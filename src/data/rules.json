@@ -1,0 +1,28 @@
+{
+  "restaurante": "Xabor",
+  "horarios": {
+    "lunes":    { "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "martes":   { "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "miercoles":{ "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "jueves":   { "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "viernes":  { "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "sabado":   { "abierto": true,  "apertura": "11:00", "cierre": "22:00" },
+    "domingo":  { "abierto": false, "apertura": null,    "cierre": null    }
+  },
+  "pedidos": {
+    "modalidades": ["recoger en tienda", "entrega a domicilio"],
+    "tiempo_preparacion_minutos": 20,
+    "pedido_minimo_entrega": 0,
+    "costo_envio": 60,
+    "pago_aceptado": ["efectivo", "tarjeta", "transferencia"]
+  },
+  "cierres_especiales": [
+    { "fecha": "2026-07-13", "motivo": "mantenimiento" }
+  ],
+  "politicas": [
+    "No se aceptan cambios ni cancelaciones una vez confirmado el pedido.",
+    "Los precios incluyen IVA.",
+    "El tiempo de entrega estimado es de 40 a 60 minutos.",
+    "No se aceptan pedidos fuera de horario."
+  ]
+}
