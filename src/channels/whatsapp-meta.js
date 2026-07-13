@@ -5,6 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos } from '../services/database.js';
 
 const router = Router();
 
@@ -111,8 +112,18 @@ router.post('/', async (req, res) => {
     // Marcar como leído
     await marcarLeido(messageId);
 
+    // Buscar cliente en BD y construir contexto
+    const clienteDB = await obtenerCliente(telefono);
+    const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono) : [];
+    const clienteCtx = clienteDB
+      ? { nombre: clienteDB.nombre || nombreMeta, pedidos: pedidosAnteriores }
+      : null;
+
+    // Registrar/actualizar cliente con nombre de WhatsApp
+    if (nombreMeta) await upsertCliente(telefono, nombreMeta);
+
     const sessionId = `meta-${telefono}`;
-    const resultado = await procesarMensaje(sessionId, texto);
+    const resultado = await procesarMensaje(sessionId, texto, clienteCtx);
 
     // Si hay orden confirmada, registrar y emitir al panel
     if (resultado.orden) {
@@ -120,6 +131,12 @@ router.post('/', async (req, res) => {
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || telefono;
       const pedido = registrarPedido(resultado.orden, 'whatsapp');
       emitirPedido(pedido);
+      // Guardar en BD
+      await guardarPedido(telefono, resultado.orden);
+      // Actualizar nombre si lo capturó el agente
+      if (resultado.orden.cliente?.nombre) {
+        await upsertCliente(telefono, resultado.orden.cliente.nombre);
+      }
     }
 
     // Si hay escalación, notificar a soporte por SMS

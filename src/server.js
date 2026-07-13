@@ -14,6 +14,7 @@ import {
   setWsBroadcast
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
+import { initDB } from './services/database.js';
 import whatsappRouter from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
@@ -143,6 +144,8 @@ app.post('/test/pedido', (req, res) => {
 });
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
+initDB().catch(e => console.error('[DB] Error al inicializar:', e.message));
+
 server.listen(PORT, () => {
   console.log(`
 🌮 =============================================

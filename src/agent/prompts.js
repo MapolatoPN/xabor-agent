@@ -71,11 +71,29 @@ function obtenerEstadoRestaurante(reglas) {
   };
 }
 
-export function construirSystemPrompt() {
+export function construirSystemPrompt(clienteCtx = null) {
   const { menu, reglas } = cargarDatos();
   const estado = obtenerEstadoRestaurante(reglas);
 
+  // Contexto del cliente conocido
+  let contextoCliente = '';
+  if (clienteCtx) {
+    contextoCliente = `\n## CLIENTE CONOCIDO\n`;
+    contextoCliente += `- Nombre: ${clienteCtx.nombre || 'desconocido'}\n`;
+    if (clienteCtx.pedidos && clienteCtx.pedidos.length > 0) {
+      contextoCliente += `- Ha ordenado antes. Sus últimos pedidos:\n`;
+      for (const p of clienteCtx.pedidos) {
+        const fecha = new Date(p.created_at).toLocaleDateString('es-MX');
+        const items = p.items.map(i => `${i.cantidad}x ${i.nombre}`).join(', ');
+        contextoCliente += `  • ${fecha}: ${items} — $${p.total}\n`;
+      }
+      contextoCliente += `- Si el cliente lo desea, puedes ofrecerle repetir su último pedido.\n`;
+    }
+    contextoCliente += `- Salúdalo por su nombre si lo conoces.\n`;
+  }
+
   return `Eres el asistente de pedidos del Restaurante Xabor. Tu nombre es Xabor.
+${contextoCliente}
 
 ## FECHA Y HORA ACTUAL
 - Hoy es ${estado.diaActual}, son las ${estado.horaActual} hora de México.
