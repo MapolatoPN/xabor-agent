@@ -1,349 +1,115 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Xabor — Panel de Comandas</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Xabor — Panel de Comandas</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+}
+header {
+  background: #e63946;
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; }
+#estado-ws { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+#dot { width: 10px; height: 10px; border-radius: 50%; background: #aaa; transition: background 0.3s; }
+#dot.conectado { background: #06d6a0; }
+#dot.desconectado { background: #ef476f; }
+#contador { background: rgba(255,255,255,0.15); padding: 6px 16px; border-radius: 20px; font-weight: 600; font-size: 0.9rem; }
+main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+#sin-pedidos { text-align: center; margin-top: 80px; opacity: 0.4; font-size: 1.1rem; }
+#sin-pedidos .emoji { font-size: 3rem; display: block; margin-bottom: 12px; }
+#grid-pedidos { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+.comanda { background: #16213e; border: 2px solid #0f3460; border-radius: 12px; overflow: hidden; animation: slideIn 0.3s ease; transition: border-color 0.3s; }
+.comanda.nuevo { border-color: #e63946; }
+.comanda.en_preparacion { border-color: #ffd166; }
+.comanda.listo { border-color: #06d6a0; }
+@keyframes slideIn { from { opacity: 0; transform: translateY(-16px); } to { opacity: 1; transform: translateY(0); } }
+.comanda-header { background: #0f3460; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+.comanda-id { font-weight: 700; font-size: 1rem; letter-spacing: 1px; }
+.comanda-canal { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 10px; border-radius: 10px; }
+.comanda-body { padding: 16px; }
+.comanda-cliente { margin-bottom: 12px; font-size: 0.9rem; color: #aaa; }
+.comanda-nombre { font-size: 1.15rem; font-weight: 700; color: #fff; letter-spacing: 0.3px; margin-bottom: 2px; }
+.comanda-cliente strong { color: #fff; font-size: 1rem; }
+.badge-modalidad { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
+.badge-recoger { background: #06d6a0; color: #000; }
+.badge-entrega { background: #ffd166; color: #000; }
+.comanda-items { margin: 12px 0; }
+.item-linea { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 0.9rem; }
+.item-linea:last-child { border-bottom: none; }
+.item-cant { color: #e63946; font-weight: 700; margin-right: 8px; }
+.item-precio { color: #ffd166; }
+.comanda-total { margin-top: 12px; padding-top: 10px; border-top: 2px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; font-size: 1.1rem; font-weight: 700; }
+.comanda-total .monto { color: #06d6a0; }
+.comanda-footer { padding: 12px 16px; background: rgba(0,0,0,0.2); display: flex; gap: 8px; flex-wrap: wrap; }
+button { border: none; border-radius: 8px; padding: 8px 14px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+button:hover { opacity: 0.85; }
+.btn-imprimir { background: #fff; color: #000; }
+.btn-preparando { background: #ffd166; color: #000; }
+.btn-listo { background: #06d6a0; color: #000; }
+.btn-entregado { background: #555; color: #fff; }
+.comanda-hora { font-size: 0.75rem; color: #666; margin-top: 8px; }
 
-    body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      min-height: 100vh;
-    }
+/* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
+@media print {
+  @page { size: 80mm auto; margin: 3mm 2mm; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { background: #fff; color: #000; width: 80mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; }
+  header, .comanda-footer, #sin-pedidos { display: none; }
+  #grid-pedidos { display: block; grid-template-columns: none; }
+  .comanda { border: none; background: #fff; color: #000; width: 76mm; page-break-inside: avoid; break-inside: avoid; }
 
-    header {
-      background: #e63946;
-      padding: 16px 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-    }
+  /* Encabezado del ticket */
+  .comanda-header { background: #000 !important; color: #fff !important; padding: 6px 8px; text-align: center; display: block; }
+  .comanda-id { font-size: 13px; font-weight: 700; letter-spacing: 2px; display: block; text-align: center; }
+  .ticket-empresa { font-size: 12px; font-weight: 700; text-align: center; display: block; margin-bottom: 2px; }
+  .comanda-canal { display: none; }
 
-    header h1 {
-      font-size: 1.4rem;
-      font-weight: 700;
-      letter-spacing: 1px;
-    }
+  /* Cuerpo */
+  .comanda-body { padding: 6px 4px; }
 
-    #estado-ws {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.85rem;
-    }
+  /* Nombre del cliente */
+  .comanda-nombre { font-size: 13px !important; font-weight: 700 !important; color: #000 !important; text-transform: uppercase; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 4px; }
 
-    #dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #aaa;
-      transition: background 0.3s;
-    }
+  /* Info del cliente: teléfono, dirección, pago */
+  .comanda-cliente { font-size: 10px; color: #000; margin-bottom: 6px; }
+  .comanda-telefono { display: block; margin: 2px 0; }
+  .comanda-pago { display: block; margin: 2px 0; font-weight: 700; text-transform: uppercase; }
 
-    #dot.conectado { background: #06d6a0; }
-    #dot.desconectado { background: #ef476f; }
+  .badge-modalidad { font-size: 10px; font-weight: 700; background: none !important; color: #000 !important; padding: 0; text-transform: uppercase; }
 
-    #contador {
-      background: rgba(255,255,255,0.15);
-      padding: 6px 16px;
-      border-radius: 20px;
-      font-weight: 600;
-      font-size: 0.9rem;
-    }
+  /* Bloque de dirección */
+  .comanda-body div[style*="border-left"] { border-left: 2px solid #000 !important; background: none !important; padding: 3px 6px; font-size: 10px; color: #000 !important; margin: 4px 0; }
 
-    main {
-      padding: 24px;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
+  /* Items */
+  .comanda-items { border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 6px 0; }
+  .item-linea { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: none; font-size: 11px; }
+  .item-cant { color: #000; font-weight: 700; }
+  .item-precio { color: #000; }
+  .item-linea small { font-size: 9px; color: #333; }
 
-    #sin-pedidos {
-      text-align: center;
-      margin-top: 80px;
-      opacity: 0.4;
-      font-size: 1.1rem;
-    }
+  /* Total */
+  .comanda-total { font-size: 14px; font-weight: 700; border-top: 2px solid #000; margin-top: 4px; padding-top: 4px; }
+  .comanda-total .monto { color: #000; }
 
-    #sin-pedidos .emoji { font-size: 3rem; display: block; margin-bottom: 12px; }
-
-    #grid-pedidos {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 20px;
-    }
-
-    .comanda {
-      background: #16213e;
-      border: 2px solid #0f3460;
-      border-radius: 12px;
-      overflow: hidden;
-      animation: slideIn 0.3s ease;
-      transition: border-color 0.3s;
-    }
-
-    .comanda.nuevo { border-color: #e63946; }
-    .comanda.en_preparacion { border-color: #ffd166; }
-    .comanda.listo { border-color: #06d6a0; }
-
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateY(-16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .comanda-header {
-      background: #0f3460;
-      padding: 12px 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .comanda-id {
-      font-weight: 700;
-      font-size: 1rem;
-      letter-spacing: 1px;
-    }
-
-    .comanda-canal {
-      font-size: 0.75rem;
-      background: rgba(255,255,255,0.1);
-      padding: 2px 10px;
-      border-radius: 10px;
-    }
-
-    .comanda-body { padding: 16px; }
-
-    .comanda-cliente {
-      margin-bottom: 12px;
-      font-size: 0.9rem;
-      color: #aaa;
-    }
-
-    .comanda-nombre {
-      font-size: 1.15rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: 0.3px;
-      margin-bottom: 2px;
-    }
-
-    .comanda-cliente strong { color: #fff; font-size: 1rem; }
-
-    .badge-modalidad {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 10px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-top: 4px;
-    }
-
-    .badge-recoger { background: #06d6a0; color: #000; }
-    .badge-entrega { background: #ffd166; color: #000; }
-
-    .comanda-items { margin: 12px 0; }
-
-    .item-linea {
-      display: flex;
-      justify-content: space-between;
-      padding: 6px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.07);
-      font-size: 0.9rem;
-    }
-
-    .item-linea:last-child { border-bottom: none; }
-    .item-cant { color: #e63946; font-weight: 700; margin-right: 8px; }
-    .item-precio { color: #ffd166; }
-
-    .comanda-total {
-      margin-top: 12px;
-      padding-top: 10px;
-      border-top: 2px solid rgba(255,255,255,0.1);
-      display: flex;
-      justify-content: space-between;
-      font-size: 1.1rem;
-      font-weight: 700;
-    }
-
-    .comanda-total .monto { color: #06d6a0; }
-
-    .comanda-footer {
-      padding: 12px 16px;
-      background: rgba(0,0,0,0.2);
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    button {
-      border: none;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-
-    button:hover { opacity: 0.85; }
-
-    .btn-imprimir { background: #fff; color: #000; }
-    .btn-preparando { background: #ffd166; color: #000; }
-    .btn-listo { background: #06d6a0; color: #000; }
-    .btn-entregado { background: #555; color: #fff; }
-
-    .comanda-hora {
-      font-size: 0.75rem;
-      color: #666;
-      margin-top: 8px;
-    }
-
-    /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
-    @media print {
-      @page {
-        size: 80mm auto;
-        margin: 3mm 2mm;
-      }
-
-      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-      body {
-        background: #fff;
-        color: #000;
-        width: 80mm;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 11px;
-        line-height: 1.4;
-      }
-
-      header, .comanda-footer, #sin-pedidos { display: none; }
-
-      #grid-pedidos {
-        display: block;
-        grid-template-columns: none;
-      }
-
-      /* Solo la comanda seleccionada se imprime */
-      .comanda {
-        border: none;
-        background: #fff;
-        color: #000;
-        width: 76mm;
-        page-break-inside: avoid;
-        break-inside: avoid;
-      }
-
-      .comanda-header {
-        background: #000 !important;
-        color: #fff !important;
-        padding: 6px 8px;
-        text-align: center;
-      }
-
-      .comanda-id {
-        font-size: 13px;
-        font-weight: 700;
-        letter-spacing: 2px;
-      }
-
-      .comanda-canal { display: none; }
-
-      .comanda-body { padding: 6px 4px; }
-
-      .comanda-nombre {
-        font-size: 13px !important;
-        font-weight: 700 !important;
-        color: #000 !important;
-        text-transform: uppercase;
-        border-bottom: 1px dashed #000;
-        padding-bottom: 4px;
-        margin-bottom: 4px;
-      }
-
-      .comanda-cliente {
-        font-size: 10px;
-        color: #000;
-        margin-bottom: 6px;
-      }
-
-      .badge-modalidad {
-        font-size: 10px;
-        font-weight: 700;
-        background: none !important;
-        color: #000 !important;
-        padding: 0;
-        text-transform: uppercase;
-      }
-
-      /* Bloque de dirección */
-      .comanda-body div[style*="border-left"] {
-        border-left: 2px solid #000 !important;
-        background: none !important;
-        padding: 3px 6px;
-        font-size: 10px;
-        color: #000 !important;
-        margin: 4px 0;
-      }
-
-      /* Separador de items */
-      .comanda-items {
-        border-top: 1px dashed #000;
-        border-bottom: 1px dashed #000;
-        padding: 4px 0;
-        margin: 6px 0;
-      }
-
-      .item-linea {
-        display: flex;
-        justify-content: space-between;
-        padding: 2px 0;
-        border-bottom: none;
-        font-size: 11px;
-      }
-
-      .item-cant { color: #000; font-weight: 700; }
-      .item-precio { color: #000; }
-
-      .item-linea small { font-size: 9px; color: #333; }
-
-      .comanda-total {
-        font-size: 14px;
-        font-weight: 700;
-        border-top: 2px solid #000;
-        margin-top: 4px;
-        padding-top: 4px;
-      }
-
-      .comanda-total .monto { color: #000; }
-
-      .comanda-hora {
-        font-size: 9px;
-        color: #555;
-        text-align: center;
-        margin-top: 8px;
-        border-top: 1px dashed #000;
-        padding-top: 4px;
-      }
-
-      /* Pie del ticket */
-      .comanda-hora::after {
-        content: '\A\A★ Gracias por tu pedido ★';
-        white-space: pre;
-        display: block;
-        font-size: 10px;
-        text-align: center;
-        color: #000;
-        margin-top: 4px;
-      }
-    }
-  </style>
+  /* Pie */
+  .comanda-hora { font-size: 9px; color: #000; text-align: center; margin-top: 8px; border-top: 1px dashed #000; padding-top: 4px; }
+  .comanda-hora::after { content: '\A\A★ Gracias por tu pedido ★'; white-space: pre; display: block; font-size: 10px; text-align: center; color: #000; margin-top: 4px; }
+}
+</style>
 </head>
 <body>
-
 <header>
   <h1>🌮 Xabor — Comandas</h1>
   <div id="estado-ws">
@@ -363,198 +129,190 @@
 </main>
 
 <script>
-  const grid = document.getElementById('grid-pedidos');
-  const sinPedidos = document.getElementById('sin-pedidos');
-  const contador = document.getElementById('contador');
-  const dot = document.getElementById('dot');
-  const labelWs = document.getElementById('label-ws');
+const grid = document.getElementById('grid-pedidos');
+const sinPedidos = document.getElementById('sin-pedidos');
+const contador = document.getElementById('contador');
+const dot = document.getElementById('dot');
+const labelWs = document.getElementById('label-ws');
+const pedidos = {};
 
-  const pedidos = {};
+// ─── WebSocket ───────────────────────────────────────────────────────────
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+let ws;
 
-  // ─── WebSocket ───────────────────────────────────────────────────────────
-  const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
-  let ws;
-
-  function conectarWS() {
-    ws = new WebSocket(WS_URL);
-
-    ws.onopen = () => {
-      dot.className = 'conectado';
-      labelWs.textContent = 'Conectado';
-    };
-
-    ws.onclose = () => {
-      dot.className = 'desconectado';
-      labelWs.textContent = 'Desconectado — reconectando...';
-      setTimeout(conectarWS, 3000);
-    };
-
-    ws.onerror = () => {
-      dot.className = 'desconectado';
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.tipo === 'nuevo_pedido') {
-          agregarPedido(msg.pedido);
-        }
-        if (msg.tipo === 'actualizar_estado') {
-          actualizarEstadoUI(msg.id, msg.estado);
-        }
-      } catch (e) {
-        console.error('Error parseando mensaje WS:', e);
-      }
-    };
-  }
-
-  // ─── Renderizar comanda ───────────────────────────────────────────────────
-  // ─── Sonido de alerta ────────────────────────────────────────────────────
-  function sonarAlerta() {
+function conectarWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; };
+  ws.onclose = () => { dot.className = 'desconectado'; labelWs.textContent = 'Desconectado — reconectando...'; setTimeout(conectarWS, 3000); };
+  ws.onerror = () => { dot.className = 'desconectado'; };
+  ws.onmessage = (event) => {
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      [0, 150, 300].forEach(delay => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.3, ctx.currentTime + delay / 1000);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay / 1000 + 0.2);
-        osc.start(ctx.currentTime + delay / 1000);
-        osc.stop(ctx.currentTime + delay / 1000 + 0.2);
-      });
-    } catch(e) {}
-  }
+      const msg = JSON.parse(event.data);
+      if (msg.tipo === 'nuevo_pedido') agregarPedido(msg.pedido);
+      if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
+    } catch (e) { console.error('Error parseando mensaje WS:', e); }
+  };
+}
 
-  function agregarPedido(pedido) {
-    pedidos[pedido.id] = pedido;
-    actualizarContador();
-    sinPedidos.style.display = 'none';
-    sonarAlerta();
+// ─── Hora en zona Piedras Negras (CST/CDT) ───────────────────────────────
+function horaCST(isoString) {
+  return new Date(isoString).toLocaleString('es-MX', {
+    timeZone: 'America/Matamoros',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+}
 
-    const card = document.createElement('div');
-    card.className = 'comanda nuevo';
-    card.id = `comanda-${pedido.id}`;
-    card.innerHTML = renderComanda(pedido);
-    grid.prepend(card);
-  }
+function horaCorta(isoString) {
+  return new Date(isoString).toLocaleTimeString('es-MX', {
+    timeZone: 'America/Matamoros',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+}
 
-  function renderComanda(p) {
-    const hora = new Date(p.timestamp).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
-    const esEntrega = p.modalidad === 'entrega a domicilio';
-    const badgeClass = esEntrega ? 'badge-entrega' : 'badge-recoger';
-    const badgeLabel = esEntrega ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda';
+// ─── Sonido de alerta ────────────────────────────────────────────────────
+function sonarAlerta() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 150, 300].forEach(delay => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + delay / 1000);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay / 1000 + 0.2);
+      osc.start(ctx.currentTime + delay / 1000);
+      osc.stop(ctx.currentTime + delay / 1000 + 0.2);
+    });
+  } catch(e) {}
+}
 
-    const itemsHTML = p.items.map(item => `
-      <div class="item-linea">
-        <span>
-          <span class="item-cant">${item.cantidad}x</span>
-          ${item.nombre}
-          ${item.notas ? `<br><small style="color:#888">${item.notas}</small>` : ''}
-        </span>
-        <span class="item-precio">$${(item.precio_unitario * item.cantidad).toFixed(0)}</span>
+function agregarPedido(pedido) {
+  pedidos[pedido.id] = pedido;
+  actualizarContador();
+  sinPedidos.style.display = 'none';
+  sonarAlerta();
+  const card = document.createElement('div');
+  card.className = 'comanda nuevo';
+  card.id = `comanda-${pedido.id}`;
+  card.innerHTML = renderComanda(pedido);
+  grid.prepend(card);
+}
+
+function renderComanda(p) {
+  const horaCorta_ = horaCorta(p.timestamp);
+  const horaCompleta = horaCST(p.timestamp);
+  const esEntrega = p.modalidad === 'entrega a domicilio';
+  const badgeClass = esEntrega ? 'badge-entrega' : 'badge-recoger';
+  const badgeLabel = esEntrega ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda';
+  const formaPago = p.forma_pago || p.cliente?.forma_pago || 'No especificada';
+
+  const itemsHTML = p.items.map(item => `
+    <div class="item-linea">
+      <span>
+        <span class="item-cant">${item.cantidad}x</span>
+        ${item.nombre}
+        ${item.notas ? `<br><small style="color:#888">${item.notas}</small>` : ''}
+      </span>
+      <span class="item-precio">$${(item.precio_unitario * item.cantidad).toFixed(0)}</span>
+    </div>
+  `).join('');
+
+  const envioHTML = p.costo_envio > 0
+    ? `<div class="item-linea"><span>Envío</span><span class="item-precio">$${p.costo_envio}</span></div>`
+    : '';
+
+  return `
+    <div class="comanda-header">
+      <span class="ticket-empresa">XABOR FOCACCERIA</span>
+      <span class="comanda-id">${p.id}</span>
+      <span class="comanda-canal">${iconCanal(p.canal)} ${p.canal}</span>
+    </div>
+    <div class="comanda-body">
+      <div class="comanda-cliente">
+        <div class="comanda-nombre">👤 ${p.cliente?.nombre || 'Sin nombre'}</div>
+        <span class="comanda-telefono">📞 ${p.cliente?.telefono || '—'}</span>
+        <span class="comanda-pago">💳 Pago: ${formaPago}</span>
+        <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
+        ${esEntrega && p.cliente?.calle ? `
+        <div style="margin-top:8px;font-size:0.82rem;color:#ccc;background:rgba(255,214,102,0.1);padding:6px 10px;border-radius:6px;border-left:3px solid #ffd166">
+          📍 ${p.cliente.calle}<br>
+          ${p.cliente.colonia ? `Col. ${p.cliente.colonia}` : ''}
+          ${p.cliente.entre_calles ? `<br>Entre: ${p.cliente.entre_calles}` : ''}
+        </div>` : ''}
       </div>
-    `).join('');
-
-    const envioHTML = p.costo_envio > 0
-      ? `<div class="item-linea"><span>Envío</span><span class="item-precio">$${p.costo_envio}</span></div>`
-      : '';
-
-    return `
-      <div class="comanda-header">
-        <span class="comanda-id">${p.id}</span>
-        <span class="comanda-canal">${iconCanal(p.canal)} ${p.canal}</span>
+      <div class="comanda-items">
+        ${itemsHTML}
+        ${envioHTML}
       </div>
-      <div class="comanda-body">
-        <div class="comanda-cliente">
-          <div class="comanda-nombre">👤 ${p.cliente?.nombre || 'Sin nombre'}</div>
-          📞 ${p.cliente?.telefono || '—'}<br>
-          <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
-          ${esEntrega && p.cliente?.calle ? `
-          <div style="margin-top:8px;font-size:0.82rem;color:#ccc;background:rgba(255,214,102,0.1);padding:6px 10px;border-radius:6px;border-left:3px solid #ffd166">
-            📍 ${p.cliente.calle}<br>
-            ${p.cliente.colonia ? `Col. ${p.cliente.colonia}` : ''}
-            ${p.cliente.entre_calles ? `<br>Entre: ${p.cliente.entre_calles}` : ''}
-          </div>` : ''}
-        </div>
-        <div class="comanda-items">
-          ${itemsHTML}
-          ${envioHTML}
-        </div>
-        <div class="comanda-total">
-          <span>TOTAL</span>
-          <span class="monto">$${p.total}</span>
-        </div>
-        <div class="comanda-hora">Recibido a las ${hora}</div>
+      <div class="comanda-total">
+        <span>TOTAL</span>
+        <span class="monto">$${p.total}</span>
       </div>
-      <div class="comanda-footer">
-        <button class="btn-imprimir" onclick="imprimirComanda('${p.id}')">🖨️ Imprimir</button>
-        <button class="btn-preparando" onclick="cambiarEstado('${p.id}', 'en_preparacion')">👨‍🍳 Preparando</button>
-        <button class="btn-listo" onclick="cambiarEstado('${p.id}', 'listo')">✅ Listo</button>
-        <button class="btn-entregado" onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
-      </div>
-    `;
-  }
+      <div class="comanda-hora">Recibido: ${horaCompleta}</div>
+    </div>
+    <div class="comanda-footer">
+      <button class="btn-imprimir" onclick="imprimirComanda('${p.id}')">🖨️ Imprimir</button>
+      <button class="btn-preparando" onclick="cambiarEstado('${p.id}', 'en_preparacion')">👨‍🍳 Preparando</button>
+      <button class="btn-listo" onclick="cambiarEstado('${p.id}', 'listo')">✅ Listo</button>
+      <button class="btn-entregado" onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
+    </div>
+  `;
+}
 
-  function iconCanal(canal) {
-    if (canal === 'whatsapp') return '💬';
-    if (canal === 'voz') return '📞';
-    return '🧪';
-  }
+function iconCanal(canal) {
+  if (canal === 'whatsapp') return '💬';
+  if (canal === 'voz') return '📞';
+  return '🧪';
+}
 
-  function actualizarEstadoUI(id, estado) {
+function actualizarEstadoUI(id, estado) {
+  const card = document.getElementById(`comanda-${id}`);
+  if (card) { card.className = `comanda ${estado}`; if (pedidos[id]) pedidos[id].estado = estado; }
+}
+
+function actualizarContador() {
+  const activos = Object.values(pedidos).filter(p => p.estado !== 'entregado').length;
+  contador.textContent = `${activos} pedido${activos !== 1 ? 's' : ''} activo${activos !== 1 ? 's' : ''}`;
+}
+
+// ─── Acciones ─────────────────────────────────────────────────────────────
+function cambiarEstado(id, nuevoEstado) {
+  fetch(`/pedidos/${id}/estado`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ estado: nuevoEstado })
+  }).then(() => actualizarEstadoUI(id, nuevoEstado));
+}
+
+function marcarEntregado(id) {
+  if (!confirm('¿Marcar como entregado y cerrar este pedido?')) return;
+  fetch(`/pedidos/${id}/estado`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ estado: 'entregado' })
+  }).then(() => {
     const card = document.getElementById(`comanda-${id}`);
-    if (card) {
-      card.className = `comanda ${estado}`;
-      if (pedidos[id]) pedidos[id].estado = estado;
-    }
-  }
+    if (card) card.remove();
+    if (pedidos[id]) delete pedidos[id];
+    actualizarContador();
+    if (Object.keys(pedidos).length === 0) sinPedidos.style.display = '';
+  });
+}
 
-  function actualizarContador() {
-    const activos = Object.values(pedidos).filter(p => p.estado !== 'entregado').length;
-    contador.textContent = `${activos} pedido${activos !== 1 ? 's' : ''} activo${activos !== 1 ? 's' : ''}`;
-  }
+function imprimirComanda(id) {
+  document.querySelectorAll('.comanda').forEach(c => {
+    c.style.display = c.id === `comanda-${id}` ? '' : 'none';
+  });
+  window.print();
+  document.querySelectorAll('.comanda').forEach(c => c.style.display = '');
+}
 
-  // ─── Acciones ─────────────────────────────────────────────────────────────
-  function cambiarEstado(id, nuevoEstado) {
-    fetch(`/pedidos/${id}/estado`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ estado: nuevoEstado })
-    }).then(() => actualizarEstadoUI(id, nuevoEstado));
-  }
+function pedidoPrueba() {
+  fetch('/test/pedido', { method: 'POST' });
+}
 
-  function marcarEntregado(id) {
-    if (!confirm('¿Marcar como entregado y cerrar este pedido?')) return;
-    fetch(`/pedidos/${id}/estado`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ estado: 'entregado' })
-    }).then(() => {
-      const card = document.getElementById(`comanda-${id}`);
-      if (card) card.remove();
-      if (pedidos[id]) delete pedidos[id];
-      actualizarContador();
-      if (Object.keys(pedidos).length === 0) sinPedidos.style.display = '';
-    });
-  }
-
-  function imprimirComanda(id) {
-    // Ocultar todas las comandas menos la seleccionada
-    document.querySelectorAll('.comanda').forEach(c => {
-      c.style.display = c.id === `comanda-${id}` ? '' : 'none';
-    });
-    window.print();
-    document.querySelectorAll('.comanda').forEach(c => c.style.display = '');
-  }
-
-  function pedidoPrueba() {
-    fetch('/test/pedido', { method: 'POST' });
-  }
-
-  // Iniciar conexión WebSocket
-  conectarWS();
+conectarWS();
 </script>
 </body>
 </html>
