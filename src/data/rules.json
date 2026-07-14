@@ -17,7 +17,8 @@
     "pago_aceptado": ["efectivo", "tarjeta", "transferencia"]
   },
   "cierres_especiales": [
-    { "fecha": "2026-07-13", "motivo": "mantenimiento" }
+    { "fecha": "2026-07-13", "motivo": "mantenimiento" },
+    { "fecha": "2026-07-14", "motivo": "sold out, agradecemos tu preferencia, mañana hornearemos más pan" }
   ],
   "politicas": [
     "No se aceptan cambios ni cancelaciones una vez confirmado el pedido.",
