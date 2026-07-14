@@ -6,20 +6,8 @@
 <title>Xabor — Panel de Comandas</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  background: #1a1a2e;
-  color: #eee;
-  min-height: 100vh;
-}
-header {
-  background: #e63946;
-  padding: 16px 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-}
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+header { background: #e63946; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
 header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; }
 #estado-ws { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
 #dot { width: 10px; height: 10px; border-radius: 50%; background: #aaa; transition: background 0.3s; }
@@ -40,8 +28,7 @@ main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 .comanda-canal { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 10px; border-radius: 10px; }
 .comanda-body { padding: 16px; }
 .comanda-cliente { margin-bottom: 12px; font-size: 0.9rem; color: #aaa; }
-.comanda-nombre { font-size: 1.15rem; font-weight: 700; color: #fff; letter-spacing: 0.3px; margin-bottom: 2px; }
-.comanda-cliente strong { color: #fff; font-size: 1rem; }
+.comanda-nombre { font-size: 1.15rem; font-weight: 700; color: #fff; letter-spacing: 0.3px; margin-bottom: 4px; }
 .badge-modalidad { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
 .badge-recoger { background: #06d6a0; color: #000; }
 .badge-entrega { background: #ffd166; color: #000; }
@@ -63,49 +50,127 @@ button:hover { opacity: 0.85; }
 
 /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
 @media print {
-  @page { size: 80mm auto; margin: 3mm 2mm; }
+  @page { size: 80mm auto; margin: 2mm 2mm; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  body { background: #fff; color: #000; width: 80mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; }
-  header, .comanda-footer, #sin-pedidos { display: none; }
-  #grid-pedidos { display: block; grid-template-columns: none; }
-  .comanda { border: none; background: #fff; color: #000; width: 76mm; page-break-inside: avoid; break-inside: avoid; }
 
-  /* Encabezado del ticket */
-  .comanda-header { background: #000 !important; color: #fff !important; padding: 6px 8px; text-align: center; display: block; }
-  .comanda-id { font-size: 13px; font-weight: 700; letter-spacing: 2px; display: block; text-align: center; }
-  .ticket-empresa { font-size: 12px; font-weight: 700; text-align: center; display: block; margin-bottom: 2px; }
-  .comanda-canal { display: none; }
+  body { background: #fff; color: #000; width: 80mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.5; }
+  header, .comanda-footer, #sin-pedidos, .comanda-hora { display: none !important; }
+  #grid-pedidos { display: block; }
+  .comanda { border: none !important; background: #fff !important; color: #000 !important; width: 76mm; page-break-inside: avoid; break-inside: avoid; margin: 0; }
 
-  /* Cuerpo */
-  .comanda-body { padding: 6px 4px; }
+  /* ── Encabezado negro ── */
+  .comanda-header {
+    background: #000 !important;
+    color: #fff !important;
+    padding: 8px 6px 6px;
+    text-align: center;
+    display: block !important;
+  }
+  .ticket-empresa-nombre {
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: 3px;
+    display: block;
+    text-align: center;
+    color: #fff !important;
+  }
+  .ticket-empresa-ciudad {
+    font-size: 9px;
+    display: block;
+    text-align: center;
+    color: #fff !important;
+    margin-bottom: 4px;
+  }
+  .comanda-id {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    display: block;
+    text-align: center;
+    color: #fff !important;
+  }
+  .comanda-canal { display: none !important; }
 
-  /* Nombre del cliente */
-  .comanda-nombre { font-size: 13px !important; font-weight: 700 !important; color: #000 !important; text-transform: uppercase; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 4px; }
+  /* ── Separador ── */
+  .ticket-sep {
+    border-top: 1px solid #000;
+    margin: 3px 0;
+    display: block;
+  }
 
-  /* Info del cliente: teléfono, dirección, pago */
-  .comanda-cliente { font-size: 10px; color: #000; margin-bottom: 6px; }
-  .comanda-telefono { display: block; margin: 2px 0; }
-  .comanda-pago { display: block; margin: 2px 0; font-weight: 700; text-transform: uppercase; }
+  /* ── Cuerpo ── */
+  .comanda-body { padding: 4px 2px; }
 
-  .badge-modalidad { font-size: 10px; font-weight: 700; background: none !important; color: #000 !important; padding: 0; text-transform: uppercase; }
+  /* ── Pedido y fecha ── */
+  .ticket-meta {
+    font-size: 10px;
+    color: #000 !important;
+    margin-bottom: 4px;
+    display: block;
+  }
 
-  /* Bloque de dirección */
-  .comanda-body div[style*="border-left"] { border-left: 2px solid #000 !important; background: none !important; padding: 3px 6px; font-size: 10px; color: #000 !important; margin: 4px 0; }
+  /* ── Cliente ── */
+  .comanda-cliente { font-size: 10px; color: #000 !important; margin-bottom: 4px; }
+  .comanda-nombre { font-size: 11px !important; font-weight: 700 !important; color: #000 !important; text-transform: uppercase; margin-bottom: 2px; }
+  .comanda-telefono { display: block; color: #000 !important; }
+  .comanda-pago { display: block; color: #000 !important; font-weight: 700; }
+  .badge-modalidad { font-size: 10px; font-weight: 700; background: none !important; color: #000 !important; padding: 0; text-transform: uppercase; display: block; margin-top: 2px; }
 
-  /* Items */
-  .comanda-items { border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 6px 0; }
-  .item-linea { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: none; font-size: 11px; }
-  .item-cant { color: #000; font-weight: 700; }
-  .item-precio { color: #000; }
-  .item-linea small { font-size: 9px; color: #333; }
+  /* ── Dirección ── */
+  .ticket-direccion {
+    border-left: 2px solid #000 !important;
+    padding: 2px 5px;
+    font-size: 10px;
+    color: #000 !important;
+    margin: 3px 0;
+    background: none !important;
+    display: block;
+  }
 
-  /* Total */
-  .comanda-total { font-size: 14px; font-weight: 700; border-top: 2px solid #000; margin-top: 4px; padding-top: 4px; }
-  .comanda-total .monto { color: #000; }
+  /* ── Tabla de items ── */
+  .comanda-items { margin: 4px 0; }
+  .ticket-items-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    font-weight: 700;
+    border-top: 1px dashed #000;
+    border-bottom: 1px dashed #000;
+    padding: 2px 0;
+    color: #000 !important;
+  }
+  .ticket-items-header .col-cant { width: 30px; }
+  .ticket-items-header .col-prod { flex: 1; }
+  .ticket-items-header .col-precio { width: 45px; text-align: right; }
 
-  /* Pie */
-  .comanda-hora { font-size: 9px; color: #000; text-align: center; margin-top: 8px; border-top: 1px dashed #000; padding-top: 4px; }
-  .comanda-hora::after { content: '\A\A★ Gracias por tu pedido ★'; white-space: pre; display: block; font-size: 10px; text-align: center; color: #000; margin-top: 4px; }
+  .item-linea { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: none; font-size: 10px; color: #000 !important; align-items: flex-start; }
+  .item-cant { color: #000 !important; font-weight: 700; width: 30px; flex-shrink: 0; }
+  .item-nombre-wrap { flex: 1; }
+  .item-precio { color: #000 !important; width: 45px; text-align: right; flex-shrink: 0; }
+  .item-linea small { font-size: 9px; color: #333 !important; display: block; padding-left: 2px; }
+
+  /* ── Total ── */
+  .comanda-total {
+    font-size: 13px !important;
+    font-weight: 900 !important;
+    border-top: 2px solid #000 !important;
+    border-bottom: 2px solid #000 !important;
+    margin-top: 3px;
+    padding: 3px 0;
+    color: #000 !important;
+  }
+  .comanda-total .monto { color: #000 !important; }
+
+  /* ── Pie ── */
+  .ticket-footer-print {
+    text-align: center;
+    font-size: 9px;
+    color: #000 !important;
+    margin-top: 6px;
+    border-top: 1px dashed #000;
+    padding-top: 4px;
+    display: block;
+  }
 }
 </style>
 </head>
@@ -136,7 +201,6 @@ const dot = document.getElementById('dot');
 const labelWs = document.getElementById('label-ws');
 const pedidos = {};
 
-// ─── WebSocket ───────────────────────────────────────────────────────────
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 let ws;
 
@@ -150,11 +214,11 @@ function conectarWS() {
       const msg = JSON.parse(event.data);
       if (msg.tipo === 'nuevo_pedido') agregarPedido(msg.pedido);
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
-    } catch (e) { console.error('Error parseando mensaje WS:', e); }
+    } catch (e) { console.error('Error WS:', e); }
   };
 }
 
-// ─── Hora en zona Piedras Negras (CST/CDT) ───────────────────────────────
+// Hora zona Piedras Negras (CST/CDT = America/Matamoros)
 function horaCST(isoString) {
   return new Date(isoString).toLocaleString('es-MX', {
     timeZone: 'America/Matamoros',
@@ -163,14 +227,6 @@ function horaCST(isoString) {
   });
 }
 
-function horaCorta(isoString) {
-  return new Date(isoString).toLocaleTimeString('es-MX', {
-    timeZone: 'America/Matamoros',
-    hour: '2-digit', minute: '2-digit', hour12: true
-  });
-}
-
-// ─── Sonido de alerta ────────────────────────────────────────────────────
 function sonarAlerta() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -179,12 +235,40 @@ function sonarAlerta() {
       const gain = ctx.createGain();
       osc.connect(gain); gain.connect(ctx.destination);
       osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.3, ctx.currentTime + delay / 1000);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay / 1000 + 0.2);
-      osc.start(ctx.currentTime + delay / 1000);
-      osc.stop(ctx.currentTime + delay / 1000 + 0.2);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + delay/1000);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay/1000 + 0.2);
+      osc.start(ctx.currentTime + delay/1000);
+      osc.stop(ctx.currentTime + delay/1000 + 0.2);
     });
   } catch(e) {}
+}
+
+// ── Extraer nombre del cliente de forma segura ──
+function getNombre(p) {
+  if (typeof p.cliente === 'string') return p.cliente;
+  if (p.cliente && typeof p.cliente === 'object') return p.cliente.nombre || p.cliente.name || 'Sin nombre';
+  if (p.nombre) return p.nombre;
+  return 'Sin nombre';
+}
+
+function getTelefono(p) {
+  if (p.cliente && typeof p.cliente === 'object') return p.cliente.telefono || p.cliente.phone || '—';
+  if (p.telefono) return p.telefono;
+  return '—';
+}
+
+function getFormaPago(p) {
+  if (p.forma_pago) return p.forma_pago;
+  if (p.cliente && typeof p.cliente === 'object' && p.cliente.forma_pago) return p.cliente.forma_pago;
+  if (p.pago) return p.pago;
+  return 'No especificada';
+}
+
+// ── Calcular precio de item de forma segura ──
+function getPrecioItem(item) {
+  const precio = item.precio_unitario || item.precio || item.price || 0;
+  const cantidad = item.cantidad || item.qty || 1;
+  return precio * cantidad;
 }
 
 function agregarPedido(pedido) {
@@ -197,54 +281,67 @@ function agregarPedido(pedido) {
   card.id = `comanda-${pedido.id}`;
   card.innerHTML = renderComanda(pedido);
   grid.prepend(card);
-
-  // Imprime automáticamente al recibir el pedido
-  setTimeout(() => imprimirComanda(pedido.id), 400);
+  // Impresión automática
+  setTimeout(() => imprimirComanda(pedido.id), 800);
 }
 
 function renderComanda(p) {
-  const horaCorta_ = horaCorta(p.timestamp);
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega = p.modalidad === 'entrega a domicilio';
   const badgeClass = esEntrega ? 'badge-entrega' : 'badge-recoger';
   const badgeLabel = esEntrega ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda';
-  const formaPago = p.forma_pago || p.cliente?.forma_pago || 'No especificada';
+  const nombre = getNombre(p);
+  const telefono = getTelefono(p);
+  const formaPago = getFormaPago(p);
 
-  const itemsHTML = p.items.map(item => `
-    <div class="item-linea">
-      <span>
-        <span class="item-cant">${item.cantidad}x</span>
-        ${item.nombre}
-        ${item.notas ? `<br><small style="color:#888">${item.notas}</small>` : ''}
-      </span>
-      <span class="item-precio">$${(item.precio_unitario * item.cantidad).toFixed(0)}</span>
-    </div>
-  `).join('');
+  const itemsHTML = (p.items || []).map(item => {
+    const precioTotal = getPrecioItem(item);
+    const precioStr = precioTotal > 0 ? `$${precioTotal.toFixed(0)}` : '—';
+    return `
+      <div class="item-linea">
+        <span class="item-cant">${item.cantidad || 1}x</span>
+        <span class="item-nombre-wrap">
+          ${item.nombre || item.name || 'Producto'}
+          ${item.notas ? `<small style="color:#888">${item.notas}</small>` : ''}
+        </span>
+        <span class="item-precio">${precioStr}</span>
+      </div>
+    `;
+  }).join('');
 
   const envioHTML = p.costo_envio > 0
-    ? `<div class="item-linea"><span>Envío</span><span class="item-precio">$${p.costo_envio}</span></div>`
+    ? `<div class="item-linea"><span class="item-cant"></span><span class="item-nombre-wrap">Envío</span><span class="item-precio">$${p.costo_envio}</span></div>`
     : '';
+
+  const direccionHTML = esEntrega && p.cliente && typeof p.cliente === 'object' && p.cliente.calle ? `
+    <div class="ticket-direccion">
+      📍 ${p.cliente.calle}<br>
+      ${p.cliente.colonia ? `Col. ${p.cliente.colonia}` : ''}
+      ${p.cliente.entre_calles ? `<br>Entre: ${p.cliente.entre_calles}` : ''}
+    </div>` : '';
 
   return `
     <div class="comanda-header">
-      <span class="ticket-empresa">XABOR FOCACCERIA</span>
-      <span class="comanda-id">${p.id}</span>
+      <span class="ticket-empresa-nombre">XABOR</span>
+      <span class="ticket-empresa-ciudad">Piedras Negras, Coahuila</span>
+      <span class="comanda-id">PEDIDO: ${p.id}</span>
       <span class="comanda-canal">${iconCanal(p.canal)} ${p.canal}</span>
     </div>
     <div class="comanda-body">
+      <span class="ticket-meta">Fecha: ${horaCompleta}</span>
       <div class="comanda-cliente">
-        <div class="comanda-nombre">👤 ${p.cliente?.nombre || 'Sin nombre'}</div>
-        <span class="comanda-telefono">📞 ${p.cliente?.telefono || '—'}</span>
-        <span class="comanda-pago">💳 Pago: ${formaPago}</span>
+        <div class="comanda-nombre">${nombre}</div>
+        <span class="comanda-telefono">Tel: ${telefono}</span>
+        <span class="comanda-pago">Pago: ${formaPago}</span>
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
-        ${esEntrega && p.cliente?.calle ? `
-        <div style="margin-top:8px;font-size:0.82rem;color:#ccc;background:rgba(255,214,102,0.1);padding:6px 10px;border-radius:6px;border-left:3px solid #ffd166">
-          📍 ${p.cliente.calle}<br>
-          ${p.cliente.colonia ? `Col. ${p.cliente.colonia}` : ''}
-          ${p.cliente.entre_calles ? `<br>Entre: ${p.cliente.entre_calles}` : ''}
-        </div>` : ''}
+        ${direccionHTML}
       </div>
       <div class="comanda-items">
+        <div class="ticket-items-header">
+          <span class="col-cant">CANT</span>
+          <span class="col-prod">PRODUCTO</span>
+          <span class="col-precio">PRECIO</span>
+        </div>
         ${itemsHTML}
         ${envioHTML}
       </div>
@@ -252,6 +349,7 @@ function renderComanda(p) {
         <span>TOTAL</span>
         <span class="monto">$${p.total}</span>
       </div>
+      <span class="ticket-footer-print">Gracias por su pedido!<br>WhatsApp: (878) 000-0000</span>
       <div class="comanda-hora">Recibido: ${horaCompleta}</div>
     </div>
     <div class="comanda-footer">
@@ -279,7 +377,6 @@ function actualizarContador() {
   contador.textContent = `${activos} pedido${activos !== 1 ? 's' : ''} activo${activos !== 1 ? 's' : ''}`;
 }
 
-// ─── Acciones ─────────────────────────────────────────────────────────────
 function cambiarEstado(id, nuevoEstado) {
   fetch(`/pedidos/${id}/estado`, {
     method: 'PATCH',
