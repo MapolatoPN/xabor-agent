@@ -197,6 +197,9 @@ function agregarPedido(pedido) {
   card.id = `comanda-${pedido.id}`;
   card.innerHTML = renderComanda(pedido);
   grid.prepend(card);
+
+  // Imprime automáticamente al recibir el pedido
+  setTimeout(() => imprimirComanda(pedido.id), 400);
 }
 
 function renderComanda(p) {
