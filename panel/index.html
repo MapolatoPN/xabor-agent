@@ -57,15 +57,17 @@ button:hover { opacity: 0.85; }
   @page { size: 80mm auto; margin: 0 2mm; }
 
   /* Forzar todo a negro sobre blanco sin excepción */
-  * {
+  *, html body *, html body div, html body span, html body p,
+  html body small, html body td, html body th {
     color: #000 !important;
-    background: #fff !important;
+    background: transparent !important;
     border-color: #000 !important;
     box-shadow: none !important;
     text-shadow: none !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  html body { background: #fff !important; }
 
   body {
     width: 76mm;
@@ -182,12 +184,12 @@ button:hover { opacity: 0.85; }
     font-weight: 900 !important;
     text-transform: uppercase;
     text-align: center;
-    padding: 2px 0 !important;
+    padding: 3px 0 !important;
     margin: 3px 0 !important;
-    border-top: 1px solid #000 !important;
-    border-bottom: 1px solid #000 !important;
     background: #000 !important;
     color: #fff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
     border-radius: 0 !important;
   }
 
