@@ -54,7 +54,7 @@ button:hover { opacity: 0.85; }
 
 /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
 @media print {
-  @page { size: 80mm auto; margin: 0; }
+  @page { size: 80mm auto; margin: 0 2mm; }
 
   /* Forzar todo a negro sobre blanco sin excepción */
   * {
@@ -68,14 +68,15 @@ button:hover { opacity: 0.85; }
   }
 
   body {
-    width: 80mm;
+    width: 76mm;
     margin: 0 auto;
     padding: 0;
     font-family: 'Courier New', Courier, monospace;
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.4;
     background: #fff !important;
     color: #000 !important;
+    overflow: hidden;
   }
 
   /* Ocultar todo excepto la comanda a imprimir */
@@ -87,12 +88,13 @@ button:hover { opacity: 0.85; }
   #grid-pedidos   { display: block !important; }
 
   .comanda {
-    width: 76mm;
+    width: 100%;
     margin: 0;
     padding: 0;
     border: none !important;
     page-break-inside: avoid;
     break-inside: avoid;
+    overflow: hidden;
   }
 
   /* ── Encabezado ── */
@@ -113,7 +115,7 @@ button:hover { opacity: 0.85; }
     object-fit: contain !important;
     margin: 2mm auto 1mm !important;
     background: #fff !important;
-    filter: grayscale(1) contrast(300%) brightness(0.2) !important;
+    filter: grayscale(1) contrast(600%) !important;
   }
   /* Si el logo cargó, ocultar texto XABOR */
   .ticket-logo.logo-ok ~ .ticket-empresa-nombre,
