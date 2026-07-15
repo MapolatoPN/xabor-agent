@@ -27,6 +27,9 @@ main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 .comanda-id { font-weight: 700; font-size: 1rem; letter-spacing: 1px; }
 .comanda-canal { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 10px; border-radius: 10px; }
 .item-nota { font-size: 0.78rem; color: #888; display: block; }
+.ticket-logo { display: none; } /* solo visible en print */
+.comanda-subtotales { padding: 2px 16px; border-top: 1px dashed rgba(255,255,255,0.2); }
+.subtotal-linea { display: flex; justify-content: space-between; font-size: 0.82rem; color: #aaa; padding: 1px 0; }
 .comanda-body { padding: 16px; }
 .comanda-cliente { margin-bottom: 12px; font-size: 0.9rem; color: #aaa; }
 .comanda-nombre { font-size: 1.15rem; font-weight: 700; color: #fff; letter-spacing: 0.3px; margin-bottom: 4px; }
@@ -94,10 +97,24 @@ button:hover { opacity: 0.85; }
 
   /* ── Encabezado ── */
   .comanda-header {
-    background: #000 !important;
-    padding: 6px 4px 4px;
+    background: #fff !important;
+    padding: 4px 4px 2px;
     text-align: center;
     display: block !important;
+    border-bottom: 2px solid #000 !important;
+  }
+  .ticket-logo {
+    display: block !important;
+    width: 52mm !important;
+    max-height: 28mm !important;
+    object-fit: contain !important;
+    margin: 0 auto 2px !important;
+    background: #fff !important;
+  }
+  /* Si el logo carga, ocultar texto; si no, mostrar texto */
+  .ticket-logo:not([style*="display:none"]) ~ .ticket-empresa-nombre,
+  .ticket-logo:not([style*="display:none"]) ~ .ticket-empresa-ciudad {
+    display: none !important;
   }
   .ticket-empresa-nombre {
     font-size: 22px !important;
@@ -105,15 +122,15 @@ button:hover { opacity: 0.85; }
     letter-spacing: 4px;
     display: block;
     text-align: center;
-    color: #fff !important;
-    background: #000 !important;
+    color: #000 !important;
+    background: #fff !important;
   }
   .ticket-empresa-ciudad {
     font-size: 10px !important;
     display: block;
     text-align: center;
-    color: #fff !important;
-    background: #000 !important;
+    color: #000 !important;
+    background: #fff !important;
     margin-bottom: 2px;
   }
   .comanda-id {
@@ -122,8 +139,11 @@ button:hover { opacity: 0.85; }
     letter-spacing: 1px;
     display: block;
     text-align: center;
-    color: #fff !important;
-    background: #000 !important;
+    color: #000 !important;
+    background: #fff !important;
+    border-top: 1px dashed #000 !important;
+    padding-top: 2px !important;
+    margin-top: 2px !important;
   }
   .comanda-canal { display: none !important; }
 
@@ -196,6 +216,19 @@ button:hover { opacity: 0.85; }
     display: block;
     padding-left: 4px;
     font-style: italic;
+  }
+
+  /* ── Subtotales (envio, descuento) ── */
+  .comanda-subtotales {
+    border-top: 1px dashed #000 !important;
+    padding: 2px 0 !important;
+    margin-top: 1px;
+  }
+  .subtotal-linea {
+    display: flex !important;
+    justify-content: space-between !important;
+    font-size: 10px !important;
+    padding: 1px 0 !important;
   }
 
   /* ── Total ── */
@@ -521,11 +554,11 @@ function agregarPedido(pedido) {
 function renderComanda(p) {
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega = p.modalidad === 'entrega a domicilio';
-  const badgeClass = esEntrega ? 'badge-entrega' : 'badge-recoger';
-  const badgeLabel = esEntrega ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda';
+  const badgeLabel = esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA';
   const nombre = getNombre(p);
   const telefono = getTelefono(p);
   const formaPago = getFormaPago(p);
+  const mostrarPago = formaPago && formaPago !== 'No especificada';
 
   const itemsHTML = (p.items || []).map(item => {
     const precioTotal = getPrecioItem(item);
@@ -542,19 +575,25 @@ function renderComanda(p) {
     `;
   }).join('');
 
-  const envioHTML = p.costo_envio > 0
-    ? `<div class="item-linea"><span class="item-cant"></span><span class="item-nombre-wrap">Envío</span><span class="item-precio">$${p.costo_envio}</span></div>`
-    : '';
+  // Subtotales separados de los items
+  const envio = parseFloat(p.costo_envio || 0);
+  const descuento = parseFloat(p.descuento || 0);
+  const subtotalHTML = (envio > 0 || descuento > 0) ? `
+    <div class="comanda-subtotales">
+      ${envio > 0 ? `<div class="subtotal-linea"><span>Envio</span><span>$${envio.toFixed(0)}</span></div>` : ''}
+      ${descuento > 0 ? `<div class="subtotal-linea"><span>Descuento</span><span>-$${descuento.toFixed(0)}</span></div>` : ''}
+    </div>` : '';
 
   const direccionHTML = esEntrega && p.cliente && typeof p.cliente === 'object' && p.cliente.calle ? `
     <div class="ticket-direccion">
-      📍 ${p.cliente.calle}<br>
+      ${p.cliente.calle}<br>
       ${p.cliente.colonia ? `Col. ${p.cliente.colonia}` : ''}
       ${p.cliente.entre_calles ? `<br>Entre: ${p.cliente.entre_calles}` : ''}
     </div>` : '';
 
   return `
     <div class="comanda-header">
+      <img src="/logo.png" class="ticket-logo" onerror="this.style.display='none'">
       <span class="ticket-empresa-nombre">XABOR</span>
       <span class="ticket-empresa-ciudad">Piedras Negras, Coahuila</span>
       <span class="comanda-id">PEDIDO: ${p.id}</span>
@@ -565,8 +604,8 @@ function renderComanda(p) {
       <div class="comanda-cliente">
         <div class="comanda-nombre">${nombre}</div>
         <span class="comanda-telefono">Tel: ${telefono}</span>
-        <span class="comanda-pago">Pago: ${formaPago}</span>
-        <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
+        ${mostrarPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
+        <span class="badge-modalidad">${badgeLabel}</span>
         ${direccionHTML}
       </div>
       <div class="comanda-items">
@@ -576,8 +615,8 @@ function renderComanda(p) {
           <span class="col-precio">PRECIO</span>
         </div>
         ${itemsHTML}
-        ${envioHTML}
       </div>
+      ${subtotalHTML}
       <div class="comanda-total">
         <span>TOTAL</span>
         <span class="monto">$${p.total}</span>
