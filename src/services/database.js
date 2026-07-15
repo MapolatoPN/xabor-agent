@@ -24,6 +24,14 @@ export async function initDB() {
       canal       VARCHAR(20),
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS pedidos_activos (
+      folio       VARCHAR(20) PRIMARY KEY,
+      estado      VARCHAR(30) DEFAULT 'nuevo',
+      datos       JSONB NOT NULL,
+      created_at  TIMESTAMP DEFAULT NOW(),
+      updated_at  TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tablas listas');
 }
@@ -66,6 +74,55 @@ export async function guardarPedido(telefono, pedido) {
     `, [telefono, JSON.stringify(pedido.items), pedido.total, pedido.modalidad, pedido.canal]);
   } catch (e) {
     console.error('[DB] Error guardarPedido:', e.message);
+  }
+}
+
+// ─── Pedidos activos del panel (sobreviven reinicios) ────────────────────────
+export async function guardarPedidoActivo(pedido) {
+  try {
+    await pool.query(`
+      INSERT INTO pedidos_activos (folio, estado, datos)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (folio) DO UPDATE SET datos = $3, updated_at = NOW()
+    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido)]);
+  } catch (e) {
+    console.error('[DB] Error guardarPedidoActivo:', e.message);
+  }
+}
+
+export async function actualizarEstadoPedidoDB(folio, estado) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos SET estado = $1, updated_at = NOW()
+      WHERE folio = $2
+    `, [estado, folio]);
+  } catch (e) {
+    console.error('[DB] Error actualizarEstadoPedidoDB:', e.message);
+  }
+}
+
+export async function obtenerPedidosActivos() {
+  try {
+    const result = await pool.query(`
+      SELECT datos FROM pedidos_activos
+      WHERE estado != 'entregado'
+      ORDER BY created_at ASC
+    `);
+    return result.rows.map(r => r.datos);
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosActivos:', e.message);
+    return [];
+  }
+}
+
+export async function archivarPedidoActivo(folio) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos SET estado = 'entregado', updated_at = NOW()
+      WHERE folio = $1
+    `, [folio]);
+  } catch (e) {
+    console.error('[DB] Error archivarPedidoActivo:', e.message);
   }
 }
 

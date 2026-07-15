@@ -11,7 +11,8 @@ import {
   emitirPedido,
   actualizarEstadoPedido,
   obtenerPedidos,
-  setWsBroadcast
+  setWsBroadcast,
+  cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { initDB } from './services/database.js';
@@ -160,7 +161,9 @@ app.post('/test/pedido', (req, res) => {
 });
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
-initDB().catch(e => console.error('[DB] Error al inicializar:', e.message));
+initDB()
+  .then(() => cargarPedidosDesdeDB())
+  .catch(e => console.error('[DB] Error al inicializar:', e.message));
 
 server.listen(PORT, () => {
   console.log(`
