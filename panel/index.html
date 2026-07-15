@@ -26,6 +26,7 @@ main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 .comanda-header { background: #0f3460; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
 .comanda-id { font-weight: 700; font-size: 1rem; letter-spacing: 1px; }
 .comanda-canal { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 10px; border-radius: 10px; }
+.item-nota { font-size: 0.78rem; color: #888; display: block; }
 .comanda-body { padding: 16px; }
 .comanda-cliente { margin-bottom: 12px; font-size: 0.9rem; color: #aaa; }
 .comanda-nombre { font-size: 1.15rem; font-weight: 700; color: #fff; letter-spacing: 0.3px; margin-bottom: 4px; }
@@ -62,8 +63,9 @@ button:hover { opacity: 0.85; }
     font-weight: bold;
     line-height: 1.6;
   }
-  header, .comanda-footer, #sin-pedidos, .comanda-hora { display: none !important; }
-  #grid-pedidos { display: block; }
+  header, .comanda-footer, #sin-pedidos, .comanda-hora,
+  #tabs-nav, #modal-overlay, #vista-chats, #vista-ventas { display: none !important; }
+  #vista-comandas, #grid-pedidos { display: block !important; }
   .comanda { border: none !important; background: #fff !important; color: #000 !important; width: 76mm; page-break-inside: avoid; break-inside: avoid; margin: 0; }
 
   /* ── Encabezado negro ── */
@@ -151,7 +153,7 @@ button:hover { opacity: 0.85; }
   .item-cant { color: #000 !important; font-weight: 900; width: 32px; flex-shrink: 0; }
   .item-nombre-wrap { flex: 1; font-weight: bold; }
   .item-precio { color: #000 !important; font-weight: 900; width: 48px; text-align: right; flex-shrink: 0; }
-  .item-linea small { font-size: 11px; font-weight: bold; color: #000 !important; display: block; padding-left: 2px; }
+  .item-linea small, .item-nota { font-size: 11px; font-weight: bold; color: #000 !important; display: block; padding-left: 2px; }
 
   /* ── Total ── */
   .comanda-total {
@@ -491,7 +493,7 @@ function renderComanda(p) {
         <span class="item-cant">${item.cantidad || 1}x</span>
         <span class="item-nombre-wrap">
           ${item.nombre || item.name || 'Producto'}
-          ${item.notas ? `<small style="color:#888">${item.notas}</small>` : ''}
+          ${item.notas ? `<small class="item-nota">${item.notas}</small>` : ''}
         </span>
         <span class="item-precio">${precioStr}</span>
       </div>
