@@ -232,6 +232,7 @@ button:hover { opacity: 0.85; }
   <div id="contador">0 pedidos activos</div>
   <button onclick="pedidoPrueba()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem">🧪 Pedido de prueba</button>
   <button onclick="abrirModalMensaje()" style="background:#06d6a0;color:#000;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:700">💬 Enviar mensaje</button>
+  <button onclick="cerrarSesion()" style="background:rgba(255,255,255,0.15);color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;">🔒 Salir</button>
 </header>
 
 <!-- Modal WhatsApp -->
@@ -364,6 +365,23 @@ button:hover { opacity: 0.85; }
 </main>
 
 <script>
+// ─── Auth ────────────────────────────────────────────────────────────────────
+const TOKEN = sessionStorage.getItem('xabor_token');
+if (!TOKEN) location.href = '/login.html';
+
+// Helper: fetch con auth
+function apiFetch(url, opts = {}) {
+  return fetch(url, {
+    ...opts,
+    headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  });
+}
+
+// Verificar token al cargar
+apiFetch('/api/auth/verify').then(r => {
+  if (!r.ok) { sessionStorage.removeItem('xabor_token'); location.href = '/login.html'; }
+});
+
 const grid = document.getElementById('grid-pedidos');
 const sinPedidos = document.getElementById('sin-pedidos');
 const contador = document.getElementById('contador');
@@ -549,18 +567,16 @@ function actualizarContador() {
 }
 
 function cambiarEstado(id, nuevoEstado) {
-  fetch(`/pedidos/${id}/estado`, {
+  apiFetch(`/pedidos/${id}/estado`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ estado: nuevoEstado })
   }).then(() => actualizarEstadoUI(id, nuevoEstado));
 }
 
 function marcarEntregado(id) {
   if (!confirm('¿Marcar como entregado y cerrar este pedido?')) return;
-  fetch(`/pedidos/${id}/estado`, {
+  apiFetch(`/pedidos/${id}/estado`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ estado: 'entregado' })
   }).then(() => {
     const card = document.getElementById(`comanda-${id}`);
@@ -580,7 +596,7 @@ function imprimirComanda(id) {
 }
 
 function pedidoPrueba() {
-  fetch('/test/pedido', { method: 'POST' });
+  apiFetch('/test/pedido', { method: 'POST' });
 }
 
 conectarWS();
@@ -607,8 +623,8 @@ async function enviarMensajeManual() {
   if (!telefono || !mensaje) { feedback.style.color='#ef476f'; feedback.textContent='Escribe el número y el mensaje.'; return; }
   btn.textContent = 'Enviando...'; btn.disabled = true;
   try {
-    const resp = await fetch('/api/send-message', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const resp = await apiFetch('/api/send-message', {
+      method: 'POST',
       body: JSON.stringify({ telefono, mensaje })
     });
     const data = await resp.json();
@@ -620,6 +636,11 @@ async function enviarMensajeManual() {
 document.getElementById('modal-overlay').addEventListener('click', (e) => {
   if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
 });
+
+function cerrarSesion() {
+  sessionStorage.removeItem('xabor_token');
+  location.href = '/login.html';
+}
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
 function mostrarTab(tab) {
@@ -646,7 +667,7 @@ let chatAbierto = null;
 let chatNuevos = 0;
 
 async function cargarConversaciones() {
-  const lista = await fetch('/api/conversaciones').then(r => r.json()).catch(() => []);
+  const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => []);
   const cont = document.getElementById('contactos-lista');
   if (!lista.length) { cont.innerHTML = '<div style="padding:16px;color:#666;font-size:0.85rem;">Sin conversaciones aún</div>'; return; }
   cont.innerHTML = lista.map(c => `
@@ -669,7 +690,7 @@ async function abrirConversacion(telefono, nombre) {
   const el = document.getElementById(`contacto-${telefono}`);
   if (el) el.style.background = '#1a4a8a';
   // Cargar mensajes
-  const msgs = await fetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
+  const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
   renderMensajes(msgs);
   // Poner teléfono en el input de envío
   document.getElementById('chat-input').dataset.telefono = telefono;
@@ -729,8 +750,8 @@ async function enviarDesdeChat() {
   input.value = '';
   input.disabled = true;
   try {
-    const resp = await fetch('/api/send-message', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const resp = await apiFetch('/api/send-message', {
+      method: 'POST',
       body: JSON.stringify({ telefono, mensaje: texto })
     });
     const data = await resp.json();
@@ -792,8 +813,8 @@ async function cargarVentas(desde, hasta) {
   document.getElementById('ventas-body').innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#555;">Cargando...</td></tr>';
 
   const [ventas, resumen] = await Promise.all([
-    fetch(`/api/ventas?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => []),
-    fetch(`/api/ventas/resumen?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => ({}))
+    apiFetch(`/api/ventas?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => []),
+    apiFetch(`/api/ventas/resumen?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => ({}))
   ]);
   ventasData = ventas;
 

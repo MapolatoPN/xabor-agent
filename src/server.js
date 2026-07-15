@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createHmac } from 'crypto';
 
 import { procesarMensaje } from './agent/brain.js';
 import {
@@ -22,6 +23,28 @@ import voiceRouter from './channels/voice.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+
+// ─── Autenticación del panel ──────────────────────────────────────────────────
+const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'xabor2024';
+const PANEL_SECRET   = process.env.PANEL_SECRET   || 'xabor-secret-key';
+
+function generarToken(password) {
+  return createHmac('sha256', PANEL_SECRET).update(password).digest('hex');
+}
+
+const TOKEN_VALIDO = generarToken(PANEL_PASSWORD);
+
+function requireAuth(req, res, next) {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+  const token = auth.slice(7);
+  if (token !== TOKEN_VALIDO) {
+    return res.status(401).json({ error: 'Token inválido' });
+  }
+  next();
+}
 
 const app = express();
 const server = createServer(app);
@@ -67,6 +90,30 @@ app.use('/webhook/whatsapp', whatsappRouter);
 app.use('/webhook/voice', voiceRouter);
 
 // ─── API interna ─────────────────────────────────────────────────────────────
+
+// Auth — rutas públicas (no requieren token)
+app.post('/api/auth/login', (req, res) => {
+  const { password } = req.body;
+  if (!password || password !== PANEL_PASSWORD) {
+    return res.status(401).json({ error: 'Contraseña incorrecta' });
+  }
+  res.json({ token: TOKEN_VALIDO });
+});
+
+app.get('/api/auth/verify', requireAuth, (req, res) => {
+  res.json({ ok: true });
+});
+
+// Proteger todas las rutas /api/* excepto las de auth
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth/')) return next();
+  requireAuth(req, res, next);
+});
+
+// Servir panel principal solo con sesión válida
+app.get('/', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/index.html'));
+});
 
 // Salud del servidor
 app.get('/health', (req, res) => {
