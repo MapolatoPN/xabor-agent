@@ -348,6 +348,7 @@ button:hover { opacity: 0.85; }
   <button onclick="mostrarTab('comandas')" id="tab-comandas" style="background:#1a1a2e;color:#fff;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">🍽️ Comandas</button>
   <button onclick="mostrarTab('chats')" id="tab-chats" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">💬 Chats <span id="badge-chats" style="background:#e63946;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.75rem;display:none">0</span></button>
   <button onclick="mostrarTab('ventas')" id="tab-ventas" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">📊 Ventas</button>
+  <button onclick="mostrarTab('historial')" id="tab-historial" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">📋 Historial</button>
 </div>
 
 <main>
@@ -433,6 +434,14 @@ button:hover { opacity: 0.85; }
       <div id="top-productos" style="display:flex;flex-direction:column;gap:6px;"></div>
     </div>
 
+  </div>
+
+  <!-- Tab Historial -->
+  <div id="vista-historial" style="display:none;padding:0 8px 24px;">
+    <div style="background:#16213e;border-radius:12px;overflow:hidden;border:1px solid #0f3460;">
+      <div style="padding:14px 18px;border-bottom:1px solid #0f3460;font-weight:700;">Pedidos entregados (últimos 100)</div>
+      <div id="historial-lista"></div>
+    </div>
   </div>
 
   <!-- Tab Chats -->
@@ -742,7 +751,7 @@ function cerrarSesion() {
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
 function mostrarTab(tab) {
-  const tabs = ['comandas', 'chats', 'ventas'];
+  const tabs = ['comandas', 'chats', 'ventas', 'historial'];
   tabs.forEach(t => {
     const activo = t === tab;
     document.getElementById(`vista-${t}`).style.display = activo ? '' : 'none';
@@ -755,9 +764,8 @@ function mostrarTab(tab) {
     chatNuevos = 0;
     cargarConversaciones();
   }
-  if (tab === 'ventas') {
-    setPeriodo('hoy');
-  }
+  if (tab === 'ventas') setPeriodo('hoy');
+  if (tab === 'historial') cargarHistorial();
 }
 
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
@@ -857,6 +865,68 @@ async function enviarDesdeChat() {
   } catch(e) { alert('Error de conexión.'); }
   input.disabled = false;
   input.focus();
+}
+
+// ─── Historial de entregados ─────────────────────────────────────────────────
+async function cargarHistorial() {
+  const cont = document.getElementById('historial-lista');
+  cont.innerHTML = '<div style="padding:20px;text-align:center;color:#555;">Cargando...</div>';
+  const lista = await apiFetch('/api/historial').then(r => r.json()).catch(() => []);
+  if (!lista.length) {
+    cont.innerHTML = '<div style="padding:20px;text-align:center;color:#555;">Sin pedidos entregados aún</div>';
+    return;
+  }
+  cont.innerHTML = lista.map((p, i) => {
+    const nombre = getNombre(p);
+    const esEntrega = (p.modalidad || '').toLowerCase().includes('domicilio');
+    const modalidadTag = esEntrega
+      ? '<span style="background:rgba(230,57,70,0.2);color:#e63946;font-size:0.75rem;padding:2px 8px;border-radius:10px;">🛵 Domicilio</span>'
+      : '<span style="background:rgba(6,214,160,0.2);color:#06d6a0;font-size:0.75rem;padding:2px 8px;border-radius:10px;">🏪 Recoger</span>';
+    const hora = p.entregado_at ? horaCST(p.entregado_at) : horaCST(p.timestamp);
+    const itemsHTML = (p.items || []).map(item => `
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #0f3460;font-size:0.85rem;">
+        <span>${item.cantidad || 1}x ${item.nombre || ''}</span>
+        <span>$${((item.precio_unitario || 0) * (item.cantidad || 1)).toFixed(0)}</span>
+      </div>
+      ${item.notas ? `<div style="font-size:0.78rem;color:#888;padding-left:16px;">${item.notas}</div>` : ''}
+    `).join('');
+    const envio = parseFloat(p.costo_envio || 0);
+    const telefono = getTelefono(p);
+    const direccion = esEntrega && p.cliente && typeof p.cliente === 'object' && p.cliente.calle
+      ? `<div style="font-size:0.82rem;color:#aaa;margin-top:4px;">📍 ${p.cliente.calle}${p.cliente.colonia ? ', Col. ' + p.cliente.colonia : ''}</div>` : '';
+
+    return `
+      <div style="border-bottom:1px solid #0f3460;">
+        <div onclick="toggleHistorial('hdet-${i}')"
+             style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:12px;justify-content:space-between;"
+             onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background=''">
+          <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
+            <span style="font-weight:700;color:#06d6a0;white-space:nowrap">${p.id || '—'}</span>
+            <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${nombre}</span>
+            ${modalidadTag}
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
+            <span style="font-weight:700;">$${p.total}</span>
+            <span style="color:#555;font-size:0.78rem;">${hora}</span>
+            <span style="color:#555">▾</span>
+          </div>
+        </div>
+        <div id="hdet-${i}" style="display:none;padding:12px 18px 16px;background:rgba(0,0,0,0.2);border-top:1px solid #0f3460;">
+          <div style="font-size:0.82rem;color:#aaa;margin-bottom:8px;">Tel: ${telefono}${p.forma_pago ? ' · Pago: ' + p.forma_pago : ''}</div>
+          ${direccion}
+          <div style="margin-top:10px;">${itemsHTML}</div>
+          ${envio > 0 ? `<div style="display:flex;justify-content:space-between;font-size:0.85rem;color:#aaa;padding:4px 0;">Envío<span>$${envio.toFixed(0)}</span></div>` : ''}
+          <div style="display:flex;justify-content:space-between;font-weight:700;font-size:1rem;padding-top:8px;border-top:1px solid #0f3460;margin-top:4px;">
+            <span>TOTAL</span><span style="color:#06d6a0;">$${p.total}</span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function toggleHistorial(id) {
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === 'none' ? '' : 'none';
 }
 
 // Enviar con Ctrl+Enter en el textarea de chat

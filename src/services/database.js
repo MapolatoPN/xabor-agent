@@ -107,6 +107,23 @@ export async function guardarPedido(telefono, pedido) {
   }
 }
 
+// ─── Historial de pedidos entregados ─────────────────────────────────────────
+export async function obtenerPedidosEntregados(limite = 100) {
+  try {
+    const result = await pool.query(`
+      SELECT folio, datos, updated_at
+      FROM pedidos_activos
+      WHERE estado = 'entregado'
+      ORDER BY updated_at DESC
+      LIMIT $1
+    `, [limite]);
+    return result.rows.map(r => ({ ...r.datos, entregado_at: r.updated_at }));
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosEntregados:', e.message);
+    return [];
+  }
+}
+
 // ─── Consultas para POS ───────────────────────────────────────────────────────
 export async function obtenerVentas(desde, hasta) {
   try {

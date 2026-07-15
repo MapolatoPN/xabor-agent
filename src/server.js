@@ -16,7 +16,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
@@ -193,6 +193,12 @@ app.post('/api/send-message', async (req, res) => {
     console.error('[Panel] Error al enviar mensaje:', error.message);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Historial de entregados
+app.get('/api/historial', requireAuth, async (req, res) => {
+  const lista = await obtenerPedidosEntregados(100);
+  res.json(lista);
 });
 
 // POS — Ventas
