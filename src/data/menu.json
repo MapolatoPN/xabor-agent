@@ -88,9 +88,9 @@
         },
         {
           "id": "ENS004",
-          "nombre": "Combo Focaccia + Ensalada",
+          "nombre": "Combo Focaccia + Media Ensalada",
           "precio": 250,
-          "descripcion": "Combo especial: una Focaccia Bar personalizable más una ensalada de tu elección (César, Clásica o del Bosque). Precio especial combinado.",
+          "descripcion": "Combo especial: una Focaccia completa (del Bar personalizable o cualquier opción de panini) más media ensalada sin pollo de tu elección (César, Clásica o del Bosque).",
           "ingredientes": [],
           "alergenos": ["gluten", "lácteos"],
           "disponible": true
