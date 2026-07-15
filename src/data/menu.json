@@ -85,6 +85,15 @@
           "ingredientes": ["mezcla de lechuga y espinacas", "manzana", "blueberries", "fresas", "queso feta", "nueces", "pechuga de pollo al horno"],
           "alergenos": ["lácteos", "nueces"],
           "disponible": true
+        },
+        {
+          "id": "ENS004",
+          "nombre": "Combo Focaccia + Ensalada",
+          "precio": 250,
+          "descripcion": "Combo especial: una Focaccia Bar personalizable más una ensalada de tu elección (César, Clásica o del Bosque). Precio especial combinado.",
+          "ingredientes": [],
+          "alergenos": ["gluten", "lácteos"],
+          "disponible": true
         }
       ]
     },

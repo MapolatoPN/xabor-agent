@@ -141,7 +141,7 @@ Política de rentas:
 - No cobramos comisión sobre las ventas ni aumentamos precios.
 - Únicamente cuando los clientes pagan con tarjeta, se descuenta una comisión del 3.5% al emprendedor. Esta comisión se resta cuando vengan a recoger su dinero.
 - Al iniciar, hacemos un inventario inicial de los productos.
-- Nosotros avisamos al emprendedor cuando el producto se esté agotando para que vengan a rellenar (semanal o según sea necesario).
+- Nosotros avisamos al emprendedor cuando el producto se esté agotando para que vengan a rellenarlo semanalmente o según sea necesario.
 - Se pueden exhibir todo tipo de productos, tomando en cuenta que los espacios no están refrigerados, por lo que se recomienda productos que no se afecten con el calor.
 
 Si el cliente está interesado en rentar un espacio, invítalo a visitar el restaurante o a escribirnos para darle más información. NO tomes reservaciones de espacios por este medio — solo informas y canalizas.
