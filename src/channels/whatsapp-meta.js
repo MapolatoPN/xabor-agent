@@ -29,7 +29,7 @@ router.get('/', (req, res) => {
 });
 
 // ─── Enviar mensaje de texto via Meta Graph API ──────────────────────────────
-async function enviarMensaje(telefono, texto) {
+export async function enviarMensaje(telefono, texto) {
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   const resp = await fetch(url, {
     method: 'POST',

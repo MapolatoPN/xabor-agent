@@ -15,7 +15,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { initDB } from './services/database.js';
-import whatsappRouter from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
 
@@ -114,6 +114,22 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   const pedido = actualizarEstadoPedido(req.params.id, estado);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
   res.json(pedido);
+});
+
+// Enviar mensaje manual desde el panel (link de pago, etc.)
+app.post('/api/send-message', async (req, res) => {
+  const { telefono, mensaje } = req.body;
+  if (!telefono || !mensaje) {
+    return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
+  }
+  try {
+    await enviarMensaje(telefono, mensaje);
+    console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[Panel] Error al enviar mensaje:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Limpiar sesión

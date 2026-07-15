@@ -202,6 +202,98 @@
       margin-top: 8px;
     }
 
+    /* ─── Modal Enviar Mensaje ──────────────────────────────────────────── */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-overlay.visible { display: flex; }
+
+    #modal-msg {
+      background: #16213e;
+      border: 2px solid #0f3460;
+      border-radius: 14px;
+      padding: 24px;
+      width: 100%;
+      max-width: 420px;
+      margin: 16px;
+    }
+
+    #modal-msg h2 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #modal-msg label {
+      display: block;
+      font-size: 0.78rem;
+      color: #aaa;
+      margin-bottom: 4px;
+      margin-top: 12px;
+    }
+
+    #modal-msg input,
+    #modal-msg textarea,
+    #modal-msg select {
+      width: 100%;
+      background: #0f3460;
+      border: 1px solid #1a4a8a;
+      border-radius: 8px;
+      color: #eee;
+      padding: 9px 12px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      resize: vertical;
+    }
+
+    #modal-msg textarea { min-height: 80px; }
+
+    #modal-aviso {
+      font-size: 0.75rem;
+      color: #ffd166;
+      background: rgba(255,209,102,0.1);
+      border-left: 3px solid #ffd166;
+      padding: 6px 10px;
+      border-radius: 4px;
+      margin-top: 12px;
+    }
+
+    #modal-acciones {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    #btn-send-msg {
+      flex: 1;
+      background: #06d6a0;
+      color: #000;
+      font-size: 0.9rem;
+      padding: 10px;
+    }
+
+    #btn-cancelar-msg {
+      background: rgba(255,255,255,0.1);
+      color: #eee;
+      padding: 10px 16px;
+    }
+
+    #msg-feedback {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      text-align: center;
+      min-height: 18px;
+    }
+
     /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
     @media print {
       @page {
@@ -352,7 +444,29 @@
   </div>
   <div id="contador">0 pedidos activos</div>
   <button onclick="pedidoPrueba()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem">🧪 Pedido de prueba</button>
+  <button onclick="abrirModalMensaje()" style="background:#06d6a0;color:#000;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:700">💬 Enviar mensaje</button>
 </header>
+
+<!-- Modal: Enviar mensaje WhatsApp -->
+<div id="modal-overlay">
+  <div id="modal-msg">
+    <h2>💬 Enviar mensaje por WhatsApp</h2>
+
+    <label>Número del cliente (con código de país)</label>
+    <input id="msg-telefono" type="text" placeholder="ej. 5218781119527" />
+
+    <label>Mensaje</label>
+    <textarea id="msg-texto" placeholder="Hola, aquí tu enlace de pago: https://clip.mx/p/..."></textarea>
+
+    <div id="modal-aviso">⚠️ Solo funciona si el cliente escribió en las últimas 24 horas</div>
+    <div id="msg-feedback"></div>
+
+    <div id="modal-acciones">
+      <button id="btn-cancelar-msg" onclick="cerrarModalMensaje()">Cancelar</button>
+      <button id="btn-send-msg" onclick="enviarMensajeManual()">📤 Enviar</button>
+    </div>
+  </div>
+</div>
 
 <main>
   <div id="sin-pedidos">
@@ -555,6 +669,70 @@
 
   // Iniciar conexión WebSocket
   conectarWS();
+
+  // ─── Modal: Enviar mensaje WhatsApp ──────────────────────────────────────
+  function abrirModalMensaje() {
+    // Pre-llenar con el teléfono del pedido más reciente si existe
+    const pedidosLista = Object.values(pedidos).filter(p => p.cliente?.telefono);
+    if (pedidosLista.length > 0) {
+      document.getElementById('msg-telefono').value = pedidosLista[0].cliente.telefono;
+    }
+    document.getElementById('msg-feedback').textContent = '';
+    document.getElementById('modal-overlay').classList.add('visible');
+    document.getElementById('msg-texto').focus();
+  }
+
+  function cerrarModalMensaje() {
+    document.getElementById('modal-overlay').classList.remove('visible');
+    document.getElementById('msg-texto').value = '';
+    document.getElementById('msg-telefono').value = '';
+    document.getElementById('msg-feedback').textContent = '';
+  }
+
+  async function enviarMensajeManual() {
+    const telefono = document.getElementById('msg-telefono').value.trim().replace(/\D/g, '');
+    const mensaje  = document.getElementById('msg-texto').value.trim();
+    const feedback = document.getElementById('msg-feedback');
+    const btn      = document.getElementById('btn-send-msg');
+
+    if (!telefono || !mensaje) {
+      feedback.style.color = '#ef476f';
+      feedback.textContent = 'Escribe el número y el mensaje.';
+      return;
+    }
+
+    btn.textContent = 'Enviando...';
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch('/api/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ telefono, mensaje })
+      });
+      const data = await resp.json();
+
+      if (data.ok) {
+        feedback.style.color = '#06d6a0';
+        feedback.textContent = '✅ Mensaje enviado';
+        setTimeout(cerrarModalMensaje, 1500);
+      } else {
+        feedback.style.color = '#ef476f';
+        feedback.textContent = `Error: ${data.error}`;
+      }
+    } catch (e) {
+      feedback.style.color = '#ef476f';
+      feedback.textContent = 'Error de conexión.';
+    }
+
+    btn.textContent = '📤 Enviar';
+    btn.disabled = false;
+  }
+
+  // Cerrar modal al hacer clic fuera
+  document.getElementById('modal-overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
+  });
 </script>
 </body>
 </html>
