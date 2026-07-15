@@ -165,368 +165,6 @@ button:hover { opacity: 0.85; }
   }
   .comanda-total .monto { color: #000 !important; font-weight: 900 !important; }
 
-    #grid-pedidos {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 20px;
-    }
-
-    .comanda {
-      background: #16213e;
-      border: 2px solid #0f3460;
-      border-radius: 12px;
-      overflow: hidden;
-      animation: slideIn 0.3s ease;
-      transition: border-color 0.3s;
-    }
-
-    .comanda.nuevo { border-color: #e63946; }
-    .comanda.en_preparacion { border-color: #ffd166; }
-    .comanda.listo { border-color: #06d6a0; }
-
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateY(-16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .comanda-header {
-      background: #0f3460;
-      padding: 12px 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .comanda-id {
-      font-weight: 700;
-      font-size: 1rem;
-      letter-spacing: 1px;
-    }
-
-    .comanda-canal {
-      font-size: 0.75rem;
-      background: rgba(255,255,255,0.1);
-      padding: 2px 10px;
-      border-radius: 10px;
-    }
-
-    .comanda-body { padding: 16px; }
-
-    .comanda-cliente {
-      margin-bottom: 12px;
-      font-size: 0.9rem;
-      color: #aaa;
-    }
-
-    .comanda-nombre {
-      font-size: 1.15rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: 0.3px;
-      margin-bottom: 2px;
-    }
-
-    .comanda-cliente strong { color: #fff; font-size: 1rem; }
-
-    .badge-modalidad {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 10px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-top: 4px;
-    }
-
-    .badge-recoger { background: #06d6a0; color: #000; }
-    .badge-entrega { background: #ffd166; color: #000; }
-
-    .comanda-items { margin: 12px 0; }
-
-    .item-linea {
-      display: flex;
-      justify-content: space-between;
-      padding: 6px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.07);
-      font-size: 0.9rem;
-    }
-
-    .item-linea:last-child { border-bottom: none; }
-    .item-cant { color: #e63946; font-weight: 700; margin-right: 8px; }
-    .item-precio { color: #ffd166; }
-
-    .comanda-total {
-      margin-top: 12px;
-      padding-top: 10px;
-      border-top: 2px solid rgba(255,255,255,0.1);
-      display: flex;
-      justify-content: space-between;
-      font-size: 1.1rem;
-      font-weight: 700;
-    }
-
-    .comanda-total .monto { color: #06d6a0; }
-
-    .comanda-footer {
-      padding: 12px 16px;
-      background: rgba(0,0,0,0.2);
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    button {
-      border: none;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-
-    button:hover { opacity: 0.85; }
-
-    .btn-imprimir { background: #fff; color: #000; }
-    .btn-preparando { background: #ffd166; color: #000; }
-    .btn-listo { background: #06d6a0; color: #000; }
-    .btn-entregado { background: #555; color: #fff; }
-
-    .comanda-hora {
-      font-size: 0.75rem;
-      color: #666;
-      margin-top: 8px;
-    }
-
-    /* ─── Modal Enviar Mensaje ──────────────────────────────────────────── */
-    #modal-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.7);
-      z-index: 100;
-      align-items: center;
-      justify-content: center;
-    }
-    #modal-overlay.visible { display: flex; }
-
-    #modal-msg {
-      background: #16213e;
-      border: 2px solid #0f3460;
-      border-radius: 14px;
-      padding: 24px;
-      width: 100%;
-      max-width: 420px;
-      margin: 16px;
-    }
-
-    #modal-msg h2 {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    #modal-msg label {
-      display: block;
-      font-size: 0.78rem;
-      color: #aaa;
-      margin-bottom: 4px;
-      margin-top: 12px;
-    }
-
-    #modal-msg input,
-    #modal-msg textarea,
-    #modal-msg select {
-      width: 100%;
-      background: #0f3460;
-      border: 1px solid #1a4a8a;
-      border-radius: 8px;
-      color: #eee;
-      padding: 9px 12px;
-      font-size: 0.9rem;
-      font-family: inherit;
-      resize: vertical;
-    }
-
-    #modal-msg textarea { min-height: 80px; }
-
-    #modal-aviso {
-      font-size: 0.75rem;
-      color: #ffd166;
-      background: rgba(255,209,102,0.1);
-      border-left: 3px solid #ffd166;
-      padding: 6px 10px;
-      border-radius: 4px;
-      margin-top: 12px;
-    }
-
-    #modal-acciones {
-      display: flex;
-      gap: 10px;
-      margin-top: 16px;
-    }
-
-    #btn-send-msg {
-      flex: 1;
-      background: #06d6a0;
-      color: #000;
-      font-size: 0.9rem;
-      padding: 10px;
-    }
-
-    #btn-cancelar-msg {
-      background: rgba(255,255,255,0.1);
-      color: #eee;
-      padding: 10px 16px;
-    }
-
-    #msg-feedback {
-      margin-top: 10px;
-      font-size: 0.82rem;
-      text-align: center;
-      min-height: 18px;
-    }
-
-    /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
-    @media print {
-      @page {
-        size: 80mm auto;
-        margin: 3mm 2mm;
-      }
-
-      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-      body {
-        background: #fff;
-        color: #000;
-        width: 80mm;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 11px;
-        line-height: 1.4;
-      }
-
-      header, .comanda-footer, #sin-pedidos { display: none; }
-
-      #grid-pedidos {
-        display: block;
-        grid-template-columns: none;
-      }
-
-      /* Solo la comanda seleccionada se imprime */
-      .comanda {
-        border: none;
-        background: #fff;
-        color: #000;
-        width: 76mm;
-        page-break-inside: avoid;
-        break-inside: avoid;
-      }
-
-      .comanda-header {
-        background: #000 !important;
-        color: #fff !important;
-        padding: 6px 8px;
-        text-align: center;
-      }
-
-      .comanda-id {
-        font-size: 13px;
-        font-weight: 700;
-        letter-spacing: 2px;
-      }
-
-      .comanda-canal { display: none; }
-
-      .comanda-body { padding: 6px 4px; }
-
-      .comanda-nombre {
-        font-size: 13px !important;
-        font-weight: 700 !important;
-        color: #000 !important;
-        text-transform: uppercase;
-        border-bottom: 1px dashed #000;
-        padding-bottom: 4px;
-        margin-bottom: 4px;
-      }
-
-      .comanda-cliente {
-        font-size: 10px;
-        color: #000;
-        margin-bottom: 6px;
-      }
-
-      .badge-modalidad {
-        font-size: 10px;
-        font-weight: 700;
-        background: none !important;
-        color: #000 !important;
-        padding: 0;
-        text-transform: uppercase;
-      }
-
-      /* Bloque de dirección */
-      .comanda-body div[style*="border-left"] {
-        border-left: 2px solid #000 !important;
-        background: none !important;
-        padding: 3px 6px;
-        font-size: 10px;
-        color: #000 !important;
-        margin: 4px 0;
-      }
-
-      /* Separador de items */
-      .comanda-items {
-        border-top: 1px dashed #000;
-        border-bottom: 1px dashed #000;
-        padding: 4px 0;
-        margin: 6px 0;
-      }
-
-      .item-linea {
-        display: flex;
-        justify-content: space-between;
-        padding: 2px 0;
-        border-bottom: none;
-        font-size: 11px;
-      }
-
-      .item-cant { color: #000; font-weight: 700; }
-      .item-precio { color: #000; }
-
-      .item-linea small { font-size: 9px; color: #333; }
-
-      .comanda-total {
-        font-size: 14px;
-        font-weight: 700;
-        border-top: 2px solid #000;
-        margin-top: 4px;
-        padding-top: 4px;
-      }
-
-      .comanda-total .monto { color: #000; }
-
-      .comanda-hora {
-        font-size: 9px;
-        color: #555;
-        text-align: center;
-        margin-top: 8px;
-        border-top: 1px dashed #000;
-        padding-top: 4px;
-      }
-
-      /* Pie del ticket */
-      .comanda-hora::after {
-        content: '\A\A★ Gracias por tu pedido ★';
-        white-space: pre;
-        display: block;
-        font-size: 10px;
-        text-align: center;
-        color: #000;
-        margin-top: 4px;
-      }
-    }
   /* ── Pie ── */
   .ticket-footer-print {
     text-align: center;
@@ -539,6 +177,37 @@ button:hover { opacity: 0.85; }
     display: block;
   }
 }
+
+    /* ─── Modal Enviar Mensaje ──────────────────────────────────────────── */
+    #modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #modal-overlay.visible { display: flex; }
+    #modal-msg {
+      background: #16213e; border: 2px solid #0f3460;
+      border-radius: 14px; padding: 24px;
+      width: 100%; max-width: 420px; margin: 16px;
+    }
+    #modal-msg h2 { font-size: 1rem; font-weight: 700; margin-bottom: 16px; }
+    #modal-msg label { display: block; font-size: 0.78rem; color: #aaa; margin-bottom: 4px; margin-top: 12px; }
+    #modal-msg input, #modal-msg textarea {
+      width: 100%; background: #0f3460; border: 1px solid #1a4a8a;
+      border-radius: 8px; color: #eee; padding: 9px 12px;
+      font-size: 0.9rem; font-family: inherit; resize: vertical;
+    }
+    #modal-msg textarea { min-height: 80px; }
+    #modal-aviso {
+      font-size: 0.75rem; color: #ffd166;
+      background: rgba(255,209,102,0.1); border-left: 3px solid #ffd166;
+      padding: 6px 10px; border-radius: 4px; margin-top: 12px;
+    }
+    #modal-acciones { display: flex; gap: 10px; margin-top: 16px; }
+    #btn-send-msg { flex: 1; background: #06d6a0; color: #000; font-size: 0.9rem; padding: 10px; }
+    #btn-cancelar-msg { background: rgba(255,255,255,0.1); color: #eee; padding: 10px 16px; }
+    #msg-feedback { margin-top: 10px; font-size: 0.82rem; text-align: center; min-height: 18px; }
+
   </style>
 </head>
 <body>
@@ -553,20 +222,16 @@ button:hover { opacity: 0.85; }
   <button onclick="abrirModalMensaje()" style="background:#06d6a0;color:#000;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:700">💬 Enviar mensaje</button>
 </header>
 
-<!-- Modal: Enviar mensaje WhatsApp -->
+<!-- Modal WhatsApp -->
 <div id="modal-overlay">
   <div id="modal-msg">
     <h2>💬 Enviar mensaje por WhatsApp</h2>
-
     <label>Número del cliente (con código de país)</label>
     <input id="msg-telefono" type="text" placeholder="ej. 5218781119527" />
-
     <label>Mensaje</label>
     <textarea id="msg-texto" placeholder="Hola, aquí tu enlace de pago: https://clip.mx/p/..."></textarea>
-
     <div id="modal-aviso">⚠️ Solo funciona si el cliente escribió en las últimas 24 horas</div>
     <div id="msg-feedback"></div>
-
     <div id="modal-acciones">
       <button id="btn-cancelar-msg" onclick="cerrarModalMensaje()">Cancelar</button>
       <button id="btn-send-msg" onclick="enviarMensajeManual()">📤 Enviar</button>
@@ -801,104 +466,44 @@ function pedidoPrueba() {
   fetch('/test/pedido', { method: 'POST' });
 }
 
-<<<<<<< HEAD
-  function marcarEntregado(id) {
-    if (!confirm('¿Marcar como entregado y cerrar este pedido?')) return;
-    fetch(`/pedidos/${id}/estado`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ estado: 'entregado' })
-    }).then(() => {
-      const card = document.getElementById(`comanda-${id}`);
-      if (card) card.remove();
-      if (pedidos[id]) delete pedidos[id];
-      actualizarContador();
-      if (Object.keys(pedidos).length === 0) sinPedidos.style.display = '';
-    });
-  }
-
-  function imprimirComanda(id) {
-    // Ocultar todas las comandas menos la seleccionada
-    document.querySelectorAll('.comanda').forEach(c => {
-      c.style.display = c.id === `comanda-${id}` ? '' : 'none';
-    });
-    window.print();
-    document.querySelectorAll('.comanda').forEach(c => c.style.display = '');
-  }
-
-  function pedidoPrueba() {
-    fetch('/test/pedido', { method: 'POST' });
-  }
-
-  // Iniciar conexión WebSocket
-  conectarWS();
-
-  // ─── Modal: Enviar mensaje WhatsApp ──────────────────────────────────────
-  function abrirModalMensaje() {
-    // Pre-llenar con el teléfono del pedido más reciente si existe
-    const pedidosLista = Object.values(pedidos).filter(p => p.cliente?.telefono);
-    if (pedidosLista.length > 0) {
-      document.getElementById('msg-telefono').value = pedidosLista[0].cliente.telefono;
-    }
-    document.getElementById('msg-feedback').textContent = '';
-    document.getElementById('modal-overlay').classList.add('visible');
-    document.getElementById('msg-texto').focus();
-  }
-
-  function cerrarModalMensaje() {
-    document.getElementById('modal-overlay').classList.remove('visible');
-    document.getElementById('msg-texto').value = '';
-    document.getElementById('msg-telefono').value = '';
-    document.getElementById('msg-feedback').textContent = '';
-  }
-
-  async function enviarMensajeManual() {
-    const telefono = document.getElementById('msg-telefono').value.trim().replace(/\D/g, '');
-    const mensaje  = document.getElementById('msg-texto').value.trim();
-    const feedback = document.getElementById('msg-feedback');
-    const btn      = document.getElementById('btn-send-msg');
-
-    if (!telefono || !mensaje) {
-      feedback.style.color = '#ef476f';
-      feedback.textContent = 'Escribe el número y el mensaje.';
-      return;
-    }
-
-    btn.textContent = 'Enviando...';
-    btn.disabled = true;
-
-    try {
-      const resp = await fetch('/api/send-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefono, mensaje })
-      });
-      const data = await resp.json();
-
-      if (data.ok) {
-        feedback.style.color = '#06d6a0';
-        feedback.textContent = '✅ Mensaje enviado';
-        setTimeout(cerrarModalMensaje, 1500);
-      } else {
-        feedback.style.color = '#ef476f';
-        feedback.textContent = `Error: ${data.error}`;
-      }
-    } catch (e) {
-      feedback.style.color = '#ef476f';
-      feedback.textContent = 'Error de conexión.';
-    }
-
-    btn.textContent = '📤 Enviar';
-    btn.disabled = false;
-  }
-
-  // Cerrar modal al hacer clic fuera
-  document.getElementById('modal-overlay').addEventListener('click', (e) => {
-    if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
-  });
-=======
 conectarWS();
->>>>>>> bb7299e533d8b166c4dce6dade1e740b7de05611
+
+// ─── Modal: Enviar mensaje WhatsApp ──────────────────────────────────────
+function abrirModalMensaje() {
+  const lista = Object.values(pedidos).filter(p => p.cliente?.telefono);
+  if (lista.length > 0) document.getElementById('msg-telefono').value = lista[0].cliente.telefono;
+  document.getElementById('msg-feedback').textContent = '';
+  document.getElementById('modal-overlay').classList.add('visible');
+  document.getElementById('msg-texto').focus();
+}
+function cerrarModalMensaje() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+  document.getElementById('msg-texto').value = '';
+  document.getElementById('msg-telefono').value = '';
+  document.getElementById('msg-feedback').textContent = '';
+}
+async function enviarMensajeManual() {
+  const telefono = document.getElementById('msg-telefono').value.trim().replace(/\D/g, '');
+  const mensaje  = document.getElementById('msg-texto').value.trim();
+  const feedback = document.getElementById('msg-feedback');
+  const btn      = document.getElementById('btn-send-msg');
+  if (!telefono || !mensaje) { feedback.style.color='#ef476f'; feedback.textContent='Escribe el número y el mensaje.'; return; }
+  btn.textContent = 'Enviando...'; btn.disabled = true;
+  try {
+    const resp = await fetch('/api/send-message', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telefono, mensaje })
+    });
+    const data = await resp.json();
+    if (data.ok) { feedback.style.color='#06d6a0'; feedback.textContent='✅ Mensaje enviado'; setTimeout(cerrarModalMensaje, 1500); }
+    else { feedback.style.color='#ef476f'; feedback.textContent=`Error: ${data.error}`; }
+  } catch(e) { feedback.style.color='#ef476f'; feedback.textContent='Error de conexión.'; }
+  btn.textContent = '📤 Enviar'; btn.disabled = false;
+}
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
+});
+
 </script>
 </body>
 </html>
