@@ -118,14 +118,21 @@ export async function obtenerConversacion(telefono, limite = 50) {
 export async function obtenerConversacionesRecientes(limite = 20) {
   try {
     const result = await pool.query(`
-      SELECT DISTINCT ON (telefono)
-        telefono, nombre, texto, direccion, timestamp
-      FROM mensajes
-      ORDER BY telefono, timestamp DESC
-    `);
-    // Ordenar por el mensaje más reciente
-    result.rows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    return result.rows.slice(0, limite);
+      SELECT
+        t.telefono,
+        (SELECT nombre FROM mensajes WHERE telefono = t.telefono AND nombre IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS nombre,
+        t.texto,
+        t.direccion,
+        t.timestamp
+      FROM (
+        SELECT DISTINCT ON (telefono) telefono, texto, direccion, timestamp
+        FROM mensajes
+        ORDER BY telefono, timestamp DESC
+      ) t
+      ORDER BY t.timestamp DESC
+      LIMIT $1
+    `, [limite]);
+    return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerConversacionesRecientes:', e.message);
     return [];

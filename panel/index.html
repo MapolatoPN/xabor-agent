@@ -563,7 +563,7 @@ async function cargarConversaciones() {
          id="contacto-${c.telefono}"
          style="padding:12px 16px;cursor:pointer;border-bottom:1px solid #0f3460;transition:background .15s;"
          onmouseover="this.style.background='#0f3460'" onmouseout="this.style.background=chatAbierto==='${c.telefono}'?'#1a4a8a':''">
-      <div style="font-weight:600;font-size:0.9rem;">${c.nombre || c.telefono}</div>
+      <div style="font-weight:600;font-size:0.9rem;">${c.nombre || ('📞 ' + c.telefono)}</div>
       <div style="font-size:0.78rem;color:#888;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.texto||''}</div>
       <div style="font-size:0.72rem;color:#555;margin-top:2px;">${horaCST(c.timestamp)}</div>
     </div>
