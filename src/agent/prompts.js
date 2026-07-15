@@ -59,7 +59,15 @@ function obtenerEstadoRestaurante(reglas) {
   // Verificar cierres especiales por fecha
   const fechaHoy = `${horaMX.getFullYear()}-${String(horaMX.getMonth()+1).padStart(2,'0')}-${String(horaMX.getDate()).padStart(2,'0')}`;
   const cierreEspecial = (reglas.cierres_especiales || []).find(c => c.fecha === fechaHoy);
-  if (cierreEspecial) abierto = false;
+  if (cierreEspecial) {
+    if (cierreEspecial.hora_cierre) {
+      // Cierre anticipado: cerrado solo después de la hora indicada
+      const [hCierreEsp] = cierreEspecial.hora_cierre.split(':').map(Number);
+      if (horaActual >= hCierreEsp) abierto = false;
+    } else {
+      abierto = false;
+    }
+  }
 
   const nombresDias = { lunes: 'lunes', martes: 'martes', miercoles: 'miércoles', jueves: 'jueves', viernes: 'viernes', sabado: 'sábado', domingo: 'domingo' };
   return {
