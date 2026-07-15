@@ -15,7 +15,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
@@ -146,6 +146,23 @@ app.post('/api/send-message', async (req, res) => {
     console.error('[Panel] Error al enviar mensaje:', error.message);
     res.status(500).json({ error: error.message });
   }
+});
+
+// POS — Ventas
+app.get('/api/ventas', async (req, res) => {
+  const { desde, hasta } = req.query;
+  const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const h = hasta || new Date().toISOString();
+  const ventas = await obtenerVentas(d, h);
+  res.json(ventas);
+});
+
+app.get('/api/ventas/resumen', async (req, res) => {
+  const { desde, hasta } = req.query;
+  const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const h = hasta || new Date().toISOString();
+  const resumen = await obtenerResumenVentas(d, h);
+  res.json(resumen);
 });
 
 // Limpiar sesión

@@ -208,6 +208,18 @@ button:hover { opacity: 0.85; }
     #btn-cancelar-msg { background: rgba(255,255,255,0.1); color: #eee; padding: 10px 16px; }
     #msg-feedback { margin-top: 10px; font-size: 0.82rem; text-align: center; min-height: 18px; }
 
+  /* POS */
+  .pos-card { background: #16213e; border: 1px solid #0f3460; border-radius: 10px; padding: 14px 18px; }
+  .pos-card-label { font-size: 0.78rem; color: #888; margin-bottom: 4px; }
+  .pos-card-value { font-size: 1.5rem; font-weight: 700; color: #06d6a0; }
+  .btn-periodo { background: #0f3460; color: #aaa; border: 1px solid #1a4a8a; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85rem; transition: all .15s; }
+  .btn-periodo.activo { background: #1a4a8a; color: #fff; border-color: #06d6a0; }
+  #tabla-ventas tbody tr:hover { background: rgba(255,255,255,0.04); cursor: pointer; }
+  #tabla-ventas tbody td { padding: 10px 14px; border-bottom: 1px solid #0f3460; vertical-align: top; }
+  .tag-modalidad { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .tag-domicilio { background: rgba(230,57,70,0.2); color: #e63946; }
+  .tag-recoger   { background: rgba(6,214,160,0.2); color: #06d6a0; }
+
   </style>
 </head>
 <body>
@@ -242,6 +254,7 @@ button:hover { opacity: 0.85; }
 <div id="tabs-nav" style="background:#0f3460;display:flex;gap:4px;padding:10px 24px 0;">
   <button onclick="mostrarTab('comandas')" id="tab-comandas" style="background:#1a1a2e;color:#fff;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">🍽️ Comandas</button>
   <button onclick="mostrarTab('chats')" id="tab-chats" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">💬 Chats <span id="badge-chats" style="background:#e63946;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.75rem;display:none">0</span></button>
+  <button onclick="mostrarTab('ventas')" id="tab-ventas" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">📊 Ventas</button>
 </div>
 
 <main>
@@ -252,6 +265,81 @@ button:hover { opacity: 0.85; }
       Esperando pedidos...
     </div>
     <div id="grid-pedidos"></div>
+  </div>
+
+  <!-- Tab Ventas / POS -->
+  <div id="vista-ventas" style="display:none;padding:0 8px 24px;">
+
+    <!-- Filtros de período -->
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <button onclick="setPeriodo('hoy')"    id="btn-hoy"    class="btn-periodo activo">Hoy</button>
+      <button onclick="setPeriodo('semana')" id="btn-semana" class="btn-periodo">Esta semana</button>
+      <button onclick="setPeriodo('mes')"    id="btn-mes"    class="btn-periodo">Este mes</button>
+      <span style="margin-left:8px;color:#aaa;font-size:0.85rem;">o personalizado:</span>
+      <input type="date" id="fecha-desde" onchange="setPeriodoCustom()" style="background:#16213e;border:1px solid #0f3460;color:#eee;border-radius:6px;padding:5px 8px;">
+      <input type="date" id="fecha-hasta" onchange="setPeriodoCustom()" style="background:#16213e;border:1px solid #0f3460;color:#eee;border-radius:6px;padding:5px 8px;">
+    </div>
+
+    <!-- Tarjetas resumen -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;">
+      <div class="pos-card">
+        <div class="pos-card-label">Total ventas</div>
+        <div class="pos-card-value" id="pos-total">$0</div>
+      </div>
+      <div class="pos-card">
+        <div class="pos-card-label">Pedidos</div>
+        <div class="pos-card-value" id="pos-pedidos">0</div>
+      </div>
+      <div class="pos-card">
+        <div class="pos-card-label">Promedio</div>
+        <div class="pos-card-value" id="pos-promedio">$0</div>
+      </div>
+      <div class="pos-card">
+        <div class="pos-card-label">🛵 Domicilios</div>
+        <div class="pos-card-value" id="pos-domicilios">0</div>
+      </div>
+      <div class="pos-card">
+        <div class="pos-card-label">🏪 Recoger</div>
+        <div class="pos-card-value" id="pos-recoger">0</div>
+      </div>
+      <div class="pos-card">
+        <div class="pos-card-label">Envíos cobrados</div>
+        <div class="pos-card-value" id="pos-envios">$0</div>
+      </div>
+    </div>
+
+    <!-- Tabla de transacciones -->
+    <div style="background:#16213e;border-radius:12px;overflow:hidden;border:1px solid #0f3460;">
+      <div style="padding:14px 18px;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:700;">Transacciones</span>
+        <button onclick="exportarCSV()" style="background:#0f3460;color:#eee;border:1px solid #1a4a8a;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:0.82rem;">⬇️ Exportar CSV</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="tabla-ventas" style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+          <thead>
+            <tr style="background:#0f3460;color:#aaa;text-align:left;">
+              <th style="padding:10px 14px;">Hora</th>
+              <th style="padding:10px 14px;">Folio</th>
+              <th style="padding:10px 14px;">Cliente</th>
+              <th style="padding:10px 14px;">Modalidad</th>
+              <th style="padding:10px 14px;">Pago</th>
+              <th style="padding:10px 14px;">Items</th>
+              <th style="padding:10px 14px;text-align:right;">Total</th>
+            </tr>
+          </thead>
+          <tbody id="ventas-body">
+            <tr><td colspan="7" style="padding:20px;text-align:center;color:#555;">Cargando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Productos más vendidos -->
+    <div style="background:#16213e;border-radius:12px;border:1px solid #0f3460;margin-top:16px;padding:16px;">
+      <div style="font-weight:700;margin-bottom:12px;">🏆 Productos más vendidos</div>
+      <div id="top-productos" style="display:flex;flex-direction:column;gap:6px;"></div>
+    </div>
+
   </div>
 
   <!-- Tab Chats -->
@@ -535,18 +623,21 @@ document.getElementById('modal-overlay').addEventListener('click', (e) => {
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
 function mostrarTab(tab) {
-  const esChats = tab === 'chats';
-  document.getElementById('vista-comandas').style.display = esChats ? 'none' : '';
-  document.getElementById('vista-chats').style.display = esChats ? '' : 'none';
-  document.getElementById('tab-comandas').style.background = esChats ? '#0f3460' : '#1a1a2e';
-  document.getElementById('tab-comandas').style.color = esChats ? '#aaa' : '#fff';
-  document.getElementById('tab-chats').style.background = esChats ? '#1a1a2e' : '#0f3460';
-  document.getElementById('tab-chats').style.color = esChats ? '#fff' : '#aaa';
-  if (esChats) {
+  const tabs = ['comandas', 'chats', 'ventas'];
+  tabs.forEach(t => {
+    const activo = t === tab;
+    document.getElementById(`vista-${t}`).style.display = activo ? '' : 'none';
+    document.getElementById(`tab-${t}`).style.background = activo ? '#1a1a2e' : '#0f3460';
+    document.getElementById(`tab-${t}`).style.color = activo ? '#fff' : '#aaa';
+  });
+  if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     document.getElementById('badge-chats').textContent = '0';
     chatNuevos = 0;
     cargarConversaciones();
+  }
+  if (tab === 'ventas') {
+    setPeriodo('hoy');
   }
 }
 
@@ -653,6 +744,136 @@ async function enviarDesdeChat() {
 document.getElementById('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarDesdeChat(); }
 });
+
+// ─── POS / Ventas ─────────────────────────────────────────────────────────────
+let ventasData = [];
+let periodoActual = 'hoy';
+
+function isoHoy() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
+}
+function isoFinDia() {
+  return new Date().toISOString();
+}
+function isoInicioSemana() {
+  const d = new Date();
+  d.setDate(d.getDate() - d.getDay());
+  d.setHours(0,0,0,0);
+  return d.toISOString();
+}
+function isoInicioMes() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
+}
+
+function setPeriodo(p) {
+  periodoActual = p;
+  document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
+  document.getElementById(`btn-${p}`).classList.add('activo');
+  let desde, hasta = isoFinDia();
+  if (p === 'hoy')   desde = isoHoy();
+  if (p === 'semana') desde = isoInicioSemana();
+  if (p === 'mes')   desde = isoInicioMes();
+  cargarVentas(desde, hasta);
+}
+
+function setPeriodoCustom() {
+  const d = document.getElementById('fecha-desde').value;
+  const h = document.getElementById('fecha-hasta').value;
+  if (!d) return;
+  document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
+  periodoActual = 'custom';
+  const hasta = h ? new Date(h + 'T23:59:59').toISOString() : isoFinDia();
+  cargarVentas(new Date(d + 'T00:00:00').toISOString(), hasta);
+}
+
+async function cargarVentas(desde, hasta) {
+  document.getElementById('ventas-body').innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#555;">Cargando...</td></tr>';
+
+  const [ventas, resumen] = await Promise.all([
+    fetch(`/api/ventas?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => []),
+    fetch(`/api/ventas/resumen?desde=${desde}&hasta=${hasta}`).then(r => r.json()).catch(() => ({}))
+  ]);
+  ventasData = ventas;
+
+  // Tarjetas resumen
+  document.getElementById('pos-total').textContent     = '$' + (resumen.total_ventas || 0).toFixed(2);
+  document.getElementById('pos-pedidos').textContent   = resumen.num_pedidos || 0;
+  document.getElementById('pos-promedio').textContent  = '$' + (resumen.promedio || 0).toFixed(2);
+  document.getElementById('pos-domicilios').textContent = resumen.domicilios || 0;
+  document.getElementById('pos-recoger').textContent   = resumen.recoger || 0;
+  document.getElementById('pos-envios').textContent    = '$' + (resumen.total_envios || 0).toFixed(2);
+
+  // Tabla
+  const tbody = document.getElementById('ventas-body');
+  if (!ventas.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#555;">Sin ventas en este período</td></tr>';
+  } else {
+    tbody.innerHTML = ventas.map(v => {
+      const esEntrega = (v.modalidad || '').toLowerCase().includes('domicilio');
+      const tagClass = esEntrega ? 'tag-domicilio' : 'tag-recoger';
+      const tagLabel = esEntrega ? '🛵 Domicilio' : '🏪 Recoger';
+      const items = Array.isArray(v.items) ? v.items.map(i => `${i.cantidad||1}x ${i.nombre||''}`).join(', ') : '—';
+      const hora = new Date(v.created_at).toLocaleString('es-MX', { timeZone: 'America/Matamoros', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', hour12:true });
+      return `<tr>
+        <td style="white-space:nowrap">${hora}</td>
+        <td style="color:#888;font-size:0.8rem">${v.folio || '#'+v.id}</td>
+        <td>${v.nombre_cliente || v.telefono || '—'}</td>
+        <td><span class="tag-modalidad ${tagClass}">${tagLabel}</span></td>
+        <td style="color:#aaa">${v.forma_pago || '—'}</td>
+        <td style="color:#aaa;font-size:0.8rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${items}</td>
+        <td style="text-align:right;font-weight:700;color:#06d6a0">$${parseFloat(v.total||0).toFixed(2)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Top productos
+  const conteo = {};
+  ventas.forEach(v => {
+    (v.items || []).forEach(item => {
+      const nombre = item.nombre || item.name || 'Desconocido';
+      const cant = item.cantidad || 1;
+      conteo[nombre] = (conteo[nombre] || 0) + cant;
+    });
+  });
+  const top = Object.entries(conteo).sort((a,b) => b[1]-a[1]).slice(0,8);
+  const maxVal = top[0]?.[1] || 1;
+  document.getElementById('top-productos').innerHTML = top.length
+    ? top.map(([nombre, cant]) => `
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:180px;font-size:0.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${nombre}</div>
+          <div style="flex:1;background:#0f3460;border-radius:4px;height:16px;overflow:hidden;">
+            <div style="height:100%;width:${(cant/maxVal*100).toFixed(0)}%;background:#06d6a0;border-radius:4px;"></div>
+          </div>
+          <div style="font-weight:700;min-width:28px;text-align:right">${cant}</div>
+        </div>`)
+      .join('')
+    : '<div style="color:#555">Sin datos</div>';
+}
+
+function exportarCSV() {
+  if (!ventasData.length) return;
+  const filas = [['Hora','Folio','Cliente','Telefono','Modalidad','Pago','Items','Total']];
+  ventasData.forEach(v => {
+    const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(' | ') : '';
+    filas.push([
+      new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros'}),
+      v.folio || v.id,
+      v.nombre_cliente || '',
+      v.telefono || '',
+      v.modalidad || '',
+      v.forma_pago || '',
+      items,
+      v.total
+    ]);
+  });
+  const csv = filas.map(r => r.map(c => `"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
 
 </script>
 </body>

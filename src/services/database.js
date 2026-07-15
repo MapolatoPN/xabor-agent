@@ -16,14 +16,22 @@ export async function initDB() {
     );
 
     CREATE TABLE IF NOT EXISTS pedidos (
-      id          SERIAL PRIMARY KEY,
-      telefono    VARCHAR(20) REFERENCES clientes(telefono),
-      items       JSONB,
-      total       DECIMAL(10,2),
-      modalidad   VARCHAR(50),
-      canal       VARCHAR(20),
-      created_at  TIMESTAMP DEFAULT NOW()
+      id             SERIAL PRIMARY KEY,
+      folio          VARCHAR(20),
+      telefono       VARCHAR(20) REFERENCES clientes(telefono),
+      nombre_cliente VARCHAR(100),
+      items          JSONB,
+      total          DECIMAL(10,2),
+      costo_envio    DECIMAL(10,2) DEFAULT 0,
+      modalidad      VARCHAR(50),
+      canal          VARCHAR(20),
+      forma_pago     VARCHAR(50),
+      created_at     TIMESTAMP DEFAULT NOW()
     );
+    ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS folio VARCHAR(20);
+    ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS nombre_cliente VARCHAR(100);
+    ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS costo_envio DECIMAL(10,2) DEFAULT 0;
+    ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS forma_pago VARCHAR(50);
 
     CREATE TABLE IF NOT EXISTS mensajes (
       id          SERIAL PRIMARY KEY,
@@ -80,11 +88,61 @@ export async function upsertCliente(telefono, nombre) {
 export async function guardarPedido(telefono, pedido) {
   try {
     await pool.query(`
-      INSERT INTO pedidos (telefono, items, total, modalidad, canal)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [telefono, JSON.stringify(pedido.items), pedido.total, pedido.modalidad, pedido.canal]);
+      INSERT INTO pedidos (telefono, items, total, modalidad, canal, forma_pago, nombre_cliente, costo_envio, folio)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT DO NOTHING
+    `, [
+      telefono,
+      JSON.stringify(pedido.items),
+      pedido.total,
+      pedido.modalidad,
+      pedido.canal,
+      pedido.forma_pago || pedido.cliente?.forma_pago || null,
+      pedido.cliente?.nombre || null,
+      pedido.costo_envio || 0,
+      pedido.id || null
+    ]);
   } catch (e) {
     console.error('[DB] Error guardarPedido:', e.message);
+  }
+}
+
+// ─── Consultas para POS ───────────────────────────────────────────────────────
+export async function obtenerVentas(desde, hasta) {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id, folio, telefono, nombre_cliente,
+        items, total, modalidad, canal,
+        forma_pago, costo_envio, created_at
+      FROM pedidos
+      WHERE created_at >= $1 AND created_at <= $2
+      ORDER BY created_at DESC
+    `, [desde, hasta]);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerVentas:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerResumenVentas(desde, hasta) {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*)::int                              AS num_pedidos,
+        COALESCE(SUM(total), 0)::float             AS total_ventas,
+        COALESCE(AVG(total), 0)::float             AS promedio,
+        COALESCE(SUM(costo_envio), 0)::float       AS total_envios,
+        COUNT(*) FILTER (WHERE modalidad ILIKE '%domicilio%')::int AS domicilios,
+        COUNT(*) FILTER (WHERE modalidad ILIKE '%recoger%' OR modalidad ILIKE '%tienda%')::int AS recoger
+      FROM pedidos
+      WHERE created_at >= $1 AND created_at <= $2
+    `, [desde, hasta]);
+    return result.rows[0];
+  } catch (e) {
+    console.error('[DB] Error obtenerResumenVentas:', e.message);
+    return {};
   }
 }
 
