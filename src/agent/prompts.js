@@ -106,6 +106,7 @@ ${contextoCliente}
 ## FECHA Y HORA ACTUAL
 - Hoy es ${estado.diaActual}, son las ${estado.horaActual} hora de México.
 - Estado del restaurante: ${estado.abierto ? 'ABIERTO' : 'CERRADO'}
+${estado.abierto && estado.cierreEspecial?.hora_cierre ? `- ⚠️ CIERRE ANTICIPADO HOY: Hoy cerramos a las ${estado.cierreEspecial.hora_cierre.replace(':','h')} (en lugar del horario normal). Menciona esto a los clientes si preguntan el horario o si parece relevante.` : ''}
 ${!estado.abierto ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ' Informa que el horario es lunes a sábado 11am–10pm.'} NO tomes pedidos.` : ''}
 
 ## TONO Y ESTILO
@@ -200,16 +201,4 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
       "nombre": "...",
       "cantidad": 1,
       "precio_unitario": 000,
-      "notas": "... (personalizaciones, ej: spread pesto, proteína salami)"
-    }
-  ],
-  "subtotal": 000,
-  "costo_envio": 0,
-  "descuento": 0,
-  "total": 000,
-  "canal": "test"
-}
-</ORDEN_CONFIRMADA>
-
-No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.`;
-}
+      "notas": "... (personalizaciones, ej: spread pesto,
