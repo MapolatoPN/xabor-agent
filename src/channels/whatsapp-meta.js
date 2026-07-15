@@ -5,7 +5,10 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje } from '../services/database.js';
+
+let wsBroadcast = null;
+export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
 
 const router = Router();
 
@@ -109,6 +112,12 @@ router.post('/', async (req, res) => {
 
     console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
 
+    // Guardar mensaje entrante y emitir al panel
+    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto);
+    if (msgGuardado && wsBroadcast) {
+      wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgGuardado });
+    }
+
     // Marcar como leído
     await marcarLeido(messageId);
 
@@ -147,6 +156,12 @@ router.post('/', async (req, res) => {
     // Enviar respuesta al cliente
     await enviarMensaje(telefono, resultado.texto);
     console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
+
+    // Guardar mensaje saliente y emitir al panel
+    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto);
+    if (msgSaliente && wsBroadcast) {
+      wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgSaliente });
+    }
 
   } catch (error) {
     console.error('[Meta WA] Error:', error.message);

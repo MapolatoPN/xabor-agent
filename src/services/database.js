@@ -25,6 +25,17 @@ export async function initDB() {
       created_at  TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS mensajes (
+      id          SERIAL PRIMARY KEY,
+      telefono    VARCHAR(20) NOT NULL,
+      nombre      VARCHAR(100),
+      direccion   VARCHAR(10) NOT NULL,
+      texto       TEXT NOT NULL,
+      timestamp   TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_mensajes_telefono ON mensajes(telefono);
+    CREATE INDEX IF NOT EXISTS idx_mensajes_timestamp ON mensajes(timestamp DESC);
+
     CREATE TABLE IF NOT EXISTS pedidos_activos (
       folio       VARCHAR(20) PRIMARY KEY,
       estado      VARCHAR(30) DEFAULT 'nuevo',
@@ -74,6 +85,50 @@ export async function guardarPedido(telefono, pedido) {
     `, [telefono, JSON.stringify(pedido.items), pedido.total, pedido.modalidad, pedido.canal]);
   } catch (e) {
     console.error('[DB] Error guardarPedido:', e.message);
+  }
+}
+
+// ─── Mensajes WhatsApp ───────────────────────────────────────────────────────
+export async function guardarMensaje(telefono, nombre, direccion, texto) {
+  try {
+    const result = await pool.query(`
+      INSERT INTO mensajes (telefono, nombre, direccion, texto)
+      VALUES ($1, $2, $3, $4) RETURNING *
+    `, [telefono, nombre || null, direccion, texto]);
+    return result.rows[0];
+  } catch (e) {
+    console.error('[DB] Error guardarMensaje:', e.message);
+    return null;
+  }
+}
+
+export async function obtenerConversacion(telefono, limite = 50) {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM mensajes WHERE telefono = $1
+      ORDER BY timestamp ASC LIMIT $2
+    `, [telefono, limite]);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerConversacion:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerConversacionesRecientes(limite = 20) {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT ON (telefono)
+        telefono, nombre, texto, direccion, timestamp
+      FROM mensajes
+      ORDER BY telefono, timestamp DESC
+    `);
+    // Ordenar por el mensaje más reciente
+    result.rows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return result.rows.slice(0, limite);
+  } catch (e) {
+    console.error('[DB] Error obtenerConversacionesRecientes:', e.message);
+    return [];
   }
 }
 

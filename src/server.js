@@ -15,8 +15,8 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB } from './services/database.js';
-import whatsappRouter, { enviarMensaje } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje } from './services/database.js';
+import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
 
@@ -38,8 +38,9 @@ function broadcast(data) {
   });
 }
 
-// Inyectar broadcast en el orderManager
+// Inyectar broadcast en el orderManager y en whatsapp
 setWsBroadcast(broadcast);
+setWsBroadcastWA(broadcast);
 
 wss.on('connection', (ws) => {
   console.log('[WS] Panel conectado');
@@ -117,6 +118,17 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   res.json(pedido);
 });
 
+// Conversaciones WhatsApp
+app.get('/api/conversaciones', async (req, res) => {
+  const lista = await obtenerConversacionesRecientes(20);
+  res.json(lista);
+});
+
+app.get('/api/conversacion/:telefono', async (req, res) => {
+  const msgs = await obtenerConversacion(req.params.telefono, 100);
+  res.json(msgs);
+});
+
 // Enviar mensaje manual desde el panel (link de pago, etc.)
 app.post('/api/send-message', async (req, res) => {
   const { telefono, mensaje } = req.body;
@@ -126,6 +138,9 @@ app.post('/api/send-message', async (req, res) => {
   try {
     await enviarMensaje(telefono, mensaje);
     console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
+    // Guardar y emitir al panel
+    const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje);
+    if (msgGuardado) broadcast({ tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     res.json({ ok: true });
   } catch (error) {
     console.error('[Panel] Error al enviar mensaje:', error.message);

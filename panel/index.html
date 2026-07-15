@@ -239,12 +239,40 @@ button:hover { opacity: 0.85; }
   </div>
 </div>
 
+<div id="tabs-nav" style="background:#0f3460;display:flex;gap:4px;padding:10px 24px 0;">
+  <button onclick="mostrarTab('comandas')" id="tab-comandas" style="background:#1a1a2e;color:#fff;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">🍽️ Comandas</button>
+  <button onclick="mostrarTab('chats')" id="tab-chats" style="background:#0f3460;color:#aaa;border:none;padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-weight:700;font-size:0.9rem;">💬 Chats <span id="badge-chats" style="background:#e63946;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.75rem;display:none">0</span></button>
+</div>
+
 <main>
-  <div id="sin-pedidos">
-    <span class="emoji">🍽️</span>
-    Esperando pedidos...
+  <!-- Tab Comandas -->
+  <div id="vista-comandas">
+    <div id="sin-pedidos">
+      <span class="emoji">🍽️</span>
+      Esperando pedidos...
+    </div>
+    <div id="grid-pedidos"></div>
   </div>
-  <div id="grid-pedidos"></div>
+
+  <!-- Tab Chats -->
+  <div id="vista-chats" style="display:none;max-width:900px;margin:0 auto;">
+    <div style="display:flex;gap:16px;height:calc(100vh - 140px);">
+      <!-- Lista de contactos -->
+      <div id="lista-chats" style="width:280px;flex-shrink:0;background:#16213e;border-radius:12px;overflow-y:auto;border:1px solid #0f3460;">
+        <div style="padding:12px 16px;border-bottom:1px solid #0f3460;font-size:0.85rem;color:#aaa;">Conversaciones recientes</div>
+        <div id="contactos-lista"></div>
+      </div>
+      <!-- Conversación activa -->
+      <div style="flex:1;display:flex;flex-direction:column;background:#16213e;border-radius:12px;border:1px solid #0f3460;overflow:hidden;">
+        <div id="chat-header" style="padding:12px 16px;border-bottom:1px solid #0f3460;font-weight:700;">Selecciona una conversación</div>
+        <div id="chat-mensajes" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;"></div>
+        <div id="chat-footer" style="padding:12px 16px;border-top:1px solid #0f3460;display:flex;gap:8px;">
+          <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2" style="flex:1;background:#0f3460;border:1px solid #1a4a8a;border-radius:8px;color:#eee;padding:8px;font-size:0.9rem;font-family:inherit;resize:none;"></textarea>
+          <button onclick="enviarDesdeChat()" style="background:#06d6a0;color:#000;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -268,6 +296,7 @@ function conectarWS() {
       const msg = JSON.parse(event.data);
       if (msg.tipo === 'nuevo_pedido') agregarPedido(msg.pedido);
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
+      if (msg.tipo === 'nuevo_mensaje') recibirMensajeWS(msg.mensaje);
     } catch (e) { console.error('Error WS:', e); }
   };
 }
@@ -502,6 +531,127 @@ async function enviarMensajeManual() {
 }
 document.getElementById('modal-overlay').addEventListener('click', (e) => {
   if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
+});
+
+// ─── Tabs ───────────────────────────────────────────────────────────────────
+function mostrarTab(tab) {
+  const esChats = tab === 'chats';
+  document.getElementById('vista-comandas').style.display = esChats ? 'none' : '';
+  document.getElementById('vista-chats').style.display = esChats ? '' : 'none';
+  document.getElementById('tab-comandas').style.background = esChats ? '#0f3460' : '#1a1a2e';
+  document.getElementById('tab-comandas').style.color = esChats ? '#aaa' : '#fff';
+  document.getElementById('tab-chats').style.background = esChats ? '#1a1a2e' : '#0f3460';
+  document.getElementById('tab-chats').style.color = esChats ? '#fff' : '#aaa';
+  if (esChats) {
+    document.getElementById('badge-chats').style.display = 'none';
+    document.getElementById('badge-chats').textContent = '0';
+    chatNuevos = 0;
+    cargarConversaciones();
+  }
+}
+
+// ─── Chats WhatsApp ──────────────────────────────────────────────────────────
+let chatAbierto = null;
+let chatNuevos = 0;
+
+async function cargarConversaciones() {
+  const lista = await fetch('/api/conversaciones').then(r => r.json()).catch(() => []);
+  const cont = document.getElementById('contactos-lista');
+  if (!lista.length) { cont.innerHTML = '<div style="padding:16px;color:#666;font-size:0.85rem;">Sin conversaciones aún</div>'; return; }
+  cont.innerHTML = lista.map(c => `
+    <div onclick="abrirConversacion('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}') "
+         id="contacto-${c.telefono}"
+         style="padding:12px 16px;cursor:pointer;border-bottom:1px solid #0f3460;transition:background .15s;"
+         onmouseover="this.style.background='#0f3460'" onmouseout="this.style.background=chatAbierto==='${c.telefono}'?'#1a4a8a':''">
+      <div style="font-weight:600;font-size:0.9rem;">${c.nombre || c.telefono}</div>
+      <div style="font-size:0.78rem;color:#888;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.texto||''}</div>
+      <div style="font-size:0.72rem;color:#555;margin-top:2px;">${horaCST(c.timestamp)}</div>
+    </div>
+  `).join('');
+}
+
+async function abrirConversacion(telefono, nombre) {
+  chatAbierto = telefono;
+  document.getElementById('chat-header').textContent = `💬 ${nombre || telefono}`;
+  // Marcar activo
+  document.querySelectorAll('#contactos-lista > div').forEach(d => d.style.background = '');
+  const el = document.getElementById(`contacto-${telefono}`);
+  if (el) el.style.background = '#1a4a8a';
+  // Cargar mensajes
+  const msgs = await fetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
+  renderMensajes(msgs);
+  // Poner teléfono en el input de envío
+  document.getElementById('chat-input').dataset.telefono = telefono;
+  document.getElementById('chat-input').dataset.nombre = nombre || '';
+}
+
+function renderMensajes(msgs) {
+  const cont = document.getElementById('chat-mensajes');
+  cont.innerHTML = msgs.map(m => {
+    const saliente = m.direccion === 'saliente';
+    return `
+      <div style="display:flex;justify-content:${saliente ? 'flex-end' : 'flex-start'};">
+        <div style="max-width:75%;padding:8px 12px;border-radius:${saliente ? '12px 12px 0 12px' : '12px 12px 12px 0'};
+                    background:${saliente ? '#06d6a0' : '#0f3460'};color:${saliente ? '#000' : '#eee'};font-size:0.88rem;word-break:break-word;">
+          ${m.texto}
+          <div style="font-size:0.7rem;opacity:0.6;margin-top:4px;text-align:right;">${horaCST(m.timestamp)}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  cont.scrollTop = cont.scrollHeight;
+}
+
+function recibirMensajeWS(msg) {
+  // Actualizar badge si no estamos en la pestaña chats
+  const enChats = document.getElementById('vista-chats').style.display !== 'none';
+  if (!enChats) {
+    chatNuevos++;
+    const badge = document.getElementById('badge-chats');
+    badge.textContent = chatNuevos;
+    badge.style.display = '';
+  }
+  // Si la conversación abierta es del mismo teléfono, agregar el mensaje
+  if (chatAbierto && msg.telefono === chatAbierto) {
+    const cont = document.getElementById('chat-mensajes');
+    const saliente = msg.direccion === 'saliente';
+    const div = document.createElement('div');
+    div.style.cssText = `display:flex;justify-content:${saliente ? 'flex-end' : 'flex-start'}`;
+    div.innerHTML = `
+      <div style="max-width:75%;padding:8px 12px;border-radius:${saliente ? '12px 12px 0 12px' : '12px 12px 12px 0'};
+                  background:${saliente ? '#06d6a0' : '#0f3460'};color:${saliente ? '#000' : '#eee'};font-size:0.88rem;word-break:break-word;">
+        ${msg.texto}
+        <div style="font-size:0.7rem;opacity:0.6;margin-top:4px;text-align:right;">${horaCST(msg.timestamp)}</div>
+      </div>`;
+    cont.appendChild(div);
+    cont.scrollTop = cont.scrollHeight;
+  }
+  // Recargar lista de contactos si estamos en chats
+  if (enChats) cargarConversaciones();
+}
+
+async function enviarDesdeChat() {
+  const input = document.getElementById('chat-input');
+  const telefono = input.dataset.telefono;
+  const texto = input.value.trim();
+  if (!telefono || !texto) return;
+  input.value = '';
+  input.disabled = true;
+  try {
+    const resp = await fetch('/api/send-message', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telefono, mensaje: texto })
+    });
+    const data = await resp.json();
+    if (!data.ok) alert('Error al enviar: ' + (data.error || 'desconocido'));
+  } catch(e) { alert('Error de conexión.'); }
+  input.disabled = false;
+  input.focus();
+}
+
+// Enviar con Ctrl+Enter en el textarea de chat
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarDesdeChat(); }
 });
 
 </script>
