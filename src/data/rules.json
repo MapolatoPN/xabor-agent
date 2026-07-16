@@ -21,6 +21,19 @@
     { "fecha": "2026-07-14", "motivo": "sold out, agradecemos tu preferencia, mañana hornearemos más pan" },
     { "fecha": "2026-07-15", "motivo": "cierre anticipado", "hora_cierre": "16:00" }
   ],
+  "promociones": [
+    {
+      "id": "PROMO001",
+      "nombre": "Envío gratis en 3 focaccias",
+      "descripcion": "Envío sin costo en pedidos a domicilio que incluyan 3 o más focaccias o paninis (cualquier combinación: Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit).",
+      "hora_inicio": "11:00",
+      "hora_fin": "15:00",
+      "dias": ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado"],
+      "condicion": "min_3_focaccias",
+      "beneficio": "envio_gratis",
+      "activa": true
+    }
+  ],
   "politicas": [
     "No se aceptan cambios ni cancelaciones una vez confirmado el pedido.",
     "Los precios incluyen IVA.",

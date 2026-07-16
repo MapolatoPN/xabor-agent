@@ -69,19 +69,45 @@ function obtenerEstadoRestaurante(reglas) {
     }
   }
 
+  // Verificar promociones activas
+  const promocionesActivas = (reglas.promociones || []).filter(promo => {
+    if (!promo.activa) return false;
+    if (promo.dias && !promo.dias.includes(diaActual)) return false;
+    const [hIni] = promo.hora_inicio.split(':').map(Number);
+    const [hFin] = promo.hora_fin.split(':').map(Number);
+    return horaActual >= hIni && horaActual < hFin;
+  });
+
   const nombresDias = { lunes: 'lunes', martes: 'martes', miercoles: 'miércoles', jueves: 'jueves', viernes: 'viernes', sabado: 'sábado', domingo: 'domingo' };
   return {
     abierto,
     diaActual: nombresDias[diaActual],
     horaActual: horaMX.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
     horarioDia,
-    cierreEspecial: cierreEspecial || null
+    cierreEspecial: cierreEspecial || null,
+    promocionesActivas
   };
 }
 
 export function construirSystemPrompt(clienteCtx = null) {
   const { menu, reglas } = cargarDatos();
   const estado = obtenerEstadoRestaurante(reglas);
+
+  // Texto de promociones activas
+  const IDS_FOCACCIA = ['FOC001', 'PAN001', 'PAN002', 'PAN003'];
+  const promoEnvioGratis = estado.promocionesActivas.find(p => p.condicion === 'min_3_focaccias');
+  let textoPromociones = '';
+  if (estado.promocionesActivas.length === 0) {
+    textoPromociones = '- Ninguna promoción activa en este momento.';
+  } else {
+    textoPromociones = estado.promocionesActivas.map(p => `- **${p.nombre}**: ${p.descripcion}`).join('\n');
+    if (promoEnvioGratis) {
+      textoPromociones += '\n\nREGLAS DE LA PROMO "ENVIO GRATIS EN 3 FOCACCIAS":\n';
+      textoPromociones += '- Aplica en pedidos a domicilio con 3 o mas unidades entre: Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit (cualquier combinacion).\n';
+      textoPromociones += '- Cuando aplique, pon "costo_envio": 0 en el JSON de la orden.\n';
+      textoPromociones += '- Si el cliente pide exactamente 2 focaccias/paninis, menciona proactivamente: "Si agregas una mas, el envio es gratis (hasta las 3pm)."';
+    }
+  }
 
   // Contexto del cliente conocido
   let contextoCliente = '';
@@ -161,11 +187,14 @@ Si el cliente expresa una queja, insatisfacción, o pide hablar con una persona,
 "Lamentamos mucho el inconveniente. En este momento pasamos tu conversación a una persona para que te dé atención."
 Luego incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta (el cliente no lo verá). No sigas tomando el pedido en esa conversación.
 
+## PROMOCIONES ACTIVAS AHORA
+${textoPromociones}
+
 ## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.
 - Si piden algo que no está en el menú, discúlpate y ofrece la alternativa más cercana.
 - NUNCA des un precio diferente al del menú.
-- El costo de envío es de $${reglas.pedidos.costo_envio} MXN con repartidor independiente. Infórmalo siempre al confirmar un pedido a domicilio.
+- El costo de envío es de $${reglas.pedidos.costo_envio} MXN con repartidor independiente. Infórmalo siempre al confirmar un pedido a domicilio. Si aplica la promo de envío gratis, informa que el envío es sin costo.
 - No hay pedido mínimo para entrega a domicilio.
 - Si el cliente dice "cancelar", "cancel", "ya no quiero", "olvídalo" u otra variación ANTES de confirmar el pedido: responde amablemente que con gusto, que no hay problema, y pregunta si hay algo más en lo que puedas ayudarle. Reinicia la conversación.
 - Si el cliente quiere cancelar DESPUÉS de haber confirmado el pedido: explica amablemente que una vez confirmado el pedido ya fue enviado a cocina y no es posible cancelarlo, pero que si tiene algún problema puede comunicarse directamente con nosotros.
