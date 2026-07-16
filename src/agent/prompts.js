@@ -93,20 +93,23 @@ export function construirSystemPrompt(clienteCtx = null) {
   const { menu, reglas } = cargarDatos();
   const estado = obtenerEstadoRestaurante(reglas);
 
-  // Texto de promociones activas
-  const IDS_FOCACCIA = ['FOC001', 'PAN001', 'PAN002', 'PAN003'];
-  const promoEnvioGratis = estado.promocionesActivas.find(p => p.condicion === 'min_3_focaccias');
+  // Texto de promociones — siempre informar aunque no estén activas ahora
+  const todasLasPromos = reglas.promociones || [];
+  const promoEnvioGratis = todasLasPromos.find(p => p.condicion === 'min_3_focaccias' && p.activa);
+  const promoActivaAhora = estado.promocionesActivas.find(p => p.condicion === 'min_3_focaccias');
   let textoPromociones = '';
-  if (estado.promocionesActivas.length === 0) {
-    textoPromociones = '- Ninguna promoción activa en este momento.';
-  } else {
-    textoPromociones = estado.promocionesActivas.map(p => `- **${p.nombre}**: ${p.descripcion}`).join('\n');
-    if (promoEnvioGratis) {
-      textoPromociones += '\n\nREGLAS DE LA PROMO "ENVIO GRATIS EN 3 FOCACCIAS":\n';
-      textoPromociones += '- Aplica en pedidos a domicilio con 3 o mas unidades entre: Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit (cualquier combinacion).\n';
+  if (promoEnvioGratis) {
+    if (promoActivaAhora) {
+      textoPromociones = 'PROMO ACTIVA AHORA: Envio gratis en pedidos a domicilio que incluyan 3 o mas focaccias o paninis (Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit, cualquier combinacion). Valida hasta las 15:00.\n';
       textoPromociones += '- Cuando aplique, pon "costo_envio": 0 en el JSON de la orden.\n';
-      textoPromociones += '- Si el cliente pide exactamente 2 focaccias/paninis, menciona proactivamente: "Si agregas una mas, el envio es gratis (hasta las 3pm)."';
+      textoPromociones += '- Si el cliente pide exactamente 2 focaccias/paninis, dile: "Si agregas una mas, el envio es gratis."';
+    } else {
+      textoPromociones = 'PROMO DISPONIBLE (fuera de horario ahora): Ofrecemos envio gratis de lunes a sabado de 11am a 3pm en pedidos a domicilio con 3 o mas focaccias o paninis.\n';
+      textoPromociones += '- Si el cliente pregunta por promociones o envio gratis, informale de esta promo y el horario en que aplica.\n';
+      textoPromociones += '- NO apliques envio gratis fuera de ese horario.';
     }
+  } else {
+    textoPromociones = '- Sin promociones activas.';
   }
 
   // Contexto del cliente conocido
