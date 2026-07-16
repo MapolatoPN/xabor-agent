@@ -19,7 +19,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const respuesta = await anthropic.messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: construirSystemPrompt(clienteCtx),
+      system: await construirSystemPrompt(clienteCtx),
       messages: session.mensajes
     });
 

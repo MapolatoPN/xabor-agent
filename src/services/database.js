@@ -51,6 +51,24 @@ export async function initDB() {
       created_at  TIMESTAMP DEFAULT NOW(),
       updated_at  TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS prompt_improvements (
+      id          SERIAL PRIMARY KEY,
+      semana      DATE NOT NULL,
+      sugerencias JSONB NOT NULL,
+      estado      VARCHAR(20) DEFAULT 'pendiente',
+      aprobadas   JSONB,
+      created_at  TIMESTAMP DEFAULT NOW(),
+      applied_at  TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_overrides (
+      id          SERIAL PRIMARY KEY,
+      seccion     VARCHAR(100) NOT NULL,
+      contenido   TEXT NOT NULL,
+      activo      BOOLEAN DEFAULT TRUE,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tablas listas');
 }
@@ -260,6 +278,85 @@ export async function archivarPedidoActivo(folio) {
     `, [folio]);
   } catch (e) {
     console.error('[DB] Error archivarPedidoActivo:', e.message);
+  }
+}
+
+// ─── Prompt improvements ─────────────────────────────────────────────────────
+export async function guardarSugerencias(semana, sugerencias) {
+  try {
+    const result = await pool.query(`
+      INSERT INTO prompt_improvements (semana, sugerencias)
+      VALUES ($1, $2) RETURNING id
+    `, [semana, JSON.stringify(sugerencias)]);
+    return result.rows[0].id;
+  } catch (e) {
+    console.error('[DB] Error guardarSugerencias:', e.message);
+    return null;
+  }
+}
+
+export async function obtenerSugerenciasPendientes() {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM prompt_improvements
+      WHERE estado = 'pendiente'
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    return result.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerSugerenciasPendientes:', e.message);
+    return null;
+  }
+}
+
+export async function aprobarSugerencias(id, indices) {
+  try {
+    await pool.query(`
+      UPDATE prompt_improvements
+      SET estado = 'aprobado', aprobadas = $2, applied_at = NOW()
+      WHERE id = $1
+    `, [id, JSON.stringify(indices)]);
+  } catch (e) {
+    console.error('[DB] Error aprobarSugerencias:', e.message);
+  }
+}
+
+export async function guardarOverride(seccion, contenido) {
+  try {
+    // Desactivar overrides anteriores de la misma sección
+    await pool.query(`UPDATE prompt_overrides SET activo = FALSE WHERE seccion = $1`, [seccion]);
+    await pool.query(`
+      INSERT INTO prompt_overrides (seccion, contenido) VALUES ($1, $2)
+    `, [seccion, contenido]);
+  } catch (e) {
+    console.error('[DB] Error guardarOverride:', e.message);
+  }
+}
+
+export async function obtenerOverridesActivos() {
+  try {
+    const result = await pool.query(`
+      SELECT seccion, contenido FROM prompt_overrides WHERE activo = TRUE
+    `);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerOverridesActivos:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerMensajesRango(desde, hasta) {
+  try {
+    const result = await pool.query(`
+      SELECT telefono, nombre, direccion, texto, timestamp
+      FROM mensajes
+      WHERE timestamp BETWEEN $1 AND $2
+      ORDER BY telefono, timestamp ASC
+    `, [desde, hasta]);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerMensajesRango:', e.message);
+    return [];
   }
 }
 

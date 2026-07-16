@@ -20,6 +20,7 @@ import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMen
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
+import { analizarSemana } from './services/learner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -222,6 +223,16 @@ app.get('/api/ventas/resumen', async (req, res) => {
 app.delete('/session/:sessionId', (req, res) => {
   deleteSession(req.params.sessionId);
   res.json({ ok: true });
+});
+
+// Endpoint para el análisis semanal (llamado por scheduled task)
+app.post('/internal/analizar-semana', async (req, res) => {
+  const secret = req.headers['x-internal-secret'];
+  if (secret !== (process.env.INTERNAL_SECRET || 'xabor-internal')) {
+    return res.status(403).json({ error: 'No autorizado' });
+  }
+  res.json({ ok: true, mensaje: 'Análisis iniciado' });
+  analizarSemana().catch(e => console.error('[Learner] Error en análisis:', e.message));
 });
 
 // Pedido de prueba (solo para desarrollo)

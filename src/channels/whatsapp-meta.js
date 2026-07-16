@@ -6,6 +6,7 @@ import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje } from '../services/database.js';
+import { procesarAprobacion } from '../services/learner.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
@@ -120,6 +121,13 @@ router.post('/', async (req, res) => {
 
     // Marcar como leído
     await marcarLeido(messageId);
+
+    // Comandos de Mario (APROBAR/RECHAZAR sugerencias del learner)
+    const esMario = telefono === (process.env.MARIO_TELEFONO || '528781091115');
+    if (esMario) {
+      const esComando = await procesarAprobacion(texto);
+      if (esComando) return;
+    }
 
     // Buscar cliente en BD y construir contexto
     const clienteDB = await obtenerCliente(telefono);

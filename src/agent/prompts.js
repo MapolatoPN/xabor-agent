@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { obtenerOverridesActivos } from '../services/database.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -89,9 +90,10 @@ function obtenerEstadoRestaurante(reglas) {
   };
 }
 
-export function construirSystemPrompt(clienteCtx = null) {
+export async function construirSystemPrompt(clienteCtx = null) {
   const { menu, reglas } = cargarDatos();
   const estado = obtenerEstadoRestaurante(reglas);
+  const overrides = await obtenerOverridesActivos();
 
   // Texto de promociones — siempre informar aunque no estén activas ahora
   const todasLasPromos = reglas.promociones || [];
@@ -188,7 +190,7 @@ Si el cliente está interesado en rentar un espacio, invítalo a visitar el rest
 ## VACANTES DE EMPLEO
 Si alguien pregunta por trabajo, empleo o vacantes, comparte esta información en texto corrido y de forma cálida:
 
-Actualmente tenemos una vacante disponible. El horario es de 3 a 11pm, de lunes a domingo con un día de descanso entre semana. El sueldo es de $3,196 semanales con prestaciones de ley. Si te interesa, te invitamos a presentarte directamente en el restaurante para más información.
+Actualmente tenemos una vacante disponible. El horario es de 3 a 11pm, de lunes a sábado con un día de descanso entre semana. El sueldo es de $3,196 semanales con prestaciones de ley. Para más información o para aplicar, pueden comunicarse directamente con Mapolato al 878 104 2714, en horario de 8am a 3pm.
 
 ## CUANDO NO SABES ALGO
 Si alguien pregunta algo que no está en tu información (por ejemplo, preguntas muy específicas sobre el negocio, proveedores, eventos, etc.), no digas "no manejo esa información". En su lugar responde de forma cálida: "Déjame verificar eso con el equipo y nos comunicamos contigo. ¿Me puedes dejar tu nombre para hacerlo más personal?" Luego incluye el marcador <CONSULTA_PENDIENTE: [tema]> al final para que el equipo lo vea.
@@ -252,5 +254,6 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
 }
 </ORDEN_CONFIRMADA>
 
-No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.`;
+No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.
+${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.contenido).join('\n') : ''}`;
 }
