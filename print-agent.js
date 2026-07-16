@@ -5,7 +5,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 const WS_URL       = 'wss://xabor-agent-production.up.railway.app';
-const PRINTER_NAME = 'POS Printer 203DPI Series';
+const PRINTER_NAME = 'POS Printer 203DPI  Series 2';  // doble espacio
 const TEMP_DIR     = join(tmpdir(), 'xabor-comandas');
 const ANCHO_PAPEL  = 42;
 
@@ -65,27 +65,9 @@ function buildEscPos(pedido) {
   const partes = [];
   const txt = (s) => Buffer.from(String(s), 'latin1');
 
-  // Extraer campos del pedido (estructura real del agente)
-  const cliente      = pedido.cliente || {};
-  const nombreCliente = typeof cliente === 'string' ? cliente : (cliente.nombre || 'Sin nombre');
-  const telefono     = typeof cliente === 'string' ? '' : (cliente.telefono || pedido.telefono || '');
-  const formaPago    = cliente.forma_pago || pedido.forma_pago || '';
-  const modalidad    = pedido.modalidad || '';
-  const esEntrega    = modalidad.toLowerCase().includes('domicilio');
-  const folio        = pedido.id || pedido.folio || 'S/N';
-  const items        = pedido.items || [];
-  const costoEnvio   = parseFloat(pedido.costo_envio || 0);
-  const descuento    = parseFloat(pedido.descuento || 0);
-  const totalPedido  = parseFloat(pedido.total || 0);
-
-  // Hora en CST (Piedras Negras)
-  const ts    = pedido.timestamp ? new Date(pedido.timestamp) : new Date();
-  const fecha = ts.toLocaleDateString('es-MX', { timeZone: 'America/Matamoros', day: '2-digit', month: '2-digit', year: 'numeric' });
-  const hora  = ts.toLocaleTimeString('es-MX', { timeZone: 'America/Matamoros', hour: '2-digit', minute: '2-digit', hour12: true });
-
-  // ── Encabezado ──
   partes.push(INIT);
   partes.push(DARKNESS);
+
   partes.push(ALIGN_CENTER);
   partes.push(SIZE_2H);
   partes.push(BOLD_ON);
@@ -98,63 +80,31 @@ function buildEscPos(pedido) {
   partes.push(txt(linea('=')));
   partes.push(lf());
 
-  // ── Folio y fecha ──
   partes.push(ALIGN_LEFT);
   partes.push(BOLD_ON);
+  const folio = pedido.folio || pedido.id || 'S/N';
   partes.push(txt(`PEDIDO: ${folio}`));
   partes.push(lf());
   partes.push(BOLD_OFF);
-  partes.push(txt(`Fecha : ${fecha}`));
-  partes.push(lf());
-  partes.push(txt(`Hora  : ${hora}`));
-  partes.push(lf());
-  partes.push(txt(linea('-')));
+
+  const ahora = new Date();
+  const hora  = ahora.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  const fecha = ahora.toLocaleDateString('es-MX');
+  partes.push(txt(`Fecha: ${fecha}  Hora: ${hora}`));
   partes.push(lf());
 
-  // ── Datos del cliente ──
-  partes.push(BOLD_ON);
-  partes.push(txt(`Cliente : ${nombreCliente}`));
-  partes.push(lf());
-  partes.push(BOLD_OFF);
-  if (telefono) { partes.push(txt(`Tel     : ${telefono}`)); partes.push(lf()); }
-  if (formaPago){ partes.push(txt(`Pago    : ${formaPago}`)); partes.push(lf()); }
-
-  // ── Modalidad ──
-  partes.push(lf());
-  partes.push(ALIGN_CENTER);
-  partes.push(BOLD_ON);
-  if (esEntrega) {
-    partes.push(txt('** ENTREGA A DOMICILIO **'));
-  } else {
-    partes.push(txt('** RECOGER EN TIENDA **'));
-  }
-  partes.push(lf());
-  partes.push(BOLD_OFF);
-
-  // ── Dirección (solo si es entrega) ──
-  if (esEntrega && typeof cliente === 'object') {
-    partes.push(ALIGN_LEFT);
+  if (pedido.cliente)  { partes.push(txt(`Cliente: ${pedido.cliente}`));  partes.push(lf()); }
+  if (pedido.telefono) { partes.push(txt(`Tel: ${pedido.telefono}`));      partes.push(lf()); }
+  if (pedido.tipo) {
+    partes.push(BOLD_ON);
+    partes.push(txt(`Tipo: ${pedido.tipo.toUpperCase()}`));
+    partes.push(BOLD_OFF);
     partes.push(lf());
-    if (cliente.calle) {
-      partes.push(txt(`Dir: ${cliente.calle}`));
-      partes.push(lf());
-    }
-    if (cliente.colonia) {
-      partes.push(txt(`     Col. ${cliente.colonia}`));
-      partes.push(lf());
-    }
-    if (cliente.entre_calles) {
-      const entr = wrap(`     Entre: ${cliente.entre_calles}`, ANCHO_PAPEL);
-      for (const l of entr.split('\n')) { partes.push(txt(l)); partes.push(lf()); }
-    }
   }
 
-  partes.push(ALIGN_LEFT);
-  partes.push(lf());
   partes.push(txt(linea('-')));
   partes.push(lf());
 
-  // ── Items ──
   partes.push(BOLD_ON);
   partes.push(txt(columnas('CANT  PRODUCTO', 'PRECIO')));
   partes.push(lf());
@@ -162,73 +112,60 @@ function buildEscPos(pedido) {
   partes.push(txt(linea('-')));
   partes.push(lf());
 
-  let subtotalCalc = 0;
+  const items = pedido.items || pedido.productos || [];
+  let total = 0;
   for (const item of items) {
-    const cant      = item.cantidad || 1;
-    const nombre    = item.nombre || item.name || '';
-    const precioU   = parseFloat(item.precio_unitario || item.precio || item.price || 0);
-    const subtotal  = cant * precioU;
-    subtotalCalc   += subtotal;
+    const cant     = item.cantidad || item.qty || 1;
+    const nombre   = item.nombre || item.name || item.producto || '';
+    const precio   = parseFloat(item.precio || item.price || 0);
+    const subtotal = cant * precio;
+    total += subtotal;
 
-    const etiqueta  = `${cant}x  ${nombre}`;
-    const monto     = `$${subtotal.toFixed(0)}`;
+    const etiqueta = `${cant}x  ${nombre}`;
+    const monto    = `$${subtotal.toFixed(2)}`;
     partes.push(txt(columnas(etiqueta.slice(0, 34), monto)));
     partes.push(lf());
 
-    if (item.notas) {
-      const ls = wrap(`     ${item.notas}`, ANCHO_PAPEL).split('\n');
-      for (const l of ls) { partes.push(txt(l)); partes.push(lf()); }
+    const mods = item.modificadores || item.extras || item.notas || '';
+    if (mods) {
+      const modTexto  = typeof mods === 'string' ? mods : mods.join(', ');
+      const lineasMod = wrap('  + ' + modTexto, ANCHO_PAPEL - 2).split('\n');
+      for (const l of lineasMod) { partes.push(txt('  ' + l)); partes.push(lf()); }
     }
   }
 
-  partes.push(txt(linea('-')));
-  partes.push(lf());
-
-  // ── Totales ──
-  const subtotal = pedido.subtotal || subtotalCalc;
-  if (costoEnvio > 0 || descuento > 0) {
-    partes.push(txt(columnas('Subtotal', `$${subtotal.toFixed(0)}`)));
-    partes.push(lf());
-  }
-  if (costoEnvio > 0) {
-    partes.push(txt(columnas('Envio', `$${costoEnvio.toFixed(0)}`)));
-    partes.push(lf());
-  }
-  if (descuento > 0) {
-    partes.push(txt(columnas('Descuento', `-$${descuento.toFixed(0)}`)));
-    partes.push(lf());
-  }
-
   partes.push(txt(linea('=')));
   partes.push(lf());
+
   partes.push(ALIGN_RIGHT);
   partes.push(BOLD_ON);
   partes.push(SIZE_2H);
-  partes.push(txt(`TOTAL  $${totalPedido.toFixed(0)}`));
+  const totalPedido = pedido.total || total;
+  partes.push(txt(`TOTAL: $${parseFloat(totalPedido).toFixed(2)}`));
   partes.push(SIZE_NORMAL);
   partes.push(BOLD_OFF);
-  partes.push(lf(2));
+  partes.push(lf());
+  partes.push(ALIGN_LEFT);
 
-  // ── Pie ──
-  partes.push(ALIGN_CENTER);
+  if (pedido.notas || pedido.instrucciones) {
+    const nota = pedido.notas || pedido.instrucciones;
+    partes.push(txt(linea('-')));
+    partes.push(lf());
+    partes.push(BOLD_ON);
+    partes.push(txt('NOTAS:'));
+    partes.push(lf());
+    partes.push(BOLD_OFF);
+    const ls = wrap(nota, ANCHO_PAPEL).split('\n');
+    for (const l of ls) { partes.push(txt(l)); partes.push(lf()); }
+  }
+
   partes.push(txt(linea('=')));
   partes.push(lf());
+  partes.push(ALIGN_CENTER);
   partes.push(txt('Gracias por su pedido!'));
   partes.push(lf());
-  partes.push(txt('WhatsApp: (878) 109-1115'));
-  partes.push(lf());
-  partes.push(txt(linea('-')));
-  partes.push(lf());
-  partes.push(txt('MARIO ALBERTO CANTU OCHOA'));
-  partes.push(lf());
-  partes.push(txt('RFC: CAOM940122PTA'));
-  partes.push(lf());
-  partes.push(txt('Lib. Manuel Perez Trevino 2416 Local 4'));
-  partes.push(lf());
-  partes.push(txt('Col. Tecnologico, CP 26080'));
-  partes.push(lf());
-  partes.push(txt('Piedras Negras, Coahuila'));
-  partes.push(lf(4));
+  partes.push(txt('WhatsApp: (878) 000-0000'));
+  partes.push(lf(3));
   partes.push(CUT);
 
   return Buffer.concat(partes);
@@ -242,9 +179,9 @@ function buildPs1(binFile) {
     `using System;`,
     `using System.Runtime.InteropServices;`,
     `public class RawPrint {`,
-    `    [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]`,
+    `    [DllImport("winspool.drv", EntryPoint="OpenPrinterA", SetLastError=true)]`,
     `    public static extern bool OpenPrinter(string pName, out IntPtr phPrinter, IntPtr pDefault);`,
-    `    [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]`,
+    `    [DllImport("winspool.drv", EntryPoint="StartDocPrinterA", SetLastError=true)]`,
     `    public static extern int StartDocPrinter(IntPtr hPrinter, int Level, ref DOCINFO di);`,
     `    [DllImport("winspool.drv", SetLastError=true)]`,
     `    public static extern bool StartPagePrinter(IntPtr hPrinter);`,
@@ -256,15 +193,15 @@ function buildPs1(binFile) {
     `    public static extern bool EndDocPrinter(IntPtr hPrinter);`,
     `    [DllImport("winspool.drv", SetLastError=true)]`,
     `    public static extern bool ClosePrinter(IntPtr hPrinter);`,
-    `    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]`,
+    `    [StructLayout(LayoutKind.Sequential)]`,
     `    public struct DOCINFO {`,
-    `        [MarshalAs(UnmanagedType.LPWStr)] public string pDocName;`,
-    `        [MarshalAs(UnmanagedType.LPWStr)] public string pOutputFile;`,
-    `        [MarshalAs(UnmanagedType.LPWStr)] public string pDataType;`,
+    `        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;`,
+    `        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;`,
+    `        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;`,
     `    }`,
     `}`,
     `"@`,
-    `$prn = 'POS Printer 203DPI Series'`,
+    `$prn = 'POS Printer 203DPI  Series 2'`,
     `$src = '${binFile}'`,
     `try {`,
     `    $bytes = [System.IO.File]::ReadAllBytes($src)`,
@@ -305,19 +242,44 @@ function imprimirComanda(pedido) {
 
     const folio   = pedido.folio || pedido.id || Date.now();
     const binFile = join(TEMP_DIR, `comanda-${folio}.bin`);
+    const psFile  = join(TEMP_DIR, `print-${folio}.ps1`);
 
     const buf = buildEscPos(pedido);
     writeFileSync(binFile, buf);
     console.log(`[IMPRIMIR] Folio ${folio} → ${buf.length} bytes ESC/POS`);
 
-    // Imprimir via copy /b a la impresora compartida localmente
-    const cmd = `cmd /c copy /b "${binFile}" "\\\\localhost\\XABORPOS"`;
-    exec(cmd, { timeout: 15000 }, (err, stdout, stderr) => {
+    // Escribir script PS1 a archivo (sin triple-escaping)
+    writeFileSync(psFile, buildPs1(binFile), 'utf8');
+
+    const cmd = `powershell -ExecutionPolicy Bypass -NonInteractive -File "${psFile}"`;
+    exec(cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+      const out = (stdout || '').trim();
+
+      if (stderr && stderr.trim()) {
+        console.warn('[PS1 stderr]', stderr.trim().slice(0, 400));
+      }
       if (err) {
-        console.error('[ERROR] copy /b:', err.message.slice(0, 200));
+        console.error('[ERROR] PS1:', err.message.slice(0, 200));
+        runFallback(binFile);
         return;
       }
-      console.log(`[OK] Impreso → ${folio}`);
+
+      console.log('[RAW] resultado:', out || '(vacío)');
+
+      if (out.startsWith('OK:')) {
+        const bytes = parseInt(out.slice(3), 10);
+        if (bytes > 0) {
+          console.log(`[OK] RAW Win32 → ${bytes} bytes enviados a impresora`);
+          return;
+        }
+        console.warn('[WARN] RAW OK pero 0 bytes escritos');
+      } else if (out.startsWith('ERROR:')) {
+        console.warn('[WARN] RAW error:', out);
+      } else {
+        console.warn('[WARN] RAW respuesta inesperada:', out || '(vacío)');
+      }
+
+      runFallback(binFile);
     });
 
   } catch (e) {
@@ -355,6 +317,7 @@ function conectar() {
       const msg = JSON.parse(data.toString());
       console.log(`[MSG] tipo=${msg.tipo}`);
       if (msg.tipo === 'nuevo_pedido') {
+        console.log('[PEDIDO JSON]', JSON.stringify(msg.pedido, null, 2));
         console.log(`[PEDIDO] ${msg.pedido?.folio || msg.pedido?.id}`);
         imprimirComanda(msg.pedido);
       }
