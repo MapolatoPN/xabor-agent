@@ -65,5 +65,6 @@ function limpiarTexto(texto) {
   return texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
+    .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
     .trim();
 }
