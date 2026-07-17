@@ -105,11 +105,10 @@ app.post('/webhook/clip', (req, res) => {
     const ref    = evento?.metadata?.external_reference || evento?.external_reference;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}`);
 
-    // Pago completado
+    // Pago completado — solo notificar al panel, sin cambiar el estado del pedido
     if (status === 'CHECKOUT_COMPLETED' || status === 'APPROVED') {
-      actualizarEstadoPedido(ref, 'pagado_clip');
       broadcast({ tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
-      console.log(`[Clip] Pago confirmado para pedido ${ref}`);
+      console.log(`[Clip] ✅ Pago confirmado para pedido ${ref}`);
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);
