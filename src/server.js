@@ -20,6 +20,8 @@ import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMen
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
+import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
+import { configurarWebhooks } from './services/rappi-api.js';
 import { analizarSemana } from './services/learner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -62,9 +64,10 @@ function broadcast(data) {
   });
 }
 
-// Inyectar broadcast en el orderManager y en whatsapp
+// Inyectar broadcast en el orderManager, whatsapp y rappi
 setWsBroadcast(broadcast);
 setWsBroadcastWA(broadcast);
+setWsBroadcastRappi(broadcast);
 
 wss.on('connection', (ws) => {
   console.log('[WS] Panel conectado');
@@ -89,6 +92,7 @@ app.use('/audio', express.static(join(__dirname, '../public/audio')));
 // ─── Rutas de webhooks (canales) ────────────────────────────────────────────
 app.use('/webhook/whatsapp', whatsappRouter);
 app.use('/webhook/voice', voiceRouter);
+app.use('/webhook/rappi', rappiRouter);
 
 // ─── API interna ─────────────────────────────────────────────────────────────
 
@@ -233,6 +237,21 @@ app.post('/internal/analizar-semana', async (req, res) => {
   }
   res.json({ ok: true, mensaje: 'Análisis iniciado' });
   analizarSemana().catch(e => console.error('[Learner] Error en análisis:', e.message));
+});
+
+// Rappi — marcar productos sin stock
+app.put('/api/rappi/stockout', requireAuth, manejarStockout);
+
+// Rappi — registrar webhooks en sandbox/producción (llamar una vez al configurar)
+app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
+  const baseUrl = process.env.PUBLIC_URL || req.body.baseUrl;
+  if (!baseUrl) return res.status(400).json({ error: 'Se requiere PUBLIC_URL o body.baseUrl' });
+  try {
+    const results = await configurarWebhooks(baseUrl);
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Pedido de prueba (solo para desarrollo)
