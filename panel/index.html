@@ -504,6 +504,7 @@ function conectarWS() {
       if (msg.tipo === 'nuevo_pedido') agregarPedido(msg.pedido);
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'nuevo_mensaje') recibirMensajeWS(msg.mensaje);
+      if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
     } catch (e) { console.error('Error WS:', e); }
   };
 }
@@ -666,6 +667,19 @@ function iconCanal(canal) {
 function actualizarEstadoUI(id, estado) {
   const card = document.getElementById(`comanda-${id}`);
   if (card) { card.className = `comanda ${estado}`; if (pedidos[id]) pedidos[id].estado = estado; }
+}
+
+function marcarPagoConfirmado(pedidoId) {
+  const card = document.getElementById(`comanda-${pedidoId}`);
+  if (!card) return;
+  // Agregar badge si no existe ya
+  if (card.querySelector('.badge-pago-clip')) return;
+  const badge = document.createElement('div');
+  badge.className = 'badge-pago-clip';
+  badge.style.cssText = 'background:#06d6a0;color:#000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;display:inline-block;margin-top:4px;';
+  badge.textContent = '✓ Pagado con Clip';
+  const cliente = card.querySelector('.comanda-cliente');
+  if (cliente) cliente.appendChild(badge);
 }
 
 function actualizarContador() {
