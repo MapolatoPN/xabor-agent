@@ -156,8 +156,8 @@ router.post('/', async (req, res) => {
       if (resultado.orden.cliente?.nombre) {
         await upsertCliente(telefono, resultado.orden.cliente.nombre);
       }
-      // Generar link de pago Clip (solo si está configurado)
-      if (process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
+      // Generar link de pago Clip solo si el cliente eligió ese método
+      if (resultado.orden.forma_pago === 'enlace de pago' && process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
         try {
           const clip = await crearLinkDePago({
             pedidoId:    pedido.id,
