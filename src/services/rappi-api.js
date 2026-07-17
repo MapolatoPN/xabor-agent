@@ -8,6 +8,7 @@
  */
 
 const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://microservices.dev.rappi.com';
+const AUTH_URL  = process.env.RAPPI_AUTH_URL  || 'https://rests-integrations-dev.auth0.com/oauth/token';
 const AUDIENCE  = process.env.RAPPI_AUDIENCE  || 'https://int-public-api-v2/api';
 const CLIENT_ID = process.env.RAPPI_CLIENT_ID;
 const CLIENT_SECRET = process.env.RAPPI_CLIENT_SECRET;
@@ -22,7 +23,7 @@ let _tokenExpires = 0;
 export async function obtenerToken() {
   if (_token && Date.now() < _tokenExpires - 60_000) return _token;
 
-  const resp = await fetch(`${API_BASE}/auth/token`, {
+  const resp = await fetch(AUTH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
