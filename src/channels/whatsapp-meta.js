@@ -189,7 +189,7 @@ router.post('/', async (req, res) => {
 
     // Enviar link de pago Clip como mensaje separado
     if (linkPago) {
-      const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}\n\nTambién puedes pagar en efectivo al recibir tu pedido.`;
+      const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}`;
       await enviarMensaje(telefono, mensajePago);
       const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago);
       if (msgPago && wsBroadcast) {
