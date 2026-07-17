@@ -94,6 +94,33 @@ app.use('/webhook/whatsapp', whatsappRouter);
 app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
+// Clip — notificación de pago completado
+app.post('/webhook/clip', (req, res) => {
+  // Responder 200 inmediatamente (Clip espera respuesta rápida)
+  res.sendStatus(200);
+
+  try {
+    const evento = req.body;
+    const status = evento?.payment_status || evento?.status;
+    const ref    = evento?.metadata?.external_reference || evento?.external_reference;
+    console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}`);
+
+    // Pago completado
+    if (status === 'CHECKOUT_COMPLETED' || status === 'APPROVED') {
+      actualizarEstadoPedido(ref, 'pagado_clip');
+      broadcast({ tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
+      console.log(`[Clip] Pago confirmado para pedido ${ref}`);
+    }
+  } catch (e) {
+    console.error('[Clip] Error al procesar webhook:', e.message);
+  }
+});
+
+// Página de agradecimiento post-pago (redirect desde Clip)
+app.get('/pago/gracias', (req, res) => {
+  res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Xabor — Pago recibido</title><style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#fafaf8;color:#333}h1{font-size:2rem;margin-bottom:.5rem}p{color:#666;font-size:1.1rem}</style></head><body><h1>¡Gracias por tu pago!</h1><p>Tu pedido de Xabor ya está en camino.</p></body></html>`);
+});
+
 // ─── API interna ─────────────────────────────────────────────────────────────
 
 // Auth — rutas públicas (no requieren token)

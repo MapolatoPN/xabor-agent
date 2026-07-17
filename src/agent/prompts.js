@@ -251,7 +251,7 @@ ${formatearMenu(menu)}
 - Costo de envío: $${reglas.pedidos.costo_envio} MXN
 - Tiempo de preparación: ${reglas.pedidos.tiempo_preparacion_minutos} minutos
 - Tiempo de entrega estimado: 40–60 minutos
-- Pago: Efectivo, tarjeta o transferencia
+- Pago: Efectivo o enlace de pago con tarjeta (te enviamos el link al confirmar tu pedido)
 ${reglas.politicas.map(p => `- ${p}`).join('\n')}
 
 ## FORMATO DE RESPUESTA

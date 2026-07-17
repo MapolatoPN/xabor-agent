@@ -7,6 +7,7 @@ import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
+import { crearLinkDePago } from '../services/clip-api.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
@@ -143,6 +144,7 @@ router.post('/', async (req, res) => {
     const resultado = await procesarMensaje(sessionId, texto, clienteCtx);
 
     // Si hay orden confirmada, registrar y emitir al panel
+    let linkPago = null;
     if (resultado.orden) {
       resultado.orden.canal    = 'whatsapp';
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || telefono;
@@ -153,6 +155,20 @@ router.post('/', async (req, res) => {
       // Actualizar nombre si lo capturó el agente
       if (resultado.orden.cliente?.nombre) {
         await upsertCliente(telefono, resultado.orden.cliente.nombre);
+      }
+      // Generar link de pago Clip (solo si está configurado)
+      if (process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
+        try {
+          const clip = await crearLinkDePago({
+            pedidoId:    pedido.id,
+            total:       resultado.orden.total,
+            descripcion: `Pedido Xabor #${pedido.id}`,
+            cliente:     resultado.orden.cliente
+          });
+          linkPago = clip.url;
+        } catch (e) {
+          console.error('[Clip] Error al generar link de pago:', e.message);
+        }
       }
     }
 
@@ -169,6 +185,16 @@ router.post('/', async (req, res) => {
     const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto);
     if (msgSaliente && wsBroadcast) {
       wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgSaliente });
+    }
+
+    // Enviar link de pago Clip como mensaje separado
+    if (linkPago) {
+      const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}\n\nTambién puedes pagar en efectivo al recibir tu pedido.`;
+      await enviarMensaje(telefono, mensajePago);
+      const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago);
+      if (msgPago && wsBroadcast) {
+        wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgPago });
+      }
     }
 
   } catch (error) {
