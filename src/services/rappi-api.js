@@ -22,7 +22,7 @@ let _tokenExpires = 0;
 export async function obtenerToken() {
   if (_token && Date.now() < _tokenExpires - 60_000) return _token;
 
-  const resp = await fetch(`${API_BASE}/auth/${encodeURIComponent(AUDIENCE)}/token`, {
+  const resp = await fetch(`${API_BASE}/auth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
