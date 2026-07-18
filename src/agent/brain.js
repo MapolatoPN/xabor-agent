@@ -28,16 +28,16 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // Registrar respuesta del asistente
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
 
-    // Detectar si hay una orden confirmada en la respuesta
-    const orden = extraerOrden(textoRespuesta);
-
-    // Detectar si el agente está escalando a humano
-    const escalar = textoRespuesta.includes('<ESCALAR_A_HUMANO>');
+    // Detectar marcadores ANTES de limpiar el texto
+    const orden       = extraerOrden(textoRespuesta);
+    const escalar     = textoRespuesta.includes('<ESCALAR_A_HUMANO>');
+    const enviarMenu  = textoRespuesta.includes('<ENVIAR_MENU>');
 
     return {
       texto: limpiarTexto(textoRespuesta),
-      orden: orden,
-      escalar: escalar,
+      orden,
+      escalar,
+      enviarMenu,
       sessionId
     };
 

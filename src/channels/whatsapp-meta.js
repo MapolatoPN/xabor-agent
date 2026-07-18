@@ -203,7 +203,7 @@ router.post('/', async (req, res) => {
 
     // Si el bot quiere enviar el menú como imagen, enviarlo primero
     const baseUrl = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
-    if (resultado.texto.includes('<ENVIAR_MENU>')) {
+    if (resultado.enviarMenu) {
       try {
         await enviarImagen(telefono, `${baseUrl}/public/menu.png`);
       } catch (e) {
