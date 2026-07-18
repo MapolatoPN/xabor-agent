@@ -36,8 +36,8 @@ router.post('/start', (req, res) => {
     <ConversationRelay
       url="${WS_URL}/ws/voice"
       language="es-MX"
-      ttsProvider="amazon"
-      voice="Mia"
+      ttsProvider="ElevenLabs"
+      voice="${process.env.ELEVENLABS_VOICE_ID || 'iBGVhgcEZS6A5gTOjqSJ'}"
       transcriptionProvider="deepgram"
       speechModel="nova-2"
       welcomeGreeting="Un momento por favor."
