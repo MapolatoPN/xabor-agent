@@ -16,10 +16,10 @@
         {
           "id": "PAN002",
           "nombre": "Chicken Parm",
-          "precio": 189,
-          "descripcion": "Pechuga de pollo al horno y empanizada con queso parmesano, salsa de tomate, queso mozzarella y mezcla de lechugas.",
-          "ingredientes": ["pechuga de pollo empanizada", "queso parmesano", "salsa de tomate", "queso mozzarella", "mezcla de lechugas"],
-          "alergenos": ["lácteos", "gluten", "huevo"],
+          "precio": 195,
+          "descripcion": "Pechuga de pollo a la plancha, spread de queso philadelphia con parmesano y aceite de oliva, queso mozzarella, tomates deshidratados y glaseado balsámico.",
+          "ingredientes": ["pechuga de pollo a la plancha", "queso philadelphia", "queso parmesano", "aceite de oliva", "queso mozzarella", "tomates deshidratados", "glaseado balsámico"],
+          "alergenos": ["lácteos", "gluten"],
           "disponible": true
         },
         {

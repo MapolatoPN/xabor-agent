@@ -60,13 +60,16 @@ function obtenerEstadoRestaurante(reglas) {
   // Verificar cierres especiales por fecha
   const fechaHoy = `${horaMX.getFullYear()}-${String(horaMX.getMonth()+1).padStart(2,'0')}-${String(horaMX.getDate()).padStart(2,'0')}`;
   const cierreEspecial = (reglas.cierres_especiales || []).find(c => c.fecha === fechaHoy);
+  let cerradoPorEspecial = false;
   if (cierreEspecial) {
     if (cierreEspecial.hora_cierre) {
       // Cierre anticipado: cerrado solo después de la hora indicada
       const [hCierreEsp] = cierreEspecial.hora_cierre.split(':').map(Number);
-      if (horaActual >= hCierreEsp) abierto = false;
+      if (horaActual >= hCierreEsp) { abierto = false; cerradoPorEspecial = true; }
     } else {
+      // Cierre todo el día
       abierto = false;
+      cerradoPorEspecial = true;
     }
   }
 
@@ -85,7 +88,7 @@ function obtenerEstadoRestaurante(reglas) {
     diaActual: nombresDias[diaActual],
     horaActual: horaMX.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
     horarioDia,
-    cierreEspecial: cierreEspecial || null,
+    cierreEspecial: cerradoPorEspecial ? cierreEspecial : null,
     promocionesActivas
   };
 }
