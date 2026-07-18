@@ -1,13 +1,12 @@
-// Webhook para llamadas de voz via Twilio + Deepgram (STT) + ElevenLabs (TTS)
-// Flujo: Cliente llama → Twilio → /webhook/voice/start
-//        Cliente habla  → Twilio graba → /webhook/voice/transcribe
-//        Deepgram transcribe → Claude responde → ElevenLabs sintetiza → Twilio reproduce
+// Webhook para llamadas de voz via Twilio + ElevenLabs (TTS)
+// STT: Twilio Gather input="speech" (más rápido que Record+Deepgram)
+// Flujo: Cliente llama → /start → bienvenida + Gather
+//        Cliente habla  → Twilio STT → /transcribe → Claude → ElevenLabs → reproduce
 
 import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { transcribirAudio } from '../services/deepgram.js';
 import { sintetizarVoz } from '../services/elevenlabs.js';
 import { setPagoPendiente } from '../services/database.js';
 
@@ -15,36 +14,40 @@ const router = Router();
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
 // Mapa para guardar el número de origen de cada llamada
-const llamadasActivas = new Map(); // callSid → telefonoFrom
+const llamadasActivas = new Map(); // sessionId → telefonoFrom
+
+// ─── Helper: responder con audio + Gather ────────────────────────────────────
+function responderYEscuchar(twiml, audioUrl, sessionId) {
+  twiml.play(audioUrl);
+  const gather = twiml.gather({
+    input:        'speech',
+    action:       `/webhook/voice/transcribe?session=${sessionId}`,
+    method:       'POST',
+    language:     'es-MX',
+    speechTimeout: 'auto',
+    speechModel:  'phone_call',
+  });
+  // Fallback silencio: redirigir de vuelta para que el cliente vuelva a hablar
+  twiml.redirect({
+    method: 'POST'
+  }, `/webhook/voice/transcribe?session=${sessionId}&silencio=true`);
+}
 
 // ─── Inicio de llamada ───────────────────────────────────────────────────────
-// Twilio llama aquí cuando alguien marca el número
 router.post('/start', async (req, res) => {
   const callSid   = req.body.CallSid;
-  const fromNum   = req.body.From; // número del cliente, ej. +5218781234567
+  const fromNum   = req.body.From;
   const sessionId = `call-${callSid}`;
 
-  // Guardar número de origen para usarlo al confirmar pedido
   llamadasActivas.set(sessionId, fromNum);
   console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
 
   try {
-    // Generamos la bienvenida del agente
     const resultado = await procesarMensaje(sessionId, 'Hola');
-    const audioUrl = await sintetizarVoz(resultado.texto, callSid, 'bienvenida');
+    const audioUrl  = await sintetizarVoz(resultado.texto, callSid, 'bienvenida');
 
     const twiml = new VoiceResponse();
-
-    // Reproducir bienvenida y luego capturar respuesta del cliente
-    twiml.play(audioUrl);
-    twiml.record({
-      action: `/webhook/voice/transcribe?session=${sessionId}`,
-      method: 'POST',
-      maxLength: 30,           // máximo 30 seg de grabación por turno
-      playBeep: false,
-      trim: 'trim-silence',
-      transcribe: false        // usamos Deepgram, no Twilio
-    });
+    responderYEscuchar(twiml, audioUrl, sessionId);
 
     res.type('text/xml');
     res.send(twiml.toString());
@@ -60,45 +63,39 @@ router.post('/start', async (req, res) => {
 });
 
 // ─── Transcripción y respuesta ───────────────────────────────────────────────
-// Twilio llama aquí con la grabación del cliente
+// Twilio llama aquí con SpeechResult ya transcrito (sin pasar por Deepgram)
 router.post('/transcribe', async (req, res) => {
-  const sessionId = req.query.session;
-  const recordingUrl = req.body.RecordingUrl;
-  const callSid = req.body.CallSid;
+  const sessionId   = req.query.session;
+  const callSid     = req.body.CallSid;
+  const silencio    = req.query.silencio === 'true';
+  const textoCliente = (req.body.SpeechResult || '').trim();
 
-  console.log(`[Voz] Grabación recibida para sesión ${sessionId}`);
+  console.log(`[Voz] Sesión ${sessionId} — "${textoCliente || '(silencio)'}"`);
 
   const twiml = new VoiceResponse();
 
-  try {
-    // 1. Transcribir audio con Deepgram
-    const textoCliente = await transcribirAudio(recordingUrl);
-    console.log(`[Voz] Cliente dijo: "${textoCliente}"`);
-
-    if (!textoCliente || textoCliente.trim() === '') {
-      // Cliente no dijo nada, pedir que repita
+  // Sin voz detectada → pedir que repita
+  if (silencio || !textoCliente) {
+    try {
       const audioUrl = await sintetizarVoz(
-        '¿Me puedes repetir eso? No te escuché bien.',
+        '¿Sigues ahí? Puedes hablar cuando quieras.',
         callSid,
         'silencio'
       );
-      twiml.play(audioUrl);
-      twiml.record({
-        action: `/webhook/voice/transcribe?session=${sessionId}`,
-        method: 'POST',
-        maxLength: 30,
-        playBeep: false,
-        trim: 'trim-silence',
-        transcribe: false
-      });
-      res.type('text/xml');
-      return res.send(twiml.toString());
+      responderYEscuchar(twiml, audioUrl, sessionId);
+    } catch (_) {
+      twiml.say({ language: 'es-MX' }, '¿Sigues ahí? Puedes hablar cuando quieras.');
+      twiml.redirect({ method: 'POST' }, `/webhook/voice/transcribe?session=${sessionId}&silencio=true`);
     }
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
 
-    // 2. Procesar con el cerebro del agente
+  try {
+    // 1. Procesar con el cerebro del agente
     const resultado = await procesarMensaje(sessionId, textoCliente);
 
-    // 3. Si hay orden confirmada, registrarla
+    // 2. Si hay orden confirmada, registrarla
     if (resultado.orden) {
       resultado.orden.canal = 'voz';
       const pedido = registrarPedido(resultado.orden, 'voz');
@@ -114,30 +111,18 @@ router.post('/transcribe', async (req, res) => {
         }
       }
 
-      // Limpiar llamada del mapa
       llamadasActivas.delete(sessionId);
     }
 
-    // 4. Sintetizar respuesta con ElevenLabs
+    // 3. Sintetizar respuesta con ElevenLabs
     const audioUrl = await sintetizarVoz(resultado.texto, callSid, Date.now());
 
-    // 5. Si el pedido fue confirmado, colgar después de la despedida
-    const esFinalizacion = resultado.orden !== null;
-
-    twiml.play(audioUrl);
-
-    if (esFinalizacion) {
+    // 4. Reproducir y colgar o seguir escuchando
+    if (resultado.orden) {
+      twiml.play(audioUrl);
       twiml.hangup();
     } else {
-      // Continuar escuchando
-      twiml.record({
-        action: `/webhook/voice/transcribe?session=${sessionId}`,
-        method: 'POST',
-        maxLength: 30,
-        playBeep: false,
-        trim: 'trim-silence',
-        transcribe: false
-      });
+      responderYEscuchar(twiml, audioUrl, sessionId);
     }
 
     res.type('text/xml');
@@ -145,15 +130,17 @@ router.post('/transcribe', async (req, res) => {
 
   } catch (error) {
     console.error('[Voz] Error en transcripción:', error.message);
-    twiml.say({ language: 'es-MX' }, 'Tuve un problema, por favor repite.');
-    twiml.record({
-      action: `/webhook/voice/transcribe?session=${sessionId}`,
-      method: 'POST',
-      maxLength: 30,
-      playBeep: false,
-      trim: 'trim-silence',
-      transcribe: false
-    });
+    try {
+      const audioUrl = await sintetizarVoz(
+        'Perdón, tuve un problema. ¿Me puedes repetir?',
+        callSid,
+        'error'
+      );
+      responderYEscuchar(twiml, audioUrl, sessionId);
+    } catch (_) {
+      twiml.say({ language: 'es-MX' }, 'Perdón, tuve un problema. ¿Me puedes repetir?');
+      twiml.redirect({ method: 'POST' }, `/webhook/voice/transcribe?session=${sessionId}`);
+    }
     res.type('text/xml');
     res.send(twiml.toString());
   }
