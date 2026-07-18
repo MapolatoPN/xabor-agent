@@ -161,13 +161,16 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Detectar si el cliente manda un folio para pagar ("folio 023", "XAB-0023", etc.)
-    const matchFolio = texto.match(/(?:folio\s*(?:XAB-?)?|XAB-?)(\d{1,4})/i);
+    // Detectar si el cliente manda un folio para pagar
+    // Acepta: "XAB1", "XAB-1", "XAB 1", "folio 1", "folio XAB1", "folio XAB-1", etc.
+    const matchFolio = texto.match(/(?:folio[\s:]*(?:XAB[\s-]?)?|XAB[\s-]?)(\d{1,4})/i);
     if (matchFolio && process.env.CLIP_API_KEY) {
-      const num   = matchFolio[1].padStart(4, '0');
-      const folio = `XAB-${num}`;
+      const num      = matchFolio[1].padStart(4, '0');
+      const folio    = `XAB-${num}`;
       const pedidoDB = await obtenerPedidoActivoPorFolio(folio);
-      if (pedidoDB && pedidoDB.forma_pago === 'enlace de pago' && !pedidoDB.pago_confirmado) {
+      console.log(`[Meta WA] Folio detectado: ${folio} — pedido en DB:`, pedidoDB ? 'sí' : 'no');
+
+      if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
           const clip = await crearLinkDePago({
             pedidoId:    folio,
@@ -181,7 +184,15 @@ router.post('/', async (req, res) => {
           console.log(`[Meta WA] Link de pago enviado por folio ${folio} a ${telefono}`);
         } catch (e) {
           console.error('[Meta WA] Error enviando link por folio:', e.message);
+          await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`);
         }
+        return;
+      }
+
+      if (!pedidoDB) {
+        // Folio no encontrado — responder directamente sin pasar a Claude
+        await enviarMensaje(telefono, `No encontramos un pedido activo con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`);
         return;
       }
     }
