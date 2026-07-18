@@ -96,7 +96,7 @@ app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
 // Clip — notificación de pago completado
-app.post('/webhook/clip', (req, res) => {
+app.post('/webhook/clip', async (req, res) => {
   // Responder 200 inmediatamente (Clip espera respuesta rápida)
   res.sendStatus(200);
 
