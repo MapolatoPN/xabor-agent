@@ -52,10 +52,19 @@ router.post('/start', (req, res) => {
 // ─── WebSocket — Conversation Relay ─────────────────────────────────────────
 export function setupVoiceWebSocket(wssVoice) {
   wssVoice.on('connection', (ws) => {
-    let callSid    = null;
-    let sessionId  = null;
-    let fromNum    = null;
-    let procesando = false;
+    let callSid         = null;
+    let sessionId       = null;
+    let fromNum         = null;
+    let procesando      = false;
+    let folioInfo       = null; // { texto } — activo mientras esperamos confirmación del folio
+    let timerCierre     = null; // timeout de cierre de llamada
+
+    const programarCierre = (ms) => {
+      if (timerCierre) clearTimeout(timerCierre);
+      timerCierre = setTimeout(() => {
+        try { ws.send(JSON.stringify({ type: 'end' })); } catch (_) {}
+      }, ms);
+    };
 
     console.log('[Voz WS] Conexión entrante');
 
@@ -80,24 +89,42 @@ export function setupVoiceWebSocket(wssVoice) {
         console.log(`[Voz WS] Cliente: "${texto}"`);
         if (!texto || procesando) return;
 
+        // ── Confirmación de folio: el cliente responde "sí/no/repite" ─────────
+        if (folioInfo) {
+          const pidioRepetir = /repite|repita|de nuevo|no entend|no escuch|otra vez|no lo escuch|no|qu[eé]/i.test(texto);
+          if (pidioRepetir) {
+            // Repetir folio y volver a preguntar
+            if (timerCierre) clearTimeout(timerCierre);
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'text', token: folioInfo.texto, last: true }));
+            }
+            programarCierre(25000);
+            return;
+          }
+          // El cliente confirmó (sí, gracias, etc.) — despedirse y colgar
+          folioInfo = null;
+          if (timerCierre) clearTimeout(timerCierre);
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'text', token: '¡Perfecto! En un momento te llega el enlace. ¡Que lo disfrutes!', last: true }));
+          }
+          programarCierre(6000);
+          return;
+        }
+
         procesando = true;
-        const frasesEnviadas = [];
 
         try {
-          // Streaming: cada frase se envía a Twilio en cuanto Claude la genera
           const resultado = await procesarMensajeStream(
             sessionId, texto, null, 'voz',
             (frase) => {
               const limpia = limpiarParaVoz(frase);
               if (!limpia) return;
-              frasesEnviadas.push(limpia);
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'text', token: limpia, last: false }));
               }
             }
           );
 
-          // Procesar orden y folio DESPUÉS de que el stream terminó
           let textoExtra = '';
           if (resultado.orden) {
             resultado.orden.canal = 'voz';
@@ -106,10 +133,8 @@ export function setupVoiceWebSocket(wssVoice) {
 
             if (resultado.orden.forma_pago === 'enlace de pago') {
               const folioVoz = deletrearFolio(pedido.id);
-              const yaLoMenciono = frasesEnviadas.join(' ').includes(folioVoz);
-              if (!yaLoMenciono) {
-                textoExtra = `Tu número de folio es ${folioVoz}. Te repito: ${folioVoz}. Mándanos ese número por WhatsApp y te enviamos el enlace de inmediato.`;
-              }
+              textoExtra = `Tu número de folio es ${folioVoz}. Repito: ${folioVoz}. Mándanos ese folio por WhatsApp al mismo número y te enviamos el enlace de pago. ¿Lo anotaste?`;
+              folioInfo = { texto: `Tu folio es ${folioVoz}. ¿Lo tienes anotado?` };
               if (fromNum) {
                 await setPagoPendiente(fromNum, pedido.id);
                 console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
@@ -117,7 +142,6 @@ export function setupVoiceWebSocket(wssVoice) {
             }
           }
 
-          // Señal de fin con last:true (+ folio si aplica)
           if (ws.readyState === 1) {
             ws.send(JSON.stringify({
               type: 'text',
@@ -127,9 +151,8 @@ export function setupVoiceWebSocket(wssVoice) {
           }
 
           if (resultado.orden) {
-            setTimeout(() => {
-              try { ws.send(JSON.stringify({ type: 'end' })); } catch (_) {}
-            }, 8000);
+            // Si hay folio, esperar respuesta del cliente; si no, colgar pronto
+            programarCierre(folioInfo ? 30000 : 8000);
           }
 
         } catch (e) {
