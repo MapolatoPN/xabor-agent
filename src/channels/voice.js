@@ -6,8 +6,9 @@
 import { Router } from 'express';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { sintetizarVoz } from '../services/elevenlabs.js';
 import { setPagoPendiente } from '../services/database.js';
+// ElevenLabs no aplica a Conversation Relay — Twilio sólo acepta mensajes tipo "text"
+// Si en el futuro se necesita voz personalizada, usar Media Streams en lugar de Conversation Relay
 
 const router = Router();
 
@@ -36,7 +37,8 @@ router.post('/start', (req, res) => {
       url="${WS_URL}/ws/voice"
       interruptible="true"
       dtmfDetection="false"
-      ttsProvider="elevenlabs"
+      voice="Polly.Mia"
+      language="es-MX"
     />
   </Connect>
 </Response>`;
@@ -73,8 +75,7 @@ export function setupVoiceWebSocket(wssVoice) {
         // Saludo inicial
         try {
           const resultado = await procesarMensaje(sessionId, 'Hola');
-          const audioUrl  = await sintetizarVoz(resultado.texto, callSid, 'bienvenida');
-          enviarAudio(ws, audioUrl);
+          enviarTexto(ws, resultado.texto);
         } catch (e) {
           console.error('[Voz WS] Error en saludo:', e.message);
           enviarTexto(ws, 'Bienvenido a Xabor, ¿en qué te podemos servir?');
@@ -105,8 +106,7 @@ export function setupVoiceWebSocket(wssVoice) {
             sesiones.delete(callSid);
           }
 
-          const audioUrl = await sintetizarVoz(resultado.texto, callSid, Date.now());
-          enviarAudio(ws, audioUrl);
+          enviarTexto(ws, resultado.texto);
 
           if (resultado.orden) {
             // Pequeña pausa para que termine el audio antes de colgar
@@ -117,16 +117,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         } catch (e) {
           console.error('[Voz WS] Error procesando mensaje:', e.message);
-          try {
-            const audioErr = await sintetizarVoz(
-              'Perdón, tuve un problema. ¿Me puedes repetir?',
-              callSid,
-              'error'
-            );
-            enviarAudio(ws, audioErr);
-          } catch {
-            enviarTexto(ws, 'Perdón, tuve un problema. ¿Me puedes repetir?');
-          }
+          enviarTexto(ws, 'Perdón, tuve un problema. ¿Me puedes repetir?');
         } finally {
           procesando = false;
         }
@@ -150,11 +141,8 @@ export function setupVoiceWebSocket(wssVoice) {
 }
 
 // ─── Helpers de envío ────────────────────────────────────────────────────────
-
-function enviarAudio(ws, url) {
-  if (ws.readyState !== 1) return;
-  ws.send(JSON.stringify({ type: 'play', url }));
-}
+// Conversation Relay sólo acepta: "text", "sendDigits", "end"
+// NO existe "play" — si se necesita audio personalizado, usar Media Streams
 
 function enviarTexto(ws, texto) {
   if (ws.readyState !== 1) return;
