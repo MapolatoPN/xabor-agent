@@ -29,7 +29,14 @@ router.post('/start', (req, res) => {
   sesiones.set(callSid, { sessionId, fromNum });
   console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
 
-  // TwiML raw — el SDK de Twilio puede no tener <ConversationRelay> según versión
+  // Saludo dinámico según hora (sin llamar a Claude)
+  const hora = new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false });
+  const h = parseInt(hora);
+  const saludo = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const greeting = `${saludo}, bienvenido a Xabor. ¿En qué te puedo ayudar?`;
+
+  const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'iBGVhgcEZS6A5gTOjqSJ';
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -37,11 +44,11 @@ router.post('/start', (req, res) => {
       url="${WS_URL}/ws/voice"
       language="es-MX"
       ttsProvider="ElevenLabs"
-      voice="${process.env.ELEVENLABS_VOICE_ID || 'iBGVhgcEZS6A5gTOjqSJ'}"
+      voice="${VOICE_ID}"
       transcriptionProvider="deepgram"
       speechModel="nova-2"
-      welcomeGreeting="Un momento por favor."
-      welcomeGreetingInterruptible="false"
+      welcomeGreeting="${greeting}"
+      welcomeGreetingInterruptible="true"
     />
   </Connect>
 </Response>`;
@@ -75,14 +82,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         console.log(`[Voz WS] Setup — ${callSid} desde ${fromNum}`);
 
-        // Saludo inicial
-        try {
-          const resultado = await procesarMensaje(sessionId, 'Hola', null, 'voz');
-          enviarTexto(ws, resultado.texto);
-        } catch (e) {
-          console.error('[Voz WS] Error en saludo:', e.message);
-          enviarTexto(ws, 'Bienvenido a Xabor, ¿en qué te podemos servir?');
-        }
+        // El saludo lo maneja Twilio con welcomeGreeting — no llamamos a Claude aquí
         return;
       }
 
