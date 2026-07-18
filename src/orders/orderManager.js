@@ -5,7 +5,8 @@ import {
   guardarPedidoActivo,
   actualizarEstadoPedidoDB,
   archivarPedidoActivo,
-  obtenerPedidosActivos
+  obtenerPedidosActivos,
+  obtenerMaxFolioNum
 } from '../services/database.js';
 
 let wsBroadcast = null;
@@ -19,15 +20,25 @@ export function setWsBroadcast(fn) {
 // Carga pedidos activos desde la DB al arrancar el servidor
 export async function cargarPedidosDesdeDB() {
   try {
-    const activos = await obtenerPedidosActivos();
+    const [activos, maxFolio] = await Promise.all([
+      obtenerPedidosActivos(),
+      obtenerMaxFolioNum()
+    ]);
+
     pedidos.length = 0;
     for (const p of activos) {
       pedidos.push(p);
-      // Mantener el contador por encima del folio más alto
-      const num = parseInt(p.id?.replace('XAB-', '')) || 0;
-      if (num >= contadorPedidos) contadorPedidos = num + 1;
     }
-    console.log(`[OrderManager] ${pedidos.length} pedidos activos cargados desde DB`);
+
+    // El contador siempre arranca por encima del folio más alto en DB
+    // Esto previene duplicados aunque haya pedidos entregados/archivados
+    const maxDesdeActivos = activos.reduce((max, p) => {
+      const num = parseInt(p.id?.replace('XAB-', '')) || 0;
+      return num > max ? num : max;
+    }, 0);
+    contadorPedidos = Math.max(maxFolio, maxDesdeActivos) + 1;
+
+    console.log(`[OrderManager] ${pedidos.length} pedidos activos cargados desde DB — próximo folio: XAB-${String(contadorPedidos).padStart(4, '0')}`);
   } catch (e) {
     console.error('[OrderManager] Error cargando pedidos desde DB:', e.message);
   }

@@ -335,6 +335,21 @@ export async function obtenerPedidosActivos() {
   }
 }
 
+// Devuelve el número más alto de folio guardado (ej. 3 si el último es XAB-0003)
+// Sirve para que el contador nunca repita un folio tras un reinicio
+export async function obtenerMaxFolioNum() {
+  try {
+    const result = await pool.query(`
+      SELECT COALESCE(MAX(CAST(REPLACE(folio, 'XAB-', '') AS INTEGER)), 0) AS max_num
+      FROM pedidos_activos
+    `);
+    return result.rows[0]?.max_num || 0;
+  } catch (e) {
+    console.error('[DB] Error obtenerMaxFolioNum:', e.message);
+    return 0;
+  }
+}
+
 export async function confirmarPagoPedido(folio) {
   try {
     await pool.query(`
