@@ -9,7 +9,7 @@ const anthropic = new Anthropic({
 // Modelo: haiku es rápido y barato, ideal para conversaciones
 const MODELO = 'claude-haiku-4-5-20251001';
 
-export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null) {
+export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null) {
   // Registrar mensaje del usuario en la sesión
   agregarMensaje(sessionId, 'user', mensajeUsuario);
 
@@ -19,7 +19,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const respuesta = await anthropic.messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: await construirSystemPrompt(clienteCtx),
+      system: await construirSystemPrompt(clienteCtx, canal),
       messages: session.mensajes
     });
 

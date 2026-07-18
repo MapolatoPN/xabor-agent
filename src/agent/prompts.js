@@ -93,7 +93,7 @@ function obtenerEstadoRestaurante(reglas) {
   };
 }
 
-export async function construirSystemPrompt(clienteCtx = null) {
+export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const { menu, reglas } = cargarDatos();
   const estado = obtenerEstadoRestaurante(reglas);
   const overrides = await obtenerOverridesActivos();
@@ -134,8 +134,12 @@ export async function construirSystemPrompt(clienteCtx = null) {
     contextoCliente += `- Salúdalo por su nombre si lo conoces.\n`;
   }
 
+  const canalTexto = canal === 'voz'
+    ? '\n## CANAL\nEstás atendiendo una LLAMADA DE VOZ. El cliente no puede leer texto, solo escucha. Responde siempre en lenguaje hablado natural, sin listas con guiones ni símbolos. Para enlace de pago, da el folio y pide que lo manden por WhatsApp.'
+    : '';
+
   return `Eres el asistente de pedidos del Restaurante Xabor. Tu nombre es Xabor.
-${contextoCliente}
+${contextoCliente}${canalTexto}
 
 ## FECHA Y HORA ACTUAL
 - Hoy es ${estado.diaActual}, son las ${estado.horaActual} hora de México.

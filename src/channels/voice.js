@@ -77,7 +77,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         // Saludo inicial
         try {
-          const resultado = await procesarMensaje(sessionId, 'Hola');
+          const resultado = await procesarMensaje(sessionId, 'Hola', null, 'voz');
           enviarTexto(ws, resultado.texto);
         } catch (e) {
           console.error('[Voz WS] Error en saludo:', e.message);
@@ -94,7 +94,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         procesando = true;
         try {
-          const resultado = await procesarMensaje(sessionId, texto);
+          const resultado = await procesarMensaje(sessionId, texto, null, 'voz');
 
           // Orden confirmada
           if (resultado.orden) {
