@@ -1,14 +1,11 @@
 // Canal de voz — Twilio Conversation Relay + ElevenLabs TTS
 // Flujo: Cliente llama → /start → TwiML <ConversationRelay> → WebSocket /ws/voice
-//        Twilio transcribe en tiempo real → nosotros procesamos → ElevenLabs → play URL
-//        El cliente puede interrumpir al bot en cualquier momento
+//        Twilio transcribe en tiempo real → nosotros procesamos → Claude → ElevenLabs TTS
 
 import { Router } from 'express';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { setPagoPendiente } from '../services/database.js';
-// ElevenLabs no aplica a Conversation Relay — Twilio sólo acepta mensajes tipo "text"
-// Si en el futuro se necesita voz personalizada, usar Media Streams en lugar de Conversation Relay
 
 const router = Router();
 
@@ -19,8 +16,6 @@ const WS_URL   = BASE_URL.replace(/^https?:\/\//, 'wss://');
 const sesiones = new Map();
 
 // ─── Inicio de llamada ───────────────────────────────────────────────────────
-// Twilio llama aquí cuando alguien marca el número.
-// Respondemos con TwiML que conecta a nuestro WebSocket.
 router.post('/start', (req, res) => {
   const callSid = req.body.CallSid;
   const fromNum = req.body.From;
@@ -30,9 +25,8 @@ router.post('/start', (req, res) => {
   console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
 
   // Saludo dinámico según hora (sin llamar a Claude)
-  const hora = new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false });
-  const h = parseInt(hora);
-  const saludo = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const h = new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false });
+  const saludo = parseInt(h) < 12 ? 'Buenos días' : parseInt(h) < 19 ? 'Buenas tardes' : 'Buenas noches';
   const greeting = `${saludo}, bienvenido a Xabor. ¿En qué te puedo ayudar?`;
 
   const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'iBGVhgcEZS6A5gTOjqSJ';
@@ -58,13 +52,12 @@ router.post('/start', (req, res) => {
 });
 
 // ─── WebSocket — Conversation Relay ─────────────────────────────────────────
-// Llamado desde server.js al recibir conexión en /ws/voice
 export function setupVoiceWebSocket(wssVoice) {
   wssVoice.on('connection', (ws) => {
     let callSid    = null;
     let sessionId  = null;
     let fromNum    = null;
-    let procesando = false; // evitar peticiones paralelas
+    let procesando = false;
 
     console.log('[Voz WS] Conexión entrante');
 
@@ -72,21 +65,19 @@ export function setupVoiceWebSocket(wssVoice) {
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
 
-      // ── Setup: primera trama, Twilio nos da callSid y número ──────────────
+      // ── Setup ──────────────────────────────────────────────────────────────
       if (msg.type === 'setup') {
         callSid   = msg.callSid;
         const ses = sesiones.get(callSid);
         sessionId = ses?.sessionId || `call-${callSid}`;
         fromNum   = ses?.fromNum   || msg.from;
         sesiones.set(callSid, { ...ses, ws });
-
         console.log(`[Voz WS] Setup — ${callSid} desde ${fromNum}`);
-
-        // El saludo lo maneja Twilio con welcomeGreeting — no llamamos a Claude aquí
+        // El saludo lo reproduce Twilio con welcomeGreeting
         return;
       }
 
-      // ── Prompt: Twilio terminó de transcribir lo que dijo el cliente ──────
+      // ── Prompt ─────────────────────────────────────────────────────────────
       if (msg.type === 'prompt') {
         const texto = (msg.voicePrompt || msg.text || '').trim();
         console.log(`[Voz WS] Cliente: "${texto}"`);
@@ -96,26 +87,30 @@ export function setupVoiceWebSocket(wssVoice) {
         try {
           const resultado = await procesarMensaje(sessionId, texto, null, 'voz');
 
-          // Orden confirmada
+          let textoFinal = resultado.texto;
+
+          // Orden confirmada — registrar y sustituir folio real en el texto
           if (resultado.orden) {
             resultado.orden.canal = 'voz';
             const pedido = registrarPedido(resultado.orden, 'voz');
             emitirPedido(pedido);
 
+            // Reemplazar placeholder [FOLIO] con folio real deletreado para voz
+            textoFinal = textoFinal.replace(/\[FOLIO\]/gi, deletrearFolio(pedido.id));
+
             if (resultado.orden.forma_pago === 'enlace de pago' && fromNum) {
               await setPagoPendiente(fromNum, pedido.id);
               console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
             }
-            sesiones.delete(callSid);
           }
 
-          enviarTexto(ws, resultado.texto);
+          enviarTexto(ws, limpiarParaVoz(textoFinal));
 
           if (resultado.orden) {
-            // Pequeña pausa para que termine el audio antes de colgar
+            // Pausa para que termine el audio antes de colgar
             setTimeout(() => {
               try { ws.send(JSON.stringify({ type: 'end' })); } catch (_) {}
-            }, 4000);
+            }, 8000);
           }
 
         } catch (e) {
@@ -127,10 +122,9 @@ export function setupVoiceWebSocket(wssVoice) {
         return;
       }
 
-      // ── Interrupt: el cliente habló mientras el bot respondía ─────────────
+      // ── Interrupt ──────────────────────────────────────────────────────────
       if (msg.type === 'interrupt') {
         console.log(`[Voz WS] Interrupción — ${callSid}`);
-        // Twilio ya detuvo el audio automáticamente; el siguiente 'prompt' llegará pronto
       }
     });
 
@@ -143,9 +137,26 @@ export function setupVoiceWebSocket(wssVoice) {
   });
 }
 
-// ─── Helpers de envío ────────────────────────────────────────────────────────
-// Conversation Relay sólo acepta: "text", "sendDigits", "end"
-// NO existe "play" — si se necesita audio personalizado, usar Media Streams
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Convierte "XAB-0012" → "equis - a - be - cero doce" para que TTS lo lea bien
+function deletrearFolio(folio) {
+  const letras = { X: 'equis', A: 'a', B: 'be' };
+  const [prefijo, numero] = folio.split('-');
+  const letrasDelPrefijo = prefijo.split('').map(l => letras[l] || l).join(' - ');
+  const num = parseInt(numero, 10);
+  return `${letrasDelPrefijo} - ${num}`;
+}
+
+// Limpia el texto para que TTS suene natural en español
+function limpiarParaVoz(texto) {
+  return texto
+    .replace(/\$\s?(\d[\d,]*)/g, '$1 pesos')   // $179 → 179 pesos
+    .replace(/\$/g, '')                           // cualquier $ restante
+    .replace(/\*/g, '')                           // asteriscos de markdown
+    .replace(/#/g, '')                            // hash de markdown
+    .trim();
+}
 
 function enviarTexto(ws, texto) {
   if (ws.readyState !== 1) return;

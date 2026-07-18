@@ -135,7 +135,13 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   }
 
   const canalTexto = canal === 'voz'
-    ? '\n## CANAL\nEstás atendiendo una LLAMADA DE VOZ. El cliente no puede leer texto, solo escucha. Responde siempre en lenguaje hablado natural, sin listas con guiones ni símbolos. Para enlace de pago, da el folio y pide que lo manden por WhatsApp.'
+    ? `\n## CANAL — LLAMADA DE VOZ
+- El cliente no puede leer, solo escucha. Habla natural, sin listas, guiones, asteriscos ni símbolos.
+- Di los precios como "ciento setenta y nueve pesos", nunca como "$179".
+- Cuando el cliente diga "panini" o "sandwich" seguido de un nombre (por ejemplo "panini fit", "panini louisiana", "panini parm"), entiéndelo como el producto equivalente en el menú: Chicken Fit, Chicken Louisiana, Chicken Parm. NO digas que no tenemos paninis; corrígelo con naturalidad: "Claro, el Chicken Fit..."
+- Para enlace de pago: al confirmar el pedido, di el folio usando el marcador [FOLIO] exactamente así. El sistema lo convierte a voz clara automáticamente. Repite el folio dos veces seguidas.
+- Si el cliente pide que repitas algo, repítelo inmediatamente. NO cuelgues hasta que el cliente confirme que escuchó el folio.
+- No uses el verbo "colgar"; di "hasta pronto" o "que lo disfrutes".`
     : '';
 
   return `Eres el asistente de pedidos del Restaurante Xabor. Tu nombre es Xabor.
