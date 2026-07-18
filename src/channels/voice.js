@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { setPagoPendiente } from '../services/database.js';
+import { setPagoPendiente, guardarPedidoActivo } from '../services/database.js';
 
 const router = Router();
 
@@ -130,6 +130,13 @@ export function setupVoiceWebSocket(wssVoice) {
             resultado.orden.canal = 'voz';
             const pedido = registrarPedido(resultado.orden, 'voz');
             emitirPedido(pedido);
+            // Guardar en DB con await — garantiza que el folio existe cuando llegue el WA
+            try {
+              await guardarPedidoActivo(pedido);
+              console.log(`[Voz WS] Pedido ${pedido.id} guardado en DB ✅`);
+            } catch (e) {
+              console.error(`[Voz WS] Error guardando pedido ${pedido.id} en DB:`, e.message);
+            }
 
             if (resultado.orden.forma_pago === 'enlace de pago') {
               const folioVoz = deletrearFolio(pedido.id);

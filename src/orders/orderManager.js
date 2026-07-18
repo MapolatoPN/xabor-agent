@@ -46,7 +46,9 @@ export function registrarPedido(orden, canal = 'test') {
   contadorPedidos++;
 
   // Guardar en DB para que sobreviva reinicios
-  guardarPedidoActivo(pedido);
+  guardarPedidoActivo(pedido).catch(e =>
+    console.error(`[OrderManager] ❌ Error guardando ${pedido.id} en DB:`, e.message)
+  );
 
   console.log('\n' + '='.repeat(50));
   console.log(`🎉 NUEVO PEDIDO: ${pedido.id} [${canal}]`);
