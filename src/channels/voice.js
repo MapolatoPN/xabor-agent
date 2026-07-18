@@ -95,12 +95,20 @@ export function setupVoiceWebSocket(wssVoice) {
             const pedido = registrarPedido(resultado.orden, 'voz');
             emitirPedido(pedido);
 
-            // Reemplazar placeholder [FOLIO] con folio real deletreado para voz
-            textoFinal = textoFinal.replace(/\[FOLIO\]/gi, deletrearFolio(pedido.id));
+            const folioVoz = deletrearFolio(pedido.id);
 
-            if (resultado.orden.forma_pago === 'enlace de pago' && fromNum) {
-              await setPagoPendiente(fromNum, pedido.id);
-              console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
+            // Reemplazar placeholder [FOLIO] si Claude lo usó
+            textoFinal = textoFinal.replace(/\[FOLIO\]/gi, folioVoz);
+
+            // Fallback: si es enlace de pago y el folio no quedó en el texto, lo añadimos nosotros
+            if (resultado.orden.forma_pago === 'enlace de pago') {
+              if (!textoFinal.includes(folioVoz)) {
+                textoFinal += ` Tu número de folio es ${folioVoz}. Te repito: ${folioVoz}. Mándanos ese número por WhatsApp y te enviamos el enlace de inmediato.`;
+              }
+              if (fromNum) {
+                await setPagoPendiente(fromNum, pedido.id);
+                console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
+              }
             }
           }
 
