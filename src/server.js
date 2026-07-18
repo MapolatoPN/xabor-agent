@@ -19,7 +19,7 @@ import { deleteSession } from './agent/session.js';
 import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
-import voiceRouter from './channels/voice.js';
+import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import { configurarWebhooks, subirCatalogo, construirCatalogoRappi } from './services/rappi-api.js';
 import { analizarSemana } from './services/learner.js';
@@ -52,8 +52,22 @@ function requireAuth(req, res, next) {
 const app = express();
 const server = createServer(app);
 
-// ─── WebSocket para el panel de comandas ────────────────────────────────────
-const wss = new WebSocketServer({ server });
+// ─── WebSocket: panel de comandas + Conversation Relay de voz ───────────────
+const wss      = new WebSocketServer({ noServer: true }); // panel
+const wssVoice = new WebSocketServer({ noServer: true }); // voz
+
+// Enrutar conexiones WebSocket por path
+server.on('upgrade', (req, socket, head) => {
+  if (req.url === '/ws/voice') {
+    wssVoice.handleUpgrade(req, socket, head, (ws) => {
+      wssVoice.emit('connection', ws, req);
+    });
+  } else {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  }
+});
 
 function broadcast(data) {
   const mensaje = JSON.stringify(data);
@@ -68,6 +82,9 @@ function broadcast(data) {
 setWsBroadcast(broadcast);
 setWsBroadcastWA(broadcast);
 setWsBroadcastRappi(broadcast);
+
+// Activar WebSocket de voz (Conversation Relay)
+setupVoiceWebSocket(wssVoice);
 
 wss.on('connection', (ws) => {
   console.log('[WS] Panel conectado');

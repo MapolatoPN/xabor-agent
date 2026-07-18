@@ -1,149 +1,164 @@
-// Webhook para llamadas de voz via Twilio + ElevenLabs (TTS)
-// STT: Twilio Gather input="speech" (más rápido que Record+Deepgram)
-// Flujo: Cliente llama → /start → bienvenida + Gather
-//        Cliente habla  → Twilio STT → /transcribe → Claude → ElevenLabs → reproduce
+// Canal de voz — Twilio Conversation Relay + ElevenLabs TTS
+// Flujo: Cliente llama → /start → TwiML <ConversationRelay> → WebSocket /ws/voice
+//        Twilio transcribe en tiempo real → nosotros procesamos → ElevenLabs → play URL
+//        El cliente puede interrumpir al bot en cualquier momento
 
 import { Router } from 'express';
-import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { sintetizarVoz } from '../services/elevenlabs.js';
 import { setPagoPendiente } from '../services/database.js';
 
 const router = Router();
-const VoiceResponse = twilio.twiml.VoiceResponse;
 
-// Mapa para guardar el número de origen de cada llamada
-const llamadasActivas = new Map(); // sessionId → telefonoFrom
+const BASE_URL = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
+const WS_URL   = BASE_URL.replace(/^https?:\/\//, 'wss://');
 
-// ─── Helper: responder con audio + Gather ────────────────────────────────────
-function responderYEscuchar(twiml, audioUrl, sessionId) {
-  twiml.play(audioUrl);
-  const gather = twiml.gather({
-    input:        'speech',
-    action:       `/webhook/voice/transcribe?session=${sessionId}`,
-    method:       'POST',
-    language:     'es-MX',
-    speechTimeout: 'auto',
-    speechModel:  'phone_call',
-  });
-  // Fallback silencio: redirigir de vuelta para que el cliente vuelva a hablar
-  twiml.redirect({
-    method: 'POST'
-  }, `/webhook/voice/transcribe?session=${sessionId}&silencio=true`);
-}
+// Mapa de sesiones activas: callSid → { sessionId, fromNum }
+const sesiones = new Map();
 
 // ─── Inicio de llamada ───────────────────────────────────────────────────────
-router.post('/start', async (req, res) => {
-  const callSid   = req.body.CallSid;
-  const fromNum   = req.body.From;
+// Twilio llama aquí cuando alguien marca el número.
+// Respondemos con TwiML que conecta a nuestro WebSocket.
+router.post('/start', (req, res) => {
+  const callSid = req.body.CallSid;
+  const fromNum = req.body.From;
   const sessionId = `call-${callSid}`;
 
-  llamadasActivas.set(sessionId, fromNum);
+  sesiones.set(callSid, { sessionId, fromNum });
   console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
 
-  try {
-    const resultado = await procesarMensaje(sessionId, 'Hola');
-    const audioUrl  = await sintetizarVoz(resultado.texto, callSid, 'bienvenida');
+  // TwiML raw — el SDK de Twilio puede no tener <ConversationRelay> según versión
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <ConversationRelay
+      url="${WS_URL}/ws/voice"
+      interruptible="true"
+      dtmfDetection="false"
+      ttsProvider="elevenlabs"
+    />
+  </Connect>
+</Response>`;
 
-    const twiml = new VoiceResponse();
-    responderYEscuchar(twiml, audioUrl, sessionId);
-
-    res.type('text/xml');
-    res.send(twiml.toString());
-
-  } catch (error) {
-    console.error('[Voz] Error en inicio:', error.message);
-    const twiml = new VoiceResponse();
-    twiml.say({ language: 'es-MX' }, 'Lo sentimos, hay un problema técnico. Por favor llame más tarde.');
-    twiml.hangup();
-    res.type('text/xml');
-    res.send(twiml.toString());
-  }
+  res.type('text/xml');
+  res.send(twiml);
 });
 
-// ─── Transcripción y respuesta ───────────────────────────────────────────────
-// Twilio llama aquí con SpeechResult ya transcrito (sin pasar por Deepgram)
-router.post('/transcribe', async (req, res) => {
-  const sessionId   = req.query.session;
-  const callSid     = req.body.CallSid;
-  const silencio    = req.query.silencio === 'true';
-  const textoCliente = (req.body.SpeechResult || '').trim();
+// ─── WebSocket — Conversation Relay ─────────────────────────────────────────
+// Llamado desde server.js al recibir conexión en /ws/voice
+export function setupVoiceWebSocket(wssVoice) {
+  wssVoice.on('connection', (ws) => {
+    let callSid    = null;
+    let sessionId  = null;
+    let fromNum    = null;
+    let procesando = false; // evitar peticiones paralelas
 
-  console.log(`[Voz] Sesión ${sessionId} — "${textoCliente || '(silencio)'}"`);
+    console.log('[Voz WS] Conexión entrante');
 
-  const twiml = new VoiceResponse();
+    ws.on('message', async (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw); } catch { return; }
 
-  // Sin voz detectada → pedir que repita
-  if (silencio || !textoCliente) {
-    try {
-      const audioUrl = await sintetizarVoz(
-        '¿Sigues ahí? Puedes hablar cuando quieras.',
-        callSid,
-        'silencio'
-      );
-      responderYEscuchar(twiml, audioUrl, sessionId);
-    } catch (_) {
-      twiml.say({ language: 'es-MX' }, '¿Sigues ahí? Puedes hablar cuando quieras.');
-      twiml.redirect({ method: 'POST' }, `/webhook/voice/transcribe?session=${sessionId}&silencio=true`);
-    }
-    res.type('text/xml');
-    return res.send(twiml.toString());
-  }
+      // ── Setup: primera trama, Twilio nos da callSid y número ──────────────
+      if (msg.type === 'setup') {
+        callSid   = msg.callSid;
+        const ses = sesiones.get(callSid);
+        sessionId = ses?.sessionId || `call-${callSid}`;
+        fromNum   = ses?.fromNum   || msg.from;
+        sesiones.set(callSid, { ...ses, ws });
 
-  try {
-    // 1. Procesar con el cerebro del agente
-    const resultado = await procesarMensaje(sessionId, textoCliente);
+        console.log(`[Voz WS] Setup — ${callSid} desde ${fromNum}`);
 
-    // 2. Si hay orden confirmada, registrarla
-    if (resultado.orden) {
-      resultado.orden.canal = 'voz';
-      const pedido = registrarPedido(resultado.orden, 'voz');
-      emitirPedido(pedido);
-
-      // Si eligió enlace de pago, guardar pendiente para cuando mande WhatsApp
-      if (resultado.orden.forma_pago === 'enlace de pago') {
-        const telefonoCliente = llamadasActivas.get(sessionId)
-          || resultado.orden.cliente?.telefono;
-        if (telefonoCliente) {
-          await setPagoPendiente(telefonoCliente, pedido.id);
-          console.log(`[Voz] Pago pendiente guardado para ${telefonoCliente} — pedido ${pedido.id}`);
+        // Saludo inicial
+        try {
+          const resultado = await procesarMensaje(sessionId, 'Hola');
+          const audioUrl  = await sintetizarVoz(resultado.texto, callSid, 'bienvenida');
+          enviarAudio(ws, audioUrl);
+        } catch (e) {
+          console.error('[Voz WS] Error en saludo:', e.message);
+          enviarTexto(ws, 'Bienvenido a Xabor, ¿en qué te podemos servir?');
         }
+        return;
       }
 
-      llamadasActivas.delete(sessionId);
-    }
+      // ── Prompt: Twilio terminó de transcribir lo que dijo el cliente ──────
+      if (msg.type === 'prompt') {
+        const texto = (msg.text || '').trim();
+        console.log(`[Voz WS] Cliente: "${texto}"`);
+        if (!texto || procesando) return;
 
-    // 3. Sintetizar respuesta con ElevenLabs
-    const audioUrl = await sintetizarVoz(resultado.texto, callSid, Date.now());
+        procesando = true;
+        try {
+          const resultado = await procesarMensaje(sessionId, texto);
 
-    // 4. Reproducir y colgar o seguir escuchando
-    if (resultado.orden) {
-      twiml.play(audioUrl);
-      twiml.hangup();
-    } else {
-      responderYEscuchar(twiml, audioUrl, sessionId);
-    }
+          // Orden confirmada
+          if (resultado.orden) {
+            resultado.orden.canal = 'voz';
+            const pedido = registrarPedido(resultado.orden, 'voz');
+            emitirPedido(pedido);
 
-    res.type('text/xml');
-    res.send(twiml.toString());
+            if (resultado.orden.forma_pago === 'enlace de pago' && fromNum) {
+              await setPagoPendiente(fromNum, pedido.id);
+              console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
+            }
+            sesiones.delete(callSid);
+          }
 
-  } catch (error) {
-    console.error('[Voz] Error en transcripción:', error.message);
-    try {
-      const audioUrl = await sintetizarVoz(
-        'Perdón, tuve un problema. ¿Me puedes repetir?',
-        callSid,
-        'error'
-      );
-      responderYEscuchar(twiml, audioUrl, sessionId);
-    } catch (_) {
-      twiml.say({ language: 'es-MX' }, 'Perdón, tuve un problema. ¿Me puedes repetir?');
-      twiml.redirect({ method: 'POST' }, `/webhook/voice/transcribe?session=${sessionId}`);
-    }
-    res.type('text/xml');
-    res.send(twiml.toString());
-  }
-});
+          const audioUrl = await sintetizarVoz(resultado.texto, callSid, Date.now());
+          enviarAudio(ws, audioUrl);
+
+          if (resultado.orden) {
+            // Pequeña pausa para que termine el audio antes de colgar
+            setTimeout(() => {
+              try { ws.send(JSON.stringify({ type: 'end' })); } catch (_) {}
+            }, 4000);
+          }
+
+        } catch (e) {
+          console.error('[Voz WS] Error procesando mensaje:', e.message);
+          try {
+            const audioErr = await sintetizarVoz(
+              'Perdón, tuve un problema. ¿Me puedes repetir?',
+              callSid,
+              'error'
+            );
+            enviarAudio(ws, audioErr);
+          } catch {
+            enviarTexto(ws, 'Perdón, tuve un problema. ¿Me puedes repetir?');
+          }
+        } finally {
+          procesando = false;
+        }
+        return;
+      }
+
+      // ── Interrupt: el cliente habló mientras el bot respondía ─────────────
+      if (msg.type === 'interrupt') {
+        console.log(`[Voz WS] Interrupción — ${callSid}`);
+        // Twilio ya detuvo el audio automáticamente; el siguiente 'prompt' llegará pronto
+      }
+    });
+
+    ws.on('close', () => {
+      console.log(`[Voz WS] Conexión cerrada — ${callSid}`);
+      if (callSid) sesiones.delete(callSid);
+    });
+
+    ws.on('error', (e) => console.error('[Voz WS] Error:', e.message));
+  });
+}
+
+// ─── Helpers de envío ────────────────────────────────────────────────────────
+
+function enviarAudio(ws, url) {
+  if (ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'play', url }));
+}
+
+function enviarTexto(ws, texto) {
+  if (ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'text', token: texto, last: true }));
+}
 
 export default router;
