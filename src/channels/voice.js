@@ -88,7 +88,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
       // ── Prompt: Twilio terminó de transcribir lo que dijo el cliente ──────
       if (msg.type === 'prompt') {
-        const texto = (msg.text || '').trim();
+        const texto = (msg.voicePrompt || msg.text || '').trim();
         console.log(`[Voz WS] Cliente: "${texto}"`);
         if (!texto || procesando) return;
 
