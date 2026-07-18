@@ -9,17 +9,24 @@ import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { transcribirAudio } from '../services/deepgram.js';
 import { sintetizarVoz } from '../services/elevenlabs.js';
+import { setPagoPendiente } from '../services/database.js';
 
 const router = Router();
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
+// Mapa para guardar el número de origen de cada llamada
+const llamadasActivas = new Map(); // callSid → telefonoFrom
+
 // ─── Inicio de llamada ───────────────────────────────────────────────────────
 // Twilio llama aquí cuando alguien marca el número
 router.post('/start', async (req, res) => {
-  const callSid = req.body.CallSid;
+  const callSid   = req.body.CallSid;
+  const fromNum   = req.body.From; // número del cliente, ej. +5218781234567
   const sessionId = `call-${callSid}`;
 
-  console.log(`[Voz] Nueva llamada: ${callSid}`);
+  // Guardar número de origen para usarlo al confirmar pedido
+  llamadasActivas.set(sessionId, fromNum);
+  console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
 
   try {
     // Generamos la bienvenida del agente
@@ -96,6 +103,19 @@ router.post('/transcribe', async (req, res) => {
       resultado.orden.canal = 'voz';
       const pedido = registrarPedido(resultado.orden, 'voz');
       emitirPedido(pedido);
+
+      // Si eligió enlace de pago, guardar pendiente para cuando mande WhatsApp
+      if (resultado.orden.forma_pago === 'enlace de pago') {
+        const telefonoCliente = llamadasActivas.get(sessionId)
+          || resultado.orden.cliente?.telefono;
+        if (telefonoCliente) {
+          await setPagoPendiente(telefonoCliente, pedido.id);
+          console.log(`[Voz] Pago pendiente guardado para ${telefonoCliente} — pedido ${pedido.id}`);
+        }
+      }
+
+      // Limpiar llamada del mapa
+      llamadasActivas.delete(sessionId);
     }
 
     // 4. Sintetizar respuesta con ElevenLabs

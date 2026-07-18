@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -158,6 +158,55 @@ router.post('/', async (req, res) => {
     const pausado = await getBotPausado(telefono);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono} — mensaje ignorado por el bot`);
+      return;
+    }
+
+    // Detectar si el cliente manda un folio para pagar ("folio 023", "XAB-0023", etc.)
+    const matchFolio = texto.match(/(?:folio\s*(?:XAB-?)?|XAB-?)(\d{1,4})/i);
+    if (matchFolio && process.env.CLIP_API_KEY) {
+      const num   = matchFolio[1].padStart(4, '0');
+      const folio = `XAB-${num}`;
+      const pedidoDB = await obtenerPedidoActivoPorFolio(folio);
+      if (pedidoDB && pedidoDB.forma_pago === 'enlace de pago' && !pedidoDB.pago_confirmado) {
+        try {
+          const clip = await crearLinkDePago({
+            pedidoId:    folio,
+            total:       pedidoDB.total,
+            descripcion: `Pedido Xabor #${folio}`,
+            cliente:     pedidoDB.cliente || {}
+          });
+          const msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${clip.url}\n\nTotal: $${pedidoDB.total} MXN`;
+          await enviarMensaje(telefono, msg);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+          console.log(`[Meta WA] Link de pago enviado por folio ${folio} a ${telefono}`);
+        } catch (e) {
+          console.error('[Meta WA] Error enviando link por folio:', e.message);
+        }
+        return;
+      }
+    }
+
+    // Si tiene un enlace de pago pendiente de una llamada, enviarlo y terminar
+    const pedidoPendiente = await getPagoPendiente(telefono);
+    if (pedidoPendiente && process.env.CLIP_API_KEY) {
+      try {
+        const { obtenerPedidoPorId } = await import('../orders/orderManager.js');
+        const pedido = obtenerPedidoPorId(pedidoPendiente);
+        const total = pedido?.total || 0;
+        const clip = await crearLinkDePago({
+          pedidoId:    pedidoPendiente,
+          total,
+          descripcion: `Pedido Xabor #${pedidoPendiente}`,
+          cliente:     pedido?.cliente || {}
+        });
+        await clearPagoPendiente(telefono);
+        const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
+        await enviarMensaje(telefono, mensajePago);
+        await guardarMensaje(telefono, null, 'saliente', mensajePago);
+        console.log(`[Meta WA] Link de pago enviado a ${telefono} para pedido ${pedidoPendiente}`);
+      } catch (e) {
+        console.error('[Meta WA] Error enviando link pendiente:', e.message);
+      }
       return;
     }
 

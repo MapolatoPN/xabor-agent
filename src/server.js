@@ -16,7 +16,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
@@ -106,10 +106,11 @@ app.post('/webhook/clip', (req, res) => {
     const ref    = evento?.metadata?.external_reference || evento?.external_reference;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}`);
 
-    // Pago completado — solo notificar al panel, sin cambiar el estado del pedido
+    // Pago completado — persistir en BD y notificar al panel
     if (status === 'CHECKOUT_COMPLETED' || status === 'APPROVED') {
+      await confirmarPagoPedido(ref);
       broadcast({ tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
-      console.log(`[Clip] ✅ Pago confirmado para pedido ${ref}`);
+      console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);

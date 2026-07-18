@@ -635,6 +635,7 @@ function renderComanda(p) {
         <span class="comanda-telefono">Tel: ${telefono}</span>
         ${mostrarPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
         <span class="badge-modalidad">${badgeLabel}</span>
+        ${p.pago_confirmado ? `<span style="background:#06d6a0;color:#000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;display:inline-block;margin-top:4px;">✓ Pagado con Clip</span>` : (p.forma_pago === 'enlace de pago' ? `<span style="background:#ffd166;color:#000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '')}
         ${direccionHTML}
       </div>
       <div class="comanda-items">

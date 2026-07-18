@@ -33,6 +33,7 @@ export async function initDB() {
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS costo_envio DECIMAL(10,2) DEFAULT 0;
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS forma_pago VARCHAR(50);
     ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN DEFAULT FALSE;
+    ALTER TABLE clientes ADD COLUMN IF NOT EXISTS pedido_pago_pendiente VARCHAR(20) DEFAULT NULL;
 
     CREATE TABLE IF NOT EXISTS mensajes (
       id          SERIAL PRIMARY KEY,
@@ -126,6 +127,43 @@ export async function getBotPausado(telefono) {
   } catch (e) {
     console.error('[DB] Error getBotPausado:', e.message);
     return false;
+  }
+}
+
+// ─── Link de pago pendiente (pedidos por voz) ────────────────────────────────
+export async function setPagoPendiente(telefono, pedidoId) {
+  try {
+    await pool.query(`
+      INSERT INTO clientes (telefono, pedido_pago_pendiente)
+      VALUES ($1, $2)
+      ON CONFLICT (telefono) DO UPDATE SET pedido_pago_pendiente = $2
+    `, [telefono, pedidoId]);
+  } catch (e) {
+    console.error('[DB] Error setPagoPendiente:', e.message);
+  }
+}
+
+export async function getPagoPendiente(telefono) {
+  try {
+    const result = await pool.query(
+      'SELECT pedido_pago_pendiente FROM clientes WHERE telefono = $1',
+      [telefono]
+    );
+    return result.rows[0]?.pedido_pago_pendiente || null;
+  } catch (e) {
+    console.error('[DB] Error getPagoPendiente:', e.message);
+    return null;
+  }
+}
+
+export async function clearPagoPendiente(telefono) {
+  try {
+    await pool.query(
+      'UPDATE clientes SET pedido_pago_pendiente = NULL WHERE telefono = $1',
+      [telefono]
+    );
+  } catch (e) {
+    console.error('[DB] Error clearPagoPendiente:', e.message);
   }
 }
 
@@ -294,6 +332,31 @@ export async function obtenerPedidosActivos() {
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivos:', e.message);
     return [];
+  }
+}
+
+export async function confirmarPagoPedido(folio) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos
+      SET datos = datos || '{"pago_confirmado": true}', updated_at = NOW()
+      WHERE folio = $1
+    `, [folio]);
+  } catch (e) {
+    console.error('[DB] Error confirmarPagoPedido:', e.message);
+  }
+}
+
+export async function obtenerPedidoActivoPorFolio(folio) {
+  try {
+    const result = await pool.query(
+      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND estado != 'entregado'`,
+      [folio]
+    );
+    return result.rows[0]?.datos || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidoActivoPorFolio:', e.message);
+    return null;
   }
 }
 
