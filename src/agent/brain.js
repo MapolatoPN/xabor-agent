@@ -9,10 +9,9 @@ const anthropic = new Anthropic({
 // Modelo: haiku es rápido y barato, ideal para conversaciones
 const MODELO = 'claude-haiku-4-5-20251001';
 
+// ─── Versión normal (WhatsApp, Rappi, panel) ─────────────────────────────────
 export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null) {
-  // Registrar mensaje del usuario en la sesión
   agregarMensaje(sessionId, 'user', mensajeUsuario);
-
   const session = getSession(sessionId);
 
   try {
@@ -24,20 +23,13 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     });
 
     const textoRespuesta = respuesta.content[0].text;
-
-    // Registrar respuesta del asistente
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
-
-    // Detectar marcadores ANTES de limpiar el texto
-    const orden       = extraerOrden(textoRespuesta);
-    const escalar     = textoRespuesta.includes('<ESCALAR_A_HUMANO>');
-    const enviarMenu  = textoRespuesta.includes('<ENVIAR_MENU>');
 
     return {
       texto: limpiarTexto(textoRespuesta),
-      orden,
-      escalar,
-      enviarMenu,
+      orden: extraerOrden(textoRespuesta),
+      escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
+      enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
       sessionId
     };
 
@@ -47,11 +39,87 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   }
 }
 
-// Extrae el JSON de orden si está presente en la respuesta
+// ─── Versión streaming (voz) ──────────────────────────────────────────────────
+// onFrase(texto, esUltima) se llama por cada oración completa mientras Claude genera.
+// Retorna el mismo objeto que procesarMensaje una vez que el stream termina.
+export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCtx = null, canal = null, onFrase) {
+  agregarMensaje(sessionId, 'user', mensajeUsuario);
+  const session = getSession(sessionId);
+
+  let textoCompleto = '';
+  let buffer        = '';
+  let bloqueado     = false; // true cuando entramos en <ORDEN_CONFIRMADA> u otro marcador
+
+  const stream = anthropic.messages.stream({
+    model: MODELO,
+    max_tokens: 1024,
+    system: await construirSystemPrompt(clienteCtx, canal),
+    messages: session.mensajes
+  });
+
+  for await (const event of stream) {
+    if (event.type !== 'content_block_delta' || event.delta.type !== 'text_delta') continue;
+
+    const token = event.delta.text;
+    textoCompleto += token;
+
+    if (bloqueado) continue;
+
+    // Detectar inicio de bloque especial — flush buffer y bloquear
+    if (textoCompleto.includes('<ORDEN_CONFIRMADA>') ||
+        textoCompleto.includes('<ESCALAR_A_HUMANO>') ||
+        textoCompleto.includes('<ENVIAR_MENU>') ||
+        textoCompleto.includes('<CONSULTA_PENDIENTE')) {
+      bloqueado = true;
+      if (buffer.trim()) {
+        onFrase(buffer.trim(), false);
+        buffer = '';
+      }
+      continue;
+    }
+
+    // Si el token contiene '<', probablemente empieza un marcador — dejar de acumular
+    if (token.includes('<')) {
+      bloqueado = true;
+      if (buffer.trim()) {
+        onFrase(buffer.trim(), false);
+        buffer = '';
+      }
+      continue;
+    }
+
+    buffer += token;
+
+    // Enviar frases completas al llegar a límite de oración
+    const match = buffer.match(/^(.*?[.!?,])\s+/s);
+    if (match) {
+      const frase = match[1].trim();
+      if (frase) onFrase(frase, false);
+      buffer = buffer.slice(match[0].length);
+    }
+  }
+
+  // Flush del buffer restante
+  if (buffer.trim() && !bloqueado) {
+    onFrase(buffer.trim(), false);
+  }
+
+  agregarMensaje(sessionId, 'assistant', textoCompleto);
+
+  return {
+    texto: limpiarTexto(textoCompleto),
+    orden: extraerOrden(textoCompleto),
+    escalar: textoCompleto.includes('<ESCALAR_A_HUMANO>'),
+    enviarMenu: textoCompleto.includes('<ENVIAR_MENU>'),
+    sessionId
+  };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 function extraerOrden(texto) {
   const match = texto.match(/<ORDEN_CONFIRMADA>([\s\S]*?)<\/ORDEN_CONFIRMADA>/);
   if (!match) return null;
-
   try {
     return JSON.parse(match[1].trim());
   } catch (e) {
@@ -60,7 +128,6 @@ function extraerOrden(texto) {
   }
 }
 
-// Elimina el bloque JSON y marcadores de la respuesta visible al cliente
 function limpiarTexto(texto) {
   return texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
