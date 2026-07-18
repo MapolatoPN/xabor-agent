@@ -35,10 +35,9 @@ router.post('/start', (req, res) => {
   <Connect>
     <ConversationRelay
       url="${WS_URL}/ws/voice"
-      interruptible="true"
-      dtmfDetection="false"
-      voice="Polly.Mia"
       language="es-MX"
+      welcomeGreeting="Un momento por favor."
+      welcomeGreetingInterruptible="false"
     />
   </Connect>
 </Response>`;
