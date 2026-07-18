@@ -21,7 +21,7 @@ import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/what
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
-import { configurarWebhooks } from './services/rappi-api.js';
+import { configurarWebhooks, subirCatalogo, construirCatalogoRappi } from './services/rappi-api.js';
 import { analizarSemana } from './services/learner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -287,6 +287,19 @@ app.post('/internal/analizar-semana', async (req, res) => {
 
 // Rappi — marcar productos sin stock
 app.put('/api/rappi/stockout', requireAuth, manejarStockout);
+
+// Rappi — subir catálogo completo (Nonna Maye / store 900172582)
+app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
+  try {
+    const catalogo = construirCatalogoRappi();
+    const resultado = await subirCatalogo(catalogo);
+    console.log('[Rappi] Catálogo subido:', JSON.stringify(resultado));
+    res.json({ ok: true, resultado });
+  } catch (e) {
+    console.error('[Rappi] Error subiendo catálogo:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Rappi — registrar webhooks en sandbox/producción (llamar una vez al configurar)
 app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
