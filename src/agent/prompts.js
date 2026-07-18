@@ -76,7 +76,13 @@ function obtenerEstadoRestaurante(reglas) {
   // Verificar promociones activas
   const promocionesActivas = (reglas.promociones || []).filter(promo => {
     if (!promo.activa) return false;
-    if (promo.dias && !promo.dias.includes(diaActual)) return false;
+    // Promo con fecha específica (ej. evento de un solo día)
+    if (promo.fecha) {
+      if (promo.fecha !== fechaHoy) return false;
+    } else {
+      // Promo recurrente por día de semana
+      if (promo.dias && !promo.dias.includes(diaActual)) return false;
+    }
     const [hIni] = promo.hora_inicio.split(':').map(Number);
     const [hFin] = promo.hora_fin.split(':').map(Number);
     return horaActual >= hIni && horaActual < hFin;
@@ -102,20 +108,39 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const todasLasPromos = reglas.promociones || [];
   const promoEnvioGratis = todasLasPromos.find(p => p.condicion === 'min_3_focaccias' && p.activa);
   const promoActivaAhora = estado.promocionesActivas.find(p => p.condicion === 'min_3_focaccias');
+  const promo2x1 = todasLasPromos.find(p => p.condicion === '2x1_focaccias' && p.activa);
+  const promo2x1Activa = estado.promocionesActivas.find(p => p.condicion === '2x1_focaccias');
+
   let textoPromociones = '';
+
+  // Promo 2x1 (tiene prioridad si está activa)
+  if (promo2x1Activa) {
+    textoPromociones += '🔥 PROMO ACTIVA AHORA — 2x1 FOCACCIAS:\n';
+    textoPromociones += '- Por cada focaccia o panini que el cliente pague, lleva OTRO IGUAL gratis.\n';
+    textoPromociones += '- Aplica a TODOS los paninis/focaccias (son lo mismo, mismo pan casero): Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit.\n';
+    textoPromociones += '- SOLO para recoger en sucursal. NO aplica a domicilio.\n';
+    textoPromociones += '- Válido hasta las 15:00 o hasta agotar existencias.\n';
+    textoPromociones += '- Cuando el cliente ordene focaccias para recoger, INFÓRMALE de la promo y pregunta cuál quiere de segunda.\n';
+    textoPromociones += '- En el JSON de la orden: agrega la focaccia gratis como item con "precio_unitario": 0 y nota "2x1 gratis".\n';
+    textoPromociones += '- Si el cliente pide 2 iguales (ej. 2 Chicken Louisiana), el segundo va a $0.\n';
+    textoPromociones += '- Si pide focaccias a domicilio, infórmale que el 2x1 es solo para recoger.\n\n';
+  } else if (promo2x1) {
+    // La promo existe pero no está activa ahora — no mencionarla proactivamente
+  }
+
   if (promoEnvioGratis) {
     if (promoActivaAhora) {
-      textoPromociones = 'PROMO ACTIVA AHORA: Envio gratis en pedidos a domicilio que incluyan 3 o mas focaccias o paninis (Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit, cualquier combinacion). Valida hasta las 15:00.\n';
+      textoPromociones += 'PROMO ACTIVA AHORA: Envio gratis en pedidos a domicilio que incluyan 3 o mas focaccias o paninis (Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit, cualquier combinacion). Valida hasta las 15:00.\n';
       textoPromociones += '- Cuando aplique, pon "costo_envio": 0 en el JSON de la orden.\n';
       textoPromociones += '- Si el cliente pide exactamente 2 focaccias/paninis, dile: "Si agregas una mas, el envio es gratis."';
     } else {
-      textoPromociones = 'PROMO DISPONIBLE (fuera de horario ahora): Ofrecemos envio gratis de lunes a sabado de 11am a 3pm en pedidos a domicilio con 3 o mas focaccias o paninis.\n';
+      textoPromociones += 'PROMO DISPONIBLE (fuera de horario ahora): Ofrecemos envio gratis de lunes a sabado de 11am a 3pm en pedidos a domicilio con 3 o mas focaccias o paninis.\n';
       textoPromociones += '- Si el cliente pregunta por promociones o envio gratis, informale de esta promo y el horario en que aplica.\n';
       textoPromociones += '- NO apliques envio gratis fuera de ese horario.';
     }
-  } else {
-    textoPromociones = '- Sin promociones activas.';
   }
+
+  if (!textoPromociones) textoPromociones = '- Sin promociones activas.';
 
   // Contexto del cliente conocido
   let contextoCliente = '';

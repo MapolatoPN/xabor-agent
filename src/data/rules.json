@@ -35,6 +35,18 @@
       "condicion": "min_3_focaccias",
       "beneficio": "envio_gratis",
       "activa": true
+    },
+    {
+      "id": "PROMO002",
+      "nombre": "2x1 Focaccias — sábado tarde",
+      "descripcion": "Por cada focaccia/panini que pagues, llevas otro igual gratis. Focaccia y panini son lo mismo: mismo pan casero. Aplica a Focaccia Bar, Chicken Louisiana (panini Louisiana), Chicken Parm (panini Parm), Chicken Fit (panini Fit). Solo para recoger en sucursal. Válido hasta agotar existencias.",
+      "fecha": "2026-07-18",
+      "hora_inicio": "14:00",
+      "hora_fin": "15:00",
+      "condicion": "2x1_focaccias",
+      "beneficio": "segunda_focaccia_gratis",
+      "modalidad_requerida": "recoger en tienda",
+      "activa": true
     }
   ],
   "politicas": [
