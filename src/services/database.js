@@ -32,6 +32,7 @@ export async function initDB() {
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS nombre_cliente VARCHAR(100);
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS costo_envio DECIMAL(10,2) DEFAULT 0;
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS forma_pago VARCHAR(50);
+    ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN DEFAULT FALSE;
 
     CREATE TABLE IF NOT EXISTS mensajes (
       id          SERIAL PRIMARY KEY,
@@ -99,6 +100,32 @@ export async function upsertCliente(telefono, nombre) {
     `, [telefono, nombre || null]);
   } catch (e) {
     console.error('[DB] Error upsertCliente:', e.message);
+  }
+}
+
+// ─── Control manual del bot por conversación ──────────────────────────────────
+export async function setBotPausado(telefono, pausado) {
+  try {
+    await pool.query(`
+      INSERT INTO clientes (telefono, bot_pausado)
+      VALUES ($1, $2)
+      ON CONFLICT (telefono) DO UPDATE SET bot_pausado = $2
+    `, [telefono, pausado]);
+  } catch (e) {
+    console.error('[DB] Error setBotPausado:', e.message);
+  }
+}
+
+export async function getBotPausado(telefono) {
+  try {
+    const result = await pool.query(
+      'SELECT bot_pausado FROM clientes WHERE telefono = $1',
+      [telefono]
+    );
+    return result.rows[0]?.bot_pausado || false;
+  } catch (e) {
+    console.error('[DB] Error getBotPausado:', e.message);
+    return false;
   }
 }
 

@@ -454,7 +454,10 @@ button:hover { opacity: 0.85; }
       </div>
       <!-- Conversación activa -->
       <div style="flex:1;display:flex;flex-direction:column;background:#16213e;border-radius:12px;border:1px solid #0f3460;overflow:hidden;">
-        <div id="chat-header" style="padding:12px 16px;border-bottom:1px solid #0f3460;font-weight:700;">Selecciona una conversación</div>
+        <div id="chat-header" style="padding:12px 16px;border-bottom:1px solid #0f3460;font-weight:700;display:flex;align-items:center;justify-content:space-between;">
+          <span id="chat-header-nombre">Selecciona una conversación</span>
+          <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;font-size:0.78rem;font-weight:700;padding:4px 12px;border-radius:20px;cursor:pointer;border:none;transition:all .2s;">Tomar control</button>
+        </div>
         <div id="chat-mensajes" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;"></div>
         <div id="chat-footer" style="padding:12px 16px;border-top:1px solid #0f3460;display:flex;gap:8px;">
           <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2" style="flex:1;background:#0f3460;border:1px solid #1a4a8a;border-radius:8px;color:#eee;padding:8px;font-size:0.9rem;font-family:inherit;resize:none;"></textarea>
@@ -505,6 +508,7 @@ function conectarWS() {
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'nuevo_mensaje') recibirMensajeWS(msg.mensaje);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
+      if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
     } catch (e) { console.error('Error WS:', e); }
   };
 }
@@ -804,7 +808,7 @@ async function cargarConversaciones() {
 
 async function abrirConversacion(telefono, nombre) {
   chatAbierto = telefono;
-  document.getElementById('chat-header').textContent = `💬 ${nombre || telefono}`;
+  document.getElementById('chat-header-nombre').textContent = `💬 ${nombre || telefono}`;
   // Marcar activo
   document.querySelectorAll('#contactos-lista > div').forEach(d => d.style.background = '');
   const el = document.getElementById(`contacto-${telefono}`);
@@ -815,6 +819,32 @@ async function abrirConversacion(telefono, nombre) {
   // Poner teléfono en el input de envío
   document.getElementById('chat-input').dataset.telefono = telefono;
   document.getElementById('chat-input').dataset.nombre = nombre || '';
+  // Cargar estado del bot y mostrar botón
+  const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.json()).catch(() => ({ pausado: false }));
+  actualizarBotonBot(estado.pausado);
+}
+
+function actualizarBotonBot(pausado) {
+  const btn = document.getElementById('btn-toggle-bot');
+  btn.style.display = chatAbierto ? '' : 'none';
+  if (pausado) {
+    btn.textContent = '🤖 Reactivar bot';
+    btn.style.background = '#06d6a0';
+    btn.style.color = '#000';
+  } else {
+    btn.textContent = '✋ Tomar control';
+    btn.style.background = '#e63946';
+    btn.style.color = '#fff';
+  }
+  btn.dataset.pausado = pausado ? '1' : '0';
+}
+
+async function toggleBotPausado() {
+  if (!chatAbierto) return;
+  const pausado = document.getElementById('btn-toggle-bot').dataset.pausado === '1';
+  const endpoint = pausado ? 'reactivar' : 'pausar';
+  await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method: 'POST' });
+  actualizarBotonBot(!pausado);
 }
 
 function renderMensajes(msgs) {

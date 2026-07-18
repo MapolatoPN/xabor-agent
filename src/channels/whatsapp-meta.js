@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -152,6 +152,13 @@ router.post('/', async (req, res) => {
     if (esMario) {
       const esComando = await procesarAprobacion(texto);
       if (esComando) return;
+    }
+
+    // Si el bot está pausado para este cliente, no procesar — el equipo atiende manualmente
+    const pausado = await getBotPausado(telefono);
+    if (pausado) {
+      console.log(`[Meta WA] Bot pausado para ${telefono} — mensaje ignorado por el bot`);
+      return;
     }
 
     // Buscar cliente en BD y construir contexto

@@ -16,7 +16,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter from './channels/voice.js';
@@ -248,6 +248,24 @@ app.get('/api/ventas/resumen', async (req, res) => {
   const h = hasta || new Date().toISOString();
   const resumen = await obtenerResumenVentas(d, h);
   res.json(resumen);
+});
+
+// Control manual del bot por conversación
+app.post('/api/conversacion/:telefono/pausar', requireAuth, async (req, res) => {
+  await setBotPausado(req.params.telefono, true);
+  broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
+  res.json({ ok: true, pausado: true });
+});
+
+app.post('/api/conversacion/:telefono/reactivar', requireAuth, async (req, res) => {
+  await setBotPausado(req.params.telefono, false);
+  broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
+  res.json({ ok: true, pausado: false });
+});
+
+app.get('/api/conversacion/:telefono/estado-bot', requireAuth, async (req, res) => {
+  const pausado = await getBotPausado(req.params.telefono);
+  res.json({ pausado });
 });
 
 // Limpiar sesión
