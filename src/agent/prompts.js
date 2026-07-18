@@ -118,12 +118,15 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
     textoPromociones += '🔥 PROMO ACTIVA AHORA — 2x1 FOCACCIAS:\n';
     textoPromociones += '- Por cada focaccia o panini que el cliente pague, lleva OTRO IGUAL gratis.\n';
     textoPromociones += '- Aplica a TODOS los paninis/focaccias (son lo mismo, mismo pan casero): Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit.\n';
+    textoPromociones += '- Se pueden COMBINAR distintos: Louisiana+Fit, Fit+Parm, Focaccia Bar+Louisiana, cualquier combinación.\n';
+    textoPromociones += '- REGLA DE PRECIO: siempre se cobra el de MAYOR precio; el de menor precio es el gratis.\n';
+    textoPromociones += '- Ejemplo: Louisiana ($180) + Fit ($179) → cobra $180, el Fit va gratis a $0.\n';
+    textoPromociones += '- Ejemplo: Parm ($195) + Focaccia Bar ($225) → cobra $225, el Parm va a $0.\n';
     textoPromociones += '- SOLO para recoger en sucursal. NO aplica a domicilio.\n';
     textoPromociones += '- Válido hasta las 15:00 o hasta agotar existencias.\n';
-    textoPromociones += '- Cuando el cliente ordene focaccias para recoger, INFÓRMALE de la promo y pregunta cuál quiere de segunda.\n';
-    textoPromociones += '- En el JSON de la orden: agrega la focaccia gratis como item con "precio_unitario": 0 y nota "2x1 gratis".\n';
-    textoPromociones += '- Si el cliente pide 2 iguales (ej. 2 Chicken Louisiana), el segundo va a $0.\n';
-    textoPromociones += '- Si pide focaccias a domicilio, infórmale que el 2x1 es solo para recoger.\n\n';
+    textoPromociones += '- Cuando el cliente ordene una focaccia/panini para recoger, INFÓRMALE de la promo y pregunta cuál quiere de segunda.\n';
+    textoPromociones += '- En el JSON: agrega el panini gratis con "precio_unitario": 0 y nota "2x1 gratis".\n';
+    textoPromociones += '- Si pide a domicilio, infórmale que el 2x1 es solo para recoger.\n\n';
   } else if (promo2x1) {
     // La promo existe pero no está activa ahora — no mencionarla proactivamente
   }
