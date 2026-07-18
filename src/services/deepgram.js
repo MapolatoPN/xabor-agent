@@ -9,34 +9,49 @@ export async function transcribirAudio(audioUrl) {
     throw new Error('DEEPGRAM_API_KEY no configurada');
   }
 
-  console.log(`[Deepgram] Transcribiendo: ${audioUrl}`);
+  console.log(`[Deepgram] Descargando grabación de Twilio: ${audioUrl}`);
 
-  // Construir URL con parámetros
-  const params = new URLSearchParams({
-    model: 'nova-2',          // Modelo más preciso de Deepgram
-    language: 'es-419',       // Español latinoamericano (incluye México)
-    smart_format: 'true',     // Formatea números, fechas, etc.
-    punctuate: 'true',        // Añade puntuación
-    utterances: 'false'
+  // Twilio requiere autenticación para descargar grabaciones.
+  // Descargamos el audio nosotros primero y lo enviamos a Deepgram como binario.
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+
+  const twilioResp = await fetch(`${audioUrl}.mp3`, {
+    headers: {
+      'Authorization': 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+    }
   });
 
-  const responseConParams = await fetch(`${DEEPGRAM_URL}?${params}`, {
+  if (!twilioResp.ok) {
+    throw new Error(`Error descargando grabación de Twilio: ${twilioResp.status}`);
+  }
+
+  const audioBuffer = await twilioResp.arrayBuffer();
+  console.log(`[Deepgram] Audio descargado (${audioBuffer.byteLength} bytes), enviando a Deepgram...`);
+
+  // Enviar el audio binario a Deepgram
+  const params = new URLSearchParams({
+    model: 'nova-2',
+    language: 'es-419',
+    smart_format: 'true',
+    punctuate: 'true'
+  });
+
+  const resp = await fetch(`${DEEPGRAM_URL}?${params}`, {
     method: 'POST',
     headers: {
       'Authorization': `Token ${DEEPGRAM_API_KEY}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'audio/mpeg'
     },
-    body: JSON.stringify({ url: audioUrl })
+    body: audioBuffer
   });
 
-  if (!responseConParams.ok) {
-    const error = await responseConParams.text();
-    throw new Error(`Deepgram error ${responseConParams.status}: ${error}`);
+  if (!resp.ok) {
+    const error = await resp.text();
+    throw new Error(`Deepgram error ${resp.status}: ${error}`);
   }
 
-  const data = await responseConParams.json();
-
-  // Extraer el texto de la transcripción
+  const data = await resp.json();
   const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
 
   if (!transcript) {
