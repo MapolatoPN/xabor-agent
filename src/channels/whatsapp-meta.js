@@ -58,6 +58,30 @@ export async function enviarMensaje(telefono, texto) {
   return resp.json();
 }
 
+// ─── Enviar imagen via Meta Graph API ────────────────────────────────────────
+export async function enviarImagen(telefono, imageUrl, caption = '') {
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: telefono,
+      type: 'image',
+      image: { link: imageUrl, caption }
+    })
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (imagen): ${JSON.stringify(err)}`);
+  }
+  return resp.json();
+}
+
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
 async function marcarLeido(messageId) {
   try {
@@ -175,6 +199,16 @@ router.post('/', async (req, res) => {
     // Si hay escalación, notificar a soporte por SMS
     if (resultado.escalar) {
       await notificarEscalacion(telefono);
+    }
+
+    // Si el bot quiere enviar el menú como imagen, enviarlo primero
+    const baseUrl = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
+    if (resultado.texto.includes('<ENVIAR_MENU>')) {
+      try {
+        await enviarImagen(telefono, `${baseUrl}/public/menu.png`);
+      } catch (e) {
+        console.error('[Meta WA] Error enviando imagen de menú:', e.message);
+      }
     }
 
     // Enviar respuesta al cliente

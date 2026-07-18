@@ -88,6 +88,7 @@ app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencode
 // Archivos estáticos: panel y audios generados por ElevenLabs
 app.use(express.static(join(__dirname, '../panel')));
 app.use('/audio', express.static(join(__dirname, '../public/audio')));
+app.use('/public', express.static(join(__dirname, '../public')));
 
 // ─── Rutas de webhooks (canales) ────────────────────────────────────────────
 app.use('/webhook/whatsapp', whatsappRouter);
