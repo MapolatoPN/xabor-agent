@@ -4,8 +4,8 @@
 
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
-import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { setPagoPendiente, guardarPedidoActivo } from '../services/database.js';
+import { registrarPedido, emitirPedido, eliminarPedido } from '../orders/orderManager.js';
+import { setPagoPendiente, guardarPedidoActivo, guardarPedidoProgramado } from '../services/database.js';
 
 const router = Router();
 
@@ -120,7 +120,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         try {
           const resultado = await procesarMensajeStream(
-            sessionId, texto, null, 'voz',
+            sessionId, texto, { telefono: fromNum || '—' }, 'voz',
             (frase) => {
               const limpia = limpiarParaVoz(frase);
               if (!limpia) return;
@@ -134,13 +134,20 @@ export function setupVoiceWebSocket(wssVoice) {
           if (resultado.orden) {
             resultado.orden.canal = 'voz';
             const pedido = registrarPedido(resultado.orden, 'voz');
-            emitirPedido(pedido);
-            // Guardar en DB con await — garantiza que el folio existe cuando llegue el WA
-            try {
-              await guardarPedidoActivo(pedido);
-              console.log(`[Voz WS] Pedido ${pedido.id} guardado en DB ✅`);
-            } catch (e) {
-              console.error(`[Voz WS] Error guardando pedido ${pedido.id} en DB:`, e.message);
+
+            if (resultado.orden.programado_para) {
+              // Pedido programado: guardar aparte, no emitir al panel todavía
+              await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
+              await eliminarPedido(pedido.id);
+              console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+            } else {
+              emitirPedido(pedido);
+              try {
+                await guardarPedidoActivo(pedido);
+                console.log(`[Voz WS] Pedido ${pedido.id} guardado en DB ✅`);
+              } catch (e) {
+                console.error(`[Voz WS] Error guardando pedido ${pedido.id} en DB:`, e.message);
+              }
             }
 
             if (resultado.orden.forma_pago === 'enlace de pago') {
@@ -243,6 +250,16 @@ function numToWordsES(n) {
 
 // Limpia y adapta el texto para TTS — convierte números a palabras
 function limpiarParaVoz(texto) {
+  // Si contiene inicio de bloque JSON o marcador, truncar ahí
+  const jsonIdx = texto.indexOf('{');
+  const tagIdx  = texto.indexOf('<');
+  const corte   = [jsonIdx, tagIdx].filter(i => i >= 0);
+  if (corte.length) texto = texto.slice(0, Math.min(...corte));
+
+  // Eliminar caracteres que no sean texto en español estándar
+  // Mantener: letras latinas, acentos, ñ, signos de puntuación básicos, espacio
+  texto = texto.replace(/[^\p{L}\p{N}\s.,;:¿?¡!áéíóúüñÁÉÍÓÚÜÑ\-']/gu, ' ');
+
   return texto
     // $180 → "ciento ochenta pesos"
     .replace(/\$\s?([\d,]+)/g, (_, num) => {
@@ -254,9 +271,7 @@ function limpiarParaVoz(texto) {
       const n = parseInt(num, 10);
       return n <= 9999 ? numToWordsES(n) : num;
     })
-    .replace(/\$/g, '')
     .replace(/\*/g, '')
-    .replace(/#/g, '')
     .replace(/\b(mmm+|hmm+|ehh?|umm?|este\.\.\.)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();

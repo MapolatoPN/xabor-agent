@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, guardarPedidoProgramado } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -198,7 +198,17 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       resultado.orden.canal = 'whatsapp';
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || telefono;
       const pedido = registrarPedido(resultado.orden, 'whatsapp');
-      emitirPedido(pedido);
+
+      // Si es pedido programado, guardarlo aparte y NO enviarlo al panel todavía
+      if (resultado.orden.programado_para) {
+        await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
+        // Quitar del panel activo — se activará automáticamente 1h antes
+        const { eliminarPedido } = await import('../orders/orderManager.js');
+        await eliminarPedido(pedido.id);
+        console.log(`[WA] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+      } else {
+        emitirPedido(pedido);
+      }
       await guardarPedido(telefono, resultado.orden);
       if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre);
       if (resultado.orden.forma_pago === 'enlace de pago' && process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {

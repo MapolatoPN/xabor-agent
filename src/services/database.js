@@ -54,6 +54,14 @@ export async function initDB() {
       updated_at  TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS pedidos_programados (
+      folio          VARCHAR(20) PRIMARY KEY,
+      datos          JSONB NOT NULL,
+      programado_para TIMESTAMP NOT NULL,
+      activado       BOOLEAN DEFAULT FALSE,
+      created_at     TIMESTAMP DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS prompt_improvements (
       id          SERIAL PRIMARY KEY,
       semana      DATE NOT NULL,
@@ -393,6 +401,57 @@ export async function eliminarPedido(folio) {
   } catch (e) {
     console.error('[DB] Error eliminarPedido:', e.message);
     throw e;
+  }
+}
+
+// ─── Pedidos programados ──────────────────────────────────────────────────────
+export async function guardarPedidoProgramado(folio, datos, programadoPara) {
+  try {
+    await pool.query(`
+      INSERT INTO pedidos_programados (folio, datos, programado_para)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (folio) DO NOTHING
+    `, [folio, JSON.stringify(datos), programadoPara]);
+  } catch (e) {
+    console.error('[DB] Error guardarPedidoProgramado:', e.message);
+  }
+}
+
+// Devuelve pedidos cuya hora de activación ya llegó (programado_para <= ahora + 1h) y no han sido activados
+export async function obtenerPedidosPorActivar() {
+  try {
+    const result = await pool.query(`
+      SELECT folio, datos, programado_para FROM pedidos_programados
+      WHERE activado = FALSE
+        AND programado_para <= NOW() + INTERVAL '1 hour'
+      ORDER BY programado_para ASC
+    `);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosPorActivar:', e.message);
+    return [];
+  }
+}
+
+export async function marcarPedidoProgramadoActivado(folio) {
+  try {
+    await pool.query(`UPDATE pedidos_programados SET activado = TRUE WHERE folio = $1`, [folio]);
+  } catch (e) {
+    console.error('[DB] Error marcarPedidoProgramadoActivado:', e.message);
+  }
+}
+
+export async function obtenerPedidosProgramadosPendientes() {
+  try {
+    const result = await pool.query(`
+      SELECT folio, datos, programado_para FROM pedidos_programados
+      WHERE activado = FALSE
+      ORDER BY programado_para ASC
+    `);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosProgramadosPendientes:', e.message);
+    return [];
   }
 }
 

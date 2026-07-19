@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -437,9 +437,46 @@ app.post('/test/pedido', (req, res) => {
   res.json({ ok: true, pedido });
 });
 
+// ─── Job: activar pedidos programados ────────────────────────────────────────
+// Corre cada 5 minutos — mueve al panel activo los pedidos cuyo horario ya llegó (≤ ahora + 1h)
+async function activarPedidosProgramados() {
+  try {
+    const pendientes = await obtenerPedidosPorActivar();
+    for (const row of pendientes) {
+      const pedido = row.datos;
+      pedido.estado = pedido.estado || 'nuevo';
+      // Registrar en el panel y emitir por WebSocket
+      const { guardarPedidoActivo } = await import('./services/database.js');
+      await guardarPedidoActivo(pedido);
+      broadcast({ tipo: 'nuevo_pedido', pedido });
+      await marcarPedidoProgramadoActivado(row.folio);
+      console.log(`[Scheduler] Pedido ${row.folio} activado (programado para ${row.programado_para})`);
+    }
+  } catch (e) {
+    console.error('[Scheduler] Error activando pedidos programados:', e.message);
+  }
+}
+
+// Endpoint para que el panel liste los pedidos programados pendientes
+app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
+  const lista = await obtenerPedidosProgramadosPendientes();
+  res.json(lista.map(r => ({
+    folio: r.folio,
+    programado_para: r.programado_para,
+    cliente: r.datos?.cliente?.nombre || '—',
+    total: r.datos?.total || 0,
+    items: r.datos?.items || []
+  })));
+});
+
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
   .then(() => cargarPedidosDesdeDB())
+  .then(() => {
+    // Activar pedidos programados cada 5 minutos
+    activarPedidosProgramados();
+    setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+  })
   .catch(e => console.error('[DB] Error al inicializar:', e.message));
 
 server.listen(PORT, () => {

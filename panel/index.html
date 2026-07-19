@@ -326,6 +326,11 @@ button:hover { opacity: 0.85; }
 
   <!-- Tab Comandas -->
   <div id="vista-comandas">
+    <!-- Pedidos programados -->
+    <div id="programados-wrap" style="display:none;margin-bottom:18px;">
+      <div style="font-size:0.78rem;font-weight:700;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;">🕐 Pedidos programados</div>
+      <div id="grid-programados" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
+    </div>
     <div id="sin-pedidos"><span class="emoji">🍽️</span>Esperando pedidos...</div>
     <div id="grid-pedidos"></div>
   </div>
@@ -519,10 +524,13 @@ apiFetch('/api/auth/verify').then(async r => {
   const data = await r.json();
   const role = data.role || ROLE;
   sessionStorage.setItem('xabor_role', role);
-  // Solo admin ve el tab de Ventas completo
   if (role === 'admin') {
     document.getElementById('tab-ventas').style.display = '';
   }
+  // Cargar pedidos programados al inicio
+  cargarProgramados();
+  // Refrescar programados cada 5 min
+  setInterval(cargarProgramados, 5 * 60 * 1000);
 });
 
 // ─── Estado global ───────────────────────────────────────────────────────────
@@ -769,6 +777,30 @@ function mostrarTab(tab) {
   if (tab === 'historial') cargarHistorial();
   if (tab === 'presencial') renderMenuPOS();
   if (tab === 'corte')     cargarCorte();
+  if (tab === 'comandas')  cargarProgramados();
+}
+
+async function cargarProgramados() {
+  try {
+    const r = await apiFetch('/api/pedidos-programados');
+    const lista = await r.json();
+    const wrap = document.getElementById('programados-wrap');
+    const grid = document.getElementById('grid-programados');
+    if (!lista.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    grid.innerHTML = lista.map(p => {
+      const fecha = new Date(p.programado_para);
+      const horaStr = fecha.toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:true });
+      const itemsStr = (p.items || []).map(i => `${i.cantidad}x ${i.nombre}`).join(', ');
+      return `<div style="background:#fff;border:1px solid #e5e2da;border-left:4px solid #6366f1;border-radius:10px;padding:12px 14px;min-width:220px;max-width:280px;">
+        <div style="font-size:0.7rem;color:#6366f1;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Programado</div>
+        <div style="font-weight:700;margin:4px 0 2px;">${p.cliente}</div>
+        <div style="font-size:0.8rem;color:#666;margin-bottom:6px;">⏰ ${horaStr}</div>
+        <div style="font-size:0.78rem;color:#444;">${itemsStr}</div>
+        <div style="font-size:0.85rem;font-weight:700;margin-top:6px;">$${p.total}</div>
+      </div>`;
+    }).join('');
+  } catch(e) { /* silencioso */ }
 }
 
 // ─── Modal WhatsApp ──────────────────────────────────────────────────────────
