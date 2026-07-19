@@ -229,6 +229,12 @@ button:hover { opacity: 0.85; }
 #btn-confirmar-presencial:hover { background: #16a34a; }
 #btn-confirmar-presencial:disabled { background: #d1cdc4; color: #aaa; cursor: not-allowed; }
 
+/* Número de orden en la comanda (pantalla) */
+.orden-badge { font-size: 1.3rem; font-weight: 900; color: #e8a020; padding: 0 6px; display: inline-flex; align-items: center; border: 2px solid #e8a020; border-radius: 8px; margin-right: 4px; line-height: 1; }
+.ticket-orden-num { display: none; }
+.ticket-total-letras { display: none; }
+.ticket-seccion-titulo { display: none; }
+
 /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
 @media print {
   @page { size: 80mm auto; margin: 0 2mm; }
@@ -279,6 +285,13 @@ button:hover { opacity: 0.85; }
   .comanda-total { display: flex !important; justify-content: space-between !important; font-size: 16px !important; font-weight: 900 !important; border-top: 2px solid #000 !important; border-bottom: 2px solid #000 !important; margin-top: 3px; padding: 4px 0; }
   .comanda-total .monto { font-size: 16px !important; font-weight: 900 !important; }
   .ticket-footer-print { display: block !important; text-align: center; font-size: 10px !important; margin-top: 5px; border-top: 1px dashed #000 !important; padding-top: 4px; }
+  .ticket-orden-num { display: block !important; text-align: center; font-size: 28px !important; font-weight: 900 !important; border-top: 1px dashed #000 !important; border-bottom: 1px dashed #000 !important; padding: 4px 0 !important; margin: 4px 0 !important; letter-spacing: 2px; }
+  .ticket-orden-num strong { font-size: 36px !important; }
+  .ticket-total-letras { display: block !important; font-size: 9px !important; text-align: center; font-style: italic; margin: 2px 0 4px; }
+  .ticket-seccion-titulo { display: block !important; font-size: 9px !important; font-weight: 900 !important; text-align: center; border-top: 1px solid #000 !important; border-bottom: 1px solid #000 !important; padding: 2px 0 !important; margin: 4px 0 2px !important; letter-spacing: 1px; }
+  .ticket-cliente-data { font-size: 10px !important; }
+  .orden-badge { display: none !important; }
+  .comanda-footer { display: none !important; }
 }
 </style>
 </head>
@@ -372,6 +385,16 @@ button:hover { opacity: 0.85; }
               <div class="pos-pago-btns">
                 <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
                 <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
+              </div>
+              <!-- Campo billete (solo efectivo) -->
+              <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
+                <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                  style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+              </div>
+              <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
+                <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
+                <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
               </div>
             </div>
             <div>
@@ -624,6 +647,28 @@ function agregarPedido(pedido) {
   setTimeout(() => imprimirComanda(pedido.id), 800);
 }
 
+// Convierte número entero a letras en español (para el ticket)
+function totalEnLetras(n) {
+  n = Math.round(n);
+  const u = ['','UN','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE',
+    'DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE','VEINTE'];
+  const vx = {21:'VEINTIÚN',22:'VEINTIDÓS',23:'VEINTITRÉS',24:'VEINTICUATRO',25:'VEINTICINCO',26:'VEINTISÉIS',27:'VEINTISIETE',28:'VEINTIOCHO',29:'VEINTINUEVE'};
+  const dec = ['','','VEINTE','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
+  const cen = ['','CIENTO','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS','SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
+  if (n === 0) return 'CERO';
+  if (n === 100) return 'CIEN';
+  if (n === 1000) return 'MIL';
+  let r = '';
+  if (n >= 1000) { const m=Math.floor(n/1000); r+=(m===1?'MIL':totalEnLetras(m)+' MIL'); n%=1000; if(n>0)r+=' '; }
+  if (n >= 100)  { r+=cen[Math.floor(n/100)]; n%=100; if(n>0)r+=' '; }
+  if (n > 0) {
+    if (n<=20) r+=u[n];
+    else if (vx[n]) r+=vx[n];
+    else { r+=dec[Math.floor(n/10)]; const ud=n%10; if(ud)r+=' Y '+u[ud]; }
+  }
+  return r.trim();
+}
+
 function renderComanda(p) {
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega    = p.modalidad === 'entrega a domicilio';
@@ -634,6 +679,9 @@ function renderComanda(p) {
   const telefono     = getTelefono(p);
   const formaPago    = getFormaPago(p);
 
+  // Número de orden corto (dígitos del folio: XAB-0035 → 35)
+  const numOrden = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
+
   const itemsHTML = (p.items || []).map(item => `
     <div class="item-linea">
       <span class="item-cant">${item.cantidad || 1}x</span>
@@ -641,54 +689,72 @@ function renderComanda(p) {
       <span class="item-precio">${getPrecioItem(item) > 0 ? '$' + getPrecioItem(item).toFixed(0) : '—'}</span>
     </div>`).join('');
 
-  const envio    = parseFloat(p.costo_envio || 0);
+  const totalNum  = parseFloat(p.total || 0);
+  const envio     = parseFloat(p.costo_envio || 0);
   const descuento = parseFloat(p.descuento || 0);
+  const billete   = parseFloat(p.billete || 0);
+  const cambio    = parseFloat(p.cambio || 0);
+  const totalArt  = (p.items || []).reduce((s,i) => s+(i.cantidad||1), 0);
+
   const subtotalHTML = (envio > 0 || descuento > 0) ? `
     <div class="comanda-subtotales">
       ${envio > 0 ? `<div class="subtotal-linea"><span>Envío</span><span>$${envio.toFixed(0)}</span></div>` : ''}
-      ${descuento > 0 ? `<div class="subtotal-linea"><span>Descuento</span><span>-$${descuento.toFixed(0)}</span></div>` : ''}
-    </div>` : '';
-
-  const direccionHTML = esEntrega && p.cliente?.calle ? `
-    <div class="ticket-direccion">${p.cliente.calle}<br>
-      ${p.cliente.colonia ? 'Col. '+p.cliente.colonia : ''}
-      ${p.cliente.entre_calles ? '<br>Entre: '+p.cliente.entre_calles : ''}
+      ${descuento > 0 ? `<div class="subtotal-linea"><span>Descuento${p.motivo_descuento ? ' ('+p.motivo_descuento+')' : ''}</span><span>-$${descuento.toFixed(0)}</span></div>` : ''}
     </div>` : '';
 
   const pagoStatus = p.pago_confirmado
     ? `<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado con Clip</span>`
     : (p.forma_pago === 'enlace de pago' ? `<span style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
 
+  const billeteHTML = billete > 0 ? `
+    <div class="comanda-subtotales">
+      <div class="subtotal-linea"><span>Billete</span><span>$${billete.toFixed(0)}</span></div>
+      <div class="subtotal-linea"><span>Cambio</span><span>$${cambio.toFixed(0)}</span></div>
+    </div>` : '';
+
+  const clienteDataHTML = esEntrega && p.cliente ? `
+    <div class="ticket-seccion-titulo">DATOS DEL CLIENTE</div>
+    <div class="ticket-cliente-data">
+      <div class="ticket-direccion">
+        ${p.cliente.calle || ''}${p.cliente.colonia ? '<br>Col. '+p.cliente.colonia : ''}
+        ${p.cliente.entre_calles ? '<br>Entre: '+p.cliente.entre_calles : ''}
+      </div>
+      ${telefono !== '—' ? `<div class="ticket-meta">Cel: ${telefono}</div>` : ''}
+    </div>` : (telefono !== '—' ? `<div class="ticket-meta">Tel: ${telefono}</div>` : '');
+
   return `
     <div class="comanda-header">
       <img src="/logo.png" class="ticket-logo" onload="this.classList.add('logo-ok')">
       <span class="ticket-empresa-nombre">XABOR</span>
-      <span class="ticket-empresa-ciudad">Piedras Negras, Coahuila</span>
-      <span class="comanda-id">PEDIDO: ${p.id}</span>
-      <span class="comanda-canal">${iconCanal(p.canal)} ${p.canal || '?'}</span>
+      <span class="ticket-empresa-ciudad">Lib. Manuel Pérez Treviño 2416 Local 4<br>Col. Tecnológico, Piedras Negras, Coah.</span>
+      <span class="ticket-empresa-ciudad">RFC: CAOM940122PTA · (878) 109-1115</span>
     </div>
     <div class="comanda-body">
       <span class="ticket-meta">Fecha: ${horaCompleta}</span>
+      <div class="ticket-orden-num">Orden: <strong>${numOrden}</strong></div>
+      <span class="ticket-meta">Cajero: ${sessionStorage.getItem('xabor_role') === 'admin' ? 'Admin' : 'Caja'}</span>
       <div class="comanda-cliente">
         <div class="comanda-nombre">${nombre}</div>
-        <span class="comanda-telefono">Tel: ${telefono}</span>
         ${formaPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
         ${pagoStatus}
-        ${direccionHTML}
       </div>
       <div class="comanda-items">
         <div class="ticket-items-header">
-          <span class="col-cant">CANT</span><span class="col-prod">PRODUCTO</span><span class="col-precio">PRECIO</span>
+          <span class="col-cant">CANT</span><span class="col-prod">DESCRIPCIÓN</span><span class="col-precio">IMPORTE</span>
         </div>
         ${itemsHTML}
       </div>
+      <div class="ticket-meta" style="text-align:right;padding-top:2px;">Artículos: ${totalArt}</div>
       ${subtotalHTML}
-      <div class="comanda-total"><span>TOTAL</span><span class="monto">$${p.total}</span></div>
-      <span class="ticket-footer-print">Gracias por su pedido!<br>WhatsApp: (878) 109-1115<br><br>MARIO ALBERTO CANTU OCHOA<br>RFC: CAOM940122PTA<br>Lib. Manuel Perez Trevino 2416 Local 4<br>Col. Tecnologico, CP 26080<br>Piedras Negras, Coahuila</span>
-      <div class="comanda-hora">Recibido: ${horaCompleta}</div>
+      <div class="comanda-total"><span>Gran Total</span><span class="monto">$${totalNum.toFixed(0)}</span></div>
+      <div class="ticket-total-letras">${totalEnLetras(totalNum)} PESOS 00/100 M.N.</div>
+      ${billeteHTML}
+      ${clienteDataHTML}
+      <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: (878) 109-1115</span>
     </div>
     <div class="comanda-footer">
+      <div class="orden-badge">#${numOrden}</div>
       <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🖨️ Imprimir</button>
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
@@ -940,6 +1006,20 @@ function renderCarrito() {
     </div>`).join('');
   document.getElementById('pos-total-monto').textContent = `$${total}`;
   document.getElementById('btn-confirmar-presencial').disabled = false;
+
+  // Cambio (solo efectivo)
+  if (posPagoSel === 'efectivo') {
+    const billete = parseFloat(document.getElementById('pos-billete')?.value || 0) || 0;
+    const cambio  = billete - total;
+    const cambioRow = document.getElementById('cambio-row');
+    if (billete > 0) {
+      cambioRow.style.display = 'flex';
+      document.getElementById('cambio-monto').textContent = cambio >= 0 ? `$${cambio.toFixed(0)}` : '⚠ Insuficiente';
+      document.getElementById('cambio-monto').style.color = cambio >= 0 ? '#22c55e' : '#ef4444';
+    } else {
+      cambioRow.style.display = 'none';
+    }
+  }
 }
 
 function ajustarCantidad(idx, delta) {
@@ -952,6 +1032,13 @@ function selPago(btn) {
   document.querySelectorAll('.pos-pago-btn').forEach(b => b.classList.remove('selected'));
   btn.classList.add('selected');
   posPagoSel = btn.dataset.pago;
+  const esEfectivo = posPagoSel === 'efectivo';
+  document.getElementById('billete-wrap').style.display = esEfectivo ? 'flex' : 'none';
+  if (!esEfectivo) {
+    document.getElementById('pos-billete').value = '';
+    document.getElementById('cambio-row').style.display = 'none';
+  }
+  renderCarrito();
 }
 
 async function confirmarPresencial() {
@@ -961,12 +1048,14 @@ async function confirmarPresencial() {
   const descuento      = calcDescuento(subtotal);
   const total          = subtotal - descuento;
   const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
+  const billete        = parseFloat(document.getElementById('pos-billete')?.value || 0) || 0;
+  const cambio         = posPagoSel === 'efectivo' && billete > 0 ? billete - total : 0;
   const btn            = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Procesando...';
   try {
     const r = await apiFetch('/api/pedido-presencial', {
       method: 'POST',
-      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento, motivo_descuento: motivoDesc })
+      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento, motivo_descuento: motivoDesc, billete, cambio })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
@@ -975,6 +1064,7 @@ async function confirmarPresencial() {
       document.getElementById('pos-nombre-input').value = '';
       document.getElementById('pos-descuento-val').value = '';
       document.getElementById('pos-descuento-motivo').value = '';
+      document.getElementById('pos-billete').value = '';
       renderCarrito();
       mostrarTab('comandas');
     }
