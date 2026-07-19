@@ -257,6 +257,7 @@ function limpiarParaVoz(texto) {
     .replace(/\$/g, '')
     .replace(/\*/g, '')
     .replace(/#/g, '')
+    .replace(/\b(mmm+|hmm+|ehh?|umm?|este\.\.\.)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
