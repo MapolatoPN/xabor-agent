@@ -43,7 +43,7 @@ function formatearMenu(menu) {
 
 function obtenerEstadoRestaurante(reglas) {
   const ahora = new Date();
-  // Hora de México (CDT = UTC-5)
+  // Hora de México (Matamoros: CDT=UTC-5 en verano, CST=UTC-6 en invierno)
   const horaMX = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Matamoros' }));
   const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
   const diaActual = diasSemana[horaMX.getDay()];
@@ -88,6 +88,12 @@ function obtenerEstadoRestaurante(reglas) {
     return horaActual >= hIni && horaActual < hFin;
   });
 
+  // Calcular offset UTC real de America/Matamoros en este momento
+  const offsetMin = -Math.round((ahora - horaMX) / 60000); // diferencia en minutos
+  const offsetH   = Math.floor(Math.abs(offsetMin) / 60);
+  const offsetM   = Math.abs(offsetMin) % 60;
+  const offsetStr = `${offsetMin <= 0 ? '-' : '+'}${String(offsetH).padStart(2,'0')}:${String(offsetM).padStart(2,'0')}`;
+
   const nombresDias = { lunes: 'lunes', martes: 'martes', miercoles: 'miércoles', jueves: 'jueves', viernes: 'viernes', sabado: 'sábado', domingo: 'domingo' };
   return {
     abierto,
@@ -95,7 +101,9 @@ function obtenerEstadoRestaurante(reglas) {
     horaActual: horaMX.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
     horarioDia,
     cierreEspecial: cerradoPorEspecial ? cierreEspecial : null,
-    promocionesActivas
+    promocionesActivas,
+    offsetMX: offsetStr,  // ej. "-05:00" en verano, "-06:00" en invierno
+    fechaHoy
   };
 }
 
@@ -184,7 +192,7 @@ INSTRUCCIONES ESPECÍFICAS PARA VOZ:
 - El número de teléfono del cliente se detecta automáticamente de la llamada. Al solicitar datos de contacto, pregunta: "¿Te contactamos a este mismo número o prefieres otro?" Si dice que sí o que es el mismo, usa el número de la llamada. Si da un número diferente: escúchalo completo, luego confirma SOLO los últimos 4 dígitos ("¿termina en [últimos 4]?"). Si el cliente confirma, úsalo. Si corrige, acepta la corrección y sigue — no vuelvas a repetirlo.
 - Cantidades: el cliente puede decir "dos" o "2" — acéptalos igual. Si no quedó claro, pregunta: "¿Serían dos?"
 - Respuestas cortas: nunca más de 2 oraciones por turno en voz. El cliente no puede leer — tiene que escuchar todo.
-- PEDIDOS PROGRAMADOS: sí aceptamos pedidos para una fecha y hora futura, siempre que sea dentro del horario de operación (lunes a sábado 11am–10pm). Cuando el cliente pida para una hora futura, confirma la fecha y hora exacta ("¿Sería el lunes a la una de la tarde?"), toma el pedido normalmente y al emitir el JSON incluye el campo "programado_para" con la fecha y hora en formato ISO 8601 hora México (America/Matamoros). Ejemplo: si hoy es domingo 20 de julio y el cliente quiere para el lunes a la 1pm, el campo sería "2026-07-21T13:00:00-06:00". Si la hora solicitada cae fuera del horario o en domingo, infórmalo amablemente y ofrece la franja más cercana disponible.`
+- PEDIDOS PROGRAMADOS: sí aceptamos pedidos para una fecha y hora futura, siempre que sea dentro del horario de operación (lunes a sábado 11am–10pm). Cuando el cliente pida para una hora futura, confirma la fecha y hora exacta ("¿Sería el lunes a la una de la tarde?"), toma el pedido normalmente y al emitir el JSON incluye el campo "programado_para" con la fecha y hora en formato ISO 8601. IMPORTANTE: el offset de México hoy es ${estado.offsetMX} — úsalo siempre en ese campo. Ejemplo para el día de hoy a la 1pm: "${estado.fechaHoy}T13:00:00${estado.offsetMX}". Ajusta la fecha al día que pida el cliente. Si la hora solicitada cae fuera del horario o en domingo, infórmalo amablemente y ofrece la franja más cercana disponible.`
     : '';
 
   return `Eres el asistente de pedidos del Restaurante Xabor. Tu nombre es Xabor.
