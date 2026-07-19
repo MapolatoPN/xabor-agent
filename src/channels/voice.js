@@ -113,6 +113,11 @@ export function setupVoiceWebSocket(wssVoice) {
 
         procesando = true;
 
+        // Token inmediato para que Twilio no cierre la conexión mientras Anthropic arranca
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'text', token: 'Un momento...', last: false }));
+        }
+
         try {
           const resultado = await procesarMensajeStream(
             sessionId, texto, null, 'voz',
@@ -197,12 +202,62 @@ function deletrearFolio(folio) {
   return `${letrasDelPrefijo} - ${parseInt(numero, 10)}`;
 }
 
+// Convierte un número entero a palabras en español (rango 0–9999)
+function numToWordsES(n) {
+  n = Math.round(n);
+  if (n === 0) return 'cero';
+  if (n === 100) return 'cien';
+  if (n === 1000) return 'mil';
+
+  const unidades = ['', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve',
+    'diez', 'once', 'doce', 'trece', 'catorce', 'quince', 'dieciséis', 'diecisiete', 'dieciocho', 'diecinueve', 'veinte'];
+  const veintiX   = { 21:'veintiuno',22:'veintidós',23:'veintitrés',24:'veinticuatro',
+    25:'veinticinco',26:'veintiséis',27:'veintisiete',28:'veintiocho',29:'veintinueve' };
+  const decenas   = ['','','veinte','treinta','cuarenta','cincuenta','sesenta','setenta','ochenta','noventa'];
+  const centenas  = ['','ciento','doscientos','trescientos','cuatrocientos','quinientos',
+    'seiscientos','setecientos','ochocientos','novecientos'];
+
+  let r = '';
+  if (n >= 1000) {
+    const m = Math.floor(n / 1000);
+    r += (m === 1 ? 'mil' : numToWordsES(m) + ' mil');
+    n %= 1000;
+    if (n > 0) r += ' ';
+  }
+  if (n >= 100) {
+    r += centenas[Math.floor(n / 100)];
+    n %= 100;
+    if (n > 0) r += ' ';
+  }
+  if (n > 0) {
+    if (n <= 20) r += unidades[n];
+    else if (veintiX[n]) r += veintiX[n];
+    else {
+      r += decenas[Math.floor(n / 10)];
+      const u = n % 10;
+      if (u) r += ' y ' + unidades[u];
+    }
+  }
+  return r.trim();
+}
+
+// Limpia y adapta el texto para TTS — convierte números a palabras
 function limpiarParaVoz(texto) {
   return texto
-    .replace(/\$\s?(\d[\d,]*)/g, '$1 pesos')
+    // $180 → "ciento ochenta pesos"
+    .replace(/\$\s?([\d,]+)/g, (_, num) => {
+      const n = parseInt(num.replace(/,/g, ''), 10);
+      return numToWordsES(n) + ' pesos';
+    })
+    // Números solos de 2+ dígitos que queden (ej. totales sin $)
+    .replace(/\b(\d{2,5})\b/g, (_, num) => {
+      const n = parseInt(num, 10);
+      return n <= 9999 ? numToWordsES(n) : num;
+    })
     .replace(/\$/g, '')
     .replace(/\*/g, '')
     .replace(/#/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
