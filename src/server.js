@@ -217,6 +217,25 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   res.json(pedido);
 });
 
+// Pedido presencial — capturado desde el panel sin pasar por el bot
+app.post('/api/pedido-presencial', requireAuth, (req, res) => {
+  const { items, nombre, forma_pago, total } = req.body;
+  if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
+  const orden = {
+    items,
+    total: total || items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0),
+    modalidad: 'recoger en tienda',
+    canal: 'presencial',
+    forma_pago: forma_pago || 'efectivo',
+    cliente: { nombre: nombre || 'Cliente presencial', telefono: '—' },
+    costo_envio: 0
+  };
+  const pedido = registrarPedido(orden, 'presencial');
+  emitirPedido(pedido);
+  import('./services/database.js').then(({ guardarPedido }) => guardarPedido('presencial', orden)).catch(() => {});
+  res.json({ ok: true, pedido });
+});
+
 // Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
 app.delete('/pedidos/:id', async (req, res) => {
   const pin = req.headers['x-admin-pin'];
