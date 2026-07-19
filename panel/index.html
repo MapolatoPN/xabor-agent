@@ -371,13 +371,15 @@ button:hover { opacity: 0.85; }
             </div>
             <div>
               <label>Descuento</label>
-              <div style="display:flex;gap:6px;align-items:center;">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
                 <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
                   style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
                 <div style="display:flex;gap:4px;">
                   <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
                   <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
                 </div>
+                <input id="pos-descuento-motivo" type="text" placeholder="Motivo del descuento"
+                  style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;color:#1a1a1a;" />
               </div>
             </div>
           </div>
@@ -922,16 +924,17 @@ function selPago(btn) {
 
 async function confirmarPresencial() {
   if (!posCarrito.length) return;
-  const nombre    = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
-  const subtotal  = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
-  const descuento = calcDescuento(subtotal);
-  const total     = subtotal - descuento;
-  const btn       = document.getElementById('btn-confirmar-presencial');
+  const nombre         = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
+  const subtotal       = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const descuento      = calcDescuento(subtotal);
+  const total          = subtotal - descuento;
+  const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
+  const btn            = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Procesando...';
   try {
     const r = await apiFetch('/api/pedido-presencial', {
       method: 'POST',
-      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento })
+      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento, motivo_descuento: motivoDesc })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
@@ -939,6 +942,7 @@ async function confirmarPresencial() {
       posCarrito = [];
       document.getElementById('pos-nombre-input').value = '';
       document.getElementById('pos-descuento-val').value = '';
+      document.getElementById('pos-descuento-motivo').value = '';
       renderCarrito();
       mostrarTab('comandas');
     }
