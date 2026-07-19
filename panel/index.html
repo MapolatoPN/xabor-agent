@@ -247,7 +247,7 @@ button:hover { opacity: 0.85; }
   html body { background: #fff !important; }
   body { width: 76mm; margin: 0 auto; padding: 0; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; background: #fff !important; color: #000 !important; overflow: hidden; }
   header, .comanda-footer, #sin-pedidos, .comanda-hora,
-  #tabs-nav, #modal-overlay, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial { display: none !important; }
+  #tabs-nav, #modal-overlay, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
   #vista-comandas { display: block !important; padding: 0 !important; margin: 0 !important; }
   #grid-pedidos   { display: block !important; }
   .comanda { width: 100%; margin: 0; padding: 0; border: none !important; border-top: none !important; page-break-inside: avoid; break-inside: avoid; overflow: hidden; box-shadow: none !important; }
@@ -333,6 +333,7 @@ button:hover { opacity: 0.85; }
   <button class="tab-btn" id="tab-ventas" onclick="mostrarTab('ventas')" style="display:none">📊 Ventas</button>
   <button class="tab-btn" id="tab-corte" onclick="mostrarTab('corte')">🧾 Corte de caja</button>
   <button class="tab-btn" id="tab-historial" onclick="mostrarTab('historial')">📋 Historial</button>
+  <button class="tab-btn" id="tab-llamadas" onclick="mostrarTab('llamadas')">📞 Llamadas</button>
 </div>
 
 <main>
@@ -525,6 +526,27 @@ button:hover { opacity: 0.85; }
     <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
       <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.95rem;">Pedidos entregados (últimos 100)</div>
       <div id="historial-lista"></div>
+    </div>
+  </div>
+
+  <!-- Tab Llamadas -->
+  <div id="vista-llamadas" style="display:none;padding:0 0 24px;max-width:860px;">
+    <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
+      <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.95rem;display:flex;align-items:center;gap:10px;">
+        📞 Transcripciones de llamadas
+        <button onclick="cargarLlamadas()" style="margin-left:auto;font-size:0.75rem;background:#f5f4f2;border:1px solid #e5e2da;border-radius:6px;padding:4px 10px;cursor:pointer;">↻ Actualizar</button>
+      </div>
+      <div id="llamadas-lista" style="padding:10px 0;min-height:80px;">
+        <div style="text-align:center;padding:24px;color:#aaa;font-size:0.85rem;">Cargando llamadas...</div>
+      </div>
+    </div>
+    <!-- Panel de transcripción expandida -->
+    <div id="transcripcion-panel" style="display:none;margin-top:16px;background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;">
+      <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;display:flex;align-items:center;gap:10px;">
+        <span id="transcripcion-titulo" style="font-weight:700;font-size:0.9rem;"></span>
+        <button onclick="document.getElementById('transcripcion-panel').style.display='none'" style="margin-left:auto;font-size:0.75rem;background:#f5f4f2;border:1px solid #e5e2da;border-radius:6px;padding:4px 10px;cursor:pointer;">✕ Cerrar</button>
+      </div>
+      <div id="transcripcion-mensajes" style="padding:16px;display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto;"></div>
     </div>
   </div>
 
@@ -862,7 +884,7 @@ function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 function mostrarTab(tab) {
-  ['comandas','presencial','chats','corte','ventas','historial'].forEach(t => {
+  ['comandas','presencial','chats','corte','ventas','historial','llamadas'].forEach(t => {
     const vista = document.getElementById(`vista-${t}`);
     const btn   = document.getElementById(`tab-${t}`);
     if (vista) vista.style.display = t === tab ? '' : 'none';
@@ -874,6 +896,7 @@ function mostrarTab(tab) {
   if (tab === 'presencial') renderMenuPOS();
   if (tab === 'corte')     cargarCorte();
   if (tab === 'comandas')  cargarProgramados();
+  if (tab === 'llamadas')  cargarLlamadas();
 }
 
 async function cargarProgramados() {
@@ -897,6 +920,64 @@ async function cargarProgramados() {
       </div>`;
     }).join('');
   } catch(e) { /* silencioso */ }
+}
+
+// ─── Llamadas / Transcripciones ──────────────────────────────────────────────
+async function cargarLlamadas() {
+  const lista = document.getElementById('llamadas-lista');
+  try {
+    const r = await apiFetch('/api/llamadas');
+    const llamadas = await r.json();
+    if (!llamadas.length) {
+      lista.innerHTML = '<div style="text-align:center;padding:24px;color:#aaa;font-size:0.85rem;">Aún no hay llamadas registradas.<br>Las próximas llamadas aparecerán aquí.</div>';
+      return;
+    }
+    lista.innerHTML = llamadas.map(ll => {
+      const inicio = new Date(ll.inicio);
+      const horaStr = inicio.toLocaleString('es-MX', { timeZone:'America/Matamoros', weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:true });
+      const num = ll.from_num ? ll.from_num.replace(/^521?/, '+52 ') : '—';
+      return `<div onclick="verTranscripcion('${ll.call_sid}', '${horaStr}', '${num}')"
+        style="padding:12px 18px;border-bottom:1px solid #f7f6f4;cursor:pointer;display:flex;align-items:center;gap:12px;transition:background .1s;"
+        onmouseover="this.style.background='#faf9f7'" onmouseout="this.style.background=''">
+        <div style="font-size:1.3rem;">📞</div>
+        <div style="flex:1;">
+          <div style="font-weight:600;font-size:0.9rem;">${num}</div>
+          <div style="font-size:0.78rem;color:#888;margin-top:1px;">⏰ ${horaStr} &nbsp;·&nbsp; ${ll.num_mensajes} mensajes</div>
+        </div>
+        <div style="font-size:0.75rem;color:#aaa;">Ver →</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    lista.innerHTML = '<div style="text-align:center;padding:24px;color:#aaa;">Error cargando llamadas</div>';
+  }
+}
+
+async function verTranscripcion(callSid, horaStr, num) {
+  const panel = document.getElementById('transcripcion-panel');
+  const titulo = document.getElementById('transcripcion-titulo');
+  const msgs = document.getElementById('transcripcion-mensajes');
+  titulo.textContent = `${num} — ${horaStr}`;
+  msgs.innerHTML = '<div style="text-align:center;color:#aaa;font-size:0.85rem;">Cargando...</div>';
+  panel.style.display = '';
+  panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  try {
+    const r = await apiFetch(`/api/llamadas/${callSid}`);
+    const mensajes = await r.json();
+    if (!mensajes.length) {
+      msgs.innerHTML = '<div style="text-align:center;color:#aaa;font-size:0.85rem;">Sin mensajes</div>';
+      return;
+    }
+    msgs.innerHTML = mensajes.map(m => {
+      const esCliente = m.rol === 'cliente';
+      const hora = new Date(m.created_at).toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+      return `<div style="display:flex;flex-direction:column;align-items:${esCliente ? 'flex-start' : 'flex-end'};">
+        <div style="font-size:0.68rem;color:#aaa;margin-bottom:2px;">${esCliente ? '👤 Cliente' : '🤖 Agente'} · ${hora}</div>
+        <div style="max-width:75%;background:${esCliente ? '#f5f4f2' : '#e8f0fe'};border-radius:12px;padding:8px 12px;font-size:0.85rem;line-height:1.4;color:#222;">${m.texto}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    msgs.innerHTML = '<div style="text-align:center;color:#aaa;">Error cargando transcripción</div>';
+  }
 }
 
 // ─── Modal WhatsApp ──────────────────────────────────────────────────────────

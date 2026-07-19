@@ -79,6 +79,17 @@ export async function initDB() {
       activo      BOOLEAN DEFAULT TRUE,
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS transcripciones_voz (
+      id          SERIAL PRIMARY KEY,
+      call_sid    VARCHAR(50) NOT NULL,
+      from_num    VARCHAR(30),
+      rol         VARCHAR(10) NOT NULL,
+      texto       TEXT NOT NULL,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_transcripciones_call_sid ON transcripciones_voz(call_sid);
+    CREATE INDEX IF NOT EXISTS idx_transcripciones_created_at ON transcripciones_voz(created_at DESC);
   `);
   console.log('[DB] Tablas listas');
 }
@@ -475,6 +486,51 @@ export async function obtenerPedidosProgramadosPendientes() {
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerPedidosProgramadosPendientes:', e.message);
+    return [];
+  }
+}
+
+// ─── Transcripciones de voz ───────────────────────────────────────────────────
+export async function guardarTranscripcionVoz(callSid, fromNum, rol, texto) {
+  try {
+    await pool.query(`
+      INSERT INTO transcripciones_voz (call_sid, from_num, rol, texto)
+      VALUES ($1, $2, $3, $4)
+    `, [callSid, fromNum || null, rol, texto]);
+  } catch (e) {
+    console.error('[DB] Error guardarTranscripcionVoz:', e.message);
+  }
+}
+
+export async function obtenerTranscripcionPorLlamada(callSid) {
+  try {
+    const result = await pool.query(`
+      SELECT rol, texto, created_at FROM transcripciones_voz
+      WHERE call_sid = $1
+      ORDER BY created_at ASC
+    `, [callSid]);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerTranscripcionPorLlamada:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerLlamadasRecientes(limite = 20) {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT ON (call_sid)
+        call_sid, from_num,
+        MIN(created_at) OVER (PARTITION BY call_sid) AS inicio,
+        MAX(created_at) OVER (PARTITION BY call_sid) AS fin,
+        COUNT(*) OVER (PARTITION BY call_sid) AS num_mensajes
+      FROM transcripciones_voz
+      ORDER BY call_sid, created_at DESC
+      LIMIT $1
+    `, [limite]);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerLlamadasRecientes:', e.message);
     return [];
   }
 }

@@ -13,7 +13,22 @@ const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB'; // V
 // Asegura que exista el directorio de audio
 mkdirSync(AUDIO_DIR, { recursive: true });
 
+function limpiarParaVoz(texto) {
+  return texto
+    .replace(/<[^>]+>/g, '')           // quitar marcadores tipo <ENVIAR_MENU>
+    .replace(/\*\*/g, '')              // quitar negritas markdown
+    .replace(/\*/g, '')                // quitar itálicas
+    .replace(/#{1,6}\s/g, '')          // quitar headers
+    .replace(/\$(\d)/g, '$1 pesos')    // "$180" → "180 pesos"
+    .replace(/MXN/g, 'pesos')
+    .replace(/—/g, ',')
+    .replace(/\n{2,}/g, '. ')          // párrafos → pausa
+    .replace(/\n/g, ', ')
+    .trim();
+}
+
 export async function sintetizarVoz(texto, callSid, sufijo = '') {
+  texto = limpiarParaVoz(texto);
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY no configurada');
   }

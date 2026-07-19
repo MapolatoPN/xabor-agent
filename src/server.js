@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -471,6 +471,17 @@ app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
     total: r.datos?.total || 0,
     items: r.datos?.items || []
   })));
+});
+
+// ─── Transcripciones de llamadas ─────────────────────────────────────────────
+app.get('/api/llamadas', requireAuth, async (req, res) => {
+  const lista = await obtenerLlamadasRecientes(30);
+  res.json(lista);
+});
+
+app.get('/api/llamadas/:callSid', requireAuth, async (req, res) => {
+  const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid);
+  res.json(mensajes);
 });
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────

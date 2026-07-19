@@ -78,13 +78,13 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
       continue;
     }
 
-    // Si el token contiene '<', probablemente empieza un marcador — dejar de acumular
-    if (token.includes('<')) {
+    // Si el token contiene '<' o '{' (inicio de JSON), dejar de acumular para TTS
+    if (token.includes('<') || token.includes('{')) {
       bloqueado = true;
-      if (buffer.trim()) {
-        onFrase(buffer.trim(), false);
-        buffer = '';
-      }
+      // Flush solo del texto antes del marcador
+      const antes = buffer.split(/[<{]/)[0];
+      if (antes.trim()) onFrase(antes.trim(), false);
+      buffer = '';
       continue;
     }
 

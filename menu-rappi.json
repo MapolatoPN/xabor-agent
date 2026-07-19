@@ -1,0 +1,192 @@
+{
+  "storeId": "900172582",
+  "items": [
+    {
+      "sku": "PAN001",
+      "name": "Chicken Louisiana",
+      "description": "Pechuga de pollo al horno bañada en salsa Louisiana, con cebolla morada, pimientos rostizados, queso manchego y aderezo Ranch.",
+      "price": 180,
+      "type": "PRODUCT",
+      "category": { "id": "cat-paninis", "name": "Paninis", "sortingPosition": 1 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 1
+    },
+    {
+      "sku": "PAN002",
+      "name": "Chicken Parm",
+      "description": "Pechuga de pollo a la plancha, spread de queso philadelphia con parmesano y aceite de oliva, queso mozzarella, tomates deshidratados y glaseado balsámico.",
+      "price": 195,
+      "type": "PRODUCT",
+      "category": { "id": "cat-paninis", "name": "Paninis", "sortingPosition": 1 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 2
+    },
+    {
+      "sku": "PAN003",
+      "name": "Chicken Fit",
+      "description": "Pechuga de pollo a la plancha, tomate, pepino, lechuga, mayonesa chipotle y queso feta.",
+      "price": 179,
+      "type": "PRODUCT",
+      "category": { "id": "cat-paninis", "name": "Paninis", "sortingPosition": 1 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 3
+    },
+    {
+      "sku": "FOC001",
+      "name": "Focaccia Bar",
+      "description": "Focaccia personalizada. Elige spread, proteína, queso, toppings y aderezo.",
+      "price": 225,
+      "type": "PRODUCT",
+      "category": { "id": "cat-focaccia", "name": "Focaccia Bar", "sortingPosition": 2 },
+      "children": [
+        { "sku": "spread-pesto",    "name": "Spread: Pesto",                        "price": 0, "type": "TOPPING" },
+        { "sku": "spread-phila",    "name": "Spread: Philadelphia y parmesano",     "price": 0, "type": "TOPPING" },
+        { "sku": "spread-tomate",   "name": "Spread: Pasta de tomate deshidratado", "price": 0, "type": "TOPPING" },
+        { "sku": "prot-salami",     "name": "Proteína: Salami",                     "price": 0, "type": "TOPPING" },
+        { "sku": "prot-peperoni",   "name": "Proteína: Peperoni",                   "price": 0, "type": "TOPPING" },
+        { "sku": "prot-pavo",       "name": "Proteína: Pechuga de pavo",            "price": 0, "type": "TOPPING" },
+        { "sku": "q-manchego",      "name": "Queso: Manchego",                      "price": 0, "type": "TOPPING" },
+        { "sku": "q-mozza",         "name": "Queso: Mozzarella",                    "price": 0, "type": "TOPPING" },
+        { "sku": "q-colby",         "name": "Queso: Monterrey Jack Colby",          "price": 0, "type": "TOPPING" },
+        { "sku": "q-feta",          "name": "Queso: Feta",                          "price": 0, "type": "TOPPING" },
+        { "sku": "top-lechuga",     "name": "Topping: Lechuga",                     "price": 0, "type": "TOPPING" },
+        { "sku": "top-espinacas",   "name": "Topping: Espinacas",                   "price": 0, "type": "TOPPING" },
+        { "sku": "top-tomate",      "name": "Topping: Tomate",                      "price": 0, "type": "TOPPING" },
+        { "sku": "top-pepino",      "name": "Topping: Pepino",                      "price": 0, "type": "TOPPING" },
+        { "sku": "top-cebolla",     "name": "Topping: Cebolla morada",              "price": 0, "type": "TOPPING" },
+        { "sku": "top-aceitunas",   "name": "Topping: Aceitunas negras",            "price": 0, "type": "TOPPING" },
+        { "sku": "top-pepinillos",  "name": "Topping: Pepinillos",                  "price": 0, "type": "TOPPING" },
+        { "sku": "top-jalapenos",   "name": "Topping: Jalapeños",                   "price": 0, "type": "TOPPING" },
+        { "sku": "top-pimientos",   "name": "Topping: Pimientos rostizados",        "price": 0, "type": "TOPPING" },
+        { "sku": "top-champi",      "name": "Topping: Champiñones rostizados",      "price": 0, "type": "TOPPING" },
+        { "sku": "ad-aceite",       "name": "Aderezo: Aceite de oliva",             "price": 0, "type": "TOPPING" },
+        { "sku": "ad-chipotle",     "name": "Aderezo: Mayo chipotle",               "price": 0, "type": "TOPPING" },
+        { "sku": "ad-ranch",        "name": "Aderezo: Ranch",                       "price": 0, "type": "TOPPING" },
+        { "sku": "ad-glassado",     "name": "Aderezo: Glassado balsámico",          "price": 0, "type": "TOPPING" },
+        { "sku": "ad-vinagreta",    "name": "Aderezo: Vinagreta balsámica",         "price": 0, "type": "TOPPING" },
+        { "sku": "ad-italiano",     "name": "Aderezo: Italiano",                    "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 1
+    },
+    {
+      "sku": "ENS001",
+      "name": "Ensalada César",
+      "description": "Lechuga, queso parmesano, queso feta, aderezo césar, crotones hechos en casa y pechuga de pollo.",
+      "price": 189,
+      "type": "PRODUCT",
+      "category": { "id": "cat-ensaladas", "name": "Ensaladas", "sortingPosition": 3 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 1
+    },
+    {
+      "sku": "ENS002",
+      "name": "Ensalada Clásica",
+      "description": "Mezcla de lechuga, zanahoria, tomate, col morada, queso Monterrey Jack Colby, pechuga de pollo a la plancha, salsa Louisiana y crotones caseros.",
+      "price": 180,
+      "type": "PRODUCT",
+      "category": { "id": "cat-ensaladas", "name": "Ensaladas", "sortingPosition": 3 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 2
+    },
+    {
+      "sku": "ENS003",
+      "name": "Ensalada del Bosque",
+      "description": "Mezcla de lechuga y espinacas, manzana, blueberries, fresas, queso feta y nueces. Con pechuga de pollo al horno.",
+      "price": 185,
+      "type": "PRODUCT",
+      "category": { "id": "cat-ensaladas", "name": "Ensaladas", "sortingPosition": 3 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 3
+    },
+    {
+      "sku": "ENS004",
+      "name": "Combo Focaccia + Media Ensalada",
+      "description": "Una Focaccia completa más media ensalada sin pollo de tu elección.",
+      "price": 250,
+      "type": "PRODUCT",
+      "category": { "id": "cat-ensaladas", "name": "Ensaladas", "sortingPosition": 3 },
+      "children": [
+        { "sku": "combo-cesar",   "name": "Media Ensalada César",      "price": 0, "type": "TOPPING" },
+        { "sku": "combo-clasica", "name": "Media Ensalada Clásica",    "price": 0, "type": "TOPPING" },
+        { "sku": "combo-bosque",  "name": "Media Ensalada del Bosque", "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 4
+    },
+    {
+      "sku": "BEB001",
+      "name": "Refresco",
+      "description": "Refresco de lata.",
+      "price": 35,
+      "type": "PRODUCT",
+      "category": { "id": "cat-bebidas", "name": "Bebidas", "sortingPosition": 4 },
+      "children": [
+        { "sku": "ref-regular", "name": "Coca Cola regular",    "price": 0, "type": "TOPPING" },
+        { "sku": "ref-light",   "name": "Coca Cola sin azúcar", "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 1
+    },
+    {
+      "sku": "BEB002",
+      "name": "Botella de agua",
+      "description": "Agua embotellada.",
+      "price": 25,
+      "type": "PRODUCT",
+      "category": { "id": "cat-bebidas", "name": "Bebidas", "sortingPosition": 4 },
+      "children": [],
+      "imageUrl": "",
+      "sortingPosition": 2
+    },
+    {
+      "sku": "BEB003",
+      "name": "Aguas frescas",
+      "description": "Aguas frescas del día.",
+      "price": 55,
+      "type": "PRODUCT",
+      "category": { "id": "cat-bebidas", "name": "Bebidas", "sortingPosition": 4 },
+      "children": [
+        { "sku": "agua-betabel",  "name": "Betabel con guayaba", "price": 0, "type": "TOPPING" },
+        { "sku": "agua-mango",    "name": "Mango con piña",      "price": 0, "type": "TOPPING" },
+        { "sku": "agua-horchata", "name": "Horchata",            "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 3
+    },
+    {
+      "sku": "BEB004",
+      "name": "Poppi",
+      "description": "Refresco probiótico Poppi.",
+      "price": 79,
+      "type": "PRODUCT",
+      "category": { "id": "cat-bebidas", "name": "Bebidas", "sortingPosition": 4 },
+      "children": [
+        { "sku": "poppi-uva",     "name": "Uva",     "price": 0, "type": "TOPPING" },
+        { "sku": "poppi-naranja", "name": "Naranja", "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 4
+    },
+    {
+      "sku": "BEB005",
+      "name": "Olipop",
+      "description": "Refresco de fibra prebiótica Olipop.",
+      "price": 79,
+      "type": "PRODUCT",
+      "category": { "id": "cat-bebidas", "name": "Bebidas", "sortingPosition": 4 },
+      "children": [
+        { "sku": "olipop-manzana", "name": "Manzana",          "price": 0, "type": "TOPPING" },
+        { "sku": "olipop-fresa",   "name": "Strawberry Cream", "price": 0, "type": "TOPPING" }
+      ],
+      "imageUrl": "",
+      "sortingPosition": 5
+    }
+  ]
+}

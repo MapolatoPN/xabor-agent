@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, eliminarPedido } from '../orders/orderManager.js';
-import { setPagoPendiente, guardarPedidoActivo, guardarPedidoProgramado } from '../services/database.js';
+import { setPagoPendiente, guardarPedidoActivo, guardarPedidoProgramado, guardarTranscripcionVoz } from '../services/database.js';
 
 const router = Router();
 
@@ -89,6 +89,9 @@ export function setupVoiceWebSocket(wssVoice) {
         console.log(`[Voz WS] Cliente: "${texto}"`);
         if (!texto || procesando) return;
 
+        // Guardar lo que dijo el cliente
+        guardarTranscripcionVoz(callSid, fromNum, 'cliente', texto);
+
         // ── Confirmación de folio: el cliente responde "sí/no/repite" ─────────
         if (folioInfo) {
           const pidioRepetir = /repite|repita|de nuevo|no entend|no escuch|otra vez|no lo escuch|no|qu[eé]/i.test(texto);
@@ -116,11 +119,14 @@ export function setupVoiceWebSocket(wssVoice) {
         // Sin filler — mandamos el primer fragmento real en cuanto Claude arranca
 
         try {
+          const frasesAgente = []; // Acumula para transcripción
+
           const resultado = await procesarMensajeStream(
             sessionId, texto, { telefono: fromNum || '—' }, 'voz',
             (frase) => {
               const limpia = limpiarParaVoz(frase);
               if (!limpia) return;
+              frasesAgente.push(limpia);
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'text', token: limpia, last: false }));
               }
@@ -158,12 +164,16 @@ export function setupVoiceWebSocket(wssVoice) {
             }
           }
 
+          // Token final last:true — vacío si no hay extra (evita que ElevenLabs sintetice basura)
+          const tokenFinal = textoExtra ? limpiarParaVoz(textoExtra) : '';
           if (ws.readyState === 1) {
-            ws.send(JSON.stringify({
-              type: 'text',
-              token: textoExtra ? limpiarParaVoz(textoExtra) : ' ',
-              last: true
-            }));
+            ws.send(JSON.stringify({ type: 'text', token: tokenFinal, last: true }));
+          }
+          if (tokenFinal) frasesAgente.push(tokenFinal);
+
+          // Guardar transcripción del agente como bloque completo
+          if (frasesAgente.length) {
+            guardarTranscripcionVoz(callSid, fromNum, 'agente', frasesAgente.join(' '));
           }
 
           if (resultado.orden) {
@@ -185,6 +195,8 @@ export function setupVoiceWebSocket(wssVoice) {
       // ── Interrupt ──────────────────────────────────────────────────────────
       if (msg.type === 'interrupt') {
         console.log(`[Voz WS] Interrupción — ${callSid}`);
+        // Permitir que el siguiente prompt sea procesado aunque Claude no haya terminado
+        procesando = false;
       }
     });
 
@@ -253,9 +265,9 @@ function limpiarParaVoz(texto) {
   const corte   = [jsonIdx, tagIdx].filter(i => i >= 0);
   if (corte.length) texto = texto.slice(0, Math.min(...corte));
 
-  // Eliminar caracteres que no sean texto en español estándar
-  // Mantener: letras latinas, acentos, ñ, signos de puntuación básicos, espacio
-  texto = texto.replace(/[^\p{L}\p{N}\s.,;:¿?¡!áéíóúüñÁÉÍÓÚÜÑ\-']/gu, ' ');
+  // Mantener SOLO caracteres latinos/españoles — excluye chino, árabe, emoji, etc.
+  // \p{L} incluye todos los Unicode; en cambio usamos rangos explícitos de latín + español
+  texto = texto.replace(/[^a-zA-ZáéíóúüñÁÉÍÓÚÜÑ0-9\s.,;:¿?¡!'\-]/g, ' ');
 
   return texto
     // $180 → "ciento ochenta pesos"
@@ -263,8 +275,20 @@ function limpiarParaVoz(texto) {
       const n = parseInt(num.replace(/,/g, ''), 10);
       return numToWordsES(n) + ' pesos';
     })
-    // Números solos de 2+ dígitos que queden (ej. totales sin $)
-    .replace(/\b(\d{2,5})\b/g, (_, num) => {
+    // Hora con am/pm: "1 pm", "3:00 pm", "11 am" → "una de la tarde", etc.
+    .replace(/\b(\d{1,2})(?::\d{2})?\s*am\b/gi, (_, h) => {
+      const n = parseInt(h, 10);
+      return numToWordsES(n) + ' de la mañana';
+    })
+    .replace(/\b(\d{1,2})(?::\d{2})?\s*pm\b/gi, (_, h) => {
+      const n = parseInt(h, 10);
+      return numToWordsES(n) + ' de la tarde';
+    })
+    // am/pm sueltos que no tengan número antes
+    .replace(/\bam\b/gi, 'de la mañana')
+    .replace(/\bpm\b/gi, 'de la tarde')
+    // Todos los números 1-9999 a palabras (incluye dígitos solos como "1", "3")
+    .replace(/\b(\d{1,5})\b/g, (_, num) => {
       const n = parseInt(num, 10);
       return n <= 9999 ? numToWordsES(n) : num;
     })
