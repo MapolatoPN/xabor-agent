@@ -159,8 +159,9 @@ Responde SOLO en este formato JSON:
     mensaje += `Mejora: _${s.mejora}_\n\n`;
   });
 
-  mensaje += `Para aprobar, responde: *APROBAR ${id} 1,2,3* (los números que quieras aplicar)\n`;
-  mensaje += `Para rechazar todo: *RECHAZAR ${id}*`;
+  mensaje += `Para aprobar, responde: *APROBAR 1,2,3* (los números que quieras)\n`;
+  mensaje += `Para aprobar todas: *APROBAR TODAS*\n`;
+  mensaje += `Para rechazar todo: *RECHAZAR*`;
 
   await enviarMensaje(MARIO_TELEFONO, mensaje);
   console.log(`[Learner] Sugerencias enviadas a Mario. ID: ${id}`);
@@ -170,27 +171,45 @@ Responde SOLO en este formato JSON:
 export async function procesarAprobacion(texto) {
   const textoUpper = texto.trim().toUpperCase();
 
-  // APROBAR {id} {indices}
-  const matchAprobar = textoUpper.match(/^APROBAR\s+(\d+)\s+([\d,\s]+)$/);
-  if (matchAprobar) {
-    const id = parseInt(matchAprobar[1]);
-    const indices = matchAprobar[2].split(',').map(n => parseInt(n.trim()) - 1);
-
+  // APROBAR — acepta varias formas:
+  //   APROBAR 7 1,2,3        (con ID de batch)
+  //   APROBAR 1,2,3          (sin ID — usa el más reciente)
+  //   APROBAR 1, 2, 3 Y 4   (con "Y" como separador)
+  //   APROBAR TODAS          (aprobar todas las sugerencias)
+  if (/^APROBAR/.test(textoUpper)) {
     const pendiente = await obtenerSugerenciasPendientes();
-    if (!pendiente || pendiente.id !== id) {
-      await enviarMensaje(MARIO_TELEFONO, `No encontré sugerencias pendientes con ID ${id}.`);
+    if (!pendiente) {
+      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes de aprobación.');
       return true;
     }
 
-    const sugerencias = pendiente.sugerencias;
-    const aprobadas = indices.filter(i => i >= 0 && i < sugerencias.length).map(i => sugerencias[i]);
+    // Extraer todos los dígitos del mensaje
+    const todosLosDigitos = textoUpper.match(/\d+/g)?.map(Number) || [];
+    const totalSugerencias = pendiente.sugerencias.length;
 
-    // Aplicar cada mejora aprobada como override
+    let indices;
+    if (/TODAS/.test(textoUpper)) {
+      // Aprobar todas
+      indices = Array.from({ length: totalSugerencias }, (_, i) => i);
+    } else if (todosLosDigitos.length === 0) {
+      await enviarMensaje(MARIO_TELEFONO, 'Indica qué números aprobar. Ejemplo: APROBAR 1,2,3');
+      return true;
+    } else {
+      // Si el primer número coincide con el ID del batch, ignorarlo
+      const numeros = (todosLosDigitos[0] === pendiente.id)
+        ? todosLosDigitos.slice(1)
+        : todosLosDigitos;
+      // Convertir a índices (el usuario manda 1-based)
+      indices = numeros.map(n => n - 1).filter(i => i >= 0 && i < totalSugerencias);
+    }
+
+    const aprobadas = indices.map(i => pendiente.sugerencias[i]);
+
     for (const s of aprobadas) {
       await guardarOverride(`aprendizaje_${Date.now()}`, s.mejora);
     }
 
-    await aprobarSugerencias(id, indices);
+    await aprobarSugerencias(pendiente.id, indices);
 
     await enviarMensaje(MARIO_TELEFONO,
       `✅ Aplicadas ${aprobadas.length} mejoras al bot. Ya están activas.\n\n` +
@@ -199,12 +218,15 @@ export async function procesarAprobacion(texto) {
     return true;
   }
 
-  // RECHAZAR {id}
-  const matchRechazar = textoUpper.match(/^RECHAZAR\s+(\d+)$/);
-  if (matchRechazar) {
-    const id = parseInt(matchRechazar[1]);
-    await aprobarSugerencias(id, []);
-    await enviarMensaje(MARIO_TELEFONO, `Entendido, sugerencias ${id} descartadas.`);
+  // RECHAZAR — con o sin ID
+  if (/^RECHAZAR/.test(textoUpper)) {
+    const pendiente = await obtenerSugerenciasPendientes();
+    if (!pendiente) {
+      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes.');
+      return true;
+    }
+    await aprobarSugerencias(pendiente.id, []);
+    await enviarMensaje(MARIO_TELEFONO, 'Entendido, sugerencias descartadas.');
     return true;
   }
 
