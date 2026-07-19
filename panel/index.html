@@ -171,6 +171,7 @@ button:hover { opacity: 0.85; }
 
 /* ─── Vista Historial ───────────────────────────────────────────────────── */
 .historial-card { background: #fff; border-radius: 10px; border: 1px solid #e5e2da; margin-bottom: 8px; overflow: hidden; }
+.historial-tag-mobile { display: none; } /* solo en mobile */
 
 /* ─── Vista Presencial / POS ────────────────────────────────────────────── */
 #pos-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; height: calc(100vh - 130px); }
@@ -234,6 +235,64 @@ button:hover { opacity: 0.85; }
 .ticket-orden-num { display: none; }
 .ticket-total-letras { display: none; }
 .ticket-seccion-titulo { display: none; }
+
+/* ─── Carrito flotante mobile ───────────────────────────────────────────── */
+#mobile-cart-bar {
+  display: none; /* solo visible en mobile via media query */
+  position: sticky; bottom: 16px; left: 12px; right: 12px;
+  z-index: 40; margin: 0 0 4px;
+  background: #1c1c1c; color: #fff;
+  border-radius: 14px; padding: 14px 18px;
+  align-items: center; gap: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  cursor: pointer; transition: transform .15s;
+}
+#mobile-cart-bar:active { transform: scale(0.98); }
+#mobile-cart-count { background: #e8a020; color: #1c1c1c; border-radius: 10px; padding: 2px 8px; font-weight: 800; font-size: 0.82rem; }
+#mobile-cart-total { font-size: 1.1rem; font-weight: 800; margin-left: auto; }
+
+/* Botón volver en chats (mobile) */
+#btn-chat-volver { display: none; background: none; border: none; color: #888; font-size: 1.1rem; padding: 2px 8px 2px 0; cursor: pointer; }
+
+/* ─── Responsive — mobile (≤640px) ─────────────────────────────────────── */
+@media (max-width: 640px) {
+  main { padding: 10px 10px 80px; } /* bottom padding para carrito flotante */
+
+  /* Header compacto */
+  .header-brand { font-size: 1rem; letter-spacing: 1px; }
+  #estado-ws .ws-label { display: none; }
+
+  /* Tabs más compactos */
+  #tabs-nav { padding: 0 4px; gap: 0; }
+  .tab-btn { padding: 10px 7px; font-size: 0.72rem; }
+
+  /* Comandas — 1 columna */
+  #grid-pedidos { grid-template-columns: 1fr; }
+
+  /* ── Presencial ── */
+  #pos-layout { grid-template-columns: 1fr; height: auto; gap: 12px; }
+  #pos-menu { padding-right: 0; }
+  .pos-productos-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .pos-producto { padding: 10px; }
+  .pos-prod-nombre { font-size: 0.8rem; }
+  #mobile-cart-bar { display: flex; }
+  #pos-order { scroll-margin-top: 70px; }
+
+  /* ── Chats ── */
+  #vista-chats > div { flex-direction: column; height: auto; gap: 0; }
+  #lista-chats { width: 100%; border-radius: 12px; }
+  #chat-area { height: calc(100vh - 180px); min-height: 300px; margin-top: 10px; border-radius: 12px; }
+  /* Single-panel nav: por defecto chat-area oculto en mobile */
+  #chat-area.mobile-hidden { display: none !important; }
+  #lista-chats.mobile-hidden { display: none !important; }
+  #btn-chat-volver { display: inline-block; }
+
+  /* ── Historial ── */
+  .historial-fila-meta { flex-wrap: wrap; gap: 4px; }
+  .historial-tag-wrap { display: none; }
+  .historial-hora { font-size: 0.7rem; }
+  .historial-tag-mobile { display: inline-block !important; font-size: 0.65rem !important; padding: 1px 6px !important; }
+}
 
 /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
 @media print {
@@ -351,6 +410,12 @@ button:hover { opacity: 0.85; }
 
   <!-- Tab Presencial -->
   <div id="vista-presencial" style="display:none;">
+    <!-- Carrito flotante — solo visible en mobile -->
+    <div id="mobile-cart-bar" onclick="scrollToOrder()">
+      <span id="mobile-cart-count">0</span>
+      <span style="font-size:0.88rem;color:#ccc;">Ver carrito</span>
+      <span id="mobile-cart-total">$0</span>
+    </div>
     <div id="pos-layout">
 
       <!-- Menú -->
@@ -373,7 +438,7 @@ button:hover { opacity: 0.85; }
       <div id="pos-order">
         <div id="pos-order-header">🧾 Pedido en curso</div>
         <div id="pos-order-items">
-          <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú →</div>
+          <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú</div>
         </div>
         <div id="pos-order-footer">
           <div id="pos-fields">
@@ -559,6 +624,7 @@ button:hover { opacity: 0.85; }
       </div>
       <div id="chat-area">
         <div id="chat-header">
+          <button id="btn-chat-volver" onclick="volverAContactos()" title="Volver">‹</button>
           <span id="chat-header-nombre" style="color:#888;">Selecciona una conversación</span>
           <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;">Tomar control</button>
         </div>
@@ -890,7 +956,17 @@ function mostrarTab(tab) {
     if (vista) vista.style.display = t === tab ? '' : 'none';
     if (btn && btn.style.display !== 'none') btn.classList.toggle('activo', t === tab);
   });
-  if (tab === 'chats')     { document.getElementById('badge-chats').style.display='none'; chatNuevos=0; cargarConversaciones(); }
+  if (tab === 'chats') {
+    document.getElementById('badge-chats').style.display='none';
+    chatNuevos=0;
+    cargarConversaciones();
+    // En mobile: mostrar lista de contactos por defecto
+    if (window.innerWidth <= 640) {
+      document.getElementById('lista-chats').classList.remove('mobile-hidden');
+      document.getElementById('chat-area').classList.add('mobile-hidden');
+      chatAbierto = null;
+    }
+  }
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'historial') cargarHistorial();
   if (tab === 'presencial') renderMenuPOS();
@@ -1070,6 +1146,7 @@ function agregarAlCarrito(prod) {
   if (existing) { existing.cantidad++; }
   else { posCarrito.push({ nombre: prod.nombre, precio_unitario: prod.precio, cantidad: 1, notas: '' }); }
   renderCarrito();
+  actualizarMobileCartBar();
 }
 
 function calcDescuento(subtotal) {
@@ -1160,10 +1237,27 @@ function renderCarrito() {
   }
 }
 
+function actualizarMobileCartBar() {
+  const bar = document.getElementById('mobile-cart-bar');
+  if (!bar) return;
+  const totalItems = posCarrito.reduce((s, i) => s + i.cantidad, 0);
+  const subtotal   = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const descuento  = calcDescuento(subtotal);
+  const total      = subtotal - descuento;
+  document.getElementById('mobile-cart-count').textContent = totalItems;
+  document.getElementById('mobile-cart-total').textContent = `$${total}`;
+  bar.style.opacity = totalItems > 0 ? '1' : '0.5';
+}
+
+function scrollToOrder() {
+  document.getElementById('pos-order')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function ajustarCantidad(idx, delta) {
   posCarrito[idx].cantidad += delta;
   if (posCarrito[idx].cantidad <= 0) posCarrito.splice(idx, 1);
   renderCarrito();
+  actualizarMobileCartBar();
 }
 
 function selPago(btn) {
@@ -1241,6 +1335,12 @@ async function cargarConversaciones() {
     </div>`).join('');
 }
 
+function volverAContactos() {
+  document.getElementById('lista-chats').classList.remove('mobile-hidden');
+  document.getElementById('chat-area').classList.add('mobile-hidden');
+  chatAbierto = null;
+}
+
 async function abrirConversacion(telefono, nombre) {
   chatAbierto = telefono;
   document.getElementById('chat-header-nombre').textContent = `💬 ${nombre || telefono}`;
@@ -1248,6 +1348,11 @@ async function abrirConversacion(telefono, nombre) {
   document.querySelectorAll('#contactos-lista > div').forEach(d => d.style.background = '');
   const el = document.getElementById(`contacto-${telefono}`);
   if (el) el.style.background = '#f0efeb';
+  // Mobile: ocultar lista, mostrar chat
+  if (window.innerWidth <= 640) {
+    document.getElementById('lista-chats').classList.add('mobile-hidden');
+    document.getElementById('chat-area').classList.remove('mobile-hidden');
+  }
   const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
   renderMensajes(msgs);
   document.getElementById('chat-input').dataset.telefono = telefono;
@@ -1389,14 +1494,17 @@ async function cargarHistorial() {
         <div onclick="toggleHistorial('hdet-${i}')"
              style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;"
              onmouseover="this.style.background='#fafaf8'" onmouseout="this.style.background=''">
-          <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;">
-            <span style="font-weight:800;color:#22c55e;white-space:nowrap;font-size:0.88rem;">${p.id||'—'}</span>
-            <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nombre}</span>
-            ${tag}
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:800;color:#22c55e;white-space:nowrap;font-size:0.88rem;">${p.id||'—'}</span>
+              <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">${nombre}</span>
+              <span class="historial-tag-wrap">${tag}</span>
+            </div>
+            <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px;">
+            ${tag.replace('class="tag-modalidad', 'class="tag-modalidad historial-tag-mobile')}
             <span style="font-weight:800;font-size:0.95rem;">$${p.total}</span>
-            <span style="color:#bbb;font-size:0.75rem;">${hora}</span>
           </div>
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
