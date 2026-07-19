@@ -237,7 +237,7 @@ app.patch('/pedidos/:id/estado', (req, res) => {
 
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 app.post('/api/pedido-presencial', requireAuth, (req, res) => {
-  const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio } = req.body;
+  const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio, mixto_efectivo, mixto_terminal } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
@@ -248,6 +248,8 @@ app.post('/api/pedido-presencial', requireAuth, (req, res) => {
     motivo_descuento: motivo_descuento || null,
     billete: parseFloat(billete) || 0,
     cambio: parseFloat(cambio) || 0,
+    mixto_efectivo: parseFloat(mixto_efectivo) || null,
+    mixto_terminal: parseFloat(mixto_terminal) || null,
     total: total ?? (subtotal - desc),
     modalidad: 'recoger en tienda',
     canal: 'presencial',

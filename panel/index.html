@@ -382,11 +382,13 @@ button:hover { opacity: 0.85; }
             </div>
             <div>
               <label>Forma de pago</label>
-              <div class="pos-pago-btns">
+              <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
                 <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
                 <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
+                <button class="pos-pago-btn" data-pago="mixto" onclick="selPago(this)">💵+💳 Mixto</button>
               </div>
-              <!-- Campo billete (solo efectivo) -->
+
+              <!-- Efectivo simple -->
               <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
                 <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
@@ -395,6 +397,25 @@ button:hover { opacity: 0.85; }
               <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
                 <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
                 <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
+              </div>
+
+              <!-- Pago mixto -->
+              <div id="mixto-wrap" style="display:none;margin-top:8px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
+                  <input id="mixto-efectivo" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
+                  <input id="mixto-terminal" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                </div>
+                <div id="mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
+                <div id="mixto-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:4px;">
+                  <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio efectivo</span>
+                  <span id="mixto-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
+                </div>
               </div>
             </div>
             <div>
@@ -706,7 +727,16 @@ function renderComanda(p) {
     ? `<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado con Clip</span>`
     : (p.forma_pago === 'enlace de pago' ? `<span style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
 
-  const billeteHTML = billete > 0 ? `
+  const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
+  const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
+  const esMixto = mixtoEfectivo > 0 || mixtoTerminal > 0;
+  const billeteHTML = esMixto ? `
+    <div class="ticket-seccion-titulo">TOTAL POR FORMA DE PAGO</div>
+    <div class="comanda-subtotales">
+      <div class="subtotal-linea"><span>💵 Efectivo</span><span>$${mixtoEfectivo.toFixed(0)}</span></div>
+      <div class="subtotal-linea"><span>💳 Terminal</span><span>$${mixtoTerminal.toFixed(0)}</span></div>
+      ${cambio > 0 ? `<div class="subtotal-linea"><span>Cambio</span><span>$${cambio.toFixed(0)}</span></div>` : ''}
+    </div>` : billete > 0 ? `
     <div class="comanda-subtotales">
       <div class="subtotal-linea"><span>Billete</span><span>$${billete.toFixed(0)}</span></div>
       <div class="subtotal-linea"><span>Cambio</span><span>$${cambio.toFixed(0)}</span></div>
@@ -1007,7 +1037,7 @@ function renderCarrito() {
   document.getElementById('pos-total-monto').textContent = `$${total}`;
   document.getElementById('btn-confirmar-presencial').disabled = false;
 
-  // Cambio (solo efectivo)
+  // Cambio (efectivo simple)
   if (posPagoSel === 'efectivo') {
     const billete = parseFloat(document.getElementById('pos-billete')?.value || 0) || 0;
     const cambio  = billete - total;
@@ -1018,6 +1048,33 @@ function renderCarrito() {
       document.getElementById('cambio-monto').style.color = cambio >= 0 ? '#22c55e' : '#ef4444';
     } else {
       cambioRow.style.display = 'none';
+    }
+  }
+
+  // Pago mixto
+  if (posPagoSel === 'mixto') {
+    const mEfectivo = parseFloat(document.getElementById('mixto-efectivo')?.value || 0) || 0;
+    const mTerminal = parseFloat(document.getElementById('mixto-terminal')?.value || 0) || 0;
+    const suma      = mEfectivo + mTerminal;
+    const diff      = suma - total;
+    const estado    = document.getElementById('mixto-estado');
+    const cambioRow = document.getElementById('mixto-cambio-row');
+    if (suma === 0) {
+      estado.textContent = `Faltan $${total} por asignar`;
+      estado.style.color = '#aaa';
+      cambioRow.style.display = 'none';
+    } else if (diff < 0) {
+      estado.textContent = `Faltan $${Math.abs(diff).toFixed(0)} por asignar`;
+      estado.style.color = '#ef4444';
+      cambioRow.style.display = 'none';
+    } else if (diff === 0) {
+      estado.textContent = '✓ Monto exacto';
+      estado.style.color = '#22c55e';
+      cambioRow.style.display = 'none';
+    } else {
+      estado.textContent = '';
+      cambioRow.style.display = 'flex';
+      document.getElementById('mixto-cambio-monto').textContent = `$${diff.toFixed(0)}`;
     }
   }
 }
@@ -1033,10 +1090,16 @@ function selPago(btn) {
   btn.classList.add('selected');
   posPagoSel = btn.dataset.pago;
   const esEfectivo = posPagoSel === 'efectivo';
-  document.getElementById('billete-wrap').style.display = esEfectivo ? 'flex' : 'none';
+  const esMixto    = posPagoSel === 'mixto';
+  document.getElementById('billete-wrap').style.display  = esEfectivo ? 'flex' : 'none';
+  document.getElementById('mixto-wrap').style.display    = esMixto    ? 'block' : 'none';
   if (!esEfectivo) {
     document.getElementById('pos-billete').value = '';
     document.getElementById('cambio-row').style.display = 'none';
+  }
+  if (!esMixto) {
+    document.getElementById('mixto-efectivo').value = '';
+    document.getElementById('mixto-terminal').value = '';
   }
   renderCarrito();
 }
@@ -1048,14 +1111,18 @@ async function confirmarPresencial() {
   const descuento      = calcDescuento(subtotal);
   const total          = subtotal - descuento;
   const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
-  const billete        = parseFloat(document.getElementById('pos-billete')?.value || 0) || 0;
-  const cambio         = posPagoSel === 'efectivo' && billete > 0 ? billete - total : 0;
+  const esMixto        = posPagoSel === 'mixto';
+  const mixtoEfectivo  = esMixto ? (parseFloat(document.getElementById('mixto-efectivo')?.value || 0) || 0) : 0;
+  const mixtoTerminal  = esMixto ? (parseFloat(document.getElementById('mixto-terminal')?.value || 0) || 0) : 0;
+  const billete        = esMixto ? mixtoEfectivo : (parseFloat(document.getElementById('pos-billete')?.value || 0) || 0);
+  const cambio         = billete > 0 ? Math.max(0, billete + mixtoTerminal - total) : 0;
+  const formaPagoFinal = esMixto ? `mixto (efectivo $${mixtoEfectivo} + terminal $${mixtoTerminal})` : posPagoSel;
   const btn            = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Procesando...';
   try {
     const r = await apiFetch('/api/pedido-presencial', {
       method: 'POST',
-      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento, motivo_descuento: motivoDesc, billete, cambio })
+      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: formaPagoFinal, total, descuento, motivo_descuento: motivoDesc, billete, cambio, mixto_efectivo: mixtoEfectivo || null, mixto_terminal: mixtoTerminal || null })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
@@ -1065,6 +1132,8 @@ async function confirmarPresencial() {
       document.getElementById('pos-descuento-val').value = '';
       document.getElementById('pos-descuento-motivo').value = '';
       document.getElementById('pos-billete').value = '';
+      document.getElementById('mixto-efectivo').value = '';
+      document.getElementById('mixto-terminal').value = '';
       renderCarrito();
       mostrarTab('comandas');
     }
