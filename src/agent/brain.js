@@ -40,69 +40,82 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
 }
 
 // ─── Versión streaming (voz) ──────────────────────────────────────────────────
-// onFrase(texto, esUltima) se llama por cada oración completa mientras Claude genera.
-// Retorna el mismo objeto que procesarMensaje una vez que el stream termina.
-export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCtx = null, canal = null, onFrase) {
+// onFrase(texto) se llama por cada oración completa mientras Claude genera.
+// signal: AbortSignal — cuando se aborta, el stream se cancela limpiamente.
+// Retorna null si fue abortado antes de terminar; de lo contrario el mismo objeto
+// que procesarMensaje.
+export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCtx = null, canal = null, onFrase, signal = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
   let textoCompleto = '';
   let buffer        = '';
-  let bloqueado     = false; // true cuando entramos en <ORDEN_CONFIRMADA> u otro marcador
+  let bloqueado     = false;
 
   const stream = anthropic.messages.stream({
     model: MODELO,
     max_tokens: 1024,
     system: await construirSystemPrompt(clienteCtx, canal),
     messages: session.mensajes
-  });
+  }, { signal });
 
-  for await (const event of stream) {
-    if (event.type !== 'content_block_delta' || event.delta.type !== 'text_delta') continue;
+  try {
+    for await (const event of stream) {
+      // Turno cancelado — salir inmediatamente sin procesar más tokens
+      if (signal?.aborted) break;
 
-    const token = event.delta.text;
-    textoCompleto += token;
+      if (event.type !== 'content_block_delta' || event.delta.type !== 'text_delta') continue;
 
-    if (bloqueado) continue;
+      const token = event.delta.text;
+      textoCompleto += token;
 
-    // Detectar inicio de bloque especial — flush buffer y bloquear
-    if (textoCompleto.includes('<ORDEN_CONFIRMADA>') ||
-        textoCompleto.includes('<ESCALAR_A_HUMANO>') ||
-        textoCompleto.includes('<ENVIAR_MENU>') ||
-        textoCompleto.includes('<CONSULTA_PENDIENTE')) {
-      bloqueado = true;
-      if (buffer.trim()) {
-        onFrase(buffer.trim(), false);
-        buffer = '';
+      if (bloqueado) continue;
+
+      // Detectar inicio de bloque especial — flush buffer y bloquear
+      if (textoCompleto.includes('<ORDEN_CONFIRMADA>') ||
+          textoCompleto.includes('<ESCALAR_A_HUMANO>') ||
+          textoCompleto.includes('<ENVIAR_MENU>') ||
+          textoCompleto.includes('<CONSULTA_PENDIENTE')) {
+        bloqueado = true;
+        if (buffer.trim()) { onFrase(buffer.trim()); buffer = ''; }
+        continue;
       }
-      continue;
-    }
 
-    // Si el token contiene '<' o '{' (inicio de JSON), dejar de acumular para TTS
-    if (token.includes('<') || token.includes('{')) {
-      bloqueado = true;
-      // Flush solo del texto antes del marcador
-      const antes = buffer.split(/[<{]/)[0];
-      if (antes.trim()) onFrase(antes.trim(), false);
-      buffer = '';
-      continue;
-    }
+      // Si el token contiene '<' o '{', dejar de acumular para TTS
+      if (token.includes('<') || token.includes('{')) {
+        bloqueado = true;
+        const antes = buffer.split(/[<{]/)[0];
+        if (antes.trim()) onFrase(antes.trim());
+        buffer = '';
+        continue;
+      }
 
-    buffer += token;
+      buffer += token;
 
-    // Enviar frases completas al llegar a límite de oración
-    const match = buffer.match(/^(.*?[.!?,])\s+/s);
-    if (match) {
-      const frase = match[1].trim();
-      if (frase) onFrase(frase, false);
-      buffer = buffer.slice(match[0].length);
+      // Enviar frases completas al llegar a límite de oración
+      const match = buffer.match(/^(.*?[.!?,])\s+/s);
+      if (match) {
+        const frase = match[1].trim();
+        if (frase) onFrase(frase);
+        buffer = buffer.slice(match[0].length);
+      }
     }
+  } catch (e) {
+    if (e.name === 'AbortError' || signal?.aborted) {
+      console.log('[brain] Stream abortado — turno cancelado');
+      return null;
+    }
+    throw e;
+  }
+
+  // Si fue abortado en el loop (break), no guardar respuesta parcial
+  if (signal?.aborted) {
+    console.log('[brain] Stream abortado (mid-loop) — descartando respuesta parcial');
+    return null;
   }
 
   // Flush del buffer restante
-  if (buffer.trim() && !bloqueado) {
-    onFrase(buffer.trim(), false);
-  }
+  if (buffer.trim() && !bloqueado) onFrase(buffer.trim());
 
   agregarMensaje(sessionId, 'assistant', textoCompleto);
 

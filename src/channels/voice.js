@@ -52,12 +52,14 @@ router.post('/start', (req, res) => {
 // ─── WebSocket — Conversation Relay ─────────────────────────────────────────
 export function setupVoiceWebSocket(wssVoice) {
   wssVoice.on('connection', (ws) => {
-    let callSid         = null;
-    let sessionId       = null;
-    let fromNum         = null;
-    let procesando      = false;
-    let folioInfo       = null; // { texto } — activo mientras esperamos confirmación del folio
-    let timerCierre     = null; // timeout de cierre de llamada
+    let callSid              = null;
+    let sessionId            = null;
+    let fromNum              = null;
+    let procesando           = false;
+    let folioInfo            = null;   // { texto } — activo mientras esperamos confirmación del folio
+    let timerCierre          = null;   // timeout de cierre de llamada
+    let currentTurnId        = 0;      // incrementa en cada prompt; filtra frases de turnos viejos
+    let currentAbortCtrl     = null;   // AbortController del stream activo
 
     const programarCierre = (ms) => {
       if (timerCierre) clearTimeout(timerCierre);
@@ -114,36 +116,54 @@ export function setupVoiceWebSocket(wssVoice) {
           return;
         }
 
+        // Cancelar el stream anterior si aún estaba corriendo
+        if (currentAbortCtrl) currentAbortCtrl.abort();
+
+        // Nuevo turno — cualquier frase de turnos anteriores queda descartada
+        currentTurnId++;
+        const myTurnId   = currentTurnId;
+        currentAbortCtrl = new AbortController();
+        const { signal } = currentAbortCtrl;
+
         procesando = true;
 
-        const t0 = Date.now(); // Recibimos el prompt del cliente
-        let t1 = null;         // Primera frase enviada a ElevenLabs (TTFF)
+        const t0 = Date.now();
+        let t1 = null;
         let numFrases = 0;
 
         try {
-          const frasesAgente = []; // Acumula para transcripción
+          const frasesAgente = [];
 
           const resultado = await procesarMensajeStream(
             sessionId, texto, { telefono: fromNum || '—' }, 'voz',
             (frase) => {
+              // Descartar si este turno ya fue superado por uno más reciente
+              if (myTurnId !== currentTurnId) {
+                console.log(`[Voz ⚡] Frase de turno ${myTurnId} descartada (turno actual: ${currentTurnId})`);
+                return;
+              }
               const limpia = limpiarParaVoz(frase);
               if (!limpia) return;
               numFrases++;
               if (!t1) {
                 t1 = Date.now();
-                console.log(`[Voz ⏱] TTFF (prompt→primera frase): ${t1 - t0}ms — "${limpia.slice(0,40)}..."`);
+                console.log(`[Voz ⏱] TTFF turno ${myTurnId}: ${t1 - t0}ms — "${limpia.slice(0,40)}"`);
               } else {
-                console.log(`[Voz ⏱] Frase ${numFrases} (+${Date.now() - t1}ms desde primera): "${limpia.slice(0,40)}"`);
+                console.log(`[Voz ⏱] Frase ${numFrases} (+${Date.now() - t1}ms): "${limpia.slice(0,40)}"`);
               }
               frasesAgente.push(limpia);
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'text', token: limpia, last: false }));
               }
-            }
+            },
+            signal
           );
 
           const t2 = Date.now();
-          console.log(`[Voz ⏱] Claude terminó: ${t2 - t0}ms total | ${numFrases} frases | TTFF=${t1 ? t1-t0 : 'n/a'}ms`);
+          console.log(`[Voz ⏱] Turno ${myTurnId} terminó: ${t2 - t0}ms | ${numFrases} frases | TTFF=${t1 ? t1-t0 : 'n/a'}ms`);
+
+          // Stream abortado — no hay resultado ni orden que procesar
+          if (!resultado) return;
 
           let textoExtra = '';
           if (resultado.orden) {
@@ -194,20 +214,29 @@ export function setupVoiceWebSocket(wssVoice) {
           }
 
         } catch (e) {
-          console.error('[Voz WS] Error procesando mensaje:', e.message);
-          if (ws.readyState === 1) {
-            ws.send(JSON.stringify({ type: 'text', token: 'Perdón, tuve un problema. ¿Me puedes repetir?', last: true }));
+          if (e.name === 'AbortError' || signal?.aborted) {
+            console.log(`[Voz ⚡] Turno ${myTurnId} abortado por interrupción`);
+          } else {
+            console.error('[Voz WS] Error procesando mensaje:', e.message);
+            if (myTurnId === currentTurnId && ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'text', token: 'Perdón, tuve un problema. ¿Me puedes repetir?', last: true }));
+            }
           }
         } finally {
-          procesando = false;
+          // Solo liberar el flag si este turno sigue siendo el activo
+          // (evita que un turno viejo anule el flag de uno nuevo)
+          if (myTurnId === currentTurnId) procesando = false;
         }
         return;
       }
 
       // ── Interrupt ──────────────────────────────────────────────────────────
       if (msg.type === 'interrupt') {
-        console.log(`[Voz WS] Interrupción — ${callSid}`);
-        // Permitir que el siguiente prompt sea procesado aunque Claude no haya terminado
+        console.log(`[Voz WS] Interrupción — turno ${currentTurnId} cancelado`);
+        if (currentAbortCtrl) {
+          currentAbortCtrl.abort();
+          currentAbortCtrl = null;
+        }
         procesando = false;
       }
     });
