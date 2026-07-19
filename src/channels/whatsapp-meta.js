@@ -148,7 +148,9 @@ router.post('/', async (req, res) => {
     await marcarLeido(messageId);
 
     // Comandos de Mario (APROBAR/RECHAZAR sugerencias del learner)
-    const esMario = telefono === (process.env.MARIO_TELEFONO || '528781091115');
+    // Meta envía números MX con "521..." pero la variable puede tener "52..." — comparar últimos 10 dígitos
+    const ultimosDiez = t => t.slice(-10);
+    const esMario = ultimosDiez(telefono) === ultimosDiez(process.env.MARIO_TELEFONO || '528781091115');
     if (esMario) {
       const esComando = await procesarAprobacion(texto);
       if (esComando) return;
