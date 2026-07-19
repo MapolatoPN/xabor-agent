@@ -708,8 +708,15 @@ function cambiarEstado(id, nuevoEstado) {
 }
 
 function eliminarComanda(id) {
-  if (!confirm(`¿Eliminar el pedido ${id}? Esto lo borrará de la base de datos y no aparecerá en historial.`)) return;
-  apiFetch(`/pedidos/${id}`, { method: 'DELETE' }).then(() => {
+  const pin = prompt(`🔒 Contraseña de administrador para eliminar ${id}:`);
+  if (pin === null) return; // canceló
+  const token = localStorage.getItem('panel_token') || '';
+  fetch(`/pedidos/${id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${token}`, 'X-Admin-Pin': pin }
+  }).then(async r => {
+    if (r.status === 403) { alert('Contraseña incorrecta.'); return; }
+    if (!r.ok) { alert('No se pudo eliminar el pedido.'); return; }
     const card = document.getElementById(`comanda-${id}`);
     if (card) card.remove();
     delete pedidos[id];

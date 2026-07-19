@@ -30,6 +30,7 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Autenticación del panel ──────────────────────────────────────────────────
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'xabor2024';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'xabor-admin';
 const PANEL_SECRET   = process.env.PANEL_SECRET   || 'xabor-secret-key';
 
 function generarToken(password) {
@@ -216,8 +217,12 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   res.json(pedido);
 });
 
-// Eliminar pedido (pruebas / limpieza)
+// Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
 app.delete('/pedidos/:id', async (req, res) => {
+  const pin = req.headers['x-admin-pin'];
+  if (!pin || pin !== ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
+  }
   const ok = await eliminarPedido(req.params.id);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   res.json({ ok: true });
