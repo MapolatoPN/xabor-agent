@@ -141,11 +141,12 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
 
   if (promoEnvioGratis) {
     if (promoActivaAhora) {
-      textoPromociones += 'PROMO ACTIVA AHORA: Envio gratis en pedidos a domicilio que incluyan 3 o mas focaccias o paninis (Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit, cualquier combinacion). Valida hasta las 15:00.\n';
+      textoPromociones += 'PROMO ACTIVA AHORA: Envio gratis en pedidos a domicilio que incluyan 3 o mas focaccias/paninis (Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit, o cualquier panini). Valida hasta las 15:00.\n';
+      textoPromociones += '- IMPORTANTE: Las ensaladas y bebidas NO cuentan para esta promo. Solo focaccias y paninis suman.\n';
       textoPromociones += '- Cuando aplique, pon "costo_envio": 0 en el JSON de la orden.\n';
       textoPromociones += '- Si el cliente pide exactamente 2 focaccias/paninis, dile: "Si agregas una mas, el envio es gratis."';
     } else {
-      textoPromociones += 'PROMO DISPONIBLE (fuera de horario ahora): Ofrecemos envio gratis de lunes a sabado de 11am a 3pm en pedidos a domicilio con 3 o mas focaccias o paninis.\n';
+      textoPromociones += 'PROMO DISPONIBLE (fuera de horario ahora): Envio gratis de lunes a sabado de 11am a 3pm en pedidos a domicilio con 3 o mas focaccias/paninis (ensaladas y bebidas no cuentan).\n';
       textoPromociones += '- Si el cliente pregunta por promociones o envio gratis, informale de esta promo y el horario en que aplica.\n';
       textoPromociones += '- NO apliques envio gratis fuera de ese horario.';
     }
