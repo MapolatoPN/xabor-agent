@@ -175,8 +175,14 @@ button:hover { opacity: 0.85; }
 /* ─── Vista Presencial / POS ────────────────────────────────────────────── */
 #pos-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; height: calc(100vh - 130px); }
 #pos-menu { overflow-y: auto; padding-right: 4px; }
-.pos-cat-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #aaa; margin: 16px 0 8px; }
-.pos-cat-title:first-child { margin-top: 0; }
+.pos-cat-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+  color: #888; margin: 14px 0 6px; cursor: pointer; user-select: none;
+  padding: 5px 8px; border-radius: 6px; transition: background .12s;
+}
+.pos-cat-header:first-child { margin-top: 0; }
+.pos-cat-header:hover { background: #ebe9e3; color: #555; }
 .pos-productos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 4px; }
 .pos-producto {
   background: #fff;
@@ -330,11 +336,17 @@ button:hover { opacity: 0.85; }
 
       <!-- Menú -->
       <div id="pos-menu">
-        <div class="pos-cat-title">🥖 Paninis &amp; Focaccias</div>
+        <div class="pos-cat-header" onclick="toggleCat('paninis')">
+          <span>🥖 Paninis &amp; Focaccias</span><span id="arrow-paninis">▾</span>
+        </div>
         <div class="pos-productos-grid" id="cat-paninis"></div>
-        <div class="pos-cat-title">🥗 Ensaladas</div>
+        <div class="pos-cat-header" onclick="toggleCat('ensaladas')">
+          <span>🥗 Ensaladas</span><span id="arrow-ensaladas">▾</span>
+        </div>
         <div class="pos-productos-grid" id="cat-ensaladas"></div>
-        <div class="pos-cat-title">🥤 Bebidas</div>
+        <div class="pos-cat-header" onclick="toggleCat('bebidas')">
+          <span>🥤 Bebidas</span><span id="arrow-bebidas">▾</span>
+        </div>
         <div class="pos-productos-grid" id="cat-bebidas"></div>
       </div>
 
@@ -357,6 +369,25 @@ button:hover { opacity: 0.85; }
                 <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
               </div>
             </div>
+            <div>
+              <label>Descuento</label>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                  style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                <div style="display:flex;gap:4px;">
+                  <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
+                  <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
+            <span style="font-size:0.8rem;color:#aaa;">Subtotal</span>
+            <span id="pos-subtotal-monto" style="font-size:0.9rem;color:#888;">$0</span>
+          </div>
+          <div id="pos-desc-row" style="display:none;justify-content:space-between;align-items:baseline;">
+            <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
+            <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
           </div>
           <div id="pos-total-row">
             <span id="pos-total-label">Total</span>
@@ -788,9 +819,26 @@ const MENU_POS = [
   { cat:'bebidas', nombre:'Olipop',         precio:79 },
 ];
 
-let posCarrito = []; // [{ nombre, precio_unitario, cantidad, notas }]
-let posPagoSel = 'efectivo';
+let posCarrito   = [];
+let posPagoSel   = 'efectivo';
+let posDescTipo  = 'pesos'; // 'pesos' | 'pct'
 let menuRendered = false;
+const catState   = { paninis: true, ensaladas: true, bebidas: true };
+
+function toggleCat(cat) {
+  catState[cat] = !catState[cat];
+  const grid  = document.getElementById(`cat-${cat}`);
+  const arrow = document.getElementById(`arrow-${cat}`);
+  grid.style.display  = catState[cat] ? '' : 'none';
+  arrow.textContent   = catState[cat] ? '▾' : '▸';
+}
+
+function selDescTipo(tipo, btn) {
+  posDescTipo = tipo;
+  document.querySelectorAll('#desc-tipo-pesos,#desc-tipo-pct').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  renderCarrito();
+}
 
 function renderMenuPOS() {
   if (menuRendered) return;
@@ -813,16 +861,32 @@ function agregarAlCarrito(prod) {
   renderCarrito();
 }
 
+function calcDescuento(subtotal) {
+  const val = parseFloat(document.getElementById('pos-descuento-val')?.value || 0) || 0;
+  if (posDescTipo === 'pct') return Math.round(subtotal * val / 100);
+  return Math.min(val, subtotal);
+}
+
 function renderCarrito() {
   const cont = document.getElementById('pos-order-items');
-  const empty = document.getElementById('pos-empty');
   if (!posCarrito.length) {
     cont.innerHTML = '<div class="pos-order-empty" id="pos-empty">Selecciona productos del menú →</div>';
     document.getElementById('pos-total-monto').textContent = '$0';
+    document.getElementById('pos-subtotal-row').style.display = 'none';
+    document.getElementById('pos-desc-row').style.display = 'none';
     document.getElementById('btn-confirmar-presencial').disabled = true;
     return;
   }
-  const total = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const subtotal  = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const descuento = calcDescuento(subtotal);
+  const total     = subtotal - descuento;
+  const tieneDesc = descuento > 0;
+  document.getElementById('pos-subtotal-row').style.display = tieneDesc ? 'flex' : 'none';
+  document.getElementById('pos-desc-row').style.display     = tieneDesc ? 'flex' : 'none';
+  document.getElementById('pos-subtotal-monto').textContent = `$${subtotal}`;
+  document.getElementById('pos-desc-monto').textContent     = `-$${descuento}`;
+  document.getElementById('pos-total-monto').textContent    = `$${total}`;
+  document.getElementById('btn-confirmar-presencial').disabled = false;
   cont.innerHTML = posCarrito.map((item, idx) => `
     <div class="pos-order-item">
       <div class="poi-qty">${item.cantidad}</div>
@@ -859,22 +923,23 @@ function selPago(btn) {
 async function confirmarPresencial() {
   if (!posCarrito.length) return;
   const nombre    = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
-  const total     = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const subtotal  = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const descuento = calcDescuento(subtotal);
+  const total     = subtotal - descuento;
   const btn       = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Procesando...';
   try {
     const r = await apiFetch('/api/pedido-presencial', {
       method: 'POST',
-      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total })
+      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: posPagoSel, total, descuento })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
     else {
-      // Limpiar carrito
       posCarrito = [];
       document.getElementById('pos-nombre-input').value = '';
+      document.getElementById('pos-descuento-val').value = '';
       renderCarrito();
-      // Ir a comandas
       mostrarTab('comandas');
     }
   } catch(e) { alert('Error de conexión.'); }
