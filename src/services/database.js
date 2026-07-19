@@ -383,6 +383,30 @@ export async function obtenerPedidoActivoPorFolio(folio) {
   }
 }
 
+// Busca en activos Y en programados — útil para enlace de pago anticipado
+export async function obtenerPedidoPorFolioAmplio(folio) {
+  try {
+    // Primero en activos
+    const activo = await pool.query(
+      `SELECT datos, 'activo' AS origen FROM pedidos_activos WHERE folio = $1 AND estado != 'entregado'`,
+      [folio]
+    );
+    if (activo.rows[0]) return { ...activo.rows[0].datos, _origen: 'activo' };
+
+    // Si no, en programados
+    const prog = await pool.query(
+      `SELECT datos, programado_para FROM pedidos_programados WHERE folio = $1 AND activado = FALSE`,
+      [folio]
+    );
+    if (prog.rows[0]) return { ...prog.rows[0].datos, _origen: 'programado', programado_para: prog.rows[0].programado_para };
+
+    return null;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidoPorFolioAmplio:', e.message);
+    return null;
+  }
+}
+
 export async function archivarPedidoActivo(folio) {
   try {
     await pool.query(`

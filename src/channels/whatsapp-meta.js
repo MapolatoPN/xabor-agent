@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, guardarPedidoProgramado } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -145,12 +145,16 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     const folioNum   = matchFolio?.[1] ?? matchFolio?.[2];
     if (folioNum && process.env.CLIP_API_KEY) {
       const folio    = `XAB-${folioNum.padStart(4, '0')}`;
-      const pedidoDB = await obtenerPedidoActivoPorFolio(folio);
-      console.log(`[Meta WA] Folio detectado: ${folio} — pedido en DB:`, pedidoDB ? 'sí' : 'no');
+      const pedidoDB = await obtenerPedidoPorFolioAmplio(folio);
+      console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
           const clip = await crearLinkDePago({ pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
-          const msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${clip.url}\n\nTotal: $${pedidoDB.total} MXN`;
+          let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${clip.url}\n\nTotal: $${pedidoDB.total} MXN`;
+          if (pedidoDB._origen === 'programado' && pedidoDB.programado_para) {
+            const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
+            msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
+          }
           await enviarMensaje(telefono, msg);
           await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
         } catch (e) {
@@ -160,7 +164,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         return;
       }
       if (!pedidoDB) {
-        await enviarMensaje(telefono, `No encontramos un pedido activo con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`);
+        await enviarMensaje(telefono, `No encontramos un pedido con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`);
         await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`);
         return;
       }
