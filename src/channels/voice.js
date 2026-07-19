@@ -113,10 +113,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
         procesando = true;
 
-        // Token inmediato para que Twilio no cierre la conexión mientras Anthropic arranca
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'text', token: 'Un momento...', last: false }));
-        }
+        // Sin filler — mandamos el primer fragmento real en cuanto Claude arranca
 
         try {
           const resultado = await procesarMensajeStream(

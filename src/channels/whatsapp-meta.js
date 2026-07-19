@@ -140,9 +140,11 @@ async function notificarEscalacion(telefono) {
 async function procesarConClaude(telefono, texto, nombreMeta) {
   try {
     // Folio para pago
-    const matchFolio = texto.match(/(?:folio[\s:]*(?:XAB[\s-]?)?|XAB[\s-]?)(\d{1,4})/i);
-    if (matchFolio && process.env.CLIP_API_KEY) {
-      const folio    = `XAB-${matchFolio[1].padStart(4, '0')}`;
+    // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
+    const matchFolio = texto.match(/(?:xab[-\s]?(\d{1,4}))|(?:folio[\s:]*(?:xab[-\s]?)?(\d{1,4}))/i);
+    const folioNum   = matchFolio?.[1] ?? matchFolio?.[2];
+    if (folioNum && process.env.CLIP_API_KEY) {
+      const folio    = `XAB-${folioNum.padStart(4, '0')}`;
       const pedidoDB = await obtenerPedidoActivoPorFolio(folio);
       console.log(`[Meta WA] Folio detectado: ${folio} — pedido en DB:`, pedidoDB ? 'sí' : 'no');
       if (pedidoDB && !pedidoDB.pago_confirmado) {
