@@ -116,7 +116,9 @@ export function setupVoiceWebSocket(wssVoice) {
 
         procesando = true;
 
-        // Sin filler — mandamos el primer fragmento real en cuanto Claude arranca
+        const t0 = Date.now(); // Recibimos el prompt del cliente
+        let t1 = null;         // Primera frase enviada a ElevenLabs (TTFF)
+        let numFrases = 0;
 
         try {
           const frasesAgente = []; // Acumula para transcripción
@@ -126,12 +128,22 @@ export function setupVoiceWebSocket(wssVoice) {
             (frase) => {
               const limpia = limpiarParaVoz(frase);
               if (!limpia) return;
+              numFrases++;
+              if (!t1) {
+                t1 = Date.now();
+                console.log(`[Voz ⏱] TTFF (prompt→primera frase): ${t1 - t0}ms — "${limpia.slice(0,40)}..."`);
+              } else {
+                console.log(`[Voz ⏱] Frase ${numFrases} (+${Date.now() - t1}ms desde primera): "${limpia.slice(0,40)}"`);
+              }
               frasesAgente.push(limpia);
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'text', token: limpia, last: false }));
               }
             }
           );
+
+          const t2 = Date.now();
+          console.log(`[Voz ⏱] Claude terminó: ${t2 - t0}ms total | ${numFrases} frases | TTFF=${t1 ? t1-t0 : 'n/a'}ms`);
 
           let textoExtra = '';
           if (resultado.orden) {
