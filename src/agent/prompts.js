@@ -167,6 +167,7 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
         contextoCliente += `  • ${fecha}: ${items} — $${p.total}\n`;
       }
       contextoCliente += `- Si el cliente lo desea, puedes ofrecerle repetir su último pedido.\n`;
+      contextoCliente += `- CLIENTE FRECUENTE: ya conoce el menú. NO lo expliques a menos que él lo pida. Ve directo a tomar su pedido con una pregunta corta y natural como "¿en qué te puedo ayudar?" o "¿qué se te antoja hoy?". NUNCA digas "¿qué te traigo?" ni "¿lo mismo de siempre?".\n`;
     }
     contextoCliente += `- Salúdalo por su nombre si lo conoces.\n`;
   }
@@ -186,6 +187,8 @@ REGLA PRINCIPAL: sé breve. Cada respuesta debe ser lo más corta posible manten
 - Focaccia Bar: el cliente puede elegir HASTA 2 spreads. Acepta ambos sin confundirte. Registra ambos en las notas.
 - Para enlace de pago: confirma el pedido y el total. NO menciones el folio — el sistema lo anuncia automáticamente.
 - Si el cliente pide que repitas algo, repítelo de inmediato.
+- MODIFICACIONES MID-ORDER: si el cliente agrega o quita un ingrediente a algo que ya quedó claro (ej. "agrega pepino", "quita el jalapeño"), confirma SOLO ese cambio en una oración ("Pepino agregado" o "Jalapeño quitado"). NO repitas toda la orden — eso ya viene en el resumen final.
+- RESUMEN FINAL: hazlo UNA SOLA VEZ, solo cuando el cliente confirme que es todo. Incluye artículos + total. Omite ingrediente por ingrediente si ya fueron confirmados durante la conversación — di algo como "tu Focaccia Bar con los ingredientes que elegiste" en lugar de listarlos de nuevo.
 - Despedidas cortas: "¡Hasta pronto!" o "¡Que lo disfrutes!"
 - RESTAURANTE CERRADO: si el estado dice CERRADO, informa al cliente con amabilidad y NO tomes el pedido bajo ninguna circunstancia. Ejemplo: "Por el momento estamos cerrados, pero puedes llamarnos en horario de lunes a sábado de once de la mañana a diez de la noche."
 
