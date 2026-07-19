@@ -311,7 +311,8 @@ button:hover { opacity: 0.85; }
   <button class="tab-btn activo" id="tab-comandas" onclick="mostrarTab('comandas')">🍽️ Comandas</button>
   <button class="tab-btn" id="tab-presencial" onclick="mostrarTab('presencial')">🧑‍💼 Presencial</button>
   <button class="tab-btn" id="tab-chats" onclick="mostrarTab('chats')">💬 Chats <span id="badge-chats" class="badge">0</span></button>
-  <button class="tab-btn" id="tab-ventas" onclick="mostrarTab('ventas')">📊 Ventas</button>
+  <button class="tab-btn" id="tab-ventas" onclick="mostrarTab('ventas')" style="display:none">📊 Ventas</button>
+  <button class="tab-btn" id="tab-corte" onclick="mostrarTab('corte')">🧾 Corte de caja</button>
   <button class="tab-btn" id="tab-historial" onclick="mostrarTab('historial')">📋 Historial</button>
 </div>
 
@@ -364,6 +365,38 @@ button:hover { opacity: 0.85; }
           <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Tab Corte de caja -->
+  <div id="vista-corte" style="display:none;padding:0 0 24px;max-width:680px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:1.1rem;font-weight:800;color:#1a1a1a;" id="corte-fecha">—</div>
+        <div style="font-size:0.8rem;color:#aaa;">Resumen del día</div>
+      </div>
+      <button onclick="cargarCorte()" style="background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:7px 14px;font-size:0.82rem;color:#555;cursor:pointer;">🔄 Actualizar</button>
+    </div>
+
+    <!-- Totales por forma de pago -->
+    <div id="corte-pagos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px;"></div>
+
+    <!-- Total general -->
+    <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">TOTAL DEL DÍA</div>
+        <div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div>
+        <div style="font-size:2rem;font-weight:800;color:#e8a020;" id="corte-num">0</div>
+      </div>
+    </div>
+
+    <!-- Lista de pedidos del día -->
+    <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;">
+      <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;color:#1a1a1a;">Pedidos del día</div>
+      <div id="corte-lista"></div>
     </div>
   </div>
 
@@ -437,8 +470,9 @@ button:hover { opacity: 0.85; }
 </main>
 
 <script>
-// ─── Auth ────────────────────────────────────────────────────────────────────
+// ─── Auth y roles ─────────────────────────────────────────────────────────────
 const TOKEN = sessionStorage.getItem('xabor_token');
+const ROLE  = sessionStorage.getItem('xabor_role') || 'staff';
 if (!TOKEN) location.href = '/login.html';
 
 function apiFetch(url, opts = {}) {
@@ -447,8 +481,15 @@ function apiFetch(url, opts = {}) {
     headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) }
   });
 }
-apiFetch('/api/auth/verify').then(r => {
-  if (!r.ok) { sessionStorage.removeItem('xabor_token'); location.href = '/login.html'; }
+apiFetch('/api/auth/verify').then(async r => {
+  if (!r.ok) { sessionStorage.removeItem('xabor_token'); location.href = '/login.html'; return; }
+  const data = await r.json();
+  const role = data.role || ROLE;
+  sessionStorage.setItem('xabor_role', role);
+  // Solo admin ve el tab de Ventas completo
+  if (role === 'admin') {
+    document.getElementById('tab-ventas').style.display = '';
+  }
 });
 
 // ─── Estado global ───────────────────────────────────────────────────────────
@@ -684,14 +725,17 @@ function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 function mostrarTab(tab) {
-  ['comandas','presencial','chats','ventas','historial'].forEach(t => {
-    document.getElementById(`vista-${t}`).style.display = t === tab ? '' : 'none';
-    document.getElementById(`tab-${t}`).classList.toggle('activo', t === tab);
+  ['comandas','presencial','chats','corte','ventas','historial'].forEach(t => {
+    const vista = document.getElementById(`vista-${t}`);
+    const btn   = document.getElementById(`tab-${t}`);
+    if (vista) vista.style.display = t === tab ? '' : 'none';
+    if (btn && btn.style.display !== 'none') btn.classList.toggle('activo', t === tab);
   });
-  if (tab === 'chats')    { document.getElementById('badge-chats').style.display='none'; chatNuevos=0; cargarConversaciones(); }
-  if (tab === 'ventas')   setPeriodo('hoy');
+  if (tab === 'chats')     { document.getElementById('badge-chats').style.display='none'; chatNuevos=0; cargarConversaciones(); }
+  if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'historial') cargarHistorial();
   if (tab === 'presencial') renderMenuPOS();
+  if (tab === 'corte')     cargarCorte();
 }
 
 // ─── Modal WhatsApp ──────────────────────────────────────────────────────────
@@ -942,6 +986,41 @@ async function enviarDesdeChat() {
 document.getElementById('chat-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarDesdeChat(); }
 });
+
+// ─── Corte de caja ───────────────────────────────────────────────────────────
+async function cargarCorte() {
+  document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando...</div>';
+  const data = await apiFetch('/api/corte-caja').then(r => r.json()).catch(() => null);
+  if (!data) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;">Error al cargar</div>'; return; }
+
+  document.getElementById('corte-fecha').textContent = data.fecha;
+  document.getElementById('corte-total').textContent = '$' + parseFloat(data.total_dia||0).toFixed(2);
+  document.getElementById('corte-num').textContent   = data.num_pedidos || 0;
+
+  const pagoIcons = { 'efectivo': '💵', 'terminal (tarjeta presente)': '💳', 'enlace de pago': '🔗' };
+  const pagosHTML = Object.entries(data.por_pago || {}).map(([pago, info]) => `
+    <div class="pos-card" style="border-left:4px solid #e8a020;">
+      <div class="pos-card-label">${pagoIcons[pago]||'💰'} ${pago.charAt(0).toUpperCase()+pago.slice(1)}</div>
+      <div class="pos-card-value">$${info.total.toFixed(2)}</div>
+      <div style="font-size:0.75rem;color:#aaa;margin-top:2px;">${info.count} pedido${info.count!==1?'s':''}</div>
+    </div>`).join('');
+  document.getElementById('corte-pagos').innerHTML = pagosHTML || '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas hoy</div>';
+
+  const lista = data.pedidos || [];
+  if (!lista.length) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos hoy</div>'; return; }
+  document.getElementById('corte-lista').innerHTML = lista.map(p => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.88rem;">
+      <div style="display:flex;gap:12px;align-items:center;flex:1;min-width:0;">
+        <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${p.hora}</span>
+        <span style="font-weight:700;color:#1a1a1a;white-space:nowrap;">${p.folio}</span>
+        <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</span>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;flex-shrink:0;">
+        <span style="font-size:0.75rem;color:#aaa;">${p.forma_pago}</span>
+        <span style="font-weight:800;color:#22c55e;">$${p.total.toFixed(2)}</span>
+      </div>
+    </div>`).join('');
+}
 
 // ─── Historial ───────────────────────────────────────────────────────────────
 async function cargarHistorial() {

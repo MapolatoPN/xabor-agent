@@ -123,6 +123,7 @@ async function login() {
     const data = await resp.json();
     if (data.token) {
       sessionStorage.setItem('xabor_token', data.token);
+      sessionStorage.setItem('xabor_role', data.role || 'staff');
       location.href = '/';
     } else {
       err.textContent = '❌ Contraseña incorrecta';

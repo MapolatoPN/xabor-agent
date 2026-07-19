@@ -37,7 +37,16 @@ function generarToken(password) {
   return createHmac('sha256', PANEL_SECRET).update(password).digest('hex');
 }
 
-const TOKEN_VALIDO = generarToken(PANEL_PASSWORD);
+const TOKEN_STAFF = generarToken(PANEL_PASSWORD);
+const TOKEN_ADMIN = generarToken(ADMIN_PASSWORD);
+// Compatibilidad con nombre antiguo
+const TOKEN_VALIDO = TOKEN_STAFF;
+
+function getRole(token) {
+  if (token === TOKEN_ADMIN)  return 'admin';
+  if (token === TOKEN_STAFF)  return 'staff';
+  return null;
+}
 
 function requireAuth(req, res, next) {
   const auth = req.headers['authorization'];
@@ -45,9 +54,18 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'No autorizado' });
   }
   const token = auth.slice(7);
-  if (token !== TOKEN_VALIDO) {
-    return res.status(401).json({ error: 'Token inválido' });
-  }
+  const role  = getRole(token);
+  if (!role) return res.status(401).json({ error: 'Token inválido' });
+  req.role = role;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+  const token = auth.slice(7);
+  if (token !== TOKEN_ADMIN) return res.status(403).json({ error: 'Solo administradores' });
+  req.role = 'admin';
   next();
 }
 
@@ -146,14 +164,14 @@ app.get('/pago/gracias', (req, res) => {
 // Auth — rutas públicas (no requieren token)
 app.post('/api/auth/login', (req, res) => {
   const { password } = req.body;
-  if (!password || password !== PANEL_PASSWORD) {
-    return res.status(401).json({ error: 'Contraseña incorrecta' });
-  }
-  res.json({ token: TOKEN_VALIDO });
+  if (!password) return res.status(401).json({ error: 'Contraseña incorrecta' });
+  if (password === ADMIN_PASSWORD) return res.json({ token: TOKEN_ADMIN, role: 'admin' });
+  if (password === PANEL_PASSWORD) return res.json({ token: TOKEN_STAFF, role: 'staff' });
+  return res.status(401).json({ error: 'Contraseña incorrecta' });
 });
 
 app.get('/api/auth/verify', requireAuth, (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, role: req.role });
 });
 
 // Proteger todas las rutas /api/* excepto las de auth
@@ -283,8 +301,8 @@ app.get('/api/historial', requireAuth, async (req, res) => {
   res.json(lista);
 });
 
-// POS — Ventas
-app.get('/api/ventas', async (req, res) => {
+// POS — Ventas (solo admin)
+app.get('/api/ventas', requireAdmin, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
   const h = hasta || new Date().toISOString();
@@ -292,12 +310,43 @@ app.get('/api/ventas', async (req, res) => {
   res.json(ventas);
 });
 
-app.get('/api/ventas/resumen', async (req, res) => {
+app.get('/api/ventas/resumen', requireAdmin, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
   const h = hasta || new Date().toISOString();
   const resumen = await obtenerResumenVentas(d, h);
   res.json(resumen);
+});
+
+// Corte de caja — disponible para staff (resumen del día por forma de pago)
+app.get('/api/corte-caja', requireAuth, async (req, res) => {
+  const d = new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const h = new Date().toISOString();
+  const [ventas, resumen] = await Promise.all([
+    obtenerVentas(d, h),
+    obtenerResumenVentas(d, h)
+  ]);
+  // Agrupar por forma de pago
+  const porPago = {};
+  (ventas || []).forEach(v => {
+    const pago = v.forma_pago || 'no especificado';
+    if (!porPago[pago]) porPago[pago] = { count: 0, total: 0 };
+    porPago[pago].count++;
+    porPago[pago].total += parseFloat(v.total || 0);
+  });
+  res.json({
+    fecha: new Date().toLocaleDateString('es-MX', { timeZone: 'America/Matamoros', dateStyle: 'full' }),
+    total_dia: resumen.total_ventas || 0,
+    num_pedidos: resumen.num_pedidos || 0,
+    por_pago: porPago,
+    pedidos: (ventas || []).map(v => ({
+      folio: v.folio || '#'+v.id,
+      hora: new Date(v.created_at).toLocaleTimeString('es-MX', { timeZone: 'America/Matamoros', hour: '2-digit', minute: '2-digit', hour12: true }),
+      cliente: v.nombre_cliente || '—',
+      forma_pago: v.forma_pago || '—',
+      total: parseFloat(v.total || 0)
+    }))
+  });
 });
 
 // Control manual del bot por conversación
