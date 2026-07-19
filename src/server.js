@@ -11,6 +11,7 @@ import {
   registrarPedido,
   emitirPedido,
   actualizarEstadoPedido,
+  eliminarPedido,
   obtenerPedidos,
   setWsBroadcast,
   cargarPedidosDesdeDB
@@ -213,6 +214,13 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   const pedido = actualizarEstadoPedido(req.params.id, estado);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
   res.json(pedido);
+});
+
+// Eliminar pedido (pruebas / limpieza)
+app.delete('/pedidos/:id', async (req, res) => {
+  const ok = await eliminarPedido(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
+  res.json({ ok: true });
 });
 
 // Conversaciones WhatsApp

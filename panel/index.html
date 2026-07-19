@@ -50,6 +50,7 @@ button:hover { opacity: 0.85; }
 .btn-preparando { background: #ffd166; color: #000; }
 .btn-listo { background: #06d6a0; color: #000; }
 .btn-entregado { background: #555; color: #fff; }
+.btn-eliminar { background: transparent; color: #e63946; border: 1px solid #e63946 !important; font-size: 0.75rem; padding: 5px 10px; }
 .comanda-hora { font-size: 0.75rem; color: #666; margin-top: 8px; }
 
 /* ─── Impresión térmica 80mm ─────────────────────────────────────────── */
@@ -506,6 +507,12 @@ function conectarWS() {
       const msg = JSON.parse(event.data);
       if (msg.tipo === 'nuevo_pedido') agregarPedido(msg.pedido);
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
+      if (msg.tipo === 'eliminar_pedido') {
+        const card = document.getElementById(`comanda-${msg.id}`);
+        if (card) card.remove();
+        delete pedidos[msg.id];
+        actualizarContador();
+      }
       if (msg.tipo === 'nuevo_mensaje') recibirMensajeWS(msg.mensaje);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
@@ -659,6 +666,7 @@ function renderComanda(p) {
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}', 'en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo" onclick="cambiarEstado('${p.id}', 'listo')">✅ Listo</button>
       <button class="btn-entregado" onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
+      <button class="btn-eliminar" onclick="eliminarComanda('${p.id}')">🗑️ Eliminar</button>
     </div>
   `;
 }
@@ -697,6 +705,16 @@ function cambiarEstado(id, nuevoEstado) {
     method: 'PATCH',
     body: JSON.stringify({ estado: nuevoEstado })
   }).then(() => actualizarEstadoUI(id, nuevoEstado));
+}
+
+function eliminarComanda(id) {
+  if (!confirm(`¿Eliminar el pedido ${id}? Esto lo borrará de la base de datos y no aparecerá en historial.`)) return;
+  apiFetch(`/pedidos/${id}`, { method: 'DELETE' }).then(() => {
+    const card = document.getElementById(`comanda-${id}`);
+    if (card) card.remove();
+    delete pedidos[id];
+    actualizarContador();
+  });
 }
 
 function marcarEntregado(id) {

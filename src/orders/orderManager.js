@@ -6,7 +6,8 @@ import {
   actualizarEstadoPedidoDB,
   archivarPedidoActivo,
   obtenerPedidosActivos,
-  obtenerMaxFolioNum
+  obtenerMaxFolioNum,
+  eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 
 let wsBroadcast = null;
@@ -99,4 +100,13 @@ export function obtenerPedidos() {
 
 export function obtenerPedidoPorId(id) {
   return pedidos.find(p => p.id === id);
+}
+
+export async function eliminarPedido(id) {
+  const idx = pedidos.findIndex(p => p.id === id);
+  if (idx === -1) return false;
+  pedidos.splice(idx, 1);
+  await eliminarPedidoDB(id);
+  if (wsBroadcast) wsBroadcast({ tipo: 'eliminar_pedido', id });
+  return true;
 }

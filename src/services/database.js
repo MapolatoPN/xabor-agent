@@ -386,6 +386,16 @@ export async function archivarPedidoActivo(folio) {
   }
 }
 
+export async function eliminarPedido(folio) {
+  try {
+    await pool.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [folio]);
+    await pool.query(`DELETE FROM pedidos WHERE folio = $1`, [folio]);
+  } catch (e) {
+    console.error('[DB] Error eliminarPedido:', e.message);
+    throw e;
+  }
+}
+
 // ─── Prompt improvements ─────────────────────────────────────────────────────
 export async function guardarSugerencias(semana, sugerencias) {
   try {
