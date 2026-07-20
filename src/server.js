@@ -17,12 +17,13 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
+import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -544,6 +545,25 @@ async function sincronizarRappi() {
   }
 }
 
+// ─── Reconciliación de pagos Clip ─────────────────────────────────────────────
+// Revisa cada 5 min si algún pago con enlace ya fue completado (por si el webhook falló)
+async function reconciliarPagosPendientes() {
+  if (!process.env.CLIP_API_KEY || !process.env.CLIP_API_SECRET) return;
+  try {
+    const pendientes = await obtenerPagosPendientesConLink();
+    for (const { folio, clip_link_id } of pendientes) {
+      const data = await consultarEstadoPago(clip_link_id);
+      if (data?.resource_status === 'COMPLETED' && data?.resource === 'CHECKOUT') {
+        await confirmarPagoPedido(folio);
+        broadcast({ tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
+        console.log(`[Clip Reconciliación] ✅ Pago confirmado automáticamente: ${folio}`);
+      }
+    }
+  } catch (e) {
+    console.error('[Clip Reconciliación] Error:', e.message);
+  }
+}
+
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
   .then(() => cargarPedidosDesdeDB())
@@ -554,6 +574,9 @@ initDB()
     // Sincronizar horario de Rappi al arrancar y cada 5 minutos
     sincronizarRappi();
     setInterval(sincronizarRappi, 5 * 60 * 1000);
+    // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
+    reconciliarPagosPendientes();
+    setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
   })
   .catch(e => console.error('[DB] Error al inicializar:', e.message));
 

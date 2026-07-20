@@ -24,6 +24,22 @@ function getAuthHeader() {
  * @param {object}  [opts.cliente]       - { nombre, telefono }
  * @returns {Promise<{ linkId: string, url: string, status: string }>}
  */
+/**
+ * Consulta el estado actual de un link de pago en Clip.
+ * Devuelve { resource_status, me_reference_id } o null si falla.
+ */
+export async function consultarEstadoPago(linkId) {
+  try {
+    const resp = await fetch(`https://api.payclip.com/v2/checkout/${linkId}`, {
+      headers: { 'Authorization': getAuthHeader() }
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function crearLinkDePago({ pedidoId, total, descripcion, cliente = {} }) {
   const baseUrl    = process.env.PUBLIC_URL || 'https://xabor.up.railway.app';
   const webhookUrl = `${baseUrl}/webhook/clip`;

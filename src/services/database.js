@@ -369,6 +369,37 @@ export async function obtenerMaxFolioNum() {
   }
 }
 
+// Guarda el Clip payment_request_id en el pedido para reconciliación
+export async function guardarLinkPago(folio, clipLinkId) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos
+      SET datos = datos || $2::jsonb, updated_at = NOW()
+      WHERE folio = $1
+    `, [folio, JSON.stringify({ clip_link_id: clipLinkId })]);
+  } catch (e) {
+    console.error('[DB] Error guardarLinkPago:', e.message);
+  }
+}
+
+// Devuelve pedidos con pago pendiente que tienen un clip_link_id guardado
+export async function obtenerPagosPendientesConLink() {
+  try {
+    const result = await pool.query(`
+      SELECT folio, datos->>'clip_link_id' AS clip_link_id
+      FROM pedidos_activos
+      WHERE datos->>'forma_pago' = 'enlace de pago'
+        AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        AND datos->>'clip_link_id' IS NOT NULL
+        AND estado != 'entregado'
+    `);
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerPagosPendientesConLink:', e.message);
+    return [];
+  }
+}
+
 export async function confirmarPagoPedido(folio) {
   try {
     await pool.query(`

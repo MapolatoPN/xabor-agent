@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -179,6 +179,8 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         const total  = pedido?.total || 0;
         const clip   = await crearLinkDePago({ pedidoId: pedidoPendiente, total, descripcion: `Pedido Xabor #${pedidoPendiente}`, cliente: pedido?.cliente || {} });
         await clearPagoPendiente(telefono);
+        // Guardar link_id para reconciliación automática
+        await guardarLinkPago(pedidoPendiente, clip.linkId);
         const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
         await enviarMensaje(telefono, mensajePago);
         await guardarMensaje(telefono, null, 'saliente', mensajePago);
