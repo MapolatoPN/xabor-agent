@@ -22,33 +22,42 @@ const STORE_ID = process.env.RAPPI_STORE_ID || '900172582';
 // ─── Webhook unificado ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const body = req.body;
+  const tipo = body?.type || '';
 
-  // PING — health check de Rappi (cada ~3 min)
-  if (body && body.store_id && !body.id && !body.order_id) {
-    console.log(`[Rappi] PING para tienda ${body.store_id}`);
+  // PING — health check de Rappi
+  if (tipo === 'PING' || (body?.store_id && !body?.id && !body?.order_id && !tipo)) {
+    console.log(`[Rappi] PING para tienda ${body.store_id || STORE_ID}`);
     return res.json({ status: 'OK', description: 'Nonna Maye operando' });
   }
 
+  // MENU_APPROVED — menú aprobado por Rappi
+  if (tipo === 'MENU_APPROVED') {
+    console.log('[Rappi] ✅ Menú aprobado por Rappi');
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_aprobado', timestamp: new Date().toISOString() });
+    return res.json({ ok: true });
+  }
+
+  // MENU_REJECTED — menú rechazado, loguear razón
+  if (tipo === 'MENU_REJECTED') {
+    const razon = body.reason || body.message || 'sin detalle';
+    console.warn(`[Rappi] ❌ Menú rechazado: ${razon}`);
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', razon, timestamp: new Date().toISOString() });
+    return res.json({ ok: true });
+  }
+
   // ORDER_EVENT_CANCEL — cancelación
-  if (body && body.type && body.type.includes('cancel')) {
+  if (tipo.toLowerCase().includes('cancel')) {
     const orderId = body.order_id || body.id;
-    console.log(`[Rappi] Cancelación de orden ${orderId}: ${body.type}`);
-    // Emitir al panel
+    console.log(`[Rappi] Cancelación de orden ${orderId}: ${tipo}`);
     if (wsBroadcast) {
-      wsBroadcast({
-        tipo: 'rappi_cancelacion',
-        orderId,
-        motivo: body.type,
-        timestamp: new Date().toISOString()
-      });
+      wsBroadcast({ tipo: 'rappi_cancelacion', orderId, motivo: tipo, timestamp: new Date().toISOString() });
     }
     return res.json({ ok: true });
   }
 
   // NEW_ORDER — orden nueva
   if (body && (body.id || body.order_id)) {
-    // Responder inmediato a Rappi (< 5 seg o timeout)
-    res.json({ ok: true });
+    res.json({ ok: true }); // responder inmediato a Rappi (< 5 seg o timeout)
     procesarOrdenRappi(body).catch(e =>
       console.error('[Rappi] Error procesando orden:', e.message)
     );

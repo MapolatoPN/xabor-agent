@@ -813,7 +813,7 @@ function renderComanda(p) {
 
   const pagoStatus = p.pago_confirmado
     ? `<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado con Clip</span>`
-    : (p.forma_pago === 'enlace de pago' ? `<span style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
+    : (p.forma_pago === 'enlace de pago' ? `<span class="badge-pago-pendiente" style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
 
   const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
   const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
@@ -899,8 +899,17 @@ function actualizarEstadoUI(id, estado) {
 }
 
 function marcarPagoConfirmado(pedidoId) {
+  // Actualizar estado en memoria para que re-renders futuros sean correctos
+  if (pedidos[pedidoId]) pedidos[pedidoId].pago_confirmado = true;
+
   const card = document.getElementById(`comanda-${pedidoId}`);
-  if (!card || card.querySelector('.badge-pago-clip')) return;
+  if (!card) return;
+
+  // Quitar badge pendiente si existe
+  card.querySelector('.badge-pago-pendiente')?.remove();
+
+  // Agregar badge confirmado si no está ya
+  if (card.querySelector('.badge-pago-clip')) return;
   const badge = document.createElement('span');
   badge.className = 'badge-pago-clip';
   badge.style.cssText = 'background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;';

@@ -143,284 +143,188 @@ export async function actualizarEstadoTienda(activa) {
 }
 
 // ─── Catálogo / Menú ──────────────────────────────────────────────────────────
+// Schema aprobado por Rappi: estructura plana con items/children + camelCase
 
 /**
  * Sube o reemplaza el catálogo completo de la tienda en Rappi.
- * Endpoint: PUT /menus  (Rappi Integration API v2)
- * Docs: https://dev.rappi.com/docs/restaurants-menu-integration
+ * Endpoint: PUT /menus  (Rappi Integration API)
  */
 export async function subirCatalogo(catalogoRappi) {
   return rappiRequest('PUT', '/menus', catalogoRappi);
 }
 
 /**
- * Construye el payload del catálogo en formato Rappi a partir de menu.json
+ * Sube el catálogo completo (alias para re-subir desde el panel).
  */
+export async function actualizarSchedule() {
+  return subirCatalogo(construirCatalogoRappi());
+}
+
+// Helper para crear un topping con todos los campos requeridos
+function topping({ sku, name, description, categoryId, categoryName, categoryMinQty, categoryMaxQty, categorySortPos, sortingPosition, price = 0, maxLimit = 1 }) {
+  return {
+    sku,
+    name,
+    type: 'TOPPING',
+    price,
+    category: {
+      id: categoryId,
+      name: categoryName,
+      maxQty: categoryMaxQty,
+      minQty: categoryMinQty,
+      sortingPosition: categorySortPos
+    },
+    children: [],
+    imageUrl: '',
+    maxLimit,
+    description,
+    sortingPosition
+  };
+}
+
 export function construirCatalogoRappi() {
   return {
-    store_integration_id: STORE_ID,
-    categories: [
-      // ── Paninis ─────────────────────────────────────────────────────────
+    storeId: STORE_ID,
+    items: [
+
+      // ── Paninis ───────────────────────────────────────────────────────────
       {
-        integration_id: 'cat-paninis',
-        name: 'Paninis',
-        sorting_position: 1,
-        items: [
-          {
-            integration_id: 'PAN001',
-            name: 'Chicken Louisiana',
-            description: 'Pechuga de pollo al horno bañada en salsa Louisiana, acompañada de cebolla morada y pimientos rostizados, queso manchego y aderezo Ranch.',
-            price: 180,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'PAN002',
-            name: 'Chicken Parm',
-            description: 'Pechuga de pollo al horno y empanizada con queso parmesano, salsa de tomate, queso mozzarella y mezcla de lechugas.',
-            price: 189,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'PAN003',
-            name: 'Chicken Fit',
-            description: 'Pechuga de pollo a la plancha, tomate, pepino, lechuga, mayonesa chipotle y queso feta.',
-            price: 179,
-            available: true,
-            modifiers_groups: []
-          }
+        sku: 'PAN001', name: 'Chicken Louisiana', type: 'PRODUCT', price: 259,
+        category: { id: 'cat-paninis', name: 'Paninis', maxQty: 0, minQty: 0, sortingPosition: 1 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 1,
+        description: 'Pechuga de pollo al horno bañada en salsa Louisiana, con cebolla morada, pimientos rostizados, queso manchego y aderezo Ranch.'
+      },
+      {
+        sku: 'PAN002', name: 'Chicken Parm', type: 'PRODUCT', price: 270,
+        category: { id: 'cat-paninis', name: 'Paninis', maxQty: 0, minQty: 0, sortingPosition: 1 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 2,
+        description: 'Pechuga de pollo a la plancha, spread de Philadelphia con queso parmesano, salsa de tomate, queso mozzarella y mezcla de lechugas.'
+      },
+      {
+        sku: 'PAN003', name: 'Chicken Fit', type: 'PRODUCT', price: 256,
+        category: { id: 'cat-paninis', name: 'Paninis', maxQty: 0, minQty: 0, sortingPosition: 1 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 3,
+        description: 'Pechuga de pollo a la plancha, tomate, pepino, lechuga, mayonesa chipotle y queso feta.'
+      },
+
+      // ── Focaccia Bar ──────────────────────────────────────────────────────
+      {
+        sku: 'FOC001', name: 'Focaccia Bar', type: 'PRODUCT', price: 322,
+        category: { id: 'cat-focaccia', name: 'Focaccia Bar', maxQty: 0, minQty: 0, sortingPosition: 2 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 1,
+        description: 'Focaccia personalizada. Elige spread, proteína, queso, toppings y aderezo.',
+        children: [
+          // Spreads
+          topping({ sku: 'spread-pesto',   name: 'Pesto',                        description: 'Spread de pesto.',                                  categoryId: 'foc-spreads',   categoryName: 'Elige tu spread',   categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'spread-phila',   name: 'Philadelphia y parmesano',     description: 'Spread de queso Philadelphia con queso parmesano.', categoryId: 'foc-spreads',   categoryName: 'Elige tu spread',   categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 }),
+          topping({ sku: 'spread-tomate',  name: 'Pasta de tomate deshidratado', description: 'Spread elaborado con tomate deshidratado.',         categoryId: 'foc-spreads',   categoryName: 'Elige tu spread',   categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 3 }),
+          // Proteínas
+          topping({ sku: 'prot-salami',   name: 'Salami',          description: 'Porción de salami.',                   categoryId: 'foc-proteinas', categoryName: 'Elige tu proteína', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 2, sortingPosition: 1 }),
+          topping({ sku: 'prot-peperoni', name: 'Peperoni',        description: 'Porción de peperoni.',                 categoryId: 'foc-proteinas', categoryName: 'Elige tu proteína', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 2, sortingPosition: 2 }),
+          topping({ sku: 'prot-pavo',     name: 'Pechuga de pavo', description: 'Porción de pechuga de pavo horneada.', categoryId: 'foc-proteinas', categoryName: 'Elige tu proteína', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 2, sortingPosition: 3 }),
+          // Quesos
+          topping({ sku: 'q-manchego', name: 'Manchego',             description: 'Porción de queso manchego.',             categoryId: 'foc-quesos', categoryName: 'Elige tu queso', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 3, sortingPosition: 1 }),
+          topping({ sku: 'q-mozza',    name: 'Mozzarella',           description: 'Porción de queso mozzarella.',           categoryId: 'foc-quesos', categoryName: 'Elige tu queso', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 3, sortingPosition: 2 }),
+          topping({ sku: 'q-colby',    name: 'Monterrey Jack Colby', description: 'Porción de queso Monterrey Jack Colby.', categoryId: 'foc-quesos', categoryName: 'Elige tu queso', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 3, sortingPosition: 3 }),
+          topping({ sku: 'q-feta',     name: 'Feta',                 description: 'Porción de queso feta.',                categoryId: 'foc-quesos', categoryName: 'Elige tu queso', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 3, sortingPosition: 4 }),
+          // Toppings
+          topping({ sku: 'top-lechuga',    name: 'Lechuga',               description: 'Porción de lechuga.',               categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 1 }),
+          topping({ sku: 'top-espinacas',  name: 'Espinacas',             description: 'Porción de espinacas.',             categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 2 }),
+          topping({ sku: 'top-tomate',     name: 'Tomate',                description: 'Porción de tomate.',                categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 3 }),
+          topping({ sku: 'top-pepino',     name: 'Pepino',                description: 'Porción de pepino.',                categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 4 }),
+          topping({ sku: 'top-cebolla',    name: 'Cebolla morada',        description: 'Porción de cebolla morada.',        categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 5 }),
+          topping({ sku: 'top-aceitunas',  name: 'Aceitunas negras',      description: 'Porción de aceitunas negras.',      categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 6 }),
+          topping({ sku: 'top-pepinillos', name: 'Pepinillos',            description: 'Porción de pepinillos.',            categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 7 }),
+          topping({ sku: 'top-jalapenos',  name: 'Jalapeños',             description: 'Porción de jalapeños.',             categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 8 }),
+          topping({ sku: 'top-pimientos',  name: 'Pimientos rostizados',  description: 'Porción de pimientos rostizados.',  categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 9 }),
+          topping({ sku: 'top-champi',     name: 'Champiñones rostizados',description: 'Porción de champiñones rostizados.',categoryId: 'foc-toppings', categoryName: 'Elige tus toppings', categoryMinQty: 0, categoryMaxQty: 5, categorySortPos: 4, sortingPosition: 10 }),
+          // Aderezos
+          topping({ sku: 'ad-aceite',    name: 'Aceite de oliva',    description: 'Porción de aceite de oliva.',    categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 1 }),
+          topping({ sku: 'ad-chipotle',  name: 'Mayonesa chipotle',  description: 'Porción de mayonesa chipotle.',  categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 2 }),
+          topping({ sku: 'ad-ranch',     name: 'Ranch',              description: 'Porción de aderezo Ranch.',      categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 3 }),
+          topping({ sku: 'ad-glaseado',  name: 'Glaseado balsámico', description: 'Porción de glaseado balsámico.', categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 4 }),
+          topping({ sku: 'ad-vinagreta', name: 'Vinagreta balsámica',description: 'Porción de vinagreta balsámica.',categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 5 }),
+          topping({ sku: 'ad-italiano',  name: 'Aderezo italiano',   description: 'Porción de aderezo italiano.',   categoryId: 'foc-aderezos', categoryName: 'Elige tu aderezo', categoryMinQty: 0, categoryMaxQty: 2, categorySortPos: 5, sortingPosition: 6 })
         ]
       },
 
-      // ── Focaccia Bar ─────────────────────────────────────────────────────
+      // ── Ensaladas ─────────────────────────────────────────────────────────
       {
-        integration_id: 'cat-focaccia',
-        name: 'Focaccia Bar',
-        sorting_position: 2,
-        items: [
-          {
-            integration_id: 'FOC001',
-            name: 'Focaccia Bar',
-            description: 'Focaccia personalizada. Elige hasta 2 spreads, 1 proteína, 1 queso, toppings a gusto y hasta 4 aderezos.',
-            price: 225,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'fg-spread',
-                name: 'Spread (elige hasta 2)',
-                min_quantity: 0,
-                max_quantity: 2,
-                modifiers: [
-                  { integration_id: 'spread-pesto',   name: 'Pesto',                        price: 0 },
-                  { integration_id: 'spread-phila',   name: 'Philadelphia y parmesano',     price: 0 },
-                  { integration_id: 'spread-tomate',  name: 'Pasta de tomate deshidratado', price: 0 }
-                ]
-              },
-              {
-                integration_id: 'fg-proteina',
-                name: 'Proteína (elige 1)',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'prot-salami',  name: 'Salami',           price: 0 },
-                  { integration_id: 'prot-peperoni',name: 'Peperoni',         price: 0 },
-                  { integration_id: 'prot-pavo',    name: 'Pechuga de pavo',  price: 0 }
-                ]
-              },
-              {
-                integration_id: 'fg-queso',
-                name: 'Queso (elige 1)',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'q-manchego',  name: 'Manchego',              price: 0 },
-                  { integration_id: 'q-mozza',     name: 'Mozzarella',            price: 0 },
-                  { integration_id: 'q-colby',     name: 'Monterrey Jack Colby',  price: 0 },
-                  { integration_id: 'q-feta',      name: 'Feta',                  price: 0 }
-                ]
-              },
-              {
-                integration_id: 'fg-toppings',
-                name: 'Toppings',
-                min_quantity: 0,
-                max_quantity: 10,
-                modifiers: [
-                  { integration_id: 'top-lechuga',    name: 'Lechuga',                  price: 0 },
-                  { integration_id: 'top-espinacas',  name: 'Espinacas',               price: 0 },
-                  { integration_id: 'top-tomate',     name: 'Tomate',                  price: 0 },
-                  { integration_id: 'top-pepino',     name: 'Pepino',                  price: 0 },
-                  { integration_id: 'top-cebolla',    name: 'Cebolla morada',          price: 0 },
-                  { integration_id: 'top-aceitunas',  name: 'Aceitunas negras',        price: 0 },
-                  { integration_id: 'top-pepinillos', name: 'Pepinillos',              price: 0 },
-                  { integration_id: 'top-jalapenos',  name: 'Jalapeños',               price: 0 },
-                  { integration_id: 'top-pimientos',  name: 'Pimientos rostizados',    price: 0 },
-                  { integration_id: 'top-champi',     name: 'Champiñones rostizados',  price: 0 }
-                ]
-              },
-              {
-                integration_id: 'fg-aderezo',
-                name: 'Aderezo (hasta 4)',
-                min_quantity: 0,
-                max_quantity: 4,
-                modifiers: [
-                  { integration_id: 'ad-aceite',    name: 'Aceite de oliva',       price: 0 },
-                  { integration_id: 'ad-chipotle',  name: 'Mayo chipotle',         price: 0 },
-                  { integration_id: 'ad-ranch',     name: 'Aderezo Ranch',         price: 0 },
-                  { integration_id: 'ad-glassado',  name: 'Glassado balsámico',    price: 0 },
-                  { integration_id: 'ad-vinagreta', name: 'Vinagreta balsámica',   price: 0 },
-                  { integration_id: 'ad-italiano',  name: 'Aderezo italiano',      price: 0 }
-                ]
-              }
-            ]
-          }
+        sku: 'ENS001', name: 'Ensalada César', type: 'PRODUCT', price: 270,
+        category: { id: 'cat-ensaladas', name: 'Ensaladas', maxQty: 0, minQty: 0, sortingPosition: 3 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 1,
+        description: 'Lechuga, queso parmesano, queso feta, aderezo César, crotones hechos en casa y pechuga de pollo.'
+      },
+      {
+        sku: 'ENS002', name: 'Ensalada Clásica', type: 'PRODUCT', price: 259,
+        category: { id: 'cat-ensaladas', name: 'Ensaladas', maxQty: 0, minQty: 0, sortingPosition: 3 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 2,
+        description: 'Mezcla de lechuga, zanahoria, tomate, col morada, queso Monterrey Jack Colby, pechuga de pollo a la plancha, salsa Louisiana y crotones caseros.'
+      },
+      {
+        sku: 'ENS003', name: 'Ensalada del Bosque', type: 'PRODUCT', price: 265,
+        category: { id: 'cat-ensaladas', name: 'Ensaladas', maxQty: 0, minQty: 0, sortingPosition: 3 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 3,
+        description: 'Mezcla de lechuga y espinacas, manzana, blueberries, fresas, queso feta y nueces. Con pechuga de pollo al horno.'
+      },
+      {
+        sku: 'ENS004', name: 'Combo Focaccia + Media Ensalada', type: 'PRODUCT', price: 359,
+        category: { id: 'cat-ensaladas', name: 'Ensaladas', maxQty: 0, minQty: 0, sortingPosition: 3 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 4,
+        description: 'Una focaccia completa más media ensalada sin pollo de tu elección.',
+        children: [
+          topping({ sku: 'combo-cesar',   name: 'Media Ensalada César',       description: 'Media porción de Ensalada César sin pollo.',       categoryId: 'combo-ensalada', categoryName: 'Elige tu media ensalada', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'combo-clasica', name: 'Media Ensalada Clásica',     description: 'Media porción de Ensalada Clásica sin pollo.',     categoryId: 'combo-ensalada', categoryName: 'Elige tu media ensalada', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 }),
+          topping({ sku: 'combo-bosque',  name: 'Media Ensalada del Bosque',  description: 'Media porción de Ensalada del Bosque sin pollo.',  categoryId: 'combo-ensalada', categoryName: 'Elige tu media ensalada', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 3 })
         ]
       },
 
-      // ── Ensaladas ────────────────────────────────────────────────────────
+      // ── Bebidas ───────────────────────────────────────────────────────────
       {
-        integration_id: 'cat-ensaladas',
-        name: 'Ensaladas',
-        sorting_position: 3,
-        items: [
-          {
-            integration_id: 'ENS001',
-            name: 'Ensalada César',
-            description: 'Lechuga, queso parmesano, queso feta, aderezo césar, crotones hechos en casa y pechuga de pollo.',
-            price: 189,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'ENS002',
-            name: 'Ensalada Clásica',
-            description: 'Mezcla de lechuga, zanahoria, tomate, col morada, queso Monterrey Jack Colby, pechuga de pollo a la plancha, bañada en salsa Louisiana y crotones hechos en casa.',
-            price: 180,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'ENS003',
-            name: 'Ensalada del Bosque',
-            description: 'Mezcla de lechuga y espinacas, manzana, blueberries, fresas, queso feta y nueces. Acompañada de pechuga de pollo al horno.',
-            price: 185,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'ENS004',
-            name: 'Combo Focaccia + Media Ensalada',
-            description: 'Una Focaccia completa más media ensalada sin pollo de tu elección (César, Clásica o del Bosque).',
-            price: 250,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'combo-ensalada',
-                name: 'Elige tu media ensalada',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'combo-cesar',   name: 'Media Ensalada César',        price: 0 },
-                  { integration_id: 'combo-clasica', name: 'Media Ensalada Clásica',      price: 0 },
-                  { integration_id: 'combo-bosque',  name: 'Media Ensalada del Bosque',   price: 0 }
-                ]
-              }
-            ]
-          }
+        sku: 'BEB001', name: 'Refresco', type: 'PRODUCT', price: 50,
+        category: { id: 'cat-bebidas', name: 'Bebidas', maxQty: 0, minQty: 0, sortingPosition: 4 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 1,
+        description: 'Refresco de lata.',
+        children: [
+          topping({ sku: 'ref-regular', name: 'Coca-Cola regular',    description: 'Coca-Cola regular en lata.',    categoryId: 'refresco-sabor', categoryName: 'Elige tu refresco', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'ref-light',   name: 'Coca-Cola sin azúcar', description: 'Coca-Cola sin azúcar en lata.', categoryId: 'refresco-sabor', categoryName: 'Elige tu refresco', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 })
         ]
       },
-
-      // ── Bebidas ──────────────────────────────────────────────────────────
       {
-        integration_id: 'cat-bebidas',
-        name: 'Bebidas',
-        sorting_position: 4,
-        items: [
-          {
-            integration_id: 'BEB001',
-            name: 'Refresco',
-            description: 'Refresco de lata.',
-            price: 35,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'beb-refresco-opciones',
-                name: 'Elige tu refresco',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'ref-regular', name: 'Coca Cola regular',     price: 0 },
-                  { integration_id: 'ref-light',   name: 'Coca Cola sin azúcar',  price: 0 }
-                ]
-              }
-            ]
-          },
-          {
-            integration_id: 'BEB002',
-            name: 'Botella de agua',
-            description: 'Agua embotellada.',
-            price: 25,
-            available: true,
-            modifiers_groups: []
-          },
-          {
-            integration_id: 'BEB003',
-            name: 'Aguas frescas',
-            description: 'Aguas frescas del día.',
-            price: 55,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'agua-opciones',
-                name: 'Elige tu sabor',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'agua-betabel', name: 'Betabel con guayaba', price: 0 },
-                  { integration_id: 'agua-mango',   name: 'Mango con piña',      price: 0 },
-                  { integration_id: 'agua-horchata',name: 'Horchata',            price: 0 }
-                ]
-              }
-            ]
-          },
-          {
-            integration_id: 'BEB004',
-            name: 'Poppi',
-            description: 'Refresco probiótico Poppi.',
-            price: 79,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'poppi-opciones',
-                name: 'Elige tu sabor',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'poppi-uva',    name: 'Uva',     price: 0 },
-                  { integration_id: 'poppi-naranja', name: 'Naranja', price: 0 }
-                ]
-              }
-            ]
-          },
-          {
-            integration_id: 'BEB005',
-            name: 'Olipop',
-            description: 'Refresco de fibra prebiótica Olipop.',
-            price: 79,
-            available: true,
-            modifiers_groups: [
-              {
-                integration_id: 'olipop-opciones',
-                name: 'Elige tu sabor',
-                min_quantity: 1,
-                max_quantity: 1,
-                modifiers: [
-                  { integration_id: 'olipop-manzana',  name: 'Manzana',        price: 0 },
-                  { integration_id: 'olipop-fresa',    name: 'Strawberry Cream', price: 0 }
-                ]
-              }
-            ]
-          }
+        sku: 'BEB002', name: 'Botella de agua', type: 'PRODUCT', price: 36,
+        category: { id: 'cat-bebidas', name: 'Bebidas', maxQty: 0, minQty: 0, sortingPosition: 4 },
+        children: [], imageUrl: '', maxLimit: 0, sortingPosition: 2,
+        description: 'Agua embotellada.'
+      },
+      {
+        sku: 'BEB003', name: 'Aguas frescas', type: 'PRODUCT', price: 79,
+        category: { id: 'cat-bebidas', name: 'Bebidas', maxQty: 0, minQty: 0, sortingPosition: 4 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 3,
+        description: 'Aguas frescas del día.',
+        children: [
+          topping({ sku: 'agua-betabel',  name: 'Betabel con guayaba', description: 'Agua fresca de betabel con guayaba.', categoryId: 'agua-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'agua-mango',    name: 'Mango con piña',      description: 'Agua fresca de mango con piña.',      categoryId: 'agua-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 }),
+          topping({ sku: 'agua-horchata', name: 'Horchata',            description: 'Agua fresca de horchata.',            categoryId: 'agua-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 3 })
+        ]
+      },
+      {
+        sku: 'BEB004', name: 'Poppi', type: 'PRODUCT', price: 113,
+        category: { id: 'cat-bebidas', name: 'Bebidas', maxQty: 0, minQty: 0, sortingPosition: 4 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 4,
+        description: 'Refresco prebiótico Poppi.',
+        children: [
+          topping({ sku: 'poppi-uva',    name: 'Uva',    description: 'Poppi sabor uva.',    categoryId: 'poppi-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'poppi-naranja',name: 'Naranja',description: 'Poppi sabor naranja.',categoryId: 'poppi-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 })
+        ]
+      },
+      {
+        sku: 'BEB005', name: 'Olipop', type: 'PRODUCT', price: 113,
+        category: { id: 'cat-bebidas', name: 'Bebidas', maxQty: 0, minQty: 0, sortingPosition: 4 },
+        imageUrl: '', maxLimit: 0, sortingPosition: 5,
+        description: 'Refresco de fibra prebiótica Olipop.',
+        children: [
+          topping({ sku: 'olipop-manzana', name: 'Manzana',        description: 'Olipop sabor manzana.',        categoryId: 'olipop-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 1 }),
+          topping({ sku: 'olipop-fresa',   name: 'Strawberry Cream',description: 'Olipop sabor Strawberry Cream.',categoryId: 'olipop-sabor', categoryName: 'Elige el sabor', categoryMinQty: 1, categoryMaxQty: 1, categorySortPos: 1, sortingPosition: 2 })
         ]
       }
     ]
@@ -452,7 +356,7 @@ export async function registrarWebhook(event, url) {
  */
 export async function configurarWebhooks(baseUrl) {
   const results = {};
-  for (const event of ['NEW_ORDER', 'ORDER_EVENT_CANCEL', 'PING']) {
+  for (const event of ['NEW_ORDER', 'ORDER_EVENT_CANCEL', 'PING', 'MENU_APPROVED', 'MENU_REJECTED']) {
     try {
       const url = `${baseUrl}/webhook/rappi`;
       results[event] = await registrarWebhook(event, url);

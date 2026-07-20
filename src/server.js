@@ -22,7 +22,7 @@ import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/what
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
-import { configurarWebhooks, subirCatalogo, construirCatalogoRappi } from './services/rappi-api.js';
+import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
 import { analizarSemana } from './services/learner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -139,8 +139,12 @@ app.post('/webhook/clip', async (req, res) => {
 
   try {
     const evento = req.body;
-    const status = evento?.payment_status || evento?.status;
-    const ref    = evento?.metadata?.external_reference || evento?.external_reference;
+    console.log('[Clip] Webhook body completo:', JSON.stringify(evento));
+    const status = evento?.payment_status || evento?.status || evento?.data?.status || evento?.data?.payment_status;
+    const ref    = evento?.metadata?.external_reference
+                || evento?.external_reference
+                || evento?.data?.metadata?.external_reference
+                || evento?.data?.external_reference;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}`);
 
     // Pago completado — persistir en BD y notificar al panel
@@ -408,6 +412,32 @@ app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
   }
 });
 
+// Rappi — actualizar solo el schedule (sin re-subir todo el catálogo)
+app.post('/api/rappi/actualizar-schedule', requireAuth, async (req, res) => {
+  try {
+    const resultado = await actualizarSchedule();
+    console.log('[Rappi] Schedule actualizado:', JSON.stringify(resultado));
+    res.json({ ok: true, resultado });
+  } catch (e) {
+    console.error('[Rappi] Error actualizando schedule:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Rappi — activar/desactivar tienda manualmente
+app.put('/api/rappi/estado-tienda', requireAuth, async (req, res) => {
+  const { activa } = req.body;
+  if (activa === undefined) return res.status(400).json({ error: 'Se requiere { activa: true|false }' });
+  try {
+    const resultado = await actualizarEstadoTienda(activa);
+    rappiAbierto = activa; // sincronizar estado interno
+    console.log(`[Rappi] Tienda ${activa ? 'activada' : 'desactivada'} manualmente`);
+    res.json({ ok: true, resultado });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Rappi — registrar webhooks en sandbox/producción (llamar una vez al configurar)
 app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
   const baseUrl = process.env.PUBLIC_URL || req.body.baseUrl;
@@ -484,6 +514,39 @@ app.get('/api/llamadas/:callSid', requireAuth, async (req, res) => {
   res.json(mensajes);
 });
 
+// ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
+// Activa/desactiva la tienda en Rappi según el horario real de Xabor.
+// Lunes–Sábado 11:00–22:00 (America/Matamoros). Corre al inicio y cada 5 min.
+let rappiAbierto = null; // null = estado desconocido al arrancar
+
+function estaAbiertoAhora() {
+  const now = new Date();
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Matamoros',
+    hour12: false,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).formatToParts(now);
+  const p = Object.fromEntries(partes.map(x => [x.type, x.value]));
+  const dow  = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[p.weekday];
+  const mins = parseInt(p.hour, 10) * 60 + parseInt(p.minute, 10);
+  return dow >= 1 && dow <= 6 && mins >= 11 * 60 && mins < 22 * 60;
+}
+
+async function sincronizarRappi() {
+  if (!process.env.RAPPI_CLIENT_ID || !process.env.RAPPI_CLIENT_SECRET) return; // no configurado
+  const abierto = estaAbiertoAhora();
+  if (rappiAbierto === abierto) return; // sin cambio — no llamar la API
+  try {
+    await actualizarEstadoTienda(abierto);
+    rappiAbierto = abierto;
+    console.log(`[Rappi] Tienda ${abierto ? 'abierta ✅' : 'cerrada 🔴'} (${new Date().toLocaleString('es-MX', { timeZone: 'America/Matamoros' })})`);
+  } catch (e) {
+    console.error('[Rappi] Error al sincronizar estado:', e.message);
+  }
+}
+
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
   .then(() => cargarPedidosDesdeDB())
@@ -491,6 +554,9 @@ initDB()
     // Activar pedidos programados cada 5 minutos
     activarPedidosProgramados();
     setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+    // Sincronizar horario de Rappi al arrancar y cada 5 minutos
+    sincronizarRappi();
+    setInterval(sincronizarRappi, 5 * 60 * 1000);
   })
   .catch(e => console.error('[DB] Error al inicializar:', e.message));
 
