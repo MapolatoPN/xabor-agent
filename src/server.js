@@ -139,16 +139,13 @@ app.post('/webhook/clip', async (req, res) => {
 
   try {
     const evento = req.body;
-    console.log('[Clip] Webhook body completo:', JSON.stringify(evento));
-    const status = evento?.payment_status || evento?.status || evento?.data?.status || evento?.data?.payment_status;
-    const ref    = evento?.metadata?.external_reference
-                || evento?.external_reference
-                || evento?.data?.metadata?.external_reference
-                || evento?.data?.external_reference;
-    console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}`);
+    // Clip Checkout Webhook: resource_status + me_reference_id
+    const status = evento?.resource_status;
+    const ref    = evento?.me_reference_id;
+    console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
 
     // Pago completado — persistir en BD y notificar al panel
-    if (status === 'CHECKOUT_COMPLETED' || status === 'APPROVED') {
+    if (status === 'COMPLETED' && evento?.resource === 'CHECKOUT') {
       await confirmarPagoPedido(ref);
       broadcast({ tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
       console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
