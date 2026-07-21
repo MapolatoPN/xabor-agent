@@ -352,7 +352,7 @@ button:hover { opacity: 0.85; }
   html body { background: #fff !important; }
   body { width: 76mm; margin: 0 auto; padding: 0; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; background: #fff !important; color: #000 !important; overflow: hidden; }
   header, .comanda-footer, #sin-pedidos, .comanda-hora,
-  #tabs-nav, #modal-overlay, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
+  #tabs-nav, #bottom-nav, #mas-sheet, #modal-overlay, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
   #vista-comandas { display: block !important; padding: 0 !important; margin: 0 !important; }
   #grid-pedidos   { display: block !important; }
   .comanda { width: 100%; margin: 0; padding: 0; border: none !important; border-top: none !important; page-break-inside: avoid; break-inside: avoid; overflow: hidden; box-shadow: none !important; }
@@ -1039,23 +1039,125 @@ function marcarEntregado(id) {
 }
 
 function imprimirComanda(id) {
-  // Guardar estado actual de visibilidad
-  const mainEl   = document.querySelector('main');
-  const extEl    = document.getElementById('vistas-extra');
-  const mainWas  = mainEl  ? mainEl.style.display  : '';
-  const extWas   = extEl   ? extEl.style.display   : '';
+  const p = pedidos[id];
+  if (!p) return;
+  const win = window.open('', '_blank', 'width=390,height=700,toolbar=0,location=0,menubar=0,status=0,scrollbars=1');
+  if (!win) return;
+  win.document.write(ticketHTML(p));
+  win.document.close();
+  // Imprimir cuando cargue; fallback a 1s por si onload no dispara
+  let printed = false;
+  win.onload = () => { if (!printed) { printed = true; setTimeout(() => { win.print(); win.close(); }, 250); } };
+  setTimeout(() => { if (!printed) { printed = true; try { win.print(); win.close(); } catch(e) {} } }, 1200);
+}
 
-  // Mostrar main temporalmente para que window.print() capture el ticket
-  if (mainEl)  mainEl.style.display  = '';
-  if (extEl)   extEl.style.display   = 'none';
+function ticketHTML(p) {
+  const horaCompleta  = horaCST(p.timestamp);
+  const esEntrega     = p.modalidad === 'entrega a domicilio';
+  const esPresencial  = p.canal === 'presencial';
+  const badgeLabel    = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
+  const nombre        = getNombre(p);
+  const telefono      = getTelefono(p);
+  const formaPago     = getFormaPago(p);
+  const numOrden      = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
+  const totalNum      = parseFloat(p.total || 0);
+  const envio         = parseFloat(p.costo_envio || 0);
+  const descuento     = parseFloat(p.descuento || 0);
+  const billete       = parseFloat(p.billete || 0);
+  const cambio        = parseFloat(p.cambio || 0);
+  const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
+  const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
+  const esMixto       = mixtoEfectivo > 0 || mixtoTerminal > 0;
+  const totalArt      = (p.items || []).reduce((s, i) => s + (i.cantidad || 1), 0);
+  const canalLabel    = esPresencial ? 'Presencial' : (p.canal === 'rappi' ? 'Rappi' : (p.canal === 'whatsapp' ? 'WhatsApp' : (p.canal || 'Sistema')));
+  const ahora         = new Date().toLocaleString('es-MX', { timeZone:'America/Matamoros', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
 
-  document.querySelectorAll('.comanda').forEach(c => c.style.display = c.id === `comanda-${id}` ? '' : 'none');
-  window.print();
-  document.querySelectorAll('.comanda').forEach(c => c.style.display = '');
+  const itemsRows = (p.items || []).map(item => `
+    <tr>
+      <td style="width:24px;vertical-align:top;font-weight:900;">${item.cantidad||1}</td>
+      <td style="vertical-align:top;">${item.nombre||item.name||'Producto'}${item.notas ? `<br><span style="font-size:9px;font-style:italic;">${item.notas}</span>` : ''}</td>
+      <td style="width:52px;text-align:right;vertical-align:top;font-weight:900;">${getPrecioItem(item) > 0 ? '$'+getPrecioItem(item).toFixed(0) : '—'}</td>
+    </tr>`).join('');
 
-  // Restaurar estado de tabs
-  if (mainEl)  mainEl.style.display  = mainWas;
-  if (extEl)   extEl.style.display   = extWas;
+  const subtotalesRows = [
+    envio    > 0 ? `<tr><td colspan="2">Costo de envío</td><td style="text-align:right;">$${envio.toFixed(0)}</td></tr>` : '',
+    descuento> 0 ? `<tr><td colspan="2">Descuento${p.motivo_descuento?' ('+p.motivo_descuento+')':''}</td><td style="text-align:right;">-$${descuento.toFixed(0)}</td></tr>` : ''
+  ].join('');
+
+  const pagoSection = esMixto ? `
+    <div class="seccion">TOTAL POR FORMA DE PAGO</div>
+    <table class="info"><tr><td>Efectivo</td><td class="r">$${mixtoEfectivo.toFixed(0)}</td></tr>
+    <tr><td>Terminal</td><td class="r">$${mixtoTerminal.toFixed(0)}</td></tr>
+    ${cambio>0?`<tr><td>Cambio</td><td class="r">$${cambio.toFixed(0)}</td></tr>`:''}</table>` :
+    billete > 0 ? `
+    <table class="info"><tr><td>Billete</td><td class="r">$${billete.toFixed(0)}</td></tr>
+    <tr><td>Cambio</td><td class="r">$${cambio.toFixed(0)}</td></tr></table>` : '';
+
+  const clienteSection = esEntrega && p.cliente ? `
+    <div class="seccion">DATOS DEL CLIENTE</div>
+    <table class="info">
+      <tr><td>Nombre</td><td class="r"><b>${nombre}</b></td></tr>
+      ${p.cliente.calle       ? `<tr><td>Calle</td><td class="r">${p.cliente.calle}</td></tr>`              : ''}
+      ${p.cliente.colonia     ? `<tr><td>Colonia</td><td class="r">${p.cliente.colonia}</td></tr>`          : ''}
+      ${p.cliente.entre_calles? `<tr><td>Entre calles</td><td class="r">${p.cliente.entre_calles}</td></tr>`: ''}
+      <tr><td>Teléfono</td><td class="r">${telefono}</td></tr>
+    </table>` : (telefono !== '—' ? `<table class="info"><tr><td>Teléfono</td><td class="r">${telefono}</td></tr></table>` : '');
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+@page{size:80mm auto;margin:0 2mm;}
+body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.45;color:#000;background:#fff;padding:3mm 1mm;}
+.c{text-align:center;} .b{font-weight:900;}
+hr{border:none;border-top:1px solid #000;margin:3px 0;}
+.dash{border-top:1px dashed #000;}
+.empresa{font-size:22px;font-weight:900;letter-spacing:4px;}
+.orden-num{font-size:36px;font-weight:900;line-height:1.1;}
+.info{width:100%;font-size:10px;border-collapse:collapse;}
+.info td{padding:1px 0;}
+.info .r{font-weight:700;text-align:right;}
+.badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:11px;padding:3px 0;margin:4px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.items{width:100%;font-size:11px;border-collapse:collapse;}
+.items td{padding:1px 0;}
+.ih td{font-size:10px;font-weight:900;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;}
+.gt{font-size:16px;font-weight:900;border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin:3px 0;}
+.gt td{padding:2px 0;}
+.letras{font-size:9px;font-style:italic;text-align:center;display:block;margin:2px 0 4px;}
+.seccion{text-align:center;font-size:9px;font-weight:900;letter-spacing:1px;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;margin:5px 0 3px;display:block;}
+.footer{text-align:center;font-size:10px;margin-top:6px;border-top:1px dashed #000;padding-top:4px;}
+</style></head><body>
+<div class="c">
+  <div class="empresa">XABOR</div>
+  <div style="font-size:10px;">Ticket Orden — ${canalLabel}</div>
+  <div style="font-size:10px;">Lib. Manuel Pérez Treviño 2416 L-4</div>
+  <div style="font-size:10px;">Col. Tecnológico, Piedras Negras, Coah.</div>
+  <div style="font-size:10px;">RFC: CAOM940122PTA &nbsp;·&nbsp; (878) 109-1115</div>
+</div>
+<hr>
+<table class="info"><tr><td>Fecha:</td><td class="r">${horaCompleta}</td></tr></table>
+<div class="c"><div style="font-size:11px;">Orden:</div><div class="orden-num">${numOrden}</div></div>
+<hr class="dash">
+<table class="info">
+  <tr><td>Cajero:</td><td class="r">Caja</td></tr>
+  <tr><td>Hora impresión:</td><td class="r">${ahora}</td></tr>
+</table>
+<div class="badge">${badgeLabel}</div>
+<table class="info">
+  <tr><td>Cliente:</td><td class="r b" style="font-size:13px;">${nombre}</td></tr>
+  <tr><td>Forma de pago:</td><td class="r">${formaPago || '—'}</td></tr>
+</table>
+<hr>
+<table class="items">
+  <thead><tr class="ih"><td style="width:24px;">Cant</td><td>Descripción</td><td style="width:52px;text-align:right;">Importe</td></tr></thead>
+  <tbody>${itemsRows}${subtotalesRows}</tbody>
+</table>
+<div style="font-size:10px;margin-top:2px;">Artículos: ${totalArt}</div>
+<table class="items gt"><tr><td colspan="2"><b>Gran Total:</b></td><td style="text-align:right;width:60px;"><b>$${totalNum.toFixed(2)}</b></td></tr></table>
+<span class="letras">${totalEnLetras(totalNum)} PESOS 00/100 M.N.</span>
+${pagoSection}
+${clienteSection}
+<div class="footer">— Gracias por su visita —<br>WhatsApp: (878) 109-1115</div>
+</body></html>`;
 }
 
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
