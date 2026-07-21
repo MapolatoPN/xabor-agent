@@ -1,0 +1,21 @@
+{
+  "name": "xabor-agent",
+  "version": "1.0.0",
+  "description": "Agente de pedidos para Restaurante Xabor",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "chat": "node src/agent/chat-test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "twilio": "^5.13.1",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  }
+}

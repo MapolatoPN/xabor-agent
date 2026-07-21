@@ -1,0 +1,155 @@
+{
+  "restaurante": "Xabor",
+  "categorias": [
+    {
+      "nombre": "Paninis",
+      "productos": [
+        {
+          "id": "PAN001",
+          "nombre": "Chicken Louisiana",
+          "precio": 180,
+          "descripcion": "Pechuga de pollo al horno bañada en salsa Louisiana, acompañada de cebolla morada y pimientos rostizados, queso manchego y aderezo Ranch.",
+          "ingredientes": ["pechuga de pollo al horno", "salsa Louisiana", "cebolla morada", "pimientos rostizados", "queso manchego", "aderezo Ranch"],
+          "alergenos": ["lácteos", "gluten"],
+          "disponible": true
+        },
+        {
+          "id": "PAN002",
+          "nombre": "Chicken Parm",
+          "precio": 195,
+          "descripcion": "Pechuga de pollo a la plancha, spread de queso philadelphia con parmesano y aceite de oliva, queso mozzarella, tomates deshidratados y glaseado balsámico.",
+          "ingredientes": ["pechuga de pollo a la plancha", "queso philadelphia", "queso parmesano", "aceite de oliva", "queso mozzarella", "tomates deshidratados", "glaseado balsámico"],
+          "alergenos": ["lácteos", "gluten"],
+          "disponible": true
+        },
+        {
+          "id": "PAN003",
+          "nombre": "Chicken Fit",
+          "precio": 179,
+          "descripcion": "Pechuga de pollo a la plancha, tomate, pepino, lechuga, mayonesa chipotle y queso feta.",
+          "ingredientes": ["pechuga de pollo a la plancha", "tomate", "pepino", "lechuga", "mayonesa chipotle", "queso feta"],
+          "alergenos": ["lácteos", "gluten", "huevo"],
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "nombre": "Focaccia Bar",
+      "nota": "Crea tu combinación perfecta — $225. El cliente elige: spread, proteína, queso, toppings y aderezo.",
+      "productos": [
+        {
+          "id": "FOC001",
+          "nombre": "Focaccia Bar",
+          "precio": 225,
+          "descripcion": "Focaccia personalizada. El cliente elige hasta 2 spreads, 1 proteína, 1 queso, toppings a gusto y hasta 4 aderezos.",
+          "ingredientes": ["pan focaccia"],
+          "alergenos": ["gluten", "lácteos"],
+          "disponible": true,
+          "personalizable": true,
+          "opciones": {
+            "spread": ["Pesto", "Philadelphia y parmesano", "Pasta de tomate deshidratado"],
+            "proteina": ["Salami", "Peperoni", "Pechuga de pavo"],
+            "queso": ["Manchego", "Mozzarella", "Monterrey Jack Colby", "Feta"],
+            "toppings": ["Lechuga", "Espinacas", "Tomate", "Pepino", "Cebolla morada", "Aceitunas negras", "Pepinillos", "Jalapeños", "Pimientos rostizados", "Champiñones rostizados"],
+            "aderezo": ["Aceite de oliva", "Mayo chipotle", "Aderezo Ranch", "Glassado balsámico", "Vinagreta balsámica", "Aderezo italiano"]
+          }
+        }
+      ]
+    },
+    {
+      "nombre": "Ensaladas",
+      "productos": [
+        {
+          "id": "ENS001",
+          "nombre": "Ensalada César",
+          "precio": 189,
+          "descripcion": "Lechuga, queso parmesano, queso feta, aderezo césar, crotones hechos en casa y pechuga de pollo.",
+          "ingredientes": ["lechuga", "queso parmesano", "queso feta", "aderezo césar", "crotones caseros", "pechuga de pollo"],
+          "alergenos": ["lácteos", "gluten"],
+          "disponible": true
+        },
+        {
+          "id": "ENS002",
+          "nombre": "Ensalada Clásica",
+          "precio": 180,
+          "descripcion": "Mezcla de lechuga, zanahoria, tomate, col morada, queso Monterrey Jack Colby, pechuga de pollo a la plancha, bañada en salsa Louisiana y crotones hechos en casa.",
+          "ingredientes": ["mezcla de lechugas", "zanahoria", "tomate", "col morada", "queso Monterrey Jack Colby", "pechuga de pollo a la plancha", "salsa Louisiana", "crotones caseros"],
+          "alergenos": ["lácteos", "gluten"],
+          "disponible": true
+        },
+        {
+          "id": "ENS003",
+          "nombre": "Ensalada del Bosque",
+          "precio": 185,
+          "descripcion": "Mezcla de lechuga y espinacas, manzana, blueberries, fresas, queso feta y nueces. Acompañada de pechuga de pollo al horno.",
+          "ingredientes": ["mezcla de lechuga y espinacas", "manzana", "blueberries", "fresas", "queso feta", "nueces", "pechuga de pollo al horno"],
+          "alergenos": ["lácteos", "nueces"],
+          "disponible": true
+        },
+        {
+          "id": "ENS004",
+          "nombre": "Combo Focaccia + Media Ensalada",
+          "precio": 250,
+          "descripcion": "Combo especial: una Focaccia completa (del Bar personalizable o cualquier opción de panini) más media ensalada sin pollo de tu elección (César, Clásica o del Bosque).",
+          "ingredientes": [],
+          "alergenos": ["gluten", "lácteos"],
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "nombre": "Bebidas",
+      "productos": [
+        {
+          "id": "BEB001",
+          "nombre": "Refresco",
+          "precio": 35,
+          "descripcion": "Refresco de lata. Opciones: Coca Cola regular o Coca Cola sin azúcar.",
+          "opciones": ["Coca Cola regular", "Coca Cola sin azúcar"],
+          "ingredientes": [],
+          "alergenos": [],
+          "disponible": true
+        },
+        {
+          "id": "BEB002",
+          "nombre": "Botella de agua",
+          "precio": 25,
+          "descripcion": "Agua embotellada.",
+          "ingredientes": [],
+          "alergenos": [],
+          "disponible": true
+        },
+        {
+          "id": "BEB003",
+          "nombre": "Aguas frescas",
+          "precio": 55,
+          "descripcion": "Aguas frescas del día. Opciones: betabel con guayaba, mango con piña u horchata.",
+          "opciones": ["Betabel con guayaba", "Mango con piña", "Horchata"],
+          "ingredientes": [],
+          "alergenos": [],
+          "disponible": true
+        },
+        {
+          "id": "BEB004",
+          "nombre": "Poppi",
+          "precio": 79,
+          "descripcion": "Refresco probiótico Poppi. Opciones: uva o naranja.",
+          "opciones": ["Uva", "Naranja"],
+          "ingredientes": [],
+          "alergenos": [],
+          "disponible": true
+        },
+        {
+          "id": "BEB005",
+          "nombre": "Olipop",
+          "precio": 79,
+          "descripcion": "Refresco de fibra prebiótica Olipop. Opciones: manzana o strawberry cream.",
+          "opciones": ["Manzana", "Strawberry Cream"],
+          "ingredientes": [],
+          "alergenos": [],
+          "disponible": true
+        }
+      ]
+    }
+  ]
+}
