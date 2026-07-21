@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago } from './services/database.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
@@ -332,6 +332,21 @@ app.delete('/pedidos/:id', async (req, res) => {
   }
   const ok = await eliminarPedido(req.params.id);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
+  res.json({ ok: true });
+});
+
+// Actualizar forma de pago — solo admin
+app.patch('/api/admin/pedido/:folio/pago', requireAdminAuth, async (req, res) => {
+  const { folio } = req.params;
+  const { forma_pago } = req.body;
+  if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
+  const ok = await actualizarFormaPago(folio, forma_pago);
+  if (!ok) return res.status(500).json({ error: 'No se pudo actualizar' });
+  // Actualizar en memoria si el pedido sigue activo
+  const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
+  const p = obtenerPedidoPorId(folio);
+  if (p) p.forma_pago = forma_pago;
+  broadcast({ tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
 });
 

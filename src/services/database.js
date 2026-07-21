@@ -383,10 +383,18 @@ export async function obtenerVentas(desde, hasta) {
   try {
     const result = await pool.query(`
       SELECT
-        id, folio, telefono, nombre_cliente,
-        items, total, modalidad, canal,
-        forma_pago, costo_envio, created_at
-      FROM pedidos
+        folio                                          AS id,
+        folio,
+        datos->'cliente'->>'telefono'                  AS telefono,
+        datos->'cliente'->>'nombre'                    AS nombre_cliente,
+        datos->'items'                                 AS items,
+        (datos->>'total')::decimal                     AS total,
+        datos->>'modalidad'                            AS modalidad,
+        datos->>'canal'                                AS canal,
+        COALESCE(datos->>'forma_pago','no especificado') AS forma_pago,
+        COALESCE((datos->>'costo_envio')::decimal, 0)  AS costo_envio,
+        created_at
+      FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
       ORDER BY created_at DESC
     `, [desde, hasta]);
@@ -401,19 +409,34 @@ export async function obtenerResumenVentas(desde, hasta) {
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(*)::int                              AS num_pedidos,
-        COALESCE(SUM(total), 0)::float             AS total_ventas,
-        COALESCE(AVG(total), 0)::float             AS promedio,
-        COALESCE(SUM(costo_envio), 0)::float       AS total_envios,
-        COUNT(*) FILTER (WHERE modalidad ILIKE '%domicilio%')::int AS domicilios,
-        COUNT(*) FILTER (WHERE modalidad ILIKE '%recoger%' OR modalidad ILIKE '%tienda%')::int AS recoger
-      FROM pedidos
+        COUNT(*)::int                                                                        AS num_pedidos,
+        COALESCE(SUM((datos->>'total')::decimal), 0)::float                                 AS total_ventas,
+        COALESCE(AVG((datos->>'total')::decimal), 0)::float                                 AS promedio,
+        COALESCE(SUM((datos->>'costo_envio')::decimal), 0)::float                           AS total_envios,
+        COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                AS domicilios,
+        COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%recoger%'
+                            OR datos->>'modalidad' ILIKE '%tienda%')::int                   AS recoger
+      FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
     `, [desde, hasta]);
     return result.rows[0];
   } catch (e) {
     console.error('[DB] Error obtenerResumenVentas:', e.message);
     return {};
+  }
+}
+
+export async function actualizarFormaPago(folio, formaPago) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos
+      SET datos = jsonb_set(datos, '{forma_pago}', $2::jsonb), updated_at = NOW()
+      WHERE folio = $1
+    `, [folio, JSON.stringify(formaPago)]);
+    return true;
+  } catch (e) {
+    console.error('[DB] Error actualizarFormaPago:', e.message);
+    return false;
   }
 }
 

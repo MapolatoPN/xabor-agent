@@ -428,6 +428,20 @@ button:hover { opacity: 0.85; }
   </div>
 </div>
 
+<!-- Modal: editar forma de pago -->
+<div id="modal-pago-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:340px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:16px;font-size:1rem;">✏️ Corregir forma de pago</h3>
+    <input type="hidden" id="pago-folio">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button onclick="confirmarPago('efectivo')"       style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💵 Efectivo</button>
+      <button onclick="confirmarPago('terminal (tarjeta presente)')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💳 Terminal (tarjeta)</button>
+      <button onclick="confirmarPago('enlace de pago')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🔗 Enlace de pago</button>
+    </div>
+    <button onclick="cerrarModalPago()" style="margin-top:14px;width:100%;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
+  </div>
+</div>
+
 <!-- Tabs -->
 <div id="tabs-nav">
   <button class="tab-btn activo" id="tab-comandas"  onclick="mostrarTab('comandas')">🍽️ Comandas</button>
@@ -772,6 +786,13 @@ function conectarWS() {
       if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
+      if (msg.tipo === 'actualizar_pago') {
+        if (pedidos[msg.id]) {
+          pedidos[msg.id].forma_pago = msg.forma_pago;
+          const card = document.getElementById(`comanda-${msg.id}`);
+          if (card) card.innerHTML = renderComanda(pedidos[msg.id]);
+        }
+      }
     } catch(e) {}
   };
 }
@@ -968,6 +989,7 @@ function renderComanda(p) {
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
       <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')">🗑️</button>
+      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-preparando" onclick="abrirModalPago('${p.id}')" style="background:#7c3aed;">✏️ Pago</button>`:''}
     </div>`;
 }
 
@@ -1424,6 +1446,24 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 function cerrarSesion() { sessionStorage.removeItem('xabor_token'); location.href='/login.html'; }
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }).then(() => console.log('[Prueba] Pedido enviado')); }
 
+// ─── Editar forma de pago (admin) ────────────────────────────────────────────
+function abrirModalPago(folio) {
+  document.getElementById('pago-folio').value = folio;
+  document.getElementById('modal-pago-overlay').style.display = 'flex';
+}
+function cerrarModalPago() {
+  document.getElementById('modal-pago-overlay').style.display = 'none';
+}
+async function confirmarPago(formaPago) {
+  const folio = document.getElementById('pago-folio').value;
+  cerrarModalPago();
+  const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH', body: JSON.stringify({ forma_pago: formaPago }) });
+  if (!r.ok) { alert('Error al actualizar el pago'); }
+}
+document.getElementById('modal-pago-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-pago-overlay')) cerrarModalPago();
+});
+
 // ─── POS Presencial ──────────────────────────────────────────────────────────
 let posCarrito   = [];
 let posPagoSel   = 'efectivo';
@@ -1841,7 +1881,10 @@ async function cargarHistorial() {
           </div>
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
-          <div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;">Tel: ${getTelefono(p)}${p.forma_pago?' · Pago: '+p.forma_pago:''}</div>
+          <div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span>Tel: ${getTelefono(p)}${p.forma_pago?' · Pago: '+p.forma_pago:''}</span>
+            ${sessionStorage.getItem('xabor_role')==='admin'?`<button onclick="abrirModalPago('${p.id||p.folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f5f3ff;color:#7c3aed;cursor:pointer;">✏️ Pago</button>`:''}
+          </div>
           ${dir}
           <div style="margin-top:8px;">${itemsHTML}</div>
           ${envio>0?`<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#aaa;padding:3px 0;">Envío<span>$${envio.toFixed(0)}</span></div>`:''}
