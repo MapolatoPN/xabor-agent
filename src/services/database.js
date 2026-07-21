@@ -116,6 +116,14 @@ export async function initDB() {
       opciones     JSONB,
       orden        INTEGER DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id          SERIAL PRIMARY KEY,
+      endpoint    TEXT NOT NULL UNIQUE,
+      auth        TEXT NOT NULL,
+      p256dh      TEXT NOT NULL,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tablas listas');
 }
@@ -217,6 +225,25 @@ export async function eliminarProducto(id) {
 
 export async function eliminarCategoria(id) {
   await pool.query('DELETE FROM menu_categorias WHERE id=$1', [id]);
+}
+
+// ─── Push Notifications ───────────────────────────────────────────────────────
+export async function guardarSuscripcionPush({ endpoint, auth, p256dh }) {
+  await pool.query(
+    `INSERT INTO push_subscriptions (endpoint, auth, p256dh)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (endpoint) DO UPDATE SET auth=$2, p256dh=$3`,
+    [endpoint, auth, p256dh]
+  );
+}
+
+export async function obtenerSuscripcionesPush() {
+  const { rows } = await pool.query('SELECT endpoint, auth, p256dh FROM push_subscriptions');
+  return rows;
+}
+
+export async function eliminarSuscripcionPush(endpoint) {
+  await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1', [endpoint]);
 }
 
 // ─── Obtener cliente por teléfono ─────────────────────────────────────────────

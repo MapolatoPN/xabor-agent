@@ -17,7 +17,8 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush } from './services/database.js';
+import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -72,6 +73,40 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ─── Web Push — VAPID ────────────────────────────────────────────────────────
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || '';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_EMAIL   = process.env.VAPID_EMAIL       || 'mailto:admin@xabor.mx';
+
+if (VAPID_PUBLIC && VAPID_PRIVATE) {
+  webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
+  console.log('[Push] VAPID configurado');
+} else {
+  console.warn('[Push] VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY no configurados — push desactivado');
+}
+
+async function enviarPushATodos(titulo, cuerpo, data = {}) {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
+  let subs;
+  try { subs = await obtenerSuscripcionesPush(); } catch { return; }
+  const payload = JSON.stringify({ titulo, cuerpo, data });
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { auth: sub.auth, p256dh: sub.p256dh } },
+        payload
+      );
+    } catch (e) {
+      if (e.statusCode === 410 || e.statusCode === 404) {
+        // Suscripción expirada — limpiar
+        await eliminarSuscripcionPush(sub.endpoint).catch(() => {});
+      } else {
+        console.error('[Push] Error enviando notificación:', e.message);
+      }
+    }
+  }
+}
+
 const app = express();
 const server = createServer(app);
 
@@ -99,6 +134,24 @@ function broadcast(data) {
       client.send(mensaje);
     }
   });
+  // Push notification para nuevo pedido
+  if (data.tipo === 'nuevo_pedido') {
+    const p = data.pedido;
+    const canal = p?.canal === 'presencial' ? 'Presencial' : (p?.canal === 'rappi' ? 'Rappi' : 'WhatsApp');
+    const cliente = p?.cliente?.nombre || 'Cliente';
+    const total   = p?.total ? `$${Number(p.total).toFixed(0)}` : '';
+    enviarPushATodos(
+      `🛎 Nuevo pedido — ${canal}`,
+      `${cliente}${total ? ' · ' + total : ''}`,
+      { pedidoId: p?.id || p?.folio }
+    ).catch(() => {});
+  }
+  // Push notification para mensaje nuevo de WhatsApp
+  if (data.tipo === 'nuevo_mensaje' && data.mensaje?.direccion === 'entrante') {
+    const tel = data.mensaje?.telefono || '';
+    const txt = data.mensaje?.texto?.slice(0, 60) || 'Nuevo mensaje';
+    enviarPushATodos('💬 Nuevo mensaje WhatsApp', txt, { telefono: tel }).catch(() => {});
+  }
 }
 
 // Inyectar broadcast en el orderManager, whatsapp y rappi
@@ -394,6 +447,33 @@ app.patch('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
 
 app.delete('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
   await eliminarProducto(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── Push Notifications — endpoints ─────────────────────────────────────────
+app.get('/api/push/vapid-public-key', (req, res) => {
+  if (!VAPID_PUBLIC) return res.status(503).json({ error: 'Push no configurado' });
+  res.json({ key: VAPID_PUBLIC });
+});
+
+app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys?.auth || !keys?.p256dh) {
+    return res.status(400).json({ error: 'Suscripción inválida' });
+  }
+  try {
+    await guardarSuscripcionPush({ endpoint, auth: keys.auth, p256dh: keys.p256dh });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[Push] Error guardando suscripción:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/push/subscribe', requireAuth, async (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) return res.status(400).json({ error: 'endpoint requerido' });
+  await eliminarSuscripcionPush(endpoint).catch(() => {});
   res.json({ ok: true });
 });
 
