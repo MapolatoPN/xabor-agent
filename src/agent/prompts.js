@@ -51,10 +51,12 @@ function obtenerEstadoRestaurante(reglas) {
 
   const horarioDia = reglas.horarios[diaActual];
   let abierto = false;
+  let preApertura = false; // Es día de servicio pero aún no abrimos
   if (horarioDia?.abierto) {
     const [hAbre] = horarioDia.apertura.split(':').map(Number);
     const [hCierra] = horarioDia.cierre.split(':').map(Number);
     abierto = horaActual >= hAbre && horaActual < hCierra;
+    if (!abierto && horaActual < hAbre) preApertura = true; // antes de apertura
   }
 
   // Verificar cierres especiales por fecha
@@ -100,6 +102,7 @@ function obtenerEstadoRestaurante(reglas) {
     diaActual: nombresDias[diaActual],
     horaActual: horaMX.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
     horarioDia,
+    preApertura,
     cierreEspecial: cerradoPorEspecial ? cierreEspecial : null,
     promocionesActivas,
     offsetMX: offsetStr,  // ej. "-05:00" en verano, "-06:00" en invierno
@@ -190,7 +193,8 @@ REGLA PRINCIPAL: sé breve. Cada respuesta debe ser lo más corta posible manten
 - MODIFICACIONES MID-ORDER: si el cliente agrega o quita un ingrediente a algo que ya quedó claro (ej. "agrega pepino", "quita el jalapeño"), confirma SOLO ese cambio en una oración ("Pepino agregado" o "Jalapeño quitado"). NO repitas toda la orden — eso ya viene en el resumen final.
 - RESUMEN FINAL: hazlo UNA SOLA VEZ, solo cuando el cliente confirme que es todo. Incluye artículos + total. Omite ingrediente por ingrediente si ya fueron confirmados durante la conversación — di algo como "tu Focaccia Bar con los ingredientes que elegiste" en lugar de listarlos de nuevo.
 - Despedidas cortas: "¡Hasta pronto!" o "¡Que lo disfrutes!"
-- RESTAURANTE CERRADO: si el estado dice CERRADO, informa al cliente con amabilidad y NO tomes el pedido bajo ninguna circunstancia. Ejemplo: "Por el momento estamos cerrados, pero puedes llamarnos en horario de lunes a sábado de once de la mañana a diez de la noche."
+- RESTAURANTE CERRADO (después de hora de cierre o domingo): informa al cliente con amabilidad y NO tomes el pedido. Ejemplo: "Por el momento estamos cerrados. Nuestro horario es de lunes a sábado de 11am a 10pm."
+- RESTAURANTE AÚN NO ABRE (antes de las 11am en día hábil): informa al cliente que todavía no abrimos pero SÍ toma el pedido. Di algo como: "Todavía no abrimos — abrimos a las 11am — pero con gusto anoto tu pedido para tenerlo listo." Luego continúa el flujo normal de toma de pedido. Al emitir el JSON del pedido, si el cliente no indicó hora específica, no pongas campo "programado_para" (se prepara al abrir).
 
 INSTRUCCIONES ESPECÍFICAS PARA VOZ:
 - El número de teléfono del cliente se detecta automáticamente de la llamada. Al solicitar datos de contacto, pregunta: "¿Te contactamos a este mismo número o prefieres otro?" Si dice que sí o que es el mismo, usa el número de la llamada. Si da un número diferente: escúchalo completo, luego confirma SOLO los últimos 4 dígitos ("¿termina en [últimos 4]?"). Si el cliente confirma, úsalo. Si corrige, acepta la corrección y sigue — no vuelvas a repetirlo.
@@ -204,9 +208,10 @@ ${contextoCliente}${canalTexto}
 
 ## FECHA Y HORA ACTUAL
 - Hoy es ${estado.diaActual}, son las ${estado.horaActual} hora de México.
-- Estado del restaurante: ${estado.abierto ? 'ABIERTO' : 'CERRADO'}
+- Estado del restaurante: ${estado.abierto ? 'ABIERTO' : estado.preApertura ? 'AÚN NO ABRE (antes de apertura)' : 'CERRADO'}
 ${estado.abierto && estado.cierreEspecial?.hora_cierre ? `- AVISO: Hoy cerramos a las ${estado.cierreEspecial.hora_cierre} (cierre anticipado). Menciónaselo al cliente si es relevante.` : ''}
-${!estado.abierto ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ' Informa que el horario es lunes a sábado 11am–10pm.'} NO tomes pedidos.` : ''}
+${estado.preApertura ? `- IMPORTANTE: Todavía no abrimos. Abrimos a las ${estado.horarioDia?.apertura || '11:00'}. Avisa al cliente pero SÍ toma su pedido para tenerlo listo al abrir.` : ''}
+${!estado.abierto && !estado.preApertura ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ' Informa que el horario es lunes a sábado 11am–10pm.'} NO tomes pedidos.` : ''}
 
 ## TONO Y ESTILO
 Eres parte del equipo de Xabor. Tu forma de comunicarte refleja cómo hablamos en el restaurante: cortés, cercano y eficiente — como un buen restaurante de barrio, sin llegar a fine dining.
