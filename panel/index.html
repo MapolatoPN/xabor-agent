@@ -32,24 +32,22 @@ header {
 .header-btn:hover { background: rgba(255,255,255,0.2); }
 .header-btn.danger { color: #f87171; border-color: rgba(248,113,113,0.3); }
 
-/* ─── POS Split Layout ───────────────────────────────────────────────────── */
-main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  height: calc(100vh - 56px);
-  overflow: hidden;
-  padding: 0;
-  max-width: none;
-}
-.pos-panel { display: flex; flex-direction: column; overflow: hidden; }
-.pos-panel-presencial { border-right: 2px solid #e5e2da; background: #f2f0ea; }
-.pos-panel-comandas   { background: #f8f7f4; }
-.pos-panel-header {
+/* ─── Tabs nav ──────────────────────────────────────────────────────────── */
+#tabs-nav {
   background: #fff; border-bottom: 2px solid #e5e2da;
-  padding: 10px 16px; font-size: 0.88rem; font-weight: 700; color: #1a1a1a;
-  display: flex; align-items: center; gap: 10px; flex-shrink: 0; height: 44px;
+  display: flex; padding: 0 24px; gap: 2px;
 }
-.pos-panel-body { flex: 1; overflow-y: auto; }
+.tab-btn {
+  background: none; border: none; border-bottom: 3px solid transparent;
+  margin-bottom: -2px; padding: 12px 18px;
+  font-size: 0.85rem; font-weight: 600; color: #888;
+  cursor: pointer; white-space: nowrap; transition: all .15s;
+}
+.tab-btn:hover { color: #444; }
+.tab-btn.activo { color: #1c1c1c; border-bottom-color: #e8a020; }
+
+/* ─── Main ──────────────────────────────────────────────────────────────── */
+main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
 
 /* ─── Admin Drawer ───────────────────────────────────────────────────────── */
 #admin-drawer {
@@ -82,13 +80,7 @@ main {
 .adm-tab.activo { color: #1c1c1c; border-bottom-color: #e8a020; }
 #admin-drawer-content { flex: 1; overflow-y: auto; padding: 20px; }
 
-/* ─── Ajustes internos del POS en split ─────────────────────────────────── */
-#pos-layout { height: calc(100vh - 100px) !important; }
-
 @media (max-width: 900px) {
-  main { grid-template-columns: 1fr; height: auto; overflow: visible; }
-  .pos-panel-presencial { border-right: none; border-bottom: 2px solid #e5e2da; }
-  #pos-layout { height: auto !important; }
   #admin-drawer { width: 100%; }
 }
 
@@ -420,12 +412,33 @@ button:hover { opacity: 0.85; }
   </div>
 </div>
 
+<!-- Tabs -->
+<div id="tabs-nav">
+  <button class="tab-btn activo" id="tab-comandas" onclick="mostrarTab('comandas')">🍽️ Comandas</button>
+  <button class="tab-btn"        id="tab-presencial" onclick="mostrarTab('presencial')">🖥️ POS</button>
+</div>
+
 <main>
 
-  <!-- ═══ PANEL IZQUIERDO: PRESENCIAL ═══ -->
-  <div class="pos-panel pos-panel-presencial">
-    <div class="pos-panel-header">🧑‍💼 Presencial</div>
-    <div class="pos-panel-body" style="padding:0;position:relative;">
+  <!-- Tab Comandas -->
+  <div id="vista-comandas">
+    <div id="programados-wrap" style="display:none;margin-bottom:18px;">
+      <div style="font-size:0.78rem;font-weight:700;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;">🕐 Pedidos programados</div>
+      <div id="grid-programados" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
+    </div>
+    <div id="sin-pedidos"><span class="emoji">🍽️</span>Esperando pedidos...</div>
+    <div id="grid-pedidos"></div>
+  </div>
+
+  <!-- Tab POS (antes Presencial) -->
+  <div id="vista-presencial" style="display:none;">
+    <!-- Carrito flotante — solo visible en mobile -->
+    <div id="mobile-cart-bar" onclick="scrollToOrder()">
+      <span id="mobile-cart-count">0</span>
+      <span style="font-size:0.88rem;color:#ccc;">Ver carrito</span>
+      <span id="mobile-cart-total">$0</span>
+    </div>
+    <div id="pos-layout">
       <!-- Carrito flotante — solo visible en mobile -->
       <div id="mobile-cart-bar" onclick="scrollToOrder()">
         <span id="mobile-cart-count">0</span>
@@ -526,131 +539,6 @@ button:hover { opacity: 0.85; }
       </div>
     </div>
   </div>
-
-  <!-- ═══ PANEL DERECHO: COMANDAS ═══ -->
-  <div class="pos-panel pos-panel-comandas">
-    <div class="pos-panel-header">
-      🍽️ Comandas
-      <span id="contador" style="background:#e8a020;color:#1c1c1c;padding:3px 12px;border-radius:20px;font-weight:700;font-size:0.8rem;">0 activos</span>
-      <span style="flex:1;"></span>
-      <button onclick="abrirModalMensaje()" style="background:rgba(0,0,0,0.06);border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.75rem;color:#555;cursor:pointer;">💬 WA</button>
-    </div>
-    <div class="pos-panel-body" style="padding:12px;">
-      <div id="vista-comandas">
-    <!-- Pedidos programados -->
-    <div id="programados-wrap" style="display:none;margin-bottom:18px;">
-      <div style="font-size:0.78rem;font-weight:700;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;">🕐 Pedidos programados</div>
-      <div id="grid-programados" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
-    </div>
-    <div id="sin-pedidos"><span class="emoji">🍽️</span>Esperando pedidos...</div>
-    <div id="grid-pedidos"></div>
-  </div>
-
-  <!-- [vista-presencial removida — contenido movido al panel izquierdo del split] -->
-  <div id="vista-presencial" style="display:none;">
-    <div id="pos-layout-OLD-HIDDEN">
-
-      <!-- Menú -->
-      <div id="pos-menu">
-        <div class="pos-cat-header" onclick="toggleCat('paninis')">
-          <span>🥖 Paninis &amp; Focaccias</span><span id="arrow-paninis">▾</span>
-        </div>
-        <div class="pos-productos-grid" id="cat-paninis"></div>
-        <div class="pos-cat-header" onclick="toggleCat('ensaladas')">
-          <span>🥗 Ensaladas</span><span id="arrow-ensaladas">▾</span>
-        </div>
-        <div class="pos-productos-grid" id="cat-ensaladas"></div>
-        <div class="pos-cat-header" onclick="toggleCat('bebidas')">
-          <span>🥤 Bebidas</span><span id="arrow-bebidas">▾</span>
-        </div>
-        <div class="pos-productos-grid" id="cat-bebidas"></div>
-      </div>
-
-      <!-- Orden -->
-      <div id="pos-order">
-        <div id="pos-order-header">🧾 Pedido en curso</div>
-        <div id="pos-order-items">
-          <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú</div>
-        </div>
-        <div id="pos-order-footer">
-          <div id="pos-fields">
-            <div>
-              <label>Nombre del cliente</label>
-              <input id="pos-nombre-input" type="text" placeholder="Nombre (opcional)" autocomplete="off" />
-            </div>
-            <div>
-              <label>Forma de pago</label>
-              <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
-                <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
-                <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
-                <button class="pos-pago-btn" data-pago="mixto" onclick="selPago(this)">💵+💳 Mixto</button>
-              </div>
-
-              <!-- Efectivo simple -->
-              <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
-                <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
-                <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                  style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-              </div>
-              <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
-                <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
-                <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-              </div>
-
-              <!-- Pago mixto -->
-              <div id="mixto-wrap" style="display:none;margin-top:8px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
-                  <input id="mixto-efectivo" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
-                  <input id="mixto-terminal" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-                <div id="mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
-                <div id="mixto-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:4px;">
-                  <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio efectivo</span>
-                  <span id="mixto-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <label>Descuento</label>
-              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                  style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                <div style="display:flex;gap:4px;">
-                  <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
-                  <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
-                </div>
-                <input id="pos-descuento-motivo" type="text" placeholder="Motivo del descuento"
-                  style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;color:#1a1a1a;" />
-              </div>
-            </div>
-          </div>
-          <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
-            <span style="font-size:0.8rem;color:#aaa;">Subtotal</span>
-            <span id="pos-subtotal-monto" style="font-size:0.9rem;color:#888;">$0</span>
-          </div>
-          <div id="pos-desc-row" style="display:none;justify-content:space-between;align-items:baseline;">
-            <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
-            <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
-          </div>
-          <div id="pos-total-row">
-            <span id="pos-total-label">Total</span>
-            <span id="pos-total-monto">$0</span>
-          </div>
-          <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-      </div><!-- /vista-comandas -->
-    </div><!-- /pos-panel-body -->
-  </div><!-- /pos-panel-comandas -->
 
 </main>
 
