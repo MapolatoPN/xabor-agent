@@ -86,9 +86,10 @@ if (VAPID_PUBLIC && VAPID_PRIVATE) {
 }
 
 async function enviarPushATodos(titulo, cuerpo, data = {}) {
-  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) { console.log('[Push] VAPID no configurado — omitiendo'); return; }
   let subs;
-  try { subs = await obtenerSuscripcionesPush(); } catch { return; }
+  try { subs = await obtenerSuscripcionesPush(); } catch (e) { console.error('[Push] Error leyendo suscripciones:', e.message); return; }
+  console.log(`[Push] Enviando "${titulo}" a ${subs.length} suscripción(es)`);
   const payload = JSON.stringify({ titulo, cuerpo, data });
   for (const sub of subs) {
     try {
