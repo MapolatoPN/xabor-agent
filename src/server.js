@@ -743,9 +743,4 @@ initDB()
 server.listen(PORT, () => {
   console.log(`
 🌮 =============================================
-   Agente Xabor corriendo en puerto ${PORT}
-   Panel: http://localhost:${PORT}
-   API:   http://localhost:${PORT}/health
-🌮 =============================================
-  `);
-});
+   Agente X

@@ -962,7 +962,8 @@ function renderComanda(p) {
     </div>
     <div class="comanda-footer">
       <div class="orden-badge">#${numOrden}</div>
-      <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🖨️ Imprimir</button>
+      <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🍽️ Comanda</button>
+      <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#2563eb;">🧾 Ticket</button>
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
@@ -1038,17 +1039,79 @@ function marcarEntregado(id) {
     });
 }
 
-function imprimirComanda(id) {
-  const p = pedidos[id];
-  if (!p) return;
+function abrirPopupImpresion(html) {
   const win = window.open('', '_blank', 'width=390,height=700,toolbar=0,location=0,menubar=0,status=0,scrollbars=1');
   if (!win) return;
-  win.document.write(ticketHTML(p));
+  win.document.write(html);
   win.document.close();
-  // Imprimir cuando cargue; fallback a 1s por si onload no dispara
   let printed = false;
   win.onload = () => { if (!printed) { printed = true; setTimeout(() => { win.print(); win.close(); }, 250); } };
   setTimeout(() => { if (!printed) { printed = true; try { win.print(); win.close(); } catch(e) {} } }, 1200);
+}
+
+// Auto-print al llegar pedido — formato cocina (sin precios)
+function imprimirComanda(id) {
+  const p = pedidos[id];
+  if (!p) return;
+  abrirPopupImpresion(comandaHTML(p));
+}
+
+// Botón manual — ticket completo para el cliente
+function imprimirTicketCliente(id) {
+  const p = pedidos[id];
+  if (!p) return;
+  abrirPopupImpresion(ticketHTML(p));
+}
+
+function comandaHTML(p) {
+  const esEntrega    = p.modalidad === 'entrega a domicilio';
+  const esPresencial = p.canal === 'presencial';
+  const badgeLabel   = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
+  const nombre       = getNombre(p);
+  const numOrden     = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
+  const horaCompleta = horaCST(p.timestamp);
+  const totalArt     = (p.items || []).reduce((s, i) => s + (i.cantidad || 1), 0);
+
+  const itemsRows = (p.items || []).map(item => `
+    <tr>
+      <td style="width:28px;font-weight:900;font-size:16px;vertical-align:top;">${item.cantidad||1}x</td>
+      <td style="vertical-align:top;font-size:14px;font-weight:700;">${item.nombre||item.name||'Producto'}
+        ${item.notas ? `<div style="font-size:11px;font-style:italic;font-weight:400;padding-left:4px;">${item.notas}</div>` : ''}
+      </td>
+    </tr>`).join('');
+
+  const dirEntrega = esEntrega && p.cliente ? `
+    <div style="border-left:3px solid #000;padding:3px 6px;margin:4px 0;font-size:11px;">
+      ${p.cliente.calle || ''}${p.cliente.colonia ? '<br>Col. '+p.cliente.colonia : ''}
+      ${p.cliente.entre_calles ? '<br>Entre: '+p.cliente.entre_calles : ''}
+    </div>` : '';
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+@page{size:80mm auto;margin:0 2mm;}
+body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.5;color:#000;background:#fff;padding:4mm 2mm;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+table{width:100%;border-collapse:collapse;}
+td{padding:2px 0;}
+hr{border:none;border-top:2px solid #000;margin:5px 0;}
+.dash{border-top:1px dashed #000 !important;}
+.c{text-align:center;}
+.badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:12px;padding:4px 0;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+</style></head><body>
+<div class="c" style="font-size:13px;font-weight:900;letter-spacing:2px;">XABOR — COMANDA</div>
+<div class="c" style="font-size:10px;">${horaCompleta}</div>
+<hr>
+<div class="c" style="font-size:13px;">Orden:</div>
+<div class="c" style="font-size:52px;font-weight:900;line-height:1.05;">${numOrden}</div>
+<hr class="dash">
+<div style="font-size:14px;font-weight:900;text-align:center;">${nombre}</div>
+<div class="badge">${badgeLabel}</div>
+${dirEntrega}
+<hr>
+<table>${itemsRows}</table>
+<hr class="dash">
+<div class="c" style="font-size:11px;">Artículos: ${totalArt}</div>
+</body></html>`;
 }
 
 function ticketHTML(p) {
@@ -1868,183 +1931,4 @@ async function cargarVentas(desde, hasta) {
 
 function exportarCSV() {
   if (!ventasData.length) return;
-  const filas = [['Hora','Folio','Cliente','Telefono','Modalidad','Pago','Items','Total']];
-  ventasData.forEach(v => {
-    const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(' | ') : '';
-    filas.push([new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros'}),v.folio||v.id,v.nombre_cliente||'',v.telefono||'',v.modalidad||'',v.forma_pago||'',items,v.total]);
-  });
-  const csv  = filas.map(r=>r.map(c=>`"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
-  const url  = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${new Date().toISOString().slice(0,10)}.csv`; a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ─── Editor de Menú ──────────────────────────────────────────────────────────
-let menuData = [];
-
-async function cargarMenuEditor() {
-  menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
-  renderMenuEditor();
-}
-
-function renderMenuEditor() {
-  const el = document.getElementById('menu-editor');
-  if (!menuData.length) { el.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No hay categorías aún</div>'; return; }
-  el.innerHTML = menuData.map(cat => `
-    <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
-      <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
-        <span style="font-weight:800;font-size:0.95rem;flex:1;">${cat.nombre}</span>
-        <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#666;cursor:pointer;">
-          <input type="checkbox" ${cat.activa ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
-          Activa
-        </label>
-        <button onclick="abrirModalProducto(${cat.id})" style="background:#e8a020;color:#1c1c1c;border:none;border-radius:7px;padding:5px 12px;font-size:0.78rem;font-weight:700;cursor:pointer;">+ Producto</button>
-        <button onclick="eliminarCategoriaUI(${cat.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:5px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
-      </div>
-      <div style="padding:10px 0;">
-        ${cat.productos.length === 0 ? '<div style="padding:12px 18px;color:#aaa;font-size:0.85rem;">Sin productos</div>' :
-          cat.productos.map(p => `
-          <div style="display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid #f8f7f4;">
-            <div style="flex:1;min-width:0;">
-              <div style="font-weight:600;font-size:0.9rem;">${p.nombre}</div>
-              <div style="font-size:0.78rem;color:#888;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.descripcion||''}</div>
-            </div>
-            <div style="font-weight:700;color:#1c1c1c;white-space:nowrap;">$${parseFloat(p.precio).toFixed(0)}</div>
-            <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:#666;cursor:pointer;white-space:nowrap;">
-              <input type="checkbox" ${p.disponible ? 'checked' : ''} onchange="toggleProducto(${p.id},this.checked)" />
-              Disponible
-            </label>
-            <button onclick="abrirModalEditarProducto(${p.id},'${p.nombre.replace(/'/g,"\\'")}',${p.precio},'${(p.descripcion||'').replace(/'/g,"\\'")}',${cat.id})" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
-            <button onclick="eliminarProductoUI(${p.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
-          </div>`).join('')}
-      </div>
-    </div>`).join('');
-}
-
-async function toggleCategoria(id, activa) {
-  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
-}
-
-async function toggleProducto(id, disponible) {
-  await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ disponible }) });
-}
-
-async function eliminarCategoriaUI(id) {
-  if (!confirm('¿Eliminar esta categoría y todos sus productos?')) return;
-  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'DELETE' });
-  cargarMenuEditor();
-}
-
-async function eliminarProductoUI(id) {
-  if (!confirm('¿Eliminar este producto?')) return;
-  await apiFetch(`/api/admin/menu/productos/${id}`, { method:'DELETE' });
-  cargarMenuEditor();
-}
-
-// Modal categoría
-function abrirModalCategoria() {
-  const nombre = prompt('Nombre de la nueva categoría:');
-  if (!nombre?.trim()) return;
-  apiFetch('/api/admin/menu/categorias', { method:'POST', body: JSON.stringify({ nombre: nombre.trim() }) })
-    .then(() => cargarMenuEditor());
-}
-
-// Modal producto — nuevo
-function abrirModalProducto(categoriaId) {
-  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true }, false);
-}
-
-// Modal producto — editar
-function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId) {
-  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true }, true);
-}
-
-function mostrarModalProducto(datos, esEdicion) {
-  const existing = document.getElementById('modal-producto');
-  if (existing) existing.remove();
-
-  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${c.nombre}</option>`).join('');
-  const div = document.createElement('div');
-  div.id = 'modal-producto';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;';
-  div.innerHTML = `
-    <div style="background:#fff;border-radius:14px;padding:28px;width:100%;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
-      <div style="font-weight:800;font-size:1rem;margin-bottom:18px;">${esEdicion ? '✏️ Editar producto' : '➕ Nuevo producto'}</div>
-      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Nombre *</label>
-      <input id="mp-nombre" value="${datos.nombre}" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;" />
-      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Precio (MXN) *</label>
-      <input id="mp-precio" type="number" value="${datos.precio}" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;" />
-      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Descripción</label>
-      <textarea id="mp-desc" rows="3" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.85rem;resize:vertical;margin-bottom:12px;">${datos.descripcion}</textarea>
-      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Categoría</label>
-      <select id="mp-cat" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:20px;">${cats}</select>
-      <div style="display:flex;gap:10px;">
-        <button onclick="document.getElementById('modal-producto').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:10px;font-size:0.9rem;cursor:pointer;">Cancelar</button>
-        <button onclick="guardarProducto(${esEdicion ? datos.id : 'null'})" style="flex:2;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px;font-size:0.9rem;font-weight:700;cursor:pointer;">${esEdicion ? 'Guardar cambios' : 'Agregar'}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(div);
-  document.getElementById('mp-nombre').focus();
-}
-
-async function guardarProducto(id) {
-  const nombre = document.getElementById('mp-nombre').value.trim();
-  const precio = parseFloat(document.getElementById('mp-precio').value);
-  const descripcion = document.getElementById('mp-desc').value.trim();
-  const categoria_id = parseInt(document.getElementById('mp-cat').value);
-  if (!nombre || isNaN(precio)) { alert('Nombre y precio son requeridos'); return; }
-  if (id) {
-    await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ nombre, precio, descripcion, categoria_id }) });
-  } else {
-    await apiFetch('/api/admin/menu/productos', { method:'POST', body: JSON.stringify({ nombre, precio, descripcion, categoria_id }) });
-  }
-  document.getElementById('modal-producto').remove();
-  cargarMenuEditor();
-}
-</script>
-<!-- Bottom nav (mobile) -->
-<nav id="bottom-nav">
-  <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-layout-grid"></i>
-    <span>Comandas</span>
-  </button>
-  <button class="bnav-item" id="bnav-presencial" onclick="bnavTab('presencial')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-shopping-cart"></i>
-    <span>POS</span>
-  </button>
-  <button class="bnav-item" id="bnav-chats" onclick="bnavTab('chats')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-message-circle"></i>
-    <span>Chats</span>
-    <span id="bnav-badge">0</span>
-  </button>
-  <button class="bnav-item" id="bnav-corte" onclick="bnavTab('corte')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-receipt"></i>
-    <span>Corte</span>
-  </button>
-  <button class="bnav-item" id="bnav-mas" onclick="abrirMasSheet()">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-dots"></i>
-    <span>Más</span>
-  </button>
-</nav>
-
-<!-- Sheet "Más" (mobile) -->
-<div id="mas-sheet">
-  <div id="mas-backdrop" onclick="cerrarMasSheet()"></div>
-  <div id="mas-panel">
-    <div class="mas-handle"></div>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-clipboard-list"></i>Historial</button>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Editor de menú</button>
-    <button class="mas-item" onclick="cerrarMasSheet();cerrarSesion()" style="color:#ef4444;"><i class="ti ti-logout" style="color:#ef4444;"></i>Salir</button>
-  </div>
-</div>
-
-</body>
-</html>
+  const filas = [['Hora','Folio','Cliente','Telefono','Modalidad','Pago','Items','Total']
