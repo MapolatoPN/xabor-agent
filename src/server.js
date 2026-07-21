@@ -367,32 +367,32 @@ app.get('/api/menu', async (req, res) => {
   res.json(menu);
 });
 
-app.post('/api/admin/menu/categorias', requireAdminAuth, async (req, res) => {
+app.post('/api/admin/menu/categorias', requireAdmin, async (req, res) => {
   const cat = await crearCategoria(req.body.nombre);
   res.json(cat);
 });
 
-app.patch('/api/admin/menu/categorias/:id', requireAdminAuth, async (req, res) => {
+app.patch('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
   await actualizarCategoria(req.params.id, req.body);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/categorias/:id', requireAdminAuth, async (req, res) => {
+app.delete('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
   await eliminarCategoria(req.params.id);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/productos', requireAdminAuth, async (req, res) => {
+app.post('/api/admin/menu/productos', requireAdmin, async (req, res) => {
   const prod = await crearProducto(req.body);
   res.json(prod);
 });
 
-app.patch('/api/admin/menu/productos/:id', requireAdminAuth, async (req, res) => {
+app.patch('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
   await actualizarProducto(req.params.id, req.body);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/productos/:id', requireAdminAuth, async (req, res) => {
+app.delete('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
   await eliminarProducto(req.params.id);
   res.json({ ok: true });
 });
