@@ -49,40 +49,10 @@ header {
 /* ─── Main ──────────────────────────────────────────────────────────────── */
 main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
 
-/* ─── Admin Drawer ───────────────────────────────────────────────────────── */
-#admin-drawer {
-  position: fixed; top: 0; right: 0; bottom: 0;
-  width: 680px; max-width: 95vw;
-  background: #f8f7f4; border-left: 2px solid #e5e2da;
-  z-index: 300; display: flex; flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.28s cubic-bezier(.4,0,.2,1);
-  box-shadow: -8px 0 32px rgba(0,0,0,0.15);
-}
-#admin-drawer.open { transform: translateX(0); }
-#admin-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 299; }
-#admin-backdrop.visible { display: block; }
-#admin-drawer-header {
-  background: #1c1c1c; color: #fff; padding: 0 20px;
-  height: 52px; display: flex; align-items: center; gap: 12px; flex-shrink: 0;
-}
-#admin-drawer-tabs {
-  display: flex; background: #fff; border-bottom: 2px solid #e5e2da;
-  overflow-x: auto; flex-shrink: 0;
-}
-.adm-tab {
-  background: none; border: none; border-bottom: 3px solid transparent;
-  margin-bottom: -2px; padding: 11px 16px;
-  font-size: 0.82rem; font-weight: 600; color: #888;
-  cursor: pointer; white-space: nowrap; transition: all .15s;
-}
-.adm-tab:hover { color: #444; }
-.adm-tab.activo { color: #1c1c1c; border-bottom-color: #e8a020; }
-#admin-drawer-content { flex: 1; overflow-y: auto; padding: 20px; }
-
-@media (max-width: 900px) {
-  #admin-drawer { width: 100%; }
-}
+/* ─── Vistas extra (corte, chats, etc.) ─────────────────────────────────── */
+#vistas-extra { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+#vistas-extra > div { display: none; }
+#vistas-extra > div.activa { display: block; }
 
 /* ─── Grid de comandas ──────────────────────────────────────────────────── */
 #sin-pedidos { text-align: center; margin-top: 80px; opacity: 0.4; font-size: 1.05rem; }
@@ -391,7 +361,6 @@ button:hover { opacity: 0.85; }
   <div class="header-brand">XABOR<span>·</span></div>
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
-  <button class="header-btn" id="btn-admin" onclick="abrirAdmin('corte')" style="background:#e8a020;color:#1c1c1c;font-weight:700;">🧾 Menú</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒 Salir</button>
 </header>
 
@@ -414,8 +383,13 @@ button:hover { opacity: 0.85; }
 
 <!-- Tabs -->
 <div id="tabs-nav">
-  <button class="tab-btn activo" id="tab-comandas" onclick="mostrarTab('comandas')">🍽️ Comandas</button>
+  <button class="tab-btn activo" id="tab-comandas"  onclick="mostrarTab('comandas')">🍽️ Comandas</button>
   <button class="tab-btn"        id="tab-presencial" onclick="mostrarTab('presencial')">🖥️ POS</button>
+  <button class="tab-btn"        id="tab-corte"      onclick="mostrarTab('corte')">🧾 Corte</button>
+  <button class="tab-btn"        id="tab-chats"      onclick="mostrarTab('chats')">💬 Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
+  <button class="tab-btn admin-only" id="tab-historial" onclick="mostrarTab('historial')">📋 Historial</button>
+  <button class="tab-btn admin-only" id="tab-ventas"    onclick="mostrarTab('ventas')">📊 Ventas</button>
+  <button class="tab-btn admin-only" id="tab-llamadas"  onclick="mostrarTab('llamadas')">📞 Llamadas</button>
 </div>
 
 <main>
@@ -542,21 +516,8 @@ button:hover { opacity: 0.85; }
 
 </main>
 
-<!-- ═══ CAJÓN ADMIN ═══ -->
-<div id="admin-drawer">
-  <div id="admin-drawer-header">
-    <span style="font-weight:800;letter-spacing:1px;font-size:0.95rem;">⚙️ ADMINISTRADOR</span>
-    <span style="flex:1;"></span>
-    <button onclick="cerrarAdmin()" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);color:#eee;border-radius:8px;padding:5px 14px;font-size:0.82rem;cursor:pointer;">✕ Cerrar</button>
-  </div>
-  <div id="admin-drawer-tabs">
-    <button class="adm-tab activo" id="adm-tab-corte"    onclick="abrirAdmin('corte')">🧾 Corte</button>
-    <button class="adm-tab"        id="adm-tab-historial" onclick="abrirAdmin('historial')">📋 Historial</button>
-    <button class="adm-tab"        id="adm-tab-ventas"   onclick="abrirAdmin('ventas')">📊 Ventas</button>
-    <button class="adm-tab"        id="adm-tab-chats"    onclick="abrirAdmin('chats')">💬 Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
-    <button class="adm-tab"        id="adm-tab-llamadas" onclick="abrirAdmin('llamadas')">📞 Llamadas</button>
-  </div>
-  <div id="admin-drawer-content">
+<!-- Vistas adicionales (fuera de main para evitar max-width) -->
+<div id="vistas-extra">
 
     <!-- Corte de caja -->
     <div id="vista-corte">
@@ -629,7 +590,7 @@ button:hover { opacity: 0.85; }
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
-      <div style="display:flex;gap:14px;height:calc(100vh - 160px);">
+      <div style="display:flex;gap:14px;height:calc(100vh - 130px);">
         <div id="lista-chats" style="width:240px;flex-shrink:0;">
           <div style="padding:12px 16px;border-bottom:1px solid #f1f0ed;font-size:0.78rem;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.5px;">Conversaciones</div>
           <div id="contactos-lista"></div>
@@ -669,9 +630,7 @@ button:hover { opacity: 0.85; }
       </div>
     </div>
 
-  </div><!-- /admin-drawer-content -->
-</div><!-- /admin-drawer -->
-<div id="admin-backdrop" onclick="cerrarAdmin()"></div>
+</div><!-- /vistas-extra -->
 
 <script>
 // ─── Auth y roles ─────────────────────────────────────────────────────────────
@@ -690,13 +649,9 @@ apiFetch('/api/auth/verify').then(async r => {
   const data = await r.json();
   const role = data.role || ROLE;
   sessionStorage.setItem('xabor_role', role);
-  // Botón visible para todos; texto y tabs según rol
-  document.getElementById('btn-admin').textContent = role === 'admin' ? '⚙️ Admin' : '🧾 Menú';
+  // Ocultar tabs de admin para operadores
   if (role !== 'admin') {
-    ['adm-tab-historial','adm-tab-ventas','adm-tab-llamadas'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
   }
   // Cargar pedidos programados al inicio
   cargarProgramados();
@@ -1003,49 +958,40 @@ function imprimirComanda(id) {
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-function abrirAdmin(seccion) {
-  document.getElementById('admin-drawer').classList.add('open');
-  document.getElementById('admin-backdrop').classList.add('visible');
-  ['corte','historial','ventas','chats','llamadas'].forEach(t => {
-    const vista = document.getElementById(`vista-${t}`);
-    const btn   = document.getElementById(`adm-tab-${t}`);
-    if (vista) vista.style.display = t === seccion ? '' : 'none';
-    if (btn)   btn.classList.toggle('activo', t === seccion);
+const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas'];
+
+function mostrarTab(tab) {
+  // Ocultar vistas principales
+  ['comandas','presencial'].forEach(v => {
+    const el = document.getElementById('vista-' + v);
+    if (el) el.style.display = (v === tab) ? '' : 'none';
   });
-  if (seccion === 'corte')     cargarCorte();
-  if (seccion === 'historial') cargarHistorial();
-  if (seccion === 'ventas')    setPeriodo('hoy');
-  if (seccion === 'llamadas')  cargarLlamadas();
-  if (seccion === 'chats') {
+  // Mostrar/ocultar vistas extra
+  ['corte','historial','ventas','chats','llamadas'].forEach(v => {
+    const el = document.getElementById('vista-' + v);
+    if (el) el.classList.toggle('activa', v === tab);
+  });
+  // Marcar tab activo
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
+  const tabEl = document.getElementById('tab-' + tab);
+  if (tabEl) tabEl.classList.add('activo');
+  // Acciones al abrir cada sección
+  if (tab === 'comandas')  cargarProgramados();
+  if (tab === 'presencial') renderMenuPOS();
+  if (tab === 'corte')     cargarCorte();
+  if (tab === 'historial') cargarHistorial();
+  if (tab === 'ventas')    setPeriodo('hoy');
+  if (tab === 'llamadas')  cargarLlamadas();
+  if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     chatNuevos = 0;
     cargarConversaciones();
   }
 }
 
-function cerrarAdmin() {
-  document.getElementById('admin-drawer').classList.remove('open');
-  document.getElementById('admin-backdrop').classList.remove('visible');
-}
-
-function mostrarTab(tab) {
-  if (['corte','historial','ventas','chats','llamadas'].includes(tab)) { abrirAdmin(tab); return; }
-
-  // Mostrar/ocultar vistas principales
-  const vistas = ['comandas', 'presencial'];
-  vistas.forEach(v => {
-    const el = document.getElementById('vista-' + v);
-    if (el) el.style.display = (v === tab) ? '' : 'none';
-  });
-
-  // Marcar tab activo
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
-  const tabEl = document.getElementById('tab-' + tab);
-  if (tabEl) tabEl.classList.add('activo');
-
-  if (tab === 'comandas') cargarProgramados();
-  if (tab === 'presencial') renderMenuPOS();
-}
+// Alias para compatibilidad con cualquier llamada existente
+function abrirAdmin(seccion) { mostrarTab(seccion); }
+function cerrarAdmin() { mostrarTab('comandas'); }
 
 async function cargarProgramados() {
   try {
