@@ -399,7 +399,7 @@ button:hover { opacity: 0.85; }
   <div class="header-brand">XABOR<span>·</span></div>
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
-  <button class="header-btn" id="btn-admin" onclick="abrirAdmin('corte')" style="display:none;background:#e8a020;color:#1c1c1c;font-weight:700;">⚙️ Admin</button>
+  <button class="header-btn" id="btn-admin" onclick="abrirAdmin('corte')" style="background:#e8a020;color:#1c1c1c;font-weight:700;">🧾 Menú</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒 Salir</button>
 </header>
 
@@ -802,8 +802,13 @@ apiFetch('/api/auth/verify').then(async r => {
   const data = await r.json();
   const role = data.role || ROLE;
   sessionStorage.setItem('xabor_role', role);
-  if (role === 'admin') {
-    document.getElementById('btn-admin').style.display = '';
+  // Botón visible para todos; texto y tabs según rol
+  document.getElementById('btn-admin').textContent = role === 'admin' ? '⚙️ Admin' : '🧾 Menú';
+  if (role !== 'admin') {
+    ['adm-tab-historial','adm-tab-ventas','adm-tab-llamadas'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
   }
   // Cargar pedidos programados al inicio
   cargarProgramados();
