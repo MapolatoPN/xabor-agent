@@ -336,7 +336,7 @@ app.delete('/pedidos/:id', async (req, res) => {
 });
 
 // Actualizar forma de pago — solo admin
-app.patch('/api/admin/pedido/:folio/pago', requireAdminAuth, async (req, res) => {
+app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
   const { folio } = req.params;
   const { forma_pago } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
