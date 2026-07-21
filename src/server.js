@@ -245,10 +245,13 @@ app.get('/', (req, res) => {
 
 // Salud del servidor
 app.get('/health', (req, res) => {
+  const activos = obtenerPedidos().filter(p => p.estado !== 'entregado');
   res.json({
     status: 'ok',
     restaurante: 'Xabor',
-    pedidos_activos: obtenerPedidos().filter(p => p.estado !== 'entregado').length,
+    pedidos_activos: activos.length,
+    pedidos: activos.map(p => ({ id: p.id, canal: p.canal, estado: p.estado, cliente: p.cliente?.nombre })),
+    ws_clientes: wss.clients.size,
     timestamp: new Date().toISOString()
   });
 });
