@@ -1,41 +1,34 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { obtenerOverridesActivos } from '../services/database.js';
+import { obtenerOverridesActivos, obtenerMenuCompleto } from '../services/database.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function cargarDatos() {
-  const menu = JSON.parse(
-    readFileSync(join(__dirname, '../data/menu.json'), 'utf-8')
-  );
-  const reglas = JSON.parse(
+function cargarReglas() {
+  return JSON.parse(
     readFileSync(join(__dirname, '../data/rules.json'), 'utf-8')
   );
-  return { menu, reglas };
 }
 
-function formatearMenu(menu) {
+function formatearMenu(categorias) {
   let texto = '';
-  for (const categoria of menu.categorias) {
-    texto += `\n### ${categoria.nombre}`;
-    if (categoria.nota) texto += ` (${categoria.nota})`;
-    texto += '\n';
+  for (const categoria of categorias) {
+    texto += `\n### ${categoria.nombre}\n`;
     for (const p of categoria.productos) {
       if (!p.disponible) continue;
       texto += `- ${p.nombre} — $${p.precio} MXN\n`;
-      texto += `  ${p.descripcion}\n`;
+      if (p.descripcion) texto += `  ${p.descripcion}\n`;
       if (p.opciones) {
-        if (Array.isArray(p.opciones)) {
-          texto += `  Opciones: ${p.opciones.join(', ')}\n`;
+        const opts = typeof p.opciones === 'string' ? JSON.parse(p.opciones) : p.opciones;
+        if (Array.isArray(opts)) {
+          texto += `  Opciones: ${opts.join(', ')}\n`;
         } else {
-          // Opciones tipo objeto (ej. Focaccia Bar)
-          for (const [categoria, valores] of Object.entries(p.opciones)) {
-            texto += `  ${categoria.charAt(0).toUpperCase() + categoria.slice(1)}: ${valores.join(', ')}\n`;
+          for (const [clave, valores] of Object.entries(opts)) {
+            texto += `  ${clave.charAt(0).toUpperCase() + clave.slice(1)}: ${valores.join(', ')}\n`;
           }
         }
       }
-      if (p.alergenos.length > 0) texto += `  Alérgenos: ${p.alergenos.join(', ')}\n`;
     }
   }
   return texto;
@@ -111,7 +104,8 @@ function obtenerEstadoRestaurante(reglas) {
 }
 
 export async function construirSystemPrompt(clienteCtx = null, canal = null) {
-  const { menu, reglas } = cargarDatos();
+  const reglas = cargarReglas();
+  const categorias = await obtenerMenuCompleto();
   const estado = obtenerEstadoRestaurante(reglas);
   const overrides = await obtenerOverridesActivos();
 
@@ -324,7 +318,7 @@ ${textoPromociones}
 - Si el cliente quiere cancelar DESPUÉS de haber confirmado el pedido: explica amablemente que una vez confirmado el pedido ya fue enviado a cocina y no es posible cancelarlo, pero que si tiene algún problema puede comunicarse directamente con nosotros.
 
 ## MENÚ ACTUAL
-${formatearMenu(menu)}
+${formatearMenu(categorias)}
 
 ## REGLAS Y POLÍTICAS
 - Horario: Lunes a Sábado 11am–10pm | Domingo: CERRADO

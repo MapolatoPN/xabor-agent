@@ -97,8 +97,126 @@ export async function initDB() {
     );
     CREATE INDEX IF NOT EXISTS idx_transcripciones_call_sid ON transcripciones_voz(call_sid);
     CREATE INDEX IF NOT EXISTS idx_transcripciones_created_at ON transcripciones_voz(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS menu_categorias (
+      id         SERIAL PRIMARY KEY,
+      nombre     VARCHAR(100) NOT NULL,
+      orden      INTEGER DEFAULT 0,
+      activa     BOOLEAN DEFAULT TRUE
+    );
+
+    CREATE TABLE IF NOT EXISTS menu_productos (
+      id           SERIAL PRIMARY KEY,
+      categoria_id INTEGER REFERENCES menu_categorias(id) ON DELETE CASCADE,
+      codigo       VARCHAR(20) UNIQUE,
+      nombre       VARCHAR(150) NOT NULL,
+      descripcion  TEXT,
+      precio       DECIMAL(10,2) NOT NULL,
+      disponible   BOOLEAN DEFAULT TRUE,
+      opciones     JSONB,
+      orden        INTEGER DEFAULT 0
+    );
   `);
   console.log('[DB] Tablas listas');
+}
+
+// ─── Menú — seed desde JSON ───────────────────────────────────────────────────
+export async function seedMenuDesdeJSON(menuJSON) {
+  try {
+    const { rows } = await pool.query('SELECT COUNT(*) FROM menu_categorias');
+    if (parseInt(rows[0].count) > 0) return; // Ya hay datos, no sobreescribir
+    for (let i = 0; i < menuJSON.categorias.length; i++) {
+      const cat = menuJSON.categorias[i];
+      const { rows: [{ id: catId }] } = await pool.query(
+        'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, $2) RETURNING id',
+        [cat.nombre, i]
+      );
+      for (let j = 0; j < cat.productos.length; j++) {
+        const p = cat.productos[j];
+        const opciones = p.opciones ? JSON.stringify(p.opciones) : null;
+        await pool.query(
+          `INSERT INTO menu_productos (categoria_id, codigo, nombre, descripcion, precio, disponible, opciones, orden)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [catId, p.id, p.nombre, p.descripcion || '', p.precio, p.disponible !== false, opciones, j]
+        );
+      }
+    }
+    console.log('[DB] Menú importado desde JSON');
+  } catch(e) {
+    console.error('[DB] Error seedMenuDesdeJSON:', e.message);
+  }
+}
+
+// ─── Menú — lectura ───────────────────────────────────────────────────────────
+export async function obtenerMenuCompleto() {
+  try {
+    const cats = await pool.query(
+      'SELECT * FROM menu_categorias WHERE activa = TRUE ORDER BY orden'
+    );
+    const prods = await pool.query(
+      `SELECT p.* FROM menu_productos p
+       JOIN menu_categorias c ON c.id = p.categoria_id
+       WHERE c.activa = TRUE ORDER BY p.orden`
+    );
+    return cats.rows.map(c => ({
+      ...c,
+      productos: prods.rows.filter(p => p.categoria_id === c.id)
+    }));
+  } catch(e) {
+    console.error('[DB] obtenerMenuCompleto:', e.message);
+    return [];
+  }
+}
+
+// ─── Menú — CRUD categorías ───────────────────────────────────────────────────
+export async function crearCategoria(nombre) {
+  const { rows } = await pool.query(
+    'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, (SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias)) RETURNING *',
+    [nombre]
+  );
+  return rows[0];
+}
+
+export async function actualizarCategoria(id, campos) {
+  const sets = [], vals = [];
+  if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);  vals.push(campos.nombre); }
+  if (campos.activa    !== undefined) { sets.push(`activa=$${sets.length+1}`);  vals.push(campos.activa); }
+  if (campos.orden     !== undefined) { sets.push(`orden=$${sets.length+1}`);   vals.push(campos.orden); }
+  if (!sets.length) return;
+  vals.push(id);
+  await pool.query(`UPDATE menu_categorias SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+}
+
+// ─── Menú — CRUD productos ────────────────────────────────────────────────────
+export async function crearProducto(datos) {
+  const { categoria_id, nombre, descripcion, precio, disponible, opciones } = datos;
+  const { rows } = await pool.query(
+    `INSERT INTO menu_productos (categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
+     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$1))
+     RETURNING *`,
+    [categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
+  );
+  return rows[0];
+}
+
+export async function actualizarProducto(id, campos) {
+  const sets = [], vals = [];
+  if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
+  if (campos.descripcion  !== undefined) { sets.push(`descripcion=$${sets.length+1}`);  vals.push(campos.descripcion); }
+  if (campos.precio       !== undefined) { sets.push(`precio=$${sets.length+1}`);       vals.push(campos.precio); }
+  if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
+  if (campos.categoria_id !== undefined) { sets.push(`categoria_id=$${sets.length+1}`); vals.push(campos.categoria_id); }
+  if (!sets.length) return;
+  vals.push(id);
+  await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+}
+
+export async function eliminarProducto(id) {
+  await pool.query('DELETE FROM menu_productos WHERE id=$1', [id]);
+}
+
+export async function eliminarCategoria(id) {
+  await pool.query('DELETE FROM menu_categorias WHERE id=$1', [id]);
 }
 
 // ─── Obtener cliente por teléfono ─────────────────────────────────────────────

@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -26,8 +26,10 @@ import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSc
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
 
+import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+const menuJSON = JSON.parse(readFileSync(join(__dirname, 'data/menu.json'), 'utf-8'));
 
 // ─── Autenticación del panel ──────────────────────────────────────────────────
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'xabor2024';
@@ -359,6 +361,42 @@ app.get('/api/caja/fondo', requireAuth, async (req, res) => {
   res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
 });
 
+// ─── Menú — endpoints ────────────────────────────────────────────────────────
+app.get('/api/menu', async (req, res) => {
+  const menu = await obtenerMenuCompleto();
+  res.json(menu);
+});
+
+app.post('/api/admin/menu/categorias', requireAdminAuth, async (req, res) => {
+  const cat = await crearCategoria(req.body.nombre);
+  res.json(cat);
+});
+
+app.patch('/api/admin/menu/categorias/:id', requireAdminAuth, async (req, res) => {
+  await actualizarCategoria(req.params.id, req.body);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/menu/categorias/:id', requireAdminAuth, async (req, res) => {
+  await eliminarCategoria(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/menu/productos', requireAdminAuth, async (req, res) => {
+  const prod = await crearProducto(req.body);
+  res.json(prod);
+});
+
+app.patch('/api/admin/menu/productos/:id', requireAdminAuth, async (req, res) => {
+  await actualizarProducto(req.params.id, req.body);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/menu/productos/:id', requireAdminAuth, async (req, res) => {
+  await eliminarProducto(req.params.id);
+  res.json({ ok: true });
+});
+
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
 app.get('/api/corte-caja', requireAuth, async (req, res) => {
   const d = inicioDelDiaMX().toISOString();
@@ -603,6 +641,7 @@ async function reconciliarPagosPendientes() {
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
+  .then(() => seedMenuDesdeJSON(menuJSON))
   .then(() => cargarPedidosDesdeDB())
   .then(() => {
     // Activar pedidos programados cada 5 minutos

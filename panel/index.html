@@ -390,6 +390,7 @@ button:hover { opacity: 0.85; }
   <button class="tab-btn admin-only" id="tab-historial" onclick="mostrarTab('historial')">📋 Historial</button>
   <button class="tab-btn admin-only" id="tab-ventas"    onclick="mostrarTab('ventas')">📊 Ventas</button>
   <button class="tab-btn admin-only" id="tab-llamadas"  onclick="mostrarTab('llamadas')">📞 Llamadas</button>
+  <button class="tab-btn admin-only" id="tab-menu"      onclick="mostrarTab('menu')">🍽️ Menú</button>
 </div>
 
 <main>
@@ -628,6 +629,15 @@ button:hover { opacity: 0.85; }
         </div>
         <div id="transcripcion-mensajes" style="padding:16px;display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto;"></div>
       </div>
+    </div>
+
+    <!-- Menú -->
+    <div id="vista-menu" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+        <div style="font-size:1.1rem;font-weight:800;">🍽️ Editor de Menú</div>
+        <button onclick="abrirModalCategoria()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;">+ Nueva categoría</button>
+      </div>
+      <div id="menu-editor"></div>
     </div>
 
 </div><!-- /vistas-extra -->
@@ -967,7 +977,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -975,7 +985,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -990,6 +1000,7 @@ function mostrarTab(tab) {
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
+  if (tab === 'menu')      cargarMenuEditor();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     chatNuevos = 0;
@@ -1636,6 +1647,129 @@ function exportarCSV() {
   const url  = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${new Date().toISOString().slice(0,10)}.csv`; a.click();
   URL.revokeObjectURL(url);
+}
+
+// ─── Editor de Menú ──────────────────────────────────────────────────────────
+let menuData = [];
+
+async function cargarMenuEditor() {
+  menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
+  renderMenuEditor();
+}
+
+function renderMenuEditor() {
+  const el = document.getElementById('menu-editor');
+  if (!menuData.length) { el.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No hay categorías aún</div>'; return; }
+  el.innerHTML = menuData.map(cat => `
+    <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
+      <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
+        <span style="font-weight:800;font-size:0.95rem;flex:1;">${cat.nombre}</span>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#666;cursor:pointer;">
+          <input type="checkbox" ${cat.activa ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
+          Activa
+        </label>
+        <button onclick="abrirModalProducto(${cat.id})" style="background:#e8a020;color:#1c1c1c;border:none;border-radius:7px;padding:5px 12px;font-size:0.78rem;font-weight:700;cursor:pointer;">+ Producto</button>
+        <button onclick="eliminarCategoriaUI(${cat.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:5px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
+      </div>
+      <div style="padding:10px 0;">
+        ${cat.productos.length === 0 ? '<div style="padding:12px 18px;color:#aaa;font-size:0.85rem;">Sin productos</div>' :
+          cat.productos.map(p => `
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid #f8f7f4;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;font-size:0.9rem;">${p.nombre}</div>
+              <div style="font-size:0.78rem;color:#888;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.descripcion||''}</div>
+            </div>
+            <div style="font-weight:700;color:#1c1c1c;white-space:nowrap;">$${parseFloat(p.precio).toFixed(0)}</div>
+            <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:#666;cursor:pointer;white-space:nowrap;">
+              <input type="checkbox" ${p.disponible ? 'checked' : ''} onchange="toggleProducto(${p.id},this.checked)" />
+              Disponible
+            </label>
+            <button onclick="abrirModalEditarProducto(${p.id},'${p.nombre.replace(/'/g,"\\'")}',${p.precio},'${(p.descripcion||'').replace(/'/g,"\\'")}',${cat.id})" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
+            <button onclick="eliminarProductoUI(${p.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
+          </div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+async function toggleCategoria(id, activa) {
+  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
+}
+
+async function toggleProducto(id, disponible) {
+  await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ disponible }) });
+}
+
+async function eliminarCategoriaUI(id) {
+  if (!confirm('¿Eliminar esta categoría y todos sus productos?')) return;
+  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'DELETE' });
+  cargarMenuEditor();
+}
+
+async function eliminarProductoUI(id) {
+  if (!confirm('¿Eliminar este producto?')) return;
+  await apiFetch(`/api/admin/menu/productos/${id}`, { method:'DELETE' });
+  cargarMenuEditor();
+}
+
+// Modal categoría
+function abrirModalCategoria() {
+  const nombre = prompt('Nombre de la nueva categoría:');
+  if (!nombre?.trim()) return;
+  apiFetch('/api/admin/menu/categorias', { method:'POST', body: JSON.stringify({ nombre: nombre.trim() }) })
+    .then(() => cargarMenuEditor());
+}
+
+// Modal producto — nuevo
+function abrirModalProducto(categoriaId) {
+  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true }, false);
+}
+
+// Modal producto — editar
+function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId) {
+  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true }, true);
+}
+
+function mostrarModalProducto(datos, esEdicion) {
+  const existing = document.getElementById('modal-producto');
+  if (existing) existing.remove();
+
+  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${c.nombre}</option>`).join('');
+  const div = document.createElement('div');
+  div.id = 'modal-producto';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:28px;width:100%;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+      <div style="font-weight:800;font-size:1rem;margin-bottom:18px;">${esEdicion ? '✏️ Editar producto' : '➕ Nuevo producto'}</div>
+      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Nombre *</label>
+      <input id="mp-nombre" value="${datos.nombre}" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;" />
+      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Precio (MXN) *</label>
+      <input id="mp-precio" type="number" value="${datos.precio}" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;" />
+      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Descripción</label>
+      <textarea id="mp-desc" rows="3" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.85rem;resize:vertical;margin-bottom:12px;">${datos.descripcion}</textarea>
+      <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Categoría</label>
+      <select id="mp-cat" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:20px;">${cats}</select>
+      <div style="display:flex;gap:10px;">
+        <button onclick="document.getElementById('modal-producto').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:10px;font-size:0.9rem;cursor:pointer;">Cancelar</button>
+        <button onclick="guardarProducto(${esEdicion ? datos.id : 'null'})" style="flex:2;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px;font-size:0.9rem;font-weight:700;cursor:pointer;">${esEdicion ? 'Guardar cambios' : 'Agregar'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+  document.getElementById('mp-nombre').focus();
+}
+
+async function guardarProducto(id) {
+  const nombre = document.getElementById('mp-nombre').value.trim();
+  const precio = parseFloat(document.getElementById('mp-precio').value);
+  const descripcion = document.getElementById('mp-desc').value.trim();
+  const categoria_id = parseInt(document.getElementById('mp-cat').value);
+  if (!nombre || isNaN(precio)) { alert('Nombre y precio son requeridos'); return; }
+  if (id) {
+    await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ nombre, precio, descripcion, categoria_id }) });
+  } else {
+    await apiFetch('/api/admin/menu/productos', { method:'POST', body: JSON.stringify({ nombre, precio, descripcion, categoria_id }) });
+  }
+  document.getElementById('modal-producto').remove();
+  cargarMenuEditor();
 }
 </script>
 </body>
