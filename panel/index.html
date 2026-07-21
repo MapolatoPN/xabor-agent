@@ -755,7 +755,7 @@ const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.ho
 let ws;
 function conectarWS() {
   ws = new WebSocket(WS_URL);
-  ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; };
+  ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; panelListo = false; setTimeout(() => { panelListo = true; }, 3000); };
   ws.onclose = () => { dot.className = 'desconectado'; labelWs.textContent = 'Desconectado'; setTimeout(conectarWS, 3000); };
   ws.onerror = () => { dot.className = 'desconectado'; };
   ws.onmessage = ({ data }) => {
@@ -826,17 +826,23 @@ function getPrecioItem(item) {
 }
 
 // ─── Comandas ────────────────────────────────────────────────────────────────
+// Pedidos recibidos en los primeros 3s de conexión son "replay" del servidor — no imprimir
+let panelListo = false;
+
 function agregarPedido(pedido) {
+  if (document.getElementById(`comanda-${pedido.id}`)) return; // ya existe en DOM
   pedidos[pedido.id] = pedido;
   actualizarContador();
   sinPedidos.style.display = 'none';
-  sonarAlerta();
   const card = document.createElement('div');
   card.className = 'comanda nuevo';
   card.id = `comanda-${pedido.id}`;
   card.innerHTML = renderComanda(pedido);
   grid.prepend(card);
-  setTimeout(() => imprimirComanda(pedido.id), 800);
+  if (panelListo) {
+    sonarAlerta();
+    setTimeout(() => imprimirComanda(pedido.id), 800);
+  }
 }
 
 // Convierte número entero a letras en español (para el ticket)
