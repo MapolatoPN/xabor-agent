@@ -623,6 +623,11 @@ app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
 });
 
 // Pedido de prueba (solo para desarrollo)
+app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
+  await enviarReporteDiario();
+  res.json({ ok: true });
+});
+
 app.post('/test/pedido', (req, res) => {
   const ordenPrueba = {
     cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
