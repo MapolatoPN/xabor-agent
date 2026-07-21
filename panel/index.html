@@ -529,15 +529,27 @@ button:hover { opacity: 0.85; }
     <!-- Totales por forma de pago -->
     <div id="corte-pagos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px;"></div>
 
-    <!-- Total general -->
-    <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-      <div>
-        <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">TOTAL DEL DÍA</div>
-        <div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div>
+    <!-- Fondo + Total general -->
+    <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div>
+          <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">FONDO INICIAL</div>
+          <div style="font-size:1.5rem;font-weight:800;color:#06d6a0;" id="corte-fondo">—</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div>
+          <div style="font-size:1.5rem;font-weight:800;color:#e8a020;" id="corte-num">0</div>
+        </div>
       </div>
-      <div style="text-align:right;">
-        <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div>
-        <div style="font-size:2rem;font-weight:800;color:#e8a020;" id="corte-num">0</div>
+      <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">VENTAS DEL DÍA</div>
+          <div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO EN CAJA</div>
+          <div style="font-size:2rem;font-weight:800;color:#22c55e;" id="corte-efectivo">$0</div>
+        </div>
       </div>
     </div>
 
@@ -1448,9 +1460,11 @@ async function cargarCorte() {
   const data = await apiFetch('/api/corte-caja').then(r => r.json()).catch(() => null);
   if (!data) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;">Error al cargar</div>'; return; }
 
-  document.getElementById('corte-fecha').textContent = data.fecha;
-  document.getElementById('corte-total').textContent = '$' + parseFloat(data.total_dia||0).toFixed(2);
-  document.getElementById('corte-num').textContent   = data.num_pedidos || 0;
+  document.getElementById('corte-fecha').textContent    = data.fecha;
+  document.getElementById('corte-total').textContent    = '$' + parseFloat(data.total_dia||0).toFixed(2);
+  document.getElementById('corte-num').textContent      = data.num_pedidos || 0;
+  document.getElementById('corte-fondo').textContent    = data.fondo_inicial != null ? '$' + parseFloat(data.fondo_inicial).toFixed(2) : 'Sin registrar';
+  document.getElementById('corte-efectivo').textContent = '$' + parseFloat(data.efectivo_esperado||0).toFixed(2);
 
   const pagoIcons = { 'efectivo': '💵', 'terminal (tarjeta presente)': '💳', 'enlace de pago': '🔗' };
   const pagosHTML = Object.entries(data.por_pago || {}).map(([pago, info]) => `

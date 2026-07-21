@@ -62,6 +62,13 @@ export async function initDB() {
       created_at     TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS caja_fondos (
+      id          SERIAL PRIMARY KEY,
+      fecha       DATE NOT NULL UNIQUE,
+      fondo       DECIMAL(10,2) NOT NULL,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS prompt_improvements (
       id          SERIAL PRIMARY KEY,
       semana      DATE NOT NULL,
@@ -659,5 +666,35 @@ export async function obtenerUltimosPedidos(telefono, limite = 3) {
   } catch (e) {
     console.error('[DB] Error obtenerUltimosPedidos:', e.message);
     return [];
+  }
+}
+
+// ─── Fondo de caja ────────────────────────────────────────────────────────────
+// Guarda el fondo inicial del día (una sola vez por fecha MX)
+export async function guardarFondoCaja(fechaMX, monto) {
+  try {
+    await pool.query(`
+      INSERT INTO caja_fondos (fecha, fondo)
+      VALUES ($1, $2)
+      ON CONFLICT (fecha) DO NOTHING
+    `, [fechaMX, monto]);
+    return true;
+  } catch (e) {
+    console.error('[DB] Error guardarFondoCaja:', e.message);
+    return false;
+  }
+}
+
+// Obtiene el fondo registrado para una fecha MX (formato 'YYYY-MM-DD')
+export async function obtenerFondoCaja(fechaMX) {
+  try {
+    const result = await pool.query(
+      `SELECT fondo, created_at FROM caja_fondos WHERE fecha = $1`,
+      [fechaMX]
+    );
+    return result.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerFondoCaja:', e.message);
+    return null;
   }
 }

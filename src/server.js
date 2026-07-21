@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja } from './services/database.js';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -313,9 +313,18 @@ app.get('/api/historial', requireAuth, async (req, res) => {
 });
 
 // POS — Ventas (solo admin)
+// Medianoche en hora de México (Matamoros) — el servidor corre en UTC
+function inicioDelDiaMX() {
+  const ahora = new Date();
+  const mxDate = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Matamoros' }));
+  const offsetMs = ahora - mxDate; // diferencia UTC vs hora MX
+  mxDate.setHours(0, 0, 0, 0);    // medianoche en tiempo MX
+  return new Date(mxDate.getTime() + offsetMs); // convertir a UTC real
+}
+
 app.get('/api/ventas', requireAdmin, async (req, res) => {
   const { desde, hasta } = req.query;
-  const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
   const ventas = await obtenerVentas(d, h);
   res.json(ventas);
@@ -323,20 +332,43 @@ app.get('/api/ventas', requireAdmin, async (req, res) => {
 
 app.get('/api/ventas/resumen', requireAdmin, async (req, res) => {
   const { desde, hasta } = req.query;
-  const d = desde || new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
   const resumen = await obtenerResumenVentas(d, h);
   res.json(resumen);
 });
 
+// ─── Fondo de caja ────────────────────────────────────────────────────────────
+function fechaHoyMX() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros' }).format(new Date());
+}
+
+app.post('/api/caja/fondo', requireAuth, async (req, res) => {
+  const { monto } = req.body;
+  if (!monto || isNaN(monto) || Number(monto) < 0) {
+    return res.status(400).json({ error: 'Monto inválido' });
+  }
+  const fecha = fechaHoyMX();
+  await guardarFondoCaja(fecha, Number(monto));
+  res.json({ ok: true, fecha, fondo: Number(monto) });
+});
+
+app.get('/api/caja/fondo', requireAuth, async (req, res) => {
+  const fecha = fechaHoyMX();
+  const registro = await obtenerFondoCaja(fecha);
+  res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
+});
+
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
 app.get('/api/corte-caja', requireAuth, async (req, res) => {
-  const d = new Date(new Date().setHours(0,0,0,0)).toISOString();
+  const d = inicioDelDiaMX().toISOString();
   const h = new Date().toISOString();
-  const [ventas, resumen] = await Promise.all([
+  const [ventas, resumen, fondoReg] = await Promise.all([
     obtenerVentas(d, h),
-    obtenerResumenVentas(d, h)
+    obtenerResumenVentas(d, h),
+    obtenerFondoCaja(fechaHoyMX())
   ]);
+  const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   // Agrupar por forma de pago
   const porPago = {};
   (ventas || []).forEach(v => {
@@ -345,9 +377,14 @@ app.get('/api/corte-caja', requireAuth, async (req, res) => {
     porPago[pago].count++;
     porPago[pago].total += parseFloat(v.total || 0);
   });
+  const totalVentas = resumen.total_ventas || 0;
+  // Efectivo en caja = fondo inicial + ventas en efectivo
+  const ventasEfectivo = (porPago['efectivo']?.total || 0) + (porPago['Efectivo']?.total || 0);
   res.json({
     fecha: new Date().toLocaleDateString('es-MX', { timeZone: 'America/Matamoros', dateStyle: 'full' }),
-    total_dia: resumen.total_ventas || 0,
+    fondo_inicial: fondo,
+    total_dia: totalVentas,
+    efectivo_esperado: fondo + ventasEfectivo,
     num_pedidos: resumen.num_pedidos || 0,
     por_pago: porPago,
     pedidos: (ventas || []).map(v => ({
