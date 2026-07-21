@@ -979,7 +979,7 @@ function iconCanal(canal) {
 
 function actualizarContador() {
   const n = Object.values(pedidos).filter(p => p.estado !== 'entregado').length;
-  contador.textContent = `${n} activo${n !== 1 ? 's' : ''}`;
+  if (contador) contador.textContent = `${n} activo${n !== 1 ? 's' : ''}`;
 }
 
 function actualizarEstadoUI(id, estado) {
