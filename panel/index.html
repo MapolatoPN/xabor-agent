@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Xabor — Panel de Comandas</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css" />
 <style>
 /* ─── Reset y base ─────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,7 +33,7 @@ header {
 .header-btn:hover { background: rgba(255,255,255,0.2); }
 .header-btn.danger { color: #f87171; border-color: rgba(248,113,113,0.3); }
 
-/* ─── Tabs nav ──────────────────────────────────────────────────────────── */
+/* ─── Tabs nav (desktop) ────────────────────────────────────────────────── */
 #tabs-nav {
   background: #fff; border-bottom: 2px solid #e5e2da;
   display: flex; padding: 0 24px; gap: 2px;
@@ -45,6 +46,46 @@ header {
 }
 .tab-btn:hover { color: #444; }
 .tab-btn.activo { color: #1c1c1c; border-bottom-color: #e8a020; }
+
+/* ─── Bottom nav (mobile) ───────────────────────────────────────────────── */
+#bottom-nav {
+  display: none;
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: #fff; border-top: 0.5px solid #e5e2da;
+  z-index: 200; padding: 8px 0 max(14px, env(safe-area-inset-bottom));
+  justify-content: space-around;
+}
+.bnav-item {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 0 12px; cursor: pointer; background: none; border: none;
+  position: relative;
+}
+.bnav-item i { font-size: 22px; color: #bbb; transition: color .15s; }
+.bnav-item span { font-size: 9px; color: #bbb; font-weight: 500; letter-spacing: .2px; }
+.bnav-item.activo i { color: #1c1c1c; }
+.bnav-item.activo span { color: #1c1c1c; }
+.bnav-dot { width: 4px; height: 4px; border-radius: 50%; background: transparent; margin-bottom: 1px; }
+.bnav-item.activo .bnav-dot { background: #e8a020; }
+#bnav-badge { position: absolute; top: -2px; right: 6px; background: #ef4444; color: #fff; border-radius: 10px; padding: 1px 5px; font-size: 8px; font-weight: 700; display: none; }
+
+/* Sheet "Más" */
+#mas-sheet {
+  display: none; position: fixed; inset: 0; z-index: 250;
+}
+#mas-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.4); }
+#mas-panel {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: #fff; border-radius: 20px 20px 0 0;
+  padding: 16px 0 max(24px, env(safe-area-inset-bottom));
+}
+.mas-handle { width: 36px; height: 4px; background: #e5e2da; border-radius: 2px; margin: 0 auto 16px; }
+.mas-item {
+  display: flex; align-items: center; gap: 14px; padding: 14px 24px;
+  background: none; border: none; width: 100%; font-size: 0.95rem;
+  font-weight: 500; color: #1a1a1a; cursor: pointer;
+}
+.mas-item i { font-size: 20px; color: #888; }
+.mas-item:active { background: #f8f7f4; }
 
 /* ─── Main ──────────────────────────────────────────────────────────────── */
 main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
@@ -256,15 +297,16 @@ button:hover { opacity: 0.85; }
 
 /* ─── Responsive — mobile (≤640px) ─────────────────────────────────────── */
 @media (max-width: 640px) {
-  main { padding: 10px 10px 80px; } /* bottom padding para carrito flotante */
+  main { padding: 10px 10px 90px; }
+  #vistas-extra { padding: 10px 10px 90px; }
 
   /* Header compacto */
   .header-brand { font-size: 1rem; letter-spacing: 1px; }
   #estado-ws .ws-label { display: none; }
 
-  /* Tabs más compactos */
-  #tabs-nav { padding: 0 4px; gap: 0; }
-  .tab-btn { padding: 10px 7px; font-size: 0.72rem; }
+  /* Ocultar top tabs, mostrar bottom nav */
+  #tabs-nav { display: none; }
+  #bottom-nav { display: flex; }
 
   /* Comandas — 1 columna */
   #grid-pedidos { grid-template-columns: 1fr; }
@@ -994,6 +1036,8 @@ function mostrarTab(tab) {
   if (tab === 'menu')      cargarMenuEditor();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
+    const bnavBadge = document.getElementById('bnav-badge');
+    if (bnavBadge) { bnavBadge.style.display = 'none'; }
     chatNuevos = 0;
     cargarConversaciones();
   }
@@ -1002,6 +1046,23 @@ function mostrarTab(tab) {
 // Alias para compatibilidad con cualquier llamada existente
 function abrirAdmin(seccion) { mostrarTab(seccion); }
 function cerrarAdmin() { mostrarTab('comandas'); }
+
+// ─── Bottom nav (mobile) ─────────────────────────────────────────────────────
+function bnavTab(tab) {
+  mostrarTab(tab);
+  // Actualizar estado activo en bottom nav
+  document.querySelectorAll('.bnav-item').forEach(b => b.classList.remove('activo'));
+  const mapa = { comandas:'bnav-comandas', presencial:'bnav-presencial', chats:'bnav-chats', corte:'bnav-corte' };
+  const btnId = mapa[tab];
+  if (btnId) document.getElementById(btnId)?.classList.add('activo');
+}
+
+function abrirMasSheet() {
+  document.getElementById('mas-sheet').style.display = 'block';
+}
+function cerrarMasSheet() {
+  document.getElementById('mas-sheet').style.display = 'none';
+}
 
 async function cargarProgramados() {
   try {
@@ -1421,6 +1482,8 @@ function recibirMensajeWS(msg) {
     const badge = document.getElementById('badge-chats');
     badge.textContent = chatNuevos;
     badge.style.display = '';
+    const bnavBadge = document.getElementById('bnav-badge');
+    if (bnavBadge) { bnavBadge.textContent = chatNuevos; bnavBadge.style.display = ''; }
   }
   if (chatAbierto && msg.telefono === chatAbierto) {
     const cont = document.getElementById('chat-mensajes');
@@ -1757,5 +1820,48 @@ async function guardarProducto(id) {
   cargarMenuEditor();
 }
 </script>
+<!-- Bottom nav (mobile) -->
+<nav id="bottom-nav">
+  <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-layout-grid"></i>
+    <span>Comandas</span>
+  </button>
+  <button class="bnav-item" id="bnav-presencial" onclick="bnavTab('presencial')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-shopping-cart"></i>
+    <span>POS</span>
+  </button>
+  <button class="bnav-item" id="bnav-chats" onclick="bnavTab('chats')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-message-circle"></i>
+    <span>Chats</span>
+    <span id="bnav-badge">0</span>
+  </button>
+  <button class="bnav-item" id="bnav-corte" onclick="bnavTab('corte')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-receipt"></i>
+    <span>Corte</span>
+  </button>
+  <button class="bnav-item" id="bnav-mas" onclick="abrirMasSheet()">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-dots"></i>
+    <span>Más</span>
+  </button>
+</nav>
+
+<!-- Sheet "Más" (mobile) -->
+<div id="mas-sheet">
+  <div id="mas-backdrop" onclick="cerrarMasSheet()"></div>
+  <div id="mas-panel">
+    <div class="mas-handle"></div>
+    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-clipboard-list"></i>Historial</button>
+    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
+    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Editor de menú</button>
+    <button class="mas-item" onclick="cerrarMasSheet();cerrarSesion()" style="color:#ef4444;"><i class="ti ti-logout" style="color:#ef4444;"></i>Salir</button>
+  </div>
+</div>
+
 </body>
 </html>
