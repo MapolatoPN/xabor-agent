@@ -517,7 +517,7 @@ button:hover { opacity: 0.85; }
 </main>
 
 <!-- Vistas adicionales (fuera de main para evitar max-width) -->
-<div id="vistas-extra">
+<div id="vistas-extra" style="display:none;">
 
     <!-- Corte de caja -->
     <div id="vista-corte">
@@ -969,8 +969,14 @@ function mostrarTab(tab) {
   // Mostrar/ocultar vistas extra
   ['corte','historial','ventas','chats','llamadas'].forEach(v => {
     const el = document.getElementById('vista-' + v);
-    if (el) el.classList.toggle('activa', v === tab);
+    if (el) el.style.display = (v === tab) ? '' : 'none';
   });
+  // Mostrar/ocultar el contenedor de vistas extra
+  const ext = document.getElementById('vistas-extra');
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas'].includes(tab) ? '' : 'none';
+  // Mostrar/ocultar main
+  const mainEl = document.querySelector('main');
+  if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
   // Marcar tab activo
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
   const tabEl = document.getElementById('tab-' + tab);
@@ -1411,7 +1417,7 @@ function renderMensajes(msgs) {
 }
 
 function recibirMensajeWS(msg) {
-  const enChats = document.getElementById('vista-chats').style.display !== 'none';
+  const enChats = document.getElementById('tab-chats')?.classList.contains('activo');
   if (!enChats) {
     chatNuevos++;
     const badge = document.getElementById('badge-chats');
