@@ -1033,9 +1033,23 @@ function marcarEntregado(id) {
 }
 
 function imprimirComanda(id) {
+  // Guardar estado actual de visibilidad
+  const mainEl   = document.querySelector('main');
+  const extEl    = document.getElementById('vistas-extra');
+  const mainWas  = mainEl  ? mainEl.style.display  : '';
+  const extWas   = extEl   ? extEl.style.display   : '';
+
+  // Mostrar main temporalmente para que window.print() capture el ticket
+  if (mainEl)  mainEl.style.display  = '';
+  if (extEl)   extEl.style.display   = 'none';
+
   document.querySelectorAll('.comanda').forEach(c => c.style.display = c.id === `comanda-${id}` ? '' : 'none');
   window.print();
   document.querySelectorAll('.comanda').forEach(c => c.style.display = '');
+
+  // Restaurar estado de tabs
+  if (mainEl)  mainEl.style.display  = mainWas;
+  if (extEl)   extEl.style.display   = extWas;
 }
 
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
