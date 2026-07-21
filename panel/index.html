@@ -269,14 +269,18 @@ button:hover { opacity: 0.85; }
   /* Comandas — 1 columna */
   #grid-pedidos { grid-template-columns: 1fr; }
 
-  /* ── Presencial ── */
-  #pos-layout { grid-template-columns: 1fr; height: auto; gap: 12px; }
+  /* ── POS mobile: dos pantallas ── */
+  #pos-layout { grid-template-columns: 1fr; height: auto; gap: 0; }
   #pos-menu { padding-right: 0; }
-  .pos-productos-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
-  .pos-producto { padding: 10px; }
-  .pos-prod-nombre { font-size: 0.8rem; }
+  .pos-productos-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+  .pos-producto { padding: 14px 10px; }
+  .pos-prod-nombre { font-size: 0.85rem; }
+  .pos-prod-precio { font-size: 1rem; }
   #mobile-cart-bar { display: flex; }
-  #pos-order { scroll-margin-top: 70px; }
+  /* Ocultar carrito en mobile — se muestra al tocar la barra */
+  #pos-order { display: none; }
+  #pos-order.mobile-visible { display: flex; flex-direction: column; }
+  #btn-volver-menu { display: inline-block !important; }
 
   /* ── Chats ── */
   #vista-chats > div { flex-direction: column; height: auto; gap: 0; }
@@ -405,111 +409,98 @@ button:hover { opacity: 0.85; }
     <div id="grid-pedidos"></div>
   </div>
 
-  <!-- Tab POS (antes Presencial) -->
+  <!-- Tab POS -->
   <div id="vista-presencial" style="display:none;">
-    <!-- Carrito flotante — solo visible en mobile -->
-    <div id="mobile-cart-bar" onclick="scrollToOrder()">
+
+    <!-- Barra flotante mobile: muestra total y abre carrito -->
+    <div id="mobile-cart-bar" onclick="abrirCarritoPOS()">
       <span id="mobile-cart-count">0</span>
-      <span style="font-size:0.88rem;color:#ccc;">Ver carrito</span>
+      <span style="font-size:0.88rem;color:#ccc;">Ver pedido</span>
       <span id="mobile-cart-total">$0</span>
     </div>
+
     <div id="pos-layout">
-      <!-- Carrito flotante — solo visible en mobile -->
-      <div id="mobile-cart-bar" onclick="scrollToOrder()">
-        <span id="mobile-cart-count">0</span>
-        <span style="font-size:0.88rem;color:#ccc;">Ver carrito</span>
-        <span id="mobile-cart-total">$0</span>
+      <!-- Menú -->
+      <div id="pos-menu">
+        <div id="pos-menu-cats"></div>
       </div>
-      <div id="pos-layout">
-        <!-- Menú -->
-        <div id="pos-menu">
-          <div class="pos-cat-header" onclick="toggleCat('paninis')">
-            <span>🥖 Paninis &amp; Focaccias</span><span id="arrow-paninis">▾</span>
-          </div>
-          <div class="pos-productos-grid" id="cat-paninis"></div>
-          <div class="pos-cat-header" onclick="toggleCat('ensaladas')">
-            <span>🥗 Ensaladas</span><span id="arrow-ensaladas">▾</span>
-          </div>
-          <div class="pos-productos-grid" id="cat-ensaladas"></div>
-          <div class="pos-cat-header" onclick="toggleCat('bebidas')">
-            <span>🥤 Bebidas</span><span id="arrow-bebidas">▾</span>
-          </div>
-          <div class="pos-productos-grid" id="cat-bebidas"></div>
+
+      <!-- Orden / Carrito -->
+      <div id="pos-order">
+        <div id="pos-order-header">
+          <button id="btn-volver-menu" onclick="volverMenuPOS()" style="display:none;background:none;border:none;font-size:1rem;color:#888;cursor:pointer;padding:0 8px 0 0;">‹ Menú</button>
+          🧾 Pedido en curso
         </div>
-        <!-- Orden -->
-        <div id="pos-order">
-          <div id="pos-order-header">🧾 Pedido en curso</div>
-          <div id="pos-order-items">
-            <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú</div>
+        <div id="pos-order-items">
+          <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú</div>
+        </div>
+        <div id="pos-order-footer">
+          <div id="pos-fields">
+            <div>
+              <label>Nombre del cliente</label>
+              <input id="pos-nombre-input" type="text" placeholder="Nombre (opcional)" autocomplete="off" />
+            </div>
+            <div>
+              <label>Forma de pago</label>
+              <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
+                <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
+                <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
+                <button class="pos-pago-btn" data-pago="mixto" onclick="selPago(this)">💵+💳 Mixto</button>
+              </div>
+              <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
+                <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                  style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+              </div>
+              <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
+                <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
+                <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
+              </div>
+              <div id="mixto-wrap" style="display:none;margin-top:8px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
+                  <input id="mixto-efectivo" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
+                  <input id="mixto-terminal" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                </div>
+                <div id="mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
+                <div id="mixto-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:4px;">
+                  <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio efectivo</span>
+                  <span id="mixto-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label>Descuento</label>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
+                  style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
+                <div style="display:flex;gap:4px;">
+                  <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
+                  <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
+                </div>
+                <input id="pos-descuento-motivo" type="text" placeholder="Motivo del descuento"
+                  style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;color:#1a1a1a;" />
+              </div>
+            </div>
           </div>
-          <div id="pos-order-footer">
-            <div id="pos-fields">
-              <div>
-                <label>Nombre del cliente</label>
-                <input id="pos-nombre-input" type="text" placeholder="Nombre (opcional)" autocomplete="off" />
-              </div>
-              <div>
-                <label>Forma de pago</label>
-                <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
-                  <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
-                  <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
-                  <button class="pos-pago-btn" data-pago="mixto" onclick="selPago(this)">💵+💳 Mixto</button>
-                </div>
-                <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
-                  <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
-                  <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-                <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
-                  <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
-                  <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-                </div>
-                <div id="mixto-wrap" style="display:none;margin-top:8px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
-                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                    <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
-                    <input id="mixto-efectivo" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                      style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                  </div>
-                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                    <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
-                    <input id="mixto-terminal" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                      style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                  </div>
-                  <div id="mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
-                  <div id="mixto-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:4px;">
-                    <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio efectivo</span>
-                    <span id="mixto-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <label>Descuento</label>
-                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                  <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                  <div style="display:flex;gap:4px;">
-                    <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
-                    <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
-                  </div>
-                  <input id="pos-descuento-motivo" type="text" placeholder="Motivo del descuento"
-                    style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-              </div>
-            </div>
-            <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
-              <span style="font-size:0.8rem;color:#aaa;">Subtotal</span>
-              <span id="pos-subtotal-monto" style="font-size:0.9rem;color:#888;">$0</span>
-            </div>
-            <div id="pos-desc-row" style="display:none;justify-content:space-between;align-items:baseline;">
-              <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
-              <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
-            </div>
-            <div id="pos-total-row">
-              <span id="pos-total-label">Total</span>
-              <span id="pos-total-monto">$0</span>
-            </div>
-            <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
+          <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
+            <span style="font-size:0.8rem;color:#aaa;">Subtotal</span>
+            <span id="pos-subtotal-monto" style="font-size:0.9rem;color:#888;">$0</span>
           </div>
+          <div id="pos-desc-row" style="display:none;justify-content:space-between;align-items:baseline;">
+            <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
+            <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
+          </div>
+          <div id="pos-total-row">
+            <span id="pos-total-label">Total</span>
+            <span id="pos-total-monto">$0</span>
+          </div>
+          <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
         </div>
       </div>
     </div>
@@ -1127,35 +1118,10 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 function cerrarSesion() { sessionStorage.removeItem('xabor_token'); location.href='/login.html'; }
 
 // ─── POS Presencial ──────────────────────────────────────────────────────────
-const MENU_POS = [
-  { cat:'paninis', nombre:'Chicken Louisiana', precio:180 },
-  { cat:'paninis', nombre:'Chicken Parm',      precio:195 },
-  { cat:'paninis', nombre:'Chicken Fit',        precio:179 },
-  { cat:'paninis', nombre:'Focaccia Bar',       precio:225 },
-  { cat:'ensaladas', nombre:'Ensalada César',              precio:189 },
-  { cat:'ensaladas', nombre:'Ensalada Clásica',            precio:180 },
-  { cat:'ensaladas', nombre:'Ensalada del Bosque',         precio:185 },
-  { cat:'ensaladas', nombre:'Combo Focaccia + ½ Ensalada', precio:250 },
-  { cat:'bebidas', nombre:'Refresco',       precio:35 },
-  { cat:'bebidas', nombre:'Agua',           precio:25 },
-  { cat:'bebidas', nombre:'Aguas frescas',  precio:55 },
-  { cat:'bebidas', nombre:'Poppi',          precio:79 },
-  { cat:'bebidas', nombre:'Olipop',         precio:79 },
-];
-
 let posCarrito   = [];
 let posPagoSel   = 'efectivo';
-let posDescTipo  = 'pesos'; // 'pesos' | 'pct'
-let menuRendered = false;
-const catState   = { paninis: true, ensaladas: true, bebidas: true };
-
-function toggleCat(cat) {
-  catState[cat] = !catState[cat];
-  const grid  = document.getElementById(`cat-${cat}`);
-  const arrow = document.getElementById(`arrow-${cat}`);
-  grid.style.display  = catState[cat] ? '' : 'none';
-  arrow.textContent   = catState[cat] ? '▾' : '▸';
-}
+let posDescTipo  = 'pesos';
+let menuPOSData  = null; // cache del menú desde DB
 
 function selDescTipo(tipo, btn) {
   posDescTipo = tipo;
@@ -1164,24 +1130,43 @@ function selDescTipo(tipo, btn) {
   renderCarrito();
 }
 
-function renderMenuPOS() {
-  if (menuRendered) return;
-  menuRendered = true;
-  const cats = { paninis: 'cat-paninis', ensaladas: 'cat-ensaladas', bebidas: 'cat-bebidas' };
-  Object.values(cats).forEach(id => document.getElementById(id).innerHTML = '');
-  MENU_POS.forEach((prod, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'pos-producto';
-    btn.innerHTML = `<div class="pos-prod-nombre">${prod.nombre}</div><div class="pos-prod-precio">$${prod.precio}</div>`;
-    btn.onclick = () => agregarAlCarrito(prod);
-    document.getElementById(cats[prod.cat]).appendChild(btn);
-  });
+async function renderMenuPOS() {
+  const cont = document.getElementById('pos-menu-cats');
+  if (!cont) return;
+  if (!menuPOSData) {
+    menuPOSData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
+  }
+  cont.innerHTML = menuPOSData.map(cat => `
+    <div class="pos-cat-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+      <span>${cat.nombre}</span><span>▾</span>
+    </div>
+    <div class="pos-productos-grid">
+      ${cat.productos.filter(p => p.disponible).map(p => `
+        <button class="pos-producto" onclick="agregarAlCarrito({nombre:'${p.nombre.replace(/'/g,"\\'")}',precio_unitario:${p.precio},cantidad:1,notas:''})">
+          <div class="pos-prod-nombre">${p.nombre}</div>
+          <div class="pos-prod-precio">$${parseFloat(p.precio).toFixed(0)}</div>
+        </button>`).join('')}
+    </div>`).join('');
+}
+
+// Mobile: navegar al carrito
+function abrirCarritoPOS() {
+  if (window.innerWidth > 640) return;
+  document.getElementById('pos-order').classList.add('mobile-visible');
+  document.getElementById('pos-menu').style.display = 'none';
+  document.getElementById('mobile-cart-bar').style.display = 'none';
+}
+
+function volverMenuPOS() {
+  document.getElementById('pos-order').classList.remove('mobile-visible');
+  document.getElementById('pos-menu').style.display = '';
+  if (window.innerWidth <= 640) document.getElementById('mobile-cart-bar').style.display = 'flex';
 }
 
 function agregarAlCarrito(prod) {
   const existing = posCarrito.find(i => i.nombre === prod.nombre);
   if (existing) { existing.cantidad++; }
-  else { posCarrito.push({ nombre: prod.nombre, precio_unitario: prod.precio, cantidad: 1, notas: '' }); }
+  else { posCarrito.push({ nombre: prod.nombre, precio_unitario: prod.precio_unitario ?? prod.precio, cantidad: 1, notas: '' }); }
   renderCarrito();
   actualizarMobileCartBar();
 }
@@ -1286,9 +1271,7 @@ function actualizarMobileCartBar() {
   bar.style.opacity = totalItems > 0 ? '1' : '0.5';
 }
 
-function scrollToOrder() {
-  document.getElementById('pos-order')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
+function scrollToOrder() { abrirCarritoPOS(); }
 
 function ajustarCantidad(idx, delta) {
   posCarrito[idx].cantidad += delta;
@@ -1347,7 +1330,9 @@ async function confirmarPresencial() {
       document.getElementById('mixto-efectivo').value = '';
       document.getElementById('mixto-terminal').value = '';
       renderCarrito();
-      cargarProgramados(); // refrescar programados en panel comandas
+      actualizarMobileCartBar();
+      volverMenuPOS();
+      cargarProgramados();
     }
   } catch(e) { alert('Error de conexión.'); }
   btn.disabled = false; btn.textContent = 'Confirmar pedido';
