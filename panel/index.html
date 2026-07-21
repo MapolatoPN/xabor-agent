@@ -969,7 +969,9 @@ function mostrarTab(tab) {
   // Mostrar/ocultar vistas extra
   ['corte','historial','ventas','chats','llamadas'].forEach(v => {
     const el = document.getElementById('vista-' + v);
-    if (el) el.style.display = (v === tab) ? '' : 'none';
+    if (!el) return;
+    if (v === tab) el.style.display = 'block';
+    else el.style.display = 'none';
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
