@@ -686,6 +686,78 @@ app.get('/api/llamadas/:callSid', requireAuth, async (req, res) => {
   res.json(mensajes);
 });
 
+// ─── Job: Reporte diario WhatsApp a las 22:01 (America/Matamoros) ────────────
+const WHATSAPP_ADMIN_NUMERO = process.env.WHATSAPP_ADMIN_NUMERO || '';
+
+function inicioDelDiaTexto(fechaISO) {
+  // Devuelve medianoche CST del mismo día como ISO
+  const d = new Date(fechaISO);
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Matamoros', year:'numeric', month:'2-digit', day:'2-digit'
+  }).formatToParts(d);
+  const y = partes.find(p=>p.type==='year').value;
+  const m = partes.find(p=>p.type==='month').value;
+  const day = partes.find(p=>p.type==='day').value;
+  return new Date(`${y}-${m}-${day}T06:00:00.000Z`).toISOString(); // UTC-6 midnight ≈ 06:00Z
+}
+
+async function enviarReporteDiario() {
+  if (!WHATSAPP_ADMIN_NUMERO) return;
+  const ahora = new Date().toISOString();
+  const inicio = inicioDelDiaTexto(ahora);
+  const [ventas, resumen, fondoReg] = await Promise.all([
+    obtenerVentas(inicio, ahora),
+    obtenerResumenVentas(inicio, ahora),
+    obtenerFondoCaja(fechaHoyMX())
+  ]);
+  const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
+  const totalVentas   = parseFloat(resumen?.total_ventas || 0);
+  // Agrupar por canal y modalidad
+  const porCanal  = {};
+  const porModal  = {};
+  let efectivoVentas = 0;
+  (ventas || []).forEach(v => {
+    const canal = v.canal || 'otro';
+    const modal = v.modalidad || 'otro';
+    const total = parseFloat(v.total || 0);
+    porCanal[canal] = (porCanal[canal] || 0) + total;
+    porModal[modal] = (porModal[modal] || 0) + total;
+    if ((v.forma_pago || '').toLowerCase().includes('efectivo')) efectivoVentas += total;
+  });
+  const fmtMXN = n => `$${parseFloat(n).toFixed(2)}`;
+  const bloqueCanal = Object.entries(porCanal).map(([k,v]) =>
+    `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
+  const bloqueModal = Object.entries(porModal).map(([k,v]) =>
+    `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
+  const msg =
+`🧾 *CORTE DE CAJA — XABOR*
+📅 ${new Date().toLocaleDateString('es-MX', { timeZone:'America/Matamoros', dateStyle:'full' })}
+
+💰 Fondo inicial: ${fmtMXN(fondo)}
+🛒 Total ventas: ${fmtMXN(totalVentas)} (${resumen?.num_pedidos || 0} pedidos)
+💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas)}
+
+📦 *Por tipo de entrega:*
+${bloqueModal}
+
+📡 *Por canal de venta:*
+${bloqueCanal}`;
+  try {
+    await enviarMensaje(WHATSAPP_ADMIN_NUMERO, msg);
+    console.log('[Reporte] Corte diario enviado por WhatsApp');
+  } catch(e) {
+    console.error('[Reporte] Error al enviar corte diario:', e.message);
+  }
+}
+
+// Verificar cada minuto si es hora del reporte (22:01 CST)
+setInterval(() => {
+  const now = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Matamoros', hour:'2-digit', minute:'2-digit', hour12: false
+  }).format(new Date());
+  if (now === '22:01') enviarReporteDiario();
+}, 60 * 1000);
+
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
 // Activa/desactiva la tienda en Rappi según el horario real de Xabor.
 // Lunes–Sábado 11:00–22:00 (America/Matamoros). Corre al inicio y cada 5 min.
