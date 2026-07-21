@@ -1107,55 +1107,75 @@ function ticketHTML(p) {
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 @page{size:80mm auto;margin:0 2mm;}
-body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.45;color:#000;background:#fff;padding:3mm 1mm;}
-.c{text-align:center;} .b{font-weight:900;}
-hr{border:none;border-top:1px solid #000;margin:3px 0;}
-.dash{border-top:1px dashed #000;}
-.empresa{font-size:22px;font-weight:900;letter-spacing:4px;}
-.orden-num{font-size:36px;font-weight:900;line-height:1.1;}
-.info{width:100%;font-size:10px;border-collapse:collapse;}
-.info td{padding:1px 0;}
-.info .r{font-weight:700;text-align:right;}
-.badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:11px;padding:3px 0;margin:4px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-.items{width:100%;font-size:11px;border-collapse:collapse;}
-.items td{padding:1px 0;}
+body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.5;color:#000;background:#fff;padding:4mm 2mm;}
+table{width:100%;border-collapse:collapse;}
+td{padding:1px 0;font-size:11px;}
+.c{text-align:center;}
+.r{text-align:right;}
+.b{font-weight:900;}
+hr{border:none;border-top:1px solid #000;margin:4px 0;}
+.dash{border-top:1px dashed #000 !important;}
+/* Header */
+.marca{font-size:28px;font-weight:900;letter-spacing:6px;text-align:center;margin-bottom:1px;}
+.subtitulo{font-size:10px;text-align:center;}
+.dir{font-size:9px;text-align:center;margin-top:1px;}
+/* Orden */
+.orden-label{font-size:11px;text-align:left;}
+.orden-num{font-size:40px;font-weight:900;text-align:left;line-height:1.05;}
+/* Badge */
+.badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:11px;padding:3px 0;margin:5px 0;letter-spacing:1px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+/* Sección */
+.sec{display:block;text-align:center;font-size:9px;font-weight:900;letter-spacing:1px;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;margin:6px 0 3px;}
+/* Items */
 .ih td{font-size:10px;font-weight:900;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;}
-.gt{font-size:16px;font-weight:900;border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin:3px 0;}
-.gt td{padding:2px 0;}
-.letras{font-size:9px;font-style:italic;text-align:center;display:block;margin:2px 0 4px;}
-.seccion{text-align:center;font-size:9px;font-weight:900;letter-spacing:1px;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;margin:5px 0 3px;display:block;}
-.footer{text-align:center;font-size:10px;margin-top:6px;border-top:1px dashed #000;padding-top:4px;}
+/* Gran Total */
+.gt-row td{font-size:18px;font-weight:900;border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;}
+.letras{font-size:9px;text-align:center;display:block;margin:3px 0 5px;text-transform:uppercase;}
+/* Footer */
+.footer{text-align:center;font-size:10px;margin-top:8px;border-top:1px dashed #000;padding-top:5px;}
 </style></head><body>
-<div class="c">
-  <div class="empresa">XABOR</div>
-  <div style="font-size:10px;">Ticket Orden — ${canalLabel}</div>
-  <div style="font-size:10px;">Lib. Manuel Pérez Treviño 2416 L-4</div>
-  <div style="font-size:10px;">Col. Tecnológico, Piedras Negras, Coah.</div>
-  <div style="font-size:10px;">RFC: CAOM940122PTA &nbsp;·&nbsp; (878) 109-1115</div>
-</div>
+
+<div class="marca">xabor</div>
+<div class="subtitulo">Preticket Orden — ${canalLabel}</div>
+<div class="dir">XABOR RESTAURANT</div>
+<div class="dir">LIB. MANUEL PÉREZ TREVIÑO 2416 LOCAL 4</div>
+<div class="dir">COL. TECNOLÓGICO, PIEDRAS NEGRAS, COAH.</div>
+<div class="dir">RFC: CAOM940122PTA &nbsp;&nbsp; TEL: (878) 109-1115</div>
+
 <hr>
-<table class="info"><tr><td>Fecha:</td><td class="r">${horaCompleta}</td></tr></table>
-<div class="c"><div style="font-size:11px;">Orden:</div><div class="orden-num">${numOrden}</div></div>
-<hr class="dash">
-<table class="info">
-  <tr><td>Cajero:</td><td class="r">Caja</td></tr>
-  <tr><td>Hora impresión:</td><td class="r">${ahora}</td></tr>
+<table>
+  <tr><td>Fecha:</td><td class="r">${horaCompleta}</td></tr>
 </table>
+<div class="orden-label">Orden:</div>
+<div class="orden-num">${numOrden}</div>
+<hr class="dash">
+<table>
+  <tr><td>Cajero:</td><td class="r">Caja</td></tr>
+  <tr><td>Hora entrada:</td><td class="r">${horaCompleta}</td></tr>
+  <tr><td>Fecha impresión:</td><td class="r">${ahora}</td></tr>
+</table>
+
 <div class="badge">${badgeLabel}</div>
-<table class="info">
+
+<table>
   <tr><td>Cliente:</td><td class="r b" style="font-size:13px;">${nombre}</td></tr>
   <tr><td>Forma de pago:</td><td class="r">${formaPago || '—'}</td></tr>
 </table>
+
 <hr>
-<table class="items">
-  <thead><tr class="ih"><td style="width:24px;">Cant</td><td>Descripción</td><td style="width:52px;text-align:right;">Importe</td></tr></thead>
+<table>
+  <thead><tr class="ih"><td style="width:24px;">Cant</td><td>Descripción</td><td class="r" style="width:54px;">Importe</td></tr></thead>
   <tbody>${itemsRows}${subtotalesRows}</tbody>
 </table>
-<div style="font-size:10px;margin-top:2px;">Artículos: ${totalArt}</div>
-<table class="items gt"><tr><td colspan="2"><b>Gran Total:</b></td><td style="text-align:right;width:60px;"><b>$${totalNum.toFixed(2)}</b></td></tr></table>
-<span class="letras">${totalEnLetras(totalNum)} PESOS 00/100 M.N.</span>
+<div style="font-size:10px;margin-top:3px;">Artículos: ${totalArt}</div>
+
+<hr>
+<table><tr class="gt-row"><td><b>Gran Total:</b></td><td class="r"><b>$${totalNum.toFixed(2)}</b></td></tr></table>
+<span class="letras">${totalEnLetras(totalNum)} pesos 00/100 m.n.</span>
+
 ${pagoSection}
 ${clienteSection}
+
 <div class="footer">— Gracias por su visita —<br>WhatsApp: (878) 109-1115</div>
 </body></html>`;
 }
