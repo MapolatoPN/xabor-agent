@@ -407,6 +407,7 @@ button:hover { opacity: 0.85; }
   <div class="header-brand">XABOR<span>·</span></div>
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
+  <button class="header-btn admin-only" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒 Salir</button>
 </header>
 
@@ -719,7 +720,7 @@ async function registrarPush() {
   try {
     const reg = await navigator.serviceWorker.register('/sw.js');
     // Obtener clave pública VAPID
-    const r = await fetch('/api/push/vapid-public-key');
+    const r = await apiFetch('/api/push/vapid-public-key');
     if (!r.ok) return; // push no configurado en servidor
     const { key } = await r.json();
     // Pedir permiso al usuario (solo si no lo hemos pedido antes)
@@ -1216,6 +1217,7 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
 });
 function cerrarSesion() { sessionStorage.removeItem('xabor_token'); location.href='/login.html'; }
+function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }).then(() => console.log('[Prueba] Pedido enviado')); }
 
 // ─── POS Presencial ──────────────────────────────────────────────────────────
 let posCarrito   = [];
