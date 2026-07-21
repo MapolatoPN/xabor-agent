@@ -1028,9 +1028,21 @@ function cerrarAdmin() {
   document.getElementById('admin-backdrop').classList.remove('visible');
 }
 
-// Compatibilidad con código que llame a mostrarTab
 function mostrarTab(tab) {
-  if (['corte','historial','ventas','chats','llamadas'].includes(tab)) abrirAdmin(tab);
+  if (['corte','historial','ventas','chats','llamadas'].includes(tab)) { abrirAdmin(tab); return; }
+
+  // Mostrar/ocultar vistas principales
+  const vistas = ['comandas', 'presencial'];
+  vistas.forEach(v => {
+    const el = document.getElementById('vista-' + v);
+    if (el) el.style.display = (v === tab) ? '' : 'none';
+  });
+
+  // Marcar tab activo
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
+  const tabEl = document.getElementById('tab-' + tab);
+  if (tabEl) tabEl.classList.add('activo');
+
   if (tab === 'comandas') cargarProgramados();
   if (tab === 'presencial') renderMenuPOS();
 }
