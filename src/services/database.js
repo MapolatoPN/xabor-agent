@@ -1066,10 +1066,9 @@ export async function obtenerPedidosParaRepartidor() {
   try {
     const r = await pool.query(
       `SELECT folio, datos, estado FROM pedidos_activos
-       WHERE estado IN ('en_preparacion','listo')
+       WHERE estado IN ('nuevo','en_preparacion','listo')
          AND datos->>'modalidad' = 'entrega a domicilio'
          AND (datos->>'repartidor_id') IS NULL
-         AND estado != 'cancelado'
        ORDER BY created_at ASC`
     );
     return r.rows;
