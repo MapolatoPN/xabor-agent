@@ -298,6 +298,8 @@ app.get('/api/auth/verify', requireAuth, (req, res) => {
 // Proteger todas las rutas /api/* excepto las de auth
 app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/auth/')) return next();
+  if (req.path.startsWith('/repartidor/')) return next(); // rutas públicas de repartidor
+  if (req.path === '/vapid-public') return next();
   requireAuth(req, res, next);
 });
 
