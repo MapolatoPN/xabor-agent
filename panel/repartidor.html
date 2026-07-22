@@ -20,6 +20,8 @@
     .btn-green { background: #16a34a; color: #fff; margin-top: 10px; }
     .btn-green:disabled { background: #86efac; cursor: default; }
     .pedido-card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08); border-left: 4px solid #f59e0b; }
+    .pedido-card.asignado { border-left-color: #16a34a; background: #f0fdf4; }
+    .estado-badge { display:inline-block; font-size:0.7rem; font-weight:700; padding:2px 8px; border-radius:10px; margin-top:6px; background:#dcfce7; color:#15803d; }
     .pedido-folio { font-size: 0.75rem; color: #888; font-weight: 700; text-transform: uppercase; }
     .pedido-cliente { font-size: 1rem; font-weight: 800; margin: 4px 0; }
     .pedido-dir { font-size: 0.85rem; color: #555; margin-bottom: 4px; }
@@ -61,6 +63,11 @@
     <span class="nombre-rep" id="nombre-rep"></span>
     <button onclick="activarPush()" id="btn-push" style="font-size:0.8rem;padding:6px 12px;border:1px solid #e5e2da;border-radius:20px;background:#fff;cursor:pointer;">🔔 Activar notificaciones</button>
   </div>
+  <div id="mis-pedidos-section" style="display:none;">
+    <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#16a34a;letter-spacing:0.05em;margin-bottom:8px;">📦 Mis pedidos en curso</div>
+    <div id="lista-mis-pedidos"></div>
+  </div>
+  <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#888;letter-spacing:0.05em;margin-bottom:8px;" id="titulo-disponibles">🛵 Pedidos disponibles</div>
   <div id="lista-pedidos"><div class="empty">Cargando pedidos...</div></div>
 </div>
 
@@ -130,8 +137,25 @@ function mostrarApp() {
 async function cargarPedidos() {
   const r = await fetch('/api/repartidor/pedidos', { headers: { 'x-rep-token': token } });
   if (!r.ok) { if (r.status === 401) { localStorage.clear(); location.reload(); } return; }
-  const pedidos = await r.json();
-  renderPedidos(pedidos);
+  const data = await r.json();
+  renderMisPedidos(data.misPedidos || []);
+  renderPedidos(data.disponibles || []);
+}
+
+function renderMisPedidos(pedidos) {
+  const sec = document.getElementById('mis-pedidos-section');
+  const cont = document.getElementById('lista-mis-pedidos');
+  if (!pedidos.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  cont.innerHTML = pedidos.map(p => `
+    <div class="pedido-card asignado">
+      <div class="pedido-folio">${p.folio} · ${p.items} producto(s)</div>
+      <div class="pedido-cliente">${p.cliente || 'Cliente'}</div>
+      <div class="pedido-dir">📍 ${p.direccion || 'Sin dirección'}</div>
+      <div class="pedido-total">💰 $${p.total} MXN</div>
+      <div class="estado-badge">✅ Pedido tuyo — en camino</div>
+    </div>
+  `).join('');
 }
 
 function renderPedidos(pedidos) {

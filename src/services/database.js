@@ -1075,6 +1075,20 @@ export async function obtenerPedidosParaRepartidor() {
   } catch (e) { return []; }
 }
 
+export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
+  try {
+    const r = await pool.query(
+      `SELECT folio, datos, estado FROM pedidos_activos
+       WHERE estado NOT IN ('entregado','cancelado')
+         AND datos->>'modalidad' = 'entrega a domicilio'
+         AND datos->>'repartidor_id' = $1
+       ORDER BY created_at ASC`,
+      [String(repartidorId)]
+    );
+    return r.rows;
+  } catch (e) { return []; }
+}
+
 export async function guardarFondoCaja(fechaMX, monto) {
   try {
     await pool.query(`

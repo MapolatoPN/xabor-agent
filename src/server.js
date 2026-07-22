@@ -27,7 +27,7 @@ import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/ra
 import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
-import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor } from './services/database.js';
+import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor } from './services/database.js';
 
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -853,15 +853,19 @@ async function requireRepartidor(req, res, next) {
 
 // Pedidos disponibles para tomar
 app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
-  const pedidos = await obtenerPedidosParaRepartidor();
-  res.json(pedidos.map(p => ({
+  const [disponibles, misPedidos] = await Promise.all([
+    obtenerPedidosParaRepartidor(),
+    obtenerPedidosAsignadosARepartidor(req.repartidor.id)
+  ]);
+  const mapear = p => ({
     folio: p.folio,
     estado: p.estado,
     cliente: p.datos?.cliente?.nombre,
     direccion: `${p.datos?.cliente?.calle || ''} ${p.datos?.cliente?.colonia || ''}`.trim(),
     total: p.datos?.total,
     items: p.datos?.items?.length
-  })));
+  });
+  res.json({ disponibles: disponibles.map(mapear), misPedidos: misPedidos.map(mapear) });
 });
 
 // Aceptar pedido (atómico — solo uno lo puede tomar)
