@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { obtenerOverridesActivos, obtenerMenuCompleto } from '../services/database.js';
+import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion } from '../services/database.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -108,6 +108,11 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const categorias = await obtenerMenuCompleto();
   const estado = obtenerEstadoRestaurante(reglas);
   const overrides = await obtenerOverridesActivos();
+  const cfg = await obtenerConfiguracion().catch(() => ({}));
+  const nombreNegocio = cfg.nombre || 'Restaurante Xabor';
+  const nombreCorto   = cfg.nombre_corto || 'Xabor';
+  const direccion     = cfg.direccion ? `${cfg.direccion}, ${cfg.ciudad || ''}` : 'Libramiento Manuel Perez Trevino 2416, Local 4, Piedras Negras, Coahuila';
+  const horario       = cfg.horario || 'lunes a sabado 11am-10pm';
 
   // Texto de promociones — siempre informar aunque no estén activas ahora
   const todasLasPromos = reglas.promociones || [];
@@ -197,7 +202,7 @@ INSTRUCCIONES ESPECÍFICAS PARA VOZ:
 - PEDIDOS PROGRAMADOS: sí aceptamos pedidos para una fecha y hora futura, siempre que sea dentro del horario de operación (lunes a sábado 11am–10pm). Cuando el cliente pida para una hora futura, confirma la fecha y hora exacta ("¿Sería el lunes a la una de la tarde?"), toma el pedido normalmente y al emitir el JSON incluye el campo "programado_para" con la fecha y hora en formato ISO 8601. IMPORTANTE: el offset de México hoy es ${estado.offsetMX} — úsalo siempre en ese campo. Ejemplo para el día de hoy a la 1pm: "${estado.fechaHoy}T13:00:00${estado.offsetMX}". Ajusta la fecha al día que pida el cliente. Si la hora solicitada cae fuera del horario o en domingo, infórmalo amablemente y ofrece la franja más cercana disponible.`
     : '';
 
-  return `Eres el asistente de pedidos del Restaurante Xabor. Tu nombre es Xabor.
+  return `Eres el asistente de pedidos de ${nombreNegocio}. Tu nombre es ${nombreCorto}.
 ${contextoCliente}${canalTexto}
 
 ## FECHA Y HORA ACTUAL
@@ -208,7 +213,7 @@ ${estado.preApertura ? `- IMPORTANTE: Todavía no abrimos. Abrimos a las ${estad
 ${!estado.abierto && !estado.preApertura ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ' Informa que el horario es lunes a sábado 11am–10pm.'} NO tomes pedidos.` : ''}
 
 ## TONO Y ESTILO
-Eres parte del equipo de Xabor. Tu forma de comunicarte refleja cómo hablamos en el restaurante: cortés, cercano y eficiente — como un buen restaurante de barrio, sin llegar a fine dining.
+Eres parte del equipo de ${nombreCorto}. Tu forma de comunicarte refleja cómo hablamos en el restaurante: cortés, cercano y eficiente — como un buen restaurante de barrio, sin llegar a fine dining.
 
 CÓMO SONAR HUMANO:
 - Saluda según la hora: "Buenos días", "Buenas tardes", "Buenas noches". Si el cliente saluda primero, respóndele su saludo antes de cualquier otra cosa.
@@ -293,7 +298,7 @@ Actualmente tenemos una vacante disponible. El horario es de 3 a 11pm, de lunes 
 ## UBICACIÓN DEL RESTAURANTE
 Cuando alguien pregunte dónde están ubicados, dónde se encuentran, cómo llegar o cualquier variación de esa pregunta, comparte esta información:
 
-Estamos en **Libramiento Manuel Pérez Treviño 2416, Local 4, Plaza Obispado**, en Piedras Negras, Coahuila. Justo frente a Mapolato Obispado.
+Estamos en **${direccion}**.
 
 No expliques zonas geográficas ni hagas comentarios sobre si pueden llegar o no — solo da la dirección de forma natural y ofrece ayuda con el pedido.
 

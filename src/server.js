@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion } from './services/database.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
@@ -30,6 +30,18 @@ import { analizarSemana } from './services/learner.js';
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+
+// Config del negocio — se carga desde DB al iniciar y se cachea en memoria
+let negocioConfig = {
+  nombre: 'Restaurante', nombre_corto: 'NEGOCIO',
+  direccion: '', ciudad: '', rfc: '', telefono: '', whatsapp: '', horario: ''
+};
+async function cargarConfig() {
+  const cfg = await obtenerConfiguracion().catch(() => ({}));
+  negocioConfig = { ...negocioConfig, ...cfg };
+  console.log('[Config] Negocio cargado:', negocioConfig.nombre);
+}
+export function getConfig() { return negocioConfig; }
 const menuJSON = JSON.parse(readFileSync(join(__dirname, 'data/menu.json'), 'utf-8'));
 
 // ─── Autenticación del panel ──────────────────────────────────────────────────
@@ -623,6 +635,18 @@ app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
 });
 
 // Pedido de prueba (solo para desarrollo)
+// Configuración del negocio
+app.get('/api/config', requireAuth, async (req, res) => {
+  res.json(negocioConfig);
+});
+app.put('/api/config', requireAdmin, async (req, res) => {
+  const ok = await actualizarConfiguracion(req.body);
+  if (!ok) return res.status(500).json({ error: 'Error al guardar' });
+  negocioConfig = { ...negocioConfig, ...req.body };
+  broadcast({ tipo: 'config_actualizada', config: negocioConfig });
+  res.json({ ok: true, config: negocioConfig });
+});
+
 app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
@@ -819,6 +843,7 @@ async function reconciliarPagosPendientes() {
 initDB()
   .then(() => seedMenuDesdeJSON(menuJSON))
   .then(() => cargarPedidosDesdeDB())
+  .then(() => cargarConfig())
   .then(() => {
     // Activar pedidos programados cada 5 minutos
     activarPedidosProgramados();

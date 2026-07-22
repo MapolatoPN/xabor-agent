@@ -452,6 +452,7 @@ button:hover { opacity: 0.85; }
   <button class="tab-btn admin-only" id="tab-ventas"    onclick="mostrarTab('ventas')">📊 Ventas</button>
   <button class="tab-btn admin-only" id="tab-llamadas"  onclick="mostrarTab('llamadas')">📞 Llamadas</button>
   <button class="tab-btn admin-only" id="tab-menu"      onclick="mostrarTab('menu')">🍽️ Menú</button>
+  <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">⚙️ Config</button>
 </div>
 
 <main>
@@ -688,6 +689,12 @@ button:hover { opacity: 0.85; }
       <div id="menu-editor"></div>
     </div>
 
+    <!-- Vista Config -->
+    <div id="vista-config" style="display:none;max-width:520px;margin:0 auto;">
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:20px;">⚙️ Configuración del Negocio</div>
+      <div id="config-form"></div>
+    </div>
+
 </div><!-- /vistas-extra -->
 
 <script>
@@ -695,6 +702,21 @@ button:hover { opacity: 0.85; }
 const TOKEN = sessionStorage.getItem('xabor_token');
 const ROLE  = sessionStorage.getItem('xabor_role') || 'staff';
 if (!TOKEN) location.href = '/login.html';
+
+// Config del negocio — se carga desde /api/config al iniciar
+let negocio = {
+  nombre: 'Restaurante', nombre_corto: 'NEGOCIO',
+  direccion: '', ciudad: '', rfc: '', telefono: '', whatsapp: '', horario: ''
+};
+async function cargarNegocio() {
+  try {
+    const r = await apiFetch('/api/config');
+    if (r.ok) {
+      negocio = await r.json();
+      document.querySelector('.header-brand').innerHTML = negocio.nombre_corto + '<span>·</span>';
+    }
+  } catch(e) {}
+}
 
 function apiFetch(url, opts = {}) {
   return fetch(url, {
@@ -711,6 +733,8 @@ apiFetch('/api/auth/verify').then(async r => {
   if (role !== 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
   }
+  // Cargar config del negocio
+  await cargarNegocio();
   // Cargar pedidos programados al inicio
   cargarProgramados();
   // Refrescar programados cada 5 min
@@ -953,9 +977,9 @@ function renderComanda(p) {
   return `
     <div class="comanda-header">
       <img src="/logo.png" class="ticket-logo" onload="this.classList.add('logo-ok')">
-      <span class="ticket-empresa-nombre">XABOR</span>
-      <span class="ticket-empresa-ciudad">Lib. Manuel Pérez Treviño 2416 Local 4<br>Col. Tecnológico, Piedras Negras, Coah.</span>
-      <span class="ticket-empresa-ciudad">RFC: CAOM940122PTA · (878) 109-1115</span>
+      <span class="ticket-empresa-nombre">${negocio.nombre_corto}</span>
+      <span class="ticket-empresa-ciudad">${negocio.direccion}<br>${negocio.ciudad}</span>
+      <span class="ticket-empresa-ciudad">RFC: ${negocio.rfc} · ${negocio.telefono}</span>
     </div>
     <div class="comanda-body">
       <span class="ticket-meta">Fecha: ${horaCompleta}</span>
@@ -979,7 +1003,7 @@ function renderComanda(p) {
       <div class="ticket-total-letras">${totalEnLetras(totalNum)} PESOS 00/100 M.N.</div>
       ${billeteHTML}
       ${clienteDataHTML}
-      <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: (878) 109-1115</span>
+      <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</span>
     </div>
     <div class="comanda-footer">
       <div class="orden-badge">#${numOrden}</div>
@@ -1120,7 +1144,7 @@ hr{border:none;border-top:2px solid #000;margin:5px 0;}
 .c{text-align:center;}
 .badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:12px;padding:4px 0;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 </style></head><body>
-<div class="c" style="font-size:13px;font-weight:900;letter-spacing:2px;">XABOR — COMANDA</div>
+<div class="c" style="font-size:13px;font-weight:900;letter-spacing:2px;">${negocio.nombre_corto} — COMANDA</div>
 <div class="c" style="font-size:10px;">${horaCompleta}</div>
 <hr>
 <div class="c" style="font-size:13px;">Orden:</div>
@@ -1220,12 +1244,12 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 .footer{text-align:center;font-size:10px;margin-top:8px;border-top:1px dashed #000;padding-top:5px;}
 </style></head><body>
 
-<div class="marca">xabor</div>
+<div class="marca">${negocio.nombre_corto.toLowerCase()}</div>
 <div class="subtitulo">TICKET DE CLIENTE — ${canalLabel}</div>
-<div class="dir">XABOR RESTAURANT</div>
-<div class="dir">LIB. MANUEL PÉREZ TREVIÑO 2416 LOCAL 4</div>
-<div class="dir">COL. TECNOLÓGICO, PIEDRAS NEGRAS, COAH.</div>
-<div class="dir">RFC: CAOM940122PTA &nbsp;&nbsp; TEL: (878) 109-1115</div>
+<div class="dir">${negocio.nombre.toUpperCase()}</div>
+<div class="dir">${negocio.direccion.toUpperCase()}</div>
+<div class="dir">${negocio.ciudad.toUpperCase()}</div>
+<div class="dir">RFC: ${negocio.rfc} &nbsp;&nbsp; TEL: ${negocio.telefono}</div>
 
 <hr>
 <table>
@@ -1261,14 +1285,14 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 ${pagoSection}
 ${clienteSection}
 
-<div class="footer">— Gracias por su visita —<br>WhatsApp: (878) 109-1115</div>
+<div class="footer">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</div>
 </body></html>`;
 }
 
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas'];
+const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config'];
 
 function mostrarTab(tab) {
   // Ocultar vistas principales
@@ -1277,7 +1301,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','config'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -1285,7 +1309,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -1301,6 +1325,7 @@ function mostrarTab(tab) {
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      cargarMenuEditor();
+  if (tab === 'config')    renderConfigForm();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     const bnavBadge = document.getElementById('bnav-badge');
@@ -1988,6 +2013,50 @@ function exportarCSV() {
 
 // ─── Editor de Menú ──────────────────────────────────────────────────────────
 let menuData = [];
+
+// ─── Configuración del negocio ────────────────────────────────────────────────
+const CONFIG_CAMPOS = [
+  { clave: 'nombre',       label: 'Nombre completo',      placeholder: 'Restaurante Xabor' },
+  { clave: 'nombre_corto', label: 'Nombre corto (header)', placeholder: 'XABOR' },
+  { clave: 'direccion',    label: 'Dirección',             placeholder: 'Av. Principal 123 Local 4' },
+  { clave: 'ciudad',       label: 'Ciudad y estado',       placeholder: 'Col. Centro, Ciudad, Estado' },
+  { clave: 'rfc',          label: 'RFC',                   placeholder: 'XXXX000000XX0' },
+  { clave: 'telefono',     label: 'Teléfono',              placeholder: '(878) 109-1115' },
+  { clave: 'whatsapp',     label: 'WhatsApp (para tickets)', placeholder: '(878) 109-1115' },
+  { clave: 'horario',      label: 'Horario de atención',   placeholder: 'lunes a sabado 11am-10pm' },
+];
+const inp = s => `border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;width:100%;box-sizing:border-box;margin-bottom:12px;`;
+
+function renderConfigForm() {
+  const cont = document.getElementById('config-form');
+  cont.innerHTML = CONFIG_CAMPOS.map(f => `
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">${f.label}</label>
+    <input id="cfg-${f.clave}" style="${inp()}" value="${(negocio[f.clave]||'').replace(/"/g,'&quot;')}" placeholder="${f.placeholder}">
+  `).join('') + `
+    <div id="cfg-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+    <button onclick="guardarConfig()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar cambios</button>
+  `;
+}
+
+async function guardarConfig() {
+  const cambios = {};
+  CONFIG_CAMPOS.forEach(f => {
+    const v = document.getElementById('cfg-' + f.clave)?.value.trim();
+    if (v !== undefined) cambios[f.clave] = v;
+  });
+  const fb = document.getElementById('cfg-feedback');
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify(cambios) });
+  if (r.ok) {
+    const data = await r.json();
+    negocio = data.config;
+    document.querySelector('.header-brand').innerHTML = negocio.nombre_corto + '<span>·</span>';
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
+  }
+}
 
 async function cargarMenuEditor() {
   menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);

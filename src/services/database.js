@@ -62,6 +62,21 @@ export async function initDB() {
       created_at     TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS configuracion (
+      clave  VARCHAR(50) PRIMARY KEY,
+      valor  TEXT NOT NULL
+    );
+    INSERT INTO configuracion (clave, valor) VALUES
+      ('nombre',        'Restaurante Xabor'),
+      ('nombre_corto',  'XABOR'),
+      ('direccion',     'Lib. Manuel Perez Trevino 2416 Local 4'),
+      ('ciudad',        'Col. Tecnologico, Piedras Negras, Coah.'),
+      ('rfc',           'CAOM940122PTA'),
+      ('telefono',      '(878) 109-1115'),
+      ('whatsapp',      '(878) 109-1115'),
+      ('horario',       'lunes a sabado 11am-10pm')
+    ON CONFLICT (clave) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS caja_fondos (
       id          SERIAL PRIMARY KEY,
       fecha       DATE NOT NULL UNIQUE,
@@ -839,6 +854,34 @@ export async function obtenerUltimosPedidos(telefono, limite = 3) {
 
 // ─── Fondo de caja ────────────────────────────────────────────────────────────
 // Guarda el fondo inicial del día (una sola vez por fecha MX)
+// ─── Configuración del negocio ───────────────────────────────────────────────
+export async function obtenerConfiguracion() {
+  try {
+    const result = await pool.query('SELECT clave, valor FROM configuracion');
+    const config = {};
+    result.rows.forEach(r => { config[r.clave] = r.valor; });
+    return config;
+  } catch (e) {
+    console.error('[DB] Error obtenerConfiguracion:', e.message);
+    return {};
+  }
+}
+
+export async function actualizarConfiguracion(cambios) {
+  try {
+    for (const [clave, valor] of Object.entries(cambios)) {
+      await pool.query(
+        'INSERT INTO configuracion (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2',
+        [clave, valor]
+      );
+    }
+    return true;
+  } catch (e) {
+    console.error('[DB] Error actualizarConfiguracion:', e.message);
+    return false;
+  }
+}
+
 export async function guardarFondoCaja(fechaMX, monto) {
   try {
     await pool.query(`
