@@ -74,6 +74,16 @@ export function emitirPedido(pedido) {
   if (wsBroadcast) {
     wsBroadcast({ tipo: 'nuevo_pedido', pedido });
   }
+  // Notificar a repartidores si es entrega a domicilio
+  if (pedido.modalidad === 'entrega a domicilio') {
+    import('../server.js').then(({ enviarPushARepartidores }) => {
+      enviarPushARepartidores(
+        '🛵 Nuevo pedido disponible',
+        `${pedido.id} — ${pedido.cliente?.nombre} — $${pedido.total} MXN`,
+        { folio: pedido.id, url: '/repartidor.html' }
+      ).catch(() => {});
+    }).catch(() => {});
+  }
 }
 
 export function actualizarEstadoPedido(id, nuevoEstado) {

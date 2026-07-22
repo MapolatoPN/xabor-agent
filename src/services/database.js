@@ -139,6 +139,24 @@ export async function initDB() {
       p256dh      TEXT NOT NULL,
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS repartidores (
+      id          SERIAL PRIMARY KEY,
+      nombre      VARCHAR(100) NOT NULL,
+      telefono    VARCHAR(20) NOT NULL UNIQUE,
+      activo      BOOLEAN DEFAULT TRUE,
+      token       VARCHAR(64) NOT NULL UNIQUE,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions_repartidor (
+      id              SERIAL PRIMARY KEY,
+      repartidor_id   INTEGER NOT NULL REFERENCES repartidores(id) ON DELETE CASCADE,
+      endpoint        TEXT NOT NULL UNIQUE,
+      auth            TEXT NOT NULL,
+      p256dh          TEXT NOT NULL,
+      created_at      TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tablas listas');
 }
@@ -959,6 +977,103 @@ export async function actualizarConfiguracion(cambios) {
     console.error('[DB] Error actualizarConfiguracion:', e.message);
     return false;
   }
+}
+
+// ─── Repartidores ─────────────────────────────────────────────────────────────
+export async function registrarRepartidor(nombre, telefono) {
+  const { createHmac } = await import('crypto');
+  const token = createHmac('sha256', 'xabor-rep').update(telefono + Date.now()).digest('hex').slice(0, 32);
+  try {
+    const result = await pool.query(
+      `INSERT INTO repartidores (nombre, telefono, token)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (telefono) DO UPDATE SET nombre = $1, activo = TRUE
+       RETURNING *`,
+      [nombre, telefono, token]
+    );
+    return result.rows[0];
+  } catch (e) {
+    console.error('[DB] Error registrarRepartidor:', e.message);
+    return null;
+  }
+}
+
+export async function obtenerRepartidorPorToken(token) {
+  try {
+    const r = await pool.query('SELECT * FROM repartidores WHERE token = $1 AND activo = TRUE', [token]);
+    return r.rows[0] || null;
+  } catch (e) { return null; }
+}
+
+export async function obtenerRepartidorPorTelefono(telefono) {
+  try {
+    const r = await pool.query('SELECT * FROM repartidores WHERE telefono = $1', [telefono]);
+    return r.rows[0] || null;
+  } catch (e) { return null; }
+}
+
+export async function obtenerRepartidores() {
+  try {
+    const r = await pool.query('SELECT * FROM repartidores WHERE activo = TRUE ORDER BY nombre');
+    return r.rows;
+  } catch (e) { return []; }
+}
+
+export async function guardarPushRepartidor(repartidorId, subscription) {
+  try {
+    await pool.query(
+      `INSERT INTO push_subscriptions_repartidor (repartidor_id, endpoint, auth, p256dh)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (endpoint) DO UPDATE SET auth = $3, p256dh = $4`,
+      [repartidorId, subscription.endpoint, subscription.keys.auth, subscription.keys.p256dh]
+    );
+  } catch (e) { console.error('[DB] Error guardarPushRepartidor:', e.message); }
+}
+
+export async function obtenerPushRepartidores() {
+  try {
+    const r = await pool.query(
+      `SELECT p.endpoint, p.auth, p.p256dh
+       FROM push_subscriptions_repartidor p
+       JOIN repartidores rep ON rep.id = p.repartidor_id
+       WHERE rep.activo = TRUE`
+    );
+    return r.rows.map(r => ({ endpoint: r.endpoint, keys: { auth: r.auth, p256dh: r.p256dh } }));
+  } catch (e) { return []; }
+}
+
+export async function asignarRepartidor(folio, repartidorId, nombreRepartidor) {
+  try {
+    // Asignación atómica — solo si aún no tiene repartidor
+    const result = await pool.query(
+      `UPDATE pedidos_activos
+       SET datos = jsonb_set(jsonb_set(datos, '{repartidor_id}', $2::jsonb), '{repartidor_nombre}', $3::jsonb),
+           updated_at = NOW()
+       WHERE folio = $1
+         AND (datos->>'repartidor_id') IS NULL
+         AND estado NOT IN ('entregado','cancelado')
+       RETURNING folio`,
+      [folio, JSON.stringify(repartidorId), JSON.stringify(nombreRepartidor)]
+    );
+    return result.rows.length > 0; // true = asignado, false = ya lo tomó otro
+  } catch (e) {
+    console.error('[DB] Error asignarRepartidor:', e.message);
+    return false;
+  }
+}
+
+export async function obtenerPedidosParaRepartidor() {
+  try {
+    const r = await pool.query(
+      `SELECT folio, datos, estado FROM pedidos_activos
+       WHERE estado IN ('en_preparacion','listo')
+         AND datos->>'modalidad' = 'entrega a domicilio'
+         AND (datos->>'repartidor_id') IS NULL
+         AND estado != 'cancelado'
+       ORDER BY created_at ASC`
+    );
+    return r.rows;
+  } catch (e) { return []; }
 }
 
 export async function guardarFondoCaja(fechaMX, monto) {

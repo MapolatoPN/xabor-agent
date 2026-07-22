@@ -27,6 +27,7 @@ import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/ra
 import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
+import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor } from './services/database.js';
 
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -149,6 +150,26 @@ async function enviarPushATodos(titulo, cuerpo, data = {}) {
     }
   }
 }
+
+async function enviarPushARepartidores(titulo, cuerpo, data = {}) {
+  const vapidPub = getIntegracion('vapid_public_key') || VAPID_PUBLIC;
+  const vapidPri = getIntegracion('vapid_private_key') || VAPID_PRIVATE;
+  const vapidEmail = getIntegracion('vapid_email') || VAPID_EMAIL;
+  if (!vapidPub || !vapidPri) return;
+  try { webpush.setVapidDetails(vapidEmail, vapidPub, vapidPri); } catch {}
+  const subs = await obtenerPushRepartidores();
+  if (!subs.length) return;
+  const payload = JSON.stringify({ titulo, cuerpo, data });
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { auth: sub.keys.auth, p256dh: sub.keys.p256dh } },
+        payload
+      );
+    } catch (e) { console.error('[Push Repartidor] Error:', e.message); }
+  }
+}
+export { enviarPushARepartidores };
 
 const app = express();
 const server = createServer(app);
@@ -749,6 +770,11 @@ app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
 
 // Pedido de prueba (solo para desarrollo)
 // Configuración del negocio
+app.get('/api/vapid-public', (req, res) => {
+  const key = getIntegracion('vapid_public_key') || VAPID_PUBLIC;
+  res.json({ publicKey: key || null });
+});
+
 app.get('/api/config', requireAuth, async (req, res) => {
   res.json(negocioConfig);
 });
@@ -792,6 +818,71 @@ app.put('/api/admin/integraciones', requireAdmin, async (req, res) => {
   // Recargar config en memoria para que los servicios usen los nuevos valores
   await cargarIntegraciones();
   res.json({ ok: true });
+});
+
+// ─── Repartidores ─────────────────────────────────────────────────────────────
+// Registro público (el repartidor accede al link y llena nombre+teléfono)
+app.post('/api/repartidor/registro', async (req, res) => {
+  const { nombre, telefono } = req.body;
+  if (!nombre || !telefono) return res.status(400).json({ error: 'nombre y telefono requeridos' });
+  const rep = await registrarRepartidor(nombre.trim(), telefono.trim());
+  if (!rep) return res.status(500).json({ error: 'Error al registrar' });
+  res.json({ ok: true, token: rep.token, nombre: rep.nombre });
+});
+
+// Login por teléfono — devuelve token
+app.post('/api/repartidor/login', async (req, res) => {
+  const { telefono } = req.body;
+  if (!telefono) return res.status(400).json({ error: 'telefono requerido' });
+  const rep = await obtenerRepartidorPorTelefono(telefono.trim());
+  if (!rep) return res.status(404).json({ error: 'No registrado' });
+  res.json({ ok: true, token: rep.token, nombre: rep.nombre });
+});
+
+// Middleware para rutas de repartidor
+async function requireRepartidor(req, res, next) {
+  const token = req.headers['x-rep-token'] || req.query.token;
+  if (!token) return res.status(401).json({ error: 'token requerido' });
+  const rep = await obtenerRepartidorPorToken(token);
+  if (!rep) return res.status(401).json({ error: 'token inválido' });
+  req.repartidor = rep;
+  next();
+}
+
+// Pedidos disponibles para tomar
+app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
+  const pedidos = await obtenerPedidosParaRepartidor();
+  res.json(pedidos.map(p => ({
+    folio: p.folio,
+    estado: p.estado,
+    cliente: p.datos?.cliente?.nombre,
+    direccion: `${p.datos?.cliente?.calle || ''} ${p.datos?.cliente?.colonia || ''}`.trim(),
+    total: p.datos?.total,
+    items: p.datos?.items?.length
+  })));
+});
+
+// Aceptar pedido (atómico — solo uno lo puede tomar)
+app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req, res) => {
+  const { folio } = req.params;
+  const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre);
+  if (!asignado) return res.status(409).json({ error: 'Este pedido ya fue tomado por otro repartidor' });
+  broadcast({ tipo: 'repartidor_asignado', folio, repartidor: req.repartidor.nombre });
+  console.log(`[Repartidor] ${req.repartidor.nombre} tomó el pedido ${folio}`);
+  res.json({ ok: true, folio });
+});
+
+// Guardar push subscription del repartidor
+app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) => {
+  const { subscription } = req.body;
+  if (!subscription) return res.status(400).json({ error: 'subscription requerida' });
+  await guardarPushRepartidor(req.repartidor.id, subscription);
+  res.json({ ok: true });
+});
+
+// Lista de repartidores (admin)
+app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
+  res.json(await obtenerRepartidores());
 });
 
 app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {

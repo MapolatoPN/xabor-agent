@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xabor — Repartidor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f4f0; min-height: 100vh; }
+    .header { background: #1c1c1c; color: #fff; padding: 16px 20px; display: flex; align-items: center; gap: 12px; }
+    .header h1 { font-size: 1.1rem; font-weight: 800; }
+    .header .estado { margin-left: auto; font-size: 0.8rem; padding: 4px 10px; border-radius: 20px; background: #333; }
+    .header .estado.conectado { background: #16a34a; }
+    #login, #app { padding: 20px; max-width: 480px; margin: 0 auto; }
+    .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card h2 { font-size: 1rem; font-weight: 700; margin-bottom: 16px; }
+    input { border: 1px solid #e5e2da; border-radius: 8px; padding: 12px; font-size: 1rem; width: 100%; margin-bottom: 12px; }
+    .btn { border: none; border-radius: 8px; padding: 14px; font-size: 1rem; font-weight: 700; cursor: pointer; width: 100%; }
+    .btn-dark { background: #1c1c1c; color: #fff; }
+    .btn-green { background: #16a34a; color: #fff; margin-top: 10px; }
+    .btn-green:disabled { background: #86efac; cursor: default; }
+    .pedido-card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08); border-left: 4px solid #f59e0b; }
+    .pedido-folio { font-size: 0.75rem; color: #888; font-weight: 700; text-transform: uppercase; }
+    .pedido-cliente { font-size: 1rem; font-weight: 800; margin: 4px 0; }
+    .pedido-dir { font-size: 0.85rem; color: #555; margin-bottom: 4px; }
+    .pedido-total { font-size: 0.9rem; color: #1c1c1c; font-weight: 700; }
+    .pedido-items { font-size: 0.8rem; color: #888; }
+    .empty { text-align: center; padding: 40px 20px; color: #aaa; }
+    .feedback { font-size: 0.85rem; margin: 8px 0; text-align: center; }
+    .nombre-rep { font-size: 0.85rem; color: #aaa; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🛵 Xabor Repartidor</h1>
+  <span class="estado" id="ws-estado">Conectando...</span>
+</div>
+
+<!-- Login -->
+<div id="login">
+  <div class="card" style="margin-top:24px;">
+    <h2>Iniciar sesión</h2>
+    <input id="inp-tel" type="tel" placeholder="Tu número de teléfono" inputmode="numeric">
+    <div class="feedback" id="login-fb"></div>
+    <button class="btn btn-dark" onclick="hacerLogin()">Entrar</button>
+    <div style="text-align:center;margin-top:14px;font-size:0.85rem;color:#888;">¿Primera vez? <a href="#" onclick="mostrarRegistro()" style="color:#1c1c1c;font-weight:700;">Regístrate</a></div>
+  </div>
+  <div class="card" id="card-registro" style="display:none;">
+    <h2>Registro</h2>
+    <input id="inp-nombre" type="text" placeholder="Tu nombre">
+    <input id="inp-tel2" type="tel" placeholder="Tu número de teléfono" inputmode="numeric">
+    <div class="feedback" id="reg-fb"></div>
+    <button class="btn btn-dark" onclick="hacerRegistro()">Registrarme</button>
+  </div>
+</div>
+
+<!-- App principal -->
+<div id="app" style="display:none;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <span class="nombre-rep" id="nombre-rep"></span>
+    <button onclick="activarPush()" id="btn-push" style="font-size:0.8rem;padding:6px 12px;border:1px solid #e5e2da;border-radius:20px;background:#fff;cursor:pointer;">🔔 Activar notificaciones</button>
+  </div>
+  <div id="lista-pedidos"><div class="empty">Cargando pedidos...</div></div>
+</div>
+
+<script>
+const BASE = '';
+let token = localStorage.getItem('rep_token');
+let repNombre = localStorage.getItem('rep_nombre');
+let ws = null;
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+if (token) mostrarApp();
+
+function mostrarRegistro() {
+  document.getElementById('card-registro').style.display = '';
+}
+
+async function hacerLogin() {
+  const tel = document.getElementById('inp-tel').value.trim();
+  if (!tel) return;
+  const fb = document.getElementById('login-fb');
+  fb.textContent = 'Buscando...'; fb.style.color = '#aaa';
+  const r = await fetch('/api/repartidor/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ telefono: tel })
+  });
+  if (r.ok) {
+    const d = await r.json();
+    localStorage.setItem('rep_token', d.token);
+    localStorage.setItem('rep_nombre', d.nombre);
+    token = d.token; repNombre = d.nombre;
+    mostrarApp();
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = 'Número no registrado. Regístrate primero.';
+  }
+}
+
+async function hacerRegistro() {
+  const nombre = document.getElementById('inp-nombre').value.trim();
+  const tel = document.getElementById('inp-tel2').value.trim();
+  if (!nombre || !tel) return;
+  const fb = document.getElementById('reg-fb');
+  fb.textContent = 'Registrando...'; fb.style.color = '#aaa';
+  const r = await fetch('/api/repartidor/registro', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre, telefono: tel })
+  });
+  if (r.ok) {
+    const d = await r.json();
+    localStorage.setItem('rep_token', d.token);
+    localStorage.setItem('rep_nombre', d.nombre);
+    token = d.token; repNombre = d.nombre;
+    mostrarApp();
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error al registrar. Intenta de nuevo.';
+  }
+}
+
+function mostrarApp() {
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  document.getElementById('nombre-rep').textContent = '👤 ' + repNombre;
+  cargarPedidos();
+  conectarWS();
+}
+
+// ─── Pedidos ──────────────────────────────────────────────────────────────────
+async function cargarPedidos() {
+  const r = await fetch('/api/repartidor/pedidos', { headers: { 'x-rep-token': token } });
+  if (!r.ok) { if (r.status === 401) { localStorage.clear(); location.reload(); } return; }
+  const pedidos = await r.json();
+  renderPedidos(pedidos);
+}
+
+function renderPedidos(pedidos) {
+  const cont = document.getElementById('lista-pedidos');
+  if (!pedidos.length) {
+    cont.innerHTML = '<div class="empty">🎉 No hay pedidos disponibles<br><span style="font-size:0.8rem;">Te avisaremos cuando llegue uno</span></div>';
+    return;
+  }
+  cont.innerHTML = pedidos.map(p => `
+    <div class="pedido-card" id="ped-${p.folio}">
+      <div class="pedido-folio">${p.folio} · ${p.items} producto(s)</div>
+      <div class="pedido-cliente">${p.cliente || 'Cliente'}</div>
+      <div class="pedido-dir">📍 ${p.direccion || 'Sin dirección'}</div>
+      <div class="pedido-total">💰 $${p.total} MXN</div>
+      <button class="btn btn-green" id="btn-${p.folio}" onclick="aceptarPedido('${p.folio}', this)">
+        ✅ Acepto este pedido
+      </button>
+    </div>
+  `).join('');
+}
+
+async function aceptarPedido(folio, btn) {
+  btn.disabled = true; btn.textContent = 'Tomando pedido...';
+  const r = await fetch(`/api/repartidor/pedido/${folio}/aceptar`, {
+    method: 'POST', headers: { 'x-rep-token': token }
+  });
+  if (r.ok) {
+    const card = document.getElementById('ped-' + folio);
+    card.style.borderLeftColor = '#16a34a';
+    btn.textContent = '✅ Pedido aceptado — ¡a entregar!';
+    btn.style.background = '#15803d';
+  } else {
+    const d = await r.json();
+    btn.disabled = false;
+    btn.textContent = '❌ ' + (d.error || 'Error');
+    btn.style.background = '#ef4444';
+    setTimeout(() => { btn.textContent = '✅ Acepto este pedido'; btn.style.background = '#16a34a'; btn.disabled = false; }, 3000);
+  }
+}
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+function conectarWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onopen = () => {
+    document.getElementById('ws-estado').textContent = 'Conectado';
+    document.getElementById('ws-estado').className = 'estado conectado';
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-estado').textContent = 'Reconectando...';
+    document.getElementById('ws-estado').className = 'estado';
+    setTimeout(conectarWS, 3000);
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.tipo === 'nuevo_pedido' && msg.pedido?.modalidad === 'entrega a domicilio') {
+      cargarPedidos(); // recargar lista
+    }
+    if (msg.tipo === 'repartidor_asignado') {
+      // Quitar el pedido que alguien más tomó
+      const card = document.getElementById('ped-' + msg.folio);
+      if (card) card.remove();
+    }
+  };
+}
+
+// ─── Push notifications ───────────────────────────────────────────────────────
+async function activarPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    alert('Tu navegador no soporta notificaciones push');
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { alert('Necesitas permitir las notificaciones'); return; }
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    // Obtener VAPID key del servidor
+    const cfgR = await fetch('/api/vapid-public');
+    const { publicKey } = await cfgR.json();
+    if (!publicKey) { alert('Push no configurado en el servidor'); return; }
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+    await fetch('/api/repartidor/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-rep-token': token },
+      body: JSON.stringify({ subscription: sub })
+    });
+    document.getElementById('btn-push').textContent = '🔔 Notificaciones activas';
+    document.getElementById('btn-push').disabled = true;
+  } catch (e) {
+    alert('Error activando notificaciones: ' + e.message);
+  }
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+</script>
+</body>
+</html>
