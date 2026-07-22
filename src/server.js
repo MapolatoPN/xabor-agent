@@ -257,17 +257,7 @@ app.get('/', (req, res) => {
 });
 
 // Salud del servidor
-app.get('/health', (req, res) => {
-  const activos = obtenerPedidos().filter(p => p.estado !== 'entregado');
-  res.json({
-    status: 'ok',
-    restaurante: 'Xabor',
-    pedidos_activos: activos.length,
-    pedidos: activos.map(p => ({ id: p.id, canal: p.canal, estado: p.estado, cliente: p.cliente?.nombre })),
-    ws_clientes: wss.clients.size,
-    timestamp: new Date().toISOString()
-  });
-});
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // Chat de prueba (sin Twilio)
 app.post('/chat', async (req, res) => {
