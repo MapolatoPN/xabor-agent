@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
@@ -54,7 +54,7 @@ function encolarMensaje(telefono, texto, procesarFn) {
     const textosCombinados = bufferMensajes.get(telefono)?.textos.join('\n') || texto;
     bufferMensajes.delete(telefono);
     procesarFn(textosCombinados);
-  }, 4000);
+  }, 6000);
 }
 
 const router = Router();
@@ -407,5 +407,32 @@ router.post('/', async (req, res) => {
     console.error('[Meta WA] Error:', error.message);
   }
 });
+
+// ─── Notificar repartidores activos por WhatsApp ─────────────────────────────
+export async function notificarRepartidoresPorWA(pedido) {
+  try {
+    const repartidores = await obtenerRepartidores();
+    if (!repartidores.length) return;
+
+    const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      : 'https://xabor-agent-production.up.railway.app';
+
+    const resumen = `${pedido.id} — ${pedido.cliente?.nombre || 'Cliente'} — $${pedido.total} MXN`;
+    const direccion = pedido.direccion ? `\n📍 ${pedido.direccion}` : '';
+    const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
+
+    for (const r of repartidores) {
+      try {
+        await enviarMensaje(r.telefono, texto);
+        console.log(`[WA Repartidor] Notificación enviada a ${r.nombre} (${r.telefono})`);
+      } catch (e) {
+        console.error(`[WA Repartidor] Error al notificar a ${r.nombre}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.error('[WA Repartidor] Error general:', e.message);
+  }
+}
 
 export default router;

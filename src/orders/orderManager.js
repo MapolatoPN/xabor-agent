@@ -74,14 +74,10 @@ export function emitirPedido(pedido) {
   if (wsBroadcast) {
     wsBroadcast({ tipo: 'nuevo_pedido', pedido });
   }
-  // Notificar a repartidores si es entrega a domicilio
+  // Notificar a repartidores si es entrega a domicilio (por WhatsApp)
   if (pedido.modalidad === 'entrega a domicilio') {
-    import('../server.js').then(({ enviarPushARepartidores }) => {
-      enviarPushARepartidores(
-        '🛵 Nuevo pedido disponible',
-        `${pedido.id} — ${pedido.cliente?.nombre} — $${pedido.total} MXN`,
-        { folio: pedido.id, url: '/repartidor.html' }
-      ).catch(() => {});
+    import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
+      notificarRepartidoresPorWA(pedido).catch(() => {});
     }).catch(() => {});
   }
 }
