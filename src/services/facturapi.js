@@ -1,10 +1,11 @@
+import { getIntegracion } from '../server.js';
 // Servicio Facturapi — generación de CFDI timbrados por el SAT
 // Documentación: https://www.facturapi.io/docs
 
 const BASE = 'https://www.facturapi.io/v2';
 
 function key() {
-  return process.env.FACTURAPI_KEY;
+  return getIntegracion('facturapi_key') || process.env.FACTURAPI_KEY;
 }
 
 async function apiCall(method, path, body) {

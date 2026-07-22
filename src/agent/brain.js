@@ -1,10 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { getIntegracion } from '../server.js';
 import { construirSystemPrompt } from './prompts.js';
 import { agregarMensaje, getSession } from './session.js';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+// Cliente lazy — se crea en runtime para respetar config desde panel
+let _anthropic = null;
+function getAnthropic() {
+  const key = getIntegracion('anthropic_api_key') || process.env.ANTHROPIC_API_KEY;
+  if (!_anthropic || _anthropic.apiKey !== key) _anthropic = new Anthropic({ apiKey: key });
+  return _anthropic;
+}
 
 // Modelo: haiku es rápido y barato, ideal para conversaciones
 const MODELO = 'claude-haiku-4-5-20251001';
@@ -15,7 +20,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   const session = getSession(sessionId);
 
   try {
-    const respuesta = await anthropic.messages.create({
+    const respuesta = await getAnthropic().messages.create({
       model: MODELO,
       max_tokens: 1024,
       system: await construirSystemPrompt(clienteCtx, canal),
@@ -53,7 +58,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   let buffer        = '';
   let bloqueado     = false;
 
-  const stream = anthropic.messages.stream({
+  const stream = getAnthropic().messages.stream({
     model: MODELO,
     max_tokens: 1024,
     system: await construirSystemPrompt(clienteCtx, canal),

@@ -9,6 +9,7 @@ import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, gu
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
+import { getIntegracion } from '../server.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
@@ -26,7 +27,7 @@ function registrarError() {
   while (errores.length && errores[0] < ahora - VENTANA_MS) errores.shift();
   if (errores.length >= UMBRAL && !alertaEnviada) {
     alertaEnviada = true;
-    const admin = process.env.WHATSAPP_ADMIN_NUMERO;
+    const admin = getIntegracion('wa_admin_numero') || process.env.WHATSAPP_ADMIN_NUMERO;
     if (admin) {
       enviarMensaje(admin, `🚨 *Xabor alerta*: el bot tuvo ${errores.length} errores en los últimos 5 minutos. Revisar Railway logs.`)
         .catch(() => {});
@@ -58,9 +59,10 @@ function encolarMensaje(telefono, texto, procesarFn) {
 
 const router = Router();
 
-const PHONE_NUMBER_ID  = process.env.META_PHONE_NUMBER_ID;
-const ACCESS_TOKEN     = process.env.META_WHATSAPP_TOKEN;
-const VERIFY_TOKEN     = process.env.META_VERIFY_TOKEN;
+// Leídos en runtime para respetar configuración desde panel
+const getPhoneNumberId = () => getIntegracion('wa_phone_id')  || process.env.META_PHONE_NUMBER_ID;
+const getAccessToken   = () => getIntegracion('wa_token')      || process.env.META_WHATSAPP_TOKEN;
+const getVerifyToken   = () => getIntegracion('wa_verify_token')|| process.env.META_VERIFY_TOKEN;
 const NUMERO_SOPORTE   = process.env.WHATSAPP_SOPORTE;
 
 // ─── Verificación del webhook (GET) — Meta lo llama al configurar ────────────
@@ -79,11 +81,11 @@ router.get('/', (req, res) => {
 
 // ─── Enviar mensaje de texto via Meta Graph API ──────────────────────────────
 export async function enviarMensaje(telefono, texto) {
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${getAccessToken()}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -104,11 +106,11 @@ export async function enviarMensaje(telefono, texto) {
 
 // ─── Enviar imagen via Meta Graph API ────────────────────────────────────────
 export async function enviarImagen(telefono, imageUrl, caption = '') {
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${getAccessToken()}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -129,10 +131,10 @@ export async function enviarImagen(telefono, imageUrl, caption = '') {
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
 async function marcarLeido(messageId) {
   try {
-    await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+    await fetch(`https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Authorization': `Bearer ${getAccessToken()}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -145,12 +147,12 @@ async function marcarLeido(messageId) {
 }
 
 // ─── Notificación de escalación — WhatsApp al admin + SMS fallback ───────────
-const ADMIN_WA = process.env.WHATSAPP_ADMIN_NUMERO; // ej: 528781234567
+const getAdminWA = () => getIntegracion('wa_admin_numero') || process.env.WHATSAPP_ADMIN_NUMERO;
 async function notificarEscalacion(telefono) {
   // Notificación por WhatsApp al número admin
-  if (ADMIN_WA) {
+  if (getAdminWA()) {
     try {
-      await enviarMensaje(ADMIN_WA, `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`);
+      await enviarMensaje(getAdminWA(), `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`);
       console.log('[Meta WA] Escalación notificada por WhatsApp al admin');
     } catch (e) {
       console.error('[Meta WA] Error notificando escalación por WA:', e.message);

@@ -1,3 +1,4 @@
+import { getIntegracion } from '../server.js';
 // Clip — generación de enlaces de pago
 // Docs: https://developer.clip.mx/reference/createnewpaymentlink
 // Auth: Basic base64(CLIP_API_KEY:CLIP_API_SECRET)
@@ -5,8 +6,8 @@
 const CLIP_CHECKOUT_URL = 'https://api.payclip.com/v2/checkout';
 
 function getAuthHeader() {
-  const apiKey  = process.env.CLIP_API_KEY;
-  const secret  = process.env.CLIP_API_SECRET;
+  const apiKey  = getIntegracion('clip_api_key')  || process.env.CLIP_API_KEY;
+  const secret  = getIntegracion('clip_api_secret') || process.env.CLIP_API_SECRET;
   if (!apiKey || !secret) {
     throw new Error('Faltan variables CLIP_API_KEY o CLIP_API_SECRET');
   }

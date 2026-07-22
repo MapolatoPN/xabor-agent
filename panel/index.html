@@ -781,6 +781,11 @@ button:hover { opacity: 0.85; }
     <div id="vista-config" style="display:none;max-width:520px;margin:0 auto;">
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:20px;">⚙️ Configuración del Negocio</div>
       <div id="config-form"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
+      <div id="int-form"></div>
     </div>
 
 </div><!-- /vistas-extra -->
@@ -1420,7 +1425,7 @@ function mostrarTab(tab) {
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      cargarMenuEditor();
-  if (tab === 'config')    renderConfigForm();
+  if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); }
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     const bnavBadge = document.getElementById('bnav-badge');
@@ -2284,6 +2289,73 @@ async function guardarConfig() {
     negocio = data.config;
     document.querySelector('.header-brand').innerHTML = negocio.nombre_corto + '<span>·</span>';
     fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
+  }
+}
+
+// ─── Integraciones ───────────────────────────────────────────────────────────
+const INT_CAMPOS = [
+  { grupo: 'WhatsApp (Meta Cloud API)', campos: [
+    { clave: 'wa_token',         label: 'Access Token',       placeholder: 'EAAxxxxxxx...' },
+    { clave: 'wa_phone_id',      label: 'Phone Number ID',    placeholder: '123456789012345' },
+    { clave: 'wa_verify_token',  label: 'Verify Token',       placeholder: 'mi-token-secreto' },
+    { clave: 'wa_admin_numero',  label: 'Número admin (reporte)', placeholder: '528781234567' },
+  ]},
+  { grupo: 'Clip (enlace de pago)', campos: [
+    { clave: 'clip_api_key',    label: 'API Key',    placeholder: '••••••••' },
+    { clave: 'clip_api_secret', label: 'API Secret', placeholder: '••••••••' },
+  ]},
+  { grupo: 'Facturapi (CFDI)', campos: [
+    { clave: 'facturapi_key', label: 'API Key', placeholder: '••••••••' },
+  ]},
+  { grupo: 'Anthropic (IA)', campos: [
+    { clave: 'anthropic_api_key', label: 'API Key', placeholder: 'sk-ant-••••••••' },
+  ]},
+];
+
+let integracionesActuales = {};
+
+async function cargarIntegracionesPanel() {
+  if (ROLE !== 'admin') return;
+  try {
+    const r = await apiFetch('/api/admin/integraciones');
+    if (r.ok) integracionesActuales = await r.json();
+    renderIntForm();
+  } catch {}
+}
+
+function renderIntForm() {
+  const cont = document.getElementById('int-form');
+  if (!cont) return;
+  const estilo = `border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;width:100%;box-sizing:border-box;margin-bottom:12px;`;
+  let html = '';
+  INT_CAMPOS.forEach(g => {
+    html += `<div style="font-size:0.75rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 8px;">${g.grupo}</div>`;
+    g.campos.forEach(f => {
+      const val = integracionesActuales[f.clave] || '';
+      html += `<label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">${f.label}</label>
+      <input id="int-${f.clave}" style="${estilo}" value="${val}" placeholder="${f.placeholder}" autocomplete="off">`;
+    });
+  });
+  html += `<div id="int-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+  <button onclick="guardarIntegraciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar integraciones</button>`;
+  cont.innerHTML = html;
+}
+
+async function guardarIntegraciones() {
+  const cambios = {};
+  INT_CAMPOS.forEach(g => g.campos.forEach(f => {
+    const v = document.getElementById('int-' + f.clave)?.value.trim();
+    if (v) cambios[f.clave] = v;
+  }));
+  const fb = document.getElementById('int-feedback');
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  const r = await apiFetch('/api/admin/integraciones', { method:'PUT', body: JSON.stringify(cambios) });
+  if (r.ok) {
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Integraciones guardadas';
+    await cargarIntegracionesPanel();
     setTimeout(() => { fb.textContent = ''; }, 3000);
   } else {
     fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';

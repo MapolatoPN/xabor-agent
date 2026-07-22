@@ -43,6 +43,35 @@ async function cargarConfig() {
   console.log('[Config] Negocio cargado:', negocioConfig.nombre);
 }
 export function getConfig() { return negocioConfig; }
+
+// ─── Integraciones en memoria (DB > env var) ─────────────────────────────────
+let integracionesCache = {};
+async function cargarIntegraciones() {
+  const cfg = await obtenerConfiguracion().catch(() => ({}));
+  integracionesCache = {};
+  for (const [k, v] of Object.entries(cfg)) {
+    if (k.startsWith('int_')) integracionesCache[k.slice(4)] = v;
+  }
+  console.log('[Config] Integraciones cargadas:', Object.keys(integracionesCache).join(', ') || 'ninguna (usando env vars)');
+}
+
+// Mapa: clave interna → variable de entorno de respaldo
+const ENV_MAP = {
+  wa_token:          'WHATSAPP_TOKEN',
+  wa_phone_id:       'WHATSAPP_PHONE_ID',
+  wa_verify_token:   'WHATSAPP_VERIFY_TOKEN',
+  wa_admin_numero:   'WHATSAPP_ADMIN_NUMERO',
+  clip_api_key:      'CLIP_API_KEY',
+  clip_api_secret:   'CLIP_API_SECRET',
+  facturapi_key:     'FACTURAPI_KEY',
+  anthropic_api_key: 'ANTHROPIC_API_KEY',
+  vapid_public_key:  'VAPID_PUBLIC_KEY',
+  vapid_private_key: 'VAPID_PRIVATE_KEY',
+  vapid_email:       'VAPID_EMAIL',
+};
+export function getIntegracion(clave) {
+  return integracionesCache[clave] || process.env[ENV_MAP[clave]] || '';
+}
 const menuJSON = JSON.parse(readFileSync(join(__dirname, 'data/menu.json'), 'utf-8'));
 
 // ─── Autenticación del panel ──────────────────────────────────────────────────
@@ -731,6 +760,40 @@ app.put('/api/config', requireAdmin, async (req, res) => {
   res.json({ ok: true, config: negocioConfig });
 });
 
+// ─── Integraciones (claves de API configurables desde panel) ──────────────────
+const INT_CLAVES = [
+  'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
+  'clip_api_key','clip_api_secret',
+  'facturapi_key',
+  'anthropic_api_key',
+  'vapid_public_key','vapid_private_key','vapid_email',
+];
+
+app.get('/api/admin/integraciones', requireAdmin, async (req, res) => {
+  const cfg = await obtenerConfiguracion();
+  const result = {};
+  INT_CLAVES.forEach(k => {
+    const val = cfg['int_' + k] || '';
+    // Enmascarar: mostrar solo últimos 4 caracteres
+    result[k] = val.length > 8 ? '••••••••' + val.slice(-4) : (val ? '••••' : '');
+  });
+  res.json(result);
+});
+
+app.put('/api/admin/integraciones', requireAdmin, async (req, res) => {
+  const cambios = {};
+  for (const [k, v] of Object.entries(req.body)) {
+    if (!INT_CLAVES.includes(k)) continue;
+    if (!v || v.startsWith('••••')) continue; // no sobreescribir con máscara
+    cambios['int_' + k] = v.trim();
+  }
+  const ok = await actualizarConfiguracion(cambios);
+  if (!ok) return res.status(500).json({ error: 'Error al guardar' });
+  // Recargar config en memoria para que los servicios usen los nuevos valores
+  await cargarIntegraciones();
+  res.json({ ok: true });
+});
+
 app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
@@ -928,6 +991,7 @@ initDB()
   .then(() => seedMenuDesdeJSON(menuJSON))
   .then(() => cargarPedidosDesdeDB())
   .then(() => cargarConfig())
+  .then(() => cargarIntegraciones())
   .then(() => {
     // Activar pedidos programados cada 5 minutos
     activarPedidosProgramados();
