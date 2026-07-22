@@ -117,6 +117,10 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 - Escalación de quejas: WhatsApp al admin (WHATSAPP_ADMIN_NUMERO) + SMS Twilio fallback ✅
 - Monitoreo de errores: alerta WA al admin si bot falla 3+ veces en 5 min ✅
 - Inventario rápido: checkbox disponible/agotado en tab Menú del panel (ya existía) ✅
+- Cancelaciones: botón 🚫 en comandas activas (admin), estado=cancelado, excluido del corte ✅
+- Devoluciones: botón ↩ en historial (admin), monto+motivo, se refleja en corte ✅
+- Control de descuentos: staff ≤ 10%, motivo obligatorio, admin sin límite ✅
+- CFDI con Facturapi: servicio facturapi.js, modal en panel, genera factura timbrada ✅
 
 ## Historial de decisiones importantes
 
@@ -178,11 +182,12 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 
 ## Pendientes
 
-### POS completo
-- Devoluciones y cancelaciones (con impacto correcto en corte)
-- Descuentos más robustos (límites por rol, motivo obligatorio)
-- Tickets fiscales / CFDI
-- Inventario básico diario (marcar agotados → el toggle ya existe en tab Menú)
+### POS completo (COMPLETADO ✅)
+- Cancelaciones con motivo — botón admin en comandas, excluidas del corte ✅
+- Devoluciones con monto+motivo — botón admin en historial, resta del corte ✅
+- Control de descuentos por rol — staff ≤ 10%, motivo obligatorio ✅
+- CFDI vía Facturapi — requiere `FACTURAPI_KEY` en Railway ✅
+- Inventario: toggle disponible/agotado en tab Menú ✅
 
 ### Agente WhatsApp
 - Imagen del menú automática: el marcador `<ENVIAR_MENU>` ya existe y funciona;

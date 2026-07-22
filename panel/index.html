@@ -442,6 +442,94 @@ button:hover { opacity: 0.85; }
   </div>
 </div>
 
+<!-- Modal: cancelar pedido -->
+<div id="modal-cancelar-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:6px;font-size:1rem;color:#ef4444;">🚫 Cancelar pedido</h3>
+    <p style="font-size:0.82rem;color:#888;margin-bottom:14px;">El pedido se cancelará y no se contará en el corte.</p>
+    <input type="hidden" id="cancelar-folio">
+    <label style="font-size:0.82rem;color:#555;font-weight:600;">Motivo de cancelación *</label>
+    <textarea id="cancelar-motivo" rows="3" placeholder="Ej: Cliente canceló, Error de captura..."
+      style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;resize:none;box-sizing:border-box;"></textarea>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button onclick="cerrarModalCancelar()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Volver</button>
+      <button onclick="confirmarCancelar()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Cancelar pedido</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: devolución -->
+<div id="modal-devolucion-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:6px;font-size:1rem;color:#ea580c;">↩ Registrar devolución</h3>
+    <p id="devolucion-ref" style="font-size:0.82rem;color:#888;margin-bottom:14px;"></p>
+    <input type="hidden" id="devolucion-folio">
+    <label style="font-size:0.82rem;color:#555;font-weight:600;">Monto a devolver ($) *</label>
+    <input id="devolucion-monto" type="number" min="1" step="1" placeholder="0"
+      style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.95rem;box-sizing:border-box;" />
+    <label style="font-size:0.82rem;color:#555;font-weight:600;margin-top:12px;display:block;">Motivo *</label>
+    <input id="devolucion-motivo" type="text" placeholder="Ej: Producto incorrecto, Queja del cliente..."
+      style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;" />
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button onclick="cerrarModalDevolucion()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
+      <button onclick="confirmarDevolucion()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#ea580c;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Registrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: factura CFDI -->
+<div id="modal-factura-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-height:90vh;overflow-y:auto;">
+    <h3 style="margin-bottom:6px;font-size:1rem;color:#16a34a;">🧾 Generar factura (CFDI)</h3>
+    <p id="factura-ref" style="font-size:0.82rem;color:#888;margin-bottom:14px;"></p>
+    <input type="hidden" id="factura-folio">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">RFC *</label>
+        <input id="factura-rfc" type="text" placeholder="XAXX010101000" maxlength="13"
+          style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;text-transform:uppercase;" />
+      </div>
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">Nombre o razón social *</label>
+        <input id="factura-nombre" type="text" placeholder="Nombre Apellido o Razón Social S.A."
+          style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">Régimen fiscal</label>
+        <select id="factura-regimen" style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+          <option value="626">626 – Simplificado de Confianza (RESICO)</option>
+          <option value="612">612 – Personas físicas con actividades empresariales</option>
+          <option value="601">601 – General de Ley Personas Morales</option>
+          <option value="621">621 – Incorporación Fiscal</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">Uso CFDI</label>
+        <select id="factura-uso" style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+          <option value="G03">G03 – Gastos en general</option>
+          <option value="G01">G01 – Adquisición de mercancias</option>
+          <option value="S01">S01 – Sin efectos fiscales</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">Código postal</label>
+        <input id="factura-cp" type="text" placeholder="26000" maxlength="5"
+          style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label style="font-size:0.8rem;color:#555;font-weight:600;">Email para enviar la factura (opcional)</label>
+        <input id="factura-email" type="email" placeholder="cliente@correo.com"
+          style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;" />
+      </div>
+    </div>
+    <div id="factura-resultado" style="display:none;margin-top:14px;padding:12px;background:#f0fdf4;border-radius:8px;font-size:0.82rem;"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button onclick="cerrarModalFactura()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
+      <button id="btn-generar-factura" onclick="confirmarFactura()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Generar factura</button>
+    </div>
+  </div>
+</div>
+
 <!-- Tabs -->
 <div id="tabs-nav">
   <button class="tab-btn activo" id="tab-comandas"  onclick="mostrarTab('comandas')">🍽️ Comandas</button>
@@ -817,6 +905,13 @@ function conectarWS() {
           if (card) card.innerHTML = renderComanda(pedidos[msg.id]);
         }
       }
+      if (msg.tipo === 'cancelar_pedido') {
+        const card = document.getElementById(`comanda-${msg.id}`);
+        if (card) card.remove();
+        delete pedidos[msg.id];
+        actualizarContador();
+        if (Object.keys(pedidos).length === 0) document.getElementById('sin-pedidos').style.display = '';
+      }
     } catch(e) {}
   };
 }
@@ -1013,7 +1108,7 @@ function renderComanda(p) {
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
       <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')">🗑️</button>
-      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-preparando" onclick="abrirModalPago('${p.id}')" style="background:#7c3aed;">✏️ Pago</button>`:''}
+      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-preparando" onclick="abrirModalPago('${p.id}')" style="background:#7c3aed;">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
     </div>`;
 }
 
@@ -1489,6 +1584,108 @@ document.getElementById('modal-pago-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-pago-overlay')) cerrarModalPago();
 });
 
+// ─── Cancelar pedido (admin) ─────────────────────────────────────────────────
+function abrirModalCancelar(folio) {
+  document.getElementById('cancelar-folio').value = folio;
+  document.getElementById('cancelar-motivo').value = '';
+  document.getElementById('modal-cancelar-overlay').style.display = 'flex';
+}
+function cerrarModalCancelar() {
+  document.getElementById('modal-cancelar-overlay').style.display = 'none';
+}
+async function confirmarCancelar() {
+  const folio  = document.getElementById('cancelar-folio').value;
+  const motivo = document.getElementById('cancelar-motivo').value.trim();
+  if (!motivo) { alert('Ingresa el motivo de cancelación'); return; }
+  const btn = document.querySelector('#modal-cancelar-overlay button:last-child');
+  btn.disabled = true; btn.textContent = 'Cancelando...';
+  const r = await apiFetch(`/api/admin/pedido/${folio}/cancelar`, { method:'POST', body: JSON.stringify({ motivo }) });
+  btn.disabled = false; btn.textContent = 'Cancelar pedido';
+  if (r.ok) { cerrarModalCancelar(); } else { const d = await r.json(); alert(d.error || 'Error'); }
+}
+document.getElementById('modal-cancelar-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-cancelar-overlay')) cerrarModalCancelar();
+});
+
+// ─── Devolución (admin) ──────────────────────────────────────────────────────
+function abrirModalDevolucion(folio, totalPedido) {
+  document.getElementById('devolucion-folio').value = folio;
+  document.getElementById('devolucion-monto').value = '';
+  document.getElementById('devolucion-monto').max = totalPedido;
+  document.getElementById('devolucion-motivo').value = '';
+  document.getElementById('devolucion-ref').textContent = `Pedido ${folio} · Total: $${totalPedido}`;
+  document.getElementById('modal-devolucion-overlay').style.display = 'flex';
+}
+function cerrarModalDevolucion() {
+  document.getElementById('modal-devolucion-overlay').style.display = 'none';
+}
+async function confirmarDevolucion() {
+  const folio  = document.getElementById('devolucion-folio').value;
+  const monto  = parseFloat(document.getElementById('devolucion-monto').value);
+  const motivo = document.getElementById('devolucion-motivo').value.trim();
+  if (!monto || monto <= 0) { alert('Ingresa un monto válido'); return; }
+  if (!motivo) { alert('Ingresa el motivo'); return; }
+  const btn = document.querySelector('#modal-devolucion-overlay button:last-child');
+  btn.disabled = true; btn.textContent = 'Registrando...';
+  const r = await apiFetch(`/api/admin/pedido/${folio}/devolucion`, { method:'POST', body: JSON.stringify({ monto, motivo }) });
+  btn.disabled = false; btn.textContent = 'Registrar';
+  if (r.ok) { cerrarModalDevolucion(); cargarHistorial(); } else { const d = await r.json(); alert(d.error || 'Error'); }
+}
+document.getElementById('modal-devolucion-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-devolucion-overlay')) cerrarModalDevolucion();
+});
+
+// ─── Factura CFDI (admin) ────────────────────────────────────────────────────
+function abrirModalFactura(folio) {
+  document.getElementById('factura-folio').value = folio;
+  document.getElementById('factura-ref').textContent = `Pedido ${folio}`;
+  document.getElementById('factura-rfc').value = '';
+  document.getElementById('factura-nombre').value = '';
+  document.getElementById('factura-email').value = '';
+  document.getElementById('factura-cp').value = '';
+  document.getElementById('factura-resultado').style.display = 'none';
+  document.getElementById('btn-generar-factura').style.display = '';
+  document.getElementById('modal-factura-overlay').style.display = 'flex';
+}
+function cerrarModalFactura() {
+  document.getElementById('modal-factura-overlay').style.display = 'none';
+}
+async function confirmarFactura() {
+  const folio   = document.getElementById('factura-folio').value;
+  const rfc     = document.getElementById('factura-rfc').value.trim().toUpperCase();
+  const nombre  = document.getElementById('factura-nombre').value.trim();
+  const regimen = document.getElementById('factura-regimen').value;
+  const uso     = document.getElementById('factura-uso').value;
+  const cp      = document.getElementById('factura-cp').value.trim();
+  const email   = document.getElementById('factura-email').value.trim();
+  if (!rfc || rfc.length < 12) { alert('RFC inválido (mínimo 12 caracteres)'); return; }
+  if (!nombre) { alert('Nombre o razón social requerido'); return; }
+  const btn = document.getElementById('btn-generar-factura');
+  btn.disabled = true; btn.textContent = 'Generando...';
+  const r = await apiFetch(`/api/admin/pedido/${folio}/factura`, {
+    method: 'POST',
+    body: JSON.stringify({ rfc, nombre_fiscal: nombre, regimen, uso_cfdi: uso, cp, email })
+  });
+  btn.disabled = false; btn.textContent = 'Generar factura';
+  const res = document.getElementById('factura-resultado');
+  res.style.display = 'block';
+  if (r.ok) {
+    const d = await r.json();
+    res.style.background = '#f0fdf4';
+    res.innerHTML = `<strong style="color:#16a34a;">✅ Factura generada</strong><br>
+      UUID: ${d.folio_fiscal||'—'}<br>
+      <a href="/api/admin/factura/${d.factura_id}/pdf" target="_blank" style="color:#16a34a;">Descargar PDF</a>${email?' · Enviada a '+email:''}`;
+    btn.style.display = 'none';
+  } else {
+    const d = await r.json().catch(() => ({}));
+    res.style.background = '#fef2f2';
+    res.innerHTML = `<strong style="color:#ef4444;">Error</strong>: ${d.error||'No se pudo generar'}`;
+  }
+}
+document.getElementById('modal-factura-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-factura-overlay')) cerrarModalFactura();
+});
+
 // ─── POS Presencial ──────────────────────────────────────────────────────────
 let posCarrito   = [];
 let posPagoSel   = 'efectivo';
@@ -1678,6 +1875,16 @@ async function confirmarPresencial() {
   const descuento      = calcDescuento(subtotal);
   const total          = subtotal - descuento;
   const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
+  const isAdmin        = sessionStorage.getItem('xabor_role') === 'admin';
+
+  // Validar límite de descuento por rol: staff ≤ 10%
+  if (descuento > 0) {
+    if (!motivoDesc) { alert('El motivo del descuento es obligatorio.'); return; }
+    if (!isAdmin) {
+      const pctDesc = (descuento / subtotal) * 100;
+      if (pctDesc > 10) { alert(`El descuento máximo para staff es 10% ($${Math.floor(subtotal*0.1)}). Para descuentos mayores, contacta al administrador.`); return; }
+    }
+  }
   const esMixto        = posPagoSel === 'mixto';
   const mixtoEfectivo  = esMixto ? (parseFloat(document.getElementById('mixto-efectivo')?.value || 0) || 0) : 0;
   const mixtoTerminal  = esMixto ? (parseFloat(document.getElementById('mixto-terminal')?.value || 0) || 0) : 0;
@@ -1873,48 +2080,64 @@ async function cargarHistorial() {
   const lista = await apiFetch('/api/historial').then(r => r.json()).catch(() => []);
   if (!lista.length) { cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos entregados aún</div>'; return; }
   cont.innerHTML = lista.map((p, i) => {
-    const nombre   = getNombre(p);
-    const esEntrega = (p.modalidad||'').toLowerCase().includes('domicilio');
-    const tag      = esEntrega
+    const nombre      = getNombre(p);
+    const esEntrega   = (p.modalidad||'').toLowerCase().includes('domicilio');
+    const cancelado   = p._estado === 'cancelado';
+    const devolucion  = p.devolucion?.monto > 0 ? p.devolucion : null;
+    const tag         = esEntrega
       ? '<span class="tag-modalidad tag-domicilio">🛵 Domicilio</span>'
       : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
-    const hora     = horaCST(p.entregado_at || p.timestamp);
-    const envio    = parseFloat(p.costo_envio || 0);
-    const itemsHTML = (p.items||[]).map(item => `
+    const tagCancel   = cancelado ? '<span style="background:#fef2f2;color:#ef4444;border-radius:12px;padding:1px 8px;font-size:0.72rem;font-weight:700;">🚫 Cancelado</span>' : '';
+    const hora        = horaCST(p.entregado_at || p.timestamp);
+    const envio       = parseFloat(p.costo_envio || 0);
+    const folio       = p.id || p.folio || '';
+    const isAdmin     = sessionStorage.getItem('xabor_role') === 'admin';
+    const itemsHTML   = (p.items||[]).map(item => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f0ed;font-size:0.85rem;">
         <span>${item.cantidad||1}x ${item.nombre||''}</span>
         <span style="color:#666;">$${((item.precio_unitario||0)*(item.cantidad||1)).toFixed(0)}</span>
       </div>${item.notas?`<div style="font-size:0.75rem;color:#aaa;padding-left:14px;">${item.notas}</div>`:''}`).join('');
     const dir = esEntrega && p.cliente?.calle
       ? `<div style="font-size:0.8rem;color:#888;margin-top:4px;">📍 ${p.cliente.calle}${p.cliente.colonia?', Col. '+p.cliente.colonia:''}</div>` : '';
+    const devHtml = devolucion
+      ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+devolucion.motivo+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
+    const cancelHtml = cancelado && p.cancelacion?.motivo
+      ? `<div style="font-size:0.78rem;color:#ef4444;margin-top:4px;">Motivo: ${p.cancelacion.motivo}</div>` : '';
+    const adminBtns = isAdmin && !cancelado ? `
+      <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f5f3ff;color:#7c3aed;cursor:pointer;">✏️ Pago</button>
+      ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
+      <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>` : '';
     return `
-      <div style="border-bottom:1px solid #f1f0ed;">
+      <div style="border-bottom:1px solid #f1f0ed;${cancelado?'opacity:0.65;':''}">
         <div onclick="toggleHistorial('hdet-${i}')"
              style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;"
              onmouseover="this.style.background='#fafaf8'" onmouseout="this.style.background=''">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="font-weight:800;color:#22c55e;white-space:nowrap;font-size:0.88rem;">${p.id||'—'}</span>
+              <span style="font-weight:800;color:${cancelado?'#ef4444':'#22c55e'};white-space:nowrap;font-size:0.88rem;">${folio||'—'}</span>
               <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">${nombre}</span>
               <span class="historial-tag-wrap">${tag}</span>
+              ${tagCancel}
             </div>
             <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px;">
             ${tag.replace('class="tag-modalidad', 'class="tag-modalidad historial-tag-mobile')}
-            <span style="font-weight:800;font-size:0.95rem;">$${p.total}</span>
+            <span style="font-weight:800;font-size:0.95rem;${cancelado?'text-decoration:line-through;color:#aaa;':''}">$${p.total}</span>
           </div>
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
           <div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span>Tel: ${getTelefono(p)}${p.forma_pago?' · Pago: '+p.forma_pago:''}</span>
-            ${sessionStorage.getItem('xabor_role')==='admin'?`<button onclick="abrirModalPago('${p.id||p.folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f5f3ff;color:#7c3aed;cursor:pointer;">✏️ Pago</button>`:''}
+            ${adminBtns}
           </div>
+          ${cancelHtml}
           ${dir}
           <div style="margin-top:8px;">${itemsHTML}</div>
           ${envio>0?`<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#aaa;padding:3px 0;">Envío<span>$${envio.toFixed(0)}</span></div>`:''}
+          ${devHtml}
           <div style="display:flex;justify-content:space-between;font-weight:800;font-size:0.95rem;padding-top:8px;border-top:1px solid #eceae4;margin-top:4px;">
-            <span>TOTAL</span><span style="color:#22c55e;">$${p.total}</span>
+            <span>TOTAL</span><span style="color:${cancelado?'#ef4444':'#22c55e'};">${cancelado?'CANCELADO':'$'+p.total}</span>
           </div>
         </div>
       </div>`;

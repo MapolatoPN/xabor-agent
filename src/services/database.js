@@ -380,16 +380,49 @@ export async function guardarPedido(telefono, pedido) {
 export async function obtenerPedidosEntregados(limite = 100) {
   try {
     const result = await pool.query(`
-      SELECT folio, datos, updated_at
+      SELECT folio, estado, datos, updated_at
       FROM pedidos_activos
-      WHERE estado = 'entregado'
+      WHERE estado IN ('entregado', 'cancelado')
       ORDER BY updated_at DESC
       LIMIT $1
     `, [limite]);
-    return result.rows.map(r => ({ ...r.datos, entregado_at: r.updated_at }));
+    return result.rows.map(r => ({ ...r.datos, entregado_at: r.updated_at, _estado: r.estado }));
   } catch (e) {
     console.error('[DB] Error obtenerPedidosEntregados:', e.message);
     return [];
+  }
+}
+
+// ─── Cancelar pedido activo ────────────────────────────────────────────────────
+export async function cancelarPedidoActivo(folio, motivo) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos
+      SET estado = 'cancelado',
+          datos  = jsonb_set(datos, '{cancelacion}', $2::jsonb),
+          updated_at = NOW()
+      WHERE folio = $1 AND estado NOT IN ('entregado', 'cancelado')
+    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString() })]);
+    return true;
+  } catch (e) {
+    console.error('[DB] Error cancelarPedidoActivo:', e.message);
+    return false;
+  }
+}
+
+// ─── Registrar devolución en pedido entregado ─────────────────────────────────
+export async function registrarDevolucion(folio, monto, motivo) {
+  try {
+    await pool.query(`
+      UPDATE pedidos_activos
+      SET datos = jsonb_set(datos, '{devolucion}', $2::jsonb),
+          updated_at = NOW()
+      WHERE folio = $1 AND estado = 'entregado'
+    `, [folio, JSON.stringify({ monto: parseFloat(monto), motivo, timestamp: new Date().toISOString() })]);
+    return true;
+  } catch (e) {
+    console.error('[DB] Error registrarDevolucion:', e.message);
+    return false;
   }
 }
 
@@ -398,19 +431,24 @@ export async function obtenerVentas(desde, hasta) {
   try {
     const result = await pool.query(`
       SELECT
-        folio                                          AS id,
+        folio                                                              AS id,
         folio,
-        datos->'cliente'->>'telefono'                  AS telefono,
-        datos->'cliente'->>'nombre'                    AS nombre_cliente,
-        datos->'items'                                 AS items,
-        (datos->>'total')::decimal                     AS total,
-        datos->>'modalidad'                            AS modalidad,
-        datos->>'canal'                                AS canal,
-        COALESCE(datos->>'forma_pago','no especificado') AS forma_pago,
-        COALESCE((datos->>'costo_envio')::decimal, 0)  AS costo_envio,
+        estado,
+        datos->'cliente'->>'telefono'                                      AS telefono,
+        datos->'cliente'->>'nombre'                                        AS nombre_cliente,
+        datos->'items'                                                     AS items,
+        (datos->>'total')::decimal                                         AS total,
+        datos->>'modalidad'                                                AS modalidad,
+        datos->>'canal'                                                    AS canal,
+        COALESCE(datos->>'forma_pago','no especificado')                   AS forma_pago,
+        COALESCE((datos->>'costo_envio')::decimal, 0)                     AS costo_envio,
+        COALESCE((datos->'devolucion'->>'monto')::decimal, 0)             AS devolucion_monto,
+        datos->'devolucion'->>'motivo'                                     AS devolucion_motivo,
+        datos->'cancelacion'->>'motivo'                                    AS cancelacion_motivo,
         created_at
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
+        AND estado != 'cancelado'
       ORDER BY created_at DESC
     `, [desde, hasta]);
     return result.rows;
@@ -424,15 +462,18 @@ export async function obtenerResumenVentas(desde, hasta) {
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(*)::int                                                                        AS num_pedidos,
-        COALESCE(SUM((datos->>'total')::decimal), 0)::float                                 AS total_ventas,
-        COALESCE(AVG((datos->>'total')::decimal), 0)::float                                 AS promedio,
-        COALESCE(SUM((datos->>'costo_envio')::decimal), 0)::float                           AS total_envios,
-        COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                AS domicilios,
+        COUNT(*)::int                                                                              AS num_pedidos,
+        COALESCE(SUM((datos->>'total')::decimal), 0)::float                                       AS total_ventas,
+        COALESCE(SUM(COALESCE((datos->'devolucion'->>'monto')::decimal, 0)), 0)::float            AS total_devoluciones,
+        COALESCE(AVG((datos->>'total')::decimal), 0)::float                                       AS promedio,
+        COALESCE(SUM((datos->>'costo_envio')::decimal), 0)::float                                 AS total_envios,
+        COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                      AS domicilios,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%recoger%'
-                            OR datos->>'modalidad' ILIKE '%tienda%')::int                   AS recoger
+                            OR datos->>'modalidad' ILIKE '%tienda%')::int                         AS recoger,
+        COUNT(*) FILTER (WHERE estado = 'cancelado')::int                                         AS cancelados
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
+        AND estado != 'cancelado'
     `, [desde, hasta]);
     return result.rows[0];
   } catch (e) {

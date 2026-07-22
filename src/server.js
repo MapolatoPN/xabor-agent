@@ -17,7 +17,8 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion } from './services/database.js';
+import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion } from './services/database.js';
+import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
@@ -378,6 +379,81 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
   if (p) p.forma_pago = forma_pago;
   broadcast({ tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
+});
+
+// Cancelar pedido activo — solo admin
+app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => {
+  const { folio } = req.params;
+  const { motivo } = req.body;
+  if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
+  const ok = await cancelarPedidoActivo(folio, motivo.trim());
+  if (!ok) return res.status(500).json({ error: 'No se pudo cancelar' });
+  // Quitar del panel en tiempo real
+  await eliminarPedido(folio).catch(() => {});
+  broadcast({ tipo: 'cancelar_pedido', id: folio, motivo });
+  console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
+  res.json({ ok: true });
+});
+
+// Registrar devolución en pedido entregado — solo admin
+app.post('/api/admin/pedido/:folio/devolucion', requireAdmin, async (req, res) => {
+  const { folio } = req.params;
+  const { monto, motivo } = req.body;
+  if (!monto || parseFloat(monto) <= 0) return res.status(400).json({ error: 'Monto inválido' });
+  if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
+  const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim());
+  if (!ok) return res.status(500).json({ error: 'No se pudo registrar la devolución' });
+  broadcast({ tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
+  console.log(`[Panel] Devolución ${folio}: $${monto} — ${motivo}`);
+  res.json({ ok: true });
+});
+
+// Generar factura CFDI — solo admin
+app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
+  const { folio } = req.params;
+  const { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp } = req.body;
+  if (!nombre_fiscal || !rfc) return res.status(400).json({ error: 'nombre_fiscal y rfc son requeridos' });
+  if (!process.env.FACTURAPI_KEY) return res.status(503).json({ error: 'FACTURAPI_KEY no configurada en Railway' });
+
+  // Obtener datos del pedido
+  const { obtenerPedidoActivoPorFolio } = await import('./services/database.js');
+  const { obtenerPedidosEntregados: _ent } = await import('./services/database.js');
+  // Buscar en activos primero, luego en entregados
+  let pedidoDatos = await obtenerPedidoActivoPorFolio(folio);
+  if (!pedidoDatos) {
+    const ents = await _ent(500);
+    const found = ents.find(p => p.id === folio || p.folio === folio);
+    pedidoDatos = found || null;
+  }
+  if (!pedidoDatos) return res.status(404).json({ error: 'Pedido no encontrado' });
+
+  try {
+    const factura = await generarFactura(pedidoDatos, { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp });
+    // Enviar por email si se proporcionó
+    if (email && factura.id) await enviarFacturaPorEmail(factura.id, email).catch(() => {});
+    res.json({
+      ok: true,
+      factura_id: factura.id,
+      folio_fiscal: factura.uuid,
+      pdf_url: `https://www.facturapi.io/v2/invoices/${factura.id}/pdf`,
+      xml_url: `https://www.facturapi.io/v2/invoices/${factura.id}/xml`
+    });
+  } catch (e) {
+    console.error('[Facturapi] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Descargar PDF de factura — proxy autenticado para el panel
+app.get('/api/admin/factura/:facturaId/pdf', requireAdmin, async (req, res) => {
+  try {
+    const buf = await descargarFacturaPDF(req.params.facturaId);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=factura-${req.params.facturaId}.pdf`);
+    res.send(Buffer.from(buf));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Conversaciones WhatsApp
