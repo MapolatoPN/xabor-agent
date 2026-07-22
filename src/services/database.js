@@ -639,6 +639,25 @@ export async function obtenerPedidoPorFolioAmplio(folio) {
   }
 }
 
+// Busca pedidos activos por número de teléfono del cliente
+export async function obtenerPedidosActivosPorTelefono(telefono) {
+  try {
+    const result = await pool.query(
+      `SELECT folio, estado, datos, created_at
+       FROM pedidos_activos
+       WHERE datos->'cliente'->>'telefono' = $1
+         AND estado NOT IN ('entregado', 'cancelado')
+       ORDER BY created_at DESC
+       LIMIT 3`,
+      [telefono]
+    );
+    return result.rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosActivosPorTelefono:', e.message);
+    return [];
+  }
+}
+
 export async function archivarPedidoActivo(folio) {
   try {
     await pool.query(`

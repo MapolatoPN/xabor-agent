@@ -111,6 +111,12 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 - Editar forma de pago: disponible para admin en comandas activas e historial ✅
 - Comanda cocina vs Ticket de cliente: separados, auto-print es comanda sin precios ✅
 - CLAUDE.md en repo para contexto entre sesiones y máquinas ✅
+- Configuración del negocio desde panel (Config tab, tabla configuracion) ✅
+- Seguimiento de pedido por WhatsApp: cliente pregunta estado → respuesta directa de DB ✅
+- Notificación automática "listo" al cliente por WA al cambiar estado en panel ✅
+- Escalación de quejas: WhatsApp al admin (WHATSAPP_ADMIN_NUMERO) + SMS Twilio fallback ✅
+- Monitoreo de errores: alerta WA al admin si bot falla 3+ veces en 5 min ✅
+- Inventario rápido: checkbox disponible/agotado en tab Menú del panel (ya existía) ✅
 
 ## Historial de decisiones importantes
 
@@ -138,6 +144,28 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 - Se refleja en tiempo real vía WebSocket (`actualizar_pago`)
 - Botón morado ✏️ Pago visible en comandas activas y en historial
 
+### Seguimiento de pedido por WhatsApp
+- En `whatsapp-meta.js`, antes de llamar a Claude, se detecta si el mensaje es una consulta de estado
+- Regex: `/en\s*qu[eé]\s*va|estado.*pedido|cu[aá]nto\s*falta|ya\s*est[aá]\s*list.../i`
+- Si hay pedido activo con ese teléfono en `pedidos_activos`, se responde directamente
+- DB function: `obtenerPedidosActivosPorTelefono(telefono)` — busca por `datos->'cliente'->>'telefono'`
+- Si no hay pedido activo, Claude responde de forma natural
+
+### Notificación "listo" al cliente
+- En `PATCH /pedidos/:id/estado`, cuando estado = 'listo', envía WA automático al cliente
+- No envía si es presencial (telefono = "—" o vacío)
+- Mensaje diferente para "recoger en tienda" vs "entrega a domicilio"
+
+### Escalación de quejas
+- `notificarEscalacion(telefono)` en `whatsapp-meta.js`
+- Primero envía WA al admin (`WHATSAPP_ADMIN_NUMERO`)
+- Luego SMS Twilio como fallback si `TWILIO_SMS_NUMBER` está configurado
+
+### Monitoreo de errores
+- Contador en memoria en `whatsapp-meta.js`: array `errores[]` con timestamps
+- Si 3+ errores en 5 minutos → envía WA de alerta al admin
+- `alertaEnviada` flag evita spam; se resetea tras 15 minutos
+
 ### Git — regla crítica
 - **NUNCA hacer commits desde el sandbox de Claude** — corrompe archivos (trunca el contenido)
 - Siempre hacer `git add`, `git commit`, `git push` desde PowerShell en Windows
@@ -150,9 +178,20 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 
 ## Pendientes
 
+### POS completo
+- Devoluciones y cancelaciones (con impacto correcto en corte)
+- Descuentos más robustos (límites por rol, motivo obligatorio)
+- Tickets fiscales / CFDI
+- Inventario básico diario (marcar agotados → el toggle ya existe en tab Menú)
+
+### Agente WhatsApp
+- Imagen del menú automática: el marcador `<ENVIAR_MENU>` ya existe y funciona;
+  el prompt ya instruye al bot a usarlo. Verificar con cliente real si se envía bien.
+
+### SaaS / Productización
+- Guía de onboarding para nuevos restaurantes (Railway + WA + variables de entorno)
+- Modelo de negocio: mensualidad, por pedido, setup fee
+
 ### Técnicos
 - Push notifications en móvil: pendiente verificar (en desktop/computadora del negocio ya funciona)
-
-### Negocio
-- En una sesión anterior se identificaron ~5 áreas a mejorar para poder ofrecer Xabor como producto a otros restaurantes — recuperar esa lista y trabajarla
-- Evaluar qué falta para productizar: onboarding, multi-tenant, configuración de menú, etc.
+- JWT con expiración (tokens estáticos actuales son menos seguros)

@@ -5,12 +5,35 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono } from '../services/database.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
+
+// ─── Monitor de errores críticos ─────────────────────────────────────────────
+const errores = []; // timestamps de errores recientes
+const VENTANA_MS   = 5 * 60 * 1000; // 5 minutos
+const UMBRAL       = 3;              // 3 errores en 5 min → alerta
+let alertaEnviada  = false;
+
+function registrarError() {
+  const ahora = Date.now();
+  errores.push(ahora);
+  // Limpiar errores fuera de la ventana
+  while (errores.length && errores[0] < ahora - VENTANA_MS) errores.shift();
+  if (errores.length >= UMBRAL && !alertaEnviada) {
+    alertaEnviada = true;
+    const admin = process.env.WHATSAPP_ADMIN_NUMERO;
+    if (admin) {
+      enviarMensaje(admin, `🚨 *Xabor alerta*: el bot tuvo ${errores.length} errores en los últimos 5 minutos. Revisar Railway logs.`)
+        .catch(() => {});
+    }
+    // Reset alerta tras 15 minutos
+    setTimeout(() => { alertaEnviada = false; }, 15 * 60 * 1000);
+  }
+}
 
 // ─── Debounce de mensajes — espera 4s antes de procesar ──────────────────────
 // Si el cliente manda varios mensajes seguidos, los combina en uno solo
@@ -120,19 +143,31 @@ async function marcarLeido(messageId) {
   } catch (_) { /* no crítico */ }
 }
 
-// ─── Notificación de escalación por SMS (sigue usando Twilio SMS) ─────────────
+// ─── Notificación de escalación — WhatsApp al admin + SMS fallback ───────────
+const ADMIN_WA = process.env.WHATSAPP_ADMIN_NUMERO; // ej: 528781234567
 async function notificarEscalacion(telefono) {
-  if (!NUMERO_SOPORTE || !process.env.TWILIO_SMS_NUMBER) return;
-  try {
-    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-    await client.messages.create({
-      from: process.env.TWILIO_SMS_NUMBER,
-      to: NUMERO_SOPORTE,
-      body: `XABOR - Cliente pide atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`
-    });
-    console.log('[Meta WA] Escalación notificada por SMS');
-  } catch (e) {
-    console.error('[Meta WA] Error al notificar escalación:', e.message);
+  // Notificación por WhatsApp al número admin
+  if (ADMIN_WA) {
+    try {
+      await enviarMensaje(ADMIN_WA, `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`);
+      console.log('[Meta WA] Escalación notificada por WhatsApp al admin');
+    } catch (e) {
+      console.error('[Meta WA] Error notificando escalación por WA:', e.message);
+    }
+  }
+  // SMS fallback (Twilio) si está configurado
+  if (NUMERO_SOPORTE && process.env.TWILIO_SMS_NUMBER) {
+    try {
+      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+      await client.messages.create({
+        from: process.env.TWILIO_SMS_NUMBER,
+        to: NUMERO_SOPORTE,
+        body: `XABOR - Cliente pide atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`
+      });
+      console.log('[Meta WA] Escalación notificada por SMS');
+    } catch (e) {
+      console.error('[Meta WA] Error al notificar escalación SMS:', e.message);
+    }
   }
 }
 
@@ -191,6 +226,31 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       return;
     }
 
+    // ── Consulta de estado de pedido ──────────────────────────────────────────
+    // Si el cliente pregunta por su pedido, respondemos directamente sin Claude
+    const esConsultaEstado = /en\s*qu[eé]\s*va|estado.*pedido|cu[aá]nto\s*falta|ya\s*est[aá]\s*list|mi\s*pedido|est[aá]\s*list[oa]|lista\s*mi|list[oa]\s*mi|salió.*pedido|pedido.*salió|preparando|me\s*avis[ae]n/i.test(texto);
+    if (esConsultaEstado) {
+      const pedidosActivos = await obtenerPedidosActivosPorTelefono(telefono);
+      if (pedidosActivos.length > 0) {
+        const etiquetas = {
+          'nuevo':          'fue recibido y está en espera de preparación',
+          'en_preparacion': 'está siendo preparado en cocina',
+          'listo':          'está listo. Puedes venir a recogerlo o ya está en camino',
+          'entregado':      'ya fue entregado'
+        };
+        const p = pedidosActivos[0];
+        const desc = etiquetas[p.estado] || p.estado;
+        const items = (p.datos?.items || []).map(i => `${i.cantidad > 1 ? i.cantidad + 'x ' : ''}${i.nombre}`).join(', ');
+        const extra = p.estado === 'listo' ? ' ¡Gracias por tu preferencia!' : '';
+        const msg = `Tu pedido ${p.folio}${items ? ` (${items})` : ''} ${desc}.${extra}`;
+        await enviarMensaje(telefono, msg);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+        console.log(`[Meta WA] Estado de pedido enviado a ${telefono}: ${p.folio} → ${p.estado}`);
+        return;
+      }
+      // Si no hay pedidos activos, Claude responderá de forma natural
+    }
+
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono);
     const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono) : [];
@@ -247,6 +307,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     }
   } catch (error) {
     console.error('[Meta WA] Error en procesarConClaude:', error.message);
+    registrarError();
   }
 }
 

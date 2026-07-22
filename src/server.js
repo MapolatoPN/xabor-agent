@@ -297,7 +297,7 @@ app.get('/pedidos', (req, res) => {
 });
 
 // Cambiar estado de un pedido (desde el panel)
-app.patch('/pedidos/:id/estado', (req, res) => {
+app.patch('/pedidos/:id/estado', async (req, res) => {
   const { estado } = req.body;
   const estadosValidos = ['nuevo', 'en_preparacion', 'listo', 'entregado'];
   if (!estadosValidos.includes(estado)) {
@@ -305,6 +305,24 @@ app.patch('/pedidos/:id/estado', (req, res) => {
   }
   const pedido = actualizarEstadoPedido(req.params.id, estado);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+
+  // Notificar al cliente por WhatsApp cuando el pedido está listo
+  if (estado === 'listo') {
+    const tel = pedido.cliente?.telefono;
+    const esPresencial = !tel || tel === '—' || tel.length < 7;
+    if (!esPresencial) {
+      try {
+        const msg = pedido.modalidad === 'recoger en tienda'
+          ? `Tu pedido ${pedido.id} está listo. Puedes pasar a recogerlo cuando gustes.`
+          : `Tu pedido ${pedido.id} está listo y en camino. Llega en unos minutos.`;
+        await enviarMensaje(tel, msg);
+        console.log(`[Panel] Notificación "listo" enviada a ${tel} para ${pedido.id}`);
+      } catch (e) {
+        console.error('[Panel] Error notificando cliente listo:', e.message);
+      }
+    }
+  }
+
   res.json(pedido);
 });
 
