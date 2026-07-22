@@ -513,8 +513,10 @@ export async function guardarMensaje(telefono, nombre, direccion, texto) {
 export async function obtenerConversacion(telefono, limite = 50) {
   try {
     const result = await pool.query(`
-      SELECT * FROM mensajes WHERE telefono = $1
-      ORDER BY timestamp ASC LIMIT $2
+      SELECT * FROM (
+        SELECT * FROM mensajes WHERE telefono = $1
+        ORDER BY timestamp DESC LIMIT $2
+      ) sub ORDER BY timestamp ASC
     `, [telefono, limite]);
     return result.rows;
   } catch (e) {
