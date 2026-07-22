@@ -463,7 +463,7 @@ app.get('/api/conversaciones', async (req, res) => {
 });
 
 app.get('/api/conversacion/:telefono', async (req, res) => {
-  const msgs = await obtenerConversacion(req.params.telefono, 300);
+  const msgs = await obtenerConversacion(req.params.telefono);
   res.json(msgs);
 });
 
