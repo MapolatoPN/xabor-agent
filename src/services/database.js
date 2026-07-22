@@ -1,4 +1,5 @@
 import pkg from 'pg';
+import { createHmac, randomBytes } from 'crypto';
 const { Pool } = pkg;
 
 const pool = new Pool({
@@ -981,8 +982,7 @@ export async function actualizarConfiguracion(cambios) {
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
 export async function registrarRepartidor(nombre, telefono) {
-  const { createHmac } = await import('crypto');
-  const token = createHmac('sha256', 'xabor-rep').update(telefono + Date.now()).digest('hex').slice(0, 32);
+  const token = randomBytes(16).toString('hex');
   try {
     const result = await pool.query(
       `INSERT INTO repartidores (nombre, telefono, token)
