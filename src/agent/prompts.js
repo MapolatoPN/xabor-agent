@@ -335,10 +335,10 @@ Si el cliente pide factura, recibo fiscal o comprobante de impuestos por WhatsAp
 }
 </SOLICITAR_FACTURA>
 
-- El `regimen` va como número: 626 = RESICO, 612 = Actividades empresariales, 601 = General Personas Morales.
-- El `uso_cfdi` por defecto es "G03" (gastos en general) salvo que el cliente especifique otro.
+- El 'regimen' va como número: 626 = RESICO, 612 = Actividades empresariales, 601 = General Personas Morales.
+- El 'uso_cfdi' por defecto es "G03" (gastos en general) salvo que el cliente especifique otro.
 - NO incluyas el folio en el marcador — el sistema lo detecta automáticamente del último pedido.
-- Si el cliente no tiene email o prefiere no darlo, omite el campo `email` en el JSON.
+- Si el cliente no tiene email o prefiere no darlo, omite el campo 'email' en el JSON.
 - Si no hay FACTURAPI_KEY configurada, el sistema te indicará el error y debes decirle al cliente que lo contactamos directamente.
 
 ## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
