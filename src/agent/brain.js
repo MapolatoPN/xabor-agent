@@ -28,6 +28,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     return {
       texto: limpiarTexto(textoRespuesta),
       orden: extraerOrden(textoRespuesta),
+      factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
       sessionId
@@ -75,6 +76,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
       if (textoCompleto.includes('<ORDEN_CONFIRMADA>') ||
           textoCompleto.includes('<ESCALAR_A_HUMANO>') ||
           textoCompleto.includes('<ENVIAR_MENU>') ||
+          textoCompleto.includes('<SOLICITAR_FACTURA>') ||
           textoCompleto.includes('<CONSULTA_PENDIENTE')) {
         bloqueado = true;
         if (buffer.trim()) { onFrase(buffer.trim()); buffer = ''; }
@@ -122,6 +124,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   return {
     texto: limpiarTexto(textoCompleto),
     orden: extraerOrden(textoCompleto),
+    factura: extraerFactura(textoCompleto),
     escalar: textoCompleto.includes('<ESCALAR_A_HUMANO>'),
     enviarMenu: textoCompleto.includes('<ENVIAR_MENU>'),
     sessionId
@@ -141,9 +144,16 @@ function extraerOrden(texto) {
   }
 }
 
+function extraerFactura(texto) {
+  const match = texto.match(/<SOLICITAR_FACTURA>([\s\S]*?)<\/SOLICITAR_FACTURA>/);
+  if (!match) return null;
+  try { return JSON.parse(match[1].trim()); } catch { return null; }
+}
+
 function limpiarTexto(texto) {
   return texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
+    .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
     .replace(/<ENVIAR_MENU>/g, '')

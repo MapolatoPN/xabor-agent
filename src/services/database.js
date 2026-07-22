@@ -680,6 +680,25 @@ export async function obtenerPedidoPorFolioAmplio(folio) {
   }
 }
 
+// Último pedido entregado de un teléfono — para generarle factura
+export async function obtenerUltimoPedidoEntregadoPorTelefono(telefono) {
+  try {
+    const result = await pool.query(
+      `SELECT folio, datos FROM pedidos_activos
+       WHERE datos->'cliente'->>'telefono' = $1
+         AND estado = 'entregado'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [telefono]
+    );
+    if (!result.rows[0]) return null;
+    return { folio: result.rows[0].folio, ...result.rows[0].datos };
+  } catch (e) {
+    console.error('[DB] Error obtenerUltimoPedidoEntregadoPorTelefono:', e.message);
+    return null;
+  }
+}
+
 // Busca pedidos activos por número de teléfono del cliente
 export async function obtenerPedidosActivosPorTelefono(telefono) {
   try {

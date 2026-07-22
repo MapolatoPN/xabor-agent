@@ -5,7 +5,8 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono } from '../services/database.js';
+import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 
@@ -292,6 +293,38 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     const baseUrl = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
     if (resultado.enviarMenu) {
       try { await enviarImagen(telefono, `${baseUrl}/public/menu.png`); } catch (e) { console.error('[Meta WA] Error enviando menú:', e.message); }
+    }
+
+    // ── Factura CFDI solicitada por WhatsApp ──────────────────────────────────
+    if (resultado.factura && process.env.FACTURAPI_KEY) {
+      try {
+        const datosFactura = resultado.factura;
+        // Si no viene el folio en el marcador, usar el último pedido entregado del cliente
+        let pedido = null;
+        if (datosFactura.folio) {
+          const { obtenerPedidoActivoPorFolio: _paf } = await import('../services/database.js');
+          pedido = await _paf(datosFactura.folio) || await obtenerUltimoPedidoEntregadoPorTelefono(telefono);
+          if (pedido && !pedido.id) pedido.id = datosFactura.folio;
+        } else {
+          pedido = await obtenerUltimoPedidoEntregadoPorTelefono(telefono);
+        }
+
+        if (!pedido) {
+          await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.');
+        } else {
+          const factura = await generarFactura(pedido, datosFactura);
+          if (datosFactura.email) await enviarFacturaPorEmail(factura.id, datosFactura.email).catch(() => {});
+          const msgFactura = datosFactura.email
+            ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
+            : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
+          await enviarMensaje(telefono, msgFactura);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura);
+          console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
+        }
+      } catch (e) {
+        console.error('[Meta WA] Error generando factura:', e.message);
+        await enviarMensaje(telefono, 'Hubo un problema generando tu factura. Comunícate con nosotros directamente para ayudarte.');
+      }
     }
 
     await enviarMensaje(telefono, resultado.texto);
