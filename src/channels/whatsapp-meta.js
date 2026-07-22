@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
@@ -397,7 +397,20 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Procesamiento con Claude — debounced 4 segundos
+    // Si el número es un repartidor registrado — responder con link y salir
+    const repartidor = await obtenerRepartidorPorTelefono(telefono);
+    if (repartidor) {
+      const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : 'https://xabor-agent-production.up.railway.app';
+      await enviarMensaje(telefono,
+        `Hola ${repartidor.nombre} 👋\nEres repartidor registrado en Xabor.\nEntra aquí para ver y aceptar pedidos:\n${BASE_URL}/repartidor.html`
+      );
+      console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
+      return;
+    }
+
+    // Procesamiento con Claude — debounced 6 segundos
     // Si el cliente manda varios mensajes seguidos, se combinan en uno
     encolarMensaje(telefono, texto, (textoCombinado) => {
       procesarConClaude(telefono, textoCombinado, nombreMeta);
