@@ -1979,6 +1979,15 @@ async function toggleBotPausado() {
   actualizarBotonBot(!pausado);
 }
 
+function escaparHTML(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br>');
+}
+
 function renderMensajes(msgs) {
   const cont = document.getElementById('chat-mensajes');
   cont.innerHTML = msgs.map(m => {
@@ -1986,7 +1995,7 @@ function renderMensajes(msgs) {
     return `<div style="display:flex;justify-content:${sal?'flex-end':'flex-start'};">
       <div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                   background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${m.texto}
+        ${escaparHTML(m.texto)}
         <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${horaCST(m.timestamp)}</div>
       </div></div>`;
   }).join('');
@@ -2010,7 +2019,7 @@ function recibirMensajeWS(msg) {
     div.style.cssText = `display:flex;justify-content:${sal?'flex-end':'flex-start'}`;
     div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                         background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${msg.texto}
+        ${escaparHTML(msg.texto)}
         <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${horaCST(msg.timestamp)}</div>
       </div>`;
     cont.appendChild(div);
