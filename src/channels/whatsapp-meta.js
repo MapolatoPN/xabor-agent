@@ -259,7 +259,18 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     if (nombreMeta) await upsertCliente(telefono, nombreMeta);
 
     const sessionId = `meta-${telefono}`;
+
+    // Si Claude tarda más de 8s, avisamos al cliente para que no piense que el bot falló
+    let waitMessageSent = false;
+    const waitTimer = setTimeout(async () => {
+      waitMessageSent = true;
+      const msgEspera = 'Dame un momento, estoy procesando tu solicitud... 🕐';
+      await enviarMensaje(telefono, msgEspera);
+      await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera);
+    }, 8000);
+
     const resultado = await procesarMensaje(sessionId, texto, clienteCtx);
+    clearTimeout(waitTimer);
 
     // Orden confirmada
     let linkPago = null;
@@ -284,6 +295,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         try {
           const clip = await crearLinkDePago({ pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
           linkPago = clip.url;
+          await guardarLinkPago(pedido.id, clip.linkId);
         } catch (e) { console.error('[Clip] Error al generar link de pago:', e.message); }
       }
     }
