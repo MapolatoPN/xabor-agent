@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
@@ -397,14 +397,29 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Si el número es un repartidor registrado — responder con link y salir
+    // Detectar auto-registro: "repartidor Nombre Apellido"
+    const matchRep = texto.match(/^repartidor\s+(.+)/i);
+    if (matchRep) {
+      const nombreRep = matchRep[1].trim();
+      const rep = await registrarRepartidor(nombreRep, telefono);
+      const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : 'https://xabor-agent-production.up.railway.app';
+      await enviarMensaje(telefono,
+        `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`
+      );
+      console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
+      return;
+    }
+
+    // Si el número ya es un repartidor registrado — responder con link y salir
     const repartidor = await obtenerRepartidorPorTelefono(telefono);
     if (repartidor) {
       const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
       await enviarMensaje(telefono,
-        `Hola ${repartidor.nombre} 👋\nEres repartidor registrado en Xabor.\nEntra aquí para ver y aceptar pedidos:\n${BASE_URL}/repartidor.html`
+        `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`
       );
       console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
       return;
