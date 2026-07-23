@@ -787,6 +787,14 @@ button:hover { opacity: 0.85; }
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
       <div id="int-form"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
+      <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
+      <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
+        📤 Subir menú a Rappi
+      </button>
+      <div id="rappi-menu-fb" style="margin-top:8px;font-size:0.85rem;text-align:center;"></div>
     </div>
 
 
@@ -2493,6 +2501,28 @@ async function guardarProducto(id) {
   }
   document.getElementById('modal-producto').remove();
   cargarMenuEditor();
+}
+
+async function subirMenuRappi() {
+  const btn = document.getElementById('btn-rappi-menu');
+  const fb  = document.getElementById('rappi-menu-fb');
+  btn.disabled = true; btn.textContent = '⏳ Subiendo...';
+  fb.textContent = ''; fb.style.color = '#888';
+  try {
+    const r = await apiFetch('/api/admin/rappi/subir-menu', { method: 'POST' });
+    if (r.ok) {
+      fb.textContent = '✅ Menú subido exitosamente a Rappi';
+      fb.style.color = '#15803d';
+    } else {
+      const d = await r.json();
+      fb.textContent = '❌ Error: ' + (d.error || 'Error desconocido');
+      fb.style.color = '#ef4444';
+    }
+  } catch(e) {
+    fb.textContent = '❌ Error de conexión';
+    fb.style.color = '#ef4444';
+  }
+  btn.disabled = false; btn.textContent = '📤 Subir menú a Rappi';
 }
 
 async function eliminarRep(id) {

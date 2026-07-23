@@ -914,6 +914,18 @@ app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
+  try {
+    const catalogo = construirCatalogoRappi();
+    const result = await subirCatalogo(catalogo);
+    console.log('[Rappi] Menú subido manualmente:', JSON.stringify(result).slice(0, 200));
+    res.json({ ok: true, result });
+  } catch(e) {
+    console.error('[Rappi] Error subiendo menú:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/test/pedido', (req, res) => {
   const ordenPrueba = {
     cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
