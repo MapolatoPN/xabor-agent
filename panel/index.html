@@ -2518,8 +2518,8 @@ async function cargarRepartidores() {
   const cont = document.getElementById('tabla-repartidores');
   try {
     const [registrados, candidatos] = await Promise.all([
-      apiFetch('/api/admin/repartidores'),
-      apiFetch('/api/admin/repartidores/candidatos')
+      apiFetch('/api/admin/repartidores').then(r => r.ok ? r.json() : []),
+      apiFetch('/api/admin/repartidores/candidatos').then(r => r.ok ? r.json() : [])
     ]);
 
     // IDs ya registrados para no duplicar
