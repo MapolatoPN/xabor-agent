@@ -74,8 +74,8 @@ export function emitirPedido(pedido) {
   if (wsBroadcast) {
     wsBroadcast({ tipo: 'nuevo_pedido', pedido });
   }
-  // Notificar a repartidores si es entrega a domicilio (por WhatsApp)
-  if (pedido.modalidad === 'entrega a domicilio') {
+  // Notificar a repartidores si es entrega a domicilio (por WhatsApp) — excluir Rappi
+  if (pedido.modalidad === 'entrega a domicilio' && pedido.canal !== 'rappi') {
     import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
       notificarRepartidoresPorWA(pedido).catch(() => {});
     }).catch(() => {});
