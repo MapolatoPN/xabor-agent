@@ -7,7 +7,7 @@
  *   Rappi → NEW_ORDER webhook → nosotros → PUT /orders/{id}/take → listo
  */
 
-const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://services.mxgrability.rappi.com';
+const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://api.rappi.com.mx';
 const AUTH_URL  = process.env.RAPPI_AUTH_URL  || 'https://api.rappi.com.mx/restaurants/auth/v1/token/login/integrations';
 const CLIENT_ID = process.env.RAPPI_CLIENT_ID;
 const CLIENT_SECRET = process.env.RAPPI_CLIENT_SECRET;
@@ -22,6 +22,7 @@ let _tokenExpires = 0;
 export async function obtenerToken() {
   if (_token && Date.now() < _tokenExpires - 60_000) return _token;
 
+  console.log(`[Rappi Auth] POST ${AUTH_URL} | client_id: ${CLIENT_ID}`);
   const resp = await fetch(AUTH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -31,12 +32,14 @@ export async function obtenerToken() {
     })
   });
 
+  const authText = await resp.text();
+  console.log(`[Rappi Auth] HTTP ${resp.status}:`, authText.slice(0, 200));
+
   if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`[Rappi Auth] ${resp.status}: ${err}`);
+    throw new Error(`[Rappi Auth] ${resp.status}: ${authText}`);
   }
 
-  const data = await resp.json();
+  const data = JSON.parse(authText);
   _token = data.access_token;
   // expires_in viene en segundos, por defecto 1 hora
   _tokenExpires = Date.now() + (data.expires_in || 3600) * 1000;
@@ -55,8 +58,11 @@ async function rappiRequest(method, path, body = null) {
   };
   if (body) opts.body = JSON.stringify(body);
 
-  const resp = await fetch(`${API_BASE}${path}`, opts);
+  const fullUrl = `${API_BASE}${path}`;
+  console.log(`[Rappi] ${method} ${fullUrl}`);
+  const resp = await fetch(fullUrl, opts);
   const text = await resp.text();
+  console.log(`[Rappi] HTTP ${resp.status}:`, text.slice(0, 300));
 
   if (!resp.ok) {
     throw new Error(`[Rappi] ${method} ${path} → ${resp.status}: ${text}`);
@@ -144,10 +150,24 @@ export async function actualizarEstadoTienda(activa) {
 
 /**
  * Sube o reemplaza el catálogo completo de la tienda en Rappi.
- * Endpoint: PUT /menus  (Rappi Integration API)
+ * Endpoint nuevo: PUT /restaurants/menu/v1/stores/{storeId}/store-menu
  */
 export async function subirCatalogo(catalogoRappi) {
-  return rappiRequest('PUT', '/menus', catalogoRappi);
+  const token = await obtenerToken();
+  const menuUrl = `${BASE_URL}/restaurants/menu/v1/stores/${STORE_ID}/store-menu`;
+  console.log(`[Rappi Menu] PUT ${menuUrl}`);
+  const resp = await fetch(menuUrl, {
+    method: 'PUT',
+    headers: {
+      'x-authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(catalogoRappi)
+  });
+  const text = await resp.text();
+  console.log(`[Rappi Menu] HTTP ${resp.status}:`, text.slice(0, 300));
+  if (!resp.ok) throw new Error(`[Rappi] PUT /menus → ${resp.status}: ${text}`);
+  try { return JSON.parse(text); } catch { return text; }
 }
 
 /**
