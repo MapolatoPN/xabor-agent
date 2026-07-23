@@ -405,9 +405,10 @@ router.post('/', async (req, res) => {
       const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
-      await enviarMensaje(telefono,
-        `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`
-      );
+      const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
+      await enviarMensaje(telefono, msgReg);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg);
       console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
       return;
     }
@@ -419,24 +420,28 @@ router.post('/', async (req, res) => {
       if (/entregu[eé]|entregado|ya entregué|listo[.,!]?$/i.test(texto.trim())) {
         const misPedidos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
         const activo = misPedidos.find(p => !['entregado','cancelado'].includes(p.estado));
+        let msgEntrega;
         if (activo) {
-          // Importar actualizarEstadoPedido del orderManager para marcar entregado
           const { actualizarEstadoPedido } = await import('../orders/orderManager.js');
           actualizarEstadoPedido(activo.folio, 'entregado');
-          await enviarMensaje(telefono, `✅ Perfecto ${repartidor.nombre}, el pedido ${activo.folio} quedó marcado como entregado. ¡Buen trabajo!`);
+          msgEntrega = `✅ Perfecto ${repartidor.nombre}, el pedido ${activo.folio} quedó marcado como entregado. ¡Buen trabajo!`;
           console.log(`[WA Repartidor] ${repartidor.nombre} confirmó entrega de ${activo.folio}`);
         } else {
-          await enviarMensaje(telefono, `No tienes pedidos activos asignados en este momento.`);
+          msgEntrega = `No tienes pedidos activos asignados en este momento.`;
         }
+        await enviarMensaje(telefono, msgEntrega);
+        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto);
+        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega);
         return;
       }
       // Cualquier otro mensaje — mandar link
       const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
-      await enviarMensaje(telefono,
-        `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`
-      );
+      const msgLink = `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`;
+      await enviarMensaje(telefono, msgLink);
+      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto);
+      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink);
       console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
       return;
     }
