@@ -1156,4 +1156,3 @@ export async function obtenerFondoCaja(fechaMX) {
     return null;
   }
 }
-      

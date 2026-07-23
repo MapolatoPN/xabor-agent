@@ -896,6 +896,11 @@ app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
+  await eliminarRepartidor(req.params.id);
+  res.json({ ok: true });
+});
+
 // Candidatos a repartidor — mensajes con "repartidor" en las últimas 72h
 app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => {
   try {
