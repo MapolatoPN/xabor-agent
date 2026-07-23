@@ -2495,6 +2495,16 @@ async function guardarProducto(id) {
   cargarMenuEditor();
 }
 
+async function eliminarRep(id) {
+  if (!confirm('¿Eliminar este repartidor?')) return;
+  const r = await apiFetch(`/api/admin/repartidores/${id}`, { method: 'DELETE' });
+  if (r.ok) {
+    document.getElementById('rep-row-' + id)?.remove();
+  } else {
+    alert('Error al eliminar');
+  }
+}
+
 // ─── Timer de órdenes activas ─────────────────────────────────────────────────
 function actualizarTimers() {
   document.querySelectorAll('.timer-badge[data-llegada]').forEach(el => {
@@ -2538,9 +2548,10 @@ async function cargarRepartidores() {
             <th style="padding:8px 6px;">Teléfono</th>
             <th style="padding:8px 6px;text-align:center;">Entregados</th>
             <th style="padding:8px 6px;text-align:center;">Estado</th>
+            <th style="padding:8px 6px;"></th>
           </tr></thead>
           <tbody>${registrados.map(rep => `
-            <tr style="border-bottom:1px solid #f0ede8;">
+            <tr style="border-bottom:1px solid #f0ede8;" id="rep-row-${rep.id}">
               <td style="padding:10px 6px;font-weight:700;">${rep.nombre}</td>
               <td style="padding:10px 6px;color:#555;font-family:monospace;">${rep.telefono}</td>
               <td style="padding:10px 6px;text-align:center;font-weight:800;">${rep.pedidos_entregados || 0}</td>
@@ -2548,6 +2559,9 @@ async function cargarRepartidores() {
                 <span style="background:${rep.activo?'#dcfce7':'#fee2e2'};color:${rep.activo?'#15803d':'#ef4444'};border-radius:10px;padding:2px 10px;font-size:0.75rem;font-weight:700;">
                   ${rep.activo ? '✅ Activo' : '❌ Inactivo'}
                 </span>
+              </td>
+              <td style="padding:10px 6px;text-align:center;">
+                <button onclick="eliminarRep(${rep.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;color:#ef4444;" title="Eliminar">🗑️</button>
               </td>
             </tr>`).join('')}
           </tbody>

@@ -981,15 +981,24 @@ export async function actualizarConfiguracion(cambios) {
 }
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
+// Normaliza teléfonos mexicanos a formato local 10 dígitos (sin prefijo 52/521)
+function normalizarTelefono(tel) {
+  tel = String(tel).replace(/\D/g, ''); // solo dígitos
+  if (tel.startsWith('521') && tel.length === 13) return tel.slice(3); // 521XXXXXXXXXX → XXXXXXXXXX
+  if (tel.startsWith('52') && tel.length === 12) return tel.slice(2);  // 52XXXXXXXXXX → XXXXXXXXXX
+  return tel;
+}
+
 export async function registrarRepartidor(nombre, telefono) {
   const token = randomBytes(16).toString('hex');
+  const telNorm = normalizarTelefono(telefono);
   try {
     const result = await pool.query(
       `INSERT INTO repartidores (nombre, telefono, token)
        VALUES ($1, $2, $3)
        ON CONFLICT (telefono) DO UPDATE SET nombre = $1, activo = TRUE
        RETURNING *`,
-      [nombre, telefono, token]
+      [nombre, telNorm, token]
     );
     return result.rows[0];
   } catch (e) {
@@ -1007,7 +1016,8 @@ export async function obtenerRepartidorPorToken(token) {
 
 export async function obtenerRepartidorPorTelefono(telefono) {
   try {
-    const r = await pool.query('SELECT * FROM repartidores WHERE telefono = $1', [telefono]);
+    const telNorm = normalizarTelefono(telefono);
+    const r = await pool.query('SELECT * FROM repartidores WHERE telefono = $1', [telNorm]);
     return r.rows[0] || null;
   } catch (e) { return null; }
 }
@@ -1098,6 +1108,13 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   } catch (e) { return []; }
 }
 
+export async function eliminarRepartidor(id) {
+  try {
+    await pool.query('DELETE FROM repartidores WHERE id = $1', [id]);
+    return true;
+  } catch(e) { return false; }
+}
+
 export async function obtenerCandidatosRepartidor() {
   try {
     const r = await pool.query(`
@@ -1139,3 +1156,4 @@ export async function obtenerFondoCaja(fechaMX) {
     return null;
   }
 }
+      
