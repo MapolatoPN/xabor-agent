@@ -7,9 +7,8 @@
  *   Rappi → NEW_ORDER webhook → nosotros → PUT /orders/{id}/take → listo
  */
 
-const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://microservices.dev.rappi.com';
-const AUTH_URL  = process.env.RAPPI_AUTH_URL  || 'https://rests-integrations-dev.auth0.com/oauth/token';
-const AUDIENCE  = process.env.RAPPI_AUDIENCE  || 'https://int-public-api-v2/api';
+const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://services.mxgrability.rappi.com';
+const AUTH_URL  = process.env.RAPPI_AUTH_URL  || 'https://api.rappi.com.mx/restaurants/auth/v1/token/login/integrations';
 const CLIENT_ID = process.env.RAPPI_CLIENT_ID;
 const CLIENT_SECRET = process.env.RAPPI_CLIENT_SECRET;
 const STORE_ID  = process.env.RAPPI_STORE_ID  || '900172582';
@@ -28,9 +27,7 @@ export async function obtenerToken() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      grant_type: 'client_credentials',
-      audience: AUDIENCE
+      client_secret: CLIENT_SECRET
     })
   });
 
