@@ -398,7 +398,7 @@ router.post('/', async (req, res) => {
     }
 
     // Detectar auto-registro: "repartidor Nombre Apellido"
-    const matchRep = texto.match(/^repartidor[ao]?\s+(.+)/i);
+    const matchRep = texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i);
     if (matchRep) {
       const nombreRep = matchRep[1].trim();
       const rep = await registrarRepartidor(nombreRep, telefono);
