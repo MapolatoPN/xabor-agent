@@ -464,7 +464,7 @@ export async function notificarRepartidoresPorWA(pedido) {
 
     const resumen = `${pedido.id} — ${pedido.cliente?.nombre || 'Cliente'} — $${pedido.total} MXN`;
     const direccion = pedido.direccion ? `\n📍 ${pedido.direccion}` : '';
-    const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
+    const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\n⏱ El pedido estará listo para recoger en *15-20 minutos*.\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
 
     for (const r of repartidores) {
       try {
