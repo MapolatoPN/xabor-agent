@@ -1098,6 +1098,20 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   } catch (e) { return []; }
 }
 
+export async function obtenerCandidatosRepartidor() {
+  try {
+    const r = await pool.query(`
+      SELECT DISTINCT ON (telefono) telefono, nombre, contenido, created_at
+      FROM mensajes
+      WHERE LOWER(contenido) LIKE '%repartidor%'
+        AND tipo = 'entrante'
+        AND created_at > NOW() - INTERVAL '72 hours'
+      ORDER BY telefono, created_at DESC
+    `);
+    return r.rows;
+  } catch(e) { return []; }
+}
+
 export async function guardarFondoCaja(fechaMX, monto) {
   try {
     await pool.query(`

@@ -27,7 +27,7 @@ import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/ra
 import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
-import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor } from './services/database.js';
+import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor } from './services/database.js';
 
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -889,6 +889,14 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
 // Lista de repartidores (admin)
 app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
   res.json(await obtenerRepartidores());
+});
+
+// Candidatos a repartidor — mensajes con "repartidor" en las últimas 72h
+app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => {
+  try {
+    const rows = await obtenerCandidatosRepartidor();
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
