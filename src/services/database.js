@@ -1101,12 +1101,12 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
 export async function obtenerCandidatosRepartidor() {
   try {
     const r = await pool.query(`
-      SELECT DISTINCT ON (telefono) telefono, nombre, contenido, created_at
+      SELECT DISTINCT ON (telefono) telefono, nombre, texto, timestamp
       FROM mensajes
-      WHERE LOWER(contenido) LIKE '%repartidor%'
-        AND tipo = 'entrante'
-        AND created_at > NOW() - INTERVAL '72 hours'
-      ORDER BY telefono, created_at DESC
+      WHERE LOWER(texto) LIKE '%repartidor%'
+        AND direccion = 'entrante'
+        AND timestamp > NOW() - INTERVAL '72 hours'
+      ORDER BY telefono, timestamp DESC
     `);
     return r.rows;
   } catch(e) { return []; }
