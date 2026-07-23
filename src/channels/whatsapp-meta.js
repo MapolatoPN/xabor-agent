@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { crearLinkDePago } from '../services/clip-api.js';
@@ -412,9 +412,25 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Si el número ya es un repartidor registrado — responder con link y salir
+    // Si el número ya es un repartidor registrado
     const repartidor = await obtenerRepartidorPorTelefono(telefono);
     if (repartidor) {
+      // Detectar confirmación de entrega
+      if (/entregu[eé]|entregado|ya entregué|listo[.,!]?$/i.test(texto.trim())) {
+        const misPedidos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
+        const activo = misPedidos.find(p => !['entregado','cancelado'].includes(p.estado));
+        if (activo) {
+          // Importar actualizarEstadoPedido del orderManager para marcar entregado
+          const { actualizarEstadoPedido } = await import('../orders/orderManager.js');
+          actualizarEstadoPedido(activo.folio, 'entregado');
+          await enviarMensaje(telefono, `✅ Perfecto ${repartidor.nombre}, el pedido ${activo.folio} quedó marcado como entregado. ¡Buen trabajo!`);
+          console.log(`[WA Repartidor] ${repartidor.nombre} confirmó entrega de ${activo.folio}`);
+        } else {
+          await enviarMensaje(telefono, `No tienes pedidos activos asignados en este momento.`);
+        }
+        return;
+      }
+      // Cualquier otro mensaje — mandar link
       const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';

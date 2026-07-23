@@ -1014,7 +1014,16 @@ export async function obtenerRepartidorPorTelefono(telefono) {
 
 export async function obtenerRepartidores() {
   try {
-    const r = await pool.query('SELECT * FROM repartidores WHERE activo = TRUE ORDER BY nombre');
+    const r = await pool.query(`
+      SELECT r.*,
+        COALESCE((
+          SELECT COUNT(*) FROM pedidos_activos
+          WHERE datos->>'repartidor_id' = r.id::text
+            AND estado = 'entregado'
+        ), 0)::int AS pedidos_entregados
+      FROM repartidores r
+      ORDER BY r.activo DESC, r.nombre ASC
+    `);
     return r.rows;
   } catch (e) { return []; }
 }

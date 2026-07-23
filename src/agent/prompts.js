@@ -357,8 +357,9 @@ ${formatearMenu(categorias)}
 - Horario: Lunes a Sábado 11am–10pm | Domingo: CERRADO
 - Pedido mínimo para envío: $${reglas.pedidos.pedido_minimo_entrega} MXN
 - Costo de envío: $${reglas.pedidos.costo_envio} MXN
-- Tiempo de preparación: ${reglas.pedidos.tiempo_preparacion_minutos} minutos
-- Tiempo de entrega estimado: 40–60 minutos
+- Tiempo de elaboración: entre 15 y 20 minutos
+- Tiempo de entrega estimado: 30–40 minutos desde que el pedido está listo
+- Al confirmar un pedido de domicilio, SIEMPRE informa al cliente que su pedido estará listo en 15-20 minutos y que el repartidor saldrá en cuanto esté listo.
 - Formas de pago (son tres opciones distintas, mencionarlas siempre así):
   1. Efectivo
   2. Terminal bancaria móvil (cobro con tarjeta al momento de la entrega o en tienda)
