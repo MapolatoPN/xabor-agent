@@ -49,7 +49,7 @@ async function rappiRequest(method, path, body = null) {
   const opts = {
     method,
     headers: {
-      'Authorization': `Bearer ${token}`,
+      'x-authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     }
   };
