@@ -19,54 +19,65 @@ const STORE_ID = process.env.RAPPI_STORE_ID || '900172582';
 // Rappi incluye Rappi-Signature header (HMAC-SHA256)
 // Por ahora solo logueamos; activar en producción con RAPPI_WEBHOOK_SECRET
 
+// ─── Health check GET (para verificar que el endpoint es accesible) ──────────
+router.get('/', (req, res) => {
+  res.json({ status: 'OK', endpoint: '/webhook/rappi', timestamp: new Date().toISOString() });
+});
+
 // ─── Webhook unificado ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const body = req.body;
-  const tipo = body?.type || '';
+  const tipo = body?.type || body?.event_type || '';
+  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'desconocida';
+  const sig = req.headers['rappi-signature'] || req.headers['x-rappi-signature'] || 'ninguna';
+  const ts = new Date().toISOString();
+
+  // LOG COMPLETO — siempre, para cualquier webhook recibido
+  console.log(`[Rappi] ▶ ${ts} | tipo="${tipo}" | ip=${ip} | sig=${sig.slice(0,20)}... | body=${JSON.stringify(body).slice(0,300)}`);
+
+  // Responder 200 inmediato para evitar timeouts y reintentos de Rappi
+  res.json({ ok: true, received: ts });
 
   // PING — health check de Rappi
-  if (tipo === 'PING' || (body?.store_id && !body?.id && !body?.order_id && !tipo)) {
-    console.log(`[Rappi] PING para tienda ${body.store_id || STORE_ID}`);
-    return res.json({ status: 'OK', description: 'Nonna Maye operando' });
+  if (tipo === 'PING' || (!tipo && body?.store_id && !body?.id && !body?.order_id)) {
+    console.log(`[Rappi] ✅ PING procesado para tienda ${body.store_id || STORE_ID}`);
+    return;
   }
 
-  // MENU_APPROVED — menú aprobado por Rappi
+  // MENU_APPROVED
   if (tipo === 'MENU_APPROVED') {
     console.log('[Rappi] ✅ Menú aprobado por Rappi');
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_aprobado', timestamp: new Date().toISOString() });
-    return res.json({ ok: true });
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_aprobado', timestamp: ts });
+    return;
   }
 
-  // MENU_REJECTED — menú rechazado, loguear razón
+  // MENU_REJECTED
   if (tipo === 'MENU_REJECTED') {
     const razon = body.reason || body.message || 'sin detalle';
     console.warn(`[Rappi] ❌ Menú rechazado: ${razon}`);
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', razon, timestamp: new Date().toISOString() });
-    return res.json({ ok: true });
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', razon, timestamp: ts });
+    return;
   }
 
   // ORDER_EVENT_CANCEL — cancelación
   if (tipo.toLowerCase().includes('cancel')) {
     const orderId = body.order_id || body.id;
-    console.log(`[Rappi] Cancelación de orden ${orderId}: ${tipo}`);
-    if (wsBroadcast) {
-      wsBroadcast({ tipo: 'rappi_cancelacion', orderId, motivo: tipo, timestamp: new Date().toISOString() });
-    }
-    return res.json({ ok: true });
+    console.log(`[Rappi] 🚫 Cancelación de orden ${orderId}: ${tipo}`);
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_cancelacion', orderId, motivo: tipo, timestamp: ts });
+    return;
   }
 
   // NEW_ORDER — orden nueva
   if (body && (body.id || body.order_id)) {
-    res.json({ ok: true }); // responder inmediato a Rappi (< 5 seg o timeout)
+    console.log(`[Rappi] 🛒 Procesando nueva orden ${body.id || body.order_id}...`);
     procesarOrdenRappi(body).catch(e =>
-      console.error('[Rappi] Error procesando orden:', e.message)
+      console.error('[Rappi] ❌ Error procesando orden:', e.message, e.stack)
     );
     return;
   }
 
-  // Evento desconocido — loguear y responder OK para no generar reintentos
-  console.log('[Rappi] Evento desconocido:', JSON.stringify(body).slice(0, 200));
-  res.json({ ok: true });
+  // Evento desconocido
+  console.warn(`[Rappi] ⚠ Evento desconocido recibido — tipo="${tipo}" body=${JSON.stringify(body).slice(0,300)}`);
 });
 
 // ─── Procesamiento de orden ───────────────────────────────────────────────────
