@@ -4,75 +4,102 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Xabor — Acceso</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
 <style>
+:root {
+  --color-bg: #F8F9FA;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #F1F3F5;
+  --color-border: #E9ECEF;
+  --color-border-strong: #DEE2E6;
+  --color-text-primary: #1A1D23;
+  --color-text-secondary: #6B7280;
+  --color-text-muted: #9CA3AF;
+  --color-brand: #FF6B35;
+  --color-brand-light: #FFF4EF;
+  --color-success: #10B981;
+  --color-danger: #EF4444;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.08), 0 4px 6px rgba(0,0,0,0.03);
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  background: #1a1a2e;
-  color: #eee;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
+  -webkit-font-smoothing: antialiased;
+  padding: 20px;
 }
 .login-box {
-  background: #16213e;
-  border: 1px solid #0f3460;
-  border-radius: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
   padding: 40px 36px;
   width: 100%;
   max-width: 380px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  box-shadow: var(--shadow-lg);
 }
 .logo {
   text-align: center;
   margin-bottom: 28px;
 }
 .logo h1 {
-  font-size: 2rem;
-  letter-spacing: 2px;
-  color: #e63946;
+  font-size: 1.9rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--color-text-primary);
 }
 .logo p {
-  color: #888;
+  color: var(--color-text-secondary);
   font-size: 0.85rem;
   margin-top: 4px;
 }
 label {
   display: block;
   font-size: 0.82rem;
-  color: #aaa;
-  margin-bottom: 6px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  margin-bottom: 7px;
 }
 input[type="password"] {
   width: 100%;
-  background: #0f3460;
-  border: 1px solid #1a4a8a;
-  border-radius: 8px;
-  color: #eee;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
   padding: 12px 14px;
   font-size: 1rem;
+  font-family: inherit;
   outline: none;
-  transition: border-color .2s;
+  transition: all .15s;
 }
-input[type="password"]:focus { border-color: #06d6a0; }
+input[type="password"]:focus { border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
 button {
   width: 100%;
-  background: #e63946;
+  background: var(--color-brand);
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 13px;
   font-size: 1rem;
-  font-weight: 700;
+  font-weight: 600;
+  font-family: inherit;
   cursor: pointer;
-  margin-top: 18px;
+  margin-top: 20px;
   transition: background .2s;
 }
-button:hover { background: #c1121f; }
-button:disabled { background: #555; cursor: default; }
+button:hover { background: #E85826; }
+button:disabled { background: var(--color-border-strong); color: var(--color-text-muted); cursor: default; }
 #error {
-  color: #ef476f;
+  color: var(--color-danger);
   font-size: 0.83rem;
   text-align: center;
   margin-top: 12px;
@@ -82,41 +109,43 @@ button:disabled { background: #555; cursor: default; }
 .modal-overlay {
   display: none;
   position: fixed; inset: 0;
-  background: rgba(0,0,0,0.7);
+  background: rgba(26,29,35,0.5);
   align-items: center;
   justify-content: center;
   z-index: 999;
 }
 .modal-overlay.visible { display: flex; }
 .modal-box {
-  background: #16213e;
-  border: 1px solid #0f3460;
-  border-radius: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
   padding: 36px 32px;
   width: 100%;
   max-width: 360px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-lg);
   text-align: center;
 }
-.modal-box h2 { font-size: 1.2rem; margin-bottom: 8px; color: #06d6a0; }
-.modal-box p  { font-size: 0.85rem; color: #aaa; margin-bottom: 20px; }
+.modal-box h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 8px; color: var(--color-text-primary); }
+.modal-box p  { font-size: 0.85rem; color: var(--color-text-secondary); margin-bottom: 20px; }
 .fondo-input {
   width: 100%;
-  background: #0f3460;
-  border: 1px solid #1a4a8a;
-  border-radius: 8px;
-  color: #eee;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
   padding: 14px;
   font-size: 1.4rem;
   font-weight: 700;
+  font-family: inherit;
   text-align: center;
   outline: none;
+  transition: all .15s;
 }
-.fondo-input:focus { border-color: #06d6a0; }
+.fondo-input:focus { border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
 .modal-btns { display: flex; gap: 10px; margin-top: 18px; }
 .modal-btns button { margin-top: 0; flex: 1; }
-.btn-skip { background: #333; }
-.btn-skip:hover { background: #444; }
+.btn-skip { background: var(--color-surface-2); color: var(--color-text-secondary); }
+.btn-skip:hover { background: var(--color-border); }
 </style>
 </head>
 <body>
