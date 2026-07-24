@@ -156,11 +156,11 @@ export async function recalcularPerfilCliente(telefono) {
         COUNT(*) FILTER (WHERE estado NOT IN ('cancelado')) AS pedidos_total,
         AVG((datos->>'total')::numeric) FILTER (WHERE estado NOT IN ('cancelado')) AS ticket_promedio,
         SUM((datos->>'total')::numeric) FILTER (WHERE estado NOT IN ('cancelado')) AS total_gastado,
-        MAX(creado_at) AS ultimo_pedido_at,
-        NOW()::date - MAX(creado_at)::date AS ultimo_pedido_hace_dias,
+        MAX(created_at) AS ultimo_pedido_at,
+        NOW()::date - MAX(created_at)::date AS ultimo_pedido_hace_dias,
         -- Día de la semana favorito (0=domingo...6=sábado)
-        MODE() WITHIN GROUP (ORDER BY EXTRACT(DOW FROM creado_at))::int AS dia_favorito_num,
-        MODE() WITHIN GROUP (ORDER BY EXTRACT(HOUR FROM creado_at))::int AS hora_favorita,
+        MODE() WITHIN GROUP (ORDER BY EXTRACT(DOW FROM created_at))::int AS dia_favorito_num,
+        MODE() WITHIN GROUP (ORDER BY EXTRACT(HOUR FROM created_at))::int AS hora_favorita,
         MODE() WITHIN GROUP (ORDER BY datos->>'modalidad') AS modalidad_favorita,
         MODE() WITHIN GROUP (ORDER BY datos->'pago'->>'metodo') AS pago_favorito
       FROM pedidos_activos
@@ -183,7 +183,7 @@ export async function recalcularPerfilCliente(telefono) {
       SELECT AVG(diff) AS promedio_dias
       FROM (
         SELECT
-          EXTRACT(EPOCH FROM (creado_at - LAG(creado_at) OVER (ORDER BY creado_at))) / 86400 AS diff
+          EXTRACT(EPOCH FROM (created_at - LAG(created_at) OVER (ORDER BY created_at))) / 86400 AS diff
         FROM pedidos_activos
         WHERE datos->'cliente'->>'telefono' = $1
           AND estado NOT IN ('cancelado')
