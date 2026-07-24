@@ -31,9 +31,8 @@ router.post('/', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'desconocida';
   const sig = req.headers['rappi-signature'] || 'ninguna';
 
-  // Según docs de Rappi: el campo de evento se llama "event" en ORDER_EVENT_CANCEL y ORDER_OTHER_EVENT.
-  // PING solo tiene { store_id: 999 }. NEW_ORDER es el objeto completo del pedido (sin campo event/type).
-  const evento = body?.event || '';
+  // Rappi docs usan "event"; implementaciones previas/DEV pueden usar "type". Soportamos ambos.
+  const evento = body?.event || body?.type || '';
 
   // LOG COMPLETO — siempre
   console.log(`[Rappi] ▶ ${ts} | evento="${evento}" | ip=${ip} | sig=${sig.slice(0,30)} | body=${JSON.stringify(body).slice(0,400)}`);
