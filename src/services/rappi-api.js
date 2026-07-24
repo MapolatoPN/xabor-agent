@@ -130,6 +130,10 @@ export async function actualizarDisponibilidad(turnOn = [], turnOff = []) {
 /**
  * Consultar disponibilidad de productos por SKU
  */
+export async function consultarAprobacionMenu(storeId = STORE_ID) {
+  return rappiRequest('GET', `/menu/approved/${storeId}`);
+}
+
 export async function consultarDisponibilidad(skus) {
   return rappiRequest('POST', '/availability/items/status', {
     store_id: STORE_ID,
