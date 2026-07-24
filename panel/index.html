@@ -929,11 +929,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
 
       <!-- Resumen de segmentos -->
-      <div id="cli-resumen" style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;"></div>
+      <div id="cli-resumen" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;"></div>
 
       <!-- Lista de clientes -->
-      <div id="cli-lista" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
-        <div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Cargando clientes...</div>
+      <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
+        <div id="cli-lista">
+          <div style="color:#aaa;text-align:center;padding:40px;">Cargando clientes...</div>
+        </div>
       </div>
 
       <!-- Modal ficha de cliente -->
@@ -2750,37 +2752,50 @@ function filtrarClientes() {
 function renderClientes(lista) {
   const cont = document.getElementById('cli-lista');
   if (!lista.length) {
-    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Sin resultados</div>';
+    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Sin resultados</div>';
     return;
   }
-  cont.innerHTML = lista.map(c => {
-    const seg = c.segmento || 'nuevo';
-    const color = SEGMENTO_COLOR[seg] || '#6b7280';
-    const label = SEGMENTO_LABEL[seg] || seg;
-    const diasStr = c.ultimo_pedido_hace_dias != null
-      ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : `hace ${c.ultimo_pedido_hace_dias}d`)
-      : '—';
-    const ticket = c.ticket_promedio ? `$${Math.round(c.ticket_promedio)}` : '—';
-    const pedidos = c.pedidos_total || 0;
-    return `
-    <div onclick="verFicha('${c.telefono}')"
-      style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:14px 16px;cursor:pointer;
-             border-left:4px solid ${color};transition:box-shadow .15s;"
-      onmouseover="this.style.boxShadow='0 2px 12px rgba(0,0,0,0.08)'"
-      onmouseout="this.style.boxShadow=''">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
-        <div style="font-weight:700;font-size:0.95rem;">${c.nombre || 'Sin nombre'}</div>
-        <span style="font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:20px;
-                     background:${color}18;color:${color};">${label}</span>
-      </div>
-      <div style="font-size:0.8rem;color:#888;margin-bottom:8px;">${c.telefono}</div>
-      <div style="display:flex;gap:16px;font-size:0.8rem;color:#555;">
-        <span><strong>${pedidos}</strong> pedidos</span>
-        <span>Ticket <strong>${ticket}</strong></span>
-        <span>Últ. <strong>${diasStr}</strong></span>
-      </div>
-    </div>`;
-  }).join('');
+  cont.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+      <thead>
+        <tr style="background:#f8f7f4;color:#888;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">
+          <th style="text-align:left;padding:10px 16px;">Cliente</th>
+          <th style="text-align:center;padding:10px 12px;">Segmento</th>
+          <th style="text-align:right;padding:10px 12px;">Pedidos</th>
+          <th style="text-align:right;padding:10px 12px;">Ticket prom.</th>
+          <th style="text-align:right;padding:10px 12px;">Total</th>
+          <th style="text-align:right;padding:10px 16px;">Último pedido</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${lista.map((c, i) => {
+          const seg = c.segmento || null;
+          const color = seg ? (SEGMENTO_COLOR[seg] || '#6b7280') : '#d1d5db';
+          const label = seg ? (SEGMENTO_LABEL[seg] || seg) : '—';
+          const diasStr = c.ultimo_pedido_hace_dias != null
+            ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : `hace ${c.ultimo_pedido_hace_dias}d`)
+            : '—';
+          const ticket = c.ticket_promedio ? `$${Math.round(c.ticket_promedio)}` : '—';
+          const total = c.total_gastado ? `$${Math.round(c.total_gastado)}` : '—';
+          const pedidos = c.pedidos_total || 0;
+          const bg = i % 2 === 0 ? '#fff' : '#fafaf8';
+          return `<tr onclick="verFicha('${c.telefono}')" style="background:${bg};cursor:pointer;border-top:1px solid #f0ede8;"
+            onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='${bg}'">
+            <td style="padding:11px 16px;">
+              <div style="font-weight:600;">${c.nombre || '<span style="color:#bbb">Sin nombre</span>'}</div>
+              <div style="font-size:0.75rem;color:#aaa;">${c.telefono}</div>
+            </td>
+            <td style="text-align:center;padding:11px 12px;">
+              ${seg ? `<span style="font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:20px;background:${color}15;color:${color};">${label}</span>` : '<span style="color:#ccc;font-size:0.8rem;">—</span>'}
+            </td>
+            <td style="text-align:right;padding:11px 12px;font-weight:${pedidos ? '700' : '400'};color:${pedidos ? '#111' : '#ccc'};">${pedidos || '—'}</td>
+            <td style="text-align:right;padding:11px 12px;color:${ticket === '—' ? '#ccc' : '#111'};">${ticket}</td>
+            <td style="text-align:right;padding:11px 12px;font-weight:${total !== '—' ? '700' : '400'};color:${total !== '—' ? '#111' : '#ccc'};">${total}</td>
+            <td style="text-align:right;padding:11px 16px;color:${diasStr === '—' ? '#ccc' : '#555'};">${diasStr}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
 }
 
 function verFicha(telefono) {
