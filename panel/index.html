@@ -2718,7 +2718,9 @@ function renderResumen() {
   const cont = document.getElementById('cli-resumen');
   const conteos = {};
   _clientes.forEach(c => { conteos[c.segmento] = (conteos[c.segmento] || 0) + 1; });
-  cont.innerHTML = Object.entries(conteos).map(([seg, n]) => `
+  cont.innerHTML = Object.entries(conteos)
+    .filter(([seg]) => seg && seg !== 'null')
+    .map(([seg, n]) => `
     <div onclick="document.getElementById('cli-segmento').value='${seg}';filtrarClientes()"
       style="padding:5px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;cursor:pointer;
              background:${SEGMENTO_COLOR[seg]}18;color:${SEGMENTO_COLOR[seg]};border:1px solid ${SEGMENTO_COLOR[seg]}44;">
