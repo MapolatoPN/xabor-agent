@@ -27,57 +27,70 @@ router.get('/', (req, res) => {
 // ─── Webhook unificado ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const body = req.body;
-  const tipo = body?.type || body?.event_type || '';
-  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'desconocida';
-  const sig = req.headers['rappi-signature'] || req.headers['x-rappi-signature'] || 'ninguna';
   const ts = new Date().toISOString();
+  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'desconocida';
+  const sig = req.headers['rappi-signature'] || 'ninguna';
 
-  // LOG COMPLETO — siempre, para cualquier webhook recibido
-  console.log(`[Rappi] ▶ ${ts} | tipo="${tipo}" | ip=${ip} | sig=${sig.slice(0,20)}... | body=${JSON.stringify(body).slice(0,300)}`);
+  // Según docs de Rappi: el campo de evento se llama "event" en ORDER_EVENT_CANCEL y ORDER_OTHER_EVENT.
+  // PING solo tiene { store_id: 999 }. NEW_ORDER es el objeto completo del pedido (sin campo event/type).
+  const evento = body?.event || '';
 
-  // Responder 200 inmediato para evitar timeouts y reintentos de Rappi
+  // LOG COMPLETO — siempre
+  console.log(`[Rappi] ▶ ${ts} | evento="${evento}" | ip=${ip} | sig=${sig.slice(0,30)} | body=${JSON.stringify(body).slice(0,400)}`);
+
+  // Responder 200 inmediato para evitar timeouts de Rappi
   res.json({ ok: true, received: ts });
 
-  // PING — health check de Rappi
-  if (tipo === 'PING' || (!tipo && body?.store_id && !body?.id && !body?.order_id)) {
-    console.log(`[Rappi] ✅ PING procesado para tienda ${body.store_id || STORE_ID}`);
+  // PING — { store_id: 999 } sin campo event
+  if (!evento && body?.store_id && !body?.order_id && !body?.id) {
+    console.log(`[Rappi] ✅ PING tienda ${body.store_id}`);
     return;
   }
 
-  // MENU_APPROVED
-  if (tipo === 'MENU_APPROVED') {
-    console.log('[Rappi] ✅ Menú aprobado por Rappi');
+  // STORE_CONNECTIVITY — { external_store_id, enabled, message }
+  if (body?.external_store_id !== undefined) {
+    console.log(`[Rappi] 🏪 Store connectivity: enabled=${body.enabled} — ${body.message}`);
+    return;
+  }
+
+  // MENU_APPROVED — { store_id, message: "Menu Approved" }
+  if (body?.message === 'Menu Approved') {
+    console.log('[Rappi] ✅ Menú aprobado');
     if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_aprobado', timestamp: ts });
     return;
   }
 
-  // MENU_REJECTED
-  if (tipo === 'MENU_REJECTED') {
-    const razon = body.reason || body.message || 'sin detalle';
-    console.warn(`[Rappi] ❌ Menú rechazado: ${razon}`);
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', razon, timestamp: ts });
+  // MENU_REJECTED — { store_id } sin message
+  if (body?.store_id && !body?.order_id && !body?.id && !body?.message && !evento) {
+    console.log(`[Rappi] ❌ Menú rechazado para tienda ${body.store_id}`);
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', timestamp: ts });
     return;
   }
 
-  // ORDER_EVENT_CANCEL — cancelación
-  if (tipo.toLowerCase().includes('cancel')) {
-    const orderId = body.order_id || body.id;
-    console.log(`[Rappi] 🚫 Cancelación de orden ${orderId}: ${tipo}`);
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_cancelacion', orderId, motivo: tipo, timestamp: ts });
+  // ORDER_EVENT_CANCEL — { event: "canceled_with_charge", order_id, store_id }
+  if (evento && (evento.includes('cancel') || evento.includes('Cancel'))) {
+    console.log(`[Rappi] 🚫 Cancelación orden ${body.order_id}: ${evento}`);
+    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
     return;
   }
 
-  // NEW_ORDER — orden nueva
-  if (body && (body.id || body.order_id)) {
-    console.log(`[Rappi] 🛒 Procesando nueva orden ${body.id || body.order_id}...`);
+  // ORDER_OTHER_EVENT — { event: "taken_visible_order", order_id, store_id }
+  if (evento && body?.order_id && !body?.id) {
+    console.log(`[Rappi] 📦 Evento de orden ${body.order_id}: ${evento}`);
+    return;
+  }
+
+  // NEW_ORDER — objeto completo del pedido (tiene id o contiene items/products)
+  if (body && (body.id || (body.order_id && body.items))) {
+    console.log(`[Rappi] 🛒 Nueva orden ${body.id || body.order_id} — procesando...`);
     procesarOrdenRappi(body).catch(e =>
       console.error('[Rappi] ❌ Error procesando orden:', e.message, e.stack)
     );
     return;
   }
 
-  // Evento desconocido
-  console.warn(`[Rappi] ⚠ Evento desconocido recibido — tipo="${tipo}" body=${JSON.stringify(body).slice(0,300)}`);
+  // Evento no identificado — loguear completo
+  console.warn(`[Rappi] ⚠ Evento no identificado | evento="${evento}" | body completo: ${JSON.stringify(body)}`);
 });
 
 // ─── Procesamiento de orden ───────────────────────────────────────────────────
