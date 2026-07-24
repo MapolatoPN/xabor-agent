@@ -286,7 +286,9 @@ export async function enriquecerTodosLosPerfiles() {
       `SELECT DISTINCT datos->'cliente'->>'telefono' AS telefono
        FROM pedidos_activos
        WHERE datos->'cliente'->>'telefono' IS NOT NULL
-         AND datos->'cliente'->>'telefono' != '—'`
+         AND datos->'cliente'->>'telefono' != '—'
+         AND datos->'cliente'->>'telefono' NOT LIKE 'rappi-%'
+         AND datos->'cliente'->>'telefono' IN (SELECT telefono FROM clientes)`
     );
 
     console.log(`[Memory] Enriqueciendo ${rows.length} perfiles...`);
