@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion } from './services/database.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -960,6 +960,29 @@ app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
 app.post('/api/admin/memory/enriquecer', requireAdmin, async (req, res) => {
   const n = await enriquecerTodosLosPerfiles();
   res.json({ ok: true, perfiles_actualizados: n });
+});
+
+// ─── Clientes CRM ─────────────────────────────────────────────────────────────
+app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        c.telefono, c.nombre, c.ultima_visita,
+        p.pedidos_total, p.ticket_promedio, p.total_gastado,
+        p.ultimo_pedido_hace_dias, p.dia_favorito, p.hora_favorita,
+        p.modalidad_favorita, p.pago_favorito, p.productos_favoritos,
+        p.segmento, p.score_abandono, p.dias_entre_compras_prom
+      FROM clientes c
+      LEFT JOIN perfiles_clientes p ON p.telefono = c.telefono
+      WHERE c.telefono != '—'
+      ORDER BY COALESCE(p.total_gastado, 0) DESC
+      LIMIT 500
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error('[clientes]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {

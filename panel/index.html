@@ -642,6 +642,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-menu"      onclick="mostrarTab('menu')">Menú</button>
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Config</button>
   <button class="tab-btn admin-only" id="tab-repartidores" onclick="mostrarTab('repartidores')">Repartidores</button>
+  <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
 </div>
 
 <main>
@@ -904,6 +905,44 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button onclick="cargarRepartidores()" style="font-size:0.8rem;padding:6px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;">↻ Actualizar</button>
       </div>
       <div id="tabla-repartidores"><div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div></div>
+    </div>
+
+    <!-- Tab Clientes -->
+    <div id="vista-clientes" style="display:none;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:1.1rem;font-weight:800;">Clientes</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input id="cli-buscar" type="search" placeholder="Buscar nombre o teléfono…"
+            style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;width:200px;"
+            oninput="filtrarClientes()">
+          <select id="cli-segmento" onchange="filtrarClientes()"
+            style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
+            <option value="">Todos los segmentos</option>
+            <option value="nuevo">Nuevos</option>
+            <option value="frecuente">Frecuentes</option>
+            <option value="vip">VIP</option>
+            <option value="en_riesgo">En riesgo</option>
+            <option value="dormido">Dormidos</option>
+          </select>
+          <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
+        </div>
+      </div>
+
+      <!-- Resumen de segmentos -->
+      <div id="cli-resumen" style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;"></div>
+
+      <!-- Lista de clientes -->
+      <div id="cli-lista" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+        <div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Cargando clientes...</div>
+      </div>
+
+      <!-- Modal ficha de cliente -->
+      <div id="cli-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center;">
+        <div style="background:#fff;border-radius:16px;padding:24px;max-width:440px;width:90%;max-height:85vh;overflow-y:auto;position:relative;">
+          <button onclick="cerrarFicha()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
+          <div id="cli-ficha-contenido"></div>
+        </div>
+      </div>
     </div>
 
 </div><!-- /vistas-extra -->
@@ -1512,7 +1551,7 @@ ${clienteSection}
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config'];
+const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes'];
 
 function mostrarTab(tab) {
   // Ocultar vistas principales
@@ -1521,7 +1560,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -1529,7 +1568,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -1547,6 +1586,7 @@ function mostrarTab(tab) {
   if (tab === 'menu')      cargarMenuEditor();
   if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); }
   if (tab === 'repartidores') cargarRepartidores();
+  if (tab === 'clientes') cargarClientes();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     const bnavBadge = document.getElementById('bnav-badge');
@@ -2653,6 +2693,155 @@ function actualizarTimers() {
 }
 setInterval(actualizarTimers, 30000);
 setTimeout(actualizarTimers, 1000);
+
+// ─── Tab Clientes ─────────────────────────────────────────────────────────────
+let _clientes = [];
+
+const SEGMENTO_LABEL = { nuevo:'Nuevo', frecuente:'Frecuente', vip:'VIP', en_riesgo:'En riesgo', dormido:'Dormido' };
+const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#2563eb', vip:'#7c3aed', en_riesgo:'#d97706', dormido:'#dc2626' };
+
+async function cargarClientes() {
+  const cont = document.getElementById('cli-lista');
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Cargando...</div>';
+  try {
+    const r = await apiFetch('/api/admin/clientes');
+    if (!r.ok) throw new Error('Error al cargar');
+    _clientes = await r.json();
+    renderResumen();
+    filtrarClientes();
+  } catch(e) {
+    cont.innerHTML = `<div style="color:#ef4444;text-align:center;padding:40px;grid-column:1/-1;">Error: ${e.message}</div>`;
+  }
+}
+
+function renderResumen() {
+  const cont = document.getElementById('cli-resumen');
+  const conteos = {};
+  _clientes.forEach(c => { conteos[c.segmento] = (conteos[c.segmento] || 0) + 1; });
+  cont.innerHTML = Object.entries(conteos).map(([seg, n]) => `
+    <div onclick="document.getElementById('cli-segmento').value='${seg}';filtrarClientes()"
+      style="padding:5px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;cursor:pointer;
+             background:${SEGMENTO_COLOR[seg]}18;color:${SEGMENTO_COLOR[seg]};border:1px solid ${SEGMENTO_COLOR[seg]}44;">
+      ${SEGMENTO_LABEL[seg] || seg} · ${n}
+    </div>
+  `).join('') + `
+    <div onclick="document.getElementById('cli-segmento').value='';filtrarClientes()"
+      style="padding:5px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;cursor:pointer;
+             background:#f1f0ed;color:#555;border:1px solid #e5e2da;">
+      Todos · ${_clientes.length}
+    </div>`;
+}
+
+function filtrarClientes() {
+  const buscar = document.getElementById('cli-buscar').value.toLowerCase();
+  const seg = document.getElementById('cli-segmento').value;
+  const lista = _clientes.filter(c => {
+    const matchSeg = !seg || c.segmento === seg;
+    const matchBuscar = !buscar ||
+      (c.nombre || '').toLowerCase().includes(buscar) ||
+      (c.telefono || '').includes(buscar);
+    return matchSeg && matchBuscar;
+  });
+  renderClientes(lista);
+}
+
+function renderClientes(lista) {
+  const cont = document.getElementById('cli-lista');
+  if (!lista.length) {
+    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Sin resultados</div>';
+    return;
+  }
+  cont.innerHTML = lista.map(c => {
+    const seg = c.segmento || 'nuevo';
+    const color = SEGMENTO_COLOR[seg] || '#6b7280';
+    const label = SEGMENTO_LABEL[seg] || seg;
+    const diasStr = c.ultimo_pedido_hace_dias != null
+      ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : `hace ${c.ultimo_pedido_hace_dias}d`)
+      : '—';
+    const ticket = c.ticket_promedio ? `$${Math.round(c.ticket_promedio)}` : '—';
+    const pedidos = c.pedidos_total || 0;
+    return `
+    <div onclick="verFicha('${c.telefono}')"
+      style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:14px 16px;cursor:pointer;
+             border-left:4px solid ${color};transition:box-shadow .15s;"
+      onmouseover="this.style.boxShadow='0 2px 12px rgba(0,0,0,0.08)'"
+      onmouseout="this.style.boxShadow=''">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+        <div style="font-weight:700;font-size:0.95rem;">${c.nombre || 'Sin nombre'}</div>
+        <span style="font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:20px;
+                     background:${color}18;color:${color};">${label}</span>
+      </div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:8px;">${c.telefono}</div>
+      <div style="display:flex;gap:16px;font-size:0.8rem;color:#555;">
+        <span><strong>${pedidos}</strong> pedidos</span>
+        <span>Ticket <strong>${ticket}</strong></span>
+        <span>Últ. <strong>${diasStr}</strong></span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function verFicha(telefono) {
+  const c = _clientes.find(x => x.telefono === telefono);
+  if (!c) return;
+  const seg = c.segmento || 'nuevo';
+  const color = SEGMENTO_COLOR[seg] || '#6b7280';
+  const label = SEGMENTO_LABEL[seg] || seg;
+  const favoritos = (c.productos_favoritos || []).join(', ') || '—';
+  const dias = c.dias_entre_compras_prom ? `cada ${Math.round(c.dias_entre_compras_prom)} días` : '—';
+  const score = c.score_abandono != null ? `${Math.round(c.score_abandono)}%` : '—';
+
+  document.getElementById('cli-ficha-contenido').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <div style="width:48px;height:48px;border-radius:50%;background:${color}22;display:flex;align-items:center;
+                  justify-content:center;font-size:1.3rem;font-weight:800;color:${color};">
+        ${(c.nombre||'?')[0].toUpperCase()}
+      </div>
+      <div>
+        <div style="font-size:1.1rem;font-weight:800;">${c.nombre || 'Sin nombre'}</div>
+        <div style="font-size:0.82rem;color:#888;">${c.telefono}</div>
+      </div>
+      <span style="margin-left:auto;font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:20px;
+                   background:${color}18;color:${color};">${label}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+      ${fichaMetrica('Pedidos', c.pedidos_total || 0)}
+      ${fichaMetrica('Ticket prom.', c.ticket_promedio ? '$' + Math.round(c.ticket_promedio) : '—')}
+      ${fichaMetrica('Total gastado', c.total_gastado ? '$' + Math.round(c.total_gastado) : '—')}
+      ${fichaMetrica('Último pedido', c.ultimo_pedido_hace_dias != null ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : 'hace ' + c.ultimo_pedido_hace_dias + ' días') : '—')}
+      ${fichaMetrica('Frecuencia', dias)}
+      ${fichaMetrica('Riesgo abandono', score)}
+    </div>
+    <div style="background:#f8f7f4;border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+      <div style="font-size:0.72rem;font-weight:700;color:#888;text-transform:uppercase;margin-bottom:6px;">Preferencias</div>
+      <div style="font-size:0.85rem;display:grid;gap:4px;">
+        <div><strong>Favoritos:</strong> ${favoritos}</div>
+        <div><strong>Modalidad:</strong> ${c.modalidad_favorita || '—'}</div>
+        <div><strong>Pago:</strong> ${c.pago_favorito || '—'}</div>
+        <div><strong>Día favorito:</strong> ${c.dia_favorito ? c.dia_favorito.charAt(0).toUpperCase() + c.dia_favorito.slice(1) : '—'}</div>
+      </div>
+    </div>
+    <a href="https://wa.me/${c.telefono}" target="_blank"
+      style="display:block;text-align:center;padding:11px;background:#25d366;color:#fff;border-radius:10px;
+             font-weight:700;font-size:0.9rem;text-decoration:none;">
+      Escribir por WhatsApp
+    </a>`;
+
+  const modal = document.getElementById('cli-modal');
+  modal.style.display = 'flex';
+  modal.onclick = e => { if (e.target === modal) cerrarFicha(); };
+}
+
+function fichaMetrica(label, valor) {
+  return `<div style="background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:10px 12px;">
+    <div style="font-size:0.7rem;color:#888;margin-bottom:3px;">${label}</div>
+    <div style="font-size:1rem;font-weight:700;">${valor}</div>
+  </div>`;
+}
+
+function cerrarFicha() {
+  document.getElementById('cli-modal').style.display = 'none';
+}
 
 // ─── Tab Repartidores ─────────────────────────────────────────────────────────
 async function cargarRepartidores() {
