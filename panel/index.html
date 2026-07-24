@@ -120,6 +120,11 @@ header {
 .tab-btn.activo {
   background: var(--color-brand-light); color: var(--color-brand); font-weight: 600;
 }
+.rep-fil-btn {
+  border: none; background: none; padding: 5px 12px; border-radius: 6px;
+  font-size: 0.8rem; font-weight: 600; cursor: pointer; color: #888; transition: all .15s;
+}
+.rep-fil-btn.activo-fil { background: #fff; color: #1c1c1c; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 .tab-btn.activo::before {
   content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
   width: 3px; border-radius: 0 3px 3px 0; background: var(--color-brand);
@@ -899,10 +904,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     </div>
 
 
-    <div id="vista-repartidores" style="display:none;max-width:600px;margin:0 auto;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-        <div style="font-size:1.1rem;font-weight:800;">🛵 Repartidores</div>
-        <button onclick="cargarRepartidores()" style="font-size:0.8rem;padding:6px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;">↻ Actualizar</button>
+    <div id="vista-repartidores" style="display:none;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:1.1rem;font-weight:800;">Repartidores</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <div style="display:flex;background:#f1f0ed;border-radius:8px;padding:3px;gap:2px;">
+            <button id="repfil-hoy"     onclick="setRepFiltro('hoy')"     class="rep-fil-btn activo-fil">Hoy</button>
+            <button id="repfil-ayer"    onclick="setRepFiltro('ayer')"    class="rep-fil-btn">Ayer</button>
+            <button id="repfil-antier"  onclick="setRepFiltro('antier')"  class="rep-fil-btn">Antier</button>
+            <button id="repfil-semana"  onclick="setRepFiltro('semana')"  class="rep-fil-btn">Semana</button>
+          </div>
+          <button onclick="cargarRepartidores()" style="padding:6px 10px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
+        </div>
       </div>
       <div id="tabla-repartidores"><div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div></div>
     </div>
@@ -2876,58 +2889,76 @@ function cerrarFicha() {
 }
 
 // ─── Tab Repartidores ─────────────────────────────────────────────────────────
+let _repFiltro = 'hoy';
+function setRepFiltro(f) {
+  _repFiltro = f;
+  document.querySelectorAll('.rep-fil-btn').forEach(b => b.classList.remove('activo-fil'));
+  document.getElementById('repfil-' + f)?.classList.add('activo-fil');
+  cargarRepartidores();
+}
+
 async function cargarRepartidores() {
   const cont = document.getElementById('tabla-repartidores');
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div>';
   try {
     const [estado, candidatos] = await Promise.all([
-      apiFetch('/api/admin/repartidores/estado').then(r => r.ok ? r.json() : []),
+      apiFetch(`/api/admin/repartidores/estado?periodo=${_repFiltro}`).then(r => r.ok ? r.json() : []),
       apiFetch('/api/admin/repartidores/candidatos').then(r => r.ok ? r.json() : [])
     ]);
 
     let html = '';
+    const labelPeriodo = { hoy:'hoy', ayer:'ayer', antier:'antier', semana:'esta semana' }[_repFiltro];
 
-    // Tarjetas por repartidor
     if (estado && estado.length) {
-      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:24px;">`;
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:24px;">`;
       html += estado.map(rep => {
-        const p = rep.pedido_activo;
-        const libre = !p;
+        const total = rep.pedidos.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+        const entregados = rep.pedidos.filter(p => p.estado === 'entregado');
+        const enRuta = rep.pedidos.filter(p => p.estado !== 'entregado' && p.estado !== 'cancelado');
         return `
-        <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;border-top:4px solid ${libre ? '#e5e2da' : '#f59e0b'};">
-          <div style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f0ede8;">
-            <div>
+        <div style="background:#fff;border:1px solid #e5e2da;border-radius:14px;overflow:hidden;">
+          <!-- Header repartidor -->
+          <div style="padding:14px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #f0ede8;">
+            <div style="width:40px;height:40px;background:#f1f0ed;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:800;">
+              ${rep.nombre[0].toUpperCase()}
+            </div>
+            <div style="flex:1;">
               <div style="font-weight:800;font-size:0.95rem;">${rep.nombre}</div>
-              <div style="font-size:0.75rem;color:#888;">${rep.telefono}</div>
+              <div style="font-size:0.75rem;color:#888;">${rep.pedidos.length} pedido${rep.pedidos.length !== 1 ? 's' : ''} · $${Math.round(total)} MXN</div>
             </div>
-            <div style="text-align:right;">
-              <span style="font-size:0.7rem;font-weight:700;padding:3px 8px;border-radius:20px;
-                background:${libre ? '#f0fdf4' : '#fef3c7'};color:${libre ? '#15803d' : '#b45309'};">
-                ${libre ? '🟢 Libre' : '🛵 En ruta'}
-              </span>
-              <div style="font-size:0.75rem;color:#888;margin-top:4px;">${rep.entregados_hoy} entregado${rep.entregados_hoy !== 1 ? 's' : ''} hoy</div>
-            </div>
+            ${enRuta.length ? `<span style="font-size:0.7rem;font-weight:700;padding:3px 8px;border-radius:20px;background:#fef3c7;color:#b45309;">🛵 En ruta</span>` : `<span style="font-size:0.7rem;font-weight:700;padding:3px 8px;border-radius:20px;background:#f0fdf4;color:#15803d;">✅ ${entregados.length} entregas</span>`}
           </div>
-          ${p ? `
-          <div style="padding:12px 16px;background:#fffbeb;">
-            <div style="font-size:0.7rem;font-weight:700;color:#b45309;text-transform:uppercase;margin-bottom:6px;">Pedido activo — ${p.folio}</div>
-            <div style="font-weight:700;font-size:0.9rem;">${p.cliente || 'Cliente'}</div>
-            ${p.telefono && p.telefono !== '—' && !p.telefono.startsWith('rappi-')
-              ? `<div style="font-size:0.82rem;color:#2563eb;margin:3px 0;">📞 ${p.telefono}</div>` : ''}
-            <div style="font-size:0.82rem;color:#555;margin:3px 0;">📍 ${p.direccion || 'Sin dirección'}</div>
-            <div style="font-size:0.82rem;font-weight:700;margin-top:4px;">$${p.total} MXN</div>
-          </div>` : `
-          <div style="padding:16px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedido activo</div>`}
-          <div style="padding:10px 16px;display:flex;justify-content:flex-end;">
-            <button onclick="eliminarRep(${rep.id})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#ef4444;">Eliminar</button>
+          <!-- Lista de pedidos -->
+          <div style="max-height:280px;overflow-y:auto;">
+            ${rep.pedidos.map((p, i) => {
+              const dir = [p.calle, p.colonia].filter(Boolean).join(', ');
+              const esActivo = p.estado !== 'entregado' && p.estado !== 'cancelado';
+              return `
+              <div style="padding:10px 16px;${i < rep.pedidos.length-1 ? 'border-bottom:1px solid #f8f7f4;' : ''}${esActivo ? 'background:#fffbeb;' : ''}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                  <span style="font-size:0.75rem;font-weight:700;color:#888;">${p.folio} · ${p.hora}</span>
+                  <span style="font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:20px;
+                    background:${esActivo ? '#fef3c7' : '#f0fdf4'};color:${esActivo ? '#b45309' : '#15803d'};">
+                    ${esActivo ? '🛵 En ruta' : '✅ Entregado'}
+                  </span>
+                </div>
+                <div style="font-weight:600;font-size:0.88rem;">${p.cliente || 'Cliente'}</div>
+                <div style="font-size:0.8rem;color:#666;margin-top:2px;">📍 ${dir || 'Sin dirección'}${p.entre_calles ? ` · ${p.entre_calles}` : ''}</div>
+                ${p.telefono && p.telefono !== '—' && !p.telefono.startsWith('rappi-') ? `<div style="font-size:0.78rem;color:#2563eb;">📞 ${p.telefono}</div>` : ''}
+                <div style="font-size:0.78rem;font-weight:700;color:#555;margin-top:2px;">$${p.total} MXN</div>
+              </div>`;
+            }).join('')}
           </div>
         </div>`;
       }).join('');
       html += `</div>`;
+    } else {
+      html = `<div style="color:#aaa;text-align:center;padding:40px;">Sin entregas ${labelPeriodo}.</div>`;
     }
 
     // Candidatos pendientes
-    const telefsRegistrados = new Set((estado||[]).map(r => r.telefono));
-    const pendientes = (candidatos||[]).filter(c => !telefsRegistrados.has(c.telefono));
+    const nombresEnEstado = new Set(estado.map(r => r.nombre));
+    const pendientes = (candidatos||[]).filter(c => !nombresEnEstado.has(c.nombre));
     if (pendientes.length) {
       html += `
         <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#f59e0b;letter-spacing:0.05em;margin-bottom:8px;">⚠️ Sin registrar</div>

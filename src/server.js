@@ -937,37 +937,47 @@ app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
   res.json(await obtenerRepartidores());
 });
 
-// Estado en tiempo real por repartidor — pedido activo + entregados hoy
+// Actividad de repartidores por período — hoy / ayer / antier / semana
 app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
   try {
-    const repartidores = await obtenerRepartidores();
-    const { rows: pedidosHoy } = await pool.query(`
+    const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
+    const tz = 'America/Matamoros';
+    let whereDate;
+    if (periodo === 'hoy')    whereDate = `DATE(created_at AT TIME ZONE '${tz}') = CURRENT_DATE AT TIME ZONE '${tz}'`;
+    else if (periodo === 'ayer')   whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '1 day'`;
+    else if (periodo === 'antier') whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '2 days'`;
+    else whereDate = `DATE(created_at AT TIME ZONE '${tz}') >= (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '6 days'`;
+
+    const { rows: pedidos } = await pool.query(`
       SELECT folio, estado, datos, created_at,
-             (datos->>'repartidor_id')::int AS repartidor_id
+             (datos->>'repartidor_id')::int AS repartidor_id,
+             datos->>'repartidor_nombre' AS repartidor_nombre
       FROM pedidos_activos
-      WHERE DATE(created_at AT TIME ZONE 'America/Matamoros') = CURRENT_DATE AT TIME ZONE 'America/Matamoros'
+      WHERE ${whereDate}
         AND datos->>'modalidad' = 'entrega a domicilio'
         AND datos->>'repartidor_id' IS NOT NULL
       ORDER BY created_at DESC
     `);
-    const estado = repartidores.map(rep => {
-      const misPedidos = pedidosHoy.filter(p => p.repartidor_id === rep.id);
-      const activo = misPedidos.find(p => p.estado !== 'entregado' && p.estado !== 'cancelado');
-      const entregados = misPedidos.filter(p => p.estado === 'entregado');
-      return {
-        ...rep,
-        pedido_activo: activo ? {
-          folio: activo.folio,
-          cliente: activo.datos?.cliente?.nombre,
-          telefono: activo.datos?.cliente?.telefono,
-          direccion: [activo.datos?.cliente?.calle, activo.datos?.cliente?.colonia].filter(Boolean).join(', '),
-          total: activo.datos?.total,
-          estado: activo.estado
-        } : null,
-        entregados_hoy: entregados.length
-      };
+
+    // Agrupar por repartidor
+    const porRep = {};
+    pedidos.forEach(p => {
+      const id = p.repartidor_id;
+      if (!porRep[id]) porRep[id] = { id, nombre: p.repartidor_nombre, pedidos: [] };
+      porRep[id].pedidos.push({
+        folio: p.folio,
+        estado: p.estado,
+        cliente: p.datos?.cliente?.nombre,
+        telefono: p.datos?.cliente?.telefono,
+        calle: p.datos?.cliente?.calle,
+        colonia: p.datos?.cliente?.colonia,
+        entre_calles: p.datos?.cliente?.entre_calles,
+        total: p.datos?.total,
+        hora: new Date(p.created_at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', timeZone: tz })
+      });
     });
-    res.json(estado);
+
+    res.json(Object.values(porRep));
   } catch (e) {
     console.error('[repartidores/estado]', e.message);
     res.status(500).json({ error: e.message });
