@@ -24,9 +24,10 @@ import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/what
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
-import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda } from './services/rappi-api.js';
+import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
+import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas } from './services/memory.js';
 import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor } from './services/database.js';
 
 import { readFileSync } from 'fs';
@@ -914,6 +915,15 @@ app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
+  try {
+    const result = await consultarAprobacionMenu();
+    res.json({ ok: true, result });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
   try {
     const catalogo = construirCatalogoRappi();
@@ -1129,6 +1139,13 @@ initDB()
     // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
     reconciliarPagosPendientes();
     setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
+    // Memory Engine: detectar conversaciones abandonadas cada 10 minutos
+    setInterval(() => detectarConversacionesAbandonadas(30), 10 * 60 * 1000);
+    // Memory Engine: enriquecer perfiles de clientes cada 2 horas
+    setTimeout(() => {
+      enriquecerTodosLosPerfiles(); // primer cálculo inicial (con delay para no sobrecargar arranque)
+      setInterval(enriquecerTodosLosPerfiles, 2 * 60 * 60 * 1000);
+    }, 30 * 1000);
   })
   .catch(e => console.error('[DB] Error al inicializar:', e.message));
 

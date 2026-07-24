@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getIntegracion } from '../server.js';
 import { construirSystemPrompt } from './prompts.js';
 import { agregarMensaje, getSession } from './session.js';
+import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, EVENTOS } from '../services/memory.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -19,11 +20,31 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
+  // Enriquecer contexto con memoria del cliente (no bloquea si falla)
+  const telefono = clienteCtx?.telefono;
+  let memoriaCtx = '';
+  if (telefono && telefono !== '—') {
+    const perfil = await obtenerPerfilCliente(telefono);
+    memoriaCtx = construirContextoCliente(perfil);
+  }
+
+  // Registrar evento (asíncrono, no bloquea respuesta)
+  if (telefono) {
+    registrarEvento({
+      tipo: EVENTOS.MENSAJE_RECIBIDO,
+      entidad_tipo: 'cliente',
+      entidad_id: telefono,
+      payload: { texto: mensajeUsuario.slice(0, 200) },
+      canal: canal || 'whatsapp',
+      sesion_id: sessionId
+    });
+  }
+
   try {
     const respuesta = await getAnthropic().messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: await construirSystemPrompt(clienteCtx, canal),
+      system: await construirSystemPrompt(clienteCtx, canal) + memoriaCtx,
       messages: session.mensajes
     });
 
@@ -54,6 +75,14 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
+  // Enriquecer contexto con memoria del cliente
+  const telefono = clienteCtx?.telefono;
+  let memoriaCtx = '';
+  if (telefono && telefono !== '—') {
+    const perfil = await obtenerPerfilCliente(telefono);
+    memoriaCtx = construirContextoCliente(perfil);
+  }
+
   let textoCompleto = '';
   let buffer        = '';
   let bloqueado     = false;
@@ -61,7 +90,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   const stream = getAnthropic().messages.stream({
     model: MODELO,
     max_tokens: 1024,
-    system: await construirSystemPrompt(clienteCtx, canal),
+    system: await construirSystemPrompt(clienteCtx, canal) + memoriaCtx,
     messages: session.mensajes
   }, { signal });
 
