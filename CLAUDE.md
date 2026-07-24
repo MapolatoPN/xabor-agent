@@ -97,6 +97,28 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 - Cada 5 min: activar pedidos programados, sincronizar estado Rappi, reconciliar pagos Clip pendientes
 - Cada minuto a las 22:01 CST: enviar reporte de corte de caja por WhatsApp al número admin
 
+## Principio innegociable: Estabilidad operacional primero
+
+> El restaurante nunca deja de vender mientras evolucionamos el producto.
+
+XABOR procesa pedidos reales. El flujo crítico es:
+```
+WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirmación
+```
+
+**Componentes protegidos** — antes de modificar cualquiera de estos, explicar el riesgo y obtener aprobación:
+- `src/agent/brain.js` — lógica conversacional
+- `src/channels/whatsapp-meta.js` — recepción y envío WA
+- `src/orders/orderManager.js` — registro y estado de pedidos
+- `panel/index.html` — gestión de estados e impresión
+- `src/server.js` rutas `/pedidos` y `/pedidos/:id/estado`
+
+**Estrategia por defecto para nuevas features:**
+- Módulos nuevos en archivos nuevos; no modificar críticos para agregar funcionalidad nueva
+- Feature flags en tabla `configuracion` para activar/desactivar sin redeploy
+- Jobs en background nunca en el path síncrono de respuesta al cliente
+- Si hay duda sobre el riesgo: módulo independiente primero, integración después
+
 ## Convenciones importantes
 - **No avanzar** integraciones de pago ni cambios en producción sin aprobación del dueño
 - IDs de pedido: `XAB-NNNN` (folio secuencial, nunca se reutiliza)

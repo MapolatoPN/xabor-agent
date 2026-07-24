@@ -915,6 +915,12 @@ app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Endpoint — forzar enriquecimiento de perfiles manualmente
+app.post('/api/admin/memory/enriquecer', requireAdmin, async (req, res) => {
+  const n = await enriquecerTodosLosPerfiles();
+  res.json({ ok: true, perfiles_actualizados: n });
+});
+
 app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
   try {
     const result = await consultarAprobacionMenu();
