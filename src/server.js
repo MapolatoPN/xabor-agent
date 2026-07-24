@@ -876,7 +876,48 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
   if (!asignado) return res.status(409).json({ error: 'Este pedido ya fue tomado por otro repartidor' });
   broadcast({ tipo: 'repartidor_asignado', folio, repartidor: req.repartidor.nombre });
   console.log(`[Repartidor] ${req.repartidor.nombre} tomó el pedido ${folio}`);
+
+  // WA "en camino" al cliente
+  try {
+    const pedido = obtenerPedidoPorId(folio);
+    const tel = pedido?.cliente?.telefono;
+    if (tel && tel !== '—' && !tel.startsWith('rappi-')) {
+      const nombre = pedido?.cliente?.nombre?.split(' ')[0] || 'cliente';
+      await enviarMensaje(tel,
+        `¡Hola ${nombre}! 🛵 Tu pedido *${folio}* ya está en camino. ` +
+        `Lo lleva ${req.repartidor.nombre}. ¡Llegará en breve!`
+      );
+    }
+  } catch (e) {
+    console.error('[Repartidor] Error enviando WA en camino:', e.message);
+  }
+
   res.json({ ok: true, folio });
+});
+
+// Repartidor marca pedido como entregado desde su celular
+app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (req, res) => {
+  const { folio } = req.params;
+  const pedido = actualizarEstadoPedido(folio, 'entregado');
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
+  console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);
+
+  // WA confirmación de entrega al cliente
+  try {
+    const tel = pedido?.cliente?.telefono;
+    if (tel && tel !== '—' && !tel.startsWith('rappi-')) {
+      const nombre = pedido?.cliente?.nombre?.split(' ')[0] || 'cliente';
+      await enviarMensaje(tel,
+        `¡Listo ${nombre}! ✅ Tu pedido *${folio}* fue entregado. ` +
+        `¡Gracias por tu preferencia! Esperamos verte pronto. 🙏`
+      );
+    }
+  } catch (e) {
+    console.error('[Repartidor] Error enviando WA entregado:', e.message);
+  }
+
+  res.json({ ok: true });
 });
 
 // Guardar push subscription del repartidor

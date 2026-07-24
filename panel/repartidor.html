@@ -45,6 +45,13 @@
     .btn-green { background: var(--color-success); color: #fff; margin-top: 10px; }
     .btn-green:hover { background: #059669; }
     .btn-green:disabled { background: #6ee7b7; cursor: default; }
+    .btn-blue { background: #2563eb; color: #fff; margin-top: 10px; }
+    .btn-blue:hover { background: #1d4ed8; }
+    .btn-orange { background: #ea580c; color: #fff; margin-top: 8px; }
+    .btn-orange:hover { background: #c2410c; }
+    .btn-orange:disabled { background: #fdba74; cursor: default; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row .btn { flex: 1; }
     .pedido-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow-sm); border-left: 4px solid var(--color-warning); }
     .pedido-card.asignado { border-left-color: var(--color-success); background: var(--color-success-light); }
     .estado-badge { display:inline-block; font-size:0.7rem; font-weight:700; padding:3px 10px; border-radius:var(--radius-pill); margin-top:6px; background:var(--color-success-light); color:#047857; }
@@ -173,15 +180,23 @@ function renderMisPedidos(pedidos) {
   const cont = document.getElementById('lista-mis-pedidos');
   if (!pedidos.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
-  cont.innerHTML = pedidos.map(p => `
-    <div class="pedido-card asignado">
+  cont.innerHTML = pedidos.map(p => {
+    const mapsUrl = p.direccion
+      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.direccion)}`
+      : null;
+    return `
+    <div class="pedido-card asignado" id="mio-${p.folio}">
       <div class="pedido-folio">${p.folio} · ${p.items} producto(s)</div>
       <div class="pedido-cliente">${p.cliente || 'Cliente'}</div>
       <div class="pedido-dir">📍 ${p.direccion || 'Sin dirección'}</div>
       <div class="pedido-total">💰 $${p.total} MXN</div>
-      <div class="estado-badge">✅ Pedido tuyo — en camino</div>
-    </div>
-  `).join('');
+      <div class="estado-badge">En camino</div>
+      <div class="btn-row" style="margin-top:10px;">
+        ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" class="btn btn-blue" style="text-decoration:none;text-align:center;">Ruta</a>` : ''}
+        <button class="btn btn-orange" id="btnent-${p.folio}" onclick="marcarEntregado('${p.folio}', this)">Entregado</button>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderPedidos(pedidos) {
@@ -201,6 +216,25 @@ function renderPedidos(pedidos) {
       </button>
     </div>
   `).join('');
+}
+
+async function marcarEntregado(folio, btn) {
+  btn.disabled = true; btn.textContent = 'Marcando...';
+  const r = await fetch(`/api/repartidor/pedido/${folio}/entregado`, {
+    method: 'POST', headers: { 'x-rep-token': token }
+  });
+  if (r.ok) {
+    const card = document.getElementById('mio-' + folio);
+    if (card) { card.style.opacity = '0.5'; card.style.pointerEvents = 'none'; }
+    btn.textContent = '✅ Entregado';
+    btn.style.background = '#15803d';
+    setTimeout(() => cargarPedidos(), 1500);
+  } else {
+    btn.disabled = false;
+    btn.textContent = 'Error — reintentar';
+    btn.style.background = '#ef4444';
+    setTimeout(() => { btn.textContent = 'Entregado'; btn.style.background = ''; btn.disabled = false; }, 3000);
+  }
 }
 
 async function aceptarPedido(folio, btn) {
