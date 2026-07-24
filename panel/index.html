@@ -1062,6 +1062,21 @@ function conectarWS() {
       if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
+      if (msg.tipo === 'repartidor_asignado') {
+        const p = pedidos[msg.folio];
+        if (p) {
+          p.repartidor_nombre = msg.repartidor;
+          const card = document.getElementById(`comanda-${msg.folio}`);
+          if (card) card.innerHTML = renderComanda(p);
+        }
+        // Alerta visual + sonido para que el staff se entere
+        sonarAlerta();
+        const toast = document.createElement('div');
+        toast.textContent = `🛵 ${msg.repartidor} tomó el pedido ${msg.folio}`;
+        toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#15803d;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:0.9rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.2);';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+      }
       if (msg.tipo === 'actualizar_pago') {
         if (pedidos[msg.id]) {
           pedidos[msg.id].forma_pago = msg.forma_pago;
