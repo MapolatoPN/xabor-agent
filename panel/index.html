@@ -2154,7 +2154,7 @@ async function cargarHistorial() {
               <span class="historial-tag-wrap">${tag}</span>
               ${tagCancel}
             </div>
-            <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}</div>
+            <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}${esEntrega && p.repartidor_nombre ? ` · 🛵 ${p.repartidor_nombre}` : ''}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px;">
             ${tag.replace('class="tag-modalidad', 'class="tag-modalidad historial-tag-mobile')}
@@ -2168,6 +2168,7 @@ async function cargarHistorial() {
           </div>
           ${cancelHtml}
           ${dir}
+          ${esEntrega && p.repartidor_nombre ? `<div style="margin-top:4px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:6px;font-weight:700;display:inline-block;">🛵 ${p.repartidor_nombre}</div>` : ''}
           <div style="margin-top:8px;">${itemsHTML}</div>
           ${envio>0?`<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#aaa;padding:3px 0;">Envío<span>$${envio.toFixed(0)}</span></div>`:''}
           ${devHtml}
