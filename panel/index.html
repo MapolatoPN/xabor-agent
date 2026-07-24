@@ -2879,62 +2879,64 @@ function cerrarFicha() {
 async function cargarRepartidores() {
   const cont = document.getElementById('tabla-repartidores');
   try {
-    const [registrados, candidatos] = await Promise.all([
-      apiFetch('/api/admin/repartidores').then(r => r.ok ? r.json() : []),
+    const [estado, candidatos] = await Promise.all([
+      apiFetch('/api/admin/repartidores/estado').then(r => r.ok ? r.json() : []),
       apiFetch('/api/admin/repartidores/candidatos').then(r => r.ok ? r.json() : [])
     ]);
 
-    // IDs ya registrados para no duplicar
-    const telefsRegistrados = new Set((registrados||[]).map(r => r.telefono));
-    const pendientes = (candidatos||[]).filter(c => !telefsRegistrados.has(c.telefono));
-
     let html = '';
 
-    // Tabla de registrados
-    if (registrados && registrados.length) {
-      html += `
-        <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#888;letter-spacing:0.05em;margin-bottom:8px;">Registrados</div>
-        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin-bottom:24px;">
-          <thead><tr style="border-bottom:2px solid #e5e2da;text-align:left;">
-            <th style="padding:8px 6px;">Nombre</th>
-            <th style="padding:8px 6px;">Teléfono</th>
-            <th style="padding:8px 6px;text-align:center;">Entregados</th>
-            <th style="padding:8px 6px;text-align:center;">Estado</th>
-            <th style="padding:8px 6px;"></th>
-          </tr></thead>
-          <tbody>${registrados.map(rep => `
-            <tr style="border-bottom:1px solid #f0ede8;" id="rep-row-${rep.id}">
-              <td style="padding:10px 6px;font-weight:700;">${rep.nombre}</td>
-              <td style="padding:10px 6px;color:#555;font-family:monospace;">${rep.telefono}</td>
-              <td style="padding:10px 6px;text-align:center;font-weight:800;">${rep.pedidos_entregados || 0}</td>
-              <td style="padding:10px 6px;text-align:center;">
-                <span style="background:${rep.activo?'#dcfce7':'#fee2e2'};color:${rep.activo?'#15803d':'#ef4444'};border-radius:10px;padding:2px 10px;font-size:0.75rem;font-weight:700;">
-                  ${rep.activo ? '✅ Activo' : '❌ Inactivo'}
-                </span>
-              </td>
-              <td style="padding:10px 6px;text-align:center;">
-                <button onclick="eliminarRep(${rep.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;color:#ef4444;" title="Eliminar">🗑️</button>
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>`;
+    // Tarjetas por repartidor
+    if (estado && estado.length) {
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:24px;">`;
+      html += estado.map(rep => {
+        const p = rep.pedido_activo;
+        const libre = !p;
+        return `
+        <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;border-top:4px solid ${libre ? '#e5e2da' : '#f59e0b'};">
+          <div style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f0ede8;">
+            <div>
+              <div style="font-weight:800;font-size:0.95rem;">${rep.nombre}</div>
+              <div style="font-size:0.75rem;color:#888;">${rep.telefono}</div>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-size:0.7rem;font-weight:700;padding:3px 8px;border-radius:20px;
+                background:${libre ? '#f0fdf4' : '#fef3c7'};color:${libre ? '#15803d' : '#b45309'};">
+                ${libre ? '🟢 Libre' : '🛵 En ruta'}
+              </span>
+              <div style="font-size:0.75rem;color:#888;margin-top:4px;">${rep.entregados_hoy} entregado${rep.entregados_hoy !== 1 ? 's' : ''} hoy</div>
+            </div>
+          </div>
+          ${p ? `
+          <div style="padding:12px 16px;background:#fffbeb;">
+            <div style="font-size:0.7rem;font-weight:700;color:#b45309;text-transform:uppercase;margin-bottom:6px;">Pedido activo — ${p.folio}</div>
+            <div style="font-weight:700;font-size:0.9rem;">${p.cliente || 'Cliente'}</div>
+            ${p.telefono && p.telefono !== '—' && !p.telefono.startsWith('rappi-')
+              ? `<div style="font-size:0.82rem;color:#2563eb;margin:3px 0;">📞 ${p.telefono}</div>` : ''}
+            <div style="font-size:0.82rem;color:#555;margin:3px 0;">📍 ${p.direccion || 'Sin dirección'}</div>
+            <div style="font-size:0.82rem;font-weight:700;margin-top:4px;">$${p.total} MXN</div>
+          </div>` : `
+          <div style="padding:16px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedido activo</div>`}
+          <div style="padding:10px 16px;display:flex;justify-content:flex-end;">
+            <button onclick="eliminarRep(${rep.id})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#ef4444;">Eliminar</button>
+          </div>
+        </div>`;
+      }).join('');
+      html += `</div>`;
     }
 
-    // Tabla de candidatos no registrados
+    // Candidatos pendientes
+    const telefsRegistrados = new Set((estado||[]).map(r => r.telefono));
+    const pendientes = (candidatos||[]).filter(c => !telefsRegistrados.has(c.telefono));
     if (pendientes.length) {
       html += `
-        <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#f59e0b;letter-spacing:0.05em;margin-bottom:8px;">⚠️ Mandaron mensaje "repartidor" pero NO están registrados</div>
-        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
-          <thead><tr style="border-bottom:2px solid #e5e2da;text-align:left;">
-            <th style="padding:8px 6px;">Nombre WA</th>
-            <th style="padding:8px 6px;">Teléfono</th>
-            <th style="padding:8px 6px;">Mensaje enviado</th>
-          </tr></thead>
+        <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#f59e0b;letter-spacing:0.05em;margin-bottom:8px;">⚠️ Sin registrar</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;background:#fff;border:1px solid #e5e2da;border-radius:10px;overflow:hidden;">
           <tbody>${pendientes.map(c => `
             <tr style="border-bottom:1px solid #f0ede8;">
-              <td style="padding:10px 6px;font-weight:700;">${c.nombre||'—'}</td>
-              <td style="padding:10px 6px;color:#555;font-family:monospace;">${c.telefono}</td>
-              <td style="padding:10px 6px;color:#888;font-size:0.82rem;">${c.texto}</td>
+              <td style="padding:10px 12px;font-weight:700;">${c.nombre||'—'}</td>
+              <td style="padding:10px 12px;color:#555;font-family:monospace;">${c.telefono}</td>
+              <td style="padding:10px 12px;color:#888;font-size:0.82rem;">${c.texto}</td>
             </tr>`).join('')}
           </tbody>
         </table>`;

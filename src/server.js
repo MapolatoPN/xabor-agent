@@ -862,7 +862,11 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
     folio: p.folio,
     estado: p.estado,
     cliente: p.datos?.cliente?.nombre,
-    direccion: `${p.datos?.cliente?.calle || ''} ${p.datos?.cliente?.colonia || ''}`.trim(),
+    telefono: p.datos?.cliente?.telefono,
+    calle: p.datos?.cliente?.calle,
+    colonia: p.datos?.cliente?.colonia,
+    entre_calles: p.datos?.cliente?.entre_calles,
+    direccion: [p.datos?.cliente?.calle, p.datos?.cliente?.colonia].filter(Boolean).join(', '),
     total: p.datos?.total,
     items: p.datos?.items?.length
   });
@@ -931,6 +935,43 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
 // Lista de repartidores (admin)
 app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
   res.json(await obtenerRepartidores());
+});
+
+// Estado en tiempo real por repartidor — pedido activo + entregados hoy
+app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
+  try {
+    const repartidores = await obtenerRepartidores();
+    const { rows: pedidosHoy } = await pool.query(`
+      SELECT folio, estado, datos, created_at,
+             (datos->>'repartidor_id')::int AS repartidor_id
+      FROM pedidos_activos
+      WHERE DATE(created_at AT TIME ZONE 'America/Matamoros') = CURRENT_DATE AT TIME ZONE 'America/Matamoros'
+        AND datos->>'modalidad' = 'entrega a domicilio'
+        AND datos->>'repartidor_id' IS NOT NULL
+      ORDER BY created_at DESC
+    `);
+    const estado = repartidores.map(rep => {
+      const misPedidos = pedidosHoy.filter(p => p.repartidor_id === rep.id);
+      const activo = misPedidos.find(p => p.estado !== 'entregado' && p.estado !== 'cancelado');
+      const entregados = misPedidos.filter(p => p.estado === 'entregado');
+      return {
+        ...rep,
+        pedido_activo: activo ? {
+          folio: activo.folio,
+          cliente: activo.datos?.cliente?.nombre,
+          telefono: activo.datos?.cliente?.telefono,
+          direccion: [activo.datos?.cliente?.calle, activo.datos?.cliente?.colonia].filter(Boolean).join(', '),
+          total: activo.datos?.total,
+          estado: activo.estado
+        } : null,
+        entregados_hoy: entregados.length
+      };
+    });
+    res.json(estado);
+  } catch (e) {
+    console.error('[repartidores/estado]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {

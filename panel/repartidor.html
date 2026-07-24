@@ -181,20 +181,31 @@ function renderMisPedidos(pedidos) {
   if (!pedidos.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
   cont.innerHTML = pedidos.map(p => {
-    const mapsUrl = p.direccion
-      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.direccion)}`
+    const entregado = p.estado === 'entregado';
+    const dirCompleta = [p.calle, p.colonia].filter(Boolean).join(', ');
+    const mapsUrl = dirCompleta
+      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dirCompleta)}`
       : null;
+    const telLimpio = p.telefono && p.telefono !== '—' && !p.telefono.startsWith('rappi-') ? p.telefono : null;
     return `
-    <div class="pedido-card asignado" id="mio-${p.folio}">
-      <div class="pedido-folio">${p.folio} · ${p.items} producto(s)</div>
-      <div class="pedido-cliente">${p.cliente || 'Cliente'}</div>
-      <div class="pedido-dir">📍 ${p.direccion || 'Sin dirección'}</div>
-      <div class="pedido-total">💰 $${p.total} MXN</div>
-      <div class="estado-badge">En camino</div>
-      <div class="btn-row" style="margin-top:10px;">
-        ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" class="btn btn-blue" style="text-decoration:none;text-align:center;">Ruta</a>` : ''}
-        <button class="btn btn-orange" id="btnent-${p.folio}" onclick="marcarEntregado('${p.folio}', this)">Entregado</button>
+    <div class="pedido-card ${entregado ? '' : 'asignado'}" id="mio-${p.folio}"
+      style="${entregado ? 'opacity:0.6;border-left-color:#9ca3af;' : ''}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <div class="pedido-folio">${p.folio} · ${p.items} producto(s)</div>
+        <span style="font-size:0.72rem;font-weight:700;padding:2px 8px;border-radius:20px;
+          background:${entregado ? '#f3f4f6' : '#dcfce7'};color:${entregado ? '#6b7280' : '#15803d'};">
+          ${entregado ? '✅ Entregado' : '🛵 En camino'}
+        </span>
       </div>
+      <div class="pedido-cliente" style="font-size:1rem;margin-bottom:6px;">${p.cliente || 'Cliente'}</div>
+      <div class="pedido-dir">📍 ${dirCompleta || 'Sin dirección'}${p.entre_calles ? `<br><span style="font-size:0.8rem;color:#888;">Entre: ${p.entre_calles}</span>` : ''}</div>
+      ${telLimpio ? `<div style="margin:6px 0;font-size:0.88rem;">📞 <a href="tel:${telLimpio}" style="color:#2563eb;font-weight:600;">${telLimpio}</a></div>` : ''}
+      <div class="pedido-total">💰 $${p.total} MXN</div>
+      ${!entregado ? `
+      <div class="btn-row" style="margin-top:10px;">
+        ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" class="btn btn-blue" style="text-decoration:none;text-align:center;">Ver ruta</a>` : ''}
+        <button class="btn btn-orange" id="btnent-${p.folio}" onclick="marcarEntregado('${p.folio}', this)">Entregado</button>
+      </div>` : ''}
     </div>`;
   }).join('');
 }
@@ -224,11 +235,8 @@ async function marcarEntregado(folio, btn) {
     method: 'POST', headers: { 'x-rep-token': token }
   });
   if (r.ok) {
-    const card = document.getElementById('mio-' + folio);
-    if (card) { card.style.opacity = '0.5'; card.style.pointerEvents = 'none'; }
-    btn.textContent = '✅ Entregado';
-    btn.style.background = '#15803d';
-    setTimeout(() => cargarPedidos(), 1500);
+    // No desaparece — se marca como completado y se recarga para mostrar el estado final
+    setTimeout(() => cargarPedidos(), 800);
   } else {
     btn.disabled = false;
     btn.textContent = 'Error — reintentar';
