@@ -373,9 +373,10 @@ app.patch('/pedidos/:id/estado', async (req, res) => {
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 // rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
 // quedará asignado en el pedido y los puntos se acumularán al entregar.
-app.post('/api/pedido-presencial', requireAuth, (req, res) => {
+app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
   const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio,
-          mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre } = req.body;
+          mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre,
+          rewards_canje_puntos } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
@@ -401,7 +402,21 @@ app.post('/api/pedido-presencial', requireAuth, (req, res) => {
   const pedido = registrarPedido(orden, 'presencial');
   emitirPedido(pedido);
   import('./services/database.js').then(({ guardarPedido }) => guardarPedido('presencial', orden)).catch(() => {});
-  res.json({ ok: true, pedido });
+
+  // Rewards — registrar canje si aplica (sincrónico para que el folio exista)
+  let canjeInfo = null;
+  const puntosACanjear = parseInt(rewards_canje_puntos) || 0;
+  if (puntosACanjear > 0 && rewards_telefono?.trim()) {
+    try {
+      canjeInfo = await registrarCanje(pedido.id, rewards_telefono.trim(), puntosACanjear, 'operador', REWARDS_TENANT);
+    } catch (e) {
+      console.error(`[Rewards] ❌ Error en canje POS (${pedido.id}):`, e.message);
+      // El pedido ya fue registrado — devolvemos advertencia pero no fallamos
+      return res.json({ ok: true, pedido, rewards_warning: e.message });
+    }
+  }
+
+  res.json({ ok: true, pedido, canje: canjeInfo });
 });
 
 // Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
@@ -441,6 +456,10 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => 
   await eliminarPedido(folio).catch(() => {});
   broadcast({ tipo: 'cancelar_pedido', id: folio, motivo });
   console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
+  // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
+  revertirMovimientosFolio(folio, REWARDS_TENANT).catch(e =>
+    console.error(`[Rewards] Error en reverso al cancelar ${folio}:`, e.message)
+  );
   res.json({ ok: true });
 });
 
@@ -1212,7 +1231,12 @@ import {
   obtenerMovimientosCliente,
   obtenerMovimientosRecientes,
   obtenerOCrearCuenta,
+  obtenerCuentaPorTelefono,
   calcularPuntos,
+  calcularBloquesDisponibles,
+  registrarCanje,
+  revertirMovimientosFolio,
+  ajustarPuntosManual,
 } from './services/rewardsService.js';
 
 const REWARDS_TENANT = 'xabor-principal';
@@ -1314,6 +1338,33 @@ app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
     const perfil = await obtenerPerfilRewards(tel, REWARDS_TENANT);
     res.json({ ok: true, perfil });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Consultar bloques de canje disponibles para un cliente en POS
+app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuth, async (req, res) => {
+  const { telefono } = req.params;
+  const { total } = req.query;
+  try {
+    const [cuenta, config] = await Promise.all([
+      obtenerCuentaPorTelefono(telefono, REWARDS_TENANT),
+      obtenerConfigRewards(REWARDS_TENANT)
+    ]);
+    if (!cuenta || !config) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
+    const totalVenta = parseFloat(total) || 0;
+    const result = calcularBloquesDisponibles(cuenta.puntos_balance, totalVenta, config);
+    res.json({ puntos_balance: cuenta.puntos_balance, ...result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Ajuste manual de puntos — solo admin
+app.post('/api/rewards/cliente/:telefono/ajustar', requireAdmin, async (req, res) => {
+  const { telefono } = req.params;
+  const { puntos, tipo, motivo } = req.body;
+  try {
+    const usuario = req.user || 'admin';
+    const result = await ajustarPuntosManual(telefono, puntos, tipo, motivo, usuario, REWARDS_TENANT);
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ─── Campañas WA ──────────────────────────────────────────────────────────────

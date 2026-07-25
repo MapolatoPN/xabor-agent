@@ -800,6 +800,21 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
               <div style="font-size:0.75rem;color:#888;" id="rw-pos-tel">—</div>
               <div style="font-size:0.75rem;color:#22c55e;margin-top:2px;" id="rw-pos-puntos">—</div>
             </div>
+            <!-- Canje de puntos — visible solo cuando hay puntos suficientes -->
+            <div id="rw-canje-wrap" style="display:none;margin-bottom:8px;padding:8px 10px;background:#fff;border:1px solid #e5e2da;border-radius:8px;">
+              <div id="rw-canje-disponible" style="font-size:0.78rem;color:#374151;margin-bottom:6px;"></div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <button id="rw-btn-canjear" onclick="rwAplicarCanje()"
+                  style="flex:1;padding:5px 10px;background:#7c3aed;color:#fff;border:none;border-radius:7px;font-size:0.78rem;font-weight:700;cursor:pointer;">
+                  Canjear puntos
+                </button>
+                <button id="rw-btn-quitar-canje" onclick="rwQuitarCanje()"
+                  style="display:none;flex:1;padding:5px 10px;background:#ef4444;color:#fff;border:none;border-radius:7px;font-size:0.78rem;font-weight:700;cursor:pointer;">
+                  Quitar canje
+                </button>
+              </div>
+              <div id="rw-canje-aplicado-info" style="display:none;font-size:0.75rem;color:#7c3aed;margin-top:4px;font-weight:600;"></div>
+            </div>
             <div id="rw-pos-buscar-wrap" style="display:flex;gap:6px;">
               <input id="rw-pos-input" type="text" placeholder="Teléfono o nombre…"
                 style="flex:1;padding:7px 10px;border:1px solid #e5e2da;border-radius:7px;font-size:0.82rem;background:#fff;"
@@ -2138,7 +2153,8 @@ function renderCarrito() {
   }
   const subtotal  = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
   const descuento = calcDescuento(subtotal);
-  const total     = subtotal - descuento;
+  const montoCanje = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
+  const total     = Math.max(0, subtotal - descuento - montoCanje);
   const tieneDesc = descuento > 0;
   document.getElementById('pos-subtotal-row').style.display = tieneDesc ? 'flex' : 'none';
   document.getElementById('pos-desc-row').style.display     = tieneDesc ? 'flex' : 'none';
@@ -2255,7 +2271,8 @@ async function confirmarPresencial() {
   const nombre         = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
   const subtotal       = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
   const descuento      = calcDescuento(subtotal);
-  const total          = subtotal - descuento;
+  const montoCanje     = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
+  const total          = Math.max(0, subtotal - descuento - montoCanje);
   const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
   const isAdmin        = sessionStorage.getItem('xabor_role') === 'admin';
 
@@ -2280,9 +2297,10 @@ async function confirmarPresencial() {
       items: posCarrito, nombre, forma_pago: formaPagoFinal, total, descuento,
       motivo_descuento: motivoDesc, billete, cambio,
       mixto_efectivo: mixtoEfectivo || null, mixto_terminal: mixtoTerminal || null,
-      // Rewards — opcional: cliente asignado
-      rewards_telefono: rwClienteAsignado?.telefono || null,
-      rewards_nombre:   rwClienteAsignado?.nombre   || null,
+      // Rewards — opcional: cliente asignado + canje
+      rewards_telefono:    rwClienteAsignado?.telefono  || null,
+      rewards_nombre:      rwClienteAsignado?.nombre    || null,
+      rewards_canje_puntos: rwCanjeAplicado?.puntos     || 0,
     };
     const r = await apiFetch('/api/pedido-presencial', { method: 'POST', body: JSON.stringify(body) });
     const data = await r.json();
@@ -3052,6 +3070,11 @@ async function verPerfilRewards(telefono) {
         <div style="text-align:right;">
           <div style="font-size:1.4rem;font-weight:800;color:#16a34a;">${(p.puntos_balance||0).toLocaleString('es-MX')}</div>
           <div style="font-size:0.72rem;color:#888;">puntos disponibles</div>
+          ${sessionStorage.getItem('xabor_role')==='admin' ? `
+          <button onclick="rwAjusteManual('${p.telefono}')"
+            style="margin-top:6px;padding:4px 10px;border:1px solid #7c3aed;border-radius:6px;background:#fff;color:#7c3aed;font-size:0.72rem;font-weight:700;cursor:pointer;">
+            ± Ajustar puntos
+          </button>` : ''}
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
@@ -3083,6 +3106,29 @@ async function verPerfilRewards(telefono) {
 
 function cerrarPerfilRewards() {
   document.getElementById('rw-perfil-modal').style.display = 'none';
+}
+
+// Ajuste manual de puntos — solo admin
+async function rwAjusteManual(telefono) {
+  const tipoStr = prompt('Tipo de ajuste:\n  1 — Agregar puntos\n  2 — Quitar puntos');
+  if (!tipoStr) return;
+  const tipo = tipoStr.trim() === '1' ? 'ajuste_positivo' : tipoStr.trim() === '2' ? 'ajuste_negativo' : null;
+  if (!tipo) { alert('Opción inválida. Escribe 1 o 2.'); return; }
+  const puntosStr = prompt('¿Cuántos puntos?');
+  const puntos = parseInt(puntosStr);
+  if (!puntos || puntos <= 0) { alert('Ingresa un número de puntos válido.'); return; }
+  const motivo = prompt('Motivo del ajuste (obligatorio):');
+  if (!motivo?.trim()) { alert('El motivo es obligatorio.'); return; }
+  try {
+    const r = await apiFetch(`/api/rewards/cliente/${encodeURIComponent(telefono)}/ajustar`, {
+      method: 'POST',
+      body: JSON.stringify({ puntos, tipo, motivo: motivo.trim() })
+    });
+    const d = await r.json();
+    if (!r.ok) { alert('Error: ' + (d.error || 'desconocido')); return; }
+    alert(`✓ Ajuste registrado. Nuevo balance: ${d.balancePosterior} pts`);
+    verPerfilRewards(telefono); // recargar perfil
+  } catch(e) { alert('Error de conexión'); }
 }
 
 // ─── Configuración ────────────────────────────────────────────────────────────
@@ -3190,8 +3236,13 @@ function rwPosSelPrimero() {
   if (primer) primer.click();
 }
 
+// Estado del canje en el POS
+let rwCanjeAplicado = null; // { puntos, monto, bloques } o null
+let rwPuntosBalance = 0;    // balance actual del cliente asignado
+
 function rwPosAsignar(telefono, nombre, puntos) {
   rwClienteAsignado = { telefono, nombre };
+  rwPuntosBalance   = puntos || 0;
   document.getElementById('rw-pos-nombre').textContent = nombre || 'Sin nombre';
   document.getElementById('rw-pos-tel').textContent    = telefono;
   document.getElementById('rw-pos-puntos').textContent = `${puntos} puntos actuales`;
@@ -3200,30 +3251,87 @@ function rwPosAsignar(telefono, nombre, puntos) {
   document.getElementById('rw-pos-resultados').innerHTML = '';
   document.getElementById('rw-pos-btn-limpiar').style.display  = '';
   document.getElementById('rw-pos-widget').classList.add('asignado');
-  // Actualizar estimación de puntos según el carrito actual
+  rwCanjeAplicado = null;
   rwActualizarEstimacion();
 }
 
 function rwPosLimpiar() {
   rwClienteAsignado = null;
+  rwCanjeAplicado   = null;
+  rwPuntosBalance   = 0;
   document.getElementById('rw-pos-cliente-info').style.display = 'none';
   document.getElementById('rw-pos-buscar-wrap').style.display  = '';
   document.getElementById('rw-pos-btn-limpiar').style.display  = 'none';
   document.getElementById('rw-pos-input').value = '';
   document.getElementById('rw-pos-resultados').innerHTML = '';
   document.getElementById('rw-pos-widget').classList.remove('asignado');
+  document.getElementById('rw-canje-wrap').style.display = 'none';
+  renderCarrito();
 }
 
-function rwActualizarEstimacion() {
+async function rwActualizarEstimacion() {
   if (!rwClienteAsignado || !rwConfig) return;
-  const total = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const totalBruto = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
   const monto = parseFloat(rwConfig.monto_por_punto) || 10;
-  const pts = Math.floor(total / monto);
+  const ptsGanara = Math.floor(totalBruto / monto);
+
+  // Actualizar texto de puntos actuales + estimado
   const el = document.getElementById('rw-pos-puntos');
-  if (el && rwClienteAsignado) {
-    const ptsActuales = parseInt(el.textContent) || 0;
-    el.textContent = `${ptsActuales} pts actuales · ganará ~${pts} pts`;
-  }
+  if (el) el.textContent = `${rwPuntosBalance} pts actuales · ganará ~${ptsGanara} pts`;
+
+  // Consultar bloques disponibles al backend (con el total actual)
+  try {
+    const r = await apiFetch(`/api/rewards/cliente/${encodeURIComponent(rwClienteAsignado.telefono)}/canje-disponible?total=${totalBruto}`);
+    const d = await r.json();
+    const canjeWrap = document.getElementById('rw-canje-wrap');
+    const canjeInfo = document.getElementById('rw-canje-disponible');
+    if (d.bloques > 0 && !rwCanjeAplicado) {
+      canjeInfo.textContent = `Puedes usar ${d.puntos} pts = $${d.valor.toFixed(2)} de descuento`;
+      canjeWrap.style.display = '';
+      document.getElementById('rw-btn-canjear').style.display   = '';
+      document.getElementById('rw-btn-quitar-canje').style.display = 'none';
+      document.getElementById('rw-canje-aplicado-info').style.display = 'none';
+      // Guardar disponible para uso en rwAplicarCanje
+      canjeWrap.dataset.puntos = d.puntos;
+      canjeWrap.dataset.monto  = d.valor;
+    } else if (d.bloques === 0 && d.puntos_balance > 0) {
+      // Tiene puntos pero no llega al mínimo
+      const min = parseInt(rwConfig.canje_minimo) || 100;
+      const falta = min - (d.puntos_balance % min || min);
+      canjeInfo.textContent = `${d.puntos_balance} pts — necesita ${falta} más para canjear`;
+      canjeWrap.style.display = '';
+      document.getElementById('rw-btn-canjear').style.display   = 'none';
+      document.getElementById('rw-btn-quitar-canje').style.display = 'none';
+      document.getElementById('rw-canje-aplicado-info').style.display = 'none';
+    } else if (!rwCanjeAplicado) {
+      canjeWrap.style.display = 'none';
+    }
+    // Actualizar balance real del cliente
+    rwPuntosBalance = d.puntos_balance;
+  } catch(_) { /* no-op */ }
+}
+
+function rwAplicarCanje() {
+  const canjeWrap = document.getElementById('rw-canje-wrap');
+  const puntos = parseInt(canjeWrap.dataset.puntos || 0);
+  const monto  = parseFloat(canjeWrap.dataset.monto || 0);
+  if (!puntos || !monto) return;
+  if (!confirm(`¿Aplicar ${puntos} puntos = $${monto.toFixed(2)} de descuento?`)) return;
+  rwCanjeAplicado = { puntos, monto };
+  document.getElementById('rw-btn-canjear').style.display       = 'none';
+  document.getElementById('rw-btn-quitar-canje').style.display  = '';
+  const info = document.getElementById('rw-canje-aplicado-info');
+  info.textContent = `✓ Canje aplicado: -$${monto.toFixed(2)}`;
+  info.style.display = '';
+  renderCarrito(); // Actualiza el total en pantalla
+}
+
+function rwQuitarCanje() {
+  rwCanjeAplicado = null;
+  document.getElementById('rw-btn-canjear').style.display       = '';
+  document.getElementById('rw-btn-quitar-canje').style.display  = 'none';
+  document.getElementById('rw-canje-aplicado-info').style.display = 'none';
+  renderCarrito();
 }
 
 async function rwPosAbrirNuevo() {

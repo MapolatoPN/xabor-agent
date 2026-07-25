@@ -268,6 +268,12 @@ export async function initDB() {
       created_at       TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(tenant_id, folio_venta, tipo)
     );
+    -- Migración: reemplazar UNIQUE global por índice parcial que solo protege
+    -- acumulacion y canje (un folio puede tener varios reversos).
+    ALTER TABLE rewards_movements DROP CONSTRAINT IF EXISTS rewards_movements_tenant_id_folio_venta_tipo_key;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_movements_no_dup
+      ON rewards_movements(tenant_id, folio_venta, tipo)
+      WHERE tipo IN ('acumulacion','canje');
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_account ON rewards_movements(account_id);
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_folio   ON rewards_movements(folio_venta);
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_tenant  ON rewards_movements(tenant_id, created_at DESC);
