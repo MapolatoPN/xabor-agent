@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana } from './services/database.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -1143,6 +1143,66 @@ app.get('/api/admin/clientes/conversion', requireAdmin, async (req, res) => {
       pedidos_confirmados: parseInt(conv.pedidos_confirmados || 0)
     });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Campañas WA ──────────────────────────────────────────────────────────────
+
+// Preview: cuántos destinatarios tiene un segmento
+app.get('/api/admin/campanas/preview', requireAdmin, async (req, res) => {
+  const { segmento = 'todos' } = req.query;
+  try {
+    const destinatarios = await obtenerDestinatariosCampana(segmento);
+    res.json({ total: destinatarios.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Historial de campañas
+app.get('/api/admin/campanas', requireAdmin, async (req, res) => {
+  try {
+    res.json(await obtenerCampanas());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Crear y enviar campaña (background — responde inmediato)
+app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
+  const { nombre, segmento = 'todos', mensaje } = req.body;
+  if (!nombre || !mensaje) return res.status(400).json({ error: 'nombre y mensaje requeridos' });
+
+  try {
+    const destinatarios = await obtenerDestinatariosCampana(segmento);
+    if (destinatarios.length === 0) return res.status(400).json({ error: 'Sin destinatarios para ese segmento' });
+
+    const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length });
+    res.json({ ok: true, campanaId, total: destinatarios.length });
+
+    // Envío en background (1 msg/seg para no saturar la API de Meta)
+    setImmediate(async () => {
+      for (const { telefono, nombre: nomCliente } of destinatarios) {
+        const primerNombre = nomCliente?.split(' ')[0] || '';
+        const msgPersonalizado = primerNombre
+          ? mensaje.replace(/\{nombre\}/gi, primerNombre)
+          : mensaje.replace(/,?\s*\{nombre\}/gi, '');
+        let ok = false;
+        try {
+          await enviarMensaje(telefono, msgPersonalizado);
+          ok = true;
+        } catch (e) {
+          console.error(`[Campaña ${campanaId}] Error enviando a ${telefono}:`, e.message);
+        }
+        await registrarEnvioCampana(campanaId, telefono, nomCliente, ok);
+        await new Promise(r => setTimeout(r, 1000)); // 1 msg/seg
+      }
+      await completarCampana(campanaId);
+      console.log(`[Campaña ${campanaId}] Completada — ${destinatarios.length} destinatarios`);
+    });
+  } catch (e) {
+    console.error('[Campañas] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

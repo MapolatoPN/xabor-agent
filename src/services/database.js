@@ -158,6 +158,36 @@ export async function initDB() {
       p256dh          TEXT NOT NULL,
       created_at      TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS campanas (
+      id                  SERIAL PRIMARY KEY,
+      restaurant_id       TEXT NOT NULL DEFAULT 'xabor-principal',
+      nombre              TEXT NOT NULL,
+      segmento            TEXT NOT NULL,
+      mensaje             TEXT NOT NULL,
+      total_destinatarios INTEGER NOT NULL DEFAULT 0,
+      enviados            INTEGER NOT NULL DEFAULT 0,
+      fallidos            INTEGER NOT NULL DEFAULT 0,
+      respondidos         INTEGER NOT NULL DEFAULT 0,
+      estado              TEXT NOT NULL DEFAULT 'pendiente',
+      creada_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completada_at       TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_campanas_estado ON campanas (estado);
+    CREATE INDEX IF NOT EXISTS idx_campanas_creada ON campanas (creada_at DESC);
+
+    CREATE TABLE IF NOT EXISTS campana_envios (
+      id          SERIAL PRIMARY KEY,
+      campana_id  INTEGER NOT NULL REFERENCES campanas(id) ON DELETE CASCADE,
+      telefono    TEXT NOT NULL,
+      nombre      TEXT,
+      estado      TEXT NOT NULL DEFAULT 'pendiente',
+      enviado_at  TIMESTAMPTZ,
+      respondio_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_campana_envios_campana  ON campana_envios (campana_id);
+    CREATE INDEX IF NOT EXISTS idx_campana_envios_telefono ON campana_envios (telefono);
+    CREATE INDEX IF NOT EXISTS idx_campana_envios_estado   ON campana_envios (estado);
   `);
   console.log('[DB] Tablas listas');
 }
@@ -1155,4 +1185,89 @@ export async function obtenerFondoCaja(fechaMX) {
     console.error('[DB] Error obtenerFondoCaja:', e.message);
     return null;
   }
+}
+
+// ─── Campañas WA ──────────────────────────────────────────────────────────────
+
+export async function crearCampana({ nombre, segmento, mensaje, totalDestinatarios }) {
+  const { rows } = await pool.query(
+    `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado)
+     VALUES ($1, $2, $3, $4, 'enviando')
+     RETURNING id`,
+    [nombre, segmento, mensaje, totalDestinatarios]
+  );
+  return rows[0].id;
+}
+
+export async function registrarEnvioCampana(campanaId, telefono, nombre, ok) {
+  await pool.query(
+    `INSERT INTO campana_envios (campana_id, telefono, nombre, estado, enviado_at)
+     VALUES ($1, $2, $3, $4, NOW())`,
+    [campanaId, telefono, nombre || null, ok ? 'enviado' : 'fallido']
+  );
+  // Incrementar contador en la cabecera
+  const col = ok ? 'enviados' : 'fallidos';
+  await pool.query(`UPDATE campanas SET ${col} = ${col} + 1 WHERE id = $1`, [campanaId]);
+}
+
+export async function completarCampana(campanaId) {
+  await pool.query(
+    `UPDATE campanas SET estado = 'completada', completada_at = NOW() WHERE id = $1`,
+    [campanaId]
+  );
+}
+
+export async function obtenerCampanas(limit = 20) {
+  const { rows } = await pool.query(
+    `SELECT id, nombre, segmento, total_destinatarios, enviados, fallidos, respondidos,
+            estado, creada_at, completada_at
+     FROM campanas
+     ORDER BY creada_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
+export async function marcarRespuestaCampana(telefono) {
+  // Si este teléfono recibió una campaña en las últimas 48h y no había respondido, marcarlo
+  await pool.query(`
+    UPDATE campana_envios SET respondio_at = NOW()
+    WHERE telefono = $1
+      AND estado = 'enviado'
+      AND respondio_at IS NULL
+      AND enviado_at > NOW() - INTERVAL '48 hours'
+  `, [telefono]);
+
+  // Actualizar contador de respondidos en las campañas afectadas
+  await pool.query(`
+    UPDATE campanas SET respondidos = (
+      SELECT COUNT(*) FROM campana_envios
+      WHERE campana_id = campanas.id AND respondio_at IS NOT NULL
+    )
+    WHERE id IN (
+      SELECT DISTINCT campana_id FROM campana_envios
+      WHERE telefono = $1 AND respondio_at IS NOT NULL
+    )
+  `, [telefono]);
+}
+
+export async function obtenerDestinatariosCampana(segmento) {
+  // Excluir repartidores y Rappi; filtrar por segmento
+  const segFiltro = segmento === 'todos'
+    ? ''
+    : `AND COALESCE(p.segmento, 'nuevo') = '${segmento}'`;
+
+  const { rows } = await pool.query(`
+    SELECT c.telefono, c.nombre
+    FROM clientes c
+    LEFT JOIN perfiles_clientes p ON p.telefono = c.telefono
+    LEFT JOIN repartidores r ON r.telefono = c.telefono
+    WHERE c.telefono != '—'
+      AND c.telefono NOT LIKE 'rappi-%'
+      AND r.telefono IS NULL
+      ${segFiltro}
+    ORDER BY COALESCE(p.total_gastado, 0) DESC
+  `);
+  return rows;
 }
