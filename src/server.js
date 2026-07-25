@@ -978,10 +978,14 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
     const tz = 'America/Matamoros';
     let whereDate;
-    if (periodo === 'hoy')     whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date`;
-    else if (periodo === 'ayer')    whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date - 1`;
-    else if (periodo === 'antier')  whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date - 2`;
-    else whereDate = `DATE(created_at AT TIME ZONE '${tz}') >= (NOW() AT TIME ZONE '${tz}')::date - 6`;
+    // created_at es TIMESTAMP WITHOUT TIME ZONE almacenado en UTC.
+    // Conversión correcta: marcar como UTC primero, luego convertir a Matamoros.
+    const dateExpr = `(created_at AT TIME ZONE 'UTC' AT TIME ZONE '${tz}')::date`;
+    const hoyMx    = `(NOW() AT TIME ZONE '${tz}')::date`;
+    if (periodo === 'hoy')    whereDate = `${dateExpr} = ${hoyMx}`;
+    else if (periodo === 'ayer')   whereDate = `${dateExpr} = ${hoyMx} - 1`;
+    else if (periodo === 'antier') whereDate = `${dateExpr} = ${hoyMx} - 2`;
+    else                           whereDate = `${dateExpr} >= ${hoyMx} - 6`;
 
     const { rows: pedidos } = await pool.query(`
       SELECT folio, estado, datos, created_at,
