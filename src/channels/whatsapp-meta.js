@@ -8,6 +8,7 @@ import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
+import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 import { getIntegracion } from '../server.js';
 
@@ -293,6 +294,8 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       }
       await guardarPedido(telefono, resultado.orden);
       if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre);
+      // Actualizar perfil del cliente en background
+      recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
       if (resultado.orden.forma_pago === 'enlace de pago' && process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
         try {
           const clip = await crearLinkDePago({ pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });

@@ -941,8 +941,17 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
 
+      <!-- Métricas de conversión (últimos 30 días) -->
+      <div id="cli-conversion" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;"></div>
+
       <!-- Resumen de segmentos -->
       <div id="cli-resumen" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;"></div>
+
+      <!-- Oportunidades pendientes -->
+      <div id="cli-oportunidades-wrap" style="display:none;margin-bottom:16px;">
+        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;color:#b45309;">⚡ Conversaciones sin cerrar</div>
+        <div id="cli-oportunidades" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
 
       <!-- Lista de clientes -->
       <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
@@ -2734,14 +2743,61 @@ async function cargarClientes() {
   const cont = document.getElementById('cli-lista');
   cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Cargando...</div>';
   try {
-    const r = await apiFetch('/api/admin/clientes');
-    if (!r.ok) throw new Error('Error al cargar');
-    _clientes = await r.json();
+    const [rClientes, rConv, rOp] = await Promise.all([
+      apiFetch('/api/admin/clientes'),
+      apiFetch('/api/admin/clientes/conversion').catch(() => null),
+      apiFetch('/api/admin/clientes/oportunidades').catch(() => null)
+    ]);
+    if (!rClientes.ok) throw new Error('Error al cargar');
+    _clientes = await rClientes.json();
+    if (rConv?.ok) renderConversion(await rConv.json());
+    if (rOp?.ok) renderOportunidades(await rOp.json());
     renderResumen();
     filtrarClientes();
   } catch(e) {
     cont.innerHTML = `<div style="color:#ef4444;text-align:center;padding:40px;grid-column:1/-1;">Error: ${e.message}</div>`;
   }
+}
+
+function renderConversion(conv) {
+  const cont = document.getElementById('cli-conversion');
+  if (!conv) { cont.innerHTML = ''; return; }
+  const items = [
+    { label: 'Chats únicos', valor: conv.chats_unicos, color: '#6366f1' },
+    { label: 'Con pedido', valor: conv.chats_con_pedido, color: '#22c55e' },
+    { label: 'Conversión', valor: conv.tasa_conversion + '%', color: conv.tasa_conversion >= 40 ? '#22c55e' : conv.tasa_conversion >= 20 ? '#f59e0b' : '#ef4444' },
+    { label: 'Menús enviados', valor: conv.menus_enviados, color: '#8b5cf6' },
+  ];
+  cont.innerHTML = items.map(it => `
+    <div style="flex:1;min-width:90px;background:#fff;border:1px solid #e5e2da;border-radius:10px;padding:10px 14px;text-align:center;">
+      <div style="font-size:1.3rem;font-weight:800;color:${it.color};">${it.valor}</div>
+      <div style="font-size:0.7rem;color:#888;margin-top:2px;">${it.label}</div>
+    </div>
+  `).join('') + `<div style="font-size:0.7rem;color:#bbb;align-self:flex-end;padding-bottom:4px;">últimos 30 días</div>`;
+}
+
+function renderOportunidades(ops) {
+  const wrap = document.getElementById('cli-oportunidades-wrap');
+  const cont = document.getElementById('cli-oportunidades');
+  if (!ops || ops.length === 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  cont.innerHTML = ops.map(op => {
+    const min = Math.round(op.minutos_inactiva || 0);
+    const tiempoStr = min < 60 ? `hace ${min} min` : `hace ${Math.round(min/60)}h`;
+    const intents = (op.intents_detectados || []).join(', ').replace(/_/g, ' ');
+    const valor = op.valor_estimado ? ` · $${Math.round(op.valor_estimado)}` : '';
+    const seg = op.segmento || '';
+    const segColor = SEGMENTO_COLOR[seg] || '#aaa';
+    return `
+    <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div>
+        <span style="font-weight:700;">${op.nombre || op.telefono}</span>
+        ${seg ? `<span style="font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:20px;background:${segColor}18;color:${segColor};margin-left:6px;">${SEGMENTO_LABEL[seg]||seg}</span>` : ''}
+        <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${intents}${valor}</div>
+      </div>
+      <div style="font-size:0.75rem;color:#aaa;white-space:nowrap;">${tiempoStr}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderResumen() {

@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getIntegracion } from '../server.js';
 import { construirSystemPrompt } from './prompts.js';
 import { agregarMensaje, getSession } from './session.js';
-import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, EVENTOS } from '../services/memory.js';
+import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -51,9 +51,15 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const textoRespuesta = respuesta.content[0].text;
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
 
+    const orden = extraerOrden(textoRespuesta);
+
+    // Registrar intents y actualizar oportunidad (background, no bloquea)
+    registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
+      .catch(e => console.error('[brain] registrarIntents:', e.message));
+
     return {
       texto: limpiarTexto(textoRespuesta),
-      orden: extraerOrden(textoRespuesta),
+      orden,
       factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
@@ -163,6 +169,55 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
     enviarMenu: textoCompleto.includes('<ENVIAR_MENU>'),
     sessionId
   };
+}
+
+// ─── Detección de intents + oportunidades ────────────────────────────────────
+
+/**
+ * Detecta señales comerciales en el mensaje del usuario y la respuesta del bot.
+ * Retorna array de EVENTOS detectados para registrar.
+ */
+function detectarIntents(mensajeUsuario, textoRespuesta) {
+  const intents = [];
+  const msg = mensajeUsuario.toLowerCase();
+
+  if (/men[uú]|carta|qu[eé] (tienen|hay|venden|ofrecen)/i.test(msg))
+    intents.push(EVENTOS.MENU_SOLICITADO);
+
+  if (/cu[aá]nto|precio|costo|valor|\$[0-9]/i.test(msg))
+    intents.push(EVENTOS.PRECIO_CONSULTADO);
+
+  if (/quiero|me das|me pones|me mandas|me llevas|pedir|ordenar|hacer un pedido/i.test(msg))
+    intents.push(EVENTOS.PEDIDO_INICIADO);
+
+  if (textoRespuesta.includes('<ORDEN_CONFIRMADA>'))
+    intents.push(EVENTOS.PEDIDO_CONFIRMADO);
+
+  return intents;
+}
+
+/**
+ * Registrar intents detectados y actualizar oportunidad en background.
+ * Nunca lanza excepción.
+ */
+async function registrarIntents(telefono, sessionId, canal, mensajeUsuario, textoRespuesta, orden) {
+  if (!telefono) return;
+  const intents = detectarIntents(mensajeUsuario, textoRespuesta);
+
+  for (const tipo of intents) {
+    registrarEvento({ tipo, entidad_tipo: 'cliente', entidad_id: telefono, canal, sesion_id: sessionId });
+  }
+
+  if (intents.length > 0) {
+    const intent = intents[intents.length - 1]; // el más relevante
+    const esCierre = intents.includes(EVENTOS.PEDIDO_CONFIRMADO);
+    await actualizarOportunidad(telefono, sessionId, {
+      estado: esCierre ? 'cerrada_con_venta' : 'activa',
+      intent,
+      valor_estimado: orden?.total || null,
+      folio_pedido: orden?.folio || null
+    });
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

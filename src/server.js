@@ -27,7 +27,7 @@ import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/ra
 import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
-import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas } from './services/memory.js';
+import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas, obtenerOportunidadesPendientes } from './services/memory.js';
 import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor } from './services/database.js';
 
 import { readFileSync } from 'fs';
@@ -1094,6 +1094,59 @@ app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
   }
 });
 
+// Resumen de segmentos para el tab Clientes
+app.get('/api/admin/clientes/segmentos', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT segmento, COUNT(*) AS total
+      FROM perfiles_clientes
+      GROUP BY segmento
+      ORDER BY total DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Oportunidades pendientes (conversaciones con intención sin pedido)
+app.get('/api/admin/clientes/oportunidades', requireAdmin, async (req, res) => {
+  try {
+    const rows = await obtenerOportunidadesPendientes();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Métricas de conversión: chats totales vs pedidos
+app.get('/api/admin/clientes/conversion', requireAdmin, async (req, res) => {
+  try {
+    const { rows: [conv] } = await pool.query(`
+      SELECT
+        COUNT(DISTINCT sesion_id) FILTER (WHERE tipo_evento = 'mensaje_recibido') AS chats_unicos,
+        COUNT(DISTINCT sesion_id) FILTER (WHERE tipo_evento = 'pedido_confirmado') AS chats_con_pedido,
+        COUNT(*) FILTER (WHERE tipo_evento = 'menu_solicitado') AS menus_enviados,
+        COUNT(*) FILTER (WHERE tipo_evento = 'pedido_iniciado') AS pedidos_iniciados,
+        COUNT(*) FILTER (WHERE tipo_evento = 'pedido_confirmado') AS pedidos_confirmados
+      FROM eventos
+      WHERE ocurrido_at > NOW() - INTERVAL '30 days'
+    `);
+    const chats = parseInt(conv.chats_unicos || 0);
+    const conPedido = parseInt(conv.chats_con_pedido || 0);
+    res.json({
+      chats_unicos: chats,
+      chats_con_pedido: conPedido,
+      tasa_conversion: chats > 0 ? Math.round((conPedido / chats) * 100) : 0,
+      menus_enviados: parseInt(conv.menus_enviados || 0),
+      pedidos_iniciados: parseInt(conv.pedidos_iniciados || 0),
+      pedidos_confirmados: parseInt(conv.pedidos_confirmados || 0)
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
   try {
     const result = await consultarAprobacionMenu();
@@ -1302,6 +1355,49 @@ async function reconciliarPagosPendientes() {
   }
 }
 
+// ─── Seguimiento WA a oportunidades abandonadas ──────────────────────────────
+async function enviarSeguimientoOportunidades() {
+  try {
+    const oportunidades = await obtenerOportunidadesPendientes();
+
+    // Solo las que aún no recibieron seguimiento y no son Rappi
+    const pendientes = oportunidades.filter(o =>
+      !o.seguimiento_enviado_at &&
+      o.seguimiento_count === 0 &&
+      o.telefono &&
+      !o.telefono.startsWith('rappi-')
+    );
+
+    for (const op of pendientes) {
+      const nombre = op.nombre?.split(' ')[0] || 'cliente';
+      let msg;
+
+      if (op.intents_detectados?.includes('pedido_iniciado')) {
+        msg = `Hola ${nombre} 👋 ¿Pudiste completar tu pedido? Si necesitas ayuda o quieres hacer tu orden, aquí estamos 🌮`;
+      } else if (op.intents_detectados?.includes('precio_consultado') || op.intents_detectados?.includes('menu_solicitado')) {
+        msg = `Hola ${nombre} 😊 ¿Tienes alguna duda sobre nuestro menú o precios? Con gusto te ayudamos a pedir 🌮`;
+      } else {
+        continue; // sin intent relevante, no enviar
+      }
+
+      try {
+        await enviarMensaje(op.telefono, msg);
+        // Marcar seguimiento enviado en DB
+        await pool.query(
+          `UPDATE oportunidades SET seguimiento_enviado_at = NOW(), seguimiento_count = 1
+           WHERE id = $1`,
+          [op.id]
+        );
+        console.log(`[Memory] Seguimiento WA enviado a ${op.telefono} (op #${op.id})`);
+      } catch (e) {
+        console.error(`[Memory] Error enviando seguimiento a ${op.telefono}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[Memory] Error en enviarSeguimientoOportunidades:', e.message);
+  }
+}
+
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
   .then(() => seedMenuDesdeJSON(menuJSON))
@@ -1318,8 +1414,11 @@ initDB()
     // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
     reconciliarPagosPendientes();
     setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
-    // Memory Engine: detectar conversaciones abandonadas cada 10 minutos
-    setInterval(() => detectarConversacionesAbandonadas(30), 10 * 60 * 1000);
+    // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
+    setInterval(async () => {
+      await detectarConversacionesAbandonadas(30);
+      await enviarSeguimientoOportunidades();
+    }, 10 * 60 * 1000);
     // Memory Engine: enriquecer perfiles de clientes cada 2 horas
     setTimeout(() => {
       enriquecerTodosLosPerfiles(); // primer cálculo inicial (con delay para no sobrecargar arranque)
