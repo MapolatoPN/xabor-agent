@@ -1357,32 +1357,52 @@ async function reconciliarPagosPendientes() {
 
 // ─── Seguimiento WA a oportunidades abandonadas ──────────────────────────────
 async function enviarSeguimientoOportunidades() {
+  const tz = 'America/Matamoros';
   try {
-    const oportunidades = await obtenerOportunidadesPendientes();
+    // Teléfonos de repartidores registrados — excluirlos siempre
+    const { rows: reps } = await pool.query(`SELECT telefono FROM repartidores WHERE telefono IS NOT NULL`);
+    const telefonosRep = new Set(reps.map(r => r.telefono));
 
-    // Solo las que aún no recibieron seguimiento y no son Rappi
-    const pendientes = oportunidades.filter(o =>
-      !o.seguimiento_enviado_at &&
-      o.seguimiento_count === 0 &&
-      o.telefono &&
-      !o.telefono.startsWith('rappi-')
-    );
+    // Oportunidades pendientes sin seguimiento, creadas el día anterior,
+    // y en la misma hora local que tuvieron actividad (ventana de ±30 min)
+    const { rows: pendientes } = await pool.query(`
+      SELECT
+        o.id, o.telefono, o.intents_detectados, o.ultima_actividad_at,
+        c.nombre,
+        EXTRACT(HOUR FROM o.ultima_actividad_at AT TIME ZONE 'UTC' AT TIME ZONE $1) AS hora_original,
+        EXTRACT(HOUR FROM NOW() AT TIME ZONE $1) AS hora_actual
+      FROM oportunidades o
+      LEFT JOIN clientes c ON c.telefono = o.telefono
+      WHERE o.estado = 'pendiente'
+        AND o.seguimiento_count = 0
+        AND o.telefono IS NOT NULL
+        AND o.telefono NOT LIKE 'rappi-%'
+        -- Que sea al menos del día anterior (no del mismo día)
+        AND (o.ultima_actividad_at AT TIME ZONE 'UTC' AT TIME ZONE $1)::date < (NOW() AT TIME ZONE $1)::date
+        -- Misma hora que cuando preguntaron (ventana ±1 hora)
+        AND ABS(
+          EXTRACT(HOUR FROM NOW() AT TIME ZONE $1) -
+          EXTRACT(HOUR FROM o.ultima_actividad_at AT TIME ZONE 'UTC' AT TIME ZONE $1)
+        ) <= 1
+    `, [tz]);
 
     for (const op of pendientes) {
+      // Excluir repartidores
+      if (telefonosRep.has(op.telefono)) continue;
+
       const nombre = op.nombre?.split(' ')[0] || 'cliente';
       let msg;
 
       if (op.intents_detectados?.includes('pedido_iniciado')) {
-        msg = `Hola ${nombre} 👋 ¿Pudiste completar tu pedido? Si necesitas ayuda o quieres hacer tu orden, aquí estamos 🌮`;
+        msg = `Hola ${nombre} 👋 Ayer quedaste a punto de hacer tu pedido. ¿Quieres que te ayudemos ahora? 🌮`;
       } else if (op.intents_detectados?.includes('precio_consultado') || op.intents_detectados?.includes('menu_solicitado')) {
-        msg = `Hola ${nombre} 😊 ¿Tienes alguna duda sobre nuestro menú o precios? Con gusto te ayudamos a pedir 🌮`;
+        msg = `Hola ${nombre} 😊 Ayer preguntaste sobre nuestro menú. ¿Hay algo en lo que te podamos ayudar hoy? 🌮`;
       } else {
-        continue; // sin intent relevante, no enviar
+        continue; // sin intent relevante
       }
 
       try {
         await enviarMensaje(op.telefono, msg);
-        // Marcar seguimiento enviado en DB
         await pool.query(
           `UPDATE oportunidades SET seguimiento_enviado_at = NOW(), seguimiento_count = 1
            WHERE id = $1`,
