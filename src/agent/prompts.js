@@ -129,6 +129,21 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const direccion     = cfg.direccion ? `${cfg.direccion}, ${cfg.ciudad || ''}` : 'Libramiento Manuel Perez Trevino 2416, Local 4, Piedras Negras, Coahuila';
   const horario       = cfg.horario || 'lunes a sabado 11am-10pm';
 
+  // Config de Rewards — para inyectar valores actuales en el prompt
+  let rwCfg = null;
+  try {
+    const { obtenerConfig: getRewardsCfg } = await import('../services/rewardsService.js');
+    rwCfg = await getRewardsCfg();
+  } catch (_) {}
+  const rwMontoPorPunto  = rwCfg ? parseFloat(rwCfg.monto_por_punto)  : 10;
+  const rwPuntosPorPeso  = rwCfg ? parseFloat(rwCfg.puntos_por_peso)  : 0.5;
+  const rwCanjeMinimo    = rwCfg ? parseInt(rwCfg.canje_minimo)        : 100;
+  const rwActivo         = rwCfg ? rwCfg.activo : false;
+  const rwValorBloque    = rwCanjeMinimo * rwPuntosPorPeso; // $$ por bloque
+  // Focaccia Bar como meta de referencia ($225)
+  const rwPtsFocaccia    = rwActivo ? Math.ceil(225 / rwPuntosPorPeso) : 0;
+  const rwVisitasFocaccia = rwActivo ? Math.ceil(rwPtsFocaccia / Math.floor(300 / rwMontoPorPunto)) : 0;
+
   // Texto de promociones — siempre informar aunque no estén activas ahora
   const todasLasPromos = reglas.promociones || [];
   const promoEnvioGratis = todasLasPromos.find(p => p.condicion === 'min_3_focaccias' && p.activa);
@@ -426,35 +441,34 @@ Si el cliente pide factura, recibo fiscal o comprobante de impuestos por WhatsAp
 - Si el cliente no tiene email o prefiere no darlo, omite el campo 'email' en el JSON.
 - Si no hay FACTURAPI_KEY configurada, el sistema te indicará el error y debes decirle al cliente que lo contactamos directamente.
 
-## XABOR REWARDS — PROGRAMA DE LEALTAD
-Tenemos un programa de puntos llamado **Xabor Rewards**. Explícalo cuando te pregunten cómo funciona, qué es, cómo acumular, cómo canjear o cualquier variante.
+${rwActivo ? `## XABOR REWARDS — PROGRAMA DE LEALTAD
+Tenemos un programa de puntos llamado Xabor Rewards. Explícalo cuando te pregunten cómo funciona, qué es, cómo acumular, cómo canjear o cualquier variante.
 
-**Cómo acumular:**
-- Por cada $10 de compra ganas 1 punto automáticamente.
-- Aplica en pedidos por WhatsApp, llamada y en mostrador (si te registras al pedir).
+Cómo acumular:
+- Por cada $${rwMontoPorPunto} de compra ganas 1 punto automáticamente.
+- Aplica en pedidos por WhatsApp, llamada y en mostrador.
 - Los puntos se acreditan cuando el pedido es entregado.
 - Rappi NO acumula puntos.
 
-**Cómo canjear:**
-- Cada 100 puntos = $50 de descuento en tu próxima compra en mostrador.
-- Solo se canjea en bloques de 100 (100 pts = $50, 200 pts = $100, etc.).
-- El canje se aplica al momento de pagar en tienda — dile al staff que quieres usar tus puntos.
+Cómo canjear:
+- Cada punto vale $${rwPuntosPorPeso} de descuento. Se canjea en bloques de ${rwCanjeMinimo} puntos ($${rwValorBloque} por bloque).
+- Ejemplo: ${rwCanjeMinimo} pts = $${rwValorBloque} de descuento, ${rwCanjeMinimo * 2} pts = $${rwValorBloque * 2}.
+- Meta popular: ${rwPtsFocaccia} puntos = Focaccia Bar gratis (aprox. ${rwVisitasFocaccia} visitas con ticket de $300).
+- El canje se aplica al pagar en tienda — el cliente le dice al staff que quiere usar sus puntos.
 
-**Niveles de membresía:**
-- 🥉 Bronze: 0–499 pts acumulados (nivel de entrada)
-- 🥈 Silver: 500–1,499 pts acumulados
-- 🥇 Gold: 1,500+ pts acumulados
+Niveles de membresía:
+- Bronze: 0–499 pts acumulados
+- Silver: 500–1,499 pts acumulados
+- Gold: 1,500+ pts acumulados
 
-**Consultar saldo:**
-- Por WhatsApp: el cliente puede preguntar "¿cuántos puntos tengo?" y le respondo directo con su saldo.
-- Por llamada: dile que consulte su saldo escribiendo al WhatsApp de Xabor o preguntando en mostrador.
-- También puede pedirle al staff en mostrador que revise su saldo.
+Consultar saldo:
+- Por WhatsApp: el cliente pregunta "¿cuántos puntos tengo?" y le respondo directo.
+- Por llamada: dile que consulte escribiendo al WhatsApp de Xabor o preguntando en mostrador.
 
-**Inscripción:**
-- Es automática: la primera vez que haces un pedido con tu número de teléfono quedas inscrito.
-- No hay tarjeta física ni app — todo es por número de teléfono.
+Inscripción:
+- Automática con el número de teléfono — sin tarjeta ni app.
 
-Si te preguntan algo de Rewards que no está aquí, responde con lo que sabes y ofrece que pregunten directamente en tienda para más detalles.
+Si te preguntan algo de Rewards que no está aquí, responde con lo que sabes y ofrece que pregunten en tienda.` : ''}
 
 ## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.
