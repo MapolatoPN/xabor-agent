@@ -3128,6 +3128,7 @@ function renderClientes(lista) {
           <th style="text-align:right;padding:10px 12px;">Ticket prom.</th>
           <th style="text-align:right;padding:10px 12px;">Total</th>
           <th style="text-align:right;padding:10px 16px;">Último pedido</th>
+          <th style="padding:10px 12px;"></th>
         </tr>
       </thead>
       <tbody>
@@ -3155,10 +3156,24 @@ function renderClientes(lista) {
             <td style="text-align:right;padding:11px 12px;color:${ticket === '—' ? '#ccc' : '#111'};">${ticket}</td>
             <td style="text-align:right;padding:11px 12px;font-weight:${total !== '—' ? '700' : '400'};color:${total !== '—' ? '#111' : '#ccc'};">${total}</td>
             <td style="text-align:right;padding:11px 16px;color:${diasStr === '—' ? '#ccc' : '#555'};">${diasStr}</td>
+            <td style="padding:11px 12px;text-align:center;" onclick="event.stopPropagation()">
+              <button onclick="marcarInterno('${c.telefono}')" title="Marcar como interno (ocultar)" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:4px 7px;line-height:0;cursor:pointer;color:#9ca3af;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+              </button>
+            </td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>`;
+}
+
+async function marcarInterno(telefono) {
+  if (!confirm(`¿Marcar ${telefono} como número interno?\n\nDesaparecerá de la lista de clientes, estadísticas y campañas.`)) return;
+  await apiFetch(`/api/admin/clientes/${telefono}/interno`, {
+    method: 'PATCH', body: JSON.stringify({ es_interno: true })
+  });
+  clientesData = clientesData.filter(c => c.telefono !== telefono);
+  filtrarClientes();
 }
 
 function verFicha(telefono) {

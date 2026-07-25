@@ -35,6 +35,7 @@ export async function initDB() {
     ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS forma_pago VARCHAR(50);
     ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN DEFAULT FALSE;
     ALTER TABLE clientes ADD COLUMN IF NOT EXISTS pedido_pago_pendiente VARCHAR(20) DEFAULT NULL;
+    ALTER TABLE clientes ADD COLUMN IF NOT EXISTS es_interno BOOLEAN DEFAULT FALSE;
 
     CREATE TABLE IF NOT EXISTS mensajes (
       id          SERIAL PRIMARY KEY,
@@ -464,6 +465,13 @@ export async function setBotPausado(telefono, pausado) {
   } catch (e) {
     console.error('[DB] Error setBotPausado:', e.message);
   }
+}
+
+export async function toggleClienteInterno(telefono, esInterno) {
+  await pool.query(
+    'UPDATE clientes SET es_interno = $1 WHERE telefono = $2',
+    [esInterno, telefono]
+  );
 }
 
 export async function getBotPausado(telefono) {
@@ -1380,6 +1388,7 @@ export async function obtenerDestinatariosCampana(segmento) {
     WHERE c.telefono != '—'
       AND c.telefono NOT LIKE 'rappi-%'
       AND r.telefono IS NULL
+      AND NOT COALESCE(c.es_interno, FALSE)
       ${segFiltro}
     ORDER BY COALESCE(p.total_gastado, 0) DESC
   `);
