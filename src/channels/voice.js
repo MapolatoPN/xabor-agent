@@ -25,7 +25,7 @@ router.post('/start', (req, res) => {
 
   const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false }));
   const saludo  = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const greeting = `${saludo}, bienvenido a Xabor. ¿En qué te puedo ayudar?`;
+  const greeting = `Hola, Xabor, ${saludo}, ¿cómo le podemos servir?`;
 
   const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'htFfPSZGJwjBv1CL0aMD';
 
@@ -299,6 +299,12 @@ function numToWordsES(n) {
 }
 
 // Limpia y adapta el texto para TTS — convierte números a palabras
+// Convierte una cadena de dígitos en palabras individuales: "5678" → "cinco seis siete ocho"
+function digitosPorPalabra(str) {
+  const map = ['cero','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve'];
+  return str.split('').map(d => map[parseInt(d)] ?? d).join(' ');
+}
+
 function limpiarParaVoz(texto) {
   // Si contiene inicio de bloque JSON o marcador, truncar ahí
   const jsonIdx = texto.indexOf('{');
@@ -307,7 +313,6 @@ function limpiarParaVoz(texto) {
   if (corte.length) texto = texto.slice(0, Math.min(...corte));
 
   // Mantener SOLO caracteres latinos/españoles — excluye chino, árabe, emoji, etc.
-  // \p{L} incluye todos los Unicode; en cambio usamos rangos explícitos de latín + español
   texto = texto.replace(/[^a-zA-ZáéíóúüñÁÉÍÓÚÜÑ0-9\s.,;:¿?¡!'\-]/g, ' ');
 
   return texto
@@ -328,6 +333,10 @@ function limpiarParaVoz(texto) {
     // am/pm sueltos que no tengan número antes
     .replace(/\bam\b/gi, 'de la mañana')
     .replace(/\bpm\b/gi, 'de la tarde')
+    // Números de teléfono completos (10+ dígitos) → dígito por dígito
+    .replace(/\b(\d{10,})\b/g, (_, num) => digitosPorPalabra(num))
+    // "termina en XXXX" → dígito por dígito (confirmación de últimos 4 dígitos)
+    .replace(/termina en (\d{3,5})\b/gi, (_, num) => 'termina en ' + digitosPorPalabra(num))
     // Todos los números 1-9999 a palabras (incluye dígitos solos como "1", "3")
     .replace(/\b(\d{1,5})\b/g, (_, num) => {
       const n = parseInt(num, 10);
