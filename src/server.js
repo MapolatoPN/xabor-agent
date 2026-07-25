@@ -994,6 +994,7 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
       FROM pedidos_activos
       WHERE ${whereDate}
         AND datos->>'modalidad' ILIKE '%domicilio%'
+        AND (datos->>'canal') IS DISTINCT FROM 'rappi'
       ORDER BY created_at DESC
     `);
 
