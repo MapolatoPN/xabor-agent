@@ -151,17 +151,25 @@ header {
 .bnav-item.activo .bnav-dot { background: var(--color-brand); }
 #bnav-badge { position: absolute; top: -2px; right: 6px; background: var(--color-danger); color: #fff; border-radius: var(--radius-pill); padding: 1px 5px; font-size: 8px; font-weight: 700; display: none; }
 
-/* Sheet "Más" */
+/* Drawer "Más" (sidebar derecho en móvil) */
 #mas-sheet {
-  display: none; position: fixed; inset: 0; z-index: 250;
+  display: block;
+  position: fixed; top: 0; right: 0; bottom: 0; width: 260px;
+  background: var(--color-surface); z-index: 1101;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+  transform: translateX(100%);
+  transition: transform .25s ease;
+  visibility: hidden;
 }
-#mas-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.4); }
-#mas-panel {
-  position: absolute; bottom: 0; left: 0; right: 0;
-  background: var(--color-surface); border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-  padding: 16px 0 max(24px, env(safe-area-inset-bottom));
+#mas-sheet.open {
+  transform: translateX(0);
+  visibility: visible;
 }
-.mas-handle { width: 36px; height: 4px; background: var(--color-border-strong); border-radius: 2px; margin: 0 auto 16px; }
+#mas-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.3); z-index: 1100;
+}
+#mas-overlay.open { display: block; }
 .mas-item {
   display: flex; flex-direction: row; align-items: center;
   gap: 12px; padding: 13px 14px;
@@ -409,8 +417,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   #vistas-extra { padding: 10px 10px 90px; }
 
   /* Header compacto */
+  header { padding: 0 12px; gap: 8px; }
   .header-brand { font-size: 1rem; letter-spacing: 0.5px; width: auto; }
   #estado-ws .ws-label { display: none; }
+  .header-btn .btn-label { display: none; }
+  #contador { padding: 4px 10px; font-size: 0.75rem; }
 
   /* Ocultar sidebar, mostrar bottom nav */
   #tabs-nav { display: none; }
@@ -517,7 +528,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>
   <button class="header-btn admin-only" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
-  <button class="header-btn danger" onclick="cerrarSesion()">🔒 Salir</button>
+  <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
 
 <!-- Modal WhatsApp -->
@@ -1696,18 +1707,12 @@ function bnavTab(tab) {
 }
 
 function abrirMasSheet() {
-  const sheet = document.getElementById('mas-sheet');
-  const overlay = document.getElementById('mas-overlay');
-  sheet.style.display = 'block';
-  overlay.style.display = 'block';
-  requestAnimationFrame(() => { sheet.style.transform = 'translateX(0)'; });
+  document.getElementById('mas-sheet').classList.add('open');
+  document.getElementById('mas-overlay').classList.add('open');
 }
 function cerrarMasSheet() {
-  const sheet = document.getElementById('mas-sheet');
-  const overlay = document.getElementById('mas-overlay');
-  sheet.style.transform = 'translateX(100%)';
-  overlay.style.display = 'none';
-  setTimeout(() => { sheet.style.display = 'none'; }, 260);
+  document.getElementById('mas-sheet').classList.remove('open');
+  document.getElementById('mas-overlay').classList.remove('open');
 }
 
 async function cargarProgramados() {
@@ -3214,8 +3219,8 @@ async function cargarRepartidores() {
 </nav>
 
 <!-- ═══════════════ MAS-DRAWER (barra lateral derecha en móvil) ═══════════════ -->
-<div id="mas-overlay" onclick="cerrarMasSheet()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1100;"></div>
-<div id="mas-sheet" style="display:none;position:fixed;top:0;right:0;bottom:0;width:260px;background:#fff;z-index:1101;padding:0;box-shadow:-4px 0 24px rgba(0,0,0,0.12);transform:translateX(100%);transition:transform .25s ease;">
+<div id="mas-overlay" onclick="cerrarMasSheet()"></div>
+<div id="mas-sheet">
   <!-- Header del drawer -->
   <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #f1f0ed;">
     <span style="font-size:0.88rem;font-weight:700;color:#1a1a1a;letter-spacing:.2px;">Más opciones</span>
