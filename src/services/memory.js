@@ -150,6 +150,12 @@ export function construirContextoCliente(perfil) {
  */
 export async function recalcularPerfilCliente(telefono) {
   try {
+    // Garantizar que el cliente existe en la tabla clientes (FK requirement)
+    await pool.query(
+      `INSERT INTO clientes (telefono) VALUES ($1) ON CONFLICT (telefono) DO NOTHING`,
+      [telefono]
+    );
+
     // Calcular métricas desde pedidos_activos (fuente de verdad)
     const { rows: [metricas] } = await pool.query(`
       SELECT
