@@ -1173,7 +1173,7 @@ if (!TOKEN) location.href = '/login.html';
 // Config del negocio — se carga desde /api/config al iniciar
 let negocio = {
   nombre: 'Restaurante', nombre_corto: 'NEGOCIO',
-  direccion: '', ciudad: '', rfc: '', telefono: '', whatsapp: '', horario: ''
+  direccion: '', ciudad: '', rfc: '', telefono: '', whatsapp: '', horario: '', bot_avisos: ''
 };
 async function cargarNegocio() {
   try {
@@ -2678,6 +2678,12 @@ function renderConfigForm() {
     <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">${f.label}</label>
     <input id="cfg-${f.clave}" style="${inp()}" value="${(negocio[f.clave]||'').replace(/"/g,'&quot;')}" placeholder="${f.placeholder}">
   `).join('') + `
+    <div style="margin-bottom:6px;">
+      <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">📣 Avisos y promociones activas para el bot</label>
+      <div style="font-size:0.75rem;color:#888;margin-bottom:6px;">El bot lo mencionará en WhatsApp y llamadas. Déjalo vacío si no hay nada activo.</div>
+      <textarea id="cfg-bot_avisos" rows="4" placeholder="Ej: Esta semana 2x puntos los viernes. Focaccia + bebida $199 hasta el domingo."
+        style="border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;">${(negocio.bot_avisos||'').replace(/</g,'&lt;')}</textarea>
+    </div>
     <div id="cfg-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
     <button onclick="guardarConfig()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar cambios</button>
   `;
@@ -2689,6 +2695,8 @@ async function guardarConfig() {
     const v = document.getElementById('cfg-' + f.clave)?.value.trim();
     if (v !== undefined) cambios[f.clave] = v;
   });
+  const avisos = document.getElementById('cfg-bot_avisos')?.value ?? '';
+  cambios.bot_avisos = avisos;
   const fb = document.getElementById('cfg-feedback');
   fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
   const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify(cambios) });

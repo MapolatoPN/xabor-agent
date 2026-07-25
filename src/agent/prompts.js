@@ -128,6 +128,7 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const nombreCorto   = cfg.nombre_corto || 'Xabor';
   const direccion     = cfg.direccion ? `${cfg.direccion}, ${cfg.ciudad || ''}` : 'Libramiento Manuel Perez Trevino 2416, Local 4, Piedras Negras, Coahuila';
   const horario       = cfg.horario || 'lunes a sabado 11am-10pm';
+  const botAvisos     = (cfg.bot_avisos || '').trim();
 
   // Config de Rewards — para inyectar valores actuales en el prompt
   let rwCfg = null;
@@ -470,7 +471,11 @@ Inscripción:
 
 Si te preguntan algo de Rewards que no está aquí, responde con lo que sabes y ofrece que pregunten en tienda.` : ''}
 
-## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
+${botAvisos ? `## AVISOS Y PROMOCIONES ACTIVAS
+${botAvisos}
+Menciona estas promociones cuando sean relevantes para el pedido del cliente, pero sin ser repetitivo.
+
+` : ''}## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.
 - Si piden algo que no está en el menú, discúlpate y ofrece la alternativa más cercana.
 - NUNCA des un precio diferente al del menú.

@@ -76,7 +76,8 @@ export async function initDB() {
       ('rfc',           'CAOM940122PTA'),
       ('telefono',      '(878) 109-1115'),
       ('whatsapp',      '(878) 109-1115'),
-      ('horario',       'lunes a sabado 11am-10pm')
+      ('horario',       'lunes a sabado 11am-10pm'),
+      ('bot_avisos',    '')
     ON CONFLICT (clave) DO NOTHING;
 
     CREATE TABLE IF NOT EXISTS caja_fondos (
