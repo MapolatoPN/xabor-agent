@@ -2968,6 +2968,36 @@ async function cargarRepartidores() {
 
 </script>
 
+<!-- ═══════════════ BOTTOM NAV (móvil) ═══════════════ -->
+<nav id="bottom-nav">
+  <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-layout-cards"></i>
+    <span>Comandas</span>
+  </button>
+  <button class="bnav-item" id="bnav-presencial" onclick="bnavTab('presencial')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-device-tablet"></i>
+    <span>POS</span>
+  </button>
+  <button class="bnav-item" id="bnav-chats" onclick="bnavTab('chats')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-message-circle"></i>
+    <span id="bnav-badge">0</span>
+    <span>Chats</span>
+  </button>
+  <button class="bnav-item" id="bnav-corte" onclick="bnavTab('corte')">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-cash-register"></i>
+    <span>Corte</span>
+  </button>
+  <button class="bnav-item" onclick="abrirMasSheet()">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-dots"></i>
+    <span>Más</span>
+  </button>
+</nav>
+
 <!-- ═══════════════ MAS-SHEET (hoja de tabs extra en móvil) ═══════════════ -->
 <div id="mas-overlay" onclick="cerrarMasSheet()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1100;"></div>
 <div id="mas-sheet" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;z-index:1101;padding:20px 16px 32px;">
