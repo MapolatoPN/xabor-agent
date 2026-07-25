@@ -411,6 +411,26 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 /* Botón volver en chats (mobile) */
 #btn-chat-volver { display: none; background: none; border: none; color: var(--color-text-secondary); font-size: 1.1rem; padding: 2px 8px 2px 0; cursor: pointer; }
 
+/* ─── Rewards ───────────────────────────────────────────────────────────── */
+.rw-card {
+  background:#fff; border:1px solid #e5e2da; border-radius:12px;
+  padding:16px 18px; display:flex; flex-direction:column; gap:4px;
+}
+.rw-card-val { font-size:1.5rem; font-weight:800; color:#1a1a1a; }
+.rw-card-lbl { font-size:0.75rem; color:#888; font-weight:500; }
+.rw-stab { transition:color .15s,border-color .15s; }
+.rw-stab.activo { color:#FF6B35 !important; border-bottom-color:#FF6B35 !important; }
+.rw-mov-fila { display:grid; grid-template-columns:90px 1fr auto auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid #f8f7f4; font-size:0.82rem; }
+.rw-mov-tipo { display:inline-block; padding:2px 8px; border-radius:12px; font-size:0.7rem; font-weight:700; }
+.rw-tipo-acumulacion  { background:#dcfce7; color:#16a34a; }
+.rw-tipo-canje        { background:#fff7ed; color:#ea580c; }
+.rw-tipo-ajuste_positivo { background:#dcfce7; color:#16a34a; }
+.rw-tipo-ajuste_negativo { background:#fee2e2; color:#dc2626; }
+.rw-tipo-reverso      { background:#f3f4f6; color:#6b7280; }
+/* Widget POS — asignar cliente */
+#rw-pos-widget { border:1px solid #e5e2da; border-radius:10px; padding:12px 14px; margin-bottom:12px; background:#fafaf8; }
+#rw-pos-widget.asignado { border-color:#22c55e; background:#f0fdf4; }
+
 /* ─── Responsive — mobile (≤640px) ─────────────────────────────────────── */
 @media (max-width: 640px) {
   main { padding: 10px 10px 90px; }
@@ -663,6 +683,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Config</button>
   <button class="tab-btn admin-only" id="tab-repartidores" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
+  <button class="tab-btn admin-only" id="tab-rewards"     onclick="mostrarTab('rewards')">Rewards</button>
 </div>
 
 <main>
@@ -768,6 +789,26 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <span id="pos-total-label">Total</span>
             <span id="pos-total-monto">$0</span>
           </div>
+          <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
+          <div id="rw-pos-widget">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+              <span style="font-size:0.78rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">Rewards — Cliente</span>
+              <button onclick="rwPosLimpiar()" id="rw-pos-btn-limpiar" style="display:none;background:none;border:none;font-size:0.72rem;color:#ef4444;cursor:pointer;font-weight:600;">Quitar</button>
+            </div>
+            <div id="rw-pos-cliente-info" style="display:none;margin-bottom:8px;">
+              <div style="font-weight:700;font-size:0.88rem;" id="rw-pos-nombre">—</div>
+              <div style="font-size:0.75rem;color:#888;" id="rw-pos-tel">—</div>
+              <div style="font-size:0.75rem;color:#22c55e;margin-top:2px;" id="rw-pos-puntos">—</div>
+            </div>
+            <div id="rw-pos-buscar-wrap" style="display:flex;gap:6px;">
+              <input id="rw-pos-input" type="text" placeholder="Teléfono o nombre…"
+                style="flex:1;padding:7px 10px;border:1px solid #e5e2da;border-radius:7px;font-size:0.82rem;background:#fff;"
+                oninput="rwPosBuscar(this.value)" onkeydown="if(event.key==='Enter')rwPosSelPrimero()" />
+              <button onclick="rwPosAbrirNuevo()" style="padding:7px 10px;border:1px solid #e5e2da;border-radius:7px;background:#fff;font-size:0.78rem;font-weight:600;cursor:pointer;color:#374151;white-space:nowrap;">+ Nuevo</button>
+            </div>
+            <div id="rw-pos-resultados" style="margin-top:6px;max-height:140px;overflow-y:auto;"></div>
+          </div>
+
           <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
         </div>
       </div>
@@ -1025,6 +1066,80 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
     </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         Tab Rewards — solo admin
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="vista-rewards" style="display:none;">
+
+      <!-- Encabezado -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-size:1.1rem;font-weight:800;" id="rw-nombre-programa">Xabor Rewards</div>
+          <div style="font-size:0.78rem;color:#888;margin-top:2px;">Programa de lealtad</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="abrirConfigRewards()" style="padding:8px 16px;border:1px solid #e5e2da;border-radius:8px;background:#fafaf8;font-size:0.82rem;font-weight:600;cursor:pointer;color:#374151;">Configuración</button>
+          <button onclick="abrirVistaRewards('movimientos')" style="padding:8px 16px;border:1px solid #e5e2da;border-radius:8px;background:#fafaf8;font-size:0.82rem;font-weight:600;cursor:pointer;color:#374151;">Movimientos</button>
+        </div>
+      </div>
+
+      <!-- Sub-tabs -->
+      <div id="rw-subtabs" style="display:flex;gap:0;border-bottom:1px solid #e5e2da;margin-bottom:20px;">
+        <button class="rw-stab activo" onclick="abrirVistaRewards('resumen')"    style="padding:9px 18px;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;color:#FF6B35;border-bottom:2px solid #FF6B35;">Resumen</button>
+        <button class="rw-stab"        onclick="abrirVistaRewards('clientes')"   style="padding:9px 18px;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;color:#888;border-bottom:2px solid transparent;">Clientes</button>
+        <button class="rw-stab"        onclick="abrirVistaRewards('movimientos')" style="padding:9px 18px;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;color:#888;border-bottom:2px solid transparent;">Movimientos</button>
+        <button class="rw-stab"        onclick="abrirVistaRewards('config')"     style="padding:9px 18px;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;color:#888;border-bottom:2px solid transparent;">Config</button>
+      </div>
+
+      <!-- ── RESUMEN ───────────────────────────────────────────────────────── -->
+      <div id="rw-vista-resumen">
+        <div id="rw-tarjetas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;">
+          <div class="rw-card"><div class="rw-card-val" id="rw-inscritos">—</div><div class="rw-card-lbl">Clientes inscritos</div></div>
+          <div class="rw-card"><div class="rw-card-val" id="rw-emitidos">—</div><div class="rw-card-lbl">Puntos emitidos</div></div>
+          <div class="rw-card"><div class="rw-card-val" id="rw-saldo">—</div><div class="rw-card-lbl">Saldo activo</div></div>
+        </div>
+        <div style="font-size:0.8rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">Movimientos recientes</div>
+        <div id="rw-movimientos-recientes"><div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div></div>
+      </div>
+
+      <!-- ── CLIENTES ──────────────────────────────────────────────────────── -->
+      <div id="rw-vista-clientes" style="display:none;">
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <input id="rw-buscar" type="search" placeholder="Buscar por nombre o teléfono…"
+            style="flex:1;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;"
+            oninput="buscarRewards(this.value)" />
+        </div>
+        <div id="rw-lista-clientes"><div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div></div>
+      </div>
+
+      <!-- ── MOVIMIENTOS ───────────────────────────────────────────────────── -->
+      <div id="rw-vista-movimientos" style="display:none;">
+        <div id="rw-tabla-movimientos"><div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div></div>
+      </div>
+
+      <!-- ── CONFIGURACIÓN ─────────────────────────────────────────────────── -->
+      <div id="rw-vista-config" style="display:none;">
+        <div style="max-width:520px;">
+          <div style="font-size:0.88rem;font-weight:700;margin-bottom:16px;color:#374151;">Configuración del programa</div>
+          <div id="rw-config-form"><div style="color:#aaa;font-size:0.85rem;">Cargando...</div></div>
+        </div>
+      </div>
+
+      <!-- Modal perfil de cliente Rewards -->
+      <div id="rw-perfil-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:flex-start;justify-content:center;padding:24px 12px;overflow-y:auto;">
+        <div style="background:#fff;border-radius:14px;width:100%;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 20px;border-bottom:1px solid #f1f0ed;background:#f8f7f4;">
+            <div style="font-weight:800;font-size:0.95rem;">Perfil del cliente</div>
+            <button onclick="cerrarPerfilRewards()" style="background:none;border:none;color:#9ca3af;cursor:pointer;padding:4px;line-height:0;border-radius:6px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div id="rw-perfil-contenido" style="padding:20px;"></div>
+        </div>
+      </div>
+
+    </div><!-- /vista-rewards -->
 
 </div><!-- /vistas-extra -->
 
@@ -1647,7 +1762,7 @@ ${clienteSection}
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes'];
+const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes','rewards'];
 
 function mostrarTab(tab) {
   // Ocultar vistas principales
@@ -1656,7 +1771,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -1664,7 +1779,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -1683,6 +1798,7 @@ function mostrarTab(tab) {
   if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); }
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
+  if (tab === 'rewards')  cargarRewards();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     const bnavBadge = document.getElementById('bnav-badge');
@@ -2090,6 +2206,8 @@ function renderCarrito() {
       document.getElementById('mixto-cambio-monto').textContent = `$${diff.toFixed(0)}`;
     }
   }
+  // Rewards — actualizar estimación de puntos cuando cambia el carrito
+  if (rwClienteAsignado && rwConfig) rwActualizarEstimacion();
 }
 
 function actualizarMobileCartBar() {
@@ -2158,10 +2276,15 @@ async function confirmarPresencial() {
   const btn            = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Procesando...';
   try {
-    const r = await apiFetch('/api/pedido-presencial', {
-      method: 'POST',
-      body: JSON.stringify({ items: posCarrito, nombre, forma_pago: formaPagoFinal, total, descuento, motivo_descuento: motivoDesc, billete, cambio, mixto_efectivo: mixtoEfectivo || null, mixto_terminal: mixtoTerminal || null })
-    });
+    const body = {
+      items: posCarrito, nombre, forma_pago: formaPagoFinal, total, descuento,
+      motivo_descuento: motivoDesc, billete, cambio,
+      mixto_efectivo: mixtoEfectivo || null, mixto_terminal: mixtoTerminal || null,
+      // Rewards — opcional: cliente asignado
+      rewards_telefono: rwClienteAsignado?.telefono || null,
+      rewards_nombre:   rwClienteAsignado?.nombre   || null,
+    };
+    const r = await apiFetch('/api/pedido-presencial', { method: 'POST', body: JSON.stringify(body) });
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
     else {
@@ -2172,6 +2295,7 @@ async function confirmarPresencial() {
       document.getElementById('pos-billete').value = '';
       document.getElementById('mixto-efectivo').value = '';
       document.getElementById('mixto-terminal').value = '';
+      rwPosLimpiar(); // Limpiar cliente Rewards asignado
       renderCarrito();
       actualizarMobileCartBar();
       volverMenuPOS();
@@ -2742,6 +2866,385 @@ async function guardarProducto(id) {
   document.getElementById('modal-producto').remove();
   cargarMenuEditor();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REWARDS — Módulo de lealtad (Fase 1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Estado del módulo ────────────────────────────────────────────────────────
+let rwConfig = null;          // Configuración actual del programa
+let rwClienteAsignado = null; // Cliente asignado en el POS actual
+
+// ─── Entrada al tab ───────────────────────────────────────────────────────────
+async function cargarRewards() {
+  abrirVistaRewards('resumen');
+  // Cargar config para nombre del programa
+  try {
+    const r = await apiFetch('/api/rewards/config');
+    if (r.ok) {
+      rwConfig = await r.json();
+      const el = document.getElementById('rw-nombre-programa');
+      if (el && rwConfig?.nombre_programa) el.textContent = rwConfig.nombre_programa;
+    }
+  } catch(e) {}
+}
+
+// ─── Sub-navegación ───────────────────────────────────────────────────────────
+function abrirVistaRewards(vista) {
+  ['resumen','clientes','movimientos','config'].forEach(v => {
+    document.getElementById('rw-vista-' + v).style.display = v === vista ? '' : 'none';
+  });
+  document.querySelectorAll('.rw-stab').forEach((btn, i) => {
+    const vistas = ['resumen','clientes','movimientos','config'];
+    const activo = vistas[i] === vista;
+    btn.classList.toggle('activo', activo);
+    btn.style.color = activo ? '#FF6B35' : '#888';
+    btn.style.borderBottomColor = activo ? '#FF6B35' : 'transparent';
+  });
+  if (vista === 'resumen')     cargarResumenRewards();
+  if (vista === 'clientes')    cargarListaClientesRewards();
+  if (vista === 'movimientos') cargarMovimientosRewards();
+  if (vista === 'config')      cargarConfigRewardsForm();
+}
+
+// ─── Resumen ──────────────────────────────────────────────────────────────────
+async function cargarResumenRewards() {
+  try {
+    const [resR, movR] = await Promise.all([
+      apiFetch('/api/rewards/resumen'),
+      apiFetch('/api/rewards/movimientos')
+    ]);
+    if (resR.ok) {
+      const res = await resR.json();
+      document.getElementById('rw-inscritos').textContent = res.clientes_inscritos.toLocaleString('es-MX');
+      document.getElementById('rw-emitidos').textContent  = res.puntos_emitidos.toLocaleString('es-MX');
+      document.getElementById('rw-saldo').textContent     = res.saldo_total.toLocaleString('es-MX') + ' pts';
+    }
+    if (movR.ok) {
+      const movs = await movR.json();
+      document.getElementById('rw-movimientos-recientes').innerHTML = movs.length
+        ? `<div style="border:1px solid #e5e2da;border-radius:10px;overflow:hidden;">
+            <div class="rw-mov-fila" style="background:#f8f7f4;font-weight:700;font-size:0.72rem;color:#888;text-transform:uppercase;">
+              <span>Fecha</span><span>Cliente</span><span>Folio</span><span>Puntos</span>
+            </div>
+            ${movs.map(m => `
+              <div class="rw-mov-fila">
+                <span style="color:#888;">${new Date(m.created_at).toLocaleDateString('es-MX')}</span>
+                <span style="font-weight:600;">${m.nombre||m.telefono||'—'}</span>
+                <span style="color:#aaa;">${m.folio_venta||'—'}</span>
+                <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="font-size:0.78rem;">+${m.puntos}</span>
+              </div>`).join('')}
+          </div>`
+        : '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin movimientos todavía.</div>';
+    }
+  } catch(e) {
+    console.error('[Rewards] Error cargando resumen:', e.message);
+  }
+}
+
+// ─── Lista de clientes inscritos ──────────────────────────────────────────────
+async function cargarListaClientesRewards() {
+  document.getElementById('rw-lista-clientes').innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div>';
+  try {
+    const r = await apiFetch('/api/rewards/clientes');
+    const lista = r.ok ? await r.json() : [];
+    renderListaClientesRewards(lista);
+  } catch(e) {}
+}
+
+function renderListaClientesRewards(lista) {
+  const cont = document.getElementById('rw-lista-clientes');
+  if (!lista.length) {
+    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin clientes inscritos todavía.</div>';
+    return;
+  }
+  cont.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+      <thead>
+        <tr style="background:#f8f7f4;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#888;">
+          <th style="text-align:left;padding:9px 14px;">Cliente</th>
+          <th style="text-align:right;padding:9px 12px;">Saldo</th>
+          <th style="text-align:right;padding:9px 12px;">Acumulado</th>
+          <th style="text-align:right;padding:9px 14px;">Inscrito</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${lista.map((c, i) => `
+          <tr onclick="verPerfilRewards('${c.telefono}')" style="background:${i%2?'#fafaf8':'#fff'};cursor:pointer;border-top:1px solid #f0ede8;"
+            onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='${i%2?'#fafaf8':'#fff'}'">
+            <td style="padding:10px 14px;">
+              <div style="font-weight:600;">${c.nombre||'<span style="color:#bbb">Sin nombre</span>'}</div>
+              <div style="font-size:0.72rem;color:#aaa;">${c.telefono}</div>
+            </td>
+            <td style="text-align:right;padding:10px 12px;font-weight:700;color:${c.puntos_balance>0?'#16a34a':'#1a1a1a'};">
+              ${(c.puntos_balance||0).toLocaleString('es-MX')} pts
+            </td>
+            <td style="text-align:right;padding:10px 12px;color:#888;">${(c.puntos_acumulados_total||0).toLocaleString('es-MX')}</td>
+            <td style="text-align:right;padding:10px 14px;color:#aaa;font-size:0.78rem;">
+              ${c.rewards_desde ? new Date(c.rewards_desde).toLocaleDateString('es-MX') : '—'}
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function buscarRewards(q) {
+  if (!q || q.length < 2) { cargarListaClientesRewards(); return; }
+  try {
+    const r = await apiFetch('/api/rewards/clientes/buscar?q=' + encodeURIComponent(q));
+    const lista = r.ok ? await r.json() : [];
+    renderListaClientesRewards(lista);
+  } catch(e) {}
+}
+
+// ─── Movimientos globales ─────────────────────────────────────────────────────
+async function cargarMovimientosRewards() {
+  document.getElementById('rw-tabla-movimientos').innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div>';
+  try {
+    const r = await apiFetch('/api/rewards/movimientos');
+    const movs = r.ok ? await r.json() : [];
+    document.getElementById('rw-tabla-movimientos').innerHTML = movs.length
+      ? `<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+          <thead>
+            <tr style="background:#f8f7f4;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#888;">
+              <th style="text-align:left;padding:9px 14px;">Fecha</th>
+              <th style="text-align:left;padding:9px 12px;">Cliente</th>
+              <th style="text-align:left;padding:9px 12px;">Tipo</th>
+              <th style="text-align:right;padding:9px 12px;">Puntos</th>
+              <th style="text-align:right;padding:9px 14px;">Folio</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${movs.map((m, i) => `
+              <tr style="background:${i%2?'#fafaf8':'#fff'};border-top:1px solid #f0ede8;">
+                <td style="padding:9px 14px;color:#888;">${new Date(m.created_at).toLocaleDateString('es-MX')}</td>
+                <td style="padding:9px 12px;font-weight:600;">${m.nombre||m.telefono||'—'}</td>
+                <td style="padding:9px 12px;"><span class="rw-mov-tipo rw-tipo-${m.tipo}">${m.tipo}</span></td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;color:#16a34a;">+${m.puntos}</td>
+                <td style="padding:9px 14px;text-align:right;color:#aaa;font-size:0.78rem;">${m.folio_venta||'—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`
+      : '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin movimientos todavía.</div>';
+  } catch(e) {}
+}
+
+// ─── Perfil de cliente ────────────────────────────────────────────────────────
+async function verPerfilRewards(telefono) {
+  const modal = document.getElementById('rw-perfil-modal');
+  const cont  = document.getElementById('rw-perfil-contenido');
+  modal.style.display = 'flex';
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div>';
+  try {
+    const [pR, mR] = await Promise.all([
+      apiFetch(`/api/rewards/cliente/${telefono}`),
+      apiFetch(`/api/rewards/cliente/${telefono}/movimientos`)
+    ]);
+    const p = pR.ok ? await pR.json() : null;
+    const movs = mR.ok ? await mR.json() : [];
+    if (!p) { cont.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px;">No encontrado</div>'; return; }
+    cont.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+        <div>
+          <div style="font-weight:800;font-size:1rem;">${p.nombre||'Sin nombre'}</div>
+          <div style="font-size:0.8rem;color:#888;margin-top:2px;">${p.telefono}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:1.4rem;font-weight:800;color:#16a34a;">${(p.puntos_balance||0).toLocaleString('es-MX')}</div>
+          <div style="font-size:0.72rem;color:#888;">puntos disponibles</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+        <div style="background:#f8f7f4;border-radius:8px;padding:10px 12px;">
+          <div style="font-size:0.72rem;color:#888;">Acumulado histórico</div>
+          <div style="font-weight:700;font-size:0.95rem;">${(p.puntos_acumulados_total||0).toLocaleString('es-MX')} pts</div>
+        </div>
+        <div style="background:#f8f7f4;border-radius:8px;padding:10px 12px;">
+          <div style="font-size:0.72rem;color:#888;">Inscrito desde</div>
+          <div style="font-weight:700;font-size:0.88rem;">${p.rewards_desde ? new Date(p.rewards_desde).toLocaleDateString('es-MX') : '—'}</div>
+        </div>
+      </div>
+      ${movs.length ? `
+        <div style="font-size:0.78rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Historial</div>
+        <div style="border:1px solid #e5e2da;border-radius:8px;overflow:hidden;">
+          ${movs.map((m, i) => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:${i%2?'#fafaf8':'#fff'};font-size:0.8rem;border-bottom:1px solid #f0ede8;">
+              <div>
+                <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="margin-right:6px;">${m.tipo}</span>
+                ${m.folio_venta||m.motivo||''}
+              </div>
+              <div style="font-weight:700;color:${m.puntos>0?'#16a34a':'#ef4444'};">${m.puntos>0?'+':''}${m.puntos} pts</div>
+            </div>`).join('')}
+        </div>` : '<div style="color:#aaa;font-size:0.82rem;text-align:center;padding:16px;">Sin movimientos todavía</div>'}`;
+  } catch(e) {
+    cont.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px;">Error al cargar</div>';
+  }
+}
+
+function cerrarPerfilRewards() {
+  document.getElementById('rw-perfil-modal').style.display = 'none';
+}
+
+// ─── Configuración ────────────────────────────────────────────────────────────
+async function cargarConfigRewardsForm() {
+  const cont = document.getElementById('rw-config-form');
+  try {
+    const r = await apiFetch('/api/rewards/config');
+    if (!r.ok) return;
+    const cfg = await r.json();
+    rwConfig = cfg;
+    cont.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Nombre del programa</label>
+          <input id="rw-cfg-nombre" type="text" value="${cfg.nombre_programa||''}"
+            style="width:100%;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;box-sizing:border-box;">
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#f8f7f4;border-radius:8px;">
+          <span style="font-size:0.88rem;font-weight:600;">Programa activo</span>
+          <label style="position:relative;display:inline-block;width:44px;height:24px;">
+            <input type="checkbox" id="rw-cfg-activo" ${cfg.activo?'checked':''} style="opacity:0;width:0;height:0;">
+            <span onclick="this.previousElementSibling.click()" style="position:absolute;cursor:pointer;inset:0;background:${cfg.activo?'#FF6B35':'#d1d5db'};border-radius:24px;transition:.2s;"></span>
+            <span onclick="this.previousElementSibling.previousElementSibling.click()" style="position:absolute;width:18px;height:18px;background:#fff;border-radius:50%;top:3px;left:${cfg.activo?'23px':'3px'};transition:.2s;"></span>
+          </label>
+        </div>
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Pesos requeridos por punto (ej: 10 = $10 → 1 punto)</label>
+          <input id="rw-cfg-monto" type="number" min="1" step="1" value="${cfg.monto_por_punto||10}"
+            style="width:120px;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:6px;">Canales habilitados</label>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${[['canal_mostrador','Mostrador (POS)'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_rappi','Rappi']].map(([k,l]) => `
+              <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                <input type="checkbox" id="rw-cfg-${k}" ${cfg[k]?'checked':''}>
+                ${l}
+              </label>`).join('')}
+          </div>
+        </div>
+        <button onclick="guardarConfigRewards()" style="padding:10px 20px;background:#FF6B35;color:#fff;border:none;border-radius:8px;font-size:0.88rem;font-weight:700;cursor:pointer;align-self:flex-start;">Guardar cambios</button>
+        <div id="rw-cfg-fb" style="font-size:0.8rem;color:#888;"></div>
+      </div>`;
+  } catch(e) {}
+}
+
+async function guardarConfigRewards() {
+  const fb = document.getElementById('rw-cfg-fb');
+  fb.textContent = 'Guardando…';
+  const datos = {
+    nombre_programa: document.getElementById('rw-cfg-nombre').value.trim(),
+    activo: document.getElementById('rw-cfg-activo').checked,
+    monto_por_punto: parseFloat(document.getElementById('rw-cfg-monto').value) || 10,
+    canal_mostrador: document.getElementById('rw-cfg-canal_mostrador').checked,
+    canal_whatsapp:  document.getElementById('rw-cfg-canal_whatsapp').checked,
+    canal_telefono:  document.getElementById('rw-cfg-canal_telefono').checked,
+    canal_rappi:     document.getElementById('rw-cfg-canal_rappi').checked,
+  };
+  try {
+    const r = await apiFetch('/api/rewards/config', { method:'PATCH', body: JSON.stringify(datos) });
+    if (r.ok) {
+      fb.textContent = '✓ Guardado';
+      fb.style.color = '#16a34a';
+      rwConfig = { ...rwConfig, ...datos };
+      const el = document.getElementById('rw-nombre-programa');
+      if (el) el.textContent = datos.nombre_programa;
+      setTimeout(() => { fb.textContent = ''; fb.style.color = '#888'; }, 2500);
+    } else { fb.textContent = 'Error al guardar'; fb.style.color = '#ef4444'; }
+  } catch(e) { fb.textContent = 'Error de conexión'; fb.style.color = '#ef4444'; }
+}
+
+function abrirConfigRewards() { abrirVistaRewards('config'); }
+
+// ─── Widget POS — Asignar cliente ─────────────────────────────────────────────
+let rwPosBuscTimer = null;
+
+function rwPosBuscar(q) {
+  clearTimeout(rwPosBuscTimer);
+  const res = document.getElementById('rw-pos-resultados');
+  if (!q || q.length < 2) { res.innerHTML = ''; return; }
+  rwPosBuscTimer = setTimeout(async () => {
+    try {
+      const r = await apiFetch('/api/rewards/clientes/buscar?q=' + encodeURIComponent(q));
+      const lista = r.ok ? await r.json() : [];
+      if (!lista.length) {
+        res.innerHTML = '<div style="font-size:0.78rem;color:#aaa;padding:6px 4px;">Sin resultados</div>';
+        return;
+      }
+      res.innerHTML = lista.map(c => `
+        <div onclick="rwPosAsignar('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}',${c.puntos_balance||0})"
+          style="padding:8px 10px;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;"
+          onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background=''">
+          <div>
+            <div style="font-weight:600;">${c.nombre||'Sin nombre'}</div>
+            <div style="color:#aaa;font-size:0.72rem;">${c.telefono}</div>
+          </div>
+          <div style="font-size:0.75rem;color:#16a34a;font-weight:700;">${(c.puntos_balance||0)} pts</div>
+        </div>`).join('');
+    } catch(e) {}
+  }, 300);
+}
+
+function rwPosSelPrimero() {
+  const primer = document.getElementById('rw-pos-resultados')?.firstElementChild;
+  if (primer) primer.click();
+}
+
+function rwPosAsignar(telefono, nombre, puntos) {
+  rwClienteAsignado = { telefono, nombre };
+  document.getElementById('rw-pos-nombre').textContent = nombre || 'Sin nombre';
+  document.getElementById('rw-pos-tel').textContent    = telefono;
+  document.getElementById('rw-pos-puntos').textContent = `${puntos} puntos actuales`;
+  document.getElementById('rw-pos-cliente-info').style.display = '';
+  document.getElementById('rw-pos-buscar-wrap').style.display  = 'none';
+  document.getElementById('rw-pos-resultados').innerHTML = '';
+  document.getElementById('rw-pos-btn-limpiar').style.display  = '';
+  document.getElementById('rw-pos-widget').classList.add('asignado');
+  // Actualizar estimación de puntos según el carrito actual
+  rwActualizarEstimacion();
+}
+
+function rwPosLimpiar() {
+  rwClienteAsignado = null;
+  document.getElementById('rw-pos-cliente-info').style.display = 'none';
+  document.getElementById('rw-pos-buscar-wrap').style.display  = '';
+  document.getElementById('rw-pos-btn-limpiar').style.display  = 'none';
+  document.getElementById('rw-pos-input').value = '';
+  document.getElementById('rw-pos-resultados').innerHTML = '';
+  document.getElementById('rw-pos-widget').classList.remove('asignado');
+}
+
+function rwActualizarEstimacion() {
+  if (!rwClienteAsignado || !rwConfig) return;
+  const total = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const monto = parseFloat(rwConfig.monto_por_punto) || 10;
+  const pts = Math.floor(total / monto);
+  const el = document.getElementById('rw-pos-puntos');
+  if (el && rwClienteAsignado) {
+    const ptsActuales = parseInt(el.textContent) || 0;
+    el.textContent = `${ptsActuales} pts actuales · ganará ~${pts} pts`;
+  }
+}
+
+async function rwPosAbrirNuevo() {
+  const nombre = prompt('Nombre del cliente:');
+  if (!nombre?.trim()) return;
+  const tel = prompt('Teléfono (10 dígitos):');
+  if (!tel?.trim()) return;
+  try {
+    const r = await apiFetch('/api/rewards/cliente', {
+      method: 'POST',
+      body: JSON.stringify({ nombre: nombre.trim(), telefono: tel.trim() })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); return; }
+    const p = data.perfil;
+    rwPosAsignar(p.telefono, p.nombre, p.puntos_balance || 0);
+  } catch(e) { alert('Error de conexión'); }
+}
+
+// Limpiar cliente asignado al confirmar o limpiar el POS
+const _rwOrigLimpiarPOS = typeof limpiarPOS === 'function' ? limpiarPOS : null;
 
 // ─── Modal modificadores ──────────────────────────────────────────────────────
 let _modProductoId = null;

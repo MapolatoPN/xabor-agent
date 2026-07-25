@@ -210,6 +210,67 @@ export async function initDB() {
       orden       INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_mod_opciones_grupo ON menu_modificadores_opciones (grupo_id);
+
+    -- ─── Rewards ─────────────────────────────────────────────────────────────
+    -- DEUDA TÉCNICA: clientes.telefono es PK actual y se usa como FK en rewards_accounts.
+    -- Cuando se migre clientes a un UUID como clave primaria, rewards_accounts.telefono
+    -- debe reemplazarse por cliente_id UUID. Las funciones de rewardsService.js están
+    -- encapsuladas para facilitar esa migración sin reescribir la lógica de negocio.
+
+    CREATE TABLE IF NOT EXISTS rewards_config (
+      id              SERIAL PRIMARY KEY,
+      tenant_id       TEXT NOT NULL DEFAULT 'xabor-principal',
+      nombre_programa TEXT NOT NULL DEFAULT 'Xabor Rewards',
+      activo          BOOLEAN DEFAULT TRUE,
+      monto_por_punto DECIMAL(10,2) DEFAULT 10,
+      puntos_por_peso DECIMAL(10,4) DEFAULT 0.5,
+      canje_minimo    INTEGER DEFAULT 100,
+      canal_mostrador BOOLEAN DEFAULT TRUE,
+      canal_whatsapp  BOOLEAN DEFAULT TRUE,
+      canal_telefono  BOOLEAN DEFAULT TRUE,
+      canal_rappi     BOOLEAN DEFAULT FALSE,
+      vigencia_dias   INTEGER DEFAULT NULL,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(tenant_id)
+    );
+    INSERT INTO rewards_config (tenant_id) VALUES ('xabor-principal') ON CONFLICT DO NOTHING;
+
+    CREATE TABLE IF NOT EXISTS rewards_accounts (
+      id                      SERIAL PRIMARY KEY,
+      telefono                VARCHAR(20) REFERENCES clientes(telefono) ON DELETE CASCADE,
+      tenant_id               TEXT NOT NULL DEFAULT 'xabor-principal',
+      puntos_balance          INTEGER NOT NULL DEFAULT 0,
+      puntos_acumulados_total INTEGER NOT NULL DEFAULT 0,
+      puntos_canjeados_total  INTEGER NOT NULL DEFAULT 0,
+      activo                  BOOLEAN DEFAULT TRUE,
+      created_at              TIMESTAMPTZ DEFAULT NOW(),
+      updated_at              TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(telefono, tenant_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rewards_accounts_telefono ON rewards_accounts(telefono);
+    CREATE INDEX IF NOT EXISTS idx_rewards_accounts_tenant   ON rewards_accounts(tenant_id);
+
+    CREATE TABLE IF NOT EXISTS rewards_movements (
+      id               SERIAL PRIMARY KEY,
+      account_id       INTEGER NOT NULL REFERENCES rewards_accounts(id) ON DELETE CASCADE,
+      tenant_id        TEXT NOT NULL DEFAULT 'xabor-principal',
+      tipo             TEXT NOT NULL CHECK (tipo IN (
+                         'acumulacion','canje','ajuste_positivo',
+                         'ajuste_negativo','expiracion','reverso')),
+      puntos           INTEGER NOT NULL,
+      balance_anterior INTEGER NOT NULL,
+      balance_posterior INTEGER NOT NULL,
+      folio_venta      VARCHAR(20),
+      usuario          TEXT,
+      motivo           TEXT,
+      metadata         JSONB,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(tenant_id, folio_venta, tipo)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rewards_movements_account ON rewards_movements(account_id);
+    CREATE INDEX IF NOT EXISTS idx_rewards_movements_folio   ON rewards_movements(folio_venta);
+    CREATE INDEX IF NOT EXISTS idx_rewards_movements_tenant  ON rewards_movements(tenant_id, created_at DESC);
   `);
   console.log('[DB] Tablas listas');
 }

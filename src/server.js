@@ -371,11 +371,17 @@ app.patch('/pedidos/:id/estado', async (req, res) => {
 });
 
 // Pedido presencial — capturado desde el panel sin pasar por el bot
+// rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
+// quedará asignado en el pedido y los puntos se acumularán al entregar.
 app.post('/api/pedido-presencial', requireAuth, (req, res) => {
-  const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio, mixto_efectivo, mixto_terminal } = req.body;
+  const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio,
+          mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
+  // Si hay cliente Rewards asignado, usarlo como cliente del pedido
+  const clienteTel = rewards_telefono?.trim() || '—';
+  const clienteNom = (rewards_telefono ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
   const orden = {
     items,
     subtotal,
@@ -389,7 +395,7 @@ app.post('/api/pedido-presencial', requireAuth, (req, res) => {
     modalidad: 'recoger en tienda',
     canal: 'presencial',
     forma_pago: forma_pago || 'efectivo',
-    cliente: { nombre: nombre || 'Cliente presencial', telefono: '—' },
+    cliente: { nombre: clienteNom, telefono: clienteTel },
     costo_envio: 0
   };
   const pedido = registrarPedido(orden, 'presencial');
@@ -1193,6 +1199,121 @@ app.get('/api/admin/clientes/conversion', requireAdmin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─── Rewards ──────────────────────────────────────────────────────────────────
+import {
+  obtenerConfig as obtenerConfigRewards,
+  actualizarConfig as actualizarConfigRewards,
+  obtenerResumenRewards,
+  buscarClientesRewards,
+  listarClientesRewards,
+  obtenerPerfilRewards,
+  obtenerMovimientosCliente,
+  obtenerMovimientosRecientes,
+  obtenerOCrearCuenta,
+  calcularPuntos,
+} from './services/rewardsService.js';
+
+const REWARDS_TENANT = 'xabor-principal';
+
+// Configuración del programa
+app.get('/api/rewards/config', requireAdmin, async (req, res) => {
+  try {
+    const config = await obtenerConfigRewards(REWARDS_TENANT);
+    res.json(config);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/rewards/config', requireAdmin, async (req, res) => {
+  try {
+    await actualizarConfigRewards(REWARDS_TENANT, req.body);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Resumen estadístico
+app.get('/api/rewards/resumen', requireAdmin, async (req, res) => {
+  try {
+    const resumen = await obtenerResumenRewards(REWARDS_TENANT);
+    res.json(resumen);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Lista de clientes inscritos
+app.get('/api/rewards/clientes', requireAdmin, async (req, res) => {
+  try {
+    const lista = await listarClientesRewards(REWARDS_TENANT);
+    res.json(lista);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Búsqueda de clientes (admin y staff — para asignar en POS)
+app.get('/api/rewards/clientes/buscar', requireAuth, async (req, res) => {
+  const { q = '' } = req.query;
+  if (!q.trim()) return res.json([]);
+  try {
+    const lista = await buscarClientesRewards(q, REWARDS_TENANT);
+    res.json(lista);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Perfil de un cliente + estimación de puntos
+app.get('/api/rewards/cliente/:telefono', requireAuth, async (req, res) => {
+  try {
+    const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
+    if (!perfil) return res.status(404).json({ error: 'No encontrado' });
+    // Calcular estimación de puntos según total query param
+    const total = parseFloat(req.query.total) || 0;
+    if (total > 0) {
+      const config = await obtenerConfigRewards(REWARDS_TENANT);
+      perfil.puntos_estimados = calcularPuntos(total, config);
+    }
+    res.json(perfil);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Movimientos de un cliente
+app.get('/api/rewards/cliente/:telefono/movimientos', requireAdmin, async (req, res) => {
+  try {
+    const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
+    if (!perfil?.account_id) return res.json([]);
+    const movimientos = await obtenerMovimientosCliente(perfil.account_id);
+    res.json(movimientos);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Movimientos recientes globales
+app.get('/api/rewards/movimientos', requireAdmin, async (req, res) => {
+  try {
+    const movimientos = await obtenerMovimientosRecientes(REWARDS_TENANT);
+    res.json(movimientos);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Crear o recuperar cliente para Rewards (staff + admin)
+// Si el cliente no existe en `clientes`, lo crea primero.
+app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
+  const { telefono, nombre } = req.body;
+  if (!telefono?.trim() || !nombre?.trim()) {
+    return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
+  }
+  const tel = telefono.trim().replace(/\D/g, '').slice(-10);
+  if (tel.length < 7) return res.status(400).json({ error: 'Teléfono inválido' });
+  try {
+    // Upsert en tabla clientes (reutiliza existente si ya existe)
+    await pool.query(
+      `INSERT INTO clientes (telefono, nombre, ultima_visita)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (telefono) DO UPDATE SET
+         nombre = COALESCE(NULLIF($2, ''), clientes.nombre),
+         ultima_visita = NOW()`,
+      [tel, nombre.trim()]
+    );
+    const cuenta = await obtenerOCrearCuenta(tel, REWARDS_TENANT);
+    const perfil = await obtenerPerfilRewards(tel, REWARDS_TENANT);
+    res.json({ ok: true, perfil });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── Campañas WA ──────────────────────────────────────────────────────────────

@@ -90,6 +90,10 @@ export function actualizarEstadoPedido(id, nuevoEstado) {
   // Persistir en DB
   if (nuevoEstado === 'entregado') {
     archivarPedidoActivo(id);
+    // Rewards — fire-and-forget, nunca bloquea el flujo crítico
+    import('../services/rewardsService.js')
+      .then(({ acumularPuntos }) => acumularPuntos(id, pedido, 'xabor-principal'))
+      .catch(e => console.error('[Rewards] Error en hook de acumulación:', e.message));
   } else {
     actualizarEstadoPedidoDB(id, nuevoEstado);
   }
