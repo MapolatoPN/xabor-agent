@@ -1442,7 +1442,25 @@ export async function marcarRespuestaCampana(telefono) {
 }
 
 export async function obtenerDestinatariosCampana(segmento) {
-  // Excluir repartidores y Rappi; filtrar por segmento
+  // Segmentos Rewards — clientes con N+ puntos de saldo activo
+  if (segmento?.startsWith('rewards_')) {
+    const minPts = parseInt(segmento.replace('rewards_', '')) || 0;
+    const { rows } = await pool.query(`
+      SELECT c.telefono, c.nombre
+      FROM clientes c
+      JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = 'xabor-principal'
+      LEFT JOIN repartidores r ON r.telefono = c.telefono
+      WHERE c.telefono != '—'
+        AND c.telefono NOT LIKE 'rappi-%'
+        AND r.telefono IS NULL
+        AND NOT COALESCE(c.es_interno, FALSE)
+        AND a.puntos_balance >= $1
+      ORDER BY a.puntos_balance DESC
+    `, [minPts]);
+    return rows;
+  }
+
+  // Segmentos CRM estándar
   const segFiltro = segmento === 'todos'
     ? ''
     : `AND COALESCE(p.segmento, 'nuevo') = '${segmento}'`;

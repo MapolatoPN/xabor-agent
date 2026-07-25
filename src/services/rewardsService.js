@@ -24,6 +24,17 @@ import { pool } from './database.js';
 
 const DEFAULT_TENANT = 'xabor-principal';
 
+// ─── Niveles de membresía ─────────────────────────────────────────────────────
+// Se calcula desde puntos_acumulados_total (histórico, nunca baja).
+// Bronze: 0–499 | Silver: 500–1499 | Gold: 1500+
+// Sin tabla nueva — calculado en tiempo real.
+export function calcularNivel(puntosAcumuladosTotal) {
+  const pts = parseInt(puntosAcumuladosTotal) || 0;
+  if (pts >= 1500) return { nombre: 'Gold',   emoji: '🥇', color: '#f59e0b', siguiente: null,     falta: 0 };
+  if (pts >= 500)  return { nombre: 'Silver', emoji: '🥈', color: '#6b7280', siguiente: 'Gold',   falta: 1500 - pts };
+  return               { nombre: 'Bronze', emoji: '🥉', color: '#b45309', siguiente: 'Silver', falta: 500  - pts };
+}
+
 // ─── Cálculo central de puntos ────────────────────────────────────────────────
 // ÚNICA fuente de verdad para el cálculo de puntos.
 // El frontend solo muestra estimaciones; el backend valida y persiste.
@@ -202,6 +213,17 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
 
     await client.query('COMMIT');
     console.log(`[Rewards] ✅ ${folio} — ${telefono} +${puntos} pts → balance: ${balancePosterior}`);
+
+    // Notificar al cliente por WhatsApp (fire-and-forget, nunca bloquea)
+    const nivelActual = calcularNivel((cuenta.puntos_acumulados_total || 0) + puntos);
+    import('../channels/whatsapp-meta.js').then(({ enviarMensaje }) => {
+      const msgNivel = nivelActual.siguiente
+        ? `Faltan ${nivelActual.falta} pts para llegar a ${nivelActual.siguiente} ${nivelActual.nombre === 'Bronze' ? '🥈' : '🥇'}`
+        : '¡Eres miembro Gold! 🏆';
+      const msg = `🎉 ¡Ganaste *${puntos} puntos* en Xabor!\n\nTu saldo: *${balancePosterior} pts* ${nivelActual.emoji} ${nivelActual.nombre}\n${msgNivel}`;
+      return enviarMensaje(telefono, msg);
+    }).catch(e => console.error('[Rewards] Error enviando notif WA:', e.message));
+
     return { puntos, balancePosterior, telefono };
 
   } catch (e) {
@@ -287,7 +309,9 @@ export async function obtenerPerfilRewards(telefono, tenantId = DEFAULT_TENANT) 
     LEFT JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = $1
     WHERE c.telefono = $2
   `, [tenantId, telefono]);
-  return perfil || null;
+  if (!perfil) return null;
+  perfil.nivel = calcularNivel(perfil.puntos_acumulados_total);
+  return perfil;
 }
 
 // ─── Movimientos de un cliente ────────────────────────────────────────────────

@@ -1065,6 +1065,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="en_riesgo">En riesgo</option>
             <option value="dormido">Dormidos</option>
             <option value="nuevo">Nuevos</option>
+            <optgroup label="── Rewards ──">
+              <option value="rewards_1">Con puntos (cualquier saldo)</option>
+              <option value="rewards_100">100+ puntos (pueden canjear)</option>
+              <option value="rewards_500">500+ puntos (Silver+)</option>
+              <option value="rewards_1500">1500+ puntos (Gold)</option>
+            </optgroup>
           </select>
 
           <div id="camp-preview" style="font-size:0.8rem;color:#FF6B35;font-weight:600;margin-bottom:14px;">Calculando destinatarios...</div>
@@ -2996,6 +3002,7 @@ function renderListaClientesRewards(lista) {
             </td>
             <td style="text-align:right;padding:10px 12px;font-weight:700;color:${c.puntos_balance>0?'#16a34a':'#1a1a1a'};">
               ${(c.puntos_balance||0).toLocaleString('es-MX')} pts
+              <div style="font-size:0.68rem;font-weight:600;color:${rwCalcularNivel(c.puntos_acumulados_total).color};">${rwCalcularNivel(c.puntos_acumulados_total).emoji} ${rwCalcularNivel(c.puntos_acumulados_total).nombre}</div>
             </td>
             <td style="text-align:right;padding:10px 12px;color:#888;">${(c.puntos_acumulados_total||0).toLocaleString('es-MX')}</td>
             <td style="text-align:right;padding:10px 14px;color:#aaa;font-size:0.78rem;">
@@ -3068,8 +3075,10 @@ async function verPerfilRewards(telefono) {
           <div style="font-size:0.8rem;color:#888;margin-top:2px;">${p.telefono}</div>
         </div>
         <div style="text-align:right;">
+          ${p.nivel ? `<div style="font-size:0.75rem;font-weight:700;color:${p.nivel.color};margin-bottom:2px;">${p.nivel.emoji} ${p.nivel.nombre}</div>` : ''}
           <div style="font-size:1.4rem;font-weight:800;color:#16a34a;">${(p.puntos_balance||0).toLocaleString('es-MX')}</div>
           <div style="font-size:0.72rem;color:#888;">puntos disponibles</div>
+          ${p.nivel?.siguiente ? `<div style="font-size:0.7rem;color:#aaa;margin-top:2px;">Faltan ${p.nivel.falta} pts → ${p.nivel.siguiente}</div>` : ''}
           ${sessionStorage.getItem('xabor_role')==='admin' ? `
           <button onclick="rwAjusteManual('${p.telefono}')"
             style="margin-top:6px;padding:4px 10px;border:1px solid #7c3aed;border-radius:6px;background:#fff;color:#7c3aed;font-size:0.72rem;font-weight:700;cursor:pointer;">
@@ -3218,7 +3227,7 @@ function rwPosBuscar(q) {
         return;
       }
       res.innerHTML = lista.map(c => `
-        <div onclick="rwPosAsignar('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}',${c.puntos_balance||0})"
+        <div onclick="rwPosAsignar('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}',${c.puntos_balance||0},${c.puntos_acumulados_total||0})"
           style="padding:8px 10px;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;"
           onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background=''">
           <div>
@@ -3236,16 +3245,25 @@ function rwPosSelPrimero() {
   if (primer) primer.click();
 }
 
+// ─── Helper de nivel (mirror del backend calcularNivel) ───────────────────────
+function rwCalcularNivel(puntosAcumulados) {
+  const pts = parseInt(puntosAcumulados) || 0;
+  if (pts >= 1500) return { nombre: 'Gold',   emoji: '🥇', color: '#f59e0b', siguiente: null,     falta: 0 };
+  if (pts >= 500)  return { nombre: 'Silver', emoji: '🥈', color: '#6b7280', siguiente: 'Gold',   falta: 1500 - pts };
+  return               { nombre: 'Bronze', emoji: '🥉', color: '#b45309', siguiente: 'Silver', falta: 500  - pts };
+}
+
 // Estado del canje en el POS
 let rwCanjeAplicado = null; // { puntos, monto, bloques } o null
 let rwPuntosBalance = 0;    // balance actual del cliente asignado
 
-function rwPosAsignar(telefono, nombre, puntos) {
+function rwPosAsignar(telefono, nombre, puntos, puntosAcumulados) {
   rwClienteAsignado = { telefono, nombre };
   rwPuntosBalance   = puntos || 0;
   document.getElementById('rw-pos-nombre').textContent = nombre || 'Sin nombre';
   document.getElementById('rw-pos-tel').textContent    = telefono;
-  document.getElementById('rw-pos-puntos').textContent = `${puntos} puntos actuales`;
+  const nivel = rwCalcularNivel(puntosAcumulados || 0);
+  document.getElementById('rw-pos-puntos').textContent = `${puntos} pts actuales ${nivel.emoji} ${nivel.nombre}`;
   document.getElementById('rw-pos-cliente-info').style.display = '';
   document.getElementById('rw-pos-buscar-wrap').style.display  = 'none';
   document.getElementById('rw-pos-resultados').innerHTML = '';
@@ -3347,7 +3365,7 @@ async function rwPosAbrirNuevo() {
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); return; }
     const p = data.perfil;
-    rwPosAsignar(p.telefono, p.nombre, p.puntos_balance || 0);
+    rwPosAsignar(p.telefono, p.nombre, p.puntos_balance || 0, p.puntos_acumulados_total || 0);
   } catch(e) { alert('Error de conexión'); }
 }
 

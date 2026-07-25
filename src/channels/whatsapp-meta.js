@@ -255,6 +255,32 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       // Si no hay pedidos activos, Claude responderá de forma natural
     }
 
+    // ── Consulta de puntos Rewards ─────────────────────────────────────────────
+    const esConsultaPuntos = /mis puntos|cu[aá]ntos puntos|tengo.*puntos|puntos.*tengo|saldo.*reward|reward.*saldo|nivel.*reward|reward.*nivel|puntos.*xabor|xabor.*puntos/i.test(texto);
+    if (esConsultaPuntos) {
+      try {
+        const { obtenerCuentaPorTelefono, calcularNivel } = await import('../services/rewardsService.js');
+        const cuenta = await obtenerCuentaPorTelefono(telefono);
+        let msg;
+        if (cuenta && cuenta.puntos_balance >= 0) {
+          const nivel = calcularNivel(cuenta.puntos_acumulados_total);
+          const msgNivel = nivel.siguiente
+            ? `Faltan ${nivel.falta} pts para llegar a ${nivel.siguiente} ${nivel.nombre === 'Bronze' ? '🥈' : '🥇'}`
+            : '¡Eres miembro Gold! 🏆';
+          msg = `🏆 Tu saldo Xabor Rewards:\n\n*${cuenta.puntos_balance} puntos* ${nivel.emoji} ${nivel.nombre}\n${msgNivel}\n\nAcumulados en total: ${cuenta.puntos_acumulados_total} pts`;
+        } else {
+          msg = `Aún no tienes puntos Rewards acumulados. ¡Tu próximo pedido los genera automáticamente! 🎁`;
+        }
+        await enviarMensaje(telefono, msg);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+        console.log(`[Meta WA] Puntos Rewards enviados a ${telefono}`);
+        return;
+      } catch(e) {
+        console.error('[Rewards] Error consultando puntos por WA:', e.message);
+        // Si falla, Claude responderá de forma natural
+      }
+    }
+
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono);
     const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono) : [];
