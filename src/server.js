@@ -943,10 +943,10 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
     const tz = 'America/Matamoros';
     let whereDate;
-    if (periodo === 'hoy')    whereDate = `DATE(created_at AT TIME ZONE '${tz}') = CURRENT_DATE AT TIME ZONE '${tz}'`;
-    else if (periodo === 'ayer')   whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '1 day'`;
-    else if (periodo === 'antier') whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '2 days'`;
-    else whereDate = `DATE(created_at AT TIME ZONE '${tz}') >= (CURRENT_DATE AT TIME ZONE '${tz}') - INTERVAL '6 days'`;
+    if (periodo === 'hoy')     whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date`;
+    else if (periodo === 'ayer')    whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date - 1`;
+    else if (periodo === 'antier')  whereDate = `DATE(created_at AT TIME ZONE '${tz}') = (NOW() AT TIME ZONE '${tz}')::date - 2`;
+    else whereDate = `DATE(created_at AT TIME ZONE '${tz}') >= (NOW() AT TIME ZONE '${tz}')::date - 6`;
 
     const { rows: pedidos } = await pool.query(`
       SELECT folio, estado, datos, created_at,
@@ -955,15 +955,15 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
       FROM pedidos_activos
       WHERE ${whereDate}
         AND datos->>'modalidad' = 'entrega a domicilio'
-        AND datos->>'repartidor_id' IS NOT NULL
       ORDER BY created_at DESC
     `);
 
-    // Agrupar por repartidor
+    // Agrupar por repartidor (o "sin_asignar" si no tiene)
     const porRep = {};
     pedidos.forEach(p => {
-      const id = p.repartidor_id;
-      if (!porRep[id]) porRep[id] = { id, nombre: p.repartidor_nombre, pedidos: [] };
+      const id = p.repartidor_id || 'sin_asignar';
+      const nombre = p.repartidor_nombre || 'Sin repartidor asignado';
+      if (!porRep[id]) porRep[id] = { id, nombre, pedidos: [] };
       porRep[id].pedidos.push({
         folio: p.folio,
         estado: p.estado,
@@ -977,7 +977,11 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
       });
     });
 
-    res.json(Object.values(porRep));
+    // Repartidores con pedidos primero, sin asignar al final
+    const resultado = Object.values(porRep).sort((a, b) =>
+      a.id === 'sin_asignar' ? 1 : b.id === 'sin_asignar' ? -1 : 0
+    );
+    res.json(resultado);
   } catch (e) {
     console.error('[repartidores/estado]', e.message);
     res.status(500).json({ error: e.message });
