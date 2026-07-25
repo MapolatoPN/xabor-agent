@@ -27,7 +27,7 @@ router.post('/start', (req, res) => {
   const saludo  = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
   const greeting = `${saludo}, bienvenido a Xabor. ¿En qué te puedo ayudar?`;
 
-  const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'iBGVhgcEZS6A5gTOjqSJ';
+  const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'htFfPSZGJwjBv1CL0aMD';
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
