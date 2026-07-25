@@ -24,7 +24,7 @@ import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/what
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
-import { configurarWebhooks, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
+import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
 import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas } from './services/memory.js';
@@ -759,14 +759,49 @@ app.put('/api/rappi/estado-tienda', requireAuth, async (req, res) => {
   }
 });
 
-// Rappi — registrar webhooks en sandbox/producción (llamar una vez al configurar)
-app.post('/api/rappi/setup-webhooks', requireAuth, async (req, res) => {
-  const baseUrl = process.env.PUBLIC_URL || req.body.baseUrl;
-  if (!baseUrl) return res.status(400).json({ error: 'Se requiere PUBLIC_URL o body.baseUrl' });
+// Rappi — registrar webhooks en producción (ejecutar una vez al configurar)
+// Flujo: GET estado actual → POST registro → GET verificación → guardar secret en DB
+app.post('/api/rappi/setup-webhooks', requireAdmin, async (req, res) => {
+  const baseUrl = process.env.PUBLIC_URL || req.body?.baseUrl || 'https://xabor-agent-production.up.railway.app';
+  const webhookUrl = `${baseUrl}/webhook/rappi`;
+
   try {
+    // 1. Estado antes del registro
+    const antesNEW = await obtenerWebhook('NEW_ORDER').catch(() => null);
+    console.log('[Setup Webhooks] NEW_ORDER antes:', antesNEW ? JSON.stringify(antesNEW).slice(0, 200) : 'no existe');
+
+    // 2. Registrar todos los webhooks con el formato oficial de Rappi
     const results = await configurarWebhooks(baseUrl);
-    res.json({ ok: true, results });
+
+    // 3. Guardar secret en DB si Rappi lo devuelve (sin imprimirlo completo)
+    const secret = results['NEW_ORDER']?.registro?.secret
+                || results['NEW_ORDER']?.registro?.data?.[0]?.secret;
+    if (secret) {
+      await actualizarConfiguracion({ rappi_webhook_secret: secret }).catch(() => {});
+      console.log(`[Setup Webhooks] Secret guardado en DB — últimos 4: ...${secret.slice(-4)}`);
+    }
+
+    // 4. Respuesta: incluye verificación post-registro, oculta el secret completo
+    const resp = {
+      ok: true,
+      storeId: process.env.RAPPI_STORE_ID,
+      webhookUrl,
+      secretGuardado: !!secret,
+      eventos: {}
+    };
+    for (const [ev, r] of Object.entries(results)) {
+      resp.eventos[ev] = r.error
+        ? { error: r.error }
+        : {
+            registrado: !r.error,
+            verificacion: r.verificacion
+              ? { event: r.verificacion.event, stores: r.verificacion.stores || r.verificacion.data, state: r.verificacion.state || r.verificacion.status }
+              : null
+          };
+    }
+    res.json(resp);
   } catch (e) {
+    console.error('[Setup Webhooks] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

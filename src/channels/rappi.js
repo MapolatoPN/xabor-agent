@@ -13,7 +13,6 @@ let wsBroadcast = null;
 export function setWsBroadcastRappi(fn) { wsBroadcast = fn; }
 
 const router = Router();
-const STORE_ID = process.env.RAPPI_STORE_ID || '900172582';
 
 // ─── Verificar HMAC de Rappi (opcional, recomendado en producción) ────────────
 // Rappi incluye Rappi-Signature header (HMAC-SHA256)

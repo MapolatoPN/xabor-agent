@@ -12,7 +12,7 @@ const NEW_BASE_URL = process.env.RAPPI_NEW_BASE_URL || 'https://api.rappi.com.mx
 const AUTH_URL  = process.env.RAPPI_AUTH_URL  || `${NEW_BASE_URL}/restaurants/auth/v1/token/login/integrations`;
 const CLIENT_ID = process.env.RAPPI_CLIENT_ID;
 const CLIENT_SECRET = process.env.RAPPI_CLIENT_SECRET;
-const STORE_ID  = process.env.RAPPI_STORE_ID  || '900172582';
+const STORE_ID  = process.env.RAPPI_STORE_ID || null; // PROD: 1930419809 — null = Rappi desactivado
 
 const API_BASE = `${BASE_URL}/api/v2/restaurants-integrations-public-api`;
 
@@ -359,33 +359,67 @@ export function construirCatalogoRappi() {
  * Registrar o actualizar la URL del webhook para un evento
  * event: 'NEW_ORDER' | 'ORDER_EVENT_CANCEL' | 'PING'
  */
-export async function registrarWebhook(event, url) {
-  // Primero intentar actualizar, si falla crear
+/**
+ * Consultar estado actual de un webhook en Rappi.
+ * Devuelve null si no existe (404).
+ */
+export async function obtenerWebhook(event) {
   try {
-    return await rappiRequest('PUT', `/webhook/${event}/change-url`, { url });
-  } catch {
-    return rappiRequest('POST', '/webhook', {
-      event,
-      url,
-      store_ids: [STORE_ID]
-    });
+    return await rappiRequest('GET', `/webhook/${event}`);
+  } catch (e) {
+    if (e.message && (e.message.includes('404') || e.message.includes('not found'))) return null;
+    throw e;
   }
 }
 
 /**
- * Registrar todos los webhooks necesarios para Sprint 1
- * baseUrl: URL pública del servidor (ej. https://xabor.up.railway.app)
+ * Registrar o actualizar la URL del webhook para un evento.
+ * Formato oficial Rappi: POST body = { event, data: [{ url, stores: [storeId] }] }
+ */
+export async function registrarWebhook(event, url) {
+  if (!STORE_ID) throw new Error('RAPPI_STORE_ID no configurado en Railway');
+  console.log(`[Rappi Webhook] ${event} → ${url} | store: ${STORE_ID}`);
+
+  // 1. Intentar actualizar URL si ya existe
+  try {
+    const r = await rappiRequest('PUT', `/webhook/${event}/change-url`, { url });
+    console.log(`[Rappi Webhook] PUT OK — ${event} actualizado`);
+    return r;
+  } catch (putErr) {
+    console.warn(`[Rappi Webhook] PUT ${event}: ${putErr.message.slice(0, 80)} — intentando POST`);
+  }
+
+  // 2. Crear nuevo — formato oficial de la API de Rappi
+  return rappiRequest('POST', '/webhook', {
+    event,
+    data: [{ url, stores: [STORE_ID] }]
+  });
+}
+
+/**
+ * Configurar todos los webhooks necesarios.
+ * Verifica estado antes y después de registrar.
+ * baseUrl: dominio público de Railway
  */
 export async function configurarWebhooks(baseUrl) {
+  if (!STORE_ID) throw new Error('RAPPI_STORE_ID no configurado en Railway');
+  const webhookUrl = `${baseUrl}/webhook/rappi`;
+  console.log(`[Rappi] Configurando webhooks → ${webhookUrl} | store: ${STORE_ID}`);
+
   const results = {};
   for (const event of ['NEW_ORDER', 'ORDER_EVENT_CANCEL', 'PING', 'MENU_APPROVED', 'MENU_REJECTED']) {
     try {
-      const url = `${baseUrl}/webhook/rappi`;
-      results[event] = await registrarWebhook(event, url);
-      console.log(`[Rappi] Webhook ${event} → ${url}`);
+      const antes = await obtenerWebhook(event).catch(() => null);
+      console.log(`[Rappi] ${event} antes:`, antes ? JSON.stringify(antes).slice(0, 120) : 'no existe');
+
+      const registro = await registrarWebhook(event, webhookUrl);
+      const despues  = await obtenerWebhook(event).catch(() => null);
+      console.log(`[Rappi] ✅ ${event} despues:`, JSON.stringify(despues).slice(0, 120));
+
+      results[event] = { registro, verificacion: despues };
     } catch (e) {
       results[event] = { error: e.message };
-      console.error(`[Rappi] Error registrando ${event}:`, e.message);
+      console.error(`[Rappi] ❌ Error ${event}:`, e.message);
     }
   }
   return results;
