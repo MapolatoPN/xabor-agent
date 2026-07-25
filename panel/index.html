@@ -163,18 +163,21 @@ header {
 }
 .mas-handle { width: 36px; height: 4px; background: var(--color-border-strong); border-radius: 2px; margin: 0 auto 16px; }
 .mas-item {
-  display: flex; align-items: center; gap: 14px; padding: 14px 24px;
-  background: none; border: none; width: 100%; font-size: 0.95rem;
-  font-family: inherit; font-weight: 500; color: var(--color-text-primary); cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 18px 8px;
+  background: var(--color-surface-2); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); width: 100%; font-size: 0.82rem;
+  font-family: inherit; font-weight: 600; color: var(--color-text-primary); cursor: pointer;
+  transition: background .15s;
 }
-.mas-item i { font-size: 20px; color: var(--color-text-secondary); }
-.mas-item:active { background: var(--color-surface-2); }
+.mas-item i { font-size: 22px; color: var(--color-text-primary); }
+.mas-item:active { background: var(--color-border); }
 
 /* ─── Main ──────────────────────────────────────────────────────────────── */
-main { display: block; padding: 24px 28px; }
+main { display: block; padding: 28px 32px; }
 
 /* ─── Vistas extra (corte, chats, etc.) ─────────────────────────────────── */
-#vistas-extra { padding: 24px 28px; }
+#vistas-extra { padding: 28px 32px; }
 #vistas-extra > div { display: none; }
 #vistas-extra > div.activa { display: block; }
 
@@ -188,7 +191,7 @@ main { display: block; padding: 24px 28px; }
   width: 72px; height: 72px; margin: 0 auto 16px; border-radius: var(--radius-xl);
   background: var(--color-surface); border: 1px solid var(--color-border); box-shadow: var(--shadow-sm);
 }
-#grid-pedidos { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+#grid-pedidos { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
 
 /* ─── Comanda card ──────────────────────────────────────────────────────── */
 .comanda {
@@ -202,13 +205,13 @@ main { display: block; padding: 24px 28px; }
   transition: border-left-color .3s, box-shadow .15s;
 }
 .comanda:hover { box-shadow: var(--shadow-md); }
-.comanda.nuevo          { border-left-color: var(--color-danger); }
+.comanda.nuevo          { border-left-color: var(--color-brand); }
 .comanda.en_preparacion { border-left-color: var(--color-warning); }
 .comanda.listo          { border-left-color: var(--color-success); }
 @keyframes slideIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
 
 .comanda-header {
-  padding: 12px 16px;
+  padding: 14px 18px;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
   display: flex;
@@ -218,7 +221,7 @@ main { display: block; padding: 24px 28px; }
 .comanda-id { font-weight: 700; font-size: 0.92rem; color: var(--color-text-primary); letter-spacing: .3px; }
 .comanda-canal { font-size: 0.7rem; font-weight: 600; background: var(--color-surface-2); color: var(--color-text-secondary); padding: 3px 10px; border-radius: var(--radius-pill); }
 
-.comanda-body { padding: 16px; }
+.comanda-body { padding: 18px; }
 .comanda-cliente { margin-bottom: 12px; }
 .comanda-nombre { font-size: 1.05rem; font-weight: 700; color: var(--color-text-primary); margin-bottom: 3px; }
 .comanda-telefono { font-size: 0.8rem; color: var(--color-text-secondary); display: block; }
@@ -226,7 +229,7 @@ main { display: block; padding: 24px 28px; }
 .badge-modalidad { display: inline-block; padding: 4px 11px; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 700; margin-top: 6px; text-transform: uppercase; letter-spacing: .5px; }
 .badge-recoger { background: var(--color-success-light); color: #047857; }
 .badge-entrega { background: var(--color-brand-light); color: var(--color-brand); }
-.badge-presencial { background: var(--color-info-light); color: #1d4ed8; }
+.badge-presencial { background: var(--color-surface-2); color: var(--color-text-secondary); }
 
 .ticket-meta { font-size: 0.75rem; color: var(--color-text-muted); display: block; margin-bottom: 8px; }
 .ticket-direccion { font-size: 0.8rem; color: var(--color-text-secondary); border-left: 3px solid var(--color-border-strong); padding: 3px 10px; margin: 6px 0; }
@@ -255,12 +258,12 @@ main { display: block; padding: 24px 28px; }
 .ticket-empresa-ciudad { display: none; }
 .ticket-footer-print { display: none; }
 
-.comanda-footer { padding: 12px 16px; background: var(--color-surface-2); border-top: 1px solid var(--color-border); display: flex; gap: 6px; flex-wrap: wrap; }
+.comanda-footer { padding: 14px 18px; background: var(--color-surface-2); border-top: 1px solid var(--color-border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-size: 0.78rem; font-weight: 600; font-family: inherit; cursor: pointer; transition: all .15s; }
 .btn-imprimir   { background: var(--color-text-primary); color: #fff; }
 .btn-imprimir:hover { background: #000; }
-.btn-preparando { background: var(--color-warning-light); color: #92400e; border: 1px solid #fcd34d !important; }
-.btn-preparando:hover { background: #fef3c7; }
+.btn-preparando { background: var(--color-surface-2); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; }
+.btn-preparando:hover { background: var(--color-surface); color: var(--color-text-primary); border-color: var(--color-text-muted) !important; }
 .btn-listo      { background: var(--color-success-light); color: #047857; border: 1px solid #6ee7b7 !important; }
 .btn-listo:hover { background: #d1fae5; }
 .btn-entregado  { background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; }
@@ -286,7 +289,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #msg-feedback { margin-top: 10px; font-size: 0.82rem; text-align: center; min-height: 18px; }
 
 /* ─── Vista Ventas ──────────────────────────────────────────────────────── */
-.pos-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px 18px; box-shadow: var(--shadow-xs); }
+.pos-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 20px 22px; box-shadow: var(--shadow-xs); }
 .pos-card-label { font-size: 0.75rem; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 6px; }
 .pos-card-value { font-size: 1.5rem; font-weight: 800; color: var(--color-text-primary); letter-spacing: -0.02em; }
 .btn-periodo { background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; border-radius: var(--radius-md); height: 36px; padding: 0 16px; cursor: pointer; font-size: 0.82rem; font-weight: 500; transition: all .15s; }
@@ -326,12 +329,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 }
 .pos-cat-header:first-child { margin-top: 0; }
 .pos-cat-header:hover { background: var(--color-surface-2); color: var(--color-text-primary); }
-.pos-productos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 4px; }
+.pos-productos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 4px; }
 .pos-producto {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 14px 16px;
   cursor: pointer;
   transition: all .15s;
   text-align: left;
@@ -368,11 +371,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #pos-total-monto { font-size: 1.6rem; font-weight: 800; color: var(--color-text-primary); letter-spacing: -0.02em; }
 #btn-confirmar-presencial {
   width: 100%; padding: 14px; border-radius: var(--radius-md);
-  background: var(--color-success); color: #fff; font-size: 1rem;
+  background: var(--color-brand); color: #fff; font-size: 1rem;
   font-weight: 700; cursor: pointer; border: none;
   transition: all .15s; letter-spacing: .2px;
 }
-#btn-confirmar-presencial:hover { background: #059669; }
+#btn-confirmar-presencial:hover { background: #e55a28; }
 #btn-confirmar-presencial:disabled { background: var(--color-border-strong); color: var(--color-text-muted); cursor: not-allowed; }
 
 /* Número de orden en la comanda (pantalla) */
@@ -777,7 +780,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
           <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">FONDO INICIAL</div><div style="font-size:1.5rem;font-weight:800;color:#06d6a0;" id="corte-fondo">—</div></div>
-          <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div><div style="font-size:1.5rem;font-weight:800;color:#e8a020;" id="corte-num">0</div></div>
+          <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div><div style="font-size:1.5rem;font-weight:800;color:#FF6B35;" id="corte-num">0</div></div>
         </div>
         <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
           <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">VENTAS DEL DÍA</div><div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div></div>
@@ -849,7 +852,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div id="chat-mensajes"></div>
           <div id="chat-footer">
             <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2"></textarea>
-            <button onclick="enviarDesdeChat()" style="background:#22c55e;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
+            <button onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
           </div>
         </div>
       </div>
@@ -938,7 +941,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="dormido">Dormidos</option>
           </select>
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
-          <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
+          <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#FF6B35;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
         </div>
       </div>
 
@@ -996,14 +999,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="nuevo">Nuevos</option>
           </select>
 
-          <div id="camp-preview" style="font-size:0.8rem;color:#7c3aed;font-weight:600;margin-bottom:14px;">Calculando destinatarios...</div>
+          <div id="camp-preview" style="font-size:0.8rem;color:#FF6B35;font-weight:600;margin-bottom:14px;">Calculando destinatarios...</div>
 
           <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Mensaje <span style="font-weight:400;color:#aaa;">— usa {nombre} para personalizar</span></label>
           <textarea id="camp-mensaje" rows="5" placeholder="Hola {nombre} 👋 Tenemos novedades para ti..."
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:18px;"></textarea>
 
           <button onclick="enviarCampana()" id="camp-btn-enviar"
-            style="width:100%;padding:12px;border:none;border-radius:10px;background:#7c3aed;color:#fff;font-size:0.95rem;font-weight:700;cursor:pointer;">
+            style="width:100%;padding:12px;border:none;border-radius:10px;background:#FF6B35;color:#fff;font-size:0.95rem;font-weight:700;cursor:pointer;">
             Enviar campaña
           </button>
           <div id="camp-resultado" style="margin-top:10px;font-size:0.82rem;text-align:center;"></div>
@@ -1347,12 +1350,12 @@ function renderComanda(p) {
     <div class="comanda-footer">
       <div class="orden-badge">#${numOrden}</div>
       <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🍽️ Comanda</button>
-      <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#2563eb;">🧾 Ticket</button>
+      <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#374151;">🧾 Ticket</button>
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
       <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')">🗑️</button>
-      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-preparando" onclick="abrirModalPago('${p.id}')" style="background:#7c3aed;">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
+      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-entregado" onclick="abrirModalPago('${p.id}')" title="Editar forma de pago">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
       ${esEntrega ? (p.repartidor_nombre ? `<div style="margin-top:6px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:4px 8px;border-radius:6px;font-weight:700;">🛵 ${p.repartidor_nombre}</div>` : '<div style="margin-top:6px;font-size:0.78rem;color:#aaa;padding:4px 0;">Sin repartidor asignado</div>') : ''}
     </div>`;
 }
@@ -2360,7 +2363,7 @@ async function cargarHistorial() {
     const cancelHtml = cancelado && p.cancelacion?.motivo
       ? `<div style="font-size:0.78rem;color:#ef4444;margin-top:4px;">Motivo: ${p.cancelacion.motivo}</div>` : '';
     const adminBtns = isAdmin && !cancelado ? `
-      <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f5f3ff;color:#7c3aed;cursor:pointer;">✏️ Pago</button>
+      <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
       ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
       <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>` : '';
     return `
@@ -2779,7 +2782,7 @@ setTimeout(actualizarTimers, 1000);
 let _clientes = [];
 
 const SEGMENTO_LABEL = { nuevo:'Nuevo', frecuente:'Frecuente', vip:'VIP', en_riesgo:'En riesgo', dormido:'Dormido', todos:'Todos' };
-const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#2563eb', vip:'#7c3aed', en_riesgo:'#d97706', dormido:'#dc2626' };
+const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#374151', vip:'#FF6B35', en_riesgo:'#ef4444', dormido:'#9ca3af' };
 
 async function cargarClientes() {
   const cont = document.getElementById('cli-lista');
@@ -2840,7 +2843,7 @@ async function cargarCampanas() {
                   <div style="font-size:0.72rem;color:#aaa;">${fecha}</div>
                 </td>
                 <td style="text-align:center;padding:10px;">
-                  <span style="font-size:0.72rem;font-weight:700;padding:2px 7px;border-radius:10px;background:#7c3aed18;color:#7c3aed;">${SEGMENTO_LABEL[c.segmento]||c.segmento}</span>
+                  <span style="font-size:0.72rem;font-weight:700;padding:2px 7px;border-radius:10px;background:#FF6B3520;color:#FF6B35;">${SEGMENTO_LABEL[c.segmento]||c.segmento}</span>
                 </td>
                 <td style="text-align:right;padding:10px;font-weight:600;">${c.enviados}<span style="color:#bbb;font-weight:400;">/${c.total_destinatarios}</span></td>
                 <td style="text-align:right;padding:10px;color:#22c55e;font-weight:${c.respondidos?'700':'400'}">${c.respondidos||'—'}</td>
