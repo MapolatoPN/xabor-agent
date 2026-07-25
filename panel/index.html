@@ -2944,81 +2944,44 @@ async function cargarRepartidores() {
                 </div>
                 <div style="font-weight:600;font-size:0.88rem;">${p.cliente || 'Cliente'}</div>
                 <div style="font-size:0.8rem;color:#666;margin-top:2px;">📍 ${dir || 'Sin dirección'}${p.entre_calles ? ` · ${p.entre_calles}` : ''}</div>
-                ${p.telefono && p.telefono !== '—' && !p.telefono.startsWith('rappi-') ? `<div style="font-size:0.78rem;color:#2563eb;">📞 ${p.telefono}</div>` : ''}
-                <div style="font-size:0.78rem;font-weight:700;color:#555;margin-top:2px;">$${p.total} MXN</div>
-              </div>`;
+              </div>
+              `;
             }).join('')}
           </div>
-        </div>`;
-      }).join('');
-      html += `</div>`;
+        </div>
+        `;
+      }).join('')
+      html += '</div>';
     } else {
-      html = `<div style="color:#aaa;text-align:center;padding:40px;">Sin entregas ${labelPeriodo}.</div>`;
-    }
-
-    // Candidatos pendientes
-    const nombresEnEstado = new Set(estado.map(r => r.nombre));
-    const pendientes = (candidatos||[]).filter(c => !nombresEnEstado.has(c.nombre));
-    if (pendientes.length) {
-      html += `
-        <div style="font-size:0.75rem;font-weight:800;text-transform:uppercase;color:#f59e0b;letter-spacing:0.05em;margin-bottom:8px;">⚠️ Sin registrar</div>
-        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;background:#fff;border:1px solid #e5e2da;border-radius:10px;overflow:hidden;">
-          <tbody>${pendientes.map(c => `
-            <tr style="border-bottom:1px solid #f0ede8;">
-              <td style="padding:10px 12px;font-weight:700;">${c.nombre||'—'}</td>
-              <td style="padding:10px 12px;color:#555;font-family:monospace;">${c.telefono}</td>
-              <td style="padding:10px 12px;color:#888;font-size:0.82rem;">${c.texto}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>`;
-    }
-
-    if (!html) {
-      cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">No hay repartidores registrados.<br><small>Diles que envíen <b>"repartidor + su nombre"</b> al WhatsApp del negocio.</small></div>';
-      return;
+      html = '<div style="text-align:center;padding:40px 20px;color:#aaa;">'
+           + '<div style="font-size:2rem;margin-bottom:8px;">&#x1F6F5;</div>'
+           + '<div style="font-weight:600;">Sin actividad ' + labelPeriodo + '</div>'
+           + '<div style="font-size:0.85rem;margin-top:4px;">Los pedidos a domicilio aparecerán aquí</div>'
+           + '</div>';
     }
     cont.innerHTML = html;
   } catch(e) {
-    cont.innerHTML = '<div style="color:#ef4444;padding:20px;">Error cargando repartidores</div>';
+    console.error('Error cargando repartidores:', e);
+    cont.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:30px;">Error al cargar</div>';
   }
 }
-</script>
-<!-- Bottom nav (mobile) -->
-<nav id="bottom-nav">
-  <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-layout-grid"></i>
-    <span>Comandas</span>
-  </button>
-  <button class="bnav-item" id="bnav-presencial" onclick="bnavTab('presencial')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-shopping-cart"></i>
-    <span>POS</span>
-  </button>
-  <button class="bnav-item" id="bnav-chats" onclick="bnavTab('chats')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-message-circle"></i>
-    <span>Chats</span>
-    <span id="bnav-badge">0</span>
-  </button>
-  <button class="bnav-item" id="bnav-corte" onclick="bnavTab('corte')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-receipt"></i>
-    <span>Corte</span>
-  </button>
-  <button class="bnav-item" id="bnav-mas" onclick="abrirMasSheet()">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-dots"></i>
-    <span>Más</span>
-  </button>
-</nav>
 
-<!-- Sheet "Más" (mobile) -->
-<div id="mas-sheet">
-  <div id="mas-backdrop" onclick="cerrarMasSheet()"></div>
-  <div id="mas-panel">
-    <div class="mas-handle"></div>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-clipboard-list"></i>Historial</button>
+</script>
+
+<!-- ═══════════════ MAS-SHEET (hoja de tabs extra en móvil) ═══════════════ -->
+<div id="mas-overlay" onclick="cerrarMasSheet()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1100;"></div>
+<div id="mas-sheet" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;z-index:1101;padding:20px 16px 32px;">
+  <div style="text-align:center;margin-bottom:16px;"><div style="width:40px;height:4px;background:#e5e2da;border-radius:2px;margin:0 auto;"></div></div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-history"></i>Historial</button>
     <button class="mas-item" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
     <button class="mas-item" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
-    <button clas
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Men&#xFA;</button>
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('config')"><i class="ti ti-settings"></i>Config</button>
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('repartidores')"><i class="ti ti-bike"></i>Repartidores</button>
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('clientes')"><i class="ti ti-users"></i>Clientes</button>
+  </div>
+</div>
+
+</body>
+</html>
