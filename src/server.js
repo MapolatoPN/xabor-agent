@@ -989,7 +989,7 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
              datos->>'repartidor_nombre' AS repartidor_nombre
       FROM pedidos_activos
       WHERE ${whereDate}
-        AND datos->>'modalidad' = 'entrega a domicilio'
+        AND datos->>'modalidad' ILIKE '%domicilio%'
       ORDER BY created_at DESC
     `);
 
