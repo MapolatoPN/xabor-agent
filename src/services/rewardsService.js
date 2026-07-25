@@ -221,15 +221,15 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
 
 // ─── Estadísticas generales (panel admin) ────────────────────────────────────
 export async function obtenerResumenRewards(tenantId = DEFAULT_TENANT) {
+  // saldo_total se calcula por separado para evitar fan-out del LEFT JOIN
   const { rows: [stats] } = await pool.query(`
     SELECT
-      COUNT(DISTINCT a.id) FILTER (WHERE a.activo)                       AS clientes_inscritos,
-      COALESCE(SUM(m.puntos) FILTER (WHERE m.tipo = 'acumulacion'), 0)   AS puntos_emitidos,
-      COALESCE(SUM(ABS(m.puntos)) FILTER (WHERE m.tipo = 'canje'), 0)    AS puntos_canjeados,
-      COALESCE(SUM(a.puntos_balance), 0)                                  AS saldo_total
-    FROM rewards_accounts a
-    LEFT JOIN rewards_movements m ON m.account_id = a.id AND m.tenant_id = $1
-    WHERE a.tenant_id = $1
+      (SELECT COUNT(*) FROM rewards_accounts WHERE tenant_id = $1 AND activo)            AS clientes_inscritos,
+      COALESCE(SUM(m.puntos) FILTER (WHERE m.tipo = 'acumulacion'), 0)                   AS puntos_emitidos,
+      COALESCE(SUM(ABS(m.puntos)) FILTER (WHERE m.tipo = 'canje'), 0)                    AS puntos_canjeados,
+      (SELECT COALESCE(SUM(puntos_balance),0) FROM rewards_accounts WHERE tenant_id = $1) AS saldo_total
+    FROM rewards_movements m
+    WHERE m.tenant_id = $1
   `, [tenantId]);
 
   return {

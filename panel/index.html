@@ -2950,7 +2950,7 @@ async function cargarResumenRewards() {
                 <span style="color:#888;">${new Date(m.created_at).toLocaleDateString('es-MX')}</span>
                 <span style="font-weight:600;">${m.nombre||m.telefono||'—'}</span>
                 <span style="color:#aaa;">${m.folio_venta||'—'}</span>
-                <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="font-size:0.78rem;">+${m.puntos}</span>
+                <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="font-size:0.78rem;color:${m.puntos>=0?'#16a34a':'#ef4444'};">${m.puntos>0?'+':''}${m.puntos}</span>
               </div>`).join('')}
           </div>`
         : '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin movimientos todavía.</div>';
