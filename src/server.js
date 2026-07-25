@@ -1041,6 +1041,20 @@ app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => 
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// DEBUG TEMPORAL — diagnóstico de un pedido en pedidos_activos
+app.get('/api/admin/debug/pedido/:folio', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT folio, estado, created_at,
+           datos->>'modalidad' AS modalidad,
+           datos->>'repartidor_id' AS repartidor_id,
+           datos->>'repartidor_nombre' AS repartidor_nombre,
+           DATE(created_at AT TIME ZONE 'America/Matamoros') AS fecha_mx,
+           (NOW() AT TIME ZONE 'America/Matamoros')::date AS hoy_mx
+    FROM pedidos_activos WHERE folio = $1
+  `, [req.params.folio]).catch(e => ({ rows: [], error: e.message }));
+  res.json(rows[0] || { error: 'no encontrado' });
+});
+
 app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
