@@ -3169,6 +3169,16 @@ async function cargarConfigRewardsForm() {
             style="width:120px;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
         </div>
         <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Valor del punto al canjear (ej: 1.0 = 1 punto vale $1)</label>
+          <input id="rw-cfg-puntos_por_peso" type="number" min="0.01" step="0.01" value="${parseFloat(cfg.puntos_por_peso||1).toFixed(2)}"
+            style="width:120px;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Canje mínimo (puntos por bloque, ej: 25 = bloques de $25)</label>
+          <input id="rw-cfg-canje_minimo" type="number" min="1" step="1" value="${parseInt(cfg.canje_minimo||25)}"
+            style="width:120px;padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
+        </div>
+        <div>
           <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:6px;">Canales habilitados</label>
           <div style="display:flex;flex-direction:column;gap:6px;">
             ${[['canal_mostrador','Mostrador (POS)'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_rappi','Rappi']].map(([k,l]) => `
@@ -3190,7 +3200,9 @@ async function guardarConfigRewards() {
   const datos = {
     nombre_programa: document.getElementById('rw-cfg-nombre').value.trim(),
     activo: document.getElementById('rw-cfg-activo').checked,
-    monto_por_punto: parseFloat(document.getElementById('rw-cfg-monto').value) || 10,
+    monto_por_punto:   parseFloat(document.getElementById('rw-cfg-monto').value) || 10,
+    puntos_por_peso:   parseFloat(document.getElementById('rw-cfg-puntos_por_peso').value) || 1.0,
+    canje_minimo:      parseInt(document.getElementById('rw-cfg-canje_minimo').value) || 25,
     canal_mostrador: document.getElementById('rw-cfg-canal_mostrador').checked,
     canal_whatsapp:  document.getElementById('rw-cfg-canal_whatsapp').checked,
     canal_telefono:  document.getElementById('rw-cfg-canal_telefono').checked,
