@@ -188,6 +188,27 @@ export async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_campana_envios_campana  ON campana_envios (campana_id);
     CREATE INDEX IF NOT EXISTS idx_campana_envios_telefono ON campana_envios (telefono);
     CREATE INDEX IF NOT EXISTS idx_campana_envios_estado   ON campana_envios (estado);
+
+    CREATE TABLE IF NOT EXISTS menu_modificadores_grupos (
+      id          SERIAL PRIMARY KEY,
+      producto_id INTEGER NOT NULL REFERENCES menu_productos(id) ON DELETE CASCADE,
+      nombre      VARCHAR(100) NOT NULL,
+      requerido   BOOLEAN DEFAULT FALSE,
+      minimo      INTEGER DEFAULT 0,
+      maximo      INTEGER DEFAULT 1,
+      orden       INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_mod_grupos_producto ON menu_modificadores_grupos (producto_id);
+
+    CREATE TABLE IF NOT EXISTS menu_modificadores_opciones (
+      id          SERIAL PRIMARY KEY,
+      grupo_id    INTEGER NOT NULL REFERENCES menu_modificadores_grupos(id) ON DELETE CASCADE,
+      nombre      VARCHAR(100) NOT NULL,
+      precio_extra DECIMAL(10,2) DEFAULT 0,
+      disponible  BOOLEAN DEFAULT TRUE,
+      orden       INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_mod_opciones_grupo ON menu_modificadores_opciones (grupo_id);
   `);
   console.log('[DB] Tablas listas');
 }
@@ -230,14 +251,107 @@ export async function obtenerMenuCompleto() {
        JOIN menu_categorias c ON c.id = p.categoria_id
        WHERE c.activa = TRUE ORDER BY p.orden`
     );
+    // Cargar modificadores de todos los productos de una sola vez
+    const prodIds = prods.rows.map(p => p.id);
+    let gruposMap = {};
+    if (prodIds.length) {
+      const { rows: grupos } = await pool.query(
+        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) ORDER BY producto_id, orden, id`,
+        [prodIds]
+      );
+      const grupoIds = grupos.map(g => g.id);
+      let opcionesMap = {};
+      if (grupoIds.length) {
+        const { rows: opciones } = await pool.query(
+          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE ORDER BY grupo_id, orden, id`,
+          [grupoIds]
+        );
+        for (const o of opciones) {
+          if (!opcionesMap[o.grupo_id]) opcionesMap[o.grupo_id] = [];
+          opcionesMap[o.grupo_id].push(o);
+        }
+      }
+      for (const g of grupos) {
+        g.opciones = opcionesMap[g.id] || [];
+        if (!gruposMap[g.producto_id]) gruposMap[g.producto_id] = [];
+        gruposMap[g.producto_id].push(g);
+      }
+    }
     return cats.rows.map(c => ({
       ...c,
-      productos: prods.rows.filter(p => p.categoria_id === c.id)
+      productos: prods.rows
+        .filter(p => p.categoria_id === c.id)
+        .map(p => ({ ...p, modificadores: gruposMap[p.id] || [] }))
     }));
   } catch(e) {
     console.error('[DB] obtenerMenuCompleto:', e.message);
     return [];
   }
+}
+
+// ─── Menú — CRUD modificadores ────────────────────────────────────────────────
+export async function obtenerModificadoresProducto(productoId) {
+  const { rows: grupos } = await pool.query(
+    `SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 ORDER BY orden, id`,
+    [productoId]
+  );
+  for (const g of grupos) {
+    const { rows } = await pool.query(
+      `SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 ORDER BY orden, id`,
+      [g.id]
+    );
+    g.opciones = rows;
+  }
+  return grupos;
+}
+
+export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }) {
+  const { rows } = await pool.query(
+    `INSERT INTO menu_modificadores_grupos (producto_id, nombre, requerido, minimo, maximo, orden)
+     VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$1))
+     RETURNING *`,
+    [productoId, nombre, requerido, minimo, maximo]
+  );
+  return rows[0];
+}
+
+export async function actualizarGrupoModificador(grupoId, campos) {
+  const sets = [], vals = [];
+  if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);    vals.push(campos.nombre); }
+  if (campos.requerido !== undefined) { sets.push(`requerido=$${sets.length+1}`); vals.push(campos.requerido); }
+  if (campos.minimo    !== undefined) { sets.push(`minimo=$${sets.length+1}`);    vals.push(campos.minimo); }
+  if (campos.maximo    !== undefined) { sets.push(`maximo=$${sets.length+1}`);    vals.push(campos.maximo); }
+  if (!sets.length) return;
+  vals.push(grupoId);
+  await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+}
+
+export async function eliminarGrupoModificador(grupoId) {
+  await pool.query('DELETE FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
+}
+
+export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, disponible=true }) {
+  const { rows } = await pool.query(
+    `INSERT INTO menu_modificadores_opciones (grupo_id, nombre, precio_extra, disponible, orden)
+     VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$1))
+     RETURNING *`,
+    [grupoId, nombre, precio_extra, disponible]
+  );
+  return rows[0];
+}
+
+export async function actualizarOpcionModificador(opcionId, campos) {
+  const sets = [], vals = [];
+  if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
+  if (campos.precio_extra !== undefined) { sets.push(`precio_extra=$${sets.length+1}`); vals.push(campos.precio_extra); }
+  if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
+  if (!sets.length) return;
+  vals.push(opcionId);
+  await pool.query(`UPDATE menu_modificadores_opciones SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+}
+
+export async function eliminarOpcionModificador(opcionId) {
+  await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1', [opcionId]);
 }
 
 // ─── Menú — CRUD categorías ───────────────────────────────────────────────────

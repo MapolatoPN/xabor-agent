@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana } from './services/database.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -615,6 +615,42 @@ app.patch('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
 
 app.delete('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
   await eliminarProducto(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── Modificadores — endpoints ───────────────────────────────────────────────
+app.get('/api/admin/menu/productos/:id/modificadores', requireAdmin, async (req, res) => {
+  const grupos = await obtenerModificadoresProducto(parseInt(req.params.id));
+  res.json(grupos);
+});
+
+app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, async (req, res) => {
+  const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body);
+  res.json(grupo);
+});
+
+app.patch('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
+  await actualizarGrupoModificador(parseInt(req.params.id), req.body);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
+  await eliminarGrupoModificador(parseInt(req.params.id));
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, async (req, res) => {
+  const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body);
+  res.json(opcion);
+});
+
+app.patch('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
+  await actualizarOpcionModificador(parseInt(req.params.id), req.body);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
+  await eliminarOpcionModificador(parseInt(req.params.id));
   res.json({ ok: true });
 });
 

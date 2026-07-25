@@ -19,7 +19,22 @@ function formatearMenu(categorias) {
       if (!p.disponible) continue;
       texto += `- ${p.nombre} — $${p.precio} MXN\n`;
       if (p.descripcion) texto += `  ${p.descripcion}\n`;
-      if (p.opciones) {
+      // Modificadores dinámicos de la DB (grupos + opciones)
+      if (p.modificadores && p.modificadores.length > 0) {
+        for (const g of p.modificadores) {
+          const opcsDisp = g.opciones.filter(o => o.disponible);
+          if (!opcsDisp.length) continue;
+          const opcsTxt = opcsDisp.map(o =>
+            parseFloat(o.precio_extra) > 0 ? `${o.nombre} (+$${parseFloat(o.precio_extra).toFixed(0)})` : o.nombre
+          ).join(', ');
+          const reglaTxt = g.requerido
+            ? (g.maximo === 1 ? 'elige 1' : `elige ${g.minimo}–${g.maximo}`)
+            : (g.maximo === 1 ? 'opcional' : `hasta ${g.maximo}`);
+          texto += `  ${g.nombre} (${reglaTxt}): ${opcsTxt}\n`;
+        }
+      }
+      // Fallback: campo opciones legacy del producto
+      if ((!p.modificadores || !p.modificadores.length) && p.opciones) {
         const opts = typeof p.opciones === 'string' ? JSON.parse(p.opciones) : p.opciones;
         if (Array.isArray(opts)) {
           texto += `  Opciones: ${opts.join(', ')}\n`;
