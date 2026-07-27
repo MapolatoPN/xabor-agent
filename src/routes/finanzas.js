@@ -6,6 +6,12 @@
 import { Router } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dns from 'dns';
+import { promisify } from 'util';
+import { exec } from 'child_process';
+import https from 'https';
+const execAsync = promisify(exec);
+const dnsResolve4 = promisify(dns.resolve4);
 import {
   sincronizarRango,
   jobDiarioSAT,
@@ -24,6 +30,74 @@ const router = Router();
 // Estado de sync activo (en memoria, suficiente para un tenant)
 let syncEnCurso = false;
 let syncLog     = [];
+
+// ─── Diagnóstico de red SAT (temporal) ────────────────────────────────────────
+router.get('/debug-network', async (req, res) => {
+  const HOST = 'cfdidescargamasivarfc.sat.gob.mx';
+  const TARGETS = [
+    { label: 'auth_corto',    url: `https://${HOST}/autenticacion` },
+    { label: 'auth_svc',      url: `https://${HOST}/CFDI/Autenticacion/autenticacion.svc` },
+    { label: 'solicitud_svc', url: `https://${HOST}/CFDI/SolicitudDescargaMasivaTercerosMTCC.svc` },
+    { label: 'verifica_svc',  url: `https://${HOST}/CFDI/VerificaSolicitudDescargaMTCC.svc` },
+    { label: 'descarga_svc',  url: `https://${HOST}/CFDI/DescargaMasivaServicio.svc` },
+    { label: 'sat_home',      url: 'https://www.sat.gob.mx' },
+  ];
+  const result = { host: HOST, timestamp: new Date().toISOString() };
+
+  // 1. DNS con resolver del sistema
+  try { result.dns_system = await dnsResolve4(HOST); }
+  catch (e) { result.dns_system = { error: e.code, message: e.message }; }
+
+  // 2. DNS con Cloudflare 1.1.1.1
+  try {
+    const r = new dns.Resolver();
+    r.setServers(['1.1.1.1']);
+    result.dns_cloudflare = await new Promise((ok, fail) =>
+      r.resolve4(HOST, (err, addrs) => err ? fail(err) : ok(addrs)));
+  } catch (e) { result.dns_cloudflare = { error: e.code, message: e.message }; }
+
+  // 3. DNS con Google 8.8.8.8
+  try {
+    const r = new dns.Resolver();
+    r.setServers(['8.8.8.8']);
+    result.dns_google = await new Promise((ok, fail) =>
+      r.resolve4(HOST, (err, addrs) => err ? fail(err) : ok(addrs)));
+  } catch (e) { result.dns_google = { error: e.code, message: e.message }; }
+
+  // 4. nslookup y dig via shell
+  for (const cmd of [`nslookup ${HOST}`, `dig +short ${HOST}`]) {
+    try {
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 8000 });
+      result[cmd.split(' ')[0]] = stdout.trim() || stderr.trim() || '(sin salida)';
+    } catch (e) { result[cmd.split(' ')[0]] = { error: e.message }; }
+  }
+
+  // 5. curl HEAD a cada endpoint
+  result.endpoints = {};
+  for (const t of TARGETS) {
+    try {
+      const { stdout } = await execAsync(
+        `curl -sS -o /dev/null -w "%{http_code}|%{time_total}|%{ssl_verify_result}" --max-time 10 -I "${t.url}" 2>&1`,
+        { timeout: 15000 }
+      );
+      const [http, time, ssl] = stdout.split('|');
+      result.endpoints[t.label] = { http_code: http, time_s: time, ssl_result: ssl, url: t.url };
+    } catch (e) {
+      result.endpoints[t.label] = { error: e.message, url: t.url };
+    }
+  }
+
+  // 6. curl verbose al auth (para ver si es TLS, TCP o DNS)
+  try {
+    const { stdout, stderr } = await execAsync(
+      `curl -sv --max-time 10 https://${HOST}/CFDI/Autenticacion/autenticacion.svc 2>&1 | head -40`,
+      { timeout: 15000 }
+    );
+    result.curl_verbose = (stdout + stderr).trim();
+  } catch (e) { result.curl_verbose = e.message; }
+
+  res.json(result);
+});
 
 // ─── Diagnóstico temporal (eliminar después) ──────────────────────────────────
 router.get('/debug-cert', (req, res) => {
