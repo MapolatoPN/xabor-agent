@@ -25,36 +25,44 @@ const SAT_URL = {
   download: 'https://cfdidescargamasivarfc.sat.gob.mx/descargarpackage',
 };
 
-// ─── Carga de certificado (.cer en DER) ──────────────────────────────────────
+// ─── Carga de certificado — desde env var (Railway) o archivo local ───────────
 function cargarCertificado(rfc) {
-  const cerPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.cer`);
-  if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado: ${cerPath}`);
-  const der = fs.readFileSync(cerPath);
-  const pem = `-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+  let der;
+  if (process.env.SAT_CERT_BASE64) {
+    der = Buffer.from(process.env.SAT_CERT_BASE64, 'base64');
+  } else {
+    const cerPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.cer`);
+    if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado. Configura SAT_CERT_BASE64 en Railway o coloca el archivo en ${cerPath}`);
+    der = fs.readFileSync(cerPath);
+  }
+  const b64 = der.toString('base64');
+  const pem = `-----BEGIN CERTIFICATE-----\n${b64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
   const cert = new crypto.X509Certificate(pem);
   const expiration = new Date(cert.validTo);
   if (expiration < new Date()) throw new Error(`Certificado vencido el ${expiration.toISOString()}`);
-  return { der, pem, cert, expiration, base64: der.toString('base64') };
+  return { der, pem, cert, expiration, base64: b64 };
 }
 
-// ─── Descifrado de llave privada (.key DER cifrado con 3DES) ────────────────
+// ─── Descifrado de llave privada — desde env var (Railway) o archivo local ───
 async function cargarLlavePrivada(rfc) {
   const password = process.env.SAT_KEY_PASSWORD;
-  if (!password) throw new Error('Variable SAT_KEY_PASSWORD no configurada');
+  if (!password) throw new Error('Variable SAT_KEY_PASSWORD no configurada en Railway');
 
-  const keyPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.key`);
-  if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada: ${keyPath}`);
+  let der;
+  if (process.env.SAT_KEY_BASE64) {
+    der = Buffer.from(process.env.SAT_KEY_BASE64, 'base64');
+  } else {
+    const keyPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.key`);
+    if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada. Configura SAT_KEY_BASE64 en Railway o coloca el archivo en ${keyPath}`);
+    der = fs.readFileSync(keyPath);
+  }
 
-  // La llave .key del SAT es PKCS#8 cifrado en DER.
-  // Usamos node-forge para descifrarla (instalado vía npm).
   let forge;
   try {
     forge = (await import('node-forge')).default;
   } catch {
     throw new Error('node-forge no instalado. Ejecuta: npm install node-forge');
   }
-
-  const der = fs.readFileSync(keyPath);
   const asn1 = forge.asn1.fromDer(der.toString('binary'));
   const encryptedPkcs8 = forge.pki.encryptedPrivateKeyFromAsn1(asn1);
   const encryptedPem = forge.pki.encryptedPrivateKeyToPem(encryptedPkcs8);
