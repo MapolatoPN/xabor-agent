@@ -7,11 +7,7 @@ import { Router } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dns from 'dns';
-import { promisify } from 'util';
-import { exec } from 'child_process';
 import https from 'https';
-const execAsync = promisify(exec);
-const dnsResolve4 = promisify(dns.resolve4);
 import {
   sincronizarRango,
   jobDiarioSAT,
@@ -31,117 +27,30 @@ const router = Router();
 let syncEnCurso = false;
 let syncLog     = [];
 
-// ─── Diagnóstico de red SAT (temporal) ────────────────────────────────────────
+// ─── Diagnóstico de endpoints SAT activos (temporal) ─────────────────────────
 router.get('/debug-network', async (req, res) => {
-  const result = { timestamp: new Date().toISOString() };
+  const { SAT_ENDPOINTS } = await import('../services/sat-endpoints.js');
+  const result = { timestamp: new Date().toISOString(), endpoints_configurados: SAT_ENDPOINTS };
 
-  // Helper: resolve con un resolver específico
-  const resolveWith = (host, server) => new Promise((ok) => {
-    const r = new dns.Resolver();
-    r.setServers([server]);
-    r.resolve4(host, (err, addrs) => ok(err ? { error: err.code } : addrs));
-  });
-
-  // Helper: HTTP GET con Node.js nativo, sin seguir redirects
   const httpProbe = (url) => new Promise((ok) => {
     const t0 = Date.now();
-    const req = https.request(url, { method: 'HEAD', timeout: 10000 }, (res2) => {
-      ok({ status: res2.statusCode, ms: Date.now() - t0 });
-      res2.resume();
+    const r2 = https.request(url, { method: 'HEAD', timeout: 12000 }, (resp) => {
+      ok({ status: resp.statusCode, ms: Date.now() - t0 });
+      resp.resume();
     });
-    req.on('timeout', () => { req.destroy(); ok({ error: 'TIMEOUT', ms: Date.now() - t0 }); });
-    req.on('error', (e) => ok({ error: e.code || e.message, ms: Date.now() - t0 }));
-    req.end();
+    r2.on('timeout', () => { r2.destroy(); ok({ error: 'TIMEOUT', ms: Date.now() - t0 }); });
+    r2.on('error', (e) => ok({ error: e.code || e.message, ms: Date.now() - t0 }));
+    r2.end();
   });
 
-  // 1. Sanity check: dominios conocidos resuelven bien
-  const sanity = {};
-  for (const h of ['google.com', 'railway.app', 'cloudflare.com']) {
-    sanity[h] = await resolveWith(h, '8.8.8.8');
-  }
-  result.sanity_dns = sanity;
+  result.dns_clouda = await new Promise(ok =>
+    dns.resolve4('clouda.sat.gob.mx', (e, a) => ok(e ? { error: e.code } : a))
+  );
 
-  // 2. DNS de hosts SAT con 3 resolvers
-  const SAT_HOSTS = [
-    'cfdidescargamasivarfc.sat.gob.mx',  // el que usamos (falla)
-    'www.sat.gob.mx',
-    'sat.gob.mx',
-    'cfdiws.sat.gob.mx',
-    'api.sat.gob.mx',
-    'descargamasiva.sat.gob.mx',
-    'cfdidescargamasiva.sat.gob.mx',
-    'ws.sat.gob.mx',
-    'servicios.sat.gob.mx',
-    'portalcfdi.sat.gob.mx',
-    'consultarfc.sat.gob.mx',
-  ];
-  result.sat_dns = {};
-  for (const h of SAT_HOSTS) {
-    result.sat_dns[h] = {
-      system:     await new Promise(ok => dns.resolve4(h, (e,a) => ok(e ? {error:e.code} : a))),
-      cloudflare: await resolveWith(h, '1.1.1.1'),
-      google:     await resolveWith(h, '8.8.8.8'),
-    };
-  }
-
-  // 3. HTTP HEAD a cada endpoint candidato (solo si DNS resolvió)
-  const ENDPOINTS = [
-    { label: 'auth_svc',      url: 'https://cfdidescargamasivarfc.sat.gob.mx/CFDI/Autenticacion/autenticacion.svc' },
-    { label: 'sat_home',      url: 'https://www.sat.gob.mx' },
-    { label: 'sat_doc_page',  url: 'https://www.sat.gob.mx/consulta/42968/consulta-y-recuperacion-de-comprobantes-(nuevo)' },
-    { label: 'api_sat',       url: 'https://api.sat.gob.mx' },
-    { label: 'cfdiws_sat',    url: 'https://cfdiws.sat.gob.mx' },
-    { label: 'ws_sat',        url: 'https://ws.sat.gob.mx' },
-    { label: 'servicios_sat', url: 'https://servicios.sat.gob.mx' },
-  ];
   result.http_probes = {};
-  for (const ep of ENDPOINTS) {
-    result.http_probes[ep.label] = await httpProbe(ep.url);
+  for (const [k, url] of Object.entries(SAT_ENDPOINTS)) {
+    result.http_probes[k] = await httpProbe(url);
   }
-
-  // 4. IP pública del servidor Railway
-  try {
-    result.railway_ip = await new Promise((ok) => {
-      https.get('https://api.ipify.org?format=json', { timeout: 5000 }, (r2) => {
-        let body = '';
-        r2.on('data', d => body += d);
-        r2.on('end', () => { try { ok(JSON.parse(body)); } catch { ok({ raw: body }); } });
-      }).on('error', e => ok({ error: e.message }));
-    });
-  } catch(e) { result.railway_ip = { error: e.message }; }
-
-  // 5. Registros CNAME / AAAA / TXT para hosts interesantes
-  const dnsExtra = {};
-  const hostsExtra = ['servicios.sat.gob.mx', 'cfdidescargamasivarfc.sat.gob.mx', 'sat.gob.mx'];
-  for (const h of hostsExtra) {
-    dnsExtra[h] = {};
-    for (const type of ['CNAME', 'AAAA', 'TXT']) {
-      dnsExtra[h][type] = await new Promise(ok => {
-        const r = new dns.Resolver(); r.setServers(['8.8.8.8']);
-        r.resolve(h, type, (e, addrs) => ok(e ? { error: e.code } : addrs));
-      });
-    }
-  }
-  result.dns_extra = dnsExtra;
-
-  // 6. Probar hostnames de implementaciones SAT conocidas (recientes)
-  const SAT_ALT_HOSTS = [
-    'cfdidescargamasivarfc.sat.gob.mx',       // el original (falla)
-    'cfdidescargamasivaportal.sat.gob.mx',
-    'cfdidescargamasivalite.sat.gob.mx',
-    'sdmd.sat.gob.mx',                        // Servicio Descarga Masiva Documentos Digitales
-    'prodservice.sat.gob.mx',
-    'sat-ws.sat.gob.mx',
-    'cfdidescargamasiva4.sat.gob.mx',
-    'cfdiws3.sat.gob.mx',
-  ];
-  result.alt_hosts_dns = {};
-  for (const h of SAT_ALT_HOSTS) {
-    result.alt_hosts_dns[h] = await resolveWith(h, '8.8.8.8');
-  }
-
-  // 7. HTTP HEAD a servicios.sat.gob.mx (tiene ENODATA en A pero podría responder HTTPS)
-  result.servicios_probe = await httpProbe('https://servicios.sat.gob.mx');
 
   res.json(result);
 });

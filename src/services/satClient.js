@@ -13,17 +13,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import crypto from 'crypto';
+import { SAT_ENDPOINTS as SAT_URL, SAT_NS } from './sat-endpoints.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CERTS_DIR = path.join(__dirname, '../../certs');
-
-// ─── Endpoints SAT ───────────────────────────────────────────────────────────
-const SAT_URL = {
-  auth:     'https://cfdidescargamasivarfc.sat.gob.mx/autenticacion',
-  request:  'https://cfdidescargamasivarfc.sat.gob.mx/solicituddescarga',
-  verify:   'https://cfdidescargamasivarfc.sat.gob.mx/verificasolicituddescarga',
-  download: 'https://cfdidescargamasivarfc.sat.gob.mx/descargarpackage',
-};
 
 // ─── Normalizar buffer a DER binario (detecta si viene en PEM) ───────────────
 function normalizarDer(buf) {
