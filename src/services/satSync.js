@@ -202,7 +202,7 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
   try {
     // 1. Autenticar
     log('Autenticando con e.firma...');
-    const token = await autenticar(rfc, { onDiag: log });
+    const token = await autenticar(rfc);
     log('Token obtenido ✓');
 
     // 2. Solicitar

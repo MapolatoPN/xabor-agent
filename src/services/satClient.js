@@ -152,10 +152,8 @@ async function construirSoapAuth(rfc) {
 }
 
 // ─── Autenticar con e.firma → token (válido 5 min) ───────────────────────────
-export async function autenticar(rfc, { onDiag } = {}) {
+export async function autenticar(rfc) {
   const soap = await construirSoapAuth(rfc);
-  // Log diagnóstico — el SOAP contiene solo material público (cert + firma)
-  if (onDiag) onDiag('SOAP_AUTH_PREVIEW: ' + soap.substring(0, 800).replace(/\n/g, ' '));
   let res;
   try {
     res = await axios.post(SAT_URL.auth, soap, {
