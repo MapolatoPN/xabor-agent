@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xabor Finanzas</title>
+<style>
+  :root {
+    --color-primary: #FF6B35;
+    --color-bg: #f5f3ef;
+    --color-surface: #fff;
+    --color-border: #e5e2da;
+    --color-text: #1c1c1c;
+    --color-muted: #888;
+    --color-success: #16a34a;
+    --color-error: #dc2626;
+    --color-warning: #d97706;
+    --sidebar-w: 200px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--color-bg); color: var(--color-text); }
+
+  /* Layout */
+  .sidebar { position: fixed; top: 0; left: 0; width: var(--sidebar-w); height: 100vh; background: #1c1c1c; color: #fff; display: flex; flex-direction: column; z-index: 100; }
+  .sidebar-logo { padding: 20px 16px 16px; font-size: 1.1rem; font-weight: 800; color: var(--color-primary); letter-spacing: 1px; }
+  .sidebar-logo span { color: #fff; font-weight: 400; font-size: 0.75rem; display: block; margin-top: 2px; }
+  .sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; font-size: 0.88rem; color: #ccc; border-radius: 0; transition: background .15s; }
+  .nav-item:hover { background: rgba(255,255,255,.07); color: #fff; }
+  .nav-item.active { background: rgba(255,107,53,.15); color: var(--color-primary); font-weight: 600; }
+  .sidebar-back { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,.1); }
+  .sidebar-back a { color: #aaa; font-size: 0.82rem; text-decoration: none; }
+  .sidebar-back a:hover { color: #fff; }
+
+  main { margin-left: var(--sidebar-w); padding: 28px 32px; min-height: 100vh; }
+  .page-title { font-size: 1.4rem; font-weight: 800; margin-bottom: 4px; }
+  .page-sub { color: var(--color-muted); font-size: 0.88rem; margin-bottom: 24px; }
+
+  /* Cards resumen */
+  .resumen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .resumen-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 16px 18px; }
+  .resumen-card .label { font-size: 0.75rem; color: var(--color-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+  .resumen-card .value { font-size: 1.35rem; font-weight: 800; }
+  .resumen-card .value.muted { color: var(--color-muted); font-size: 1rem; }
+
+  /* Toolbar */
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 14px 16px; }
+  .toolbar input, .toolbar select { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 10px; font-size: 0.85rem; background: var(--color-bg); }
+  .toolbar input[type="text"] { min-width: 200px; }
+  .toolbar label { font-size: 0.75rem; font-weight: 600; color: var(--color-muted); display: block; margin-bottom: 3px; }
+  .toolbar .spacer { flex: 1; }
+  .btn { border: none; border-radius: 8px; padding: 9px 16px; font-size: 0.85rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: var(--color-primary); color: #fff; }
+  .btn-secondary { background: #1c1c1c; color: #fff; }
+  .btn-ghost { background: transparent; color: var(--color-text); border: 1px solid var(--color-border); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* Tabla */
+  .table-wrap { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  thead th { padding: 11px 14px; text-align: left; font-size: 0.75rem; font-weight: 700; color: var(--color-muted); text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--color-border); background: #faf9f7; }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #faf9f7; }
+  .tipo-badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; }
+  .tipo-I { background: #dcfce7; color: #16a34a; }
+  .tipo-E { background: #fee2e2; color: #dc2626; }
+  .tipo-P { background: #dbeafe; color: #1d4ed8; }
+  .tipo-N { background: #fef9c3; color: #854d0e; }
+  .status-badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; }
+  .status-vigente { background: #dcfce7; color: #16a34a; }
+  .status-cancelado { background: #fee2e2; color: #dc2626; }
+
+  /* Paginación */
+  .pagination { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-top: 1px solid var(--color-border); font-size: 0.85rem; }
+  .pagination .info { color: var(--color-muted); flex: 1; }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 500; display: none; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--color-surface); border-radius: 16px; max-width: 780px; width: 94%; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+  .modal-header { padding: 18px 22px; border-bottom: 1px solid var(--color-border); display: flex; align-items: center; justify-content: space-between; }
+  .modal-header h3 { font-size: 1rem; font-weight: 700; }
+  .modal-close { background: none; border: none; font-size: 1.3rem; cursor: pointer; color: var(--color-muted); padding: 4px; }
+  .modal-body { padding: 20px 22px; overflow-y: auto; flex: 1; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-bottom: 20px; }
+  .detail-row label { font-size: 0.72rem; font-weight: 700; color: var(--color-muted); text-transform: uppercase; display: block; margin-bottom: 2px; }
+  .detail-row p { font-size: 0.88rem; }
+  .items-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 12px; }
+  .items-table th { padding: 6px 8px; text-align: left; background: #faf9f7; font-size: 0.72rem; text-transform: uppercase; color: var(--color-muted); border-bottom: 1px solid var(--color-border); }
+  .items-table td { padding: 7px 8px; border-bottom: 1px solid var(--color-border); }
+  .modal-footer { padding: 14px 22px; border-top: 1px solid var(--color-border); display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* Sync panel */
+  .sync-panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+  .sync-panel h4 { font-size: 0.88rem; font-weight: 700; margin-bottom: 8px; }
+  .sync-log { background: #1c1c1c; color: #a3e635; font-family: monospace; font-size: 0.78rem; border-radius: 8px; padding: 12px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; }
+  .sync-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .sync-status { font-size: 0.82rem; color: var(--color-muted); }
+  .sync-status.ok { color: var(--color-success); }
+  .sync-status.error { color: var(--color-error); }
+  .sync-status.running { color: var(--color-warning); }
+
+  /* Config tab */
+  .config-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 22px; max-width: 520px; }
+  .config-section h4 { font-size: 0.9rem; font-weight: 700; margin-bottom: 14px; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { font-size: 0.78rem; font-weight: 700; color: #555; display: block; margin-bottom: 4px; }
+  .form-group input { width: 100%; padding: 9px 12px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 0.9rem; }
+  .config-nota { background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 14px; font-size: 0.82rem; color: #78350f; margin-bottom: 16px; line-height: 1.5; }
+  .cert-status { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; padding: 10px 12px; border-radius: 8px; background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; margin-bottom: 12px; }
+  .cert-status.invalid { background: #fef2f2; border-color: #fecaca; color: #dc2626; }
+
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--color-muted); }
+  .empty-state .icon { font-size: 2.5rem; margin-bottom: 10px; }
+  .empty-state p { font-size: 0.9rem; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #1c1c1c; color: #fff; padding: 12px 18px; border-radius: 10px; font-size: 0.88rem; z-index: 9999; display: none; }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-logo">XABOR<span>Finanzas</span></div>
+  <div class="sidebar-nav">
+    <div class="nav-item active" onclick="mostrarTab('facturas')" id="nav-facturas">📄 Facturas</div>
+    <div class="nav-item" onclick="mostrarTab('config')" id="nav-config">⚙️ Configuración</div>
+  </div>
+  <div class="sidebar-back"><a href="/panel">← Panel principal</a></div>
+</nav>
+
+<main>
+  <!-- ── TAB: Facturas ── -->
+  <div id="tab-facturas">
+    <div class="page-title">Facturas recibidas</div>
+    <div class="page-sub" id="sync-info">Cargando...</div>
+
+    <!-- Resumen -->
+    <div class="resumen-grid" id="resumen-grid">
+      <div class="resumen-card"><div class="label">Total facturado</div><div class="value" id="r-total">—</div></div>
+      <div class="resumen-card"><div class="label">Subtotal</div><div class="value" id="r-subtotal">—</div></div>
+      <div class="resumen-card"><div class="label">IVA trasladado</div><div class="value" id="r-iva">—</div></div>
+      <div class="resumen-card"><div class="label">Retenciones</div><div class="value" id="r-ret">—</div></div>
+      <div class="resumen-card"><div class="label">Cantidad de CFDI</div><div class="value" id="r-cant">—</div></div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div>
+        <label>Buscar</label>
+        <input type="text" id="f-busqueda" placeholder="UUID, proveedor, folio..." oninput="debounceCargar()">
+      </div>
+      <div>
+        <label>Desde</label>
+        <input type="date" id="f-desde" onchange="cargarFacturas()">
+      </div>
+      <div>
+        <label>Hasta</label>
+        <input type="date" id="f-hasta" onchange="cargarFacturas()">
+      </div>
+      <div>
+        <label>Tipo</label>
+        <select id="f-tipo" onchange="cargarFacturas()">
+          <option value="">Todos</option>
+          <option value="I">Ingreso (I)</option>
+          <option value="E">Egreso / NC (E)</option>
+          <option value="P">Pago (P)</option>
+          <option value="N">Nómina (N)</option>
+          <option value="T">Traslado (T)</option>
+        </select>
+      </div>
+      <div>
+        <label>Estado</label>
+        <select id="f-status" onchange="cargarFacturas()">
+          <option value="">Todos</option>
+          <option value="vigente">Vigente</option>
+          <option value="cancelado">Cancelado</option>
+        </select>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" onclick="abrirSync()" id="btn-sync">🔄 Sincronizar ahora</button>
+    </div>
+
+    <!-- Tabla -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Fecha emisión</th>
+            <th>Proveedor (Emisor)</th>
+            <th>RFC Emisor</th>
+            <th>Tipo</th>
+            <th>Total</th>
+            <th>Estado</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tabla-facturas">
+          <tr><td colspan="7" style="text-align:center;padding:40px;color:#aaa;">Cargando...</td></tr>
+        </tbody>
+      </table>
+      <div class="pagination">
+        <div class="info" id="pag-info">—</div>
+        <button class="btn btn-ghost" onclick="cambiarPagina(-1)" id="btn-prev">← Anterior</button>
+        <button class="btn btn-ghost" onclick="cambiarPagina(1)" id="btn-next">Siguiente →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TAB: Config ── -->
+  <div id="tab-config" style="display:none">
+    <div class="page-title">Configuración SAT</div>
+    <div class="page-sub" style="margin-bottom:20px;">Configura tu e.firma para la descarga automática de CFDI</div>
+
+    <div class="config-section">
+      <div class="config-nota">
+        <strong>⚠️ Seguridad:</strong> Los archivos <code>.cer</code> y <code>.key</code> de tu e.firma deben colocarse
+        manualmente en la carpeta <code>certs/</code> del servidor (nunca se suben a GitHub).
+        La contraseña se configura como variable de entorno <code>SAT_KEY_PASSWORD</code> en Railway.
+        <br><br>
+        Nombre esperado de archivos: <code>certs/{RFC}.cer</code> y <code>certs/{RFC}.key</code>
+      </div>
+
+      <div id="cert-status-box" style="display:none"></div>
+
+      <h4>Cuenta SAT</h4>
+      <div class="form-group">
+        <label>RFC del negocio</label>
+        <input type="text" id="cfg-rfc" placeholder="CAOM940122PTA" maxlength="13" style="text-transform:uppercase">
+      </div>
+      <div style="margin-bottom:12px">
+        <button class="btn btn-ghost" onclick="validarCertificado()" style="margin-right:8px">Validar certificado</button>
+        <button class="btn btn-primary" onclick="guardarCuenta()">Guardar cuenta</button>
+      </div>
+      <div id="cfg-feedback" style="font-size:0.82rem;color:#888;"></div>
+    </div>
+
+    <div style="height:24px"></div>
+
+    <!-- Historial de solicitudes -->
+    <div class="config-section" style="max-width:100%">
+      <h4>Historial de sincronizaciones</h4>
+      <div id="historial-sync" style="margin-top:12px;font-size:0.85rem;color:#aaa;">Cargando...</div>
+    </div>
+  </div>
+</main>
+
+<!-- Modal Detalle Factura -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)cerrarModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">Detalle de factura</h3>
+      <button class="modal-close" onclick="cerrarModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">Cargando...</div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="btn-xml" onclick="descargarXML()">⬇ Descargar XML</button>
+      <button class="btn btn-ghost" onclick="cerrarModal()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Sync -->
+<div class="modal-overlay" id="modal-sync" onclick="if(event.target===this)cerrarSync()">
+  <div class="modal" style="max-width:540px">
+    <div class="modal-header">
+      <h3>Sincronizar con SAT</h3>
+      <button class="modal-close" onclick="cerrarSync()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Fecha inicial</label>
+          <input type="date" id="sync-desde" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Fecha final</label>
+          <input type="date" id="sync-hasta" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;">
+        </div>
+      </div>
+      <div style="display:none" id="sync-log-wrap">
+        <div style="font-size:0.82rem;font-weight:700;margin-bottom:6px;">Progreso:</div>
+        <div class="sync-log" id="sync-log-box"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="cerrarSync()" id="btn-sync-cancel">Cancelar</button>
+      <button class="btn btn-primary" onclick="iniciarSync()" id="btn-sync-ok">🔄 Iniciar sincronización</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── Estado ──────────────────────────────────────────────────────────────────
+let token = sessionStorage.getItem('token') || '';
+let paginaActual = 1;
+let totalFacturas = 0;
+let pageSize = 50;
+let facturaActualId = null;
+let syncInterval = null;
+let debounceTimer = null;
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...opts.headers }
+  });
+  if (res.status === 401) { window.location.href = '/panel/login.html'; return null; }
+  return res;
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  // Heredar token del panel principal
+  token = sessionStorage.getItem('token') || localStorage.getItem('xabor_token') || '';
+
+  // Defaults de fecha: último mes
+  const hoy = new Date();
+  const hace30 = new Date(hoy); hace30.setDate(hace30.getDate() - 30);
+  document.getElementById('f-hasta').value  = hoy.toISOString().split('T')[0];
+  document.getElementById('f-desde').value  = hace30.toISOString().split('T')[0];
+  document.getElementById('sync-hasta').value = hoy.toISOString().split('T')[0];
+  const hace7 = new Date(hoy); hace7.setDate(hace7.getDate() - 7);
+  document.getElementById('sync-desde').value = hace7.toISOString().split('T')[0];
+
+  await Promise.all([cargarEstado(), cargarFacturas()]);
+});
+
+async function cargarEstado() {
+  const res = await apiFetch('/api/finanzas/estado');
+  if (!res || !res.ok) return;
+  const d = await res.json();
+
+  // Info de última sync
+  const el = document.getElementById('sync-info');
+  if (d.ultimaSync) {
+    const fecha = new Date(d.ultimaSync.requested_at).toLocaleString('es-MX');
+    const statusColor = { completado: '#16a34a', error: '#dc2626', pendiente: '#d97706' }[d.ultimaSync.status] || '#888';
+    el.innerHTML = `Última sincronización: <strong>${fecha}</strong> — <span style="color:${statusColor}">${d.ultimaSync.status}</span>`;
+  } else {
+    el.textContent = 'Sin sincronizaciones previas';
+  }
+  if (d.syncEnCurso) {
+    document.getElementById('btn-sync').innerHTML = '<span class="spinner"></span> Sincronizando...';
+    document.getElementById('btn-sync').disabled = true;
+  }
+
+  // Config tab: mostrar RFC
+  if (d.cuenta) document.getElementById('cfg-rfc').value = d.cuenta.rfc;
+}
+
+// ─── Facturas ─────────────────────────────────────────────────────────────────
+async function cargarFacturas(resetPagina = true) {
+  if (resetPagina) paginaActual = 1;
+  const q       = document.getElementById('f-busqueda').value.trim();
+  const desde   = document.getElementById('f-desde').value;
+  const hasta   = document.getElementById('f-hasta').value;
+  const tipo    = document.getElementById('f-tipo').value;
+  const status  = document.getElementById('f-status').value;
+
+  const params = new URLSearchParams({ page: paginaActual, size: pageSize });
+  if (q)      params.set('q', q);
+  if (desde)  params.set('desde', desde + 'T00:00:00');
+  if (hasta)  params.set('hasta', hasta + 'T23:59:59');
+  if (tipo)   params.set('tipo', tipo);
+  if (status) params.set('status', status);
+
+  const res = await apiFetch('/api/finanzas/facturas?' + params);
+  if (!res || !res.ok) return;
+  const d = await res.json();
+
+  totalFacturas = d.total;
+  renderTabla(d.facturas);
+  renderResumen(d.resumen);
+  renderPaginacion(d.total, d.page, d.pageSize);
+}
+
+function renderTabla(facturas) {
+  const tbody = document.getElementById('tabla-facturas');
+  if (!facturas.length) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="icon">📄</div><p>No hay facturas en este periodo</p></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = facturas.map(f => {
+    const fecha = f.fecha_emision ? new Date(f.fecha_emision).toLocaleDateString('es-MX') : '—';
+    const total = f.total != null ? '$' + parseFloat(f.total).toLocaleString('es-MX', {minimumFractionDigits:2}) : '—';
+    const tipo  = f.tipo_comprobante || '?';
+    const tipoLabel = { I:'Ingreso', E:'Egreso', P:'Pago', N:'Nómina', T:'Traslado' }[tipo] || tipo;
+    return `<tr>
+      <td>${fecha}</td>
+      <td>${escHtml(f.nombre_emisor || '—')}</td>
+      <td style="font-family:monospace;font-size:0.82rem">${escHtml(f.rfc_emisor || '—')}</td>
+      <td><span class="tipo-badge tipo-${tipo}">${tipoLabel}</span></td>
+      <td style="font-weight:700">${total}</td>
+      <td><span class="status-badge status-${f.fiscal_status}">${f.fiscal_status}</span></td>
+      <td><button class="btn btn-ghost" style="padding:5px 10px;font-size:0.78rem" onclick="abrirDetalle(${f.id})">Ver detalle</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderResumen(r) {
+  if (!r) return;
+  const fmt = v => '$' + parseFloat(v||0).toLocaleString('es-MX', {minimumFractionDigits:2});
+  document.getElementById('r-total').textContent    = fmt(r.total_facturado);
+  document.getElementById('r-subtotal').textContent = fmt(r.total_subtotal);
+  document.getElementById('r-iva').textContent      = fmt(r.total_iva);
+  document.getElementById('r-ret').textContent      = fmt(r.total_retenciones);
+  document.getElementById('r-cant').textContent     = parseInt(r.cantidad || 0).toLocaleString();
+}
+
+function renderPaginacion(total, page, size) {
+  const inicio = (page - 1) * size + 1;
+  const fin    = Math.min(page * size, total);
+  document.getElementById('pag-info').textContent = total ? `Mostrando ${inicio}–${fin} de ${total}` : 'Sin resultados';
+  document.getElementById('btn-prev').disabled = page <= 1;
+  document.getElementById('btn-next').disabled = fin >= total;
+}
+
+function cambiarPagina(dir) {
+  const maxPage = Math.ceil(totalFacturas / pageSize);
+  paginaActual = Math.max(1, Math.min(maxPage, paginaActual + dir));
+  cargarFacturas(false);
+}
+
+function debounceCargar() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => cargarFacturas(), 400);
+}
+
+// ─── Detalle ──────────────────────────────────────────────────────────────────
+async function abrirDetalle(id) {
+  facturaActualId = id;
+  document.getElementById('modal-overlay').classList.add('open');
+  document.getElementById('modal-body').innerHTML = '<div style="text-align:center;padding:40px;color:#aaa">Cargando...</div>';
+
+  const res = await apiFetch(`/api/finanzas/facturas/${id}`);
+  if (!res || !res.ok) { document.getElementById('modal-body').innerHTML = '<p style="color:red">Error al cargar</p>'; return; }
+  const f = await res.json();
+
+  const fmt = v => v != null ? '$' + parseFloat(v).toLocaleString('es-MX', {minimumFractionDigits:2}) : '—';
+  const tipo = { I:'Ingreso', E:'Egreso/NC', P:'Pago complemento', N:'Nómina', T:'Traslado' }[f.tipo_comprobante] || f.tipo_comprobante;
+
+  document.getElementById('modal-title').textContent = `Factura ${f.serie||''}${f.folio||''} · ${f.rfc_emisor}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-row"><label>UUID</label><p style="font-family:monospace;font-size:0.78rem">${f.uuid}</p></div>
+      <div class="detail-row"><label>Tipo</label><p><span class="tipo-badge tipo-${f.tipo_comprobante}">${tipo}</span></p></div>
+      <div class="detail-row"><label>Fecha emisión</label><p>${f.fecha_emision ? new Date(f.fecha_emision).toLocaleString('es-MX') : '—'}</p></div>
+      <div class="detail-row"><label>Fecha timbrado</label><p>${f.fecha_timbrado ? new Date(f.fecha_timbrado).toLocaleString('es-MX') : '—'}</p></div>
+      <div class="detail-row"><label>Emisor</label><p>${escHtml(f.nombre_emisor||'—')}</p></div>
+      <div class="detail-row"><label>RFC Emisor</label><p style="font-family:monospace">${f.rfc_emisor||'—'}</p></div>
+      <div class="detail-row"><label>Receptor</label><p>${escHtml(f.nombre_receptor||'—')}</p></div>
+      <div class="detail-row"><label>RFC Receptor</label><p style="font-family:monospace">${f.rfc_receptor||'—'}</p></div>
+      <div class="detail-row"><label>Método de pago</label><p>${f.metodo_pago||'—'}</p></div>
+      <div class="detail-row"><label>Forma de pago</label><p>${f.forma_pago||'—'}</p></div>
+      <div class="detail-row"><label>Moneda</label><p>${f.moneda||'MXN'}${f.tipo_cambio && f.tipo_cambio != 1 ? ` (TC: ${f.tipo_cambio})` : ''}</p></div>
+      <div class="detail-row"><label>Estado fiscal</label><p><span class="status-badge status-${f.fiscal_status}">${f.fiscal_status}</span></p></div>
+    </div>
+    <div style="background:#faf9f7;border:1px solid #e5e2da;border-radius:8px;padding:14px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:right;">
+        <div><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase">Subtotal</div><div style="font-weight:700">${fmt(f.subtotal)}</div></div>
+        <div><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase">Descuento</div><div style="font-weight:700">${fmt(f.descuento)}</div></div>
+        <div><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase">IVA</div><div style="font-weight:700">${fmt(f.impuestos_trasladados)}</div></div>
+        <div><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase">Total</div><div style="font-size:1.1rem;font-weight:800;color:var(--color-primary)">${fmt(f.total)}</div></div>
+      </div>
+    </div>
+    ${f.items?.length ? `
+    <div style="font-size:0.82rem;font-weight:700;margin-bottom:8px;">Conceptos (${f.items.length})</div>
+    <table class="items-table">
+      <thead><tr><th>Descripción</th><th>Clave</th><th>Cant.</th><th style="text-align:right">V. Unit.</th><th style="text-align:right">Importe</th></tr></thead>
+      <tbody>${f.items.map(i => `<tr>
+        <td>${escHtml(i.descripcion||'—')}</td>
+        <td style="font-family:monospace;font-size:0.75rem">${i.clave_prod_serv||'—'}</td>
+        <td>${parseFloat(i.cantidad||0).toLocaleString()}</td>
+        <td style="text-align:right">${fmt(i.valor_unitario)}</td>
+        <td style="text-align:right;font-weight:700">${fmt(i.importe)}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : ''}
+  `;
+}
+
+function cerrarModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  facturaActualId = null;
+}
+
+async function descargarXML() {
+  if (!facturaActualId) return;
+  const res = await apiFetch(`/api/finanzas/facturas/${facturaActualId}/xml`);
+  if (!res || !res.ok) { mostrarToast('XML no disponible'); return; }
+  const xml = await res.text();
+  const blob = new Blob([xml], { type: 'application/xml' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `factura_${facturaActualId}.xml`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Sync ────────────────────────────────────────────────────────────────────
+function abrirSync() { document.getElementById('modal-sync').classList.add('open'); }
+function cerrarSync() {
+  if (syncInterval) { clearInterval(syncInterval); syncInterval = null; }
+  document.getElementById('modal-sync').classList.remove('open');
+  document.getElementById('sync-log-wrap').style.display = 'none';
+  document.getElementById('btn-sync-ok').disabled = false;
+  document.getElementById('btn-sync-ok').innerHTML = '🔄 Iniciar sincronización';
+}
+
+async function iniciarSync() {
+  const desde = document.getElementById('sync-desde').value;
+  const hasta  = document.getElementById('sync-hasta').value;
+  if (!desde || !hasta) { mostrarToast('Selecciona rango de fechas'); return; }
+
+  document.getElementById('btn-sync-ok').disabled = true;
+  document.getElementById('btn-sync-ok').innerHTML = '<span class="spinner"></span> Sincronizando...';
+  document.getElementById('sync-log-wrap').style.display = 'block';
+  document.getElementById('sync-log-box').textContent = 'Iniciando...';
+
+  const res = await apiFetch('/api/finanzas/sync', {
+    method: 'POST',
+    body: JSON.stringify({ fechaInicial: desde + 'T00:00:00', fechaFinal: hasta + 'T23:59:59' })
+  });
+  if (!res || !res.ok) {
+    mostrarToast('Error al iniciar sincronización');
+    document.getElementById('btn-sync-ok').disabled = false;
+    document.getElementById('btn-sync-ok').innerHTML = '🔄 Iniciar sincronización';
+    return;
+  }
+
+  // Polling del log cada 3 segundos
+  syncInterval = setInterval(async () => {
+    const r = await apiFetch('/api/finanzas/sync/log');
+    if (!r || !r.ok) return;
+    const d = await r.json();
+    document.getElementById('sync-log-box').textContent = d.log.join('\n');
+    document.getElementById('sync-log-box').scrollTop = 9999;
+    if (!d.enCurso) {
+      clearInterval(syncInterval); syncInterval = null;
+      document.getElementById('btn-sync-ok').disabled = false;
+      document.getElementById('btn-sync-ok').innerHTML = '✓ Completado';
+      document.getElementById('btn-sync').innerHTML = '🔄 Sincronizar ahora';
+      document.getElementById('btn-sync').disabled = false;
+      await cargarFacturas();
+      await cargarEstado();
+    }
+  }, 3000);
+}
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+async function validarCertificado() {
+  const box = document.getElementById('cert-status-box');
+  box.style.display = 'block';
+  box.innerHTML = '<div class="cert-status">Validando...</div>';
+  const res = await apiFetch('/api/finanzas/cuenta/validar');
+  if (!res) return;
+  const d = await res.json();
+  if (d.valido) {
+    const exp = d.expiration ? new Date(d.expiration).toLocaleDateString('es-MX') : '?';
+    box.innerHTML = `<div class="cert-status">✓ Certificado válido · Vence: ${exp}</div>`;
+  } else {
+    box.innerHTML = `<div class="cert-status invalid">✗ ${escHtml(d.mensaje)}</div>`;
+  }
+}
+
+async function guardarCuenta() {
+  const rfc = document.getElementById('cfg-rfc').value.trim().toUpperCase();
+  if (!rfc) return;
+  const fb = document.getElementById('cfg-feedback');
+  fb.textContent = 'Guardando...';
+  const res = await apiFetch('/api/finanzas/cuenta', { method: 'POST', body: JSON.stringify({ rfc }) });
+  if (!res) return;
+  const d = await res.json();
+  if (d.ok) {
+    fb.style.color = '#16a34a';
+    fb.textContent = `✓ Cuenta guardada para RFC ${d.rfc}`;
+  } else {
+    fb.style.color = '#dc2626';
+    fb.textContent = d.error || 'Error al guardar';
+  }
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+function mostrarTab(tab) {
+  ['facturas', 'config'].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === tab ? '' : 'none';
+    document.getElementById(`nav-${t}`).classList.toggle('active', t === tab);
+  });
+  if (tab === 'config') cargarHistorialSync();
+}
+
+async function cargarHistorialSync() {
+  const res = await apiFetch('/api/finanzas/estado');
+  if (!res || !res.ok) return;
+  const d = await res.json();
+  const el = document.getElementById('historial-sync');
+  if (!d.ultimaSync) { el.textContent = 'Sin historial'; return; }
+  const r = d.ultimaSync;
+  const statusColor = { completado: '#16a34a', error: '#dc2626', pendiente: '#d97706' }[r.status] || '#888';
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:0.82rem;">
+      <div><div style="font-size:0.72rem;color:#888;font-weight:700">Solicitud</div><div>${new Date(r.requested_at).toLocaleString('es-MX')}</div></div>
+      <div><div style="font-size:0.72rem;color:#888;font-weight:700">Rango</div><div>${r.fecha_inicial?.split('T')[0]} → ${r.fecha_final?.split('T')[0]}</div></div>
+      <div><div style="font-size:0.72rem;color:#888;font-weight:700">Paquetes</div><div>${r.total_paquetes || 0} (${r.paquetes_ok || 0} OK)</div></div>
+      <div><div style="font-size:0.72rem;color:#888;font-weight:700">Estado</div><div style="font-weight:700;color:${statusColor}">${r.status}</div></div>
+    </div>
+    ${r.error_message ? `<div style="margin-top:8px;color:#dc2626;font-size:0.8rem;">Error: ${escHtml(r.error_message)}</div>` : ''}
+  `;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function mostrarToast(msg, ms = 3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), ms);
+}
+</script>
+</body>
+</html>

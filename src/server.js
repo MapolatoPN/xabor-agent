@@ -24,6 +24,8 @@ import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/what
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
+import finanzasRouter from './routes/finanzas.js';
+import { jobDiarioSAT } from './services/satSync.js';
 import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
@@ -248,6 +250,9 @@ app.use(express.static(join(__dirname, '../panel')));
 app.use('/audio', express.static(join(__dirname, '../public/audio')));
 app.use('/public', express.static(join(__dirname, '../public')));
 
+// ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
+app.use('/api/finanzas', requireAdmin, finanzasRouter);
+
 // ─── Rutas de webhooks (canales) ────────────────────────────────────────────
 app.use('/webhook/whatsapp', whatsappRouter);
 app.use('/webhook/voice', voiceRouter);
@@ -307,6 +312,11 @@ app.use('/api', (req, res, next) => {
 // Servir panel principal solo con sesión válida
 app.get('/', (req, res) => {
   res.sendFile(join(__dirname, '../panel/index.html'));
+});
+
+// Xabor Finanzas — SPA independiente (solo admin)
+app.get('/finanzas', requireAdmin, (req, res) => {
+  res.sendFile(join(__dirname, '../panel/finanzas.html'));
 });
 
 // Salud del servidor
@@ -1581,6 +1591,7 @@ setInterval(() => {
     timeZone: 'America/Matamoros', hour:'2-digit', minute:'2-digit', hour12: false
   }).format(new Date());
   if (now === '22:01') enviarReporteDiario();
+  if (now === '02:00') jobDiarioSAT(); // Sync SAT diaria a las 2am CST
 }, 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────

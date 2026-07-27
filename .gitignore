@@ -2,3 +2,11 @@ node_modules/
 .env
 *.log
 .DS_Store
+
+# Xabor Finanzas — e.firma y archivos sensibles (NUNCA subir a git)
+certs/
+*.cer
+*.key
+*.p12
+*.pfx
+storage/cfdi/

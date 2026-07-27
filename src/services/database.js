@@ -279,6 +279,102 @@ export async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_folio   ON rewards_movements(folio_venta);
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_tenant  ON rewards_movements(tenant_id, created_at DESC);
   `);
+
+  // ─── Xabor Finanzas — tablas SAT (módulo independiente) ──────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sat_accounts (
+      id                      SERIAL PRIMARY KEY,
+      negocio_id              VARCHAR(50) NOT NULL DEFAULT 'default',
+      rfc                     VARCHAR(13) NOT NULL,
+      certificate_serial      VARCHAR(40),
+      certificate_expiration  TIMESTAMP,
+      encrypted_key_reference TEXT,
+      active                  BOOLEAN DEFAULT TRUE,
+      created_at              TIMESTAMP DEFAULT NOW(),
+      updated_at              TIMESTAMP DEFAULT NOW(),
+      UNIQUE(negocio_id, rfc)
+    );
+
+    CREATE TABLE IF NOT EXISTS sat_download_requests (
+      id              SERIAL PRIMARY KEY,
+      negocio_id      VARCHAR(50) NOT NULL DEFAULT 'default',
+      sat_request_id  VARCHAR(100),
+      fecha_inicial   TIMESTAMP NOT NULL,
+      fecha_final     TIMESTAMP NOT NULL,
+      download_type   VARCHAR(20) NOT NULL DEFAULT 'recibidos',
+      status          VARCHAR(30) NOT NULL DEFAULT 'pendiente',
+      requested_at    TIMESTAMP DEFAULT NOW(),
+      last_checked_at TIMESTAMP,
+      completed_at    TIMESTAMP,
+      error_code      VARCHAR(20),
+      error_message   TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sat_packages (
+      id                  SERIAL PRIMARY KEY,
+      download_request_id INTEGER NOT NULL REFERENCES sat_download_requests(id) ON DELETE CASCADE,
+      sat_package_id      VARCHAR(100) NOT NULL,
+      status              VARCHAR(30) NOT NULL DEFAULT 'pendiente',
+      storage_path        TEXT,
+      downloaded_at       TIMESTAMP,
+      processed_at        TIMESTAMP,
+      error_message       TEXT,
+      UNIQUE(sat_package_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS invoices (
+      id                     SERIAL PRIMARY KEY,
+      negocio_id             VARCHAR(50) NOT NULL DEFAULT 'default',
+      uuid                   VARCHAR(36) NOT NULL,
+      version_cfdi           VARCHAR(5),
+      fecha_emision          TIMESTAMP,
+      fecha_timbrado         TIMESTAMP,
+      rfc_emisor             VARCHAR(13),
+      nombre_emisor          TEXT,
+      rfc_receptor           VARCHAR(13),
+      nombre_receptor        TEXT,
+      subtotal               DECIMAL(14,2),
+      descuento              DECIMAL(14,2) DEFAULT 0,
+      impuestos_trasladados  DECIMAL(14,2) DEFAULT 0,
+      impuestos_retenidos    DECIMAL(14,2) DEFAULT 0,
+      total                  DECIMAL(14,2),
+      moneda                 VARCHAR(3) DEFAULT 'MXN',
+      tipo_cambio            DECIMAL(14,6) DEFAULT 1,
+      tipo_comprobante       VARCHAR(1),
+      metodo_pago            VARCHAR(3),
+      forma_pago             VARCHAR(3),
+      uso_cfdi               VARCHAR(4),
+      serie                  VARCHAR(25),
+      folio                  VARCHAR(40),
+      exportacion            VARCHAR(2),
+      fiscal_status          VARCHAR(30) DEFAULT 'vigente',
+      xml_storage_path       TEXT,
+      source                 VARCHAR(30) DEFAULT 'sat_descarga',
+      imported_at            TIMESTAMP DEFAULT NOW(),
+      CONSTRAINT uq_invoice_uuid UNIQUE (negocio_id, uuid)
+    );
+
+    CREATE TABLE IF NOT EXISTS invoice_items (
+      id               SERIAL PRIMARY KEY,
+      invoice_id       INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+      clave_prod_serv  VARCHAR(8),
+      no_identificacion VARCHAR(100),
+      descripcion      TEXT,
+      cantidad         DECIMAL(14,6),
+      clave_unidad     VARCHAR(4),
+      unidad           VARCHAR(20),
+      valor_unitario   DECIMAL(14,6),
+      importe          DECIMAL(14,2),
+      descuento        DECIMAL(14,2) DEFAULT 0,
+      objeto_impuesto  VARCHAR(2)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_invoices_negocio_fecha    ON invoices(negocio_id, fecha_emision DESC);
+    CREATE INDEX IF NOT EXISTS idx_invoices_rfc_emisor       ON invoices(negocio_id, rfc_emisor);
+    CREATE INDEX IF NOT EXISTS idx_invoices_tipo             ON invoices(negocio_id, tipo_comprobante);
+    CREATE INDEX IF NOT EXISTS idx_sat_requests_negocio      ON sat_download_requests(negocio_id, requested_at DESC);
+  `);
+
   console.log('[DB] Tablas listas');
 }
 
