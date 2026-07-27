@@ -197,7 +197,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   // ─── Atributos de solicitud en orden ALFABÉTICO (ksort de phpcfdi) ──────────
   // EstadoComprobante="1" → solo vigentes (nunca cancelados)
   const attrs = {
-    EstadoComprobante: '1',
+    EstadoComprobante: 'Vigente',  // SAT espera texto, no número. '1' es inválido.
     FechaFinal: fechaFinal,
     FechaInicial: fechaInicial,
     RfcReceptor: rfcSolicitante,
