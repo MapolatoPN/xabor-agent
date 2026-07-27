@@ -25,6 +25,25 @@ const router = Router();
 let syncEnCurso = false;
 let syncLog     = [];
 
+// ─── Diagnóstico temporal (eliminar después) ──────────────────────────────────
+router.get('/debug-cert', (req, res) => {
+  const raw64 = process.env.SAT_CERT_BASE64 || '';
+  if (!raw64) return res.json({ error: 'SAT_CERT_BASE64 no está configurada' });
+  const clean = raw64.replace(/\s+/g, '');
+  const buf = Buffer.from(clean, 'base64');
+  const preview = buf.slice(0, 50).toString('utf8');
+  const hexPreview = buf.slice(0, 10).toString('hex');
+  res.json({
+    envVarLength: raw64.length,
+    cleanLength: clean.length,
+    bufferLength: buf.length,
+    previewUtf8: preview,
+    previewHex: hexPreview,
+    looksLikePem: preview.trim().startsWith('-----BEGIN'),
+    looksLikeDer: buf[0] === 0x30,
+  });
+});
+
 // ─── Middleware: solo admin ───────────────────────────────────────────────────
 // requireAdmin se pasa desde server.js al montar el router
 
