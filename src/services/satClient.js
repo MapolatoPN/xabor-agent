@@ -270,7 +270,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
       headers: {
         'Content-Type': 'text/xml; charset=utf-8',
         'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
-        // Sin Authorization: la auth va en la firma del body (phpcfdi pattern)
+        'Authorization': `WRAP access_token="${token}"`,
       },
       timeout: 30000,
     });
