@@ -25,16 +25,32 @@ const SAT_URL = {
   download: 'https://cfdidescargamasivarfc.sat.gob.mx/descargarpackage',
 };
 
+// ─── Normalizar buffer a DER binario (detecta si viene en PEM) ───────────────
+function normalizarDer(buf) {
+  const preview = buf.slice(0, 30).toString('utf8').trim();
+  if (preview.startsWith('-----BEGIN')) {
+    // Ya es PEM — extraer el DER de adentro
+    const pemStr = buf.toString('utf8');
+    const b64 = pemStr
+      .replace(/-----BEGIN[^-]+-----/g, '')
+      .replace(/-----END[^-]+-----/g, '')
+      .replace(/\s+/g, '');
+    return Buffer.from(b64, 'base64');
+  }
+  return buf; // Ya es DER binario
+}
+
 // ─── Carga de certificado — desde env var (Railway) o archivo local ───────────
 function cargarCertificado(rfc) {
-  let der;
+  let raw;
   if (process.env.SAT_CERT_BASE64) {
-    der = Buffer.from(process.env.SAT_CERT_BASE64.replace(/\s+/g, ''), 'base64');
+    raw = Buffer.from(process.env.SAT_CERT_BASE64.replace(/\s+/g, ''), 'base64');
   } else {
     const cerPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.cer`);
     if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado. Configura SAT_CERT_BASE64 en Railway o coloca el archivo en ${cerPath}`);
-    der = fs.readFileSync(cerPath);
+    raw = fs.readFileSync(cerPath);
   }
+  const der = normalizarDer(raw);
   const b64 = der.toString('base64');
   const pem = `-----BEGIN CERTIFICATE-----\n${b64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
   const cert = new crypto.X509Certificate(pem);
@@ -50,7 +66,7 @@ async function cargarLlavePrivada(rfc) {
 
   let der;
   if (process.env.SAT_KEY_BASE64) {
-    der = Buffer.from(process.env.SAT_KEY_BASE64.replace(/\s+/g, ''), 'base64');
+    der = normalizarDer(Buffer.from(process.env.SAT_KEY_BASE64.replace(/\s+/g, ''), 'base64'));
   } else {
     const keyPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.key`);
     if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada. Configura SAT_KEY_BASE64 en Railway o coloca el archivo en ${keyPath}`);
