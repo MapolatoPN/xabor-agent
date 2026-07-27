@@ -18,6 +18,17 @@ import { SAT_ENDPOINTS as SAT_URL, SAT_NS } from './sat-endpoints.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CERTS_DIR = path.join(__dirname, '../../certs');
 
+// ─── Caché de credenciales cargadas desde DB ──────────────────────────────────
+let _credDbCache = null;
+let _credDbCacheTime = 0;
+const CRED_CACHE_TTL = 5 * 60 * 1000; // 5 min
+
+/** Invalida el caché — llamar después de guardar nuevas credenciales en DB */
+export function invalidarCacheCredenciales() {
+  _credDbCache = null;
+  _credDbCacheTime = 0;
+}
+
 // ─── Normalizar buffer a DER binario (detecta si viene en PEM) ───────────────
 function normalizarDer(buf) {
   const preview = buf.slice(0, 30).toString('utf8').trim();
@@ -84,6 +95,46 @@ async function cargarLlavePrivada(rfc) {
   return { privateKeyPem };
 }
 
+// ─── Carga unificada de credenciales: DB primero, luego env vars / archivo ────
+// Devuelve { cerB64, cert, privateKeyPem }
+async function obtenerCredencialesCompletas(rfc) {
+  const now = Date.now();
+
+  // Intentar refrescar caché desde DB
+  if (!_credDbCache || now - _credDbCacheTime > CRED_CACHE_TTL) {
+    try {
+      const { cargarCredencialesSATdb } = await import('./satCredentials.js');
+      const db = await cargarCredencialesSATdb();
+      if (db) {
+        _credDbCache = db;
+        _credDbCacheTime = now;
+      }
+    } catch { /* si DB falla, usa env vars */ }
+  }
+
+  let cerB64, cert, privateKeyPem;
+
+  if (_credDbCache) {
+    // ── Desde DB ──
+    cerB64 = _credDbCache.certBase64;
+    privateKeyPem = _credDbCache.privateKeyPem;
+    const der = Buffer.from(cerB64, 'base64');
+    const certPem = `-----BEGIN CERTIFICATE-----\n${cerB64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+    cert = new crypto.X509Certificate(certPem);
+    const expiration = new Date(cert.validTo);
+    if (expiration < new Date()) throw new Error(`e.firma (DB) vencida el ${expiration.toISOString()}`);
+  } else {
+    // ── Desde env vars / archivo ──
+    const cerData = cargarCertificado(rfc);
+    cerB64 = cerData.base64;
+    cert = cerData.cert;
+    const llaveData = await cargarLlavePrivada(rfc);
+    privateKeyPem = llaveData.privateKeyPem;
+  }
+
+  return { cerB64, cert, privateKeyPem };
+}
+
 // ─── Timestamp ISO8601 para SOAP ─────────────────────────────────────────────
 function isoNow(offsetSeconds = 0) {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
@@ -91,8 +142,7 @@ function isoNow(offsetSeconds = 0) {
 
 // ─── Construir y firmar el SOAP de autenticación ─────────────────────────────
 async function construirSoapAuth(rfc) {
-  const { der: cerDer, base64: cerB64, cert } = cargarCertificado(rfc);
-  const { privateKeyPem } = await cargarLlavePrivada(rfc);
+  const { cerB64, cert, privateKeyPem } = await obtenerCredencialesCompletas(rfc);
 
   // Verificar que la llave privada corresponde al certificado ANTES de enviar al SAT
   {
@@ -188,10 +238,8 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   const rfcSolicitante = rfc.toUpperCase();
 
   // ─── Certificado y llave ─────────────────────────────────────────────────────
-  const { base64: cerB64, cert } = cargarCertificado(rfc);
-  const { privateKeyPem } = await cargarLlavePrivada(rfc);
+  const { cerB64, cert, privateKeyPem } = await obtenerCredencialesCompletas(rfc);
   const serial = BigInt('0x' + cert.serialNumber).toString(10);
-  // Issuer en formato comma-separated (de la representación newline de Node.js)
   const issuerName = cert.issuer.split('\n').filter(Boolean).join(', ');
 
   // ─── Atributos de solicitud en orden ALFABÉTICO (ksort de phpcfdi) ──────────
@@ -234,17 +282,15 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
     '<SignedInfo>'
   );
 
-  // ─── Signature completo con X509IssuerSerial (igual que phpcfdi createKeyInfoData) ─
+  // ─── Signature — KeyInfo con solo X509Certificate ───────────────────────────
+  // X509IssuerSerial omitido: evita fallos de lookup por formato de IssuerName.
+  // El SAT puede derivar todo del cert embebido directamente.
   const signatureXml = nospaces(
     `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
     `${signedInfoFinal}` +
     `<SignatureValue>${signatureB64}</SignatureValue>` +
     `<KeyInfo>` +
     `<X509Data>` +
-    `<X509IssuerSerial>` +
-    `<X509IssuerName>${issuerName}</X509IssuerName>` +
-    `<X509SerialNumber>${serial}</X509SerialNumber>` +
-    `</X509IssuerSerial>` +
     `<X509Certificate>${cerB64}</X509Certificate>` +
     `</X509Data>` +
     `</KeyInfo>` +

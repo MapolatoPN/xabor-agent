@@ -26,6 +26,8 @@ import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import finanzasRouter from './routes/finanzas.js';
 import { jobDiarioSAT } from './services/satSync.js';
+import { guardarCredencialesSAT, obtenerInfoCertSAT, eliminarCredencialesSAT } from './services/satCredentials.js';
+import { invalidarCacheCredenciales } from './services/satClient.js';
 import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
@@ -252,6 +254,107 @@ app.use('/public', express.static(join(__dirname, '../public')));
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
 app.use('/api/finanzas', requireAdmin, finanzasRouter);
+
+// ─── Credenciales e.firma SAT ────────────────────────────────────────────────
+// GET: devuelve info pública del cert (sin llave) para mostrar en panel
+app.get('/api/admin/sat/credenciales/info', requireAdmin, async (req, res) => {
+  try {
+    const info = await obtenerInfoCertSAT();
+    res.json({ ok: true, info }); // info es null si no hay credenciales
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST: recibe cert (.cer) y llave (.key) como base64 + contraseña
+// Verifica que coincidan, descifra la llave y guarda en DB cifrada
+app.post('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+  const { certBase64Raw, keyBase64Raw, password } = req.body;
+  if (!certBase64Raw || !keyBase64Raw || !password) {
+    return res.status(400).json({ error: 'Se requieren certBase64Raw, keyBase64Raw y password' });
+  }
+  try {
+    const forge = (await import('node-forge')).default;
+    const crypto = (await import('crypto')).default;
+
+    // ── 1. Parsear certificado ──────────────────────────────────────────────
+    const certDer = Buffer.from(certBase64Raw, 'base64');
+    // normalizarDer inline (el archivo puede ser DER o PEM)
+    let certDerFinal = certDer;
+    if (certDer.slice(0, 30).toString('utf8').trim().startsWith('-----BEGIN')) {
+      const pemStr = certDer.toString('utf8');
+      const b64 = pemStr.replace(/-----BEGIN[^-]+-----/g, '').replace(/-----END[^-]+-----/g, '').replace(/\s+/g, '');
+      certDerFinal = Buffer.from(b64, 'base64');
+    }
+    const cerB64 = certDerFinal.toString('base64');
+    const certPem = `-----BEGIN CERTIFICATE-----\n${cerB64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+    const certObj = new crypto.X509Certificate(certPem);
+    const expiration = new Date(certObj.validTo);
+    if (expiration < new Date()) {
+      return res.status(422).json({ error: `El certificado está vencido (venció el ${expiration.toISOString()})` });
+    }
+
+    // ── 2. Descifrar llave privada ──────────────────────────────────────────
+    const keyDer = Buffer.from(keyBase64Raw, 'base64');
+    let keyDerFinal = keyDer;
+    if (keyDer.slice(0, 30).toString('utf8').trim().startsWith('-----BEGIN')) {
+      const pemStr = keyDer.toString('utf8');
+      const b64 = pemStr.replace(/-----BEGIN[^-]+-----/g, '').replace(/-----END[^-]+-----/g, '').replace(/\s+/g, '');
+      keyDerFinal = Buffer.from(b64, 'base64');
+    }
+    const asn1 = forge.asn1.fromDer(keyDerFinal.toString('binary'));
+    const pkInfo = forge.pki.decryptPrivateKeyInfo(asn1, password);
+    if (!pkInfo) return res.status(422).json({ error: 'Contraseña incorrecta o llave corrupta' });
+    const privateKey = forge.pki.privateKeyFromAsn1(pkInfo);
+    const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
+
+    // ── 3. Verificar que cert y llave coinciden ──────────────────────────────
+    const testData = Buffer.from('xabor-efirma-check');
+    const privKeyObj = crypto.createPrivateKey(privateKeyPem);
+    const sig = crypto.sign('sha256', testData, privKeyObj);
+    if (!crypto.verify('sha256', testData, certObj.publicKey, sig)) {
+      return res.status(422).json({ error: 'La llave privada NO corresponde al certificado. Asegúrate de subir el par correcto.' });
+    }
+
+    // ── 4. Extraer metadatos del cert ──────────────────────────────────────
+    const serial = BigInt('0x' + certObj.serialNumber).toString(10);
+    const subject = certObj.subject;
+    // Extraer RFC del subject (OID 2.5.4.45 o campo UniqueIdentifier / OU)
+    const rfcMatch = subject.match(/(?:UniqueIdentifier|UID|OID\.2\.5\.4\.45)=([A-Z]{3,4}\d{6}[A-Z0-9]{3})/i)
+      || subject.match(/([A-Z]{3,4}\d{6}[A-Z0-9]{3})/);
+    const rfcCert = rfcMatch ? rfcMatch[1].toUpperCase() : null;
+
+    const certInfo = {
+      serial,
+      rfc: rfcCert,
+      validFrom: certObj.validFrom,
+      validTo: certObj.validTo,
+      subject: certObj.subject,
+    };
+
+    // ── 5. Guardar en DB (llave cifrada) ────────────────────────────────────
+    await guardarCredencialesSAT({ certBase64: cerB64, privateKeyPem, certInfo });
+
+    // ── 6. Invalidar caché en memoria ──────────────────────────────────────
+    invalidarCacheCredenciales();
+
+    res.json({ ok: true, info: certInfo });
+  } catch (e) {
+    console.error('[SAT] Error guardando credenciales:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE: eliminar credenciales SAT guardadas en DB
+app.delete('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+  try {
+    await eliminarCredencialesSAT();
+    invalidarCacheCredenciales();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ─── Rutas de webhooks (canales) ────────────────────────────────────────────
 app.use('/webhook/whatsapp', whatsappRouter);

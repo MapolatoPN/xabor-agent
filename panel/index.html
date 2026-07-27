@@ -972,6 +972,42 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         📤 Subir menú a Rappi
       </button>
       <div id="rappi-menu-fb" style="margin-top:8px;font-size:0.85rem;text-align:center;"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🔐 e.firma SAT</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Sube tu certificado (.cer) y llave privada (.key) para la Descarga Masiva de CFDI. Se guardan cifrados en la base de datos — la contraseña no se almacena.</div>
+
+      <!-- Estado actual del cert -->
+      <div id="sat-cert-status" style="background:#f1f0ed;border-radius:10px;padding:14px 16px;margin-bottom:18px;font-size:0.85rem;color:#555;">
+        Cargando estado...
+      </div>
+
+      <!-- Formulario de carga -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Certificado (.cer)</label>
+          <input type="file" id="sat-cer-file" accept=".cer" style="width:100%;padding:9px 12px;border:1px dashed #ccc;border-radius:8px;font-size:0.85rem;background:#fafaf8;cursor:pointer;" />
+        </div>
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Llave privada (.key)</label>
+          <input type="file" id="sat-key-file" accept=".key" style="width:100%;padding:9px 12px;border:1px dashed #ccc;border-radius:8px;font-size:0.85rem;background:#fafaf8;cursor:pointer;" />
+        </div>
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Contraseña de la llave privada</label>
+          <input type="password" id="sat-key-pass" autocomplete="new-password" placeholder="Contraseña del archivo .key"
+            style="width:100%;padding:10px 14px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;background:#fff;" />
+        </div>
+        <button onclick="subirCredencialesSAT()" id="btn-sat-subir"
+          style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">
+          ✅ Verificar y guardar
+        </button>
+        <div id="sat-subir-fb" style="font-size:0.85rem;text-align:center;min-height:20px;"></div>
+
+        <!-- Botón eliminar (solo si hay credenciales) -->
+        <button id="btn-sat-eliminar" onclick="eliminarCredencialesSAT()" style="display:none;background:#fff;color:#ef4444;border:1.5px solid #ef4444;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:600;cursor:pointer;width:100%;">
+          🗑️ Eliminar credenciales guardadas
+        </button>
+      </div>
     </div>
 
 
@@ -1816,7 +1852,7 @@ function mostrarTab(tab) {
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      cargarMenuEditor();
-  if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); }
+  if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); cargarInfoCertSAT(); }
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
   if (tab === 'rewards')  cargarRewards();
@@ -2730,6 +2766,107 @@ const INT_CAMPOS = [
     { clave: 'anthropic_api_key', label: 'API Key', placeholder: 'sk-ant-••••••••' },
   ]},
 ];
+
+// ─── e.firma SAT — carga y subida de credenciales ────────────────────────────
+async function cargarInfoCertSAT() {
+  if (ROLE !== 'admin') return;
+  const el = document.getElementById('sat-cert-status');
+  const btnElim = document.getElementById('btn-sat-eliminar');
+  if (!el) return;
+  try {
+    const r = await apiFetch('/api/admin/sat/credenciales/info');
+    if (!r.ok) { el.innerHTML = '<span style="color:#ef4444">Error al consultar estado</span>'; return; }
+    const { info } = await r.json();
+    if (!info) {
+      el.innerHTML = '<span style="color:#888;">Sin credenciales guardadas.</span> Sube el .cer y .key para activar la descarga del SAT.';
+      if (btnElim) btnElim.style.display = 'none';
+    } else {
+      const vence = new Date(info.validTo);
+      const hoy = new Date();
+      const diasRestantes = Math.ceil((vence - hoy) / 86400000);
+      const vigenteColor = diasRestantes > 30 ? '#10B981' : diasRestantes > 0 ? '#F59E0B' : '#ef4444';
+      const vigenteTexto = diasRestantes > 0 ? `Vigente — vence el ${vence.toLocaleDateString('es-MX')} (en ${diasRestantes} días)` : `⚠️ Vencido el ${vence.toLocaleDateString('es-MX')}`;
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="width:10px;height:10px;border-radius:50%;background:${vigenteColor};display:inline-block;"></span>
+          <strong style="color:${vigenteColor};">${vigenteTexto}</strong>
+        </div>
+        ${info.rfc ? `<div><b>RFC:</b> ${info.rfc}</div>` : ''}
+        <div><b>No. de serie:</b> ${info.serial}</div>
+        <div style="color:#888;font-size:0.78rem;margin-top:4px;">Guardado cifrado en base de datos</div>
+      `;
+      if (btnElim) btnElim.style.display = '';
+    }
+  } catch (e) {
+    if (el) el.innerHTML = `<span style="color:#ef4444">Error: ${e.message}</span>`;
+  }
+}
+
+async function subirCredencialesSAT() {
+  const cerFile = document.getElementById('sat-cer-file').files[0];
+  const keyFile = document.getElementById('sat-key-file').files[0];
+  const password = document.getElementById('sat-key-pass').value.trim();
+  const fb = document.getElementById('sat-subir-fb');
+  const btn = document.getElementById('btn-sat-subir');
+
+  if (!cerFile) { fb.innerHTML = '<span style="color:#ef4444">Selecciona el archivo .cer</span>'; return; }
+  if (!keyFile) { fb.innerHTML = '<span style="color:#ef4444">Selecciona el archivo .key</span>'; return; }
+  if (!password) { fb.innerHTML = '<span style="color:#ef4444">Ingresa la contraseña de la llave privada</span>'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Verificando...';
+  fb.innerHTML = '';
+
+  try {
+    const toBase64 = file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(btoa(String.fromCharCode(...new Uint8Array(e.target.result))));
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    });
+
+    const [certBase64Raw, keyBase64Raw] = await Promise.all([toBase64(cerFile), toBase64(keyFile)]);
+
+    const r = await apiFetch('/api/admin/sat/credenciales', {
+      method: 'POST',
+      body: JSON.stringify({ certBase64Raw, keyBase64Raw, password }),
+    });
+    const data = await r.json();
+
+    if (!r.ok) {
+      fb.innerHTML = `<span style="color:#ef4444">❌ ${data.error}</span>`;
+    } else {
+      fb.innerHTML = '<span style="color:#10B981">✅ Credenciales verificadas y guardadas correctamente</span>';
+      // Limpiar inputs
+      document.getElementById('sat-cer-file').value = '';
+      document.getElementById('sat-key-file').value = '';
+      document.getElementById('sat-key-pass').value = '';
+      // Recargar estado
+      await cargarInfoCertSAT();
+    }
+  } catch (e) {
+    fb.innerHTML = `<span style="color:#ef4444">❌ Error inesperado: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✅ Verificar y guardar';
+  }
+}
+
+async function eliminarCredencialesSAT() {
+  if (!confirm('¿Eliminar las credenciales e.firma guardadas? El sistema volverá a usar las variables de entorno de Railway.')) return;
+  const fb = document.getElementById('sat-subir-fb');
+  try {
+    const r = await apiFetch('/api/admin/sat/credenciales', { method: 'DELETE' });
+    if (r.ok) {
+      fb.innerHTML = '<span style="color:#F59E0B">Credenciales eliminadas. Usando variables de entorno.</span>';
+      await cargarInfoCertSAT();
+    } else {
+      fb.innerHTML = '<span style="color:#ef4444">Error al eliminar</span>';
+    }
+  } catch (e) {
+    fb.innerHTML = `<span style="color:#ef4444">Error: ${e.message}</span>`;
+  }
+}
 
 let integracionesActuales = {};
 
