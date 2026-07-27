@@ -110,20 +110,38 @@ router.get('/debug-network', async (req, res) => {
     });
   } catch(e) { result.railway_ip = { error: e.message }; }
 
-  // 5. Buscar endpoint actual en página SAT (primeros 3000 chars del body)
-  result.sat_doc_body = await new Promise((ok) => {
-    const req = https.get(
-      'https://www.sat.gob.mx/consulta/42968/consulta-y-recuperacion-de-comprobantes-(nuevo)',
-      { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } },
-      (r2) => {
-        let body = '';
-        r2.on('data', d => { body += d; if (body.length > 6000) req.destroy(); });
-        r2.on('end', () => ok({ status: r2.statusCode, preview: body.slice(0, 3000) }));
-      }
-    );
-    req.on('error', e => ok({ error: e.code || e.message }));
-    req.on('timeout', () => { req.destroy(); ok({ error: 'TIMEOUT' }); });
-  });
+  // 5. Registros CNAME / AAAA / TXT para hosts interesantes
+  const dnsExtra = {};
+  const hostsExtra = ['servicios.sat.gob.mx', 'cfdidescargamasivarfc.sat.gob.mx', 'sat.gob.mx'];
+  for (const h of hostsExtra) {
+    dnsExtra[h] = {};
+    for (const type of ['CNAME', 'AAAA', 'TXT']) {
+      dnsExtra[h][type] = await new Promise(ok => {
+        const r = new dns.Resolver(); r.setServers(['8.8.8.8']);
+        r.resolve(h, type, (e, addrs) => ok(e ? { error: e.code } : addrs));
+      });
+    }
+  }
+  result.dns_extra = dnsExtra;
+
+  // 6. Probar hostnames de implementaciones SAT conocidas (recientes)
+  const SAT_ALT_HOSTS = [
+    'cfdidescargamasivarfc.sat.gob.mx',       // el original (falla)
+    'cfdidescargamasivaportal.sat.gob.mx',
+    'cfdidescargamasivalite.sat.gob.mx',
+    'sdmd.sat.gob.mx',                        // Servicio Descarga Masiva Documentos Digitales
+    'prodservice.sat.gob.mx',
+    'sat-ws.sat.gob.mx',
+    'cfdidescargamasiva4.sat.gob.mx',
+    'cfdiws3.sat.gob.mx',
+  ];
+  result.alt_hosts_dns = {};
+  for (const h of SAT_ALT_HOSTS) {
+    result.alt_hosts_dns[h] = await resolveWith(h, '8.8.8.8');
+  }
+
+  // 7. HTTP HEAD a servicios.sat.gob.mx (tiene ENODATA en A pero podría responder HTTPS)
+  result.servicios_probe = await httpProbe('https://servicios.sat.gob.mx');
 
   res.json(result);
 });
