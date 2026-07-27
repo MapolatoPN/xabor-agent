@@ -178,9 +178,45 @@ export async function autenticar(rfc) {
 // ─── Solicitar descarga de CFDI ──────────────────────────────────────────────
 export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipoComprobante = null) {
   const rfcSolicitante = rfc.toUpperCase();
-  // TipoSolicitud="CFDI" = queremos XMLs completos (no Metadata)
-  // TipoComprobante = filtro opcional por tipo de CFDI (I/E/T/N/P); omitir = todos los tipos
-  const tcAttr = tipoComprobante ? ` TipoComprobante="${tipoComprobante}"` : '';
+  // TipoSolicitud="CFDI" = XMLs completos vigentes (EstadoComprobante="1")
+  // TipoComprobante = filtro opcional por tipo I/E/T/N/P; omitir = todos
+  const tcValue = tipoComprobante || null;
+
+  // ─── Certificado y llave para firmar la solicitud ───────────────────────────
+  // El XSD requiere un <Signature> hijo dentro de <solicitud> (xs:sequence obligatorio)
+  const { base64: cerB64, cert } = cargarCertificado(rfc);
+  const { privateKeyPem } = await cargarLlavePrivada(rfc);
+  const serial = BigInt('0x' + cert.serialNumber).toString(10);
+
+  // ─── Canonical form de solicitud para digest (Exc-C14N, sin Signature hijo) ─
+  // Atributos en orden alfabético por nombre local (regla C14N)
+  // El namespace xmlns se incluye porque solicitud lo utiliza visiblemente (Exc-C14N sin InclusiveNamespaces)
+  const solicitudCanonAttrs = [
+    `EstadoComprobante="1"`,
+    `FechaFinal="${fechaFinal}"`,
+    `FechaInicial="${fechaInicial}"`,
+    `RfcReceptor="${rfcSolicitante}"`,
+    `RfcSolicitante="${rfcSolicitante}"`,
+    ...(tcValue ? [`TipoComprobante="${tcValue}"`] : []),
+    `TipoSolicitud="CFDI"`,
+  ].join(' ');
+  const solicitudCanonical = `<solicitud xmlns="http://DescargaMasivaTerceros.sat.gob.mx" ${solicitudCanonAttrs}></solicitud>`;
+  const solicitudDigest = crypto.createHash('sha1').update(Buffer.from(solicitudCanonical, 'utf8')).digest('base64');
+
+  // ─── SignedInfo para la Signature de solicitud ──────────────────────────────
+  // Misma estructura que auth pero Reference URI="" con enveloped-signature + exc-c14n
+  const signedInfoSol = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></Transform><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${solicitudDigest}</DigestValue></Reference></SignedInfo>`;
+
+  // ─── Firma RSA-SHA1 (mismo patrón que construirSoapAuth) ───────────────────
+  const signerSol = crypto.createSign('SHA1');
+  signerSol.update(signedInfoSol);
+  const signatureB64Sol = signerSol.sign(privateKeyPem, 'base64');
+
+  // ─── XML Signature embebido dentro de <solicitud> ───────────────────────────
+  const signatureXml = `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">${signedInfoSol}<SignatureValue>${signatureB64Sol}</SignatureValue><KeyInfo><X509Data><X509Certificate>${cerB64}</X509Certificate></X509Data></KeyInfo></Signature>`;
+
+  // ─── Atributos del elemento solicitud en el SOAP (orden legible, no canónico) ─
+  const solicitudAttrs = `RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" EstadoComprobante="1"${tcValue ? ` TipoComprobante="${tcValue}"` : ''}`;
 
   const soap = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -191,7 +227,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   </s:Header>
   <s:Body>
     <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" EstadoComprobante="1"${tcAttr}/>
+      <solicitud ${solicitudAttrs}>${signatureXml}</solicitud>
     </SolicitaDescargaRecibidos>
   </s:Body>
 </s:Envelope>`;
