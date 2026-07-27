@@ -123,9 +123,6 @@ async function construirSoapAuth(rfc) {
   const signatureB64 = signer.sign(privateKeyPem, 'base64');
 
   // --- Numero de serie del certificado (decimal) ---
-  const cert = new crypto.X509Certificate(
-    `-----BEGIN CERTIFICATE-----\n${cerB64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`
-  );
   const serial = BigInt('0x' + cert.serialNumber).toString(10);
 
   // --- SOAP envelope completo ---
