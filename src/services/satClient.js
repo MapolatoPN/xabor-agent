@@ -29,7 +29,7 @@ const SAT_URL = {
 function cargarCertificado(rfc) {
   let der;
   if (process.env.SAT_CERT_BASE64) {
-    der = Buffer.from(process.env.SAT_CERT_BASE64, 'base64');
+    der = Buffer.from(process.env.SAT_CERT_BASE64.replace(/\s+/g, ''), 'base64');
   } else {
     const cerPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.cer`);
     if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado. Configura SAT_CERT_BASE64 en Railway o coloca el archivo en ${cerPath}`);
@@ -50,7 +50,7 @@ async function cargarLlavePrivada(rfc) {
 
   let der;
   if (process.env.SAT_KEY_BASE64) {
-    der = Buffer.from(process.env.SAT_KEY_BASE64, 'base64');
+    der = Buffer.from(process.env.SAT_KEY_BASE64.replace(/\s+/g, ''), 'base64');
   } else {
     const keyPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.key`);
     if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada. Configura SAT_KEY_BASE64 en Railway o coloca el archivo en ${keyPath}`);
