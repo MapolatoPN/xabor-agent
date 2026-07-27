@@ -14,10 +14,12 @@ import { pool } from './database.js';
 const ALGORITHM = 'aes-256-cbc';
 
 function derivarClaveCifrado() {
-  const token = process.env.ADMIN_TOKEN;
-  if (!token) throw new Error('ADMIN_TOKEN no configurado — necesario para cifrar la e.firma');
-  // Deriva 32 bytes deterministas desde el token (sha256 con prefijo fijo)
-  return crypto.createHash('sha256').update(`xabor-sat-efirma:${token}`).digest();
+  // Usa PANEL_SECRET como clave base (ya existe en Railway como secret del HMAC de tokens)
+  // Fallback a ADMIN_PASSWORD si PANEL_SECRET no está configurado
+  const secret = process.env.PANEL_SECRET || process.env.ADMIN_PASSWORD;
+  if (!secret) throw new Error('PANEL_SECRET / ADMIN_PASSWORD no configurados en Railway');
+  // Deriva 32 bytes deterministas (sha256 con prefijo fijo)
+  return crypto.createHash('sha256').update(`xabor-sat-efirma:${secret}`).digest();
 }
 
 function cifrar(texto) {
