@@ -193,7 +193,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   </s:Header>
   <s:Body>
     <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI"${tcAttr}/>
+      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" EstadoComprobante="1"${tcAttr}/>
     </SolicitaDescargaRecibidos>
   </s:Body>
 </s:Envelope>`;
