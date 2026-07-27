@@ -155,13 +155,20 @@ async function construirSoapAuth(rfc) {
 // ─── Autenticar con e.firma → token (válido 5 min) ───────────────────────────
 export async function autenticar(rfc) {
   const soap = await construirSoapAuth(rfc);
-  const res = await axios.post(SAT_URL.auth, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
-    },
-    timeout: 30000,
-  });
+  let res;
+  try {
+    res = await axios.post(SAT_URL.auth, soap, {
+      headers: {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
+      },
+      timeout: 30000,
+    });
+  } catch (e) {
+    // Capturar cuerpo de respuesta SAT para diagnóstico
+    const body = e.response?.data ? String(e.response.data).substring(0, 800) : e.message;
+    throw new Error(`SAT auth HTTP ${e.response?.status ?? 'ERR'}: ${body}`);
+  }
 
   // Extraer token del XML de respuesta
   const token = extraerValorXml(res.data, 'AutenticaResult');
