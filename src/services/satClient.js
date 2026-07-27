@@ -178,10 +178,11 @@ export async function autenticar(rfc, { onDiag } = {}) {
 }
 
 // ─── Solicitar descarga de CFDI ──────────────────────────────────────────────
-export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipo = 'CFDI') {
+export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipoComprobante = null) {
   const rfcSolicitante = rfc.toUpperCase();
-  // Para recibidos: RfcReceptor = nuestro RFC; TipoSolicitud = formato de descarga (CFDI = XML completo)
-  // El tipo de flujo (Recibidos vs Emitidos) lo determina el elemento SOAP, no el atributo TipoSolicitud
+  // TipoSolicitud="CFDI" = queremos XMLs completos (no Metadata)
+  // TipoComprobante = filtro opcional por tipo de CFDI (I/E/T/N/P); omitir = todos los tipos
+  const tcAttr = tipoComprobante ? ` TipoComprobante="${tipoComprobante}"` : '';
 
   const soap = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -192,7 +193,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   </s:Header>
   <s:Body>
     <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" TipoComprobante="${tipo}"/>
+      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI"${tcAttr}/>
     </SolicitaDescargaRecibidos>
   </s:Body>
 </s:Envelope>`;
