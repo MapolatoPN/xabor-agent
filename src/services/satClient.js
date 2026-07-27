@@ -197,14 +197,20 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
   </s:Body>
 </s:Envelope>`;
 
-  const res = await axios.post(SAT_URL.request, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
-      'Authorization': `WRAP access_token="${token}"`,
-    },
-    timeout: 30000,
-  });
+  let res;
+  try {
+    res = await axios.post(SAT_URL.request, soap, {
+      headers: {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
+        'Authorization': `WRAP access_token="${token}"`,
+      },
+      timeout: 30000,
+    });
+  } catch (e) {
+    const body = e.response?.data ? String(e.response.data).substring(0, 800) : e.message;
+    throw new Error(`SAT solicitud HTTP ${e.response?.status ?? 'ERR'}: ${body}`);
+  }
 
   const idSolicitud  = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'IdSolicitud');
   const codEstatus   = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'CodEstatus');
