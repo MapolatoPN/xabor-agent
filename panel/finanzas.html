@@ -314,14 +314,15 @@ async function apiFetch(url, opts = {}) {
     ...opts,
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...opts.headers }
   });
-  if (res.status === 401) { window.location.href = '/panel/login.html'; return null; }
+  if (res.status === 401) { window.location.href = '/login.html'; return null; }
   return res;
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   // Heredar token del panel principal
-  token = sessionStorage.getItem('token') || localStorage.getItem('xabor_token') || '';
+  token = sessionStorage.getItem('xabor_token') || '';
+  if (!token) { window.location.href = '/login.html'; return; }
 
   // Defaults de fecha: último mes
   const hoy = new Date();
