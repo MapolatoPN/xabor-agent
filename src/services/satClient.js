@@ -80,11 +80,11 @@ async function cargarLlavePrivada(rfc) {
     throw new Error('node-forge no instalado. Ejecuta: npm install node-forge');
   }
   const asn1 = forge.asn1.fromDer(der.toString('binary'));
-  const encryptedPkcs8 = forge.pki.encryptedPrivateKeyFromAsn1(asn1);
-  const encryptedPem = forge.pki.encryptedPrivateKeyToPem(encryptedPkcs8);
-  const privateKey = forge.pki.decryptRsaPrivateKey(encryptedPem, password);
 
-  if (!privateKey) throw new Error('Contraseña incorrecta o llave corrupta');
+  // Descifrar PKCS#8 cifrado: decryptPrivateKeyInfo → privateKeyFromAsn1
+  const pkInfo = forge.pki.decryptPrivateKeyInfo(asn1, password);
+  if (!pkInfo) throw new Error('Contraseña incorrecta o llave corrupta');
+  const privateKey = forge.pki.privateKeyFromAsn1(pkInfo);
 
   const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
 

@@ -220,11 +220,7 @@
 
     <div class="config-section">
       <div class="config-nota">
-        <strong>⚠️ Seguridad:</strong> Los archivos <code>.cer</code> y <code>.key</code> de tu e.firma deben colocarse
-        manualmente en la carpeta <code>certs/</code> del servidor (nunca se suben a GitHub).
-        La contraseña se configura como variable de entorno <code>SAT_KEY_PASSWORD</code> en Railway.
-        <br><br>
-        Nombre esperado de archivos: <code>certs/{RFC}.cer</code> y <code>certs/{RFC}.key</code>
+        <strong>🔒 Seguridad:</strong> Los certificados se almacenan como variables de entorno en Railway (<code>SAT_CERT_BASE64</code>, <code>SAT_KEY_BASE64</code>). La contraseña de la llave privada se guarda en <code>SAT_KEY_PASSWORD</code>. Ningún archivo sensible se sube a GitHub.
       </div>
 
       <div id="cert-status-box" style="display:none"></div>
