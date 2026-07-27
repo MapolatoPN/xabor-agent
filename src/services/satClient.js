@@ -175,62 +175,94 @@ export async function autenticar(rfc) {
   return token;
 }
 
+// ─── Compactar XML (equivalente a Helpers::nospaces de phpcfdi) ───────────────
+function nospaces(xml) {
+  // Elimina espacios horizontales al inicio de cada línea y saltos de línea
+  return xml.replace(/^[^\S\n]*/mg, '').replace(/[^\S\n]*\r?\n/mg, '');
+}
+
 // ─── Solicitar descarga de CFDI ──────────────────────────────────────────────
+// Implementación basada en phpcfdi/sat-ws-descarga-masiva (FielRequestBuilder.php)
+// El body se firma directamente con e.firma — NO se usa WRAP token en header SOAP
 export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipoComprobante = null) {
   const rfcSolicitante = rfc.toUpperCase();
-  // TipoSolicitud="CFDI" = XMLs completos vigentes (EstadoComprobante="1")
-  // TipoComprobante = filtro opcional por tipo I/E/T/N/P; omitir = todos
-  const tcValue = tipoComprobante || null;
 
-  // ─── Certificado y llave para firmar la solicitud ───────────────────────────
-  // El XSD requiere un <Signature> hijo dentro de <solicitud> (xs:sequence obligatorio)
+  // ─── Certificado y llave ─────────────────────────────────────────────────────
   const { base64: cerB64, cert } = cargarCertificado(rfc);
   const { privateKeyPem } = await cargarLlavePrivada(rfc);
   const serial = BigInt('0x' + cert.serialNumber).toString(10);
+  // Issuer en formato comma-separated (de la representación newline de Node.js)
+  const issuerName = cert.issuer.split('\n').filter(Boolean).join(', ');
 
-  // ─── Canonical form de solicitud para digest (Exc-C14N, sin Signature hijo) ─
-  // Atributos en orden alfabético por nombre local (regla C14N)
-  // El namespace xmlns se incluye porque solicitud lo utiliza visiblemente (Exc-C14N sin InclusiveNamespaces)
-  const solicitudCanonAttrs = [
-    `EstadoComprobante="1"`,
-    `FechaFinal="${fechaFinal}"`,
-    `FechaInicial="${fechaInicial}"`,
-    `RfcReceptor="${rfcSolicitante}"`,
-    `RfcSolicitante="${rfcSolicitante}"`,
-    ...(tcValue ? [`TipoComprobante="${tcValue}"`] : []),
-    `TipoSolicitud="CFDI"`,
-  ].join(' ');
-  const solicitudCanonical = `<solicitud xmlns="http://DescargaMasivaTerceros.sat.gob.mx" ${solicitudCanonAttrs}></solicitud>`;
-  const solicitudDigest = crypto.createHash('sha1').update(Buffer.from(solicitudCanonical, 'utf8')).digest('base64');
+  // ─── Atributos de solicitud en orden ALFABÉTICO (ksort de phpcfdi) ──────────
+  // EstadoComprobante="1" → solo vigentes (nunca cancelados)
+  const attrs = {
+    EstadoComprobante: '1',
+    FechaFinal: fechaFinal,
+    FechaInicial: fechaInicial,
+    RfcReceptor: rfcSolicitante,
+    RfcSolicitante: rfcSolicitante,
+    TipoSolicitud: 'CFDI',
+    ...(tipoComprobante ? { TipoComprobante: tipoComprobante } : {}),
+  };
+  // Ordenar alfabéticamente (phpcfdi hace ksort)
+  const sortedAttrStr = Object.keys(attrs).sort().map(k => `${k}="${attrs[k]}"`).join(' ');
 
-  // ─── SignedInfo para la Signature de solicitud ──────────────────────────────
-  // Misma estructura que auth pero Reference URI="" con enveloped-signature + exc-c14n
-  const signedInfoSol = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></Transform><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${solicitudDigest}</DigestValue></Reference></SignedInfo>`;
+  // ─── toDigestXml: elemento outer SIN Signature (lo que phpcfdi llama $toDigestXml) ─
+  // Se usa des: prefix explícito, igual que phpcfdi
+  const toDigestXml = nospaces(
+    `<des:SolicitaDescargaRecibidos xmlns:des="http://DescargaMasivaTerceros.sat.gob.mx">` +
+    `<des:solicitud ${sortedAttrStr}></des:solicitud>` +
+    `</des:SolicitaDescargaRecibidos>`
+  );
 
-  // ─── Firma RSA-SHA1 (mismo patrón que construirSoapAuth) ───────────────────
-  const signerSol = crypto.createSign('SHA1');
-  signerSol.update(signedInfoSol);
-  const signatureB64Sol = signerSol.sign(privateKeyPem, 'base64');
+  // ─── Digest SHA1 del toDigestXml compacto ───────────────────────────────────
+  const digest = crypto.createHash('sha1').update(Buffer.from(toDigestXml, 'utf8')).digest('base64');
 
-  // ─── XML Signature embebido dentro de <solicitud> ───────────────────────────
-  const signatureXml = `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">${signedInfoSol}<SignatureValue>${signatureB64Sol}</SignatureValue><KeyInfo><X509Data><X509Certificate>${cerB64}</X509Certificate></X509Data></KeyInfo></Signature>`;
+  // ─── SignedInfo CON xmlns (para firmar) — igual que phpcfdi createSignedInfoCanonicalExclusive ─
+  // Transform: solo exc-c14n (NO enveloped-signature), URI="" referencia al outer element
+  const signedInfoWithNs = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${digest}</DigestValue></Reference></SignedInfo>`;
 
-  // ─── Atributos del elemento solicitud en el SOAP (orden legible, no canónico) ─
-  const solicitudAttrs = `RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" EstadoComprobante="1"${tcValue ? ` TipoComprobante="${tcValue}"` : ''}`;
+  // ─── Firma RSA-SHA1 ──────────────────────────────────────────────────────────
+  const signer = crypto.createSign('SHA1');
+  signer.update(signedInfoWithNs);
+  const signatureB64 = signer.sign(privateKeyPem, 'base64');
 
-  const soap = `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header>
-    <o:Security xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-      <o:BinarySecurityToken ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#SAML" EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${token}</o:BinarySecurityToken>
-    </o:Security>
-  </s:Header>
-  <s:Body>
-    <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud ${solicitudAttrs}>${signatureXml}</solicitud>
-    </SolicitaDescargaRecibidos>
-  </s:Body>
-</s:Envelope>`;
+  // ─── SignedInfo en el XML final SIN xmlns (phpcfdi hace str_replace para quitarlo) ─
+  const signedInfoFinal = signedInfoWithNs.replace(
+    '<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">',
+    '<SignedInfo>'
+  );
+
+  // ─── Signature completo con X509IssuerSerial (igual que phpcfdi createKeyInfoData) ─
+  const signatureXml = nospaces(
+    `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
+    `${signedInfoFinal}` +
+    `<SignatureValue>${signatureB64}</SignatureValue>` +
+    `<KeyInfo>` +
+    `<X509Data>` +
+    `<X509IssuerSerial>` +
+    `<X509IssuerName>${issuerName}</X509IssuerName>` +
+    `<X509SerialNumber>${serial}</X509SerialNumber>` +
+    `</X509IssuerSerial>` +
+    `<X509Certificate>${cerB64}</X509Certificate>` +
+    `</X509Data>` +
+    `</KeyInfo>` +
+    `</Signature>`
+  );
+
+  // ─── SOAP envelope — header VACÍO, sin token (phpcfdi: <s:Header/>) ─────────
+  // La autenticación va en la firma del body, no en el header
+  // namespaces xd: y des: declarados en el Envelope (phpcfdi pattern)
+  const soap = nospaces(`<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="http://DescargaMasivaTerceros.sat.gob.mx" xmlns:xd="http://www.w3.org/2000/09/xmldsig#">
+<s:Header/>
+<s:Body>
+<des:SolicitaDescargaRecibidos>
+<des:solicitud ${sortedAttrStr}>${signatureXml}</des:solicitud>
+</des:SolicitaDescargaRecibidos>
+</s:Body>
+</s:Envelope>`);
 
   let res;
   try {
@@ -238,7 +270,7 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
       headers: {
         'Content-Type': 'text/xml; charset=utf-8',
         'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
-        'Authorization': `WRAP access_token="${token}"`,
+        // Sin Authorization: la auth va en la firma del body (phpcfdi pattern)
       },
       timeout: 30000,
     });
