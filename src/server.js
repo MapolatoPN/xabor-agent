@@ -314,8 +314,8 @@ app.get('/', (req, res) => {
   res.sendFile(join(__dirname, '../panel/index.html'));
 });
 
-// Xabor Finanzas — SPA independiente (solo admin)
-app.get('/finanzas', requireAdmin, (req, res) => {
+// Xabor Finanzas — SPA independiente (auth client-side, igual que panel principal)
+app.get('/finanzas', (req, res) => {
   res.sendFile(join(__dirname, '../panel/finanzas.html'));
 });
 
