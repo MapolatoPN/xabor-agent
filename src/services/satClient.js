@@ -91,8 +91,18 @@ function isoNow(offsetSeconds = 0) {
 
 // ─── Construir y firmar el SOAP de autenticación ─────────────────────────────
 async function construirSoapAuth(rfc) {
-  const { der: cerDer, base64: cerB64 } = cargarCertificado(rfc);
+  const { der: cerDer, base64: cerB64, cert } = cargarCertificado(rfc);
   const { privateKeyPem } = await cargarLlavePrivada(rfc);
+
+  // Verificar que la llave privada corresponde al certificado ANTES de enviar al SAT
+  {
+    const testData = Buffer.from('xabor-efirma-check');
+    const privKey = crypto.createPrivateKey(privateKeyPem);
+    const sig = crypto.sign('sha256', testData, privKey);
+    if (!crypto.verify('sha256', testData, cert.publicKey, sig)) {
+      throw new Error('DIAGNÓSTICO: La llave privada (SAT_KEY_BASE64) NO corresponde al certificado (SAT_CERT_BASE64). Verifica que ambos archivos pertenecen a la misma e.firma.');
+    }
+  }
 
   const created = isoNow();
   const expires = isoNow(300); // 5 minutos
@@ -145,8 +155,10 @@ async function construirSoapAuth(rfc) {
 }
 
 // ─── Autenticar con e.firma → token (válido 5 min) ───────────────────────────
-export async function autenticar(rfc) {
+export async function autenticar(rfc, { onDiag } = {}) {
   const soap = await construirSoapAuth(rfc);
+  // Log diagnóstico — el SOAP contiene solo material público (cert + firma)
+  if (onDiag) onDiag('SOAP_AUTH_PREVIEW: ' + soap.substring(0, 800).replace(/\n/g, ' '));
   let res;
   try {
     res = await axios.post(SAT_URL.auth, soap, {
