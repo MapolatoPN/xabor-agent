@@ -174,7 +174,10 @@ button:disabled { background: var(--color-border-strong); color: var(--color-tex
 </div>
 
 <script>
-// Si ya hay sesión válida, ir directo al panel
+// Si hay ?redirect=... en la URL, redirigir ahí después del login
+const redirectUrl = new URLSearchParams(location.search).get('redirect') || '/';
+
+// Si ya hay sesión válida, ir directo
 const token = sessionStorage.getItem('xabor_token');
 if (token) verificarYRedirigir(token);
 
@@ -182,7 +185,7 @@ async function verificarYRedirigir(t) {
   const resp = await fetch('/api/auth/verify', {
     headers: { 'Authorization': 'Bearer ' + t }
   }).catch(() => null);
-  if (resp && resp.ok) location.href = '/';
+  if (resp && resp.ok) location.href = redirectUrl;
 }
 
 let tokenActual = null;
@@ -214,8 +217,8 @@ async function login() {
       }).catch(() => null);
       const fondoData = fondoResp ? await fondoResp.json().catch(() => null) : null;
       if (fondoData && fondoData.fondo !== null) {
-        // Ya tiene fondo — ir directo al panel
-        location.href = '/';
+        // Ya tiene fondo — ir a la URL de destino
+        location.href = redirectUrl;
       } else {
         // Mostrar modal de inicio de caja
         document.getElementById('modal-fondo').classList.add('visible');
@@ -244,11 +247,11 @@ async function guardarFondo() {
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tokenActual },
     body: JSON.stringify({ monto })
   }).catch(() => null);
-  location.href = '/';
+  location.href = redirectUrl;
 }
 
 function omitirFondo() {
-  location.href = '/';
+  location.href = redirectUrl;
 }
 
 document.getElementById('password').addEventListener('keydown', e => {
