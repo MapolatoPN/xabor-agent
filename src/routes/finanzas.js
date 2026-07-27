@@ -63,11 +63,17 @@ router.get('/debug-network', async (req, res) => {
 
   // 2. DNS de hosts SAT con 3 resolvers
   const SAT_HOSTS = [
-    'cfdidescargamasivarfc.sat.gob.mx',
+    'cfdidescargamasivarfc.sat.gob.mx',  // el que usamos (falla)
     'www.sat.gob.mx',
     'sat.gob.mx',
-    'cfdidescargamasiva3.sat.gob.mx',   // variante alternativa
+    'cfdiws.sat.gob.mx',
+    'api.sat.gob.mx',
+    'descargamasiva.sat.gob.mx',
+    'cfdidescargamasiva.sat.gob.mx',
+    'ws.sat.gob.mx',
+    'servicios.sat.gob.mx',
     'portalcfdi.sat.gob.mx',
+    'consultarfc.sat.gob.mx',
   ];
   result.sat_dns = {};
   for (const h of SAT_HOSTS) {
@@ -81,11 +87,12 @@ router.get('/debug-network', async (req, res) => {
   // 3. HTTP HEAD a cada endpoint candidato (solo si DNS resolvió)
   const ENDPOINTS = [
     { label: 'auth_svc',      url: 'https://cfdidescargamasivarfc.sat.gob.mx/CFDI/Autenticacion/autenticacion.svc' },
-    { label: 'auth_corto',    url: 'https://cfdidescargamasivarfc.sat.gob.mx/autenticacion' },
-    { label: 'solicitud_svc', url: 'https://cfdidescargamasivarfc.sat.gob.mx/CFDI/SolicitudDescargaMasivaTercerosMTCC.svc' },
-    { label: 'verifica_svc',  url: 'https://cfdidescargamasivarfc.sat.gob.mx/CFDI/VerificaSolicitudDescargaMTCC.svc' },
-    { label: 'descarga_svc',  url: 'https://cfdidescargamasivarfc.sat.gob.mx/CFDI/DescargaMasivaServicio.svc' },
     { label: 'sat_home',      url: 'https://www.sat.gob.mx' },
+    { label: 'sat_doc_page',  url: 'https://www.sat.gob.mx/consulta/42968/consulta-y-recuperacion-de-comprobantes-(nuevo)' },
+    { label: 'api_sat',       url: 'https://api.sat.gob.mx' },
+    { label: 'cfdiws_sat',    url: 'https://cfdiws.sat.gob.mx' },
+    { label: 'ws_sat',        url: 'https://ws.sat.gob.mx' },
+    { label: 'servicios_sat', url: 'https://servicios.sat.gob.mx' },
   ];
   result.http_probes = {};
   for (const ep of ENDPOINTS) {
@@ -102,6 +109,21 @@ router.get('/debug-network', async (req, res) => {
       }).on('error', e => ok({ error: e.message }));
     });
   } catch(e) { result.railway_ip = { error: e.message }; }
+
+  // 5. Buscar endpoint actual en página SAT (primeros 3000 chars del body)
+  result.sat_doc_body = await new Promise((ok) => {
+    const req = https.get(
+      'https://www.sat.gob.mx/consulta/42968/consulta-y-recuperacion-de-comprobantes-(nuevo)',
+      { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } },
+      (r2) => {
+        let body = '';
+        r2.on('data', d => { body += d; if (body.length > 6000) req.destroy(); });
+        r2.on('end', () => ok({ status: r2.statusCode, preview: body.slice(0, 3000) }));
+      }
+    );
+    req.on('error', e => ok({ error: e.code || e.message }));
+    req.on('timeout', () => { req.destroy(); ok({ error: 'TIMEOUT' }); });
+  });
 
   res.json(result);
 });
