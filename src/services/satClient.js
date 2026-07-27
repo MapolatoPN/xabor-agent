@@ -114,8 +114,8 @@ async function construirSoapAuth(rfc) {
   // --- Digest SHA-1 del Timestamp (C14N simple, el elemento ya es canónico) ---
   const tsDigest = crypto.createHash('sha1').update(tsXml).digest('base64');
 
-  // --- SignedInfo ---
-  const signedInfoXml = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/><Reference URI="#${tsId}"><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/><DigestValue>${tsDigest}</DigestValue></Reference></SignedInfo>`;
+  // --- SignedInfo — usar Canonical XML (elementos vacíos NUNCA self-closing, C14N los expande) ---
+  const signedInfoXml = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI="#${tsId}"><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${tsDigest}</DigestValue></Reference></SignedInfo>`;
 
   // --- Firma RSA-SHA1 sobre SignedInfo (crypto nativo — compatible con WCF del SAT) ---
   const signer = crypto.createSign('SHA1');
