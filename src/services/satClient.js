@@ -158,7 +158,7 @@ export async function autenticar(rfc) {
   const res = await axios.post(SAT_URL.auth, soap, {
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.gob.mx/IAutentica/Autentica"',
+      'SOAPAction': '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
     },
     timeout: 30000,
   });
@@ -172,38 +172,35 @@ export async function autenticar(rfc) {
 // ─── Solicitar descarga de CFDI ──────────────────────────────────────────────
 export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipo = 'CFDI') {
   const rfcSolicitante = rfc.toUpperCase();
-  const rfcReceptor   = rfc.toUpperCase(); // recibidos = receptor es nuestro RFC
-  const tipoSolicitud = 'Recibidos';
+  // Para recibidos: RfcReceptor = nuestro RFC; TipoSolicitud = formato de descarga (CFDI = XML completo)
+  // El tipo de flujo (Recibidos vs Emitidos) lo determina el elemento SOAP, no el atributo TipoSolicitud
 
   const soap = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>
-    <h:SolicitaDescargaHeader xmlns:h="http://DescargaMasivaTerceros.sat.gob.mx" xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <Signature xmlns="http://www.w3.org/2000/09/xmldsig#"/>
-    </h:SolicitaDescargaHeader>
     <o:Security xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
       <o:BinarySecurityToken ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#SAML" EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${token}</o:BinarySecurityToken>
     </o:Security>
   </s:Header>
   <s:Body>
-    <SolicitaDescarga xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcReceptor}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="${tipoSolicitud}" TipoComprobante="${tipo}"/>
-    </SolicitaDescarga>
+    <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
+      <solicitud RfcSolicitante="${rfcSolicitante}" RfcReceptor="${rfcSolicitante}" FechaInicial="${fechaInicial}" FechaFinal="${fechaFinal}" TipoSolicitud="CFDI" TipoComprobante="${tipo}"/>
+    </SolicitaDescargaRecibidos>
   </s:Body>
 </s:Envelope>`;
 
   const res = await axios.post(SAT_URL.request, soap, {
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescarga"',
+      'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
       'Authorization': `WRAP access_token="${token}"`,
     },
     timeout: 30000,
   });
 
-  const idSolicitud  = extraerAtributoXml(res.data, 'SolicitaDescargaResult', 'IdSolicitud');
-  const codEstatus   = extraerAtributoXml(res.data, 'SolicitaDescargaResult', 'CodEstatus');
-  const mensaje      = extraerAtributoXml(res.data, 'SolicitaDescargaResult', 'Mensaje');
+  const idSolicitud  = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'IdSolicitud');
+  const codEstatus   = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'CodEstatus');
+  const mensaje      = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'Mensaje');
 
   if (codEstatus !== '5000') throw new Error(`SAT rechazó solicitud [${codEstatus}]: ${mensaje}`);
   return idSolicitud;

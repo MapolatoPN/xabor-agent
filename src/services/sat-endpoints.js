@@ -1,24 +1,49 @@
 /**
- * sat-endpoints.js — Endpoints oficiales SAT, Descarga Masiva de Documentos Digitales
+ * sat-endpoints.js — Endpoints oficiales SAT, Descarga Masiva de CFDI
  *
  * Fuente: SAT — "Consulta y recuperación de comprobantes — URLs del Web Service"
- * Dominio vigente: clouda.sat.gob.mx  (el anterior cfdidescargamasivarfc.sat.gob.mx fue descomisionado)
+ * WSDL verificados el 2026-07-27 directamente desde México:
+ *   auth    → WSDL responde ✅
+ *   request → WSDL responde ✅ (confirmado por SAT)
+ *   verify  → WSDL responde ✅
+ *   download→ URL confirmada por phpcfdi y nodecfdi (WCF no expone WSDL vía GET)
  *
- * Para actualizar endpoints en el futuro: modificar ÚNICAMENTE este archivo.
- * No dispersar URLs del SAT en otros módulos.
+ * Todos los servicios usan subdominio propio bajo clouda.sat.gob.mx.
+ * El anterior hostname cfdidescargamasivarfc.sat.gob.mx fue descomisionado.
+ *
+ * Para actualizar endpoints: modificar ÚNICAMENTE este archivo.
  */
 
 export const SAT_ENDPOINTS = {
-  auth:     'https://clouda.sat.gob.mx/Autenticacion/Autenticacion/1.0.0/autenticacion',
-  request:  'https://clouda.sat.gob.mx/Descarga/SolicitudDescarga/1.0.0/SolicitudDescargaMasivaTercerosMTCC',
-  verify:   'https://clouda.sat.gob.mx/Descarga/VerificaSolicitudDescarga/1.0.0/VerificaSolicitudDescargaMTCC',
-  download: 'https://clouda.sat.gob.mx/Descarga/DescargaMasiva/1.0.0/DescargaMasiva',
+  /** Autenticación — obtiene el token Bearer firmado con e.firma */
+  auth:     'https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc',
+
+  /** Solicitud de descarga — registra el rango/filtro y devuelve un IdSolicitud */
+  request:  'https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc',
+
+  /** Verificación — consulta estado de la solicitud y lista de paquetes listos */
+  verify:   'https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc',
+
+  /** Descarga — descarga el ZIP con los XMLs de cada paquete */
+  download: 'https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc',
 };
 
 /**
- * Namespaces SOAP — no cambian con el nuevo dominio (forman parte del WSDL).
+ * Namespaces SOAP extraídos directamente de los WSDLs verificados.
+ * autenticacion usa un namespace diferente (gob.mx en lugar de sat.gob.mx).
  */
 export const SAT_NS = {
   autenticacion: 'http://DescargaMasivaTerceros.gob.mx',
   descarga:      'http://DescargaMasivaTerceros.sat.gob.mx',
+};
+
+/**
+ * SOAPActions por operación, extraídas de los WSDLs.
+ */
+export const SAT_ACTIONS = {
+  autentica:              'http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica',
+  solicitaEmitidos:       'http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaEmitidos',
+  solicitaRecibidos:      'http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos',
+  solicitaFolio:          'http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaFolio',
+  verificaSolicitud:      'http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga',
 };

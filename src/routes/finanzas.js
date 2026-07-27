@@ -6,7 +6,6 @@
 import { Router } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dns from 'dns';
 import https from 'https';
 import {
   sincronizarRango,
@@ -42,10 +41,6 @@ router.get('/debug-network', async (req, res) => {
     r2.on('error', (e) => ok({ error: e.code || e.message, ms: Date.now() - t0 }));
     r2.end();
   });
-
-  result.dns_clouda = await new Promise(ok =>
-    dns.resolve4('clouda.sat.gob.mx', (e, a) => ok(e ? { error: e.code } : a))
-  );
 
   result.http_probes = {};
   for (const [k, url] of Object.entries(SAT_ENDPOINTS)) {
