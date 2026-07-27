@@ -81,9 +81,7 @@ async function cargarLlavePrivada(rfc) {
 
   const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
 
-  // Limpiar referencias
-  // forge no expone zeroize, pero al menos soltamos la ref del objeto
-  return { privateKeyPem, forge };
+  return { privateKeyPem };
 }
 
 // ─── Timestamp ISO8601 para SOAP ─────────────────────────────────────────────
@@ -94,7 +92,7 @@ function isoNow(offsetSeconds = 0) {
 // ─── Construir y firmar el SOAP de autenticación ─────────────────────────────
 async function construirSoapAuth(rfc) {
   const { der: cerDer, base64: cerB64 } = cargarCertificado(rfc);
-  const { privateKeyPem, forge } = await cargarLlavePrivada(rfc);
+  const { privateKeyPem } = await cargarLlavePrivada(rfc);
 
   const created = isoNow();
   const expires = isoNow(300); // 5 minutos
@@ -109,16 +107,10 @@ async function construirSoapAuth(rfc) {
   // --- SignedInfo ---
   const signedInfoXml = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/><Reference URI="#${tsId}"><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/><DigestValue>${tsDigest}</DigestValue></Reference></SignedInfo>`;
 
-  // --- Firma RSA-SHA1 sobre SignedInfo ---
-  const md = forge.md.sha1.create();
-  md.update(signedInfoXml, 'utf8');
-  const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
-  const signatureBytes = privateKey.sign(md);
-  const signatureB64 = forge.util.encode64(signatureBytes);
-
-  // Limpiar llave de memoria
-  const cleanKey = privateKeyPem.replace(/./g, '\0');
-  void cleanKey;
+  // --- Firma RSA-SHA1 sobre SignedInfo (crypto nativo — compatible con WCF del SAT) ---
+  const signer = crypto.createSign('SHA1');
+  signer.update(signedInfoXml);
+  const signatureB64 = signer.sign(privateKeyPem, 'base64');
 
   // --- Numero de serie del certificado (decimal) ---
   const cert = new crypto.X509Certificate(
