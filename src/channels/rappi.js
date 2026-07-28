@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services/rappi-api.js';
-import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
+import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
 import { guardarPedido, guardarMensaje } from '../services/database.js';
 
 let wsBroadcast = null;
@@ -87,6 +87,44 @@ router.post('/', async (req, res) => {
     return;
   }
 
+  // NEW_ORDER — formato productivo observado: sin "event"/"type", el pedido
+  // completo viene anidado en order_detail + store (ver orden real 2460364932,
+  // tienda Nonna Maye / store.internal_id="1930419809"). Nunca tumba el
+  // servidor ante un payload mal formado — todo el bloque va en try/catch.
+  try {
+    if (body?.order_detail?.order_id && body?.order_detail?.items && body?.store?.internal_id) {
+      console.log(`[Rappi] Orden productiva detectada por order_detail.order_id: ${body.order_detail.order_id}`);
+
+      const storeIdRecibido = String(body.store.internal_id);
+      const storeIdConfigurado = String(process.env.RAPPI_STORE_ID || '');
+      if (storeIdRecibido !== storeIdConfigurado) {
+        console.warn(`[Rappi] ⚠ Tienda no coincide (recibida=${storeIdRecibido}, configurada=${storeIdConfigurado}) — orden ${body.order_detail.order_id} ignorada`);
+        return;
+      }
+      console.log('[Rappi] Tienda validada');
+
+      const orderId = String(body.order_detail.order_id);
+
+      // Deduplicación: reutiliza el listado en memoria de pedidos ya
+      // registrados (cada pedido de Rappi guarda su rappi_order_id — ver
+      // mapearOrdenRappi más abajo). No se inventa un mecanismo nuevo.
+      if (obtenerPedidos().some(p => String(p.rappi_order_id) === orderId)) {
+        console.log(`[Rappi] Orden ${orderId} ya fue procesada — se ignora el reenvío duplicado del webhook`);
+        return;
+      }
+
+      console.log(`[Rappi] Procesando orden ${orderId}`);
+      const normalizado = normalizarOrdenProductiva(body.order_detail, body.customer);
+      procesarOrdenRappi(normalizado).catch(e =>
+        console.error('[Rappi] ❌ Error procesando orden productiva:', e.message, e.stack)
+      );
+      return;
+    }
+  } catch (e) {
+    console.error('[Rappi] ❌ Error inesperado detectando/normalizando orden productiva:', e.message, e.stack);
+    return;
+  }
+
   // Evento no identificado — loguear completo
   console.warn(`[Rappi] ⚠ Evento no identificado | evento="${evento}" | body completo: ${JSON.stringify(body)}`);
 });
@@ -135,6 +173,22 @@ async function procesarOrdenRappi(data) {
   }
 }
 
+// ─── Normalización del formato productivo (order_detail) ─────────────────────
+// Convierte { order_detail, customer, store } a la misma forma "plana" que
+// procesarOrdenRappi()/mapearOrdenRappi() ya esperan del formato clásico.
+// No duplica lógica de mapeo de pedidos — solo reacomoda los campos de entrada.
+function normalizarOrdenProductiva(orderDetail, customer) {
+  return {
+    id: orderDetail.order_id,
+    order_id: orderDetail.order_id,
+    items: orderDetail.items || [],
+    totals: orderDetail.totals || {},
+    delivery_method: orderDetail.delivery_method,
+    delivery: orderDetail.delivery_information || {},
+    customer: customer || {},
+  };
+}
+
 // ─── Mapeo Rappi → Xabor ─────────────────────────────────────────────────────
 function mapearOrdenRappi(data) {
   const orderId = data.id || data.order_id;
@@ -144,7 +198,7 @@ function mapearOrdenRappi(data) {
     nombre: item.name || item.product_name || 'Producto Rappi',
     cantidad: item.units || item.quantity || 1,
     precio_unitario: item.unit_price || item.price || 0,
-    notas: formatearTopping(item.toppings || item.sub_items || [])
+    notas: formatearTopping(item.toppings || item.sub_items || item.subitems || [])
   }));
 
   // Totales
@@ -159,7 +213,7 @@ function mapearOrdenRappi(data) {
 
   // Cliente (Rappi puede ofuscar algunos datos)
   const cliente = {
-    nombre: data.customer?.name || `Cliente Rappi #${orderId}`,
+    nombre: data.customer?.name || data.customer?.first_name || data.customer?.firstName || `Cliente Rappi #${orderId}`,
     telefono: data.customer?.phone || `rappi-${orderId}`,
     calle: delivery.complete_address || delivery.street_name || 'Dirección Rappi',
     colonia: delivery.neighborhood || '',
