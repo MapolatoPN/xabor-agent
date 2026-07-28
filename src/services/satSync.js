@@ -182,6 +182,22 @@ async function procesarPaquete(paqueteDbId, packageId, zipBuffer, rfc) {
   return { total: xmls.length, nuevos, duplicados, errores };
 }
 
+// ─── Buscar solicitud pendiente reanudable (timeout o solicitado) ────────────
+async function buscarSolicitudPendiente(rfc, fechaInicial, fechaFinal) {
+  const { rows } = await pool.query(
+    `SELECT id, sat_request_id FROM sat_download_requests
+     WHERE negocio_id = $1
+       AND status IN ('timeout', 'solicitado')
+       AND sat_request_id IS NOT NULL
+       AND fecha_inicial = $2
+       AND fecha_final   = $3
+     ORDER BY requested_at DESC
+     LIMIT 1`,
+    [NEGOCIO_ID, fechaInicial, fechaFinal]
+  );
+  return rows[0] ?? null;
+}
+
 // ─── FLUJO PRINCIPAL: sincronizar un rango de fechas ────────────────────────
 export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } = {}) {
   const log = (msg) => {
@@ -196,20 +212,31 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
   validarCertificado(rfc);
   log('Certificado válido ✓');
 
-  // Crear registro de solicitud
-  const solicitudDbId = await crearSolicitudDB(rfc, fechaInicial, fechaFinal);
+  let solicitudDbId, satRequestId, token;
 
   try {
     // 1. Autenticar
     log('Autenticando con e.firma...');
-    const token = await autenticar(rfc);
+    token = await autenticar(rfc);
     log('Token obtenido ✓');
 
-    // 2. Solicitar
-    log('Enviando solicitud de descarga...');
-    const satRequestId = await solicitarDescarga(rfc, token, fechaInicial, fechaFinal);
-    log(`Solicitud aceptada: ${satRequestId}`);
-    await actualizarSolicitudDB(solicitudDbId, { sat_request_id: satRequestId, status: 'solicitado' });
+    // ── Reanudar solicitud pendiente si existe ─────────────────────────────
+    const pendiente = await buscarSolicitudPendiente(rfc, fechaInicial, fechaFinal);
+    if (pendiente) {
+      solicitudDbId = pendiente.id;
+      satRequestId  = pendiente.sat_request_id;
+      log(`Reanudando solicitud pendiente: ${satRequestId}`);
+      await actualizarSolicitudDB(solicitudDbId, { status: 'solicitado' });
+    } else {
+      // Crear registro de solicitud nuevo
+      solicitudDbId = await crearSolicitudDB(rfc, fechaInicial, fechaFinal);
+
+      // 2. Solicitar
+      log('Enviando solicitud de descarga...');
+      satRequestId = await solicitarDescarga(rfc, token, fechaInicial, fechaFinal);
+      log(`Solicitud aceptada: ${satRequestId}`);
+      await actualizarSolicitudDB(solicitudDbId, { sat_request_id: satRequestId, status: 'solicitado' });
+    }
 
     // 3. Verificar con polling (hasta 30 intentos, cada 60s = 30 min máx)
     log('Verificando estado... (puede tardar varios minutos)');
