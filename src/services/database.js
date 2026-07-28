@@ -1397,6 +1397,76 @@ async function resolverNegocioActualId() {
   return _negocioActualIdCache;
 }
 
+// ─── Multiempresa — mapeo canal → negocio (Fase 5, migración 008) ──────────
+// Resuelve el negocio (y sucursal, si aplica) dueño de un identificador de
+// integración externo (store_id de Rappi, phone_number_id de WhatsApp,
+// número de Twilio en voz) contra integraciones_canal. Función de SOLO
+// LECTURA: no crea ni modifica filas, no lee variables de entorno, no
+// acepta negocioId directamente (el negocio se deriva exclusivamente del
+// identificador del canal, nunca de un valor que el llamador pudiera
+// manipular) y NO tiene fallback a Nonna Maye ni a ningún negocio por
+// defecto — un identificador sin coincidencia siempre devuelve null.
+// Ningún canal (WhatsApp/Rappi/voz) la usa todavía; se agrega sola, sin
+// conectar nada, como preparación para una fase posterior.
+//
+// A diferencia de la mayoría de las funciones de este archivo, aquí NO se
+// atrapa el error de la consulta: un fallo real de base de datos debe
+// propagarse al llamador (mismo criterio que crearProducto/
+// actualizarProducto/crearUsuarioConPassword) — "no encontrado" y "error
+// real" son casos distintos y no deben confundirse devolviendo null en
+// ambos.
+export async function obtenerIntegracionCanal(canal, identificador) {
+  if (typeof canal !== 'string' || !canal.trim()) return null;
+  if (typeof identificador !== 'string' || !identificador.trim()) return null;
+
+  // canal se normaliza agresivamente (trim + minúsculas): es un valor
+  // interno controlado por nosotros, los canales conocidos ('whatsapp',
+  // 'rappi', 'voice') siempre se siembran en minúsculas. identificador NO
+  // cambia de mayúsculas/minúsculas — viene tal cual del proveedor externo
+  // en cada webhook y se sembró en la migración 008 con su capitalización
+  // original; forzar un case distinto podría dejar de coincidir con lo que
+  // Rappi/Meta/Twilio realmente envían.
+  const canalNorm = canal.trim().toLowerCase();
+  const identificadorNorm = identificador.trim();
+
+  const { rows } = await pool.query(
+    `SELECT
+       ic.id AS integracion_id,
+       ic.negocio_id, n.slug AS negocio_slug, n.nombre AS negocio_nombre,
+       ic.sucursal_id, s.nombre AS sucursal_nombre,
+       ic.canal, ic.identificador, ic.configuracion
+     FROM integraciones_canal ic
+     JOIN negocios n ON n.id = ic.negocio_id
+     LEFT JOIN sucursales s ON s.id = ic.sucursal_id
+     WHERE ic.canal = $1 AND ic.identificador = $2 AND ic.activo = TRUE`,
+    [canalNorm, identificadorNorm]
+  );
+
+  if (rows.length === 0) return null;
+
+  if (rows.length > 1) {
+    // UNIQUE(canal, identificador) debería impedir esto. Si ocurre de
+    // todos modos, es un error estructural real -- no un "no encontrado"
+    // -- y debe tratarse como tal, no devolverse silenciosamente como null.
+    throw new Error(
+      `obtenerIntegracionCanal: se encontraron ${rows.length} integraciones activas para canal='${canalNorm}' identificador='${identificadorNorm}' — se esperaba a lo sumo 1 (violación de UNIQUE)`
+    );
+  }
+
+  const r = rows[0];
+  return {
+    integracionId: r.integracion_id,
+    negocioId: r.negocio_id,
+    negocioSlug: r.negocio_slug,
+    negocioNombre: r.negocio_nombre,
+    sucursalId: r.sucursal_id,
+    sucursalNombre: r.sucursal_nombre,
+    canal: r.canal,
+    identificador: r.identificador,
+    configuracion: r.configuracion,
+  };
+}
+
 // ─── Multiempresa — membresía usuario↔negocio (Fase 2, autenticación) ───────
 // Mecanismo real: la pertenencia de un usuario a uno o más negocios vive en
 // la tabla usuario_negocios (migración 005). El middleware de autenticación
