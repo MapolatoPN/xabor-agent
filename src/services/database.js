@@ -68,17 +68,6 @@ export async function initDB() {
       clave  VARCHAR(50) PRIMARY KEY,
       valor  TEXT NOT NULL
     );
-    INSERT INTO configuracion (clave, valor) VALUES
-      ('nombre',        'Restaurante Xabor'),
-      ('nombre_corto',  'XABOR'),
-      ('direccion',     'Lib. Manuel Perez Trevino 2416 Local 4'),
-      ('ciudad',        'Col. Tecnologico, Piedras Negras, Coah.'),
-      ('rfc',           'CAOM940122PTA'),
-      ('telefono',      '(878) 109-1115'),
-      ('whatsapp',      '(878) 109-1115'),
-      ('horario',       'lunes a sabado 11am-10pm'),
-      ('bot_avisos',    '')
-    ON CONFLICT (clave) DO NOTHING;
 
     CREATE TABLE IF NOT EXISTS caja_fondos (
       id          SERIAL PRIMARY KEY,
@@ -279,6 +268,45 @@ export async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_folio   ON rewards_movements(folio_venta);
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_tenant  ON rewards_movements(tenant_id, created_at DESC);
   `);
+
+  // ─── Seed inicial de configuracion (Nonna Maye) ──────────────────────────
+  // Requiere que el negocio 'nonna-maye' ya exista (migraciones 003/004).
+  // initDB() debe seguir siendo seguro de llamar en cualquier estado de
+  // migración y NUNCA debe bloquear el resto de la cadena de arranque
+  // (seedMenuDesdeJSON/cargarPedidosDesdeDB/cargarConfig/cargarIntegraciones
+  // corren después de initDB() en server.js) — por eso nunca se relanza el
+  // error aquí. Nunca se hardcodea el UUID: siempre se resuelve por slug.
+  try {
+    const { rows } = await pool.query('SELECT id FROM negocios WHERE slug = $1', ['nonna-maye']);
+    const negocioId = rows[0]?.id;
+    if (negocioId) {
+      await pool.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES
+           ($1, 'nombre',        'Restaurante Xabor'),
+           ($1, 'nombre_corto',  'XABOR'),
+           ($1, 'direccion',     'Lib. Manuel Perez Trevino 2416 Local 4'),
+           ($1, 'ciudad',        'Col. Tecnologico, Piedras Negras, Coah.'),
+           ($1, 'rfc',           'CAOM940122PTA'),
+           ($1, 'telefono',      '(878) 109-1115'),
+           ($1, 'whatsapp',      '(878) 109-1115'),
+           ($1, 'horario',       'lunes a sabado 11am-10pm'),
+           ($1, 'bot_avisos',    '')
+         ON CONFLICT (negocio_id, clave) DO NOTHING`,
+        [negocioId]
+      );
+    } else {
+      // La tabla 'negocios' existe pero no tiene un negocio con slug
+      // 'nonna-maye' — esto SÍ es un problema real (migración 003 corrida
+      // sin su seed, o slug cambiado). Falla de forma visible en el log,
+      // pero controlada: no se relanza el error, initDB() continúa.
+      console.error("[DB] ⚠ ADVERTENCIA: no existe un negocio con slug 'nonna-maye' — el seed de configuración inicial NO se aplicó. Verifica que 003_multiempresa_seed.sql haya sido ejecutada.");
+    }
+  } catch (e) {
+    // Caso esperado antes de aplicar la migración 003: la tabla 'negocios'
+    // todavía no existe. No es un error real — es un estado de migración
+    // pendiente, no de un fallo silencioso de datos.
+    console.log("[DB] Tabla 'negocios' aún no disponible — seed de configuración por negocio pendiente hasta aplicar las migraciones 003/004:", e.message);
+  }
 
   // ─── Xabor Finanzas — tablas SAT (módulo independiente) ──────────────────
   await pool.query(`
@@ -487,7 +515,10 @@ export async function crearGrupoModificador(productoId, { nombre, requerido=fals
 
   // negocio_id se deriva del producto padre — nunca se acepta suelto
   const { rows: prodRows } = await pool.query('SELECT negocio_id FROM menu_productos WHERE id=$1', [productoId]);
-  if (!prodRows[0] || prodRows[0].negocio_id !== negId) {
+  if (!prodRows[0]) {
+    throw new Error('crearGrupoModificador: producto no encontrado');
+  }
+  if (prodRows[0].negocio_id !== negId) {
     throw new Error('crearGrupoModificador: el producto no pertenece al negocio actual');
   }
 
@@ -522,7 +553,10 @@ export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, 
 
   // negocio_id se deriva del grupo padre — nunca se acepta suelto
   const { rows: grupoRows } = await pool.query('SELECT negocio_id FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
-  if (!grupoRows[0] || grupoRows[0].negocio_id !== negId) {
+  if (!grupoRows[0]) {
+    throw new Error('crearOpcionModificador: grupo no encontrado');
+  }
+  if (grupoRows[0].negocio_id !== negId) {
     throw new Error('crearOpcionModificador: el grupo no pertenece al negocio actual');
   }
 
@@ -586,7 +620,10 @@ export async function crearProducto(datos, negocioId) {
 
   // negocio_id se deriva de la categoría padre — nunca se acepta suelto desde datos
   const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [categoria_id]);
-  if (!catRows[0] || catRows[0].negocio_id !== negId) {
+  if (!catRows[0]) {
+    throw new Error('crearProducto: categoría no encontrada');
+  }
+  if (catRows[0].negocio_id !== negId) {
     throw new Error('crearProducto: la categoría no pertenece al negocio actual');
   }
 
