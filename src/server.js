@@ -17,8 +17,9 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
-import { crearTokenSesion, verificarTokenSesion } from './services/session.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth } from './services/session.js';
+import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -177,10 +178,12 @@ const JERARQUIA_ROLES = { admin: 2, staff: 1 };
 function requireSesionNegocio(rolMinimo) {
   return async (req, res, next) => {
     const auth = req.headers['authorization'];
-    if (!auth || !auth.startsWith('Bearer ')) {
+    const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+    const token = leerCookieSesion(req) || tokenBearer;
+    if (!token) {
       return res.status(401).json({ error: 'No autenticado' });
     }
-    const payload = verificarTokenSesion(auth.slice(7));
+    const payload = verificarTokenSesion(token);
     if (!payload) {
       return res.status(401).json({ error: 'Sesión inválida o expirada' });
     }
@@ -205,6 +208,106 @@ function requireSesionNegocio(rolMinimo) {
     req.negocioId = payload.negocioId;
     req.rol = membresia.rol;
     next();
+  };
+}
+
+// ─── Cookies de sesión (Fase 3) ─────────────────────────────────────────────
+// Parseo manual — sin agregar cookie-parser como dependencia nueva. Solo se
+// necesita leer/escribir una cookie propia (xabor_sesion), no un parser
+// genérico de cookies de terceros.
+const COOKIE_SESION = 'xabor_sesion';
+
+function leerCookieSesion(req) {
+  const header = req.headers['cookie'];
+  if (!header) return null;
+  for (const par of header.split(';')) {
+    const idx = par.indexOf('=');
+    if (idx === -1) continue;
+    const nombre = par.slice(0, idx).trim();
+    if (nombre === COOKIE_SESION) return decodeURIComponent(par.slice(idx + 1).trim());
+  }
+  return null;
+}
+
+function setCookieSesion(res, token) {
+  const partes = [
+    `${COOKIE_SESION}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${12 * 60 * 60}`, // 12 horas — igual a DURACION_MS en session.js
+  ];
+  if (process.env.NODE_ENV === 'production') partes.push('Secure');
+  res.setHeader('Set-Cookie', partes.join('; '));
+}
+
+function limpiarCookieSesion(res) {
+  const partes = [`${COOKIE_SESION}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (process.env.NODE_ENV === 'production') partes.push('Secure');
+  res.setHeader('Set-Cookie', partes.join('; '));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 3) — puente sesión-nueva / legado para rutas de config y menú
+// Intenta primero la sesión nueva (cookie httpOnly, o un Authorization:
+// Bearer que sea un token de sesión firmado — no el token admin/staff
+// legado). Si se presentó una credencial de sesión nueva pero resulta
+// inválida o expirada, se RECHAZA de inmediato — nunca cae al mecanismo
+// legado en ese caso, porque eso dejaría colarse a alguien con un token
+// viejo o manipulado por la puerta de atrás. Solo cuando no se presentó
+// ninguna credencial de sesión nueva (ninguna cookie y, si hay Bearer, es el
+// token admin/staff legado) se usa el mecanismo legado como respaldo
+// temporal, exactamente como funcionaba antes de esta fase.
+//
+// PENDIENTE DE ELIMINAR (ver requisito de "compatibilidad temporal"): una
+// vez que todos los usuarios del panel inicien sesión con el mecanismo
+// nuevo, quitar la rama "⚠ LEGADO" de esta función y las rutas/middlewares
+// marcados ⚠ LEGADO (resolverNegocio, requireAuth, requireAdmin, TOKEN_ADMIN,
+// TOKEN_STAFF, POST /api/auth/login).
+function resolverNegocioSeguro(rolMinimo) {
+  return async (req, res, next) => {
+    const tokenCookie = leerCookieSesion(req);
+    const auth = req.headers['authorization'];
+    const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+    const esBearerLegado = tokenBearer && (tokenBearer === TOKEN_ADMIN || tokenBearer === TOKEN_STAFF);
+    const tokenSesionNueva = tokenCookie || (esBearerLegado ? null : tokenBearer);
+
+    if (tokenSesionNueva) {
+      const payload = verificarTokenSesion(tokenSesionNueva);
+      if (!payload) {
+        // Credencial de sesión nueva presente pero inválida/expirada — no
+        // caer al legado silenciosamente.
+        return res.status(401).json({ error: 'Sesión inválida o expirada' });
+      }
+      const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+      if (!membresia || !membresia.activo) {
+        return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+      }
+      if (rolMinimo) {
+        const nivelUsuario   = JERARQUIA_ROLES[membresia.rol] || 0;
+        const nivelRequerido = JERARQUIA_ROLES[rolMinimo] || 0;
+        if (nivelUsuario < nivelRequerido) {
+          return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
+        }
+      }
+      const negocioDefaultId = await resolverNegocioActualPorDefecto();
+      req.usuarioId = payload.usuarioId;
+      req.negocioId = payload.negocioId;
+      req.rol = membresia.rol;
+      req.esNegocioPorDefecto = payload.negocioId === negocioDefaultId;
+      req.sesionNueva = true;
+      return next();
+    }
+
+    // ⚠ LEGADO — sin credencial de sesión nueva, usar token admin/staff + slug
+    const role = tokenBearer ? getRole(tokenBearer) : null;
+    if (!role) return res.status(401).json({ error: 'No autenticado' });
+    if (rolMinimo === 'admin' && role !== 'admin') {
+      return res.status(403).json({ error: 'Solo administradores' });
+    }
+    req.role = role;
+    req.sesionNueva = false;
+    return resolverNegocio(req, res, next);
   };
 }
 
@@ -516,6 +619,84 @@ app.post('/api/auth/sesion', requireAdmin, async (req, res) => {
   res.json({ token, negocioId: negocioElegido.negocio_id, negocioNombre: negocioElegido.nombre, rol: negocioElegido.rol });
 });
 
+// ─── Login real por correo y contraseña (Fase 3) ──────────────────────────
+// Un solo endpoint cubre los dos pasos del flujo:
+//  1) email + password → si el usuario pertenece a un solo negocio activo,
+//     se emite la sesión de una vez (cookie httpOnly). Si pertenece a
+//     varios, se devuelve la lista de negocios + un token corto de
+//     preselección (preAuth) en vez de una sesión — el cliente no vuelve a
+//     enviar la contraseña, solo el preAuth + el negocioId elegido.
+//  2) preAuth + negocioId → completa la sesión para el negocio elegido.
+// El mensaje de error para "no existe" y "contraseña incorrecta" es el
+// mismo a propósito, para no revelar si un correo está registrado.
+app.post('/api/auth/negocio/login', async (req, res) => {
+  const { email, password, negocioId, preAuth } = req.body;
+  try {
+    let usuarioId;
+
+    if (preAuth) {
+      usuarioId = verificarTokenPreAuth(preAuth);
+      if (!usuarioId) {
+        return res.status(401).json({ error: 'Selección de negocio inválida o expirada — inicia sesión de nuevo' });
+      }
+    } else {
+      if (!email || !password) {
+        return res.status(400).json({ error: 'email y password son requeridos' });
+      }
+      const usuario = await obtenerUsuarioPorEmail(email);
+      if (!usuario || !usuario.activo || !verifyPassword(password, usuario.password_hash)) {
+        return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+      }
+      usuarioId = usuario.id;
+    }
+
+    const negocios = await obtenerNegociosDeUsuario(usuarioId);
+    if (!negocios.length) {
+      return res.status(403).json({ error: 'El usuario no pertenece a ningún negocio activo' });
+    }
+
+    // Si el cliente indicó explícitamente un negocioId, se valida pertenencia
+    // real SIEMPRE — sin importar si el usuario tiene uno o varios negocios.
+    // Nunca se ignora un negocioId inválido a favor de auto-seleccionar otro:
+    // eso confundiría a un cliente que cree haber entrado a un negocio al
+    // que en realidad no tiene acceso.
+    if (negocioId) {
+      const elegido = negocios.find(n => n.negocio_id === negocioId);
+      if (!elegido) {
+        return res.status(403).json({ error: 'El usuario no pertenece al negocio solicitado' });
+      }
+      const token = crearTokenSesion({ usuarioId, negocioId: elegido.negocio_id, rol: elegido.rol });
+      setCookieSesion(res, token);
+      return res.json({ ok: true, negocioId: elegido.negocio_id, negocioNombre: elegido.nombre, rol: elegido.rol });
+    }
+
+    // Sin negocioId y un solo negocio — auto-seleccionar, sesión de inmediato.
+    if (negocios.length === 1) {
+      const n = negocios[0];
+      const token = crearTokenSesion({ usuarioId, negocioId: n.negocio_id, rol: n.rol });
+      setCookieSesion(res, token);
+      return res.json({ ok: true, negocioId: n.negocio_id, negocioNombre: n.nombre, rol: n.rol });
+    }
+
+    // Sin negocioId y varios negocios — devolver selector + preAuth.
+    const preAuthToken = crearTokenPreAuth(usuarioId);
+    res.json({
+      ok: true,
+      requiereSeleccion: true,
+      preAuth: preAuthToken,
+      negocios: negocios.map(n => ({ negocioId: n.negocio_id, nombre: n.nombre, rol: n.rol })),
+    });
+  } catch (e) {
+    console.error('[POST /api/auth/negocio/login] Error:', e.message);
+    res.status(500).json({ error: 'Error interno al iniciar sesión' });
+  }
+});
+
+app.post('/api/auth/negocio/logout', (req, res) => {
+  limpiarCookieSesion(res);
+  res.json({ ok: true });
+});
+
 app.get('/api/auth/me', requireSesionNegocio(), (req, res) => {
   res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol });
 });
@@ -531,6 +712,10 @@ app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/auth/')) return next();
   if (req.path.startsWith('/repartidor/')) return next(); // rutas públicas de repartidor
   if (req.path === '/vapid-public') return next();
+  // /config, /menu y /admin/menu (Fase 3) se autentican por sí mismas con
+  // resolverNegocioSeguro — no con el requireAuth legado de este gate — para
+  // poder aceptar sesión nueva (cookie) además del token admin/staff legado.
+  if (req.path === '/config' || req.path.startsWith('/menu') || req.path.startsWith('/admin/menu')) return next();
   requireAuth(req, res, next);
 });
 
@@ -843,27 +1028,27 @@ app.get('/api/caja/fondo', requireAuth, async (req, res) => {
 });
 
 // ─── Menú — endpoints ────────────────────────────────────────────────────────
-app.get('/api/menu', resolverNegocio, async (req, res) => {
+app.get('/api/menu', resolverNegocioSeguro(), async (req, res) => {
   const menu = await obtenerMenuCompleto(req.negocioId);
   res.json(menu);
 });
 
-app.post('/api/admin/menu/categorias', requireAdmin, resolverNegocio, async (req, res) => {
+app.post('/api/admin/menu/categorias', resolverNegocioSeguro('admin'), async (req, res) => {
   const cat = await crearCategoria(req.body.nombre, req.negocioId);
   res.json(cat);
 });
 
-app.patch('/api/admin/menu/categorias/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.patch('/api/admin/menu/categorias/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await actualizarCategoria(req.params.id, req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/categorias/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.delete('/api/admin/menu/categorias/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await eliminarCategoria(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/productos', requireAdmin, resolverNegocio, async (req, res) => {
+app.post('/api/admin/menu/productos', resolverNegocioSeguro('admin'), async (req, res) => {
   try {
     const prod = await crearProducto(req.body, req.negocioId);
     res.json(prod);
@@ -879,7 +1064,7 @@ app.post('/api/admin/menu/productos', requireAdmin, resolverNegocio, async (req,
   }
 });
 
-app.patch('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.patch('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   try {
     await actualizarProducto(req.params.id, req.body, req.negocioId);
     res.json({ ok: true });
@@ -895,18 +1080,18 @@ app.patch('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async 
   }
 });
 
-app.delete('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.delete('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await eliminarProducto(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
 // ─── Modificadores — endpoints ───────────────────────────────────────────────
-app.get('/api/admin/menu/productos/:id/modificadores', requireAdmin, resolverNegocio, async (req, res) => {
+app.get('/api/admin/menu/productos/:id/modificadores', resolverNegocioSeguro('admin'), async (req, res) => {
   const grupos = await obtenerModificadoresProducto(parseInt(req.params.id), req.negocioId);
   res.json(grupos);
 });
 
-app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, resolverNegocio, async (req, res) => {
+app.post('/api/admin/menu/productos/:id/modificadores/grupos', resolverNegocioSeguro('admin'), async (req, res) => {
   try {
     const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
     res.json(grupo);
@@ -922,17 +1107,17 @@ app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, res
   }
 });
 
-app.patch('/api/admin/menu/modificadores/grupos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.patch('/api/admin/menu/modificadores/grupos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await actualizarGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/grupos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.delete('/api/admin/menu/modificadores/grupos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await eliminarGrupoModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, resolverNegocio, async (req, res) => {
+app.post('/api/admin/menu/modificadores/grupos/:id/opciones', resolverNegocioSeguro('admin'), async (req, res) => {
   try {
     const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
     res.json(opcion);
@@ -948,12 +1133,12 @@ app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, reso
   }
 });
 
-app.patch('/api/admin/menu/modificadores/opciones/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.patch('/api/admin/menu/modificadores/opciones/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await actualizarOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/opciones/:id', requireAdmin, resolverNegocio, async (req, res) => {
+app.delete('/api/admin/menu/modificadores/opciones/:id', resolverNegocioSeguro('admin'), async (req, res) => {
   await eliminarOpcionModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
@@ -1153,12 +1338,12 @@ app.get('/api/vapid-public', (req, res) => {
   res.json({ publicKey: key || null });
 });
 
-app.get('/api/config', requireAuth, resolverNegocio, async (req, res) => {
+app.get('/api/config', resolverNegocioSeguro(), async (req, res) => {
   if (req.esNegocioPorDefecto) return res.json(negocioConfig);
   const cfg = await obtenerConfiguracion(req.negocioId);
   res.json(cfg);
 });
-app.put('/api/config', requireAdmin, resolverNegocio, async (req, res) => {
+app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   const ok = await actualizarConfiguracion(req.body, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
   if (req.esNegocioPorDefecto) {
@@ -1986,7 +2171,8 @@ async function enviarSeguimientoOportunidades() {
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
-  .then(() => seedMenuDesdeJSON(menuJSON))
+  .then(() => resolverNegocioActualPorDefecto())
+  .then((negocioId) => seedMenuDesdeJSON(menuJSON, negocioId))
   .then(() => cargarPedidosDesdeDB())
   .then(() => cargarConfig())
   .then(() => cargarIntegraciones())
