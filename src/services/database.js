@@ -458,102 +458,158 @@ export async function obtenerMenuCompleto(negocioId) {
 }
 
 // ─── Menú — CRUD modificadores ────────────────────────────────────────────────
-export async function obtenerModificadoresProducto(productoId) {
+// Todas reciben negocioId opcional; si no se entrega, usan el negocio actual
+// (resolverNegocioActualId), igual que obtenerConfiguracion/obtenerMenuCompleto.
+export async function obtenerModificadoresProducto(productoId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  const { rows: prodRows } = await pool.query(
+    'SELECT id FROM menu_productos WHERE id=$1 AND negocio_id=$2', [productoId, negId]
+  );
+  if (!prodRows[0]) return [];
+
   const { rows: grupos } = await pool.query(
-    `SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 ORDER BY orden, id`,
-    [productoId]
+    `SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 AND negocio_id=$2 ORDER BY orden, id`,
+    [productoId, negId]
   );
   for (const g of grupos) {
     const { rows } = await pool.query(
-      `SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 ORDER BY orden, id`,
-      [g.id]
+      `SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 AND negocio_id=$2 ORDER BY orden, id`,
+      [g.id, negId]
     );
     g.opciones = rows;
   }
   return grupos;
 }
 
-export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }) {
+export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // negocio_id se deriva del producto padre — nunca se acepta suelto
+  const { rows: prodRows } = await pool.query('SELECT negocio_id FROM menu_productos WHERE id=$1', [productoId]);
+  if (!prodRows[0] || prodRows[0].negocio_id !== negId) {
+    throw new Error('crearGrupoModificador: el producto no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_modificadores_grupos (producto_id, nombre, requerido, minimo, maximo, orden)
-     VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$1))
+    `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2))
      RETURNING *`,
-    [productoId, nombre, requerido, minimo, maximo]
+    [negId, productoId, nombre, requerido, minimo, maximo]
   );
   return rows[0];
 }
 
-export async function actualizarGrupoModificador(grupoId, campos) {
+export async function actualizarGrupoModificador(grupoId, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);    vals.push(campos.nombre); }
   if (campos.requerido !== undefined) { sets.push(`requerido=$${sets.length+1}`); vals.push(campos.requerido); }
   if (campos.minimo    !== undefined) { sets.push(`minimo=$${sets.length+1}`);    vals.push(campos.minimo); }
   if (campos.maximo    !== undefined) { sets.push(`maximo=$${sets.length+1}`);    vals.push(campos.maximo); }
   if (!sets.length) return;
-  vals.push(grupoId);
-  await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(grupoId, negId);
+  await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarGrupoModificador(grupoId) {
-  await pool.query('DELETE FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
+export async function eliminarGrupoModificador(grupoId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_modificadores_grupos WHERE id=$1 AND negocio_id=$2', [grupoId, negId]);
 }
 
-export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, disponible=true }) {
+export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, disponible=true }, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // negocio_id se deriva del grupo padre — nunca se acepta suelto
+  const { rows: grupoRows } = await pool.query('SELECT negocio_id FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
+  if (!grupoRows[0] || grupoRows[0].negocio_id !== negId) {
+    throw new Error('crearOpcionModificador: el grupo no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_modificadores_opciones (grupo_id, nombre, precio_extra, disponible, orden)
-     VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$1))
+    `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
+     VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$2))
      RETURNING *`,
-    [grupoId, nombre, precio_extra, disponible]
+    [negId, grupoId, nombre, precio_extra, disponible]
   );
   return rows[0];
 }
 
-export async function actualizarOpcionModificador(opcionId, campos) {
+export async function actualizarOpcionModificador(opcionId, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
   if (campos.precio_extra !== undefined) { sets.push(`precio_extra=$${sets.length+1}`); vals.push(campos.precio_extra); }
   if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
   if (!sets.length) return;
-  vals.push(opcionId);
-  await pool.query(`UPDATE menu_modificadores_opciones SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(opcionId, negId);
+  await pool.query(`UPDATE menu_modificadores_opciones SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarOpcionModificador(opcionId) {
-  await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1', [opcionId]);
+export async function eliminarOpcionModificador(opcionId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1 AND negocio_id=$2', [opcionId, negId]);
 }
 
 // ─── Menú — CRUD categorías ───────────────────────────────────────────────────
-export async function crearCategoria(nombre) {
+export async function crearCategoria(nombre, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const { rows } = await pool.query(
-    'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, (SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias)) RETURNING *',
-    [nombre]
+    `INSERT INTO menu_categorias (negocio_id, nombre, orden)
+     VALUES ($1, $2, (SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias WHERE negocio_id=$1))
+     RETURNING *`,
+    [negId, nombre]
   );
   return rows[0];
 }
 
-export async function actualizarCategoria(id, campos) {
+export async function actualizarCategoria(id, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);  vals.push(campos.nombre); }
   if (campos.activa    !== undefined) { sets.push(`activa=$${sets.length+1}`);  vals.push(campos.activa); }
   if (campos.orden     !== undefined) { sets.push(`orden=$${sets.length+1}`);   vals.push(campos.orden); }
   if (!sets.length) return;
-  vals.push(id);
-  await pool.query(`UPDATE menu_categorias SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(id, negId);
+  await pool.query(`UPDATE menu_categorias SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
+}
+
+export async function eliminarCategoria(id, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_categorias WHERE id=$1 AND negocio_id=$2', [id, negId]);
 }
 
 // ─── Menú — CRUD productos ────────────────────────────────────────────────────
-export async function crearProducto(datos) {
+export async function crearProducto(datos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const { categoria_id, nombre, descripcion, precio, disponible, opciones } = datos;
+
+  // negocio_id se deriva de la categoría padre — nunca se acepta suelto desde datos
+  const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [categoria_id]);
+  if (!catRows[0] || catRows[0].negocio_id !== negId) {
+    throw new Error('crearProducto: la categoría no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_productos (categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
-     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$1))
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2))
      RETURNING *`,
-    [categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
+    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
   );
   return rows[0];
 }
 
-export async function actualizarProducto(id, campos) {
+export async function actualizarProducto(id, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // Si se intenta mover el producto a otra categoría, esa categoría debe ser del mismo negocio
+  if (campos.categoria_id !== undefined) {
+    const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [campos.categoria_id]);
+    if (!catRows[0] || catRows[0].negocio_id !== negId) {
+      throw new Error('actualizarProducto: la categoría destino no pertenece al negocio actual');
+    }
+  }
+
   const sets = [], vals = [];
   if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
   if (campos.descripcion  !== undefined) { sets.push(`descripcion=$${sets.length+1}`);  vals.push(campos.descripcion); }
@@ -561,16 +617,13 @@ export async function actualizarProducto(id, campos) {
   if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
   if (campos.categoria_id !== undefined) { sets.push(`categoria_id=$${sets.length+1}`); vals.push(campos.categoria_id); }
   if (!sets.length) return;
-  vals.push(id);
-  await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(id, negId);
+  await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarProducto(id) {
-  await pool.query('DELETE FROM menu_productos WHERE id=$1', [id]);
-}
-
-export async function eliminarCategoria(id) {
-  await pool.query('DELETE FROM menu_categorias WHERE id=$1', [id]);
+export async function eliminarProducto(id, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2', [id, negId]);
 }
 
 // ─── Push Notifications ───────────────────────────────────────────────────────
