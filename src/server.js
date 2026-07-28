@@ -17,7 +17,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -118,6 +118,41 @@ function requireAdmin(req, res, next) {
   const token = auth.slice(7);
   if (token !== TOKEN_ADMIN) return res.status(403).json({ error: 'Solo administradores' });
   req.role = 'admin';
+  next();
+}
+
+// ─── Multiempresa (TEMPORAL) — resolver de negocio para config/menú ──────────
+// Sin autenticación multiempresa todavía: por defecto siempre resuelve el
+// negocio actual (Nonna Maye). Solo para pruebas, el header X-Negocio-Slug
+// permite apuntar a otro negocio ya existente — nunca se acepta un negocioId
+// directo del cliente, solo un slug que se resuelve a UUID en el servidor.
+// Aplicado únicamente a las rutas de configuración y menú (GET/PUT /api/config,
+// GET /api/menu y /api/admin/menu/*) — no se extiende a WhatsApp, voz, Rappi,
+// SAT, pedidos ni impresión.
+// PENDIENTE: este mecanismo es temporal y debe sustituirse por req.negocio,
+// resuelto desde la sesión autenticada, cuando se implemente login/JWT por
+// negocio (fuera de alcance de esta fase).
+let negocioPorDefectoIdCache = null;
+async function resolverNegocioActualPorDefecto() {
+  if (!negocioPorDefectoIdCache) {
+    negocioPorDefectoIdCache = await obtenerNegocioIdPorSlug('nonna-maye');
+  }
+  return negocioPorDefectoIdCache;
+}
+
+async function resolverNegocio(req, res, next) {
+  const slug = req.headers['x-negocio-slug'];
+  if (!slug) {
+    req.negocioId = await resolverNegocioActualPorDefecto();
+    req.esNegocioPorDefecto = true;
+    return next();
+  }
+  const id = await obtenerNegocioIdPorSlug(slug);
+  if (!id) {
+    return res.status(404).json({ error: `Negocio no encontrado para slug: ${slug}` });
+  }
+  req.negocioId = id;
+  req.esNegocioPorDefecto = false;
   next();
 }
 
@@ -721,74 +756,107 @@ app.get('/api/caja/fondo', requireAuth, async (req, res) => {
 });
 
 // ─── Menú — endpoints ────────────────────────────────────────────────────────
-app.get('/api/menu', async (req, res) => {
-  const menu = await obtenerMenuCompleto();
+app.get('/api/menu', resolverNegocio, async (req, res) => {
+  const menu = await obtenerMenuCompleto(req.negocioId);
   res.json(menu);
 });
 
-app.post('/api/admin/menu/categorias', requireAdmin, async (req, res) => {
-  const cat = await crearCategoria(req.body.nombre);
+app.post('/api/admin/menu/categorias', requireAdmin, resolverNegocio, async (req, res) => {
+  const cat = await crearCategoria(req.body.nombre, req.negocioId);
   res.json(cat);
 });
 
-app.patch('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
-  await actualizarCategoria(req.params.id, req.body);
+app.patch('/api/admin/menu/categorias/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await actualizarCategoria(req.params.id, req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
-  await eliminarCategoria(req.params.id);
+app.delete('/api/admin/menu/categorias/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await eliminarCategoria(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/productos', requireAdmin, async (req, res) => {
-  const prod = await crearProducto(req.body);
-  res.json(prod);
+app.post('/api/admin/menu/productos', requireAdmin, resolverNegocio, async (req, res) => {
+  try {
+    const prod = await crearProducto(req.body, req.negocioId);
+    res.json(prod);
+  } catch (e) {
+    if (e.message?.includes('no encontrada') || e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/productos] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear el producto' });
+  }
 });
 
-app.patch('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
-  await actualizarProducto(req.params.id, req.body);
+app.patch('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await actualizarProducto(req.params.id, req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
-  await eliminarProducto(req.params.id);
+app.delete('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await eliminarProducto(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
 // ─── Modificadores — endpoints ───────────────────────────────────────────────
-app.get('/api/admin/menu/productos/:id/modificadores', requireAdmin, async (req, res) => {
-  const grupos = await obtenerModificadoresProducto(parseInt(req.params.id));
+app.get('/api/admin/menu/productos/:id/modificadores', requireAdmin, resolverNegocio, async (req, res) => {
+  const grupos = await obtenerModificadoresProducto(parseInt(req.params.id), req.negocioId);
   res.json(grupos);
 });
 
-app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, async (req, res) => {
-  const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body);
-  res.json(grupo);
+app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, resolverNegocio, async (req, res) => {
+  try {
+    const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
+    res.json(grupo);
+  } catch (e) {
+    if (e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/productos/:id/modificadores/grupos] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear el grupo de modificadores' });
+  }
 });
 
-app.patch('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
-  await actualizarGrupoModificador(parseInt(req.params.id), req.body);
+app.patch('/api/admin/menu/modificadores/grupos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await actualizarGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
-  await eliminarGrupoModificador(parseInt(req.params.id));
+app.delete('/api/admin/menu/modificadores/grupos/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await eliminarGrupoModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, async (req, res) => {
-  const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body);
-  res.json(opcion);
+app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, resolverNegocio, async (req, res) => {
+  try {
+    const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
+    res.json(opcion);
+  } catch (e) {
+    if (e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/modificadores/grupos/:id/opciones] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear la opción de modificador' });
+  }
 });
 
-app.patch('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
-  await actualizarOpcionModificador(parseInt(req.params.id), req.body);
+app.patch('/api/admin/menu/modificadores/opciones/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await actualizarOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
-  await eliminarOpcionModificador(parseInt(req.params.id));
+app.delete('/api/admin/menu/modificadores/opciones/:id', requireAdmin, resolverNegocio, async (req, res) => {
+  await eliminarOpcionModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
 
@@ -987,15 +1055,21 @@ app.get('/api/vapid-public', (req, res) => {
   res.json({ publicKey: key || null });
 });
 
-app.get('/api/config', requireAuth, async (req, res) => {
-  res.json(negocioConfig);
+app.get('/api/config', requireAuth, resolverNegocio, async (req, res) => {
+  if (req.esNegocioPorDefecto) return res.json(negocioConfig);
+  const cfg = await obtenerConfiguracion(req.negocioId);
+  res.json(cfg);
 });
-app.put('/api/config', requireAdmin, async (req, res) => {
-  const ok = await actualizarConfiguracion(req.body);
+app.put('/api/config', requireAdmin, resolverNegocio, async (req, res) => {
+  const ok = await actualizarConfiguracion(req.body, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
-  negocioConfig = { ...negocioConfig, ...req.body };
-  broadcast({ tipo: 'config_actualizada', config: negocioConfig });
-  res.json({ ok: true, config: negocioConfig });
+  if (req.esNegocioPorDefecto) {
+    negocioConfig = { ...negocioConfig, ...req.body };
+    broadcast({ tipo: 'config_actualizada', config: negocioConfig });
+    return res.json({ ok: true, config: negocioConfig });
+  }
+  const cfgActualizada = await obtenerConfiguracion(req.negocioId);
+  res.json({ ok: true, config: cfgActualizada });
 });
 
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
