@@ -406,30 +406,33 @@ export async function seedMenuDesdeJSON(menuJSON) {
 }
 
 // ─── Menú — lectura ───────────────────────────────────────────────────────────
-export async function obtenerMenuCompleto() {
+export async function obtenerMenuCompleto(negocioId) {
   try {
+    const id = negocioId || await resolverNegocioActualId();
     const cats = await pool.query(
-      'SELECT * FROM menu_categorias WHERE activa = TRUE ORDER BY orden'
+      'SELECT * FROM menu_categorias WHERE activa = TRUE AND negocio_id = $1 ORDER BY orden',
+      [id]
     );
     const prods = await pool.query(
       `SELECT p.* FROM menu_productos p
        JOIN menu_categorias c ON c.id = p.categoria_id
-       WHERE c.activa = TRUE ORDER BY p.orden`
+       WHERE c.activa = TRUE AND p.negocio_id = $1 ORDER BY p.orden`,
+      [id]
     );
     // Cargar modificadores de todos los productos de una sola vez
     const prodIds = prods.rows.map(p => p.id);
     let gruposMap = {};
     if (prodIds.length) {
       const { rows: grupos } = await pool.query(
-        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) ORDER BY producto_id, orden, id`,
-        [prodIds]
+        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) AND negocio_id = $2 ORDER BY producto_id, orden, id`,
+        [prodIds, id]
       );
       const grupoIds = grupos.map(g => g.id);
       let opcionesMap = {};
       if (grupoIds.length) {
         const { rows: opciones } = await pool.query(
-          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE ORDER BY grupo_id, orden, id`,
-          [grupoIds]
+          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE AND negocio_id = $2 ORDER BY grupo_id, orden, id`,
+          [grupoIds, id]
         );
         for (const o of opciones) {
           if (!opcionesMap[o.grupo_id]) opcionesMap[o.grupo_id] = [];
@@ -1268,10 +1271,36 @@ export async function obtenerUltimosPedidos(telefono, limite = 3) {
 
 // ─── Fondo de caja ────────────────────────────────────────────────────────────
 // Guarda el fondo inicial del día (una sola vez por fecha MX)
-// ─── Configuración del negocio ───────────────────────────────────────────────
-export async function obtenerConfiguracion() {
+// ─── Multiempresa — resolución del negocio actual ────────────────────────────
+// Temporal: sin autenticación multiempresa todavía, todo el sistema opera sobre
+// un único "negocio actual" resuelto por slug (ver migrations/003_multiempresa*
+// y 004_config_menu_negocio*). Nunca hardcodear el UUID: siempre se resuelve
+// consultando negocios.slug.
+const NEGOCIO_ACTUAL_SLUG = 'nonna-maye';
+let _negocioActualIdCache = null;
+
+export async function obtenerNegocioIdPorSlug(slug) {
   try {
-    const result = await pool.query('SELECT clave, valor FROM configuracion');
+    const { rows } = await pool.query('SELECT id FROM negocios WHERE slug = $1', [slug]);
+    return rows[0]?.id || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerNegocioIdPorSlug:', e.message);
+    return null;
+  }
+}
+
+async function resolverNegocioActualId() {
+  if (!_negocioActualIdCache) {
+    _negocioActualIdCache = await obtenerNegocioIdPorSlug(NEGOCIO_ACTUAL_SLUG);
+  }
+  return _negocioActualIdCache;
+}
+
+// ─── Configuración del negocio ───────────────────────────────────────────────
+export async function obtenerConfiguracion(negocioId) {
+  try {
+    const id = negocioId || await resolverNegocioActualId();
+    const result = await pool.query('SELECT clave, valor FROM configuracion WHERE negocio_id = $1', [id]);
     const config = {};
     result.rows.forEach(r => { config[r.clave] = r.valor; });
     return config;
@@ -1281,12 +1310,13 @@ export async function obtenerConfiguracion() {
   }
 }
 
-export async function actualizarConfiguracion(cambios) {
+export async function actualizarConfiguracion(cambios, negocioId) {
   try {
+    const id = negocioId || await resolverNegocioActualId();
     for (const [clave, valor] of Object.entries(cambios)) {
       await pool.query(
-        'INSERT INTO configuracion (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2',
-        [clave, valor]
+        'INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, $2, $3) ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $3',
+        [id, clave, valor]
       );
     }
     return true;
