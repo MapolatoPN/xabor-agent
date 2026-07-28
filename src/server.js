@@ -17,7 +17,8 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { crearTokenSesion, verificarTokenSesion } from './services/session.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -121,17 +122,19 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// ─── Multiempresa (TEMPORAL) — resolver de negocio para config/menú ──────────
-// Sin autenticación multiempresa todavía: por defecto siempre resuelve el
-// negocio actual (Nonna Maye). Solo para pruebas, el header X-Negocio-Slug
-// permite apuntar a otro negocio ya existente — nunca se acepta un negocioId
-// directo del cliente, solo un slug que se resuelve a UUID en el servidor.
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠ LEGADO — resolver de negocio por header, SIN autenticación real ─────────
+// Confía en un slug que envía el cliente (X-Negocio-Slug) para elegir el
+// negocio, sin verificar que quien hace la request tenga permiso alguno
+// sobre él. Se conserva únicamente para no romper el panel actual de Nonna
+// Maye (que todavía no inicia sesión con el mecanismo nuevo de abajo).
 // Aplicado únicamente a las rutas de configuración y menú (GET/PUT /api/config,
 // GET /api/menu y /api/admin/menu/*) — no se extiende a WhatsApp, voz, Rappi,
 // SAT, pedidos ni impresión.
-// PENDIENTE: este mecanismo es temporal y debe sustituirse por req.negocio,
-// resuelto desde la sesión autenticada, cuando se implemente login/JWT por
-// negocio (fuera de alcance de esta fase).
+// REEMPLAZO: requireSesionNegocio (ver abajo) es el mecanismo real — resuelve
+// el negocio desde una sesión firmada server-side y verifica membresía en
+// usuario_negocios. Migrar las rutas de config/menú a requireSesionNegocio
+// es el siguiente paso pendiente (requiere que el panel inicie sesión real).
 let negocioPorDefectoIdCache = null;
 async function resolverNegocioActualPorDefecto() {
   if (!negocioPorDefectoIdCache) {
@@ -154,6 +157,55 @@ async function resolverNegocio(req, res, next) {
   req.negocioId = id;
   req.esNegocioPorDefecto = false;
   next();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 2) — autenticación multiempresa real por sesión ────────────
+// El negocio autorizado NUNCA se acepta porque el cliente lo envía (ni
+// header ni body ni query) — se determina exclusivamente a partir de un
+// token de sesión firmado por el servidor (ver services/session.js), y se
+// verifica contra la tabla usuario_negocios que el usuario de esa sesión
+// realmente pertenece al negocio que la sesión indica.
+//
+// Uso: app.get('/ruta', requireSesionNegocio(), handler)
+//      app.post('/ruta', requireSesionNegocio('admin'), handler)  // exige rol
+//
+// Jerarquía de roles simple: 'admin' satisface cualquier requerimiento;
+// 'staff' solo satisface requerimientos de 'staff' o ninguno.
+const JERARQUIA_ROLES = { admin: 2, staff: 1 };
+
+function requireSesionNegocio(rolMinimo) {
+  return async (req, res, next) => {
+    const auth = req.headers['authorization'];
+    if (!auth || !auth.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autenticado' });
+    }
+    const payload = verificarTokenSesion(auth.slice(7));
+    if (!payload) {
+      return res.status(401).json({ error: 'Sesión inválida o expirada' });
+    }
+
+    // Verificar que el usuario de la sesión SIGUE perteneciendo al negocio
+    // que la sesión indica — no basta con confiar en el token: la membresía
+    // pudo revocarse después de emitido.
+    const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+    if (!membresia || !membresia.activo) {
+      return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+    }
+
+    if (rolMinimo) {
+      const nivelUsuario  = JERARQUIA_ROLES[membresia.rol] || 0;
+      const nivelRequerido = JERARQUIA_ROLES[rolMinimo] || 0;
+      if (nivelUsuario < nivelRequerido) {
+        return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
+      }
+    }
+
+    req.usuarioId = payload.usuarioId;
+    req.negocioId = payload.negocioId;
+    req.rol = membresia.rol;
+    next();
+  };
 }
 
 // ─── Web Push — VAPID ────────────────────────────────────────────────────────
@@ -437,6 +489,41 @@ app.post('/api/auth/login', (req, res) => {
 
 app.get('/api/auth/verify', requireAuth, (req, res) => {
   res.json({ ok: true, role: req.role });
+});
+
+// ─── Sesión multiempresa (Fase 2) ─────────────────────────────────────────
+// Emisión de sesión: NO es un login por contraseña de usuario todavía (eso
+// queda pendiente — ver riesgos). Por ahora, quien ya tiene el token admin
+// legado puede emitir una sesión real para un usuario+negocio que ya exista
+// en usuario_negocios, para poder probar y adoptar gradualmente el
+// middleware requireSesionNegocio antes de construir el login final.
+app.post('/api/auth/sesion', requireAdmin, async (req, res) => {
+  const { usuarioId, negocioId } = req.body;
+  if (!usuarioId) return res.status(400).json({ error: 'usuarioId requerido' });
+
+  const usuario = await obtenerUsuarioPorId(usuarioId);
+  if (!usuario) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+  const negocios = await obtenerNegociosDeUsuario(usuarioId);
+  if (!negocios.length) return res.status(403).json({ error: 'El usuario no pertenece a ningún negocio activo' });
+
+  const negocioElegido = negocioId
+    ? negocios.find(n => n.negocio_id === negocioId)
+    : negocios[0];
+  if (!negocioElegido) return res.status(403).json({ error: 'El usuario no pertenece al negocio solicitado' });
+
+  const token = crearTokenSesion({ usuarioId, negocioId: negocioElegido.negocio_id, rol: negocioElegido.rol });
+  res.json({ token, negocioId: negocioElegido.negocio_id, negocioNombre: negocioElegido.nombre, rol: negocioElegido.rol });
+});
+
+app.get('/api/auth/me', requireSesionNegocio(), (req, res) => {
+  res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol });
+});
+
+// Diagnóstico de solo lectura para validar la exigencia de rol del nuevo
+// middleware (requireSesionNegocio('admin')) — no expone ni modifica datos.
+app.get('/api/auth/me/admin', requireSesionNegocio('admin'), (req, res) => {
+  res.json({ ok: true, rol: req.rol });
 });
 
 // Proteger todas las rutas /api/* excepto las de auth
@@ -793,8 +880,19 @@ app.post('/api/admin/menu/productos', requireAdmin, resolverNegocio, async (req,
 });
 
 app.patch('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
-  await actualizarProducto(req.params.id, req.body, req.negocioId);
-  res.json({ ok: true });
+  try {
+    await actualizarProducto(req.params.id, req.body, req.negocioId);
+    res.json({ ok: true });
+  } catch (e) {
+    if (e.message?.includes('no encontrada') || e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[PATCH /api/admin/menu/productos/:id] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el producto' });
+  }
 });
 
 app.delete('/api/admin/menu/productos/:id', requireAdmin, resolverNegocio, async (req, res) => {
