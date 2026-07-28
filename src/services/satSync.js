@@ -238,15 +238,18 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
       await actualizarSolicitudDB(solicitudDbId, { sat_request_id: satRequestId, status: 'solicitado' });
     }
 
-    // 3. Verificar con polling (hasta 30 intentos, cada 60s = 30 min máx)
+    // 3. Verificar con polling (hasta 45 intentos, cada 20s = 15 min máx)
     log('Verificando estado... (puede tardar varios minutos)');
     let verificacion;
-    for (let intento = 0; intento < 30; intento++) {
-      // Re-autenticar si el token venció (5 min)
-      const tokenActual = intento > 0 ? await autenticar(rfc) : token;
+    let consecutivosEnCero = 0;
+
+    for (let intento = 0; intento < 45; intento++) {
+      // Re-autenticar cada 14 intentos (~5 min, duración del token)
+      if (intento > 0 && intento % 14 === 0) token = await autenticar(rfc);
+      const tokenActual = token;
 
       verificacion = await verificarSolicitud(rfc, tokenActual, satRequestId);
-      log(`Estado: ${verificacion.estadoSolicitud} | Paquetes: ${verificacion.packageIds.length} | CFDIs: ${verificacion.numCfdis}`);
+      log(`Estado: ${verificacion.estadoSolicitud} | Paquetes: ${verificacion.packageIds.length} | CFDIs: ${verificacion.numCfdis} | CodEstado: ${verificacion.codEstadoSol}`);
 
       if (verificacion.terminada) break;
       if (verificacion.error) {
@@ -259,7 +262,20 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
         throw new Error(`SAT error en solicitud: ${verificacion.mensaje}`);
       }
 
-      await sleep(60000); // esperar 60 segundos antes del siguiente check
+      // Estado 0 persistente = SAT no tiene CFDIs para este rango (sin datos)
+      if (verificacion.estadoSolicitud === '0' || verificacion.estadoSolicitud === null) {
+        consecutivosEnCero++;
+        if (consecutivosEnCero >= 5) {
+          // Después de 5 polls con Estado 0 (~1.5 min), asumir sin datos
+          log('Sin CFDIs para este período (Estado 0 persistente).');
+          verificacion = { ...verificacion, terminada: true, packageIds: [], numCfdis: 0 };
+          break;
+        }
+      } else {
+        consecutivosEnCero = 0;
+      }
+
+      await sleep(20000); // 20 segundos entre intentos
     }
 
     if (!verificacion?.terminada) {
