@@ -241,7 +241,6 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
     // 3. Verificar con polling (hasta 45 intentos, cada 20s = 15 min máx)
     log('Verificando estado... (puede tardar varios minutos)');
     let verificacion;
-    let consecutivosEnCero = 0;
 
     for (let intento = 0; intento < 45; intento++) {
       // Re-autenticar cada 14 intentos (~5 min, duración del token)
@@ -260,19 +259,6 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
           completed_at: new Date().toISOString(),
         });
         throw new Error(`SAT error en solicitud: ${verificacion.mensaje}`);
-      }
-
-      // Estado 0 persistente = SAT no tiene CFDIs para este rango (sin datos)
-      if (verificacion.estadoSolicitud === '0' || verificacion.estadoSolicitud === null) {
-        consecutivosEnCero++;
-        if (consecutivosEnCero >= 5) {
-          // Después de 5 polls con Estado 0 (~1.5 min), asumir sin datos
-          log('Sin CFDIs para este período (Estado 0 persistente).');
-          verificacion = { ...verificacion, terminada: true, packageIds: [], numCfdis: 0 };
-          break;
-        }
-      } else {
-        consecutivosEnCero = 0;
       }
 
       await sleep(20000); // 20 segundos entre intentos
