@@ -7,12 +7,29 @@
 import { Router } from 'express';
 import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services/rappi-api.js';
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
-import { guardarPedido, guardarMensaje, upsertCliente } from '../services/database.js';
+import { guardarPedido, guardarMensaje, upsertCliente, obtenerIntegracionCanal } from '../services/database.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastRappi(fn) { wsBroadcast = fn; }
 
 const router = Router();
+
+// ─── Resolución de negocio por store_id (Fase 5) ────────────────────────────
+// Único punto donde este canal determina a qué negocio pertenece una orden
+// entrante — nunca desde RAPPI_STORE_ID (variable global de una sola
+// tienda, que sigue usándose sin cambios para llamadas salientes en
+// rappi-api.js: tomar/rechazar orden, disponibilidad, schedule) ni desde
+// ningún campo del body que el remitente pudiera manipular aparte del
+// propio store.internal_id que Rappi firma en cada webhook. Sin fallback a
+// Nonna Maye ni a ningún negocio por defecto: un store_id no registrado o
+// una integración inactiva siempre devuelven null — nunca un negocio
+// "adivinado".
+async function resolverIntegracionRappi(storeId) {
+  if (!storeId) return null;
+  const storeIdNorm = String(storeId).trim();
+  if (!storeIdNorm) return null;
+  return obtenerIntegracionCanal('rappi', storeIdNorm);
+}
 
 // ─── Verificar HMAC de Rappi (opcional, recomendado en producción) ────────────
 // Rappi incluye Rappi-Signature header (HMAC-SHA256)
@@ -96,12 +113,15 @@ router.post('/', async (req, res) => {
       console.log(`[Rappi] Orden productiva detectada por order_detail.order_id: ${body.order_detail.order_id}`);
 
       const storeIdRecibido = String(body.store.internal_id);
-      const storeIdConfigurado = String(process.env.RAPPI_STORE_ID || '');
-      if (storeIdRecibido !== storeIdConfigurado) {
-        console.warn(`[Rappi] ⚠ Tienda no coincide (recibida=${storeIdRecibido}, configurada=${storeIdConfigurado}) — orden ${body.order_detail.order_id} ignorada`);
+      const integracion = await resolverIntegracionRappi(storeIdRecibido);
+      if (!integracion) {
+        // Advertencia segura: nunca se loguea el store_id real ni el body.
+        console.warn('[Rappi] Integración no registrada para store_id=***');
         return;
       }
-      console.log('[Rappi] Tienda validada');
+      console.log('[Rappi] Integración resuelta');
+      console.log(`[Rappi] Negocio: ${integracion.negocioSlug}`);
+      console.log('[Rappi] Store ID validado');
 
       const orderId = String(body.order_detail.order_id);
 
@@ -115,6 +135,17 @@ router.post('/', async (req, res) => {
 
       console.log(`[Rappi] Procesando orden ${orderId}`);
       const normalizado = normalizarOrdenProductiva(body.order_detail, body.customer);
+      // Fase 5 — temporal: deja constancia de que el negocio ya se
+      // identifica correctamente en el borde del canal. NO se propaga a
+      // mapearOrdenRappi/registrarPedido/guardarPedido/clientes/rewards/
+      // WebSocket/impresión todavía -- esas funciones siguen construyendo
+      // sus propios objetos campo por campo y no leen estas tres
+      // propiedades, así que agregarlas aquí no cambia ningún
+      // comportamiento existente. Conectar el resto del flujo es la fase
+      // siguiente, no autorizada en este commit.
+      normalizado.negocioId = integracion.negocioId;
+      normalizado.negocioSlug = integracion.negocioSlug;
+      normalizado.sucursalId = integracion.sucursalId;
       procesarOrdenRappi(normalizado).catch(e =>
         console.error('[Rappi] ❌ Error procesando orden productiva:', e.message, e.stack)
       );
