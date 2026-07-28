@@ -311,6 +311,27 @@ function resolverNegocioSeguro(rolMinimo) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 4) — puente sesión-nueva/legado para rutas SIN filtrado por
+// negocio_id todavía. Mismo criterio de seguridad que resolverNegocioSeguro
+// (sesión nueva inválida se rechaza de inmediato, nunca cae al legado; el
+// legado solo aplica cuando no se presentó ninguna credencial nueva), pero
+// sin resolver ni exigir negocio — solo autentica, exactamente como hacían
+// requireAuth/requireAdmin. Se usa en rutas cuyas tablas subyacentes
+// (pedidos, clientes, mensajes, etc.) todavía no tienen negocio_id real
+// filtrado — ver auditoría de Fase 4. Reutiliza resolverNegocioSeguro para
+// no duplicar la lógica de aceptar/rechazar la credencial; simplemente
+// ignora req.negocioId después.
+//
+// PENDIENTE DE ELIMINAR junto con resolverNegocioSeguro cuando se retire el
+// mecanismo legado (ver documentación de compatibilidad temporal).
+function requireAuthSeguro(req, res, next) {
+  return resolverNegocioSeguro()(req, res, next);
+}
+function requireAdminSeguro(req, res, next) {
+  return resolverNegocioSeguro('admin')(req, res, next);
+}
+
 // ─── Web Push — VAPID ────────────────────────────────────────────────────────
 const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || '';
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
@@ -447,7 +468,7 @@ app.use('/api/finanzas', requireAdmin, finanzasRouter);
 
 // ─── Credenciales e.firma SAT ────────────────────────────────────────────────
 // GET: devuelve info pública del cert (sin llave) para mostrar en panel
-app.get('/api/admin/sat/credenciales/info', requireAdmin, async (req, res) => {
+app.get('/api/admin/sat/credenciales/info', requireAdminSeguro, async (req, res) => {
   try {
     const info = await obtenerInfoCertSAT();
     res.json({ ok: true, info }); // info es null si no hay credenciales
@@ -458,7 +479,7 @@ app.get('/api/admin/sat/credenciales/info', requireAdmin, async (req, res) => {
 
 // POST: recibe cert (.cer) y llave (.key) como base64 + contraseña
 // Verifica que coincidan, descifra la llave y guarda en DB cifrada
-app.post('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+app.post('/api/admin/sat/credenciales', requireAdminSeguro, async (req, res) => {
   const { certBase64Raw, keyBase64Raw, password } = req.body;
   if (!certBase64Raw || !keyBase64Raw || !password) {
     return res.status(400).json({ error: 'Se requieren certBase64Raw, keyBase64Raw y password' });
@@ -536,7 +557,7 @@ app.post('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
 });
 
 // DELETE: eliminar credenciales SAT guardadas en DB
-app.delete('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+app.delete('/api/admin/sat/credenciales', requireAdminSeguro, async (req, res) => {
   try {
     await eliminarCredencialesSAT();
     invalidarCacheCredenciales();
@@ -707,16 +728,27 @@ app.get('/api/auth/me/admin', requireSesionNegocio('admin'), (req, res) => {
   res.json({ ok: true, rol: req.rol });
 });
 
-// Proteger todas las rutas /api/* excepto las de auth
+// Gate legado para /api/* — a partir de Fase 4, CADA ruta trae su propio
+// middleware de auth explícito (requireAuthSeguro/requireAdminSeguro/
+// resolverNegocioSeguro/requireRepartidor, o es pública a propósito), así
+// que este gate ya no necesita ser el mecanismo por defecto. Solo re-aplica
+// el requireAuth legado a las pocas rutas de integración Rappi que aún no
+// se migraron (ver auditoría de Fase 4 — no se tocaron porque disparan
+// llamadas hacia Rappi y no están confirmadas como usadas por el panel
+// actual). Cualquier ruta nueva que se agregue en el futuro DEBE traer su
+// propio middleware — este gate ya no la protege por omisión.
+const RUTAS_LEGADO_SOLAMENTE = [
+  '/rappi/stockout',
+  '/rappi/subir-catalogo',
+  '/rappi/actualizar-schedule',
+  '/rappi/estado-tienda',
+  '/rappi/setup-webhooks',
+];
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/auth/')) return next();
-  if (req.path.startsWith('/repartidor/')) return next(); // rutas públicas de repartidor
-  if (req.path === '/vapid-public') return next();
-  // /config, /menu y /admin/menu (Fase 3) se autentican por sí mismas con
-  // resolverNegocioSeguro — no con el requireAuth legado de este gate — para
-  // poder aceptar sesión nueva (cookie) además del token admin/staff legado.
-  if (req.path === '/config' || req.path.startsWith('/menu') || req.path.startsWith('/admin/menu')) return next();
-  requireAuth(req, res, next);
+  if (RUTAS_LEGADO_SOLAMENTE.includes(req.path)) {
+    return requireAuth(req, res, next);
+  }
+  next();
 });
 
 // Servir panel principal solo con sesión válida
@@ -761,7 +793,7 @@ app.get('/pedidos', (req, res) => {
 });
 
 // Cambiar estado de un pedido (desde el panel)
-app.patch('/pedidos/:id/estado', async (req, res) => {
+app.patch('/pedidos/:id/estado', requireAuthSeguro, async (req, res) => {
   const { estado } = req.body;
   const estadosValidos = ['nuevo', 'en_preparacion', 'listo', 'entregado'];
   if (!estadosValidos.includes(estado)) {
@@ -793,7 +825,7 @@ app.patch('/pedidos/:id/estado', async (req, res) => {
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 // rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
 // quedará asignado en el pedido y los puntos se acumularán al entregar.
-app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
+app.post('/api/pedido-presencial', requireAuthSeguro, async (req, res) => {
   const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio,
           mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre,
           rewards_canje_puntos } = req.body;
@@ -840,7 +872,7 @@ app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
 });
 
 // Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
-app.delete('/pedidos/:id', async (req, res) => {
+app.delete('/pedidos/:id', requireAuthSeguro, async (req, res) => {
   const pin = req.headers['x-admin-pin'];
   if (!pin || pin !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
@@ -851,7 +883,7 @@ app.delete('/pedidos/:id', async (req, res) => {
 });
 
 // Actualizar forma de pago — solo admin
-app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
+app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { forma_pago } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
@@ -866,7 +898,7 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
 });
 
 // Cancelar pedido activo — solo admin
-app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { motivo } = req.body;
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
@@ -884,7 +916,7 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => 
 });
 
 // Registrar devolución en pedido entregado — solo admin
-app.post('/api/admin/pedido/:folio/devolucion', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { monto, motivo } = req.body;
   if (!monto || parseFloat(monto) <= 0) return res.status(400).json({ error: 'Monto inválido' });
@@ -897,7 +929,7 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdmin, async (req, res) =
 });
 
 // Generar factura CFDI — solo admin
-app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp } = req.body;
   if (!nombre_fiscal || !rfc) return res.status(400).json({ error: 'nombre_fiscal y rfc son requeridos' });
@@ -933,7 +965,7 @@ app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
 });
 
 // Descargar PDF de factura — proxy autenticado para el panel
-app.get('/api/admin/factura/:facturaId/pdf', requireAdmin, async (req, res) => {
+app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, async (req, res) => {
   try {
     const buf = await descargarFacturaPDF(req.params.facturaId);
     res.setHeader('Content-Type', 'application/pdf');
@@ -945,18 +977,18 @@ app.get('/api/admin/factura/:facturaId/pdf', requireAdmin, async (req, res) => {
 });
 
 // Conversaciones WhatsApp
-app.get('/api/conversaciones', async (req, res) => {
+app.get('/api/conversaciones', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerConversacionesRecientes(20);
   res.json(lista);
 });
 
-app.get('/api/conversacion/:telefono', async (req, res) => {
+app.get('/api/conversacion/:telefono', requireAuthSeguro, async (req, res) => {
   const msgs = await obtenerConversacion(req.params.telefono);
   res.json(msgs);
 });
 
 // Enviar mensaje manual desde el panel (link de pago, etc.)
-app.post('/api/send-message', async (req, res) => {
+app.post('/api/send-message', requireAuthSeguro, async (req, res) => {
   const { telefono, mensaje } = req.body;
   if (!telefono || !mensaje) {
     return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
@@ -975,7 +1007,7 @@ app.post('/api/send-message', async (req, res) => {
 });
 
 // Historial de entregados
-app.get('/api/historial', requireAuth, async (req, res) => {
+app.get('/api/historial', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerPedidosEntregados(100);
   res.json(lista);
 });
@@ -990,7 +1022,7 @@ function inicioDelDiaMX() {
   return new Date(mxDate.getTime() + offsetMs); // convertir a UTC real
 }
 
-app.get('/api/ventas', requireAdmin, async (req, res) => {
+app.get('/api/ventas', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
@@ -998,7 +1030,7 @@ app.get('/api/ventas', requireAdmin, async (req, res) => {
   res.json(ventas);
 });
 
-app.get('/api/ventas/resumen', requireAdmin, async (req, res) => {
+app.get('/api/ventas/resumen', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
@@ -1011,7 +1043,7 @@ function fechaHoyMX() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros' }).format(new Date());
 }
 
-app.post('/api/caja/fondo', requireAuth, async (req, res) => {
+app.post('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
   const { monto } = req.body;
   if (!monto || isNaN(monto) || Number(monto) < 0) {
     return res.status(400).json({ error: 'Monto inválido' });
@@ -1021,7 +1053,7 @@ app.post('/api/caja/fondo', requireAuth, async (req, res) => {
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
-app.get('/api/caja/fondo', requireAuth, async (req, res) => {
+app.get('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
   const fecha = fechaHoyMX();
   const registro = await obtenerFondoCaja(fecha);
   res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
@@ -1149,7 +1181,7 @@ app.get('/api/push/vapid-public-key', (req, res) => {
   res.json({ key: VAPID_PUBLIC });
 });
 
-app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+app.post('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint, keys } = req.body;
   if (!endpoint || !keys?.auth || !keys?.p256dh) {
     return res.status(400).json({ error: 'Suscripción inválida' });
@@ -1163,7 +1195,7 @@ app.post('/api/push/subscribe', requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/push/subscribe', requireAuth, async (req, res) => {
+app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint } = req.body;
   if (!endpoint) return res.status(400).json({ error: 'endpoint requerido' });
   await eliminarSuscripcionPush(endpoint).catch(() => {});
@@ -1171,7 +1203,7 @@ app.delete('/api/push/subscribe', requireAuth, async (req, res) => {
 });
 
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
-app.get('/api/corte-caja', requireAuth, async (req, res) => {
+app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
   const d = inicioDelDiaMX().toISOString();
   const h = new Date().toISOString();
   const [ventas, resumen, fondoReg] = await Promise.all([
@@ -1209,19 +1241,19 @@ app.get('/api/corte-caja', requireAuth, async (req, res) => {
 });
 
 // Control manual del bot por conversación
-app.post('/api/conversacion/:telefono/pausar', requireAuth, async (req, res) => {
+app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, async (req, res) => {
   await setBotPausado(req.params.telefono, true);
   broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
   res.json({ ok: true, pausado: true });
 });
 
-app.post('/api/conversacion/:telefono/reactivar', requireAuth, async (req, res) => {
+app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, async (req, res) => {
   await setBotPausado(req.params.telefono, false);
   broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
   res.json({ ok: true, pausado: false });
 });
 
-app.get('/api/conversacion/:telefono/estado-bot', requireAuth, async (req, res) => {
+app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, async (req, res) => {
   const pausado = await getBotPausado(req.params.telefono);
   res.json({ pausado });
 });
@@ -1364,7 +1396,7 @@ const INT_CLAVES = [
   'vapid_public_key','vapid_private_key','vapid_email',
 ];
 
-app.get('/api/admin/integraciones', requireAdmin, async (req, res) => {
+app.get('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
   const cfg = await obtenerConfiguracion();
   const result = {};
   INT_CLAVES.forEach(k => {
@@ -1375,7 +1407,7 @@ app.get('/api/admin/integraciones', requireAdmin, async (req, res) => {
   res.json(result);
 });
 
-app.put('/api/admin/integraciones', requireAdmin, async (req, res) => {
+app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
   const cambios = {};
   for (const [k, v] of Object.entries(req.body)) {
     if (!INT_CLAVES.includes(k)) continue;
@@ -1499,12 +1531,12 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
 });
 
 // Lista de repartidores (admin)
-app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores', requireAdminSeguro, async (req, res) => {
   res.json(await obtenerRepartidores());
 });
 
 // Actividad de repartidores por período — hoy / ayer / antier / semana
-app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) => {
   try {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
     const tz = 'America/Matamoros';
@@ -1559,18 +1591,13 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
-  await eliminarRepartidor(req.params.id);
-  res.json({ ok: true });
-});
-
-app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
+app.delete('/api/admin/repartidores/:id', requireAdminSeguro, async (req, res) => {
   await eliminarRepartidor(req.params.id);
   res.json({ ok: true });
 });
 
 // Candidatos a repartidor — mensajes con "repartidor" en las últimas 72h
-app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores/candidatos', requireAdminSeguro, async (req, res) => {
   try {
     const rows = await obtenerCandidatosRepartidor();
     res.json(rows);
@@ -1578,7 +1605,7 @@ app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => 
 });
 
 // DEBUG TEMPORAL — diagnóstico de un pedido en pedidos_activos
-app.get('/api/admin/debug/pedido/:folio', requireAdmin, async (req, res) => {
+app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, async (req, res) => {
   const { rows } = await pool.query(`
     SELECT folio, estado, created_at,
            datos->>'modalidad' AS modalidad,
@@ -1591,19 +1618,19 @@ app.get('/api/admin/debug/pedido/:folio', requireAdmin, async (req, res) => {
   res.json(rows[0] || { error: 'no encontrado' });
 });
 
-app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
+app.post('/api/admin/reporte-diario/enviar', requireAdminSeguro, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
 });
 
 // Endpoint — forzar enriquecimiento de perfiles manualmente
-app.post('/api/admin/memory/enriquecer', requireAdmin, async (req, res) => {
+app.post('/api/admin/memory/enriquecer', requireAdminSeguro, async (req, res) => {
   const n = await enriquecerTodosLosPerfiles();
   res.json({ ok: true, perfiles_actualizados: n });
 });
 
 // ─── Clientes CRM ─────────────────────────────────────────────────────────────
-app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes', requireAdminSeguro, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -1627,7 +1654,7 @@ app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
 });
 
 // Marcar/desmarcar cliente como interno (excluye de lista, stats y campañas)
-app.patch('/api/admin/clientes/:telefono/interno', requireAdmin, async (req, res) => {
+app.patch('/api/admin/clientes/:telefono/interno', requireAdminSeguro, async (req, res) => {
   try {
     const { es_interno } = req.body;
     await toggleClienteInterno(req.params.telefono, !!es_interno);
@@ -1638,7 +1665,7 @@ app.patch('/api/admin/clientes/:telefono/interno', requireAdmin, async (req, res
 });
 
 // Resumen de segmentos para el tab Clientes
-app.get('/api/admin/clientes/segmentos', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/segmentos', requireAdminSeguro, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT segmento, COUNT(*) AS total
@@ -1653,7 +1680,7 @@ app.get('/api/admin/clientes/segmentos', requireAdmin, async (req, res) => {
 });
 
 // Oportunidades pendientes (conversaciones con intención sin pedido)
-app.get('/api/admin/clientes/oportunidades', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/oportunidades', requireAdminSeguro, async (req, res) => {
   try {
     const rows = await obtenerOportunidadesPendientes();
     res.json(rows);
@@ -1663,7 +1690,7 @@ app.get('/api/admin/clientes/oportunidades', requireAdmin, async (req, res) => {
 });
 
 // Métricas de conversión: chats totales vs pedidos
-app.get('/api/admin/clientes/conversion', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/conversion', requireAdminSeguro, async (req, res) => {
   try {
     const { rows: [conv] } = await pool.query(`
       SELECT
@@ -1712,14 +1739,14 @@ import {
 const REWARDS_TENANT = 'xabor-principal';
 
 // Configuración del programa
-app.get('/api/rewards/config', requireAdmin, async (req, res) => {
+app.get('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
     const config = await obtenerConfigRewards(REWARDS_TENANT);
     res.json(config);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.patch('/api/rewards/config', requireAdmin, async (req, res) => {
+app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
     await actualizarConfigRewards(REWARDS_TENANT, req.body);
     res.json({ ok: true });
@@ -1727,7 +1754,7 @@ app.patch('/api/rewards/config', requireAdmin, async (req, res) => {
 });
 
 // Resumen estadístico
-app.get('/api/rewards/resumen', requireAdmin, async (req, res) => {
+app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
   try {
     const resumen = await obtenerResumenRewards(REWARDS_TENANT);
     res.json(resumen);
@@ -1735,7 +1762,7 @@ app.get('/api/rewards/resumen', requireAdmin, async (req, res) => {
 });
 
 // Lista de clientes inscritos
-app.get('/api/rewards/clientes', requireAdmin, async (req, res) => {
+app.get('/api/rewards/clientes', requireAdminSeguro, async (req, res) => {
   try {
     const lista = await listarClientesRewards(REWARDS_TENANT);
     res.json(lista);
@@ -1743,7 +1770,7 @@ app.get('/api/rewards/clientes', requireAdmin, async (req, res) => {
 });
 
 // Búsqueda de clientes (admin y staff — para asignar en POS)
-app.get('/api/rewards/clientes/buscar', requireAuth, async (req, res) => {
+app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
@@ -1753,7 +1780,7 @@ app.get('/api/rewards/clientes/buscar', requireAuth, async (req, res) => {
 });
 
 // Perfil de un cliente + estimación de puntos
-app.get('/api/rewards/cliente/:telefono', requireAuth, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
     if (!perfil) return res.status(404).json({ error: 'No encontrado' });
@@ -1768,7 +1795,7 @@ app.get('/api/rewards/cliente/:telefono', requireAuth, async (req, res) => {
 });
 
 // Movimientos de un cliente
-app.get('/api/rewards/cliente/:telefono/movimientos', requireAdmin, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
     if (!perfil?.account_id) return res.json([]);
@@ -1778,7 +1805,7 @@ app.get('/api/rewards/cliente/:telefono/movimientos', requireAdmin, async (req, 
 });
 
 // Movimientos recientes globales
-app.get('/api/rewards/movimientos', requireAdmin, async (req, res) => {
+app.get('/api/rewards/movimientos', requireAdminSeguro, async (req, res) => {
   try {
     const movimientos = await obtenerMovimientosRecientes(REWARDS_TENANT);
     res.json(movimientos);
@@ -1787,7 +1814,7 @@ app.get('/api/rewards/movimientos', requireAdmin, async (req, res) => {
 
 // Crear o recuperar cliente para Rewards (staff + admin)
 // Si el cliente no existe en `clientes`, lo crea primero.
-app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
+app.post('/api/rewards/cliente', requireAuthSeguro, async (req, res) => {
   const { telefono, nombre } = req.body;
   if (!telefono?.trim() || !nombre?.trim()) {
     return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
@@ -1811,7 +1838,7 @@ app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
 });
 
 // Consultar bloques de canje disponibles para un cliente en POS
-app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuth, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, async (req, res) => {
   const { telefono } = req.params;
   const { total } = req.query;
   try {
@@ -1827,7 +1854,7 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuth, async (r
 });
 
 // Ajuste manual de puntos — solo admin
-app.post('/api/rewards/cliente/:telefono/ajustar', requireAdmin, async (req, res) => {
+app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, async (req, res) => {
   const { telefono } = req.params;
   const { puntos, tipo, motivo } = req.body;
   try {
@@ -1840,7 +1867,7 @@ app.post('/api/rewards/cliente/:telefono/ajustar', requireAdmin, async (req, res
 // ─── Campañas WA ──────────────────────────────────────────────────────────────
 
 // Preview: cuántos destinatarios tiene un segmento
-app.get('/api/admin/campanas/preview', requireAdmin, async (req, res) => {
+app.get('/api/admin/campanas/preview', requireAdminSeguro, async (req, res) => {
   const { segmento = 'todos' } = req.query;
   try {
     const destinatarios = await obtenerDestinatariosCampana(segmento);
@@ -1851,16 +1878,21 @@ app.get('/api/admin/campanas/preview', requireAdmin, async (req, res) => {
 });
 
 // Historial de campañas
-app.get('/api/admin/campanas', requireAdmin, async (req, res) => {
+app.get('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
   try {
-    res.json(await obtenerCampanas());
+    res.json(await obtenerCampanas(req.negocioId));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // Crear y enviar campaña (background — responde inmediato)
-app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
+// NOTA: la campaña (quién la creó) queda aislada por negocio_id, pero la
+// SELECCIÓN de destinatarios (obtenerDestinatariosCampana) todavía consulta
+// clientes/rewards sin filtrar por negocio — ver auditoría Fase 4. Con un
+// solo negocio real hoy esto no tiene efecto observable, pero es un riesgo
+// de fuga documentado, no resuelto.
+app.post('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
   const { nombre, segmento = 'todos', mensaje } = req.body;
   if (!nombre || !mensaje) return res.status(400).json({ error: 'nombre y mensaje requeridos' });
 
@@ -1868,7 +1900,7 @@ app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
     const destinatarios = await obtenerDestinatariosCampana(segmento);
     if (destinatarios.length === 0) return res.status(400).json({ error: 'Sin destinatarios para ese segmento' });
 
-    const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length });
+    const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length, negocioId: req.negocioId });
     res.json({ ok: true, campanaId, total: destinatarios.length });
 
     // Envío en background (1 msg/seg para no saturar la API de Meta)
@@ -1897,7 +1929,7 @@ app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
+app.get('/api/admin/rappi/menu-status', requireAdminSeguro, async (req, res) => {
   try {
     const result = await consultarAprobacionMenu();
     res.json({ ok: true, result });
@@ -1906,7 +1938,7 @@ app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
+app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, async (req, res) => {
   try {
     const catalogo = construirCatalogoRappi();
     const result = await subirCatalogo(catalogo);
@@ -1918,7 +1950,7 @@ app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/test/pedido', (req, res) => {
+app.post('/test/pedido', requireAdminSeguro, (req, res) => {
   const ordenPrueba = {
     cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
     modalidad: 'entrega a domicilio',
@@ -1959,7 +1991,7 @@ async function activarPedidosProgramados() {
 }
 
 // Endpoint para que el panel liste los pedidos programados pendientes
-app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
+app.get('/api/pedidos-programados', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerPedidosProgramadosPendientes();
   res.json(lista.map(r => ({
     folio: r.folio,
@@ -1971,12 +2003,12 @@ app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
 });
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────
-app.get('/api/llamadas', requireAuth, async (req, res) => {
+app.get('/api/llamadas', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerLlamadasRecientes(30);
   res.json(lista);
 });
 
-app.get('/api/llamadas/:callSid', requireAuth, async (req, res) => {
+app.get('/api/llamadas/:callSid', requireAuthSeguro, async (req, res) => {
   const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid);
   res.json(mensajes);
 });
