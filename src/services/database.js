@@ -1,5 +1,6 @@
 import pkg from 'pg';
 import { createHmac, randomBytes } from 'crypto';
+import { hashPassword } from './password.js';
 const { Pool } = pkg;
 
 export const pool = new Pool({
@@ -407,23 +408,30 @@ export async function initDB() {
 }
 
 // ─── Menú — seed desde JSON ───────────────────────────────────────────────────
-export async function seedMenuDesdeJSON(menuJSON) {
+// negocioId es OBLIGATORIO — nunca se inserta una categoría/producto sin
+// negocio. Si no se entrega, la función se niega a insertar nada (falla
+// controlada, no silenciosa) en vez de asumir un negocio por defecto.
+export async function seedMenuDesdeJSON(menuJSON, negocioId) {
+  if (!negocioId) {
+    console.error('[DB] seedMenuDesdeJSON: negocioId requerido — no se sembró ningún dato.');
+    return;
+  }
   try {
-    const { rows } = await pool.query('SELECT COUNT(*) FROM menu_categorias');
-    if (parseInt(rows[0].count) > 0) return; // Ya hay datos, no sobreescribir
+    const { rows } = await pool.query('SELECT COUNT(*) FROM menu_categorias WHERE negocio_id = $1', [negocioId]);
+    if (parseInt(rows[0].count) > 0) return; // Ya hay datos para este negocio, no sobreescribir
     for (let i = 0; i < menuJSON.categorias.length; i++) {
       const cat = menuJSON.categorias[i];
       const { rows: [{ id: catId }] } = await pool.query(
-        'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, $2) RETURNING id',
-        [cat.nombre, i]
+        'INSERT INTO menu_categorias (negocio_id, nombre, orden) VALUES ($1, $2, $3) RETURNING id',
+        [negocioId, cat.nombre, i]
       );
       for (let j = 0; j < cat.productos.length; j++) {
         const p = cat.productos[j];
         const opciones = p.opciones ? JSON.stringify(p.opciones) : null;
         await pool.query(
-          `INSERT INTO menu_productos (categoria_id, codigo, nombre, descripcion, precio, disponible, opciones, orden)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [catId, p.id, p.nombre, p.descripcion || '', p.precio, p.disponible !== false, opciones, j]
+          `INSERT INTO menu_productos (negocio_id, categoria_id, codigo, nombre, descripcion, precio, disponible, opciones, orden)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [negocioId, catId, p.id, p.nombre, p.descripcion || '', p.precio, p.disponible !== false, opciones, j]
         );
       }
     }
@@ -1437,6 +1445,53 @@ export async function obtenerUsuarioPorId(usuarioId) {
   } catch (e) {
     console.error('[DB] Error obtenerUsuarioPorId:', e.message);
     return null;
+  }
+}
+
+// email es único globalmente desde la migración 006 — a lo sumo una fila.
+// Incluye password_hash porque la usa el login para verificar la
+// contraseña; el llamador nunca debe reenviarlo al cliente.
+export async function obtenerUsuarioPorEmail(email) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, negocio_id, nombre, email, password_hash, activo FROM usuarios WHERE email = $1`,
+      [email]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerUsuarioPorEmail:', e.message);
+    return null;
+  }
+}
+
+// Crea un usuario CON contraseña y su membresía inicial en un negocio, de
+// forma atómica (transacción). Pensado para el script de administrador
+// inicial (scripts/crear-admin-local.js) y para futuras altas de usuario.
+// Nunca acepta un hash ya calculado — siempre recibe la contraseña en
+// texto plano y la hashea aquí mismo, para que no exista otra forma de
+// insertar un usuario sin pasar por hashPassword().
+export async function crearUsuarioConPassword({ negocioId, nombre, email, password, rol = 'admin' }) {
+  const client = await pool.connect();
+  try {
+    const hash = hashPassword(password);
+    await client.query('BEGIN');
+    const { rows: [usuario] } = await client.query(
+      `INSERT INTO usuarios (negocio_id, nombre, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, negocio_id, nombre, email`,
+      [negocioId, nombre, email, hash]
+    );
+    await client.query(
+      `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol) VALUES ($1,$2,$3)
+       ON CONFLICT (usuario_id, negocio_id) DO UPDATE SET rol = $3, activo = TRUE`,
+      [usuario.id, negocioId, rol]
+    );
+    await client.query('COMMIT');
+    return usuario;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error crearUsuarioConPassword:', e.message);
+    throw e;
+  } finally {
+    client.release();
   }
 }
 
