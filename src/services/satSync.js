@@ -30,6 +30,39 @@ function asegurarDirectorio(dirPath) {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+// ─── Migración de columnas nuevas ────────────────────────────────────────────
+async function migrarTablas() {
+  await pool.query(`
+    ALTER TABLE sat_download_requests
+      ADD COLUMN IF NOT EXISTS tipo_solicitud VARCHAR(20) DEFAULT 'CFDI'
+  `).catch(() => {});
+}
+
+// ─── Máscaras para logs (ocultar RFC e IdSolicitud completos) ─────────────────
+function ocultarRfc(rfc) {
+  if (!rfc || rfc.length < 6) return '***';
+  return rfc.slice(0, 3) + '***' + rfc.slice(-3);
+}
+function ocultarId(id) {
+  if (!id) return '…';
+  return id.slice(0, 8) + '…';
+}
+// Enmascara cualquier UUID y RFC en texto libre
+function enmascarar(texto) {
+  if (!texto) return texto;
+  return texto
+    .replace(/\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      (m) => m.slice(0, 8) + '…')
+    .replace(/\b([A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3})\b/g,
+      (m) => m.slice(0, 3) + '***' + m.slice(-3));
+}
+
+// ─── Esperas progresivas entre polls ─────────────────────────────────────────
+// 10 s → 20 s → 30 s → 60 s (constante desde el 4.º intento)
+function delayPoll(intento) {
+  return [10000, 20000, 30000][intento] ?? 60000;
+}
+
 // ─── Obtener RFC configurado ─────────────────────────────────────────────────
 async function obtenerRfcActivo() {
   const { rows } = await pool.query(
@@ -44,8 +77,8 @@ async function obtenerRfcActivo() {
 async function crearSolicitudDB(rfc, fechaInicial, fechaFinal) {
   const { rows } = await pool.query(
     `INSERT INTO sat_download_requests
-       (negocio_id, fecha_inicial, fecha_final, download_type, status, requested_at)
-     VALUES ($1, $2, $3, 'recibidos', 'pendiente', NOW())
+       (negocio_id, fecha_inicial, fecha_final, download_type, tipo_solicitud, status, requested_at)
+     VALUES ($1, $2, $3, 'recibidos', 'CFDI', 'pendiente_sat', NOW())
      RETURNING id`,
     [NEGOCIO_ID, fechaInicial, fechaFinal]
   );
@@ -182,12 +215,13 @@ async function procesarPaquete(paqueteDbId, packageId, zipBuffer, rfc) {
   return { total: xmls.length, nuevos, duplicados, errores };
 }
 
-// ─── Buscar solicitud pendiente reanudable (timeout o solicitado) ────────────
+// ─── Buscar solicitud pendiente reanudable ────────────────────────────────────
 async function buscarSolicitudPendiente(rfc, fechaInicial, fechaFinal) {
   const { rows } = await pool.query(
     `SELECT id, sat_request_id FROM sat_download_requests
      WHERE negocio_id = $1
-       AND status IN ('timeout', 'solicitado')
+       AND download_type = 'recibidos'
+       AND status IN ('pendiente_sat', 'timeout')
        AND sat_request_id IS NOT NULL
        AND fecha_inicial = $2
        AND fecha_final   = $3
@@ -200,73 +234,106 @@ async function buscarSolicitudPendiente(rfc, fechaInicial, fechaFinal) {
 
 // ─── FLUJO PRINCIPAL: sincronizar un rango de fechas ────────────────────────
 export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } = {}) {
-  const log = (msg) => {
-    console.log(`[SAT Sync] ${msg}`);
-    onProgress?.(msg);
+  await migrarTablas();
+
+  // tipo='evento' = línea fija que se agrega al log
+  // tipo='estado' = línea única que se sobreescribe (polling)
+  const evento = (msg) => {
+    const txt = enmascarar(msg);
+    console.log(`[SAT Sync] ${txt}`);
+    onProgress?.(txt, 'evento');
+  };
+  const estadoLine = (msg) => {
+    onProgress?.(enmascarar(msg), 'estado');
   };
 
   const rfc = await obtenerRfcActivo();
-  log(`RFC: ${rfc} | ${fechaInicial} → ${fechaFinal}`);
+  evento(`Iniciando sincronización ${fechaInicial} → ${fechaFinal}`);
 
-  // Validar certificado
   validarCertificado(rfc);
-  log('Certificado válido ✓');
+  evento('Certificado válido ✓');
 
-  let solicitudDbId, satRequestId, token;
+  let solicitudDbId, satRequestId;
+  let tokenObtenidoEn = 0;
+
+  const renovarToken = async () => {
+    const t = await autenticar(rfc);
+    tokenObtenidoEn = Date.now();
+    return t;
+  };
+  const tokenFresco = async (t) => {
+    if (Date.now() - tokenObtenidoEn > 4.5 * 60 * 1000) {
+      evento('Renovando token SAT...');
+      return renovarToken();
+    }
+    return t;
+  };
 
   try {
-    // 1. Autenticar
-    log('Autenticando con e.firma...');
-    token = await autenticar(rfc);
-    log('Token obtenido ✓');
+    evento('Autenticando con e.firma...');
+    let token = await renovarToken();
+    evento('Token obtenido ✓');
 
     // ── Reanudar solicitud pendiente si existe ─────────────────────────────
     const pendiente = await buscarSolicitudPendiente(rfc, fechaInicial, fechaFinal);
     if (pendiente) {
       solicitudDbId = pendiente.id;
       satRequestId  = pendiente.sat_request_id;
-      log(`Reanudando solicitud pendiente: ${satRequestId}`);
-      await actualizarSolicitudDB(solicitudDbId, { status: 'solicitado' });
+      evento(`Retomando solicitud existente: ${ocultarId(satRequestId)}`);
+      await actualizarSolicitudDB(solicitudDbId, { status: 'pendiente_sat' });
     } else {
-      // Crear registro de solicitud nuevo
+      // Crear registro ANTES de llamar a SAT (para guardar el IdSolicitud en cuanto llegue)
       solicitudDbId = await crearSolicitudDB(rfc, fechaInicial, fechaFinal);
-
-      // 2. Solicitar
-      log('Enviando solicitud de descarga...');
+      evento('Enviando solicitud de descarga a SAT...');
       satRequestId = await solicitarDescarga(rfc, token, fechaInicial, fechaFinal);
-      log(`Solicitud aceptada: ${satRequestId}`);
-      await actualizarSolicitudDB(solicitudDbId, { sat_request_id: satRequestId, status: 'solicitado' });
+      evento(`Solicitud registrada: ${ocultarId(satRequestId)}`);
+      await actualizarSolicitudDB(solicitudDbId, {
+        sat_request_id: satRequestId,
+        status: 'pendiente_sat',
+      });
     }
 
-    // 3. Verificar con polling (hasta 45 intentos, cada 20s = 15 min máx)
-    log('Verificando estado... (puede tardar varios minutos)');
+    // 3. Polling de verificación — progresivo: 10s, 20s, 30s, luego 60s fijo
+    evento('SAT está procesando la solicitud...');
     let verificacion;
 
-    for (let intento = 0; intento < 45; intento++) {
-      // Re-autenticar cada 14 intentos (~5 min, duración del token)
-      if (intento > 0 && intento % 14 === 0) token = await autenticar(rfc);
-      const tokenActual = token;
+    for (let intento = 0; intento < 20; intento++) {
+      token = await tokenFresco(token);
+      verificacion = await verificarSolicitud(rfc, token, satRequestId);
 
-      verificacion = await verificarSolicitud(rfc, tokenActual, satRequestId);
-      log(`Estado: ${verificacion.estadoSolicitud} | Paquetes: ${verificacion.packageIds.length} | CFDIs: ${verificacion.numCfdis} | CodEstado: ${verificacion.codEstadoSol}`);
+      const hora = new Date().toLocaleTimeString('es-MX', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+      estadoLine(`SAT sigue procesando la solicitud. Última consulta: ${hora}`);
 
-      if (verificacion.terminada) break;
-      if (verificacion.error) {
-        await actualizarSolicitudDB(solicitudDbId, {
-          status: 'error',
-          error_code: verificacion.codEstatus,
-          error_message: verificacion.mensaje,
-          completed_at: new Date().toISOString(),
-        });
-        throw new Error(`SAT error en solicitud: ${verificacion.mensaje}`);
+      if (verificacion.terminada) {
+        evento('SAT terminó de procesar ✓');
+        break;
       }
 
-      await sleep(20000); // 20 segundos entre intentos
+      // Error/rechazo definitivo del SAT
+      const estadoNum = parseInt(verificacion.estadoSolicitud, 10);
+      if (verificacion.error || [4, 5, 6].includes(estadoNum)) {
+        const codigo  = verificacion.codEstadoSol ?? verificacion.codEstatus ?? estadoNum;
+        const mensaje = verificacion.mensaje || `EstadoSolicitud=${estadoNum}`;
+        await actualizarSolicitudDB(solicitudDbId, {
+          status: 'fallida',
+          error_code: String(codigo),
+          error_message: mensaje,
+          completed_at: new Date().toISOString(),
+        });
+        throw new Error(`SAT rechazó la solicitud [${codigo}]: ${mensaje}`);
+      }
+
+      // Esperar antes del siguiente poll (tiempo progresivo)
+      if (intento < 19) await sleep(delayPoll(intento));
     }
 
+    // Si no terminó en 20 polls → timeout no es error, SAT sigue procesando
     if (!verificacion?.terminada) {
       await actualizarSolicitudDB(solicitudDbId, { status: 'timeout' });
-      throw new Error('Tiempo de espera agotado. La solicitud puede seguir procesándose en SAT.');
+      evento('Solicitud registrada en SAT. Xabor continuará consultándola al reintentar.');
+      return { ok: false, pendiente: true, satRequestId };
     }
 
     await actualizarSolicitudDB(solicitudDbId, {
@@ -274,46 +341,46 @@ export async function sincronizarRango(fechaInicial, fechaFinal, { onProgress } 
       completed_at: new Date().toISOString(),
     });
 
-    // 4. Descargar y procesar cada paquete
+    // 4. Descargar y procesar paquetes
     const resumen = { total: 0, nuevos: 0, duplicados: 0, errores: 0, paquetes: 0 };
-    // Re-autenticar para las descargas
-    const tokenDescarga = await autenticar(rfc);
+    const tokenDescarga = await renovarToken();
+    const total = verificacion.packageIds.length;
 
-    for (const packageId of verificacion.packageIds) {
-      log(`Descargando paquete ${packageId}...`);
+    for (let i = 0; i < total; i++) {
+      const packageId = verificacion.packageIds[i];
+      evento(`Descargando paquete ${i + 1}/${total}...`);
       const paqueteDbId = await crearPaqueteDB(solicitudDbId, packageId);
-
       try {
         const zipBuffer = await descargarPaquete(rfc, tokenDescarga, packageId);
         await actualizarPaqueteDB(paqueteDbId, {
           status: 'descargado',
           downloaded_at: new Date().toISOString(),
         });
-
-        log(`Procesando paquete ${packageId}...`);
         const r = await procesarPaquete(paqueteDbId, packageId, zipBuffer, rfc);
         resumen.total      += r.total;
         resumen.nuevos     += r.nuevos;
         resumen.duplicados += r.duplicados;
         resumen.errores    += r.errores;
         resumen.paquetes++;
-        log(`  → ${r.nuevos} nuevos, ${r.duplicados} duplicados, ${r.errores} errores`);
+        evento(`  → ${r.nuevos} nuevas, ${r.duplicados} duplicadas, ${r.errores} errores`);
       } catch (e) {
         await actualizarPaqueteDB(paqueteDbId, { status: 'error', error_message: e.message });
-        log(`  ✗ Error en paquete ${packageId}: ${e.message}`);
+        evento(`  ✗ Error en paquete ${i + 1}: ${e.message}`);
         resumen.errores++;
       }
     }
 
     await actualizarSolicitudDB(solicitudDbId, { status: 'completado' });
-    log(`✓ Sync completada: ${resumen.nuevos} nuevas, ${resumen.duplicados} duplicadas, ${resumen.errores} errores`);
+    evento(`✓ Sincronización completa: ${resumen.nuevos} nuevas, ${resumen.duplicados} duplicadas, ${resumen.errores} errores`);
     return { ok: true, solicitudId: solicitudDbId, ...resumen };
 
   } catch (e) {
-    await actualizarSolicitudDB(solicitudDbId, {
-      status: 'error',
-      error_message: e.message,
-    }).catch(() => {});
+    if (solicitudDbId) {
+      await actualizarSolicitudDB(solicitudDbId, {
+        status: e.message?.includes('fallida') ? 'fallida' : 'error',
+        error_message: e.message,
+      }).catch(() => {});
+    }
     throw e;
   }
 }

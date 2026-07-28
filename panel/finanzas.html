@@ -283,6 +283,8 @@
       <div style="display:none" id="sync-log-wrap">
         <div style="font-size:0.82rem;font-weight:700;margin-bottom:6px;">Progreso:</div>
         <div class="sync-log" id="sync-log-box"></div>
+        <div id="sync-estado-line" style="display:none;font-size:0.78rem;color:#a3e635;font-family:monospace;padding:6px 12px;background:#1c1c1c;border-radius:0 0 8px 8px;border-top:1px solid #2d2d2d;white-space:pre-wrap;"></div>
+        <div id="sync-pendiente-msg" style="display:none;margin-top:8px;font-size:0.83rem;color:#3b82f6;font-weight:500;"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -507,6 +509,8 @@ function cerrarSync() {
   if (syncInterval) { clearInterval(syncInterval); syncInterval = null; }
   document.getElementById('modal-sync').classList.remove('open');
   document.getElementById('sync-log-wrap').style.display = 'none';
+  document.getElementById('sync-estado-line').style.display = 'none';
+  document.getElementById('sync-pendiente-msg').style.display = 'none';
   document.getElementById('btn-sync-ok').disabled = false;
   document.getElementById('btn-sync-ok').innerHTML = '🔄 Iniciar sincronización';
 }
@@ -537,16 +541,44 @@ async function iniciarSync() {
     const r = await apiFetch('/api/finanzas/sync/log');
     if (!r || !r.ok) return;
     const d = await r.json();
-    document.getElementById('sync-log-box').textContent = d.log.join('\n');
-    document.getElementById('sync-log-box').scrollTop = 9999;
+
+    // Líneas fijas de evento
+    const logBox = document.getElementById('sync-log-box');
+    logBox.textContent = d.log.join('\n');
+    logBox.scrollTop = 9999;
+
+    // Línea única de estado de polling (sobreescribe)
+    const estadoEl = document.getElementById('sync-estado-line');
+    if (d.estado) {
+      estadoEl.style.display = 'block';
+      estadoEl.textContent = d.estado;
+    } else {
+      estadoEl.style.display = 'none';
+    }
+
     if (!d.enCurso) {
       clearInterval(syncInterval); syncInterval = null;
-      document.getElementById('btn-sync-ok').disabled = false;
-      document.getElementById('btn-sync-ok').innerHTML = '✓ Completado';
+      estadoEl.style.display = 'none';
+
+      const pendienteEl = document.getElementById('sync-pendiente-msg');
+      if (d.resultado?.pendiente) {
+        // No es un error — SAT sigue procesando, el IdSolicitud está guardado
+        pendienteEl.style.display = 'block';
+        pendienteEl.textContent = 'Solicitud registrada en SAT. Puedes cerrar esta ventana; Xabor continuará consultándola.';
+        document.getElementById('btn-sync-ok').disabled = false;
+        document.getElementById('btn-sync-ok').innerHTML = '🔄 Reintentar';
+      } else {
+        pendienteEl.style.display = 'none';
+        document.getElementById('btn-sync-ok').disabled = false;
+        document.getElementById('btn-sync-ok').innerHTML = d.resultado?.ok ? '✓ Completado' : '🔄 Reintentar';
+      }
       document.getElementById('btn-sync').innerHTML = '🔄 Sincronizar ahora';
       document.getElementById('btn-sync').disabled = false;
-      await cargarFacturas();
-      await cargarEstado();
+
+      if (d.resultado?.ok) {
+        await cargarFacturas();
+        await cargarEstado();
+      }
     }
   }, 3000);
 }

@@ -23,8 +23,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
 
 // Estado de sync activo (en memoria, suficiente para un tenant)
-let syncEnCurso = false;
-let syncLog     = [];
+let syncEnCurso  = false;
+let syncLog      = [];   // líneas fijas de evento
+let syncEstado   = null; // línea única de estado en polling (se sobreescribe)
+let syncResultado = null; // resultado final { ok, pendiente, ... }
 
 // ─── Diagnóstico de endpoints SAT activos (temporal) ─────────────────────────
 router.get('/debug-network', async (req, res) => {
@@ -104,23 +106,48 @@ router.post('/sync', async (req, res) => {
     fechaInicial = d.toISOString().split('T')[0] + 'T00:00:00';
   }
 
-  syncEnCurso = true;
-  syncLog = [`Iniciando sincronización ${fechaInicial} → ${fechaFinal}`];
+  syncEnCurso  = true;
+  syncLog      = [`Iniciando sincronización ${fechaInicial} → ${fechaFinal}`];
+  syncEstado   = null;
+  syncResultado = null;
 
   // Responder inmediatamente; el proceso corre en background
   res.json({ ok: true, mensaje: 'Sincronización iniciada', fechaInicial, fechaFinal });
 
   sincronizarRango(fechaInicial, fechaFinal, {
-    onProgress: (msg) => { syncLog.push(msg); if (syncLog.length > 100) syncLog.shift(); }
+    onProgress: (msg, tipo) => {
+      if (tipo === 'estado') {
+        syncEstado = msg; // sobreescribe la línea de polling
+      } else {
+        syncEstado = null; // nuevo evento fijo borra la línea de estado
+        syncLog.push(msg);
+        if (syncLog.length > 150) syncLog.shift();
+      }
+    },
   })
-    .then(r => { syncLog.push(`✓ Completada: ${JSON.stringify(r)}`); })
-    .catch(e => { syncLog.push(`✗ Error: ${e.message}`); })
-    .finally(() => { syncEnCurso = false; });
+    .then(r => {
+      syncResultado = r;
+      if (r.pendiente) {
+        syncLog.push('Solicitud registrada en SAT. Puedes cerrar esta ventana; Xabor continuará consultándola.');
+      } else {
+        syncLog.push(`✓ Completada: ${r.nuevos} nuevas, ${r.duplicados} duplicadas, ${r.errores} errores`);
+      }
+    })
+    .catch(e => {
+      syncResultado = { ok: false, error: e.message };
+      syncLog.push(`✗ Error: ${e.message}`);
+    })
+    .finally(() => { syncEnCurso = false; syncEstado = null; });
 });
 
 // ─── GET /api/finanzas/sync/log ───────────────────────────────────────────────
 router.get('/sync/log', (req, res) => {
-  res.json({ enCurso: syncEnCurso, log: syncLog });
+  res.json({
+    enCurso:    syncEnCurso,
+    log:        syncLog,
+    estado:     syncEstado,    // línea de polling (puede ser null)
+    resultado:  syncResultado, // resultado final (null mientras corre)
+  });
 });
 
 // ─── GET /api/finanzas/facturas ───────────────────────────────────────────────
