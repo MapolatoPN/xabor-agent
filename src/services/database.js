@@ -1704,12 +1704,16 @@ export async function obtenerFondoCaja(fechaMX) {
 
 // ─── Campañas WA ──────────────────────────────────────────────────────────────
 
-export async function crearCampana({ nombre, segmento, mensaje, totalDestinatarios }) {
+// negocioId: a diferencia de pedidos/clientes/rewards, las campañas se
+// crean EXCLUSIVAMENTE desde esta función (ningún canal en vivo las
+// escribe) — es seguro filtrar su listado por negocio_id sin riesgo de que
+// una campaña nueva "desaparezca" por no tener la columna poblada.
+export async function crearCampana({ nombre, segmento, mensaje, totalDestinatarios, negocioId }) {
   const { rows } = await pool.query(
-    `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado)
-     VALUES ($1, $2, $3, $4, 'enviando')
+    `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado, negocio_id)
+     VALUES ($1, $2, $3, $4, 'enviando', $5)
      RETURNING id`,
-    [nombre, segmento, mensaje, totalDestinatarios]
+    [nombre, segmento, mensaje, totalDestinatarios, negocioId || null]
   );
   return rows[0].id;
 }
@@ -1732,14 +1736,22 @@ export async function completarCampana(campanaId) {
   );
 }
 
-export async function obtenerCampanas(limit = 20) {
+// negocioId es obligatorio: sin él se devuelve una lista vacía en vez de
+// filtrar "todas las campañas" por accidente (falla cerrado, mismo
+// criterio que seedMenuDesdeJSON).
+export async function obtenerCampanas(negocioId, limit = 20) {
+  if (!negocioId) {
+    console.error('[DB] obtenerCampanas: negocioId requerido — devolviendo lista vacía.');
+    return [];
+  }
   const { rows } = await pool.query(
     `SELECT id, nombre, segmento, total_destinatarios, enviados, fallidos, respondidos,
             estado, creada_at, completada_at
      FROM campanas
+     WHERE negocio_id = $1
      ORDER BY creada_at DESC
-     LIMIT $1`,
-    [limit]
+     LIMIT $2`,
+    [negocioId, limit]
   );
   return rows;
 }
