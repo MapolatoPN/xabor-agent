@@ -18,7 +18,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
-import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth } from './services/session.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -714,6 +714,14 @@ app.post('/api/auth/negocio/login', async (req, res) => {
 });
 
 app.post('/api/auth/negocio/logout', (req, res) => {
+  // Revocar el token en sí (no solo borrar la cookie) — si no se hace esto,
+  // la misma cookie reenviada después de logout (p. ej. por el botón Atrás
+  // restaurando una página cacheada) seguiría siendo válida hasta su
+  // expiración natural.
+  const auth = req.headers['authorization'];
+  const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+  const token = leerCookieSesion(req) || tokenBearer;
+  revocarTokenSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });

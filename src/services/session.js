@@ -20,6 +20,42 @@ function firmar(payloadB64) {
   return createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('hex');
 }
 
+// ─── Revocación de sesión (logout) ─────────────────────────────────────────
+// Un token firmado es válido criptográficamente hasta su expiración natural
+// aunque el usuario haya cerrado sesión — logout solo borra la cookie del
+// navegador, no invalida el token en sí. Se mantiene en memoria el conjunto
+// de tokens cerrados explícitamente para que, si esa misma cookie se
+// reenvía (p. ej. el botón Atrás del navegador restaura una página
+// cacheada que vuelve a llamar a la API con la cookie que aún tenía en
+// memoria), el servidor la rechace igual que a un token expirado.
+// Limitación conocida y aceptada: es en memoria del proceso — un reinicio
+// del servidor limpia la lista y un token cerrado antes del reinicio
+// volvería a ser válido hasta su expiración natural (máx. 12h). No hay
+// múltiples instancias del proceso hoy, así que esto es suficiente por
+// ahora; si el proceso se replica, esto necesitará moverse a un store
+// compartido (Redis/DB).
+// Map<token, exp> en vez de Set para poder purgar entradas ya expiradas
+// (que de todos modos verificarTokenSesion rechazaría por exp) y que el
+// set no crezca sin límite en un proceso de larga duración.
+const tokensRevocados = new Map();
+
+export function revocarTokenSesion(token) {
+  if (!token) return;
+  const ahora = Date.now();
+  for (const [t, exp] of tokensRevocados) {
+    if (exp < ahora) tokensRevocados.delete(t);
+  }
+  // Guarda la expiración real del token si se puede leer, o una hora desde
+  // ahora como respaldo si el payload no se pudo decodificar.
+  let exp = ahora + 60 * 60 * 1000;
+  try {
+    const [payloadB64] = token.split('.');
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    if (payload.exp) exp = payload.exp;
+  } catch { /* token corrupto — se guarda igual con el respaldo de 1h */ }
+  tokensRevocados.set(token, exp);
+}
+
 export function crearTokenSesion({ usuarioId, negocioId, rol }) {
   const now = Date.now();
   const payload = { usuarioId, negocioId, rol, iat: now, exp: now + DURACION_MS };
@@ -33,6 +69,7 @@ export function crearTokenSesion({ usuarioId, negocioId, rol }) {
 export function verificarTokenSesion(token) {
   try {
     if (!token || typeof token !== 'string') return null;
+    if (tokensRevocados.has(token)) return null; // sesión cerrada explícitamente (logout)
     const [payloadB64, sig] = token.split('.');
     if (!payloadB64 || !sig) return null;
 
