@@ -642,7 +642,10 @@ export async function actualizarProducto(id, campos, negocioId) {
   // Si se intenta mover el producto a otra categoría, esa categoría debe ser del mismo negocio
   if (campos.categoria_id !== undefined) {
     const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [campos.categoria_id]);
-    if (!catRows[0] || catRows[0].negocio_id !== negId) {
+    if (!catRows[0]) {
+      throw new Error('actualizarProducto: categoría destino no encontrada');
+    }
+    if (catRows[0].negocio_id !== negId) {
       throw new Error('actualizarProducto: la categoría destino no pertenece al negocio actual');
     }
   }
@@ -1384,6 +1387,57 @@ async function resolverNegocioActualId() {
     _negocioActualIdCache = await obtenerNegocioIdPorSlug(NEGOCIO_ACTUAL_SLUG);
   }
   return _negocioActualIdCache;
+}
+
+// ─── Multiempresa — membresía usuario↔negocio (Fase 2, autenticación) ───────
+// Mecanismo real: la pertenencia de un usuario a uno o más negocios vive en
+// la tabla usuario_negocios (migración 005). El middleware de autenticación
+// en server.js usa obtenerMembresiaUsuarioNegocio para decidir si una
+// request autenticada puede operar sobre el negocio que pide su sesión —
+// nunca confía en un slug/ID que el cliente envíe directamente.
+export async function obtenerMembresiaUsuarioNegocio(usuarioId, negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT rol, activo FROM usuario_negocios WHERE usuario_id = $1 AND negocio_id = $2`,
+      [usuarioId, negocioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerMembresiaUsuarioNegocio:', e.message);
+    return null;
+  }
+}
+
+// Lista los negocios a los que pertenece un usuario (para elegir negocio
+// activo al iniciar sesión). Solo membresías activas.
+export async function obtenerNegociosDeUsuario(usuarioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT un.negocio_id, un.rol, n.nombre, n.slug
+       FROM usuario_negocios un
+       JOIN negocios n ON n.id = un.negocio_id
+       WHERE un.usuario_id = $1 AND un.activo = TRUE AND n.activo = TRUE
+       ORDER BY n.nombre`,
+      [usuarioId]
+    );
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerNegociosDeUsuario:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerUsuarioPorId(usuarioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, negocio_id, nombre, email, activo FROM usuarios WHERE id = $1`,
+      [usuarioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerUsuarioPorId:', e.message);
+    return null;
+  }
 }
 
 // ─── Configuración del negocio ───────────────────────────────────────────────
