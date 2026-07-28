@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services/rappi-api.js';
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
-import { guardarPedido, guardarMensaje } from '../services/database.js';
+import { guardarPedido, guardarMensaje, upsertCliente } from '../services/database.js';
 
 let wsBroadcast = null;
 export function setWsBroadcastRappi(fn) { wsBroadcast = fn; }
@@ -142,8 +142,13 @@ async function procesarOrdenRappi(data) {
     const pedido = registrarPedido(orden, 'rappi');
     emitirPedido(pedido);
 
-    // Guardar en BD (teléfono ficticio para órdenes Rappi)
+    // Guardar en BD (teléfono ficticio para órdenes Rappi).
+    // clientes.telefono es FK de pedidos.telefono — hay que asegurar que el
+    // cliente sintético exista antes de guardar el pedido histórico.
+    // upsertCliente ya es idempotente (ON CONFLICT DO UPDATE), mismo patrón
+    // que usa el canal de WhatsApp.
     const telefonoRappi = `rappi-${orderId}`;
+    await upsertCliente(telefonoRappi, orden.cliente?.nombre);
     await guardarPedido(telefonoRappi, orden);
 
     // Emitir notificación extra al panel con el ID de Rappi
