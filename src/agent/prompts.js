@@ -473,8 +473,11 @@ Inscripción:
 Si te preguntan algo de Rewards que no está aquí, responde con lo que sabes y ofrece que pregunten en tienda.` : ''}
 
 ${botAvisos ? `## AVISOS Y PROMOCIONES ACTIVAS
+Hoy es ${estado.fechaHoy}. Los siguientes avisos están configurados:
+
 ${botAvisos}
-Menciona estas promociones cuando sean relevantes para el pedido del cliente, pero sin ser repetitivo.
+
+REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó (comparar con la fecha de hoy arriba), NO lo menciones ni lo apliques bajo ninguna circunstancia. Solo aplica avisos cuya fecha sea hoy o futura, o que no tengan fecha límite.
 
 ` : ''}## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.

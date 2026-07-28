@@ -1986,12 +1986,14 @@ async function activarPedidosProgramados() {
     for (const row of pendientes) {
       const pedido = row.datos;
       pedido.estado = pedido.estado || 'nuevo';
-      // Registrar en el panel y emitir por WebSocket
+      // Persistir en DB (reinsertar en pedidos_activos) y agregar a memoria
       const { guardarPedidoActivo } = await import('./services/database.js');
+      const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
       await guardarPedidoActivo(pedido);
+      agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
       broadcast({ tipo: 'nuevo_pedido', pedido });
       await marcarPedidoProgramadoActivado(row.folio);
-      console.log(`[Scheduler] Pedido ${row.folio} activado (programado para ${row.programado_para})`);
+      console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
   } catch (e) {
     console.error('[Scheduler] Error activando pedidos programados:', e.message);

@@ -112,6 +112,14 @@ export function obtenerPedidoPorId(id) {
   return pedidos.find(p => p.id === id);
 }
 
+// Agrega un pedido al array en memoria sin generar folio ni guardar en DB.
+// Usado por el job de activación de pedidos programados.
+export function agregarPedidoAMemoria(pedido) {
+  if (!pedidos.find(p => p.id === pedido.id)) {
+    pedidos.push(pedido);
+  }
+}
+
 export async function eliminarPedido(id) {
   const idx = pedidos.findIndex(p => p.id === id);
   if (idx === -1) return false;
