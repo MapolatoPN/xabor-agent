@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Xabor — Iniciar sesión</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+<style>
+:root {
+  --color-bg: #F8F9FA;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #F1F3F5;
+  --color-border: #E9ECEF;
+  --color-border-strong: #DEE2E6;
+  --color-text-primary: #1A1D23;
+  --color-text-secondary: #6B7280;
+  --color-text-muted: #9CA3AF;
+  --color-brand: #FF6B35;
+  --color-brand-light: #FFF4EF;
+  --color-success: #10B981;
+  --color-danger: #EF4444;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.08), 0 4px 6px rgba(0,0,0,0.03);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+  padding: 20px;
+}
+.login-box {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: var(--shadow-lg);
+}
+.logo { text-align: center; margin-bottom: 28px; }
+.logo h1 { font-size: 1.9rem; font-weight: 800; letter-spacing: 0.5px; color: var(--color-text-primary); }
+.logo p { color: var(--color-text-secondary); font-size: 0.85rem; margin-top: 4px; }
+label { display: block; font-size: 0.82rem; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 7px; }
+label:not(:first-child) { margin-top: 16px; }
+input[type="email"], input[type="password"] {
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  padding: 12px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  transition: all .15s;
+}
+input:focus { border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
+button {
+  width: 100%;
+  background: var(--color-brand);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 13px;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  margin-top: 20px;
+  transition: background .2s;
+}
+button:hover { background: #E85826; }
+button:disabled { background: var(--color-border-strong); color: var(--color-text-muted); cursor: default; }
+.btn-secondary { background: var(--color-surface-2); color: var(--color-text-primary); }
+.btn-secondary:hover { background: var(--color-border); }
+#error { color: var(--color-danger); font-size: 0.83rem; text-align: center; margin-top: 12px; min-height: 18px; }
+.negocio-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  margin-top: 10px;
+  transition: all .15s;
+}
+.negocio-item:hover { border-color: var(--color-brand); background: var(--color-brand-light); }
+.negocio-item .rol { display: block; font-size: 0.78rem; color: var(--color-text-secondary); margin-top: 2px; }
+.sesion-activa { text-align: center; }
+.sesion-activa .negocio-nombre { font-size: 1.1rem; font-weight: 700; margin: 10px 0 2px; }
+.sesion-activa .negocio-rol { color: var(--color-text-secondary); font-size: 0.85rem; margin-bottom: 22px; }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <div class="logo">
+    <h1>🌮 XABOR</h1>
+    <p>Iniciar sesión</p>
+  </div>
+
+  <!-- Paso 1: correo + contraseña -->
+  <div id="paso-login">
+    <label>Correo</label>
+    <input type="email" id="email" placeholder="correo@negocio.com" autofocus autocomplete="username" />
+    <label>Contraseña</label>
+    <input type="password" id="password" placeholder="••••••••" autocomplete="current-password" />
+    <div id="error"></div>
+    <button id="btn-login" onclick="login()">Entrar</button>
+  </div>
+
+  <!-- Paso 2: selección de negocio (solo si el usuario pertenece a varios) -->
+  <div id="paso-seleccion" class="hidden">
+    <label>Selecciona el negocio</label>
+    <div id="lista-negocios"></div>
+    <div id="error-seleccion"></div>
+  </div>
+
+  <!-- Sesión ya activa -->
+  <div id="paso-sesion-activa" class="sesion-activa hidden">
+    <p>Sesión activa</p>
+    <div class="negocio-nombre" id="sesion-negocio-nombre"></div>
+    <div class="negocio-rol" id="sesion-negocio-rol"></div>
+    <button onclick="irAlPanel()">Ir al panel</button>
+    <button class="btn-secondary" onclick="cerrarSesion()">Cerrar sesión</button>
+  </div>
+</div>
+
+<script>
+const redirectUrl = new URLSearchParams(location.search).get('redirect') || '/';
+let preAuthActual = null;
+
+// Al cargar: si ya hay una sesión de negocio válida, mostrarla en vez del
+// formulario — el negocio autorizado siempre se lee del servidor, nunca de
+// algo que el propio navegador decida.
+(async function verificarSesionExistente() {
+  try {
+    const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    if (!r.ok) return; // sin sesión — se queda el formulario de login
+    const data = await r.json();
+    mostrarSesionActiva(data);
+  } catch (e) { /* sin conexión — se queda el formulario */ }
+})();
+
+function mostrarSesionActiva(data) {
+  document.getElementById('paso-login').classList.add('hidden');
+  document.getElementById('paso-seleccion').classList.add('hidden');
+  document.getElementById('sesion-negocio-nombre').textContent = data.negocioNombre || data.negocioId;
+  document.getElementById('sesion-negocio-rol').textContent = data.rol === 'admin' ? 'Administrador' : 'Operador';
+  document.getElementById('paso-sesion-activa').classList.remove('hidden');
+}
+
+function irAlPanel() { location.href = redirectUrl; }
+
+async function cerrarSesion() {
+  await fetch('/api/auth/negocio/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => null);
+  location.reload();
+}
+
+async function login() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const btn = document.getElementById('btn-login');
+  const err = document.getElementById('error');
+  err.textContent = '';
+  if (!email || !password) { err.textContent = 'Ingresa tu correo y contraseña'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Verificando...';
+
+  try {
+    const resp = await fetch('/api/auth/negocio/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      err.textContent = data.error || 'No se pudo iniciar sesión';
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+      return;
+    }
+    if (data.requiereSeleccion) {
+      preAuthActual = data.preAuth;
+      mostrarSelectorNegocios(data.negocios);
+      return;
+    }
+    // Sesión emitida directamente (un solo negocio)
+    location.href = redirectUrl;
+  } catch (e) {
+    err.textContent = 'Error de conexión';
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+  }
+}
+
+function mostrarSelectorNegocios(negocios) {
+  document.getElementById('paso-login').classList.add('hidden');
+  const lista = document.getElementById('lista-negocios');
+  lista.innerHTML = '';
+  negocios.forEach(n => {
+    const btn = document.createElement('button');
+    btn.className = 'negocio-item';
+    btn.innerHTML = `${n.nombre}<span class="rol">${n.rol === 'admin' ? 'Administrador' : 'Operador'}</span>`;
+    btn.onclick = () => seleccionarNegocio(n.negocioId);
+    lista.appendChild(btn);
+  });
+  document.getElementById('paso-seleccion').classList.remove('hidden');
+}
+
+async function seleccionarNegocio(negocioId) {
+  const err = document.getElementById('error-seleccion');
+  err.textContent = '';
+  try {
+    const resp = await fetch('/api/auth/negocio/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preAuth: preAuthActual, negocioId })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      err.textContent = data.error || 'No se pudo completar el inicio de sesión';
+      return;
+    }
+    location.href = redirectUrl;
+  } catch (e) {
+    err.textContent = 'Error de conexión';
+  }
+}
+
+document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+document.getElementById('email').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+</script>
+</body>
+</html>
