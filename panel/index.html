@@ -1260,6 +1260,10 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   setInterval(cargarProgramados, 5 * 60 * 1000);
   // Registrar service worker y suscribirse a push notifications
   registrarPush();
+  // WebSocket del panel — solo se conecta DESPUÉS de confirmar sesión
+  // válida (nunca antes: la cookie httpOnly xabor_sesion es la única
+  // credencial, el servidor la exige en el handshake de /ws/panel).
+  conectarWS();
 }).catch(() => irALogin());
 
 // ─── Push Notifications ──────────────────────────────────────────────────────
@@ -1308,12 +1312,27 @@ const labelWs    = document.getElementById('label-ws');
 const pedidos    = {};
 
 // ─── WebSocket ───────────────────────────────────────────────────────────────
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+// Ruta dedicada y autenticada del panel — el servidor exige la cookie de
+// sesión en el handshake (ver autenticarUpgradePanel en server.js). Nunca se
+// manda token, negocioId ni rol por JavaScript: la cookie httpOnly viaja
+// sola, automáticamente, por ser same-origin.
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/panel`;
 let ws;
 function conectarWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; panelListo = false; setTimeout(() => { panelListo = true; }, 3000); };
-  ws.onclose = () => { dot.className = 'desconectado'; labelWs.textContent = 'Desconectado'; setTimeout(conectarWS, 3000); };
+  ws.onclose = () => {
+    dot.className = 'desconectado'; labelWs.textContent = 'Desconectado';
+    // Antes de reintentar, reconfirmar que la sesión sigue siendo válida.
+    // Si el servidor rechazó el handshake por sesión expirada/revocada,
+    // reintentar cada 3s sin comprobar generaría una tormenta indefinida de
+    // conexiones rechazadas. Si /api/auth/me también falla, se va a login
+    // en vez de seguir reintentando el WebSocket.
+    fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => {
+      if (r.ok) setTimeout(conectarWS, 3000);
+      else irALogin();
+    }).catch(() => setTimeout(conectarWS, 3000));
+  };
   ws.onerror = () => { dot.className = 'desconectado'; };
   ws.onmessage = ({ data }) => {
     try {
@@ -1361,7 +1380,9 @@ function conectarWS() {
     } catch(e) {}
   };
 }
-conectarWS();
+// conectarWS() ya no se llama aquí sin condición — se invoca únicamente
+// tras confirmar /api/auth/me (ver arriba), para nunca abrir el WebSocket
+// antes de saber si hay una sesión válida.
 
 // ─── Inicializar POS al cargar ────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {

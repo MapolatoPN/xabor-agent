@@ -396,17 +396,78 @@ const server = createServer(app);
 const wss      = new WebSocketServer({ noServer: true }); // panel
 const wssVoice = new WebSocketServer({ noServer: true }); // voz
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO — autenticación del handshake WebSocket del panel (/ws/panel) ────
+// Mismo criterio que requireSesionNegocio/resolverNegocioSeguro (HTTP): el
+// negocio NUNCA se acepta porque el cliente lo envía (ni query, ni header,
+// ni primer mensaje) — se deriva exclusivamente de la cookie de sesión
+// httpOnly xabor_sesion, verificada con verificarTokenSesion (firma, expiración
+// y revocación) y luego reconfirmada contra usuario_negocios (la membresía
+// pudo revocarse después de emitido el token). Rechaza ANTES de completar el
+// upgrade — nunca se abre el socket ni se envía un solo pedido a una
+// conexión no autenticada.
+//
+// La conexión legado (print-agent, sin autenticar, en la raíz "/") sigue
+// intacta en esta tarea — ver el comentario "PENDIENTE DE ELIMINAR" junto a
+// wss.on('connection') más abajo. broadcast() tampoco cambia todavía.
+async function autenticarUpgradePanel(req, socket, head) {
+  function rechazar(status, motivo) {
+    socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  }
+
+  const token = leerCookieSesion(req);
+  if (!token) return rechazar(401, 'Unauthorized');
+
+  const payload = verificarTokenSesion(token); // firma, expiración y revocación
+  if (!payload) return rechazar(401, 'Unauthorized');
+  if (!payload.usuarioId || !payload.rol) return rechazar(401, 'Unauthorized');
+  if (typeof payload.negocioId !== 'string' || !payload.negocioId.trim()) return rechazar(401, 'Unauthorized');
+
+  // Reconfirmar membresía real — no basta con confiar en el token.
+  const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+  if (!membresia || !membresia.activo) return rechazar(403, 'Forbidden');
+  if (!JERARQUIA_ROLES[membresia.rol]) return rechazar(403, 'Forbidden'); // rol corrupto/desconocido
+
+  const contextoWS = {
+    tipo: 'panel',
+    usuarioId: payload.usuarioId,
+    negocioId: payload.negocioId,
+    rol: membresia.rol, // rol fresco de DB, no el del token (pudo cambiar)
+    sucursalId: null,
+    terminalId: null,
+  };
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.contextoWS = contextoWS;
+    wss.emit('connection', ws, req);
+  });
+}
+
 // Enrutar conexiones WebSocket por path
 server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/ws/voice') {
+  const pathname = req.url.split('?')[0];
+
+  if (pathname === '/ws/voice') {
     wssVoice.handleUpgrade(req, socket, head, (ws) => {
       wssVoice.emit('connection', ws, req);
     });
-  } else {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
-    });
+    return;
   }
+
+  if (pathname === '/ws/panel') {
+    autenticarUpgradePanel(req, socket, head);
+    return;
+  }
+
+  // ⚠ LEGADO — MULTIEMPRESA INSEGURO: conexión sin autenticar (usada hoy por
+  // print-agent.js en la raíz "/"). PENDIENTE DE ELIMINAR en cuanto
+  // print-agent.js migre a su propia ruta autenticada — no ampliar esta ruta
+  // para nuevos clientes mientras tanto.
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.contextoWS = { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
+    wss.emit('connection', ws, req);
+  });
 });
 
 function broadcast(data) {
@@ -444,24 +505,42 @@ setWsBroadcastRappi(broadcast);
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
 
-// ⚠ LEGADO — MULTIEMPRESA INSEGURO: esta conexión todavía no se autentica
-// ni se asocia a un negocio, así que usa
-// obtenerTodosPedidosParaWebSocketLegacy() (todos los pedidos de todos los
-// negocios) para conservar el comportamiento actual del tablero de Nonna
-// Maye sin romperlo. NO DESPLEGAR PARA UN SEGUNDO NEGOCIO hasta
-// autenticar y segmentar esta conexión por negocio -- ver el comentario
-// "PENDIENTE DE ELIMINAR" junto a esa función en orderManager.js. broadcast()
-// y print-agent.js siguen exactamente igual, sin cambios en esta tarea.
+// wss recibe DOS clases de conexión hoy:
+//   - 'panel'  → autenticada en autenticarUpgradePanel() (/ws/panel), carga
+//     inicial aislada por negocio vía obtenerPedidos(ws.negocioId).
+//   - 'legacy' → ⚠ MULTIEMPRESA INSEGURO, sin autenticar (raíz "/", usada
+//     hoy por print-agent.js). Usa obtenerTodosPedidosParaWebSocketLegacy()
+//     (todos los pedidos de todos los negocios) para conservar el
+//     comportamiento actual sin romper la impresión de Nonna Maye.
+//     PENDIENTE DE ELIMINAR en cuanto print-agent.js migre a su propia ruta
+//     autenticada (fase no autorizada todavía). NO DESPLEGAR PARA UN
+//     SEGUNDO NEGOCIO mientras esta rama exista. broadcast() sigue
+//     exactamente igual (llega a ambas clases de conexión), sin cambios en
+//     esta tarea.
 wss.on('connection', (ws) => {
-  console.log('[WS] Panel conectado');
+  const ctx = ws.contextoWS || { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
+  ws.tipo       = ctx.tipo;
+  ws.usuarioId  = ctx.usuarioId;
+  ws.negocioId  = ctx.negocioId;
+  ws.rol        = ctx.rol;
+  ws.sucursalId = ctx.sucursalId;
+  ws.terminalId = ctx.terminalId;
 
-  // Enviar pedidos existentes al panel cuando se conecta
-  const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
-  pedidosActivos.forEach(pedido => {
-    ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
-  });
+  if (ws.tipo === 'panel') {
+    console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
+    const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => p.estado !== 'entregado');
+    pedidosNegocio.forEach(pedido => {
+      ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
+    });
+  } else {
+    console.log('[WS] Conexión legado (sin autenticar) conectada');
+    const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
+    pedidosActivos.forEach(pedido => {
+      ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
+    });
+  }
 
-  ws.on('close', () => console.log('[WS] Panel desconectado'));
+  ws.on('close', () => console.log(`[WS] ${ws.tipo === 'panel' ? 'Panel autenticado' : 'Conexión legado'} desconectada`));
 });
 
 // ─── Middlewares ─────────────────────────────────────────────────────────────
