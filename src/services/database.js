@@ -837,15 +837,22 @@ export async function guardarPedido(telefono, pedido, negocioId) {
 }
 
 // ─── Historial de pedidos entregados ─────────────────────────────────────────
-export async function obtenerPedidosEntregados(limite = 100) {
+// negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
+export async function obtenerPedidosEntregados(limite = 100, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidosEntregados: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT folio, estado, datos, updated_at
       FROM pedidos_activos
       WHERE estado IN ('entregado', 'cancelado')
+        AND negocio_id = $2
       ORDER BY updated_at DESC
       LIMIT $1
-    `, [limite]);
+    `, [limite, negocioIdNorm]);
     return result.rows.map(r => ({ ...r.datos, entregado_at: r.updated_at, _estado: r.estado }));
   } catch (e) {
     console.error('[DB] Error obtenerPedidosEntregados:', e.message);
@@ -887,7 +894,13 @@ export async function registrarDevolucion(folio, monto, motivo) {
 }
 
 // ─── Consultas para POS ───────────────────────────────────────────────────────
-export async function obtenerVentas(desde, hasta) {
+// negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
+export async function obtenerVentas(desde, hasta, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerVentas: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT
@@ -909,8 +922,9 @@ export async function obtenerVentas(desde, hasta) {
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
+        AND negocio_id = $3
       ORDER BY created_at DESC
-    `, [desde, hasta]);
+    `, [desde, hasta, negocioIdNorm]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerVentas:', e.message);
@@ -918,7 +932,12 @@ export async function obtenerVentas(desde, hasta) {
   }
 }
 
-export async function obtenerResumenVentas(desde, hasta) {
+export async function obtenerResumenVentas(desde, hasta, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerResumenVentas: negocioId inválido u omitido — rechazado, sin consulta global');
+    return {};
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT
@@ -934,7 +953,8 @@ export async function obtenerResumenVentas(desde, hasta) {
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
-    `, [desde, hasta]);
+        AND negocio_id = $3
+    `, [desde, hasta, negocioIdNorm]);
     return result.rows[0];
   } catch (e) {
     console.error('[DB] Error obtenerResumenVentas:', e.message);

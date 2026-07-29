@@ -970,7 +970,7 @@ app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, async (req, res
   // Buscar en activos primero, luego en entregados
   let pedidoDatos = await obtenerPedidoActivoPorFolio(folio);
   if (!pedidoDatos) {
-    const ents = await _ent(500);
+    const ents = await _ent(500, req.negocioId);
     const found = ents.find(p => p.id === folio || p.folio === folio);
     pedidoDatos = found || null;
   }
@@ -1037,7 +1037,7 @@ app.post('/api/send-message', requireAuthSeguro, async (req, res) => {
 
 // Historial de entregados
 app.get('/api/historial', requireAuthSeguro, async (req, res) => {
-  const lista = await obtenerPedidosEntregados(100);
+  const lista = await obtenerPedidosEntregados(100, req.negocioId);
   res.json(lista);
 });
 
@@ -1055,7 +1055,7 @@ app.get('/api/ventas', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
-  const ventas = await obtenerVentas(d, h);
+  const ventas = await obtenerVentas(d, h, req.negocioId);
   res.json(ventas);
 });
 
@@ -1063,7 +1063,7 @@ app.get('/api/ventas/resumen', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
-  const resumen = await obtenerResumenVentas(d, h);
+  const resumen = await obtenerResumenVentas(d, h, req.negocioId);
   res.json(resumen);
 });
 
@@ -1232,12 +1232,22 @@ app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
 });
 
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
+// ⚠ AISLAMIENTO PARCIAL — ver diagnóstico en el reporte de esta fase:
+// ventas/resumen SÍ se filtran por req.negocioId (pedidos_activos.negocio_id
+// existe y está poblado). El fondo de caja (obtenerFondoCaja) NO puede
+// aislarse todavía: caja_fondos tiene "fecha DATE UNIQUE" global (una sola
+// fila por fecha para TODOS los negocios) y guardarFondoCaja nunca escribe
+// negocio_id aunque la columna exista (migración 007, nullable). Con dos
+// negocios activos el mismo día, ambos verían/pisarían el mismo fondo. No se
+// inventa un filtro ni se asigna Nonna Maye por defecto — PENDIENTE DE
+// SEGURIDAD: requiere rediseñar el esquema (negocio_id en la UNIQUE) antes
+// de habilitar un segundo negocio con corte de caja real.
 app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
   const d = inicioDelDiaMX().toISOString();
   const h = new Date().toISOString();
   const [ventas, resumen, fondoReg] = await Promise.all([
-    obtenerVentas(d, h),
-    obtenerResumenVentas(d, h),
+    obtenerVentas(d, h, req.negocioId),
+    obtenerResumenVentas(d, h, req.negocioId),
     obtenerFondoCaja(fechaHoyMX())
   ]);
   const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
@@ -2067,13 +2077,21 @@ function inicioDelDiaTexto(fechaISO) {
   return new Date(`${y}-${m}-${day}T06:00:00.000Z`).toISOString(); // UTC-6 midnight ≈ 06:00Z
 }
 
+// ⚠ LEGADO — job sin contexto de request: no hay req.negocioId disponible.
+// Reutiliza el mismo mecanismo de negocio-por-defecto ya usado por el
+// middleware legado resolverNegocio (resolverNegocioActualPorDefecto,
+// cacheado a 'nonna-maye') — no se inventa un fallback nuevo. Este reporte
+// de WhatsApp es de un solo negocio por diseño (WHATSAPP_ADMIN_NUMERO es un
+// único número); PENDIENTE DE ELIMINAR/rediseñar si se necesita el reporte
+// diario para más de un negocio.
 async function enviarReporteDiario() {
   if (!WHATSAPP_ADMIN_NUMERO) return;
   const ahora = new Date().toISOString();
   const inicio = inicioDelDiaTexto(ahora);
+  const negocioIdReporte = await resolverNegocioActualPorDefecto();
   const [ventas, resumen, fondoReg] = await Promise.all([
-    obtenerVentas(inicio, ahora),
-    obtenerResumenVentas(inicio, ahora),
+    obtenerVentas(inicio, ahora, negocioIdReporte),
+    obtenerResumenVentas(inicio, ahora, negocioIdReporte),
     obtenerFondoCaja(fechaHoyMX())
   ]);
   const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
