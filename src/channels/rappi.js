@@ -135,14 +135,11 @@ router.post('/', async (req, res) => {
 
       console.log(`[Rappi] Procesando orden ${orderId}`);
       const normalizado = normalizarOrdenProductiva(body.order_detail, body.customer);
-      // Fase 5 — temporal: deja constancia de que el negocio ya se
-      // identifica correctamente en el borde del canal. NO se propaga a
-      // mapearOrdenRappi/registrarPedido/guardarPedido/clientes/rewards/
-      // WebSocket/impresión todavía -- esas funciones siguen construyendo
-      // sus propios objetos campo por campo y no leen estas tres
-      // propiedades, así que agregarlas aquí no cambia ningún
-      // comportamiento existente. Conectar el resto del flujo es la fase
-      // siguiente, no autorizada en este commit.
+      // Fase 5 (threading operativo): el negocio ya resuelto aquí se
+      // propaga desde este punto hasta cliente/pedido/pedido_activo (ver
+      // mapearOrdenRappi y las llamadas a upsertCliente/guardarPedido más
+      // abajo). Rewards, WebSocket e impresión siguen sin cambios en esta
+      // tarea -- eso es una fase posterior, no autorizada aquí.
       normalizado.negocioId = integracion.negocioId;
       normalizado.negocioSlug = integracion.negocioSlug;
       normalizado.sucursalId = integracion.sucursalId;
@@ -179,8 +176,8 @@ async function procesarOrdenRappi(data) {
     // upsertCliente ya es idempotente (ON CONFLICT DO UPDATE), mismo patrón
     // que usa el canal de WhatsApp.
     const telefonoRappi = `rappi-${orderId}`;
-    await upsertCliente(telefonoRappi, orden.cliente?.nombre);
-    await guardarPedido(telefonoRappi, orden);
+    await upsertCliente(telefonoRappi, orden.cliente?.nombre, orden.negocioId);
+    await guardarPedido(telefonoRappi, orden, orden.negocioId);
 
     // Emitir notificación extra al panel con el ID de Rappi
     if (wsBroadcast) {
@@ -266,7 +263,19 @@ function mapearOrdenRappi(data) {
     descuento: parseFloat(descuento),
     total: parseFloat(total),
     canal: 'rappi',
-    pago: 'rappi_pay'        // Pago ya procesado por Rappi
+    pago: 'rappi_pay',       // Pago ya procesado por Rappi
+    // Fase 5 (threading operativo) -- propaga el negocio ya resuelto en el
+    // borde del canal (ver router.post('/') más arriba). Nunca se lee de
+    // ningún campo del payload de Rappi: viene exclusivamente de
+    // data.negocioId/negocioSlug/sucursalId, que el webhook ya puso ahí a
+    // partir de obtenerIntegracionCanal -- nunca de datos manipulables por
+    // quien envía el webhook. Para el formato clásico/de prueba (sin
+    // store.internal_id, ver más arriba) estos tres campos vienen
+    // undefined -- registrarPedido rechaza esos pedidos por no tener
+    // negocioId, documentado en el reporte de esta tarea.
+    negocioId: data.negocioId,
+    negocioSlug: data.negocioSlug,
+    sucursalId: data.sucursalId,
   };
 }
 

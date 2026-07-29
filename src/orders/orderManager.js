@@ -7,6 +7,7 @@ import {
   archivarPedidoActivo,
   obtenerPedidosActivos,
   obtenerMaxFolioNum,
+  obtenerNegocioIdPorSlug,
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 
@@ -18,13 +19,37 @@ export function setWsBroadcast(fn) {
   wsBroadcast = fn;
 }
 
+// ─── Respaldo temporal de negocio (Fase 5 — threading operativo) ───────────
+// WhatsApp y Voz todavía NO resuelven su propio negocioId en el borde del
+// canal (a diferencia de Rappi, que ya lo hace vía obtenerIntegracionCanal
+// en rappi.js) — sus pedidos siguen llegando a registrarPedido sin
+// negocioId. Para no romper su funcionamiento actual mientras se migran,
+// se cachea aquí UNA sola vez, al arrancar, el negocio por defecto (Nonna
+// Maye) y se usa como respaldo SOLO para canales distintos de 'rappi'. Si
+// no se puede resolver (p. ej. migraciones 003/004 aún no aplicadas),
+// queda en null y esos canales simplemente siguen sin negocio_id, EXACTO
+// el comportamiento de hoy — nunca se bloquea un pedido de WhatsApp/Voz
+// por esto.
+//
+// Rappi NUNCA usa este respaldo: si un pedido de canal 'rappi' llega sin
+// negocioId ya resuelto, registrarPedido lo rechaza explícitamente (ver
+// abajo) en vez de adivinar un negocio.
+//
+// PENDIENTE DE ELIMINAR: cuando WhatsApp y Voz resuelvan su propio
+// negocioId en el borde del canal (mismo patrón que Rappi), esta variable,
+// su carga en cargarPedidosDesdeDB() y su uso en registrarPedido deben
+// eliminarse por completo.
+let _negocioFallbackId = null;
+
 // Carga pedidos activos desde la DB al arrancar el servidor
 export async function cargarPedidosDesdeDB() {
   try {
-    const [activos, maxFolio] = await Promise.all([
+    const [activos, maxFolio, negocioFallback] = await Promise.all([
       obtenerPedidosActivos(),
-      obtenerMaxFolioNum()
+      obtenerMaxFolioNum(),
+      obtenerNegocioIdPorSlug('nonna-maye')
     ]);
+    _negocioFallbackId = negocioFallback;
 
     pedidos.length = 0;
     for (const p of activos) {
@@ -46,8 +71,23 @@ export async function cargarPedidosDesdeDB() {
 }
 
 export function registrarPedido(orden, canal = 'test') {
+  // Rappi ya resuelve negocioId de forma confiable en el borde del canal
+  // (rappi.js, vía obtenerIntegracionCanal, nunca desde datos manipulables
+  // del payload) y SIEMPRE debe traerlo en orden.negocioId al llegar aquí.
+  // Si falta, es un error real -- no un caso a rellenar -- y se rechaza
+  // ANTES de tocar memoria, DB o WebSocket.
+  if (canal === 'rappi' && !orden.negocioId) {
+    throw new Error('registrarPedido: pedido de canal "rappi" sin negocioId resuelto — se rechaza antes de persistir o emitir');
+  }
+
+  // negocioId final: el que ya trae la orden (Rappi, siempre; otros
+  // canales, cuando se migren) o el respaldo temporal solo para canales
+  // no-Rappi todavía sin migrar (ver comentario junto a _negocioFallbackId).
+  const negocioId = orden.negocioId || (canal !== 'rappi' ? _negocioFallbackId : null);
+
   const pedido = {
     ...orden,
+    negocioId,
     id: `XAB-${String(contadorPedidos).padStart(4, '0')}`,
     canal,
     timestamp: new Date().toISOString(),
@@ -58,7 +98,7 @@ export function registrarPedido(orden, canal = 'test') {
   contadorPedidos++;
 
   // Guardar en DB para que sobreviva reinicios
-  guardarPedidoActivo(pedido).catch(e =>
+  guardarPedidoActivo(pedido, negocioId).catch(e =>
     console.error(`[OrderManager] ❌ Error guardando ${pedido.id} en DB:`, e.message)
   );
 

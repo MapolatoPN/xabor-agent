@@ -708,15 +708,31 @@ export async function obtenerCliente(telefono) {
 }
 
 // ─── Crear o actualizar cliente ───────────────────────────────────────────────
-export async function upsertCliente(telefono, nombre) {
+// negocioId (Fase 5 — threading operativo): clientes.telefono sigue siendo
+// la única PK, global (sin negocio_id en la llave) — no se cambia aquí, no
+// hay migración en esta tarea. Por eso el UPDATE del ON CONFLICT NUNCA
+// reescribe negocio_id: si dos negocios llegaran a compartir un mismo
+// teléfono real (posible hoy porque la tabla no aísla clientes por
+// negocio), sobreescribir el dueño en cada visita mezclaría datos entre
+// negocios. Solo el INSERT (primera vez que se ve ese teléfono) fija
+// negocio_id. Para Rappi esto es seguro sin excepción: su teléfono
+// sintético `rappi-{orderId}` es único por diseño (Rappi nunca repite un
+// order_id entre tiendas), así que un mismo teléfono nunca pertenece a dos
+// pedidos de negocios distintos — el caso de "conflicto entre negocios"
+// solo podría darse con números reales de WhatsApp, fuera del alcance de
+// esta tarea. BLOQUEO DOCUMENTADO: un aislamiento real de clientes por
+// negocio requeriría que la identidad del cliente deje de depender solo de
+// telefono (p. ej. clave compuesta o tabla puente cliente↔negocio) — eso
+// es una migración de esquema, no se hace aquí.
+export async function upsertCliente(telefono, nombre, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO clientes (telefono, nombre, ultima_visita)
-      VALUES ($1, $2, NOW())
+      INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
+      VALUES ($1, $2, NOW(), $3)
       ON CONFLICT (telefono) DO UPDATE SET
         nombre = COALESCE(NULLIF($2, ''), clientes.nombre),
         ultima_visita = NOW()
-    `, [telefono, nombre || null]);
+    `, [telefono, nombre || null, negocioId || null]);
   } catch (e) {
     console.error('[DB] Error upsertCliente:', e.message);
   }
@@ -793,11 +809,15 @@ export async function clearPagoPendiente(telefono) {
 }
 
 // ─── Guardar pedido ───────────────────────────────────────────────────────────
-export async function guardarPedido(telefono, pedido) {
+// negocioId (Fase 5): pedidos.id es SERIAL (PK autogenerada) y no hay
+// ninguna restricción UNIQUE real sobre folio en esta tabla — el
+// ON CONFLICT DO NOTHING existente no se toca ni se le inventa un target,
+// solo se agrega negocio_id a la lista de columnas del INSERT.
+export async function guardarPedido(telefono, pedido, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO pedidos (telefono, items, total, modalidad, canal, forma_pago, nombre_cliente, costo_envio, folio)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO pedidos (telefono, items, total, modalidad, canal, forma_pago, nombre_cliente, costo_envio, folio, negocio_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT DO NOTHING
     `, [
       telefono,
@@ -808,7 +828,8 @@ export async function guardarPedido(telefono, pedido) {
       pedido.forma_pago || pedido.cliente?.forma_pago || null,
       pedido.cliente?.nombre || null,
       pedido.costo_envio || 0,
-      pedido.id || null
+      pedido.id || null,
+      negocioId || null
     ]);
   } catch (e) {
     console.error('[DB] Error guardarPedido:', e.message);
@@ -987,13 +1008,18 @@ export async function obtenerConversacionesRecientes(limite = 20) {
 }
 
 // ─── Pedidos activos del panel (sobreviven reinicios) ────────────────────────
-export async function guardarPedidoActivo(pedido) {
+// negocioId (Fase 5): folio es la PK real de esta tabla y un mismo folio
+// pertenece al mismo negocio durante toda su vida (se fija una sola vez,
+// en el primer INSERT) — por eso el UPDATE del ON CONFLICT (reutilizado en
+// cada cambio de estado) no reescribe negocio_id; sería redundante, no
+// arriesgado, pero se omite para mantener el UPDATE mínimo y explícito.
+export async function guardarPedidoActivo(pedido, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO pedidos_activos (folio, estado, datos)
-      VALUES ($1, $2, $3)
+      INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (folio) DO UPDATE SET datos = $3, updated_at = NOW()
-    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido)]);
+    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
   }
