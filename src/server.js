@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createHmac, createHash } from 'crypto';
+import { createHmac, createHash, timingSafeEqual } from 'crypto';
 
 import { procesarMensaje } from './agent/brain.js';
 import {
@@ -392,6 +392,56 @@ export { enviarPushARepartidores };
 const app = express();
 const server = createServer(app);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO — autenticación de terminales de impresión (print-agent) ─────────
+// Consulta central de solo lectura: terminales → sucursales → negocios.
+// La única identidad que declara el cliente es terminalId + token (nunca
+// negocioId ni sucursalId) -- ambos se derivan aquí, exclusivamente desde
+// la base de datos, vía el JOIN. negocios.activo existe en el esquema
+// (migración 003) -- se valida directamente, no se documenta como ausente.
+// terminalId puede venir malformado (no-UUID) desde un cliente hostil: se
+// captura el error de sintaxis de Postgres y se trata igual que "no
+// encontrado" -- nunca se distingue de cara al cliente.
+async function obtenerTerminalParaAutenticacion(terminalId) {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        t.id      AS terminal_id,
+        t.token_hash,
+        t.activo  AS terminal_activo,
+        t.tipo    AS terminal_tipo,
+        s.id      AS sucursal_id,
+        s.activo  AS sucursal_activo,
+        n.id      AS negocio_id,
+        n.activo  AS negocio_activo
+      FROM terminales t
+      JOIN sucursales s ON s.id = t.sucursal_id
+      JOIN negocios n   ON n.id = s.negocio_id
+      WHERE t.id = $1
+    `, [terminalId]);
+    return rows[0] || null;
+  } catch (e) {
+    // Incluye el caso de terminalId con formato inválido (no-UUID) --
+    // Postgres lanza "invalid input syntax for type uuid", se trata igual
+    // que "no encontrado". Log seguro: solo el terminalId (identificador
+    // interno declarado por el cliente, nunca un secreto), nunca el token.
+    console.error(`[PrintAgent] obtenerTerminalParaAutenticacion: error de consulta para terminalId=${terminalId} — ${e.message}`);
+    return null;
+  }
+}
+
+// Se actualiza EXCLUSIVAMENTE al autenticar con éxito -- nunca por un
+// trigger genérico (ver migración 010). Un fallo aquí NUNCA invalida una
+// autenticación ya correcta -- ver el único llamador, que no lo espera
+// antes de responder éxito al agente.
+async function marcarUltimaConexionTerminal(terminalId) {
+  try {
+    await pool.query(`UPDATE terminales SET ultima_conexion = NOW() WHERE id = $1`, [terminalId]);
+  } catch (e) {
+    console.error(`[PrintAgent] No se pudo actualizar ultima_conexion para terminal=${terminalId}: ${e.message}`);
+  }
+}
+
 // ─── WebSocket: panel de comandas + Conversation Relay de voz ───────────────
 const wss      = new WebSocketServer({ noServer: true }); // panel
 const wssVoice = new WebSocketServer({ noServer: true }); // voz
@@ -457,6 +507,22 @@ server.on('upgrade', (req, socket, head) => {
 
   if (pathname === '/ws/panel') {
     autenticarUpgradePanel(req, socket, head);
+    return;
+  }
+
+  // ✅ NUEVO — ruta dedicada para print-agents autenticados por terminal.
+  // A diferencia del panel (que ya trae su credencial en el handshake vía
+  // cookie), el print-agent no tiene cookie -- su credencial llega en el
+  // PRIMER MENSAJE post-conexión (ver wss.on('connection') más abajo), así
+  // que el upgrade siempre se completa aquí sin autenticar todavía. La
+  // conexión queda marcada 'print-agent-pendiente' -- nunca 'legacy', y no
+  // recibe absolutamente nada (ni pedidos, ni snapshot, ni eventos) hasta
+  // que el mensaje inicial autentique correctamente o expire el timeout.
+  if (pathname === '/ws/print-agent') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.contextoWS = { tipo: 'print-agent-pendiente', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null, autenticado: false };
+      wss.emit('connection', ws, req);
+    });
     return;
   }
 
@@ -567,6 +633,45 @@ function broadcastPrintAgentLegacy(data) {
   return enviados;
 }
 
+// ✅ NUEVO — broadcast seguro para print-agents autenticados. Exige
+// negocioId Y sucursalId (ambos obligatorios aquí, a diferencia de
+// broadcastNegocio del panel) -- fail closed si falta cualquiera de los
+// dos, sin excepción, sin caer nunca a broadcast()/broadcastPrintAgentLegacy.
+// Envía EXCLUSIVAMENTE a ws.tipo==='print-agent' con ws.autenticado===true
+// cuyo negocioId Y sucursalId coincidan exactamente -- nunca a 'panel',
+// 'legacy' ni 'print-agent-pendiente' (sin autenticar). TODAVÍA no la
+// invoca ningún emisor real de pedidos -- queda definida y disponible
+// para la siguiente fase.
+function broadcastPrintAgentNegocio(negocioId, sucursalId, data) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || typeof sucursalId !== 'string' || !sucursalId.trim()) {
+    console.error(`[PrintAgent] broadcastPrintAgentNegocio: negocioId/sucursalId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
+    return 0;
+  }
+  const negocioIdNorm = negocioId.trim();
+  const sucursalIdNorm = sucursalId.trim();
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return; // 1 = OPEN
+    if (client.tipo !== 'print-agent') return;
+    if (!client.autenticado) return;
+    if (client.negocioId !== negocioIdNorm) return;
+    if (client.sucursalId !== sucursalIdNorm) return;
+    client.send(mensaje);
+    enviados++;
+  });
+  // Log seguro: negocio/sucursal/tipo/folio -- nunca cliente, teléfono,
+  // dirección, items ni token.
+  const folio = data?.pedido?.id || data?.pedido?.folio || data?.folio || null;
+  console.log(`[PrintAgent] broadcastPrintAgentNegocio — negocio=${negocioIdNorm} sucursal=${sucursalIdNorm} tipo=${data?.tipo} folio=${folio || '-'} destinatarios=${enviados}`);
+  return enviados;
+}
+// Exportada únicamente para poder probarla de forma aislada y para que la
+// siguiente fase (todavía no autorizada) la conecte a un emisor real de
+// pedidos -- mismo patrón ya usado en este archivo para
+// enviarPushARepartidores. Ningún llamador real la invoca todavía.
+export { broadcastPrintAgentNegocio };
+
 // Inyectar broadcast en el orderManager, whatsapp y rappi
 setWsBroadcast(broadcastNegocio, broadcastPrintAgentLegacy);
 setWsBroadcastWA(broadcast);
@@ -575,17 +680,35 @@ setWsBroadcastRappi(broadcastNegocio, broadcast);
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
 
-// wss recibe DOS clases de conexión hoy:
+// Tiempo máximo para que una conexión /ws/print-agent envíe su mensaje de
+// autenticación antes de cerrarse. Valor razonable, no configurable
+// todavía (no se pidió que lo fuera).
+const TIMEOUT_AUTH_PRINT_AGENT_MS = 5000;
+const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload excesivo
+
+// wss recibe TRES clases de conexión hoy:
 //   - 'panel'  → autenticada en autenticarUpgradePanel() (/ws/panel), carga
 //     inicial aislada por negocio vía obtenerPedidos(ws.negocioId).
+//   - 'print-agent-pendiente' → conexión de /ws/print-agent, upgrade ya
+//     completado pero SIN autenticar todavía. No recibe absolutamente
+//     nada -- ni pedidos, ni snapshot, ni eventos administrativos -- hasta
+//     que su primer mensaje ({tipo:'autenticar_terminal', terminalId,
+//     token}) valide correctamente contra terminales→sucursales→negocios,
+//     o hasta que expire TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero.
+//     Al autenticar con éxito pasa a ws.tipo='print-agent',
+//     ws.autenticado=true. Nunca se clasifica como 'legacy'. Solo se
+//     procesa el PRIMER mensaje recibido en toda la conexión -- cualquier
+//     mensaje adicional (incluido un segundo intento de autenticación) se
+//     rechaza cerrando el socket, para impedir reautenticarse como otra
+//     terminal en la misma conexión.
 //   - 'legacy' → ⚠ MULTIEMPRESA INSEGURO, sin autenticar (raíz "/", usada
 //     hoy por print-agent.js). Usa obtenerTodosPedidosParaWebSocketLegacy()
 //     (todos los pedidos de todos los negocios) para conservar el
 //     comportamiento actual sin romper la impresión de Nonna Maye.
-//     PENDIENTE DE ELIMINAR en cuanto print-agent.js migre a su propia ruta
-//     autenticada (fase no autorizada todavía). NO DESPLEGAR PARA UN
+//     PENDIENTE DE ELIMINAR en cuanto print-agent.js migre a /ws/print-agent
+//     (fase posterior, no autorizada todavía). NO DESPLEGAR PARA UN
 //     SEGUNDO NEGOCIO mientras esta rama exista. broadcast() sigue
-//     exactamente igual (llega a ambas clases de conexión), sin cambios en
+//     exactamente igual (llega solo a 'panel' y 'legacy'), sin cambios en
 //     esta tarea.
 wss.on('connection', (ws) => {
   const ctx = ws.contextoWS || { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
@@ -595,6 +718,7 @@ wss.on('connection', (ws) => {
   ws.rol        = ctx.rol;
   ws.sucursalId = ctx.sucursalId;
   ws.terminalId = ctx.terminalId;
+  ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/legacy), false/true = print-agent
 
   if (ws.tipo === 'panel') {
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
@@ -602,15 +726,104 @@ wss.on('connection', (ws) => {
     pedidosNegocio.forEach(pedido => {
       ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
     });
-  } else {
-    console.log('[WS] Conexión legado (sin autenticar) conectada');
-    const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
-    pedidosActivos.forEach(pedido => {
-      ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
-    });
+    ws.on('close', () => console.log('[WS] Panel autenticado desconectado'));
+    return;
   }
 
-  ws.on('close', () => console.log(`[WS] ${ws.tipo === 'panel' ? 'Panel autenticado' : 'Conexión legado'} desconectada`));
+  if (ws.tipo === 'print-agent-pendiente') {
+    // Sin volcado inicial de ningún tipo -- ni ahora ni tras autenticar
+    // (ver Fase 9 del reporte de esta tarea): el agente nuevo solo
+    // recibirá trabajos explícitos en una fase posterior, nunca un
+    // snapshot al conectar. Esto es justo lo que elimina la reimpresión
+    // masiva por reconexión que sí sufre el agente legacy.
+    let procesado = false;
+
+    const limpiarTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+    let timer = setTimeout(() => {
+      if (!ws.autenticado) {
+        console.log('[PrintAgent] Conexión cerrada por timeout de autenticación (sin secretos en el log)');
+        try { ws.close(1008, 'Timeout de autenticación'); } catch { ws.terminate(); }
+      }
+    }, TIMEOUT_AUTH_PRINT_AGENT_MS);
+
+    const rechazar = (motivoLog) => {
+      console.log(`[PrintAgent] Autenticación fallida (${motivoLog}) — sin revelar el motivo al cliente`);
+      try { ws.send(JSON.stringify({ tipo: 'error', mensaje: 'Autenticación fallida' })); } catch {}
+      limpiarTimer();
+      try { ws.close(); } catch { ws.terminate(); }
+    };
+
+    ws.on('message', async (raw) => {
+      if (procesado) {
+        // Ya se procesó un mensaje en esta conexión -- ni reautenticación
+        // como otra terminal, ni mensajes adicionales en esta fase.
+        return rechazar('mensaje adicional tras el primero');
+      }
+      procesado = true;
+
+      if (!raw || raw.length > TAMANO_MAXIMO_MENSAJE_AUTH) return rechazar('payload excesivo o vacío');
+
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return rechazar('JSON inválido'); }
+
+      if (!msg || msg.tipo !== 'autenticar_terminal') return rechazar('tipo de mensaje incorrecto');
+
+      const { terminalId, token } = msg;
+      if (typeof terminalId !== 'string' || !terminalId.trim() || terminalId.length > 100) return rechazar('terminalId inválido');
+      if (typeof token !== 'string' || !token.trim() || token.length > 512) return rechazar('token inválido');
+      const terminalIdNorm = terminalId.trim();
+
+      const fila = await obtenerTerminalParaAutenticacion(terminalIdNorm);
+      if (!fila) return rechazar('terminal inexistente');
+      if (!fila.token_hash) return rechazar('sin credencial emitida');
+      if (!fila.terminal_activo) return rechazar('terminal inactiva');
+      if (!fila.sucursal_activo) return rechazar('sucursal inactiva');
+      if (!fila.negocio_activo) return rechazar('negocio inactivo');
+
+      // Comparación en tiempo constante -- mismo patrón que session.js
+      // para verificar firmas. token nunca se loguea, nunca se guarda,
+      // nunca se envía de regreso, nunca se almacena en ws.
+      const hashRecibido    = Buffer.from(createHash('sha256').update(token).digest('hex'), 'hex');
+      const hashAlmacenado  = Buffer.from(fila.token_hash, 'hex');
+      if (hashRecibido.length !== hashAlmacenado.length || !timingSafeEqual(hashRecibido, hashAlmacenado)) {
+        return rechazar('token incorrecto');
+      }
+
+      // Éxito -- limpiar timer inmediatamente.
+      limpiarTimer();
+      ws.tipo        = 'print-agent';
+      ws.autenticado = true;
+      ws.terminalId  = fila.terminal_id;
+      ws.sucursalId  = fila.sucursal_id;
+      ws.negocioId   = fila.negocio_id;
+
+      ws.send(JSON.stringify({
+        tipo: 'terminal_autenticada',
+        terminalId: fila.terminal_id,
+        negocioId: fila.negocio_id,
+        sucursalId: fila.sucursal_id,
+      }));
+
+      // Fire-and-forget a propósito: un fallo de telemetría nunca debe
+      // invalidar una autenticación ya correcta (ver Fase 7 del reporte).
+      marcarUltimaConexionTerminal(fila.terminal_id);
+
+      console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id}`);
+    });
+
+    ws.on('close', () => { limpiarTimer(); console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`); });
+    ws.on('error', () => { limpiarTimer(); });
+    return;
+  }
+
+  // 'legacy'
+  console.log('[WS] Conexión legado (sin autenticar) conectada');
+  const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
+  pedidosActivos.forEach(pedido => {
+    ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
+  });
+  ws.on('close', () => console.log('[WS] Conexión legado desconectada'));
 });
 
 // ─── Middlewares ─────────────────────────────────────────────────────────────
