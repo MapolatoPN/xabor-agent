@@ -1642,6 +1642,71 @@ export async function actualizarConfiguracion(cambios, negocioId) {
   }
 }
 
+// ─── Impresión: modo por negocio y resolución de sucursal ───────────────────
+// Solo lectura, fail-closed. Nunca usan resolverNegocioActualId() ni ningún
+// negocio por defecto: negocioId debe llegar explícito del llamador. Un
+// resultado ambiguo se traduce en modo/sucursalId = null con una "razon"
+// explícita -- nunca en un valor adivinado. No se atrapan errores de
+// consulta aquí: se propagan tal cual para que el llamador nunca los
+// confunda con "configuración ausente" y jamás caiga a legacy por un fallo
+// de DB.
+export async function resolverModoImpresion(negocioId) {
+  if (typeof negocioId !== 'string' || negocioId === '') {
+    throw new Error('resolverModoImpresion: negocioId inválido u omitido');
+  }
+  const { rows } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'print_agent_legacy_activo'`,
+    [negocioId]
+  );
+  if (rows.length === 0) {
+    return { modo: null, configurado: false, razon: 'configuracion_ausente' };
+  }
+  const valor = rows[0].valor;
+  if (valor === 'true')  return { modo: 'legacy', configurado: true };
+  if (valor === 'false') return { modo: 'autenticado', configurado: true };
+  // Cualquier otro texto es ambiguo -- no se compara con variantes
+  // ('TRUE', '1', etc.) ni se registra el valor recibido.
+  return { modo: null, configurado: false, razon: 'configuracion_invalida' };
+}
+
+export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido = null) {
+  if (typeof negocioId !== 'string' || negocioId === '') {
+    throw new Error('resolverSucursalParaImpresion: negocioId inválido u omitido');
+  }
+  if (sucursalIdPedido !== null && sucursalIdPedido !== undefined && typeof sucursalIdPedido !== 'string') {
+    throw new Error('resolverSucursalParaImpresion: sucursalIdPedido debe ser string, null o undefined');
+  }
+  const tieneSucursalPedido = typeof sucursalIdPedido === 'string' && sucursalIdPedido.length > 0;
+
+  // Caso A: el pedido trae sucursalId -- se valida contra DB (nunca por
+  // formato/regex). Si no hay fila, es un error explícito: NO se cae a la
+  // resolución de "sucursal única" del caso B.
+  if (tieneSucursalPedido) {
+    const { rows } = await pool.query(
+      `SELECT id FROM sucursales WHERE id = $1 AND negocio_id = $2 AND activo = true`,
+      [sucursalIdPedido, negocioId]
+    );
+    if (rows.length === 1) {
+      return { sucursalId: rows[0].id, resueltaPor: 'pedido' };
+    }
+    return { sucursalId: null, resueltaPor: null, razon: 'sucursal_invalida' };
+  }
+
+  // Caso B: sin sucursalId -- resuelve solo si hay EXACTAMENTE una sucursal
+  // activa del negocio. Nunca LIMIT 1, nunca la primera arbitrariamente.
+  const { rows } = await pool.query(
+    `SELECT id FROM sucursales WHERE negocio_id = $1 AND activo = true ORDER BY id`,
+    [negocioId]
+  );
+  if (rows.length === 1) {
+    return { sucursalId: rows[0].id, resueltaPor: 'unica_activa' };
+  }
+  if (rows.length === 0) {
+    return { sucursalId: null, resueltaPor: null, razon: 'sin_sucursales_activas' };
+  }
+  return { sucursalId: null, resueltaPor: null, razon: 'multiples_sucursales_activas' };
+}
+
 // ─── Repartidores ─────────────────────────────────────────────────────────────
 // Normaliza teléfonos mexicanos a formato local 10 dígitos (sin prefijo 52/521)
 function normalizarTelefono(tel) {
