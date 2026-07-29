@@ -11,8 +11,10 @@ import {
   registrarPedido,
   emitirPedido,
   actualizarEstadoPedido,
+  actualizarEstadoPedidoLegacySinNegocio,
   eliminarPedido,
   obtenerPedidos,
+  obtenerTodosPedidosParaWebSocketLegacy,
   setWsBroadcast,
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
@@ -442,11 +444,19 @@ setWsBroadcastRappi(broadcast);
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
 
+// ⚠ LEGADO — MULTIEMPRESA INSEGURO: esta conexión todavía no se autentica
+// ni se asocia a un negocio, así que usa
+// obtenerTodosPedidosParaWebSocketLegacy() (todos los pedidos de todos los
+// negocios) para conservar el comportamiento actual del tablero de Nonna
+// Maye sin romperlo. NO DESPLEGAR PARA UN SEGUNDO NEGOCIO hasta
+// autenticar y segmentar esta conexión por negocio -- ver el comentario
+// "PENDIENTE DE ELIMINAR" junto a esa función en orderManager.js. broadcast()
+// y print-agent.js siguen exactamente igual, sin cambios en esta tarea.
 wss.on('connection', (ws) => {
   console.log('[WS] Panel conectado');
 
   // Enviar pedidos existentes al panel cuando se conecta
-  const pedidosActivos = obtenerPedidos().filter(p => p.estado !== 'entregado');
+  const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
   pedidosActivos.forEach(pedido => {
     ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
   });
@@ -796,18 +806,29 @@ app.post('/chat', async (req, res) => {
 });
 
 // Ver todos los pedidos
-app.get('/pedidos', (req, res) => {
-  res.json(obtenerPedidos());
+// Fase 6 — aislamiento del tablero: el negocio SIEMPRE se toma de
+// req.negocioId (resuelto por requireAuthSeguro a partir de la sesión
+// validada), nunca de query/body/header/params. Esta ruta antes no tenía
+// NINGÚN middleware de auth -- se agrega aquí porque sin sesión no hay
+// forma de saber de qué negocio pedir el tablero (y sin ella,
+// obtenerPedidos(undefined) ya devuelve [] por diseño, nunca el arreglo
+// completo).
+app.get('/pedidos', requireAuthSeguro, (req, res) => {
+  res.json(obtenerPedidos(req.negocioId));
 });
 
 // Cambiar estado de un pedido (desde el panel)
+// Fase 6: un pedido inexistente y un pedido de otro negocio responden
+// exactamente igual (404 genérico) para no revelar si el folio existe en
+// otro negocio -- ver actualizarEstadoPedido en orderManager.js, que ya
+// devuelve null en ambos casos.
 app.patch('/pedidos/:id/estado', requireAuthSeguro, async (req, res) => {
   const { estado } = req.body;
   const estadosValidos = ['nuevo', 'en_preparacion', 'listo', 'entregado'];
   if (!estadosValidos.includes(estado)) {
     return res.status(400).json({ error: 'Estado inválido' });
   }
-  const pedido = actualizarEstadoPedido(req.params.id, estado);
+  const pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
 
   // Notificar al cliente por WhatsApp cuando el pedido está listo
@@ -1506,9 +1527,17 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
 });
 
 // Repartidor marca pedido como entregado desde su celular
+// ⚠ PENDIENTE DE SEGURIDAD: requireRepartidor autentica por token
+// individual del repartidor (SELECT * FROM repartidores WHERE token=$1),
+// no por sesión de negocio -- y repartidores.negocio_id nunca se puebla
+// hoy al registrar un repartidor (fuera del alcance de esta tarea, vive
+// en whatsapp-meta.js). Sin un negocioId real y confiable que derivar,
+// se usa actualizarEstadoPedidoLegacySinNegocio en vez de inventar uno o
+// usar Nonna Maye como relleno. Conserva exactamente el comportamiento
+// previo a esta tarea -- ver diagnóstico completo en orderManager.js.
 app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
-  const pedido = actualizarEstadoPedido(folio, 'entregado');
+  const pedido = actualizarEstadoPedidoLegacySinNegocio(folio, 'entregado');
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
   broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);

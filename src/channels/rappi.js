@@ -128,7 +128,15 @@ router.post('/', async (req, res) => {
       // Deduplicación: reutiliza el listado en memoria de pedidos ya
       // registrados (cada pedido de Rappi guarda su rappi_order_id — ver
       // mapearOrdenRappi más abajo). No se inventa un mecanismo nuevo.
-      if (obtenerPedidos().some(p => String(p.rappi_order_id) === orderId)) {
+      //
+      // Se consulta con integracion.negocioId (ya resuelto arriba vía
+      // integraciones_canal, nunca desde RAPPI_STORE_ID ni desde el body)
+      // -- ocurre DESPUÉS de resolver la integración, nunca antes, y nunca
+      // revisa pedidos de otros negocios: obtenerPedidos(negocioId) ya
+      // filtra por negocio, así que dos negocios distintos con el mismo
+      // rappi_order_id (imposible en la práctica, Rappi no repite IDs de
+      // orden entre tiendas, pero aun así) no se cruzarían entre sí.
+      if (obtenerPedidos(integracion.negocioId).some(p => String(p.rappi_order_id) === orderId)) {
         console.log(`[Rappi] Orden ${orderId} ya fue procesada — se ignora el reenvío duplicado del webhook`);
         return;
       }
