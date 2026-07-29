@@ -19,6 +19,7 @@ import {
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
+import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import { verifyPassword } from './services/password.js';
@@ -673,9 +674,14 @@ function broadcastPrintAgentNegocio(negocioId, sucursalId, data) {
 export { broadcastPrintAgentNegocio };
 
 // Inyectar broadcast en el orderManager, whatsapp y rappi
-setWsBroadcast(broadcastNegocio, broadcastPrintAgentLegacy);
+setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcast);
 setWsBroadcastRappi(broadcastNegocio, broadcast);
+
+// Inyectar los broadcasts de impresión en printRouter -- una sola vez al
+// arrancar, nunca por pedido. printRouter decide legacy vs. autenticado;
+// aquí solo se le da acceso a los dos canales WebSocket reales.
+setBroadcastsImpresion({ legacy: broadcastPrintAgentLegacy, autenticado: broadcastPrintAgentNegocio });
 
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
@@ -2476,10 +2482,15 @@ async function activarPedidosProgramados() {
       await guardarPedidoActivo(pedido);
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
       // Aislado por negocio (mismo patrón que emitirPedido en
-      // orderManager.js) + compatibilidad temporal con print-agent legacy.
-      // Ya no se usa broadcast() global para este evento.
+      // orderManager.js). Ya no se usa broadcast() global para este evento.
       broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
-      broadcastPrintAgentLegacy({ tipo: 'nuevo_pedido', pedido });
+      // Impresión física: decidida por completo en printRouter.js (legacy
+      // vs. autenticado). Nunca lanza -- si la impresión queda omitida
+      // (sin configuración, sin sucursal resuelta, sin terminal conectada),
+      // el pedido igual se marca activado abajo: la activación representa
+      // que el pedido ya entró a operación, no que la impresora confirmó
+      // éxito. No se reintenta por esto en la siguiente corrida del job.
+      await emitirTrabajoImpresion(pedido);
       await marcarPedidoProgramadoActivado(row.folio);
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }

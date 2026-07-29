@@ -10,25 +10,23 @@ import {
   obtenerNegocioIdPorSlug,
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
+import { emitirTrabajoImpresion } from '../printing/printRouter.js';
 
-// ✅ NUEVO (Fase 7) — dos canales de emisión, inyectados desde server.js:
-//   - wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, aislado
-//     por negocio. Usado por nuevo_pedido, actualizar_estado, eliminar_pedido
-//     (los tres ya tienen pedido.negocioId confiable — ver reporte de esta
-//     fase). Fail closed: si el pedido no trae negocioId, NO se emite, se
-//     loguea y punto — nunca se usa Nonna Maye como relleno aquí.
-//   - wsBroadcastPrintAgentLegacy(data) → SOLO para nuevo_pedido, mantiene
-//     temporalmente la impresión de Nonna Maye funcionando mientras
-//     print-agent.js no migra a su propia ruta autenticada. ⚠ PENDIENTE DE
-//     ELIMINAR — no se usa para actualizar_estado ni eliminar_pedido.
+// wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, inyectado
+// desde server.js, aislado por negocio. Usado por nuevo_pedido,
+// actualizar_estado, eliminar_pedido (los tres ya tienen pedido.negocioId
+// confiable). Fail closed: si el pedido no trae negocioId, NO se emite, se
+// loguea y punto — nunca se usa Nonna Maye como relleno aquí.
+//
+// La impresión física (legacy vs. autenticado) ya no se decide aquí: vive
+// por completo en printRouter.js, vía emitirTrabajoImpresion — ver
+// emitirPedido más abajo.
 let wsBroadcastNegocio = null;
-let wsBroadcastPrintAgentLegacy = null;
 const pedidos = [];
 let contadorPedidos = 1;
 
-export function setWsBroadcast(fnNegocio, fnPrintAgentLegacy) {
+export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
-  wsBroadcastPrintAgentLegacy = fnPrintAgentLegacy;
 }
 
 // ─── Respaldo temporal de negocio (Fase 5 — threading operativo) ───────────
@@ -122,7 +120,7 @@ export function registrarPedido(orden, canal = 'test') {
   return pedido;
 }
 
-export function emitirPedido(pedido) {
+export async function emitirPedido(pedido) {
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
     if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
   } else {
@@ -132,11 +130,13 @@ export function emitirPedido(pedido) {
     // ocurre es una señal real de que algo quedó sin resolver.
     console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite al panel (fail closed)`);
   }
-  // Print-agent legado (raíz "/", sin autenticar): sigue recibiendo TODO
-  // nuevo_pedido sin filtrar, a propósito, para no interrumpir la impresión
-  // actual de Nonna Maye mientras print-agent no migra. Nunca condicionado
-  // a negocioId -- ver broadcastPrintAgentLegacy en server.js.
-  if (wsBroadcastPrintAgentLegacy) wsBroadcastPrintAgentLegacy({ tipo: 'nuevo_pedido', pedido });
+
+  // Impresión física (legacy vs. autenticado, por sucursal, con
+  // printJobId): decidida por completo dentro de printRouter.js. Nunca
+  // lanza -- cualquier error de configuración/sucursal/broadcast ya se
+  // captura ahí y se traduce en un resultado 'omitido', así que esperar su
+  // resultado aquí no puede romper la creación del pedido.
+  await emitirTrabajoImpresion(pedido);
 
   // Notificar a repartidores si es entrega a domicilio (por WhatsApp) — excluir Rappi
   if (pedido.modalidad === 'entrega a domicilio' && pedido.canal !== 'rappi') {
