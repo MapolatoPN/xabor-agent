@@ -1078,13 +1078,13 @@ app.post('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
     return res.status(400).json({ error: 'Monto inválido' });
   }
   const fecha = fechaHoyMX();
-  await guardarFondoCaja(fecha, Number(monto));
+  await guardarFondoCaja(fecha, Number(monto), req.negocioId);
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
 app.get('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
   const fecha = fechaHoyMX();
-  const registro = await obtenerFondoCaja(fecha);
+  const registro = await obtenerFondoCaja(fecha, req.negocioId);
   res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
 });
 
@@ -1232,23 +1232,18 @@ app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
 });
 
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
-// ⚠ AISLAMIENTO PARCIAL — ver diagnóstico en el reporte de esta fase:
-// ventas/resumen SÍ se filtran por req.negocioId (pedidos_activos.negocio_id
-// existe y está poblado). El fondo de caja (obtenerFondoCaja) NO puede
-// aislarse todavía: caja_fondos tiene "fecha DATE UNIQUE" global (una sola
-// fila por fecha para TODOS los negocios) y guardarFondoCaja nunca escribe
-// negocio_id aunque la columna exista (migración 007, nullable). Con dos
-// negocios activos el mismo día, ambos verían/pisarían el mismo fondo. No se
-// inventa un filtro ni se asigna Nonna Maye por defecto — PENDIENTE DE
-// SEGURIDAD: requiere rediseñar el esquema (negocio_id en la UNIQUE) antes
-// de habilitar un segundo negocio con corte de caja real.
+// Aislamiento completo por negocio (migración 009): ventas, resumen y
+// fondo de caja se filtran/escriben con req.negocioId. caja_fondos ahora
+// tiene UNIQUE(negocio_id, fecha) en vez de UNIQUE(fecha) global — dos
+// negocios pueden tener cada uno su propio fondo el mismo día sin
+// pisarse. Ver migrations/009_caja_fondos_por_negocio*.
 app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
   const d = inicioDelDiaMX().toISOString();
   const h = new Date().toISOString();
   const [ventas, resumen, fondoReg] = await Promise.all([
     obtenerVentas(d, h, req.negocioId),
     obtenerResumenVentas(d, h, req.negocioId),
-    obtenerFondoCaja(fechaHoyMX())
+    obtenerFondoCaja(fechaHoyMX(), req.negocioId)
   ]);
   const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   // Agrupar por forma de pago
@@ -2092,7 +2087,7 @@ async function enviarReporteDiario() {
   const [ventas, resumen, fondoReg] = await Promise.all([
     obtenerVentas(inicio, ahora, negocioIdReporte),
     obtenerResumenVentas(inicio, ahora, negocioIdReporte),
-    obtenerFondoCaja(fechaHoyMX())
+    obtenerFondoCaja(fechaHoyMX(), negocioIdReporte)
   ]);
   const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   const totalVentas   = parseFloat(resumen?.total_ventas || 0);

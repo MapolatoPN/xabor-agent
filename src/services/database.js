@@ -1790,13 +1790,19 @@ export async function obtenerCandidatosRepartidor() {
   } catch(e) { return []; }
 }
 
-export async function guardarFondoCaja(fechaMX, monto) {
+// negocioId OBLIGATORIO — falla cerrado (sin escritura global) si falta.
+export async function guardarFondoCaja(fechaMX, monto, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarFondoCaja: negocioId inválido u omitido — rechazado, sin escritura global');
+    return false;
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     await pool.query(`
-      INSERT INTO caja_fondos (fecha, fondo)
-      VALUES ($1, $2)
-      ON CONFLICT (fecha) DO NOTHING
-    `, [fechaMX, monto]);
+      INSERT INTO caja_fondos (fecha, fondo, negocio_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (negocio_id, fecha) DO NOTHING
+    `, [fechaMX, monto, negocioIdNorm]);
     return true;
   } catch (e) {
     console.error('[DB] Error guardarFondoCaja:', e.message);
@@ -1804,12 +1810,18 @@ export async function guardarFondoCaja(fechaMX, monto) {
   }
 }
 
-// Obtiene el fondo registrado para una fecha MX (formato 'YYYY-MM-DD')
-export async function obtenerFondoCaja(fechaMX) {
+// Obtiene el fondo registrado para una fecha MX (formato 'YYYY-MM-DD').
+// negocioId OBLIGATORIO — falla cerrado (sin lectura global) si falta.
+export async function obtenerFondoCaja(fechaMX, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerFondoCaja: negocioId inválido u omitido — rechazado, sin lectura global');
+    return null;
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(
-      `SELECT fondo, created_at FROM caja_fondos WHERE fecha = $1`,
-      [fechaMX]
+      `SELECT fondo, created_at FROM caja_fondos WHERE fecha = $1 AND negocio_id = $2`,
+      [fechaMX, negocioIdNorm]
     );
     return result.rows[0] || null;
   } catch (e) {
