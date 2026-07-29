@@ -291,7 +291,8 @@ export async function initDB() {
            ($1, 'telefono',      '(878) 109-1115'),
            ($1, 'whatsapp',      '(878) 109-1115'),
            ($1, 'horario',       'lunes a sabado 11am-10pm'),
-           ($1, 'bot_avisos',    '')
+           ($1, 'bot_avisos',    ''),
+           ($1, 'print_agent_legacy_activo', 'true')
          ON CONFLICT (negocio_id, clave) DO NOTHING`,
         [negocioId]
       );
