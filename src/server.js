@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createHmac } from 'crypto';
+import { createHmac, createHash } from 'crypto';
 
 import { procesarMensaje } from './agent/brain.js';
 import {
@@ -470,14 +470,15 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
-function broadcast(data) {
-  const mensaje = JSON.stringify(data);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) { // 1 = OPEN
-      client.send(mensaje);
-    }
-  });
-  // Push notification para nuevo pedido
+// ✅ NUEVO (Fase 7) — push notifications, extraídas de broadcast() a su
+// propia función para poder dispararlas tanto desde broadcast() (legado)
+// como desde broadcastNegocio() (nuevo), sin duplicar la lógica ni
+// mezclarla con el filtrado por negocio. Push SIGUE GLOBAL a propósito en
+// esta fase (no se tocó el sistema de push) — ver reporte, sección "Estado
+// del push global". broadcastPrintAgentLegacy NUNCA la llama (evitaría un
+// doble push del mismo nuevo_pedido, que ya dispara push vía
+// broadcastNegocio).
+function dispararPushParaEvento(data) {
   if (data.tipo === 'nuevo_pedido') {
     const p = data.pedido;
     const canal = p?.canal === 'presencial' ? 'Presencial' : (p?.canal === 'rappi' ? 'Rappi' : 'WhatsApp');
@@ -489,7 +490,6 @@ function broadcast(data) {
       { pedidoId: p?.id || p?.folio }
     ).catch(() => {});
   }
-  // Push notification para mensaje nuevo de WhatsApp
   if (data.tipo === 'nuevo_mensaje' && data.mensaje?.direccion === 'entrante') {
     const tel = data.mensaje?.telefono || '';
     const txt = data.mensaje?.texto?.slice(0, 60) || 'Nuevo mensaje';
@@ -497,10 +497,80 @@ function broadcast(data) {
   }
 }
 
+// ⚠ PENDIENTE DE ELIMINAR: broadcast global legado — envía a TODOS los
+// sockets de wss (panel de cualquier negocio + print-agent legado), sin
+// aislar nada. NO USAR PARA NUEVOS EVENTOS OPERATIVOS. Se conserva
+// únicamente para flujos que hoy todavía no tienen negocioId confiable:
+// nuevo_mensaje de WhatsApp, bot_pausado, pago_confirmado (webhooks/jobs
+// sin sesión), repartidor_asignado y el actualizar_estado del flujo de
+// repartidor (sin sesión de negocio), rappi_menu_aprobado/rechazado (sin
+// datos operativos que aislar) y rappi_cancelacion cuando su store_id no
+// resuelve a ninguna integración registrada — ver reporte de esta fase
+// para el detalle completo de cada caso. Usar broadcastNegocio(negocioId,
+// data) para cualquier evento operativo nuevo.
+function broadcast(data) {
+  const mensaje = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) { // 1 = OPEN
+      client.send(mensaje);
+    }
+  });
+  dispararPushParaEvento(data);
+}
+
+// ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
+// conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
+// nunca a 'legacy' (print-agent), nunca a wssVoice, nunca a otro negocio.
+// Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
+// broadcast() global. Dispara el mismo push global que broadcast() (ver
+// dispararPushParaEvento) — deliberado y documentado, no un efecto
+// accidental del filtrado por negocio.
+function broadcastNegocio(negocioId, data, opciones = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
+    return 0;
+  }
+  const negocioIdNorm = negocioId.trim();
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return; // 1 = OPEN
+    if (client.tipo !== 'panel') return;
+    if (client.negocioId !== negocioIdNorm) return;
+    // opciones.sucursalId / opciones.terminalId: reservado para filtros
+    // futuros más finos (no usado todavía — no se inventa comportamiento
+    // no solicitado en esta fase).
+    client.send(mensaje);
+    enviados++;
+  });
+  dispararPushParaEvento(data);
+  return enviados;
+}
+
+// ⚠ PENDIENTE DE ELIMINAR: envío adicional y temporal hacia print-agent
+// (conexiones ws.tipo==='legacy' en la raíz "/"), EXCLUSIVAMENTE para
+// nuevo_pedido — mantiene la impresión de Nonna Maye funcionando mientras
+// print-agent.js no migra a su propia ruta autenticada (fase no autorizada
+// todavía). Nunca debe usarse para mensajes, pagos, clientes ni eventos
+// administrativos. No está aislada por negocio (print-agent hoy no sabe a
+// qué negocio pertenece) — por diseño, no por descuido. No dispara push
+// (ya lo hace broadcastNegocio para el mismo evento; evita duplicarlo).
+function broadcastPrintAgentLegacy(data) {
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return;
+    if (client.tipo !== 'legacy') return;
+    client.send(mensaje);
+    enviados++;
+  });
+  return enviados;
+}
+
 // Inyectar broadcast en el orderManager, whatsapp y rappi
-setWsBroadcast(broadcast);
+setWsBroadcast(broadcastNegocio, broadcastPrintAgentLegacy);
 setWsBroadcastWA(broadcast);
-setWsBroadcastRappi(broadcast);
+setWsBroadcastRappi(broadcastNegocio, broadcast);
 
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
@@ -662,6 +732,9 @@ app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
 // Clip — notificación de pago completado
+// ⚠ Se queda en broadcast() legado a propósito: es un webhook sin sesión,
+// no hay req.negocioId (podría derivarse buscando el pedido por folio, pero
+// esta fase solo migra rutas con contexto de sesión real — ver reporte).
 app.post('/webhook/clip', async (req, res) => {
   // Responder 200 inmediatamente (Clip espera respuesta rápida)
   res.sendStatus(200);
@@ -930,19 +1003,51 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, async (req, res) => {
   res.json(pedido);
 });
 
+// ─── Cliente técnico para pedidos presenciales sin teléfono real ───────────
+// clientes.telefono es VARCHAR(20) PRIMARY KEY GLOBAL (sin negocio_id en la
+// clave) -- no se puede usar un solo literal 'presencial' para todos los
+// negocios (colisiona entre ellos: el segundo negocio pisaría el nombre y
+// pedidos de ambos apuntarían a la misma fila) ni el UUID completo de
+// negocioId (36 caracteres, no cabe en VARCHAR(20)). Se deriva un hash
+// corto y determinista del negocioId: el mismo negocio siempre produce el
+// mismo identificador técnico (se reutiliza, nunca se duplica); negocios
+// distintos siempre producen identificadores distintos. 'pos-' (4) + 12 hex
+// = 16 caracteres, dentro del límite de VARCHAR(20) con margen. No es un
+// UUID ni se puede revertir a uno -- no expone negocioId completo en UI ni
+// logs. Nunca se acepta este valor desde el cliente: se deriva
+// exclusivamente server-side a partir de un negocioId ya autenticado.
+function idClienteTecnicoPresencial(negocioId) {
+  return 'pos-' + createHash('sha256').update(negocioId).digest('hex').slice(0, 12);
+}
+
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 // rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
 // quedará asignado en el pedido y los puntos se acumularán al entregar.
 app.post('/api/pedido-presencial', requireAuthSeguro, async (req, res) => {
+  // negocioId EXCLUSIVAMENTE de req.negocioId (sesión/membresía ya
+  // validada por requireAuthSeguro) -- nunca de body/query/headers. Falla
+  // cerrado antes de registrar, persistir, emitir o imprimir: sin esto, el
+  // pedido quedaba etiquetado con el respaldo temporal de Nonna Maye sin
+  // importar qué negocio lo creó (hallazgo de la fase anterior). Sin
+  // fallback aquí -- si req.negocioId falta, es un error real de sesión,
+  // no un caso a rellenar.
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    console.error('[Panel] POST /api/pedido-presencial: req.negocioId inválido u omitido — pedido rechazado (fail closed)');
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
   const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio,
           mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre,
           rewards_canje_puntos } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
-  // Si hay cliente Rewards asignado, usarlo como cliente del pedido
-  const clienteTel = rewards_telefono?.trim() || '—';
-  const clienteNom = (rewards_telefono ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
+  // Si hay cliente Rewards asignado (teléfono real), usarlo como cliente
+  // del pedido -- si no, un cliente técnico determinista por negocio (ver
+  // idClienteTecnicoPresencial arriba), nunca el literal 'presencial'
+  // global ni un valor que el cliente HTTP pueda controlar.
+  const tieneTelefonoReal = !!rewards_telefono?.trim();
+  const clienteTel = tieneTelefonoReal ? rewards_telefono.trim() : idClienteTecnicoPresencial(req.negocioId);
+  const clienteNom = (tieneTelefonoReal ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
   const orden = {
     items,
     subtotal,
@@ -957,11 +1062,31 @@ app.post('/api/pedido-presencial', requireAuthSeguro, async (req, res) => {
     canal: 'presencial',
     forma_pago: forma_pago || 'efectivo',
     cliente: { nombre: clienteNom, telefono: clienteTel },
-    costo_envio: 0
+    costo_envio: 0,
+    negocioId: req.negocioId
   };
   const pedido = registrarPedido(orden, 'presencial');
   emitirPedido(pedido);
-  import('./services/database.js').then(({ guardarPedido }) => guardarPedido('presencial', orden)).catch(() => {});
+  // Persistencia en el historial (tabla pedidos) -- en segundo plano, no
+  // bloquea la respuesta ni la emisión al panel (igual que antes). Se debe
+  // asegurar primero que exista la fila en clientes (upsertCliente) ANTES
+  // de insertar en pedidos, porque pedidos.telefono es FK hacia
+  // clientes.telefono -- si no, el INSERT viola la FK y falla en
+  // silencio (hallazgo de la fase anterior). Mismo patrón ya usado por
+  // Rappi (upsertCliente antes de guardarPedido). Se pasa "pedido" (no
+  // "orden") a guardarPedido -- guardarPedido lee pedido.id para la
+  // columna folio, y solo el objeto devuelto por registrarPedido lo tiene
+  // (orden nunca lo recibe de vuelta); pasar "orden" dejaba folio siempre
+  // NULL, un segundo hallazgo de persistencia distinto al de la FK.
+  (async () => {
+    try {
+      const { upsertCliente, guardarPedido } = await import('./services/database.js');
+      await upsertCliente(clienteTel, clienteNom, pedido.negocioId);
+      await guardarPedido(clienteTel, pedido, pedido.negocioId);
+    } catch (e) {
+      console.error('[Panel] Error persistiendo pedido presencial en historial:', e.message);
+    }
+  })();
 
   // Rewards — registrar canje si aplica (sincrónico para que el folio exista)
   let canjeInfo = null;
@@ -1001,7 +1126,7 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, async (req, res) 
   const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
   const p = obtenerPedidoPorId(folio);
   if (p) p.forma_pago = forma_pago;
-  broadcast({ tipo: 'actualizar_pago', id: folio, forma_pago });
+  broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
 });
 
@@ -1014,7 +1139,7 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, async (req, re
   if (!ok) return res.status(500).json({ error: 'No se pudo cancelar' });
   // Quitar del panel en tiempo real
   await eliminarPedido(folio).catch(() => {});
-  broadcast({ tipo: 'cancelar_pedido', id: folio, motivo });
+  broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
   console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
   // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
   revertirMovimientosFolio(folio, REWARDS_TENANT).catch(e =>
@@ -1031,7 +1156,7 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, async (req, 
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
   const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim());
   if (!ok) return res.status(500).json({ error: 'No se pudo registrar la devolución' });
-  broadcast({ tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
+  broadcastNegocio(req.negocioId, { tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
   console.log(`[Panel] Devolución ${folio}: $${monto} — ${motivo}`);
   res.json({ ok: true });
 });
@@ -1354,6 +1479,11 @@ app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
 });
 
 // Control manual del bot por conversación
+// ⚠ bot_pausado se queda en broadcast() legado a propósito: aunque la ruta
+// tiene req.negocioId, la conversación de WhatsApp en sí (mensajes,
+// telefono) todavía no resuelve/filtra por negocio (mismo gap documentado
+// de nuevo_mensaje, fuera de alcance de esta fase) — no es un evento de
+// "pedidos", que es lo único que esta fase migra.
 app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, async (req, res) => {
   await setBotPausado(req.params.telefono, true);
   broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
@@ -1493,7 +1623,7 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
   if (req.esNegocioPorDefecto) {
     negocioConfig = { ...negocioConfig, ...req.body };
-    broadcast({ tipo: 'config_actualizada', config: negocioConfig });
+    broadcastNegocio(req.negocioId, { tipo: 'config_actualizada', config: negocioConfig });
     return res.json({ ok: true, config: negocioConfig });
   }
   const cfgActualizada = await obtenerConfiguracion(req.negocioId);
@@ -1585,6 +1715,10 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
 });
 
 // Aceptar pedido (atómico — solo uno lo puede tomar)
+// ⚠ repartidor_asignado se queda en broadcast() legado: requireRepartidor
+// autentica por token individual del repartidor, no por sesión de negocio
+// -- sin req.negocioId real (mismo gap ya documentado para
+// actualizarEstadoPedidoLegacySinNegocio en orderManager.js).
 app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
   const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre);
@@ -1623,6 +1757,13 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
   const { folio } = req.params;
   const pedido = actualizarEstadoPedidoLegacySinNegocio(folio, 'entregado');
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  // Este broadcast() directo se queda legado a propósito (misma razón que
+  // el comentario de arriba: sin req.negocioId real). No es una fuga real:
+  // _persistirCambioEstado (orderManager.js) YA emitió este mismo
+  // actualizar_estado vía broadcastNegocio(pedido.negocioId, ...) al
+  // actualizar el estado unas líneas arriba -- el panel del negocio
+  // correcto ya lo recibió aislado. Este es un envío redundante heredado,
+  // documentado, no una segunda fuente de verdad.
   broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);
 
@@ -2252,6 +2393,8 @@ async function sincronizarRappi() {
 
 // ─── Reconciliación de pagos Clip ─────────────────────────────────────────────
 // Revisa cada 5 min si algún pago con enlace ya fue completado (por si el webhook falló)
+// ⚠ broadcast() legado a propósito: job programado sin request/sesión, sin
+// req.negocioId — misma razón que /webhook/clip arriba.
 async function reconciliarPagosPendientes() {
   if (!process.env.CLIP_API_KEY || !process.env.CLIP_API_SECRET) return;
   try {

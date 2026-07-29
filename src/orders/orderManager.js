@@ -11,12 +11,24 @@ import {
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 
-let wsBroadcast = null;
+// ✅ NUEVO (Fase 7) — dos canales de emisión, inyectados desde server.js:
+//   - wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, aislado
+//     por negocio. Usado por nuevo_pedido, actualizar_estado, eliminar_pedido
+//     (los tres ya tienen pedido.negocioId confiable — ver reporte de esta
+//     fase). Fail closed: si el pedido no trae negocioId, NO se emite, se
+//     loguea y punto — nunca se usa Nonna Maye como relleno aquí.
+//   - wsBroadcastPrintAgentLegacy(data) → SOLO para nuevo_pedido, mantiene
+//     temporalmente la impresión de Nonna Maye funcionando mientras
+//     print-agent.js no migra a su propia ruta autenticada. ⚠ PENDIENTE DE
+//     ELIMINAR — no se usa para actualizar_estado ni eliminar_pedido.
+let wsBroadcastNegocio = null;
+let wsBroadcastPrintAgentLegacy = null;
 const pedidos = [];
 let contadorPedidos = 1;
 
-export function setWsBroadcast(fn) {
-  wsBroadcast = fn;
+export function setWsBroadcast(fnNegocio, fnPrintAgentLegacy) {
+  wsBroadcastNegocio = fnNegocio;
+  wsBroadcastPrintAgentLegacy = fnPrintAgentLegacy;
 }
 
 // ─── Respaldo temporal de negocio (Fase 5 — threading operativo) ───────────
@@ -111,9 +123,21 @@ export function registrarPedido(orden, canal = 'test') {
 }
 
 export function emitirPedido(pedido) {
-  if (wsBroadcast) {
-    wsBroadcast({ tipo: 'nuevo_pedido', pedido });
+  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
+    if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
+  } else {
+    // Fail closed: nunca se emite al panel sin negocioId ni se usa Nonna
+    // Maye como relleno aquí — esto no debería pasar hoy (Rappi siempre lo
+    // trae, WhatsApp/Voz/presencial usan el respaldo temporal), así que si
+    // ocurre es una señal real de que algo quedó sin resolver.
+    console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite al panel (fail closed)`);
   }
+  // Print-agent legado (raíz "/", sin autenticar): sigue recibiendo TODO
+  // nuevo_pedido sin filtrar, a propósito, para no interrumpir la impresión
+  // actual de Nonna Maye mientras print-agent no migra. Nunca condicionado
+  // a negocioId -- ver broadcastPrintAgentLegacy en server.js.
+  if (wsBroadcastPrintAgentLegacy) wsBroadcastPrintAgentLegacy({ tipo: 'nuevo_pedido', pedido });
+
   // Notificar a repartidores si es entrega a domicilio (por WhatsApp) — excluir Rappi
   if (pedido.modalidad === 'entrega a domicilio' && pedido.canal !== 'rappi') {
     import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
@@ -140,8 +164,16 @@ function _persistirCambioEstado(pedido, nuevoEstado) {
     actualizarEstadoPedidoDB(pedido.id, nuevoEstado);
   }
 
-  if (wsBroadcast) {
-    wsBroadcast({ tipo: 'actualizar_estado', id: pedido.id, estado: nuevoEstado });
+  // Aislado por negocio (ver reporte de esta fase) -- nunca llega a
+  // print-agent (legado) ni a otros negocios. pedido.negocioId es
+  // confiable independientemente de qué caller invocó esta función
+  // (actualizarEstadoPedido con sesión real, o
+  // actualizarEstadoPedidoLegacySinNegocio vía repartidor): es una
+  // propiedad del pedido en sí, fijada al crearlo, no del caller.
+  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
+    if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'actualizar_estado', id: pedido.id, estado: nuevoEstado });
+  } else {
+    console.error(`[OrderManager] _persistirCambioEstado: pedido ${pedido.id} sin negocioId — no se emite (fail closed)`);
   }
 }
 
@@ -251,8 +283,13 @@ export function agregarPedidoAMemoria(pedido) {
 export async function eliminarPedido(id) {
   const idx = pedidos.findIndex(p => p.id === id);
   if (idx === -1) return false;
+  const pedido = pedidos[idx]; // capturado ANTES del splice, para conservar negocioId
   pedidos.splice(idx, 1);
   await eliminarPedidoDB(id);
-  if (wsBroadcast) wsBroadcast({ tipo: 'eliminar_pedido', id });
+  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
+    if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id });
+  } else {
+    console.error(`[OrderManager] eliminarPedido: pedido ${id} sin negocioId — no se emite (fail closed)`);
+  }
   return true;
 }
