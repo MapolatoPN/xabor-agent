@@ -2240,12 +2240,33 @@ async function activarPedidosProgramados() {
     for (const row of pendientes) {
       const pedido = row.datos;
       pedido.estado = pedido.estado || 'nuevo';
+
+      // negocioId viene del propio pedido (ya resuelto cuando se creó vía
+      // WhatsApp/Voz, con el mismo respaldo temporal que usan sus pedidos
+      // regulares -- ver registrarPedido en orderManager.js), nunca
+      // inventado aquí. Fail closed: si falta o es inválido, se salta esta
+      // fila por completo -- no se persiste, no se agrega a memoria, no se
+      // emite (ni por broadcastNegocio ni por broadcast() global), y NO se
+      // marca activado, para que quede pendiente y se pueda corregir el
+      // dato y reintentar en la siguiente corrida del job (5 min después).
+      // Nunca se usa Nonna Maye ni ningún otro negocio por defecto. El log
+      // solo incluye el folio (identificador interno) -- nunca nombre,
+      // teléfono, dirección, items ni el payload completo.
+      if (typeof pedido.negocioId !== 'string' || !pedido.negocioId.trim()) {
+        console.error(`[Scheduler] Pedido programado ${row.folio} sin negocioId válido — no se activa (queda pendiente para corregir y reintentar)`);
+        continue;
+      }
+
       // Persistir en DB (reinsertar en pedidos_activos) y agregar a memoria
       const { guardarPedidoActivo } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
       await guardarPedidoActivo(pedido);
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
-      broadcast({ tipo: 'nuevo_pedido', pedido });
+      // Aislado por negocio (mismo patrón que emitirPedido en
+      // orderManager.js) + compatibilidad temporal con print-agent legacy.
+      // Ya no se usa broadcast() global para este evento.
+      broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
+      broadcastPrintAgentLegacy({ tipo: 'nuevo_pedido', pedido });
       await marcarPedidoProgramadoActivado(row.folio);
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
