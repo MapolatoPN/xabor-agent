@@ -5,13 +5,17 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago } from '../services/clip-api.js';
 import { getIntegracion } from '../server.js';
 
+// wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
+// data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
+// mensaje de WhatsApp de CUALQUIER negocio se emitía a todos los paneles
+// conectados (fuga en vivo confirmada).
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
 
@@ -40,20 +44,25 @@ function registrarError() {
 
 // ─── Debounce de mensajes — espera 4s antes de procesar ──────────────────────
 // Si el cliente manda varios mensajes seguidos, los combina en uno solo
-const bufferMensajes = new Map(); // telefono → { textos: [], timer }
+// Clave compuesta `${negocioId}:${telefono}` (Incidente P0): si el mismo
+// número de teléfono le escribe a DOS negocios distintos dentro de la
+// ventana de debounce, cada negocio tiene su propio buffer -- nunca se
+// combinan mensajes de conversaciones de negocios distintos en una sola
+// respuesta del bot.
+const bufferMensajes = new Map(); // clave → { textos: [], timer }
 
-function encolarMensaje(telefono, texto, procesarFn) {
-  if (bufferMensajes.has(telefono)) {
-    const entry = bufferMensajes.get(telefono);
+function encolarMensaje(clave, texto, procesarFn) {
+  if (bufferMensajes.has(clave)) {
+    const entry = bufferMensajes.get(clave);
     clearTimeout(entry.timer);
     entry.textos.push(texto);
   } else {
-    bufferMensajes.set(telefono, { textos: [texto] });
+    bufferMensajes.set(clave, { textos: [texto] });
   }
-  const entry = bufferMensajes.get(telefono);
+  const entry = bufferMensajes.get(clave);
   entry.timer = setTimeout(() => {
-    const textosCombinados = bufferMensajes.get(telefono)?.textos.join('\n') || texto;
-    bufferMensajes.delete(telefono);
+    const textosCombinados = bufferMensajes.get(clave)?.textos.join('\n') || texto;
+    bufferMensajes.delete(clave);
     procesarFn(textosCombinados);
   }, 6000);
 }
@@ -176,7 +185,10 @@ async function notificarEscalacion(telefono) {
 }
 
 // ─── Procesamiento con Claude (se llama tras el debounce) ────────────────────
-async function procesarConClaude(telefono, texto, nombreMeta) {
+// negocioId (Incidente P0): resuelto UNA vez en el webhook (integraciones_canal
+// por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
+// ni se usa un fallback aquí adentro.
+async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
   try {
     // Folio para pago
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
@@ -195,7 +207,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
             msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
           }
           await enviarMensaje(telefono, msg);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         } catch (e) {
           console.error('[Meta WA] Error enviando link por folio:', e.message);
           await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`);
@@ -204,7 +216,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       }
       if (!pedidoDB) {
         await enviarMensaje(telefono, `No encontramos un pedido con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`, negocioId);
         return;
       }
     }
@@ -222,7 +234,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         await guardarLinkPago(pedidoPendiente, clip.linkId);
         const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
         await enviarMensaje(telefono, mensajePago);
-        await guardarMensaje(telefono, null, 'saliente', mensajePago);
+        await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId);
         console.log(`[Meta WA] Link de pago enviado a ${telefono}`);
       } catch (e) {
         console.error('[Meta WA] Error enviando link pendiente:', e.message);
@@ -248,7 +260,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         const extra = p.estado === 'listo' ? ' ¡Gracias por tu preferencia!' : '';
         const msg = `Tu pedido ${p.folio}${items ? ` (${items})` : ''} ${desc}.${extra}`;
         await enviarMensaje(telefono, msg);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         console.log(`[Meta WA] Estado de pedido enviado a ${telefono}: ${p.folio} → ${p.estado}`);
         return;
       }
@@ -260,7 +272,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     if (esConsultaPuntos) {
       try {
         const { obtenerCuentaPorTelefono, calcularNivel } = await import('../services/rewardsService.js');
-        const cuenta = await obtenerCuentaPorTelefono(telefono);
+        const cuenta = await obtenerCuentaPorTelefono(telefono, negocioId);
         let msg;
         if (cuenta && cuenta.puntos_balance >= 0) {
           const nivel = calcularNivel(cuenta.puntos_acumulados_total);
@@ -272,7 +284,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
           msg = `Aún no tienes puntos Rewards acumulados. ¡Tu próximo pedido los genera automáticamente! 🎁`;
         }
         await enviarMensaje(telefono, msg);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msg);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         console.log(`[Meta WA] Puntos Rewards enviados a ${telefono}`);
         return;
       } catch(e) {
@@ -282,10 +294,10 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     }
 
     // Contexto del cliente
-    const clienteDB = await obtenerCliente(telefono);
+    const clienteDB = await obtenerCliente(telefono, negocioId);
     const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono) : [];
     const clienteCtx = clienteDB ? { nombre: clienteDB.nombre || nombreMeta, pedidos: pedidosAnteriores } : null;
-    if (nombreMeta) await upsertCliente(telefono, nombreMeta);
+    if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
 
     const sessionId = `meta-${telefono}`;
 
@@ -296,7 +308,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       const msgEspera = 'Dame un momento, estoy procesando tu solicitud... 🕐';
       try {
         await enviarMensaje(telefono, msgEspera);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera, negocioId);
       } catch (error) {
         // Fallo de Meta (token inválido/expirado, rate limit, caída de la API, etc.)
         // no debe tumbar el proceso — nunca se propaga como unhandled rejection.
@@ -342,7 +354,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
           });
           const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
           await enviarMensaje(telefono, confirmMsg);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId);
         } catch (e) {
           console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
         }
@@ -355,7 +367,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       // distinto. resultado.orden en sí nunca trae negocioId (registrarPedido
       // no lo muta), por eso se toma de pedido, no de resultado.orden.
       await guardarPedido(telefono, resultado.orden, pedido.negocioId);
-      if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre);
+      if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre, negocioId);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
       if (resultado.orden.forma_pago === 'enlace de pago' && process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
@@ -397,7 +409,7 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
             ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
             : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
           await enviarMensaje(telefono, msgFactura);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura, negocioId);
           console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
         }
       } catch (e) {
@@ -408,14 +420,14 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
 
     await enviarMensaje(telefono, resultado.texto);
     console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
-    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto);
-    if (msgSaliente && wsBroadcast) wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgSaliente });
+    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId);
+    if (msgSaliente && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgSaliente });
 
     if (linkPago) {
       const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}`;
       await enviarMensaje(telefono, mensajePago);
-      const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago);
-      if (msgPago && wsBroadcast) wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgPago });
+      const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago, negocioId);
+      if (msgPago && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgPago });
     }
   } catch (error) {
     console.error('[Meta WA] Error en procesarConClaude:', error.message);
@@ -435,6 +447,22 @@ router.post('/', async (req, res) => {
     const message = value?.messages?.[0];
     if (!message || message.type !== 'text') return;
 
+    // negocioId (Incidente P0): se resuelve EXCLUSIVAMENTE contra
+    // integraciones_canal usando el phone_number_id que manda Meta en el
+    // propio payload del webhook -- nunca de un valor que el cliente HTTP
+    // pudiera controlar, nunca adivinado. Si el phone_number_id no está
+    // mapeado a ningún negocio, el mensaje se descarta (fail closed): no
+    // se guarda, no se procesa con el bot, no se usa Nonna Maye como
+    // relleno. Esto requiere que integraciones_canal tenga una fila para
+    // 'whatsapp' antes de desplegar este cambio (ver plan de deploy).
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp', phoneNumberId) : null;
+    if (!integracion) {
+      console.error(`[Meta WA] Webhook sin negocio mapeado para phone_number_id=${phoneNumberId || '(vacío)'} — mensaje descartado (fail closed)`);
+      return;
+    }
+    const negocioId = integracion.negocioId;
+
     const telefono   = message.from;
     const texto      = message.text.body;
     const messageId  = message.id;
@@ -443,8 +471,8 @@ router.post('/', async (req, res) => {
     console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
 
     // Acciones inmediatas (no debounced)
-    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto);
-    if (msgGuardado && wsBroadcast) wsBroadcast({ tipo: 'nuevo_mensaje', mensaje: msgGuardado });
+    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId);
+    if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     await marcarLeido(messageId);
     // Tracking de respuesta a campañas (background, no bloquea)
     marcarRespuestaCampana(telefono).catch(() => {});
@@ -468,20 +496,20 @@ router.post('/', async (req, res) => {
     const matchRep = texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i);
     if (matchRep) {
       const nombreRep = matchRep[1].trim();
-      const rep = await registrarRepartidor(nombreRep, telefono);
+      const rep = await registrarRepartidor(nombreRep, telefono, negocioId);
       const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
       const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
       await enviarMensaje(telefono, msgReg);
-      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto);
-      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId);
       console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
       return;
     }
 
-    // Si el número ya es un repartidor registrado
-    const repartidor = await obtenerRepartidorPorTelefono(telefono);
+    // Si el número ya es un repartidor registrado (de ESTE negocio)
+    const repartidor = await obtenerRepartidorPorTelefono(telefono, negocioId);
     if (repartidor) {
       // Detectar confirmación de entrega
       if (/entregu[eé]|entregado|ya entregué|listo[.,!]?$/i.test(texto.trim())) {
@@ -497,8 +525,8 @@ router.post('/', async (req, res) => {
           msgEntrega = `No tienes pedidos activos asignados en este momento.`;
         }
         await enviarMensaje(telefono, msgEntrega);
-        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto);
-        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega);
+        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
+        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega, negocioId);
         return;
       }
       // Cualquier otro mensaje — mandar link
@@ -507,16 +535,16 @@ router.post('/', async (req, res) => {
         : 'https://xabor-agent-production.up.railway.app';
       const msgLink = `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`;
       await enviarMensaje(telefono, msgLink);
-      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto);
-      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink);
+      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
+      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink, negocioId);
       console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
       return;
     }
 
     // Procesamiento con Claude — debounced 6 segundos
     // Si el cliente manda varios mensajes seguidos, se combinan en uno
-    encolarMensaje(telefono, texto, (textoCombinado) => {
-      procesarConClaude(telefono, textoCombinado, nombreMeta);
+    encolarMensaje(`${negocioId}:${telefono}`, texto, (textoCombinado) => {
+      procesarConClaude(telefono, textoCombinado, nombreMeta, negocioId);
     });
 
   } catch (error) {
@@ -527,7 +555,11 @@ router.post('/', async (req, res) => {
 // ─── Notificar repartidores activos por WhatsApp ─────────────────────────────
 export async function notificarRepartidoresPorWA(pedido) {
   try {
-    const repartidores = await obtenerRepartidores();
+    if (!pedido?.negocioId) {
+      console.warn('[WA Repartidor] notificarRepartidoresPorWA: pedido sin negocioId — no se notifica a nadie (fail closed)');
+      return;
+    }
+    const repartidores = await obtenerRepartidores(pedido.negocioId);
     if (!repartidores.length) return;
 
     const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN

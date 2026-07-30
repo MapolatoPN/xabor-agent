@@ -10,7 +10,7 @@
  * Es consultado por brain.js (lectura) y por jobs en background (escritura).
  */
 
-import { pool } from './database.js';
+import { pool, obtenerNegocioIdPorSlug } from './database.js';
 
 // ─── CAPA 1: Event Log ────────────────────────────────────────────────────────
 
@@ -357,9 +357,21 @@ export async function actualizarOportunidad(telefono, sesion_id, { estado, inten
 
 /**
  * Obtener oportunidades pendientes para mostrar en el dashboard.
+ * negocioId OBLIGATORIO — falla cerrado (Incidente P0). Compatibilidad NULL
+ * limitada a Nonna Maye, mismo criterio que mensajes/clientes: actualizarOportunidad
+ * (escritura, disparada desde brain.js por sesión) todavía no escribe
+ * negocio_id -- deuda documentada, no resuelta en este P0 porque el reporte
+ * de fuga confirmado fue de LECTURA. Cualquier oportunidad nueva queda con
+ * negocio_id NULL y solo la ve Nonna Maye, nunca Alora ni un negocio nuevo.
  */
-export async function obtenerOportunidadesPendientes() {
+export async function obtenerOportunidadesPendientes(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[Memory] obtenerOportunidadesPendientes: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
     const { rows } = await pool.query(`
       SELECT
         o.id, o.telefono, o.intents_detectados, o.valor_estimado,
@@ -371,9 +383,10 @@ export async function obtenerOportunidadesPendientes() {
       LEFT JOIN clientes c ON c.telefono = o.telefono
       LEFT JOIN perfiles_clientes p ON p.telefono = o.telefono
       WHERE o.estado = 'pendiente'
+        AND (o.negocio_id = $1 OR ($2::boolean AND o.negocio_id IS NULL))
       ORDER BY p.segmento = 'vip' DESC, o.valor_estimado DESC NULLS LAST, o.ultima_actividad_at ASC
       LIMIT 50
-    `);
+    `, [negocioId, incluirNull]);
     return rows;
   } catch (e) {
     console.error('[Memory] Error obteniendo oportunidades:', e.message);

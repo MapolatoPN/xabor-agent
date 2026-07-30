@@ -14,6 +14,7 @@ import {
   actualizarEstadoPedidoLegacySinNegocio,
   eliminarPedido,
   obtenerPedidos,
+  obtenerPedidoPorId,
   obtenerTodosPedidosParaWebSocketLegacy,
   setWsBroadcast,
   cargarPedidosDesdeDB
@@ -687,8 +688,13 @@ function broadcastPrintAgentNegocio(negocioId, sucursalId, data) {
 export { broadcastPrintAgentNegocio };
 
 // Inyectar broadcast en el orderManager, whatsapp y rappi
+// negocioId (Incidente P0): setWsBroadcastWA(broadcast) era la fuga en vivo
+// confirmada -- cada mensaje de WhatsApp de CUALQUIER negocio se emitía a
+// TODOS los paneles conectados. whatsapp-meta.js ahora resuelve negocioId
+// por webhook (integraciones_canal) y llama wsBroadcast(negocioId, data)
+// con la misma firma que broadcastNegocio.
 setWsBroadcast(broadcastNegocio);
-setWsBroadcastWA(broadcast);
+setWsBroadcastWA(broadcastNegocio);
 setWsBroadcastRappi(broadcastNegocio, broadcast);
 
 // Inyectar los broadcasts de impresión en printRouter -- una sola vez al
@@ -964,9 +970,10 @@ app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
 // Clip — notificación de pago completado
-// ⚠ Se queda en broadcast() legado a propósito: es un webhook sin sesión,
-// no hay req.negocioId (podría derivarse buscando el pedido por folio, pero
-// esta fase solo migra rutas con contexto de sesión real — ver reporte).
+// negocioId (Incidente P0): webhook sin sesión, se deriva buscando el
+// pedido por folio (obtenerPedidoPorId) -- si no se puede resolver, se
+// omite el broadcast en vez de mandarlo global (fail closed, nunca se
+// inventa negocio).
 app.post('/webhook/clip', async (req, res) => {
   // Responder 200 inmediatamente (Clip espera respuesta rápida)
   res.sendStatus(200);
@@ -981,7 +988,12 @@ app.post('/webhook/clip', async (req, res) => {
     // Pago completado — persistir en BD y notificar al panel
     if (status === 'COMPLETED' && evento?.resource === 'CHECKOUT') {
       await confirmarPagoPedido(ref);
-      broadcast({ tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
+      const pedido = obtenerPedidoPorId(ref);
+      if (pedido?.negocioId) {
+        broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
+      } else {
+        console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — broadcast omitido`);
+      }
       console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
     }
   } catch (e) {
@@ -1369,7 +1381,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, async (req, res) => {
   const puntosACanjear = parseInt(rewards_canje_puntos) || 0;
   if (puntosACanjear > 0 && rewards_telefono?.trim()) {
     try {
-      canjeInfo = await registrarCanje(pedido.id, rewards_telefono.trim(), puntosACanjear, 'operador', REWARDS_TENANT);
+      canjeInfo = await registrarCanje(pedido.id, rewards_telefono.trim(), puntosACanjear, 'operador', req.negocioId);
     } catch (e) {
       console.error(`[Rewards] ❌ Error en canje POS (${pedido.id}):`, e.message);
       // El pedido ya fue registrado — devolvemos advertencia pero no fallamos
@@ -1418,7 +1430,7 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, async (req, re
   broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
   console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
   // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
-  revertirMovimientosFolio(folio, REWARDS_TENANT).catch(e =>
+  revertirMovimientosFolio(folio, req.negocioId).catch(e =>
     console.error(`[Rewards] Error en reverso al cancelar ${folio}:`, e.message)
   );
   res.json({ ok: true });
@@ -1487,12 +1499,12 @@ app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, async (req, res
 
 // Conversaciones WhatsApp
 app.get('/api/conversaciones', requireAuthSeguro, async (req, res) => {
-  const lista = await obtenerConversacionesRecientes(20);
+  const lista = await obtenerConversacionesRecientes(req.negocioId, 20);
   res.json(lista);
 });
 
 app.get('/api/conversacion/:telefono', requireAuthSeguro, async (req, res) => {
-  const msgs = await obtenerConversacion(req.params.telefono);
+  const msgs = await obtenerConversacion(req.params.telefono, req.negocioId);
   res.json(msgs);
 });
 
@@ -1506,8 +1518,8 @@ app.post('/api/send-message', requireAuthSeguro, async (req, res) => {
     await enviarMensaje(telefono, mensaje);
     console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
     // Guardar y emitir al panel
-    const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje);
-    if (msgGuardado) broadcast({ tipo: 'nuevo_mensaje', mensaje: msgGuardado });
+    const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId);
+    if (msgGuardado) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     res.json({ ok: true });
   } catch (error) {
     console.error('[Panel] Error al enviar mensaje:', error.message);
@@ -1755,20 +1767,19 @@ app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
 });
 
 // Control manual del bot por conversación
-// ⚠ bot_pausado se queda en broadcast() legado a propósito: aunque la ruta
-// tiene req.negocioId, la conversación de WhatsApp en sí (mensajes,
-// telefono) todavía no resuelve/filtra por negocio (mismo gap documentado
-// de nuevo_mensaje, fuera de alcance de esta fase) — no es un evento de
-// "pedidos", que es lo único que esta fase migra.
+// negocioId (Incidente P0): antes iba por broadcast() global y exponía el
+// teléfono real del cliente a TODOS los negocios conectados -- el mismo
+// tipo de fuga confirmada para mensajes/chats. req.negocioId ya existe en
+// esta ruta (requireAuthSeguro), así que se usa broadcastNegocio.
 app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, async (req, res) => {
-  await setBotPausado(req.params.telefono, true);
-  broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
+  await setBotPausado(req.params.telefono, true, req.negocioId);
+  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
   res.json({ ok: true, pausado: true });
 });
 
 app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, async (req, res) => {
-  await setBotPausado(req.params.telefono, false);
-  broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
+  await setBotPausado(req.params.telefono, false, req.negocioId);
+  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
   res.json({ ok: true, pausado: false });
 });
 
@@ -2285,20 +2296,25 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
 });
 
 // Aceptar pedido (atómico — solo uno lo puede tomar)
-// ⚠ repartidor_asignado se queda en broadcast() legado: requireRepartidor
-// autentica por token individual del repartidor, no por sesión de negocio
-// -- sin req.negocioId real (mismo gap ya documentado para
-// actualizarEstadoPedidoLegacySinNegocio en orderManager.js).
+// negocioId (Incidente P0): requireRepartidor autentica por token individual
+// del repartidor, no por sesión de negocio, pero el pedido en sí ya trae
+// pedido.negocioId (resuelto por registrarPedido) -- se usa ese para aislar
+// el broadcast en vez de mandarlo global. Si no se puede resolver (pedido
+// ya no está en memoria), se omite el broadcast en vez de mandarlo global.
 app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
   const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre);
   if (!asignado) return res.status(409).json({ error: 'Este pedido ya fue tomado por otro repartidor' });
-  broadcast({ tipo: 'repartidor_asignado', folio, repartidor: req.repartidor.nombre });
+  const pedido = obtenerPedidoPorId(folio);
+  if (pedido?.negocioId) {
+    broadcastNegocio(pedido.negocioId, { tipo: 'repartidor_asignado', folio, repartidor: req.repartidor.nombre });
+  } else {
+    console.warn(`[Repartidor] repartidor_asignado: no se pudo resolver negocioId para ${folio} — broadcast omitido`);
+  }
   console.log(`[Repartidor] ${req.repartidor.nombre} tomó el pedido ${folio}`);
 
   // WA "en camino" al cliente
   try {
-    const pedido = obtenerPedidoPorId(folio);
     const tel = pedido?.cliente?.telefono;
     if (tel && tel !== '—' && !tel.startsWith('rappi-')) {
       const nombre = pedido?.cliente?.nombre?.split(' ')[0] || 'cliente';
@@ -2364,7 +2380,7 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
 
 // Lista de repartidores (admin)
 app.get('/api/admin/repartidores', requireAdminSeguro, async (req, res) => {
-  res.json(await obtenerRepartidores());
+  res.json(await obtenerRepartidores(req.negocioId));
 });
 
 // Actividad de repartidores por período — hoy / ayer / antier / semana
@@ -2424,14 +2440,15 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) =
 });
 
 app.delete('/api/admin/repartidores/:id', requireAdminSeguro, async (req, res) => {
-  await eliminarRepartidor(req.params.id);
+  const ok = await eliminarRepartidor(req.params.id, req.negocioId);
+  if (!ok) return res.status(404).json({ error: 'Repartidor no encontrado en este negocio' });
   res.json({ ok: true });
 });
 
 // Candidatos a repartidor — mensajes con "repartidor" en las últimas 72h
 app.get('/api/admin/repartidores/candidatos', requireAdminSeguro, async (req, res) => {
   try {
-    const rows = await obtenerCandidatosRepartidor();
+    const rows = await obtenerCandidatosRepartidor(req.negocioId);
     res.json(rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2462,8 +2479,14 @@ app.post('/api/admin/memory/enriquecer', requireAdminSeguro, async (req, res) =>
 });
 
 // ─── Clientes CRM ─────────────────────────────────────────────────────────────
+// negocio_id OBLIGATORIO en todas las rutas de este bloque (Incidente P0) —
+// antes consultaban clientes/perfiles_clientes/eventos sin filtrar, fuga
+// confirmada en producción. Compatibilidad NULL limitada a Nonna Maye, mismo
+// criterio que database.js (los 2 clientes con negocio_id NULL).
 app.get('/api/admin/clientes', requireAdminSeguro, async (req, res) => {
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && req.negocioId === nonnaMayeId;
     const { rows } = await pool.query(`
       SELECT
         c.telefono, c.nombre, c.ultima_visita,
@@ -2475,9 +2498,10 @@ app.get('/api/admin/clientes', requireAdminSeguro, async (req, res) => {
       LEFT JOIN perfiles_clientes p ON p.telefono = c.telefono
       WHERE c.telefono != '—'
         AND NOT COALESCE(c.es_interno, FALSE)
+        AND (c.negocio_id = $1 OR ($2::boolean AND c.negocio_id IS NULL))
       ORDER BY COALESCE(p.total_gastado, 0) DESC
       LIMIT 500
-    `);
+    `, [req.negocioId, incluirNull]);
     res.json(rows);
   } catch (e) {
     console.error('[clientes]', e.message);
@@ -2489,7 +2513,8 @@ app.get('/api/admin/clientes', requireAdminSeguro, async (req, res) => {
 app.patch('/api/admin/clientes/:telefono/interno', requireAdminSeguro, async (req, res) => {
   try {
     const { es_interno } = req.body;
-    await toggleClienteInterno(req.params.telefono, !!es_interno);
+    const ok = await toggleClienteInterno(req.params.telefono, !!es_interno, req.negocioId);
+    if (!ok) return res.status(404).json({ error: 'Cliente no encontrado en este negocio' });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2499,12 +2524,15 @@ app.patch('/api/admin/clientes/:telefono/interno', requireAdminSeguro, async (re
 // Resumen de segmentos para el tab Clientes
 app.get('/api/admin/clientes/segmentos', requireAdminSeguro, async (req, res) => {
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && req.negocioId === nonnaMayeId;
     const { rows } = await pool.query(`
       SELECT segmento, COUNT(*) AS total
       FROM perfiles_clientes
+      WHERE negocio_id = $1 OR ($2::boolean AND negocio_id IS NULL)
       GROUP BY segmento
       ORDER BY total DESC
-    `);
+    `, [req.negocioId, incluirNull]);
     res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2514,7 +2542,7 @@ app.get('/api/admin/clientes/segmentos', requireAdminSeguro, async (req, res) =>
 // Oportunidades pendientes (conversaciones con intención sin pedido)
 app.get('/api/admin/clientes/oportunidades', requireAdminSeguro, async (req, res) => {
   try {
-    const rows = await obtenerOportunidadesPendientes();
+    const rows = await obtenerOportunidadesPendientes(req.negocioId);
     res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2524,6 +2552,8 @@ app.get('/api/admin/clientes/oportunidades', requireAdminSeguro, async (req, res
 // Métricas de conversión: chats totales vs pedidos
 app.get('/api/admin/clientes/conversion', requireAdminSeguro, async (req, res) => {
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && req.negocioId === nonnaMayeId;
     const { rows: [conv] } = await pool.query(`
       SELECT
         COUNT(DISTINCT sesion_id) FILTER (WHERE tipo_evento = 'mensaje_recibido') AS chats_unicos,
@@ -2533,7 +2563,8 @@ app.get('/api/admin/clientes/conversion', requireAdminSeguro, async (req, res) =
         COUNT(*) FILTER (WHERE tipo_evento = 'pedido_confirmado') AS pedidos_confirmados
       FROM eventos
       WHERE ocurrido_at > NOW() - INTERVAL '30 days'
-    `);
+        AND (negocio_id = $1 OR ($2::boolean AND negocio_id IS NULL))
+    `, [req.negocioId, incluirNull]);
     const chats = parseInt(conv.chats_unicos || 0);
     const conPedido = parseInt(conv.chats_con_pedido || 0);
     res.json({
@@ -2568,19 +2599,24 @@ import {
   ajustarPuntosManual,
 } from './services/rewardsService.js';
 
-const REWARDS_TENANT = 'xabor-principal';
+// negocioId (Incidente P0): rewardsService usa un parámetro tenantId legado
+// (default 'xabor-principal', ver rewardsService.js) desconectado del
+// sistema de negocios. Aquí se pasa siempre req.negocioId como tenantId —
+// nunca el literal hardcodeado — para que cada negocio solo vea y modifique
+// su propio programa de puntos (migración 013 reetiquetó los datos
+// existentes de Nonna Maye a su negocio_id real).
 
 // Configuración del programa
 app.get('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
-    const config = await obtenerConfigRewards(REWARDS_TENANT);
+    const config = await obtenerConfigRewards(req.negocioId);
     res.json(config);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
-    await actualizarConfigRewards(REWARDS_TENANT, req.body);
+    await actualizarConfigRewards(req.negocioId, req.body);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2588,7 +2624,7 @@ app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
 // Resumen estadístico
 app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
   try {
-    const resumen = await obtenerResumenRewards(REWARDS_TENANT);
+    const resumen = await obtenerResumenRewards(req.negocioId);
     res.json(resumen);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2596,7 +2632,7 @@ app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
 // Lista de clientes inscritos
 app.get('/api/rewards/clientes', requireAdminSeguro, async (req, res) => {
   try {
-    const lista = await listarClientesRewards(REWARDS_TENANT);
+    const lista = await listarClientesRewards(req.negocioId);
     res.json(lista);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2606,7 +2642,7 @@ app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
-    const lista = await buscarClientesRewards(q, REWARDS_TENANT);
+    const lista = await buscarClientesRewards(q, req.negocioId);
     res.json(lista);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2614,12 +2650,12 @@ app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
 // Perfil de un cliente + estimación de puntos
 app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) => {
   try {
-    const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
+    const perfil = await obtenerPerfilRewards(req.params.telefono, req.negocioId);
     if (!perfil) return res.status(404).json({ error: 'No encontrado' });
     // Calcular estimación de puntos según total query param
     const total = parseFloat(req.query.total) || 0;
     if (total > 0) {
-      const config = await obtenerConfigRewards(REWARDS_TENANT);
+      const config = await obtenerConfigRewards(req.negocioId);
       perfil.puntos_estimados = calcularPuntos(total, config);
     }
     res.json(perfil);
@@ -2629,7 +2665,7 @@ app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) =>
 // Movimientos de un cliente
 app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, async (req, res) => {
   try {
-    const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
+    const perfil = await obtenerPerfilRewards(req.params.telefono, req.negocioId);
     if (!perfil?.account_id) return res.json([]);
     const movimientos = await obtenerMovimientosCliente(perfil.account_id);
     res.json(movimientos);
@@ -2639,7 +2675,7 @@ app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, async 
 // Movimientos recientes globales
 app.get('/api/rewards/movimientos', requireAdminSeguro, async (req, res) => {
   try {
-    const movimientos = await obtenerMovimientosRecientes(REWARDS_TENANT);
+    const movimientos = await obtenerMovimientosRecientes(req.negocioId);
     res.json(movimientos);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2654,17 +2690,19 @@ app.post('/api/rewards/cliente', requireAuthSeguro, async (req, res) => {
   const tel = telefono.trim().replace(/\D/g, '').slice(-10);
   if (tel.length < 7) return res.status(400).json({ error: 'Teléfono inválido' });
   try {
-    // Upsert en tabla clientes (reutiliza existente si ya existe)
+    // Upsert en tabla clientes (reutiliza existente si ya existe) — nunca
+    // reescribe negocio_id de un cliente existente, mismo criterio que
+    // upsertCliente en database.js.
     await pool.query(
-      `INSERT INTO clientes (telefono, nombre, ultima_visita)
-       VALUES ($1, $2, NOW())
+      `INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
+       VALUES ($1, $2, NOW(), $3)
        ON CONFLICT (telefono) DO UPDATE SET
          nombre = COALESCE(NULLIF($2, ''), clientes.nombre),
          ultima_visita = NOW()`,
-      [tel, nombre.trim()]
+      [tel, nombre.trim(), req.negocioId]
     );
-    const cuenta = await obtenerOCrearCuenta(tel, REWARDS_TENANT);
-    const perfil = await obtenerPerfilRewards(tel, REWARDS_TENANT);
+    const cuenta = await obtenerOCrearCuenta(tel, req.negocioId);
+    const perfil = await obtenerPerfilRewards(tel, req.negocioId);
     res.json({ ok: true, perfil });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2675,8 +2713,8 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, as
   const { total } = req.query;
   try {
     const [cuenta, config] = await Promise.all([
-      obtenerCuentaPorTelefono(telefono, REWARDS_TENANT),
-      obtenerConfigRewards(REWARDS_TENANT)
+      obtenerCuentaPorTelefono(telefono, req.negocioId),
+      obtenerConfigRewards(req.negocioId)
     ]);
     if (!cuenta || !config) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
     const totalVenta = parseFloat(total) || 0;
@@ -2691,7 +2729,7 @@ app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, async (re
   const { puntos, tipo, motivo } = req.body;
   try {
     const usuario = req.user || 'admin';
-    const result = await ajustarPuntosManual(telefono, puntos, tipo, motivo, usuario, REWARDS_TENANT);
+    const result = await ajustarPuntosManual(telefono, puntos, tipo, motivo, usuario, req.negocioId);
     res.json({ ok: true, ...result });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -2702,7 +2740,7 @@ app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, async (re
 app.get('/api/admin/campanas/preview', requireAdminSeguro, async (req, res) => {
   const { segmento = 'todos' } = req.query;
   try {
-    const destinatarios = await obtenerDestinatariosCampana(segmento);
+    const destinatarios = await obtenerDestinatariosCampana(segmento, req.negocioId);
     res.json({ total: destinatarios.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2719,17 +2757,14 @@ app.get('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
 });
 
 // Crear y enviar campaña (background — responde inmediato)
-// NOTA: la campaña (quién la creó) queda aislada por negocio_id, pero la
-// SELECCIÓN de destinatarios (obtenerDestinatariosCampana) todavía consulta
-// clientes/rewards sin filtrar por negocio — ver auditoría Fase 4. Con un
-// solo negocio real hoy esto no tiene efecto observable, pero es un riesgo
-// de fuga documentado, no resuelto.
+// negocioId OBLIGATORIO en la selección de destinatarios (Incidente P0) —
+// antes obtenerDestinatariosCampana no filtraba por negocio en absoluto.
 app.post('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
   const { nombre, segmento = 'todos', mensaje } = req.body;
   if (!nombre || !mensaje) return res.status(400).json({ error: 'nombre y mensaje requeridos' });
 
   try {
-    const destinatarios = await obtenerDestinatariosCampana(segmento);
+    const destinatarios = await obtenerDestinatariosCampana(segmento, req.negocioId);
     if (destinatarios.length === 0) return res.status(400).json({ error: 'Sin destinatarios para ese segmento' });
 
     const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length, negocioId: req.negocioId });
@@ -2868,12 +2903,12 @@ app.get('/api/pedidos-programados', requireAuthSeguro, async (req, res) => {
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────
 app.get('/api/llamadas', requireAuthSeguro, async (req, res) => {
-  const lista = await obtenerLlamadasRecientes(30);
+  const lista = await obtenerLlamadasRecientes(req.negocioId, 30);
   res.json(lista);
 });
 
 app.get('/api/llamadas/:callSid', requireAuthSeguro, async (req, res) => {
-  const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid);
+  const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid, req.negocioId);
   res.json(mensajes);
 });
 
@@ -2993,8 +3028,8 @@ async function sincronizarRappi() {
 
 // ─── Reconciliación de pagos Clip ─────────────────────────────────────────────
 // Revisa cada 5 min si algún pago con enlace ya fue completado (por si el webhook falló)
-// ⚠ broadcast() legado a propósito: job programado sin request/sesión, sin
-// req.negocioId — misma razón que /webhook/clip arriba.
+// negocioId (Incidente P0): job programado sin request/sesión, se deriva
+// buscando el pedido por folio, mismo criterio que /webhook/clip arriba.
 async function reconciliarPagosPendientes() {
   if (!process.env.CLIP_API_KEY || !process.env.CLIP_API_SECRET) return;
   try {
@@ -3003,7 +3038,12 @@ async function reconciliarPagosPendientes() {
       const data = await consultarEstadoPago(clip_link_id);
       if (data?.resource_status === 'COMPLETED' && data?.resource === 'CHECKOUT') {
         await confirmarPagoPedido(folio);
-        broadcast({ tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
+        const pedido = obtenerPedidoPorId(folio);
+        if (pedido?.negocioId) {
+          broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
+        } else {
+          console.warn(`[Clip Reconciliación] pago_confirmado: no se pudo resolver negocioId para ${folio} — broadcast omitido`);
+        }
         console.log(`[Clip Reconciliación] ✅ Pago confirmado automáticamente: ${folio}`);
       }
     }

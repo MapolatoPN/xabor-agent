@@ -156,10 +156,18 @@ function _persistirCambioEstado(pedido, nuevoEstado) {
 
   if (nuevoEstado === 'entregado') {
     archivarPedidoActivo(pedido.id);
-    // Rewards — fire-and-forget, nunca bloquea el flujo crítico
-    import('../services/rewardsService.js')
-      .then(({ acumularPuntos }) => acumularPuntos(pedido.id, pedido, 'xabor-principal'))
-      .catch(e => console.error('[Rewards] Error en hook de acumulación:', e.message));
+    // Rewards — fire-and-forget, nunca bloquea el flujo crítico.
+    // negocioId (Incidente P0): antes acumulaba SIEMPRE bajo el tenant
+    // hardcodeado 'xabor-principal' sin importar de qué negocio era el
+    // pedido -- si pedido.negocioId no se pudo resolver, se omite la
+    // acumulación en vez de acumular puntos bajo el negocio equivocado.
+    if (pedido.negocioId) {
+      import('../services/rewardsService.js')
+        .then(({ acumularPuntos }) => acumularPuntos(pedido.id, pedido, pedido.negocioId))
+        .catch(e => console.error('[Rewards] Error en hook de acumulación:', e.message));
+    } else {
+      console.warn(`[Rewards] Pedido ${pedido.id} sin negocioId — acumulación de puntos omitida (fail closed)`);
+    }
   } else {
     actualizarEstadoPedidoDB(pedido.id, nuevoEstado);
   }

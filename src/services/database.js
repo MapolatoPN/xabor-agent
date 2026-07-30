@@ -695,11 +695,21 @@ export async function eliminarSuscripcionPush(endpoint) {
 }
 
 // ─── Obtener cliente por teléfono ─────────────────────────────────────────────
-export async function obtenerCliente(telefono) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0 de aislamiento).
+// Compatibilidad TEMPORAL y limitada a Nonna Maye para los 2 clientes con
+// negocio_id NULL (mismo criterio que _esNonnaMaye en mensajes) — no se
+// reasignan todavía, solo siguen visibles para Nonna Maye.
+export async function obtenerCliente(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerCliente: negocioId inválido u omitido — rechazado, sin consulta global');
+    return null;
+  }
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
     const result = await pool.query(
-      'SELECT * FROM clientes WHERE telefono = $1',
-      [telefono]
+      'SELECT * FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+      [telefono, negocioId, incluirNull]
     );
     return result.rows[0] || null;
   } catch (e) {
@@ -740,23 +750,47 @@ export async function upsertCliente(telefono, nombre, negocioId) {
 }
 
 // ─── Control manual del bot por conversación ──────────────────────────────────
-export async function setBotPausado(telefono, pausado) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Antes cualquier
+// negocio podía pausar/reactivar el bot de un cliente de OTRO negocio con
+// solo conocer su teléfono, y de paso creaba clientes nuevos con
+// negocio_id NULL. El WHERE del ON CONFLICT hace que la escritura sea un
+// no-op si el teléfono ya pertenece a otro negocio (nunca lo reasigna).
+export async function setBotPausado(telefono, pausado, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] setBotPausado: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
-      INSERT INTO clientes (telefono, bot_pausado)
-      VALUES ($1, $2)
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+    const { rowCount } = await pool.query(`
+      INSERT INTO clientes (telefono, bot_pausado, negocio_id)
+      VALUES ($1, $2, $3)
       ON CONFLICT (telefono) DO UPDATE SET bot_pausado = $2
-    `, [telefono, pausado]);
+        WHERE clientes.negocio_id = $3 OR ($4::boolean AND clientes.negocio_id IS NULL)
+    `, [telefono, pausado, negocioId, incluirNull]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error setBotPausado:', e.message);
+    return false;
   }
 }
 
-export async function toggleClienteInterno(telefono, esInterno) {
-  await pool.query(
-    'UPDATE clientes SET es_interno = $1 WHERE telefono = $2',
-    [esInterno, telefono]
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Sin esto, cualquier
+// negocio podía marcar/desmarcar como "interno" al cliente de OTRO negocio
+// con solo conocer su teléfono (escritura sin validar dueño).
+export async function toggleClienteInterno(telefono, esInterno, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] toggleClienteInterno: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
+  const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+  const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+  const { rowCount } = await pool.query(
+    'UPDATE clientes SET es_interno = $1 WHERE telefono = $2 AND (negocio_id = $3 OR ($4::boolean AND negocio_id IS NULL))',
+    [esInterno, telefono, negocioId, incluirNull]
   );
+  return rowCount > 0;
 }
 
 export async function getBotPausado(telefono) {
@@ -978,12 +1012,20 @@ export async function actualizarFormaPago(folio, formaPago) {
 }
 
 // ─── Mensajes WhatsApp ───────────────────────────────────────────────────────
-export async function guardarMensaje(telefono, nombre, direccion, texto) {
+// negocioId OBLIGATORIO en escritura y lectura — falla cerrado (Incidente P0
+// de aislamiento, julio 2026). El negocio SIEMPRE viene de la sesión del
+// llamador (req.negocioId) o de la resolución de canal (integraciones_canal),
+// nunca de un valor enviado por el frontend.
+export async function guardarMensaje(telefono, nombre, direccion, texto, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarMensaje: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return null;
+  }
   try {
     const result = await pool.query(`
-      INSERT INTO mensajes (telefono, nombre, direccion, texto)
-      VALUES ($1, $2, $3, $4) RETURNING *
-    `, [telefono, nombre || null, direccion, texto]);
+      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id)
+      VALUES ($1, $2, $3, $4, $5) RETURNING *
+    `, [telefono, nombre || null, direccion, texto, negocioId.trim()]);
     return result.rows[0];
   } catch (e) {
     console.error('[DB] Error guardarMensaje:', e.message);
@@ -991,12 +1033,30 @@ export async function guardarMensaje(telefono, nombre, direccion, texto) {
   }
 }
 
-export async function obtenerConversacion(telefono) {
+// Compatibilidad TEMPORAL y estrictamente limitada a Nonna Maye: los 90
+// mensajes con negocio_id NULL (previos a que WhatsApp empezara a escribir
+// negocio_id) siguen siendo visibles solo para Nonna Maye — nunca para un
+// negocio nuevo. No es un COALESCE global ni una conversión automática de
+// NULL: la condición solo se activa si negocioId coincide exactamente con
+// el id real de Nonna Maye, resuelto por slug (nunca hardcodeado). Instrucción
+// explícita del incidente P0 — no reasignar esos registros todavía.
+async function _esNonnaMaye(negocioId) {
+  const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+  return !!nonnaMayeId && negocioId === nonnaMayeId;
+}
+
+export async function obtenerConversacion(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerConversacion: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
+    const incluirNull = await _esNonnaMaye(negocioId);
     const result = await pool.query(`
-      SELECT * FROM mensajes WHERE telefono = $1
+      SELECT * FROM mensajes
+      WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))
       ORDER BY timestamp ASC
-    `, [telefono]);
+    `, [telefono, negocioId, incluirNull]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerConversacion:', e.message);
@@ -1004,23 +1064,31 @@ export async function obtenerConversacion(telefono) {
   }
 }
 
-export async function obtenerConversacionesRecientes(limite = 20) {
+export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerConversacionesRecientes: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
+    const incluirNull = await _esNonnaMaye(negocioId);
     const result = await pool.query(`
       SELECT
         t.telefono,
-        (SELECT nombre FROM mensajes WHERE telefono = t.telefono AND nombre IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS nombre,
+        (SELECT nombre FROM mensajes WHERE telefono = t.telefono AND nombre IS NOT NULL
+           AND (negocio_id = $1 OR ($2::boolean AND negocio_id IS NULL))
+           ORDER BY timestamp DESC LIMIT 1) AS nombre,
         t.texto,
         t.direccion,
         t.timestamp
       FROM (
         SELECT DISTINCT ON (telefono) telefono, texto, direccion, timestamp
         FROM mensajes
+        WHERE negocio_id = $1 OR ($2::boolean AND negocio_id IS NULL)
         ORDER BY telefono, timestamp DESC
       ) t
       ORDER BY t.timestamp DESC
-      LIMIT $1
-    `, [limite]);
+      LIMIT $3
+    `, [negocioId, incluirNull, limite]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerConversacionesRecientes:', e.message);
@@ -1302,24 +1370,36 @@ export async function obtenerUltimoPedidoEntregadoPorTelefono(telefono) {
 }
 
 // ─── Transcripciones de voz ───────────────────────────────────────────────────
-export async function guardarTranscripcionVoz(callSid, fromNum, rol, texto) {
+// negocioId OBLIGATORIO en escritura y lectura — falla cerrado (Incidente P0).
+// 0 filas con negocio_id NULL en el diagnóstico de producción, así que no
+// hace falta ninguna cláusula de compatibilidad aquí (a diferencia de
+// mensajes/clientes).
+export async function guardarTranscripcionVoz(callSid, fromNum, rol, texto, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarTranscripcionVoz: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return;
+  }
   try {
     await pool.query(`
-      INSERT INTO transcripciones_voz (call_sid, from_num, rol, texto)
-      VALUES ($1, $2, $3, $4)
-    `, [callSid, fromNum || null, rol, texto]);
+      INSERT INTO transcripciones_voz (call_sid, from_num, rol, texto, negocio_id)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [callSid, fromNum || null, rol, texto, negocioId.trim()]);
   } catch (e) {
     console.error('[DB] Error guardarTranscripcionVoz:', e.message);
   }
 }
 
-export async function obtenerTranscripcionPorLlamada(callSid) {
+export async function obtenerTranscripcionPorLlamada(callSid, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerTranscripcionPorLlamada: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const result = await pool.query(`
       SELECT rol, texto, created_at FROM transcripciones_voz
-      WHERE call_sid = $1
+      WHERE call_sid = $1 AND negocio_id = $2
       ORDER BY created_at ASC
-    `, [callSid]);
+    `, [callSid, negocioId]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerTranscripcionPorLlamada:', e.message);
@@ -1327,7 +1407,11 @@ export async function obtenerTranscripcionPorLlamada(callSid) {
   }
 }
 
-export async function obtenerLlamadasRecientes(limite = 20) {
+export async function obtenerLlamadasRecientes(negocioId, limite = 20) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerLlamadasRecientes: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const result = await pool.query(`
       SELECT DISTINCT ON (call_sid)
@@ -1336,9 +1420,10 @@ export async function obtenerLlamadasRecientes(limite = 20) {
         MAX(created_at) OVER (PARTITION BY call_sid) AS fin,
         COUNT(*) OVER (PARTITION BY call_sid) AS num_mensajes
       FROM transcripciones_voz
+      WHERE negocio_id = $1
       ORDER BY call_sid, created_at DESC
-      LIMIT $1
-    `, [limite]);
+      LIMIT $2
+    `, [negocioId, limite]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerLlamadasRecientes:', e.message);
@@ -1829,16 +1914,23 @@ function normalizarTelefono(tel) {
   return tel;
 }
 
-export async function registrarRepartidor(nombre, telefono) {
+// negocioId (Incidente P0): opcional en la escritura porque el registro
+// público del repartidor (/api/repartidor/registro, sin sesión) hoy no
+// carga negocio -- mismo hueco de arquitectura ya documentado para
+// _negocioFallbackId en pedidos. Cuando SÍ se conoce (registro por
+// WhatsApp, negocioId resuelto vía integraciones_canal) se escribe. El
+// ON CONFLICT nunca reescribe negocio_id -- mismo criterio que
+// upsertCliente: la primera vez que se ve ese teléfono fija al dueño.
+export async function registrarRepartidor(nombre, telefono, negocioId) {
   const token = randomBytes(16).toString('hex');
   const telNorm = normalizarTelefono(telefono);
   try {
     const result = await pool.query(
-      `INSERT INTO repartidores (nombre, telefono, token)
-       VALUES ($1, $2, $3)
+      `INSERT INTO repartidores (nombre, telefono, token, negocio_id)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (telefono) DO UPDATE SET nombre = $1, activo = TRUE
        RETURNING *`,
-      [nombre, telNorm, token]
+      [nombre, telNorm, token, negocioId || null]
     );
     return result.rows[0];
   } catch (e) {
@@ -1854,16 +1946,39 @@ export async function obtenerRepartidorPorToken(token) {
   } catch (e) { return null; }
 }
 
-export async function obtenerRepartidorPorTelefono(telefono) {
+// negocioId opcional: cuando se pasa (flujo de WhatsApp, para decidir si el
+// remitente es un repartidor DE ESE negocio) filtra con el mismo criterio de
+// compatibilidad NULL limitado a Nonna Maye. Cuando se omite (login público
+// del propio repartidor por teléfono) es autoservicio -- el repartidor solo
+// puede obtener su propio registro por su propio teléfono, no hay negocio
+// ajeno que exponer aquí.
+export async function obtenerRepartidorPorTelefono(telefono, negocioId) {
   try {
     const telNorm = normalizarTelefono(telefono);
+    if (negocioId) {
+      const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+      const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+      const r = await pool.query(
+        'SELECT * FROM repartidores WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+        [telNorm, negocioId, incluirNull]
+      );
+      return r.rows[0] || null;
+    }
     const r = await pool.query('SELECT * FROM repartidores WHERE telefono = $1', [telNorm]);
     return r.rows[0] || null;
   } catch (e) { return null; }
 }
 
-export async function obtenerRepartidores() {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Lista de repartidores
+// del panel admin; era la fuga confirmada por el diagnóstico de producción.
+export async function obtenerRepartidores(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerRepartidores: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
     const r = await pool.query(`
       SELECT r.*,
         COALESCE((
@@ -1872,8 +1987,9 @@ export async function obtenerRepartidores() {
             AND estado = 'entregado'
         ), 0)::int AS pedidos_entregados
       FROM repartidores r
+      WHERE r.negocio_id = $1 OR ($2::boolean AND r.negocio_id IS NULL)
       ORDER BY r.activo DESC, r.nombre ASC
-    `);
+    `, [negocioId, incluirNull]);
     return r.rows;
   } catch (e) { return []; }
 }
@@ -1948,23 +2064,45 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   } catch (e) { return []; }
 }
 
-export async function eliminarRepartidor(id) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Sin esto, cualquier
+// negocio podía borrar el repartidor de OTRO negocio con solo conocer su id
+// (escritura sin validar dueño).
+export async function eliminarRepartidor(id, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] eliminarRepartidor: negocioId inválido u omitido — rechazado, no se borra sin negocio');
+    return false;
+  }
   try {
-    await pool.query('DELETE FROM repartidores WHERE id = $1', [id]);
-    return true;
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+    const { rowCount } = await pool.query(
+      'DELETE FROM repartidores WHERE id = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+      [id, negocioId, incluirNull]
+    );
+    return rowCount > 0;
   } catch(e) { return false; }
 }
 
-export async function obtenerCandidatosRepartidor() {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Consulta la misma
+// tabla mensajes que guardarMensaje/obtenerConversacion, mismo criterio de
+// compatibilidad NULL limitado a Nonna Maye.
+export async function obtenerCandidatosRepartidor(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerCandidatosRepartidor: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
     const r = await pool.query(`
       SELECT DISTINCT ON (telefono) telefono, nombre, texto, timestamp
       FROM mensajes
       WHERE LOWER(texto) LIKE '%repartidor%'
         AND direccion = 'entrante'
         AND timestamp > NOW() - INTERVAL '72 hours'
+        AND (negocio_id = $1 OR ($2::boolean AND negocio_id IS NULL))
       ORDER BY telefono, timestamp DESC
-    `);
+    `, [negocioId, incluirNull]);
     return r.rows;
   } catch(e) { return []; }
 }
@@ -2086,30 +2224,42 @@ export async function marcarRespuestaCampana(telefono) {
   `, [telefono]);
 }
 
-export async function obtenerDestinatariosCampana(segmento) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Antes no filtraba
+// por negocio en absoluto: una campaña creada desde cualquier negocio podía
+// mandar WhatsApp a los clientes reales de otro negocio. tenant_id de
+// rewards_accounts ahora es el negocio_id real (migración 013), nunca
+// 'xabor-principal' hardcodeado. Mismo criterio de compatibilidad NULL
+// limitado a Nonna Maye que en mensajes/clientes (los 2 clientes con
+// negocio_id NULL). De paso se parametriza segmento — antes se interpolaba
+// directo en el SQL (inyección posible desde un admin autenticado).
+export async function obtenerDestinatariosCampana(segmento, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerDestinatariosCampana: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+  const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+
   // Segmentos Rewards — clientes con N+ puntos de saldo activo
   if (segmento?.startsWith('rewards_')) {
     const minPts = parseInt(segmento.replace('rewards_', '')) || 0;
     const { rows } = await pool.query(`
       SELECT c.telefono, c.nombre
       FROM clientes c
-      JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = 'xabor-principal'
+      JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = $2
       LEFT JOIN repartidores r ON r.telefono = c.telefono
       WHERE c.telefono != '—'
         AND c.telefono NOT LIKE 'rappi-%'
         AND r.telefono IS NULL
         AND NOT COALESCE(c.es_interno, FALSE)
+        AND (c.negocio_id = $2 OR ($3::boolean AND c.negocio_id IS NULL))
         AND a.puntos_balance >= $1
       ORDER BY a.puntos_balance DESC
-    `, [minPts]);
+    `, [minPts, negocioId, incluirNull]);
     return rows;
   }
 
   // Segmentos CRM estándar
-  const segFiltro = segmento === 'todos'
-    ? ''
-    : `AND COALESCE(p.segmento, 'nuevo') = '${segmento}'`;
-
   const { rows } = await pool.query(`
     SELECT c.telefono, c.nombre
     FROM clientes c
@@ -2119,9 +2269,10 @@ export async function obtenerDestinatariosCampana(segmento) {
       AND c.telefono NOT LIKE 'rappi-%'
       AND r.telefono IS NULL
       AND NOT COALESCE(c.es_interno, FALSE)
-      ${segFiltro}
+      AND (c.negocio_id = $1 OR ($3::boolean AND c.negocio_id IS NULL))
+      AND ($2 = 'todos' OR COALESCE(p.segmento, 'nuevo') = $2)
     ORDER BY COALESCE(p.total_gastado, 0) DESC
-  `);
+  `, [negocioId, segmento, incluirNull]);
   return rows;
 }
 

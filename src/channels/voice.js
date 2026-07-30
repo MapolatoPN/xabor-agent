@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, eliminarPedido } from '../orders/orderManager.js';
-import { setPagoPendiente, guardarPedidoProgramado, guardarTranscripcionVoz } from '../services/database.js';
+import { setPagoPendiente, guardarPedidoProgramado, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
 
 const router = Router();
 
@@ -15,13 +15,33 @@ const WS_URL   = BASE_URL.replace(/^https?:\/\//, 'wss://');
 const sesiones = new Map();
 
 // ─── Inicio de llamada ───────────────────────────────────────────────────────
-router.post('/start', (req, res) => {
+// negocioId (Incidente P0): se resuelve EXCLUSIVAMENTE contra
+// integraciones_canal usando el número "To" que manda Twilio (el número
+// marcado por el cliente) -- nunca adivinado, nunca Nonna Maye como
+// relleno. Si el número no está mapeado a ningún negocio, la llamada se
+// rechaza con TwiML de error en vez de conectarla al bot sin negocio
+// (fail closed). Esto requiere que integraciones_canal tenga una fila
+// para 'voz' antes de desplegar este cambio (ver plan de deploy).
+router.post('/start', async (req, res) => {
   const callSid  = req.body.CallSid;
   const fromNum  = req.body.From;
+  const toNum    = req.body.To;
   const sessionId = `call-${callSid}`;
 
-  sesiones.set(callSid, { sessionId, fromNum });
-  console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum}`);
+  const integracion = toNum ? await obtenerIntegracionCanal('voz', toNum) : null;
+  if (!integracion) {
+    console.error(`[Voz] Llamada sin negocio mapeado para To=${toNum || '(vacío)'} — rechazada (fail closed)`);
+    res.type('text/xml');
+    return res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="es-MX">Lo sentimos, este servicio no está disponible en este momento.</Say>
+  <Hangup/>
+</Response>`);
+  }
+  const negocioId = integracion.negocioId;
+
+  sesiones.set(callSid, { sessionId, fromNum, negocioId });
+  console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum} — negocio ${negocioId}`);
 
   const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false }));
   const saludo  = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -55,6 +75,7 @@ export function setupVoiceWebSocket(wssVoice) {
     let callSid              = null;
     let sessionId            = null;
     let fromNum              = null;
+    let negocioId            = null;
     let procesando           = false;
     let folioInfo            = null;   // { texto } — activo mientras esperamos confirmación del folio
     let timerCierre          = null;   // timeout de cierre de llamada
@@ -80,8 +101,12 @@ export function setupVoiceWebSocket(wssVoice) {
         const ses = sesiones.get(callSid);
         sessionId = ses?.sessionId || `call-${callSid}`;
         fromNum   = ses?.fromNum   || msg.from;
+        negocioId = ses?.negocioId || null;
         sesiones.set(callSid, { ...ses, ws });
-        console.log(`[Voz WS] Setup — ${callSid} desde ${fromNum}`);
+        if (!negocioId) {
+          console.error(`[Voz WS] Setup sin negocioId resuelto — ${callSid} desde ${fromNum} (fail closed, no se guardarán transcripciones)`);
+        }
+        console.log(`[Voz WS] Setup — ${callSid} desde ${fromNum} — negocio ${negocioId || '(sin resolver)'}`);
         return;
       }
 
@@ -92,7 +117,7 @@ export function setupVoiceWebSocket(wssVoice) {
         if (!texto || procesando) return;
 
         // Guardar lo que dijo el cliente
-        guardarTranscripcionVoz(callSid, fromNum, 'cliente', texto);
+        guardarTranscripcionVoz(callSid, fromNum, 'cliente', texto, negocioId);
 
         // ── Confirmación de folio: el cliente responde "sí/no/repite" ─────────
         if (folioInfo) {
@@ -206,7 +231,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
           // Guardar transcripción del agente como bloque completo
           if (frasesAgente.length) {
-            guardarTranscripcionVoz(callSid, fromNum, 'agente', frasesAgente.join(' '));
+            guardarTranscripcionVoz(callSid, fromNum, 'agente', frasesAgente.join(' '), negocioId);
           }
 
           if (resultado.orden) {
