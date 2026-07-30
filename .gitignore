@@ -10,3 +10,11 @@ certs/
 *.p12
 *.pfx
 storage/cfdi/
+
+# Herramientas locales y archivos sensibles SAT
+export-certs.bat
+export-certs.ps1
+validate-sat.bat
+validate-sat-result.txt
+cert_b64.txt
+key_b64.txt

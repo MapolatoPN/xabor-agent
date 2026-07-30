@@ -4,20 +4,25 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createHmac } from 'crypto';
+import { createHmac, createHash, timingSafeEqual } from 'crypto';
 
 import { procesarMensaje } from './agent/brain.js';
 import {
   registrarPedido,
   emitirPedido,
   actualizarEstadoPedido,
+  actualizarEstadoPedidoLegacySinNegocio,
   eliminarPedido,
   obtenerPedidos,
+  obtenerTodosPedidosParaWebSocketLegacy,
   setWsBroadcast,
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
+import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -121,6 +126,215 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠ LEGADO — resolver de negocio por header, SIN autenticación real ─────────
+// Confía en un slug que envía el cliente (X-Negocio-Slug) para elegir el
+// negocio, sin verificar que quien hace la request tenga permiso alguno
+// sobre él. Se conserva únicamente para no romper el panel actual de Nonna
+// Maye (que todavía no inicia sesión con el mecanismo nuevo de abajo).
+// Aplicado únicamente a las rutas de configuración y menú (GET/PUT /api/config,
+// GET /api/menu y /api/admin/menu/*) — no se extiende a WhatsApp, voz, Rappi,
+// SAT, pedidos ni impresión.
+// REEMPLAZO: requireSesionNegocio (ver abajo) es el mecanismo real — resuelve
+// el negocio desde una sesión firmada server-side y verifica membresía en
+// usuario_negocios. Migrar las rutas de config/menú a requireSesionNegocio
+// es el siguiente paso pendiente (requiere que el panel inicie sesión real).
+let negocioPorDefectoIdCache = null;
+async function resolverNegocioActualPorDefecto() {
+  if (!negocioPorDefectoIdCache) {
+    negocioPorDefectoIdCache = await obtenerNegocioIdPorSlug('nonna-maye');
+  }
+  return negocioPorDefectoIdCache;
+}
+
+async function resolverNegocio(req, res, next) {
+  const slug = req.headers['x-negocio-slug'];
+  if (!slug) {
+    req.negocioId = await resolverNegocioActualPorDefecto();
+    req.esNegocioPorDefecto = true;
+    return next();
+  }
+  const id = await obtenerNegocioIdPorSlug(slug);
+  if (!id) {
+    return res.status(404).json({ error: `Negocio no encontrado para slug: ${slug}` });
+  }
+  req.negocioId = id;
+  req.esNegocioPorDefecto = false;
+  next();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 2) — autenticación multiempresa real por sesión ────────────
+// El negocio autorizado NUNCA se acepta porque el cliente lo envía (ni
+// header ni body ni query) — se determina exclusivamente a partir de un
+// token de sesión firmado por el servidor (ver services/session.js), y se
+// verifica contra la tabla usuario_negocios que el usuario de esa sesión
+// realmente pertenece al negocio que la sesión indica.
+//
+// Uso: app.get('/ruta', requireSesionNegocio(), handler)
+//      app.post('/ruta', requireSesionNegocio('admin'), handler)  // exige rol
+//
+// Jerarquía de roles simple: 'admin' satisface cualquier requerimiento;
+// 'staff' solo satisface requerimientos de 'staff' o ninguno.
+const JERARQUIA_ROLES = { admin: 2, staff: 1 };
+
+function requireSesionNegocio(rolMinimo) {
+  return async (req, res, next) => {
+    const auth = req.headers['authorization'];
+    const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+    const token = leerCookieSesion(req) || tokenBearer;
+    if (!token) {
+      return res.status(401).json({ error: 'No autenticado' });
+    }
+    const payload = verificarTokenSesion(token);
+    if (!payload) {
+      return res.status(401).json({ error: 'Sesión inválida o expirada' });
+    }
+
+    // Verificar que el usuario de la sesión SIGUE perteneciendo al negocio
+    // que la sesión indica — no basta con confiar en el token: la membresía
+    // pudo revocarse después de emitido.
+    const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+    if (!membresia || !membresia.activo) {
+      return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+    }
+
+    if (rolMinimo) {
+      const nivelUsuario  = JERARQUIA_ROLES[membresia.rol] || 0;
+      const nivelRequerido = JERARQUIA_ROLES[rolMinimo] || 0;
+      if (nivelUsuario < nivelRequerido) {
+        return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
+      }
+    }
+
+    req.usuarioId = payload.usuarioId;
+    req.negocioId = payload.negocioId;
+    req.rol = membresia.rol;
+    next();
+  };
+}
+
+// ─── Cookies de sesión (Fase 3) ─────────────────────────────────────────────
+// Parseo manual — sin agregar cookie-parser como dependencia nueva. Solo se
+// necesita leer/escribir una cookie propia (xabor_sesion), no un parser
+// genérico de cookies de terceros.
+const COOKIE_SESION = 'xabor_sesion';
+
+function leerCookieSesion(req) {
+  const header = req.headers['cookie'];
+  if (!header) return null;
+  for (const par of header.split(';')) {
+    const idx = par.indexOf('=');
+    if (idx === -1) continue;
+    const nombre = par.slice(0, idx).trim();
+    if (nombre === COOKIE_SESION) return decodeURIComponent(par.slice(idx + 1).trim());
+  }
+  return null;
+}
+
+function setCookieSesion(res, token) {
+  const partes = [
+    `${COOKIE_SESION}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${12 * 60 * 60}`, // 12 horas — igual a DURACION_MS en session.js
+  ];
+  if (process.env.NODE_ENV === 'production') partes.push('Secure');
+  res.setHeader('Set-Cookie', partes.join('; '));
+}
+
+function limpiarCookieSesion(res) {
+  const partes = [`${COOKIE_SESION}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (process.env.NODE_ENV === 'production') partes.push('Secure');
+  res.setHeader('Set-Cookie', partes.join('; '));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 3) — puente sesión-nueva / legado para rutas de config y menú
+// Intenta primero la sesión nueva (cookie httpOnly, o un Authorization:
+// Bearer que sea un token de sesión firmado — no el token admin/staff
+// legado). Si se presentó una credencial de sesión nueva pero resulta
+// inválida o expirada, se RECHAZA de inmediato — nunca cae al mecanismo
+// legado en ese caso, porque eso dejaría colarse a alguien con un token
+// viejo o manipulado por la puerta de atrás. Solo cuando no se presentó
+// ninguna credencial de sesión nueva (ninguna cookie y, si hay Bearer, es el
+// token admin/staff legado) se usa el mecanismo legado como respaldo
+// temporal, exactamente como funcionaba antes de esta fase.
+//
+// PENDIENTE DE ELIMINAR (ver requisito de "compatibilidad temporal"): una
+// vez que todos los usuarios del panel inicien sesión con el mecanismo
+// nuevo, quitar la rama "⚠ LEGADO" de esta función y las rutas/middlewares
+// marcados ⚠ LEGADO (resolverNegocio, requireAuth, requireAdmin, TOKEN_ADMIN,
+// TOKEN_STAFF, POST /api/auth/login).
+function resolverNegocioSeguro(rolMinimo) {
+  return async (req, res, next) => {
+    const tokenCookie = leerCookieSesion(req);
+    const auth = req.headers['authorization'];
+    const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+    const esBearerLegado = tokenBearer && (tokenBearer === TOKEN_ADMIN || tokenBearer === TOKEN_STAFF);
+    const tokenSesionNueva = tokenCookie || (esBearerLegado ? null : tokenBearer);
+
+    if (tokenSesionNueva) {
+      const payload = verificarTokenSesion(tokenSesionNueva);
+      if (!payload) {
+        // Credencial de sesión nueva presente pero inválida/expirada — no
+        // caer al legado silenciosamente.
+        return res.status(401).json({ error: 'Sesión inválida o expirada' });
+      }
+      const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+      if (!membresia || !membresia.activo) {
+        return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+      }
+      if (rolMinimo) {
+        const nivelUsuario   = JERARQUIA_ROLES[membresia.rol] || 0;
+        const nivelRequerido = JERARQUIA_ROLES[rolMinimo] || 0;
+        if (nivelUsuario < nivelRequerido) {
+          return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
+        }
+      }
+      const negocioDefaultId = await resolverNegocioActualPorDefecto();
+      req.usuarioId = payload.usuarioId;
+      req.negocioId = payload.negocioId;
+      req.rol = membresia.rol;
+      req.esNegocioPorDefecto = payload.negocioId === negocioDefaultId;
+      req.sesionNueva = true;
+      return next();
+    }
+
+    // ⚠ LEGADO — sin credencial de sesión nueva, usar token admin/staff + slug
+    const role = tokenBearer ? getRole(tokenBearer) : null;
+    if (!role) return res.status(401).json({ error: 'No autenticado' });
+    if (rolMinimo === 'admin' && role !== 'admin') {
+      return res.status(403).json({ error: 'Solo administradores' });
+    }
+    req.role = role;
+    req.sesionNueva = false;
+    return resolverNegocio(req, res, next);
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase 4) — puente sesión-nueva/legado para rutas SIN filtrado por
+// negocio_id todavía. Mismo criterio de seguridad que resolverNegocioSeguro
+// (sesión nueva inválida se rechaza de inmediato, nunca cae al legado; el
+// legado solo aplica cuando no se presentó ninguna credencial nueva), pero
+// sin resolver ni exigir negocio — solo autentica, exactamente como hacían
+// requireAuth/requireAdmin. Se usa en rutas cuyas tablas subyacentes
+// (pedidos, clientes, mensajes, etc.) todavía no tienen negocio_id real
+// filtrado — ver auditoría de Fase 4. Reutiliza resolverNegocioSeguro para
+// no duplicar la lógica de aceptar/rechazar la credencial; simplemente
+// ignora req.negocioId después.
+//
+// PENDIENTE DE ELIMINAR junto con resolverNegocioSeguro cuando se retire el
+// mecanismo legado (ver documentación de compatibilidad temporal).
+function requireAuthSeguro(req, res, next) {
+  return resolverNegocioSeguro()(req, res, next);
+}
+function requireAdminSeguro(req, res, next) {
+  return resolverNegocioSeguro('admin')(req, res, next);
+}
+
 // ─── Web Push — VAPID ────────────────────────────────────────────────────────
 const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || '';
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
@@ -179,31 +393,159 @@ export { enviarPushARepartidores };
 const app = express();
 const server = createServer(app);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO — autenticación de terminales de impresión (print-agent) ─────────
+// Consulta central de solo lectura: terminales → sucursales → negocios.
+// La única identidad que declara el cliente es terminalId + token (nunca
+// negocioId ni sucursalId) -- ambos se derivan aquí, exclusivamente desde
+// la base de datos, vía el JOIN. negocios.activo existe en el esquema
+// (migración 003) -- se valida directamente, no se documenta como ausente.
+// terminalId puede venir malformado (no-UUID) desde un cliente hostil: se
+// captura el error de sintaxis de Postgres y se trata igual que "no
+// encontrado" -- nunca se distingue de cara al cliente.
+async function obtenerTerminalParaAutenticacion(terminalId) {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        t.id      AS terminal_id,
+        t.token_hash,
+        t.activo  AS terminal_activo,
+        t.tipo    AS terminal_tipo,
+        s.id      AS sucursal_id,
+        s.activo  AS sucursal_activo,
+        n.id      AS negocio_id,
+        n.activo  AS negocio_activo
+      FROM terminales t
+      JOIN sucursales s ON s.id = t.sucursal_id
+      JOIN negocios n   ON n.id = s.negocio_id
+      WHERE t.id = $1
+    `, [terminalId]);
+    return rows[0] || null;
+  } catch (e) {
+    // Incluye el caso de terminalId con formato inválido (no-UUID) --
+    // Postgres lanza "invalid input syntax for type uuid", se trata igual
+    // que "no encontrado". Log seguro: solo el terminalId (identificador
+    // interno declarado por el cliente, nunca un secreto), nunca el token.
+    console.error(`[PrintAgent] obtenerTerminalParaAutenticacion: error de consulta para terminalId=${terminalId} — ${e.message}`);
+    return null;
+  }
+}
+
+// Se actualiza EXCLUSIVAMENTE al autenticar con éxito -- nunca por un
+// trigger genérico (ver migración 010). Un fallo aquí NUNCA invalida una
+// autenticación ya correcta -- ver el único llamador, que no lo espera
+// antes de responder éxito al agente.
+async function marcarUltimaConexionTerminal(terminalId) {
+  try {
+    await pool.query(`UPDATE terminales SET ultima_conexion = NOW() WHERE id = $1`, [terminalId]);
+  } catch (e) {
+    console.error(`[PrintAgent] No se pudo actualizar ultima_conexion para terminal=${terminalId}: ${e.message}`);
+  }
+}
+
 // ─── WebSocket: panel de comandas + Conversation Relay de voz ───────────────
 const wss      = new WebSocketServer({ noServer: true }); // panel
 const wssVoice = new WebSocketServer({ noServer: true }); // voz
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO — autenticación del handshake WebSocket del panel (/ws/panel) ────
+// Mismo criterio que requireSesionNegocio/resolverNegocioSeguro (HTTP): el
+// negocio NUNCA se acepta porque el cliente lo envía (ni query, ni header,
+// ni primer mensaje) — se deriva exclusivamente de la cookie de sesión
+// httpOnly xabor_sesion, verificada con verificarTokenSesion (firma, expiración
+// y revocación) y luego reconfirmada contra usuario_negocios (la membresía
+// pudo revocarse después de emitido el token). Rechaza ANTES de completar el
+// upgrade — nunca se abre el socket ni se envía un solo pedido a una
+// conexión no autenticada.
+//
+// La conexión legado (print-agent, sin autenticar, en la raíz "/") sigue
+// intacta en esta tarea — ver el comentario "PENDIENTE DE ELIMINAR" junto a
+// wss.on('connection') más abajo. broadcast() tampoco cambia todavía.
+async function autenticarUpgradePanel(req, socket, head) {
+  function rechazar(status, motivo) {
+    socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  }
+
+  const token = leerCookieSesion(req);
+  if (!token) return rechazar(401, 'Unauthorized');
+
+  const payload = verificarTokenSesion(token); // firma, expiración y revocación
+  if (!payload) return rechazar(401, 'Unauthorized');
+  if (!payload.usuarioId || !payload.rol) return rechazar(401, 'Unauthorized');
+  if (typeof payload.negocioId !== 'string' || !payload.negocioId.trim()) return rechazar(401, 'Unauthorized');
+
+  // Reconfirmar membresía real — no basta con confiar en el token.
+  const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
+  if (!membresia || !membresia.activo) return rechazar(403, 'Forbidden');
+  if (!JERARQUIA_ROLES[membresia.rol]) return rechazar(403, 'Forbidden'); // rol corrupto/desconocido
+
+  const contextoWS = {
+    tipo: 'panel',
+    usuarioId: payload.usuarioId,
+    negocioId: payload.negocioId,
+    rol: membresia.rol, // rol fresco de DB, no el del token (pudo cambiar)
+    sucursalId: null,
+    terminalId: null,
+  };
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.contextoWS = contextoWS;
+    wss.emit('connection', ws, req);
+  });
+}
+
 // Enrutar conexiones WebSocket por path
 server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/ws/voice') {
+  const pathname = req.url.split('?')[0];
+
+  if (pathname === '/ws/voice') {
     wssVoice.handleUpgrade(req, socket, head, (ws) => {
       wssVoice.emit('connection', ws, req);
     });
-  } else {
+    return;
+  }
+
+  if (pathname === '/ws/panel') {
+    autenticarUpgradePanel(req, socket, head);
+    return;
+  }
+
+  // ✅ NUEVO — ruta dedicada para print-agents autenticados por terminal.
+  // A diferencia del panel (que ya trae su credencial en el handshake vía
+  // cookie), el print-agent no tiene cookie -- su credencial llega en el
+  // PRIMER MENSAJE post-conexión (ver wss.on('connection') más abajo), así
+  // que el upgrade siempre se completa aquí sin autenticar todavía. La
+  // conexión queda marcada 'print-agent-pendiente' -- nunca 'legacy', y no
+  // recibe absolutamente nada (ni pedidos, ni snapshot, ni eventos) hasta
+  // que el mensaje inicial autentique correctamente o expire el timeout.
+  if (pathname === '/ws/print-agent') {
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.contextoWS = { tipo: 'print-agent-pendiente', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null, autenticado: false };
       wss.emit('connection', ws, req);
     });
+    return;
   }
+
+  // ⚠ LEGADO — MULTIEMPRESA INSEGURO: conexión sin autenticar (usada hoy por
+  // print-agent.js en la raíz "/"). PENDIENTE DE ELIMINAR en cuanto
+  // print-agent.js migre a su propia ruta autenticada — no ampliar esta ruta
+  // para nuevos clientes mientras tanto.
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.contextoWS = { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
+    wss.emit('connection', ws, req);
+  });
 });
 
-function broadcast(data) {
-  const mensaje = JSON.stringify(data);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) { // 1 = OPEN
-      client.send(mensaje);
-    }
-  });
-  // Push notification para nuevo pedido
+// ✅ NUEVO (Fase 7) — push notifications, extraídas de broadcast() a su
+// propia función para poder dispararlas tanto desde broadcast() (legado)
+// como desde broadcastNegocio() (nuevo), sin duplicar la lógica ni
+// mezclarla con el filtrado por negocio. Push SIGUE GLOBAL a propósito en
+// esta fase (no se tocó el sistema de push) — ver reporte, sección "Estado
+// del push global". broadcastPrintAgentLegacy NUNCA la llama (evitaría un
+// doble push del mismo nuevo_pedido, que ya dispara push vía
+// broadcastNegocio).
+function dispararPushParaEvento(data) {
   if (data.tipo === 'nuevo_pedido') {
     const p = data.pedido;
     const canal = p?.canal === 'presencial' ? 'Presencial' : (p?.canal === 'rappi' ? 'Rappi' : 'WhatsApp');
@@ -215,7 +557,6 @@ function broadcast(data) {
       { pedidoId: p?.id || p?.folio }
     ).catch(() => {});
   }
-  // Push notification para mensaje nuevo de WhatsApp
   if (data.tipo === 'nuevo_mensaje' && data.mensaje?.direccion === 'entrante') {
     const tel = data.mensaje?.telefono || '';
     const txt = data.mensaje?.texto?.slice(0, 60) || 'Nuevo mensaje';
@@ -223,24 +564,272 @@ function broadcast(data) {
   }
 }
 
+// ⚠ PENDIENTE DE ELIMINAR: broadcast global legado — envía a TODOS los
+// sockets de wss (panel de cualquier negocio + print-agent legado), sin
+// aislar nada. NO USAR PARA NUEVOS EVENTOS OPERATIVOS. Se conserva
+// únicamente para flujos que hoy todavía no tienen negocioId confiable:
+// nuevo_mensaje de WhatsApp, bot_pausado, pago_confirmado (webhooks/jobs
+// sin sesión), repartidor_asignado y el actualizar_estado del flujo de
+// repartidor (sin sesión de negocio), rappi_menu_aprobado/rechazado (sin
+// datos operativos que aislar) y rappi_cancelacion cuando su store_id no
+// resuelve a ninguna integración registrada — ver reporte de esta fase
+// para el detalle completo de cada caso. Usar broadcastNegocio(negocioId,
+// data) para cualquier evento operativo nuevo.
+function broadcast(data) {
+  const mensaje = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) { // 1 = OPEN
+      client.send(mensaje);
+    }
+  });
+  dispararPushParaEvento(data);
+}
+
+// ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
+// conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
+// nunca a 'legacy' (print-agent), nunca a wssVoice, nunca a otro negocio.
+// Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
+// broadcast() global. Dispara el mismo push global que broadcast() (ver
+// dispararPushParaEvento) — deliberado y documentado, no un efecto
+// accidental del filtrado por negocio.
+function broadcastNegocio(negocioId, data, opciones = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
+    return 0;
+  }
+  const negocioIdNorm = negocioId.trim();
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return; // 1 = OPEN
+    if (client.tipo !== 'panel') return;
+    if (client.negocioId !== negocioIdNorm) return;
+    // opciones.sucursalId / opciones.terminalId: reservado para filtros
+    // futuros más finos (no usado todavía — no se inventa comportamiento
+    // no solicitado en esta fase).
+    client.send(mensaje);
+    enviados++;
+  });
+  dispararPushParaEvento(data);
+  return enviados;
+}
+
+// ⚠ PENDIENTE DE ELIMINAR: envío adicional y temporal hacia print-agent
+// (conexiones ws.tipo==='legacy' en la raíz "/"), EXCLUSIVAMENTE para
+// nuevo_pedido — mantiene la impresión de Nonna Maye funcionando mientras
+// print-agent.js no migra a su propia ruta autenticada (fase no autorizada
+// todavía). Nunca debe usarse para mensajes, pagos, clientes ni eventos
+// administrativos. No está aislada por negocio (print-agent hoy no sabe a
+// qué negocio pertenece) — por diseño, no por descuido. No dispara push
+// (ya lo hace broadcastNegocio para el mismo evento; evita duplicarlo).
+function broadcastPrintAgentLegacy(data) {
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return;
+    if (client.tipo !== 'legacy') return;
+    client.send(mensaje);
+    enviados++;
+  });
+  return enviados;
+}
+
+// ✅ NUEVO — broadcast seguro para print-agents autenticados. Exige
+// negocioId Y sucursalId (ambos obligatorios aquí, a diferencia de
+// broadcastNegocio del panel) -- fail closed si falta cualquiera de los
+// dos, sin excepción, sin caer nunca a broadcast()/broadcastPrintAgentLegacy.
+// Envía EXCLUSIVAMENTE a ws.tipo==='print-agent' con ws.autenticado===true
+// cuyo negocioId Y sucursalId coincidan exactamente -- nunca a 'panel',
+// 'legacy' ni 'print-agent-pendiente' (sin autenticar). TODAVÍA no la
+// invoca ningún emisor real de pedidos -- queda definida y disponible
+// para la siguiente fase.
+function broadcastPrintAgentNegocio(negocioId, sucursalId, data) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || typeof sucursalId !== 'string' || !sucursalId.trim()) {
+    console.error(`[PrintAgent] broadcastPrintAgentNegocio: negocioId/sucursalId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
+    return 0;
+  }
+  const negocioIdNorm = negocioId.trim();
+  const sucursalIdNorm = sucursalId.trim();
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return; // 1 = OPEN
+    if (client.tipo !== 'print-agent') return;
+    if (!client.autenticado) return;
+    if (client.negocioId !== negocioIdNorm) return;
+    if (client.sucursalId !== sucursalIdNorm) return;
+    client.send(mensaje);
+    enviados++;
+  });
+  // Log seguro: negocio/sucursal/tipo/folio -- nunca cliente, teléfono,
+  // dirección, items ni token.
+  const folio = data?.pedido?.id || data?.pedido?.folio || data?.folio || null;
+  console.log(`[PrintAgent] broadcastPrintAgentNegocio — negocio=${negocioIdNorm} sucursal=${sucursalIdNorm} tipo=${data?.tipo} folio=${folio || '-'} destinatarios=${enviados}`);
+  return enviados;
+}
+// Exportada únicamente para poder probarla de forma aislada y para que la
+// siguiente fase (todavía no autorizada) la conecte a un emisor real de
+// pedidos -- mismo patrón ya usado en este archivo para
+// enviarPushARepartidores. Ningún llamador real la invoca todavía.
+export { broadcastPrintAgentNegocio };
+
 // Inyectar broadcast en el orderManager, whatsapp y rappi
-setWsBroadcast(broadcast);
+setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcast);
-setWsBroadcastRappi(broadcast);
+setWsBroadcastRappi(broadcastNegocio, broadcast);
+
+// Inyectar los broadcasts de impresión en printRouter -- una sola vez al
+// arrancar, nunca por pedido. printRouter decide legacy vs. autenticado;
+// aquí solo se le da acceso a los dos canales WebSocket reales.
+setBroadcastsImpresion({ legacy: broadcastPrintAgentLegacy, autenticado: broadcastPrintAgentNegocio });
 
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
 
-wss.on('connection', (ws) => {
-  console.log('[WS] Panel conectado');
+// Tiempo máximo para que una conexión /ws/print-agent envíe su mensaje de
+// autenticación antes de cerrarse. Valor razonable, no configurable
+// todavía (no se pidió que lo fuera).
+const TIMEOUT_AUTH_PRINT_AGENT_MS = 5000;
+const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload excesivo
 
-  // Enviar pedidos existentes al panel cuando se conecta
-  const pedidosActivos = obtenerPedidos().filter(p => p.estado !== 'entregado');
+// wss recibe TRES clases de conexión hoy:
+//   - 'panel'  → autenticada en autenticarUpgradePanel() (/ws/panel), carga
+//     inicial aislada por negocio vía obtenerPedidos(ws.negocioId).
+//   - 'print-agent-pendiente' → conexión de /ws/print-agent, upgrade ya
+//     completado pero SIN autenticar todavía. No recibe absolutamente
+//     nada -- ni pedidos, ni snapshot, ni eventos administrativos -- hasta
+//     que su primer mensaje ({tipo:'autenticar_terminal', terminalId,
+//     token}) valide correctamente contra terminales→sucursales→negocios,
+//     o hasta que expire TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero.
+//     Al autenticar con éxito pasa a ws.tipo='print-agent',
+//     ws.autenticado=true. Nunca se clasifica como 'legacy'. Solo se
+//     procesa el PRIMER mensaje recibido en toda la conexión -- cualquier
+//     mensaje adicional (incluido un segundo intento de autenticación) se
+//     rechaza cerrando el socket, para impedir reautenticarse como otra
+//     terminal en la misma conexión.
+//   - 'legacy' → ⚠ MULTIEMPRESA INSEGURO, sin autenticar (raíz "/", usada
+//     hoy por print-agent.js). Usa obtenerTodosPedidosParaWebSocketLegacy()
+//     (todos los pedidos de todos los negocios) para conservar el
+//     comportamiento actual sin romper la impresión de Nonna Maye.
+//     PENDIENTE DE ELIMINAR en cuanto print-agent.js migre a /ws/print-agent
+//     (fase posterior, no autorizada todavía). NO DESPLEGAR PARA UN
+//     SEGUNDO NEGOCIO mientras esta rama exista. broadcast() sigue
+//     exactamente igual (llega solo a 'panel' y 'legacy'), sin cambios en
+//     esta tarea.
+wss.on('connection', (ws) => {
+  const ctx = ws.contextoWS || { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
+  ws.tipo       = ctx.tipo;
+  ws.usuarioId  = ctx.usuarioId;
+  ws.negocioId  = ctx.negocioId;
+  ws.rol        = ctx.rol;
+  ws.sucursalId = ctx.sucursalId;
+  ws.terminalId = ctx.terminalId;
+  ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/legacy), false/true = print-agent
+
+  if (ws.tipo === 'panel') {
+    console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
+    const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => p.estado !== 'entregado');
+    pedidosNegocio.forEach(pedido => {
+      ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
+    });
+    ws.on('close', () => console.log('[WS] Panel autenticado desconectado'));
+    return;
+  }
+
+  if (ws.tipo === 'print-agent-pendiente') {
+    // Sin volcado inicial de ningún tipo -- ni ahora ni tras autenticar
+    // (ver Fase 9 del reporte de esta tarea): el agente nuevo solo
+    // recibirá trabajos explícitos en una fase posterior, nunca un
+    // snapshot al conectar. Esto es justo lo que elimina la reimpresión
+    // masiva por reconexión que sí sufre el agente legacy.
+    let procesado = false;
+
+    const limpiarTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+    let timer = setTimeout(() => {
+      if (!ws.autenticado) {
+        console.log('[PrintAgent] Conexión cerrada por timeout de autenticación (sin secretos en el log)');
+        try { ws.close(1008, 'Timeout de autenticación'); } catch { ws.terminate(); }
+      }
+    }, TIMEOUT_AUTH_PRINT_AGENT_MS);
+
+    const rechazar = (motivoLog) => {
+      console.log(`[PrintAgent] Autenticación fallida (${motivoLog}) — sin revelar el motivo al cliente`);
+      try { ws.send(JSON.stringify({ tipo: 'error', mensaje: 'Autenticación fallida' })); } catch {}
+      limpiarTimer();
+      try { ws.close(); } catch { ws.terminate(); }
+    };
+
+    ws.on('message', async (raw) => {
+      if (procesado) {
+        // Ya se procesó un mensaje en esta conexión -- ni reautenticación
+        // como otra terminal, ni mensajes adicionales en esta fase.
+        return rechazar('mensaje adicional tras el primero');
+      }
+      procesado = true;
+
+      if (!raw || raw.length > TAMANO_MAXIMO_MENSAJE_AUTH) return rechazar('payload excesivo o vacío');
+
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return rechazar('JSON inválido'); }
+
+      if (!msg || msg.tipo !== 'autenticar_terminal') return rechazar('tipo de mensaje incorrecto');
+
+      const { terminalId, token } = msg;
+      if (typeof terminalId !== 'string' || !terminalId.trim() || terminalId.length > 100) return rechazar('terminalId inválido');
+      if (typeof token !== 'string' || !token.trim() || token.length > 512) return rechazar('token inválido');
+      const terminalIdNorm = terminalId.trim();
+
+      const fila = await obtenerTerminalParaAutenticacion(terminalIdNorm);
+      if (!fila) return rechazar('terminal inexistente');
+      if (!fila.token_hash) return rechazar('sin credencial emitida');
+      if (!fila.terminal_activo) return rechazar('terminal inactiva');
+      if (!fila.sucursal_activo) return rechazar('sucursal inactiva');
+      if (!fila.negocio_activo) return rechazar('negocio inactivo');
+
+      // Comparación en tiempo constante -- mismo patrón que session.js
+      // para verificar firmas. token nunca se loguea, nunca se guarda,
+      // nunca se envía de regreso, nunca se almacena en ws.
+      const hashRecibido    = Buffer.from(createHash('sha256').update(token).digest('hex'), 'hex');
+      const hashAlmacenado  = Buffer.from(fila.token_hash, 'hex');
+      if (hashRecibido.length !== hashAlmacenado.length || !timingSafeEqual(hashRecibido, hashAlmacenado)) {
+        return rechazar('token incorrecto');
+      }
+
+      // Éxito -- limpiar timer inmediatamente.
+      limpiarTimer();
+      ws.tipo        = 'print-agent';
+      ws.autenticado = true;
+      ws.terminalId  = fila.terminal_id;
+      ws.sucursalId  = fila.sucursal_id;
+      ws.negocioId   = fila.negocio_id;
+
+      ws.send(JSON.stringify({
+        tipo: 'terminal_autenticada',
+        terminalId: fila.terminal_id,
+        negocioId: fila.negocio_id,
+        sucursalId: fila.sucursal_id,
+      }));
+
+      // Fire-and-forget a propósito: un fallo de telemetría nunca debe
+      // invalidar una autenticación ya correcta (ver Fase 7 del reporte).
+      marcarUltimaConexionTerminal(fila.terminal_id);
+
+      console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id}`);
+    });
+
+    ws.on('close', () => { limpiarTimer(); console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`); });
+    ws.on('error', () => { limpiarTimer(); });
+    return;
+  }
+
+  // 'legacy'
+  console.log('[WS] Conexión legado (sin autenticar) conectada');
+  const pedidosActivos = obtenerTodosPedidosParaWebSocketLegacy().filter(p => p.estado !== 'entregado');
   pedidosActivos.forEach(pedido => {
     ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
   });
-
-  ws.on('close', () => console.log('[WS] Panel desconectado'));
+  ws.on('close', () => console.log('[WS] Conexión legado desconectada'));
 });
 
 // ─── Middlewares ─────────────────────────────────────────────────────────────
@@ -257,7 +846,7 @@ app.use('/api/finanzas', requireAdmin, finanzasRouter);
 
 // ─── Credenciales e.firma SAT ────────────────────────────────────────────────
 // GET: devuelve info pública del cert (sin llave) para mostrar en panel
-app.get('/api/admin/sat/credenciales/info', requireAdmin, async (req, res) => {
+app.get('/api/admin/sat/credenciales/info', requireAdminSeguro, async (req, res) => {
   try {
     const info = await obtenerInfoCertSAT();
     res.json({ ok: true, info }); // info es null si no hay credenciales
@@ -268,7 +857,7 @@ app.get('/api/admin/sat/credenciales/info', requireAdmin, async (req, res) => {
 
 // POST: recibe cert (.cer) y llave (.key) como base64 + contraseña
 // Verifica que coincidan, descifra la llave y guarda en DB cifrada
-app.post('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+app.post('/api/admin/sat/credenciales', requireAdminSeguro, async (req, res) => {
   const { certBase64Raw, keyBase64Raw, password } = req.body;
   if (!certBase64Raw || !keyBase64Raw || !password) {
     return res.status(400).json({ error: 'Se requieren certBase64Raw, keyBase64Raw y password' });
@@ -346,7 +935,7 @@ app.post('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
 });
 
 // DELETE: eliminar credenciales SAT guardadas en DB
-app.delete('/api/admin/sat/credenciales', requireAdmin, async (req, res) => {
+app.delete('/api/admin/sat/credenciales', requireAdminSeguro, async (req, res) => {
   try {
     await eliminarCredencialesSAT();
     invalidarCacheCredenciales();
@@ -362,6 +951,9 @@ app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
 // Clip — notificación de pago completado
+// ⚠ Se queda en broadcast() legado a propósito: es un webhook sin sesión,
+// no hay req.negocioId (podría derivarse buscando el pedido por folio, pero
+// esta fase solo migra rutas con contexto de sesión real — ver reporte).
 app.post('/webhook/clip', async (req, res) => {
   // Responder 200 inmediatamente (Clip espera respuesta rápida)
   res.sendStatus(200);
@@ -404,12 +996,148 @@ app.get('/api/auth/verify', requireAuth, (req, res) => {
   res.json({ ok: true, role: req.role });
 });
 
-// Proteger todas las rutas /api/* excepto las de auth
+// ─── Sesión multiempresa (Fase 2) ─────────────────────────────────────────
+// Emisión de sesión: NO es un login por contraseña de usuario todavía (eso
+// queda pendiente — ver riesgos). Por ahora, quien ya tiene el token admin
+// legado puede emitir una sesión real para un usuario+negocio que ya exista
+// en usuario_negocios, para poder probar y adoptar gradualmente el
+// middleware requireSesionNegocio antes de construir el login final.
+app.post('/api/auth/sesion', requireAdmin, async (req, res) => {
+  const { usuarioId, negocioId } = req.body;
+  if (!usuarioId) return res.status(400).json({ error: 'usuarioId requerido' });
+
+  const usuario = await obtenerUsuarioPorId(usuarioId);
+  if (!usuario) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+  const negocios = await obtenerNegociosDeUsuario(usuarioId);
+  if (!negocios.length) return res.status(403).json({ error: 'El usuario no pertenece a ningún negocio activo' });
+
+  const negocioElegido = negocioId
+    ? negocios.find(n => n.negocio_id === negocioId)
+    : negocios[0];
+  if (!negocioElegido) return res.status(403).json({ error: 'El usuario no pertenece al negocio solicitado' });
+
+  const token = crearTokenSesion({ usuarioId, negocioId: negocioElegido.negocio_id, rol: negocioElegido.rol });
+  res.json({ token, negocioId: negocioElegido.negocio_id, negocioNombre: negocioElegido.nombre, rol: negocioElegido.rol });
+});
+
+// ─── Login real por correo y contraseña (Fase 3) ──────────────────────────
+// Un solo endpoint cubre los dos pasos del flujo:
+//  1) email + password → si el usuario pertenece a un solo negocio activo,
+//     se emite la sesión de una vez (cookie httpOnly). Si pertenece a
+//     varios, se devuelve la lista de negocios + un token corto de
+//     preselección (preAuth) en vez de una sesión — el cliente no vuelve a
+//     enviar la contraseña, solo el preAuth + el negocioId elegido.
+//  2) preAuth + negocioId → completa la sesión para el negocio elegido.
+// El mensaje de error para "no existe" y "contraseña incorrecta" es el
+// mismo a propósito, para no revelar si un correo está registrado.
+app.post('/api/auth/negocio/login', async (req, res) => {
+  const { email, password, negocioId, preAuth } = req.body;
+  try {
+    let usuarioId;
+
+    if (preAuth) {
+      usuarioId = verificarTokenPreAuth(preAuth);
+      if (!usuarioId) {
+        return res.status(401).json({ error: 'Selección de negocio inválida o expirada — inicia sesión de nuevo' });
+      }
+    } else {
+      if (!email || !password) {
+        return res.status(400).json({ error: 'email y password son requeridos' });
+      }
+      const usuario = await obtenerUsuarioPorEmail(email);
+      if (!usuario || !usuario.activo || !verifyPassword(password, usuario.password_hash)) {
+        return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+      }
+      usuarioId = usuario.id;
+    }
+
+    const negocios = await obtenerNegociosDeUsuario(usuarioId);
+    if (!negocios.length) {
+      return res.status(403).json({ error: 'El usuario no pertenece a ningún negocio activo' });
+    }
+
+    // Si el cliente indicó explícitamente un negocioId, se valida pertenencia
+    // real SIEMPRE — sin importar si el usuario tiene uno o varios negocios.
+    // Nunca se ignora un negocioId inválido a favor de auto-seleccionar otro:
+    // eso confundiría a un cliente que cree haber entrado a un negocio al
+    // que en realidad no tiene acceso.
+    if (negocioId) {
+      const elegido = negocios.find(n => n.negocio_id === negocioId);
+      if (!elegido) {
+        return res.status(403).json({ error: 'El usuario no pertenece al negocio solicitado' });
+      }
+      const token = crearTokenSesion({ usuarioId, negocioId: elegido.negocio_id, rol: elegido.rol });
+      setCookieSesion(res, token);
+      return res.json({ ok: true, negocioId: elegido.negocio_id, negocioNombre: elegido.nombre, rol: elegido.rol });
+    }
+
+    // Sin negocioId y un solo negocio — auto-seleccionar, sesión de inmediato.
+    if (negocios.length === 1) {
+      const n = negocios[0];
+      const token = crearTokenSesion({ usuarioId, negocioId: n.negocio_id, rol: n.rol });
+      setCookieSesion(res, token);
+      return res.json({ ok: true, negocioId: n.negocio_id, negocioNombre: n.nombre, rol: n.rol });
+    }
+
+    // Sin negocioId y varios negocios — devolver selector + preAuth.
+    const preAuthToken = crearTokenPreAuth(usuarioId);
+    res.json({
+      ok: true,
+      requiereSeleccion: true,
+      preAuth: preAuthToken,
+      negocios: negocios.map(n => ({ negocioId: n.negocio_id, nombre: n.nombre, rol: n.rol })),
+    });
+  } catch (e) {
+    console.error('[POST /api/auth/negocio/login] Error:', e.message);
+    res.status(500).json({ error: 'Error interno al iniciar sesión' });
+  }
+});
+
+app.post('/api/auth/negocio/logout', (req, res) => {
+  // Revocar el token en sí (no solo borrar la cookie) — si no se hace esto,
+  // la misma cookie reenviada después de logout (p. ej. por el botón Atrás
+  // restaurando una página cacheada) seguiría siendo válida hasta su
+  // expiración natural.
+  const auth = req.headers['authorization'];
+  const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+  const token = leerCookieSesion(req) || tokenBearer;
+  revocarTokenSesion(token);
+  limpiarCookieSesion(res);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', requireSesionNegocio(), (req, res) => {
+  res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol });
+});
+
+// Diagnóstico de solo lectura para validar la exigencia de rol del nuevo
+// middleware (requireSesionNegocio('admin')) — no expone ni modifica datos.
+app.get('/api/auth/me/admin', requireSesionNegocio('admin'), (req, res) => {
+  res.json({ ok: true, rol: req.rol });
+});
+
+// Gate legado para /api/* — a partir de Fase 4, CADA ruta trae su propio
+// middleware de auth explícito (requireAuthSeguro/requireAdminSeguro/
+// resolverNegocioSeguro/requireRepartidor, o es pública a propósito), así
+// que este gate ya no necesita ser el mecanismo por defecto. Solo re-aplica
+// el requireAuth legado a las pocas rutas de integración Rappi que aún no
+// se migraron (ver auditoría de Fase 4 — no se tocaron porque disparan
+// llamadas hacia Rappi y no están confirmadas como usadas por el panel
+// actual). Cualquier ruta nueva que se agregue en el futuro DEBE traer su
+// propio middleware — este gate ya no la protege por omisión.
+const RUTAS_LEGADO_SOLAMENTE = [
+  '/rappi/stockout',
+  '/rappi/subir-catalogo',
+  '/rappi/actualizar-schedule',
+  '/rappi/estado-tienda',
+  '/rappi/setup-webhooks',
+];
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/auth/')) return next();
-  if (req.path.startsWith('/repartidor/')) return next(); // rutas públicas de repartidor
-  if (req.path === '/vapid-public') return next();
-  requireAuth(req, res, next);
+  if (RUTAS_LEGADO_SOLAMENTE.includes(req.path)) {
+    return requireAuth(req, res, next);
+  }
+  next();
 });
 
 // Servir panel principal solo con sesión válida
@@ -449,18 +1177,29 @@ app.post('/chat', async (req, res) => {
 });
 
 // Ver todos los pedidos
-app.get('/pedidos', (req, res) => {
-  res.json(obtenerPedidos());
+// Fase 6 — aislamiento del tablero: el negocio SIEMPRE se toma de
+// req.negocioId (resuelto por requireAuthSeguro a partir de la sesión
+// validada), nunca de query/body/header/params. Esta ruta antes no tenía
+// NINGÚN middleware de auth -- se agrega aquí porque sin sesión no hay
+// forma de saber de qué negocio pedir el tablero (y sin ella,
+// obtenerPedidos(undefined) ya devuelve [] por diseño, nunca el arreglo
+// completo).
+app.get('/pedidos', requireAuthSeguro, (req, res) => {
+  res.json(obtenerPedidos(req.negocioId));
 });
 
 // Cambiar estado de un pedido (desde el panel)
-app.patch('/pedidos/:id/estado', async (req, res) => {
+// Fase 6: un pedido inexistente y un pedido de otro negocio responden
+// exactamente igual (404 genérico) para no revelar si el folio existe en
+// otro negocio -- ver actualizarEstadoPedido en orderManager.js, que ya
+// devuelve null en ambos casos.
+app.patch('/pedidos/:id/estado', requireAuthSeguro, async (req, res) => {
   const { estado } = req.body;
   const estadosValidos = ['nuevo', 'en_preparacion', 'listo', 'entregado'];
   if (!estadosValidos.includes(estado)) {
     return res.status(400).json({ error: 'Estado inválido' });
   }
-  const pedido = actualizarEstadoPedido(req.params.id, estado);
+  const pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
 
   // Notificar al cliente por WhatsApp cuando el pedido está listo
@@ -483,19 +1222,51 @@ app.patch('/pedidos/:id/estado', async (req, res) => {
   res.json(pedido);
 });
 
+// ─── Cliente técnico para pedidos presenciales sin teléfono real ───────────
+// clientes.telefono es VARCHAR(20) PRIMARY KEY GLOBAL (sin negocio_id en la
+// clave) -- no se puede usar un solo literal 'presencial' para todos los
+// negocios (colisiona entre ellos: el segundo negocio pisaría el nombre y
+// pedidos de ambos apuntarían a la misma fila) ni el UUID completo de
+// negocioId (36 caracteres, no cabe en VARCHAR(20)). Se deriva un hash
+// corto y determinista del negocioId: el mismo negocio siempre produce el
+// mismo identificador técnico (se reutiliza, nunca se duplica); negocios
+// distintos siempre producen identificadores distintos. 'pos-' (4) + 12 hex
+// = 16 caracteres, dentro del límite de VARCHAR(20) con margen. No es un
+// UUID ni se puede revertir a uno -- no expone negocioId completo en UI ni
+// logs. Nunca se acepta este valor desde el cliente: se deriva
+// exclusivamente server-side a partir de un negocioId ya autenticado.
+function idClienteTecnicoPresencial(negocioId) {
+  return 'pos-' + createHash('sha256').update(negocioId).digest('hex').slice(0, 12);
+}
+
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 // rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
 // quedará asignado en el pedido y los puntos se acumularán al entregar.
-app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
+app.post('/api/pedido-presencial', requireAuthSeguro, async (req, res) => {
+  // negocioId EXCLUSIVAMENTE de req.negocioId (sesión/membresía ya
+  // validada por requireAuthSeguro) -- nunca de body/query/headers. Falla
+  // cerrado antes de registrar, persistir, emitir o imprimir: sin esto, el
+  // pedido quedaba etiquetado con el respaldo temporal de Nonna Maye sin
+  // importar qué negocio lo creó (hallazgo de la fase anterior). Sin
+  // fallback aquí -- si req.negocioId falta, es un error real de sesión,
+  // no un caso a rellenar.
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    console.error('[Panel] POST /api/pedido-presencial: req.negocioId inválido u omitido — pedido rechazado (fail closed)');
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
   const { items, nombre, forma_pago, total, descuento, motivo_descuento, billete, cambio,
           mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre,
           rewards_canje_puntos } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
-  // Si hay cliente Rewards asignado, usarlo como cliente del pedido
-  const clienteTel = rewards_telefono?.trim() || '—';
-  const clienteNom = (rewards_telefono ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
+  // Si hay cliente Rewards asignado (teléfono real), usarlo como cliente
+  // del pedido -- si no, un cliente técnico determinista por negocio (ver
+  // idClienteTecnicoPresencial arriba), nunca el literal 'presencial'
+  // global ni un valor que el cliente HTTP pueda controlar.
+  const tieneTelefonoReal = !!rewards_telefono?.trim();
+  const clienteTel = tieneTelefonoReal ? rewards_telefono.trim() : idClienteTecnicoPresencial(req.negocioId);
+  const clienteNom = (tieneTelefonoReal ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
   const orden = {
     items,
     subtotal,
@@ -510,11 +1281,31 @@ app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
     canal: 'presencial',
     forma_pago: forma_pago || 'efectivo',
     cliente: { nombre: clienteNom, telefono: clienteTel },
-    costo_envio: 0
+    costo_envio: 0,
+    negocioId: req.negocioId
   };
   const pedido = registrarPedido(orden, 'presencial');
   emitirPedido(pedido);
-  import('./services/database.js').then(({ guardarPedido }) => guardarPedido('presencial', orden)).catch(() => {});
+  // Persistencia en el historial (tabla pedidos) -- en segundo plano, no
+  // bloquea la respuesta ni la emisión al panel (igual que antes). Se debe
+  // asegurar primero que exista la fila en clientes (upsertCliente) ANTES
+  // de insertar en pedidos, porque pedidos.telefono es FK hacia
+  // clientes.telefono -- si no, el INSERT viola la FK y falla en
+  // silencio (hallazgo de la fase anterior). Mismo patrón ya usado por
+  // Rappi (upsertCliente antes de guardarPedido). Se pasa "pedido" (no
+  // "orden") a guardarPedido -- guardarPedido lee pedido.id para la
+  // columna folio, y solo el objeto devuelto por registrarPedido lo tiene
+  // (orden nunca lo recibe de vuelta); pasar "orden" dejaba folio siempre
+  // NULL, un segundo hallazgo de persistencia distinto al de la FK.
+  (async () => {
+    try {
+      const { upsertCliente, guardarPedido } = await import('./services/database.js');
+      await upsertCliente(clienteTel, clienteNom, pedido.negocioId);
+      await guardarPedido(clienteTel, pedido, pedido.negocioId);
+    } catch (e) {
+      console.error('[Panel] Error persistiendo pedido presencial en historial:', e.message);
+    }
+  })();
 
   // Rewards — registrar canje si aplica (sincrónico para que el folio exista)
   let canjeInfo = null;
@@ -533,7 +1324,7 @@ app.post('/api/pedido-presencial', requireAuth, async (req, res) => {
 });
 
 // Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
-app.delete('/pedidos/:id', async (req, res) => {
+app.delete('/pedidos/:id', requireAuthSeguro, async (req, res) => {
   const pin = req.headers['x-admin-pin'];
   if (!pin || pin !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
@@ -544,7 +1335,7 @@ app.delete('/pedidos/:id', async (req, res) => {
 });
 
 // Actualizar forma de pago — solo admin
-app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
+app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { forma_pago } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
@@ -554,12 +1345,12 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdmin, async (req, res) => {
   const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
   const p = obtenerPedidoPorId(folio);
   if (p) p.forma_pago = forma_pago;
-  broadcast({ tipo: 'actualizar_pago', id: folio, forma_pago });
+  broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
 });
 
 // Cancelar pedido activo — solo admin
-app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { motivo } = req.body;
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
@@ -567,7 +1358,7 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => 
   if (!ok) return res.status(500).json({ error: 'No se pudo cancelar' });
   // Quitar del panel en tiempo real
   await eliminarPedido(folio).catch(() => {});
-  broadcast({ tipo: 'cancelar_pedido', id: folio, motivo });
+  broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
   console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
   // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
   revertirMovimientosFolio(folio, REWARDS_TENANT).catch(e =>
@@ -577,20 +1368,20 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdmin, async (req, res) => 
 });
 
 // Registrar devolución en pedido entregado — solo admin
-app.post('/api/admin/pedido/:folio/devolucion', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { monto, motivo } = req.body;
   if (!monto || parseFloat(monto) <= 0) return res.status(400).json({ error: 'Monto inválido' });
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
   const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim());
   if (!ok) return res.status(500).json({ error: 'No se pudo registrar la devolución' });
-  broadcast({ tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
+  broadcastNegocio(req.negocioId, { tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
   console.log(`[Panel] Devolución ${folio}: $${monto} — ${motivo}`);
   res.json({ ok: true });
 });
 
 // Generar factura CFDI — solo admin
-app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
+app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp } = req.body;
   if (!nombre_fiscal || !rfc) return res.status(400).json({ error: 'nombre_fiscal y rfc son requeridos' });
@@ -602,7 +1393,7 @@ app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
   // Buscar en activos primero, luego en entregados
   let pedidoDatos = await obtenerPedidoActivoPorFolio(folio);
   if (!pedidoDatos) {
-    const ents = await _ent(500);
+    const ents = await _ent(500, req.negocioId);
     const found = ents.find(p => p.id === folio || p.folio === folio);
     pedidoDatos = found || null;
   }
@@ -626,7 +1417,7 @@ app.post('/api/admin/pedido/:folio/factura', requireAdmin, async (req, res) => {
 });
 
 // Descargar PDF de factura — proxy autenticado para el panel
-app.get('/api/admin/factura/:facturaId/pdf', requireAdmin, async (req, res) => {
+app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, async (req, res) => {
   try {
     const buf = await descargarFacturaPDF(req.params.facturaId);
     res.setHeader('Content-Type', 'application/pdf');
@@ -638,18 +1429,18 @@ app.get('/api/admin/factura/:facturaId/pdf', requireAdmin, async (req, res) => {
 });
 
 // Conversaciones WhatsApp
-app.get('/api/conversaciones', async (req, res) => {
+app.get('/api/conversaciones', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerConversacionesRecientes(20);
   res.json(lista);
 });
 
-app.get('/api/conversacion/:telefono', async (req, res) => {
+app.get('/api/conversacion/:telefono', requireAuthSeguro, async (req, res) => {
   const msgs = await obtenerConversacion(req.params.telefono);
   res.json(msgs);
 });
 
 // Enviar mensaje manual desde el panel (link de pago, etc.)
-app.post('/api/send-message', async (req, res) => {
+app.post('/api/send-message', requireAuthSeguro, async (req, res) => {
   const { telefono, mensaje } = req.body;
   if (!telefono || !mensaje) {
     return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
@@ -668,8 +1459,8 @@ app.post('/api/send-message', async (req, res) => {
 });
 
 // Historial de entregados
-app.get('/api/historial', requireAuth, async (req, res) => {
-  const lista = await obtenerPedidosEntregados(100);
+app.get('/api/historial', requireAuthSeguro, async (req, res) => {
+  const lista = await obtenerPedidosEntregados(100, req.negocioId);
   res.json(lista);
 });
 
@@ -683,19 +1474,19 @@ function inicioDelDiaMX() {
   return new Date(mxDate.getTime() + offsetMs); // convertir a UTC real
 }
 
-app.get('/api/ventas', requireAdmin, async (req, res) => {
+app.get('/api/ventas', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
-  const ventas = await obtenerVentas(d, h);
+  const ventas = await obtenerVentas(d, h, req.negocioId);
   res.json(ventas);
 });
 
-app.get('/api/ventas/resumen', requireAdmin, async (req, res) => {
+app.get('/api/ventas/resumen', requireAdminSeguro, async (req, res) => {
   const { desde, hasta } = req.query;
   const d = desde || inicioDelDiaMX().toISOString();
   const h = hasta || new Date().toISOString();
-  const resumen = await obtenerResumenVentas(d, h);
+  const resumen = await obtenerResumenVentas(d, h, req.negocioId);
   res.json(resumen);
 });
 
@@ -704,91 +1495,135 @@ function fechaHoyMX() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros' }).format(new Date());
 }
 
-app.post('/api/caja/fondo', requireAuth, async (req, res) => {
+app.post('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
   const { monto } = req.body;
   if (!monto || isNaN(monto) || Number(monto) < 0) {
     return res.status(400).json({ error: 'Monto inválido' });
   }
   const fecha = fechaHoyMX();
-  await guardarFondoCaja(fecha, Number(monto));
+  await guardarFondoCaja(fecha, Number(monto), req.negocioId);
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
-app.get('/api/caja/fondo', requireAuth, async (req, res) => {
+app.get('/api/caja/fondo', requireAuthSeguro, async (req, res) => {
   const fecha = fechaHoyMX();
-  const registro = await obtenerFondoCaja(fecha);
+  const registro = await obtenerFondoCaja(fecha, req.negocioId);
   res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
 });
 
 // ─── Menú — endpoints ────────────────────────────────────────────────────────
-app.get('/api/menu', async (req, res) => {
-  const menu = await obtenerMenuCompleto();
+app.get('/api/menu', resolverNegocioSeguro(), async (req, res) => {
+  const menu = await obtenerMenuCompleto(req.negocioId);
   res.json(menu);
 });
 
-app.post('/api/admin/menu/categorias', requireAdmin, async (req, res) => {
-  const cat = await crearCategoria(req.body.nombre);
+app.post('/api/admin/menu/categorias', resolverNegocioSeguro('admin'), async (req, res) => {
+  const cat = await crearCategoria(req.body.nombre, req.negocioId);
   res.json(cat);
 });
 
-app.patch('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
-  await actualizarCategoria(req.params.id, req.body);
+app.patch('/api/admin/menu/categorias/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await actualizarCategoria(req.params.id, req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/categorias/:id', requireAdmin, async (req, res) => {
-  await eliminarCategoria(req.params.id);
+app.delete('/api/admin/menu/categorias/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await eliminarCategoria(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/productos', requireAdmin, async (req, res) => {
-  const prod = await crearProducto(req.body);
-  res.json(prod);
+app.post('/api/admin/menu/productos', resolverNegocioSeguro('admin'), async (req, res) => {
+  try {
+    const prod = await crearProducto(req.body, req.negocioId);
+    res.json(prod);
+  } catch (e) {
+    if (e.message?.includes('no encontrada') || e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/productos] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear el producto' });
+  }
 });
 
-app.patch('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
-  await actualizarProducto(req.params.id, req.body);
-  res.json({ ok: true });
+app.patch('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  try {
+    await actualizarProducto(req.params.id, req.body, req.negocioId);
+    res.json({ ok: true });
+  } catch (e) {
+    if (e.message?.includes('no encontrada') || e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[PATCH /api/admin/menu/productos/:id] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el producto' });
+  }
 });
 
-app.delete('/api/admin/menu/productos/:id', requireAdmin, async (req, res) => {
-  await eliminarProducto(req.params.id);
+app.delete('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await eliminarProducto(req.params.id, req.negocioId);
   res.json({ ok: true });
 });
 
 // ─── Modificadores — endpoints ───────────────────────────────────────────────
-app.get('/api/admin/menu/productos/:id/modificadores', requireAdmin, async (req, res) => {
-  const grupos = await obtenerModificadoresProducto(parseInt(req.params.id));
+app.get('/api/admin/menu/productos/:id/modificadores', resolverNegocioSeguro('admin'), async (req, res) => {
+  const grupos = await obtenerModificadoresProducto(parseInt(req.params.id), req.negocioId);
   res.json(grupos);
 });
 
-app.post('/api/admin/menu/productos/:id/modificadores/grupos', requireAdmin, async (req, res) => {
-  const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body);
-  res.json(grupo);
+app.post('/api/admin/menu/productos/:id/modificadores/grupos', resolverNegocioSeguro('admin'), async (req, res) => {
+  try {
+    const grupo = await crearGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
+    res.json(grupo);
+  } catch (e) {
+    if (e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/productos/:id/modificadores/grupos] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear el grupo de modificadores' });
+  }
 });
 
-app.patch('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
-  await actualizarGrupoModificador(parseInt(req.params.id), req.body);
+app.patch('/api/admin/menu/modificadores/grupos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await actualizarGrupoModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/grupos/:id', requireAdmin, async (req, res) => {
-  await eliminarGrupoModificador(parseInt(req.params.id));
+app.delete('/api/admin/menu/modificadores/grupos/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await eliminarGrupoModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
 
-app.post('/api/admin/menu/modificadores/grupos/:id/opciones', requireAdmin, async (req, res) => {
-  const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body);
-  res.json(opcion);
+app.post('/api/admin/menu/modificadores/grupos/:id/opciones', resolverNegocioSeguro('admin'), async (req, res) => {
+  try {
+    const opcion = await crearOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
+    res.json(opcion);
+  } catch (e) {
+    if (e.message?.includes('no encontrado')) {
+      return res.status(404).json({ error: e.message });
+    }
+    if (e.message?.includes('no pertenece al negocio actual')) {
+      return res.status(403).json({ error: e.message });
+    }
+    console.error('[POST /api/admin/menu/modificadores/grupos/:id/opciones] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear la opción de modificador' });
+  }
 });
 
-app.patch('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
-  await actualizarOpcionModificador(parseInt(req.params.id), req.body);
+app.patch('/api/admin/menu/modificadores/opciones/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await actualizarOpcionModificador(parseInt(req.params.id), req.body, req.negocioId);
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/menu/modificadores/opciones/:id', requireAdmin, async (req, res) => {
-  await eliminarOpcionModificador(parseInt(req.params.id));
+app.delete('/api/admin/menu/modificadores/opciones/:id', resolverNegocioSeguro('admin'), async (req, res) => {
+  await eliminarOpcionModificador(parseInt(req.params.id), req.negocioId);
   res.json({ ok: true });
 });
 
@@ -798,7 +1633,7 @@ app.get('/api/push/vapid-public-key', (req, res) => {
   res.json({ key: VAPID_PUBLIC });
 });
 
-app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+app.post('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint, keys } = req.body;
   if (!endpoint || !keys?.auth || !keys?.p256dh) {
     return res.status(400).json({ error: 'Suscripción inválida' });
@@ -812,7 +1647,7 @@ app.post('/api/push/subscribe', requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/push/subscribe', requireAuth, async (req, res) => {
+app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint } = req.body;
   if (!endpoint) return res.status(400).json({ error: 'endpoint requerido' });
   await eliminarSuscripcionPush(endpoint).catch(() => {});
@@ -820,13 +1655,18 @@ app.delete('/api/push/subscribe', requireAuth, async (req, res) => {
 });
 
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
-app.get('/api/corte-caja', requireAuth, async (req, res) => {
+// Aislamiento completo por negocio (migración 009): ventas, resumen y
+// fondo de caja se filtran/escriben con req.negocioId. caja_fondos ahora
+// tiene UNIQUE(negocio_id, fecha) en vez de UNIQUE(fecha) global — dos
+// negocios pueden tener cada uno su propio fondo el mismo día sin
+// pisarse. Ver migrations/009_caja_fondos_por_negocio*.
+app.get('/api/corte-caja', requireAuthSeguro, async (req, res) => {
   const d = inicioDelDiaMX().toISOString();
   const h = new Date().toISOString();
   const [ventas, resumen, fondoReg] = await Promise.all([
-    obtenerVentas(d, h),
-    obtenerResumenVentas(d, h),
-    obtenerFondoCaja(fechaHoyMX())
+    obtenerVentas(d, h, req.negocioId),
+    obtenerResumenVentas(d, h, req.negocioId),
+    obtenerFondoCaja(fechaHoyMX(), req.negocioId)
   ]);
   const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   // Agrupar por forma de pago
@@ -858,19 +1698,24 @@ app.get('/api/corte-caja', requireAuth, async (req, res) => {
 });
 
 // Control manual del bot por conversación
-app.post('/api/conversacion/:telefono/pausar', requireAuth, async (req, res) => {
+// ⚠ bot_pausado se queda en broadcast() legado a propósito: aunque la ruta
+// tiene req.negocioId, la conversación de WhatsApp en sí (mensajes,
+// telefono) todavía no resuelve/filtra por negocio (mismo gap documentado
+// de nuevo_mensaje, fuera de alcance de esta fase) — no es un evento de
+// "pedidos", que es lo único que esta fase migra.
+app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, async (req, res) => {
   await setBotPausado(req.params.telefono, true);
   broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
   res.json({ ok: true, pausado: true });
 });
 
-app.post('/api/conversacion/:telefono/reactivar', requireAuth, async (req, res) => {
+app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, async (req, res) => {
   await setBotPausado(req.params.telefono, false);
   broadcast({ tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
   res.json({ ok: true, pausado: false });
 });
 
-app.get('/api/conversacion/:telefono/estado-bot', requireAuth, async (req, res) => {
+app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, async (req, res) => {
   const pausado = await getBotPausado(req.params.telefono);
   res.json({ pausado });
 });
@@ -987,15 +1832,21 @@ app.get('/api/vapid-public', (req, res) => {
   res.json({ publicKey: key || null });
 });
 
-app.get('/api/config', requireAuth, async (req, res) => {
-  res.json(negocioConfig);
+app.get('/api/config', resolverNegocioSeguro(), async (req, res) => {
+  if (req.esNegocioPorDefecto) return res.json(negocioConfig);
+  const cfg = await obtenerConfiguracion(req.negocioId);
+  res.json(cfg);
 });
-app.put('/api/config', requireAdmin, async (req, res) => {
-  const ok = await actualizarConfiguracion(req.body);
+app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
+  const ok = await actualizarConfiguracion(req.body, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
-  negocioConfig = { ...negocioConfig, ...req.body };
-  broadcast({ tipo: 'config_actualizada', config: negocioConfig });
-  res.json({ ok: true, config: negocioConfig });
+  if (req.esNegocioPorDefecto) {
+    negocioConfig = { ...negocioConfig, ...req.body };
+    broadcastNegocio(req.negocioId, { tipo: 'config_actualizada', config: negocioConfig });
+    return res.json({ ok: true, config: negocioConfig });
+  }
+  const cfgActualizada = await obtenerConfiguracion(req.negocioId);
+  res.json({ ok: true, config: cfgActualizada });
 });
 
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
@@ -1007,7 +1858,7 @@ const INT_CLAVES = [
   'vapid_public_key','vapid_private_key','vapid_email',
 ];
 
-app.get('/api/admin/integraciones', requireAdmin, async (req, res) => {
+app.get('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
   const cfg = await obtenerConfiguracion();
   const result = {};
   INT_CLAVES.forEach(k => {
@@ -1018,7 +1869,7 @@ app.get('/api/admin/integraciones', requireAdmin, async (req, res) => {
   res.json(result);
 });
 
-app.put('/api/admin/integraciones', requireAdmin, async (req, res) => {
+app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
   const cambios = {};
   for (const [k, v] of Object.entries(req.body)) {
     if (!INT_CLAVES.includes(k)) continue;
@@ -1083,6 +1934,10 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
 });
 
 // Aceptar pedido (atómico — solo uno lo puede tomar)
+// ⚠ repartidor_asignado se queda en broadcast() legado: requireRepartidor
+// autentica por token individual del repartidor, no por sesión de negocio
+// -- sin req.negocioId real (mismo gap ya documentado para
+// actualizarEstadoPedidoLegacySinNegocio en orderManager.js).
 app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
   const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre);
@@ -1109,10 +1964,25 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
 });
 
 // Repartidor marca pedido como entregado desde su celular
+// ⚠ PENDIENTE DE SEGURIDAD: requireRepartidor autentica por token
+// individual del repartidor (SELECT * FROM repartidores WHERE token=$1),
+// no por sesión de negocio -- y repartidores.negocio_id nunca se puebla
+// hoy al registrar un repartidor (fuera del alcance de esta tarea, vive
+// en whatsapp-meta.js). Sin un negocioId real y confiable que derivar,
+// se usa actualizarEstadoPedidoLegacySinNegocio en vez de inventar uno o
+// usar Nonna Maye como relleno. Conserva exactamente el comportamiento
+// previo a esta tarea -- ver diagnóstico completo en orderManager.js.
 app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
-  const pedido = actualizarEstadoPedido(folio, 'entregado');
+  const pedido = actualizarEstadoPedidoLegacySinNegocio(folio, 'entregado');
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  // Este broadcast() directo se queda legado a propósito (misma razón que
+  // el comentario de arriba: sin req.negocioId real). No es una fuga real:
+  // _persistirCambioEstado (orderManager.js) YA emitió este mismo
+  // actualizar_estado vía broadcastNegocio(pedido.negocioId, ...) al
+  // actualizar el estado unas líneas arriba -- el panel del negocio
+  // correcto ya lo recibió aislado. Este es un envío redundante heredado,
+  // documentado, no una segunda fuente de verdad.
   broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);
 
@@ -1142,12 +2012,12 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
 });
 
 // Lista de repartidores (admin)
-app.get('/api/admin/repartidores', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores', requireAdminSeguro, async (req, res) => {
   res.json(await obtenerRepartidores());
 });
 
 // Actividad de repartidores por período — hoy / ayer / antier / semana
-app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) => {
   try {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
     const tz = 'America/Matamoros';
@@ -1202,18 +2072,13 @@ app.get('/api/admin/repartidores/estado', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
-  await eliminarRepartidor(req.params.id);
-  res.json({ ok: true });
-});
-
-app.delete('/api/admin/repartidores/:id', requireAdmin, async (req, res) => {
+app.delete('/api/admin/repartidores/:id', requireAdminSeguro, async (req, res) => {
   await eliminarRepartidor(req.params.id);
   res.json({ ok: true });
 });
 
 // Candidatos a repartidor — mensajes con "repartidor" en las últimas 72h
-app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => {
+app.get('/api/admin/repartidores/candidatos', requireAdminSeguro, async (req, res) => {
   try {
     const rows = await obtenerCandidatosRepartidor();
     res.json(rows);
@@ -1221,7 +2086,7 @@ app.get('/api/admin/repartidores/candidatos', requireAdmin, async (req, res) => 
 });
 
 // DEBUG TEMPORAL — diagnóstico de un pedido en pedidos_activos
-app.get('/api/admin/debug/pedido/:folio', requireAdmin, async (req, res) => {
+app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, async (req, res) => {
   const { rows } = await pool.query(`
     SELECT folio, estado, created_at,
            datos->>'modalidad' AS modalidad,
@@ -1234,19 +2099,19 @@ app.get('/api/admin/debug/pedido/:folio', requireAdmin, async (req, res) => {
   res.json(rows[0] || { error: 'no encontrado' });
 });
 
-app.post('/api/admin/reporte-diario/enviar', requireAdmin, async (req, res) => {
+app.post('/api/admin/reporte-diario/enviar', requireAdminSeguro, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
 });
 
 // Endpoint — forzar enriquecimiento de perfiles manualmente
-app.post('/api/admin/memory/enriquecer', requireAdmin, async (req, res) => {
+app.post('/api/admin/memory/enriquecer', requireAdminSeguro, async (req, res) => {
   const n = await enriquecerTodosLosPerfiles();
   res.json({ ok: true, perfiles_actualizados: n });
 });
 
 // ─── Clientes CRM ─────────────────────────────────────────────────────────────
-app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes', requireAdminSeguro, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -1270,7 +2135,7 @@ app.get('/api/admin/clientes', requireAdmin, async (req, res) => {
 });
 
 // Marcar/desmarcar cliente como interno (excluye de lista, stats y campañas)
-app.patch('/api/admin/clientes/:telefono/interno', requireAdmin, async (req, res) => {
+app.patch('/api/admin/clientes/:telefono/interno', requireAdminSeguro, async (req, res) => {
   try {
     const { es_interno } = req.body;
     await toggleClienteInterno(req.params.telefono, !!es_interno);
@@ -1281,7 +2146,7 @@ app.patch('/api/admin/clientes/:telefono/interno', requireAdmin, async (req, res
 });
 
 // Resumen de segmentos para el tab Clientes
-app.get('/api/admin/clientes/segmentos', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/segmentos', requireAdminSeguro, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT segmento, COUNT(*) AS total
@@ -1296,7 +2161,7 @@ app.get('/api/admin/clientes/segmentos', requireAdmin, async (req, res) => {
 });
 
 // Oportunidades pendientes (conversaciones con intención sin pedido)
-app.get('/api/admin/clientes/oportunidades', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/oportunidades', requireAdminSeguro, async (req, res) => {
   try {
     const rows = await obtenerOportunidadesPendientes();
     res.json(rows);
@@ -1306,7 +2171,7 @@ app.get('/api/admin/clientes/oportunidades', requireAdmin, async (req, res) => {
 });
 
 // Métricas de conversión: chats totales vs pedidos
-app.get('/api/admin/clientes/conversion', requireAdmin, async (req, res) => {
+app.get('/api/admin/clientes/conversion', requireAdminSeguro, async (req, res) => {
   try {
     const { rows: [conv] } = await pool.query(`
       SELECT
@@ -1355,14 +2220,14 @@ import {
 const REWARDS_TENANT = 'xabor-principal';
 
 // Configuración del programa
-app.get('/api/rewards/config', requireAdmin, async (req, res) => {
+app.get('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
     const config = await obtenerConfigRewards(REWARDS_TENANT);
     res.json(config);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.patch('/api/rewards/config', requireAdmin, async (req, res) => {
+app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
   try {
     await actualizarConfigRewards(REWARDS_TENANT, req.body);
     res.json({ ok: true });
@@ -1370,7 +2235,7 @@ app.patch('/api/rewards/config', requireAdmin, async (req, res) => {
 });
 
 // Resumen estadístico
-app.get('/api/rewards/resumen', requireAdmin, async (req, res) => {
+app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
   try {
     const resumen = await obtenerResumenRewards(REWARDS_TENANT);
     res.json(resumen);
@@ -1378,7 +2243,7 @@ app.get('/api/rewards/resumen', requireAdmin, async (req, res) => {
 });
 
 // Lista de clientes inscritos
-app.get('/api/rewards/clientes', requireAdmin, async (req, res) => {
+app.get('/api/rewards/clientes', requireAdminSeguro, async (req, res) => {
   try {
     const lista = await listarClientesRewards(REWARDS_TENANT);
     res.json(lista);
@@ -1386,7 +2251,7 @@ app.get('/api/rewards/clientes', requireAdmin, async (req, res) => {
 });
 
 // Búsqueda de clientes (admin y staff — para asignar en POS)
-app.get('/api/rewards/clientes/buscar', requireAuth, async (req, res) => {
+app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
@@ -1396,7 +2261,7 @@ app.get('/api/rewards/clientes/buscar', requireAuth, async (req, res) => {
 });
 
 // Perfil de un cliente + estimación de puntos
-app.get('/api/rewards/cliente/:telefono', requireAuth, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
     if (!perfil) return res.status(404).json({ error: 'No encontrado' });
@@ -1411,7 +2276,7 @@ app.get('/api/rewards/cliente/:telefono', requireAuth, async (req, res) => {
 });
 
 // Movimientos de un cliente
-app.get('/api/rewards/cliente/:telefono/movimientos', requireAdmin, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, REWARDS_TENANT);
     if (!perfil?.account_id) return res.json([]);
@@ -1421,7 +2286,7 @@ app.get('/api/rewards/cliente/:telefono/movimientos', requireAdmin, async (req, 
 });
 
 // Movimientos recientes globales
-app.get('/api/rewards/movimientos', requireAdmin, async (req, res) => {
+app.get('/api/rewards/movimientos', requireAdminSeguro, async (req, res) => {
   try {
     const movimientos = await obtenerMovimientosRecientes(REWARDS_TENANT);
     res.json(movimientos);
@@ -1430,7 +2295,7 @@ app.get('/api/rewards/movimientos', requireAdmin, async (req, res) => {
 
 // Crear o recuperar cliente para Rewards (staff + admin)
 // Si el cliente no existe en `clientes`, lo crea primero.
-app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
+app.post('/api/rewards/cliente', requireAuthSeguro, async (req, res) => {
   const { telefono, nombre } = req.body;
   if (!telefono?.trim() || !nombre?.trim()) {
     return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
@@ -1454,7 +2319,7 @@ app.post('/api/rewards/cliente', requireAuth, async (req, res) => {
 });
 
 // Consultar bloques de canje disponibles para un cliente en POS
-app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuth, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, async (req, res) => {
   const { telefono } = req.params;
   const { total } = req.query;
   try {
@@ -1470,7 +2335,7 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuth, async (r
 });
 
 // Ajuste manual de puntos — solo admin
-app.post('/api/rewards/cliente/:telefono/ajustar', requireAdmin, async (req, res) => {
+app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, async (req, res) => {
   const { telefono } = req.params;
   const { puntos, tipo, motivo } = req.body;
   try {
@@ -1483,7 +2348,7 @@ app.post('/api/rewards/cliente/:telefono/ajustar', requireAdmin, async (req, res
 // ─── Campañas WA ──────────────────────────────────────────────────────────────
 
 // Preview: cuántos destinatarios tiene un segmento
-app.get('/api/admin/campanas/preview', requireAdmin, async (req, res) => {
+app.get('/api/admin/campanas/preview', requireAdminSeguro, async (req, res) => {
   const { segmento = 'todos' } = req.query;
   try {
     const destinatarios = await obtenerDestinatariosCampana(segmento);
@@ -1494,16 +2359,21 @@ app.get('/api/admin/campanas/preview', requireAdmin, async (req, res) => {
 });
 
 // Historial de campañas
-app.get('/api/admin/campanas', requireAdmin, async (req, res) => {
+app.get('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
   try {
-    res.json(await obtenerCampanas());
+    res.json(await obtenerCampanas(req.negocioId));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // Crear y enviar campaña (background — responde inmediato)
-app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
+// NOTA: la campaña (quién la creó) queda aislada por negocio_id, pero la
+// SELECCIÓN de destinatarios (obtenerDestinatariosCampana) todavía consulta
+// clientes/rewards sin filtrar por negocio — ver auditoría Fase 4. Con un
+// solo negocio real hoy esto no tiene efecto observable, pero es un riesgo
+// de fuga documentado, no resuelto.
+app.post('/api/admin/campanas', requireAdminSeguro, async (req, res) => {
   const { nombre, segmento = 'todos', mensaje } = req.body;
   if (!nombre || !mensaje) return res.status(400).json({ error: 'nombre y mensaje requeridos' });
 
@@ -1511,7 +2381,7 @@ app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
     const destinatarios = await obtenerDestinatariosCampana(segmento);
     if (destinatarios.length === 0) return res.status(400).json({ error: 'Sin destinatarios para ese segmento' });
 
-    const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length });
+    const campanaId = await crearCampana({ nombre, segmento, mensaje, totalDestinatarios: destinatarios.length, negocioId: req.negocioId });
     res.json({ ok: true, campanaId, total: destinatarios.length });
 
     // Envío en background (1 msg/seg para no saturar la API de Meta)
@@ -1540,7 +2410,7 @@ app.post('/api/admin/campanas', requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
+app.get('/api/admin/rappi/menu-status', requireAdminSeguro, async (req, res) => {
   try {
     const result = await consultarAprobacionMenu();
     res.json({ ok: true, result });
@@ -1549,7 +2419,7 @@ app.get('/api/admin/rappi/menu-status', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
+app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, async (req, res) => {
   try {
     const catalogo = construirCatalogoRappi();
     const result = await subirCatalogo(catalogo);
@@ -1561,7 +2431,7 @@ app.post('/api/admin/rappi/subir-menu', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/test/pedido', (req, res) => {
+app.post('/test/pedido', requireAdminSeguro, (req, res) => {
   const ordenPrueba = {
     cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
     modalidad: 'entrega a domicilio',
@@ -1589,12 +2459,44 @@ async function activarPedidosProgramados() {
     for (const row of pendientes) {
       const pedido = row.datos;
       pedido.estado = pedido.estado || 'nuevo';
-      // Registrar en el panel y emitir por WebSocket
+
+      // negocioId viene del propio pedido (ya resuelto cuando se creó vía
+      // WhatsApp/Voz, con el mismo respaldo temporal que usan sus pedidos
+      // regulares -- ver registrarPedido en orderManager.js), nunca
+      // inventado aquí. Fail closed: si falta o es inválido, se salta esta
+      // fila por completo -- no se persiste, no se agrega a memoria, no se
+      // emite (ni por broadcastNegocio ni por broadcast() global), y NO se
+      // marca activado, para que quede pendiente y se pueda corregir el
+      // dato y reintentar en la siguiente corrida del job (5 min después).
+      // Nunca se usa Nonna Maye ni ningún otro negocio por defecto. El log
+      // solo incluye el folio (identificador interno) -- nunca nombre,
+      // teléfono, dirección, items ni el payload completo.
+      if (typeof pedido.negocioId !== 'string' || !pedido.negocioId.trim()) {
+        console.error(`[Scheduler] Pedido programado ${row.folio} sin negocioId válido — no se activa (queda pendiente para corregir y reintentar)`);
+        continue;
+      }
+
+      // Persistir en DB (reinsertar en pedidos_activos) y agregar a memoria.
+      // negocioId explícito: sin esto, pedidos_activos.negocio_id quedaba
+      // NULL para siempre (única escritura de esta fila -- ON CONFLICT
+      // DO UPDATE nunca corrige negocio_id después). pedido.negocioId ya
+      // fue validado como string no vacío arriba, nunca inventado aquí.
       const { guardarPedidoActivo } = await import('./services/database.js');
-      await guardarPedidoActivo(pedido);
-      broadcast({ tipo: 'nuevo_pedido', pedido });
+      const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
+      await guardarPedidoActivo(pedido, pedido.negocioId);
+      agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
+      // Aislado por negocio (mismo patrón que emitirPedido en
+      // orderManager.js). Ya no se usa broadcast() global para este evento.
+      broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
+      // Impresión física: decidida por completo en printRouter.js (legacy
+      // vs. autenticado). Nunca lanza -- si la impresión queda omitida
+      // (sin configuración, sin sucursal resuelta, sin terminal conectada),
+      // el pedido igual se marca activado abajo: la activación representa
+      // que el pedido ya entró a operación, no que la impresora confirmó
+      // éxito. No se reintenta por esto en la siguiente corrida del job.
+      await emitirTrabajoImpresion(pedido);
       await marcarPedidoProgramadoActivado(row.folio);
-      console.log(`[Scheduler] Pedido ${row.folio} activado (programado para ${row.programado_para})`);
+      console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
   } catch (e) {
     console.error('[Scheduler] Error activando pedidos programados:', e.message);
@@ -1602,7 +2504,7 @@ async function activarPedidosProgramados() {
 }
 
 // Endpoint para que el panel liste los pedidos programados pendientes
-app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
+app.get('/api/pedidos-programados', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerPedidosProgramadosPendientes();
   res.json(lista.map(r => ({
     folio: r.folio,
@@ -1614,12 +2516,12 @@ app.get('/api/pedidos-programados', requireAuth, async (req, res) => {
 });
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────
-app.get('/api/llamadas', requireAuth, async (req, res) => {
+app.get('/api/llamadas', requireAuthSeguro, async (req, res) => {
   const lista = await obtenerLlamadasRecientes(30);
   res.json(lista);
 });
 
-app.get('/api/llamadas/:callSid', requireAuth, async (req, res) => {
+app.get('/api/llamadas/:callSid', requireAuthSeguro, async (req, res) => {
   const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid);
   res.json(mensajes);
 });
@@ -1639,14 +2541,22 @@ function inicioDelDiaTexto(fechaISO) {
   return new Date(`${y}-${m}-${day}T06:00:00.000Z`).toISOString(); // UTC-6 midnight ≈ 06:00Z
 }
 
+// ⚠ LEGADO — job sin contexto de request: no hay req.negocioId disponible.
+// Reutiliza el mismo mecanismo de negocio-por-defecto ya usado por el
+// middleware legado resolverNegocio (resolverNegocioActualPorDefecto,
+// cacheado a 'nonna-maye') — no se inventa un fallback nuevo. Este reporte
+// de WhatsApp es de un solo negocio por diseño (WHATSAPP_ADMIN_NUMERO es un
+// único número); PENDIENTE DE ELIMINAR/rediseñar si se necesita el reporte
+// diario para más de un negocio.
 async function enviarReporteDiario() {
   if (!WHATSAPP_ADMIN_NUMERO) return;
   const ahora = new Date().toISOString();
   const inicio = inicioDelDiaTexto(ahora);
+  const negocioIdReporte = await resolverNegocioActualPorDefecto();
   const [ventas, resumen, fondoReg] = await Promise.all([
-    obtenerVentas(inicio, ahora),
-    obtenerResumenVentas(inicio, ahora),
-    obtenerFondoCaja(fechaHoyMX())
+    obtenerVentas(inicio, ahora, negocioIdReporte),
+    obtenerResumenVentas(inicio, ahora, negocioIdReporte),
+    obtenerFondoCaja(fechaHoyMX(), negocioIdReporte)
   ]);
   const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   const totalVentas   = parseFloat(resumen?.total_ventas || 0);
@@ -1732,6 +2642,8 @@ async function sincronizarRappi() {
 
 // ─── Reconciliación de pagos Clip ─────────────────────────────────────────────
 // Revisa cada 5 min si algún pago con enlace ya fue completado (por si el webhook falló)
+// ⚠ broadcast() legado a propósito: job programado sin request/sesión, sin
+// req.negocioId — misma razón que /webhook/clip arriba.
 async function reconciliarPagosPendientes() {
   if (!process.env.CLIP_API_KEY || !process.env.CLIP_API_SECRET) return;
   try {
@@ -1814,7 +2726,8 @@ async function enviarSeguimientoOportunidades() {
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
 initDB()
-  .then(() => seedMenuDesdeJSON(menuJSON))
+  .then(() => resolverNegocioActualPorDefecto())
+  .then((negocioId) => seedMenuDesdeJSON(menuJSON, negocioId))
   .then(() => cargarPedidosDesdeDB())
   .then(() => cargarConfig())
   .then(() => cargarIntegraciones())

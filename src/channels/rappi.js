@@ -7,12 +7,42 @@
 import { Router } from 'express';
 import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services/rappi-api.js';
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
-import { guardarPedido, guardarMensaje, upsertCliente } from '../services/database.js';
+import { guardarPedido, guardarMensaje, upsertCliente, obtenerIntegracionCanal } from '../services/database.js';
 
-let wsBroadcast = null;
-export function setWsBroadcastRappi(fn) { wsBroadcast = fn; }
+// ✅ NUEVO (Fase 7) — dos canales de emisión, inyectados desde server.js:
+//   - wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, aislado
+//     por negocio. Usado donde integracion.negocioId/pedido.negocioId es
+//     confiable (rappi_orden, rappi_cancelacion cuando el store_id resuelve).
+//   - wsBroadcastLegacy(data) → broadcast() global legado, ⚠ PENDIENTE DE
+//     ELIMINAR. Se conserva para rappi_menu_aprobado/rappi_menu_rechazado
+//     (payload sin datos operativos, ver reporte) y como respaldo cuando
+//     rappi_cancelacion no puede resolver negocio — nunca se inventa un
+//     negocioId, nunca se usa Nonna Maye como relleno.
+let wsBroadcastNegocio = null;
+let wsBroadcastLegacy = null;
+export function setWsBroadcastRappi(fnNegocio, fnLegacy) {
+  wsBroadcastNegocio = fnNegocio;
+  wsBroadcastLegacy = fnLegacy;
+}
 
 const router = Router();
+
+// ─── Resolución de negocio por store_id (Fase 5) ────────────────────────────
+// Único punto donde este canal determina a qué negocio pertenece una orden
+// entrante — nunca desde RAPPI_STORE_ID (variable global de una sola
+// tienda, que sigue usándose sin cambios para llamadas salientes en
+// rappi-api.js: tomar/rechazar orden, disponibilidad, schedule) ni desde
+// ningún campo del body que el remitente pudiera manipular aparte del
+// propio store.internal_id que Rappi firma en cada webhook. Sin fallback a
+// Nonna Maye ni a ningún negocio por defecto: un store_id no registrado o
+// una integración inactiva siempre devuelven null — nunca un negocio
+// "adivinado".
+async function resolverIntegracionRappi(storeId) {
+  if (!storeId) return null;
+  const storeIdNorm = String(storeId).trim();
+  if (!storeIdNorm) return null;
+  return obtenerIntegracionCanal('rappi', storeIdNorm);
+}
 
 // ─── Verificar HMAC de Rappi (opcional, recomendado en producción) ────────────
 // Rappi incluye Rappi-Signature header (HMAC-SHA256)
@@ -52,23 +82,39 @@ router.post('/', async (req, res) => {
   }
 
   // MENU_APPROVED — { store_id, message: "Menu Approved" }
+  // ⚠ Se queda en broadcast legado a propósito (no migrado): el payload
+  // solo lleva un timestamp, sin negocioId, sin cliente, sin pedido -- no
+  // hay ningún dato operativo que aislar por negocio (Categoría C). Migrar
+  // esto agregaría una consulta a integraciones_canal sin ningún beneficio
+  // real (además, hoy no tiene ningún consumidor en el panel).
   if (body?.message === 'Menu Approved') {
     console.log('[Rappi] ✅ Menú aprobado');
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_aprobado', timestamp: ts });
+    if (wsBroadcastLegacy) wsBroadcastLegacy({ tipo: 'rappi_menu_aprobado', timestamp: ts });
     return;
   }
 
   // MENU_REJECTED — { store_id } sin message
+  // ⚠ Misma razón que MENU_APPROVED: sin datos operativos, Categoría C.
   if (body?.store_id && !body?.order_id && !body?.id && !body?.message && !evento) {
     console.log(`[Rappi] ❌ Menú rechazado para tienda ${body.store_id}`);
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_menu_rechazado', timestamp: ts });
+    if (wsBroadcastLegacy) wsBroadcastLegacy({ tipo: 'rappi_menu_rechazado', timestamp: ts });
     return;
   }
 
   // ORDER_EVENT_CANCEL — { event: "canceled_with_charge", order_id, store_id }
+  // Migrado: store_id viene en el payload documentado de este evento, se
+  // resuelve con el mismo mecanismo ya confiable que usa NEW_ORDER
+  // (integraciones_canal, nunca RAPPI_STORE_ID ni un campo libre). Si el
+  // store_id no resuelve (integración no registrada), no se inventa un
+  // negocio -- se deja en broadcast legado en vez de perder el evento.
   if (evento && (evento.includes('cancel') || evento.includes('Cancel'))) {
     console.log(`[Rappi] 🚫 Cancelación orden ${body.order_id}: ${evento}`);
-    if (wsBroadcast) wsBroadcast({ tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
+    const integracionCancel = await resolverIntegracionRappi(body?.store_id);
+    if (integracionCancel && wsBroadcastNegocio) {
+      wsBroadcastNegocio(integracionCancel.negocioId, { tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
+    } else if (wsBroadcastLegacy) {
+      wsBroadcastLegacy({ tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
+    }
     return;
   }
 
@@ -96,25 +142,44 @@ router.post('/', async (req, res) => {
       console.log(`[Rappi] Orden productiva detectada por order_detail.order_id: ${body.order_detail.order_id}`);
 
       const storeIdRecibido = String(body.store.internal_id);
-      const storeIdConfigurado = String(process.env.RAPPI_STORE_ID || '');
-      if (storeIdRecibido !== storeIdConfigurado) {
-        console.warn(`[Rappi] ⚠ Tienda no coincide (recibida=${storeIdRecibido}, configurada=${storeIdConfigurado}) — orden ${body.order_detail.order_id} ignorada`);
+      const integracion = await resolverIntegracionRappi(storeIdRecibido);
+      if (!integracion) {
+        // Advertencia segura: nunca se loguea el store_id real ni el body.
+        console.warn('[Rappi] Integración no registrada para store_id=***');
         return;
       }
-      console.log('[Rappi] Tienda validada');
+      console.log('[Rappi] Integración resuelta');
+      console.log(`[Rappi] Negocio: ${integracion.negocioSlug}`);
+      console.log('[Rappi] Store ID validado');
 
       const orderId = String(body.order_detail.order_id);
 
       // Deduplicación: reutiliza el listado en memoria de pedidos ya
       // registrados (cada pedido de Rappi guarda su rappi_order_id — ver
       // mapearOrdenRappi más abajo). No se inventa un mecanismo nuevo.
-      if (obtenerPedidos().some(p => String(p.rappi_order_id) === orderId)) {
+      //
+      // Se consulta con integracion.negocioId (ya resuelto arriba vía
+      // integraciones_canal, nunca desde RAPPI_STORE_ID ni desde el body)
+      // -- ocurre DESPUÉS de resolver la integración, nunca antes, y nunca
+      // revisa pedidos de otros negocios: obtenerPedidos(negocioId) ya
+      // filtra por negocio, así que dos negocios distintos con el mismo
+      // rappi_order_id (imposible en la práctica, Rappi no repite IDs de
+      // orden entre tiendas, pero aun así) no se cruzarían entre sí.
+      if (obtenerPedidos(integracion.negocioId).some(p => String(p.rappi_order_id) === orderId)) {
         console.log(`[Rappi] Orden ${orderId} ya fue procesada — se ignora el reenvío duplicado del webhook`);
         return;
       }
 
       console.log(`[Rappi] Procesando orden ${orderId}`);
       const normalizado = normalizarOrdenProductiva(body.order_detail, body.customer);
+      // Fase 5 (threading operativo): el negocio ya resuelto aquí se
+      // propaga desde este punto hasta cliente/pedido/pedido_activo (ver
+      // mapearOrdenRappi y las llamadas a upsertCliente/guardarPedido más
+      // abajo). Rewards, WebSocket e impresión siguen sin cambios en esta
+      // tarea -- eso es una fase posterior, no autorizada aquí.
+      normalizado.negocioId = integracion.negocioId;
+      normalizado.negocioSlug = integracion.negocioSlug;
+      normalizado.sucursalId = integracion.sucursalId;
       procesarOrdenRappi(normalizado).catch(e =>
         console.error('[Rappi] ❌ Error procesando orden productiva:', e.message, e.stack)
       );
@@ -148,12 +213,15 @@ async function procesarOrdenRappi(data) {
     // upsertCliente ya es idempotente (ON CONFLICT DO UPDATE), mismo patrón
     // que usa el canal de WhatsApp.
     const telefonoRappi = `rappi-${orderId}`;
-    await upsertCliente(telefonoRappi, orden.cliente?.nombre);
-    await guardarPedido(telefonoRappi, orden);
+    await upsertCliente(telefonoRappi, orden.cliente?.nombre, orden.negocioId);
+    await guardarPedido(telefonoRappi, orden, orden.negocioId);
 
-    // Emitir notificación extra al panel con el ID de Rappi
-    if (wsBroadcast) {
-      wsBroadcast({
+    // Emitir notificación extra al panel con el ID de Rappi — aislado por
+    // negocio: pedido.negocioId ya viene resuelto (registrarPedido lo exige
+    // para canal 'rappi', ver orderManager.js), nunca desde RAPPI_STORE_ID
+    // ni desde el body.
+    if (pedido.negocioId && wsBroadcastNegocio) {
+      wsBroadcastNegocio(pedido.negocioId, {
         tipo: 'rappi_orden',
         rappiOrderId: orderId,
         pedidoInternoId: pedido.id,
@@ -235,7 +303,19 @@ function mapearOrdenRappi(data) {
     descuento: parseFloat(descuento),
     total: parseFloat(total),
     canal: 'rappi',
-    pago: 'rappi_pay'        // Pago ya procesado por Rappi
+    pago: 'rappi_pay',       // Pago ya procesado por Rappi
+    // Fase 5 (threading operativo) -- propaga el negocio ya resuelto en el
+    // borde del canal (ver router.post('/') más arriba). Nunca se lee de
+    // ningún campo del payload de Rappi: viene exclusivamente de
+    // data.negocioId/negocioSlug/sucursalId, que el webhook ya puso ahí a
+    // partir de obtenerIntegracionCanal -- nunca de datos manipulables por
+    // quien envía el webhook. Para el formato clásico/de prueba (sin
+    // store.internal_id, ver más arriba) estos tres campos vienen
+    // undefined -- registrarPedido rechaza esos pedidos por no tener
+    // negocioId, documentado en el reporte de esta tarea.
+    negocioId: data.negocioId,
+    negocioSlug: data.negocioSlug,
+    sucursalId: data.sucursalId,
   };
 }
 

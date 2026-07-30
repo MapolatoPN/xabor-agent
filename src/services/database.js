@@ -1,5 +1,6 @@
 import pkg from 'pg';
 import { createHmac, randomBytes } from 'crypto';
+import { hashPassword } from './password.js';
 const { Pool } = pkg;
 
 export const pool = new Pool({
@@ -68,17 +69,6 @@ export async function initDB() {
       clave  VARCHAR(50) PRIMARY KEY,
       valor  TEXT NOT NULL
     );
-    INSERT INTO configuracion (clave, valor) VALUES
-      ('nombre',        'Restaurante Xabor'),
-      ('nombre_corto',  'XABOR'),
-      ('direccion',     'Lib. Manuel Perez Trevino 2416 Local 4'),
-      ('ciudad',        'Col. Tecnologico, Piedras Negras, Coah.'),
-      ('rfc',           'CAOM940122PTA'),
-      ('telefono',      '(878) 109-1115'),
-      ('whatsapp',      '(878) 109-1115'),
-      ('horario',       'lunes a sabado 11am-10pm'),
-      ('bot_avisos',    '')
-    ON CONFLICT (clave) DO NOTHING;
 
     CREATE TABLE IF NOT EXISTS caja_fondos (
       id          SERIAL PRIMARY KEY,
@@ -280,6 +270,46 @@ export async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_rewards_movements_tenant  ON rewards_movements(tenant_id, created_at DESC);
   `);
 
+  // ─── Seed inicial de configuracion (Nonna Maye) ──────────────────────────
+  // Requiere que el negocio 'nonna-maye' ya exista (migraciones 003/004).
+  // initDB() debe seguir siendo seguro de llamar en cualquier estado de
+  // migración y NUNCA debe bloquear el resto de la cadena de arranque
+  // (seedMenuDesdeJSON/cargarPedidosDesdeDB/cargarConfig/cargarIntegraciones
+  // corren después de initDB() en server.js) — por eso nunca se relanza el
+  // error aquí. Nunca se hardcodea el UUID: siempre se resuelve por slug.
+  try {
+    const { rows } = await pool.query('SELECT id FROM negocios WHERE slug = $1', ['nonna-maye']);
+    const negocioId = rows[0]?.id;
+    if (negocioId) {
+      await pool.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES
+           ($1, 'nombre',        'Restaurante Xabor'),
+           ($1, 'nombre_corto',  'XABOR'),
+           ($1, 'direccion',     'Lib. Manuel Perez Trevino 2416 Local 4'),
+           ($1, 'ciudad',        'Col. Tecnologico, Piedras Negras, Coah.'),
+           ($1, 'rfc',           'CAOM940122PTA'),
+           ($1, 'telefono',      '(878) 109-1115'),
+           ($1, 'whatsapp',      '(878) 109-1115'),
+           ($1, 'horario',       'lunes a sabado 11am-10pm'),
+           ($1, 'bot_avisos',    ''),
+           ($1, 'print_agent_legacy_activo', 'true')
+         ON CONFLICT (negocio_id, clave) DO NOTHING`,
+        [negocioId]
+      );
+    } else {
+      // La tabla 'negocios' existe pero no tiene un negocio con slug
+      // 'nonna-maye' — esto SÍ es un problema real (migración 003 corrida
+      // sin su seed, o slug cambiado). Falla de forma visible en el log,
+      // pero controlada: no se relanza el error, initDB() continúa.
+      console.error("[DB] ⚠ ADVERTENCIA: no existe un negocio con slug 'nonna-maye' — el seed de configuración inicial NO se aplicó. Verifica que 003_multiempresa_seed.sql haya sido ejecutada.");
+    }
+  } catch (e) {
+    // Caso esperado antes de aplicar la migración 003: la tabla 'negocios'
+    // todavía no existe. No es un error real — es un estado de migración
+    // pendiente, no de un fallo silencioso de datos.
+    console.log("[DB] Tabla 'negocios' aún no disponible — seed de configuración por negocio pendiente hasta aplicar las migraciones 003/004:", e.message);
+  }
+
   // ─── Xabor Finanzas — tablas SAT (módulo independiente) ──────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sat_accounts (
@@ -379,23 +409,30 @@ export async function initDB() {
 }
 
 // ─── Menú — seed desde JSON ───────────────────────────────────────────────────
-export async function seedMenuDesdeJSON(menuJSON) {
+// negocioId es OBLIGATORIO — nunca se inserta una categoría/producto sin
+// negocio. Si no se entrega, la función se niega a insertar nada (falla
+// controlada, no silenciosa) en vez de asumir un negocio por defecto.
+export async function seedMenuDesdeJSON(menuJSON, negocioId) {
+  if (!negocioId) {
+    console.error('[DB] seedMenuDesdeJSON: negocioId requerido — no se sembró ningún dato.');
+    return;
+  }
   try {
-    const { rows } = await pool.query('SELECT COUNT(*) FROM menu_categorias');
-    if (parseInt(rows[0].count) > 0) return; // Ya hay datos, no sobreescribir
+    const { rows } = await pool.query('SELECT COUNT(*) FROM menu_categorias WHERE negocio_id = $1', [negocioId]);
+    if (parseInt(rows[0].count) > 0) return; // Ya hay datos para este negocio, no sobreescribir
     for (let i = 0; i < menuJSON.categorias.length; i++) {
       const cat = menuJSON.categorias[i];
       const { rows: [{ id: catId }] } = await pool.query(
-        'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, $2) RETURNING id',
-        [cat.nombre, i]
+        'INSERT INTO menu_categorias (negocio_id, nombre, orden) VALUES ($1, $2, $3) RETURNING id',
+        [negocioId, cat.nombre, i]
       );
       for (let j = 0; j < cat.productos.length; j++) {
         const p = cat.productos[j];
         const opciones = p.opciones ? JSON.stringify(p.opciones) : null;
         await pool.query(
-          `INSERT INTO menu_productos (categoria_id, codigo, nombre, descripcion, precio, disponible, opciones, orden)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [catId, p.id, p.nombre, p.descripcion || '', p.precio, p.disponible !== false, opciones, j]
+          `INSERT INTO menu_productos (negocio_id, categoria_id, codigo, nombre, descripcion, precio, disponible, opciones, orden)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [negocioId, catId, p.id, p.nombre, p.descripcion || '', p.precio, p.disponible !== false, opciones, j]
         );
       }
     }
@@ -406,30 +443,33 @@ export async function seedMenuDesdeJSON(menuJSON) {
 }
 
 // ─── Menú — lectura ───────────────────────────────────────────────────────────
-export async function obtenerMenuCompleto() {
+export async function obtenerMenuCompleto(negocioId) {
   try {
+    const id = negocioId || await resolverNegocioActualId();
     const cats = await pool.query(
-      'SELECT * FROM menu_categorias WHERE activa = TRUE ORDER BY orden'
+      'SELECT * FROM menu_categorias WHERE activa = TRUE AND negocio_id = $1 ORDER BY orden',
+      [id]
     );
     const prods = await pool.query(
       `SELECT p.* FROM menu_productos p
        JOIN menu_categorias c ON c.id = p.categoria_id
-       WHERE c.activa = TRUE ORDER BY p.orden`
+       WHERE c.activa = TRUE AND p.negocio_id = $1 ORDER BY p.orden`,
+      [id]
     );
     // Cargar modificadores de todos los productos de una sola vez
     const prodIds = prods.rows.map(p => p.id);
     let gruposMap = {};
     if (prodIds.length) {
       const { rows: grupos } = await pool.query(
-        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) ORDER BY producto_id, orden, id`,
-        [prodIds]
+        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) AND negocio_id = $2 ORDER BY producto_id, orden, id`,
+        [prodIds, id]
       );
       const grupoIds = grupos.map(g => g.id);
       let opcionesMap = {};
       if (grupoIds.length) {
         const { rows: opciones } = await pool.query(
-          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE ORDER BY grupo_id, orden, id`,
-          [grupoIds]
+          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE AND negocio_id = $2 ORDER BY grupo_id, orden, id`,
+          [grupoIds, id]
         );
         for (const o of opciones) {
           if (!opcionesMap[o.grupo_id]) opcionesMap[o.grupo_id] = [];
@@ -455,102 +495,170 @@ export async function obtenerMenuCompleto() {
 }
 
 // ─── Menú — CRUD modificadores ────────────────────────────────────────────────
-export async function obtenerModificadoresProducto(productoId) {
+// Todas reciben negocioId opcional; si no se entrega, usan el negocio actual
+// (resolverNegocioActualId), igual que obtenerConfiguracion/obtenerMenuCompleto.
+export async function obtenerModificadoresProducto(productoId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  const { rows: prodRows } = await pool.query(
+    'SELECT id FROM menu_productos WHERE id=$1 AND negocio_id=$2', [productoId, negId]
+  );
+  if (!prodRows[0]) return [];
+
   const { rows: grupos } = await pool.query(
-    `SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 ORDER BY orden, id`,
-    [productoId]
+    `SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 AND negocio_id=$2 ORDER BY orden, id`,
+    [productoId, negId]
   );
   for (const g of grupos) {
     const { rows } = await pool.query(
-      `SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 ORDER BY orden, id`,
-      [g.id]
+      `SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 AND negocio_id=$2 ORDER BY orden, id`,
+      [g.id, negId]
     );
     g.opciones = rows;
   }
   return grupos;
 }
 
-export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }) {
+export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // negocio_id se deriva del producto padre — nunca se acepta suelto
+  const { rows: prodRows } = await pool.query('SELECT negocio_id FROM menu_productos WHERE id=$1', [productoId]);
+  if (!prodRows[0]) {
+    throw new Error('crearGrupoModificador: producto no encontrado');
+  }
+  if (prodRows[0].negocio_id !== negId) {
+    throw new Error('crearGrupoModificador: el producto no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_modificadores_grupos (producto_id, nombre, requerido, minimo, maximo, orden)
-     VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$1))
+    `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2))
      RETURNING *`,
-    [productoId, nombre, requerido, minimo, maximo]
+    [negId, productoId, nombre, requerido, minimo, maximo]
   );
   return rows[0];
 }
 
-export async function actualizarGrupoModificador(grupoId, campos) {
+export async function actualizarGrupoModificador(grupoId, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);    vals.push(campos.nombre); }
   if (campos.requerido !== undefined) { sets.push(`requerido=$${sets.length+1}`); vals.push(campos.requerido); }
   if (campos.minimo    !== undefined) { sets.push(`minimo=$${sets.length+1}`);    vals.push(campos.minimo); }
   if (campos.maximo    !== undefined) { sets.push(`maximo=$${sets.length+1}`);    vals.push(campos.maximo); }
   if (!sets.length) return;
-  vals.push(grupoId);
-  await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(grupoId, negId);
+  await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarGrupoModificador(grupoId) {
-  await pool.query('DELETE FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
+export async function eliminarGrupoModificador(grupoId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_modificadores_grupos WHERE id=$1 AND negocio_id=$2', [grupoId, negId]);
 }
 
-export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, disponible=true }) {
+export async function crearOpcionModificador(grupoId, { nombre, precio_extra=0, disponible=true }, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // negocio_id se deriva del grupo padre — nunca se acepta suelto
+  const { rows: grupoRows } = await pool.query('SELECT negocio_id FROM menu_modificadores_grupos WHERE id=$1', [grupoId]);
+  if (!grupoRows[0]) {
+    throw new Error('crearOpcionModificador: grupo no encontrado');
+  }
+  if (grupoRows[0].negocio_id !== negId) {
+    throw new Error('crearOpcionModificador: el grupo no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_modificadores_opciones (grupo_id, nombre, precio_extra, disponible, orden)
-     VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$1))
+    `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
+     VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$2))
      RETURNING *`,
-    [grupoId, nombre, precio_extra, disponible]
+    [negId, grupoId, nombre, precio_extra, disponible]
   );
   return rows[0];
 }
 
-export async function actualizarOpcionModificador(opcionId, campos) {
+export async function actualizarOpcionModificador(opcionId, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
   if (campos.precio_extra !== undefined) { sets.push(`precio_extra=$${sets.length+1}`); vals.push(campos.precio_extra); }
   if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
   if (!sets.length) return;
-  vals.push(opcionId);
-  await pool.query(`UPDATE menu_modificadores_opciones SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(opcionId, negId);
+  await pool.query(`UPDATE menu_modificadores_opciones SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarOpcionModificador(opcionId) {
-  await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1', [opcionId]);
+export async function eliminarOpcionModificador(opcionId, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1 AND negocio_id=$2', [opcionId, negId]);
 }
 
 // ─── Menú — CRUD categorías ───────────────────────────────────────────────────
-export async function crearCategoria(nombre) {
+export async function crearCategoria(nombre, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const { rows } = await pool.query(
-    'INSERT INTO menu_categorias (nombre, orden) VALUES ($1, (SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias)) RETURNING *',
-    [nombre]
+    `INSERT INTO menu_categorias (negocio_id, nombre, orden)
+     VALUES ($1, $2, (SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias WHERE negocio_id=$1))
+     RETURNING *`,
+    [negId, nombre]
   );
   return rows[0];
 }
 
-export async function actualizarCategoria(id, campos) {
+export async function actualizarCategoria(id, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const sets = [], vals = [];
   if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);  vals.push(campos.nombre); }
   if (campos.activa    !== undefined) { sets.push(`activa=$${sets.length+1}`);  vals.push(campos.activa); }
   if (campos.orden     !== undefined) { sets.push(`orden=$${sets.length+1}`);   vals.push(campos.orden); }
   if (!sets.length) return;
-  vals.push(id);
-  await pool.query(`UPDATE menu_categorias SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(id, negId);
+  await pool.query(`UPDATE menu_categorias SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
+}
+
+export async function eliminarCategoria(id, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_categorias WHERE id=$1 AND negocio_id=$2', [id, negId]);
 }
 
 // ─── Menú — CRUD productos ────────────────────────────────────────────────────
-export async function crearProducto(datos) {
+export async function crearProducto(datos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
   const { categoria_id, nombre, descripcion, precio, disponible, opciones } = datos;
+
+  // negocio_id se deriva de la categoría padre — nunca se acepta suelto desde datos
+  const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [categoria_id]);
+  if (!catRows[0]) {
+    throw new Error('crearProducto: categoría no encontrada');
+  }
+  if (catRows[0].negocio_id !== negId) {
+    throw new Error('crearProducto: la categoría no pertenece al negocio actual');
+  }
+
   const { rows } = await pool.query(
-    `INSERT INTO menu_productos (categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
-     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$1))
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2))
      RETURNING *`,
-    [categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
+    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
   );
   return rows[0];
 }
 
-export async function actualizarProducto(id, campos) {
+export async function actualizarProducto(id, campos, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+
+  // Si se intenta mover el producto a otra categoría, esa categoría debe ser del mismo negocio
+  if (campos.categoria_id !== undefined) {
+    const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [campos.categoria_id]);
+    if (!catRows[0]) {
+      throw new Error('actualizarProducto: categoría destino no encontrada');
+    }
+    if (catRows[0].negocio_id !== negId) {
+      throw new Error('actualizarProducto: la categoría destino no pertenece al negocio actual');
+    }
+  }
+
   const sets = [], vals = [];
   if (campos.nombre       !== undefined) { sets.push(`nombre=$${sets.length+1}`);       vals.push(campos.nombre); }
   if (campos.descripcion  !== undefined) { sets.push(`descripcion=$${sets.length+1}`);  vals.push(campos.descripcion); }
@@ -558,16 +666,13 @@ export async function actualizarProducto(id, campos) {
   if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
   if (campos.categoria_id !== undefined) { sets.push(`categoria_id=$${sets.length+1}`); vals.push(campos.categoria_id); }
   if (!sets.length) return;
-  vals.push(id);
-  await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+  vals.push(id, negId);
+  await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
 }
 
-export async function eliminarProducto(id) {
-  await pool.query('DELETE FROM menu_productos WHERE id=$1', [id]);
-}
-
-export async function eliminarCategoria(id) {
-  await pool.query('DELETE FROM menu_categorias WHERE id=$1', [id]);
+export async function eliminarProducto(id, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2', [id, negId]);
 }
 
 // ─── Push Notifications ───────────────────────────────────────────────────────
@@ -604,15 +709,31 @@ export async function obtenerCliente(telefono) {
 }
 
 // ─── Crear o actualizar cliente ───────────────────────────────────────────────
-export async function upsertCliente(telefono, nombre) {
+// negocioId (Fase 5 — threading operativo): clientes.telefono sigue siendo
+// la única PK, global (sin negocio_id en la llave) — no se cambia aquí, no
+// hay migración en esta tarea. Por eso el UPDATE del ON CONFLICT NUNCA
+// reescribe negocio_id: si dos negocios llegaran a compartir un mismo
+// teléfono real (posible hoy porque la tabla no aísla clientes por
+// negocio), sobreescribir el dueño en cada visita mezclaría datos entre
+// negocios. Solo el INSERT (primera vez que se ve ese teléfono) fija
+// negocio_id. Para Rappi esto es seguro sin excepción: su teléfono
+// sintético `rappi-{orderId}` es único por diseño (Rappi nunca repite un
+// order_id entre tiendas), así que un mismo teléfono nunca pertenece a dos
+// pedidos de negocios distintos — el caso de "conflicto entre negocios"
+// solo podría darse con números reales de WhatsApp, fuera del alcance de
+// esta tarea. BLOQUEO DOCUMENTADO: un aislamiento real de clientes por
+// negocio requeriría que la identidad del cliente deje de depender solo de
+// telefono (p. ej. clave compuesta o tabla puente cliente↔negocio) — eso
+// es una migración de esquema, no se hace aquí.
+export async function upsertCliente(telefono, nombre, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO clientes (telefono, nombre, ultima_visita)
-      VALUES ($1, $2, NOW())
+      INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
+      VALUES ($1, $2, NOW(), $3)
       ON CONFLICT (telefono) DO UPDATE SET
         nombre = COALESCE(NULLIF($2, ''), clientes.nombre),
         ultima_visita = NOW()
-    `, [telefono, nombre || null]);
+    `, [telefono, nombre || null, negocioId || null]);
   } catch (e) {
     console.error('[DB] Error upsertCliente:', e.message);
   }
@@ -689,11 +810,15 @@ export async function clearPagoPendiente(telefono) {
 }
 
 // ─── Guardar pedido ───────────────────────────────────────────────────────────
-export async function guardarPedido(telefono, pedido) {
+// negocioId (Fase 5): pedidos.id es SERIAL (PK autogenerada) y no hay
+// ninguna restricción UNIQUE real sobre folio en esta tabla — el
+// ON CONFLICT DO NOTHING existente no se toca ni se le inventa un target,
+// solo se agrega negocio_id a la lista de columnas del INSERT.
+export async function guardarPedido(telefono, pedido, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO pedidos (telefono, items, total, modalidad, canal, forma_pago, nombre_cliente, costo_envio, folio)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO pedidos (telefono, items, total, modalidad, canal, forma_pago, nombre_cliente, costo_envio, folio, negocio_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT DO NOTHING
     `, [
       telefono,
@@ -704,7 +829,8 @@ export async function guardarPedido(telefono, pedido) {
       pedido.forma_pago || pedido.cliente?.forma_pago || null,
       pedido.cliente?.nombre || null,
       pedido.costo_envio || 0,
-      pedido.id || null
+      pedido.id || null,
+      negocioId || null
     ]);
   } catch (e) {
     console.error('[DB] Error guardarPedido:', e.message);
@@ -712,15 +838,22 @@ export async function guardarPedido(telefono, pedido) {
 }
 
 // ─── Historial de pedidos entregados ─────────────────────────────────────────
-export async function obtenerPedidosEntregados(limite = 100) {
+// negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
+export async function obtenerPedidosEntregados(limite = 100, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidosEntregados: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT folio, estado, datos, updated_at
       FROM pedidos_activos
       WHERE estado IN ('entregado', 'cancelado')
+        AND negocio_id = $2
       ORDER BY updated_at DESC
       LIMIT $1
-    `, [limite]);
+    `, [limite, negocioIdNorm]);
     return result.rows.map(r => ({ ...r.datos, entregado_at: r.updated_at, _estado: r.estado }));
   } catch (e) {
     console.error('[DB] Error obtenerPedidosEntregados:', e.message);
@@ -762,7 +895,13 @@ export async function registrarDevolucion(folio, monto, motivo) {
 }
 
 // ─── Consultas para POS ───────────────────────────────────────────────────────
-export async function obtenerVentas(desde, hasta) {
+// negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
+export async function obtenerVentas(desde, hasta, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerVentas: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT
@@ -784,8 +923,9 @@ export async function obtenerVentas(desde, hasta) {
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
+        AND negocio_id = $3
       ORDER BY created_at DESC
-    `, [desde, hasta]);
+    `, [desde, hasta, negocioIdNorm]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerVentas:', e.message);
@@ -793,7 +933,12 @@ export async function obtenerVentas(desde, hasta) {
   }
 }
 
-export async function obtenerResumenVentas(desde, hasta) {
+export async function obtenerResumenVentas(desde, hasta, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerResumenVentas: negocioId inválido u omitido — rechazado, sin consulta global');
+    return {};
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(`
       SELECT
@@ -809,7 +954,8 @@ export async function obtenerResumenVentas(desde, hasta) {
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
-    `, [desde, hasta]);
+        AND negocio_id = $3
+    `, [desde, hasta, negocioIdNorm]);
     return result.rows[0];
   } catch (e) {
     console.error('[DB] Error obtenerResumenVentas:', e.message);
@@ -883,13 +1029,18 @@ export async function obtenerConversacionesRecientes(limite = 20) {
 }
 
 // ─── Pedidos activos del panel (sobreviven reinicios) ────────────────────────
-export async function guardarPedidoActivo(pedido) {
+// negocioId (Fase 5): folio es la PK real de esta tabla y un mismo folio
+// pertenece al mismo negocio durante toda su vida (se fija una sola vez,
+// en el primer INSERT) — por eso el UPDATE del ON CONFLICT (reutilizado en
+// cada cambio de estado) no reescribe negocio_id; sería redundante, no
+// arriesgado, pero se omite para mantener el UPDATE mínimo y explícito.
+export async function guardarPedidoActivo(pedido, negocioId) {
   try {
     await pool.query(`
-      INSERT INTO pedidos_activos (folio, estado, datos)
-      VALUES ($1, $2, $3)
+      INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (folio) DO UPDATE SET datos = $3, updated_at = NOW()
-    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido)]);
+    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
   }
@@ -909,11 +1060,22 @@ export async function actualizarEstadoPedidoDB(folio, estado) {
 export async function obtenerPedidosActivos() {
   try {
     const result = await pool.query(`
-      SELECT datos FROM pedidos_activos
+      SELECT datos, negocio_id FROM pedidos_activos
       WHERE estado != 'entregado'
       ORDER BY created_at ASC
     `);
-    return result.rows.map(r => r.datos);
+    // Fallback para pedidos activos pre-migración: su JSON nunca tuvo
+    // negocioId (se guardó antes de que ese concepto existiera), pero la
+    // columna SQL sí quedó backfilleada por la migración 007. Sin este
+    // fallback, orderManager.js los filtra como si no pertenecieran a
+    // ningún negocio y desaparecen del panel. Nunca se sobrescribe un
+    // negocioId ya presente en el JSON, nunca se inventa un negocio por
+    // defecto, y el JSON guardado en DB nunca se modifica (solo se ajusta
+    // el objeto devuelto en memoria).
+    return result.rows.map(r => {
+      const datos = r.datos || {};
+      return { ...datos, negocioId: datos.negocioId || r.negocio_id || null };
+    });
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivos:', e.message);
     return [];
@@ -1072,12 +1234,26 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
 export async function obtenerPedidosPorActivar() {
   try {
     const result = await pool.query(`
-      SELECT folio, datos, programado_para FROM pedidos_programados
+      SELECT folio, datos, negocio_id, programado_para FROM pedidos_programados
       WHERE activado = FALSE
         AND programado_para <= NOW() + INTERVAL '1 hour'
       ORDER BY programado_para ASC
     `);
-    return result.rows;
+    // Mismo fallback y mismo motivo que obtenerPedidosActivos(): un
+    // pedido programado creado antes de la migración 007 no tiene
+    // negocioId en su JSON, aunque la columna sí lo tenga. Sin esto,
+    // activarPedidosProgramados() (server.js) lo rechaza para siempre por
+    // su propia guarda fail-closed. row.negocio_id nunca se expone aparte
+    // -- se pliega dentro de datos.negocioId, que es lo único que lee el
+    // consumidor.
+    return result.rows.map(r => {
+      const datos = r.datos || {};
+      return {
+        folio: r.folio,
+        programado_para: r.programado_para,
+        datos: { ...datos, negocioId: datos.negocioId || r.negocio_id || null }
+      };
+    });
   } catch (e) {
     console.error('[DB] Error obtenerPedidosPorActivar:', e.message);
     return [];
@@ -1268,10 +1444,227 @@ export async function obtenerUltimosPedidos(telefono, limite = 3) {
 
 // ─── Fondo de caja ────────────────────────────────────────────────────────────
 // Guarda el fondo inicial del día (una sola vez por fecha MX)
-// ─── Configuración del negocio ───────────────────────────────────────────────
-export async function obtenerConfiguracion() {
+// ─── Multiempresa — resolución del negocio actual ────────────────────────────
+// Temporal: sin autenticación multiempresa todavía, todo el sistema opera sobre
+// un único "negocio actual" resuelto por slug (ver migrations/003_multiempresa*
+// y 004_config_menu_negocio*). Nunca hardcodear el UUID: siempre se resuelve
+// consultando negocios.slug.
+const NEGOCIO_ACTUAL_SLUG = 'nonna-maye';
+let _negocioActualIdCache = null;
+
+export async function obtenerNegocioIdPorSlug(slug) {
   try {
-    const result = await pool.query('SELECT clave, valor FROM configuracion');
+    const { rows } = await pool.query('SELECT id FROM negocios WHERE slug = $1', [slug]);
+    return rows[0]?.id || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerNegocioIdPorSlug:', e.message);
+    return null;
+  }
+}
+
+async function resolverNegocioActualId() {
+  if (!_negocioActualIdCache) {
+    _negocioActualIdCache = await obtenerNegocioIdPorSlug(NEGOCIO_ACTUAL_SLUG);
+  }
+  return _negocioActualIdCache;
+}
+
+// ─── Multiempresa — mapeo canal → negocio (Fase 5, migración 008) ──────────
+// Resuelve el negocio (y sucursal, si aplica) dueño de un identificador de
+// integración externo (store_id de Rappi, phone_number_id de WhatsApp,
+// número de Twilio en voz) contra integraciones_canal. Función de SOLO
+// LECTURA: no crea ni modifica filas, no lee variables de entorno, no
+// acepta negocioId directamente (el negocio se deriva exclusivamente del
+// identificador del canal, nunca de un valor que el llamador pudiera
+// manipular) y NO tiene fallback a Nonna Maye ni a ningún negocio por
+// defecto — un identificador sin coincidencia siempre devuelve null.
+// Ningún canal (WhatsApp/Rappi/voz) la usa todavía; se agrega sola, sin
+// conectar nada, como preparación para una fase posterior.
+//
+// A diferencia de la mayoría de las funciones de este archivo, aquí NO se
+// atrapa el error de la consulta: un fallo real de base de datos debe
+// propagarse al llamador (mismo criterio que crearProducto/
+// actualizarProducto/crearUsuarioConPassword) — "no encontrado" y "error
+// real" son casos distintos y no deben confundirse devolviendo null en
+// ambos.
+export async function obtenerIntegracionCanal(canal, identificador) {
+  if (typeof canal !== 'string' || !canal.trim()) return null;
+  if (typeof identificador !== 'string' || !identificador.trim()) return null;
+
+  // canal se normaliza agresivamente (trim + minúsculas): es un valor
+  // interno controlado por nosotros, los canales conocidos ('whatsapp',
+  // 'rappi', 'voice') siempre se siembran en minúsculas. identificador NO
+  // cambia de mayúsculas/minúsculas — viene tal cual del proveedor externo
+  // en cada webhook y se sembró en la migración 008 con su capitalización
+  // original; forzar un case distinto podría dejar de coincidir con lo que
+  // Rappi/Meta/Twilio realmente envían.
+  const canalNorm = canal.trim().toLowerCase();
+  const identificadorNorm = identificador.trim();
+
+  const { rows } = await pool.query(
+    `SELECT
+       ic.id AS integracion_id,
+       ic.negocio_id, n.slug AS negocio_slug, n.nombre AS negocio_nombre,
+       ic.sucursal_id, s.nombre AS sucursal_nombre,
+       ic.canal, ic.identificador, ic.configuracion
+     FROM integraciones_canal ic
+     JOIN negocios n ON n.id = ic.negocio_id
+     LEFT JOIN sucursales s ON s.id = ic.sucursal_id
+     WHERE ic.canal = $1 AND ic.identificador = $2 AND ic.activo = TRUE`,
+    [canalNorm, identificadorNorm]
+  );
+
+  if (rows.length === 0) return null;
+
+  if (rows.length > 1) {
+    // UNIQUE(canal, identificador) debería impedir esto. Si ocurre de
+    // todos modos, es un error estructural real -- no un "no encontrado"
+    // -- y debe tratarse como tal, no devolverse silenciosamente como null.
+    throw new Error(
+      `obtenerIntegracionCanal: se encontraron ${rows.length} integraciones activas para canal='${canalNorm}' identificador='${identificadorNorm}' — se esperaba a lo sumo 1 (violación de UNIQUE)`
+    );
+  }
+
+  const r = rows[0];
+  return {
+    integracionId: r.integracion_id,
+    negocioId: r.negocio_id,
+    negocioSlug: r.negocio_slug,
+    negocioNombre: r.negocio_nombre,
+    sucursalId: r.sucursal_id,
+    sucursalNombre: r.sucursal_nombre,
+    canal: r.canal,
+    identificador: r.identificador,
+    configuracion: r.configuracion,
+  };
+}
+
+// ─── Multiempresa — membresía usuario↔negocio (Fase 2, autenticación) ───────
+// Mecanismo real: la pertenencia de un usuario a uno o más negocios vive en
+// la tabla usuario_negocios (migración 005). El middleware de autenticación
+// en server.js usa obtenerMembresiaUsuarioNegocio para decidir si una
+// request autenticada puede operar sobre el negocio que pide su sesión —
+// nunca confía en un slug/ID que el cliente envíe directamente.
+// Exige negocio.activo además de membresía.activo -- mismo criterio que ya
+// usa obtenerNegociosDeUsuario() para el login. Sin esto, una sesión emitida
+// antes de desactivar un negocio seguía siendo válida indefinidamente en
+// cada request protegida (resolverNegocioSeguro/requireSesionNegocio/
+// autenticarUpgradePanel), porque solo revalidaban usuario_negocios.activo.
+// Un negocio inactivo con membresía.activo=true en la fila ahora devuelve
+// null (misma forma de "sin membresía válida" que ya usan los llamadores),
+// nunca un objeto con negocio_activo=false que el llamador tendría que
+// interpretar aparte.
+// Exige también usuarios.activo, por el mismo motivo que ya exige
+// negocios.activo (ver comentario arriba): sin esto, un usuario
+// desactivado con sesión ya emitida seguía con acceso indefinidamente en
+// cada request protegida, porque nada revalidaba usuarios.activo fuera del
+// momento de login. usuarios.activo=false ahora produce el mismo null
+// (ausencia de membresía válida) que ya interpretan los 3 llamadores.
+export async function obtenerMembresiaUsuarioNegocio(usuarioId, negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT un.rol, un.activo
+       FROM usuario_negocios un
+       JOIN negocios n ON n.id = un.negocio_id
+       JOIN usuarios u ON u.id = un.usuario_id
+       WHERE un.usuario_id = $1
+         AND un.negocio_id = $2
+         AND un.activo = true
+         AND n.activo = true
+         AND u.activo = true`,
+      [usuarioId, negocioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerMembresiaUsuarioNegocio:', e.message);
+    return null;
+  }
+}
+
+// Lista los negocios a los que pertenece un usuario (para elegir negocio
+// activo al iniciar sesión). Solo membresías activas.
+export async function obtenerNegociosDeUsuario(usuarioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT un.negocio_id, un.rol, n.nombre, n.slug
+       FROM usuario_negocios un
+       JOIN negocios n ON n.id = un.negocio_id
+       WHERE un.usuario_id = $1 AND un.activo = TRUE AND n.activo = TRUE
+       ORDER BY n.nombre`,
+      [usuarioId]
+    );
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerNegociosDeUsuario:', e.message);
+    return [];
+  }
+}
+
+export async function obtenerUsuarioPorId(usuarioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, negocio_id, nombre, email, activo FROM usuarios WHERE id = $1`,
+      [usuarioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerUsuarioPorId:', e.message);
+    return null;
+  }
+}
+
+// email es único globalmente desde la migración 006 — a lo sumo una fila.
+// Incluye password_hash porque la usa el login para verificar la
+// contraseña; el llamador nunca debe reenviarlo al cliente.
+export async function obtenerUsuarioPorEmail(email) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, negocio_id, nombre, email, password_hash, activo FROM usuarios WHERE email = $1`,
+      [email]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerUsuarioPorEmail:', e.message);
+    return null;
+  }
+}
+
+// Crea un usuario CON contraseña y su membresía inicial en un negocio, de
+// forma atómica (transacción). Pensado para el script de administrador
+// inicial (scripts/crear-admin-local.js) y para futuras altas de usuario.
+// Nunca acepta un hash ya calculado — siempre recibe la contraseña en
+// texto plano y la hashea aquí mismo, para que no exista otra forma de
+// insertar un usuario sin pasar por hashPassword().
+export async function crearUsuarioConPassword({ negocioId, nombre, email, password, rol = 'admin' }) {
+  const client = await pool.connect();
+  try {
+    const hash = hashPassword(password);
+    await client.query('BEGIN');
+    const { rows: [usuario] } = await client.query(
+      `INSERT INTO usuarios (negocio_id, nombre, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, negocio_id, nombre, email`,
+      [negocioId, nombre, email, hash]
+    );
+    await client.query(
+      `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol) VALUES ($1,$2,$3)
+       ON CONFLICT (usuario_id, negocio_id) DO UPDATE SET rol = $3, activo = TRUE`,
+      [usuario.id, negocioId, rol]
+    );
+    await client.query('COMMIT');
+    return usuario;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error crearUsuarioConPassword:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Configuración del negocio ───────────────────────────────────────────────
+export async function obtenerConfiguracion(negocioId) {
+  try {
+    const id = negocioId || await resolverNegocioActualId();
+    const result = await pool.query('SELECT clave, valor FROM configuracion WHERE negocio_id = $1', [id]);
     const config = {};
     result.rows.forEach(r => { config[r.clave] = r.valor; });
     return config;
@@ -1281,12 +1674,13 @@ export async function obtenerConfiguracion() {
   }
 }
 
-export async function actualizarConfiguracion(cambios) {
+export async function actualizarConfiguracion(cambios, negocioId) {
   try {
+    const id = negocioId || await resolverNegocioActualId();
     for (const [clave, valor] of Object.entries(cambios)) {
       await pool.query(
-        'INSERT INTO configuracion (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2',
-        [clave, valor]
+        'INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, $2, $3) ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $3',
+        [id, clave, valor]
       );
     }
     return true;
@@ -1294,6 +1688,71 @@ export async function actualizarConfiguracion(cambios) {
     console.error('[DB] Error actualizarConfiguracion:', e.message);
     return false;
   }
+}
+
+// ─── Impresión: modo por negocio y resolución de sucursal ───────────────────
+// Solo lectura, fail-closed. Nunca usan resolverNegocioActualId() ni ningún
+// negocio por defecto: negocioId debe llegar explícito del llamador. Un
+// resultado ambiguo se traduce en modo/sucursalId = null con una "razon"
+// explícita -- nunca en un valor adivinado. No se atrapan errores de
+// consulta aquí: se propagan tal cual para que el llamador nunca los
+// confunda con "configuración ausente" y jamás caiga a legacy por un fallo
+// de DB.
+export async function resolverModoImpresion(negocioId) {
+  if (typeof negocioId !== 'string' || negocioId === '') {
+    throw new Error('resolverModoImpresion: negocioId inválido u omitido');
+  }
+  const { rows } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'print_agent_legacy_activo'`,
+    [negocioId]
+  );
+  if (rows.length === 0) {
+    return { modo: null, configurado: false, razon: 'configuracion_ausente' };
+  }
+  const valor = rows[0].valor;
+  if (valor === 'true')  return { modo: 'legacy', configurado: true };
+  if (valor === 'false') return { modo: 'autenticado', configurado: true };
+  // Cualquier otro texto es ambiguo -- no se compara con variantes
+  // ('TRUE', '1', etc.) ni se registra el valor recibido.
+  return { modo: null, configurado: false, razon: 'configuracion_invalida' };
+}
+
+export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido = null) {
+  if (typeof negocioId !== 'string' || negocioId === '') {
+    throw new Error('resolverSucursalParaImpresion: negocioId inválido u omitido');
+  }
+  if (sucursalIdPedido !== null && sucursalIdPedido !== undefined && typeof sucursalIdPedido !== 'string') {
+    throw new Error('resolverSucursalParaImpresion: sucursalIdPedido debe ser string, null o undefined');
+  }
+  const tieneSucursalPedido = typeof sucursalIdPedido === 'string' && sucursalIdPedido.length > 0;
+
+  // Caso A: el pedido trae sucursalId -- se valida contra DB (nunca por
+  // formato/regex). Si no hay fila, es un error explícito: NO se cae a la
+  // resolución de "sucursal única" del caso B.
+  if (tieneSucursalPedido) {
+    const { rows } = await pool.query(
+      `SELECT id FROM sucursales WHERE id = $1 AND negocio_id = $2 AND activo = true`,
+      [sucursalIdPedido, negocioId]
+    );
+    if (rows.length === 1) {
+      return { sucursalId: rows[0].id, resueltaPor: 'pedido' };
+    }
+    return { sucursalId: null, resueltaPor: null, razon: 'sucursal_invalida' };
+  }
+
+  // Caso B: sin sucursalId -- resuelve solo si hay EXACTAMENTE una sucursal
+  // activa del negocio. Nunca LIMIT 1, nunca la primera arbitrariamente.
+  const { rows } = await pool.query(
+    `SELECT id FROM sucursales WHERE negocio_id = $1 AND activo = true ORDER BY id`,
+    [negocioId]
+  );
+  if (rows.length === 1) {
+    return { sucursalId: rows[0].id, resueltaPor: 'unica_activa' };
+  }
+  if (rows.length === 0) {
+    return { sucursalId: null, resueltaPor: null, razon: 'sin_sucursales_activas' };
+  }
+  return { sucursalId: null, resueltaPor: null, razon: 'multiples_sucursales_activas' };
 }
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
@@ -1445,13 +1904,19 @@ export async function obtenerCandidatosRepartidor() {
   } catch(e) { return []; }
 }
 
-export async function guardarFondoCaja(fechaMX, monto) {
+// negocioId OBLIGATORIO — falla cerrado (sin escritura global) si falta.
+export async function guardarFondoCaja(fechaMX, monto, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarFondoCaja: negocioId inválido u omitido — rechazado, sin escritura global');
+    return false;
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     await pool.query(`
-      INSERT INTO caja_fondos (fecha, fondo)
-      VALUES ($1, $2)
-      ON CONFLICT (fecha) DO NOTHING
-    `, [fechaMX, monto]);
+      INSERT INTO caja_fondos (fecha, fondo, negocio_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (negocio_id, fecha) DO NOTHING
+    `, [fechaMX, monto, negocioIdNorm]);
     return true;
   } catch (e) {
     console.error('[DB] Error guardarFondoCaja:', e.message);
@@ -1459,12 +1924,18 @@ export async function guardarFondoCaja(fechaMX, monto) {
   }
 }
 
-// Obtiene el fondo registrado para una fecha MX (formato 'YYYY-MM-DD')
-export async function obtenerFondoCaja(fechaMX) {
+// Obtiene el fondo registrado para una fecha MX (formato 'YYYY-MM-DD').
+// negocioId OBLIGATORIO — falla cerrado (sin lectura global) si falta.
+export async function obtenerFondoCaja(fechaMX, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerFondoCaja: negocioId inválido u omitido — rechazado, sin lectura global');
+    return null;
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     const result = await pool.query(
-      `SELECT fondo, created_at FROM caja_fondos WHERE fecha = $1`,
-      [fechaMX]
+      `SELECT fondo, created_at FROM caja_fondos WHERE fecha = $1 AND negocio_id = $2`,
+      [fechaMX, negocioIdNorm]
     );
     return result.rows[0] || null;
   } catch (e) {
@@ -1475,12 +1946,16 @@ export async function obtenerFondoCaja(fechaMX) {
 
 // ─── Campañas WA ──────────────────────────────────────────────────────────────
 
-export async function crearCampana({ nombre, segmento, mensaje, totalDestinatarios }) {
+// negocioId: a diferencia de pedidos/clientes/rewards, las campañas se
+// crean EXCLUSIVAMENTE desde esta función (ningún canal en vivo las
+// escribe) — es seguro filtrar su listado por negocio_id sin riesgo de que
+// una campaña nueva "desaparezca" por no tener la columna poblada.
+export async function crearCampana({ nombre, segmento, mensaje, totalDestinatarios, negocioId }) {
   const { rows } = await pool.query(
-    `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado)
-     VALUES ($1, $2, $3, $4, 'enviando')
+    `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado, negocio_id)
+     VALUES ($1, $2, $3, $4, 'enviando', $5)
      RETURNING id`,
-    [nombre, segmento, mensaje, totalDestinatarios]
+    [nombre, segmento, mensaje, totalDestinatarios, negocioId || null]
   );
   return rows[0].id;
 }
@@ -1503,14 +1978,22 @@ export async function completarCampana(campanaId) {
   );
 }
 
-export async function obtenerCampanas(limit = 20) {
+// negocioId es obligatorio: sin él se devuelve una lista vacía en vez de
+// filtrar "todas las campañas" por accidente (falla cerrado, mismo
+// criterio que seedMenuDesdeJSON).
+export async function obtenerCampanas(negocioId, limit = 20) {
+  if (!negocioId) {
+    console.error('[DB] obtenerCampanas: negocioId requerido — devolviendo lista vacía.');
+    return [];
+  }
   const { rows } = await pool.query(
     `SELECT id, nombre, segmento, total_destinatarios, enviados, fallidos, respondidos,
             estado, creada_at, completada_at
      FROM campanas
+     WHERE negocio_id = $1
      ORDER BY creada_at DESC
-     LIMIT $1`,
-    [limit]
+     LIMIT $2`,
+    [negocioId, limit]
   );
   return rows;
 }

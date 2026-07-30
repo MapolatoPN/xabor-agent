@@ -226,9 +226,14 @@ function extraerOrden(texto) {
   const match = texto.match(/<ORDEN_CONFIRMADA>([\s\S]*?)<\/ORDEN_CONFIRMADA>/);
   if (!match) return null;
   try {
-    return JSON.parse(match[1].trim());
+    const orden = JSON.parse(match[1].trim());
+    console.log(`[brain] Orden extraída OK — total: $${orden.total} | programado_para: ${orden.programado_para || 'inmediato'}`);
+    return orden;
   } catch (e) {
-    console.error('[brain] Error al parsear orden:', e.message);
+    // Error crítico: el bloque JSON existe pero no es parseable.
+    // Loguear el contenido completo para diagnóstico.
+    console.error('[brain] ⚠️ ORDEN_CONFIRMADA presente pero JSON inválido:', e.message);
+    console.error('[brain] Contenido del bloque:', match[1].trim().slice(0, 500));
     return null;
   }
 }

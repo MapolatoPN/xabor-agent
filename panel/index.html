@@ -1201,10 +1201,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 </div><!-- /vistas-extra -->
 
 <script>
-// ─── Auth y roles ─────────────────────────────────────────────────────────────
-const TOKEN = sessionStorage.getItem('xabor_token');
-const ROLE  = sessionStorage.getItem('xabor_role') || 'staff';
-if (!TOKEN) location.href = '/login.html';
+// ─── Auth y roles (Fase 4 — sesión multiempresa por cookie) ────────────────
+// Ya no se usa un token compartido en sessionStorage: la sesión vive en una
+// cookie httpOnly (xabor_sesion) que el navegador adjunta automáticamente
+// en cada fetch same-origin — por eso apiFetch ya no arma un header
+// Authorization. El negocio autorizado SIEMPRE se lee del servidor
+// (/api/auth/me, /api/config) — el panel nunca elige ni envía un
+// negocio_id/slug propio.
+let ROL = 'staff';
+let NEGOCIO_ID = null;
 
 // Config del negocio — se carga desde /api/config al iniciar
 let negocio = {
@@ -1224,16 +1229,27 @@ async function cargarNegocio() {
 function apiFetch(url, opts = {}) {
   return fetch(url, {
     ...opts,
-    headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
   });
 }
-apiFetch('/api/auth/verify').then(async r => {
-  if (!r.ok) { sessionStorage.removeItem('xabor_token'); location.href = '/login.html'; return; }
+
+function irALogin() {
+  location.href = '/login-negocio.html?redirect=' + encodeURIComponent(location.pathname);
+}
+
+async function cerrarSesion() {
+  try { await apiFetch('/api/auth/negocio/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/login-negocio.html';
+}
+
+fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
+  if (!r.ok) { irALogin(); return; }
   const data = await r.json();
-  const role = data.role || ROLE;
-  sessionStorage.setItem('xabor_role', role);
+  ROL = data.rol || 'staff';
+  NEGOCIO_ID = data.negocioId;
   // Ocultar tabs de admin para operadores
-  if (role !== 'admin') {
+  if (ROL !== 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
   }
   // Cargar config del negocio
@@ -1244,7 +1260,11 @@ apiFetch('/api/auth/verify').then(async r => {
   setInterval(cargarProgramados, 5 * 60 * 1000);
   // Registrar service worker y suscribirse a push notifications
   registrarPush();
-});
+  // WebSocket del panel — solo se conecta DESPUÉS de confirmar sesión
+  // válida (nunca antes: la cookie httpOnly xabor_sesion es la única
+  // credencial, el servidor la exige en el handshake de /ws/panel).
+  conectarWS();
+}).catch(() => irALogin());
 
 // ─── Push Notifications ──────────────────────────────────────────────────────
 function urlBase64ToUint8Array(base64String) {
@@ -1292,12 +1312,27 @@ const labelWs    = document.getElementById('label-ws');
 const pedidos    = {};
 
 // ─── WebSocket ───────────────────────────────────────────────────────────────
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+// Ruta dedicada y autenticada del panel — el servidor exige la cookie de
+// sesión en el handshake (ver autenticarUpgradePanel en server.js). Nunca se
+// manda token, negocioId ni rol por JavaScript: la cookie httpOnly viaja
+// sola, automáticamente, por ser same-origin.
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/panel`;
 let ws;
 function conectarWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; panelListo = false; setTimeout(() => { panelListo = true; }, 3000); };
-  ws.onclose = () => { dot.className = 'desconectado'; labelWs.textContent = 'Desconectado'; setTimeout(conectarWS, 3000); };
+  ws.onclose = () => {
+    dot.className = 'desconectado'; labelWs.textContent = 'Desconectado';
+    // Antes de reintentar, reconfirmar que la sesión sigue siendo válida.
+    // Si el servidor rechazó el handshake por sesión expirada/revocada,
+    // reintentar cada 3s sin comprobar generaría una tormenta indefinida de
+    // conexiones rechazadas. Si /api/auth/me también falla, se va a login
+    // en vez de seguir reintentando el WebSocket.
+    fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => {
+      if (r.ok) setTimeout(conectarWS, 3000);
+      else irALogin();
+    }).catch(() => setTimeout(conectarWS, 3000));
+  };
   ws.onerror = () => { dot.className = 'desconectado'; };
   ws.onmessage = ({ data }) => {
     try {
@@ -1345,7 +1380,9 @@ function conectarWS() {
     } catch(e) {}
   };
 }
-conectarWS();
+// conectarWS() ya no se llama aquí sin condición — se invoca únicamente
+// tras confirmar /api/auth/me (ver arriba), para nunca abrir el WebSocket
+// antes de saber si hay una sesión válida.
 
 // ─── Inicializar POS al cargar ────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -1510,7 +1547,7 @@ function renderComanda(p) {
     <div class="comanda-body">
       <span class="ticket-meta">Fecha: ${horaCompleta} &nbsp;<span class="timer-badge" ${timerAttr}></span></span>
       <div class="ticket-orden-num">Orden: <strong>${numOrden}</strong></div>
-      <span class="ticket-meta">Cajero: ${sessionStorage.getItem('xabor_role') === 'admin' ? 'Admin' : 'Caja'}</span>
+      <span class="ticket-meta">Cajero: ${ROL === 'admin' ? 'Admin' : 'Caja'}</span>
       <div class="comanda-cliente">
         <div class="comanda-nombre">${nombre}</div>
         ${formaPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
@@ -1539,7 +1576,7 @@ function renderComanda(p) {
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
       <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')">🗑️</button>
-      ${sessionStorage.getItem('xabor_role')==='admin'?`<button class="btn-entregado" onclick="abrirModalPago('${p.id}')" title="Editar forma de pago">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
+      ${ROL==='admin'?`<button class="btn-entregado" onclick="abrirModalPago('${p.id}')" title="Editar forma de pago">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
       ${esEntrega ? (p.repartidor_nombre ? `<div style="margin-top:6px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:4px 8px;border-radius:6px;font-weight:700;">🛵 ${p.repartidor_nombre}</div>` : '<div style="margin-top:6px;font-size:0.78rem;color:#aaa;padding:4px 0;">Sin repartidor asignado</div>') : ''}
     </div>`;
 }
@@ -1590,7 +1627,8 @@ function eliminarComanda(id) {
   if (pin === null) return;
   fetch(`/pedidos/${id}`, {
     method: 'DELETE',
-    headers: { 'Authorization': 'Bearer ' + TOKEN, 'X-Admin-Pin': pin }
+    credentials: 'same-origin',
+    headers: { 'X-Admin-Pin': pin }
   }).then(async r => {
     if (r.status === 403) { alert('Contraseña incorrecta.'); return; }
     if (!r.ok) { alert('No se pudo eliminar.'); return; }
@@ -2000,7 +2038,6 @@ async function enviarMensajeManual() {
 document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
 });
-function cerrarSesion() { sessionStorage.removeItem('xabor_token'); location.href='/login.html'; }
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }).then(() => console.log('[Prueba] Pedido enviado')); }
 
 // ─── Editar forma de pago (admin) ────────────────────────────────────────────
@@ -2316,7 +2353,7 @@ async function confirmarPresencial() {
   const montoCanje     = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
   const total          = Math.max(0, subtotal - descuento - montoCanje);
   const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
-  const isAdmin        = sessionStorage.getItem('xabor_role') === 'admin';
+  const isAdmin        = ROL === 'admin';
 
   // Validar límite de descuento por rol: staff ≤ 10%
   if (descuento > 0) {
@@ -2548,7 +2585,7 @@ async function cargarHistorial() {
     const hora        = horaCST(p.entregado_at || p.timestamp);
     const envio       = parseFloat(p.costo_envio || 0);
     const folio       = p.id || p.folio || '';
-    const isAdmin     = sessionStorage.getItem('xabor_role') === 'admin';
+    const isAdmin     = ROL === 'admin';
     const itemsHTML   = (p.items||[]).map(item => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f0ed;font-size:0.85rem;">
         <span>${item.cantidad||1}x ${item.nombre||''}</span>
@@ -2769,7 +2806,7 @@ const INT_CAMPOS = [
 
 // ─── e.firma SAT — carga y subida de credenciales ────────────────────────────
 async function cargarInfoCertSAT() {
-  if (ROLE !== 'admin') return;
+  if (ROL !== 'admin') return;
   const el = document.getElementById('sat-cert-status');
   const btnElim = document.getElementById('btn-sat-eliminar');
   if (!el) return;
@@ -2871,7 +2908,7 @@ async function eliminarCredencialesSAT() {
 let integracionesActuales = {};
 
 async function cargarIntegracionesPanel() {
-  if (ROLE !== 'admin') return;
+  if (ROL !== 'admin') return;
   try {
     const r = await apiFetch('/api/admin/integraciones');
     if (r.ok) integracionesActuales = await r.json();
@@ -3224,7 +3261,7 @@ async function verPerfilRewards(telefono) {
           <div style="font-size:1.4rem;font-weight:800;color:#16a34a;">${(p.puntos_balance||0).toLocaleString('es-MX')}</div>
           <div style="font-size:0.72rem;color:#888;">puntos disponibles</div>
           ${p.nivel?.siguiente ? `<div style="font-size:0.7rem;color:#aaa;margin-top:2px;">Faltan ${p.nivel.falta} pts → ${p.nivel.siguiente}</div>` : ''}
-          ${sessionStorage.getItem('xabor_role')==='admin' ? `
+          ${ROL==='admin' ? `
           <button onclick="rwAjusteManual('${p.telefono}')"
             style="margin-top:6px;padding:4px 10px;border:1px solid #7c3aed;border-radius:6px;background:#fff;color:#7c3aed;font-size:0.72rem;font-weight:700;cursor:pointer;">
             ± Ajustar puntos

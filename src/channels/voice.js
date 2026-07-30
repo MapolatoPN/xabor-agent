@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, eliminarPedido } from '../orders/orderManager.js';
-import { setPagoPendiente, guardarPedidoActivo, guardarPedidoProgramado, guardarTranscripcionVoz } from '../services/database.js';
+import { setPagoPendiente, guardarPedidoProgramado, guardarTranscripcionVoz } from '../services/database.js';
 
 const router = Router();
 
@@ -177,12 +177,13 @@ export function setupVoiceWebSocket(wssVoice) {
               console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
             } else {
               emitirPedido(pedido);
-              try {
-                await guardarPedidoActivo(pedido);
-                console.log(`[Voz WS] Pedido ${pedido.id} guardado en DB ✅`);
-              } catch (e) {
-                console.error(`[Voz WS] Error guardando pedido ${pedido.id} en DB:`, e.message);
-              }
+              // No se vuelve a llamar guardarPedidoActivo aquí: registrarPedido()
+              // ya persiste el pedido (con negocioId correcto) internamente.
+              // Esta llamada duplicada, sin negocioId, causaba una condición de
+              // carrera real -- si su escritura llegaba a la DB antes que la de
+              // registrarPedido(), pedidos_activos.negocio_id quedaba en NULL
+              // para siempre (el ON CONFLICT DO UPDATE de guardarPedidoActivo
+              // nunca corrige negocio_id, solo datos/updated_at).
             }
 
             if (resultado.orden.forma_pago === 'enlace de pago') {

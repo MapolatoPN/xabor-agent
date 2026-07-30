@@ -307,6 +307,20 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     const resultado = await procesarMensaje(sessionId, texto, clienteCtx);
     clearTimeout(waitTimer);
 
+    // Detección de confirmación verbal sin JSON — alerta al admin
+    // Si el bot dice "confirmado/registrado" pero no emitió <ORDEN_CONFIRMADA>, algo falló
+    if (!resultado.orden) {
+      const textoBot = resultado.texto || '';
+      const pareceConfirmacion = /pedido\s+(confirmado|registrado|listo|anotado|quedó)|quedó\s+registrado|queda\s+registrado/i.test(textoBot);
+      if (pareceConfirmacion) {
+        console.error(`[WA] ⚠️ ALERTA: bot confirmó verbalmente a ${telefono} pero no generó <ORDEN_CONFIRMADA>. Texto: ${textoBot.slice(0, 200)}`);
+        const admin = getAdminWA();
+        if (admin) {
+          enviarMensaje(admin, `⚠️ *Pedido perdido posible*: el bot le dijo a un cliente que su pedido quedó registrado, pero no generó la orden. Teléfono: ${telefono}. Revisar chat ahora.`).catch(() => {});
+        }
+      }
+    }
+
     // Orden confirmada
     let linkPago = null;
     if (resultado.orden) {
@@ -321,10 +335,26 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
         const { eliminarPedido } = await import('../orders/orderManager.js');
         await eliminarPedido(pedido.id);
         console.log(`[WA] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+        // Confirmación al cliente con folio y hora — operación crítica
+        try {
+          const horaLocal = new Date(resultado.orden.programado_para).toLocaleTimeString('es-MX', {
+            hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Matamoros'
+          });
+          const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
+          await enviarMensaje(telefono, confirmMsg);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg);
+        } catch (e) {
+          console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
+        }
       } else {
         emitirPedido(pedido);
       }
-      await guardarPedido(telefono, resultado.orden);
+      // pedido.negocioId ya viene resuelto por registrarPedido() (fallback
+      // temporal a Nonna Maye vía _negocioFallbackId, o null si ese
+      // fallback no pudo resolverse) -- nunca se inventa aquí un valor
+      // distinto. resultado.orden en sí nunca trae negocioId (registrarPedido
+      // no lo muta), por eso se toma de pedido, no de resultado.orden.
+      await guardarPedido(telefono, resultado.orden, pedido.negocioId);
       if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));

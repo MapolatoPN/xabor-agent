@@ -1,0 +1,19 @@
+-- ============================================================
+-- XABOR Multiempresa — Migración 009 (seed)
+-- Esta migración NO tiene datos nuevos que sembrar.
+--
+-- A diferencia de 008 (que introdujo un identificador real de Rappi que
+-- no existía en ningún otro lugar del esquema), 009 no agrega
+-- configuración de negocio nueva: la única "asignación de datos" que
+-- necesita es el backfill de las filas de caja_fondos que ya existían
+-- antes de la migración, y ese backfill vive dentro de
+-- 009_caja_fondos_por_negocio.sql (Paso 3), en el mismo lugar donde lo
+-- hacen 004 y 007 para sus propias tablas — no se separó en este
+-- archivo para no partir en dos una operación que debe correr atómica
+-- con la verificación de "cero NULL" del Paso 4.
+--
+-- Este archivo se conserva vacío (sin sentencias) únicamente para
+-- mantener la convención de nombres de cinco archivos por migración
+-- usada en 008. Es seguro ejecutarlo cualquier número de veces: no hace
+-- nada.
+-- ============================================================
