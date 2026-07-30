@@ -1,5 +1,5 @@
 import pkg from 'pg';
-import { createHmac, randomBytes } from 'crypto';
+import { createHmac, createHash, randomBytes } from 'crypto';
 import { hashPassword } from './password.js';
 const { Pool } = pkg;
 
@@ -2321,10 +2321,15 @@ export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropieta
       [negocio.id, nombreSucursal]
     );
 
-    const hash = hashPassword(randomBytes(24).toString('hex')); // sin login todavía -- ver nota de invitación en el reporte
+    // password_hash NULL a propósito (la columna es nullable desde la
+    // migración 006, exactamente para este caso: "un usuario sin
+    // password_hash simplemente no puede iniciar sesión todavía"). Nunca se
+    // genera una contraseña aleatoria que nadie conoce -- el flujo de
+    // invitación (ver abajo) es el único camino para que este usuario quede
+    // con una contraseña utilizable.
     const { rows: [usuario] } = await client.query(
-      `INSERT INTO usuarios (negocio_id, nombre, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, nombre, email`,
-      [negocio.id, nombrePropietario, emailNorm, hash]
+      `INSERT INTO usuarios (negocio_id, nombre, email, password_hash) VALUES ($1,$2,$3,NULL) RETURNING id, nombre, email`,
+      [negocio.id, nombrePropietario, emailNorm]
     );
     await client.query(
       `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol) VALUES ($1,$2,'admin')`,
@@ -2361,6 +2366,13 @@ export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropieta
       );
     }
 
+    // Invitación inicial -- misma transacción: si algo falla después de este
+    // punto, no debe quedar un usuario sin ninguna forma de activar su
+    // cuenta. crearBy = superadminId (quien la emite).
+    const invitacion = await crearInvitacionInterna(client, {
+      usuarioId: usuario.id, negocioId: negocio.id, tipo: 'crear_password_inicial', createdBy: superadminId,
+    });
+
     await registrarAuditoriaPlataforma({
       superadminId, accion: 'crear_negocio', negocioId: negocio.id, usuarioId: usuario.id,
       estadoAnterior: null,
@@ -2369,7 +2381,13 @@ export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropieta
     }, client);
 
     await client.query('COMMIT');
-    return { negocio, sucursal, usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email }, checklist: checklistInicial };
+    return {
+      negocio, sucursal, usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email }, checklist: checklistInicial,
+      // token: solo en memoria de este retorno -- el llamador (la ruta HTTP)
+      // lo pasa al servicio de correo y nunca lo devuelve al cliente ni lo
+      // loguea. Ver services/email.js.
+      invitacion: { token: invitacion.token, expiresAt: invitacion.expiresAt },
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     if (!e.code || (e.code !== 'SLUG_DUPLICADO' && e.code !== 'EMAIL_EXISTENTE' && e.code !== 'SLUG_INVALIDO')) {
@@ -2514,4 +2532,163 @@ export async function obtenerAuditoriaPlataforma({ limit = 50, offset = 0, negoc
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params);
   return rows;
+}
+
+// ─── Invitaciones de usuario (Fase 7) ───────────────────────────────────────
+const INVITACION_DURACION_MS = 24 * 60 * 60 * 1000; // 24 horas
+
+function hashToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+// Interna -- nunca exportada sola sin transacción alrededor. Revoca cualquier
+// invitación vigente previa del mismo usuario antes de crear la nueva
+// ("invalidarse al generar una nueva invitación"), genera un token de 32
+// bytes (256 bits) y devuelve el token EN CRUDO solo para este retorno --
+// nunca se guarda en ninguna tabla, solo su hash.
+async function crearInvitacionInterna(client, { usuarioId, negocioId, tipo, createdBy }) {
+  await client.query(
+    `UPDATE invitaciones_usuario SET revoked_at = NOW()
+     WHERE usuario_id = $1 AND used_at IS NULL AND revoked_at IS NULL`,
+    [usuarioId]
+  );
+  const token = randomBytes(32).toString('base64url');
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + INVITACION_DURACION_MS);
+  await client.query(
+    `INSERT INTO invitaciones_usuario (usuario_id, negocio_id, tipo, token_hash, expires_at, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [usuarioId, negocioId, tipo, tokenHash, expiresAt, createdBy]
+  );
+  return { token, expiresAt };
+}
+
+// Reenvía la invitación para el administrador principal de un negocio.
+// Resuelve el usuario internamente (el mismo criterio de "admin principal"
+// que ya usa obtenerNegociosParaSuperadmin) -- la ruta HTTP nunca acepta un
+// usuarioId del cliente para esto.
+export async function reenviarInvitacion(negocioId, superadminId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: negocioRows } = await client.query('SELECT id, nombre FROM negocios WHERE id = $1', [negocioId]);
+    if (!negocioRows.length) { await client.query('ROLLBACK'); return null; }
+    const negocio = negocioRows[0];
+
+    const { rows: adminRows } = await client.query(
+      `SELECT u.id, u.nombre, u.email FROM usuario_negocios un
+       JOIN usuarios u ON u.id = un.usuario_id
+       WHERE un.negocio_id = $1 AND un.rol = 'admin'
+       ORDER BY un.created_at ASC LIMIT 1`,
+      [negocioId]
+    );
+    if (!adminRows.length) {
+      const err = new Error('Este negocio no tiene ningún administrador registrado'); err.code = 'SIN_ADMIN'; throw err;
+    }
+    const admin = adminRows[0];
+
+    const invitacion = await crearInvitacionInterna(client, {
+      usuarioId: admin.id, negocioId, tipo: 'crear_password_inicial', createdBy: superadminId,
+    });
+
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'reenviar_invitacion', negocioId, usuarioId: admin.id,
+      estadoAnterior: null, estadoNuevo: null,
+      contexto: { expiresAt: invitacion.expiresAt },
+    }, client);
+
+    await client.query('COMMIT');
+    return {
+      negocioNombre: negocio.nombre,
+      usuario: { id: admin.id, nombre: admin.nombre, email: admin.email },
+      token: invitacion.token, expiresAt: invitacion.expiresAt,
+    };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e.code !== 'SIN_ADMIN') console.error('[DB] Error reenviarInvitacion:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Pública indirectamente (vía GET /api/auth/invitacion/:token) -- solo
+// lectura, nunca marca nada como usada. Devuelve un estado explícito en vez
+// de true/false para que la página pueda mostrar el mensaje correcto sin
+// adivinar la causa.
+export async function validarInvitacion(token) {
+  if (!token || typeof token !== 'string') return { estado: 'invalido' };
+  const tokenHash = hashToken(token);
+  const { rows } = await pool.query(
+    `SELECT i.used_at, i.revoked_at, i.expires_at, n.nombre AS negocio_nombre, u.nombre AS usuario_nombre
+     FROM invitaciones_usuario i
+     JOIN negocios n ON n.id = i.negocio_id
+     JOIN usuarios u ON u.id = i.usuario_id
+     WHERE i.token_hash = $1`,
+    [tokenHash]
+  );
+  if (!rows.length) return { estado: 'invalido' };
+  const inv = rows[0];
+  if (inv.used_at) return { estado: 'usado' };
+  if (inv.revoked_at) return { estado: 'invalido' }; // no se distingue de "invalido" -- una revocada nunca debe reactivarse ni dar pistas
+  if (new Date(inv.expires_at) < new Date()) return { estado: 'expirado' };
+  // Primer nombre únicamente -- "nombre del usuario parcialmente necesario" (nunca el correo).
+  const primerNombre = (inv.usuario_nombre || '').trim().split(/\s+/)[0] || '';
+  return { estado: 'valido', negocioNombre: inv.negocio_nombre, nombreParcial: primerNombre };
+}
+
+// Consume la invitación y establece la contraseña. Todo en una transacción:
+// si el hash o cualquier UPDATE falla, nada queda a medias -- la invitación
+// sigue vigente y se puede reintentar. FOR UPDATE bloquea la fila para que
+// dos solicitudes concurrentes con el mismo token nunca la consuman ambas
+// (prueba de "creación concurrente no permite doble uso").
+export async function crearPasswordDesdeInvitacion(token, password) {
+  if (!token || typeof token !== 'string') { const e = new Error('Token inválido'); e.code = 'INVALIDO'; throw e; }
+  const tokenHash = hashToken(token);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT i.id, i.usuario_id, i.negocio_id, i.used_at, i.revoked_at, i.expires_at, u.email
+       FROM invitaciones_usuario i JOIN usuarios u ON u.id = i.usuario_id
+       WHERE i.token_hash = $1 FOR UPDATE`,
+      [tokenHash]
+    );
+    if (!rows.length) { const e = new Error('Invitación no encontrada'); e.code = 'INVALIDO'; throw e; }
+    const inv = rows[0];
+    if (inv.used_at) { const e = new Error('Esta invitación ya fue utilizada'); e.code = 'USADO'; throw e; }
+    if (inv.revoked_at) { const e = new Error('Esta invitación ya no es válida'); e.code = 'INVALIDO'; throw e; }
+    if (new Date(inv.expires_at) < new Date()) { const e = new Error('Esta invitación expiró'); e.code = 'EXPIRADO'; throw e; }
+    if (typeof password !== 'string' || password.length < 8) {
+      const e = new Error('La contraseña debe tener al menos 8 caracteres'); e.code = 'PASSWORD_INVALIDA'; throw e;
+    }
+    if (password.toLowerCase() === inv.email.toLowerCase()) {
+      const e = new Error('La contraseña no puede ser igual a tu correo'); e.code = 'PASSWORD_INVALIDA'; throw e;
+    }
+
+    const hash = hashPassword(password);
+    await client.query('UPDATE usuarios SET password_hash = $1, updated_at = NOW() WHERE id = $2', [hash, inv.usuario_id]);
+    // Ya estaba activa por defecto desde la creación (ver crearNegocioCompleto),
+    // pero se reafirma explícitamente aquí -- nunca se toca negocios.estado ni
+    // negocios.activo: esa decisión (pasar de "pendiente" a "activo") sigue
+    // siendo exclusiva del superadmin, no un efecto secundario de que el
+    // administrador haya definido su contraseña.
+    await client.query('UPDATE usuario_negocios SET activo = true WHERE usuario_id = $1 AND negocio_id = $2', [inv.usuario_id, inv.negocio_id]);
+    await client.query('UPDATE invitaciones_usuario SET used_at = NOW() WHERE id = $1', [inv.id]);
+    // Defensivo: cualquier OTRA invitación vigente del mismo usuario (no debería
+    // existir ninguna, crearInvitacionInterna ya revoca al reenviar) queda revocada.
+    await client.query(
+      `UPDATE invitaciones_usuario SET revoked_at = NOW() WHERE usuario_id = $1 AND id != $2 AND used_at IS NULL AND revoked_at IS NULL`,
+      [inv.usuario_id, inv.id]
+    );
+
+    await client.query('COMMIT');
+    return { usuarioId: inv.usuario_id, negocioId: inv.negocio_id };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!e.code) console.error('[DB] Error crearPasswordDesdeInvitacion:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
 }

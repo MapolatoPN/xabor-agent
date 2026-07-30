@@ -26,7 +26,10 @@ import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
+  reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion,
 } from './services/database.js';
+import { enviarCorreoInvitacion } from './services/email.js';
+import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -396,6 +399,11 @@ async function enviarPushARepartidores(titulo, cuerpo, data = {}) {
 export { enviarPushARepartidores };
 
 const app = express();
+// Railway pone la app detrás de un único proxy inverso -- sin esto, req.ip
+// devuelve la IP interna del proxy para todas las requests (colapsa el rate
+// limit por IP de las rutas de invitación en uno solo compartido por todos
+// los usuarios, en vez de uno por cliente real).
+app.set('trust proxy', 1);
 const server = createServer(app);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1112,6 +1120,34 @@ app.post('/api/auth/negocio/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Invitación → crear contraseña (Fase 7) ─────────────────────────────────
+// Públicas a propósito -- la seguridad no viene de exigir sesión (no puede
+// haberla: el usuario todavía no tiene contraseña), sino de que el token de
+// 256 bits es indistinguible de aleatorio y de un solo uso. Rate limit por
+// IP en ambas para dificultar fuerza bruta sobre el espacio de tokens.
+app.get('/api/auth/invitacion/:token', rateLimitMiddleware(req => `val-inv:${req.ip}`, 20, 60 * 1000), async (req, res) => {
+  const resultado = await validarInvitacion(req.params.token);
+  res.json(resultado);
+});
+
+app.post('/api/auth/crear-password', rateLimitMiddleware(req => `crear-pw:${req.ip}`, 10, 60 * 1000), async (req, res) => {
+  const { token, password, passwordConfirm } = req.body;
+  if (typeof token !== 'string' || !token) return res.status(400).json({ error: 'Token requerido' });
+  if (typeof password !== 'string' || typeof passwordConfirm !== 'string') return res.status(400).json({ error: 'Contraseña requerida' });
+  if (password !== passwordConfirm) return res.status(400).json({ error: 'Las contraseñas no coinciden' });
+  try {
+    await crearPasswordDesdeInvitacion(token, password);
+    res.json({ ok: true });
+  } catch (e) {
+    if (e.code === 'USADO') return res.status(409).json({ error: 'Este enlace ya fue utilizado' });
+    if (e.code === 'EXPIRADO') return res.status(410).json({ error: 'Este enlace expiró' });
+    if (e.code === 'INVALIDO') return res.status(404).json({ error: 'Enlace inválido' });
+    if (e.code === 'PASSWORD_INVALIDA') return res.status(400).json({ error: e.message });
+    console.error('[POST /api/auth/crear-password] Error:', e.message);
+    res.status(500).json({ error: 'No se pudo crear la contraseña' });
+  }
+});
+
 app.get('/api/auth/me', requireSesionNegocio(), (req, res) => {
   res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol });
 });
@@ -1162,6 +1198,13 @@ app.get('/finanzas', (req, res) => {
 // página cargar y de inmediato un 401/403 en cada llamada -- nunca datos.
 app.get('/superadmin', (req, res) => {
   res.sendFile(join(__dirname, '../panel/superadmin.html'));
+});
+
+// Página pública de creación de contraseña -- el token vive en la query
+// string y se valida client-side vía GET /api/auth/invitacion/:token; el
+// HTML en sí no contiene ningún dato sensible.
+app.get('/crear-password', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/crear-password.html'));
 });
 
 // Salud del servidor
@@ -2027,13 +2070,67 @@ app.post('/api/superadmin/negocios', requireSuperadmin, async (req, res) => {
       ciudad: ciudad || '', plan, modulosIniciales: modulosIniciales || [], estadoInicial,
       superadminId: req.usuarioId,
     });
-    res.status(201).json(resultado);
+
+    const baseUrl = process.env.PUBLIC_URL || 'https://xabor.mx';
+    const enlace = `${baseUrl}/crear-password?token=${resultado.invitacion.token}`;
+    let entregadoPorCorreo = false;
+    try {
+      const r = await enviarCorreoInvitacion({ to: resultado.usuario.email, nombre: resultado.usuario.nombre, negocioNombre: resultado.negocio.nombre, enlace });
+      entregadoPorCorreo = r.enviado;
+    } catch (errCorreo) {
+      console.error('[POST /api/superadmin/negocios] Error al enviar invitación (negocio ya quedó creado):', errCorreo.message);
+    }
+
+    // Decisión aceptada (sin proveedor de correo configurado): el enlace se
+    // muestra UNA SOLA VEZ en esta respuesta para que el superadmin lo copie
+    // y lo envíe manualmente. Nunca se loguea, nunca queda recuperable
+    // después (no hay ningún GET que vuelva a exponerlo) -- solo existe en
+    // este JSON, una vez, para quien acaba de crear el negocio. Si en el
+    // futuro se conecta un proveedor real, entregadoPorCorreo=true y el
+    // enlace deja de incluirse automáticamente (ya no hace falta copiarlo).
+    const { invitacion, ...resultadoSeguro } = resultado;
+    res.status(201).json({
+      ...resultadoSeguro,
+      invitacionEnviadaPorCorreo: entregadoPorCorreo,
+      enlaceInvitacion: entregadoPorCorreo ? undefined : enlace,
+    });
   } catch (e) {
     if (e.code === 'SLUG_DUPLICADO' || e.code === '23505') return res.status(409).json({ error: 'El slug ya está en uso' });
     if (e.code === 'EMAIL_EXISTENTE') return res.status(409).json({ error: e.message });
     if (e.code === 'SLUG_INVALIDO') return res.status(400).json({ error: e.message });
     console.error('[POST /api/superadmin/negocios] Error:', e.message);
     res.status(500).json({ error: 'Error al crear el negocio' });
+  }
+});
+
+app.post('/api/superadmin/negocios/:negocioId/reenviar-invitacion', requireSuperadmin, rateLimitMiddleware(req => `reenviar:${req.usuarioId}`, 10, 60 * 1000), async (req, res) => {
+  try {
+    const resultado = await reenviarInvitacion(req.params.negocioId, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+
+    const baseUrl = process.env.PUBLIC_URL || 'https://xabor.mx';
+    const enlace = `${baseUrl}/crear-password?token=${resultado.token}`;
+    let entregado = false;
+    try {
+      const r = await enviarCorreoInvitacion({ to: resultado.usuario.email, nombre: resultado.usuario.nombre, negocioNombre: resultado.negocioNombre, enlace });
+      entregado = r.enviado;
+    } catch (errCorreo) {
+      console.error('[POST /api/superadmin/negocios/:id/reenviar-invitacion] Error al enviar:', errCorreo.message);
+    }
+
+    // Mismo criterio que en la creación de negocio: sin proveedor de correo,
+    // el enlace se devuelve UNA VEZ para que el superadmin lo copie a mano.
+    // Nunca se loguea, y esta es la única respuesta que lo expone -- no hay
+    // ningún GET que lo recupere después.
+    res.json({
+      ok: true, negocioNombre: resultado.negocioNombre, expiresAt: resultado.expiresAt,
+      correoEntregado: entregado,
+      enlaceInvitacion: entregado ? undefined : enlace,
+    });
+  } catch (e) {
+    if (e.code === 'SIN_ADMIN') return res.status(409).json({ error: e.message });
+    console.error('[POST /api/superadmin/negocios/:id/reenviar-invitacion] Error:', e.message);
+    res.status(500).json({ error: 'Error al reenviar la invitación' });
   }
 });
 
