@@ -294,8 +294,14 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
     const waitTimer = setTimeout(async () => {
       waitMessageSent = true;
       const msgEspera = 'Dame un momento, estoy procesando tu solicitud... 🕐';
-      await enviarMensaje(telefono, msgEspera);
-      await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera);
+      try {
+        await enviarMensaje(telefono, msgEspera);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera);
+      } catch (error) {
+        // Fallo de Meta (token inválido/expirado, rate limit, caída de la API, etc.)
+        // no debe tumbar el proceso — nunca se propaga como unhandled rejection.
+        console.error(`[WhatsApp] No se pudo enviar mensaje de espera: ${error.message}`);
+      }
     }, 8000);
 
     const resultado = await procesarMensaje(sessionId, texto, clienteCtx);
