@@ -160,7 +160,7 @@ export function setupVoiceWebSocket(wssVoice) {
           const frasesAgente = [];
 
           const resultado = await procesarMensajeStream(
-            sessionId, texto, { telefono: fromNum || '—' }, 'voz',
+            sessionId, texto, { telefono: fromNum || '—' }, 'voz', negocioId,
             (frase) => {
               // Descartar si este turno ya fue superado por uno más reciente
               if (myTurnId !== currentTurnId) {

@@ -16,7 +16,11 @@ function getAnthropic() {
 const MODELO = 'claude-haiku-4-5-20251001';
 
 // ─── Versión normal (WhatsApp, Rappi, panel) ─────────────────────────────────
-export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null) {
+// negocioId: pasado tal cual por el llamador (ya resuelto de forma segura --
+// integraciones_canal para WhatsApp, sesión autenticada para el panel).
+// Nunca se resuelve aquí, nunca cae a un negocio por defecto -- ver
+// construirSystemPrompt para el detalle de fail-closed en Rewards.
+export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
@@ -44,7 +48,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const respuesta = await getAnthropic().messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: await construirSystemPrompt(clienteCtx, canal) + memoriaCtx,
+      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx,
       messages: session.mensajes
     });
 
@@ -77,7 +81,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
 // signal: AbortSignal — cuando se aborta, el stream se cancela limpiamente.
 // Retorna null si fue abortado antes de terminar; de lo contrario el mismo objeto
 // que procesarMensaje.
-export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCtx = null, canal = null, onFrase, signal = null) {
+export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, onFrase, signal = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
@@ -96,7 +100,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   const stream = getAnthropic().messages.stream({
     model: MODELO,
     max_tokens: 1024,
-    system: await construirSystemPrompt(clienteCtx, canal) + memoriaCtx,
+    system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx,
     messages: session.mensajes
   }, { signal });
 

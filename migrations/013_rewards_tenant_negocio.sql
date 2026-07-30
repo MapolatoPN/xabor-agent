@@ -43,11 +43,21 @@ DECLARE
 BEGIN
   SELECT id::text INTO v_negocio_id FROM negocios WHERE slug = 'nonna-maye';
 
+  -- Solo es un conflicto real si TODAVÍA existe una fila 'xabor-principal'
+  -- Y ya existe una fila con el tenant_id destino -- eso sí chocaría contra
+  -- UNIQUE(tenant_id) al hacer el UPDATE del Paso 3. Si 'xabor-principal'
+  -- ya no existe (la migración ya corrió antes), la fila con tenant_id
+  -- destino es simplemente el resultado de la corrida anterior -- no es un
+  -- duplicado, es el estado ya migrado, y el Paso 3 no tiene nada que
+  -- hacer (reejecutable de verdad, no solo en el caso feliz de "nunca se
+  -- corrió").
   SELECT count(*) INTO v_dup_config
-  FROM rewards_config WHERE tenant_id = v_negocio_id;
+  FROM rewards_config
+  WHERE tenant_id = v_negocio_id
+    AND EXISTS (SELECT 1 FROM rewards_config WHERE tenant_id = 'xabor-principal');
   IF v_dup_config > 0 THEN
     RAISE EXCEPTION
-      'Migración 013 abortada: ya existe % fila(s) en rewards_config con tenant_id=%. No se modificó nada.',
+      'Migración 013 abortada: ya existe % fila(s) en rewards_config con tenant_id=% Y todavía queda una fila ''xabor-principal'' -- reetiquetar chocaría contra UNIQUE(tenant_id). No se modificó nada.',
       v_dup_config, v_negocio_id;
   END IF;
 

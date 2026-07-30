@@ -118,7 +118,16 @@ function obtenerEstadoRestaurante(reglas) {
   };
 }
 
-export async function construirSystemPrompt(clienteCtx = null, canal = null) {
+// negocioId (seguimiento Incidente P0 — Rewards en el prompt): quien llama
+// SIEMPRE debe pasar el negocio ya resuelto de forma segura --
+// integraciones_canal para WhatsApp, contexto autenticado/de integración
+// para cualquier otro canal. Esta función NUNCA acepta negocio_id de
+// frontend/cliente (no hay forma de que llegue uno desde aquí: no lee
+// req.body/query, solo recibe el parámetro que ya validó el llamador) y
+// nunca cae a Nonna Maye ni a 'xabor-principal' si negocioId es inválido u
+// omitido -- en ese caso rwCfg queda null y la sección de Rewards del
+// prompt se omite por completo (ver `${rwActivo ? ... : ''}` más abajo).
+export async function construirSystemPrompt(clienteCtx = null, canal = null, negocioId = null) {
   const reglas = cargarReglas();
   const categorias = await obtenerMenuCompleto();
   const estado = obtenerEstadoRestaurante(reglas);
@@ -130,12 +139,17 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null) {
   const horario       = cfg.horario || 'lunes a sabado 11am-10pm';
   const botAvisos     = (cfg.bot_avisos || '').trim();
 
-  // Config de Rewards — para inyectar valores actuales en el prompt
+  // Config de Rewards — para inyectar valores actuales en el prompt.
+  // Fail closed: sin negocioId válido, rwCfg se queda null (nunca se
+  // consulta con un tenant por defecto) y toda la sección de Rewards
+  // desaparece del prompt más abajo.
   let rwCfg = null;
-  try {
-    const { obtenerConfig: getRewardsCfg } = await import('../services/rewardsService.js');
-    rwCfg = await getRewardsCfg();
-  } catch (_) {}
+  if (typeof negocioId === 'string' && negocioId.trim()) {
+    try {
+      const { obtenerConfig: getRewardsCfg } = await import('../services/rewardsService.js');
+      rwCfg = await getRewardsCfg(negocioId);
+    } catch (_) {}
+  }
   const rwMontoPorPunto  = rwCfg ? parseFloat(rwCfg.monto_por_punto)  : 10;
   const rwPuntosPorPeso  = rwCfg ? parseFloat(rwCfg.puntos_por_peso)  : 0.5;
   const rwCanjeMinimo    = rwCfg ? parseInt(rwCfg.canje_minimo)        : 100;

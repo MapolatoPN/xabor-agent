@@ -225,7 +225,11 @@ export async function initDB() {
       updated_at      TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(tenant_id)
     );
-    INSERT INTO rewards_config (tenant_id) VALUES ('xabor-principal') ON CONFLICT DO NOTHING;
+    -- Seed de rewards_config: ya NO se siembra aquí con el tenant legado
+    -- 'xabor-principal' (incidente P0, seguimiento Rewards en el prompt).
+    -- Tras la migración 013 los tenant_id reales son negocio_id (UUID); el
+    -- seed por negocio vive más abajo, junto al seed de 'configuracion' de
+    -- Nonna Maye, reusando el mismo negocioId ya resuelto por slug.
 
     CREATE TABLE IF NOT EXISTS rewards_accounts (
       id                      SERIAL PRIMARY KEY,
@@ -294,6 +298,18 @@ export async function initDB() {
            ($1, 'bot_avisos',    ''),
            ($1, 'print_agent_legacy_activo', 'true')
          ON CONFLICT (negocio_id, clave) DO NOTHING`,
+        [negocioId]
+      );
+
+      // Seed de rewards_config por negocio (incidente P0, seguimiento
+      // Rewards en el prompt) -- tenant_id = negocio_id real de Nonna Maye,
+      // nunca 'xabor-principal'. DO NOTHING si ya existe: jamás pisa los
+      // valores personalizados que Nonna Maye ya haya configurado desde el
+      // panel (p. ej. puntos_por_peso/canje_minimo distintos de fábrica).
+      // No siembra nada para ningún otro negocio -- este bloque solo corre
+      // con el negocioId de Nonna Maye, resuelto arriba por slug.
+      await pool.query(
+        `INSERT INTO rewards_config (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`,
         [negocioId]
       );
     } else {
