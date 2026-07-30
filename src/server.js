@@ -2476,10 +2476,14 @@ async function activarPedidosProgramados() {
         continue;
       }
 
-      // Persistir en DB (reinsertar en pedidos_activos) y agregar a memoria
+      // Persistir en DB (reinsertar en pedidos_activos) y agregar a memoria.
+      // negocioId explícito: sin esto, pedidos_activos.negocio_id quedaba
+      // NULL para siempre (única escritura de esta fila -- ON CONFLICT
+      // DO UPDATE nunca corrige negocio_id después). pedido.negocioId ya
+      // fue validado como string no vacío arriba, nunca inventado aquí.
       const { guardarPedidoActivo } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
-      await guardarPedidoActivo(pedido);
+      await guardarPedidoActivo(pedido, pedido.negocioId);
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
       // Aislado por negocio (mismo patrón que emitirPedido en
       // orderManager.js). Ya no se usa broadcast() global para este evento.
