@@ -1060,11 +1060,22 @@ export async function actualizarEstadoPedidoDB(folio, estado) {
 export async function obtenerPedidosActivos() {
   try {
     const result = await pool.query(`
-      SELECT datos FROM pedidos_activos
+      SELECT datos, negocio_id FROM pedidos_activos
       WHERE estado != 'entregado'
       ORDER BY created_at ASC
     `);
-    return result.rows.map(r => r.datos);
+    // Fallback para pedidos activos pre-migración: su JSON nunca tuvo
+    // negocioId (se guardó antes de que ese concepto existiera), pero la
+    // columna SQL sí quedó backfilleada por la migración 007. Sin este
+    // fallback, orderManager.js los filtra como si no pertenecieran a
+    // ningún negocio y desaparecen del panel. Nunca se sobrescribe un
+    // negocioId ya presente en el JSON, nunca se inventa un negocio por
+    // defecto, y el JSON guardado en DB nunca se modifica (solo se ajusta
+    // el objeto devuelto en memoria).
+    return result.rows.map(r => {
+      const datos = r.datos || {};
+      return { ...datos, negocioId: datos.negocioId || r.negocio_id || null };
+    });
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivos:', e.message);
     return [];
@@ -1223,12 +1234,26 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
 export async function obtenerPedidosPorActivar() {
   try {
     const result = await pool.query(`
-      SELECT folio, datos, programado_para FROM pedidos_programados
+      SELECT folio, datos, negocio_id, programado_para FROM pedidos_programados
       WHERE activado = FALSE
         AND programado_para <= NOW() + INTERVAL '1 hour'
       ORDER BY programado_para ASC
     `);
-    return result.rows;
+    // Mismo fallback y mismo motivo que obtenerPedidosActivos(): un
+    // pedido programado creado antes de la migración 007 no tiene
+    // negocioId en su JSON, aunque la columna sí lo tenga. Sin esto,
+    // activarPedidosProgramados() (server.js) lo rechaza para siempre por
+    // su propia guarda fail-closed. row.negocio_id nunca se expone aparte
+    // -- se pliega dentro de datos.negocioId, que es lo único que lee el
+    // consumidor.
+    return result.rows.map(r => {
+      const datos = r.datos || {};
+      return {
+        folio: r.folio,
+        programado_para: r.programado_para,
+        datos: { ...datos, negocioId: datos.negocioId || r.negocio_id || null }
+      };
+    });
   } catch (e) {
     console.error('[DB] Error obtenerPedidosPorActivar:', e.message);
     return [];
