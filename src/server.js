@@ -1832,11 +1832,29 @@ app.get('/api/vapid-public', (req, res) => {
   res.json({ publicKey: key || null });
 });
 
-app.get('/api/config', resolverNegocioSeguro(), async (req, res) => {
+// ⚠ Solo admin: configuracion.* incluye credenciales SAT (cert/llave cifrada/IV)
+// y rappi_webhook_secret sin filtrar -- nunca debe llegar a un staff (ver
+// hallazgo de seguridad de esta tarea). El panel de operación normal (todos
+// los roles) usa /api/config/operativa, abajo, que sí filtra por allowlist.
+app.get('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   if (req.esNegocioPorDefecto) return res.json(negocioConfig);
   const cfg = await obtenerConfiguracion(req.negocioId);
   res.json(cfg);
 });
+
+// ✅ Config operativa — accesible a cualquier sesión válida (admin y staff).
+// Allowlist cerrada a propósito (nunca blacklist): solo las claves que el
+// panel realmente necesita para membrete/encabezado y tickets impresos. Si
+// mañana se agrega una clave sensible nueva a `configuracion`, esta lista NO
+// la expone automáticamente -- hay que agregarla aquí a mano, a propósito.
+const CONFIG_CLAVES_OPERATIVAS = ['nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp', 'horario', 'bot_avisos'];
+app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
+  const cfgCompleta = req.esNegocioPorDefecto ? negocioConfig : await obtenerConfiguracion(req.negocioId);
+  const cfgOperativa = {};
+  for (const clave of CONFIG_CLAVES_OPERATIVAS) cfgOperativa[clave] = cfgCompleta[clave] ?? '';
+  res.json(cfgOperativa);
+});
+
 app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   const ok = await actualizarConfiguracion(req.body, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });

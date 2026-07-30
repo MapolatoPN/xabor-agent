@@ -1218,7 +1218,11 @@ let negocio = {
 };
 async function cargarNegocio() {
   try {
-    const r = await apiFetch('/api/config');
+    // /api/config/operativa (no /api/config): accesible a cualquier rol, y
+    // solo trae las claves de membrete/tickets -- nunca secretos. El panel
+    // de Config (admin-only) reutiliza este mismo objeto `negocio`, cuyos
+    // campos coinciden exactamente con CONFIG_CAMPOS, así que no pierde nada.
+    const r = await apiFetch('/api/config/operativa');
     if (r.ok) {
       negocio = await r.json();
       document.querySelector('.header-brand').innerHTML = negocio.nombre_corto + '<span>·</span>';
