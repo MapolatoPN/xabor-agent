@@ -1554,16 +1554,24 @@ export async function obtenerIntegracionCanal(canal, identificador) {
 // null (misma forma de "sin membresía válida" que ya usan los llamadores),
 // nunca un objeto con negocio_activo=false que el llamador tendría que
 // interpretar aparte.
+// Exige también usuarios.activo, por el mismo motivo que ya exige
+// negocios.activo (ver comentario arriba): sin esto, un usuario
+// desactivado con sesión ya emitida seguía con acceso indefinidamente en
+// cada request protegida, porque nada revalidaba usuarios.activo fuera del
+// momento de login. usuarios.activo=false ahora produce el mismo null
+// (ausencia de membresía válida) que ya interpretan los 3 llamadores.
 export async function obtenerMembresiaUsuarioNegocio(usuarioId, negocioId) {
   try {
     const { rows } = await pool.query(
       `SELECT un.rol, un.activo
        FROM usuario_negocios un
        JOIN negocios n ON n.id = un.negocio_id
+       JOIN usuarios u ON u.id = un.usuario_id
        WHERE un.usuario_id = $1
          AND un.negocio_id = $2
          AND un.activo = true
-         AND n.activo = true`,
+         AND n.activo = true
+         AND u.activo = true`,
       [usuarioId, negocioId]
     );
     return rows[0] || null;
