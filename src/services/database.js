@@ -1545,10 +1545,25 @@ export async function obtenerIntegracionCanal(canal, identificador) {
 // en server.js usa obtenerMembresiaUsuarioNegocio para decidir si una
 // request autenticada puede operar sobre el negocio que pide su sesión —
 // nunca confía en un slug/ID que el cliente envíe directamente.
+// Exige negocio.activo además de membresía.activo -- mismo criterio que ya
+// usa obtenerNegociosDeUsuario() para el login. Sin esto, una sesión emitida
+// antes de desactivar un negocio seguía siendo válida indefinidamente en
+// cada request protegida (resolverNegocioSeguro/requireSesionNegocio/
+// autenticarUpgradePanel), porque solo revalidaban usuario_negocios.activo.
+// Un negocio inactivo con membresía.activo=true en la fila ahora devuelve
+// null (misma forma de "sin membresía válida" que ya usan los llamadores),
+// nunca un objeto con negocio_activo=false que el llamador tendría que
+// interpretar aparte.
 export async function obtenerMembresiaUsuarioNegocio(usuarioId, negocioId) {
   try {
     const { rows } = await pool.query(
-      `SELECT rol, activo FROM usuario_negocios WHERE usuario_id = $1 AND negocio_id = $2`,
+      `SELECT un.rol, un.activo
+       FROM usuario_negocios un
+       JOIN negocios n ON n.id = un.negocio_id
+       WHERE un.usuario_id = $1
+         AND un.negocio_id = $2
+         AND un.activo = true
+         AND n.activo = true`,
       [usuarioId, negocioId]
     );
     return rows[0] || null;
