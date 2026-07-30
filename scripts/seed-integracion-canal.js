@@ -75,6 +75,19 @@ try {
   const negocio = negocios[0];
   if (!negocio) abortar(`No existe ningún negocio con slug '${negocioSlug}'. No se creó nada.`);
 
+  // Guarda de conflicto: si (canal, identificador) YA pertenece a OTRO
+  // negocio, detenerse -- nunca reasignar en silencio un identificador que
+  // ya está mapeado a alguien más (idempotente solo cuando el dueño ya
+  // coincide; conflicto real con otro negocio es un abortar, no un
+  // sobrescribir).
+  const { rows: existentes } = await pool.query(
+    'SELECT ic.negocio_id, n.slug AS negocio_slug FROM integraciones_canal ic JOIN negocios n ON n.id = ic.negocio_id WHERE ic.canal = $1 AND ic.identificador = $2',
+    [canal, identificador]
+  );
+  if (existentes[0] && existentes[0].negocio_id !== negocio.id) {
+    abortar(`Conflicto: canal='${canal}' identificador='${identificador.slice(0,3)}***${identificador.slice(-2)}' ya está mapeado a otro negocio ('${existentes[0].negocio_slug}'). No se modificó nada -- resuélvelo manualmente antes de reintentar.`);
+  }
+
   const { rows: resultado } = await pool.query(
     `INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
      VALUES ($1, $2, $3, $4, true)
