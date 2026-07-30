@@ -684,6 +684,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-repartidores" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
   <button class="tab-btn admin-only" id="tab-rewards"     onclick="mostrarTab('rewards')">Rewards</button>
+  <button class="tab-btn admin-only" id="tab-usuarios"    onclick="mostrarTab('usuarios')">Usuarios</button>
 </div>
 
 <main>
@@ -1197,6 +1198,48 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
 
     </div><!-- /vista-rewards -->
+
+    <div id="vista-usuarios" style="display:none;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:1.1rem;font-weight:800;">Usuarios</div>
+        <button onclick="abrirModalNuevoUsuario()" style="padding:8px 16px;border:none;border-radius:8px;background:#1c1c1c;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:700;">+ Agregar usuario</button>
+      </div>
+
+      <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
+        <div id="usr-lista">
+          <div style="color:#aaa;text-align:center;padding:40px;">Cargando usuarios...</div>
+        </div>
+      </div>
+
+      <!-- Modal nuevo usuario -->
+      <div id="usr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
+        <div style="background:#fff;border-radius:16px;padding:24px;max-width:420px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
+          <button onclick="cerrarModalNuevoUsuario()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
+          <div style="font-size:1.05rem;font-weight:800;margin-bottom:18px;">Agregar operador</div>
+
+          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Nombre</label>
+          <input id="usr-nombre" type="text" placeholder="Nombre completo"
+            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+
+          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Correo</label>
+          <input id="usr-email" type="email" placeholder="operador@negocio.com"
+            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+
+          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Contraseña temporal</label>
+          <input id="usr-password" type="password" placeholder="Mínimo 8 caracteres"
+            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+
+          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Confirmar contraseña</label>
+          <input id="usr-password2" type="password" placeholder="Repite la contraseña"
+            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+
+          <div style="font-size:0.78rem;color:#888;margin-bottom:14px;">Se creará con rol <b>Operador</b>. El operador puede cambiarla al iniciar sesión.</div>
+
+          <div id="usr-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+          <button onclick="crearUsuarioStaff()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Crear usuario</button>
+        </div>
+      </div>
+    </div><!-- /vista-usuarios -->
 
 </div><!-- /vistas-extra -->
 
@@ -1870,7 +1913,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards','usuarios'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -1878,7 +1921,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards','usuarios'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -1898,6 +1941,7 @@ function mostrarTab(tab) {
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
   if (tab === 'rewards')  cargarRewards();
+  if (tab === 'usuarios') cargarUsuarios();
   if (tab === 'chats') {
     document.getElementById('badge-chats').style.display = 'none';
     const bnavBadge = document.getElementById('bnav-badge');
@@ -2785,6 +2829,88 @@ async function guardarConfig() {
     setTimeout(() => { fb.textContent = ''; }, 3000);
   } else {
     fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
+  }
+}
+
+// ─── Usuarios (Fase 5) ───────────────────────────────────────────────────────
+// El rol se muestra siempre como "Operador" en la interfaz aunque el backend
+// use 'staff' -- esta pantalla nunca ofrece crear un admin, así que no hay
+// ambigüedad que mostrar.
+function escaparHTML(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+async function cargarUsuarios() {
+  const cont = document.getElementById('usr-lista');
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Cargando usuarios...</div>';
+  try {
+    const r = await apiFetch('/api/admin/usuarios');
+    if (!r.ok) { cont.innerHTML = '<div style="color:#ef4444;text-align:center;padding:40px;">No se pudo cargar la lista.</div>'; return; }
+    const usuarios = await r.json();
+    if (!usuarios.length) {
+      cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Todavía no hay operadores. Agrega el primero.</div>';
+      return;
+    }
+    cont.innerHTML = usuarios.map(u => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid #f0ede6;flex-wrap:wrap;">
+        <div>
+          <div style="font-weight:700;font-size:0.92rem;">${escaparHTML(u.nombre)} ${u.activo ? '' : '<span style="color:#ef4444;font-size:0.75rem;font-weight:600;">(inactivo)</span>'}</div>
+          <div style="color:#888;font-size:0.8rem;">${escaparHTML(u.email)} · Operador · alta ${new Date(u.created_at).toLocaleDateString('es-MX')}</div>
+        </div>
+        <button onclick="toggleUsuarioEstado('${u.id}', ${!u.activo})"
+          style="padding:6px 14px;border-radius:8px;border:1px solid ${u.activo ? '#ef4444' : '#22c55e'};background:#fff;color:${u.activo ? '#ef4444' : '#22c55e'};cursor:pointer;font-size:0.8rem;font-weight:700;">
+          ${u.activo ? 'Desactivar' : 'Activar'}
+        </button>
+      </div>
+    `).join('');
+  } catch (e) {
+    cont.innerHTML = '<div style="color:#ef4444;text-align:center;padding:40px;">Error al cargar usuarios.</div>';
+  }
+}
+
+async function toggleUsuarioEstado(usuarioId, nuevoActivo) {
+  if (!confirm(nuevoActivo ? '¿Activar este operador?' : '¿Desactivar este operador? Perderá acceso al panel de inmediato.')) return;
+  const r = await apiFetch(`/api/admin/usuarios/${usuarioId}/estado`, { method: 'PATCH', body: JSON.stringify({ activo: nuevoActivo }) });
+  if (r.ok) {
+    cargarUsuarios();
+  } else {
+    const body = await r.json().catch(() => ({}));
+    alert(body.error || 'No se pudo actualizar el estado');
+  }
+}
+
+function abrirModalNuevoUsuario() {
+  document.getElementById('usr-nombre').value = '';
+  document.getElementById('usr-email').value = '';
+  document.getElementById('usr-password').value = '';
+  document.getElementById('usr-password2').value = '';
+  document.getElementById('usr-feedback').textContent = '';
+  document.getElementById('usr-modal').style.display = 'flex';
+}
+function cerrarModalNuevoUsuario() {
+  document.getElementById('usr-modal').style.display = 'none';
+}
+
+async function crearUsuarioStaff() {
+  const nombre = document.getElementById('usr-nombre').value.trim();
+  const email = document.getElementById('usr-email').value.trim();
+  const password = document.getElementById('usr-password').value;
+  const password2 = document.getElementById('usr-password2').value;
+  const fb = document.getElementById('usr-feedback');
+
+  if (!nombre) { fb.style.color = '#ef4444'; fb.textContent = 'El nombre es obligatorio'; return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { fb.style.color = '#ef4444'; fb.textContent = 'Correo inválido'; return; }
+  if (password.length < 8) { fb.style.color = '#ef4444'; fb.textContent = 'La contraseña debe tener al menos 8 caracteres'; return; }
+  if (password !== password2) { fb.style.color = '#ef4444'; fb.textContent = 'Las contraseñas no coinciden'; return; }
+
+  fb.style.color = '#aaa'; fb.textContent = 'Creando...';
+  const r = await apiFetch('/api/admin/usuarios', { method: 'POST', body: JSON.stringify({ nombre, email, password }) });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok) {
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Usuario creado';
+    setTimeout(() => { cerrarModalNuevoUsuario(); cargarUsuarios(); }, 700);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = body.error || 'No se pudo crear el usuario';
   }
 }
 
@@ -4192,6 +4318,7 @@ async function cargarRepartidores() {
     <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('config')"><i class="ti ti-settings"></i>Config</button>
     <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('repartidores')"><i class="ti ti-bike"></i>Repartidores</button>
     <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('clientes')"><i class="ti ti-users"></i>Clientes</button>
+    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('usuarios')"><i class="ti ti-user-cog"></i>Usuarios</button>
   </div>
 </div>
 

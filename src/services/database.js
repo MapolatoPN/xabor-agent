@@ -1660,6 +1660,71 @@ export async function crearUsuarioConPassword({ negocioId, nombre, email, passwo
   }
 }
 
+// ─── Módulo de Usuarios del panel (Fase 5) ──────────────────────────────────
+// Lista los usuarios de UN negocio (siempre el de la sesión del llamador,
+// nunca uno arbitrario) con su rol y estado de membresía. Nunca incluye
+// password_hash ni ninguna otra columna sensible -- la consulta ni siquiera
+// la selecciona.
+export async function obtenerUsuariosDeNegocio(negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.nombre, u.email, un.rol, un.activo, u.created_at
+       FROM usuarios u
+       JOIN usuario_negocios un ON un.usuario_id = u.id
+       WHERE un.negocio_id = $1
+       ORDER BY u.created_at DESC`,
+      [negocioId]
+    );
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerUsuariosDeNegocio:', e.message);
+    return [];
+  }
+}
+
+// A diferencia de obtenerMembresiaUsuarioNegocio (que exige activo=true en
+// las tres tablas, pensada para autorizar requests), esta variante devuelve
+// la membresía exista o no esté activa -- la necesita POST /api/admin/usuarios
+// para distinguir "ya tiene cuenta en este negocio, solo desactivada" de
+// "el correo es de otro negocio o no tiene ninguna membresía aquí todavía".
+export async function obtenerMembresiaCualquierEstado(usuarioId, negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT rol, activo FROM usuario_negocios WHERE usuario_id = $1 AND negocio_id = $2`,
+      [usuarioId, negocioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerMembresiaCualquierEstado:', e.message);
+    return null;
+  }
+}
+
+// Activa/desactiva la membresía de un usuario a UN negocio específico --
+// nunca toca usuarios.activo (que es global, afectaría a otros negocios del
+// mismo usuario) ni membresías de otros negocios. El WHERE con ambos IDs es
+// lo que hace imposible que un admin de negocio A afecte una fila de
+// negocio B, incluso si adivinara el usuario_id correcto.
+export async function actualizarEstadoMembresia(usuarioId, negocioId, activo) {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE usuario_negocios SET activo = $3 WHERE usuario_id = $1 AND negocio_id = $2`,
+      [usuarioId, negocioId, activo]
+    );
+    return rowCount > 0;
+  } catch (e) {
+    console.error('[DB] Error actualizarEstadoMembresia:', e.message);
+    return false;
+  }
+}
+
+// Retirada a propósito: no existe una función para que un admin de negocio
+// cambie la contraseña de otro usuario. usuarios.email es una identidad
+// global (migración 006) que puede pertenecer a varios negocios -- un admin
+// de UN negocio no debe poder afectar el acceso de esa persona a otros. La
+// recuperación de contraseña se resolverá con un flujo personal (correo o
+// enlace seguro), no desde el panel de administración de un negocio.
+
 // ─── Configuración del negocio ───────────────────────────────────────────────
 export async function obtenerConfiguracion(negocioId) {
   try {

@@ -20,7 +20,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
@@ -1865,6 +1865,91 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   }
   const cfgActualizada = await obtenerConfiguracion(req.negocioId);
   res.json({ ok: true, config: cfgActualizada });
+});
+
+// ─── Usuarios del panel (Fase 5) ─────────────────────────────────────────────
+// Las tres rutas exigen admin y resuelven el negocio EXCLUSIVAMENTE desde la
+// sesión (req.negocioId, puesto por resolverNegocioSeguro) -- nunca desde
+// body/query/params. Ningún handler acepta negocio_id del cliente, así que
+// no hay forma de que un admin opere sobre un negocio que no es el suyo.
+//
+// requireAdminModerno, no requireAdminSeguro: administrar usuarios exige
+// además req.usuarioId (identidad real de sesión nueva). El modo legado
+// ADMIN_PASSWORD no tiene ningún usuarioId asociado -- no representa a una
+// persona concreta, solo un rol compartido -- así que "no desactivarse a sí
+// mismo" no tendría ningún significado ahí, y dejarlo pasar abriría la
+// puerta a que cualquiera con esa contraseña compartida administre
+// identidades reales sin quedar ligado a una cuenta. El resto del sistema
+// (pedidos, config, etc.) sigue aceptando el modo legado sin cambios.
+function requireAdminModerno(req, res, next) {
+  requireAdminSeguro(req, res, () => {
+    if (!req.usuarioId) {
+      return res.status(403).json({ error: 'Esta acción requiere iniciar sesión con el sistema de usuarios (no con la contraseña de administrador compartida)' });
+    }
+    next();
+  });
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+app.get('/api/admin/usuarios', requireAdminModerno, async (req, res) => {
+  const usuarios = await obtenerUsuariosDeNegocio(req.negocioId);
+  res.json(usuarios);
+});
+
+app.post('/api/admin/usuarios', requireAdminModerno, async (req, res) => {
+  const { nombre, email, password } = req.body;
+  if (typeof nombre !== 'string' || !nombre.trim()) {
+    return res.status(400).json({ error: 'El nombre es obligatorio' });
+  }
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
+    return res.status(400).json({ error: 'Correo inválido' });
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+  const emailNorm = email.trim().toLowerCase();
+  try {
+    // El rol SIEMPRE es 'staff' aquí -- nunca se lee del body, así que esta
+    // ruta no puede usarse para crear un admin.
+    const existente = await obtenerUsuarioPorEmail(emailNorm);
+    if (existente) {
+      // El correo ya existe como identidad global (migración 006). Nunca se
+      // vincula en silencio: se distingue entre "ya tiene cuenta en TU
+      // negocio" (mensaje específico, accionable) y "el correo pertenece a
+      // otra parte" (mensaje genérico, sin confirmar ni negar a qué negocio
+      // pertenece -- evita filtrar información entre negocios).
+      const membresia = await obtenerMembresiaCualquierEstado(existente.id, req.negocioId);
+      if (membresia) {
+        return res.status(409).json({
+          error: membresia.activo
+            ? 'Ya existe un usuario activo con ese correo en tu negocio'
+            : 'Ya existe un usuario con ese correo en tu negocio, pero está desactivado. Actívalo en vez de crear uno nuevo.'
+        });
+      }
+      return res.status(409).json({ error: 'Ya existe una cuenta con este correo. No se puede crear automáticamente desde aquí.' });
+    }
+    const nuevo = await crearUsuarioConPassword({ negocioId: req.negocioId, nombre: nombre.trim(), email: emailNorm, password, rol: 'staff' });
+    res.status(201).json({ id: nuevo.id, nombre: nuevo.nombre, email: nuevo.email, rol: 'staff', activo: true });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Ya existe una cuenta con este correo' });
+    console.error('[POST /api/admin/usuarios] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear usuario' });
+  }
+});
+
+app.patch('/api/admin/usuarios/:usuarioId/estado', requireAdminModerno, async (req, res) => {
+  const { usuarioId } = req.params;
+  const { activo } = req.body;
+  if (typeof activo !== 'boolean') {
+    return res.status(400).json({ error: 'Falta el campo "activo" (boolean)' });
+  }
+  if (usuarioId === req.usuarioId) {
+    return res.status(400).json({ error: 'No puedes desactivar tu propia cuenta' });
+  }
+  const ok = await actualizarEstadoMembresia(usuarioId, req.negocioId, activo);
+  if (!ok) return res.status(404).json({ error: 'Usuario no encontrado en tu negocio' });
+  res.json({ ok: true });
 });
 
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
