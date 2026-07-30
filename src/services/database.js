@@ -692,22 +692,53 @@ export async function eliminarProducto(id, negocioId) {
 }
 
 // ─── Push Notifications ───────────────────────────────────────────────────────
-export async function guardarSuscripcionPush({ endpoint, auth, p256dh }) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0 complementaria, push).
+// ON CONFLICT (endpoint) SÍ reescribe negocio_id a propósito, a diferencia
+// de clientes/repartidores: el endpoint es prueba de que la request viene
+// de una sesión autenticada real (requireAuthSeguro ya validó negocioId
+// antes de llamar aquí) -- si el mismo navegador se resuscribe bajo otro
+// negocio (cambio de negocio legítimo), es correcto que la fila se
+// reasigne, no es un vector de secuestro como sí lo sería con un teléfono
+// que cualquiera puede enviar sin probar nada.
+export async function guardarSuscripcionPush({ endpoint, auth, p256dh }, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarSuscripcionPush: negocioId inválido u omitido — rechazado, no se guarda sin negocio');
+    return false;
+  }
   await pool.query(
-    `INSERT INTO push_subscriptions (endpoint, auth, p256dh)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (endpoint) DO UPDATE SET auth=$2, p256dh=$3`,
-    [endpoint, auth, p256dh]
+    `INSERT INTO push_subscriptions (endpoint, auth, p256dh, negocio_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (endpoint) DO UPDATE SET auth=$2, p256dh=$3, negocio_id=$4`,
+    [endpoint, auth, p256dh, negocioId.trim()]
   );
+  return true;
 }
 
-export async function obtenerSuscripcionesPush() {
-  const { rows } = await pool.query('SELECT endpoint, auth, p256dh FROM push_subscriptions');
+export async function obtenerSuscripcionesPush(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerSuscripcionesPush: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const { rows } = await pool.query(
+    'SELECT endpoint, auth, p256dh FROM push_subscriptions WHERE negocio_id = $1',
+    [negocioId.trim()]
+  );
   return rows;
 }
 
-export async function eliminarSuscripcionPush(endpoint) {
-  await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1', [endpoint]);
+// Borra solo si el endpoint pertenece al negocio indicado -- nunca borra
+// una suscripción ajena aunque el endpoint coincida (no debería, es un
+// valor único, pero se valida en vez de asumir).
+export async function eliminarSuscripcionPush(endpoint, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] eliminarSuscripcionPush: negocioId inválido u omitido — rechazado, no se borra sin negocio');
+    return false;
+  }
+  const { rowCount } = await pool.query(
+    'DELETE FROM push_subscriptions WHERE endpoint=$1 AND negocio_id=$2',
+    [endpoint, negocioId.trim()]
+  );
+  return rowCount > 0;
 }
 
 // ─── Obtener cliente por teléfono ─────────────────────────────────────────────
@@ -1563,6 +1594,23 @@ export async function obtenerNegocioIdPorSlug(slug) {
   }
 }
 
+// Chequeo de solo lectura para el envío de push (Auditoría P0
+// complementaria): la sesión ya se rechaza al suscribirse si el negocio
+// está inactivo (obtenerMembresiaUsuarioNegocio lo exige), pero un negocio
+// puede suspenderse DESPUÉS de que ya existan filas de suscripción
+// guardadas -- este chequeo se hace también al momento de ENVIAR, no solo
+// al suscribirse.
+export async function negocioEstaActivo(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  try {
+    const { rows } = await pool.query('SELECT activo FROM negocios WHERE id = $1', [negocioId.trim()]);
+    return rows[0]?.activo === true;
+  } catch (e) {
+    console.error('[DB] Error negocioEstaActivo:', e.message);
+    return false;
+  }
+}
+
 async function resolverNegocioActualId() {
   if (!_negocioActualIdCache) {
     _negocioActualIdCache = await obtenerNegocioIdPorSlug(NEGOCIO_ACTUAL_SLUG);
@@ -2010,24 +2058,37 @@ export async function obtenerRepartidores(negocioId) {
   } catch (e) { return []; }
 }
 
-export async function guardarPushRepartidor(repartidorId, subscription) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0 complementaria,
+// push). El llamador debe derivarlo del propio repartidor autenticado
+// (req.repartidor.negocio_id), nunca de un valor enviado aparte.
+export async function guardarPushRepartidor(repartidorId, subscription, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarPushRepartidor: negocioId inválido u omitido — rechazado, no se guarda sin negocio');
+    return false;
+  }
   try {
     await pool.query(
-      `INSERT INTO push_subscriptions_repartidor (repartidor_id, endpoint, auth, p256dh)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (endpoint) DO UPDATE SET auth = $3, p256dh = $4`,
-      [repartidorId, subscription.endpoint, subscription.keys.auth, subscription.keys.p256dh]
+      `INSERT INTO push_subscriptions_repartidor (repartidor_id, endpoint, auth, p256dh, negocio_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (endpoint) DO UPDATE SET auth = $3, p256dh = $4, negocio_id = $5`,
+      [repartidorId, subscription.endpoint, subscription.keys.auth, subscription.keys.p256dh, negocioId.trim()]
     );
-  } catch (e) { console.error('[DB] Error guardarPushRepartidor:', e.message); }
+    return true;
+  } catch (e) { console.error('[DB] Error guardarPushRepartidor:', e.message); return false; }
 }
 
-export async function obtenerPushRepartidores() {
+export async function obtenerPushRepartidores(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPushRepartidores: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const r = await pool.query(
       `SELECT p.endpoint, p.auth, p.p256dh
        FROM push_subscriptions_repartidor p
        JOIN repartidores rep ON rep.id = p.repartidor_id
-       WHERE rep.activo = TRUE`
+       WHERE rep.activo = TRUE AND p.negocio_id = $1`,
+      [negocioId.trim()]
     );
     return r.rows.map(r => ({ endpoint: r.endpoint, keys: { auth: r.auth, p256dh: r.p256dh } }));
   } catch (e) { return []; }

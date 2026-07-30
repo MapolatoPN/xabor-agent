@@ -21,7 +21,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -356,11 +356,24 @@ if (VAPID_PUBLIC && VAPID_PRIVATE) {
   console.warn('[Push] VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY no configurados — push desactivado');
 }
 
-async function enviarPushATodos(titulo, cuerpo, data = {}) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0 complementaria,
+// push). Reemplaza a enviarPushATodos: nunca envía a nadie sin negocioId
+// válido, nunca consulta suscripciones fuera del negocio indicado, y
+// valida que el negocio siga activo justo antes de enviar (un negocio
+// puede suspenderse después de que ya existan suscripciones guardadas).
+async function enviarPushANegocio(negocioId, titulo, cuerpo, data = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[Push] enviarPushANegocio: negocioId inválido u omitido — no se envía a nadie (fail closed)');
+    return;
+  }
   if (!VAPID_PUBLIC || !VAPID_PRIVATE) { console.log('[Push] VAPID no configurado — omitiendo'); return; }
+  if (!(await negocioEstaActivo(negocioId))) {
+    console.log(`[Push] Negocio ${negocioId} inactivo/suspendido — envío omitido`);
+    return;
+  }
   let subs;
-  try { subs = await obtenerSuscripcionesPush(); } catch (e) { console.error('[Push] Error leyendo suscripciones:', e.message); return; }
-  console.log(`[Push] Enviando "${titulo}" a ${subs.length} suscripción(es)`);
+  try { subs = await obtenerSuscripcionesPush(negocioId); } catch (e) { console.error('[Push] Error leyendo suscripciones:', e.message); return; }
+  console.log(`[Push] Enviando "${titulo}" a ${subs.length} suscripción(es) del negocio`);
   const payload = JSON.stringify({ titulo, cuerpo, data });
   for (const sub of subs) {
     try {
@@ -370,8 +383,8 @@ async function enviarPushATodos(titulo, cuerpo, data = {}) {
       );
     } catch (e) {
       if (e.statusCode === 410 || e.statusCode === 404) {
-        // Suscripción expirada — limpiar
-        await eliminarSuscripcionPush(sub.endpoint).catch(() => {});
+        // Suscripción expirada — limpiar (mismo negocio, nunca ajeno)
+        await eliminarSuscripcionPush(sub.endpoint, negocioId).catch(() => {});
       } else {
         console.error('[Push] Error enviando notificación:', e.message);
       }
@@ -379,13 +392,21 @@ async function enviarPushATodos(titulo, cuerpo, data = {}) {
   }
 }
 
-async function enviarPushARepartidores(titulo, cuerpo, data = {}) {
+// negocioId OBLIGATORIO — mismo criterio que enviarPushANegocio. Sigue
+// sin tener llamador real (ver comentario más abajo), se corrige de todos
+// modos para que, si algún día se conecta, ya nazca aislada por negocio.
+async function enviarPushARepartidores(negocioId, titulo, cuerpo, data = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[Push Repartidor] negocioId inválido u omitido — no se envía a nadie (fail closed)');
+    return;
+  }
   const vapidPub = getIntegracion('vapid_public_key') || VAPID_PUBLIC;
   const vapidPri = getIntegracion('vapid_private_key') || VAPID_PRIVATE;
   const vapidEmail = getIntegracion('vapid_email') || VAPID_EMAIL;
   if (!vapidPub || !vapidPri) return;
+  if (!(await negocioEstaActivo(negocioId))) return;
   try { webpush.setVapidDetails(vapidEmail, vapidPub, vapidPri); } catch {}
-  const subs = await obtenerPushRepartidores();
+  const subs = await obtenerPushRepartidores(negocioId);
   if (!subs.length) return;
   const payload = JSON.stringify({ titulo, cuerpo, data });
   for (const sub of subs) {
@@ -551,30 +572,30 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
-// ✅ NUEVO (Fase 7) — push notifications, extraídas de broadcast() a su
-// propia función para poder dispararlas tanto desde broadcast() (legado)
-// como desde broadcastNegocio() (nuevo), sin duplicar la lógica ni
-// mezclarla con el filtrado por negocio. Push SIGUE GLOBAL a propósito en
-// esta fase (no se tocó el sistema de push) — ver reporte, sección "Estado
-// del push global". broadcastPrintAgentLegacy NUNCA la llama (evitaría un
-// doble push del mismo nuevo_pedido, que ya dispara push vía
-// broadcastNegocio).
-function dispararPushParaEvento(data) {
+// negocioId OBLIGATORIO (Auditoría P0 complementaria, push) — antes
+// disparaba enviarPushATodos() sin filtrar, incluso desde
+// broadcastNegocio() ya aislado por negocio. Ahora: sin negocioId válido
+// no se envía nada (fail closed, nunca cae a broadcast() global ni a
+// Nonna Maye como relleno), y el contenido se redujo a lo genérico —
+// nunca teléfono, texto del mensaje, nombre completo de cliente ni monto.
+// El detalle real se consulta dentro del panel ya autenticado.
+function dispararPushParaEvento(data, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return;
   if (data.tipo === 'nuevo_pedido') {
-    const p = data.pedido;
-    const canal = p?.canal === 'presencial' ? 'Presencial' : (p?.canal === 'rappi' ? 'Rappi' : 'WhatsApp');
-    const cliente = p?.cliente?.nombre || 'Cliente';
-    const total   = p?.total ? `$${Number(p.total).toFixed(0)}` : '';
-    enviarPushATodos(
-      `🛎 Nuevo pedido — ${canal}`,
-      `${cliente}${total ? ' · ' + total : ''}`,
-      { pedidoId: p?.id || p?.folio }
+    enviarPushANegocio(
+      negocioId,
+      '🛎 Nuevo pedido',
+      'Tienes un nuevo pedido en Xabor',
+      {}
     ).catch(() => {});
   }
   if (data.tipo === 'nuevo_mensaje' && data.mensaje?.direccion === 'entrante') {
-    const tel = data.mensaje?.telefono || '';
-    const txt = data.mensaje?.texto?.slice(0, 60) || 'Nuevo mensaje';
-    enviarPushATodos('💬 Nuevo mensaje WhatsApp', txt, { telefono: tel }).catch(() => {});
+    enviarPushANegocio(
+      negocioId,
+      '💬 Nuevo mensaje de WhatsApp',
+      'Tienes una conversación nueva en Xabor',
+      {}
+    ).catch(() => {});
   }
 }
 
@@ -588,7 +609,9 @@ function dispararPushParaEvento(data) {
 // datos operativos que aislar) y rappi_cancelacion cuando su store_id no
 // resuelve a ninguna integración registrada — ver reporte de esta fase
 // para el detalle completo de cada caso. Usar broadcastNegocio(negocioId,
-// data) para cualquier evento operativo nuevo.
+// data) para cualquier evento operativo nuevo. Nunca tiene negocioId real
+// que ofrecer, así que dispararPushParaEvento simplemente no envía nada
+// (fail closed) para lo que pase por aquí.
 function broadcast(data) {
   const mensaje = JSON.stringify(data);
   wss.clients.forEach(client => {
@@ -596,16 +619,16 @@ function broadcast(data) {
       client.send(mensaje);
     }
   });
-  dispararPushParaEvento(data);
+  dispararPushParaEvento(data, null);
 }
 
 // ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
 // conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
 // nunca a 'legacy' (print-agent), nunca a wssVoice, nunca a otro negocio.
 // Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
-// broadcast() global. Dispara el mismo push global que broadcast() (ver
-// dispararPushParaEvento) — deliberado y documentado, no un efecto
-// accidental del filtrado por negocio.
+// broadcast() global. El push (dispararPushParaEvento) ahora comparte el
+// mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
+// complementaria).
 function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
@@ -624,7 +647,7 @@ function broadcastNegocio(negocioId, data, opciones = {}) {
     client.send(mensaje);
     enviados++;
   });
-  dispararPushParaEvento(data);
+  dispararPushParaEvento(data, negocioIdNorm);
   return enviados;
 }
 
@@ -1119,7 +1142,12 @@ app.post('/api/auth/negocio/login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/negocio/logout', (req, res) => {
+// negocioId (Auditoría P0 complementaria, push): se lee del propio token
+// de sesión (antes de revocarlo), nunca del body -- así se sabe de qué
+// negocio desvincular la suscripción sin volver a confiar en el cliente.
+// Si el navegador no manda endpoint, no se borra nada (nunca se adivina
+// ni se borran otras suscripciones del mismo negocio).
+app.post('/api/auth/negocio/logout', async (req, res) => {
   // Revocar el token en sí (no solo borrar la cookie) — si no se hace esto,
   // la misma cookie reenviada después de logout (p. ej. por el botón Atrás
   // restaurando una página cacheada) seguiría siendo válida hasta su
@@ -1127,6 +1155,15 @@ app.post('/api/auth/negocio/logout', (req, res) => {
   const auth = req.headers['authorization'];
   const tokenBearer = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
   const token = leerCookieSesion(req) || tokenBearer;
+
+  const { endpoint } = req.body || {};
+  if (endpoint) {
+    const payload = verificarTokenSesion(token);
+    if (payload?.negocioId) {
+      await eliminarSuscripcionPush(endpoint, payload.negocioId).catch(() => {});
+    }
+  }
+
   revocarTokenSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
@@ -1702,13 +1739,21 @@ app.get('/api/push/vapid-public-key', (req, res) => {
   res.json({ key: VAPID_PUBLIC });
 });
 
+// negocioId (Auditoría P0 complementaria, push): SIEMPRE de req.negocioId
+// (requireAuthSeguro ya validó sesión + membresía + negocio activo) --
+// cualquier negocio_id que el body pudiera traer se ignora por completo,
+// nunca se lee. Chequeo explícito de negocio activo aquí también, además
+// del que ya hace el middleware, para no depender solo de esa cadena.
 app.post('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint, keys } = req.body;
   if (!endpoint || !keys?.auth || !keys?.p256dh) {
     return res.status(400).json({ error: 'Suscripción inválida' });
   }
+  if (!(await negocioEstaActivo(req.negocioId))) {
+    return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
+  }
   try {
-    await guardarSuscripcionPush({ endpoint, auth: keys.auth, p256dh: keys.p256dh });
+    await guardarSuscripcionPush({ endpoint, auth: keys.auth, p256dh: keys.p256dh }, req.negocioId);
     res.json({ ok: true });
   } catch (e) {
     console.error('[Push] Error guardando suscripción:', e.message);
@@ -1716,10 +1761,13 @@ app.post('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   }
 });
 
+// Borra únicamente si el endpoint pertenece al negocio de la sesión --
+// nunca borra una suscripción de otro negocio aunque el endpoint llegara
+// a coincidir (eliminarSuscripcionPush ya lo valida con AND negocio_id).
 app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   const { endpoint } = req.body;
   if (!endpoint) return res.status(400).json({ error: 'endpoint requerido' });
-  await eliminarSuscripcionPush(endpoint).catch(() => {});
+  await eliminarSuscripcionPush(endpoint, req.negocioId).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -2370,11 +2418,13 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
   res.json({ ok: true });
 });
 
-// Guardar push subscription del repartidor
+// Guardar push subscription del repartidor -- negocioId sale del propio
+// repartidor autenticado (req.repartidor.negocio_id), nunca del body.
 app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) => {
   const { subscription } = req.body;
   if (!subscription) return res.status(400).json({ error: 'subscription requerida' });
-  await guardarPushRepartidor(req.repartidor.id, subscription);
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  await guardarPushRepartidor(req.repartidor.id, subscription, req.repartidor.negocio_id);
   res.json({ ok: true });
 });
 

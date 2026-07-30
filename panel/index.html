@@ -1286,7 +1286,12 @@ function irALogin() {
 }
 
 async function cerrarSesion() {
-  try { await apiFetch('/api/auth/negocio/logout', { method: 'POST' }); } catch (e) {}
+  // Desvincular la suscripción push de ESTE negocio antes de destruir la
+  // sesión -- si no hay endpoint guardado (nunca se registró push en este
+  // navegador), no se manda nada y el servidor no borra nada por su cuenta.
+  const endpoint = localStorage.getItem('xabor_push_endpoint') || undefined;
+  try { await apiFetch('/api/auth/negocio/logout', { method: 'POST', body: JSON.stringify({ endpoint }) }); } catch (e) {}
+  localStorage.removeItem('xabor_push_endpoint');
   location.href = '/login-negocio.html';
 }
 
@@ -1339,11 +1344,17 @@ async function registrarPush() {
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(key)
     });
-    // Enviar suscripción al servidor
+    // Enviar suscripción al servidor -- el negocio lo determina el
+    // servidor a partir de la sesión (req.negocioId), nunca de lo que
+    // mande este cliente.
     await apiFetch('/api/push/subscribe', {
       method: 'POST',
       body: JSON.stringify(sub.toJSON())
     });
+    // Guardar el endpoint localmente -- solo para poder desvincularlo en
+    // logout (nunca se usa como autorización, el servidor siempre valida
+    // contra la sesión real).
+    localStorage.setItem('xabor_push_endpoint', sub.endpoint);
     console.log('[Push] Suscripción registrada');
   } catch (e) {
     console.warn('[Push] No se pudo registrar:', e.message);
