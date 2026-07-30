@@ -22,6 +22,11 @@ import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
+import {
+  esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
+  crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
+  actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
+} from './services/database.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -1150,6 +1155,15 @@ app.get('/finanzas', (req, res) => {
   res.sendFile(join(__dirname, '../panel/finanzas.html'));
 });
 
+// Panel de superadmin — completamente separado de /app (panel/index.html).
+// Servir el HTML aquí no expone nada: la página está vacía de datos hasta
+// que su JS llama a /api/superadmin/*, y esas rutas exigen requireSuperadmin
+// real. Un admin de negocio o staff que entre a esta URL directamente ve la
+// página cargar y de inmediato un 401/403 en cada llamada -- nunca datos.
+app.get('/superadmin', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/superadmin.html'));
+});
+
 // Salud del servidor
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
@@ -1950,6 +1964,143 @@ app.patch('/api/admin/usuarios/:usuarioId/estado', requireAdminModerno, async (r
   const ok = await actualizarEstadoMembresia(usuarioId, req.negocioId, activo);
   if (!ok) return res.status(404).json({ error: 'Usuario no encontrado en tu negocio' });
   res.json({ ok: true });
+});
+
+// ─── Superadmin de plataforma (Fase 6) ───────────────────────────────────────
+// Deliberadamente NO usa resolverNegocioSeguro/requireAdminSeguro: un
+// superadmin no opera "dentro" de un negocio -- ve y toca varios a la vez.
+// La única credencial que exige es una sesión moderna (cookie válida, con
+// usuarioId) cuyo usuarioId esté marcado en administradores_plataforma. El
+// negocioId que esa sesión traiga (si trae alguno) es irrelevante aquí --
+// por eso el privilegio "no depende de ser admin de Nonna Maye": basta con
+// tener CUALQUIER sesión moderna válida más el registro en la tabla
+// separada. Distingue 401 (sin sesión reconocible) de 403 (sesión
+// reconocida -- moderna sin privilegio, o legado -- pero no autorizada
+// aquí), tal como exige el resto de la plataforma.
+async function requireSuperadmin(req, res, next) {
+  const token = leerCookieSesion(req);
+  const payload = token ? verificarTokenSesion(token) : null;
+  if (payload && payload.usuarioId) {
+    const esSuper = await esSuperadmin(payload.usuarioId);
+    if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
+    return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+  }
+  const auth = req.headers['authorization'];
+  const bearerToken = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
+  if (bearerToken && getRole(bearerToken)) {
+    return res.status(403).json({ error: 'Esta sección requiere sesión de superadmin, no el modo legado' });
+  }
+  return res.status(401).json({ error: 'No autenticado' });
+}
+
+const MODULOS_VALIDOS_API = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion'];
+const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
+const ESTADOS_NEGOCIO_VALIDOS_API = ['pendiente', 'activo', 'suspendido'];
+
+app.get('/api/superadmin/dashboard', requireSuperadmin, async (req, res) => {
+  res.json(await obtenerDashboardSuperadmin());
+});
+
+app.get('/api/superadmin/negocios', requireSuperadmin, async (req, res) => {
+  const { buscar = '', estado = '', plan = '', limit, offset } = req.query;
+  const negocios = await obtenerNegociosParaSuperadmin({ buscar: String(buscar), estado: String(estado), plan: String(plan), limit, offset });
+  res.json(negocios);
+});
+
+app.post('/api/superadmin/negocios', requireSuperadmin, async (req, res) => {
+  const { nombre, slug, nombrePropietario, emailAdmin, telefono, nombreSucursal, ciudad, plan, modulosIniciales, estadoInicial } = req.body;
+
+  if (typeof nombre !== 'string' || !nombre.trim()) return res.status(400).json({ error: 'El nombre comercial es obligatorio' });
+  if (typeof nombrePropietario !== 'string' || !nombrePropietario.trim()) return res.status(400).json({ error: 'El nombre del propietario es obligatorio' });
+  if (typeof emailAdmin !== 'string' || !EMAIL_RE.test(emailAdmin.trim())) return res.status(400).json({ error: 'Correo del administrador inválido' });
+  if (typeof nombreSucursal !== 'string' || !nombreSucursal.trim()) return res.status(400).json({ error: 'El nombre de la sucursal principal es obligatorio' });
+  if (!PLANES_VALIDOS_API.includes(plan)) return res.status(400).json({ error: 'Plan inválido' });
+  if (!['pendiente', 'activo'].includes(estadoInicial)) return res.status(400).json({ error: 'Estado inicial inválido (solo pendiente o activo)' });
+  if (modulosIniciales !== undefined && (!Array.isArray(modulosIniciales) || modulosIniciales.some(m => !MODULOS_VALIDOS_API.includes(m)))) {
+    return res.status(400).json({ error: 'Módulos iniciales inválidos' });
+  }
+
+  try {
+    const resultado = await crearNegocioCompleto({
+      nombre: nombre.trim(), slugDeseado: slug, nombrePropietario: nombrePropietario.trim(),
+      emailAdmin: emailAdmin.trim(), telefono: telefono || '', nombreSucursal: nombreSucursal.trim(),
+      ciudad: ciudad || '', plan, modulosIniciales: modulosIniciales || [], estadoInicial,
+      superadminId: req.usuarioId,
+    });
+    res.status(201).json(resultado);
+  } catch (e) {
+    if (e.code === 'SLUG_DUPLICADO' || e.code === '23505') return res.status(409).json({ error: 'El slug ya está en uso' });
+    if (e.code === 'EMAIL_EXISTENTE') return res.status(409).json({ error: e.message });
+    if (e.code === 'SLUG_INVALIDO') return res.status(400).json({ error: e.message });
+    console.error('[POST /api/superadmin/negocios] Error:', e.message);
+    res.status(500).json({ error: 'Error al crear el negocio' });
+  }
+});
+
+app.get('/api/superadmin/negocios/:negocioId', requireSuperadmin, async (req, res) => {
+  const detalle = await obtenerNegocioDetalleSuperadmin(req.params.negocioId);
+  if (!detalle) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(detalle);
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/estado', requireSuperadmin, async (req, res) => {
+  const { estado } = req.body;
+  if (!ESTADOS_NEGOCIO_VALIDOS_API.includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+  try {
+    const resultado = await actualizarEstadoNegocioSuperadmin(req.params.negocioId, estado, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/superadmin/negocios/:id/estado] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el estado' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/plan', requireSuperadmin, async (req, res) => {
+  const { plan } = req.body;
+  if (!PLANES_VALIDOS_API.includes(plan)) return res.status(400).json({ error: 'Plan inválido' });
+  try {
+    const resultado = await actualizarPlanNegocioSuperadmin(req.params.negocioId, plan, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/superadmin/negocios/:id/plan] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el plan' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, async (req, res) => {
+  const { modulos } = req.body;
+  if (!modulos || typeof modulos !== 'object' || Array.isArray(modulos)) return res.status(400).json({ error: 'Formato de módulos inválido' });
+  try {
+    const resultado = await actualizarModulosNegocioSuperadmin(req.params.negocioId, modulos, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    if (e.code === 'MODULO_INVALIDO' || e.code === 'ESTADO_MODULO_INVALIDO') return res.status(400).json({ error: e.message });
+    console.error('[PATCH /api/superadmin/negocios/:id/modulos] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar los módulos' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/checklist', requireSuperadmin, async (req, res) => {
+  const { checklist } = req.body;
+  if (!checklist || typeof checklist !== 'object' || Array.isArray(checklist)) return res.status(400).json({ error: 'Formato de checklist inválido' });
+  if (Object.values(checklist).some(v => typeof v !== 'boolean')) return res.status(400).json({ error: 'Los valores del checklist deben ser boolean' });
+  try {
+    const resultado = await actualizarChecklistNegocioSuperadmin(req.params.negocioId, checklist, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/superadmin/negocios/:id/checklist] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el checklist' });
+  }
+});
+
+app.get('/api/superadmin/auditoria', requireSuperadmin, async (req, res) => {
+  const { limit, offset, negocioId } = req.query;
+  const auditoria = await obtenerAuditoriaPlataforma({ limit, offset, negocioId: negocioId || null });
+  res.json(auditoria);
 });
 
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────

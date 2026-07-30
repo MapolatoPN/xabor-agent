@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xabor · Superadmin</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #e2e5ea; --text: #1a1d23; --muted: #6b7280;
+    --accent: #1f2937; --accent-soft: #eef0f3;
+    --ok: #16a34a; --warn: #d97706; --danger: #dc2626; --info: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  #app { display:none; }
+  #cargando, #sin-acceso { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:12px; color:var(--muted); text-align:center; padding:20px; }
+  #sin-acceso { display:none; }
+  header { background:var(--accent); color:#fff; padding:14px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+  header .brand { font-weight:800; font-size:1.05rem; letter-spacing:0.3px; }
+  header .brand span { color:#9ca3af; font-weight:500; }
+  header button { background:transparent; border:1px solid #4b5563; color:#e5e7eb; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:0.82rem; }
+  nav { background:#fff; border-bottom:1px solid var(--border); display:flex; gap:4px; padding:0 20px; overflow-x:auto; }
+  nav button { background:none; border:none; padding:12px 16px; font-size:0.86rem; font-weight:600; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
+  nav button.activo { color:var(--accent); border-bottom-color:var(--accent); }
+  main { max-width:1180px; margin:0 auto; padding:22px 20px 60px; }
+  .vista { display:none; }
+  .vista.activa { display:block; }
+  h1 { font-size:1.3rem; margin:0 0 18px; }
+  h2 { font-size:1.05rem; margin:0 0 10px; }
+  .grid-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:24px; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .stat .num { font-size:1.6rem; font-weight:800; }
+  .stat .lbl { font-size:0.75rem; color:var(--muted); margin-top:2px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .fila-lista { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--accent-soft); font-size:0.85rem; }
+  .fila-lista:last-child { border-bottom:none; }
+  table { width:100%; border-collapse:collapse; font-size:0.84rem; }
+  th { text-align:left; color:var(--muted); font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.4px; padding:8px 10px; border-bottom:1px solid var(--border); }
+  td { padding:10px; border-bottom:1px solid var(--accent-soft); vertical-align:middle; }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover { background:var(--accent-soft); }
+  .badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; }
+  .badge-activo { background:#dcfce7; color:var(--ok); }
+  .badge-pendiente { background:#fef3c7; color:var(--warn); }
+  .badge-suspendido { background:#fee2e2; color:var(--danger); }
+  .badge-plan { background:#e0e7ff; color:#4338ca; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
+  input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
+  input[type=search] { width:220px; }
+  button.btn { background:var(--accent); color:#fff; border:none; border-radius:7px; padding:9px 16px; font-size:0.85rem; font-weight:700; cursor:pointer; }
+  button.btn.secundario { background:#fff; color:var(--accent); border:1px solid var(--border); }
+  button.btn.peligro { background:#fff; color:var(--danger); border:1px solid #fecaca; }
+  button.btn:disabled { opacity:0.5; cursor:not-allowed; }
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(15,17,21,0.5); z-index:999; align-items:center; justify-content:center; padding:16px; }
+  .modal-overlay.visible { display:flex; }
+  .modal { background:#fff; border-radius:12px; padding:22px; max-width:520px; width:100%; max-height:90vh; overflow-y:auto; }
+  .modal h3 { margin-top:0; }
+  .campo { margin-bottom:12px; }
+  .campo label { display:block; font-size:0.78rem; font-weight:700; color:#444; margin-bottom:4px; }
+  .campo input, .campo select { width:100%; }
+  .feedback { font-size:0.82rem; margin:8px 0; min-height:18px; }
+  .feedback.ok { color:var(--ok); }
+  .feedback.err { color:var(--danger); }
+  .checklist-item, .modulo-item { display:flex; align-items:center; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--accent-soft); font-size:0.83rem; }
+  .modulo-item select { font-size:0.78rem; padding:4px 8px; }
+  .back-link { display:inline-block; margin-bottom:14px; color:var(--muted); cursor:pointer; font-size:0.85rem; }
+  .seccion-detalle { margin-bottom:20px; }
+  .empty { color:var(--muted); text-align:center; padding:30px; font-size:0.85rem; }
+  @media (max-width:640px) {
+    table, thead, tbody, tr { display:block; }
+    thead { display:none; }
+    tr { border:1px solid var(--border); border-radius:10px; margin-bottom:10px; padding:8px; background:#fff; }
+    td { display:flex; justify-content:space-between; border:none; padding:6px 4px; }
+    td::before { content:attr(data-label); font-weight:700; color:var(--muted); font-size:0.72rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="cargando"><div>Verificando acceso…</div></div>
+
+<div id="sin-acceso">
+  <div style="font-size:2rem;">🔒</div>
+  <div style="font-weight:700;font-size:1.05rem;">Sin acceso</div>
+  <div>Esta sección es exclusiva del propietario de la plataforma.</div>
+  <button class="btn secundario" onclick="location.href='/'">Volver al panel</button>
+</div>
+
+<div id="app">
+  <header>
+    <div class="brand">XABOR <span>· Superadmin</span></div>
+    <button onclick="cerrarSesion()">Cerrar sesión</button>
+  </header>
+  <nav>
+    <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Dashboard</button>
+    <button class="tab" data-tab="negocios" onclick="irVista('negocios')">Negocios</button>
+    <button class="tab" data-tab="auditoria" onclick="irVista('auditoria')">Auditoría</button>
+  </nav>
+  <main>
+
+    <!-- DASHBOARD -->
+    <div id="vista-dashboard" class="vista activa">
+      <h1>Panel general</h1>
+      <div class="grid-stats" id="da-stats"></div>
+      <div class="card">
+        <h2>Negocios recientes</h2>
+        <div id="da-recientes" class="empty">Cargando…</div>
+      </div>
+      <div class="card">
+        <h2>Sin administrador</h2>
+        <div id="da-sin-admin" class="empty">Cargando…</div>
+      </div>
+      <div class="card">
+        <h2>Sin terminal o sin menú</h2>
+        <div id="da-sin-instalar" class="empty">Cargando…</div>
+      </div>
+    </div>
+
+    <!-- NEGOCIOS -->
+    <div id="vista-negocios" class="vista">
+      <h1>Negocios</h1>
+      <div class="toolbar">
+        <input type="search" id="ng-buscar" placeholder="Buscar por nombre o slug…" oninput="cargarNegocios()">
+        <select id="ng-estado" onchange="cargarNegocios()">
+          <option value="">Todos los estados</option>
+          <option value="pendiente">Pendiente</option>
+          <option value="activo">Activo</option>
+          <option value="suspendido">Suspendido</option>
+        </select>
+        <select id="ng-plan" onchange="cargarNegocios()">
+          <option value="">Todos los planes</option>
+          <option value="prueba">Prueba</option>
+          <option value="basico">Básico</option>
+          <option value="pro">Pro</option>
+          <option value="personalizado">Personalizado</option>
+        </select>
+        <button class="btn" style="margin-left:auto;" onclick="abrirModalNuevoNegocio()">+ Nuevo negocio</button>
+      </div>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Nombre</th><th>Estado</th><th>Plan</th><th>Admin</th><th>Sucursales</th><th>Usuarios</th><th>Alta</th></tr></thead>
+          <tbody id="ng-tabla"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- DETALLE -->
+    <div id="vista-detalle" class="vista">
+      <div class="back-link" onclick="irVista('negocios')">← Volver a negocios</div>
+      <h1 id="dt-titulo">Detalle del negocio</h1>
+
+      <div class="card seccion-detalle">
+        <h2>Estado y plan</h2>
+        <div class="fila-lista"><span>Estado actual</span><span id="dt-estado-actual"></span></div>
+        <div class="toolbar">
+          <select id="dt-estado-select">
+            <option value="pendiente">Pendiente</option>
+            <option value="activo">Activo</option>
+            <option value="suspendido">Suspendido</option>
+          </select>
+          <button class="btn secundario" onclick="cambiarEstadoNegocio()">Guardar estado</button>
+          <select id="dt-plan-select" style="margin-left:16px;">
+            <option value="prueba">Prueba</option>
+            <option value="basico">Básico</option>
+            <option value="pro">Pro</option>
+            <option value="personalizado">Personalizado</option>
+          </select>
+          <button class="btn secundario" onclick="cambiarPlanNegocio()">Guardar plan</button>
+        </div>
+        <div class="feedback" id="dt-feedback"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Datos generales</h2>
+        <div id="dt-generales"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Módulos</h2>
+        <div id="dt-modulos"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Checklist de instalación</h2>
+        <div id="dt-checklist"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Usuarios</h2>
+        <div id="dt-usuarios"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Sucursales</h2>
+        <div id="dt-sucursales"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Terminales</h2>
+        <div id="dt-terminales"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Integraciones</h2>
+        <div id="dt-integraciones"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Auditoría reciente de este negocio</h2>
+        <div id="dt-auditoria"></div>
+      </div>
+    </div>
+
+    <!-- AUDITORIA -->
+    <div id="vista-auditoria" class="vista">
+      <h1>Auditoría de plataforma</h1>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Fecha</th><th>Superadmin</th><th>Acción</th><th>Negocio</th></tr></thead>
+          <tbody id="au-tabla"><tr><td colspan="4" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Modal nuevo negocio -->
+<div class="modal-overlay" id="ng-modal">
+  <div class="modal">
+    <h3>Nuevo negocio</h3>
+    <div class="campo"><label>Nombre comercial</label><input id="ng-nombre" oninput="sugerirSlug()"></div>
+    <div class="campo"><label>Slug (editable)</label><input id="ng-slug"></div>
+    <div class="campo"><label>Nombre del propietario</label><input id="ng-propietario"></div>
+    <div class="campo"><label>Correo del primer administrador</label><input id="ng-email" type="email"></div>
+    <div class="campo"><label>Teléfono</label><input id="ng-telefono"></div>
+    <div class="campo"><label>Nombre de la sucursal principal</label><input id="ng-sucursal" value="Principal"></div>
+    <div class="campo"><label>Ciudad</label><input id="ng-ciudad"></div>
+    <div class="campo"><label>Plan</label>
+      <select id="ng-plan-nuevo">
+        <option value="prueba">Prueba</option>
+        <option value="basico">Básico</option>
+        <option value="pro">Pro</option>
+        <option value="personalizado">Personalizado</option>
+      </select>
+    </div>
+    <div class="campo"><label>Estado inicial</label>
+      <select id="ng-estado-nuevo">
+        <option value="pendiente">Pendiente (onboarding en curso)</option>
+        <option value="activo">Activo</option>
+      </select>
+    </div>
+    <div class="campo">
+      <label>Módulos iniciales</label>
+      <div id="ng-modulos-check"></div>
+    </div>
+    <div class="feedback" id="ng-feedback"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn secundario" onclick="cerrarModalNuevoNegocio()">Cancelar</button>
+      <button class="btn" onclick="crearNegocio()">Crear negocio</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const MODULOS = ['pos','usuarios','caja','menu','impresion','whatsapp','voz','rappi','facturacion'];
+const NOMBRES_MODULO = { pos:'POS', usuarios:'Usuarios', caja:'Caja', menu:'Menú', impresion:'Impresión', whatsapp:'WhatsApp', voz:'Voz', rappi:'Rappi', facturacion:'Facturación' };
+const NOMBRES_CHECKLIST = {
+  negocio_creado:'Negocio creado', administrador_creado:'Administrador creado', sucursal_creada:'Sucursal creada',
+  datos_generales_completos:'Datos generales completos', menu_cargado:'Menú cargado', usuarios_creados:'Usuarios creados',
+  terminal_creada:'Terminal creada', impresion_probada:'Impresión probada', whatsapp_configurado:'WhatsApp configurado',
+  rappi_configurado:'Rappi configurado', pedido_prueba:'Pedido de prueba', listo_para_operar:'Listo para operar',
+};
+let negocioActualId = null;
+
+function escaparHTML(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function badgeEstado(estado) { return `<span class="badge badge-${estado}">${estado}</span>`; }
+function fechaCorta(f) { return f ? new Date(f).toLocaleDateString('es-MX') : '—'; }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, credentials:'same-origin', headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
+  if (r.status === 401) { location.href = '/login-negocio.html?redirect=' + encodeURIComponent('/superadmin'); throw new Error('no autenticado'); }
+  return r;
+}
+
+async function verificarAcceso() {
+  try {
+    const r = await api('/api/superadmin/dashboard');
+    if (r.status === 403) { document.getElementById('cargando').style.display='none'; document.getElementById('sin-acceso').style.display='flex'; return; }
+    if (!r.ok) { document.getElementById('cargando').style.display='none'; document.getElementById('sin-acceso').style.display='flex'; return; }
+    document.getElementById('cargando').style.display='none';
+    document.getElementById('app').style.display='block';
+    renderDashboard(await r.json());
+    cargarNegocios();
+    cargarAuditoria();
+  } catch (e) { /* redirigido a login */ }
+}
+
+function irVista(nombre) {
+  document.querySelectorAll('.vista').forEach(v => v.classList.remove('activa'));
+  document.getElementById('vista-' + nombre).classList.add('activa');
+  document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === nombre));
+  if (nombre === 'dashboard') api('/api/superadmin/dashboard').then(r => r.json()).then(renderDashboard);
+  if (nombre === 'negocios') cargarNegocios();
+  if (nombre === 'auditoria') cargarAuditoria();
+}
+
+function renderDashboard(d) {
+  document.getElementById('da-stats').innerHTML = `
+    <div class="stat"><div class="num">${d.totalNegocios}</div><div class="lbl">Negocios totales</div></div>
+    <div class="stat"><div class="num">${d.activos}</div><div class="lbl">Activos</div></div>
+    <div class="stat"><div class="num">${d.pendientes}</div><div class="lbl">Pendientes</div></div>
+    <div class="stat"><div class="num">${d.suspendidos}</div><div class="lbl">Suspendidos</div></div>
+    <div class="stat"><div class="num">${d.totalUsuarios}</div><div class="lbl">Usuarios totales</div></div>
+    <div class="stat"><div class="num">${d.totalSucursales}</div><div class="lbl">Sucursales totales</div></div>
+  `;
+  document.getElementById('da-recientes').innerHTML = d.recientes.length ? d.recientes.map(n => `
+    <div class="fila-lista"><span>${escaparHTML(n.nombre)} <span style="color:var(--muted);">(${escaparHTML(n.slug)})</span></span><span>${badgeEstado(n.estado)} · ${fechaCorta(n.created_at)}</span></div>
+  `).join('') : '<div class="empty">Sin negocios todavía</div>';
+  document.getElementById('da-sin-admin').innerHTML = d.sinAdministrador.length ? d.sinAdministrador.map(n => `
+    <div class="fila-lista"><span>${escaparHTML(n.nombre)}</span><span style="color:var(--danger);">sin administrador</span></div>
+  `).join('') : '<div class="empty">Todos los negocios tienen administrador</div>';
+  document.getElementById('da-sin-instalar').innerHTML = d.sinTerminalOMenu.length ? d.sinTerminalOMenu.map(n => `
+    <div class="fila-lista"><span>${escaparHTML(n.nombre)}</span><span style="color:var(--warn);">${n.sin_terminal ? 'sin terminal ' : ''}${n.sin_menu ? 'sin menú' : ''}</span></div>
+  `).join('') : '<div class="empty">Todos tienen terminal y menú</div>';
+}
+
+async function cargarNegocios() {
+  const buscar = document.getElementById('ng-buscar').value;
+  const estado = document.getElementById('ng-estado').value;
+  const plan = document.getElementById('ng-plan').value;
+  const params = new URLSearchParams({ buscar, estado, plan });
+  const r = await api('/api/superadmin/negocios?' + params);
+  const negocios = await r.json();
+  const tbody = document.getElementById('ng-tabla');
+  if (!negocios.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">Sin resultados</td></tr>'; return; }
+  tbody.innerHTML = negocios.map(n => `
+    <tr class="clickable" onclick="verDetalleNegocio('${n.id}')">
+      <td data-label="Nombre">${escaparHTML(n.nombre)}<br><span style="color:var(--muted);font-size:0.78rem;">${escaparHTML(n.slug)}</span></td>
+      <td data-label="Estado">${badgeEstado(n.estado)}</td>
+      <td data-label="Plan"><span class="badge badge-plan">${n.plan}</span></td>
+      <td data-label="Admin">${n.admin_nombre ? escaparHTML(n.admin_nombre) + '<br><span style="color:var(--muted);font-size:0.78rem;">' + escaparHTML(n.admin_email) + '</span>' : '<span style="color:var(--danger);">sin admin</span>'}</td>
+      <td data-label="Sucursales">${n.num_sucursales}</td>
+      <td data-label="Usuarios">${n.num_usuarios}</td>
+      <td data-label="Alta">${fechaCorta(n.created_at)}</td>
+    </tr>
+  `).join('');
+}
+
+async function verDetalleNegocio(id) {
+  negocioActualId = id;
+  irVista('detalle');
+  const r = await api('/api/superadmin/negocios/' + id);
+  if (!r.ok) { alert('No se pudo cargar el negocio'); return; }
+  const n = await r.json();
+  document.getElementById('dt-titulo').textContent = n.nombre;
+  document.getElementById('dt-estado-actual').innerHTML = badgeEstado(n.estado);
+  document.getElementById('dt-estado-select').value = n.estado;
+  document.getElementById('dt-plan-select').value = n.plan;
+  document.getElementById('dt-feedback').textContent = '';
+
+  document.getElementById('dt-generales').innerHTML = `
+    <div class="fila-lista"><span>Slug</span><span>${escaparHTML(n.slug)}</span></div>
+    <div class="fila-lista"><span>Creado</span><span>${fechaCorta(n.created_at)}</span></div>
+    <div class="fila-lista"><span>Última modificación</span><span>${fechaCorta(n.updated_at)}</span></div>
+  `;
+
+  const modMap = Object.fromEntries(n.modulos.map(m => [m.modulo, m.estado]));
+  document.getElementById('dt-modulos').innerHTML = MODULOS.map(m => `
+    <div class="modulo-item"><span>${NOMBRES_MODULO[m]}</span>
+      <select onchange="cambiarModulo('${m}', this.value)">
+        ${['no_configurado','pendiente','configurado','activo','suspendido'].map(e => `<option value="${e}" ${modMap[m] === e ? 'selected' : ''}>${e}</option>`).join('')}
+      </select>
+    </div>
+  `).join('');
+
+  const chk = n.checklist || {};
+  document.getElementById('dt-checklist').innerHTML = Object.keys(NOMBRES_CHECKLIST).map(k => `
+    <div class="checklist-item"><span>${NOMBRES_CHECKLIST[k]}</span>
+      <input type="checkbox" ${chk[k] ? 'checked' : ''} onchange="cambiarChecklistItem('${k}', this.checked)">
+    </div>
+  `).join('');
+
+  document.getElementById('dt-usuarios').innerHTML = n.usuarios.length ? n.usuarios.map(u => `
+    <div class="fila-lista"><span>${escaparHTML(u.nombre)} (${escaparHTML(u.email)})</span><span>${u.rol} · ${u.activo ? 'activo' : 'inactivo'}</span></div>
+  `).join('') : '<div class="empty">Sin usuarios</div>';
+
+  document.getElementById('dt-sucursales').innerHTML = n.sucursales.length ? n.sucursales.map(s => `
+    <div class="fila-lista"><span>${escaparHTML(s.nombre)}</span><span>${s.activo ? 'activa' : 'inactiva'}</span></div>
+  `).join('') : '<div class="empty">Sin sucursales</div>';
+
+  document.getElementById('dt-terminales').innerHTML = n.terminales.length ? n.terminales.map(t => `
+    <div class="fila-lista"><span>${escaparHTML(t.nombre)} (${escaparHTML(t.sucursal_nombre)})</span><span>${t.credencial_emitida ? 'credencial emitida' : 'sin credencial'} · ${t.activo ? 'activa' : 'inactiva'}</span></div>
+  `).join('') : '<div class="empty">Sin terminales</div>';
+
+  document.getElementById('dt-integraciones').innerHTML = n.integraciones.length ? n.integraciones.map(i => `
+    <div class="fila-lista"><span>${escaparHTML(i.canal)}${i.nombre ? ' — ' + escaparHTML(i.nombre) : ''}</span><span>···${escaparHTML(i.identificador_enmascarado)} · ${i.activo ? 'activa' : 'inactiva'}</span></div>
+  `).join('') : '<div class="empty">Sin integraciones configuradas</div>';
+
+  document.getElementById('dt-auditoria').innerHTML = n.auditoriaReciente.length ? n.auditoriaReciente.map(a => `
+    <div class="fila-lista"><span>${a.accion} — ${escaparHTML(a.superadmin_nombre)}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
+  `).join('') : '<div class="empty">Sin auditoría todavía</div>';
+}
+
+async function cambiarEstadoNegocio() {
+  const nuevo = document.getElementById('dt-estado-select').value;
+  const fb = document.getElementById('dt-feedback');
+  if (nuevo === 'suspendido' && !confirm('¿Suspender este negocio? Sus administradores y staff perderán acceso de inmediato. Los datos no se borran.')) return;
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/estado`, { method:'PATCH', body: JSON.stringify({ estado: nuevo }) });
+  if (r.ok) { fb.className = 'feedback ok'; fb.textContent = '✓ Estado actualizado'; verDetalleNegocio(negocioActualId); }
+  else { const b = await r.json().catch(()=>({})); fb.className = 'feedback err'; fb.textContent = b.error || 'Error al actualizar'; }
+}
+async function cambiarPlanNegocio() {
+  const nuevo = document.getElementById('dt-plan-select').value;
+  const fb = document.getElementById('dt-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/plan`, { method:'PATCH', body: JSON.stringify({ plan: nuevo }) });
+  if (r.ok) { fb.className = 'feedback ok'; fb.textContent = '✓ Plan actualizado'; }
+  else { const b = await r.json().catch(()=>({})); fb.className = 'feedback err'; fb.textContent = b.error || 'Error al actualizar'; }
+}
+async function cambiarModulo(modulo, estado) {
+  await api(`/api/superadmin/negocios/${negocioActualId}/modulos`, { method:'PATCH', body: JSON.stringify({ modulos: { [modulo]: estado } }) });
+}
+async function cambiarChecklistItem(clave, valor) {
+  await api(`/api/superadmin/negocios/${negocioActualId}/checklist`, { method:'PATCH', body: JSON.stringify({ checklist: { [clave]: valor } }) });
+}
+
+async function cargarAuditoria() {
+  const r = await api('/api/superadmin/auditoria');
+  const filas = await r.json();
+  const tbody = document.getElementById('au-tabla');
+  tbody.innerHTML = filas.length ? filas.map(a => `
+    <tr>
+      <td data-label="Fecha">${new Date(a.created_at).toLocaleString('es-MX')}</td>
+      <td data-label="Superadmin">${escaparHTML(a.superadmin_nombre)}</td>
+      <td data-label="Acción">${a.accion}</td>
+      <td data-label="Negocio">${a.negocio_nombre ? escaparHTML(a.negocio_nombre) : '—'}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="4" class="empty">Sin actividad todavía</td></tr>';
+}
+
+function sugerirSlug() {
+  const nombre = document.getElementById('ng-nombre').value;
+  document.getElementById('ng-slug').value = nombre.toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function abrirModalNuevoNegocio() {
+  ['ng-nombre','ng-slug','ng-propietario','ng-email','ng-telefono','ng-ciudad'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('ng-sucursal').value = 'Principal';
+  document.getElementById('ng-plan-nuevo').value = 'prueba';
+  document.getElementById('ng-estado-nuevo').value = 'pendiente';
+  document.getElementById('ng-feedback').textContent = '';
+  document.getElementById('ng-modulos-check').innerHTML = MODULOS.map(m => `
+    <label style="display:inline-flex;align-items:center;gap:4px;margin:3px 10px 3px 0;font-size:0.8rem;font-weight:400;">
+      <input type="checkbox" value="${m}" class="ng-mod-check"> ${NOMBRES_MODULO[m]}
+    </label>
+  `).join('');
+  document.getElementById('ng-modal').classList.add('visible');
+}
+function cerrarModalNuevoNegocio() { document.getElementById('ng-modal').classList.remove('visible'); }
+
+async function crearNegocio() {
+  const fb = document.getElementById('ng-feedback');
+  const nombre = document.getElementById('ng-nombre').value.trim();
+  const slug = document.getElementById('ng-slug').value.trim();
+  const nombrePropietario = document.getElementById('ng-propietario').value.trim();
+  const emailAdmin = document.getElementById('ng-email').value.trim();
+  const telefono = document.getElementById('ng-telefono').value.trim();
+  const nombreSucursal = document.getElementById('ng-sucursal').value.trim();
+  const ciudad = document.getElementById('ng-ciudad').value.trim();
+  const plan = document.getElementById('ng-plan-nuevo').value;
+  const estadoInicial = document.getElementById('ng-estado-nuevo').value;
+  const modulosIniciales = [...document.querySelectorAll('.ng-mod-check:checked')].map(c => c.value);
+
+  if (!nombre || !nombrePropietario || !emailAdmin || !nombreSucursal) { fb.className='feedback err'; fb.textContent='Completa los campos obligatorios'; return; }
+
+  fb.className = 'feedback'; fb.textContent = 'Creando…';
+  const r = await api('/api/superadmin/negocios', { method:'POST', body: JSON.stringify({
+    nombre, slug, nombrePropietario, emailAdmin, telefono, nombreSucursal, ciudad, plan, modulosIniciales, estadoInicial
+  }) });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok) {
+    fb.className = 'feedback ok'; fb.textContent = '✓ Negocio creado';
+    setTimeout(() => { cerrarModalNuevoNegocio(); cargarNegocios(); irVista('dashboard'); }, 700);
+  } else {
+    fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo crear el negocio';
+  }
+}
+
+async function cerrarSesion() {
+  try { await fetch('/api/auth/negocio/logout', { method:'POST', credentials:'same-origin' }); } catch(e) {}
+  location.href = '/login-negocio.html';
+}
+
+verificarAcceso();
+</script>
+</body>
+</html>

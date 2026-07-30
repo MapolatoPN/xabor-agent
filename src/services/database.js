@@ -2124,3 +2124,394 @@ export async function obtenerDestinatariosCampana(segmento) {
   `);
   return rows;
 }
+
+// ─── Superadmin de plataforma (Fase 6) ──────────────────────────────────────
+// Todo lo de aquí abajo opera FUERA del concepto de "negocio de la sesión":
+// un superadmin ve y toca varios negocios a la vez por diseño. Ninguna
+// función acepta negocioId sin validarlo contra la fila real en `negocios`
+// (existe/no existe), pero a diferencia del resto del archivo, aquí SÍ se
+// opera deliberadamente sobre cualquier negocio -- ese es el propósito de
+// este módulo, no un descuido de aislamiento.
+
+const MODULOS_VALIDOS = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion'];
+const ESTADOS_MODULO_VALIDOS = ['no_configurado', 'pendiente', 'configurado', 'activo', 'suspendido'];
+const ESTADOS_NEGOCIO_VALIDOS = ['pendiente', 'activo', 'suspendido'];
+const PLANES_VALIDOS = ['prueba', 'basico', 'pro', 'personalizado'];
+
+// Único punto de verdad de "¿esta persona es superadmin?" -- tabla separada
+// de `usuarios` a propósito (ver migración 011 para el razonamiento
+// completo). activo=true además de la fila existir: revocar el privilegio
+// nunca borra el registro histórico, solo lo desactiva.
+export async function esSuperadmin(usuarioId) {
+  if (!usuarioId) return false;
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM administradores_plataforma WHERE usuario_id = $1 AND activo = true`,
+      [usuarioId]
+    );
+    return rows.length > 0;
+  } catch (e) {
+    console.error('[DB] Error esSuperadmin:', e.message);
+    return false;
+  }
+}
+
+function slugify(texto) {
+  return String(texto || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // quitar acentos
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
+export async function registrarAuditoriaPlataforma({ superadminId, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null }, client = pool) {
+  await client.query(
+    `INSERT INTO auditoria_plataforma (superadmin_id, accion, negocio_id, usuario_id, estado_anterior, estado_nuevo, contexto)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [superadminId, accion, negocioId, usuarioId, estadoAnterior, estadoNuevo, contexto]
+  );
+}
+
+export async function obtenerDashboardSuperadmin() {
+  const [totales, recientes, sinAdmin, sinTerminalOMenu] = await Promise.all([
+    pool.query(`
+      SELECT
+        count(*) AS total_negocios,
+        count(*) FILTER (WHERE estado = 'activo')      AS activos,
+        count(*) FILTER (WHERE estado = 'pendiente')    AS pendientes,
+        count(*) FILTER (WHERE estado = 'suspendido')   AS suspendidos,
+        (SELECT count(*) FROM usuarios)                 AS total_usuarios,
+        (SELECT count(*) FROM sucursales)                AS total_sucursales
+      FROM negocios
+    `),
+    pool.query(`SELECT id, nombre, slug, estado, plan, created_at FROM negocios ORDER BY created_at DESC LIMIT 5`),
+    pool.query(`
+      SELECT n.id, n.nombre, n.slug
+      FROM negocios n
+      WHERE NOT EXISTS (
+        SELECT 1 FROM usuario_negocios un WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true
+      )
+      ORDER BY n.created_at DESC
+    `),
+    pool.query(`
+      SELECT n.id, n.nombre, n.slug,
+        NOT EXISTS (SELECT 1 FROM terminales t JOIN sucursales s ON s.id = t.sucursal_id WHERE s.negocio_id = n.id) AS sin_terminal,
+        NOT EXISTS (SELECT 1 FROM menu_productos mp WHERE mp.negocio_id = n.id) AS sin_menu
+      FROM negocios n
+    `)
+  ]);
+  const t = totales.rows[0];
+  return {
+    totalNegocios: Number(t.total_negocios),
+    activos: Number(t.activos),
+    pendientes: Number(t.pendientes),
+    suspendidos: Number(t.suspendidos),
+    totalUsuarios: Number(t.total_usuarios),
+    totalSucursales: Number(t.total_sucursales),
+    recientes: recientes.rows,
+    onboardingIncompleto: recientes.rows.filter(n => n.estado === 'pendiente'),
+    sinAdministrador: sinAdmin.rows,
+    sinTerminalOMenu: sinTerminalOMenu.rows.filter(n => n.sin_terminal || n.sin_menu),
+  };
+}
+
+// limit siempre acotado (máx 100) -- "todas las consultas globales deben
+// estar limitadas y ordenadas" (requisito de seguridad de esta tarea).
+export async function obtenerNegociosParaSuperadmin({ buscar = '', estado = '', plan = '', limit = 50, offset = 0 } = {}) {
+  const limitSeguro = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  const offsetSeguro = Math.max(Number(offset) || 0, 0);
+  const condiciones = [];
+  const params = [];
+  if (buscar) {
+    params.push(`%${buscar}%`);
+    condiciones.push(`(n.nombre ILIKE $${params.length} OR n.slug ILIKE $${params.length})`);
+  }
+  if (estado && ESTADOS_NEGOCIO_VALIDOS.includes(estado)) {
+    params.push(estado);
+    condiciones.push(`n.estado = $${params.length}`);
+  }
+  if (plan && PLANES_VALIDOS.includes(plan)) {
+    params.push(plan);
+    condiciones.push(`n.plan = $${params.length}`);
+  }
+  const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+  params.push(limitSeguro, offsetSeguro);
+
+  const { rows } = await pool.query(`
+    SELECT
+      n.id, n.nombre, n.slug, n.estado, n.plan, n.created_at,
+      (SELECT u.nombre FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id WHERE un.negocio_id = n.id AND un.rol = 'admin' ORDER BY un.created_at ASC LIMIT 1) AS admin_nombre,
+      (SELECT u.email FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id WHERE un.negocio_id = n.id AND un.rol = 'admin' ORDER BY un.created_at ASC LIMIT 1) AS admin_email,
+      (SELECT count(*) FROM sucursales s WHERE s.negocio_id = n.id) AS num_sucursales,
+      (SELECT count(*) FROM usuario_negocios un WHERE un.negocio_id = n.id) AS num_usuarios,
+      n.checklist
+    FROM negocios n
+    ${where}
+    ORDER BY n.created_at DESC
+    LIMIT $${params.length - 1} OFFSET $${params.length}
+  `, params);
+  return rows;
+}
+
+export async function obtenerNegocioDetalleSuperadmin(negocioId) {
+  const negocio = await pool.query(`SELECT id, nombre, slug, estado, plan, checklist, created_at, updated_at FROM negocios WHERE id = $1`, [negocioId]);
+  if (!negocio.rows.length) return null;
+
+  const [usuarios, sucursales, terminales, integraciones, modulos, auditoria] = await Promise.all([
+    pool.query(`SELECT u.id, u.nombre, u.email, un.rol, un.activo, u.created_at FROM usuarios u JOIN usuario_negocios un ON un.usuario_id = u.id WHERE un.negocio_id = $1 ORDER BY u.created_at ASC`, [negocioId]),
+    pool.query(`SELECT id, nombre, activo, created_at FROM sucursales WHERE negocio_id = $1 ORDER BY created_at ASC`, [negocioId]),
+    // Nunca token_hash -- solo metadatos.
+    pool.query(`SELECT t.id, t.nombre, t.codigo, t.tipo, t.activo, (t.token_hash IS NOT NULL) AS credencial_emitida, s.nombre AS sucursal_nombre FROM terminales t JOIN sucursales s ON s.id = t.sucursal_id WHERE s.negocio_id = $1 ORDER BY t.created_at ASC`, [negocioId]),
+    // Nunca el identificador crudo completo -- enmascarado a los últimos 4 caracteres.
+    pool.query(`SELECT canal, nombre, activo, created_at, RIGHT(identificador, 4) AS identificador_enmascarado FROM integraciones_canal WHERE negocio_id = $1 ORDER BY created_at ASC`, [negocioId]),
+    pool.query(`SELECT modulo, estado, updated_at FROM negocio_modulos WHERE negocio_id = $1 ORDER BY modulo`, [negocioId]),
+    pool.query(`
+      SELECT a.id, a.accion, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at, u.nombre AS superadmin_nombre
+      FROM auditoria_plataforma a JOIN usuarios u ON u.id = a.superadmin_id
+      WHERE a.negocio_id = $1 ORDER BY a.created_at DESC LIMIT 20
+    `, [negocioId]),
+  ]);
+
+  return {
+    ...negocio.rows[0],
+    usuarios: usuarios.rows,
+    sucursales: sucursales.rows,
+    terminales: terminales.rows,
+    integraciones: integraciones.rows,
+    modulos: modulos.rows,
+    auditoriaReciente: auditoria.rows,
+  };
+}
+
+// Creación completa y transaccional de un negocio nuevo. Reutiliza
+// hashPassword (mismo mecanismo que crearUsuarioConPassword) -- nunca un
+// segundo camino para generar un hash. Si CUALQUIER paso falla, ROLLBACK
+// total: nunca queda un negocio sin sucursal, sin admin o sin membresía.
+export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropietario, emailAdmin, telefono, nombreSucursal, ciudad, plan, modulosIniciales, estadoInicial, superadminId }) {
+  const slugBase = slugify(slugDeseado || nombre);
+  if (!slugBase) {
+    const err = new Error('No se pudo generar un slug válido a partir del nombre'); err.code = 'SLUG_INVALIDO'; throw err;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: slugExistente } = await client.query('SELECT 1 FROM negocios WHERE slug = $1', [slugBase]);
+    if (slugExistente.length) {
+      const err = new Error('El slug ya está en uso'); err.code = 'SLUG_DUPLICADO'; throw err;
+    }
+
+    // Correo existente: identidad global (migración 006) -- nunca se
+    // vincula en silencio (mismo criterio que POST /api/admin/usuarios).
+    const emailNorm = emailAdmin.trim().toLowerCase();
+    const { rows: usuarioExistente } = await client.query('SELECT id FROM usuarios WHERE email = $1', [emailNorm]);
+    if (usuarioExistente.length) {
+      const err = new Error('Ya existe una cuenta con este correo. No se puede crear automáticamente desde aquí.'); err.code = 'EMAIL_EXISTENTE'; throw err;
+    }
+
+    const { rows: [negocio] } = await client.query(
+      `INSERT INTO negocios (nombre, slug, activo, estado, plan) VALUES ($1,$2,$3,$4,$5) RETURNING id, nombre, slug, estado, plan, created_at`,
+      [nombre, slugBase, estadoInicial === 'activo', estadoInicial, plan]
+    );
+
+    const { rows: [sucursal] } = await client.query(
+      `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,$2) RETURNING id, nombre`,
+      [negocio.id, nombreSucursal]
+    );
+
+    const hash = hashPassword(randomBytes(24).toString('hex')); // sin login todavía -- ver nota de invitación en el reporte
+    const { rows: [usuario] } = await client.query(
+      `INSERT INTO usuarios (negocio_id, nombre, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, nombre, email`,
+      [negocio.id, nombrePropietario, emailNorm, hash]
+    );
+    await client.query(
+      `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol) VALUES ($1,$2,'admin')`,
+      [usuario.id, negocio.id]
+    );
+
+    // Configuración base -- mismas claves que ya usa Nonna Maye (reutiliza
+    // el mecanismo existente de `configuracion`, no columnas nuevas).
+    const camposConfig = [
+      ['nombre', nombre], ['nombre_corto', nombre.slice(0, 20)],
+      ['ciudad', ciudad || ''], ['telefono', telefono || ''],
+    ];
+    for (const [clave, valor] of camposConfig) {
+      await client.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,$2,$3) ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $3`,
+        [negocio.id, clave, valor]
+      );
+    }
+
+    const checklistInicial = {
+      negocio_creado: true, administrador_creado: true, sucursal_creada: true,
+      datos_generales_completos: false, menu_cargado: false, usuarios_creados: false,
+      terminal_creada: false, impresion_probada: false, whatsapp_configurado: false,
+      rappi_configurado: false, pedido_prueba: false, listo_para_operar: false,
+    };
+    await client.query('UPDATE negocios SET checklist = $2 WHERE id = $1', [negocio.id, JSON.stringify(checklistInicial)]);
+
+    const modulosSet = new Set(modulosIniciales || []);
+    for (const modulo of MODULOS_VALIDOS) {
+      const estadoModulo = modulosSet.has(modulo) ? 'pendiente' : 'no_configurado';
+      await client.query(
+        `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)`,
+        [negocio.id, modulo, estadoModulo]
+      );
+    }
+
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'crear_negocio', negocioId: negocio.id, usuarioId: usuario.id,
+      estadoAnterior: null,
+      estadoNuevo: { nombre: negocio.nombre, slug: negocio.slug, estado: negocio.estado, plan: negocio.plan, adminEmail: emailNorm },
+      contexto: { sucursal: sucursal.nombre, modulosIniciales: [...modulosSet] },
+    }, client);
+
+    await client.query('COMMIT');
+    return { negocio, sucursal, usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email }, checklist: checklistInicial };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!e.code || (e.code !== 'SLUG_DUPLICADO' && e.code !== 'EMAIL_EXISTENTE' && e.code !== 'SLUG_INVALIDO')) {
+      console.error('[DB] Error crearNegocioCompleto:', e.message);
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function actualizarEstadoNegocioSuperadmin(negocioId, nuevoEstado, superadminId) {
+  if (!ESTADOS_NEGOCIO_VALIDOS.includes(nuevoEstado)) throw Object.assign(new Error('Estado inválido'), { code: 'ESTADO_INVALIDO' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id, nombre, estado, activo FROM negocios WHERE id = $1 FOR UPDATE', [negocioId]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const anterior = rows[0];
+    const nuevoActivo = nuevoEstado === 'activo'; // invariante: estado='activo' <=> activo=true (ver migración 011)
+    await client.query('UPDATE negocios SET estado = $2, activo = $3 WHERE id = $1', [negocioId, nuevoEstado, nuevoActivo]);
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_estado_negocio', negocioId,
+      estadoAnterior: { estado: anterior.estado, activo: anterior.activo },
+      estadoNuevo: { estado: nuevoEstado, activo: nuevoActivo },
+    }, client);
+    await client.query('COMMIT');
+    return { id: negocioId, estado: nuevoEstado, activo: nuevoActivo };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarEstadoNegocioSuperadmin:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function actualizarPlanNegocioSuperadmin(negocioId, nuevoPlan, superadminId) {
+  if (!PLANES_VALIDOS.includes(nuevoPlan)) throw Object.assign(new Error('Plan inválido'), { code: 'PLAN_INVALIDO' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id, plan FROM negocios WHERE id = $1 FOR UPDATE', [negocioId]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const anterior = rows[0];
+    await client.query('UPDATE negocios SET plan = $2 WHERE id = $1', [negocioId, nuevoPlan]);
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_plan_negocio', negocioId,
+      estadoAnterior: { plan: anterior.plan }, estadoNuevo: { plan: nuevoPlan },
+    }, client);
+    await client.query('COMMIT');
+    return { id: negocioId, plan: nuevoPlan };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarPlanNegocioSuperadmin:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// modulos: { [modulo]: estado } -- solo se tocan las claves presentes, el
+// resto de módulos del negocio queda intacto.
+export async function actualizarModulosNegocioSuperadmin(negocioId, modulos, superadminId) {
+  const entradas = Object.entries(modulos || {});
+  for (const [modulo, estado] of entradas) {
+    if (!MODULOS_VALIDOS.includes(modulo)) throw Object.assign(new Error(`Módulo inválido: ${modulo}`), { code: 'MODULO_INVALIDO' });
+    if (!ESTADOS_MODULO_VALIDOS.includes(estado)) throw Object.assign(new Error(`Estado de módulo inválido: ${estado}`), { code: 'ESTADO_MODULO_INVALIDO' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: negocioRows } = await client.query('SELECT id FROM negocios WHERE id = $1', [negocioId]);
+    if (!negocioRows.length) { await client.query('ROLLBACK'); return null; }
+
+    const { rows: anteriorRows } = await client.query('SELECT modulo, estado FROM negocio_modulos WHERE negocio_id = $1', [negocioId]);
+    const anteriorMapa = Object.fromEntries(anteriorRows.map(r => [r.modulo, r.estado]));
+
+    for (const [modulo, estado] of entradas) {
+      await client.query(
+        `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)
+         ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = $3`,
+        [negocioId, modulo, estado]
+      );
+    }
+
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_modulos_negocio', negocioId,
+      estadoAnterior: entradas.reduce((acc, [m]) => ({ ...acc, [m]: anteriorMapa[m] ?? null }), {}),
+      estadoNuevo: Object.fromEntries(entradas),
+    }, client);
+
+    await client.query('COMMIT');
+    return { id: negocioId, modulos: Object.fromEntries(entradas) };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarModulosNegocioSuperadmin:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function actualizarChecklistNegocioSuperadmin(negocioId, cambiosChecklist, superadminId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id, checklist FROM negocios WHERE id = $1 FOR UPDATE', [negocioId]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const anterior = rows[0].checklist || {};
+    const nuevo = { ...anterior, ...cambiosChecklist };
+    await client.query('UPDATE negocios SET checklist = $2 WHERE id = $1', [negocioId, JSON.stringify(nuevo)]);
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_checklist_negocio', negocioId,
+      estadoAnterior: anterior, estadoNuevo: nuevo,
+    }, client);
+    await client.query('COMMIT');
+    return { id: negocioId, checklist: nuevo };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarChecklistNegocioSuperadmin:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function obtenerAuditoriaPlataforma({ limit = 50, offset = 0, negocioId = null } = {}) {
+  const limitSeguro = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  const offsetSeguro = Math.max(Number(offset) || 0, 0);
+  const params = [];
+  let where = '';
+  if (negocioId) { params.push(negocioId); where = `WHERE a.negocio_id = $${params.length}`; }
+  params.push(limitSeguro, offsetSeguro);
+  const { rows } = await pool.query(`
+    SELECT a.id, a.accion, a.negocio_id, n.nombre AS negocio_nombre, a.usuario_id, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at, u.nombre AS superadmin_nombre
+    FROM auditoria_plataforma a
+    JOIN usuarios u ON u.id = a.superadmin_id
+    LEFT JOIN negocios n ON n.id = a.negocio_id
+    ${where}
+    ORDER BY a.created_at DESC
+    LIMIT $${params.length - 1} OFFSET $${params.length}
+  `, params);
+  return rows;
+}
