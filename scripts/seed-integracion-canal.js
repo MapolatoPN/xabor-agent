@@ -5,11 +5,11 @@
 // webhook/llamada entrante fallará cerrado (rechazado, ver whatsapp-meta.js
 // y voice.js) y el canal en vivo de Nonna Maye se rompería en producción.
 //
-// Nunca imprime tokens ni secretos -- el identificador de canal
-// (phone_number_id de Meta, número de Twilio) NO es un secreto según la
-// migración 008 ("Nunca un secreto ... esta tabla solo resuelve a qué
-// negocio pertenece este identificador"), así que sí se registra en el log
-// para poder confirmar visualmente que se mapeó el número correcto.
+// Nunca imprime identificadores completos en el log -- aunque el
+// identificador de canal (phone_number_id de Meta, número de Twilio) no es
+// técnicamente un secreto según la migración 008, se enmascara de todos
+// modos (mismo criterio que las consultas de prevalidación) para no dejarlo
+// expuesto en logs de deploy.
 //
 // Uso (canal whatsapp -- IDENTIFICADOR se toma automáticamente de
 // META_PHONE_NUMBER_ID si ya está configurado en el entorno del servicio,
@@ -98,7 +98,10 @@ try {
   );
   const fila = resultado[0];
 
-  console.log(`[seed-integracion-canal] ✅ ${fila.fue_insertado ? 'Registrado' : 'Actualizado'}: canal='${canal}' identificador='${identificador}' → negocio='${negocio.nombre}' (${negocio.slug}, id=${negocio.id})`);
+  const idEnmascarado = identificador.length > 5
+    ? `${identificador.slice(0,3)}${'*'.repeat(identificador.length - 5)}${identificador.slice(-2)}`
+    : '*'.repeat(identificador.length);
+  console.log(`[seed-integracion-canal] ✅ ${fila.fue_insertado ? 'Registrado' : 'Actualizado'}: canal='${canal}' identificador='${idEnmascarado}' → negocio='${negocio.nombre}' (${negocio.slug}, id=${negocio.id})`);
   console.log(`[seed-integracion-canal] integracionId=${fila.id}`);
 } catch (e) {
   abortar(e.message);
