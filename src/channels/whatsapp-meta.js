@@ -349,7 +349,12 @@ async function procesarConClaude(telefono, texto, nombreMeta) {
       } else {
         emitirPedido(pedido);
       }
-      await guardarPedido(telefono, resultado.orden);
+      // pedido.negocioId ya viene resuelto por registrarPedido() (fallback
+      // temporal a Nonna Maye vía _negocioFallbackId, o null si ese
+      // fallback no pudo resolverse) -- nunca se inventa aquí un valor
+      // distinto. resultado.orden en sí nunca trae negocioId (registrarPedido
+      // no lo muta), por eso se toma de pedido, no de resultado.orden.
+      await guardarPedido(telefono, resultado.orden, pedido.negocioId);
       if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
