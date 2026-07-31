@@ -1,14 +1,73 @@
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion } from '../services/database.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
+// de un archivo estático compartido por todos los negocios -- viven en
+// configuracion.reglas_atencion, por negocio_id (JSON validado en
+// aplicación, editable sin deploy). REGLAS_POR_DEFECTO es la plantilla
+// de arranque segura para cualquier negocio nuevo (Alora incluida) que
+// todavía no haya configurado las suyas -- nunca hereda las reglas
+// operativas reales de Nonna Maye por accidente. Los valores de Nonna
+// Maye se preservan explícitamente vía la migración 017 (siembra desde
+// el antiguo data/rules.json hacia su propia fila de configuracion).
+const REGLAS_POR_DEFECTO = {
+  restaurante: 'Xabor',
+  horarios: {
+    lunes:     { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    martes:    { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    miercoles: { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    jueves:    { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    viernes:   { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    sabado:    { abierto: true,  apertura: '09:00', cierre: '20:00' },
+    domingo:   { abierto: false, apertura: null,    cierre: null    },
+  },
+  pedidos: {
+    modalidades: ['recoger en tienda', 'entrega a domicilio'],
+    tiempo_preparacion_minutos: 20,
+    pedido_minimo_entrega: 0,
+    costo_envio: 0,
+    pago_aceptado: ['efectivo', 'terminal (tarjeta presente)', 'enlace de pago'],
+  },
+  cierres_especiales: [],
+  promociones: [],
+  politicas: [],
+};
 
-function cargarReglas() {
-  return JSON.parse(
-    readFileSync(join(__dirname, '../data/rules.json'), 'utf-8')
-  );
+// Validación mínima de estructura -- exige exactamente los campos que
+// construirSystemPrompt/obtenerEstadoRestaurante consumen (sección 5 del
+// plan de Fase A). Cualquier campo faltante o de tipo incorrecto hace
+// que se use REGLAS_POR_DEFECTO completo -- nunca un objeto a medias que
+// podría romper el resto del prompt.
+function validarEstructuraReglas(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (!obj.horarios || typeof obj.horarios !== 'object') return false;
+  const diasRequeridos = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo'];
+  for (const dia of diasRequeridos) {
+    if (!obj.horarios[dia] || typeof obj.horarios[dia].abierto !== 'boolean') return false;
+  }
+  if (!obj.pedidos || typeof obj.pedidos !== 'object') return false;
+  if (typeof obj.pedidos.costo_envio !== 'number') return false;
+  if (typeof obj.pedidos.pedido_minimo_entrega !== 'number') return false;
+  if (!Array.isArray(obj.cierres_especiales)) return false;
+  if (!Array.isArray(obj.promociones)) return false;
+  if (!Array.isArray(obj.politicas)) return false;
+  return true;
+}
+
+// Fase A: negocioId obligatorio. Sin él, o si el JSON guardado está
+// corrupto/incompleto, se usa el default seguro -- nunca las reglas de
+// otro negocio, nunca un objeto parcial que rompa el prompt.
+async function cargarReglas(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return REGLAS_POR_DEFECTO;
+  try {
+    const cfg = await obtenerConfiguracion(negocioId);
+    const crudo = cfg.reglas_atencion;
+    if (!crudo) return REGLAS_POR_DEFECTO;
+    const parsed = JSON.parse(crudo);
+    return validarEstructuraReglas(parsed) ? parsed : REGLAS_POR_DEFECTO;
+  } catch (e) {
+    console.error(`[Prompts] Error cargando reglas de negocio ${negocioId}, usando default:`, e.message);
+    return REGLAS_POR_DEFECTO;
+  }
 }
 
 function formatearMenu(categorias) {
@@ -128,11 +187,17 @@ function obtenerEstadoRestaurante(reglas) {
 // omitido -- en ese caso rwCfg queda null y la sección de Rewards del
 // prompt se omite por completo (ver `${rwActivo ? ... : ''}` más abajo).
 export async function construirSystemPrompt(clienteCtx = null, canal = null, negocioId = null) {
-  const reglas = cargarReglas();
-  const categorias = await obtenerMenuCompleto();
+  // Fase A: las 4 fuentes de contenido del prompt ahora reciben
+  // negocioId explícito -- antes se llamaban sin argumento y caían al
+  // negocio hardcodeado (o, en el caso de overrides, no tenían filtro
+  // alguno). Sin negocioId válido, cada una devuelve su propio default
+  // seguro (reglas: REGLAS_POR_DEFECTO; menú/overrides/config: vacíos) --
+  // nunca el contenido de otro negocio.
+  const reglas = await cargarReglas(negocioId);
+  const categorias = await obtenerMenuCompleto(negocioId);
   const estado = obtenerEstadoRestaurante(reglas);
-  const overrides = await obtenerOverridesActivos();
-  const cfg = await obtenerConfiguracion().catch(() => ({}));
+  const overrides = await obtenerOverridesActivos(negocioId);
+  const cfg = await obtenerConfiguracion(negocioId).catch(() => ({}));
   const nombreNegocio = cfg.nombre || 'Restaurante Xabor';
   const nombreCorto   = cfg.nombre_corto || 'Xabor';
   const direccion     = cfg.direccion ? `${cfg.direccion}, ${cfg.ciudad || ''}` : 'Libramiento Manuel Perez Trevino 2416, Local 4, Piedras Negras, Coahuila';

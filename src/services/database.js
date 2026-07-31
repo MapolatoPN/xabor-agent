@@ -1557,23 +1557,34 @@ export async function aprobarSugerencias(id, indices) {
   }
 }
 
-export async function guardarOverride(seccion, contenido) {
+// Fase A (aislamiento de WhatsApp): negocioId obligatorio -- desde la
+// migración 016, prompt_overrides.negocio_id es NOT NULL. Sin un
+// negocioId válido, nunca se guarda un override "huérfano" que
+// terminaría filtrándose al prompt de cualquier negocio.
+export async function guardarOverride(seccion, contenido, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.error('[DB] guardarOverride: negocioId inválido u omitido — rechazado, no se guarda sin negocio');
+    return;
+  }
   try {
-    // Desactivar overrides anteriores de la misma sección
-    await pool.query(`UPDATE prompt_overrides SET activo = FALSE WHERE seccion = $1`, [seccion]);
+    // Desactivar overrides anteriores de la misma sección, SOLO de este negocio
+    await pool.query(`UPDATE prompt_overrides SET activo = FALSE WHERE seccion = $1 AND negocio_id = $2`, [seccion, negocioId.trim()]);
     await pool.query(`
-      INSERT INTO prompt_overrides (seccion, contenido) VALUES ($1, $2)
-    `, [seccion, contenido]);
+      INSERT INTO prompt_overrides (seccion, contenido, negocio_id) VALUES ($1, $2, $3)
+    `, [seccion, contenido, negocioId.trim()]);
   } catch (e) {
     console.error('[DB] Error guardarOverride:', e.message);
   }
 }
 
-export async function obtenerOverridesActivos() {
+// Fase A: negocioId obligatorio -- sin él, nunca se devuelven overrides
+// de ningún negocio (fail-closed, nunca cae a "todos" ni a Nonna Maye).
+export async function obtenerOverridesActivos(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   try {
     const result = await pool.query(`
-      SELECT seccion, contenido FROM prompt_overrides WHERE activo = TRUE
-    `);
+      SELECT seccion, contenido FROM prompt_overrides WHERE activo = TRUE AND negocio_id = $1
+    `, [negocioId.trim()]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerOverridesActivos:', e.message);
@@ -1597,15 +1608,22 @@ export async function obtenerMensajesRango(desde, hasta) {
 }
 
 // ─── Obtener últimos pedidos de un cliente ────────────────────────────────────
-export async function obtenerUltimosPedidos(telefono, limite = 3) {
+// Fase A (aislamiento de WhatsApp): negocioId obligatorio -- esta consulta
+// alimenta directamente el contexto que se inyecta al bot (clienteCtx.pedidos
+// en prompts.js). Sin filtrar por negocio_id (columna ya agregada por la
+// migración 007, pero nunca antes usada en esta consulta), el bot de
+// cualquier negocio veía el historial de pedidos del mismo teléfono en
+// TODOS los negocios.
+export async function obtenerUltimosPedidos(telefono, negocioId, limite = 3) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   try {
     const result = await pool.query(`
       SELECT items, total, modalidad, created_at
       FROM pedidos
-      WHERE telefono = $1
+      WHERE telefono = $1 AND negocio_id = $2
       ORDER BY created_at DESC
-      LIMIT $2
-    `, [telefono, limite]);
+      LIMIT $3
+    `, [telefono, negocioId.trim(), limite]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerUltimosPedidos:', e.message);
