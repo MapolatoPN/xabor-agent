@@ -2010,7 +2010,23 @@ function mostrarTab(tab) {
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      cargarMenuEditor();
-  if (tab === 'config')    { renderConfigForm(); cargarIntegracionesPanel(); cargarInfoCertSAT(); }
+  // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
+  // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
+  // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
+  // gateado con requireModulo('facturacion')): si se llama para un negocio
+  // sin ese módulo, el interceptor de 403 de apiFetch dispara un aviso
+  // aunque el usuario solo quería ver Configuración general -- se evita
+  // llamando solo cuando el módulo está realmente habilitado.
+  if (tab === 'config') {
+    renderConfigForm();
+    cargarIntegracionesPanel();
+    if (MODULOS.includes('facturacion')) {
+      cargarInfoCertSAT();
+    } else {
+      const satEl = document.getElementById('sat-cert-status');
+      if (satEl) satEl.innerHTML = '<span style="color:#888;">Facturación no está habilitada para este negocio.</span>';
+    }
+  }
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
   if (tab === 'rewards')  cargarRewards();
