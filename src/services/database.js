@@ -943,16 +943,25 @@ export async function obtenerPedidosEntregados(limite = 100, negocioId) {
 }
 
 // ─── Cancelar pedido activo ────────────────────────────────────────────────────
-export async function cancelarPedidoActivo(folio, motivo) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, mutaciones por folio).
+// El folio por sí solo nunca autoriza: la fila solo se toca si además
+// pertenece al negocio de la sesión. Un folio ajeno se comporta idéntico
+// a un folio inexistente (false), para que la ruta responda 404 sin
+// revelar cuál de los dos casos ocurrió.
+export async function cancelarPedidoActivo(folio, motivo, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] cancelarPedidoActivo: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
+    const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
       SET estado = 'cancelado',
           datos  = jsonb_set(datos, '{cancelacion}', $2::jsonb),
           updated_at = NOW()
-      WHERE folio = $1 AND estado NOT IN ('entregado', 'cancelado')
-    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString() })]);
-    return true;
+      WHERE folio = $1 AND negocio_id = $3 AND estado NOT IN ('entregado', 'cancelado')
+    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString() }), negocioId.trim()]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error cancelarPedidoActivo:', e.message);
     return false;
@@ -960,15 +969,20 @@ export async function cancelarPedidoActivo(folio, motivo) {
 }
 
 // ─── Registrar devolución en pedido entregado ─────────────────────────────────
-export async function registrarDevolucion(folio, monto, motivo) {
+// negocioId OBLIGATORIO — mismo criterio que cancelarPedidoActivo.
+export async function registrarDevolucion(folio, monto, motivo, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] registrarDevolucion: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
+    const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
       SET datos = jsonb_set(datos, '{devolucion}', $2::jsonb),
           updated_at = NOW()
-      WHERE folio = $1 AND estado = 'entregado'
-    `, [folio, JSON.stringify({ monto: parseFloat(monto), motivo, timestamp: new Date().toISOString() })]);
-    return true;
+      WHERE folio = $1 AND negocio_id = $3 AND estado = 'entregado'
+    `, [folio, JSON.stringify({ monto: parseFloat(monto), motivo, timestamp: new Date().toISOString() }), negocioId.trim()]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error registrarDevolucion:', e.message);
     return false;
@@ -1044,14 +1058,19 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
   }
 }
 
-export async function actualizarFormaPago(folio, formaPago) {
+// negocioId OBLIGATORIO — mismo criterio que cancelarPedidoActivo (Auditoría P0).
+export async function actualizarFormaPago(folio, formaPago, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] actualizarFormaPago: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
+    const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
       SET datos = jsonb_set(datos, '{forma_pago}', $2::jsonb), updated_at = NOW()
-      WHERE folio = $1
-    `, [folio, JSON.stringify(formaPago)]);
-    return true;
+      WHERE folio = $1 AND negocio_id = $3
+    `, [folio, JSON.stringify(formaPago), negocioId.trim()]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error actualizarFormaPago:', e.message);
     return false;
@@ -1255,11 +1274,17 @@ export async function confirmarPagoPedido(folio) {
   }
 }
 
-export async function obtenerPedidoActivoPorFolio(folio) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0). Un folio de otro
+// negocio se comporta idéntico a un folio inexistente (null).
+export async function obtenerPedidoActivoPorFolio(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidoActivoPorFolio: negocioId inválido u omitido — rechazado, sin consulta global');
+    return null;
+  }
   try {
     const result = await pool.query(
-      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND estado != 'entregado'`,
-      [folio]
+      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 AND estado != 'entregado'`,
+      [folio, negocioId.trim()]
     );
     return result.rows[0]?.datos || null;
   } catch (e) {
@@ -1268,20 +1293,29 @@ export async function obtenerPedidoActivoPorFolio(folio) {
   }
 }
 
-// Busca en activos Y en programados — útil para enlace de pago anticipado
-export async function obtenerPedidoPorFolioAmplio(folio) {
+// Busca en activos Y en programados — útil para enlace de pago anticipado.
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, Categoría C: un
+// cliente de WhatsApp de un negocio nunca debe poder consultar el folio de
+// otro escribiéndolo a mano). Un folio de otro negocio se comporta
+// idéntico a un folio inexistente (null) en ambas tablas.
+export async function obtenerPedidoPorFolioAmplio(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidoPorFolioAmplio: negocioId inválido u omitido — rechazado, sin consulta global');
+    return null;
+  }
+  const negocioIdNorm = negocioId.trim();
   try {
     // Primero en activos
     const activo = await pool.query(
-      `SELECT datos, 'activo' AS origen FROM pedidos_activos WHERE folio = $1 AND estado != 'entregado'`,
-      [folio]
+      `SELECT datos, 'activo' AS origen FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 AND estado != 'entregado'`,
+      [folio, negocioIdNorm]
     );
     if (activo.rows[0]) return { ...activo.rows[0].datos, _origen: 'activo' };
 
     // Si no, en programados
     const prog = await pool.query(
-      `SELECT datos, programado_para FROM pedidos_programados WHERE folio = $1 AND activado = FALSE`,
-      [folio]
+      `SELECT datos, programado_para FROM pedidos_programados WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
+      [folio, negocioIdNorm]
     );
     if (prog.rows[0]) return { ...prog.rows[0].datos, _origen: 'programado', programado_para: prog.rows[0].programado_para };
 
@@ -1383,13 +1417,18 @@ export async function marcarPedidoProgramadoActivado(folio) {
   }
 }
 
-export async function obtenerPedidosProgramadosPendientes() {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, Categoría A).
+export async function obtenerPedidosProgramadosPendientes(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidosProgramadosPendientes: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const result = await pool.query(`
       SELECT folio, datos, programado_para FROM pedidos_programados
-      WHERE activado = FALSE
+      WHERE activado = FALSE AND negocio_id = $1
       ORDER BY programado_para ASC
-    `);
+    `, [negocioId.trim()]);
     return result.rows;
   } catch (e) {
     console.error('[DB] Error obtenerPedidosProgramadosPendientes:', e.message);
@@ -2094,34 +2133,53 @@ export async function obtenerPushRepartidores(negocioId) {
   } catch (e) { return []; }
 }
 
-export async function asignarRepartidor(folio, repartidorId, nombreRepartidor) {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, Categoría B). Un
+// repartidor de un negocio no puede aceptar el folio de otro -- se
+// comporta idéntico a "ya lo tomó otro" (false), nunca revela ni modifica
+// el pedido ajeno.
+export async function asignarRepartidor(folio, repartidorId, nombreRepartidor, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] asignarRepartidor: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
+    return false;
+  }
   try {
-    // Asignación atómica — solo si aún no tiene repartidor
+    // Asignación atómica — solo si aún no tiene repartidor y el pedido es
+    // del mismo negocio que el repartidor autenticado
     const result = await pool.query(
       `UPDATE pedidos_activos
        SET datos = jsonb_set(jsonb_set(datos, '{repartidor_id}', $2::jsonb), '{repartidor_nombre}', $3::jsonb),
            updated_at = NOW()
        WHERE folio = $1
+         AND negocio_id = $4
          AND (datos->>'repartidor_id') IS NULL
          AND estado NOT IN ('entregado','cancelado')
        RETURNING folio`,
-      [folio, JSON.stringify(repartidorId), JSON.stringify(nombreRepartidor)]
+      [folio, JSON.stringify(repartidorId), JSON.stringify(nombreRepartidor), negocioId.trim()]
     );
-    return result.rows.length > 0; // true = asignado, false = ya lo tomó otro
+    return result.rows.length > 0; // true = asignado, false = ya lo tomó otro (o es de otro negocio)
   } catch (e) {
     console.error('[DB] Error asignarRepartidor:', e.message);
     return false;
   }
 }
 
-export async function obtenerPedidosParaRepartidor() {
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, Categoría A). El
+// llamador lo deriva del propio repartidor autenticado
+// (req.repartidor.negocio_id), nunca de un valor enviado aparte.
+export async function obtenerPedidosParaRepartidor(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidosParaRepartidor: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const r = await pool.query(
       `SELECT folio, datos, estado FROM pedidos_activos
        WHERE estado IN ('nuevo','en_preparacion','listo')
          AND datos->>'modalidad' = 'entrega a domicilio'
          AND (datos->>'repartidor_id') IS NULL
-       ORDER BY created_at ASC`
+         AND negocio_id = $1
+       ORDER BY created_at ASC`,
+      [negocioId.trim()]
     );
     return r.rows;
   } catch (e) { return []; }

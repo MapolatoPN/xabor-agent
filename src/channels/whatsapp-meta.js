@@ -196,7 +196,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     const folioNum   = matchFolio?.[1] ?? matchFolio?.[2];
     if (folioNum && process.env.CLIP_API_KEY) {
       const folio    = `XAB-${folioNum.padStart(4, '0')}`;
-      const pedidoDB = await obtenerPedidoPorFolioAmplio(folio);
+      const pedidoDB = await obtenerPedidoPorFolioAmplio(folio, negocioId);
       console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
@@ -345,7 +345,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
         // Quitar del panel activo — se activará automáticamente 1h antes
         const { eliminarPedido } = await import('../orders/orderManager.js');
-        await eliminarPedido(pedido.id);
+        await eliminarPedido(pedido.id, pedido.negocioId);
         console.log(`[WA] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
         // Confirmación al cliente con folio y hora — operación crítica
         try {

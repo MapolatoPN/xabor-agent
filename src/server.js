@@ -1435,22 +1435,25 @@ app.delete('/pedidos/:id', requireAuthSeguro, async (req, res) => {
   if (!pin || pin !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
   }
-  const ok = await eliminarPedido(req.params.id);
+  const ok = await eliminarPedido(req.params.id, req.negocioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   res.json({ ok: true });
 });
 
 // Actualizar forma de pago — solo admin
+// negocioId OBLIGATORIO (Auditoría P0, Categoría B): un folio de otro
+// negocio responde 404, idéntico a un folio inexistente -- nunca revela
+// cuál de los dos casos ocurrió, nunca modifica nada ajeno.
 app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, async (req, res) => {
   const { folio } = req.params;
   const { forma_pago } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
-  const ok = await actualizarFormaPago(folio, forma_pago);
-  if (!ok) return res.status(500).json({ error: 'No se pudo actualizar' });
+  const ok = await actualizarFormaPago(folio, forma_pago, req.negocioId);
+  if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   // Actualizar en memoria si el pedido sigue activo
   const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
   const p = obtenerPedidoPorId(folio);
-  if (p) p.forma_pago = forma_pago;
+  if (p && p.negocioId === req.negocioId) p.forma_pago = forma_pago;
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
 });
@@ -1460,10 +1463,10 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, async (req, re
   const { folio } = req.params;
   const { motivo } = req.body;
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
-  const ok = await cancelarPedidoActivo(folio, motivo.trim());
-  if (!ok) return res.status(500).json({ error: 'No se pudo cancelar' });
+  const ok = await cancelarPedidoActivo(folio, motivo.trim(), req.negocioId);
+  if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   // Quitar del panel en tiempo real
-  await eliminarPedido(folio).catch(() => {});
+  await eliminarPedido(folio, req.negocioId).catch(() => {});
   broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
   console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
   // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
@@ -1479,8 +1482,8 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, async (req, 
   const { monto, motivo } = req.body;
   if (!monto || parseFloat(monto) <= 0) return res.status(400).json({ error: 'Monto inválido' });
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
-  const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim());
-  if (!ok) return res.status(500).json({ error: 'No se pudo registrar la devolución' });
+  const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim(), req.negocioId);
+  if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   broadcastNegocio(req.negocioId, { tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
   console.log(`[Panel] Devolución ${folio}: $${monto} — ${motivo}`);
   res.json({ ok: true });
@@ -1497,7 +1500,7 @@ app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, async (req, res
   const { obtenerPedidoActivoPorFolio } = await import('./services/database.js');
   const { obtenerPedidosEntregados: _ent } = await import('./services/database.js');
   // Buscar en activos primero, luego en entregados
-  let pedidoDatos = await obtenerPedidoActivoPorFolio(folio);
+  let pedidoDatos = await obtenerPedidoActivoPorFolio(folio, req.negocioId);
   if (!pedidoDatos) {
     const ents = await _ent(500, req.negocioId);
     const found = ents.find(p => p.id === folio || p.folio === folio);
@@ -2323,9 +2326,13 @@ async function requireRepartidor(req, res, next) {
 }
 
 // Pedidos disponibles para tomar
+// negocioId sale del propio repartidor autenticado (Auditoría P0, Categoría
+// A) -- nunca de un valor enviado aparte. Sin negocio_id resuelto en el
+// repartidor, no se listan pedidos disponibles (fail closed).
 app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
   const [disponibles, misPedidos] = await Promise.all([
-    obtenerPedidosParaRepartidor(),
+    obtenerPedidosParaRepartidor(req.repartidor.negocio_id),
     obtenerPedidosAsignadosARepartidor(req.repartidor.id)
   ]);
   const mapear = p => ({
@@ -2351,7 +2358,8 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
 // ya no está en memoria), se omite el broadcast en vez de mandarlo global.
 app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
-  const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre);
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre, req.repartidor.negocio_id);
   if (!asignado) return res.status(409).json({ error: 'Este pedido ya fue tomado por otro repartidor' });
   const pedido = obtenerPedidoPorId(folio);
   if (pedido?.negocioId) {
@@ -2379,17 +2387,17 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
 });
 
 // Repartidor marca pedido como entregado desde su celular
-// ⚠ PENDIENTE DE SEGURIDAD: requireRepartidor autentica por token
-// individual del repartidor (SELECT * FROM repartidores WHERE token=$1),
-// no por sesión de negocio -- y repartidores.negocio_id nunca se puebla
-// hoy al registrar un repartidor (fuera del alcance de esta tarea, vive
-// en whatsapp-meta.js). Sin un negocioId real y confiable que derivar,
-// se usa actualizarEstadoPedidoLegacySinNegocio en vez de inventar uno o
-// usar Nonna Maye como relleno. Conserva exactamente el comportamiento
-// previo a esta tarea -- ver diagnóstico completo en orderManager.js.
+// negocioId (Auditoría P0, Categoría B): repartidores.negocio_id ya se
+// puebla al registrar (incidente P0 principal), así que este endpoint
+// pasó de actualizarEstadoPedidoLegacySinNegocio (sin verificar dueño) a
+// la función segura actualizarEstadoPedido, que rechaza un folio de otro
+// negocio exactamente igual que uno inexistente. Sin negocio_id resuelto
+// en el repartidor (registro público sin sesión, caso residual), se
+// falla cerrado en vez de usar la función insegura.
 app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
-  const pedido = actualizarEstadoPedidoLegacySinNegocio(folio, 'entregado');
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id);
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
   // Este broadcast() directo se queda legado a propósito (misma razón que
   // el comentario de arriba: sin req.negocioId real). No es una fuga real:
@@ -2434,7 +2442,19 @@ app.get('/api/admin/repartidores', requireAdminSeguro, async (req, res) => {
 });
 
 // Actividad de repartidores por período — hoy / ayer / antier / semana
+// negocioId OBLIGATORIO — falla cerrado (Auditoría P0, Categoría A). Antes
+// consultaba pedidos_activos sin filtrar por negocio en absoluto -- fuga
+// confirmada (cualquier sesión veía folios, clientes, direcciones y
+// montos reales de todos los negocios). Payload recortado: el frontend
+// (panel/index.html) nunca lee el teléfono en esta vista, así que se deja
+// de mandar.
 app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(403).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  if (!(await negocioEstaActivo(req.negocioId))) {
+    return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
+  }
   try {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
     const tz = 'America/Matamoros';
@@ -2456,8 +2476,9 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) =
       WHERE ${whereDate}
         AND datos->>'modalidad' ILIKE '%domicilio%'
         AND (datos->>'canal') IS DISTINCT FROM 'rappi'
+        AND negocio_id = $1
       ORDER BY created_at DESC
-    `);
+    `, [req.negocioId]);
 
     // Agrupar por repartidor (o "sin_asignar" si no tiene)
     const porRep = {};
@@ -2469,7 +2490,6 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, async (req, res) =
         folio: p.folio,
         estado: p.estado,
         cliente: p.datos?.cliente?.nombre,
-        telefono: p.datos?.cliente?.telefono,
         calle: p.datos?.cliente?.calle,
         colonia: p.datos?.cliente?.colonia,
         entre_calles: p.datos?.cliente?.entre_calles,
@@ -2504,6 +2524,8 @@ app.get('/api/admin/repartidores/candidatos', requireAdminSeguro, async (req, re
 });
 
 // DEBUG TEMPORAL — diagnóstico de un pedido en pedidos_activos
+// negocioId OBLIGATORIO (Auditoría P0, Categoría B): mismo criterio que
+// las demás rutas por folio — un folio de otro negocio responde 404.
 app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, async (req, res) => {
   const { rows } = await pool.query(`
     SELECT folio, estado, created_at,
@@ -2512,9 +2534,10 @@ app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, async (req, res) =
            datos->>'repartidor_nombre' AS repartidor_nombre,
            DATE(created_at AT TIME ZONE 'America/Matamoros') AS fecha_mx,
            (NOW() AT TIME ZONE 'America/Matamoros')::date AS hoy_mx
-    FROM pedidos_activos WHERE folio = $1
-  `, [req.params.folio]).catch(e => ({ rows: [], error: e.message }));
-  res.json(rows[0] || { error: 'no encontrado' });
+    FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2
+  `, [req.params.folio, req.negocioId]).catch(e => ({ rows: [], error: e.message }));
+  if (!rows[0]) return res.status(404).json({ error: 'no encontrado' });
+  res.json(rows[0]);
 });
 
 app.post('/api/admin/reporte-diario/enviar', requireAdminSeguro, async (req, res) => {
@@ -2941,7 +2964,7 @@ async function activarPedidosProgramados() {
 
 // Endpoint para que el panel liste los pedidos programados pendientes
 app.get('/api/pedidos-programados', requireAuthSeguro, async (req, res) => {
-  const lista = await obtenerPedidosProgramadosPendientes();
+  const lista = await obtenerPedidosProgramadosPendientes(req.negocioId);
   res.json(lista.map(r => ({
     folio: r.folio,
     programado_para: r.programado_para,

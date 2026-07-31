@@ -198,7 +198,7 @@ export function setupVoiceWebSocket(wssVoice) {
             if (resultado.orden.programado_para) {
               // Pedido programado: guardar aparte, no emitir al panel todavía
               await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
-              await eliminarPedido(pedido.id);
+              await eliminarPedido(pedido.id, pedido.negocioId);
               console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
             } else {
               emitirPedido(pedido);

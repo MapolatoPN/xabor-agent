@@ -288,16 +288,29 @@ export function agregarPedidoAMemoria(pedido) {
   }
 }
 
-export async function eliminarPedido(id) {
+// negocioId OBLIGATORIO y estricto (Auditoría P0, mutaciones por folio) —
+// mismo criterio que actualizarEstadoPedido: un folio de otro negocio se
+// comporta idéntico a un folio inexistente (false), nunca se revela ni se
+// toca. El único llamador que legítimamente no tiene negocioId de sesión
+// (activación de pedidos programados, servidor mismo) sigue funcionando
+// porque conoce el pedido.negocioId real de antemano.
+export async function eliminarPedido(id, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn(`[OrderManager] eliminarPedido: negocioId inválido u omitido — folio=${id}, rechazado`);
+    return false;
+  }
+  const negocioIdNorm = negocioId.trim();
   const idx = pedidos.findIndex(p => p.id === id);
   if (idx === -1) return false;
   const pedido = pedidos[idx]; // capturado ANTES del splice, para conservar negocioId
+
+  if (pedido.negocioId !== negocioIdNorm) {
+    console.warn(`[OrderManager] eliminarPedido: acceso cruzado bloqueado — folio=${id} negocio_sesion=${negocioIdNorm}`);
+    return false;
+  }
+
   pedidos.splice(idx, 1);
   await eliminarPedidoDB(id);
-  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
-    if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id });
-  } else {
-    console.error(`[OrderManager] eliminarPedido: pedido ${id} sin negocioId — no se emite (fail closed)`);
-  }
+  if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id });
   return true;
 }
