@@ -8,12 +8,31 @@ import {
   guardarSugerencias,
   obtenerSugerenciasPendientes,
   aprobarSugerencias,
-  guardarOverride
+  guardarOverride,
+  obtenerNegocioIdPorSlug,
+  obtenerCredencialesWhatsappNegocio
 } from './database.js';
 import { enviarMensaje } from '../channels/whatsapp-meta.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MARIO_TELEFONO = process.env.MARIO_TELEFONO || '528781091115';
+
+// Fase A (aislamiento de WhatsApp): analizarSemana() es un job programado
+// (no dispara desde el webhook de ningún negocio específico) que hoy
+// analiza TODAS las conversaciones del sistema sin distinguir negocio
+// (obtenerMensajesRango no filtra por negocio_id -- deuda técnica
+// preexistente, fuera de alcance de esta fase) y le manda el reporte
+// semanal a Mario, el dueño de la plataforma. Al no tener un negocio de
+// origen real, se resuelve explícitamente el de Nonna Maye -- hoy es el
+// único negocio con conversaciones reales, así que el reporte sigue
+// siendo exacto; el día que exista análisis multi-negocio real, este
+// job necesita rediseñarse (reportes por negocio, no uno solo global) --
+// documentado como pendiente, no resuelto a medias aquí.
+async function resolverCredencialesAvisoPlataforma() {
+  const negocioId = await obtenerNegocioIdPorSlug('nonna-maye');
+  if (!negocioId) return null;
+  return obtenerCredencialesWhatsappNegocio(negocioId);
+}
 
 // ─── Agrupar mensajes por conversación (teléfono) ────────────────────────────
 function agruparConversaciones(mensajes) {
@@ -86,9 +105,16 @@ export async function analizarSemana() {
 
   console.log(`[Learner] ${conversaciones.length} conversaciones, ${conFallos.length} con fallos detectados.`);
 
+  const credenciales = await resolverCredencialesAvisoPlataforma();
+  if (!credenciales) {
+    console.log('[Learner] Reporte semanal no enviado — sin integración de WhatsApp propia verificada para el aviso de plataforma');
+    return;
+  }
+
   if (conFallos.length === 0) {
     await enviarMensaje(MARIO_TELEFONO,
-      '📊 *Reporte semanal del bot*\n\nEsta semana el bot no tuvo fallos detectables. ¡Todo bien! 🎉'
+      '📊 *Reporte semanal del bot*\n\nEsta semana el bot no tuvo fallos detectables. ¡Todo bien! 🎉',
+      credenciales
     );
     return;
   }
@@ -163,12 +189,17 @@ Responde SOLO en este formato JSON:
   mensaje += `Para aprobar todas: *APROBAR TODAS*\n`;
   mensaje += `Para rechazar todo: *RECHAZAR*`;
 
-  await enviarMensaje(MARIO_TELEFONO, mensaje);
+  await enviarMensaje(MARIO_TELEFONO, mensaje, credenciales);
   console.log(`[Learner] Sugerencias enviadas a Mario. ID: ${id}`);
 }
 
 // ─── Procesar respuesta de aprobación de Mario ───────────────────────────────
-export async function procesarAprobacion(texto) {
+// Fase A: negocioId/credenciales llegan ya resueltos desde el webhook que
+// recibió el mensaje de Mario (whatsapp-meta.js) -- nunca se re-resuelven
+// aquí ni se asume Nonna Maye. guardarOverride ahora exige negocio_id
+// (migración 016): las mejoras que Mario apruebe quedan asociadas al
+// negocio desde el que él escribió el comando.
+export async function procesarAprobacion(texto, negocioId, credenciales) {
   const textoUpper = texto.trim().toUpperCase();
 
   // APROBAR — acepta varias formas:
@@ -179,7 +210,7 @@ export async function procesarAprobacion(texto) {
   if (/^APROBAR/.test(textoUpper)) {
     const pendiente = await obtenerSugerenciasPendientes();
     if (!pendiente) {
-      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes de aprobación.');
+      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes de aprobación.', credenciales);
       return true;
     }
 
@@ -192,7 +223,7 @@ export async function procesarAprobacion(texto) {
       // Aprobar todas
       indices = Array.from({ length: totalSugerencias }, (_, i) => i);
     } else if (todosLosDigitos.length === 0) {
-      await enviarMensaje(MARIO_TELEFONO, 'Indica qué números aprobar. Ejemplo: APROBAR 1,2,3');
+      await enviarMensaje(MARIO_TELEFONO, 'Indica qué números aprobar. Ejemplo: APROBAR 1,2,3', credenciales);
       return true;
     } else {
       // Si el primer número coincide con el ID del batch, ignorarlo
@@ -206,14 +237,15 @@ export async function procesarAprobacion(texto) {
     const aprobadas = indices.map(i => pendiente.sugerencias[i]);
 
     for (const s of aprobadas) {
-      await guardarOverride(`aprendizaje_${Date.now()}`, s.mejora);
+      await guardarOverride(`aprendizaje_${Date.now()}`, s.mejora, negocioId);
     }
 
     await aprobarSugerencias(pendiente.id, indices);
 
     await enviarMensaje(MARIO_TELEFONO,
       `✅ Aplicadas ${aprobadas.length} mejoras al bot. Ya están activas.\n\n` +
-      aprobadas.map((s, i) => `${i + 1}. ${s.titulo}`).join('\n')
+      aprobadas.map((s, i) => `${i + 1}. ${s.titulo}`).join('\n'),
+      credenciales
     );
     return true;
   }
@@ -222,11 +254,11 @@ export async function procesarAprobacion(texto) {
   if (/^RECHAZAR/.test(textoUpper)) {
     const pendiente = await obtenerSugerenciasPendientes();
     if (!pendiente) {
-      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes.');
+      await enviarMensaje(MARIO_TELEFONO, 'No hay sugerencias pendientes.', credenciales);
       return true;
     }
     await aprobarSugerencias(pendiente.id, []);
-    await enviarMensaje(MARIO_TELEFONO, 'Entendido, sugerencias descartadas.');
+    await enviarMensaje(MARIO_TELEFONO, 'Entendido, sugerencias descartadas.', credenciales);
     return true;
   }
 
