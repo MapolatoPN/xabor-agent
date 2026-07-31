@@ -60,35 +60,102 @@ export const EVENTOS = {
 
 // ─── CAPA 2: Perfiles de Clientes ─────────────────────────────────────────────
 
+// Fase A (aislamiento de WhatsApp) — hallazgo durante la implementación:
+// perfiles_clientes.telefono es PK de una sola columna (migración 001).
+// La migración 007 le agregó negocio_id (nullable, backfilled a Nonna
+// Maye) y ya se usa para FILTRAR lecturas en el CRM (/api/admin/clientes,
+// desglose de segmento en server.js), pero recalcularPerfilCliente()
+// sigue escribiendo con `ON CONFLICT (telefono) DO UPDATE` -- es decir,
+// si dos negocios distintos tuvieran el mismo teléfono como cliente, el
+// segundo en escribir SOBRESCRIBIRÍA el perfil del primero (no es una
+// fuga de lectura, es corrupción de escritura entre tenants). Hoy no es
+// explotable (solo Nonna Maye tiene bot activo, por lo tanto solo ella
+// escribe perfiles_clientes), pero se vuelve un problema real en cuanto
+// el bot de un segundo negocio (Alora) entregue su primer pedido y
+// dispare recalcularPerfilCliente() para un teléfono que Nonna Maye ya
+// tenía. Corregir esto (PK compuesta telefono+negocio_id, mismo patrón
+// ya usado en rewards_accounts) queda FUERA de esta fase (alcance:
+// aislamiento de WhatsApp, no reestructurar el CRM) -- se documenta como
+// hallazgo crítico a resolver ANTES de activar el bot de Alora (Fase E),
+// nunca antes de eso porque hasta entonces nadie más escribe esta tabla.
+//
+// Mientras tanto, el CONTEXTO que ve el bot (lo único que toca esta
+// fase) deja de depender de perfiles_clientes para sus métricas: se
+// calcula en vivo, ya filtrado por negocio_id, directamente desde
+// pedidos_activos (que SÍ tiene negocio_id correctamente poblado desde
+// el Incidente P0, y conserva tanto pedidos activos como entregados
+// indefinidamente -- solo se excluyen cancelados, mismo criterio que ya
+// usaba recalcularPerfilCliente). El segmento (clasificación VIP/en
+// riesgo/dormido) sigue viniendo de perfiles_clientes, pero con una
+// LECTURA filtrada por negocio_id -- nunca se escribe desde aquí, así
+// que no participa del problema de corrupción de arriba, y para Nonna
+// Maye devuelve exactamente su valor real ya existente.
+
 /**
  * Obtener el perfil enriquecido de un cliente para inyectar en el contexto del agente.
- * Retorna null si el cliente no existe o no tiene perfil aún.
+ * Retorna null si el cliente no existe (para este negocio) o no tiene perfil aún.
  */
-export async function obtenerPerfilCliente(telefono) {
+export async function obtenerPerfilCliente(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[Memory] obtenerPerfilCliente: negocioId inválido u omitido — rechazado (fail closed)');
+    return null;
+  }
+  const id = negocioId.trim();
   try {
-    const { rows } = await pool.query(
-      `SELECT
-        c.nombre,
-        c.ultima_visita,
-        p.pedidos_total,
-        p.ticket_promedio,
-        p.total_gastado,
-        p.dias_entre_compras_prom,
-        p.ultimo_pedido_hace_dias,
-        p.dia_favorito,
-        p.hora_favorita,
-        p.modalidad_favorita,
-        p.pago_favorito,
-        p.productos_favoritos,
-        p.segmento,
-        p.score_abandono,
-        p.acepta_promociones
-       FROM clientes c
-       LEFT JOIN perfiles_clientes p ON p.telefono = c.telefono
-       WHERE c.telefono = $1`,
-      [telefono]
+    const { rows: [clienteRow] } = await pool.query(
+      `SELECT nombre FROM clientes WHERE telefono = $1 AND negocio_id = $2`,
+      [telefono, id]
     );
-    return rows[0] || null;
+    if (!clienteRow) return null; // este negocio nunca tuvo trato con este teléfono
+
+    const { rows: [metricas] } = await pool.query(`
+      SELECT
+        COUNT(*) AS pedidos_total,
+        AVG((datos->>'total')::numeric) AS ticket_promedio,
+        SUM((datos->>'total')::numeric) AS total_gastado,
+        MAX(created_at) AS ultimo_pedido_at,
+        NOW()::date - MAX(created_at)::date AS ultimo_pedido_hace_dias,
+        MODE() WITHIN GROUP (ORDER BY EXTRACT(DOW FROM created_at))::int AS dia_favorito_num,
+        MODE() WITHIN GROUP (ORDER BY datos->>'modalidad') AS modalidad_favorita,
+        MODE() WITHIN GROUP (ORDER BY datos->'pago'->>'metodo') AS pago_favorito
+      FROM pedidos_activos
+      WHERE datos->'cliente'->>'telefono' = $1
+        AND negocio_id = $2
+        AND estado NOT IN ('cancelado')
+    `, [telefono, id]);
+
+    const { rows: productos } = await pool.query(`
+      SELECT item->>'nombre' AS nombre, COUNT(*) AS veces
+      FROM pedidos_activos, jsonb_array_elements(datos->'items') AS item
+      WHERE datos->'cliente'->>'telefono' = $1
+        AND negocio_id = $2
+        AND estado NOT IN ('cancelado')
+      GROUP BY item->>'nombre'
+      ORDER BY veces DESC
+      LIMIT 3
+    `, [telefono, id]);
+
+    // Segmento: lectura filtrada, nunca escritura (ver nota arriba).
+    const { rows: [perfilSegmento] } = await pool.query(
+      `SELECT segmento FROM perfiles_clientes WHERE telefono = $1 AND negocio_id = $2`,
+      [telefono, id]
+    );
+
+    const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+    return {
+      nombre: clienteRow.nombre,
+      pedidos_total: parseInt(metricas?.pedidos_total) || 0,
+      ticket_promedio: metricas?.ticket_promedio ?? null,
+      total_gastado: metricas?.total_gastado ?? null,
+      productos_favoritos: productos.map(p => p.nombre),
+      modalidad_favorita: metricas?.modalidad_favorita ?? null,
+      pago_favorito: metricas?.pago_favorito ?? null,
+      ultimo_pedido_hace_dias: metricas?.ultimo_pedido_hace_dias !== null && metricas?.ultimo_pedido_hace_dias !== undefined
+        ? parseInt(metricas.ultimo_pedido_hace_dias) : null,
+      dia_favorito: metricas?.dia_favorito_num !== null && metricas?.dia_favorito_num !== undefined
+        ? dias[metricas.dia_favorito_num] : null,
+      segmento: perfilSegmento?.segmento || null,
+    };
   } catch (e) {
     console.error('[Memory] Error obteniendo perfil:', e.message);
     return null;

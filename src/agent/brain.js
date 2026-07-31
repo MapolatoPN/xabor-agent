@@ -27,8 +27,8 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   // Enriquecer contexto con memoria del cliente (no bloquea si falla)
   const telefono = clienteCtx?.telefono;
   let memoriaCtx = '';
-  if (telefono && telefono !== '—') {
-    const perfil = await obtenerPerfilCliente(telefono);
+  if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
+    const perfil = await obtenerPerfilCliente(telefono, negocioId);
     memoriaCtx = construirContextoCliente(perfil);
   }
 
@@ -88,8 +88,8 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   // Enriquecer contexto con memoria del cliente
   const telefono = clienteCtx?.telefono;
   let memoriaCtx = '';
-  if (telefono && telefono !== '—') {
-    const perfil = await obtenerPerfilCliente(telefono);
+  if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
+    const perfil = await obtenerPerfilCliente(telefono, negocioId);
     memoriaCtx = construirContextoCliente(perfil);
   }
 
