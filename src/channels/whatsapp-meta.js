@@ -90,12 +90,20 @@ router.get('/', (req, res) => {
 });
 
 // ─── Enviar mensaje de texto via Meta Graph API ──────────────────────────────
-export async function enviarMensaje(telefono, texto) {
-  const url = `https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`;
+// credenciales (opcional): { phoneNumberId, accessToken } -- cuando se pasa
+// explícito (usado por el envío manual del panel, resuelto por negocio),
+// tiene prioridad sobre el caché global/env vars. Todo el motor del bot
+// (webhooks, alertas, learner.js, rewards) sigue sin pasar este argumento,
+// así que su comportamiento no cambia: sigue usando el caché global
+// existente, sin regresión.
+export async function enviarMensaje(telefono, texto, credenciales) {
+  const phoneNumberId = credenciales?.phoneNumberId || getPhoneNumberId();
+  const accessToken = credenciales?.accessToken || getAccessToken();
+  const url = `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${getAccessToken()}`,
+      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({

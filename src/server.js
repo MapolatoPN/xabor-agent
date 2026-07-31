@@ -21,7 +21,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerModulosHabilitados, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -1199,7 +1199,13 @@ app.post('/api/auth/crear-password', rateLimitMiddleware(req => `crear-pw:${req.
 
 app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   const modulos = await obtenerModulosHabilitados(req.negocioId);
-  res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos });
+  // Nunca expone phone_number_id/token -- solo si el negocio tiene AMBOS
+  // configurados. Sirve para que el panel muestre "pendiente de
+  // configuración" en vez de un chat vacío ambiguo.
+  const whatsappConfigurado = modulos.includes('whatsapp')
+    ? !!(await obtenerCredencialesWhatsappNegocio(req.negocioId))
+    : false;
+  res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado });
 });
 
 // Diagnóstico de solo lectura para validar la exigencia de rol del nuevo
@@ -1550,13 +1556,24 @@ app.get('/api/conversacion/:telefono', requireAuthSeguro, requireModulo('whatsap
 });
 
 // Enviar mensaje manual desde el panel (link de pago, etc.)
+// Fix de seguridad: antes enviarMensaje() se llamaba sin credenciales,
+// usando siempre el caché global (hardcodeado a Nonna Maye) o env vars --
+// CUALQUIER negocio con el módulo whatsapp habilitado habría enviado por
+// el número real de Nonna Maye. Ahora se resuelven credenciales propias
+// del negocio de sesión; sin ellas, el envío se rechaza (409) y nunca se
+// intenta -- nunca hay fallback a Nonna Maye ni a env vars para este envío
+// manual desde el panel.
 app.post('/api/send-message', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
   const { telefono, mensaje } = req.body;
   if (!telefono || !mensaje) {
     return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
   }
+  const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+  if (!credenciales) {
+    return res.status(409).json({ error: 'WhatsApp no configurado para este negocio' });
+  }
   try {
-    await enviarMensaje(telefono, mensaje);
+    await enviarMensaje(telefono, mensaje, credenciales);
     console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
     // Guardar y emitir al panel
     const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId);
@@ -2297,27 +2314,53 @@ const INT_CLAVES = [
   'vapid_public_key','vapid_private_key','vapid_email',
 ];
 
+// Fix de seguridad (aislamiento de integraciones por negocio): ambas rutas
+// antes llamaban a obtenerConfiguracion()/actualizarConfiguracion() SIN
+// negocioId, lo que disparaba su fallback interno a
+// resolverNegocioActualId() -- hardcodeado a 'nonna-maye' -- sin importar
+// qué negocio tuviera la sesión. Cualquier admin autenticado (de CUALQUIER
+// negocio) leía y podía sobrescribir la configuración global de Nonna
+// Maye (WhatsApp/Clip/Facturapi/Anthropic/VAPID). Ahora ambas exigen
+// req.negocioId explícito -- nunca se acepta un negocio_id del body/query,
+// nunca hay fallback a ningún negocio por defecto.
 app.get('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
-  const cfg = await obtenerConfiguracion();
+  if (!(await negocioEstaActivo(req.negocioId))) {
+    return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
+  }
+  const cfg = await obtenerConfiguracion(req.negocioId);
   const result = {};
   INT_CLAVES.forEach(k => {
     const val = cfg['int_' + k] || '';
-    // Enmascarar: mostrar solo últimos 4 caracteres
+    // Enmascarar: mostrar solo últimos 4 caracteres. Vacío = "pendiente de
+    // configuración" para ESTE negocio -- nunca se copia ni se infiere del
+    // valor de otro negocio.
     result[k] = val.length > 8 ? '••••••••' + val.slice(-4) : (val ? '••••' : '');
   });
   res.json(result);
 });
 
 app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
+  if (!(await negocioEstaActivo(req.negocioId))) {
+    return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
+  }
   const cambios = {};
   for (const [k, v] of Object.entries(req.body)) {
     if (!INT_CLAVES.includes(k)) continue;
     if (!v || v.startsWith('••••')) continue; // no sobreescribir con máscara
     cambios['int_' + k] = v.trim();
   }
-  const ok = await actualizarConfiguracion(cambios);
+  const ok = await actualizarConfiguracion(cambios, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
-  // Recargar config en memoria para que los servicios usen los nuevos valores
+  // cargarIntegraciones() recarga el caché global EN MEMORIA que usa el
+  // motor del bot (getIntegracion/enviarMensaje automático) -- ese caché
+  // sigue leyendo exclusivamente el negocio hardcodeado en
+  // NEGOCIO_ACTUAL_SLUG ('nonna-maye'), sin importar qué negocio acaba de
+  // guardar aquí. Si guardó Nonna Maye, su bot recoge el cambio de
+  // inmediato (comportamiento sin cambios). Si guardó cualquier OTRO
+  // negocio, esta recarga es un no-op sobre los datos de Nonna Maye --
+  // nunca copia, mezcla ni expone nada del negocio que acaba de guardar.
+  // Migrar el motor del bot a credenciales por negocio es un cambio mayor,
+  // fuera de alcance de este ciclo (ver reporte).
   await cargarIntegraciones();
   res.json({ ok: true });
 });

@@ -1943,6 +1943,51 @@ export async function actualizarConfiguracion(cambios, negocioId) {
   }
 }
 
+// ─── WhatsApp por negocio (fix seguridad: eliminar fallback global a
+// Nonna Maye) ────────────────────────────────────────────────────────────
+// Dos fuentes posibles de credenciales, en este orden:
+//
+// 1) Integración propia guardada en configuracion.int_wa_* para ESTE
+//    negocio_id -- obtenerConfiguracion(negocioId) ya es negocio-scoped
+//    cuando se le pasa un id explícito. Sirve para cualquier negocio
+//    futuro con su propia integración (Alora el día que la tenga,
+//    negocios sintéticos de prueba, etc).
+//
+// 2) Variables de entorno de Railway (META_PHONE_NUMBER_ID/TOKEN, con
+//    WHATSAPP_PHONE_ID/TOKEN como alias legado -- el mismo orden exacto
+//    que ya usa whatsapp-meta.js:getPhoneNumberId()/getAccessToken()) --
+//    pero NUNCA como fallback genérico para "cualquier negocio sin
+//    integración propia". Antes de usarlas se confirma contra
+//    integraciones_canal que ESE phone_number_id de entorno está
+//    vinculado exactamente a ESTE negocio_id (fail-closed: sin fila,
+//    inactiva, o vinculada a otro negocio -> null, nunca se usan). No es
+//    "Nonna Maye como caso especial": es "quien sea que
+//    integraciones_canal diga que es dueño de ese número", que hoy
+//    resuelve a Nonna Maye porque es la única fila real que existe.
+//
+// En ambos casos: solo se considera "configurado" si AMBAS claves
+// (phone_number_id y token) están presentes -- nunca un envío con una
+// credencial a medias.
+export async function obtenerCredencialesWhatsappNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const id = negocioId.trim();
+
+  const cfg = await obtenerConfiguracion(id);
+  if (cfg.int_wa_phone_id && cfg.int_wa_token) {
+    return { phoneNumberId: cfg.int_wa_phone_id, accessToken: cfg.int_wa_token };
+  }
+
+  const envPhoneId = process.env.WHATSAPP_PHONE_ID || process.env.META_PHONE_NUMBER_ID || '';
+  const envToken = process.env.WHATSAPP_TOKEN || process.env.META_WHATSAPP_TOKEN || '';
+  if (!envPhoneId || !envToken) return null;
+
+  const propietario = await obtenerIntegracionCanal('whatsapp', envPhoneId);
+  if (propietario && propietario.negocioId === id) {
+    return { phoneNumberId: envPhoneId, accessToken: envToken };
+  }
+  return null;
+}
+
 // ─── Impresión: modo por negocio y resolución de sucursal ───────────────────
 // Solo lectura, fail-closed. Nunca usan resolverNegocioActualId() ni ningún
 // negocio por defecto: negocioId debe llegar explícito del llamador. Un

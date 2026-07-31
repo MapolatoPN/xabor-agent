@@ -1311,6 +1311,7 @@ async function cerrarSesion() {
 }
 
 let MODULOS = [];
+let WHATSAPP_CONFIGURADO = false;
 
 // Oculta cualquier elemento con data-modulo cuyo módulo no esté en la lista
 // que trajo /api/auth/me (siempre viene del servidor, nunca se calcula ni
@@ -1340,6 +1341,15 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   ROL = data.rol || 'staff';
   NEGOCIO_ID = data.negocioId;
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
+  WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
+  // Deshabilitar el compositor de chat si este negocio no tiene su propia
+  // integración de WhatsApp -- refuerzo de UX, el backend ya rechaza el
+  // envío (409) de cualquier forma.
+  const chatInputEl = document.getElementById('chat-input');
+  if (chatInputEl && !WHATSAPP_CONFIGURADO) {
+    chatInputEl.disabled = true;
+    chatInputEl.placeholder = 'WhatsApp pendiente de configuración';
+  }
   // Ocultar tabs de admin para operadores
   if (ROL !== 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
@@ -2518,8 +2528,18 @@ let chatAbierto = null;
 let chatNuevos  = 0;
 
 async function cargarConversaciones() {
+  const cont = document.getElementById('contactos-lista');
+  // Módulo habilitado no es lo mismo que integración configurada -- un
+  // negocio puede tener whatsapp=activo sin tener aún su propio
+  // phone_number_id/token en integraciones. Mientras no los tenga, el
+  // backend ya rechaza el envío (409); aquí solo evitamos una llamada de
+  // lectura innecesaria y mostramos el estado real en vez de "sin
+  // conversaciones" (que sugeriría que el canal sí funciona).
+  if (!WHATSAPP_CONFIGURADO) {
+    cont.innerHTML = '<div style="padding:16px;color:#aaa;font-size:0.82rem;">📵 WhatsApp pendiente de configuración para este negocio</div>';
+    return;
+  }
   const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => []);
-  const cont  = document.getElementById('contactos-lista');
   if (!lista.length) { cont.innerHTML = '<div style="padding:16px;color:#aaa;font-size:0.82rem;">Sin conversaciones aún</div>'; return; }
   cont.innerHTML = lista.map(c => `
     <div onclick="abrirConversacion('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}')"
