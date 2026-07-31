@@ -21,7 +21,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -2045,18 +2045,35 @@ function requireAdminModerno(req, res, next) {
 // respondiendo 200 con datos reales aunque el módulo estuviera apagado.
 // Funciona igual para admin y para staff -- ninguno de los dos evade el
 // bloqueo por rol, el módulo se exige de todos modos.
+// Respuesta 403 con código estructurado -- el frontend no debe depender
+// solo del texto (que es para mostrar al usuario, puede cambiar de
+// redacción); `codigo` es el campo estable para tomar decisiones de UI.
+function responderModuloBloqueado(res, codigo, error) {
+  return res.status(403).json({ error, codigo });
+}
+
 function requireModulo(modulo) {
   return async (req, res, next) => {
     if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
-      return res.status(403).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+      return responderModuloBloqueado(res, 'sesion_invalida', 'Sesión inválida — no se pudo determinar el negocio');
     }
     if (!(await negocioEstaActivo(req.negocioId))) {
-      return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
+      return responderModuloBloqueado(res, 'negocio_suspendido', 'Negocio suspendido o inactivo');
     }
-    if (!(await moduloHabilitado(req.negocioId, modulo))) {
-      return res.status(403).json({ error: 'Módulo no habilitado' });
+    const estado = await obtenerEstadoModulo(req.negocioId, modulo);
+    if (MODULO_ESTADOS_DISPONIBLES_API.includes(estado)) return next();
+    if (estado === 'suspendido') {
+      return responderModuloBloqueado(res, 'modulo_suspendido', 'Este módulo está temporalmente suspendido.');
     }
-    next();
+    // 'pendiente' (vocabulario heredado) y 'pendiente_configuracion'
+    // (vocabulario canónico, usado por Rewards) son equivalentes aquí --
+    // ambos significan "contratado pero técnicamente no configurado".
+    if (estado === 'pendiente' || estado === 'pendiente_configuracion') {
+      return responderModuloBloqueado(res, 'modulo_pendiente_configuracion', 'Este módulo está pendiente de configuración.');
+    }
+    // 'no_configurado' (heredado), 'no_contratado' (canónico) o sin fila --
+    // no contratado, el default seguro.
+    return responderModuloBloqueado(res, 'modulo_no_contratado', 'Este módulo no está incluido para este negocio.');
   };
 }
 
@@ -2149,7 +2166,8 @@ async function requireSuperadmin(req, res, next) {
   return res.status(401).json({ error: 'No autenticado' });
 }
 
-const MODULOS_VALIDOS_API = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion'];
+const MODULOS_VALIDOS_API = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards'];
+const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
 const ESTADOS_NEGOCIO_VALIDOS_API = ['pendiente', 'activo', 'suspendido'];
 
@@ -2757,14 +2775,14 @@ import {
 // existentes de Nonna Maye a su negocio_id real).
 
 // Configuración del programa
-app.get('/api/rewards/config', requireAdminSeguro, async (req, res) => {
+app.get('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const config = await obtenerConfigRewards(req.negocioId);
     res.json(config);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
+app.patch('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     await actualizarConfigRewards(req.negocioId, req.body);
     res.json({ ok: true });
@@ -2772,7 +2790,7 @@ app.patch('/api/rewards/config', requireAdminSeguro, async (req, res) => {
 });
 
 // Resumen estadístico
-app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
+app.get('/api/rewards/resumen', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const resumen = await obtenerResumenRewards(req.negocioId);
     res.json(resumen);
@@ -2780,7 +2798,7 @@ app.get('/api/rewards/resumen', requireAdminSeguro, async (req, res) => {
 });
 
 // Lista de clientes inscritos
-app.get('/api/rewards/clientes', requireAdminSeguro, async (req, res) => {
+app.get('/api/rewards/clientes', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const lista = await listarClientesRewards(req.negocioId);
     res.json(lista);
@@ -2788,7 +2806,7 @@ app.get('/api/rewards/clientes', requireAdminSeguro, async (req, res) => {
 });
 
 // Búsqueda de clientes (admin y staff — para asignar en POS)
-app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
+app.get('/api/rewards/clientes/buscar', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
@@ -2798,7 +2816,7 @@ app.get('/api/rewards/clientes/buscar', requireAuthSeguro, async (req, res) => {
 });
 
 // Perfil de un cliente + estimación de puntos
-app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, req.negocioId);
     if (!perfil) return res.status(404).json({ error: 'No encontrado' });
@@ -2813,17 +2831,21 @@ app.get('/api/rewards/cliente/:telefono', requireAuthSeguro, async (req, res) =>
 });
 
 // Movimientos de un cliente
-app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/movimientos', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const perfil = await obtenerPerfilRewards(req.params.telefono, req.negocioId);
     if (!perfil?.account_id) return res.json([]);
-    const movimientos = await obtenerMovimientosCliente(perfil.account_id);
+    // tenantId como defensa en profundidad -- perfil.account_id ya viene de
+    // una consulta filtrada por negocioId, pero obtenerMovimientosCliente
+    // vuelve a filtrar por tenant_id en la propia consulta, para no
+    // depender únicamente de que el account_id llegue ya validado.
+    const movimientos = await obtenerMovimientosCliente(perfil.account_id, req.negocioId);
     res.json(movimientos);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Movimientos recientes globales
-app.get('/api/rewards/movimientos', requireAdminSeguro, async (req, res) => {
+app.get('/api/rewards/movimientos', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
     const movimientos = await obtenerMovimientosRecientes(req.negocioId);
     res.json(movimientos);
@@ -2831,8 +2853,11 @@ app.get('/api/rewards/movimientos', requireAdminSeguro, async (req, res) => {
 });
 
 // Crear o recuperar cliente para Rewards (staff + admin)
-// Si el cliente no existe en `clientes`, lo crea primero.
-app.post('/api/rewards/cliente', requireAuthSeguro, async (req, res) => {
+// La identidad de Rewards vive en rewards_accounts (nombre incluido,
+// aislada por tenant_id) -- `clientes` solo se toca para garantizar que
+// la fila exista (lo exige la FK de rewards_accounts.telefono), NUNCA
+// para leer o escribir nombre/ultima_visita de un negocio ajeno.
+app.post('/api/rewards/cliente', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
   const { telefono, nombre } = req.body;
   if (!telefono?.trim() || !nombre?.trim()) {
     return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
@@ -2840,25 +2865,25 @@ app.post('/api/rewards/cliente', requireAuthSeguro, async (req, res) => {
   const tel = telefono.trim().replace(/\D/g, '').slice(-10);
   if (tel.length < 7) return res.status(400).json({ error: 'Teléfono inválido' });
   try {
-    // Upsert en tabla clientes (reutiliza existente si ya existe) — nunca
-    // reescribe negocio_id de un cliente existente, mismo criterio que
-    // upsertCliente en database.js.
+    // Solo crea la fila en `clientes` si NO existe todavía (satisface la
+    // FK). Si ya existe -- sea de este negocio o de otro -- nunca se
+    // reescribe nombre/ultima_visita desde aquí; esa reescritura pisaba
+    // silenciosamente el nombre de un cliente ajeno cuando el teléfono ya
+    // pertenecía a otro negocio.
     await pool.query(
       `INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
        VALUES ($1, $2, NOW(), $3)
-       ON CONFLICT (telefono) DO UPDATE SET
-         nombre = COALESCE(NULLIF($2, ''), clientes.nombre),
-         ultima_visita = NOW()`,
+       ON CONFLICT (telefono) DO NOTHING`,
       [tel, nombre.trim(), req.negocioId]
     );
-    const cuenta = await obtenerOCrearCuenta(tel, req.negocioId);
+    const cuenta = await obtenerOCrearCuenta(tel, nombre.trim(), req.negocioId);
     const perfil = await obtenerPerfilRewards(tel, req.negocioId);
     res.json({ ok: true, perfil });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Consultar bloques de canje disponibles para un cliente en POS
-app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, async (req, res) => {
+app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
   const { telefono } = req.params;
   const { total } = req.query;
   try {
@@ -2874,7 +2899,7 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, as
 });
 
 // Ajuste manual de puntos — solo admin
-app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, async (req, res) => {
+app.post('/api/rewards/cliente/:telefono/ajustar', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   const { telefono } = req.params;
   const { puntos, tipo, motivo } = req.body;
   try {

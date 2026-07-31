@@ -2464,8 +2464,13 @@ export async function obtenerDestinatariosCampana(segmento, negocioId) {
 // opera deliberadamente sobre cualquier negocio -- ese es el propósito de
 // este módulo, no un descuido de aislamiento.
 
-const MODULOS_VALIDOS = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion'];
-const ESTADOS_MODULO_VALIDOS = ['no_configurado', 'pendiente', 'configurado', 'activo', 'suspendido'];
+const MODULOS_VALIDOS = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards'];
+// Incluye tanto el vocabulario heredado (usado por pos/usuarios/caja/menu/
+// impresion/whatsapp/voz/rappi/facturacion) como el vocabulario canónico
+// aprobado para Rewards (pendiente_configuracion, no_contratado) -- ambos
+// conjuntos son válidos a la vez, igual que en el CHECK de negocio_modulos
+// (migración 015); ningún módulo existente cambia de vocabulario aquí.
+const ESTADOS_MODULO_VALIDOS = ['no_configurado', 'pendiente', 'configurado', 'activo', 'suspendido', 'pendiente_configuracion', 'no_contratado'];
 const ESTADOS_NEGOCIO_VALIDOS = ['pendiente', 'activo', 'suspendido'];
 const PLANES_VALIDOS = ['prueba', 'basico', 'pro', 'personalizado'];
 
@@ -2493,6 +2498,26 @@ export async function moduloHabilitado(negocioId, modulo) {
   } catch (e) {
     console.error('[DB] Error moduloHabilitado:', e.message);
     return false;
+  }
+}
+
+// Estado crudo del módulo (o null si no hay fila) -- a diferencia de
+// moduloHabilitado (que colapsa todo a true/false), esto se usa donde el
+// llamador necesita distinguir POR QUÉ está bloqueado (no contratado vs
+// pendiente de configurar vs suspendido) para responder con un código
+// estructurado, no solo un texto genérico.
+export async function obtenerEstadoModulo(negocioId, modulo) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (!MODULOS_VALIDOS.includes(modulo)) return null;
+  try {
+    const { rows } = await pool.query(
+      'SELECT estado FROM negocio_modulos WHERE negocio_id = $1 AND modulo = $2',
+      [negocioId.trim(), modulo]
+    );
+    return rows[0]?.estado ?? null;
+  } catch (e) {
+    console.error('[DB] Error obtenerEstadoModulo:', e.message);
+    return null;
   }
 }
 

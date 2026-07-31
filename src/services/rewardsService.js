@@ -20,9 +20,15 @@
  *   - Expiración: job nocturno que crea movimientos tipo 'expiracion'.
  */
 
-import { pool } from './database.js';
+import { pool, obtenerEstadoModulo } from './database.js';
 
 const DEFAULT_TENANT = 'xabor-principal';
+
+// Mismo criterio de disponibilidad que requireModulo/moduloHabilitado en
+// server.js/database.js -- 'activo' o 'configurado' cuentan como
+// disponible. Rewards solo siembra 'activo' hoy, pero se comparte el
+// mismo criterio por si en el futuro se usa 'configurado' para él.
+const REWARDS_ESTADOS_DISPONIBLES = ['activo', 'configurado'];
 
 // ─── Niveles de membresía ─────────────────────────────────────────────────────
 // Se calcula desde puntos_acumulados_total (histórico, nunca baja).
@@ -78,22 +84,34 @@ export async function actualizarConfig(tenantId = DEFAULT_TENANT, datos) {
 }
 
 // ─── Cuentas de cliente ───────────────────────────────────────────────────────
-// Único punto de contacto con la tabla `clientes`.
-// Al migrar a UUID, solo esta función cambia.
-export async function obtenerOCrearCuenta(telefono, tenantId = DEFAULT_TENANT) {
-  // Verificar que el cliente existe en tabla clientes (evita FK violada)
+// rewards_accounts (UNIQUE telefono+tenant_id) es la identidad propia de
+// Rewards por negocio -- nombre incluido (columna propia, migración 015).
+// `clientes` solo se consulta para confirmar que la fila exista (lo exige
+// la FK rewards_accounts.telefono -> clientes.telefono); nunca se lee su
+// `nombre` para mostrarlo, y nunca se asume que el negocio_id de esa fila
+// coincide con el tenant que está inscribiendo -- el mismo teléfono puede
+// ser cliente "dueño" de otro negocio en `clientes` y aun así tener aquí
+// una cuenta de Rewards totalmente independiente para este tenant.
+export async function obtenerOCrearCuenta(telefono, nombre, tenantId = DEFAULT_TENANT) {
   const { rows: [cliente] } = await pool.query(
-    'SELECT telefono, nombre FROM clientes WHERE telefono = $1',
+    'SELECT telefono FROM clientes WHERE telefono = $1',
     [telefono]
   );
   if (!cliente) throw new Error(`[Rewards] Cliente ${telefono} no existe en tabla clientes`);
 
+  // Conflicto en la UNIQUE (telefono, tenant_id) -- nunca en telefono solo:
+  // el mismo teléfono en otro tenant_id no genera conflicto aquí, inserta
+  // una fila nueva e independiente con su propio nombre. Cuando SÍ hay
+  // conflicto, es porque este mismo negocio ya tenía una cuenta para este
+  // teléfono -- ahí sí se permite corregir el nombre (COALESCE evita
+  // borrarlo si esta llamada no trae uno nuevo).
   const { rows: [cuenta] } = await pool.query(
-    `INSERT INTO rewards_accounts (telefono, tenant_id)
-     VALUES ($1, $2)
-     ON CONFLICT (telefono, tenant_id) DO UPDATE SET updated_at = NOW()
+    `INSERT INTO rewards_accounts (telefono, tenant_id, nombre)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (telefono, tenant_id)
+     DO UPDATE SET nombre = COALESCE(EXCLUDED.nombre, rewards_accounts.nombre), updated_at = NOW()
      RETURNING *`,
-    [telefono, tenantId]
+    [telefono, tenantId, nombre || null]
   );
   return cuenta;
 }
@@ -111,6 +129,20 @@ export async function obtenerCuentaPorTelefono(telefono, tenantId = DEFAULT_TENA
 // Se ejecuta en background (fire-and-forget con try/catch en orderManager).
 // Si falla aquí, la venta ya quedó archivada — nunca bloquea el flujo crítico.
 export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
+  // 0. Módulo Rewards contratado y disponible para este negocio -- defensa
+  // en profundidad independiente de rewards_config.activo (que es un flag
+  // heredado, previo a negocio_modulos, y puede quedar desincronizado). Se
+  // consulta negocio_modulos directamente vía obtenerEstadoModulo, nunca se
+  // asume. Sin punto de entrada gateado aquí, un negocio sin Rewards
+  // contratado podría acumular puntos igualmente porque esta función se
+  // invoca desde el flujo de pedidos (fuera de las 11 rutas de
+  // requireModulo('rewards')). Fallo seguro: sin más, no acumula.
+  const estadoModulo = await obtenerEstadoModulo(tenantId, 'rewards');
+  if (!REWARDS_ESTADOS_DISPONIBLES.includes(estadoModulo)) {
+    console.log(`[Rewards] Módulo no disponible (estado=${estadoModulo || 'sin contratar'}) — sin puntos para ${folio}`);
+    return null;
+  }
+
   // 1. Configuración
   const config = await obtenerConfig(tenantId);
   if (!config || !config.activo) {
@@ -214,15 +246,33 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     await client.query('COMMIT');
     console.log(`[Rewards] ✅ ${folio} — ${telefono} +${puntos} pts → balance: ${balancePosterior}`);
 
-    // Notificar al cliente por WhatsApp (fire-and-forget, nunca bloquea)
+    // Notificar al cliente por WhatsApp (fire-and-forget, nunca bloquea la
+    // acumulación de puntos, que ya quedó confirmada arriba). Fix de
+    // seguridad: antes llamaba a enviarMensaje() sin credenciales, lo que
+    // usaba el caché global del motor del bot (mismo mecanismo que causó
+    // el incidente de aislamiento de WhatsApp) -- CUALQUIER negocio con
+    // Rewards activo habría notificado por el número de Nonna Maye. Ahora
+    // se resuelven credenciales propias del negocio vía
+    // obtenerCredencialesWhatsappNegocio (el mismo resolvedor ya validado
+    // para el envío manual del panel, reutilizado tal cual, sin
+    // modificarlo). Sin integración propia verificada, la notificación
+    // simplemente se omite -- nunca cae a Nonna Maye ni a ningún caché
+    // global, y la acumulación de puntos ya sucedió de todos modos.
     const nivelActual = calcularNivel((cuenta.puntos_acumulados_total || 0) + puntos);
-    import('../channels/whatsapp-meta.js').then(({ enviarMensaje }) => {
+    (async () => {
+      const { obtenerCredencialesWhatsappNegocio } = await import('./database.js');
+      const credenciales = await obtenerCredencialesWhatsappNegocio(tenantId);
+      if (!credenciales) {
+        console.log(`[Rewards] Notificación de puntos omitida — sin integración de WhatsApp propia para este negocio (folio ${folio})`);
+        return;
+      }
+      const { enviarMensaje } = await import('../channels/whatsapp-meta.js');
       const msgNivel = nivelActual.siguiente
         ? `Faltan ${nivelActual.falta} pts para llegar a ${nivelActual.siguiente} ${nivelActual.nombre === 'Bronze' ? '🥈' : '🥇'}`
         : '¡Eres miembro Gold! 🏆';
       const msg = `🎉 ¡Ganaste *${puntos} puntos* en Xabor!\n\nTu saldo: *${balancePosterior} pts* ${nivelActual.emoji} ${nivelActual.nombre}\n${msgNivel}`;
-      return enviarMensaje(telefono, msg);
-    }).catch(e => console.error('[Rewards] Error enviando notif WA:', e.message));
+      return enviarMensaje(telefono, msg, credenciales);
+    })().catch(e => console.error(`[Rewards] Error enviando notificación de puntos (folio ${folio}):`, e.message));
 
     return { puntos, balancePosterior, telefono };
 
@@ -263,19 +313,26 @@ export async function obtenerResumenRewards(tenantId = DEFAULT_TENANT) {
 }
 
 // ─── Búsqueda de clientes ─────────────────────────────────────────────────────
+// Arranca desde `rewards_accounts` (ya aislada por tenant_id), nunca desde
+// `clientes` sin filtrar -- así nunca puede devolver un cliente de otro
+// negocio, ni con datos de Rewards ni sin ellos. `clientes` solo aporta
+// `ultima_visita` real (uso general, no específico de Rewards) cuando esa
+// fila SÍ pertenece a este mismo negocio; si pertenece a otro, se omite
+// (nunca se muestra ese dato ajeno).
 export async function buscarClientesRewards(q, tenantId = DEFAULT_TENANT) {
   const buscar = `%${(q || '').trim()}%`;
   const { rows } = await pool.query(`
     SELECT
-      c.telefono, c.nombre, c.ultima_visita,
+      a.telefono, a.nombre,
+      CASE WHEN c.negocio_id::text = $1 THEN c.ultima_visita ELSE NULL END AS ultima_visita,
       a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
       a.activo AS rewards_activo, a.created_at AS rewards_desde
-    FROM clientes c
-    LEFT JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = $1
-    WHERE (c.nombre ILIKE $2 OR c.telefono ILIKE $2)
-      AND c.telefono != '—'
-      AND NOT COALESCE(c.es_interno, FALSE)
-    ORDER BY c.ultima_visita DESC NULLS LAST
+    FROM rewards_accounts a
+    LEFT JOIN clientes c ON c.telefono = a.telefono
+    WHERE a.tenant_id = $1
+      AND (a.nombre ILIKE $2 OR a.telefono ILIKE $2)
+      AND a.telefono != '—'
+    ORDER BY a.updated_at DESC NULLS LAST
     LIMIT 20
   `, [tenantId, buscar]);
   return rows;
@@ -283,13 +340,16 @@ export async function buscarClientesRewards(q, tenantId = DEFAULT_TENANT) {
 
 // ─── Lista de clientes inscritos ──────────────────────────────────────────────
 export async function listarClientesRewards(tenantId = DEFAULT_TENANT) {
+  // LEFT JOIN solo para el flag es_interno (excluir clientes internos de
+  // prueba de la lista, mismo comportamiento que ya existía) -- nunca para
+  // nombre/ultima_visita, que ya vienen de la propia cuenta aislada.
   const { rows } = await pool.query(`
     SELECT
-      c.telefono, c.nombre, c.ultima_visita,
+      a.telefono, a.nombre,
       a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
       a.activo AS rewards_activo, a.created_at AS rewards_desde
     FROM rewards_accounts a
-    JOIN clientes c ON c.telefono = a.telefono
+    LEFT JOIN clientes c ON c.telefono = a.telefono
     WHERE a.tenant_id = $1
       AND NOT COALESCE(c.es_interno, FALSE)
     ORDER BY a.puntos_balance DESC
@@ -299,15 +359,20 @@ export async function listarClientesRewards(tenantId = DEFAULT_TENANT) {
 }
 
 // ─── Perfil de un cliente ─────────────────────────────────────────────────────
+// Arranca desde rewards_accounts (aislada por tenant_id) -- si este
+// negocio nunca inscribió ese teléfono, no existe perfil que mostrar,
+// sin importar si el teléfono es cliente de otro negocio. "última
+// actividad de Rewards" se deriva de la propia cuenta (updated_at),
+// nunca de clientes.ultima_visita (ese campo es global entre negocios,
+// no específico de Rewards -- ver decisión de producto).
 export async function obtenerPerfilRewards(telefono, tenantId = DEFAULT_TENANT) {
   const { rows: [perfil] } = await pool.query(`
     SELECT
-      c.telefono, c.nombre, c.ultima_visita,
+      a.telefono, a.nombre, a.updated_at AS ultima_actividad_rewards,
       a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
       a.puntos_canjeados_total, a.activo AS rewards_activo, a.created_at AS rewards_desde
-    FROM clientes c
-    LEFT JOIN rewards_accounts a ON a.telefono = c.telefono AND a.tenant_id = $1
-    WHERE c.telefono = $2
+    FROM rewards_accounts a
+    WHERE a.tenant_id = $1 AND a.telefono = $2
   `, [tenantId, telefono]);
   if (!perfil) return null;
   perfil.nivel = calcularNivel(perfil.puntos_acumulados_total);
@@ -315,15 +380,21 @@ export async function obtenerPerfilRewards(telefono, tenantId = DEFAULT_TENANT) 
 }
 
 // ─── Movimientos de un cliente ────────────────────────────────────────────────
-export async function obtenerMovimientosCliente(accountId, limit = 50) {
+// tenantId es defensa en profundidad: el caller (server.js) ya resolvió
+// account_id a través de una consulta filtrada por tenant_id, pero esta
+// función vuelve a exigirlo explícitamente en su propio WHERE -- nunca
+// confía únicamente en que el account_id que le llegó ya fue validado
+// aguas arriba.
+export async function obtenerMovimientosCliente(accountId, tenantId = DEFAULT_TENANT, limit = 50) {
   const { rows } = await pool.query(`
-    SELECT id, tipo, puntos, balance_anterior, balance_posterior,
-           folio_venta, usuario, motivo, created_at
-    FROM rewards_movements
-    WHERE account_id = $1
-    ORDER BY created_at DESC
-    LIMIT $2
-  `, [accountId, limit]);
+    SELECT m.id, m.tipo, m.puntos, m.balance_anterior, m.balance_posterior,
+           m.folio_venta, m.usuario, m.motivo, m.created_at
+    FROM rewards_movements m
+    JOIN rewards_accounts a ON a.id = m.account_id
+    WHERE m.account_id = $1 AND m.tenant_id = $2 AND a.tenant_id = $2
+    ORDER BY m.created_at DESC
+    LIMIT $3
+  `, [accountId, tenantId, limit]);
   return rows;
 }
 
@@ -333,10 +404,9 @@ export async function obtenerMovimientosRecientes(tenantId = DEFAULT_TENANT, lim
     SELECT
       m.id, m.tipo, m.puntos, m.balance_posterior,
       m.folio_venta, m.created_at,
-      c.nombre, c.telefono
+      a.nombre, a.telefono
     FROM rewards_movements m
     JOIN rewards_accounts a ON a.id = m.account_id
-    JOIN clientes c ON c.telefono = a.telefono
     WHERE m.tenant_id = $1
     ORDER BY m.created_at DESC
     LIMIT $2
@@ -364,6 +434,14 @@ export function calcularBloquesDisponibles(puntosBalance, totalVenta, config) {
 // Retorna { puntos, monto, balancePosterior } o null si ya fue procesado.
 // Lanza error si saldo insuficiente o puntos inválidos — el caller debe manejarlos.
 export async function registrarCanje(folio, telefono, puntosACanjear, usuario, tenantId = DEFAULT_TENANT) {
+  // 0. Mismo gate de negocio_modulos que acumularPuntos -- el canje
+  // también se dispara desde el flujo de pedidos (POS presencial), fuera
+  // de las rutas gateadas por requireModulo('rewards').
+  const estadoModulo = await obtenerEstadoModulo(tenantId, 'rewards');
+  if (!REWARDS_ESTADOS_DISPONIBLES.includes(estadoModulo)) {
+    throw new Error('Rewards no está contratado para este negocio');
+  }
+
   const config = await obtenerConfig(tenantId);
   if (!config || !config.activo) throw new Error('Rewards desactivado');
 

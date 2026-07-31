@@ -683,7 +683,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Config</button>
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
-  <button class="tab-btn admin-only" id="tab-rewards"     onclick="mostrarTab('rewards')">Rewards</button>
+  <button class="tab-btn admin-only" id="tab-rewards"     data-modulo="rewards" onclick="mostrarTab('rewards')">Rewards</button>
   <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
 </div>
 
@@ -791,7 +791,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <span id="pos-total-monto">$0</span>
           </div>
           <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
-          <div id="rw-pos-widget">
+          <div id="rw-pos-widget" data-modulo="rewards">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
               <span style="font-size:0.78rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">Rewards — Cliente</span>
               <button onclick="rwPosLimpiar()" id="rw-pos-btn-limpiar" style="display:none;background:none;border:none;font-size:0.72rem;color:#ef4444;cursor:pointer;font-weight:600;">Quitar</button>
@@ -1286,9 +1286,14 @@ function apiFetch(url, opts = {}) {
     if (r.status === 403) {
       try {
         const d = await r.clone().json();
-        if ((d.error === 'Módulo no habilitado' || d.error === 'Negocio suspendido o inactivo') && Date.now() - ultimoAvisoModulo > 4000) {
+        // requireModulo ahora responde con `codigo` estructurado -- nunca se
+        // decide qué mostrar solo por el texto (que puede cambiar de
+        // redacción). El texto (`d.error`) ya viene listo para mostrar tal
+        // cual, el servidor es quien decide la redacción final.
+        const codigosModulo = ['sesion_invalida', 'negocio_suspendido', 'modulo_suspendido', 'modulo_pendiente_configuracion', 'modulo_no_contratado'];
+        if (d.codigo && codigosModulo.includes(d.codigo) && Date.now() - ultimoAvisoModulo > 4000) {
           ultimoAvisoModulo = Date.now();
-          alert(d.error === 'Módulo no habilitado' ? 'Este módulo no está habilitado para tu negocio.' : 'Tu negocio está suspendido.');
+          alert(d.error || 'Este módulo no está disponible para tu negocio.');
         }
       } catch (e) {}
     }
