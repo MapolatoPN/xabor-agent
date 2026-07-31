@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -20,25 +20,44 @@ let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
 
 // ─── Monitor de errores críticos ─────────────────────────────────────────────
-const errores = []; // timestamps de errores recientes
+// Fase A (aislamiento de WhatsApp): antes era un único arreglo global —
+// 3 errores de CUALQUIER negocio en 5 minutos alertaban a UN SOLO admin
+// (wa_admin_numero global) usando el caché global para enviar. Ahora es
+// un contador por negocio_id: cada negocio necesita sus propios 3
+// errores en su propia ventana de 5 minutos para disparar su propia
+// alerta, notificada con sus propias credenciales al admin configurado
+// para ESE negocio -- nunca se suman errores entre negocios distintos,
+// nunca se notifica con el número de otro.
+const erroresPorNegocio = new Map(); // negocioId -> { timestamps: [], alertaEnviada: bool }
 const VENTANA_MS   = 5 * 60 * 1000; // 5 minutos
 const UMBRAL       = 3;              // 3 errores en 5 min → alerta
-let alertaEnviada  = false;
 
-function registrarError() {
+async function registrarError(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return; // sin negocio, no se puede alertar a nadie específico
+  const id = negocioId.trim();
+  if (!erroresPorNegocio.has(id)) erroresPorNegocio.set(id, { timestamps: [], alertaEnviada: false });
+  const entry = erroresPorNegocio.get(id);
+
   const ahora = Date.now();
-  errores.push(ahora);
-  // Limpiar errores fuera de la ventana
-  while (errores.length && errores[0] < ahora - VENTANA_MS) errores.shift();
-  if (errores.length >= UMBRAL && !alertaEnviada) {
-    alertaEnviada = true;
-    const admin = getIntegracion('wa_admin_numero') || process.env.WHATSAPP_ADMIN_NUMERO;
-    if (admin) {
-      enviarMensaje(admin, `🚨 *Xabor alerta*: el bot tuvo ${errores.length} errores en los últimos 5 minutos. Revisar Railway logs.`)
-        .catch(() => {});
+  entry.timestamps.push(ahora);
+  while (entry.timestamps.length && entry.timestamps[0] < ahora - VENTANA_MS) entry.timestamps.shift();
+
+  if (entry.timestamps.length >= UMBRAL && !entry.alertaEnviada) {
+    entry.alertaEnviada = true;
+    try {
+      const cfg = await obtenerConfiguracion(id);
+      const admin = cfg.wa_admin_numero;
+      const credenciales = await obtenerCredencialesWhatsappNegocio(id);
+      if (admin && credenciales) {
+        enviarMensaje(admin, `🚨 *Xabor alerta*: el bot tuvo ${entry.timestamps.length} errores en los últimos 5 minutos. Revisar Railway logs.`, credenciales)
+          .catch(() => {});
+      } else {
+        console.log(`[Meta WA] Alerta de errores omitida — sin admin/integración propia verificada para negocio ${id}`);
+      }
+    } catch (e) {
+      console.error('[Meta WA] Error preparando alerta de errores críticos:', e.message);
     }
-    // Reset alerta tras 15 minutos
-    setTimeout(() => { alertaEnviada = false; }, 15 * 60 * 1000);
+    setTimeout(() => { entry.alertaEnviada = false; }, 15 * 60 * 1000);
   }
 }
 
@@ -69,9 +88,14 @@ function encolarMensaje(clave, texto, procesarFn) {
 
 const router = Router();
 
-// Leídos en runtime para respetar configuración desde panel
-const getPhoneNumberId = () => getIntegracion('wa_phone_id')  || process.env.META_PHONE_NUMBER_ID;
-const getAccessToken   = () => getIntegracion('wa_token')      || process.env.META_WHATSAPP_TOKEN;
+// Fase A (aislamiento de WhatsApp): getPhoneNumberId()/getAccessToken()
+// (el caché global de credenciales) se eliminaron -- ya ningún punto de
+// envío de este archivo los usa, todos reciben `credenciales` resueltas
+// por negocio vía obtenerCredencialesWhatsappNegocio. getVerifyToken()
+// se conserva: la verificación del webhook (GET) es a nivel de App de
+// Meta, no por negocio -- un solo webhook URL/verify token sirve para
+// todos los negocios suscritos a esa App (comportamiento correcto, no
+// es parte de este aislamiento).
 const getVerifyToken   = () => getIntegracion('wa_verify_token')|| process.env.META_VERIFY_TOKEN;
 const NUMERO_SOPORTE   = process.env.WHATSAPP_SOPORTE;
 
@@ -100,15 +124,17 @@ router.get('/', (req, res) => {
 });
 
 // ─── Enviar mensaje de texto via Meta Graph API ──────────────────────────────
-// credenciales (opcional): { phoneNumberId, accessToken } -- cuando se pasa
-// explícito (usado por el envío manual del panel, resuelto por negocio),
-// tiene prioridad sobre el caché global/env vars. Todo el motor del bot
-// (webhooks, alertas, learner.js, rewards) sigue sin pasar este argumento,
-// así que su comportamiento no cambia: sigue usando el caché global
-// existente, sin regresión.
+// Fase A (aislamiento de WhatsApp): `credenciales` ({ phoneNumberId,
+// accessToken }) ahora es OBLIGATORIO -- ya no hay fallback al caché
+// global/env vars. Sin credenciales, se registra un log controlado (sin
+// exponer el teléfono completo) y no se envía nada -- nunca se asume
+// ningún negocio por defecto.
 export async function enviarMensaje(telefono, texto, credenciales) {
-  const phoneNumberId = credenciales?.phoneNumberId || getPhoneNumberId();
-  const accessToken = credenciales?.accessToken || getAccessToken();
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarMensaje sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const { phoneNumberId, accessToken } = credenciales;
   const url = `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
@@ -133,12 +159,17 @@ export async function enviarMensaje(telefono, texto, credenciales) {
 }
 
 // ─── Enviar imagen via Meta Graph API ────────────────────────────────────────
-export async function enviarImagen(telefono, imageUrl, caption = '') {
-  const url = `https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`;
+// Fase A: mismo criterio que enviarMensaje -- credenciales obligatorias.
+export async function enviarImagen(telefono, imageUrl, caption = '', credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarImagen sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const url = `https://graph.facebook.com/v20.0/${credenciales.phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${getAccessToken()}`,
+      'Authorization': `Bearer ${credenciales.accessToken}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -157,12 +188,14 @@ export async function enviarImagen(telefono, imageUrl, caption = '') {
 }
 
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
-async function marcarLeido(messageId) {
+// Fase A: mismo criterio -- credenciales obligatorias.
+async function marcarLeido(messageId, credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) return;
   try {
-    await fetch(`https://graph.facebook.com/v20.0/${getPhoneNumberId()}/messages`, {
+    await fetch(`https://graph.facebook.com/v20.0/${credenciales.phoneNumberId}/messages`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${getAccessToken()}`,
+        'Authorization': `Bearer ${credenciales.accessToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -175,13 +208,21 @@ async function marcarLeido(messageId) {
 }
 
 // ─── Notificación de escalación — WhatsApp al admin + SMS fallback ───────────
-const getAdminWA = () => getIntegracion('wa_admin_numero') || process.env.WHATSAPP_ADMIN_NUMERO;
-async function notificarEscalacion(telefono) {
-  // Notificación por WhatsApp al número admin
-  if (getAdminWA()) {
+// Fase A: el número admin y las credenciales se resuelven para EL MISMO
+// negocio que escaló -- nunca el admin/caché global. El SMS de respaldo
+// (Twilio, NUMERO_SOPORTE) es una alerta de plataforma para Mario, no un
+// dato del negocio -- se deja como estaba.
+async function notificarEscalacion(telefono, negocioId, credenciales) {
+  if (typeof negocioId === 'string' && negocioId.trim()) {
     try {
-      await enviarMensaje(getAdminWA(), `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`);
-      console.log('[Meta WA] Escalación notificada por WhatsApp al admin');
+      const cfg = await obtenerConfiguracion(negocioId);
+      const adminWA = cfg.wa_admin_numero;
+      if (adminWA && credenciales) {
+        await enviarMensaje(adminWA, `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`, credenciales);
+        console.log(`[Meta WA] Escalación notificada por WhatsApp al admin del negocio ${negocioId}`);
+      } else {
+        console.log(`[Meta WA] Escalación no notificada por WhatsApp — sin admin/integración propia para negocio ${negocioId}`);
+      }
     } catch (e) {
       console.error('[Meta WA] Error notificando escalación por WA:', e.message);
     }
@@ -207,6 +248,18 @@ async function notificarEscalacion(telefono) {
 // por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
 // ni se usa un fallback aquí adentro.
 async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
+  // Fase A (aislamiento de WhatsApp): credenciales resueltas UNA sola vez
+  // aquí, para ESTE negocio, y pasadas explícitamente a cada envío de
+  // esta función -- nunca se vuelve a resolver por punto de envío, nunca
+  // cae al caché global. Sin integración propia verificada, el bot no
+  // puede responder -- se omite todo el procesamiento (no tiene sentido
+  // llamar a Claude si no hay forma de contestarle al cliente), nunca se
+  // usan las credenciales de otro negocio como respaldo.
+  const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+  if (!credenciales) {
+    console.log(`[Meta WA] Mensaje entrante ignorado — sin integración de WhatsApp propia verificada para negocio ${negocioId}`);
+    return;
+  }
   try {
     // Folio para pago
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
@@ -224,16 +277,16 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
             msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
           }
-          await enviarMensaje(telefono, msg);
+          await enviarMensaje(telefono, msg, credenciales);
           await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         } catch (e) {
           console.error('[Meta WA] Error enviando link por folio:', e.message);
-          await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`);
+          await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`, credenciales);
         }
         return;
       }
       if (!pedidoDB) {
-        await enviarMensaje(telefono, `No encontramos un pedido con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`);
+        await enviarMensaje(telefono, `No encontramos un pedido con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`, credenciales);
         await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`, negocioId);
         return;
       }
@@ -251,7 +304,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         // Guardar link_id para reconciliación automática
         await guardarLinkPago(pedidoPendiente, clip.linkId);
         const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
-        await enviarMensaje(telefono, mensajePago);
+        await enviarMensaje(telefono, mensajePago, credenciales);
         await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId);
         console.log(`[Meta WA] Link de pago enviado a ${telefono}`);
       } catch (e) {
@@ -277,7 +330,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         const items = (p.datos?.items || []).map(i => `${i.cantidad > 1 ? i.cantidad + 'x ' : ''}${i.nombre}`).join(', ');
         const extra = p.estado === 'listo' ? ' ¡Gracias por tu preferencia!' : '';
         const msg = `Tu pedido ${p.folio}${items ? ` (${items})` : ''} ${desc}.${extra}`;
-        await enviarMensaje(telefono, msg);
+        await enviarMensaje(telefono, msg, credenciales);
         await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         console.log(`[Meta WA] Estado de pedido enviado a ${telefono}: ${p.folio} → ${p.estado}`);
         return;
@@ -301,7 +354,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         } else {
           msg = `Aún no tienes puntos Rewards acumulados. ¡Tu próximo pedido los genera automáticamente! 🎁`;
         }
-        await enviarMensaje(telefono, msg);
+        await enviarMensaje(telefono, msg, credenciales);
         await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
         console.log(`[Meta WA] Puntos Rewards enviados a ${telefono}`);
         return;
@@ -313,11 +366,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
 
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono, negocioId);
-    const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono) : [];
+    const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono, negocioId) : [];
     const clienteCtx = clienteDB ? { nombre: clienteDB.nombre || nombreMeta, pedidos: pedidosAnteriores } : null;
     if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
 
-    const sessionId = `meta-${telefono}`;
+    // Fase A: sessionId incluye negocioId -- antes era solo `meta-${telefono}`,
+    // un Map global en session.js compartía el mismo historial de
+    // conversación de Claude entre negocios distintos si el mismo
+    // teléfono le escribía a ambos.
+    const sessionId = `meta-${negocioId}-${telefono}`;
 
     // Si Claude tarda más de 8s, avisamos al cliente para que no piense que el bot falló
     let waitMessageSent = false;
@@ -325,7 +382,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       waitMessageSent = true;
       const msgEspera = 'Dame un momento, estoy procesando tu solicitud... 🕐';
       try {
-        await enviarMensaje(telefono, msgEspera);
+        await enviarMensaje(telefono, msgEspera, credenciales);
         await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera, negocioId);
       } catch (error) {
         // Fallo de Meta (token inválido/expirado, rate limit, caída de la API, etc.)
@@ -344,10 +401,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       const pareceConfirmacion = /pedido\s+(confirmado|registrado|listo|anotado|quedó)|quedó\s+registrado|queda\s+registrado/i.test(textoBot);
       if (pareceConfirmacion) {
         console.error(`[WA] ⚠️ ALERTA: bot confirmó verbalmente a ${telefono} pero no generó <ORDEN_CONFIRMADA>. Texto: ${textoBot.slice(0, 200)}`);
-        const admin = getAdminWA();
-        if (admin) {
-          enviarMensaje(admin, `⚠️ *Pedido perdido posible*: el bot le dijo a un cliente que su pedido quedó registrado, pero no generó la orden. Teléfono: ${telefono}. Revisar chat ahora.`).catch(() => {});
-        }
+        // Fase A: admin propio de este negocio, credenciales propias --
+        // nunca el admin/caché global.
+        obtenerConfiguracion(negocioId).then(cfg => {
+          if (cfg.wa_admin_numero) {
+            enviarMensaje(cfg.wa_admin_numero, `⚠️ *Pedido perdido posible*: el bot le dijo a un cliente que su pedido quedó registrado, pero no generó la orden. Teléfono: ${telefono}. Revisar chat ahora.`, credenciales).catch(() => {});
+          }
+        }).catch(() => {});
       }
     }
 
@@ -371,7 +431,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Matamoros'
           });
           const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
-          await enviarMensaje(telefono, confirmMsg);
+          await enviarMensaje(telefono, confirmMsg, credenciales);
           await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId);
         } catch (e) {
           console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
@@ -397,11 +457,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
     }
 
-    if (resultado.escalar) await notificarEscalacion(telefono);
+    if (resultado.escalar) await notificarEscalacion(telefono, negocioId, credenciales);
 
     const baseUrl = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
     if (resultado.enviarMenu) {
-      try { await enviarImagen(telefono, `${baseUrl}/public/menu.png`); } catch (e) { console.error('[Meta WA] Error enviando menú:', e.message); }
+      try { await enviarImagen(telefono, `${baseUrl}/public/menu.png`, '', credenciales); } catch (e) { console.error('[Meta WA] Error enviando menú:', e.message); }
     }
 
     // ── Factura CFDI solicitada por WhatsApp ──────────────────────────────────
@@ -419,37 +479,37 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         }
 
         if (!pedido) {
-          await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.');
+          await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.', credenciales);
         } else {
           const factura = await generarFactura(pedido, datosFactura);
           if (datosFactura.email) await enviarFacturaPorEmail(factura.id, datosFactura.email).catch(() => {});
           const msgFactura = datosFactura.email
             ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
             : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
-          await enviarMensaje(telefono, msgFactura);
+          await enviarMensaje(telefono, msgFactura, credenciales);
           await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura, negocioId);
           console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
         }
       } catch (e) {
         console.error('[Meta WA] Error generando factura:', e.message);
-        await enviarMensaje(telefono, 'Hubo un problema generando tu factura. Comunícate con nosotros directamente para ayudarte.');
+        await enviarMensaje(telefono, 'Hubo un problema generando tu factura. Comunícate con nosotros directamente para ayudarte.', credenciales);
       }
     }
 
-    await enviarMensaje(telefono, resultado.texto);
+    await enviarMensaje(telefono, resultado.texto, credenciales);
     console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
     const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId);
     if (msgSaliente && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgSaliente });
 
     if (linkPago) {
       const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}`;
-      await enviarMensaje(telefono, mensajePago);
+      await enviarMensaje(telefono, mensajePago, credenciales);
       const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago, negocioId);
       if (msgPago && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgPago });
     }
   } catch (error) {
     console.error('[Meta WA] Error en procesarConClaude:', error.message);
-    registrarError();
+    registrarError(negocioId);
   }
 }
 
@@ -488,10 +548,16 @@ router.post('/', async (req, res) => {
 
     console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
 
+    // Fase A: credenciales resueltas una vez para todo el manejo de este
+    // webhook (repartidores, marcar leído) -- mismo criterio que
+    // procesarConClaude. Puede ser null (negocio sin integración propia
+    // verificada); cada punto de envío de abajo ya maneja ese caso.
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+
     // Acciones inmediatas (no debounced)
     const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId);
     if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
-    await marcarLeido(messageId);
+    await marcarLeido(messageId, credenciales);
     // Tracking de respuesta a campañas (background, no bloquea)
     marcarRespuestaCampana(telefono).catch(() => {});
 
@@ -499,7 +565,7 @@ router.post('/', async (req, res) => {
     const ultimosDiez = t => t.slice(-10);
     const esMario = ultimosDiez(telefono) === ultimosDiez(process.env.MARIO_TELEFONO || '528781091115');
     if (esMario) {
-      const esComando = await procesarAprobacion(texto);
+      const esComando = await procesarAprobacion(texto, negocioId, credenciales);
       if (esComando) return;
     }
 
@@ -519,7 +585,7 @@ router.post('/', async (req, res) => {
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
       const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
-      await enviarMensaje(telefono, msgReg);
+      await enviarMensaje(telefono, msgReg, credenciales);
       await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId);
       await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId);
       console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
@@ -542,7 +608,7 @@ router.post('/', async (req, res) => {
         } else {
           msgEntrega = `No tienes pedidos activos asignados en este momento.`;
         }
-        await enviarMensaje(telefono, msgEntrega);
+        await enviarMensaje(telefono, msgEntrega, credenciales);
         await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
         await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega, negocioId);
         return;
@@ -552,7 +618,7 @@ router.post('/', async (req, res) => {
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : 'https://xabor-agent-production.up.railway.app';
       const msgLink = `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`;
-      await enviarMensaje(telefono, msgLink);
+      await enviarMensaje(telefono, msgLink, credenciales);
       await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
       await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink, negocioId);
       console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
@@ -580,6 +646,16 @@ export async function notificarRepartidoresPorWA(pedido) {
     const repartidores = await obtenerRepartidores(pedido.negocioId);
     if (!repartidores.length) return;
 
+    // Fase A: credenciales propias del mismo negocio del pedido -- nunca
+    // el caché global. Sin integración propia, se omite en silencio
+    // (misma decisión que el resto del motor: no hay forma de notificar,
+    // pero eso nunca bloquea nada del flujo de pedidos).
+    const credenciales = await obtenerCredencialesWhatsappNegocio(pedido.negocioId);
+    if (!credenciales) {
+      console.log(`[WA Repartidor] Notificación omitida — sin integración propia verificada para negocio ${pedido.negocioId}`);
+      return;
+    }
+
     const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
       ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
       : 'https://xabor-agent-production.up.railway.app';
@@ -590,7 +666,7 @@ export async function notificarRepartidoresPorWA(pedido) {
 
     for (const r of repartidores) {
       try {
-        await enviarMensaje(r.telefono, texto);
+        await enviarMensaje(r.telefono, texto, credenciales);
         console.log(`[WA Repartidor] Notificación enviada a ${r.nombre} (${r.telefono})`);
       } catch (e) {
         console.error(`[WA Repartidor] Error al notificar a ${r.nombre}: ${e.message}`);
