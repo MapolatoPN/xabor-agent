@@ -2424,6 +2424,51 @@ const ESTADOS_MODULO_VALIDOS = ['no_configurado', 'pendiente', 'configurado', 'a
 const ESTADOS_NEGOCIO_VALIDOS = ['pendiente', 'activo', 'suspendido'];
 const PLANES_VALIDOS = ['prueba', 'basico', 'pro', 'personalizado'];
 
+// ─── Control real de módulos por negocio (fase "módulos") ──────────────────
+// Criterio de disponibilidad, documentado explícitamente (no se inventan
+// estados nuevos -- son exactamente los 5 que ya define el CHECK de
+// negocio_modulos.estado, ver migración 011):
+//   'activo' o 'configurado'  -> módulo DISPONIBLE
+//   'pendiente' | 'no_configurado' | 'suspendido' | (sin fila)  -> BLOQUEADO
+// 'configurado' cuenta como disponible porque ya lo usa así el flujo real de
+// facturación (Nonna Maye tiene facturacion='configurado' en producción,
+// nunca 'activo', y ya emite facturas hoy -- tratarlo como bloqueado sería
+// una regresión real, no una corrección).
+const MODULO_ESTADOS_DISPONIBLES = ['activo', 'configurado'];
+
+export async function moduloHabilitado(negocioId, modulo) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  if (!MODULOS_VALIDOS.includes(modulo)) return false;
+  try {
+    const { rows } = await pool.query(
+      'SELECT estado FROM negocio_modulos WHERE negocio_id = $1 AND modulo = $2',
+      [negocioId.trim(), modulo]
+    );
+    return !!rows[0] && MODULO_ESTADOS_DISPONIBLES.includes(rows[0].estado);
+  } catch (e) {
+    console.error('[DB] Error moduloHabilitado:', e.message);
+    return false;
+  }
+}
+
+// Lista de módulos disponibles para el negocio de la sesión -- usada por
+// /api/auth/me para que el frontend construya su navegación. Nunca incluye
+// el estado crudo (activo vs configurado) ni ningún otro dato de
+// negocio_modulos -- solo los nombres ya filtrados a "disponible".
+export async function obtenerModulosHabilitados(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  try {
+    const { rows } = await pool.query(
+      'SELECT modulo FROM negocio_modulos WHERE negocio_id = $1 AND estado = ANY($2) ORDER BY modulo',
+      [negocioId.trim(), MODULO_ESTADOS_DISPONIBLES]
+    );
+    return rows.map(r => r.modulo);
+  } catch (e) {
+    console.error('[DB] Error obtenerModulosHabilitados:', e.message);
+    return [];
+  }
+}
+
 // Único punto de verdad de "¿esta persona es superadmin?" -- tabla separada
 // de `usuarios` a propósito (ver migración 011 para el razonamiento
 // completo). activo=true además de la fila existir: revocar el privilegio

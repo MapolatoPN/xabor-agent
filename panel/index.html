@@ -547,7 +547,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>
-  <button class="header-btn admin-only" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
+  <button class="header-btn admin-only" data-modulo="pos" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
 
@@ -672,19 +672,19 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
 <!-- Tabs -->
 <div id="tabs-nav">
-  <button class="tab-btn activo" id="tab-comandas"  onclick="mostrarTab('comandas')">Comandas</button>
-  <button class="tab-btn"        id="tab-presencial" onclick="mostrarTab('presencial')">POS</button>
-  <button class="tab-btn admin-only" id="tab-corte"  onclick="mostrarTab('corte')">Corte</button>
-  <button class="tab-btn"        id="tab-chats"      onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
-  <button class="tab-btn admin-only" id="tab-historial" onclick="mostrarTab('historial')">Historial</button>
-  <button class="tab-btn admin-only" id="tab-ventas"    onclick="mostrarTab('ventas')">Ventas</button>
-  <button class="tab-btn admin-only" id="tab-llamadas"  onclick="mostrarTab('llamadas')">Llamadas</button>
-  <button class="tab-btn admin-only" id="tab-menu"      onclick="mostrarTab('menu')">Menú</button>
+  <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Comandas</button>
+  <button class="tab-btn"        id="tab-presencial" data-modulo="pos" onclick="mostrarTab('presencial')">POS</button>
+  <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
+  <button class="tab-btn"        id="tab-chats"      data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
+  <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
+  <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
+  <button class="tab-btn admin-only" id="tab-llamadas"  data-modulo="voz" onclick="mostrarTab('llamadas')">Llamadas</button>
+  <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Config</button>
-  <button class="tab-btn admin-only" id="tab-repartidores" onclick="mostrarTab('repartidores')">Repartidores</button>
+  <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
   <button class="tab-btn admin-only" id="tab-rewards"     onclick="mostrarTab('rewards')">Rewards</button>
-  <button class="tab-btn admin-only" id="tab-usuarios"    onclick="mostrarTab('usuarios')">Usuarios</button>
+  <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
 </div>
 
 <main>
@@ -1273,11 +1273,26 @@ async function cargarNegocio() {
   } catch(e) {}
 }
 
+// Avisos de "módulo no habilitado" nunca se acumulan en un flood -- si dos
+// llamadas caen casi al mismo tiempo (ej. carga inicial), solo se muestra
+// una vez cada pocos segundos.
+let ultimoAvisoModulo = 0;
 function apiFetch(url, opts = {}) {
   return fetch(url, {
     ...opts,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  }).then(async r => {
+    if (r.status === 403) {
+      try {
+        const d = await r.clone().json();
+        if ((d.error === 'Módulo no habilitado' || d.error === 'Negocio suspendido o inactivo') && Date.now() - ultimoAvisoModulo > 4000) {
+          ultimoAvisoModulo = Date.now();
+          alert(d.error === 'Módulo no habilitado' ? 'Este módulo no está habilitado para tu negocio.' : 'Tu negocio está suspendido.');
+        }
+      } catch (e) {}
+    }
+    return r;
   });
 }
 
@@ -1295,21 +1310,58 @@ async function cerrarSesion() {
   location.href = '/login-negocio.html';
 }
 
+let MODULOS = [];
+
+// Oculta cualquier elemento con data-modulo cuyo módulo no esté en la lista
+// que trajo /api/auth/me (siempre viene del servidor, nunca se calcula ni
+// se confía en nada que mande el propio panel). Ocultar el botón es solo
+// una mejora de UX -- el 403 real lo impone el backend en cada endpoint.
+function aplicarModulosUI() {
+  document.querySelectorAll('[data-modulo]').forEach(el => {
+    if (!MODULOS.includes(el.dataset.modulo)) el.style.display = 'none';
+  });
+}
+
+// Si el tab activo por default (o el que haya quedado marcado) terminó
+// oculto por rol o por módulo, cae al primer tab visible en vez de dejar
+// una pantalla vacía sin ninguna pestaña resaltada.
+function primerTabVisible() {
+  const orden = ['comandas','presencial','corte','chats','historial','ventas','llamadas','menu','repartidores','clientes','rewards','usuarios','config'];
+  for (const tab of orden) {
+    const btn = document.getElementById('tab-' + tab);
+    if (btn && btn.style.display !== 'none') return tab;
+  }
+  return null;
+}
+
 fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   if (!r.ok) { irALogin(); return; }
   const data = await r.json();
   ROL = data.rol || 'staff';
   NEGOCIO_ID = data.negocioId;
+  MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   // Ocultar tabs de admin para operadores
   if (ROL !== 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
   }
+  // Ocultar tabs de módulos no habilitados para este negocio
+  aplicarModulosUI();
+  // Si el tab activo (comandas, por default) quedó oculto, mostrar el
+  // primero disponible en vez de una vista en blanco sin pestaña marcada.
+  const tabActivo = document.querySelector('.tab-btn.activo');
+  if (!tabActivo || tabActivo.style.display === 'none') {
+    const siguiente = primerTabVisible();
+    if (siguiente) mostrarTab(siguiente);
+  }
   // Cargar config del negocio
   await cargarNegocio();
-  // Cargar pedidos programados al inicio
-  cargarProgramados();
-  // Refrescar programados cada 5 min
-  setInterval(cargarProgramados, 5 * 60 * 1000);
+  // Cargar pedidos programados al inicio -- solo si el módulo POS está
+  // habilitado (si no, el endpoint solo respondería 403).
+  if (MODULOS.includes('pos')) {
+    cargarProgramados();
+    // Refrescar programados cada 5 min
+    setInterval(cargarProgramados, 5 * 60 * 1000);
+  }
   // Registrar service worker y suscribirse a push notifications
   registrarPush();
   // WebSocket del panel — solo se conecta DESPUÉS de confirmar sesión
@@ -4322,14 +4374,14 @@ async function cargarRepartidores() {
   </div>
   <!-- Items como lista vertical -->
   <div style="padding:10px 12px;display:flex;flex-direction:column;gap:4px;">
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-history"></i>Historial</button>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
-    <button class="mas-item" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Men&#xFA;</button>
+    <button class="mas-item" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-history"></i>Historial</button>
+    <button class="mas-item" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
+    <button class="mas-item" data-modulo="voz" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
+    <button class="mas-item admin-only" data-modulo="menu" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Men&#xFA;</button>
     <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('config')"><i class="ti ti-settings"></i>Config</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('repartidores')"><i class="ti ti-bike"></i>Repartidores</button>
+    <button class="mas-item admin-only" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('repartidores')"><i class="ti ti-bike"></i>Repartidores</button>
     <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('clientes')"><i class="ti ti-users"></i>Clientes</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('usuarios')"><i class="ti ti-user-cog"></i>Usuarios</button>
+    <button class="mas-item admin-only" data-modulo="usuarios" onclick="cerrarMasSheet();bnavTab('usuarios')"><i class="ti ti-user-cog"></i>Usuarios</button>
   </div>
 </div>
 
