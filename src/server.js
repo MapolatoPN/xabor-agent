@@ -1332,8 +1332,16 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
         const msg = pedido.modalidad === 'recoger en tienda'
           ? `Tu pedido ${pedido.id} está listo. Puedes pasar a recogerlo cuando gustes.`
           : `Tu pedido ${pedido.id} está listo y en camino. Llega en unos minutos.`;
-        await enviarMensaje(tel, msg);
-        console.log(`[Panel] Notificación "listo" enviada a ${tel} para ${pedido.id}`);
+        // Fase A: credenciales propias del negocio de la sesión -- nunca
+        // caché global. Sin integración propia, se omite en silencio
+        // (nunca bloquea el cambio de estado del pedido, ya confirmado arriba).
+        const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+        if (credenciales) {
+          await enviarMensaje(tel, msg, credenciales);
+          console.log(`[Panel] Notificación "listo" enviada a ${tel} para ${pedido.id}`);
+        } else {
+          console.log(`[Panel] Notificación "listo" omitida — sin integración propia para negocio ${req.negocioId}`);
+        }
       } catch (e) {
         console.error('[Panel] Error notificando cliente listo:', e.message);
       }
@@ -2464,15 +2472,20 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
   }
   console.log(`[Repartidor] ${req.repartidor.nombre} tomó el pedido ${folio}`);
 
-  // WA "en camino" al cliente
+  // WA "en camino" al cliente — Fase A: credenciales propias del negocio
+  // del repartidor, nunca caché global.
   try {
     const tel = pedido?.cliente?.telefono;
     if (tel && tel !== '—' && !tel.startsWith('rappi-')) {
       const nombre = pedido?.cliente?.nombre?.split(' ')[0] || 'cliente';
-      await enviarMensaje(tel,
-        `¡Hola ${nombre}! 🛵 Tu pedido *${folio}* ya está en camino. ` +
-        `Lo lleva ${req.repartidor.nombre}. ¡Llegará en breve!`
-      );
+      const credenciales = await obtenerCredencialesWhatsappNegocio(req.repartidor.negocio_id);
+      if (credenciales) {
+        await enviarMensaje(tel,
+          `¡Hola ${nombre}! 🛵 Tu pedido *${folio}* ya está en camino. ` +
+          `Lo lleva ${req.repartidor.nombre}. ¡Llegará en breve!`,
+          credenciales
+        );
+      }
     }
   } catch (e) {
     console.error('[Repartidor] Error enviando WA en camino:', e.message);
@@ -2504,15 +2517,20 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
   broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);
 
-  // WA confirmación de entrega al cliente
+  // WA confirmación de entrega al cliente — Fase A: credenciales propias
+  // del negocio del repartidor, nunca caché global.
   try {
     const tel = pedido?.cliente?.telefono;
     if (tel && tel !== '—' && !tel.startsWith('rappi-')) {
       const nombre = pedido?.cliente?.nombre?.split(' ')[0] || 'cliente';
-      await enviarMensaje(tel,
-        `¡Listo ${nombre}! ✅ Tu pedido *${folio}* fue entregado. ` +
-        `¡Gracias por tu preferencia! Esperamos verte pronto. 🙏`
-      );
+      const credenciales = await obtenerCredencialesWhatsappNegocio(req.repartidor.negocio_id);
+      if (credenciales) {
+        await enviarMensaje(tel,
+          `¡Listo ${nombre}! ✅ Tu pedido *${folio}* fue entregado. ` +
+          `¡Gracias por tu preferencia! Esperamos verte pronto. 🙏`,
+          credenciales
+        );
+      }
     }
   } catch (e) {
     console.error('[Repartidor] Error enviando WA entregado:', e.message);
@@ -2946,7 +2964,17 @@ app.post('/api/admin/campanas', requireAdminSeguro, requireModulo('whatsapp'), a
     res.json({ ok: true, campanaId, total: destinatarios.length });
 
     // Envío en background (1 msg/seg para no saturar la API de Meta)
+    // Fase A: credenciales propias del negocio resueltas una vez, antes
+    // del loop -- nunca caché global. Si el negocio no tiene integración
+    // propia, la campaña completa se omite (se loguea una sola vez, no
+    // por cada destinatario).
+    const negocioIdCampana = req.negocioId;
     setImmediate(async () => {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioIdCampana);
+      if (!credenciales) {
+        console.log(`[Campaña ${campanaId}] Omitida por completo — sin integración propia verificada para negocio ${negocioIdCampana}`);
+        return;
+      }
       for (const { telefono, nombre: nomCliente } of destinatarios) {
         const primerNombre = nomCliente?.split(' ')[0] || '';
         const msgPersonalizado = primerNombre
@@ -2954,7 +2982,7 @@ app.post('/api/admin/campanas', requireAdminSeguro, requireModulo('whatsapp'), a
           : mensaje.replace(/,?\s*\{nombre\}/gi, '');
         let ok = false;
         try {
-          await enviarMensaje(telefono, msgPersonalizado);
+          await enviarMensaje(telefono, msgPersonalizado, credenciales);
           ok = true;
         } catch (e) {
           console.error(`[Campaña ${campanaId}] Error enviando a ${telefono}:`, e.message);
@@ -3152,7 +3180,14 @@ ${bloqueModal}
 📡 *Por canal de venta:*
 ${bloqueCanal}`;
   try {
-    await enviarMensaje(WHATSAPP_ADMIN_NUMERO, msg);
+    // Fase A: credenciales propias del mismo negocio del reporte -- nunca
+    // caché global. Job de un solo negocio por diseño (ver nota arriba).
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioIdReporte);
+    if (!credenciales) {
+      console.log(`[Reporte] Corte diario no enviado — sin integración propia verificada para negocio ${negocioIdReporte}`);
+      return;
+    }
+    await enviarMensaje(WHATSAPP_ADMIN_NUMERO, msg, credenciales);
     console.log('[Reporte] Corte diario enviado por WhatsApp');
   } catch(e) {
     console.error('[Reporte] Error al enviar corte diario:', e.message);
@@ -3239,7 +3274,7 @@ async function enviarSeguimientoOportunidades() {
     // y en la misma hora local que tuvieron actividad (ventana de ±30 min)
     const { rows: pendientes } = await pool.query(`
       SELECT
-        o.id, o.telefono, o.intents_detectados, o.ultima_actividad_at,
+        o.id, o.telefono, o.negocio_id, o.intents_detectados, o.ultima_actividad_at,
         c.nombre,
         EXTRACT(HOUR FROM o.ultima_actividad_at AT TIME ZONE 'UTC' AT TIME ZONE $1) AS hora_original,
         EXTRACT(HOUR FROM NOW() AT TIME ZONE $1) AS hora_actual
@@ -3258,6 +3293,18 @@ async function enviarSeguimientoOportunidades() {
         ) <= 1
     `, [tz]);
 
+    // Fase A: credenciales resueltas por negocio_id, cacheadas dentro de
+    // esta corrida del job -- nunca caché global, nunca se usa la
+    // integración de un negocio para el seguimiento de otro.
+    const credencialesPorNegocio = new Map();
+    async function resolverCredencialesCacheadas(negocioId) {
+      if (!negocioId) return null;
+      if (!credencialesPorNegocio.has(negocioId)) {
+        credencialesPorNegocio.set(negocioId, await obtenerCredencialesWhatsappNegocio(negocioId));
+      }
+      return credencialesPorNegocio.get(negocioId);
+    }
+
     for (const op of pendientes) {
       // Excluir repartidores
       if (telefonosRep.has(op.telefono)) continue;
@@ -3273,8 +3320,14 @@ async function enviarSeguimientoOportunidades() {
         continue; // sin intent relevante
       }
 
+      const credenciales = await resolverCredencialesCacheadas(op.negocio_id);
+      if (!credenciales) {
+        console.log(`[Memory] Seguimiento omitido — sin integración propia verificada para negocio ${op.negocio_id || '(sin resolver)'} (op #${op.id})`);
+        continue;
+      }
+
       try {
-        await enviarMensaje(op.telefono, msg);
+        await enviarMensaje(op.telefono, msg, credenciales);
         await pool.query(
           `UPDATE oportunidades SET seguimiento_enviado_at = NOW(), seguimiento_count = 1
            WHERE id = $1`,
