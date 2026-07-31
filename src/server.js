@@ -879,7 +879,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded
 
 // Archivos estáticos: panel y audios generados por ElevenLabs
-app.use(express.static(join(__dirname, '../panel')));
+app.use(express.static(join(__dirname, '../panel'), { index: false }));
 app.use('/audio', express.static(join(__dirname, '../public/audio')));
 app.use('/public', express.static(join(__dirname, '../public')));
 
@@ -1239,6 +1239,14 @@ app.use('/api', (req, res, next) => {
 
 // Servir panel principal solo con sesión válida
 app.get('/', (req, res) => {
+  res.sendFile(join(__dirname, '../public/landing/index.html'));
+});
+
+app.get('/login', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/login-negocio.html'));
+});
+
+app.get('/app', (req, res) => {
   res.sendFile(join(__dirname, '../panel/index.html'));
 });
 
