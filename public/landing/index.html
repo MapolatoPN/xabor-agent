@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Xabor convierte mensajes de WhatsApp en pedidos, comandas y seguimiento operativo dentro de un sistema diseñado para trabajar de forma más inteligente.">
+  <title>Xabor — Tu negocio responde, vende y opera en un solo lugar</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     NAV
+══════════════════════════════════════════════════════════ -->
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo">
+        <div class="logo-mark">X</div>
+        Xabor
+      </a>
+
+      <div class="nav-links">
+        <a href="#solucion"     class="nav-link">Plataforma</a>
+        <a href="#como-funciona" class="nav-link">Cómo funciona</a>
+        <a href="#casos"        class="nav-link">Casos de uso</a>
+        <a href="#faq"          class="nav-link">FAQ</a>
+        <a href="/login"        class="btn btn-outline" style="font-size:.85rem;padding:8px 18px;">Iniciar sesión</a>
+        <button class="btn btn-primary" style="font-size:.85rem;padding:8px 18px;" data-pending="próximamente">
+          Solicitar demo
+        </button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     HERO
+══════════════════════════════════════════════════════════ -->
+<section id="hero">
+  <div class="container">
+    <div class="hero-inner">
+
+      <div class="hero-copy">
+        <div class="badge">
+          <span>●</span> Sistema operativo para negocios con pedidos
+        </div>
+
+        <h1>Tu negocio responde, vende y opera en un solo lugar</h1>
+
+        <p class="subtitle">
+          Xabor convierte mensajes de WhatsApp en pedidos, comandas y seguimiento operativo dentro de un sistema diseñado para trabajar de forma más inteligente.
+        </p>
+
+        <div class="hero-cta">
+          <button class="btn btn-primary" data-pending="próximamente">
+            Solicitar demostración
+          </button>
+          <a href="/login" class="btn btn-outline">
+            Iniciar sesión
+          </a>
+        </div>
+
+        <div class="hero-proof">
+          <div class="hero-proof-item">
+            <span class="dot"></span>
+            WhatsApp, POS y comandas integrados
+          </div>
+          <div class="hero-proof-item">
+            <span class="dot"></span>
+            Sin cambiar tu número de WhatsApp
+          </div>
+          <div class="hero-proof-item">
+            <span class="dot"></span>
+            Multiempresa
+          </div>
+        </div>
+      </div>
+
+      <!-- UI mockup del sistema -->
+      <div class="hero-visual">
+        <div class="mock-shell">
+          <div class="mock-bar">
+            <div class="mock-bar-dot r"></div>
+            <div class="mock-bar-dot y"></div>
+            <div class="mock-bar-dot g"></div>
+            <span class="mock-bar-title">Panel Xabor</span>
+          </div>
+          <div class="mock-body">
+
+            <!-- Comanda activa -->
+            <div class="comanda-card">
+              <div class="comanda-header">
+                <span class="comanda-folio">XAB-0127</span>
+                <span class="comanda-badge nuevo">Nuevo · WhatsApp</span>
+              </div>
+              <div style="font-size:.78rem;color:var(--text-2);margin-bottom:8px;">
+                📍 Entrega a domicilio &nbsp;|&nbsp; Laura M.
+              </div>
+              <div class="comanda-item"><span>1× Focaccia Bar</span><span>$225</span></div>
+              <div class="comanda-item"><span>2× Ensalada Xabor</span><span>$318</span></div>
+              <div class="comanda-item"><span>1× Poppi Uva</span><span>$79</span></div>
+              <div class="comanda-total"><span>Total</span><span>$682</span></div>
+            </div>
+
+            <!-- Chat de WhatsApp -->
+            <div class="chat-wrap">
+              <div class="chat-msg recv">
+                Hola, quiero hacer un pedido para domicilio 🙏
+                <div class="chat-meta">10:14</div>
+              </div>
+              <div class="chat-msg sent">
+                ¡Hola Laura! Con gusto. ¿Qué te gustaría ordenar hoy?
+                <div class="chat-meta">10:14 ✓✓</div>
+              </div>
+              <div class="chat-msg recv">
+                Una Focaccia Bar, dos ensaladas y un Poppi de uva
+                <div class="chat-meta">10:15</div>
+              </div>
+              <div class="chat-msg sent">
+                Perfecto. Tu pedido es:<br>
+                · 1× Focaccia Bar $225<br>
+                · 2× Ensalada Xabor $318<br>
+                · 1× Poppi Uva $79<br>
+                Total: $682 + $60 envío = <strong>$742</strong><br><br>
+                ¿Confirmas?
+                <div class="chat-meta">10:15 ✓✓</div>
+              </div>
+              <div class="chat-msg recv">
+                ¡Sí, confirmo! Voy a pagar en efectivo
+                <div class="chat-meta">10:15</div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;">
+              <div style="flex:1;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px;text-align:center;">
+                <div style="font-size:1.2rem;font-weight:800;color:#15803D;">4</div>
+                <div style="font-size:.7rem;color:#16A34A;font-weight:600;">En cocina</div>
+              </div>
+              <div style="flex:1;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 12px;text-align:center;">
+                <div style="font-size:1.2rem;font-weight:800;color:#1D4ED8;">2</div>
+                <div style="font-size:.7rem;color:#2563EB;font-weight:600;">Nuevos</div>
+              </div>
+              <div style="flex:1;background:var(--accent-pale);border:1px solid #FDBA74;border-radius:8px;padding:10px 12px;text-align:center;">
+                <div style="font-size:1.2rem;font-weight:800;color:var(--accent);">1</div>
+                <div style="font-size:.7rem;color:var(--accent-dark);font-weight:600;">Listos</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     EL PROBLEMA
+══════════════════════════════════════════════════════════ -->
+<section id="problema">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">El problema</p>
+      <h2>Operar un negocio con pedidos no debería ser caótico</h2>
+      <p>La mayoría de los negocios pequeños y medianos atienden por WhatsApp, anotan en papel, usan otro sistema de cobro y tratan de no perder ningún pedido entre todo eso.</p>
+    </div>
+
+    <div class="problema-grid">
+      <div class="problema-card">
+        <div class="problema-icon">💬</div>
+        <h3>Mensajes simultáneos</h3>
+        <p>Varios clientes escriben al mismo tiempo y responder a todos con precisión se vuelve imposible en horas pico.</p>
+      </div>
+      <div class="problema-card">
+        <div class="problema-icon">⏱</div>
+        <h3>Clientes presenciales esperando</h3>
+        <p>Mientras estás en el WhatsApp, el cliente frente a ti espera. La atención dual divide la concentración y genera errores.</p>
+      </div>
+      <div class="problema-card">
+        <div class="problema-icon">❌</div>
+        <h3>Pedidos que se pierden</h3>
+        <p>Un mensaje no visto, una nota que se borra o una comanda que llega tarde generan errores que afectan la reputación del negocio.</p>
+      </div>
+      <div class="problema-card">
+        <div class="problema-icon">🗂</div>
+        <h3>Información fragmentada</h3>
+        <p>Historial de clientes en WhatsApp, pedidos en papel, pagos en otro sistema. Sin visión unificada, operar bien es difícil.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     SOLUCIÓN
+══════════════════════════════════════════════════════════ -->
+<section id="solucion">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">La plataforma</p>
+      <h2>Todo lo que necesita tu negocio para operar sin fricciones</h2>
+      <p>Xabor integra en un solo sistema los canales de venta, el equipo de operaciones y el historial de clientes.</p>
+    </div>
+
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">💬</div>
+        <h3>WhatsApp con IA</h3>
+        <p>El agente conversacional atiende, toma pedidos y confirma detalles en lenguaje natural, sin que el equipo tenga que intervenir en cada mensaje.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🧾</div>
+        <h3>Comandas automáticas</h3>
+        <p>Cada pedido confirmado genera una comanda en el panel al instante. El equipo de cocina ve el pedido en segundos, sin intermediarios.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🖥</div>
+        <h3>POS integrado</h3>
+        <p>Recibe pedidos presenciales desde el mismo panel. Corte de caja, historial, formas de pago y tickets en un solo lugar.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">👥</div>
+        <h3>Clientes y memoria</h3>
+        <p>Xabor recuerda a cada cliente: sus pedidos anteriores, preferencias y frecuencia de compra para ayudarte a atenderlos mejor.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🚴</div>
+        <h3>Repartidores</h3>
+        <p>Asigna y notifica a tu equipo de reparto por WhatsApp directamente desde el panel, con información completa del pedido.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📞</div>
+        <h3>Llamadas por IA</h3>
+        <p>Xabor también puede recibir pedidos por llamada telefónica con un agente de voz, registrándolos automáticamente en el panel.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🎁</div>
+        <h3>Rewards</h3>
+        <p>Programa de lealtad integrado. Tus clientes acumulan puntos con cada compra y puedes configurar sus beneficios desde el panel.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🧾</div>
+        <h3>Facturación CFDI</h3>
+        <p>Genera facturas timbradas directamente desde el panel o por WhatsApp, sin necesidad de otro sistema.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🏢</div>
+        <h3>Multiempresa</h3>
+        <p>Gestiona más de una sucursal o negocio desde una sola plataforma. Cada uno con sus propios datos, canales y configuración.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     CÓMO FUNCIONA
+══════════════════════════════════════════════════════════ -->
+<section id="como-funciona">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">Cómo funciona</p>
+      <h2>Del mensaje al pedido entregado</h2>
+      <p>Un flujo claro desde que el cliente escribe hasta que recibe su pedido.</p>
+    </div>
+
+    <div class="steps-track">
+      <div class="step active">
+        <div class="step-num">1</div>
+        <h3>Cliente escribe</h3>
+        <p>El cliente envía un mensaje de WhatsApp, llama por teléfono o hace su pedido en el mostrador.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>IA toma el pedido</h3>
+        <p>El agente conversacional entiende el pedido, confirma los detalles y lo registra sin intervención humana.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Entra al panel</h3>
+        <p>El pedido aparece en el panel del equipo en tiempo real. La comanda de cocina se imprime automáticamente.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <h3>Cocina lo prepara</h3>
+        <p>El equipo cambia el estado del pedido conforme avanza. El cliente puede consultar su estatus por WhatsApp.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <h3>Entrega y cierre</h3>
+        <p>Al entregar, se cierra el pedido, se genera el ticket y queda registrado en el historial del cliente.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     BENEFICIOS
+══════════════════════════════════════════════════════════ -->
+<section id="beneficios">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">Beneficios</p>
+      <h2>Menos tiempo operando, más tiempo creciendo</h2>
+    </div>
+
+    <div class="benefits-grid">
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">✅</div>
+        <div>
+          <h3>Menos errores en pedidos</h3>
+          <p>El agente registra exactamente lo que el cliente pidió y lo confirma antes de enviarlo a cocina.</p>
+        </div>
+      </div>
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">⚡</div>
+        <div>
+          <h3>Atención más rápida</h3>
+          <p>Tu equipo responde en segundos, incluso durante horas pico, sin importar cuántos mensajes lleguen a la vez.</p>
+        </div>
+      </div>
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">🗂</div>
+        <div>
+          <h3>Operación centralizada</h3>
+          <p>Un solo panel para todos los canales, todos los pedidos y todo el equipo. Sin cambiar entre aplicaciones.</p>
+        </div>
+      </div>
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">👤</div>
+        <div>
+          <h3>Historial de clientes</h3>
+          <p>Sabe quién compra más, qué pide y con qué frecuencia. Información disponible en cada conversación.</p>
+        </div>
+      </div>
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">🧠</div>
+        <div>
+          <h3>Memoria del negocio</h3>
+          <p>Xabor aprende los patrones del negocio para ayudarte a tomar mejores decisiones operativas.</p>
+        </div>
+      </div>
+      <div class="benefit-item">
+        <div class="benefit-icon-wrap">📦</div>
+        <div>
+          <h3>Seguimiento hasta entrega</h3>
+          <p>El cliente sabe en todo momento el estado de su pedido sin tener que preguntar.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     MEMORIA DEL NEGOCIO
+══════════════════════════════════════════════════════════ -->
+<section id="memoria">
+  <div class="container">
+    <div class="memoria-body">
+
+      <div class="memoria-copy">
+        <p class="eyebrow">La memoria de tu negocio</p>
+        <h2>Tu negocio recuerda a cada cliente</h2>
+        <p>
+          Xabor conserva el historial completo de cada cliente: sus pedidos anteriores, las preferencias que ha expresado, la frecuencia con la que compra y los patrones que ayudan al negocio a atenderlo mejor.
+        </p>
+        <p>
+          Esta información está disponible en cada conversación, en cada comanda y en el panel del equipo. No en una app separada. No en una hoja de cálculo.
+        </p>
+        <p>
+          La memoria del negocio no es un reporte mensual. Es parte del flujo de trabajo diario.
+        </p>
+      </div>
+
+      <div class="memoria-visual">
+        <div style="font-size:.72rem;font-weight:600;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em;">Clientes recientes</div>
+
+        <div class="mem-row">
+          <div class="mem-avatar">LM</div>
+          <div class="mem-info">
+            <div class="mem-name">Laura M.</div>
+            <div class="mem-detail">12 pedidos · Focaccia Bar, Ensalada Xabor</div>
+          </div>
+          <span class="mem-tag fav">Frecuente</span>
+        </div>
+
+        <div class="mem-row">
+          <div class="mem-avatar">CR</div>
+          <div class="mem-info">
+            <div class="mem-name">Carlos R.</div>
+            <div class="mem-detail">5 pedidos · Siempre pide domicilio</div>
+          </div>
+          <span class="mem-tag reg">Regular</span>
+        </div>
+
+        <div class="mem-row">
+          <div class="mem-avatar">AS</div>
+          <div class="mem-info">
+            <div class="mem-name">Ana S.</div>
+            <div class="mem-detail">1 pedido · Primera compra hoy</div>
+          </div>
+          <span class="mem-tag new">Nuevo</span>
+        </div>
+
+        <div class="mem-row">
+          <div class="mem-avatar">RP</div>
+          <div class="mem-info">
+            <div class="mem-name">Roberto P.</div>
+            <div class="mem-detail">8 pedidos · Martes y viernes</div>
+          </div>
+          <span class="mem-tag fav">Frecuente</span>
+        </div>
+
+        <div style="margin-top:8px;font-size:.75rem;color:#555;text-align:center;">
+          Historial • Preferencias • Frecuencia • Comportamiento
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     CASOS DE USO
+══════════════════════════════════════════════════════════ -->
+<section id="casos">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">Casos de uso</p>
+      <h2>Para negocios que reciben pedidos</h2>
+      <p>Xabor está diseñado para cualquier negocio que atiende clientes por WhatsApp y necesita organizar su operación.</p>
+    </div>
+
+    <div class="casos-grid">
+      <div class="caso-card">
+        <div class="caso-icon">🍽</div>
+        <h3>Restaurantes</h3>
+        <p>Comandas automáticas, POS presencial, repartidores y facturación.</p>
+      </div>
+      <div class="caso-card">
+        <div class="caso-icon">☕</div>
+        <h3>Cafeterías</h3>
+        <p>Pedidos anticipados por WhatsApp y punto de venta para atención en mostrador.</p>
+      </div>
+      <div class="caso-card">
+        <div class="caso-icon">🥘</div>
+        <h3>Cocinas</h3>
+        <p>Gestión de pedidos por volumen con estado en tiempo real para el equipo.</p>
+      </div>
+      <div class="caso-card">
+        <div class="caso-icon">💐</div>
+        <h3>Florerías</h3>
+        <p>Pedidos con fecha programada, pagos y seguimiento de entrega.</p>
+      </div>
+      <div class="caso-card">
+        <div class="caso-icon">📦</div>
+        <h3>Cualquier negocio con pedidos por WhatsApp</h3>
+        <p>Si tu negocio recibe pedidos por mensajes, Xabor puede organizarlos.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     SEGURIDAD
+══════════════════════════════════════════════════════════ -->
+<section id="seguridad">
+  <div class="container">
+    <div class="seguridad-inner">
+
+      <div class="seguridad-copy">
+        <p class="eyebrow">Seguridad y separación</p>
+        <h2>Cada negocio es un entorno independiente</h2>
+        <p>
+          Cada negocio opera con sus propios usuarios, datos, canales e integraciones. La información de un negocio nunca es visible para otro.
+        </p>
+        <p>
+          Los accesos se asignan por rol. El equipo ve lo que necesita. El administrador tiene control completo sobre la operación y la configuración.
+        </p>
+      </div>
+
+      <div class="seg-pillars">
+        <div class="seg-pill">
+          <div class="seg-pill-icon">🔐</div>
+          <span class="seg-pill-text">Datos separados por negocio</span>
+        </div>
+        <div class="seg-pill">
+          <div class="seg-pill-icon">👤</div>
+          <span class="seg-pill-text">Control de acceso por rol</span>
+        </div>
+        <div class="seg-pill">
+          <div class="seg-pill-icon">📵</div>
+          <span class="seg-pill-text">Sin acceso cruzado entre negocios</span>
+        </div>
+        <div class="seg-pill">
+          <div class="seg-pill-icon">📱</div>
+          <span class="seg-pill-text">Canales de WhatsApp propios de cada cuenta</span>
+        </div>
+        <div class="seg-pill">
+          <div class="seg-pill-icon">🗂</div>
+          <span class="seg-pill-text">Historial y configuración independiente</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     FAQ
+══════════════════════════════════════════════════════════ -->
+<section id="faq">
+  <div class="container">
+    <div class="section-header">
+      <p class="eyebrow">Preguntas frecuentes</p>
+      <h2>Lo que necesitas saber antes de empezar</h2>
+    </div>
+
+    <div class="faq-list">
+
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          <span>¿Necesito cambiar mi número de WhatsApp?</span>
+          <div class="faq-arrow">▾</div>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">
+            No. Xabor se conecta a tu número de WhatsApp Business a través de la API oficial de Meta. Puedes mantener tu número actual sin interrumpir la comunicación con tus clientes durante la configuración.
+          </div>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          <span>¿Xabor sustituye mi POS actual?</span>
+          <div class="faq-arrow">▾</div>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">
+            Xabor incluye un módulo de punto de venta integrado al panel de comandas. Dependiendo de cómo uses tu POS actual, puede funcionar como sustituto directo o como complemento. El objetivo es que todo quede en un solo sistema.
+          </div>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          <span>¿Puedo usarlo en más de una sucursal?</span>
+          <div class="faq-arrow">▾</div>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">
+            Sí. Xabor tiene soporte multiempresa. Cada sucursal o negocio opera con su propia configuración, usuarios, canales e historial, todo desde la misma plataforma.
+          </div>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          <span>¿La IA puede transferir la conversación a una persona?</span>
+          <div class="faq-arrow">▾</div>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">
+            Sí. El agente puede pausarse en cualquier momento para que un miembro del equipo tome la conversación directamente. El historial de la conversación queda disponible en el panel para dar seguimiento sin que el cliente tenga que repetir nada.
+          </div>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          <span>¿Funciona para negocios que no son restaurantes?</span>
+          <div class="faq-arrow">▾</div>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">
+            Sí. Aunque el flujo de comandas y el panel están optimizados para negocios de alimentos, cualquier negocio que reciba pedidos por WhatsApp puede usar Xabor: florerías, tiendas, cocinas, cafeterías y más. El catálogo y las reglas operativas son configurables por negocio.
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     CTA FINAL
+══════════════════════════════════════════════════════════ -->
+<section id="cta-final">
+  <div class="container">
+    <h2>Convierte tus conversaciones en operación</h2>
+    <p>Deja de atender pedido por pedido a mano. Xabor organiza tu negocio para que puedas enfocarte en lo que importa.</p>
+
+    <div class="cta-btn-group">
+      <button class="btn btn-ghost" style="font-size:1rem;padding:15px 32px;" data-pending="próximamente">
+        Solicitar demostración
+      </button>
+      <a href="/login" class="btn" style="background:rgba(255,255,255,.15);color:#fff;border:1.5px solid rgba(255,255,255,.3);font-size:1rem;padding:15px 32px;">
+        Iniciar sesión
+      </a>
+    </div>
+
+    <p style="font-size:.82rem;margin-top:32px;margin-bottom:0;color:rgba(255,255,255,.5);">
+      ¿Tienes preguntas? Escríbenos a <a href="mailto:hola@xabor.mx" style="color:rgba(255,255,255,.75);">hola@xabor.mx</a>
+    </p>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     FOOTER
+══════════════════════════════════════════════════════════ -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">
+        <div class="logo-mark" style="background:#333;">X</div>
+        Xabor
+      </div>
+
+      <div class="footer-links">
+        <a href="mailto:hola@xabor.mx">hola@xabor.mx</a>
+        <a href="/login">Iniciar sesión</a>
+        <a href="#" data-pending="próximamente">Privacidad</a>
+      </div>
+
+      <span class="footer-copy">© 2025 Xabor. Todos los derechos reservados.</span>
+    </div>
+  </div>
+</footer>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     SCRIPT — solo FAQ accordion
+══════════════════════════════════════════════════════════ -->
+<script>
+  function toggleFaq(el) {
+    const item = el.closest('.faq-item');
+    const isOpen = item.classList.contains('open');
+
+    // Cerrar todos
+    document.querySelectorAll('.faq-item.open').forEach(i => i.classList.remove('open'));
+
+    // Abrir el que se clickeó si no estaba abierto
+    if (!isOpen) item.classList.add('open');
+  }
+
+  // Marcar botones sin funcionalidad con console.log para integración posterior
+  document.querySelectorAll('[data-pending]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.info('[Xabor landing] Botón pendiente de integración:', btn.textContent.trim());
+    });
+  });
+</script>
+
+</body>
+</html>
