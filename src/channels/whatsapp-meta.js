@@ -76,16 +76,26 @@ const getVerifyToken   = () => getIntegracion('wa_verify_token')|| process.env.M
 const NUMERO_SOPORTE   = process.env.WHATSAPP_SOPORTE;
 
 // ─── Verificación del webhook (GET) — Meta lo llama al configurar ────────────
+// Fix: usaba un identificador VERIFY_TOKEN nunca definido en este archivo
+// (solo existía la función getVerifyToken()) -- cualquier intento real de
+// verificación de Meta habría lanzado un ReferenceError (500), nunca
+// comparaba nada. Se corrige a getVerifyToken() (el mecanismo oficial ya
+// existente: configuración por negocio con respaldo a la variable de
+// entorno). Se exige además que el token configurado no esté vacío antes
+// de comparar -- evita que una verificación mal configurada (ambos lados
+// vacíos/undefined) pase por accidente. Nunca se loguea el valor del
+// token, solo si la verificación tuvo éxito o no.
 router.get('/', (req, res) => {
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const mode        = req.query['hub.mode'];
+  const token       = req.query['hub.verify_token'];
+  const challenge   = req.query['hub.challenge'];
+  const verifyToken = getVerifyToken();
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+  if (mode === 'subscribe' && verifyToken && token === verifyToken) {
     console.log('[Meta WA] ✅ Webhook verificado por Meta');
     return res.status(200).send(challenge);
   }
-  console.warn('[Meta WA] ⚠️ Verificación fallida — token incorrecto');
+  console.warn('[Meta WA] ⚠️ Verificación fallida — token incorrecto o ausente');
   res.sendStatus(403);
 });
 
