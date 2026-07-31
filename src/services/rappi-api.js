@@ -34,12 +34,16 @@ export async function obtenerToken() {
   });
 
   const authText = await resp.text();
-  console.log(`[Rappi Auth] HTTP ${resp.status}:`, authText.slice(0, 200));
 
   if (!resp.ok) {
-    throw new Error(`[Rappi Auth] ${resp.status}: ${authText}`);
+    // Nunca se loguea ni se propaga el cuerpo crudo de la respuesta -- puede
+    // contener detalles de depuración de Rappi. El código HTTP alcanza para
+    // diagnosticar (credenciales inválidas, servicio caído, etc.).
+    console.error(`[Rappi Auth] HTTP ${resp.status} — fallo de autenticación`);
+    throw new Error(`[Rappi Auth] Fallo de autenticación (HTTP ${resp.status})`);
   }
 
+  console.log(`[Rappi Auth] HTTP ${resp.status} — token obtenido correctamente`);
   const data = JSON.parse(authText);
   _token = data.access_token;
   // expires_in viene en segundos, por defecto 1 hora
