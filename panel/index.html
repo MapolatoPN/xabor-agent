@@ -322,6 +322,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #chat-input { flex: 1; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); padding: 10px; font-size: 0.9rem; font-family: inherit; resize: none; transition: all .15s; }
 #chat-input:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
 #btn-toggle-bot { font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: var(--radius-pill); cursor: pointer; transition: all .2s; }
+#chat-atencion-estado { font-size: 0.72rem; font-weight: 700; color: #475569; white-space: nowrap; }
+@media (max-width: 640px) {
+  #chat-header { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+  #chat-atencion-estado { order: 3; width: 100%; padding-left: 34px; }
+  #btn-toggle-bot { padding: 7px 10px; }
+}
 
 /* ─── Vista Historial ───────────────────────────────────────────────────── */
 .historial-card { background: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); margin-bottom: 8px; overflow: hidden; }
@@ -917,7 +923,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div id="chat-header">
             <button id="btn-chat-volver" onclick="volverAContactos()" title="Volver">‹</button>
             <span id="chat-header-nombre" style="color:#888;">Selecciona una conversación</span>
-            <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;">Tomar control</button>
+            <span id="chat-atencion-estado" title="Indica quién responderá los próximos mensajes"></span>
+            <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;">Tomar conversación</button>
           </div>
           <div id="chat-mensajes"></div>
           <div id="chat-error" style="display:none;padding:6px 14px;color:#c0392b;font-size:0.78rem;background:#fdecea;"></div>
@@ -969,7 +976,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="int-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🤖 Bot de WhatsApp</div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">Atención automática del negocio</div>
       <div id="bot-whatsapp-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
@@ -2555,6 +2562,7 @@ async function confirmarPresencial() {
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
 let chatAbierto = null;
 let chatNuevos  = 0;
+let atencionNegocioActiva = false;
 
 async function cargarConversaciones() {
   const cont = document.getElementById('contactos-lista');
@@ -2583,19 +2591,20 @@ async function cargarConversaciones() {
 
 async function cargarBannerBotChats() {
   const banner = document.getElementById('chats-banner-bot');
-  if (!banner || !WHATSAPP_CONFIGURADO || ROL !== 'admin') { if (banner) banner.style.display = 'none'; return; }
+  if (!banner || !WHATSAPP_CONFIGURADO) { if (banner) banner.style.display = 'none'; return; }
   try {
-    const r = await apiFetch('/api/admin/bot-whatsapp');
+    const r = await apiFetch('/api/bot-whatsapp');
     if (!r.ok) { banner.style.display = 'none'; return; }
     const { botWhatsappActivo } = await r.json();
-    banner.style.display = '';
+    atencionNegocioActiva = botWhatsappActivo;
     if (botWhatsappActivo) {
-      banner.style.background = '#dcfce7'; banner.style.color = '#166534';
-      banner.textContent = '🤖 Bot global activo — responde automáticamente salvo en conversaciones pausadas.';
+      banner.style.display = 'none';
     } else {
+      banner.style.display = '';
       banner.style.background = '#f1f5f9'; banner.style.color = '#475569';
-      banner.textContent = '⏸️ Bot global apagado — todos los mensajes requieren respuesta manual desde aquí.';
+      banner.textContent = 'La atención automática del negocio está pausada';
     }
+    if (chatAbierto) actualizarBotonBot(document.getElementById('btn-toggle-bot').dataset.pausado === '1');
   } catch { banner.style.display = 'none'; }
 }
 
@@ -2637,24 +2646,41 @@ async function abrirConversacion(telefono, nombre) {
   renderMensajes(msgs);
   document.getElementById('chat-input').dataset.telefono = telefono;
   document.getElementById('chat-input').dataset.nombre   = nombre || '';
-  const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.json()).catch(() => ({ pausado:false }));
+  const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.ok ? r.json() : Promise.reject()).catch(() => ({ pausado:false, botWhatsappActivo:atencionNegocioActiva }));
+  atencionNegocioActiva = estado.botWhatsappActivo;
   actualizarBotonBot(estado.pausado);
 }
 
 function actualizarBotonBot(pausado) {
   const btn = document.getElementById('btn-toggle-bot');
+  const estado = document.getElementById('chat-atencion-estado');
   btn.style.display = chatAbierto ? '' : 'none';
-  btn.textContent = pausado ? '🤖 Reactivar bot' : '✋ Tomar control';
+  btn.textContent = pausado ? 'Devolver al bot' : 'Tomar conversación';
   btn.style.background = pausado ? '#dcfce7' : '#fee2e2';
   btn.style.color      = pausado ? '#15803d' : '#b91c1c';
   btn.dataset.pausado  = pausado ? '1' : '0';
+  estado.textContent = !atencionNegocioActiva
+    ? 'Atención automática pausada en todo el negocio'
+    : (pausado ? 'Atención humana' : 'Atención automática');
+  estado.title = !atencionNegocioActiva
+    ? 'Los mensajes se reciben, pero ninguna conversación obtiene respuestas automáticas.'
+    : (pausado ? 'El equipo responde manualmente en esta conversación.' : 'El bot puede responder en esta conversación.');
 }
 
 async function toggleBotPausado() {
   if (!chatAbierto) return;
-  const pausado  = document.getElementById('btn-toggle-bot').dataset.pausado === '1';
+  const btn = document.getElementById('btn-toggle-bot');
+  const pausado  = btn.dataset.pausado === '1';
   const endpoint = pausado ? 'reactivar' : 'pausar';
-  await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method:'POST' });
+  btn.disabled = true;
+  const r = await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method:'POST' });
+  btn.disabled = false;
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    mostrarErrorChat(data.error || 'No se pudo cambiar la atención de esta conversación.');
+    return;
+  }
+  mostrarErrorChat(null);
   actualizarBotonBot(!pausado);
 }
 
@@ -3242,23 +3268,27 @@ async function cargarBotWhatsappPanel() {
     if (!r.ok) { cont.innerHTML = ''; return; }
     const { botWhatsappActivo } = await r.json();
     cont.innerHTML = `
-      <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${botWhatsappActivo ? 'Activo' : 'Apagado'}</strong></div>
+      <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${botWhatsappActivo ? 'Activa' : 'Pausada'}</strong></div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">${botWhatsappActivo
         ? 'El bot puede responder en conversaciones que no estén pausadas.'
         : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente.'}</div>
       <div id="bot-whatsapp-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
-      <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Apagar bot' : 'Activar bot'}</button>
+      <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Pausar atención automática' : 'Activar atención automática'}</button>
     `;
   } catch {}
 }
 
 async function cambiarBotWhatsappPanel(nuevoValor) {
-  if (nuevoValor && !confirm('¿Activar el bot de WhatsApp? Responderá automáticamente a los clientes que le escriban (salvo conversaciones pausadas individualmente).')) return;
+  const pregunta = nuevoValor
+    ? '¿Activar la atención automática del negocio? Las conversaciones no tomadas podrán recibir respuestas automáticas.'
+    : '¿Pausar la atención automática del negocio? Todos los mensajes seguirán llegando y deberán responderse manualmente.';
+  if (!confirm(pregunta)) return;
   const fb = document.getElementById('bot-whatsapp-feedback');
   if (fb) { fb.style.color = '#aaa'; fb.textContent = 'Guardando...'; }
   const r = await apiFetch('/api/admin/bot-whatsapp', { method: 'PATCH', body: JSON.stringify({ activo: nuevoValor }) });
   if (r.ok) {
     await cargarBotWhatsappPanel();
+    await cargarBannerBotChats();
   } else if (fb) {
     fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
   }
