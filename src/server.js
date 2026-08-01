@@ -22,7 +22,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -38,7 +38,7 @@ import {
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
-import { enviarCorreoInvitacion } from './services/email.js';
+import { enviarCorreoInvitacion, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
@@ -1282,6 +1282,101 @@ app.get('/crear-password', (req, res) => {
 
 // Salud del servidor
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// ─── Captura pública de prospectos (landing) ───────────────────────────────
+// Endpoint público (sin sesión) -- reemplaza el flujo anterior de mailto:.
+// La persistencia en PostgreSQL es la fuente de verdad; el correo a
+// hola@xabor.mx es una notificación secundaria que nunca bloquea ni
+// condiciona la respuesta 201 (ver enviarNotificacionNuevoProspecto).
+const TIPOS_NEGOCIO_PROSPECTO = ['Restaurante', 'Cafetería', 'Cocina', 'Repostería', 'Florería', 'Otro negocio con pedidos por WhatsApp'];
+const VOLUMENES_PROSPECTO = ['Menos de 10', 'Entre 10 y 30', 'Entre 30 y 60', 'Más de 60'];
+const TIEMPO_MINIMO_LLENADO_MS = 1200;
+
+function limpiarTexto(v, maxLen) {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!t || t.length > maxLen) return null;
+  if (t.includes('<') || t.includes('>')) return null; // "no aceptar HTML"
+  return t;
+}
+
+app.post(
+  '/api/public/prospectos',
+  rateLimitMiddleware(req => `prospecto:${req.ip}`, 6, 10 * 60 * 1000),
+  rateLimitMiddleware(() => 'prospecto:global', 120, 10 * 60 * 1000, 'El formulario está recibiendo muchas solicitudes. Intenta de nuevo en unos minutos.'),
+  async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+      // Honeypot: un bot que llena todos los campos llenará también este,
+      // invisible para una persona real. Se responde éxito sin persistir
+      // nada -- un rechazo explícito (400/403) le enseñaría al bot cuál
+      // campo evitar la próxima vez.
+      if (typeof body.empresaWeb === 'string' && body.empresaWeb.trim()) {
+        return res.status(201).json({ ok: true, message: 'Recibimos tus datos. Nos pondremos en contacto contigo.' });
+      }
+
+      // Tiempo mínimo de llenado: si el formulario se envía más rápido de
+      // lo humanamente posible, se trata igual que el honeypot (éxito
+      // silencioso, sin persistir). Si el cliente no manda el timestamp
+      // (JS deshabilitado, integración distinta), no se bloquea por esto
+      // solo -- el honeypot y el rate limit siguen aplicando.
+      if (typeof body.cargadoEn === 'number' && Number.isFinite(body.cargadoEn)) {
+        if (Date.now() - body.cargadoEn < TIEMPO_MINIMO_LLENADO_MS) {
+          return res.status(201).json({ ok: true, message: 'Recibimos tus datos. Nos pondremos en contacto contigo.' });
+        }
+      }
+
+      const nombre = limpiarTexto(body.nombre, 120);
+      const negocio = limpiarTexto(body.negocio, 150);
+      const ciudad = limpiarTexto(body.ciudad, 100);
+      const telefonoBruto = typeof body.telefono === 'string' ? body.telefono.trim() : '';
+      // Normalización sin asumir país: solo se conservan dígitos y un
+      // '+' inicial opcional -- nunca se agrega una lada por defecto.
+      const telefono = telefonoBruto.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+      const tipoNegocio = typeof body.tipoNegocio === 'string' ? body.tipoNegocio.trim() : '';
+      const volumenMensajes = typeof body.volumenMensajes === 'string' ? body.volumenMensajes.trim() : '';
+      const comentario = body.comentario ? limpiarTexto(body.comentario, 800) : null;
+      if (body.comentario && comentario === null) {
+        return res.status(400).json({ error: 'El comentario es demasiado largo o contiene caracteres no permitidos.' });
+      }
+
+      if (!nombre) return res.status(400).json({ error: 'El nombre es requerido.' });
+      if (!negocio) return res.status(400).json({ error: 'El nombre del negocio es requerido.' });
+      if (!ciudad) return res.status(400).json({ error: 'La ciudad es requerida.' });
+      if (telefono.length < 7 || telefono.length > 20) return res.status(400).json({ error: 'El teléfono no es válido.' });
+      if (!TIPOS_NEGOCIO_PROSPECTO.includes(tipoNegocio)) return res.status(400).json({ error: 'Selecciona un tipo de negocio válido.' });
+      if (volumenMensajes && !VOLUMENES_PROSPECTO.includes(volumenMensajes)) return res.status(400).json({ error: 'Selecciona una opción válida de volumen de mensajes.' });
+
+      // Solo se aceptan los campos esperados -- cualquier otra clave en el
+      // body se ignora silenciosamente (nunca se persiste "tal cual").
+      const ipHash = createHmac('sha256', PANEL_SECRET).update(String(req.ip || '')).digest('hex');
+      const userAgentResumen = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 160) : null;
+
+      const { creado, prospecto } = await crearProspectoComercial({
+        nombre, negocio, ciudad, telefono, tipoNegocio,
+        volumenMensajes: volumenMensajes || null, comentario, origen: 'landing',
+        ipHash, userAgentResumen,
+      });
+
+      if (creado) {
+        // Notificación asíncrona -- no se espera (await) su resultado
+        // porque nunca debe demorar ni condicionar la respuesta 201; el
+        // prospecto ya quedó guardado antes de esta línea.
+        enviarNotificacionNuevoProspecto({
+          id: prospecto.id, nombre, negocio, ciudad, telefono, tipoNegocio,
+          volumenMensajes, comentario, createdAt: prospecto.created_at,
+        }).then(r => marcarCorreoProspectoEnviado(prospecto.id, !!r.enviado))
+          .catch(e => console.error('[Leads] Error notificando prospecto (registro ya guardado):', e.message));
+      }
+
+      res.status(201).json({ ok: true, message: 'Recibimos tus datos. Nos pondremos en contacto contigo.' });
+    } catch (e) {
+      console.error('[Leads] Error al procesar prospecto:', e.message);
+      res.status(500).json({ error: 'No pudimos procesar tu solicitud. Intenta de nuevo más tarde.' });
+    }
+  }
+);
 
 // Chat de prueba (sin Twilio)
 app.post('/chat', async (req, res) => {

@@ -3415,3 +3415,132 @@ export async function crearPasswordDesdeInvitacion(token, password) {
     client.release();
   }
 }
+
+// ─── Prospectos comerciales (captura pública de leads) ─────────────────────
+// Reemplaza el flujo anterior de la landing (mailto:) -- la base es la
+// fuente de verdad del prospecto; el correo a hola@xabor.mx (ver
+// src/services/email.js) es una notificación secundaria que puede fallar
+// sin perder el registro. Sin FK a `negocios`: un prospecto todavía no es
+// un negocio dado de alta.
+export async function crearProspectoComercial({ nombre, negocio, ciudad, telefono, tipoNegocio, volumenMensajes, comentario, email, origen, ipHash, userAgentResumen }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Doble clic / reenvío accidental: si ya existe un prospecto con el
+    // mismo teléfono+negocio dentro de la ventana de deduplicación, se
+    // reutiliza ese registro en vez de crear uno nuevo -- el endpoint
+    // sigue respondiendo éxito (la persona no debe ver un error por algo
+    // que no es su culpa), pero no se duplica la fila ni se reenvía el
+    // correo de notificación.
+    const { rows: existentes } = await client.query(
+      `SELECT * FROM prospectos_comerciales
+       WHERE telefono = $1 AND negocio = $2 AND created_at > NOW() - INTERVAL '10 minutes'
+       ORDER BY created_at DESC LIMIT 1`,
+      [telefono, negocio]
+    );
+    if (existentes[0]) {
+      await client.query('COMMIT');
+      return { creado: false, prospecto: existentes[0] };
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO prospectos_comerciales
+         (nombre, negocio, ciudad, telefono, tipo_negocio, volumen_mensajes, comentario, email, origen, ip_hash, user_agent_resumen)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [nombre, negocio, ciudad, telefono, tipoNegocio, volumenMensajes || null, comentario || null, email || null, origen || 'landing', ipHash || null, userAgentResumen || null]
+    );
+    await client.query('COMMIT');
+    return { creado: true, prospecto: rows[0] };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error crearProspectoComercial:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function marcarCorreoProspectoEnviado(id, enviado) {
+  await pool.query('UPDATE prospectos_comerciales SET correo_notificacion_enviado = $2 WHERE id = $1', [id, !!enviado]);
+}
+
+const FILTROS_PROSPECTOS_VALIDOS = ['nuevo','contactado','demo_agendada','seguimiento','convertido','descartado'];
+
+export async function obtenerProspectosComerciales({ estado, ciudad, tipoNegocio, busqueda, limit = 100, offset = 0 } = {}) {
+  const condiciones = [];
+  const valores = [];
+  if (estado && FILTROS_PROSPECTOS_VALIDOS.includes(estado)) {
+    valores.push(estado);
+    condiciones.push(`estado = $${valores.length}`);
+  }
+  if (ciudad && typeof ciudad === 'string' && ciudad.trim()) {
+    valores.push(`%${ciudad.trim()}%`);
+    condiciones.push(`ciudad ILIKE $${valores.length}`);
+  }
+  if (tipoNegocio && typeof tipoNegocio === 'string' && tipoNegocio.trim()) {
+    valores.push(`%${tipoNegocio.trim()}%`);
+    condiciones.push(`tipo_negocio ILIKE $${valores.length}`);
+  }
+  if (busqueda && typeof busqueda === 'string' && busqueda.trim()) {
+    valores.push(`%${busqueda.trim()}%`);
+    const i = valores.length;
+    condiciones.push(`(nombre ILIKE $${i} OR negocio ILIKE $${i} OR telefono ILIKE $${i})`);
+  }
+  const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+  const limiteSeguro = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+  const offsetSeguro = Math.max(parseInt(offset, 10) || 0, 0);
+  valores.push(limiteSeguro, offsetSeguro);
+  const { rows } = await pool.query(
+    `SELECT id, nombre, negocio, ciudad, telefono, tipo_negocio, volumen_mensajes, estado, responsable, fecha_ultimo_seguimiento, correo_notificacion_enviado, created_at
+     FROM prospectos_comerciales ${where}
+     ORDER BY created_at DESC
+     LIMIT $${valores.length - 1} OFFSET $${valores.length}`,
+    valores
+  );
+  return rows;
+}
+
+export async function obtenerProspectoComercialPorId(id) {
+  if (typeof id !== 'string' || !id.trim()) return null;
+  const { rows } = await pool.query('SELECT * FROM prospectos_comerciales WHERE id = $1', [id.trim()]);
+  return rows[0] || null;
+}
+
+const CAMPOS_ACTUALIZABLES_PROSPECTO = ['estado', 'responsable', 'notas_internas', 'fecha_ultimo_seguimiento'];
+
+export async function actualizarProspectoComercial(id, cambios, superadminId) {
+  if (typeof id !== 'string' || !id.trim()) return null;
+  if (cambios.estado !== undefined && !FILTROS_PROSPECTOS_VALIDOS.includes(cambios.estado)) {
+    const err = new Error('estado de prospecto inválido'); err.code = 'ESTADO_INVALIDO'; throw err;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: existente } = await client.query('SELECT * FROM prospectos_comerciales WHERE id = $1 FOR UPDATE', [id]);
+    if (!existente[0]) { await client.query('ROLLBACK'); return null; }
+    const anterior = existente[0];
+    const claves = Object.keys(cambios).filter(k => CAMPOS_ACTUALIZABLES_PROSPECTO.includes(k));
+    if (!claves.length) { await client.query('ROLLBACK'); return anterior; }
+    const sets = claves.map((k, i) => `${k} = $${i + 2}`).join(', ');
+    const valores = claves.map(k => cambios[k]);
+    const { rows } = await client.query(
+      `UPDATE prospectos_comerciales SET ${sets}, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [id, ...valores]
+    );
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'actualizar_prospecto_comercial', negocioId: null,
+      estadoAnterior: { estado: anterior.estado, responsable: anterior.responsable },
+      estadoNuevo: { estado: rows[0].estado, responsable: rows[0].responsable },
+      contexto: { prospectoId: id },
+    }, client);
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!e.code) console.error('[DB] Error actualizarProspectoComercial:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
