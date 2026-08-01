@@ -35,6 +35,7 @@ import {
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
+import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
@@ -2369,7 +2370,7 @@ app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSup
   try {
     const integracion = await obtenerIntegracionNegocio(req.params.negocioId, 'whatsapp', 'meta');
     const estadoModulo = await obtenerEstadoModulo(req.params.negocioId, 'whatsapp');
-    res.json({ integracion, estadoModulo: estadoModulo || 'no_contratado' });
+    res.json({ integracion, estadoModulo: estadoModulo || 'no_contratado', conexionPendiente: hayIntentoPendiente(req.params.negocioId) });
   } catch (e) {
     console.error('[GET /api/superadmin/negocios/:id/integraciones/whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al obtener la integración' });
@@ -2453,8 +2454,6 @@ app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/credencia
 // confía en negocio_id del body -- solo en el que trae el state firmado
 // y ya validado. Ningún log ni respuesta incluye access_token/code.
 // ---------------------------------------------------------------------
-const signupEnCurso = new Map(); // negocioId -> true, evita doble clic / procesos paralelos
-
 // Configuración PÚBLICA únicamente -- nunca META_APP_SECRET, tokens, ni
 // la llave de cifrado. Leída de process.env en cada request (runtime),
 // nunca fijada en build ni hardcodeada.
@@ -2477,17 +2476,34 @@ app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', r
   if (estadoModulo === 'suspendido') {
     return res.status(403).json({ error: 'El módulo de WhatsApp está suspendido para este negocio' });
   }
-  if (signupEnCurso.get(negocioId)) {
-    return res.status(409).json({ error: 'Ya hay un proceso de conexión en curso para este negocio' });
-  }
+  // Ya no bloquea con 409: iniciar de nuevo simplemente reemplaza
+  // cualquier intento previo de este negocio -- el state anterior (si
+  // alguien lo usa después) se rechaza como "reemplazado" en el
+  // callback (ver validarIntentoVigente). Esto evita quedar atorado
+  // esperando el vencimiento de 10 minutos cuando un intento previo se
+  // abandonó (popup cerrado, recarga de página, etc.).
   const state = crearState({ negocioId, superadminId: req.usuarioId });
-  signupEnCurso.set(negocioId, true);
-  setTimeout(() => signupEnCurso.delete(negocioId), 10 * 60 * 1000); // libera aunque el callback nunca llegue
+  registrarIntentoPendiente(negocioId, state);
   await registrarAuditoriaPlataforma({
     superadminId: req.usuarioId, accion: 'integracion_embedded_signup_iniciado', negocioId,
     contexto: { canal: 'whatsapp', proveedor: 'meta' },
   });
   res.json({ state }); // appId/configId se obtienen aparte de GET /api/superadmin/meta/embedded-signup/config
+});
+
+// Cancela el intento pendiente vigente del negocio -- idempotente
+// (llamarlo sin intento pendiente, o dos veces seguidas, sigue
+// devolviendo 200). No toca integraciones ni credenciales, solo el
+// rastreo efímero del intento en curso.
+app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/conexion-pendiente', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  cancelarIntentoPendiente(negocioId);
+  await registrarAuditoriaPlataforma({
+    superadminId: req.usuarioId, accion: 'integracion_embedded_signup_cancelado', negocioId,
+    contexto: { canal: 'whatsapp', proveedor: 'meta' },
+  });
+  res.json({ ok: true });
 });
 
 app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', requireSuperadmin, async (req, res) => {
@@ -2499,6 +2515,13 @@ app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', req
 // navegador del superadmin es redirigido aquí por Meta, no llega con
 // cookie de sesión del panel en todos los flujos). Nunca confía en
 // negocio_id del body; solo en el que trae el state ya validado.
+const MENSAJES_INTENTO_INVALIDO = {
+  no_vigente: 'No hay una conexión pendiente vigente para este negocio',
+  cancelado: 'Esta conexión fue cancelada',
+  vencido: 'Esta conexión venció, inicia una nueva',
+  reemplazado: 'Esta conexión fue reemplazada por un intento más reciente',
+};
+
 app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   const { state, code, phoneNumberId, wabaId, businessId, displayPhoneNumber } = req.body || {};
   const consumido = validarYConsumirState(state);
@@ -2506,15 +2529,29 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     return res.status(400).json({ error: 'state inválido, vencido o ya utilizado' });
   }
   const { negocioId, superadminId } = consumido;
-  signupEnCurso.delete(negocioId);
+
+  // Capa de aplicación (además de la firma/vencimiento/uso único ya
+  // verificados arriba): ¿sigue siendo ESTE el intento vigente del
+  // negocio, o fue cancelado/reemplazado por uno más nuevo? Nunca se
+  // registra el state completo, solo el motivo de rechazo.
+  const vigente = validarIntentoVigente(negocioId, state);
+  if (!vigente.ok) {
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'integracion_embedded_signup_fallido', negocioId,
+      contexto: { motivo: vigente.motivo },
+    }).catch(() => {});
+    return res.status(400).json({ error: MENSAJES_INTENTO_INVALIDO[vigente.motivo] || 'Conexión pendiente inválida' });
+  }
 
   if (typeof code !== 'string' || !code.trim()) {
     // Sin code: cancelación del usuario o respuesta incompleta de Meta --
     // el state ya quedó consumido arriba (uso único), no se toca el
     // estado técnico de la integración (se deja como estaba).
+    limpiarIntentoPendiente(negocioId);
     return res.status(400).json({ error: 'Conexión cancelada o incompleta' });
   }
   if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
+    limpiarIntentoPendiente(negocioId);
     return res.status(400).json({ error: 'phoneNumberId requerido en la respuesta de Meta' });
   }
 
@@ -2525,6 +2562,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     );
     if (dueno.rows[0] && dueno.rows[0].negocio_id !== negocioId) {
       await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
+      limpiarIntentoPendiente(negocioId);
       return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
     }
 
@@ -2538,6 +2576,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
       superadminId, accion: 'integracion_embedded_signup_completado', negocioId,
       contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
     });
+    limpiarIntentoPendiente(negocioId);
     res.json({ ok: true, estado: resultado.estado });
   } catch (e) {
     console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
@@ -2546,6 +2585,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
       superadminId, accion: 'integracion_embedded_signup_fallido', negocioId,
       contexto: { motivo: 'error_intercambio_o_guardado' },
     }).catch(() => {});
+    limpiarIntentoPendiente(negocioId);
     res.status(502).json({ error: 'No se pudo completar la conexión con Meta' });
   }
 });

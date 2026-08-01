@@ -505,7 +505,7 @@ async function cargarIntegracionWhatsapp() {
   fb.textContent = '';
   const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp`);
   if (!r.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar la integración</div>'; return; }
-  const { integracion, estadoModulo } = await r.json();
+  const { integracion, estadoModulo, conexionPendiente } = await r.json();
   waIntegracionActual = integracion;
   const estado = integracion?.estado || 'no_configurado';
   const moduloBloqueado = !estadoModulo || estadoModulo === 'no_contratado' || estadoModulo === 'suspendido';
@@ -519,12 +519,14 @@ async function cargarIntegracionWhatsapp() {
     <div class="fila-lista"><span>Última actualización</span><span>${integracion?.updated_at ? fechaCorta(integracion.updated_at) : '—'}</span></div>
     <div class="feedback ${estado === 'error' ? 'err' : ''}" style="margin-top:6px;">${MENSAJES_ESTADO_WA[estado] || ''}</div>
     ${moduloBloqueado ? '<div class="feedback err">Este negocio no tiene el módulo de WhatsApp contratado o está suspendido — no se puede configurar ni activar.</div>' : ''}
+    ${conexionPendiente ? '<div class="feedback">Hay una conexión con Meta pendiente/en curso para este negocio.</div>' : ''}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
       <button class="btn secundario" ${moduloBloqueado || estado === 'no_configurado' ? 'disabled' : ''} onclick="marcarPendienteWhatsapp()">Marcar pendiente de configuración</button>
       <button class="btn secundario" ${estado !== 'activo' ? 'disabled' : ''} onclick="suspenderWhatsapp()">Suspender</button>
       <button class="btn secundario" ${moduloBloqueado || estado !== 'suspendido' ? 'disabled' : ''} onclick="reactivarWhatsapp()">Reactivar</button>
       <button class="btn peligro" ${estado === 'no_configurado' ? 'disabled' : ''} onclick="eliminarCredencialesWhatsapp()">Eliminar credenciales</button>
-      <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso ? 'disabled' : ''} onclick="conectarConMeta()">Conectar con Meta</button>
+      <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso || conexionPendiente ? 'disabled' : ''} onclick="conectarConMeta()">Conectar con Meta</button>
+      ${conexionPendiente ? '<button class="btn secundario" onclick="cancelarConexionPendiente()">Cancelar conexión pendiente</button>' : ''}
     </div>
   `;
 }
@@ -593,35 +595,72 @@ function liberarSignup() {
   if (btn) btn.disabled = false;
 }
 
+// Cancela en el backend el intento pendiente del negocio actual --
+// "fire and forget" (no bloquea la UI, ni cambia el mensaje ya
+// mostrado al usuario) para usarse en cualquier punto donde el flujo
+// no pueda continuar (SDK bloqueado, cancelación en Meta, error de
+// configuración, etc.).
+function cancelarIntentoSilencioso(negocioId) {
+  api(`/api/superadmin/negocios/${negocioId}/integraciones/whatsapp/conexion-pendiente`, { method: 'DELETE' }).catch(() => {});
+}
+
+async function cancelarConexionPendiente() {
+  const fb = document.getElementById('dt-wa-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Cancelando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/conexion-pendiente`, { method: 'DELETE' });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo cancelar'; return; }
+  fb.className = 'feedback ok'; fb.textContent = '✓ Conexión pendiente cancelada';
+  waSignupDatos = null;
+  liberarSignup();
+  cargarIntegracionWhatsapp();
+}
+
 async function conectarConMeta() {
   if (waSignupEnCurso) return; // impide doble clic / diálogo duplicado
   const fb = document.getElementById('dt-wa-feedback');
+  const negocioId = negocioActualId;
   waSignupEnCurso = true;
   document.getElementById('btn-conectar-meta').disabled = true;
   fb.className = 'feedback'; fb.textContent = 'Iniciando conexión con Meta…';
   try {
-    const rIniciar = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/iniciar`, { method: 'POST' });
+    const rIniciar = await api(`/api/superadmin/negocios/${negocioId}/integraciones/whatsapp/iniciar`, { method: 'POST' });
     const bodyIniciar = await rIniciar.json().catch(() => ({}));
     if (!rIniciar.ok) { fb.className = 'feedback err'; fb.textContent = bodyIniciar.error || 'No se pudo iniciar la conexión'; liberarSignup(); return; }
-    waSignupDatos = { state: bodyIniciar.state, negocioId: negocioActualId };
+    waSignupDatos = { state: bodyIniciar.state, negocioId };
 
     const rConfig = await api('/api/superadmin/meta/embedded-signup/config');
     const config = await rConfig.json().catch(() => ({}));
-    if (!rConfig.ok) { fb.className = 'feedback err'; fb.textContent = config.error || 'Embedded Signup no está configurado en este entorno'; liberarSignup(); return; }
+    if (!rConfig.ok) {
+      fb.className = 'feedback err'; fb.textContent = config.error || 'Embedded Signup no está configurado en este entorno';
+      cancelarIntentoSilencioso(negocioId); liberarSignup(); return;
+    }
 
-    await cargarSdkMeta(config.appId, config.graphApiVersion);
-    if (!window.FB) { fb.className = 'feedback err'; fb.textContent = 'El SDK de Meta no está disponible'; liberarSignup(); return; }
+    try {
+      await cargarSdkMeta(config.appId, config.graphApiVersion);
+    } catch (e) {
+      fb.className = 'feedback err'; fb.textContent = e.message || 'El SDK de Meta no pudo cargarse';
+      cancelarIntentoSilencioso(negocioId); liberarSignup(); return;
+    }
+    if (!window.FB) {
+      fb.className = 'feedback err'; fb.textContent = 'El SDK de Meta no está disponible';
+      cancelarIntentoSilencioso(negocioId); liberarSignup(); return;
+    }
 
     window.FB.login(resp => {
       if (resp.authResponse && resp.authResponse.code) {
         completarSignupMeta(resp.authResponse.code);
       } else {
+        // El usuario cerró/canceló el diálogo de Meta, o Meta no devolvió
+        // code -- el flujo no puede continuar, se cancela explícitamente.
         fb.className = 'feedback err'; fb.textContent = 'Conexión cancelada en Meta';
+        cancelarIntentoSilencioso(negocioId);
         liberarSignup();
       }
     }, { config_id: config.configId, response_type: 'code', override_default_response_type: true });
   } catch (e) {
     fb.className = 'feedback err'; fb.textContent = 'Error iniciando la conexión con Meta';
+    cancelarIntentoSilencioso(negocioId);
     liberarSignup();
   }
 }
