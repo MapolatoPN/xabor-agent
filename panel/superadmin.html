@@ -47,6 +47,8 @@
   .badge-no_configurado { background:#f1f5f9; color:#475569; }
   .badge-pendiente_configuracion { background:#fef3c7; color:var(--warn); }
   .badge-error { background:#fee2e2; color:var(--danger); }
+  .badge-bot_activo { background:#dcfce7; color:var(--ok); }
+  .badge-bot_apagado { background:#f1f5f9; color:#475569; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
   input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
   input[type=search] { width:220px; }
@@ -310,6 +312,13 @@ let negocioActualId = null;
 
 function escaparHTML(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function badgeEstado(estado) { return `<span class="badge badge-${estado}">${estado}</span>`; }
+// Distinto de badgeEstado(): el interruptor global del bot (migración 019)
+// es un concepto separado de "Estado técnico" de la integración -- reusar
+// las etiquetas activo/suspendido ahí generaba ambigüedad (un negocio con
+// integración sana pero bot apagado se veía igual que uno con la
+// integración realmente suspendida). Ver MENSAJES_ESTADO_WA para el
+// estado técnico de la integración.
+function badgeBot(activo) { return activo ? '<span class="badge badge-bot_activo">Bot activo</span>' : '<span class="badge badge-bot_apagado">Bot apagado</span>'; }
 function fechaCorta(f) { return f ? new Date(f).toLocaleDateString('es-MX') : '—'; }
 
 async function api(path, opts = {}) {
