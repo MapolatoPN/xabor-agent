@@ -229,6 +229,12 @@
       </div>
 
       <div class="card seccion-detalle">
+        <h2>Bot de WhatsApp</h2>
+        <div id="dt-bot-whatsapp"></div>
+        <div class="feedback" id="dt-bot-whatsapp-feedback"></div>
+      </div>
+
+      <div class="card seccion-detalle">
         <h2>Auditoría reciente de este negocio</h2>
         <div id="dt-auditoria"></div>
       </div>
@@ -429,6 +435,7 @@ async function verDetalleNegocio(id) {
   `).join('') : '<div class="empty">Sin integraciones configuradas</div>';
 
   cargarIntegracionWhatsapp();
+  cargarBotWhatsapp();
 
   document.getElementById('dt-auditoria').innerHTML = n.auditoriaReciente.length ? n.auditoriaReciente.map(a => `
     <div class="fila-lista"><span>${a.accion} — ${escaparHTML(a.superadmin_nombre)}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
@@ -529,6 +536,34 @@ async function cargarIntegracionWhatsapp() {
       ${conexionPendiente ? '<button class="btn secundario" onclick="cancelarConexionPendiente()">Cancelar conexión pendiente</button>' : ''}
     </div>
   `;
+}
+
+// ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──
+async function cargarBotWhatsapp() {
+  const cont = document.getElementById('dt-bot-whatsapp');
+  const fb = document.getElementById('dt-bot-whatsapp-feedback');
+  fb.textContent = '';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/bot-whatsapp`);
+  if (!r.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar el interruptor del bot</div>'; return; }
+  const { botWhatsappActivo } = await r.json();
+  cont.innerHTML = `
+    <div class="fila-lista"><span>Estado</span><span>${botWhatsappActivo ? badgeEstado('activo') : badgeEstado('suspendido')}</span></div>
+    <div class="feedback" style="margin-top:0;margin-bottom:10px;">${botWhatsappActivo
+      ? 'El bot puede responder en conversaciones que no estén pausadas.'
+      : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente.'}</div>
+    <button class="btn ${botWhatsappActivo ? 'peligro' : ''}" onclick="cambiarBotWhatsapp(${!botWhatsappActivo})">${botWhatsappActivo ? 'Apagar' : 'Activar'}</button>
+  `;
+}
+
+async function cambiarBotWhatsapp(nuevoValor) {
+  const fb = document.getElementById('dt-bot-whatsapp-feedback');
+  if (nuevoValor && !confirm('¿Activar el bot de WhatsApp para este negocio? Responderá automáticamente a los clientes que le escriban (salvo conversaciones pausadas individualmente).')) return;
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/bot-whatsapp`, { method: 'PATCH', body: JSON.stringify({ activo: nuevoValor }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al actualizar el bot'; return; }
+  fb.className = 'feedback ok'; fb.textContent = nuevoValor ? '✓ Bot activado' : '✓ Bot apagado';
+  cargarBotWhatsapp();
 }
 
 async function cambiarEstadoWhatsapp(nuevoEstado) {

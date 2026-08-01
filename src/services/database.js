@@ -2837,6 +2837,55 @@ export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropieta
   }
 }
 
+// Interruptor global de bot de WhatsApp por negocio (migración 019) --
+// independiente del estado técnico de cualquier integración. Regla
+// real de si el bot responde (bot_whatsapp_activo Y NOT
+// bot_pausado_cliente) vive en whatsapp-meta.js, no aquí -- estas
+// funciones solo leen/escriben el interruptor global.
+//
+// Fail-closed: negocioId inválido o negocio inexistente -> false
+// (nunca responde el bot por defecto ni por error de lectura).
+export async function obtenerBotWhatsappActivoNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  try {
+    const { rows } = await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id = $1', [negocioId.trim()]);
+    return rows[0]?.bot_whatsapp_activo === true;
+  } catch (e) {
+    console.error('[DB] Error obtenerBotWhatsappActivoNegocio:', e.message);
+    return false;
+  }
+}
+
+// actorUsuarioId: puede ser un superadmin o el administrador del propio
+// negocio -- registrarAuditoriaPlataforma solo exige un usuario válido,
+// no un rol específico (ver migración 011: la columna es superadmin_id
+// mas la FK es genérica hacia usuarios).
+export async function actualizarBotWhatsappActivoNegocio(negocioId, activo, actorUsuarioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (typeof activo !== 'boolean') throw Object.assign(new Error('activo debe ser boolean'), { code: 'VALOR_INVALIDO' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id, nombre, bot_whatsapp_activo FROM negocios WHERE id = $1 FOR UPDATE', [negocioId.trim()]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const anterior = rows[0];
+    await client.query('UPDATE negocios SET bot_whatsapp_activo = $2 WHERE id = $1', [negocioId.trim(), activo]);
+    await registrarAuditoriaPlataforma({
+      superadminId: actorUsuarioId, accion: 'cambiar_bot_whatsapp_activo_negocio', negocioId: negocioId.trim(),
+      estadoAnterior: { bot_whatsapp_activo: anterior.bot_whatsapp_activo },
+      estadoNuevo: { bot_whatsapp_activo: activo },
+    }, client);
+    await client.query('COMMIT');
+    return { id: negocioId.trim(), botWhatsappActivo: activo };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarBotWhatsappActivoNegocio:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function actualizarEstadoNegocioSuperadmin(negocioId, nuevoEstado, superadminId) {
   if (!ESTADOS_NEGOCIO_VALIDOS.includes(nuevoEstado)) throw Object.assign(new Error('Estado inválido'), { code: 'ESTADO_INVALIDO' });
   const client = await pool.connect();

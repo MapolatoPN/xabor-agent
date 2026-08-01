@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -554,9 +554,13 @@ router.post('/', async (req, res) => {
     // verificada); cada punto de envío de abajo ya maneja ese caso.
     const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
 
-    // Acciones inmediatas (no debounced)
+    // Acciones inmediatas (no debounced) -- ocurren SIEMPRE, sin importar
+    // el interruptor global del bot ni la pausa por cliente: guardar el
+    // mensaje, actualizar el cliente y emitir el evento para que
+    // aparezca en el chat de Xabor y se pueda atender manualmente.
     const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId);
     if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
+    if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
     await marcarLeido(messageId, credenciales);
     // Tracking de respuesta a campañas (background, no bloquea)
     marcarRespuestaCampana(telefono).catch(() => {});
@@ -569,7 +573,18 @@ router.post('/', async (req, res) => {
       if (esComando) return;
     }
 
-    // Bot pausado — sin debounce
+    // Interruptor global de bot por negocio (migración 019) + pausa por
+    // cliente (ya existente) — el bot solo llama a brain.js si AMBOS lo
+    // permiten: bot_whatsapp_activo = TRUE Y bot_pausado_cliente =
+    // FALSE. El mensaje ya se guardó, se transmitió y el cliente ya se
+    // actualizó arriba (sigue apareciendo en el chat de Xabor para
+    // atención manual) -- aquí solo se decide si se invoca a la IA.
+    // Nunca se modifica bot_pausado desde aquí.
+    const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
+    if (!botGlobalActivo) {
+      console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
+      return;
+    }
     const pausado = await getBotPausado(telefono);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
@@ -627,6 +642,7 @@ router.post('/', async (req, res) => {
 
     // Procesamiento con Claude — debounced 6 segundos
     // Si el cliente manda varios mensajes seguidos, se combinan en uno
+    console.log(`[Meta WA] Bot de WhatsApp activo para el negocio ${negocioId} — encolando para procesar con IA`);
     encolarMensaje(`${negocioId}:${telefono}`, texto, (textoCombinado) => {
       procesarConClaude(telefono, textoCombinado, nombreMeta, negocioId);
     });

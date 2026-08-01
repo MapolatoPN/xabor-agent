@@ -967,6 +967,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="int-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🤖 Bot de WhatsApp</div>
+      <div id="bot-whatsapp-form"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
       <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
       <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
@@ -2025,6 +2029,7 @@ function mostrarTab(tab) {
   if (tab === 'config') {
     renderConfigForm();
     cargarIntegracionesPanel();
+    cargarBotWhatsappPanel();
     if (MODULOS.includes('facturacion')) {
       cargarInfoCertSAT();
     } else {
@@ -3166,6 +3171,38 @@ function renderIntForm() {
   html += `<div id="int-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
   <button onclick="guardarIntegraciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar integraciones</button>`;
   cont.innerHTML = html;
+}
+
+// ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──
+async function cargarBotWhatsappPanel() {
+  if (ROL !== 'admin') return;
+  const cont = document.getElementById('bot-whatsapp-form');
+  if (!cont) return;
+  try {
+    const r = await apiFetch('/api/admin/bot-whatsapp');
+    if (!r.ok) { cont.innerHTML = ''; return; }
+    const { botWhatsappActivo } = await r.json();
+    cont.innerHTML = `
+      <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${botWhatsappActivo ? 'Activo' : 'Apagado'}</strong></div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">${botWhatsappActivo
+        ? 'El bot puede responder en conversaciones que no estén pausadas.'
+        : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente.'}</div>
+      <div id="bot-whatsapp-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+      <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Apagar bot' : 'Activar bot'}</button>
+    `;
+  } catch {}
+}
+
+async function cambiarBotWhatsappPanel(nuevoValor) {
+  if (nuevoValor && !confirm('¿Activar el bot de WhatsApp? Responderá automáticamente a los clientes que le escriban (salvo conversaciones pausadas individualmente).')) return;
+  const fb = document.getElementById('bot-whatsapp-feedback');
+  if (fb) { fb.style.color = '#aaa'; fb.textContent = 'Guardando...'; }
+  const r = await apiFetch('/api/admin/bot-whatsapp', { method: 'PATCH', body: JSON.stringify({ activo: nuevoValor }) });
+  if (r.ok) {
+    await cargarBotWhatsappPanel();
+  } else if (fb) {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
+  }
 }
 
 async function guardarIntegraciones() {

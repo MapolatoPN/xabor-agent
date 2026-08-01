@@ -28,6 +28,7 @@ import {
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
+  obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio,
 } from './services/database.js';
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
@@ -2466,6 +2467,28 @@ app.get('/api/superadmin/meta/embedded-signup/config', requireSuperadmin, (req, 
   res.json({ appId, configId, graphApiVersion: GRAPH_VERSION });
 });
 
+// Interruptor global de bot de WhatsApp por negocio (migración 019).
+// Independiente del estado técnico de la integración -- puede haber
+// credenciales válidas y el bot seguir apagado. Vista Superadmin:
+// cualquier negocio, por :negocioId.
+app.get('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin, async (req, res) => {
+  if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.params.negocioId) });
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin, async (req, res) => {
+  const { activo } = req.body || {};
+  if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo debe ser boolean' });
+  try {
+    const resultado = await actualizarBotWhatsappActivoNegocio(req.params.negocioId, activo, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/superadmin/negocios/:id/bot-whatsapp] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
+  }
+});
+
 app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', requireSuperadmin, async (req, res) => {
   const negocioId = req.params.negocioId;
   if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
@@ -2654,6 +2677,30 @@ app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
   // fuera de alcance de este ciclo (ver reporte).
   await cargarIntegraciones();
   res.json({ ok: true });
+});
+
+// Interruptor global de bot de WhatsApp por negocio (migración 019) --
+// vista del administrador del propio negocio. req.negocioId viene
+// EXCLUSIVAMENTE de la sesión ya validada por requireAdminSeguro --
+// nunca de un parámetro que el cliente pudiera manipular, así que un
+// admin de OTRO negocio no puede alcanzar este recurso (ni con 403 ni
+// con éxito accidental: estructuralmente no hay forma de dirigirlo a
+// otro negocio). Staff queda fuera por el rol mínimo 'admin'.
+app.get('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
+  res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
+});
+
+app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
+  const { activo } = req.body || {};
+  if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo debe ser boolean' });
+  try {
+    const resultado = await actualizarBotWhatsappActivoNegocio(req.negocioId, activo, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/admin/bot-whatsapp] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
+  }
 });
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
