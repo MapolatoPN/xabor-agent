@@ -680,6 +680,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
   <button class="tab-btn admin-only" id="tab-llamadas"  data-modulo="voz" onclick="mostrarTab('llamadas')">Llamadas</button>
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
+  <button class="tab-btn admin-only" id="tab-entrenamiento" onclick="mostrarTab('entrenamiento')">Bot</button>
+  <button class="tab-btn admin-only" id="tab-diagnostico" onclick="mostrarTab('diagnostico')">Estado</button>
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Config</button>
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
@@ -691,6 +693,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <!-- Tab Comandas -->
   <div id="vista-comandas">
+    <div id="onboarding-wrap" style="display:none;margin-bottom:18px;background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:16px 18px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleOnboarding()">
+        <div style="font-weight:800;font-size:0.95rem;">🚀 Configura tu negocio <span id="onboarding-pct" style="color:#888;font-weight:600;font-size:0.85rem;"></span></div>
+        <span id="onboarding-toggle-icono" style="font-size:0.85rem;color:#888;">▾</span>
+      </div>
+      <div id="onboarding-barra" style="height:6px;background:#f1f0ed;border-radius:3px;margin-top:10px;overflow:hidden;">
+        <div id="onboarding-barra-fill" style="height:100%;background:#22c55e;width:0%;transition:width .3s;"></div>
+      </div>
+      <div id="onboarding-pasos" style="margin-top:14px;"></div>
+    </div>
     <div id="programados-wrap" style="display:none;margin-bottom:18px;">
       <div style="font-size:0.78rem;font-weight:700;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;">🕐 Pedidos programados</div>
       <div id="grid-programados" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
@@ -958,10 +970,47 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="menu-editor"></div>
     </div>
 
+    <!-- Vista Entrenamiento del bot (Fase 4) -->
+    <div id="vista-entrenamiento" style="display:none;max-width:640px;margin:0 auto;">
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🎓 Entrenamiento del bot</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Esto define cómo habla el bot y qué sabe además de tu menú, horarios y reglas (que se configuran en la pestaña Config).</div>
+      <div id="entrenamiento-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+      <div id="entrenamiento-form"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🧪 Probar al bot (simulación)</div>
+      <div style="font-size:0.8rem;color:#c05621;margin-bottom:14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;">
+        Esto es una SIMULACIÓN: no se envían mensajes de WhatsApp reales, no se crean pedidos y no afecta ninguna conversación real.
+      </div>
+      <div id="sim-mensajes" style="background:#fafaf8;border:1px solid #e5e2da;border-radius:10px;padding:12px;height:280px;overflow-y:auto;margin-bottom:10px;"></div>
+      <div style="display:flex;gap:8px;">
+        <textarea id="sim-input" rows="2" placeholder="Escribe como si fueras un cliente..." style="flex:1;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;resize:none;font-family:inherit;"></textarea>
+        <button onclick="enviarMensajeSimulador()" id="sim-btn-enviar" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:0 18px;font-size:0.9rem;font-weight:700;cursor:pointer;">Enviar</button>
+      </div>
+      <button onclick="limpiarSimulador()" style="background:none;border:1px solid #e5e2da;border-radius:8px;padding:8px 14px;font-size:0.8rem;color:#666;cursor:pointer;margin-top:10px;">🗑 Limpiar prueba</button>
+    </div>
+
+    <!-- Vista Diagnóstico (Fase 6) -->
+    <div id="vista-diagnostico" style="display:none;max-width:640px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-size:1.1rem;font-weight:800;">🩺 Estado del sistema</div>
+        <button onclick="cargarDiagnostico()" style="background:#f1f0ed;border:none;border-radius:7px;padding:6px 14px;font-size:0.8rem;cursor:pointer;">↻ Reintentar</button>
+      </div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Nunca muestra tokens, contraseñas ni claves — solo estados.</div>
+      <div id="diagnostico-contenido">Cargando...</div>
+      <button onclick="copiarDiagnostico()" style="background:none;border:1px solid #e5e2da;border-radius:8px;padding:8px 14px;font-size:0.8rem;color:#666;cursor:pointer;margin-top:14px;">📋 Copiar diagnóstico (sin secretos)</button>
+    </div>
+
     <!-- Vista Config -->
     <div id="vista-config" style="display:none;max-width:520px;margin:0 auto;">
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:20px;">⚙️ Configuración del Negocio</div>
       <div id="config-form"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🕒 Horarios, operación, pagos y entregas</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Esta información la usa el bot para responder a tus clientes. Guárdala aunque el bot esté apagado.</div>
+      <div id="reglas-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+      <div id="reglas-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
@@ -1383,6 +1432,7 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
     // Refrescar programados cada 5 min
     setInterval(cargarProgramados, 5 * 60 * 1000);
   }
+  if (ROL === 'admin') cargarOnboarding();
   // Registrar service worker y suscribirse a push notifications
   registrarPush();
   // WebSocket del panel — solo se conecta DESPUÉS de confirmar sesión
@@ -1997,7 +2047,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards','usuarios'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','usuarios'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -2005,7 +2055,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','config','repartidores','clientes','rewards','usuarios'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','usuarios'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -2014,13 +2064,15 @@ function mostrarTab(tab) {
   const tabEl = document.getElementById('tab-' + tab);
   if (tabEl) tabEl.classList.add('activo');
   // Acciones al abrir cada sección
-  if (tab === 'comandas')  cargarProgramados();
+  if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
   if (tab === 'presencial') renderMenuPOS();
   if (tab === 'corte')     cargarCorte();
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      cargarMenuEditor();
+  if (tab === 'entrenamiento') cargarEntrenamientoForm();
+  if (tab === 'diagnostico') cargarDiagnostico();
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -2030,6 +2082,7 @@ function mostrarTab(tab) {
   // llamando solo cuando el módulo está realmente habilitado.
   if (tab === 'config') {
     renderConfigForm();
+    cargarReglasForm();
     cargarIntegracionesPanel();
     cargarBotWhatsappPanel();
     if (MODULOS.includes('facturacion')) {
@@ -3004,6 +3057,450 @@ async function guardarConfig() {
   } else {
     fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
   }
+}
+
+// ─── Reglas de negocio (Fase 2: horarios/operación/pagos/entregas) ───────────
+// Mismo objeto reglas_atencion que ya usa prompts.js -- no se inventa un
+// almacenamiento paralelo. Si el negocio no lo ha configurado todavía,
+// arranca con el mismo default seguro que usa el bot (REGLAS_POR_DEFECTO).
+const REGLAS_DEFAULT_FRONTEND = {
+  horarios: {
+    lunes: { abierto:true, apertura:'09:00', cierre:'20:00' }, martes: { abierto:true, apertura:'09:00', cierre:'20:00' },
+    miercoles: { abierto:true, apertura:'09:00', cierre:'20:00' }, jueves: { abierto:true, apertura:'09:00', cierre:'20:00' },
+    viernes: { abierto:true, apertura:'09:00', cierre:'20:00' }, sabado: { abierto:true, apertura:'09:00', cierre:'20:00' },
+    domingo: { abierto:false, apertura:null, cierre:null },
+  },
+  pedidos: {
+    modalidades: ['recoger en tienda','entrega a domicilio'], tiempo_preparacion_minutos: 20,
+    pedido_minimo_entrega: 0, costo_envio: 0, pago_aceptado: ['efectivo'],
+    tiempo_entrega_min_minutos: 30, tiempo_entrega_max_minutos: 45, entrega_gratis_desde: 0,
+    notas: '', pago_instrucciones: '', zonas_entrega: [],
+  },
+  cierres_especiales: [], promociones: [], politicas: [],
+};
+const DIAS_SEMANA = [['lunes','Lunes'],['martes','Martes'],['miercoles','Miércoles'],['jueves','Jueves'],['viernes','Viernes'],['sabado','Sábado'],['domingo','Domingo']];
+const MODALIDADES_DISPONIBLES = ['recoger en tienda','entrega a domicilio','consumo en sitio'];
+const PAGOS_DISPONIBLES = ['efectivo','terminal (tarjeta presente)','enlace de pago','transferencia','contra entrega'];
+let reglasActuales = null;
+let zonasEntregaTmp = [];
+
+async function cargarReglasForm() {
+  const r = await apiFetch('/api/config');
+  if (!r.ok) { document.getElementById('reglas-form').innerHTML = '<div style="color:#ef4444;font-size:0.85rem;">No se pudo cargar</div>'; return; }
+  const cfg = await r.json();
+  let reglas = REGLAS_DEFAULT_FRONTEND;
+  if (cfg.reglas_atencion) {
+    try { reglas = JSON.parse(cfg.reglas_atencion); } catch {}
+  }
+  reglasActuales = reglas;
+  zonasEntregaTmp = Array.isArray(reglas.pedidos?.zonas_entrega) ? [...reglas.pedidos.zonas_entrega] : [];
+  renderReglasForm(reglas);
+}
+
+function renderReglasForm(reglas) {
+  const p = reglas.pedidos || {};
+  const horariosHtml = DIAS_SEMANA.map(([clave, nombre]) => {
+    const h = reglas.horarios?.[clave] || { abierto:false, apertura:'', cierre:'' };
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+      <label style="display:flex;align-items:center;gap:6px;width:110px;font-size:0.85rem;">
+        <input type="checkbox" id="reg-dia-${clave}" ${h.abierto ? 'checked' : ''} onchange="document.getElementById('reg-horas-${clave}').style.display=this.checked?'flex':'none'">${nombre}
+      </label>
+      <div id="reg-horas-${clave}" style="display:${h.abierto?'flex':'none'};gap:6px;align-items:center;flex:1;">
+        <input type="time" id="reg-apertura-${clave}" value="${h.apertura||'09:00'}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+        <span style="color:#aaa;">–</span>
+        <input type="time" id="reg-cierre-${clave}" value="${h.cierre||'20:00'}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+      </div>
+    </div>`;
+  }).join('');
+
+  const modalidadesHtml = MODALIDADES_DISPONIBLES.map(m => `
+    <label style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:0.85rem;">
+      <input type="checkbox" class="reg-modalidad" value="${m}" ${(p.modalidades||[]).includes(m)?'checked':''}>${m}
+    </label>`).join('');
+
+  const pagosHtml = PAGOS_DISPONIBLES.map(m => `
+    <label style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;margin-bottom:6px;font-size:0.85rem;">
+      <input type="checkbox" class="reg-pago" value="${m}" ${(p.pago_aceptado||[]).includes(m)?'checked':''}>${m}
+    </label>`).join('');
+
+  const campo = (label) => `font-size:0.8rem;color:#666;display:block;margin-bottom:4px;margin-top:10px;`;
+  const numInput = (id, val) => `<input type="number" id="${id}" value="${val ?? ''}" style="${inp()}">`;
+
+  document.getElementById('reglas-form').innerHTML = `
+    <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">Horarios</div>
+    ${horariosHtml}
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Operación</div>
+    <label style="${campo()}">Modalidades que ofreces</label>
+    <div>${modalidadesHtml}</div>
+    <label style="${campo()}">Tiempo de preparación (minutos)</label>
+    ${numInput('reg-tiempo-prep', p.tiempo_preparacion_minutos ?? 20)}
+    <label style="${campo()}">Notas operativas (opcional)</label>
+    <textarea id="reg-notas" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.notas||'').replace(/</g,'&lt;')}</textarea>
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Pagos</div>
+    <label style="${campo()}">Métodos de pago aceptados</label>
+    <div>${pagosHtml}</div>
+    <label style="${campo()}">Instrucciones de pago para el cliente (opcional)</label>
+    <textarea id="reg-pago-instrucciones" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.pago_instrucciones||'').replace(/</g,'&lt;')}</textarea>
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Entregas</div>
+    <label style="${campo()}">Costo de envío base (MXN)</label>
+    ${numInput('reg-costo-envio', p.costo_envio ?? 0)}
+    <label style="${campo()}">Pedido mínimo para entrega a domicilio (MXN, 0 = sin mínimo)</label>
+    ${numInput('reg-pedido-minimo', p.pedido_minimo_entrega ?? 0)}
+    <label style="${campo()}">Entrega gratis desde (MXN, 0 = desactivado)</label>
+    ${numInput('reg-entrega-gratis', p.entrega_gratis_desde ?? 0)}
+    <div style="display:flex;gap:10px;">
+      <div style="flex:1;"><label style="${campo()}">Tiempo de entrega mínimo (min)</label>${numInput('reg-entrega-min', p.tiempo_entrega_min_minutos ?? 30)}</div>
+      <div style="flex:1;"><label style="${campo()}">Tiempo de entrega máximo (min)</label>${numInput('reg-entrega-max', p.tiempo_entrega_max_minutos ?? 45)}</div>
+    </div>
+    <label style="${campo()}">Zonas de entrega (opcional — si se define, se usa en vez del costo base único)</label>
+    <div id="reg-zonas-lista"></div>
+    <button type="button" onclick="agregarZonaEntrega()" style="background:#f1f0ed;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;cursor:pointer;margin-top:4px;">+ Agregar zona</button>
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Reglas y políticas</div>
+    <label style="${campo()}">Cancelaciones, cambios, pedidos especiales, anticipos, disponibilidad, etc. (una por línea)</label>
+    <textarea id="reg-politicas" rows="4" style="${inp()}resize:vertical;font-family:inherit;">${(reglas.politicas||[]).join('\n').replace(/</g,'&lt;')}</textarea>
+
+    <button onclick="guardarReglas()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:16px;">Guardar horarios y reglas</button>
+  `;
+  renderZonasEntrega();
+}
+
+function renderZonasEntrega() {
+  const cont = document.getElementById('reg-zonas-lista');
+  if (!cont) return;
+  cont.innerHTML = zonasEntregaTmp.map((z, i) => `
+    <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+      <input value="${(z.nombre||'').replace(/"/g,'&quot;')}" placeholder="Nombre de la zona" oninput="zonasEntregaTmp[${i}].nombre=this.value" style="flex:2;padding:7px 10px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+      <input type="number" value="${z.costo ?? 0}" placeholder="Costo" oninput="zonasEntregaTmp[${i}].costo=Number(this.value)" style="flex:1;padding:7px 10px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+      <button type="button" onclick="zonasEntregaTmp.splice(${i},1);renderZonasEntrega()" style="background:none;border:none;color:#ef4444;font-size:1rem;cursor:pointer;padding:4px 8px;">✕</button>
+    </div>`).join('') || '<div style="font-size:0.78rem;color:#aaa;margin-bottom:6px;">Sin zonas — se usa el costo base para todos los envíos.</div>';
+}
+function agregarZonaEntrega() { zonasEntregaTmp.push({ nombre:'', costo:0 }); renderZonasEntrega(); }
+
+async function guardarReglas() {
+  const horarios = {};
+  for (const [clave] of DIAS_SEMANA) {
+    const abierto = document.getElementById(`reg-dia-${clave}`).checked;
+    horarios[clave] = abierto
+      ? { abierto:true, apertura: document.getElementById(`reg-apertura-${clave}`).value, cierre: document.getElementById(`reg-cierre-${clave}`).value }
+      : { abierto:false, apertura:null, cierre:null };
+  }
+  const modalidades = [...document.querySelectorAll('.reg-modalidad:checked')].map(el => el.value);
+  const pagoAceptado = [...document.querySelectorAll('.reg-pago:checked')].map(el => el.value);
+  const politicas = document.getElementById('reg-politicas').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const nuevasReglas = {
+    ...reglasActuales,
+    horarios,
+    pedidos: {
+      ...reglasActuales.pedidos,
+      modalidades, pago_aceptado: pagoAceptado,
+      tiempo_preparacion_minutos: Number(document.getElementById('reg-tiempo-prep').value) || 0,
+      pedido_minimo_entrega: Number(document.getElementById('reg-pedido-minimo').value) || 0,
+      costo_envio: Number(document.getElementById('reg-costo-envio').value) || 0,
+      entrega_gratis_desde: Number(document.getElementById('reg-entrega-gratis').value) || 0,
+      tiempo_entrega_min_minutos: Number(document.getElementById('reg-entrega-min').value) || 0,
+      tiempo_entrega_max_minutos: Number(document.getElementById('reg-entrega-max').value) || 0,
+      notas: document.getElementById('reg-notas').value.trim(),
+      pago_instrucciones: document.getElementById('reg-pago-instrucciones').value.trim(),
+      zonas_entrega: zonasEntregaTmp.filter(z => z.nombre && z.nombre.trim()),
+    },
+    politicas,
+    cierres_especiales: reglasActuales.cierres_especiales || [],
+    promociones: reglasActuales.promociones || [],
+  };
+  const fb = document.getElementById('reglas-feedback');
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify({ reglas_atencion: nuevasReglas }) });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok) {
+    reglasActuales = nuevasReglas;
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = body.error || 'Error al guardar';
+  }
+}
+
+// ─── Entrenamiento del bot (Fase 4) ───────────────────────────────────────────
+// Mismo objeto reglas_atencion, bajo la clave `bot` -- no un almacenamiento
+// paralelo. Todo lo que se ve en la pestaña Config (horarios/pagos/entregas/
+// políticas) también forma parte de lo que el bot ya sabe; esta pestaña solo
+// agrega los campos que no tienen otro lugar natural (tono, saludo,
+// personalidad, FAQs, respuestas prohibidas, cuándo transferir, palabras
+// críticas) más el simulador.
+let faqsTmp = [];
+let respuestasProhibidasTmp = [];
+let palabrasCriticasTmp = [];
+
+async function cargarEntrenamientoForm() {
+  const r = await apiFetch('/api/config');
+  if (!r.ok) { document.getElementById('entrenamiento-form').innerHTML = '<div style="color:#ef4444;font-size:0.85rem;">No se pudo cargar</div>'; return; }
+  const cfg = await r.json();
+  let reglas = REGLAS_DEFAULT_FRONTEND;
+  if (cfg.reglas_atencion) { try { reglas = JSON.parse(cfg.reglas_atencion); } catch {} }
+  reglasActuales = reglas;
+  const bot = reglas.bot || {};
+  faqsTmp = Array.isArray(bot.faqs) ? bot.faqs.map(f => ({ ...f })) : [];
+  respuestasProhibidasTmp = Array.isArray(bot.respuestas_prohibidas) ? [...bot.respuestas_prohibidas] : [];
+  palabrasCriticasTmp = Array.isArray(bot.palabras_criticas) ? [...bot.palabras_criticas] : [];
+  renderEntrenamientoForm(bot);
+  iniciarSesionSimulador();
+}
+
+function renderEntrenamientoForm(bot) {
+  document.getElementById('entrenamiento-form').innerHTML = `
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Saludo al iniciar una conversación (opcional)</label>
+    <input id="ent-saludo" value="${(bot.saludo||'').replace(/"/g,'&quot;')}" placeholder="¡Hola! Bienvenido, ¿en qué te ayudamos hoy?" style="${inp()}">
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Tono de atención</label>
+    <input id="ent-tono" value="${(bot.tono||'').replace(/"/g,'&quot;')}" placeholder="Cercano y profesional" style="${inp()}">
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Personalidad (opcional)</label>
+    <textarea id="ent-personalidad" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(bot.personalidad||'').replace(/</g,'&lt;')}</textarea>
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Información importante que el bot debe conocer</label>
+    <textarea id="ent-info" rows="3" placeholder="Ej: Aceptamos mascotas en la terraza. Tenemos estacionamiento propio." style="${inp()}resize:vertical;font-family:inherit;">${(bot.informacion_importante||'').replace(/</g,'&lt;')}</textarea>
+
+    <label style="font-size:0.8rem;color:#666;display:block;margin:12px 0 4px;">Preguntas frecuentes</label>
+    <div id="ent-faqs-lista"></div>
+    <button type="button" onclick="agregarFaq()" style="background:#f1f0ed;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;cursor:pointer;margin-top:4px;">+ Agregar pregunta</button>
+
+    <label style="font-size:0.8rem;color:#666;display:block;margin:16px 0 4px;">Respuestas prohibidas (cosas que el bot nunca debe decir)</label>
+    <div id="ent-prohibidas-lista"></div>
+    <button type="button" onclick="agregarItemLista('respuestasProhibidasTmp','ent-prohibidas-lista')" style="background:#f1f0ed;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;cursor:pointer;margin-top:4px;">+ Agregar</button>
+
+    <label style="font-size:0.8rem;color:#666;display:block;margin:16px 0 4px;">Cuándo transferir a una persona (opcional)</label>
+    <textarea id="ent-transferir" rows="2" placeholder="Si el cliente se queja del servicio o pide hablar con un humano." style="${inp()}resize:vertical;font-family:inherit;">${(bot.transferir_a_humano||'').replace(/</g,'&lt;')}</textarea>
+
+    <label style="font-size:0.8rem;color:#666;display:block;margin:12px 0 4px;">Palabras o escenarios críticos (requieren especial cuidado)</label>
+    <div id="ent-criticas-lista"></div>
+    <button type="button" onclick="agregarItemLista('palabrasCriticasTmp','ent-criticas-lista')" style="background:#f1f0ed;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;cursor:pointer;margin-top:4px;">+ Agregar</button>
+
+    <button onclick="guardarEntrenamiento()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:20px;">Guardar entrenamiento</button>
+  `;
+  renderFaqsLista(); renderItemLista('respuestasProhibidasTmp','ent-prohibidas-lista'); renderItemLista('palabrasCriticasTmp','ent-criticas-lista');
+}
+
+function renderFaqsLista() {
+  const cont = document.getElementById('ent-faqs-lista');
+  if (!cont) return;
+  cont.innerHTML = faqsTmp.map((f,i) => `
+    <div style="border:1px solid #e5e2da;border-radius:8px;padding:10px;margin-bottom:8px;">
+      <input value="${(f.pregunta||'').replace(/"/g,'&quot;')}" placeholder="Pregunta" oninput="faqsTmp[${i}].pregunta=this.value" style="${inp()}margin-bottom:6px;">
+      <div style="display:flex;gap:6px;">
+        <textarea rows="2" placeholder="Respuesta" oninput="faqsTmp[${i}].respuesta=this.value" style="flex:1;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.85rem;resize:vertical;font-family:inherit;">${(f.respuesta||'').replace(/</g,'&lt;')}</textarea>
+        <button type="button" onclick="faqsTmp.splice(${i},1);renderFaqsLista()" style="background:none;border:none;color:#ef4444;font-size:1rem;cursor:pointer;">✕</button>
+      </div>
+    </div>`).join('') || '<div style="font-size:0.78rem;color:#aaa;">Sin preguntas frecuentes configuradas.</div>';
+}
+function agregarFaq() { faqsTmp.push({ pregunta:'', respuesta:'' }); renderFaqsLista(); }
+
+// Listas simples reutilizables (respuestas prohibidas / palabras críticas):
+// operan sobre una variable global por nombre para no duplicar 4 funciones
+// casi idénticas.
+const LISTAS_TMP = { respuestasProhibidasTmp: () => respuestasProhibidasTmp, palabrasCriticasTmp: () => palabrasCriticasTmp };
+function renderItemLista(nombreVar, contId) {
+  const cont = document.getElementById(contId);
+  if (!cont) return;
+  const arr = LISTAS_TMP[nombreVar]();
+  cont.innerHTML = arr.map((v,i) => `
+    <div style="display:flex;gap:6px;margin-bottom:6px;">
+      <input value="${(v||'').replace(/"/g,'&quot;')}" oninput="${nombreVar}[${i}]=this.value" style="flex:1;padding:7px 10px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+      <button type="button" onclick="${nombreVar}.splice(${i},1);renderItemLista('${nombreVar}','${contId}')" style="background:none;border:none;color:#ef4444;font-size:1rem;cursor:pointer;">✕</button>
+    </div>`).join('') || '<div style="font-size:0.78rem;color:#aaa;margin-bottom:6px;">Ninguna configurada.</div>';
+}
+function agregarItemLista(nombreVar, contId) { LISTAS_TMP[nombreVar]().push(''); renderItemLista(nombreVar, contId); }
+
+async function guardarEntrenamiento() {
+  const bot = {
+    saludo: document.getElementById('ent-saludo').value.trim(),
+    tono: document.getElementById('ent-tono').value.trim(),
+    personalidad: document.getElementById('ent-personalidad').value.trim(),
+    informacion_importante: document.getElementById('ent-info').value.trim(),
+    faqs: faqsTmp.filter(f => f.pregunta?.trim() && f.respuesta?.trim()),
+    respuestas_prohibidas: respuestasProhibidasTmp.filter(v => v && v.trim()),
+    transferir_a_humano: document.getElementById('ent-transferir').value.trim(),
+    palabras_criticas: palabrasCriticasTmp.filter(v => v && v.trim()),
+  };
+  const nuevasReglas = { ...reglasActuales, bot };
+  const fb = document.getElementById('entrenamiento-feedback');
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify({ reglas_atencion: nuevasReglas }) });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok) {
+    reglasActuales = nuevasReglas;
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = body.error || 'Error al guardar';
+  }
+}
+
+// ─── Simulador del bot ────────────────────────────────────────────────────────
+let simSessionId = null;
+
+async function iniciarSesionSimulador() {
+  document.getElementById('sim-mensajes').innerHTML = '';
+  const r = await apiFetch('/api/admin/bot-simulador/sesion', { method:'POST' });
+  if (r.ok) { const d = await r.json(); simSessionId = d.sessionId; }
+}
+
+function burbujaSimulador(texto, esUsuario) {
+  const cont = document.getElementById('sim-mensajes');
+  const div = document.createElement('div');
+  div.style.cssText = `display:flex;justify-content:${esUsuario?'flex-end':'flex-start'};margin-bottom:8px;`;
+  div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:${esUsuario?'12px 12px 0 12px':'12px 12px 12px 0'};background:${esUsuario?'#dcfce7':'#fff'};border:1px solid #e5e2da;font-size:0.85rem;white-space:pre-wrap;">${escaparHTML(texto)}</div>`;
+  cont.appendChild(div);
+  cont.scrollTop = cont.scrollHeight;
+}
+
+async function enviarMensajeSimulador() {
+  const input = document.getElementById('sim-input');
+  const btn = document.getElementById('sim-btn-enviar');
+  const texto = input.value.trim();
+  if (!texto) return;
+  if (!simSessionId) await iniciarSesionSimulador();
+  burbujaSimulador(texto, true);
+  input.value = ''; input.disabled = true; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/admin/bot-simulador/mensaje', { method:'POST', body: JSON.stringify({ sessionId: simSessionId, mensaje: texto }) });
+    const d = await r.json();
+    if (r.ok) {
+      burbujaSimulador(d.texto, false);
+      if (d.ordenDetectada) burbujaSimulador('(El bot generaría un pedido aquí — en la simulación no se crea nada real.)', false);
+      if (d.escalar) burbujaSimulador('(El bot marcaría esta conversación para atención humana.)', false);
+    } else {
+      burbujaSimulador('Error: ' + (d.error || 'no se pudo generar una respuesta'), false);
+    }
+  } catch {
+    burbujaSimulador('Error de conexión con el simulador.', false);
+  }
+  input.disabled = false; btn.disabled = false; input.focus();
+}
+document.getElementById('sim-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarMensajeSimulador(); }
+});
+
+async function limpiarSimulador() {
+  if (simSessionId) await apiFetch(`/api/admin/bot-simulador/${simSessionId}`, { method:'DELETE' }).catch(() => {});
+  await iniciarSesionSimulador();
+}
+
+// ─── Onboarding guiado (Fase 5) ────────────────────────────────────────────────
+// Reutiliza EXACTAMENTE el checklist de activación del bot (mismos 8
+// campos automáticos + 3 confirmaciones manuales que ya usa Superadmin) --
+// nunca se inventa un segundo checklist paralelo. Los pasos "Probar
+// atención manual" y "Probar bot" reusan las claves manuales existentes
+// (prueba_manual_confirmada / mensaje_inicial_revisado) con una etiqueta
+// más clara para este asistente, sin agregar columnas nuevas.
+const PASOS_ONBOARDING = [
+  { id:'datos_basicos',  label:'Datos básicos',            tab:'config',        tipo:'auto',   clave:'nombre_negocio' },
+  { id:'horarios',       label:'Horarios',                 tab:'config',        tipo:'auto',   clave:'horarios' },
+  { id:'pagos',          label:'Métodos de pago',          tab:'config',        tipo:'auto',   clave:'metodos_pago' },
+  { id:'entregas',       label:'Entregas',                 tab:'config',        tipo:'auto',   clave:'modalidades_entrega' },
+  { id:'menu',           label:'Menú o catálogo',          tab:'menu',          tipo:'auto',   clave:'productos_servicios' },
+  { id:'reglas_bot',     label:'Reglas del bot',           tab:'entrenamiento', tipo:'auto',   clave:'reglas_operativas' },
+  { id:'whatsapp',       label:'Conectar WhatsApp',        tab:'config',        tipo:'auto',   clave:'integracion_conectada' },
+  { id:'prueba_manual',  label:'Probar atención manual',   tab:'chats',         tipo:'manual', clave:'prueba_manual_confirmada' },
+  { id:'prueba_bot',     label:'Probar bot (simulador)',   tab:'entrenamiento', tipo:'manual', clave:'mensaje_inicial_revisado' },
+  { id:'activar',        label:'Activar bot',              tab:'config',        tipo:'manual', clave:'aceptacion_administrador' },
+];
+let onboardingAbierto = true;
+
+async function cargarOnboarding() {
+  const wrap = document.getElementById('onboarding-wrap');
+  const r = await apiFetch('/api/admin/checklist-activacion-bot');
+  if (!r.ok) { wrap.style.display = 'none'; return; }
+  const { automaticos, manuales, listoParaActivar } = await r.json();
+  const estados = PASOS_ONBOARDING.map(p => p.tipo === 'auto' ? !!automaticos[p.clave] : !!manuales[p.clave]);
+  const completos = estados.filter(Boolean).length;
+  const pct = Math.round((completos / PASOS_ONBOARDING.length) * 100);
+  if (completos === PASOS_ONBOARDING.length) { wrap.style.display = 'none'; return; } // ya no hace falta mostrarlo
+  wrap.style.display = '';
+  document.getElementById('onboarding-pct').textContent = `${completos}/${PASOS_ONBOARDING.length} · ${pct}%`;
+  document.getElementById('onboarding-barra-fill').style.width = pct + '%';
+  document.getElementById('onboarding-pasos').style.display = onboardingAbierto ? '' : 'none';
+  document.getElementById('onboarding-toggle-icono').textContent = onboardingAbierto ? '▾' : '▸';
+  document.getElementById('onboarding-pasos').innerHTML = PASOS_ONBOARDING.map((p, i) => {
+    const listo = estados[i];
+    if (p.tipo === 'manual') {
+      return `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:0.85rem;cursor:pointer;">
+        <input type="checkbox" ${listo?'checked':''} onchange="marcarPasoOnboarding('${p.clave}',this.checked)">
+        <span style="flex:1;${listo?'color:#22c55e;':''}">${listo?'✅':'⬜'} ${p.label}</span>
+        <a href="#" onclick="event.preventDefault();mostrarTab('${p.tab}')" style="font-size:0.78rem;color:#888;">ir →</a>
+      </label>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:0.85rem;">
+      <span style="flex:1;${listo?'color:#22c55e;':'color:#888;'}">${listo?'✅':'⚪'} ${p.label}</span>
+      <a href="#" onclick="event.preventDefault();mostrarTab('${p.tab}')" style="font-size:0.78rem;color:#888;">ir →</a>
+    </div>`;
+  }).join('');
+}
+
+function toggleOnboarding() {
+  onboardingAbierto = !onboardingAbierto;
+  document.getElementById('onboarding-pasos').style.display = onboardingAbierto ? '' : 'none';
+  document.getElementById('onboarding-toggle-icono').textContent = onboardingAbierto ? '▾' : '▸';
+}
+
+async function marcarPasoOnboarding(clave, valor) {
+  await apiFetch('/api/admin/checklist', { method:'PATCH', body: JSON.stringify({ checklist: { [clave]: valor } }) });
+  cargarOnboarding();
+}
+
+// ─── Diagnóstico y soporte (Fase 6) ────────────────────────────────────────────
+const ESTADOS_WA_TEXTO = {
+  no_configurado: 'Sin configurar', pendiente_configuracion: 'Conexión pendiente',
+  activo: 'Conectado', suspendido: 'Suspendido', error: 'Error',
+};
+let ultimoDiagnostico = null;
+
+function fechaRelativaCorta(iso) {
+  if (!iso) return 'Nunca';
+  const diffMin = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return 'Hace un momento';
+  if (diffMin < 60) return `Hace ${diffMin} min`;
+  if (diffMin < 1440) return `Hace ${Math.round(diffMin/60)} h`;
+  return new Date(iso).toLocaleDateString('es-MX');
+}
+
+async function cargarDiagnostico() {
+  const cont = document.getElementById('diagnostico-contenido');
+  cont.innerHTML = 'Cargando...';
+  const r = await apiFetch('/api/admin/diagnostico');
+  if (!r.ok) { cont.innerHTML = '<div style="color:#ef4444;font-size:0.85rem;">No se pudo cargar el diagnóstico.</div>'; return; }
+  const d = await r.json();
+  ultimoDiagnostico = d;
+  const fila = (label, valor, color) => `<div class="fila-lista" style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f1f0ed;font-size:0.85rem;"><span style="color:#666;">${label}</span><span style="font-weight:600;${color?`color:${color};`:''}">${valor}</span></div>`;
+  const wa = d.whatsapp, op = d.operacion || {};
+  cont.innerHTML = `
+    <div style="font-weight:700;font-size:0.85rem;margin:14px 0 6px;">WhatsApp</div>
+    ${fila('Estado', ESTADOS_WA_TEXTO[wa.estado] || wa.estado, wa.estado==='error'?'#ef4444':wa.estado==='activo'?'#22c55e':'#888')}
+    ${fila('Bot', wa.botActivo ? 'Activo' : 'Apagado', wa.botActivo?'#22c55e':'#888')}
+    ${fila('Última recepción', fechaRelativaCorta(wa.ultimaRecepcion))}
+    ${fila('Último envío exitoso', fechaRelativaCorta(wa.ultimoEnvioExitoso))}
+    ${wa.ultimoErrorCodigo ? fila('Último error', `${wa.ultimoErrorCodigo} (${fechaRelativaCorta(wa.ultimoErrorAt)})`, '#ef4444') : ''}
+
+    <div style="font-weight:700;font-size:0.85rem;margin:18px 0 6px;">Chats</div>
+    ${fila('Conversaciones recientes', d.chats.conversacionesRecientes)}
+    ${fila('Requieren atención (esperando respuesta)', d.chats.requierenAtencion, d.chats.requierenAtencion>0?'#f59e0b':'#888')}
+
+    <div style="font-weight:700;font-size:0.85rem;margin:18px 0 6px;">Operación</div>
+    ${fila('Menú configurado', op.productos_servicios ? '✅ Sí' : '⬜ No', op.productos_servicios?'#22c55e':'#888')}
+    ${fila('Horarios configurados', op.horarios ? '✅ Sí' : '⬜ No', op.horarios?'#22c55e':'#888')}
+    ${fila('Pagos configurados', op.metodos_pago ? '✅ Sí' : '⬜ No', op.metodos_pago?'#22c55e':'#888')}
+    ${fila('Entregas configuradas', op.modalidades_entrega ? '✅ Sí' : '⬜ No', op.modalidades_entrega?'#22c55e':'#888')}
+    ${fila('Bot listo para activar', op.reglas_operativas && op.integracion_conectada ? '✅ Sí' : '⬜ No', (op.reglas_operativas && op.integracion_conectada)?'#22c55e':'#888')}
+
+    <div style="font-weight:700;font-size:0.85rem;margin:18px 0 6px;">Integraciones</div>
+    ${Object.entries(d.integraciones).map(([mod,estado]) => fila(mod.charAt(0).toUpperCase()+mod.slice(1), estado)).join('') || '<div style="font-size:0.8rem;color:#aaa;">Sin módulos adicionales</div>'}
+  `;
+}
+
+function copiarDiagnostico() {
+  if (!ultimoDiagnostico) return;
+  const texto = JSON.stringify(ultimoDiagnostico, null, 2);
+  navigator.clipboard?.writeText(texto).then(() => alert('Diagnóstico copiado (sin secretos).')).catch(() => alert('No se pudo copiar.'));
 }
 
 // ─── Usuarios (Fase 5) ───────────────────────────────────────────────────────

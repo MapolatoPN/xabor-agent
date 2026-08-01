@@ -2540,6 +2540,50 @@ app.get('/api/superadmin/negocios/:negocioId/checklist-activacion-bot', requireS
   res.json(chequeo);
 });
 
+// Estado del sistema (Fase 6: diagnóstico y soporte). Solo lectura,
+// agrega datos que ya existen -- ver obtenerDiagnosticoNegocio. La
+// integración de WhatsApp se resuelve aquí con columnas ya filtradas
+// (COLUMNAS_SEGURAS en integracionesService.js nunca incluye secretos).
+app.get('/api/admin/diagnostico', requireAdminSeguro, async (req, res) => {
+  const integracionWhatsapp = await obtenerIntegracionNegocio(req.negocioId, 'whatsapp', 'meta');
+  const diagnostico = await obtenerDiagnosticoNegocio(req.negocioId, integracionWhatsapp);
+  if (!diagnostico) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(diagnostico);
+});
+
+// Vista propia del administrador (Fase 5: onboarding guiado) -- mismos
+// datos que la versión de superadmin, autoservicio sobre req.negocioId.
+app.get('/api/admin/checklist-activacion-bot', requireAdminSeguro, async (req, res) => {
+  const chequeo = await obtenerChecklistActivacionBot(req.negocioId);
+  if (!chequeo) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(chequeo);
+});
+
+// Confirmaciones manuales del propio negocio (mensaje_inicial_revisado,
+// prueba_manual_confirmada, aceptacion_administrador) -- mismas 3 claves
+// que ya usa el checklist de activación de superadmin, mismo
+// negocios.checklist JSONB. Solo permite tocar esas 3 claves desde
+// autoservicio: cualquier otra (p. ej. las del checklist de instalación
+// de superadmin) queda fuera de este endpoint a propósito.
+const CLAVES_CHECKLIST_AUTOSERVICIO = ['mensaje_inicial_revisado', 'prueba_manual_confirmada', 'aceptacion_administrador'];
+app.patch('/api/admin/checklist', requireAdminSeguro, async (req, res) => {
+  const { checklist } = req.body || {};
+  if (!checklist || typeof checklist !== 'object' || Array.isArray(checklist)) return res.status(400).json({ error: 'Formato de checklist inválido' });
+  const claves = Object.keys(checklist);
+  if (!claves.length || claves.some(c => !CLAVES_CHECKLIST_AUTOSERVICIO.includes(c))) {
+    return res.status(400).json({ error: `Solo se pueden actualizar: ${CLAVES_CHECKLIST_AUTOSERVICIO.join(', ')}` });
+  }
+  if (Object.values(checklist).some(v => typeof v !== 'boolean')) return res.status(400).json({ error: 'Los valores del checklist deben ser boolean' });
+  try {
+    const resultado = await actualizarChecklistNegocioSuperadmin(req.negocioId, checklist, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/admin/checklist] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el checklist' });
+  }
+});
+
 app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin, async (req, res) => {
   const { activo } = req.body || {};
   if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo debe ser boolean' });
@@ -2792,6 +2836,46 @@ app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
     console.error('[PATCH /api/admin/bot-whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
   }
+});
+
+// ─── Simulador del bot (Fase 4 -- centro de entrenamiento) ───────────────────
+// Admin-only, nunca WhatsApp/voz real: usa exactamente la configuración real
+// del negocio (menú, reglas_atencion, entrenamiento) a través de
+// simularMensaje(), pero esa función nunca registra pedidos, envía mensajes
+// ni persiste nada en `mensajes`. El sessionId siempre lo genera el
+// servidor con el negocioId embebido y cada request re-valida que el
+// sessionId pertenezca al negocio de la sesión -- un admin de otro negocio
+// nunca puede leer ni limpiar la conversación de prueba de otro.
+app.post('/api/admin/bot-simulador/sesion', requireAdminSeguro, (req, res) => {
+  const sessionId = `sim-${req.negocioId}-${crearHashAleatorio()}`;
+  res.json({ sessionId });
+});
+
+function crearHashAleatorio() {
+  return createHash('sha256').update(`${Date.now()}-${Math.random()}`).digest('hex').slice(0, 16);
+}
+
+function sessionIdPerteneceANegocio(sessionId, negocioId) {
+  return typeof sessionId === 'string' && sessionId.startsWith(`sim-${negocioId}-`);
+}
+
+app.post('/api/admin/bot-simulador/mensaje', requireAdminSeguro, async (req, res) => {
+  const { sessionId, mensaje } = req.body || {};
+  if (!mensaje || typeof mensaje !== 'string' || !mensaje.trim()) return res.status(400).json({ error: 'Se requiere mensaje' });
+  if (!sessionIdPerteneceANegocio(sessionId, req.negocioId)) return res.status(400).json({ error: 'sessionId inválido para este negocio' });
+  try {
+    const resultado = await simularMensaje(sessionId, mensaje.trim(), req.negocioId);
+    res.json(resultado);
+  } catch (e) {
+    console.error('[POST /api/admin/bot-simulador/mensaje] Error:', e.message);
+    res.status(502).json({ error: 'El simulador no pudo generar una respuesta. Intenta de nuevo.' });
+  }
+});
+
+app.delete('/api/admin/bot-simulador/:sessionId', requireAdminSeguro, (req, res) => {
+  if (!sessionIdPerteneceANegocio(req.params.sessionId, req.negocioId)) return res.status(400).json({ error: 'sessionId inválido para este negocio' });
+  deleteSession(req.params.sessionId);
+  res.json({ ok: true });
 });
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────

@@ -76,6 +76,42 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   }
 }
 
+// ─── Simulador del bot (Fase 4 -- centro de entrenamiento) ───────────────────
+// Usa EXACTAMENTE la misma construcción de prompt que procesarMensaje (mismo
+// menú, mismas reglas_atencion, mismo entrenamiento configurado) para que la
+// respuesta simulada sea representativa de lo que el bot real diría -- pero
+// deliberadamente NUNCA llama a registrarPedido/enviarMensaje/memoria/
+// facturación/Rewards ni persiste nada en `mensajes`. Cualquier marcador que
+// el modelo emita (<ORDEN_CONFIRMADA>, <ESCALAR_A_HUMANO>, etc.) se detecta
+// solo para mostrarlo como aviso informativo en el simulador -- nunca se
+// actúa sobre él. sessionId vive en el mismo Map en memoria de session.js
+// pero bajo el prefijo 'sim-' (nunca colisiona con sesiones reales de
+// WhatsApp/voz, que usan teléfono o 'call-').
+export async function simularMensaje(sessionId, mensajeUsuario, negocioId) {
+  if (!sessionId || !sessionId.startsWith('sim-')) throw new Error('sessionId de simulador inválido');
+  agregarMensaje(sessionId, 'user', mensajeUsuario);
+  const session = getSession(sessionId);
+  try {
+    const respuesta = await getAnthropic().messages.create({
+      model: MODELO,
+      max_tokens: 1024,
+      system: await construirSystemPrompt(null, 'simulador', negocioId),
+      messages: session.mensajes,
+    });
+    const textoRespuesta = respuesta.content[0].text;
+    agregarMensaje(sessionId, 'assistant', textoRespuesta);
+    return {
+      texto: limpiarTexto(textoRespuesta),
+      ordenDetectada: !!extraerOrden(textoRespuesta),
+      escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
+      sessionId,
+    };
+  } catch (error) {
+    console.error('[brain] Error en simulador:', error.message);
+    throw error;
+  }
+}
+
 // ─── Versión streaming (voz) ──────────────────────────────────────────────────
 // onFrase(texto) se llama por cada oración completa mientras Claude genera.
 // signal: AbortSignal — cuando se aborta, el stream se cancela limpiamente.

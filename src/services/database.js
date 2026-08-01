@@ -2849,6 +2849,47 @@ export async function obtenerChecklistActivacionBot(negocioId) {
   return { automaticos, manuales, listoParaActivar };
 }
 
+// Diagnóstico y soporte (Fase 6 -- panel comercial). Agrega datos que YA
+// existen en varias tablas (integraciones_canal, mensajes, negocio_modulos,
+// bot_whatsapp_activo, checklist) en una sola lectura de solo lectura.
+// Nunca incluye tokens/IVs/auth tags -- reutiliza COLUMNAS_SEGURAS de
+// integracionesService.js (recibida ya filtrada por el llamador) y aquí
+// mismo nunca hace SELECT * sobre integraciones_canal_credenciales.
+export async function obtenerDiagnosticoNegocio(negocioId, integracionWhatsapp) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+
+  const [botActivo, ultimoEntrante, ultimoSaliente, conversacionesRecientes, modulosRows, checklist] = await Promise.all([
+    obtenerBotWhatsappActivoNegocio(negocioId),
+    pool.query(`SELECT timestamp FROM mensajes WHERE negocio_id = $1 AND direccion = 'entrante' ORDER BY timestamp DESC LIMIT 1`, [negocioId]),
+    pool.query(`SELECT timestamp FROM mensajes WHERE negocio_id = $1 AND direccion = 'saliente' ORDER BY timestamp DESC LIMIT 1`, [negocioId]),
+    obtenerConversacionesRecientes(negocioId, 20),
+    pool.query(`SELECT modulo, estado FROM negocio_modulos WHERE negocio_id = $1`, [negocioId]),
+    obtenerChecklistActivacionBot(negocioId),
+  ]);
+
+  const modulos = {};
+  for (const row of modulosRows.rows) modulos[row.modulo] = row.estado;
+
+  const requierenAtencion = conversacionesRecientes.filter(c => c.direccion === 'entrante').length;
+
+  return {
+    whatsapp: {
+      estado: integracionWhatsapp?.estado || 'no_configurado',
+      botActivo,
+      ultimaRecepcion: ultimoEntrante.rows[0]?.timestamp || null,
+      ultimoEnvioExitoso: ultimoSaliente.rows[0]?.timestamp || null,
+      ultimoErrorCodigo: integracionWhatsapp?.ultimo_error_codigo || null,
+      ultimoErrorAt: integracionWhatsapp?.ultimo_error_at || null,
+    },
+    chats: {
+      conversacionesRecientes: conversacionesRecientes.length,
+      requierenAtencion,
+    },
+    operacion: checklist ? checklist.automaticos : null,
+    integraciones: modulos,
+  };
+}
+
 // Plan comercial (Fase 7 -- exclusivo de Superadmin, nunca visible en el
 // panel del propio negocio). Un registro por negocio (PK = negocio_id);
 // se crea con defaults seguros ('prospecto') la primera vez que se
