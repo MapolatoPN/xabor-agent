@@ -1986,9 +1986,28 @@ export async function actualizarConfiguracion(cambios, negocioId) {
 // En ambos casos: solo se considera "configurado" si AMBAS claves
 // (phone_number_id y token) están presentes -- nunca un envío con una
 // credencial a medias.
+// Fase B (integraciones por negocio, cifradas): se agrega una TERCERA
+// fuente, consultada PRIMERO -- el almacenamiento cifrado nuevo
+// (integraciones_canal + integraciones_canal_credenciales, vía
+// integracionesService.js). Import dinámico a propósito: evita
+// cualquier riesgo de dependencia circular estática (integracionesService.js
+// importa `pool` de este mismo archivo) y sigue el mismo patrón ya usado
+// en esta base de código para este tipo de import cruzado (ver
+// rewardsService.js). Las dos fuentes heredadas NO se tocan ni se
+// reordenan entre sí -- el fallback verificado de Nonna Maye hacia las
+// variables de entorno de Railway sigue exactamente igual mientras no
+// se migren sus credenciales reales a este modelo nuevo (Fase F).
 export async function obtenerCredencialesWhatsappNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const id = negocioId.trim();
+
+  try {
+    const { obtenerCredencialesDescifradas } = await import('./integracionesService.js');
+    const credencialesCifradas = await obtenerCredencialesDescifradas(id, 'whatsapp', 'meta');
+    if (credencialesCifradas) return credencialesCifradas;
+  } catch (e) {
+    console.error('[DB] Error consultando integraciones cifradas (negocio ocultado):', e.message);
+  }
 
   const cfg = await obtenerConfiguracion(id);
   if (cfg.int_wa_phone_id && cfg.int_wa_token) {
