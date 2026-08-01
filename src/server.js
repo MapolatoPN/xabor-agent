@@ -2378,6 +2378,13 @@ app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSup
 // No se expone como formulario de "pegar token" en la UI normal
 // (Fase C usará Embedded Signup en su lugar).
 app.put('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSuperadmin, async (req, res) => {
+  // Apagado por defecto -- esta vía manual solo existe para pruebas
+  // internas y migraciones controladas (ver comentario arriba). En
+  // producción la variable debe quedar ausente o en 'false'; nunca se
+  // imprime su valor, solo se compara.
+  if (process.env.ALLOW_MANUAL_INTEGRATION_CREDENTIALS !== 'true') {
+    return res.status(403).json({ error: 'Configuración manual de credenciales de WhatsApp deshabilitada en este entorno' });
+  }
   const negocioId = req.params.negocioId;
   if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
   const estadoModulo = await obtenerEstadoModulo(negocioId, 'whatsapp');
