@@ -2357,6 +2357,27 @@ app.patch('/api/superadmin/negocios/:negocioId/plan', requireSuperadmin, async (
   }
 });
 
+// Plan comercial (Fase 7) -- exclusivo de Superadmin, seguimiento
+// interno de mensualidad/fechas/estado del contrato. Nunca se expone en
+// ninguna ruta de autoservicio del propio negocio.
+app.get('/api/superadmin/negocios/:negocioId/plan-comercial', requireSuperadmin, async (req, res) => {
+  const plan = await obtenerPlanComercial(req.params.negocioId);
+  if (!plan) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(plan);
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/plan-comercial', requireSuperadmin, async (req, res) => {
+  try {
+    const resultado = await actualizarPlanComercial(req.params.negocioId, req.body || {}, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json(resultado);
+  } catch (e) {
+    if (e.code === 'ESTADO_INVALIDO') return res.status(400).json({ error: e.message });
+    console.error('[PATCH /api/superadmin/negocios/:id/plan-comercial] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el plan comercial' });
+  }
+});
+
 app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, async (req, res) => {
   const { modulos } = req.body;
   if (!modulos || typeof modulos !== 'object' || Array.isArray(modulos)) return res.status(400).json({ error: 'Formato de módulos inválido' });

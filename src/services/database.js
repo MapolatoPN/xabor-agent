@@ -2849,6 +2849,58 @@ export async function obtenerChecklistActivacionBot(negocioId) {
   return { automaticos, manuales, listoParaActivar };
 }
 
+// Plan comercial (Fase 7 -- exclusivo de Superadmin, nunca visible en el
+// panel del propio negocio). Un registro por negocio (PK = negocio_id);
+// se crea con defaults seguros ('prospecto') la primera vez que se
+// consulta, para que la pantalla nunca tenga que inventar valores en el
+// frontend.
+export async function obtenerPlanComercial(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query('SELECT * FROM negocio_plan_comercial WHERE negocio_id = $1', [negocioId]);
+  if (rows[0]) return rows[0];
+  const { rows: negocioRows } = await pool.query('SELECT id FROM negocios WHERE id = $1', [negocioId]);
+  if (!negocioRows[0]) return null;
+  return { negocio_id: negocioId, plan: 'prospecto', estado: 'prospecto', mensualidad: null, costo_instalacion: null, instalacion_pagada: false, fecha_inicio: null, proxima_fecha_pago: null, notas: null, responsable: null, fecha_ultimo_seguimiento: null };
+}
+
+const CAMPOS_PLAN_COMERCIAL = ['plan','mensualidad','costo_instalacion','instalacion_pagada','fecha_inicio','proxima_fecha_pago','estado','notas','responsable','fecha_ultimo_seguimiento'];
+const ESTADOS_PLAN_COMERCIAL = ['prospecto','prueba','activo','vencido','suspendido','cancelado'];
+export async function actualizarPlanComercial(negocioId, cambios, superadminId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (cambios.estado !== undefined && !ESTADOS_PLAN_COMERCIAL.includes(cambios.estado)) {
+    const err = new Error('estado de plan comercial inválido'); err.code = 'ESTADO_INVALIDO'; throw err;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: existente } = await client.query('SELECT * FROM negocio_plan_comercial WHERE negocio_id = $1 FOR UPDATE', [negocioId]);
+    const anterior = existente[0] || null;
+    const claves = Object.keys(cambios).filter(k => CAMPOS_PLAN_COMERCIAL.includes(k));
+    if (!claves.length) { await client.query('ROLLBACK'); return anterior; }
+    const cols = ['negocio_id', ...claves];
+    const placeholders = cols.map((_, i) => `$${i+1}`);
+    const updates = claves.map(k => `${k} = EXCLUDED.${k}`).join(', ') + ', updated_at = NOW()';
+    const { rows } = await client.query(
+      `INSERT INTO negocio_plan_comercial (${cols.join(',')}) VALUES (${placeholders.join(',')})
+       ON CONFLICT (negocio_id) DO UPDATE SET ${updates} RETURNING *`,
+      [negocioId, ...claves.map(k => cambios[k])]
+    );
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_plan_comercial_negocio', negocioId,
+      estadoAnterior: anterior, estadoNuevo: rows[0],
+    }, client);
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e.code === 'ESTADO_INVALIDO') throw e;
+    console.error('[DB] Error actualizarPlanComercial:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // Creación completa y transaccional de un negocio nuevo. Reutiliza
 // hashPassword (mismo mecanismo que crearUsuarioConPassword) -- nunca un
 // segundo camino para generar un hash. Si CUALQUIER paso falla, ROLLBACK

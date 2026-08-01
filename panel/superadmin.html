@@ -237,6 +237,13 @@
       </div>
 
       <div class="card seccion-detalle">
+        <h2>Plan comercial</h2>
+        <div style="font-size:0.78rem;color:#888;margin-bottom:12px;">Seguimiento interno de Xabor -- nunca visible para el negocio.</div>
+        <div id="dt-plan-comercial"></div>
+        <div class="feedback" id="dt-plan-comercial-feedback"></div>
+      </div>
+
+      <div class="card seccion-detalle">
         <h2>Auditoría reciente de este negocio</h2>
         <div id="dt-auditoria"></div>
       </div>
@@ -477,6 +484,7 @@ async function verDetalleNegocio(id) {
 
   cargarIntegracionWhatsapp();
   cargarBotWhatsapp();
+  cargarPlanComercial();
 
   document.getElementById('dt-auditoria').innerHTML = n.auditoriaReciente.length ? n.auditoriaReciente.map(a => `
     <div class="fila-lista"><span>${a.accion} — ${escaparHTML(a.superadmin_nombre)}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
@@ -635,6 +643,63 @@ async function cambiarBotWhatsapp(nuevoValor) {
   if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al actualizar el bot'; return; }
   fb.className = 'feedback ok'; fb.textContent = nuevoValor ? '✓ Bot activado' : '✓ Bot apagado';
   cargarBotWhatsapp();
+}
+
+// ── Plan comercial (Fase 7) — exclusivo de Superadmin ──
+const ESTADOS_PLAN_COMERCIAL = ['prospecto','prueba','activo','vencido','suspendido','cancelado'];
+async function cargarPlanComercial() {
+  const cont = document.getElementById('dt-plan-comercial');
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/plan-comercial`);
+  if (!r.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar</div>'; return; }
+  const p = await r.json();
+  cont.innerHTML = `
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Estado</label>
+    <select id="pc-estado" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;">
+      ${ESTADOS_PLAN_COMERCIAL.map(e => `<option value="${e}" ${p.estado===e?'selected':''}>${e}</option>`).join('')}
+    </select>
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Plan</label>
+    <input id="pc-plan" value="${(p.plan||'').replace(/"/g,'&quot;')}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;">
+    <div style="display:flex;gap:10px;">
+      <div style="flex:1;"><label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Mensualidad (MXN)</label><input id="pc-mensualidad" type="number" value="${p.mensualidad ?? ''}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;"></div>
+      <div style="flex:1;"><label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Costo instalación (MXN)</label><input id="pc-instalacion" type="number" value="${p.costo_instalacion ?? ''}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;margin-bottom:10px;cursor:pointer;">
+      <input type="checkbox" id="pc-instalacion-pagada" ${p.instalacion_pagada?'checked':''}> Instalación pagada
+    </label>
+    <div style="display:flex;gap:10px;">
+      <div style="flex:1;"><label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Fecha de inicio</label><input id="pc-fecha-inicio" type="date" value="${p.fecha_inicio ? String(p.fecha_inicio).slice(0,10) : ''}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;"></div>
+      <div style="flex:1;"><label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Próxima fecha de pago</label><input id="pc-proxima-pago" type="date" value="${p.proxima_fecha_pago ? String(p.proxima_fecha_pago).slice(0,10) : ''}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;"></div>
+    </div>
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Responsable</label>
+    <input id="pc-responsable" value="${(p.responsable||'').replace(/"/g,'&quot;')}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;">
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Fecha de último seguimiento</label>
+    <input id="pc-ultimo-seguimiento" type="date" value="${p.fecha_ultimo_seguimiento ? String(p.fecha_ultimo_seguimiento).slice(0,10) : ''}" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;margin-bottom:10px;">
+    <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Notas comerciales</label>
+    <textarea id="pc-notas" rows="3" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 11px;font-size:0.85rem;resize:vertical;font-family:inherit;margin-bottom:10px;">${(p.notas||'').replace(/</g,'&lt;')}</textarea>
+    <button class="btn" onclick="guardarPlanComercial()">Guardar plan comercial</button>
+  `;
+}
+
+async function guardarPlanComercial() {
+  const fb = document.getElementById('dt-plan-comercial-feedback');
+  const cambios = {
+    estado: document.getElementById('pc-estado').value,
+    plan: document.getElementById('pc-plan').value.trim(),
+    mensualidad: document.getElementById('pc-mensualidad').value ? Number(document.getElementById('pc-mensualidad').value) : null,
+    costo_instalacion: document.getElementById('pc-instalacion').value ? Number(document.getElementById('pc-instalacion').value) : null,
+    instalacion_pagada: document.getElementById('pc-instalacion-pagada').checked,
+    fecha_inicio: document.getElementById('pc-fecha-inicio').value || null,
+    proxima_fecha_pago: document.getElementById('pc-proxima-pago').value || null,
+    responsable: document.getElementById('pc-responsable').value.trim(),
+    fecha_ultimo_seguimiento: document.getElementById('pc-ultimo-seguimiento').value || null,
+    notas: document.getElementById('pc-notas').value.trim(),
+  };
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/plan-comercial`, { method:'PATCH', body: JSON.stringify(cambios) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al guardar'; return; }
+  fb.className = 'feedback ok'; fb.textContent = '✓ Guardado correctamente';
+  setTimeout(() => { fb.textContent = ''; }, 3000);
 }
 
 async function cambiarEstadoWhatsapp(nuevoEstado) {
