@@ -34,7 +34,7 @@ import {
   suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion,
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
-import { intercambiarCodigoPorToken } from './services/metaEmbeddedSignup.js';
+import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
 import { enviarCorreoInvitacion } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
@@ -2455,6 +2455,18 @@ app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/credencia
 // ---------------------------------------------------------------------
 const signupEnCurso = new Map(); // negocioId -> true, evita doble clic / procesos paralelos
 
+// Configuración PÚBLICA únicamente -- nunca META_APP_SECRET, tokens, ni
+// la llave de cifrado. Leída de process.env en cada request (runtime),
+// nunca fijada en build ni hardcodeada.
+app.get('/api/superadmin/meta/embedded-signup/config', requireSuperadmin, (req, res) => {
+  const appId = process.env.META_APP_ID;
+  const configId = process.env.META_CONFIG_ID;
+  if (!appId || !configId) {
+    return res.status(503).json({ error: 'Embedded Signup no está configurado en este entorno (falta META_APP_ID/META_CONFIG_ID)' });
+  }
+  res.json({ appId, configId, graphApiVersion: GRAPH_VERSION });
+});
+
 app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', requireSuperadmin, async (req, res) => {
   const negocioId = req.params.negocioId;
   if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
@@ -2468,11 +2480,6 @@ app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', r
   if (signupEnCurso.get(negocioId)) {
     return res.status(409).json({ error: 'Ya hay un proceso de conexión en curso para este negocio' });
   }
-  const appId = process.env.META_APP_ID;
-  const redirectUri = process.env.META_REDIRECT_URI;
-  if (!appId || !redirectUri) {
-    return res.status(503).json({ error: 'Embedded Signup no está configurado en este entorno (falta META_APP_ID/META_REDIRECT_URI)' });
-  }
   const state = crearState({ negocioId, superadminId: req.usuarioId });
   signupEnCurso.set(negocioId, true);
   setTimeout(() => signupEnCurso.delete(negocioId), 10 * 60 * 1000); // libera aunque el callback nunca llegue
@@ -2480,10 +2487,7 @@ app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', r
     superadminId: req.usuarioId, accion: 'integracion_embedded_signup_iniciado', negocioId,
     contexto: { canal: 'whatsapp', proveedor: 'meta' },
   });
-  res.json({
-    state, appId, redirectUri,
-    configId: process.env.META_CONFIG_ID || null, // algunos flujos de Embedded Signup lo requieren, otros no
-  });
+  res.json({ state }); // appId/configId se obtienen aparte de GET /api/superadmin/meta/embedded-signup/config
 });
 
 app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', requireSuperadmin, async (req, res) => {

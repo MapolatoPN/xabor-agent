@@ -14,7 +14,7 @@
 // - META_APP_SECRET: secreto de esa app, usado para firmar el intercambio OAuth.
 // - META_REDIRECT_URI: debe coincidir exactamente con la configurada en Meta.
 
-const GRAPH_VERSION = 'v20.0';
+export const GRAPH_VERSION = 'v20.0';
 
 // Simulación explícita para pruebas (Fase C, punto 7) -- solo se activa
 // con META_EMBEDDED_SIGNUP_MOCK='true', nunca en producción. Nunca llama
