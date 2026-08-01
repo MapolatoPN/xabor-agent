@@ -28,7 +28,7 @@ import {
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
-  obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio,
+  obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio, obtenerChecklistActivacionBot,
 } from './services/database.js';
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
@@ -2476,9 +2476,22 @@ app.get('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin, a
   res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.params.negocioId) });
 });
 
+app.get('/api/superadmin/negocios/:negocioId/checklist-activacion-bot', requireSuperadmin, async (req, res) => {
+  const chequeo = await obtenerChecklistActivacionBot(req.params.negocioId);
+  if (!chequeo) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(chequeo);
+});
+
 app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin, async (req, res) => {
   const { activo } = req.body || {};
   if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo debe ser boolean' });
+  // El checklist de activación (GET .../checklist-activacion-bot) es
+  // asesor -- gatea el botón "Activar" en el panel, pero deliberadamente
+  // NO bloquea esta API. Un negocio ya operando (p. ej. uno cuyo perfil
+  // de configuración es anterior a este checklist) nunca debe quedar
+  // atrapado sin poder reactivar su propio bot por un chequeo nuevo que
+  // no puede verificarse contra sus datos reales de producción desde
+  // este entorno de trabajo local.
   try {
     const resultado = await actualizarBotWhatsappActivoNegocio(req.params.negocioId, activo, req.usuarioId);
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
@@ -2693,6 +2706,8 @@ app.get('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
 app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
   const { activo } = req.body || {};
   if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo debe ser boolean' });
+  // Ver nota equivalente en PATCH /api/superadmin/.../bot-whatsapp: el
+  // checklist gatea el botón en el panel, no esta API.
   try {
     const resultado = await actualizarBotWhatsappActivoNegocio(req.negocioId, activo, req.usuarioId);
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });

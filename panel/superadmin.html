@@ -307,6 +307,11 @@ const NOMBRES_CHECKLIST = {
   datos_generales_completos:'Datos generales completos', menu_cargado:'Menú cargado', usuarios_creados:'Usuarios creados',
   terminal_creada:'Terminal creada', impresion_probada:'Impresión probada', whatsapp_configurado:'WhatsApp configurado',
   rappi_configurado:'Rappi configurado', pedido_prueba:'Pedido de prueba', listo_para_operar:'Listo para operar',
+  // Confirmaciones manuales del checklist de activación del bot (Fase 5) --
+  // sin campo existente que las respalde, así que quedan aquí como
+  // confirmación explícita del superadmin, nunca inferidas.
+  mensaje_inicial_revisado:'Bot: mensaje inicial revisado', prueba_manual_confirmada:'Bot: prueba manual confirmada',
+  aceptacion_administrador:'Bot: aceptación del administrador',
 };
 let negocioActualId = null;
 
@@ -548,19 +553,49 @@ async function cargarIntegracionWhatsapp() {
 }
 
 // ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──
+const NOMBRES_CHECKLIST_BOT_AUTO = {
+  integracion_conectada: 'Integración de WhatsApp conectada',
+  bot_apagado: 'Bot actualmente apagado',
+  nombre_negocio: 'Nombre del negocio configurado',
+  horarios: 'Horarios configurados',
+  productos_servicios: 'Al menos un producto o servicio en el menú',
+  metodos_pago: 'Métodos de pago aceptados definidos',
+  modalidades_entrega: 'Modalidades de entrega/recolección definidas',
+  reglas_operativas: 'Reglas operativas configuradas (no usa el default genérico)',
+};
+
 async function cargarBotWhatsapp() {
   const cont = document.getElementById('dt-bot-whatsapp');
   const fb = document.getElementById('dt-bot-whatsapp-feedback');
   fb.textContent = '';
-  const r = await api(`/api/superadmin/negocios/${negocioActualId}/bot-whatsapp`);
-  if (!r.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar el interruptor del bot</div>'; return; }
-  const { botWhatsappActivo } = await r.json();
+  const [rBot, rChk] = await Promise.all([
+    api(`/api/superadmin/negocios/${negocioActualId}/bot-whatsapp`),
+    api(`/api/superadmin/negocios/${negocioActualId}/checklist-activacion-bot`),
+  ]);
+  if (!rBot.ok || !rChk.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar el interruptor del bot</div>'; return; }
+  const { botWhatsappActivo } = await rBot.json();
+  const { automaticos, manuales, listoParaActivar } = await rChk.json();
+
+  const filaCheck = (ok, texto) => `<div class="checklist-item"><span>${ok ? '✅' : '❌'} ${texto}</span></div>`;
+  const filaManual = (clave, texto) => `<div class="checklist-item"><span>${texto}</span>
+    <input type="checkbox" ${manuales[clave] ? 'checked' : ''} onchange="cambiarChecklistItem('${clave}', this.checked); setTimeout(cargarBotWhatsapp, 300)"></div>`;
+
   cont.innerHTML = `
-    <div class="fila-lista"><span>Estado</span><span>${botWhatsappActivo ? badgeEstado('activo') : badgeEstado('suspendido')}</span></div>
+    <div class="fila-lista"><span>Estado</span><span>${badgeBot(botWhatsappActivo)}</span></div>
     <div class="feedback" style="margin-top:0;margin-bottom:10px;">${botWhatsappActivo
       ? 'El bot puede responder en conversaciones que no estén pausadas.'
-      : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente.'}</div>
-    <button class="btn ${botWhatsappActivo ? 'peligro' : ''}" onclick="cambiarBotWhatsapp(${!botWhatsappActivo})">${botWhatsappActivo ? 'Apagar' : 'Activar'}</button>
+      : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente. Este es distinto de "Suspendido" (que se refiere a la integración técnica, no al bot).'}</div>
+    ${!botWhatsappActivo ? `
+      <div style="margin:10px 0;">
+        <div style="font-size:0.78rem;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;">Checklist de activación</div>
+        ${Object.entries(NOMBRES_CHECKLIST_BOT_AUTO).map(([clave, texto]) => filaCheck(automaticos[clave], texto)).join('')}
+        ${filaManual('mensaje_inicial_revisado', 'Mensaje inicial revisado (confirmación manual)')}
+        ${filaManual('prueba_manual_confirmada', 'Prueba manual confirmada (confirmación manual)')}
+        ${filaManual('aceptacion_administrador', 'Aceptación del administrador (confirmación manual)')}
+        ${!listoParaActivar ? '<div class="feedback err" style="margin-top:6px;">Faltan requisitos — el bot no puede activarse todavía.</div>' : ''}
+      </div>
+    ` : ''}
+    <button class="btn ${botWhatsappActivo ? 'peligro' : ''}" ${!botWhatsappActivo && !listoParaActivar ? 'disabled' : ''} onclick="cambiarBotWhatsapp(${!botWhatsappActivo})">${botWhatsappActivo ? 'Apagar' : 'Activar'}</button>
   `;
 }
 

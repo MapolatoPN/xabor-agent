@@ -2754,6 +2754,55 @@ export async function obtenerNegocioDetalleSuperadmin(negocioId) {
   };
 }
 
+// Checklist previo a activar el bot de WhatsApp (piloto -- preparación
+// para primeros clientes). Los ítems "automáticos" se derivan de datos
+// que YA existen (integración, configuracion.nombre/horario,
+// configuracion.reglas_atencion, menú) -- nunca se inventan claves nuevas
+// para representarlos. Los 3 ítems sin ningún campo existente que los
+// respalde (mensaje inicial revisado / prueba manual confirmada /
+// aceptación del administrador) son confirmaciones manuales del
+// superadmin, guardadas como nuevas claves en el mismo negocios.checklist
+// JSONB ya usado por el checklist de instalación (migración 011) --
+// reutiliza actualizarChecklistNegocioSuperadmin, sin tabla nueva.
+export async function obtenerChecklistActivacionBot(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const [negocioRows, integracionRows, cfg, menu] = await Promise.all([
+    pool.query(`SELECT bot_whatsapp_activo, checklist FROM negocios WHERE id = $1`, [negocioId]),
+    pool.query(`SELECT estado FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp' ORDER BY created_at DESC LIMIT 1`, [negocioId]),
+    obtenerConfiguracion(negocioId),
+    obtenerMenuCompleto(negocioId),
+  ]);
+  if (!negocioRows.rows.length) return null;
+
+  // configuracion.reglas_atencion se guarda como TEXT (JSON serializado,
+  // igual que lo lee agent/prompts.js#cargarReglas) -- nunca es un objeto
+  // ya parseado al salir de obtenerConfiguracion.
+  let reglas = null;
+  if (cfg.reglas_atencion) {
+    try { reglas = JSON.parse(cfg.reglas_atencion); } catch { reglas = null; }
+  }
+  const pedidos = reglas?.pedidos || {};
+  const checklist = negocioRows.rows[0].checklist || {};
+
+  const automaticos = {
+    integracion_conectada: integracionRows.rows[0]?.estado === 'activo',
+    bot_apagado: negocioRows.rows[0].bot_whatsapp_activo === false,
+    nombre_negocio: !!(cfg.nombre && String(cfg.nombre).trim()),
+    horarios: !!(cfg.horario && String(cfg.horario).trim()) || !!(reglas?.horarios && Object.keys(reglas.horarios).length > 0),
+    productos_servicios: Array.isArray(menu) && menu.some(cat => Array.isArray(cat.productos) && cat.productos.length > 0),
+    metodos_pago: Array.isArray(pedidos.pago_aceptado) && pedidos.pago_aceptado.length > 0,
+    modalidades_entrega: Array.isArray(pedidos.modalidades) && pedidos.modalidades.length > 0,
+    reglas_operativas: !!reglas,
+  };
+  const manuales = {
+    mensaje_inicial_revisado: checklist.mensaje_inicial_revisado === true,
+    prueba_manual_confirmada: checklist.prueba_manual_confirmada === true,
+    aceptacion_administrador: checklist.aceptacion_administrador === true,
+  };
+  const listoParaActivar = Object.values(automaticos).every(Boolean) && Object.values(manuales).every(Boolean);
+  return { automaticos, manuales, listoParaActivar };
+}
+
 // Creación completa y transaccional de un negocio nuevo. Reutiliza
 // hashPassword (mismo mecanismo que crearUsuarioConPassword) -- nunca un
 // segundo camino para generar un hash. Si CUALQUIER paso falla, ROLLBACK
