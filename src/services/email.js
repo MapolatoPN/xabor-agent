@@ -85,6 +85,82 @@ export async function enviarCorreoInvitacion({ to, nombre, negocioNombre, enlace
   return resultado;
 }
 
+// ─── Notificación de nuevo prospecto comercial ──────────────────────────────
+// Secundaria por diseño: la persistencia en `prospectos_comerciales` (ver
+// crearProspectoComercial en database.js) YA ocurrió antes de llamar esta
+// función y es la fuente de verdad. Si el correo falla o no hay proveedor
+// configurado, el prospecto sigue guardado -- el llamador nunca debe
+// bloquear la respuesta HTTP 201 esperando esto. Nunca incluye IP, user
+// agent, tokens ni ningún dato técnico -- solo lo que el propio visitante
+// escribió en el formulario.
+const LEADS_NOTIFICATION_EMAIL = process.env.LEADS_NOTIFICATION_EMAIL || 'hola@xabor.mx';
+const PUBLIC_URL_BASE = process.env.PUBLIC_URL || 'https://xabor.mx';
+
+function plantillaNuevoProspecto(p) {
+  const filas = [
+    ['Nombre', p.nombre],
+    ['Negocio', p.negocio],
+    ['Ciudad', p.ciudad],
+    ['Teléfono', p.telefono],
+    ['Tipo de negocio', p.tipoNegocio],
+    ['Volumen aproximado de mensajes', p.volumenMensajes || 'No especificado'],
+    ['Comentario', p.comentario || 'Sin comentarios adicionales'],
+    ['Fecha', new Date(p.createdAt || Date.now()).toLocaleString('es-MX', { timeZone: 'America/Matamoros' })],
+  ];
+  const enlace = `${PUBLIC_URL_BASE}/superadmin?prospecto=${encodeURIComponent(p.id)}`;
+
+  const filasHtml = filas.map(([k, v]) => `
+    <tr>
+      <td style="padding:6px 12px 6px 0;color:#666;font-size:0.85rem;white-space:nowrap;">${escapeHtml(k)}</td>
+      <td style="padding:6px 0;color:#111;font-size:0.9rem;">${escapeHtml(v)}</td>
+    </tr>`).join('');
+
+  const html = `
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a1a;line-height:1.5;">
+  <p>Nuevo prospecto capturado desde la landing de Xabor:</p>
+  <table style="border-collapse:collapse;width:100%;margin:16px 0;">${filasHtml}</table>
+  <p style="text-align:center;margin:28px 0;">
+    <a href="${enlace}" style="background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Ver en Superadmin</a>
+  </p>
+  <p style="font-size:0.8rem;color:#888;">Este correo es solo una notificación. El registro completo ya está guardado en Xabor.</p>
+</div>`.trim();
+
+  const texto = [
+    'Nuevo prospecto capturado desde la landing de Xabor:',
+    '',
+    ...filas.map(([k, v]) => `${k}: ${v}`),
+    '',
+    `Ver en Superadmin: ${enlace}`,
+  ].join('\n');
+
+  return { subject: `Nuevo prospecto de Xabor — ${p.negocio}`, html, texto };
+}
+
+// Nunca lanza -- un fallo de correo no debe tumbar la request que ya guardó
+// al prospecto en base. Devuelve { enviado, motivo? } igual que
+// enviarCorreoInvitacion, para que el llamador pueda registrar el estado
+// (columna correo_notificacion_enviado) sin depender de excepciones.
+export async function enviarNotificacionNuevoProspecto(prospecto) {
+  try {
+    const esProduccion = process.env.NODE_ENV === 'production';
+    if (!esProduccion) {
+      console.log(`[email:dev] Notificación de prospecto preparada para ${LEADS_NOTIFICATION_EMAIL} — negocio "${prospecto.negocio}" (no se envía correo real fuera de producción)`);
+      return { enviado: false, modo: 'consola-local' };
+    }
+    if (!RESEND_API_KEY) {
+      console.warn('[email] RESEND_API_KEY no configurada -- no se notificó el nuevo prospecto (el registro ya está guardado).');
+      return { enviado: false, motivo: 'proveedor_no_configurado' };
+    }
+    const { subject, html } = plantillaNuevoProspecto(prospecto);
+    const resultado = await enviarViaResend({ to: LEADS_NOTIFICATION_EMAIL, subject, html });
+    if (resultado.enviado) console.log(`[email] Notificación de nuevo prospecto enviada (negocio: ${prospecto.negocio})`);
+    return resultado;
+  } catch (e) {
+    console.error('[email] Fallo inesperado notificando nuevo prospecto:', e.message);
+    return { enviado: false, motivo: 'error_inesperado' };
+  }
+}
+
 // ─── Pendiente, fuera de alcance de esta fase ───────────────────────────────
 // No existe ningún flujo de "recuperar contraseña" en el código (confirmado
 // por auditoría: sin rutas /forgot-password ni similares). Este servicio ya
