@@ -32,6 +32,7 @@ export const ORDEN_MIGRACIONES = [
   '017_seed_reglas_nonna_maye.sql',
   '018_integraciones_canal_credenciales.sql',
   '019_bot_whatsapp_activo_negocio.sql',
+  '020_mensajes_origen_dedup.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
