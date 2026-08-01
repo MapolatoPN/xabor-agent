@@ -561,40 +561,68 @@ async function eliminarCredencialesWhatsapp() {
 // ── Fase C: Embedded Signup de Meta ─────────────────────────────────────
 // waSignupEnCurso evita doble clic / dos procesos en paralelo desde este
 // mismo navegador (el backend también lo bloquea por negocio_id, ver
-// POST .../iniciar). No conecta números reales todavía: sin el SDK real
-// de Meta cargado y META_APP_ID configurado, solo prepara el state y
-// explica el paso manual pendiente.
+// POST .../iniciar). No activa el bot ni envía mensajes -- solo guarda
+// credenciales cifradas.
 let waSignupEnCurso = false;
 let waSignupDatos = null; // { state, negocioId } del proceso en curso
+let fbSdkPromise = null;  // se carga una sola vez, reutilizado entre clics
+
+function cargarSdkMeta(appId, version) {
+  if (fbSdkPromise) return fbSdkPromise;
+  fbSdkPromise = new Promise((resolve, reject) => {
+    const inicializar = () => {
+      try { window.FB.init({ appId, cookie: true, xfbml: false, version }); resolve(); }
+      catch (e) { reject(e); }
+    };
+    if (window.FB) { inicializar(); return; }
+    window.fbAsyncInit = inicializar;
+    if (document.getElementById('facebook-jssdk')) return; // ya insertado por un clic anterior
+    const js = document.createElement('script');
+    js.id = 'facebook-jssdk';
+    js.src = 'https://connect.facebook.net/es_LA/sdk.js';
+    js.onerror = () => reject(new Error('El SDK de Meta no pudo cargarse (bloqueado por el navegador o sin conexión)'));
+    document.body.appendChild(js);
+    setTimeout(() => { if (!window.FB) reject(new Error('Tiempo de espera agotado cargando el SDK de Meta')); }, 10000);
+  });
+  return fbSdkPromise;
+}
+
+function liberarSignup() {
+  waSignupEnCurso = false;
+  const btn = document.getElementById('btn-conectar-meta');
+  if (btn) btn.disabled = false;
+}
 
 async function conectarConMeta() {
-  if (waSignupEnCurso) return;
+  if (waSignupEnCurso) return; // impide doble clic / diálogo duplicado
   const fb = document.getElementById('dt-wa-feedback');
   waSignupEnCurso = true;
   document.getElementById('btn-conectar-meta').disabled = true;
   fb.className = 'feedback'; fb.textContent = 'Iniciando conexión con Meta…';
   try {
-    const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/iniciar`, { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo iniciar la conexión'; waSignupEnCurso = false; cargarIntegracionWhatsapp(); return; }
-    waSignupDatos = { state: body.state, negocioId: negocioActualId };
-    if (!window.FB || !body.appId) {
-      fb.className = 'feedback';
-      fb.textContent = 'Embedded Signup preparado (state emitido) — falta cargar el SDK real de Meta y META_APP_ID en este entorno para abrir el diálogo. Paso manual pendiente.';
-      waSignupEnCurso = false;
-      return;
-    }
+    const rIniciar = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/iniciar`, { method: 'POST' });
+    const bodyIniciar = await rIniciar.json().catch(() => ({}));
+    if (!rIniciar.ok) { fb.className = 'feedback err'; fb.textContent = bodyIniciar.error || 'No se pudo iniciar la conexión'; liberarSignup(); return; }
+    waSignupDatos = { state: bodyIniciar.state, negocioId: negocioActualId };
+
+    const rConfig = await api('/api/superadmin/meta/embedded-signup/config');
+    const config = await rConfig.json().catch(() => ({}));
+    if (!rConfig.ok) { fb.className = 'feedback err'; fb.textContent = config.error || 'Embedded Signup no está configurado en este entorno'; liberarSignup(); return; }
+
+    await cargarSdkMeta(config.appId, config.graphApiVersion);
+    if (!window.FB) { fb.className = 'feedback err'; fb.textContent = 'El SDK de Meta no está disponible'; liberarSignup(); return; }
+
     window.FB.login(resp => {
       if (resp.authResponse && resp.authResponse.code) {
         completarSignupMeta(resp.authResponse.code);
       } else {
         fb.className = 'feedback err'; fb.textContent = 'Conexión cancelada en Meta';
-        waSignupEnCurso = false;
+        liberarSignup();
       }
-    }, { config_id: body.configId, response_type: 'code', override_default_response_type: true });
+    }, { config_id: config.configId, response_type: 'code', override_default_response_type: true });
   } catch (e) {
-    fb.className = 'feedback err'; fb.textContent = 'Error iniciando la conexión';
-    waSignupEnCurso = false;
+    fb.className = 'feedback err'; fb.textContent = 'Error iniciando la conexión con Meta';
+    liberarSignup();
   }
 }
 
