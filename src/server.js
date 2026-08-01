@@ -2862,6 +2862,59 @@ app.get('/api/superadmin/auditoria', requireSuperadmin, async (req, res) => {
   res.json(auditoria);
 });
 
+// ─── Prospectos comerciales (Superadmin) ───────────────────────────────────
+// Exclusivo de Superadmin -- un admin o staff de negocio nunca debe ver
+// leads de otros negocios ni de la plataforma en general. requireSuperadmin
+// ya valida esto en backend (no solo ocultando la UI).
+app.get('/api/superadmin/prospectos', requireSuperadmin, async (req, res) => {
+  const { estado, ciudad, tipoNegocio, busqueda, limit, offset } = req.query;
+  const prospectos = await obtenerProspectosComerciales({ estado, ciudad, tipoNegocio, busqueda, limit, offset });
+  res.json(prospectos);
+});
+
+app.get('/api/superadmin/prospectos/:id', requireSuperadmin, async (req, res) => {
+  const prospecto = await obtenerProspectoComercialPorId(req.params.id);
+  if (!prospecto) return res.status(404).json({ error: 'Prospecto no encontrado' });
+  res.json(prospecto);
+});
+
+const ESTADOS_PROSPECTO_VALIDOS_API = ['nuevo', 'contactado', 'demo_agendada', 'seguimiento', 'convertido', 'descartado'];
+app.patch('/api/superadmin/prospectos/:id', requireSuperadmin, async (req, res) => {
+  const cambios = {};
+  const body = req.body || {};
+  if (body.estado !== undefined) {
+    if (!ESTADOS_PROSPECTO_VALIDOS_API.includes(body.estado)) return res.status(400).json({ error: 'Estado inválido' });
+    cambios.estado = body.estado;
+  }
+  if (body.responsable !== undefined) {
+    if (body.responsable !== null && (typeof body.responsable !== 'string' || body.responsable.length > 120)) {
+      return res.status(400).json({ error: 'Responsable inválido' });
+    }
+    cambios.responsable = body.responsable ? body.responsable.trim() : null;
+  }
+  if (body.notasInternas !== undefined) {
+    if (body.notasInternas !== null && (typeof body.notasInternas !== 'string' || body.notasInternas.length > 4000)) {
+      return res.status(400).json({ error: 'Notas inválidas' });
+    }
+    cambios.notas_internas = body.notasInternas ? body.notasInternas.trim() : null;
+  }
+  if (body.fechaUltimoSeguimiento !== undefined) {
+    if (body.fechaUltimoSeguimiento !== null && !/^\d{4}-\d{2}-\d{2}$/.test(body.fechaUltimoSeguimiento)) {
+      return res.status(400).json({ error: 'Fecha inválida' });
+    }
+    cambios.fecha_ultimo_seguimiento = body.fechaUltimoSeguimiento || null;
+  }
+  try {
+    const actualizado = await actualizarProspectoComercial(req.params.id, cambios, req.usuarioId);
+    if (!actualizado) return res.status(404).json({ error: 'Prospecto no encontrado' });
+    res.json(actualizado);
+  } catch (e) {
+    if (e.code === 'ESTADO_INVALIDO') return res.status(400).json({ error: 'Estado inválido' });
+    console.error('[PATCH /api/superadmin/prospectos/:id] Error:', e.message);
+    res.status(500).json({ error: 'No se pudo actualizar el prospecto' });
+  }
+});
+
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',

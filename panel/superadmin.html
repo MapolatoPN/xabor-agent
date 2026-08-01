@@ -49,6 +49,12 @@
   .badge-error { background:#fee2e2; color:var(--danger); }
   .badge-bot_activo { background:#dcfce7; color:var(--ok); }
   .badge-bot_apagado { background:#f1f5f9; color:#475569; }
+  .badge-prospecto-nuevo { background:#dbeafe; color:#1d4ed8; }
+  .badge-prospecto-contactado { background:#fef3c7; color:#b45309; }
+  .badge-prospecto-demo_agendada { background:#cffafe; color:#0e7490; }
+  .badge-prospecto-seguimiento { background:#ffedd5; color:#c2410c; }
+  .badge-prospecto-convertido { background:#dcfce7; color:var(--ok); }
+  .badge-prospecto-descartado { background:#f1f5f9; color:#475569; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
   input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
   input[type=search] { width:220px; }
@@ -99,6 +105,7 @@
   <nav>
     <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Dashboard</button>
     <button class="tab" data-tab="negocios" onclick="irVista('negocios')">Negocios</button>
+    <button class="tab" data-tab="prospectos" onclick="irVista('prospectos')">Prospectos</button>
     <button class="tab" data-tab="auditoria" onclick="irVista('auditoria')">Auditoría</button>
   </nav>
   <main>
@@ -249,6 +256,31 @@
       </div>
     </div>
 
+    <!-- PROSPECTOS -->
+    <div id="vista-prospectos" class="vista">
+      <h1>Prospectos</h1>
+      <div class="toolbar">
+        <input type="search" id="pr-buscar" placeholder="Buscar por nombre, negocio o teléfono…" oninput="cargarProspectos()">
+        <select id="pr-estado" onchange="cargarProspectos()">
+          <option value="">Todos los estados</option>
+          <option value="nuevo">Nuevo</option>
+          <option value="contactado">Contactado</option>
+          <option value="demo_agendada">Demo agendada</option>
+          <option value="seguimiento">Seguimiento</option>
+          <option value="convertido">Convertido</option>
+          <option value="descartado">Descartado</option>
+        </select>
+        <input type="text" id="pr-ciudad" placeholder="Filtrar por ciudad…" oninput="cargarProspectos()">
+        <input type="text" id="pr-tipo" placeholder="Filtrar por tipo de negocio…" oninput="cargarProspectos()">
+      </div>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Fecha</th><th>Nombre</th><th>Negocio</th><th>Ciudad</th><th>Teléfono</th><th>Tipo</th><th>Estado</th><th>Responsable</th></tr></thead>
+          <tbody id="pr-tabla"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- AUDITORIA -->
     <div id="vista-auditoria" class="vista">
       <h1>Auditoría de plataforma</h1>
@@ -333,6 +365,33 @@
   </div>
 </div>
 
+<!-- Modal: detalle y seguimiento de prospecto -->
+<div class="modal-overlay" id="pr-modal">
+  <div class="modal">
+    <h3>Detalle del prospecto</h3>
+    <div id="pr-detalle-datos"></div>
+    <div class="campo">
+      <label>Estado</label>
+      <select id="pr-detalle-estado">
+        <option value="nuevo">Nuevo</option>
+        <option value="contactado">Contactado</option>
+        <option value="demo_agendada">Demo agendada</option>
+        <option value="seguimiento">Seguimiento</option>
+        <option value="convertido">Convertido</option>
+        <option value="descartado">Descartado</option>
+      </select>
+    </div>
+    <div class="campo"><label>Responsable</label><input id="pr-detalle-responsable" placeholder="Nombre de quién le da seguimiento"></div>
+    <div class="campo"><label>Último seguimiento</label><input id="pr-detalle-fecha" type="date"></div>
+    <div class="campo"><label>Notas internas</label><textarea id="pr-detalle-notas" rows="4" style="width:100%;font-family:inherit;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea></div>
+    <div class="feedback" id="pr-detalle-feedback"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn secundario" onclick="cerrarModalProspecto()">Cerrar</button>
+      <button class="btn" onclick="guardarProspecto()">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const MODULOS = ['pos','usuarios','caja','menu','impresion','whatsapp','voz','rappi','facturacion'];
 const NOMBRES_MODULO = { pos:'POS', usuarios:'Usuarios', caja:'Caja', menu:'Menú', impresion:'Impresión', whatsapp:'WhatsApp', voz:'Voz', rappi:'Rappi', facturacion:'Facturación' };
@@ -376,6 +435,14 @@ async function verificarAcceso() {
     renderDashboard(await r.json());
     cargarNegocios();
     cargarAuditoria();
+    // Enlace directo desde el correo de notificación de un nuevo
+    // prospecto (ver enviarNotificacionNuevoProspecto en email.js): si
+    // llega con ?prospecto=<id>, abre esa vista y ese detalle directo.
+    const prospectoUrl = new URLSearchParams(location.search).get('prospecto');
+    if (prospectoUrl) {
+      irVista('prospectos');
+      abrirProspecto(prospectoUrl);
+    }
   } catch (e) { /* redirigido a login */ }
 }
 
@@ -385,6 +452,7 @@ function irVista(nombre) {
   document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === nombre));
   if (nombre === 'dashboard') api('/api/superadmin/dashboard').then(r => r.json()).then(renderDashboard);
   if (nombre === 'negocios') cargarNegocios();
+  if (nombre === 'prospectos') cargarProspectos();
   if (nombre === 'auditoria') cargarAuditoria();
 }
 
@@ -895,6 +963,92 @@ async function completarSignupMeta(code) {
     waSignupEnCurso = false;
     waSignupDatos = null;
     cargarIntegracionWhatsapp();
+  }
+}
+
+// ── Prospectos comerciales (captura pública de leads) ──
+const NOMBRES_ESTADO_PROSPECTO = { nuevo:'Nuevo', contactado:'Contactado', demo_agendada:'Demo agendada', seguimiento:'Seguimiento', convertido:'Convertido', descartado:'Descartado' };
+function badgeProspecto(estado) { return `<span class="badge badge-prospecto-${estado}">${NOMBRES_ESTADO_PROSPECTO[estado] || estado}</span>`; }
+
+let prospectoActualId = null;
+
+async function cargarProspectos() {
+  const params = new URLSearchParams();
+  const estado = document.getElementById('pr-estado').value;
+  const ciudad = document.getElementById('pr-ciudad').value.trim();
+  const tipo = document.getElementById('pr-tipo').value.trim();
+  const busqueda = document.getElementById('pr-buscar').value.trim();
+  if (estado) params.set('estado', estado);
+  if (ciudad) params.set('ciudad', ciudad);
+  if (tipo) params.set('tipoNegocio', tipo);
+  if (busqueda) params.set('busqueda', busqueda);
+
+  const r = await api('/api/superadmin/prospectos?' + params.toString());
+  const filas = await r.json();
+  const tbody = document.getElementById('pr-tabla');
+  tbody.innerHTML = filas.length ? filas.map(p => `
+    <tr class="clickable" onclick="abrirProspecto('${p.id}')">
+      <td data-label="Fecha">${new Date(p.created_at).toLocaleString('es-MX')}</td>
+      <td data-label="Nombre">${escaparHTML(p.nombre)}</td>
+      <td data-label="Negocio">${escaparHTML(p.negocio)}</td>
+      <td data-label="Ciudad">${escaparHTML(p.ciudad)}</td>
+      <td data-label="Teléfono">${escaparHTML(p.telefono)}</td>
+      <td data-label="Tipo">${escaparHTML(p.tipo_negocio)}</td>
+      <td data-label="Estado">${badgeProspecto(p.estado)}</td>
+      <td data-label="Responsable">${p.responsable ? escaparHTML(p.responsable) : '—'}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="8" class="empty">Sin prospectos con estos filtros</td></tr>';
+}
+
+async function abrirProspecto(id) {
+  const r = await api('/api/superadmin/prospectos/' + id);
+  if (!r.ok) return;
+  const p = await r.json();
+  prospectoActualId = p.id;
+  document.getElementById('pr-detalle-datos').innerHTML = `
+    <div class="fila-lista"><span>Nombre</span><span>${escaparHTML(p.nombre)}</span></div>
+    <div class="fila-lista"><span>Negocio</span><span>${escaparHTML(p.negocio)}</span></div>
+    <div class="fila-lista"><span>Ciudad</span><span>${escaparHTML(p.ciudad)}</span></div>
+    <div class="fila-lista"><span>Teléfono</span><span>${escaparHTML(p.telefono)}</span></div>
+    <div class="fila-lista"><span>Tipo de negocio</span><span>${escaparHTML(p.tipo_negocio)}</span></div>
+    <div class="fila-lista"><span>Volumen aproximado</span><span>${p.volumen_mensajes ? escaparHTML(p.volumen_mensajes) : '—'}</span></div>
+    <div class="fila-lista"><span>Comentario</span><span>${p.comentario ? escaparHTML(p.comentario) : '—'}</span></div>
+    <div class="fila-lista"><span>Recibido</span><span>${new Date(p.created_at).toLocaleString('es-MX')}</span></div>
+    <div class="fila-lista"><span>Notificación por correo</span><span>${p.correo_notificacion_enviado ? 'Enviada' : 'No enviada'}</span></div>
+  `;
+  document.getElementById('pr-detalle-estado').value = p.estado;
+  document.getElementById('pr-detalle-responsable').value = p.responsable || '';
+  document.getElementById('pr-detalle-fecha').value = p.fecha_ultimo_seguimiento ? p.fecha_ultimo_seguimiento.slice(0, 10) : '';
+  document.getElementById('pr-detalle-notas').value = p.notas_internas || '';
+  document.getElementById('pr-detalle-feedback').textContent = '';
+  document.getElementById('pr-modal').classList.add('visible');
+}
+
+function cerrarModalProspecto() {
+  document.getElementById('pr-modal').classList.remove('visible');
+  prospectoActualId = null;
+}
+
+async function guardarProspecto() {
+  if (!prospectoActualId) return;
+  const fb = document.getElementById('pr-detalle-feedback');
+  fb.className = 'feedback';
+  fb.textContent = 'Guardando…';
+  const cambios = {
+    estado: document.getElementById('pr-detalle-estado').value,
+    responsable: document.getElementById('pr-detalle-responsable').value.trim() || null,
+    notasInternas: document.getElementById('pr-detalle-notas').value.trim() || null,
+    fechaUltimoSeguimiento: document.getElementById('pr-detalle-fecha').value || null,
+  };
+  const r = await api('/api/superadmin/prospectos/' + prospectoActualId, { method: 'PATCH', body: JSON.stringify(cambios) });
+  if (r.ok) {
+    fb.className = 'feedback ok';
+    fb.textContent = 'Cambios guardados.';
+    cargarProspectos();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    fb.className = 'feedback err';
+    fb.textContent = data.error || 'No se pudo guardar.';
   }
 }
 
