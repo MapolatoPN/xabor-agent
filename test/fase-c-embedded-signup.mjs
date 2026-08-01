@@ -39,6 +39,7 @@ async function api(base, path, { cookie, bearer, method = 'GET', body } = {}) {
 const rutaIniciar = (id) => `/api/superadmin/negocios/${id}/integraciones/whatsapp/iniciar`;
 const rutaEstado = (id) => `/api/superadmin/negocios/${id}/integraciones/whatsapp/estado`;
 const rutaCallback = '/api/integraciones/whatsapp/meta/callback';
+const rutaConfig = '/api/superadmin/meta/embedded-signup/config';
 
 const cookieSuperadmin = cookieHeader(SEED.superadminUsuarioId, SEED.negocioA, 'admin');
 const cookieAdminA = cookieHeader(SEED.adminNegocioAUsuarioId, SEED.negocioA, 'admin');
@@ -85,9 +86,30 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND n
     PORT: PUERTO,
     META_EMBEDDED_SIGNUP_MOCK: 'true',
     META_APP_ID: 'TEST_APP_ID',
+    META_CONFIG_ID: 'TEST_CONFIG_ID',
     META_REDIRECT_URI: 'https://xabor.mx/callback-test',
   });
   try {
+    await t('CONFIG', 'sin sesión -> 401', async () => {
+      const r = await api(srv.base, rutaConfig);
+      assert.strictEqual(r.status, 401);
+    });
+    await t('CONFIG', 'admin normal -> 403', async () => {
+      const r = await api(srv.base, rutaConfig, { cookie: cookieAdminA });
+      assert.strictEqual(r.status, 403);
+    });
+    await t('CONFIG', 'superadmin -> appId/configId/graphApiVersion, sin secretos', async () => {
+      const r = await api(srv.base, rutaConfig, { cookie: cookieSuperadmin });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.appId, 'TEST_APP_ID');
+      assert.strictEqual(r.body.configId, 'TEST_CONFIG_ID');
+      assert.ok(r.body.graphApiVersion);
+      const claves = Object.keys(r.body).sort();
+      assert.deepStrictEqual(claves, ['appId', 'configId', 'graphApiVersion']);
+      const texto = JSON.stringify(r.body);
+      assert.ok(!/secret|redirect|encryption/i.test(texto));
+    });
+
     await t('PERM', 'sin sesión -> 401 al iniciar', async () => {
       const r = await api(srv.base, rutaIniciar(SEED.negocioA), { method: 'POST' });
       assert.strictEqual(r.status, 401);
@@ -183,6 +205,18 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND n
       assert.ok(!/access_token_cifrado|token_iv|token_auth_tag/i.test(texto));
     });
   } finally { srv.detener(); }
+}
+
+// ── HTTP: servidor SIN META_APP_ID/META_CONFIG_ID ──
+{
+  const srv2 = await arrancarServidor({ PORT: String(Number(PUERTO) + 1) }, { omitir: ['META_APP_ID', 'META_CONFIG_ID', 'META_REDIRECT_URI', 'META_EMBEDDED_SIGNUP_MOCK'] });
+  try {
+    await t('CONFIG', 'falta META_APP_ID/META_CONFIG_ID -> 503 controlado, sin crash', async () => {
+      const r = await api(srv2.base, rutaConfig, { cookie: cookieSuperadmin });
+      assert.strictEqual(r.status, 503);
+      assert.ok(r.body.error);
+    });
+  } finally { srv2.detener(); }
 }
 
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas`);
