@@ -27,12 +27,14 @@ import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
-  reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion,
+  reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
 } from './services/database.js';
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
-  suspenderIntegracion, eliminarCredencialesIntegracion,
+  suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion,
 } from './services/integracionesService.js';
+import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
+import { intercambiarCodigoPorToken } from './services/metaEmbeddedSignup.js';
 import { enviarCorreoInvitacion } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
@@ -2442,6 +2444,105 @@ app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/credencia
   } catch (e) {
     console.error('[DELETE /api/superadmin/negocios/:id/integraciones/whatsapp/credenciales] Error:', e.message);
     res.status(500).json({ error: 'Error al eliminar las credenciales' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Fase C -- Embedded Signup de Meta. No conecta números reales todavía
+// (eso es una acción manual explícita posterior). El callback nunca
+// confía en negocio_id del body -- solo en el que trae el state firmado
+// y ya validado. Ningún log ni respuesta incluye access_token/code.
+// ---------------------------------------------------------------------
+const signupEnCurso = new Map(); // negocioId -> true, evita doble clic / procesos paralelos
+
+app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const estadoModulo = await obtenerEstadoModulo(negocioId, 'whatsapp');
+  if (!estadoModulo || estadoModulo === 'no_contratado') {
+    return res.status(403).json({ error: 'El módulo de WhatsApp no está contratado para este negocio' });
+  }
+  if (estadoModulo === 'suspendido') {
+    return res.status(403).json({ error: 'El módulo de WhatsApp está suspendido para este negocio' });
+  }
+  if (signupEnCurso.get(negocioId)) {
+    return res.status(409).json({ error: 'Ya hay un proceso de conexión en curso para este negocio' });
+  }
+  const appId = process.env.META_APP_ID;
+  const redirectUri = process.env.META_REDIRECT_URI;
+  if (!appId || !redirectUri) {
+    return res.status(503).json({ error: 'Embedded Signup no está configurado en este entorno (falta META_APP_ID/META_REDIRECT_URI)' });
+  }
+  const state = crearState({ negocioId, superadminId: req.usuarioId });
+  signupEnCurso.set(negocioId, true);
+  setTimeout(() => signupEnCurso.delete(negocioId), 10 * 60 * 1000); // libera aunque el callback nunca llegue
+  await registrarAuditoriaPlataforma({
+    superadminId: req.usuarioId, accion: 'integracion_embedded_signup_iniciado', negocioId,
+    contexto: { canal: 'whatsapp', proveedor: 'meta' },
+  });
+  res.json({
+    state, appId, redirectUri,
+    configId: process.env.META_CONFIG_ID || null, // algunos flujos de Embedded Signup lo requieren, otros no
+  });
+});
+
+app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', requireSuperadmin, async (req, res) => {
+  if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json({ estado: await obtenerEstadoIntegracion(req.params.negocioId, 'whatsapp', 'meta') });
+});
+
+// Sin requireSuperadmin -- el propio state firmado es la credencial (el
+// navegador del superadmin es redirigido aquí por Meta, no llega con
+// cookie de sesión del panel en todos los flujos). Nunca confía en
+// negocio_id del body; solo en el que trae el state ya validado.
+app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
+  const { state, code, phoneNumberId, wabaId, businessId, displayPhoneNumber } = req.body || {};
+  const consumido = validarYConsumirState(state);
+  if (!consumido) {
+    return res.status(400).json({ error: 'state inválido, vencido o ya utilizado' });
+  }
+  const { negocioId, superadminId } = consumido;
+  signupEnCurso.delete(negocioId);
+
+  if (typeof code !== 'string' || !code.trim()) {
+    // Sin code: cancelación del usuario o respuesta incompleta de Meta --
+    // el state ya quedó consumido arriba (uso único), no se toca el
+    // estado técnico de la integración (se deja como estaba).
+    return res.status(400).json({ error: 'Conexión cancelada o incompleta' });
+  }
+  if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
+    return res.status(400).json({ error: 'phoneNumberId requerido en la respuesta de Meta' });
+  }
+
+  try {
+    const dueno = await pool.query(
+      `SELECT negocio_id FROM integraciones_canal WHERE canal = 'whatsapp' AND identificador = $1`,
+      [phoneNumberId.trim()]
+    );
+    if (dueno.rows[0] && dueno.rows[0].negocio_id !== negocioId) {
+      await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
+      return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
+    }
+
+    const { accessToken } = await intercambiarCodigoPorToken(code);
+    const resultado = await guardarCredencialesCifradas(
+      negocioId, 'whatsapp', 'meta',
+      { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken },
+      superadminId
+    );
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'integracion_embedded_signup_completado', negocioId,
+      contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
+    });
+    res.json({ ok: true, estado: resultado.estado });
+  } catch (e) {
+    console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
+    await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'integracion_embedded_signup_fallido', negocioId,
+      contexto: { motivo: 'error_intercambio_o_guardado' },
+    }).catch(() => {});
+    res.status(502).json({ error: 'No se pudo completar la conexión con Meta' });
   }
 });
 
