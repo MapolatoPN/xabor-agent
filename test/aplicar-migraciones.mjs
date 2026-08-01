@@ -33,6 +33,8 @@ export const ORDEN_MIGRACIONES = [
   '018_integraciones_canal_credenciales.sql',
   '019_bot_whatsapp_activo_negocio.sql',
   '020_mensajes_origen_dedup.sql',
+  '021_menu_agotado_destacado.sql',
+  '022_plan_comercial_negocio.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
