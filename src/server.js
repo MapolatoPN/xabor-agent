@@ -1251,6 +1251,10 @@ app.get('/', (req, res) => {
   res.sendFile(join(__dirname, '../public/landing/index.html'));
 });
 
+app.get('/aviso-privacidad.html', (req, res) => {
+  res.sendFile(join(__dirname, '../public/landing/aviso-privacidad.html'));
+});
+
 app.get('/login', (req, res) => {
   res.sendFile(join(__dirname, '../panel/login-negocio.html'));
 });
