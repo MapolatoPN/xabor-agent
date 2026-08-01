@@ -2952,12 +2952,18 @@ let menuData = [];
 const CONFIG_CAMPOS = [
   { clave: 'nombre',       label: 'Nombre completo',      placeholder: 'Restaurante Xabor' },
   { clave: 'nombre_corto', label: 'Nombre corto (header)', placeholder: 'XABOR' },
+  { clave: 'descripcion',  label: 'Descripción breve',     placeholder: 'Comida casera para llevar y a domicilio' },
   { clave: 'direccion',    label: 'Dirección',             placeholder: 'Av. Principal 123 Local 4' },
+  { clave: 'referencia',   label: 'Referencia de ubicación', placeholder: 'Frente a la plaza, junto al banco' },
   { clave: 'ciudad',       label: 'Ciudad y estado',       placeholder: 'Col. Centro, Ciudad, Estado' },
+  { clave: 'codigo_postal', label: 'Código postal',        placeholder: '26000' },
+  { clave: 'ubicacion',    label: 'Enlace de ubicación (Google Maps)', placeholder: 'https://maps.google.com/...' },
   { clave: 'rfc',          label: 'RFC',                   placeholder: 'XXXX000000XX0' },
-  { clave: 'telefono',     label: 'Teléfono',              placeholder: '(878) 109-1115' },
+  { clave: 'telefono',     label: 'Teléfono de contacto',  placeholder: '(878) 109-1115' },
+  { clave: 'email',        label: 'Correo de contacto',    placeholder: 'contacto@negocio.com' },
   { clave: 'whatsapp',     label: 'WhatsApp (para tickets)', placeholder: '(878) 109-1115' },
-  { clave: 'horario',      label: 'Horario de atención',   placeholder: 'lunes a sabado 11am-10pm' },
+  { clave: 'horario',      label: 'Horario de atención (texto libre para tickets)', placeholder: 'lunes a sabado 11am-10pm' },
+  { clave: 'logo_url',     label: 'Logo (enlace a imagen ya publicada)', placeholder: 'https://...' },
 ];
 const inp = s => `border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;width:100%;box-sizing:border-box;margin-bottom:12px;`;
 

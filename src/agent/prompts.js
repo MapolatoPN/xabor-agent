@@ -37,7 +37,13 @@ const REGLAS_POR_DEFECTO = {
 // plan de Fase A). Cualquier campo faltante o de tipo incorrecto hace
 // que se use REGLAS_POR_DEFECTO completo -- nunca un objeto a medias que
 // podría romper el resto del prompt.
-function validarEstructuraReglas(obj) {
+// `bot` (Fase 4 -- centro de entrenamiento) es opcional y aditivo: reglas
+// guardadas antes de que existiera este campo siguen siendo válidas
+// (obj.bot === undefined), y construirSystemPrompt omite por completo
+// cualquier sección que dependa de él. Cuando está presente, cada
+// subcampo también es opcional -- nunca se exige llenar todo el
+// cuestionario para poder guardar.
+export function validarEstructuraReglas(obj) {
   if (!obj || typeof obj !== 'object') return false;
   if (!obj.horarios || typeof obj.horarios !== 'object') return false;
   const diasRequeridos = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo'];
@@ -50,7 +56,63 @@ function validarEstructuraReglas(obj) {
   if (!Array.isArray(obj.cierres_especiales)) return false;
   if (!Array.isArray(obj.promociones)) return false;
   if (!Array.isArray(obj.politicas)) return false;
+  if (obj.bot !== undefined) {
+    if (typeof obj.bot !== 'object' || obj.bot === null || Array.isArray(obj.bot)) return false;
+    const { tono, saludo, personalidad, informacion_importante, faqs, respuestas_prohibidas, transferir_a_humano, palabras_criticas } = obj.bot;
+    const strOk = (v) => v === undefined || typeof v === 'string';
+    const arrStrOk = (v) => v === undefined || (Array.isArray(v) && v.every(x => typeof x === 'string'));
+    if (!strOk(tono) || !strOk(saludo) || !strOk(personalidad) || !strOk(informacion_importante) || !strOk(transferir_a_humano)) return false;
+    if (!arrStrOk(respuestas_prohibidas) || !arrStrOk(palabras_criticas)) return false;
+    if (faqs !== undefined) {
+      if (!Array.isArray(faqs)) return false;
+      if (!faqs.every(f => f && typeof f === 'object' && typeof f.pregunta === 'string' && typeof f.respuesta === 'string')) return false;
+    }
+  }
   return true;
+}
+
+const NOMBRES_DIAS_ES = { lunes:'lunes', martes:'martes', miercoles:'miércoles', jueves:'jueves', viernes:'viernes', sabado:'sábado', domingo:'domingo' };
+
+// Genera el texto de horario a partir de reglas.horarios agrupando días
+// consecutivos con el mismo apertura/cierre (ej. "Lunes a sábado
+// 11:00–22:00 | Domingo: cerrado") en vez de listar los 7 días sueltos.
+// Reemplaza el texto que antes estaba fijo a "lunes a sábado 11am-10pm"
+// (el horario real de Nonna Maye, sembrado en la migración 017, produce
+// exactamente ese resultado con este generador -- no cambia su prompt).
+export function formatearHorarioTexto(horarios) {
+  const orden = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo'];
+  const grupos = [];
+  for (const dia of orden) {
+    const h = horarios[dia];
+    const clave = h?.abierto ? `${h.apertura}-${h.cierre}` : 'cerrado';
+    const ultimo = grupos[grupos.length - 1];
+    if (ultimo && ultimo.clave === clave) ultimo.dias.push(dia);
+    else grupos.push({ clave, dias: [dia] });
+  }
+  return grupos.map(g => {
+    const nombres = g.dias.length > 1
+      ? `${NOMBRES_DIAS_ES[g.dias[0]].charAt(0).toUpperCase()}${NOMBRES_DIAS_ES[g.dias[0]].slice(1)} a ${NOMBRES_DIAS_ES[g.dias[g.dias.length-1]]}`
+      : `${NOMBRES_DIAS_ES[g.dias[0]].charAt(0).toUpperCase()}${NOMBRES_DIAS_ES[g.dias[0]].slice(1)}`;
+    if (g.clave === 'cerrado') return `${nombres}: cerrado`;
+    const [apertura, cierre] = g.clave.split('-');
+    return `${nombres} ${apertura}–${cierre}`;
+  }).join(' | ');
+}
+
+// Formatea la lista de métodos de pago aceptados con una breve
+// descripción para los métodos conocidos (mismo texto que antes estaba
+// fijo para los 3 métodos que usa Nonna Maye); métodos desconocidos se
+// listan tal cual, sin inventar una descripción.
+const DESCRIPCIONES_PAGO = {
+  'efectivo': 'Efectivo',
+  'terminal (tarjeta presente)': 'Terminal bancaria móvil (cobro con tarjeta al momento de la entrega o en tienda)',
+  'enlace de pago': 'Enlace de pago (link que se envía por WhatsApp para pagar con tarjeta desde el teléfono)',
+  'transferencia': 'Transferencia bancaria',
+  'contra entrega': 'Pago contra entrega',
+};
+export function formatearPagoTexto(pagoAceptado) {
+  const metodos = Array.isArray(pagoAceptado) && pagoAceptado.length ? pagoAceptado : ['efectivo'];
+  return metodos.map((m, i) => `  ${i + 1}. ${DESCRIPCIONES_PAGO[m] || m}`).join('\n');
 }
 
 // Fase A: negocioId obligatorio. Sin él, o si el JSON guardado está
@@ -75,7 +137,7 @@ function formatearMenu(categorias) {
   for (const categoria of categorias) {
     texto += `\n### ${categoria.nombre}\n`;
     for (const p of categoria.productos) {
-      if (!p.disponible) continue;
+      if (!p.disponible || p.agotado) continue;
       texto += `- ${p.nombre} — $${p.precio} MXN\n`;
       if (p.descripcion) texto += `  ${p.descripcion}\n`;
       // Modificadores dinámicos de la DB (grupos + opciones)
@@ -197,6 +259,24 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
   const categorias = await obtenerMenuCompleto(negocioId);
   const estado = obtenerEstadoRestaurante(reglas);
   const overrides = await obtenerOverridesActivos(negocioId);
+  const horarioTexto = formatearHorarioTexto(reglas.horarios);
+  // tiempo_preparacion_minutos/tiempo_entrega_*_minutos son campos nuevos
+  // (Fase 4 -- centro de entrenamiento), opcionales -- si el negocio no
+  // los configuró todavía, se usan los mismos valores que ya traía
+  // REGLAS_POR_DEFECTO/rules.json para no cambiar el texto que ya recibía
+  // Nonna Maye.
+  const tiempoPrepMin = reglas.pedidos.tiempo_preparacion_minutos;
+  const tiempoPrepTexto = typeof tiempoPrepMin === 'number' ? `${tiempoPrepMin} minutos` : 'entre 15 y 20 minutos';
+  const tiempoEntregaTexto = (typeof reglas.pedidos.tiempo_entrega_min_minutos === 'number' && typeof reglas.pedidos.tiempo_entrega_max_minutos === 'number')
+    ? `${reglas.pedidos.tiempo_entrega_min_minutos}–${reglas.pedidos.tiempo_entrega_max_minutos} minutos desde que el pedido está listo`
+    : '30–40 minutos desde que el pedido está listo';
+  const pedidoMinimoTexto = reglas.pedidos.pedido_minimo_entrega > 0
+    ? `Pedido mínimo para envío: $${reglas.pedidos.pedido_minimo_entrega} MXN.`
+    : 'No hay pedido mínimo para entrega a domicilio.';
+  const modalidadesDisponibles = Array.isArray(reglas.pedidos.modalidades) && reglas.pedidos.modalidades.length
+    ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+  const modalidadEnumTexto = modalidadesDisponibles.map(m => `"${m}"`).join(' | ');
+  const bot = (reglas.bot && typeof reglas.bot === 'object') ? reglas.bot : {};
   const cfg = await obtenerConfiguracion(negocioId).catch(() => ({}));
   const nombreNegocio = cfg.nombre || 'Restaurante Xabor';
   const nombreCorto   = cfg.nombre_corto || 'Xabor';
@@ -391,9 +471,11 @@ ${contextoCliente}${canalTexto}
 - Estado del restaurante: ${estado.abierto ? 'ABIERTO' : estado.preApertura ? 'AÚN NO ABRE (antes de apertura)' : 'CERRADO'}
 ${estado.abierto && estado.cierreEspecial?.hora_cierre ? `- AVISO: Hoy cerramos a las ${estado.cierreEspecial.hora_cierre} (cierre anticipado). Menciónaselo al cliente si es relevante.` : ''}
 ${estado.preApertura ? `- IMPORTANTE: Todavía no abrimos. Abrimos a las ${estado.horarioDia?.apertura || '11:00'}. Avisa al cliente pero SÍ toma su pedido para tenerlo listo al abrir.` : ''}
-${!estado.abierto && !estado.preApertura ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ' Informa que el horario es lunes a sábado 11am–10pm.'} NO tomes pedidos.` : ''}
+${!estado.abierto && !estado.preApertura ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ` Informa que el horario es ${horarioTexto}.`} NO tomes pedidos.` : ''}
 
-## TONO Y ESTILO
+${bot.saludo || bot.tono || bot.personalidad ? `## TONO Y SALUDO CONFIGURADOS POR EL NEGOCIO
+${bot.saludo ? `Saludo sugerido al iniciar una conversación nueva: "${bot.saludo}"\n` : ''}${bot.tono ? `Tono de atención: ${bot.tono}\n` : ''}${bot.personalidad ? `Personalidad: ${bot.personalidad}\n` : ''}
+` : ''}## TONO Y ESTILO
 Eres parte del equipo de ${nombreCorto}. Tu forma de comunicarte refleja cómo hablamos en el restaurante: cortés, cercano y eficiente — como un buen restaurante de barrio, sin llegar a fine dining.
 
 CÓMO SONAR HUMANO:
@@ -564,7 +646,7 @@ REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó 
 - Si piden algo que no está en el menú, discúlpate y ofrece la alternativa más cercana.
 - NUNCA des un precio diferente al del menú.
 - El costo de envío es de $${reglas.pedidos.costo_envio} MXN con repartidor independiente. Infórmalo siempre al confirmar un pedido a domicilio. Si aplica la promo de envío gratis, informa que el envío es sin costo.
-- No hay pedido mínimo para entrega a domicilio.
+- ${pedidoMinimoTexto}
 - Si el cliente dice "cancelar", "cancel", "ya no quiero", "olvídalo" u otra variación ANTES de confirmar el pedido: responde amablemente que con gusto, que no hay problema, y pregunta si hay algo más en lo que puedas ayudarle. Reinicia la conversación.
 - Si el cliente quiere cancelar DESPUÉS de haber confirmado el pedido: explica amablemente que una vez confirmado el pedido ya fue enviado a cocina y no es posible cancelarlo, pero que si tiene algún problema puede comunicarse directamente con nosotros.
 
@@ -572,18 +654,17 @@ REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó 
 ${formatearMenu(categorias)}
 
 ## REGLAS Y POLÍTICAS
-- Horario: Lunes a Sábado 11am–10pm | Domingo: CERRADO
-- Pedido mínimo para envío: $${reglas.pedidos.pedido_minimo_entrega} MXN
+- Horario: ${horarioTexto}
+- ${pedidoMinimoTexto}
 - Costo de envío: $${reglas.pedidos.costo_envio} MXN
-- Tiempo de elaboración: entre 15 y 20 minutos
-- Tiempo de entrega estimado: 30–40 minutos desde que el pedido está listo
-- Al confirmar un pedido de domicilio, SIEMPRE informa al cliente que su pedido estará listo en 15-20 minutos y que el repartidor saldrá en cuanto esté listo.
-- Formas de pago (son tres opciones distintas, mencionarlas siempre así):
-  1. Efectivo
-  2. Terminal bancaria móvil (cobro con tarjeta al momento de la entrega o en tienda)
-  3. Enlace de pago (link que te enviamos por WhatsApp para pagar con tarjeta desde tu teléfono)
-- NO se aceptan transferencias ni depósitos bancarios. Si el cliente lo pide, ofrécele el enlace de pago como alternativa.
-${reglas.politicas.map(p => `- ${p}`).join('\n')}
+- Tiempo de elaboración: ${tiempoPrepTexto}
+- Tiempo de entrega estimado: ${tiempoEntregaTexto}
+- Al confirmar un pedido de domicilio, SIEMPRE informa al cliente el tiempo de elaboración y que el repartidor saldrá en cuanto esté listo.
+- Formas de pago aceptadas (mencionarlas siempre así):
+${formatearPagoTexto(reglas.pedidos.pago_aceptado)}
+- Si el cliente pide una forma de pago que no está en la lista de arriba, discúlpate y ofrece las que sí manejamos.
+${reglas.pedidos.pago_instrucciones ? `- ${reglas.pedidos.pago_instrucciones}\n` : ''}${Array.isArray(reglas.pedidos.zonas_entrega) && reglas.pedidos.zonas_entrega.length ? `- Zonas de entrega y costo:\n${reglas.pedidos.zonas_entrega.map(z => `  - ${z.nombre}: $${z.costo} MXN`).join('\n')}\n` : ''}${typeof reglas.pedidos.entrega_gratis_desde === 'number' && reglas.pedidos.entrega_gratis_desde > 0 ? `- Entrega gratis en pedidos a domicilio de $${reglas.pedidos.entrega_gratis_desde} MXN o más.\n` : ''}${reglas.pedidos.notas ? `- ${reglas.pedidos.notas}\n` : ''}${reglas.politicas.map(p => `- ${p}`).join('\n')}
+${bot.informacion_importante ? `\n## INFORMACIÓN IMPORTANTE DEL NEGOCIO\n${bot.informacion_importante}\n` : ''}${Array.isArray(bot.faqs) && bot.faqs.length ? `\n## PREGUNTAS FRECUENTES\n${bot.faqs.map(f => `P: ${f.pregunta}\nR: ${f.respuesta}`).join('\n\n')}\n` : ''}${Array.isArray(bot.respuestas_prohibidas) && bot.respuestas_prohibidas.length ? `\n## NUNCA DIGAS ESTO\n${bot.respuestas_prohibidas.map(r => `- ${r}`).join('\n')}\n` : ''}${bot.transferir_a_humano ? `\n## CUÁNDO TRANSFERIR A UNA PERSONA\n${bot.transferir_a_humano}\nSi aplica, incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta.\n` : ''}${Array.isArray(bot.palabras_criticas) && bot.palabras_criticas.length ? `\n## PALABRAS O ESCENARIOS CRÍTICOS\nSi el cliente menciona cualquiera de estos temas, responde con especial cuidado y considera transferir a una persona: ${bot.palabras_criticas.join(', ')}.\n` : ''}
 
 ## MENÚ EN IMAGEN
 Cuando alguien pida el menú por WhatsApp, responde brevemente con algo natural como "Aquí está nuestro menú:" e incluye el marcador <ENVIAR_MENU>. El sistema enviará la imagen. NO listes productos en texto para WhatsApp.
@@ -603,7 +684,7 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
     "colonia": "... (null si es recoger en tienda)",
     "entre_calles": "... (null si no se proporcionó)"
   },
-  "modalidad": "recoger en tienda" | "entrega a domicilio",
+  "modalidad": ${modalidadEnumTexto},
   "items": [
     {
       "nombre": "...",

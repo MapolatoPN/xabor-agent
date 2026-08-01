@@ -6,7 +6,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHmac, createHash, timingSafeEqual } from 'crypto';
 
-import { procesarMensaje } from './agent/brain.js';
+import { procesarMensaje, simularMensaje } from './agent/brain.js';
+import { validarEstructuraReglas } from './agent/prompts.js';
 import {
   registrarPedido,
   emitirPedido,
@@ -21,7 +22,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -2008,7 +2009,16 @@ app.get('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
 // panel realmente necesita para membrete/encabezado y tickets impresos. Si
 // mañana se agrega una clave sensible nueva a `configuracion`, esta lista NO
 // la expone automáticamente -- hay que agregarla aquí a mano, a propósito.
-const CONFIG_CLAVES_OPERATIVAS = ['nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp', 'horario', 'bot_avisos'];
+// Fase 2 (panel comercial): datos de contacto/ubicación agregados a la
+// allowlist -- son información pública del negocio (igual que
+// telefono/direccion, ya expuestos), nunca secretos. reglas_atencion
+// (horarios/pedidos/políticas/entrenamiento del bot) NO se agrega aquí a
+// propósito: es un JSON estructurado, no un campo de membrete, y ya se
+// lee completo (sin filtrar) vía GET /api/config, admin-only.
+const CONFIG_CLAVES_OPERATIVAS = [
+  'nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp', 'horario', 'bot_avisos',
+  'descripcion', 'email', 'referencia', 'codigo_postal', 'ubicacion', 'logo_url',
+];
 app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   const cfgCompleta = req.esNegocioPorDefecto ? negocioConfig : await obtenerConfiguracion(req.negocioId);
   const cfgOperativa = {};
@@ -2016,11 +2026,27 @@ app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   res.json(cfgOperativa);
 });
 
+// reglas_atencion llega del panel como objeto JS (Fase 2/4) -- se valida
+// con la MISMA función que usa prompts.js para decidir si confía en un
+// JSON guardado (validarEstructuraReglas), así que nunca se guarda algo
+// que el propio bot rechazaría en tiempo de ejecución. Se normaliza a
+// string antes de persistir porque configuracion.valor es TEXT.
 app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
-  const ok = await actualizarConfiguracion(req.body, req.negocioId);
+  const cambios = { ...req.body };
+  if ('reglas_atencion' in cambios) {
+    let reglas = cambios.reglas_atencion;
+    if (typeof reglas === 'string') {
+      try { reglas = JSON.parse(reglas); } catch { return res.status(400).json({ error: 'reglas_atencion no es JSON válido' }); }
+    }
+    if (!validarEstructuraReglas(reglas)) {
+      return res.status(400).json({ error: 'reglas_atencion no tiene la estructura esperada (horarios de los 7 días, pedidos.costo_envio, pedidos.pedido_minimo_entrega como número, cierres_especiales/promociones/politicas como arreglos)' });
+    }
+    cambios.reglas_atencion = JSON.stringify(reglas);
+  }
+  const ok = await actualizarConfiguracion(cambios, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
   if (req.esNegocioPorDefecto) {
-    negocioConfig = { ...negocioConfig, ...req.body };
+    negocioConfig = { ...negocioConfig, ...cambios };
     broadcastNegocio(req.negocioId, { tipo: 'config_actualizada', config: negocioConfig });
     return res.json({ ok: true, config: negocioConfig });
   }
