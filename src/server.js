@@ -29,6 +29,10 @@ import {
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion,
 } from './services/database.js';
+import {
+  obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
+  suspenderIntegracion, eliminarCredencialesIntegracion,
+} from './services/integracionesService.js';
 import { enviarCorreoInvitacion } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
@@ -2178,6 +2182,13 @@ const MODULOS_VALIDOS_API = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'wh
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
 const ESTADOS_NEGOCIO_VALIDOS_API = ['pendiente', 'activo', 'suspendido'];
+const ESTADOS_INTEGRACION_VALIDOS_API = ['no_configurado', 'pendiente_configuracion', 'activo', 'suspendido', 'error'];
+
+async function negocioExisteSuperadmin(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rows } = await pool.query('SELECT 1 FROM negocios WHERE id = $1', [negocioId.trim()]);
+  return !!rows[0];
+}
 
 app.get('/api/superadmin/dashboard', requireSuperadmin, async (req, res) => {
   res.json(await obtenerDashboardSuperadmin());
@@ -2330,6 +2341,100 @@ app.patch('/api/superadmin/negocios/:negocioId/checklist', requireSuperadmin, as
   } catch (e) {
     console.error('[PATCH /api/superadmin/negocios/:id/checklist] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el checklist' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Fase B -- Integraciones por negocio (Superadmin). Almacenamiento
+// cifrado de credenciales y estado técnico, sin conexión real a Meta
+// todavía (Embedded Signup / OAuth es Fase C). Ningún endpoint de esta
+// sección devuelve access_token, IV ni auth tag en ninguna respuesta.
+// ---------------------------------------------------------------------
+
+app.get('/api/superadmin/negocios/:negocioId/integraciones', requireSuperadmin, async (req, res) => {
+  if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const integraciones = await obtenerIntegracionesNegocio(req.params.negocioId);
+    res.json({ integraciones });
+  } catch (e) {
+    console.error('[GET /api/superadmin/negocios/:id/integraciones] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener las integraciones' });
+  }
+});
+
+app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSuperadmin, async (req, res) => {
+  if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const integracion = await obtenerIntegracionNegocio(req.params.negocioId, 'whatsapp', 'meta');
+    const estadoModulo = await obtenerEstadoModulo(req.params.negocioId, 'whatsapp');
+    res.json({ integracion, estadoModulo: estadoModulo || 'no_contratado' });
+  } catch (e) {
+    console.error('[GET /api/superadmin/negocios/:id/integraciones/whatsapp] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener la integración' });
+  }
+});
+
+// PUT manual -- solo para pruebas internas y migraciones controladas.
+// No se expone como formulario de "pegar token" en la UI normal
+// (Fase C usará Embedded Signup en su lugar).
+app.put('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const estadoModulo = await obtenerEstadoModulo(negocioId, 'whatsapp');
+  if (!estadoModulo || estadoModulo === 'no_contratado') {
+    return res.status(403).json({ error: 'El módulo de WhatsApp no está contratado para este negocio' });
+  }
+  if (estadoModulo === 'suspendido') {
+    return res.status(403).json({ error: 'El módulo de WhatsApp está suspendido para este negocio' });
+  }
+  const { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken, nombre } = req.body || {};
+  if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) return res.status(400).json({ error: 'phoneNumberId requerido' });
+  if (typeof accessToken !== 'string' || !accessToken.trim()) return res.status(400).json({ error: 'accessToken requerido' });
+  try {
+    const resultado = await guardarCredencialesCifradas(
+      negocioId, 'whatsapp', 'meta',
+      { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken, nombre },
+      req.usuarioId
+    );
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PUT /api/superadmin/negocios/:id/integraciones/whatsapp] Error:', e.message);
+    res.status(500).json({ error: 'Error al guardar las credenciales' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const { estado } = req.body || {};
+  if (!ESTADOS_INTEGRACION_VALIDOS_API.includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+  const estadoModulo = await obtenerEstadoModulo(negocioId, 'whatsapp');
+  if (estado === 'activo' && (!estadoModulo || estadoModulo === 'no_contratado' || estadoModulo === 'suspendido')) {
+    return res.status(403).json({ error: 'No se puede activar: el módulo de WhatsApp no está contratado o está suspendido' });
+  }
+  try {
+    const resultado = await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', estado, req.usuarioId);
+    if (!resultado.ok) return res.status(400).json({ error: resultado.error });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PATCH /api/superadmin/negocios/:id/integraciones/whatsapp/estado] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el estado' });
+  }
+});
+
+app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/credenciales', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (req.body?.confirmar !== true) {
+    return res.status(400).json({ error: 'Se requiere confirmación explícita ({ confirmar: true }) para eliminar credenciales' });
+  }
+  try {
+    const resultado = await eliminarCredencialesIntegracion(negocioId, 'whatsapp', 'meta', req.usuarioId);
+    if (!resultado.ok) return res.status(400).json({ error: resultado.error });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[DELETE /api/superadmin/negocios/:id/integraciones/whatsapp/credenciales] Error:', e.message);
+    res.status(500).json({ error: 'Error al eliminar las credenciales' });
   }
 });
 
