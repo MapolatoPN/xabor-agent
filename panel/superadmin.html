@@ -524,7 +524,7 @@ async function cargarIntegracionWhatsapp() {
       <button class="btn secundario" ${estado !== 'activo' ? 'disabled' : ''} onclick="suspenderWhatsapp()">Suspender</button>
       <button class="btn secundario" ${moduloBloqueado || estado !== 'suspendido' ? 'disabled' : ''} onclick="reactivarWhatsapp()">Reactivar</button>
       <button class="btn peligro" ${estado === 'no_configurado' ? 'disabled' : ''} onclick="eliminarCredencialesWhatsapp()">Eliminar credenciales</button>
-      <button class="btn secundario" disabled title="Disponible en Fase C (Embedded Signup)">Conectar con Meta — disponible en Fase C</button>
+      <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso ? 'disabled' : ''} onclick="conectarConMeta()">Conectar con Meta</button>
     </div>
   `;
 }
@@ -556,6 +556,81 @@ async function eliminarCredencialesWhatsapp() {
   if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al eliminar credenciales'; return; }
   fb.className = 'feedback ok'; fb.textContent = '✓ Credenciales eliminadas';
   cargarIntegracionWhatsapp();
+}
+
+// ── Fase C: Embedded Signup de Meta ─────────────────────────────────────
+// waSignupEnCurso evita doble clic / dos procesos en paralelo desde este
+// mismo navegador (el backend también lo bloquea por negocio_id, ver
+// POST .../iniciar). No conecta números reales todavía: sin el SDK real
+// de Meta cargado y META_APP_ID configurado, solo prepara el state y
+// explica el paso manual pendiente.
+let waSignupEnCurso = false;
+let waSignupDatos = null; // { state, negocioId } del proceso en curso
+
+async function conectarConMeta() {
+  if (waSignupEnCurso) return;
+  const fb = document.getElementById('dt-wa-feedback');
+  waSignupEnCurso = true;
+  document.getElementById('btn-conectar-meta').disabled = true;
+  fb.className = 'feedback'; fb.textContent = 'Iniciando conexión con Meta…';
+  try {
+    const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/iniciar`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo iniciar la conexión'; waSignupEnCurso = false; cargarIntegracionWhatsapp(); return; }
+    waSignupDatos = { state: body.state, negocioId: negocioActualId };
+    if (!window.FB || !body.appId) {
+      fb.className = 'feedback';
+      fb.textContent = 'Embedded Signup preparado (state emitido) — falta cargar el SDK real de Meta y META_APP_ID en este entorno para abrir el diálogo. Paso manual pendiente.';
+      waSignupEnCurso = false;
+      return;
+    }
+    window.FB.login(resp => {
+      if (resp.authResponse && resp.authResponse.code) {
+        completarSignupMeta(resp.authResponse.code);
+      } else {
+        fb.className = 'feedback err'; fb.textContent = 'Conexión cancelada en Meta';
+        waSignupEnCurso = false;
+      }
+    }, { config_id: body.configId, response_type: 'code', override_default_response_type: true });
+  } catch (e) {
+    fb.className = 'feedback err'; fb.textContent = 'Error iniciando la conexión';
+    waSignupEnCurso = false;
+  }
+}
+
+// Meta entrega phone_number_id/waba_id por postMessage (evento
+// WA_EMBEDDED_SIGNUP), por separado del code de FB.login.
+window.addEventListener('message', (event) => {
+  if (!waSignupDatos) return;
+  let datos;
+  try { datos = JSON.parse(event.data); } catch { return; }
+  if (datos.type !== 'WA_EMBEDDED_SIGNUP' || datos.event !== 'FINISH') return;
+  waSignupDatos.phoneNumberId = datos.data?.phone_number_id;
+  waSignupDatos.wabaId = datos.data?.waba_id;
+  waSignupDatos.businessId = datos.data?.business_id;
+});
+
+async function completarSignupMeta(code) {
+  const fb = document.getElementById('dt-wa-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Completando conexión…';
+  try {
+    const r = await api('/api/integraciones/whatsapp/meta/callback', {
+      method: 'POST',
+      body: JSON.stringify({
+        state: waSignupDatos.state, code,
+        phoneNumberId: waSignupDatos.phoneNumberId, wabaId: waSignupDatos.wabaId, businessId: waSignupDatos.businessId,
+      }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo completar la conexión'; }
+    else { fb.className = 'feedback ok'; fb.textContent = '✓ Conectado con Meta'; }
+  } catch (e) {
+    fb.className = 'feedback err'; fb.textContent = 'Error completando la conexión';
+  } finally {
+    waSignupEnCurso = false;
+    waSignupDatos = null;
+    cargarIntegracionWhatsapp();
+  }
 }
 
 async function cargarAuditoria() {
