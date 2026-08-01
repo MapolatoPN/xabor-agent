@@ -1072,6 +1072,27 @@ nav {
 
 .field textarea { resize: vertical; min-height: 80px; }
 
+.field input[aria-invalid="true"],
+.field select[aria-invalid="true"] { border-color: #DC2626; }
+
+.field-error {
+  display: block;
+  font-size: .78rem;
+  color: #B91C1C;
+  min-height: 1em;
+}
+
+.consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 20px 0;
+  font-size: .86rem;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.consent-row input { margin-top: 3px; flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); }
+
 .form-note {
   font-size: .78rem;
   color: var(--text-3);
@@ -1090,6 +1111,7 @@ nav {
   text-align: center;
 }
 .form-feedback.is-error { background: #FEF2F2; color: #B91C1C; }
+.form-feedback:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── CTA Final ────────────────────────────────────────────────── */
 #cta-final {

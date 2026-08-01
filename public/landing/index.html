@@ -852,19 +852,23 @@
         <div class="form-grid">
           <div class="field">
             <label for="f-nombre">Nombre *</label>
-            <input type="text" id="f-nombre" name="nombre" required autocomplete="name">
+            <input type="text" id="f-nombre" name="nombre" required autocomplete="name" maxlength="120">
+            <span class="field-error" id="err-nombre" aria-live="polite"></span>
           </div>
           <div class="field">
             <label for="f-negocio">Negocio *</label>
-            <input type="text" id="f-negocio" name="negocio" required autocomplete="organization">
+            <input type="text" id="f-negocio" name="negocio" required autocomplete="organization" maxlength="150">
+            <span class="field-error" id="err-negocio" aria-live="polite"></span>
           </div>
           <div class="field">
             <label for="f-ciudad">Ciudad *</label>
-            <input type="text" id="f-ciudad" name="ciudad" required autocomplete="address-level2">
+            <input type="text" id="f-ciudad" name="ciudad" required autocomplete="address-level2" maxlength="100">
+            <span class="field-error" id="err-ciudad" aria-live="polite"></span>
           </div>
           <div class="field">
             <label for="f-telefono">Teléfono *</label>
-            <input type="tel" id="f-telefono" name="telefono" required autocomplete="tel" inputmode="tel">
+            <input type="tel" id="f-telefono" name="telefono" required autocomplete="tel" inputmode="tel" maxlength="20">
+            <span class="field-error" id="err-telefono" aria-live="polite"></span>
           </div>
           <div class="field">
             <label for="f-tipo">Tipo de negocio *</label>
@@ -877,6 +881,7 @@
               <option>Florería</option>
               <option>Otro negocio con pedidos por WhatsApp</option>
             </select>
+            <span class="field-error" id="err-tipo" aria-live="polite"></span>
           </div>
           <div class="field">
             <label for="f-volumen">Pedidos o mensajes aproximados al día</label>
@@ -890,19 +895,24 @@
           </div>
           <div class="field field-full">
             <label for="f-comentario">Comentario (opcional)</label>
-            <textarea id="f-comentario" name="comentario" rows="3"></textarea>
+            <textarea id="f-comentario" name="comentario" rows="3" maxlength="800"></textarea>
           </div>
         </div>
 
-        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">
+        <label class="consent-row">
+          <input type="checkbox" id="f-consentimiento" required>
+          <span>He leído y acepto que Xabor me contacte respecto a esta solicitud.</span>
+        </label>
+
+        <button type="submit" class="btn btn-primary" id="lead-submit" style="width:100%;justify-content:center;">
           Enviar solicitud
         </button>
 
         <p class="form-note">
-          Al enviar, se abrirá tu correo con los datos de este formulario listos para mandarse a <strong>hola@xabor.mx</strong>. Revísalo y envíalo para completar tu solicitud.
+          Usaremos tus datos únicamente para contactarte sobre una demostración de Xabor. No compartiremos tu información con terceros para fines publicitarios. Consulta el <a href="/aviso-privacidad.html">aviso de privacidad</a>.
         </p>
 
-        <div class="form-feedback" id="form-feedback" role="status" aria-live="polite" hidden></div>
+        <div class="form-feedback" id="form-feedback" role="status" aria-live="polite" tabindex="-1" hidden></div>
       </form>
     </div>
   </div>
@@ -1021,56 +1031,80 @@
     });
   }
 
-  /* Formulario de demostración — sin backend de leads todavía.
-     Se valida en el navegador y se compone un mailto: con los datos,
-     dirigido a la cuenta real hola@xabor.mx. No se inventa ninguna
-     integración ni se simula un envío que en realidad no ocurre. */
+  /* Formulario de demostración — envío real a POST /api/public/prospectos.
+     La persistencia en base es la fuente de verdad; nunca se dice "correo
+     enviado" porque eso no es lo que garantiza el éxito de la solicitud. */
   var form = document.getElementById('lead-form');
   var feedback = document.getElementById('form-feedback');
+  var submitBtn = document.getElementById('lead-submit');
+  var cargadoEn = Date.now();
 
   function mostrarFeedback(msg, esError) {
     feedback.textContent = msg;
     feedback.hidden = false;
     feedback.classList.toggle('is-error', !!esError);
+    feedback.focus();
+  }
+
+  function limpiarErrores() {
+    document.querySelectorAll('.field-error').forEach(function (el) { el.textContent = ''; });
+    document.querySelectorAll('.field input, .field select, .field textarea').forEach(function (el) {
+      el.removeAttribute('aria-invalid');
+    });
   }
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    limpiarErrores();
+    feedback.hidden = true;
 
-    // Honeypot: si el campo oculto tiene contenido, es un bot.
-    var honeypot = document.getElementById('empresa-web');
-    if (honeypot && honeypot.value) return;
-
-    if (!form.checkValidity()) {
+    var consentimiento = document.getElementById('f-consentimiento');
+    if (!form.checkValidity() || !consentimiento.checked) {
       form.reportValidity();
+      if (!consentimiento.checked) {
+        mostrarFeedback('Debes aceptar que Xabor te contacte para poder enviar el formulario.', true);
+      }
       return;
     }
 
-    var datos = {
+    var payload = {
       nombre: document.getElementById('f-nombre').value.trim(),
       negocio: document.getElementById('f-negocio').value.trim(),
       ciudad: document.getElementById('f-ciudad').value.trim(),
       telefono: document.getElementById('f-telefono').value.trim(),
-      tipo: document.getElementById('f-tipo').value,
-      volumen: document.getElementById('f-volumen').value || 'No especificado',
-      comentario: document.getElementById('f-comentario').value.trim() || 'Sin comentarios adicionales'
+      tipoNegocio: document.getElementById('f-tipo').value,
+      volumenMensajes: document.getElementById('f-volumen').value || '',
+      comentario: document.getElementById('f-comentario').value.trim(),
+      empresaWeb: document.getElementById('empresa-web').value,
+      cargadoEn: cargadoEn
     };
 
-    var asunto = 'Solicitud de demostración — ' + datos.negocio;
-    var cuerpo = [
-      'Nombre: ' + datos.nombre,
-      'Negocio: ' + datos.negocio,
-      'Ciudad: ' + datos.ciudad,
-      'Teléfono: ' + datos.telefono,
-      'Tipo de negocio: ' + datos.tipo,
-      'Pedidos o mensajes aproximados al día: ' + datos.volumen,
-      'Comentario: ' + datos.comentario
-    ].join('\n');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Enviando…';
 
-    var mailto = 'mailto:hola@xabor.mx?subject=' + encodeURIComponent(asunto) + '&body=' + encodeURIComponent(cuerpo);
-
-    mostrarFeedback('Se abrió tu correo con los datos de tu solicitud. Revísalo y envíalo para completar el proceso.', false);
-    window.location.href = mailto;
+    fetch('/api/public/prospectos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(function (r) { return r.json().then(function (data) { return { status: r.status, data: data }; }); })
+      .then(function (res) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Enviar solicitud';
+        if (res.status === 201 && res.data.ok) {
+          form.reset();
+          mostrarFeedback('Recibimos la información de tu negocio. Te contactaremos para conocer cómo atiendes tus pedidos actualmente y mostrarte una demostración de Xabor.', false);
+        } else if (res.status === 429) {
+          mostrarFeedback(res.data.error || 'Demasiados intentos. Espera un momento e inténtalo de nuevo.', true);
+        } else {
+          mostrarFeedback(res.data.error || 'No pudimos enviar tus datos en este momento. Revisa tu conexión e inténtalo nuevamente.', true);
+        }
+      })
+      .catch(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Enviar solicitud';
+        mostrarFeedback('No pudimos enviar tus datos en este momento. Revisa tu conexión e inténtalo nuevamente.', true);
+      });
   });
 })();
 </script>
