@@ -46,6 +46,7 @@ const adminNegocioB = await crearUsuarioConPassword({
   password: 'ClaveAdminBPrueba123!', rol: 'admin',
 });
 const cookieAdminA = cookieHeader(SEED.adminNegocioAUsuarioId, SEED.negocioA, 'admin');
+const cookieStaffA = cookieHeader(SEED.staffNegocioAUsuarioId, SEED.negocioA, 'staff');
 const cookieAdminB = cookieHeader(adminNegocioB.id, SEED.negocioB, 'admin');
 
 // Limpieza + estado base: ambos negocios con bot apagado, sin integración
@@ -114,8 +115,7 @@ await t('AISLAMIENTO', 'HTTP: GET estado-bot de un teléfono pausado en A, consu
     const rB = await api(srv.base, `/api/conversacion/${tel}/estado-bot`, { cookie: cookieAdminB });
     assert.strictEqual(rA.status, 200);
     assert.strictEqual(rA.body.pausado, true);
-    assert.strictEqual(rB.status, 200);
-    assert.strictEqual(rB.body.pausado, false); // antes de esta corrección, B habría visto true
+    assert.strictEqual(rB.status, 403);
   } finally { srv.detener(); }
 });
 
@@ -189,6 +189,20 @@ await t('AISLAMIENTO', 'HTTP: GET estado-bot de un teléfono pausado en A, consu
       const rReactivar = await api(srv.base, `/api/conversacion/${tel}/reactivar`, { cookie: cookieAdminA, method: 'POST' });
       assert.strictEqual(rReactivar.status, 200);
       assert.strictEqual(await getBotPausado(tel, SEED.negocioA), false);
+    });
+
+    await t('PERMISOS', 'operador propio puede tomar y devolver la conversación', async () => {
+      const tel = '5218781004001';
+      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/pausar`, { cookie: cookieStaffA, method: 'POST' })).status, 200);
+      assert.strictEqual(await getBotPausado(tel, SEED.negocioA), true);
+      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/reactivar`, { cookie: cookieStaffA, method: 'POST' })).status, 200);
+    });
+
+    await t('PERMISOS', 'sin sesión da 401, conversación ajena 403 e inexistente 404', async () => {
+      const ruta = '/api/conversacion/5218781004001/pausar';
+      assert.strictEqual((await api(srv.base, ruta, { method: 'POST' })).status, 401);
+      assert.strictEqual((await api(srv.base, ruta, { cookie: cookieAdminB, method: 'POST' })).status, 403);
+      assert.strictEqual((await api(srv.base, '/api/conversacion/5218781999999/pausar', { cookie: cookieAdminA, method: 'POST' })).status, 404);
     });
 
     await t('FASE2', 'el envío manual NUNCA activa el interruptor global del bot', async () => {
