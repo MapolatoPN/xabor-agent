@@ -1162,6 +1162,22 @@ export async function obtenerConversacion(telefono, negocioId) {
   }
 }
 
+// Clasifica la pertenencia antes de operar el control de una conversación.
+// No crea clientes implícitamente: una conversación debe existir en mensajes
+// o en clientes y pertenecer al negocio autenticado.
+export async function obtenerPertenenciaConversacion(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return 'inexistente';
+  const incluirNull = await _esNonnaMaye(negocioId);
+  const { rows } = await pool.query(`
+    SELECT
+      EXISTS (SELECT 1 FROM mensajes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL)))
+      OR EXISTS (SELECT 1 FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))) AS propia,
+      EXISTS (SELECT 1 FROM mensajes WHERE telefono = $1)
+      OR EXISTS (SELECT 1 FROM clientes WHERE telefono = $1) AS existe
+  `, [telefono, negocioId.trim(), incluirNull]);
+  return rows[0]?.propia ? 'propia' : (rows[0]?.existe ? 'ajena' : 'inexistente');
+}
+
 export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] obtenerConversacionesRecientes: negocioId inválido u omitido — rechazado, sin consulta global');

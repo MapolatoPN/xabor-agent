@@ -21,7 +21,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -1859,26 +1859,41 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
   });
 });
 
-// Control manual del bot por conversación
-// negocioId (Incidente P0): antes iba por broadcast() global y exponía el
-// teléfono real del cliente a TODOS los negocios conectados -- el mismo
-// tipo de fuga confirmada para mensajes/chats. req.negocioId ya existe en
-// esta ruta (requireAuthSeguro), así que se usa broadcastNegocio.
-app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
-  await setBotPausado(req.params.telefono, true, req.negocioId);
-  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado: true });
-  res.json({ ok: true, pausado: true });
+// Control operativo por conversación. Admin y staff pueden usarlo; el
+// recurso se valida contra el negocio de la sesión antes de leer o escribir.
+async function validarConversacionPropia(req, res, next) {
+  const pertenencia = await obtenerPertenenciaConversacion(req.params.telefono, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La conversación pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Conversación no encontrada' });
+  next();
+}
+
+async function cambiarAtencionConversacion(req, res, pausado) {
+  const anterior = await getBotPausado(req.params.telefono, req.negocioId);
+  const actualizado = await setBotPausado(req.params.telefono, pausado, req.negocioId);
+  if (!actualizado) return res.status(403).json({ error: 'No se pudo modificar esta conversación' });
+  await registrarAuditoriaPlataforma({
+    superadminId: req.usuarioId, accion: pausado ? 'tomar_conversacion' : 'devolver_conversacion_bot',
+    negocioId: req.negocioId, estadoAnterior: { telefono: req.params.telefono, bot_pausado: anterior },
+    estadoNuevo: { telefono: req.params.telefono, bot_pausado: pausado },
+  });
+  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado });
+  res.json({ ok: true, pausado });
+}
+
+app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+  await cambiarAtencionConversacion(req, res, true);
 });
 
-app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
-  await setBotPausado(req.params.telefono, false, req.negocioId);
-  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado: false });
-  res.json({ ok: true, pausado: false });
+app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+  await cambiarAtencionConversacion(req, res, false);
 });
 
-app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
-  const pausado = await getBotPausado(req.params.telefono, req.negocioId);
-  res.json({ pausado });
+app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+  const [pausado, botWhatsappActivo] = await Promise.all([
+    getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
+  ]);
+  res.json({ pausado, botWhatsappActivo });
 });
 
 // Limpiar sesión
@@ -2717,6 +2732,12 @@ app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
 // admin de OTRO negocio no puede alcanzar este recurso (ni con 403 ni
 // con éxito accidental: estructuralmente no hay forma de dirigirlo a
 // otro negocio). Staff queda fuera por el rol mínimo 'admin'.
+// La lectura sí está disponible para todo el staff autenticado porque el
+// estado general determina el estado visible de cada conversación.
+app.get('/api/bot-whatsapp', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
+  res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
+});
+
 app.get('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
   res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
 });
