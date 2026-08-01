@@ -299,6 +299,33 @@
   </div>
 </div>
 
+<!-- Modal: aviso previo a Embedded Signup estándar (Fase 6) -->
+<div class="modal-overlay" id="aviso-migracion-modal">
+  <div class="modal">
+    <h3>Antes de continuar</h3>
+    <p style="font-size:0.88rem;line-height:1.5;margin-bottom:10px;">
+      Al continuar, este número puede dejar de atenderse desde la aplicación WhatsApp Business.
+      Las conversaciones nuevas se administrarán desde Xabor.
+    </p>
+    <ul style="font-size:0.85rem;line-height:1.6;margin:0 0 14px 18px;color:#444;">
+      <li>El bot iniciará apagado.</li>
+      <li>No se enviarán respuestas automáticas al finalizar.</li>
+      <li>El historial local del teléfono podría no transferirse.</li>
+      <li>La atención posterior será desde Xabor.</li>
+      <li>Se recomienda respaldar información importante antes de continuar.</li>
+    </ul>
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.85rem;margin-bottom:14px;cursor:pointer;">
+      <input type="checkbox" id="aviso-migracion-check" style="margin-top:3px;">
+      <span>Entiendo lo anterior y quiero continuar con la conexión.</span>
+    </label>
+    <div class="feedback" id="aviso-migracion-feedback"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn secundario" onclick="cerrarAvisoMigracion()">Cancelar</button>
+      <button class="btn" id="aviso-migracion-btn-continuar" disabled onclick="aceptarAvisoMigracion()">Acepto y continuar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const MODULOS = ['pos','usuarios','caja','menu','impresion','whatsapp','voz','rappi','facturacion'];
 const NOMBRES_MODULO = { pos:'POS', usuarios:'Usuarios', caja:'Caja', menu:'Menú', impresion:'Impresión', whatsapp:'WhatsApp', voz:'Voz', rappi:'Rappi', facturacion:'Facturación' };
@@ -546,7 +573,7 @@ async function cargarIntegracionWhatsapp() {
       <button class="btn secundario" ${estado !== 'activo' ? 'disabled' : ''} onclick="suspenderWhatsapp()">Suspender</button>
       <button class="btn secundario" ${moduloBloqueado || estado !== 'suspendido' ? 'disabled' : ''} onclick="reactivarWhatsapp()">Reactivar</button>
       <button class="btn peligro" ${estado === 'no_configurado' ? 'disabled' : ''} onclick="eliminarCredencialesWhatsapp()">Eliminar credenciales</button>
-      <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso || conexionPendiente ? 'disabled' : ''} onclick="conectarConMeta()">Conectar con Meta</button>
+      <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso || conexionPendiente ? 'disabled' : ''} onclick="abrirAvisoMigracion()">Conectar con Meta</button>
       ${conexionPendiente ? '<button class="btn secundario" onclick="cancelarConexionPendiente()">Cancelar conexión pendiente</button>' : ''}
     </div>
   `;
@@ -693,6 +720,33 @@ async function cancelarConexionPendiente() {
   waSignupDatos = null;
   liberarSignup();
   cargarIntegracionWhatsapp();
+}
+
+// El aviso de migración (Fase 6) es obligatorio antes de abrir el flujo
+// estándar de Embedded Signup -- el botón del panel ya no llama a
+// conectarConMeta() directamente, sino a abrirAvisoMigracion(), que solo
+// abre el modal. conectarConMeta() conserva su nombre y su lógica
+// original (usada también por la suite de pruebas del SDK) y solo se
+// invoca después de aceptar explícitamente (checkbox marcado + botón) y
+// registrar la auditoría.
+function abrirAvisoMigracion() {
+  if (waSignupEnCurso) return; // impide doble clic / diálogo duplicado
+  document.getElementById('aviso-migracion-check').checked = false;
+  document.getElementById('aviso-migracion-btn-continuar').disabled = true;
+  document.getElementById('aviso-migracion-feedback').textContent = '';
+  document.getElementById('aviso-migracion-modal').classList.add('visible');
+}
+function cerrarAvisoMigracion() { document.getElementById('aviso-migracion-modal').classList.remove('visible'); }
+document.getElementById('aviso-migracion-check')?.addEventListener('change', (e) => {
+  document.getElementById('aviso-migracion-btn-continuar').disabled = !e.target.checked;
+});
+async function aceptarAvisoMigracion() {
+  const fb = document.getElementById('aviso-migracion-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Registrando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/aviso-migracion`, { method: 'POST' });
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = 'No se pudo registrar la aceptación. Intenta de nuevo.'; return; }
+  document.getElementById('aviso-migracion-modal').classList.remove('visible');
+  conectarConMeta();
 }
 
 async function conectarConMeta() {

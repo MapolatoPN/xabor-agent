@@ -2502,6 +2502,24 @@ app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin,
   }
 });
 
+// Aviso previo a Embedded Signup estándar (Fase 6 -- preparación para
+// primeros clientes): registra que el superadmin vio y aceptó
+// explícitamente el aviso de migración antes de iniciar la conexión real
+// con Meta. Solo auditoría -- nunca guarda número, token ni ningún dato
+// sensible, solo negocio/usuario/fecha/versión del aviso. No bloquea
+// /iniciar (ese endpoint sigue igual); el gate real es el modal en el
+// panel, que no deja llamar a /iniciar sin pasar por aquí primero.
+const AVISO_MIGRACION_WHATSAPP_VERSION = '1';
+app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/aviso-migracion', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  await registrarAuditoriaPlataforma({
+    superadminId: req.usuarioId, accion: 'aviso_migracion_whatsapp_aceptado', negocioId,
+    contexto: { version: AVISO_MIGRACION_WHATSAPP_VERSION },
+  });
+  res.json({ ok: true, version: AVISO_MIGRACION_WHATSAPP_VERSION });
+});
+
 app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/iniciar', requireSuperadmin, async (req, res) => {
   const negocioId = req.params.negocioId;
   if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
