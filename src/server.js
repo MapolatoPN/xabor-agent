@@ -1600,7 +1600,7 @@ app.post('/api/send-message', requireAuthSeguro, requireModulo('whatsapp'), asyn
     await enviarMensaje(telefono, mensaje, credenciales);
     console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
     // Guardar y emitir al panel
-    const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId);
+    const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId, 'humano');
     if (msgGuardado) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     res.json({ ok: true });
   } catch (error) {
@@ -1877,7 +1877,7 @@ app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, requireModu
 });
 
 app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
-  const pausado = await getBotPausado(req.params.telefono);
+  const pausado = await getBotPausado(req.params.telefono, req.negocioId);
   res.json({ pausado });
 });
 

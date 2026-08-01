@@ -840,11 +840,23 @@ export async function toggleClienteInterno(telefono, esInterno, negocioId) {
   return rowCount > 0;
 }
 
-export async function getBotPausado(telefono) {
+// Fase de piloto (auditoría de aislamiento del chat manual): antes
+// consultaba bot_pausado por teléfono SIN filtrar por negocio -- un
+// staff de cualquier negocio con el módulo whatsapp podía consultar el
+// estado de pausa de un teléfono de OTRO negocio. negocioId ahora es
+// obligatorio; mismo criterio de compatibilidad que obtenerConversacion
+// para los clientes de Nonna Maye anteriores a la migración 007 (única
+// excepción real de negocio_id NULL en clientes).
+export async function getBotPausado(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] getBotPausado: negocioId inválido u omitido — rechazado (fail closed)');
+    return false;
+  }
   try {
+    const incluirNull = await _esNonnaMaye(negocioId);
     const result = await pool.query(
-      'SELECT bot_pausado FROM clientes WHERE telefono = $1',
-      [telefono]
+      'SELECT bot_pausado FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+      [telefono, negocioId.trim(), incluirNull]
     );
     return result.rows[0]?.bot_pausado || false;
   } catch (e) {
@@ -1082,17 +1094,37 @@ export async function actualizarFormaPago(folio, formaPago, negocioId) {
 // de aislamiento, julio 2026). El negocio SIEMPRE viene de la sesión del
 // llamador (req.negocioId) o de la resolución de canal (integraciones_canal),
 // nunca de un valor enviado por el frontend.
-export async function guardarMensaje(telefono, nombre, direccion, texto, negocioId) {
+// origen: 'cliente' | 'bot' | 'humano' | null (desconocido -- nunca se
+// adivina). messageIdExterno: wamid de Meta, solo para entrantes --
+// si Meta reentrega el mismo webhook, el índice único parcial
+// (migración 020) hace que el segundo INSERT no inserte nada; se
+// detecta por ON CONFLICT y se devuelve la fila ya existente en vez
+// de null, para que el llamador pueda seguir su flujo normal sin
+// tratarlo como error.
+export async function guardarMensaje(telefono, nombre, direccion, texto, negocioId, origen = null, messageIdExterno = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] guardarMensaje: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
     return null;
   }
   try {
     const result = await pool.query(`
-      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id)
-      VALUES ($1, $2, $3, $4, $5) RETURNING *
-    `, [telefono, nombre || null, direccion, texto, negocioId.trim()]);
-    return result.rows[0];
+      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id, origen, message_id_externo)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING
+      RETURNING *
+    `, [telefono, nombre || null, direccion, texto, negocioId.trim(), origen || null, messageIdExterno || null]);
+    if (result.rows[0]) return result.rows[0];
+    if (messageIdExterno) {
+      // ON CONFLICT no insertó nada -- ya existía este message_id (Meta
+      // reentregó el webhook). Devolvemos la fila existente, no null,
+      // para que el llamador no lo trate como un fallo de guardado.
+      const existente = await pool.query(`SELECT * FROM mensajes WHERE message_id_externo = $1`, [messageIdExterno]);
+      if (existente.rows[0]) {
+        console.log(`[DB] guardarMensaje: mensaje duplicado ignorado (message_id_externo ya existía)`);
+        return existente.rows[0];
+      }
+    }
+    return null;
   } catch (e) {
     console.error('[DB] Error guardarMensaje:', e.message);
     return null;

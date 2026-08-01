@@ -907,6 +907,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
+      <div id="chats-banner-bot" style="display:none;padding:8px 14px;border-radius:8px;font-size:0.8rem;margin-bottom:10px;"></div>
       <div style="display:flex;gap:14px;height:calc(100vh - 130px);">
         <div id="lista-chats" style="width:240px;flex-shrink:0;">
           <div style="padding:12px 16px;border-bottom:1px solid #f1f0ed;font-size:0.78rem;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.5px;">Conversaciones</div>
@@ -919,9 +920,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;">Tomar control</button>
           </div>
           <div id="chat-mensajes"></div>
+          <div id="chat-error" style="display:none;padding:6px 14px;color:#c0392b;font-size:0.78rem;background:#fdecea;"></div>
           <div id="chat-footer">
             <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2"></textarea>
-            <button onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
+            <button id="btn-chat-enviar" onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
           </div>
         </div>
       </div>
@@ -2047,6 +2049,7 @@ function mostrarTab(tab) {
     if (bnavBadge) { bnavBadge.style.display = 'none'; }
     chatNuevos = 0;
     cargarConversaciones();
+    cargarBannerBotChats();
   }
 }
 
@@ -2578,24 +2581,58 @@ async function cargarConversaciones() {
     </div>`).join('');
 }
 
-function volverAContactos() {
-  document.getElementById('lista-chats').classList.remove('mobile-hidden');
-  document.getElementById('chat-area').classList.add('mobile-hidden');
-  chatAbierto = null;
+async function cargarBannerBotChats() {
+  const banner = document.getElementById('chats-banner-bot');
+  if (!banner || !WHATSAPP_CONFIGURADO || ROL !== 'admin') { if (banner) banner.style.display = 'none'; return; }
+  try {
+    const r = await apiFetch('/api/admin/bot-whatsapp');
+    if (!r.ok) { banner.style.display = 'none'; return; }
+    const { botWhatsappActivo } = await r.json();
+    banner.style.display = '';
+    if (botWhatsappActivo) {
+      banner.style.background = '#dcfce7'; banner.style.color = '#166534';
+      banner.textContent = '🤖 Bot global activo — responde automáticamente salvo en conversaciones pausadas.';
+    } else {
+      banner.style.background = '#f1f5f9'; banner.style.color = '#475569';
+      banner.textContent = '⏸️ Bot global apagado — todos los mensajes requieren respuesta manual desde aquí.';
+    }
+  } catch { banner.style.display = 'none'; }
 }
+
+function volverAContactos() {
+  chatAbierto = null;
+  ajustarLayoutChatMovil();
+}
+
+function ajustarLayoutChatMovil() {
+  const lista = document.getElementById('lista-chats');
+  const area  = document.getElementById('chat-area');
+  if (!lista || !area) return;
+  if (window.innerWidth <= 640) {
+    if (chatAbierto) {
+      lista.classList.add('mobile-hidden');
+      area.classList.remove('mobile-hidden');
+    } else {
+      lista.classList.remove('mobile-hidden');
+      area.classList.add('mobile-hidden');
+    }
+  } else {
+    lista.classList.remove('mobile-hidden');
+    area.classList.remove('mobile-hidden');
+  }
+}
+window.addEventListener('resize', ajustarLayoutChatMovil);
 
 async function abrirConversacion(telefono, nombre) {
   chatAbierto = telefono;
+  mostrarErrorChat(null);
   document.getElementById('chat-header-nombre').textContent = `💬 ${nombre || telefono}`;
   document.getElementById('chat-header-nombre').style.color = '#1a1a1a';
   document.querySelectorAll('#contactos-lista > div').forEach(d => d.style.background = '');
   const el = document.getElementById(`contacto-${telefono}`);
   if (el) el.style.background = '#f0efeb';
   // Mobile: ocultar lista, mostrar chat
-  if (window.innerWidth <= 640) {
-    document.getElementById('lista-chats').classList.add('mobile-hidden');
-    document.getElementById('chat-area').classList.remove('mobile-hidden');
-  }
+  ajustarLayoutChatMovil();
   const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
   renderMensajes(msgs);
   document.getElementById('chat-input').dataset.telefono = telefono;
@@ -2630,6 +2667,13 @@ function escaparHTML(str) {
     .replace(/\n/g, '<br>');
 }
 
+function etiquetaOrigen(m) {
+  if (m.direccion !== 'saliente') return '';
+  if (m.origen === 'bot')    return '<span style="opacity:0.55;">🤖 Bot</span> · ';
+  if (m.origen === 'humano') return '<span style="opacity:0.55;">🧑 Tú</span> · ';
+  return '';
+}
+
 function renderMensajes(msgs) {
   const cont = document.getElementById('chat-mensajes');
   cont.innerHTML = msgs.map(m => {
@@ -2638,7 +2682,7 @@ function renderMensajes(msgs) {
       <div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                   background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
         ${escaparHTML(m.texto)}
-        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${horaCST(m.timestamp)}</div>
+        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(m)}${horaCST(m.timestamp)}</div>
       </div></div>`;
   }).join('');
   cont.scrollTop = cont.scrollHeight;
@@ -2662,7 +2706,7 @@ function recibirMensajeWS(msg) {
     div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                         background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
         ${escaparHTML(msg.texto)}
-        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${horaCST(msg.timestamp)}</div>
+        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(msg)}${horaCST(msg.timestamp)}</div>
       </div>`;
     cont.appendChild(div);
     cont.scrollTop = cont.scrollHeight;
@@ -2670,18 +2714,33 @@ function recibirMensajeWS(msg) {
   if (enChats) cargarConversaciones();
 }
 
+function mostrarErrorChat(texto) {
+  const err = document.getElementById('chat-error');
+  if (!texto) { err.style.display = 'none'; err.textContent = ''; return; }
+  err.textContent = texto;
+  err.style.display = '';
+}
+
 async function enviarDesdeChat() {
   const input    = document.getElementById('chat-input');
+  const boton    = document.getElementById('btn-chat-enviar');
   const telefono = input.dataset.telefono;
   const texto    = input.value.trim();
   if (!telefono || !texto) return;
-  input.value = ''; input.disabled = true;
+  mostrarErrorChat(null);
+  input.disabled = true; boton.disabled = true;
   try {
     const r = await apiFetch('/api/send-message', { method:'POST', body: JSON.stringify({ telefono, mensaje:texto }) });
     const d = await r.json();
-    if (!d.ok) alert('Error al enviar: ' + (d.error || 'desconocido'));
-  } catch { alert('Error de conexión.'); }
-  input.disabled = false; input.focus();
+    if (!d.ok) {
+      mostrarErrorChat('No se pudo enviar: ' + (d.error || 'error desconocido'));
+    } else {
+      input.value = '';
+    }
+  } catch {
+    mostrarErrorChat('Error de conexión. El mensaje no se envió, intenta de nuevo.');
+  }
+  input.disabled = false; boton.disabled = false; input.focus();
 }
 document.getElementById('chat-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarDesdeChat(); }

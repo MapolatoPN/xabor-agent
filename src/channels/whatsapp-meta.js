@@ -278,7 +278,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
           }
           await enviarMensaje(telefono, msg, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         } catch (e) {
           console.error('[Meta WA] Error enviando link por folio:', e.message);
           await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`, credenciales);
@@ -287,7 +287,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
       if (!pedidoDB) {
         await enviarMensaje(telefono, `No encontramos un pedido con el folio ${folio}. Verifica el número o escríbenos para ayudarte.`, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`, negocioId);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', `No encontramos pedido con folio ${folio}.`, negocioId, 'bot');
         return;
       }
     }
@@ -305,7 +305,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         await guardarLinkPago(pedidoPendiente, clip.linkId);
         const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
         await enviarMensaje(telefono, mensajePago, credenciales);
-        await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId);
+        await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId, 'bot');
         console.log(`[Meta WA] Link de pago enviado a ${telefono}`);
       } catch (e) {
         console.error('[Meta WA] Error enviando link pendiente:', e.message);
@@ -331,7 +331,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         const extra = p.estado === 'listo' ? ' ¡Gracias por tu preferencia!' : '';
         const msg = `Tu pedido ${p.folio}${items ? ` (${items})` : ''} ${desc}.${extra}`;
         await enviarMensaje(telefono, msg, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         console.log(`[Meta WA] Estado de pedido enviado a ${telefono}: ${p.folio} → ${p.estado}`);
         return;
       }
@@ -355,7 +355,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           msg = `Aún no tienes puntos Rewards acumulados. ¡Tu próximo pedido los genera automáticamente! 🎁`;
         }
         await enviarMensaje(telefono, msg, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         console.log(`[Meta WA] Puntos Rewards enviados a ${telefono}`);
         return;
       } catch(e) {
@@ -383,7 +383,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       const msgEspera = 'Dame un momento, estoy procesando tu solicitud... 🕐';
       try {
         await enviarMensaje(telefono, msgEspera, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera, negocioId);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msgEspera, negocioId, 'bot');
       } catch (error) {
         // Fallo de Meta (token inválido/expirado, rate limit, caída de la API, etc.)
         // no debe tumbar el proceso — nunca se propaga como unhandled rejection.
@@ -432,7 +432,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           });
           const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
           await enviarMensaje(telefono, confirmMsg, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId, 'bot');
         } catch (e) {
           console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
         }
@@ -487,7 +487,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
             : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
           await enviarMensaje(telefono, msgFactura, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura, negocioId);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura, negocioId, 'bot');
           console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
         }
       } catch (e) {
@@ -498,13 +498,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
 
     await enviarMensaje(telefono, resultado.texto, credenciales);
     console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
-    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId);
+    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId, 'bot');
     if (msgSaliente && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgSaliente });
 
     if (linkPago) {
       const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}`;
       await enviarMensaje(telefono, mensajePago, credenciales);
-      const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago, negocioId);
+      const msgPago = await guardarMensaje(telefono, nombreMeta, 'saliente', mensajePago, negocioId, 'bot');
       if (msgPago && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgPago });
     }
   } catch (error) {
@@ -558,7 +558,7 @@ router.post('/', async (req, res) => {
     // el interruptor global del bot ni la pausa por cliente: guardar el
     // mensaje, actualizar el cliente y emitir el evento para que
     // aparezca en el chat de Xabor y se pueda atender manualmente.
-    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId);
+    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId, 'cliente', messageId);
     if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
     await marcarLeido(messageId, credenciales);
@@ -585,7 +585,7 @@ router.post('/', async (req, res) => {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
       return;
     }
-    const pausado = await getBotPausado(telefono);
+    const pausado = await getBotPausado(telefono, negocioId);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
       return;
@@ -601,8 +601,8 @@ router.post('/', async (req, res) => {
         : 'https://xabor-agent-production.up.railway.app';
       const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
       await enviarMensaje(telefono, msgReg, credenciales);
-      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId);
-      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId, 'cliente');
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId, 'bot');
       console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
       return;
     }
@@ -624,8 +624,8 @@ router.post('/', async (req, res) => {
           msgEntrega = `No tienes pedidos activos asignados en este momento.`;
         }
         await enviarMensaje(telefono, msgEntrega, credenciales);
-        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
-        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega, negocioId);
+        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId, 'cliente');
+        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega, negocioId, 'bot');
         return;
       }
       // Cualquier otro mensaje — mandar link
@@ -634,8 +634,8 @@ router.post('/', async (req, res) => {
         : 'https://xabor-agent-production.up.railway.app';
       const msgLink = `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`;
       await enviarMensaje(telefono, msgLink, credenciales);
-      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId);
-      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink, negocioId);
+      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId, 'cliente');
+      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink, negocioId, 'bot');
       console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
       return;
     }
