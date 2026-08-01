@@ -1721,6 +1721,17 @@ app.delete('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), requ
   res.json({ ok: true });
 });
 
+app.post('/api/admin/menu/productos/:id/duplicar', resolverNegocioSeguro('admin'), requireModulo('menu'), async (req, res) => {
+  try {
+    const copia = await duplicarProducto(req.params.id, req.negocioId);
+    res.json(copia);
+  } catch (e) {
+    if (e.message?.includes('no encontrado')) return res.status(404).json({ error: e.message });
+    console.error('[POST /api/admin/menu/productos/:id/duplicar] Error:', e.message);
+    res.status(500).json({ error: 'Error al duplicar el producto' });
+  }
+});
+
 // ─── Modificadores — endpoints ───────────────────────────────────────────────
 app.get('/api/admin/menu/productos/:id/modificadores', resolverNegocioSeguro('admin'), requireModulo('menu'), async (req, res) => {
   const grupos = await obtenerModificadoresProducto(parseInt(req.params.id), req.negocioId);

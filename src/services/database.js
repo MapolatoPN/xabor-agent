@@ -641,7 +641,7 @@ export async function eliminarCategoria(id, negocioId) {
 // ─── Menú — CRUD productos ────────────────────────────────────────────────────
 export async function crearProducto(datos, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();
-  const { categoria_id, nombre, descripcion, precio, disponible, opciones } = datos;
+  const { categoria_id, nombre, descripcion, precio, disponible, opciones, agotado, destacado } = datos;
 
   // negocio_id se deriva de la categoría padre — nunca se acepta suelto desde datos
   const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [categoria_id]);
@@ -653,10 +653,10 @@ export async function crearProducto(datos, negocioId) {
   }
 
   const { rows } = await pool.query(
-    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2))
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),$8,$9)
      RETURNING *`,
-    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null]
+    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null, agotado===true, destacado===true]
   );
   return rows[0];
 }
@@ -681,6 +681,9 @@ export async function actualizarProducto(id, campos, negocioId) {
   if (campos.precio       !== undefined) { sets.push(`precio=$${sets.length+1}`);       vals.push(campos.precio); }
   if (campos.disponible   !== undefined) { sets.push(`disponible=$${sets.length+1}`);   vals.push(campos.disponible); }
   if (campos.categoria_id !== undefined) { sets.push(`categoria_id=$${sets.length+1}`); vals.push(campos.categoria_id); }
+  if (campos.agotado      !== undefined) { sets.push(`agotado=$${sets.length+1}`);      vals.push(campos.agotado === true); }
+  if (campos.destacado    !== undefined) { sets.push(`destacado=$${sets.length+1}`);    vals.push(campos.destacado === true); }
+  if (campos.orden        !== undefined) { sets.push(`orden=$${sets.length+1}`);        vals.push(campos.orden); }
   if (!sets.length) return;
   vals.push(id, negId);
   await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
@@ -689,6 +692,49 @@ export async function actualizarProducto(id, campos, negocioId) {
 export async function eliminarProducto(id, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();
   await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2', [id, negId]);
+}
+
+// Duplica un producto (Fase 3: acción "duplicar") junto con sus grupos y
+// opciones de modificadores -- copia completa, no solo el registro base,
+// para que un producto con variantes complejas no se tenga que rearmar a
+// mano. El nuevo producto queda "Copia de <nombre>" y disponible=false
+// por defecto: el negocio debe revisarlo/activarlo, nunca aparece
+// automáticamente en el catálogo que ve el bot.
+export async function duplicarProducto(id, negocioId) {
+  const negId = negocioId || await resolverNegocioActualId();
+  const { rows: [original] } = await pool.query(
+    'SELECT * FROM menu_productos WHERE id=$1 AND negocio_id=$2', [id, negId]
+  );
+  if (!original) throw new Error('duplicarProducto: producto no encontrado');
+
+  const { rows: [copia] } = await pool.query(
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado)
+     VALUES ($1,$2,$3,$4,$5,FALSE,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),FALSE,FALSE)
+     RETURNING *`,
+    [negId, original.categoria_id, `Copia de ${original.nombre}`, original.descripcion, original.precio, original.opciones]
+  );
+
+  const { rows: grupos } = await pool.query(
+    'SELECT * FROM menu_modificadores_grupos WHERE producto_id=$1 AND negocio_id=$2 ORDER BY orden, id', [id, negId]
+  );
+  for (const g of grupos) {
+    const { rows: [grupoCopia] } = await pool.query(
+      `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [negId, copia.id, g.nombre, g.requerido, g.minimo, g.maximo, g.orden]
+    );
+    const { rows: opciones } = await pool.query(
+      'SELECT * FROM menu_modificadores_opciones WHERE grupo_id=$1 AND negocio_id=$2 ORDER BY orden, id', [g.id, negId]
+    );
+    for (const o of opciones) {
+      await pool.query(
+        `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [negId, grupoCopia.id, o.nombre, o.precio_extra, o.disponible, o.orden]
+      );
+    }
+  }
+  return copia;
 }
 
 // ─── Push Notifications ───────────────────────────────────────────────────────
