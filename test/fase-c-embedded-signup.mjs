@@ -138,13 +138,20 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND n
       assert.ok(r.body.state);
       stateA = r.body.state;
     });
-    await t('INICIAR', 'doble clic / segundo proceso en paralelo -> 409', async () => {
+    await t('INICIAR', 'doble clic / segundo proceso en paralelo: no bloquea con 409, reemplaza el intento anterior', async () => {
+      // Rediseño (fix "permitir cancelar embedded signup pendiente"): ya
+      // no hay un booleano que bloquee con 409 hasta vencer -- iniciar de
+      // nuevo simplemente reemplaza el intento previo (ver
+      // test/fase-c-signup-pendiente.mjs para la cobertura completa del
+      // mecanismo de reemplazo/cancelación/vencimiento).
       const r = await api(srv.base, rutaIniciar(SEED.negocioA), { cookie: cookieSuperadmin, method: 'POST' });
-      assert.strictEqual(r.status, 409);
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.state);
+      assert.notStrictEqual(r.body.state, stateA); // es un intento nuevo, no el mismo
+      // El state viejo (stateA) ya no es el vigente -- confirmarlo lo
+      // consumiría (uso único) sin necesidad real aquí; se deja que la
+      // suite de signup-pendiente pruebe el rechazo por "reemplazado".
     });
-    // Libera el candado de A cancelando el proceso pendiente (sin code),
-    // para poder iniciar de nuevo más abajo.
-    await api(srv.base, rutaCallback, { method: 'POST', body: { state: stateA } });
 
     await t('CALLBACK', 'sin state -> 400', async () => {
       const r = await api(srv.base, rutaCallback, { method: 'POST', body: { code: 'SIMULAR_EXITO', phoneNumberId: 'X' } });
