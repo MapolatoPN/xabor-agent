@@ -44,6 +44,9 @@
   .badge-pendiente { background:#fef3c7; color:var(--warn); }
   .badge-suspendido { background:#fee2e2; color:var(--danger); }
   .badge-plan { background:#e0e7ff; color:#4338ca; }
+  .badge-no_configurado { background:#f1f5f9; color:#475569; }
+  .badge-pendiente_configuracion { background:#fef3c7; color:var(--warn); }
+  .badge-error { background:#fee2e2; color:var(--danger); }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
   input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
   input[type=search] { width:220px; }
@@ -217,6 +220,12 @@
       <div class="card seccion-detalle">
         <h2>Integraciones</h2>
         <div id="dt-integraciones"></div>
+      </div>
+
+      <div class="card seccion-detalle">
+        <h2>Integraciones de WhatsApp</h2>
+        <div id="dt-wa-integracion"></div>
+        <div class="feedback" id="dt-wa-feedback"></div>
       </div>
 
       <div class="card seccion-detalle">
@@ -419,6 +428,8 @@ async function verDetalleNegocio(id) {
     <div class="fila-lista"><span>${escaparHTML(i.canal)}${i.nombre ? ' — ' + escaparHTML(i.nombre) : ''}</span><span>···${escaparHTML(i.identificador_enmascarado)} · ${i.activo ? 'activa' : 'inactiva'}</span></div>
   `).join('') : '<div class="empty">Sin integraciones configuradas</div>';
 
+  cargarIntegracionWhatsapp();
+
   document.getElementById('dt-auditoria').innerHTML = n.auditoriaReciente.length ? n.auditoriaReciente.map(a => `
     <div class="fila-lista"><span>${a.accion} — ${escaparHTML(a.superadmin_nombre)}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
   `).join('') : '<div class="empty">Sin auditoría todavía</div>';
@@ -471,6 +482,80 @@ async function cambiarModulo(modulo, estado) {
 }
 async function cambiarChecklistItem(clave, valor) {
   await api(`/api/superadmin/negocios/${negocioActualId}/checklist`, { method:'PATCH', body: JSON.stringify({ checklist: { [clave]: valor } }) });
+}
+
+const MENSAJES_ESTADO_WA = {
+  no_configurado: 'Sin configurar todavía. No hay identificadores ni credenciales guardadas.',
+  pendiente_configuracion: 'Configuración incompleta — faltan identificadores o credenciales para poder activarse.',
+  activo: 'Activa. Credenciales configuradas y en uso.',
+  suspendido: 'Suspendida — las credenciales se conservan pero no se pueden usar hasta reactivar.',
+  error: 'En error — revisar configuración.',
+};
+let waIntegracionActual = null;
+
+function enmascararIdentificador(id) {
+  if (!id) return '—';
+  const s = String(id);
+  return s.length > 4 ? '···' + s.slice(-4) : '···';
+}
+
+async function cargarIntegracionWhatsapp() {
+  const cont = document.getElementById('dt-wa-integracion');
+  const fb = document.getElementById('dt-wa-feedback');
+  fb.textContent = '';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp`);
+  if (!r.ok) { cont.innerHTML = '<div class="empty">No se pudo cargar la integración</div>'; return; }
+  const { integracion, estadoModulo } = await r.json();
+  waIntegracionActual = integracion;
+  const estado = integracion?.estado || 'no_configurado';
+  const moduloBloqueado = !estadoModulo || estadoModulo === 'no_contratado' || estadoModulo === 'suspendido';
+
+  cont.innerHTML = `
+    <div class="fila-lista"><span>Estado comercial del módulo</span><span>${badgeEstado(estadoModulo || 'no_contratado')}</span></div>
+    <div class="fila-lista"><span>Estado técnico</span><span>${badgeEstado(estado)}</span></div>
+    <div class="fila-lista"><span>Número visible</span><span>${integracion?.display_phone_number ? escaparHTML(integracion.display_phone_number) : '—'}</span></div>
+    <div class="fila-lista"><span>Phone Number ID</span><span>${enmascararIdentificador(integracion?.identificador)}</span></div>
+    <div class="fila-lista"><span>Conectado desde</span><span>${integracion?.conectado_at ? fechaCorta(integracion.conectado_at) : '—'}</span></div>
+    <div class="fila-lista"><span>Última actualización</span><span>${integracion?.updated_at ? fechaCorta(integracion.updated_at) : '—'}</span></div>
+    <div class="feedback ${estado === 'error' ? 'err' : ''}" style="margin-top:6px;">${MENSAJES_ESTADO_WA[estado] || ''}</div>
+    ${moduloBloqueado ? '<div class="feedback err">Este negocio no tiene el módulo de WhatsApp contratado o está suspendido — no se puede configurar ni activar.</div>' : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <button class="btn secundario" ${moduloBloqueado || estado === 'no_configurado' ? 'disabled' : ''} onclick="marcarPendienteWhatsapp()">Marcar pendiente de configuración</button>
+      <button class="btn secundario" ${estado !== 'activo' ? 'disabled' : ''} onclick="suspenderWhatsapp()">Suspender</button>
+      <button class="btn secundario" ${moduloBloqueado || estado !== 'suspendido' ? 'disabled' : ''} onclick="reactivarWhatsapp()">Reactivar</button>
+      <button class="btn peligro" ${estado === 'no_configurado' ? 'disabled' : ''} onclick="eliminarCredencialesWhatsapp()">Eliminar credenciales</button>
+      <button class="btn secundario" disabled title="Disponible en Fase C (Embedded Signup)">Conectar con Meta — disponible en Fase C</button>
+    </div>
+  `;
+}
+
+async function cambiarEstadoWhatsapp(nuevoEstado) {
+  const fb = document.getElementById('dt-wa-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/estado`, { method:'PATCH', body: JSON.stringify({ estado: nuevoEstado }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al actualizar el estado'; return; }
+  fb.className = 'feedback ok'; fb.textContent = '✓ Estado actualizado';
+  cargarIntegracionWhatsapp();
+}
+function marcarPendienteWhatsapp() { cambiarEstadoWhatsapp('pendiente_configuracion'); }
+function suspenderWhatsapp() {
+  if (!confirm('¿Suspender la integración de WhatsApp? Se conservan las credenciales pero se bloquea su uso de inmediato.')) return;
+  cambiarEstadoWhatsapp('suspendido');
+}
+function reactivarWhatsapp() { cambiarEstadoWhatsapp('activo'); }
+
+async function eliminarCredencialesWhatsapp() {
+  const nombreNegocio = document.getElementById('dt-titulo').textContent;
+  const confirmacion = prompt(`Esta acción borra permanentemente las credenciales de WhatsApp de "${nombreNegocio}". El bot dejará de poder enviar/recibir mensajes hasta reconfigurar. Escribe ELIMINAR para confirmar:`);
+  if (confirmacion !== 'ELIMINAR') return;
+  const fb = document.getElementById('dt-wa-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Eliminando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/credenciales`, { method:'DELETE', body: JSON.stringify({ confirmar: true }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al eliminar credenciales'; return; }
+  fb.className = 'feedback ok'; fb.textContent = '✓ Credenciales eliminadas';
+  cargarIntegracionWhatsapp();
 }
 
 async function cargarAuditoria() {
