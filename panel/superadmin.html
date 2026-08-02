@@ -239,6 +239,12 @@
       </div>
 
       <div class="card seccion-detalle">
+        <h2>Integraciones de Pagos</h2>
+        <div id="dt-pagos-integraciones"></div>
+        <div class="feedback" id="dt-pagos-feedback"></div>
+      </div>
+
+      <div class="card seccion-detalle">
         <h2>Bot de WhatsApp</h2>
         <div id="dt-bot-whatsapp"></div>
         <div class="feedback" id="dt-bot-whatsapp-feedback"></div>
@@ -552,6 +558,7 @@ async function verDetalleNegocio(id) {
   `).join('') : '<div class="empty">Sin integraciones configuradas</div>';
 
   cargarIntegracionWhatsapp();
+  cargarIntegracionesPago();
   cargarBotWhatsapp();
   cargarPlanComercial();
 
@@ -685,6 +692,123 @@ async function completarActivacionWhatsappUI() {
     fb.className = 'feedback err'; fb.textContent = `Activación incompleta — falló: ${motivos.join(' y ')}`;
   }
   cargarIntegracionWhatsapp();
+}
+
+// ── Integraciones de Pagos (arquitectura multiempresa) ──────────────────────
+// Solo Clip y manual_transfer están implementados de verdad -- el resto se
+// muestra como "Próximamente" (nunca se finge una integración inexistente).
+let proveedoresPagoRegistro = null;
+async function cargarIntegracionesPago() {
+  const cont = document.getElementById('dt-pagos-integraciones');
+  const fb = document.getElementById('dt-pagos-feedback');
+  fb.textContent = '';
+  if (!proveedoresPagoRegistro) {
+    const rReg = await api('/api/superadmin/proveedores-pago');
+    if (rReg.ok) proveedoresPagoRegistro = (await rReg.json()).proveedores;
+  }
+  const rInt = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos`);
+  if (!rInt.ok || !proveedoresPagoRegistro) { cont.innerHTML = '<div class="empty">No se pudo cargar las integraciones de pago</div>'; return; }
+  const { integraciones } = await rInt.json();
+
+  cont.innerHTML = proveedoresPagoRegistro.map(p => {
+    const integ = integraciones.find(i => i.proveedor === p.id);
+    if (!p.implementado) {
+      return `<div class="fila-lista"><span>${escaparHTML(p.nombre)}</span><span style="color:#999;">Próximamente</span></div>`;
+    }
+    const estado = integ?.estado || 'no_configurado';
+    const filas = `
+      <div class="fila-lista"><span>${escaparHTML(p.nombre)}${integ?.principal ? ' ⭐ principal' : ''}</span><span>${badgeEstado(estado)}</span></div>
+      ${integ ? `
+        <div class="fila-lista"><span>Ambiente</span><span>${escaparHTML(integ.ambiente || 'sandbox')}</span></div>
+        <div class="fila-lista"><span>Última prueba</span><span>${integ.ultima_prueba_at ? `${fechaCorta(integ.ultima_prueba_at)} — ${integ.ultima_prueba_ok ? '✅ ok' : '❌ falló'}` : '—'}</span></div>
+      ` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px;">
+        <button class="btn secundario" onclick="abrirFormularioPago('${p.id}')">${integ ? 'Reemplazar credenciales' : 'Agregar proveedor'}</button>
+        ${integ ? `<button class="btn secundario" onclick="probarIntegracionPagoUI('${p.id}')">Probar conexión</button>` : ''}
+        ${integ && estado === 'activo' && !integ.principal ? `<button class="btn" onclick="marcarPrincipalUI('${p.id}')">Marcar como principal</button>` : ''}
+        ${integ && estado === 'activo' ? `<button class="btn secundario" onclick="suspenderPagoUI('${p.id}')">Suspender</button>` : ''}
+        ${integ && estado === 'suspendido' ? `<button class="btn secundario" onclick="reactivarPagoUI('${p.id}')">Reactivar</button>` : ''}
+        ${integ ? `<button class="btn peligro" onclick="eliminarIntegracionPagoUI('${p.id}')">Eliminar integración</button>` : ''}
+      </div>
+      <div id="form-pago-${p.id}"></div>
+    `;
+    return filas;
+  }).join('');
+}
+
+function abrirFormularioPago(proveedorId) {
+  const p = proveedoresPagoRegistro.find(x => x.id === proveedorId);
+  const cont = document.getElementById(`form-pago-${proveedorId}`);
+  if (cont.dataset.abierto) { cont.innerHTML = ''; cont.dataset.abierto = ''; return; }
+  cont.dataset.abierto = '1';
+  cont.innerHTML = `
+    <div class="card" style="background:#f7f7f9;margin-bottom:10px;">
+      ${p.camposConfiguracion.map(c => `<input type="text" id="campo-${proveedorId}-${c}" placeholder="${c}" style="margin:4px 0;width:100%;">`).join('')}
+      <label style="font-size:0.78rem;display:block;margin:6px 0;"><input type="checkbox" id="ambiente-prod-${proveedorId}"> Ambiente producción (requiere credenciales completas)</label>
+      <button class="btn" onclick="guardarIntegracionPagoUI('${proveedorId}')">Guardar</button>
+    </div>
+  `;
+}
+
+async function guardarIntegracionPagoUI(proveedorId) {
+  const fb = document.getElementById('dt-pagos-feedback');
+  const p = proveedoresPagoRegistro.find(x => x.id === proveedorId);
+  const credenciales = {};
+  for (const c of p.camposConfiguracion) {
+    credenciales[c] = document.getElementById(`campo-${proveedorId}-${c}`).value.trim();
+  }
+  const ambiente = document.getElementById(`ambiente-prod-${proveedorId}`).checked ? 'produccion' : 'sandbox';
+  fb.className = 'feedback'; fb.textContent = 'Guardando…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}`, { method: 'PUT', body: JSON.stringify({ credenciales, ambiente }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al guardar'; return; }
+  fb.className = 'feedback ok'; fb.textContent = '✓ Credenciales guardadas';
+  cargarIntegracionesPago();
+}
+
+async function probarIntegracionPagoUI(proveedorId) {
+  const fb = document.getElementById('dt-pagos-feedback');
+  fb.className = 'feedback'; fb.textContent = 'Probando conexión…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}/probar`, { method: 'POST' });
+  const body = await r.json().catch(() => ({}));
+  fb.className = `feedback ${body.ok ? 'ok' : 'err'}`;
+  fb.textContent = body.ok ? `✓ ${body.motivo}` : `✗ ${body.motivo || 'Falló la prueba'}`;
+  cargarIntegracionesPago();
+}
+
+async function marcarPrincipalUI(proveedorId) {
+  const fb = document.getElementById('dt-pagos-feedback');
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}/principal`, { method: 'POST' });
+  const body = await r.json().catch(() => ({}));
+  fb.className = `feedback ${r.ok ? 'ok' : 'err'}`;
+  fb.textContent = r.ok ? '✓ Marcado como principal' : (body.error || 'Error');
+  cargarIntegracionesPago();
+}
+
+async function suspenderPagoUI(proveedorId) {
+  if (!confirm('¿Suspender este proveedor de pago? Dejará de poder generar enlaces nuevos.')) return;
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}/suspender`, { method: 'POST' });
+  const fb = document.getElementById('dt-pagos-feedback');
+  fb.className = `feedback ${r.ok ? 'ok' : 'err'}`;
+  fb.textContent = r.ok ? '✓ Suspendido' : 'Error al suspender';
+  cargarIntegracionesPago();
+}
+
+async function reactivarPagoUI(proveedorId) {
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}/reactivar`, { method: 'POST' });
+  const fb = document.getElementById('dt-pagos-feedback');
+  fb.className = `feedback ${r.ok ? 'ok' : 'err'}`;
+  fb.textContent = r.ok ? '✓ Reactivado' : 'Error al reactivar';
+  cargarIntegracionesPago();
+}
+
+async function eliminarIntegracionPagoUI(proveedorId) {
+  if (!confirm('¿Eliminar por completo esta integración de pago? Se borran las credenciales cifradas (no se puede deshacer).')) return;
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/pagos/${proveedorId}`, { method: 'DELETE' });
+  const fb = document.getElementById('dt-pagos-feedback');
+  fb.className = `feedback ${r.ok ? 'ok' : 'err'}`;
+  fb.textContent = r.ok ? '✓ Integración eliminada' : 'Error al eliminar';
+  cargarIntegracionesPago();
 }
 
 // ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──
