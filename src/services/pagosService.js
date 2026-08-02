@@ -1,0 +1,102 @@
+/**
+ * pagosService.js — Generación segura de enlaces de pago (Fase 8/10/11).
+ *
+ * Reemplaza las llamadas directas a crearLinkDePago() (Clip-específico)
+ * por un flujo agnóstico de proveedor: recalcula el total desde la base
+ * de datos (nunca confía en el monto que traiga el llamador), resuelve
+ * el proveedor PRINCIPAL del negocio (nunca asume Clip), y es idempotente
+ * por (negocioId, pedidoId, versionPedido, tipo) -- un doble clic o un
+ * reintento del agente devuelve el MISMO enlace en vez de crear uno
+ * nuevo; si el pedido cambió de monto/modalidad desde el último intento,
+ * el enlace anterior se invalida y se genera uno nuevo.
+ */
+import {
+  obtenerPedidoActivoPorFolio, calcularVersionPedidoHash, obtenerPagoVigente,
+  crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
+  guardarLinkPago,
+} from './database.js';
+import { obtenerProveedorPrincipal, obtenerCredencialesPagoDescifradas } from './integracionesService.js';
+import { obtenerAdaptador } from './paymentProviders.js';
+
+export class SinProveedorPrincipalError extends Error {
+  constructor(negocioId) {
+    super(`No hay proveedor de pago principal activo para el negocio ${negocioId}`);
+    this.code = 'SIN_PROVEEDOR_PRINCIPAL';
+  }
+}
+export class PedidoInvalidoError extends Error {
+  constructor(msg) { super(msg); this.code = 'PEDIDO_INVALIDO'; }
+}
+
+/**
+ * Crea (o reutiliza, si ya hay uno vigente y sin cambios) un enlace de
+ * pago para un pedido. Nunca acepta el total del llamador como fuente de
+ * verdad -- siempre se recalcula desde pedidos_activos.
+ */
+export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idempotencyKey = null, descripcion = null }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearEnlacePago: negocioId requerido');
+  if (typeof pedidoId !== 'string' || !pedidoId.trim()) throw new Error('crearEnlacePago: pedidoId requerido');
+
+  const pedido = await obtenerPedidoActivoPorFolio(pedidoId, negocioId);
+  if (!pedido) throw new PedidoInvalidoError(`Pedido ${pedidoId} no encontrado para este negocio`);
+  const total = Number(pedido.total);
+  if (!Number.isFinite(total) || total <= 0) throw new PedidoInvalidoError(`Pedido ${pedidoId} tiene un total inválido`);
+
+  const versionHash = calcularVersionPedidoHash(pedido);
+
+  // El proveedor PRINCIPAL se resuelve ANTES de revisar idempotencia porque
+  // el tipo de pago depende de él: Clip crea un enlace real ('enlace_pago'),
+  // manual_transfer no crea nada, solo instrucciones a conciliar a mano
+  // ('transferencia') -- sin esto, un negocio con manual_transfer como
+  // principal quedaría registrado con el tipo equivocado y chocaría contra
+  // el índice único de "un pago vigente por pedido+tipo".
+  const principal = await obtenerProveedorPrincipal(negocioId);
+  if (!principal) throw new SinProveedorPrincipalError(negocioId);
+  const adaptador = obtenerAdaptador(principal.proveedor);
+  if (!adaptador) throw new SinProveedorPrincipalError(negocioId);
+  const tipo = adaptador.getCapabilities().createLink ? 'enlace_pago' : 'transferencia';
+
+  // Idempotencia: si ya hay un pago vigente para este pedido (mismo tipo) y
+  // coincide la versión, se reutiliza tal cual (mismo enlace) -- nunca se
+  // genera uno nuevo por un doble clic o un reintento.
+  const vigente = await obtenerPagoVigente(negocioId, pedidoId, tipo);
+  if (vigente && vigente.version_pedido_hash === versionHash && ['pendiente', 'requiere_revision'].includes(vigente.estado)) {
+    return { pagoId: vigente.id, url: vigente.url, reutilizado: true, referenciaExterna: vigente.referencia_externa, estado: vigente.estado };
+  }
+  if (vigente && vigente.version_pedido_hash !== versionHash) {
+    // El pedido cambió desde el último intento (ejemplo del encargo:
+    // domicilio $560 -> recoger $500) -- el enlace anterior ya no es
+    // válido, se invalida explícitamente y nunca se reenvía.
+    await invalidarPagosVigentesDePedido(negocioId, pedidoId, 'pedido modificado antes de completar el pago anterior');
+  }
+
+  const referenciaInterna = `${negocioId.trim()}:${pedidoId}:${versionHash}`;
+  const registro = await crearRegistroPago({
+    negocioId, pedidoFolio: pedidoId, clienteTelefono: pedido.cliente?.telefono || null,
+    proveedor: principal.proveedor, integracionId: principal.id, referenciaInterna,
+    tipo, moneda: 'MXN', monto: total, versionPedidoHash: versionHash,
+    idempotencyKey, createdBy: actor,
+  });
+
+  try {
+    const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
+    const resultado = await adaptador.createPaymentLink({
+      negocioId, pedidoId, total, descripcion: descripcion || `Pedido Xabor #${pedidoId}`,
+      cliente: pedido.cliente || {}, referencia: referenciaInterna, credenciales,
+    });
+    await actualizarPagoCreado(registro.id, {
+      referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
+      estado: resultado.estado || 'pendiente',
+    });
+    // Compatibilidad: mismo campo legacy que ya usa la reconciliación en
+    // background (obtenerPagosPendientesConLink) para negocios que no han
+    // migrado ese job todavía. Solo aplica cuando hay una referencia real
+    // de proveedor (Clip) -- transferencia manual no tiene nada que
+    // reconciliar por esa vía.
+    if (resultado.referenciaExterna) await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
+    return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: resultado.estado || 'pendiente', instrucciones: resultado.instrucciones || null };
+  } catch (e) {
+    await marcarPagoFallido(registro.id, e.code || e.message);
+    throw e;
+  }
+}
