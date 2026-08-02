@@ -21,7 +21,10 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
+import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
+import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -42,7 +45,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import whatsappRouter, { enviarMensaje, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje, enviarDocumento, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -1896,6 +1899,185 @@ app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModu
   res.json({ pausado, botWhatsappActivo });
 });
 
+// ─── Documentos PDF en el chat ────────────────────────────────────────────────
+// Módulo por negocio (chat_documentos_pdf) + validación de pertenencia de la
+// conversación (mismo criterio que /api/conversacion/*) -- el frontend nunca
+// es la fuente de verdad: si el botón se manipula para llamar a estas rutas
+// sin el módulo habilitado, requireModulo responde 403 igual.
+
+app.post('/api/documentos/enviar', requireAuthSeguro, requireModulo('chat_documentos_pdf'),
+  rateLimitMiddleware(req => `doc-enviar:${req.negocioId}`, 20, 60 * 1000),
+  async (req, res) => {
+    const { telefono, filename, base64, caption } = req.body || {};
+    if (typeof telefono !== 'string' || !telefono.trim()) return res.status(400).json({ error: 'telefono requerido' });
+    if (typeof base64 !== 'string' || !base64.trim()) return res.status(400).json({ error: 'base64 requerido' });
+
+    const pertenencia = await obtenerPertenenciaConversacion(telefono, req.negocioId);
+    if (pertenencia === 'ajena') return res.status(403).json({ error: 'La conversación pertenece a otro negocio' });
+
+    let buffer;
+    try {
+      buffer = Buffer.from(base64, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'base64 inválido' });
+    }
+
+    const resultado = await procesarDocumentoSaliente({ negocioId: req.negocioId, buffer, filename });
+    if (!resultado.ok) {
+      const mensajes = { archivo_vacio: 'Archivo vacío', tamano_excedido: 'El archivo excede el tamaño máximo permitido', mime_invalido: 'El archivo no es un PDF válido' };
+      return res.status(400).json({ error: mensajes[resultado.motivo] || 'Archivo inválido' });
+    }
+
+    const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+    if (!credenciales?.accessToken) return res.status(409).json({ error: 'WhatsApp no configurado para este negocio' });
+
+    try {
+      const envio = await enviarDocumento(telefono, buffer, resultado.filename, caption || '', credenciales);
+      const documento = await crearDocumentoSaliente({
+        negocioId: req.negocioId, telefono, filename: resultado.filename, sizeBytes: resultado.sizeBytes,
+        storageKey: resultado.storageKey, caption: caption || null, wamid: envio?.messages?.[0]?.id || null,
+        createdBy: req.usuarioId,
+      });
+      const msg = await guardarMensaje(telefono, null, 'saliente', `📄 ${resultado.filename}`, req.negocioId, 'humano', documento.wamid, 'documento', documento.id);
+      if (msg) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
+      res.json({ ok: true, documento });
+    } catch (e) {
+      console.error('[POST /api/documentos/enviar] Error:', e.message);
+      res.status(502).json({ error: 'No se pudo enviar el documento a WhatsApp' });
+    }
+  }
+);
+
+app.get('/api/documentos/:id', requireAuthSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'El documento pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Documento no encontrado' });
+  const documento = await obtenerDocumento(req.params.id, req.negocioId);
+  res.json(documento);
+});
+
+app.get('/api/documentos/:id/archivo', requireAuthSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+  const documento = await obtenerDocumento(req.params.id, req.negocioId);
+  if (!documento) return res.status(404).json({ error: 'Documento no encontrado' });
+  if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'El documento no está listo todavía' });
+
+  if (driverEsLocal()) {
+    const buffer = await leerArchivo(documento.storage_key);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${sanitizarNombreArchivo(documento.filename)}"`);
+    return res.send(buffer);
+  }
+  const url = await obtenerUrlDescarga(documento.storage_key, { ttlSegundos: 300 });
+  res.redirect(url);
+});
+
+// Borrar un documento: solo admin (operador nunca borra, por especificación).
+app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+  const documento = await obtenerDocumento(req.params.id, req.negocioId);
+  if (!documento) return res.status(404).json({ error: 'Documento no encontrado' });
+  if (documento.storage_key) await eliminarArchivo(documento.storage_key);
+  await eliminarDocumentoRegistro(req.params.id);
+  broadcastNegocio(req.negocioId, { tipo: 'documento_eliminado', documentoId: req.params.id });
+  res.json({ ok: true });
+});
+
+// ─── Cotizaciones ──────────────────────────────────────────────────────────────
+app.get('/api/cotizaciones', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+  const cotizaciones = await listarCotizaciones(req.negocioId, { telefono: req.query.telefono || null });
+  res.json(cotizaciones);
+});
+
+app.get('/api/cotizaciones/:id', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
+  res.json(await obtenerCotizacion(req.params.id, req.negocioId));
+});
+
+app.post('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
+  const { telefono, evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
+  if (typeof telefono !== 'string' || !telefono.trim()) return res.status(400).json({ error: 'telefono requerido' });
+  const pertenencia = await obtenerPertenenciaConversacion(telefono, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'El cliente pertenece a otro negocio' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Al menos un item requerido' });
+  try {
+    const cotizacion = await crearCotizacion({
+      negocioId: req.negocioId, telefono, createdBy: req.usuarioId, evento, vigenciaHasta,
+      anticipoRequerido, notas, terminos, items, impuestosPct,
+    });
+    res.json(cotizacion);
+  } catch (e) {
+    console.error('[POST /api/cotizaciones] Error:', e.message);
+    res.status(400).json({ error: 'No se pudo crear la cotización' });
+  }
+});
+
+app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
+  const { evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
+  try {
+    const cotizacion = await actualizarCotizacion(req.params.id, req.negocioId, { evento, vigenciaHasta, anticipoRequerido, notas, terminos }, items || null, impuestosPct);
+    res.json(cotizacion);
+  } catch (e) {
+    console.error('[PATCH /api/cotizaciones/:id] Error:', e.message);
+    res.status(400).json({ error: 'No se pudo actualizar la cotización' });
+  }
+});
+
+app.get('/api/cotizaciones/:id/pdf', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
+  try {
+    const resultado = await obtenerOGenerarPdfCotizacion(req.params.id, req.negocioId);
+    if (driverEsLocal()) {
+      const buffer = resultado.buffer || await leerArchivo(resultado.storageKey);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${resultado.cotizacion.folio}.pdf"`);
+      return res.send(buffer);
+    }
+    const url = await obtenerUrlDescarga(resultado.storageKey, { ttlSegundos: 300 });
+    res.redirect(url);
+  } catch (e) {
+    console.error('[GET /api/cotizaciones/:id/pdf] Error:', e.message);
+    res.status(500).json({ error: 'No se pudo generar el PDF' });
+  }
+});
+
+app.post('/api/cotizaciones/:id/enviar', requireAuthSeguro, requireModulo('cotizaciones'), requireModulo('chat_documentos_pdf'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
+
+  const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+  if (!credenciales?.accessToken) return res.status(409).json({ error: 'WhatsApp no configurado para este negocio' });
+
+  try {
+    const { cotizacion, buffer, storageKey } = await obtenerOGenerarPdfCotizacion(req.params.id, req.negocioId);
+    const bytesPdf = buffer || await leerArchivo(storageKey);
+    const mensajeTexto = (req.body?.mensaje && String(req.body.mensaje).trim())
+      || 'Hola, te compartimos la cotización solicitada. Quedamos atentos a cualquier ajuste.';
+    const filename = `${cotizacion.folio}.pdf`;
+
+    const envio = await enviarDocumento(cotizacion.telefono, bytesPdf, filename, mensajeTexto, credenciales);
+    const documento = await crearDocumentoSaliente({
+      negocioId: req.negocioId, telefono: cotizacion.telefono, filename, sizeBytes: bytesPdf.length,
+      storageKey: storageKey, caption: mensajeTexto, wamid: envio?.messages?.[0]?.id || null, createdBy: req.usuarioId,
+    });
+    await pool.query('UPDATE documentos SET cotizacion_id = $2 WHERE id = $1', [documento.id, cotizacion.id]);
+    const msg = await guardarMensaje(cotizacion.telefono, null, 'saliente', `📄 ${filename}`, req.negocioId, 'humano', documento.wamid, 'documento', documento.id);
+    if (msg) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
+
+    const actualizada = await marcarCotizacionEnviada(req.params.id);
+    res.json({ ok: true, cotizacion: actualizada, documento });
+  } catch (e) {
+    console.error('[POST /api/cotizaciones/:id/enviar] Error:', e.message);
+    res.status(502).json({ error: 'No se pudo enviar la cotización' });
+  }
+});
+
 // Limpiar sesión
 app.delete('/session/:sessionId', (req, res) => {
   deleteSession(req.params.sessionId);
@@ -2197,7 +2379,10 @@ async function requireSuperadmin(req, res, next) {
   return res.status(401).json({ error: 'No autenticado' });
 }
 
-const MODULOS_VALIDOS_API = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards'];
+const MODULOS_VALIDOS_API = [
+  'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
+  'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
+];
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
 const ESTADOS_NEGOCIO_VALIDOS_API = ['pendiente', 'activo', 'suspendido'];

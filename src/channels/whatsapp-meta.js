@@ -5,11 +5,12 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago } from '../services/clip-api.js';
+import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } from '../services/documentos.js';
 import { getIntegracion } from '../server.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
@@ -185,6 +186,141 @@ export async function enviarImagen(telefono, imageUrl, caption = '', credenciale
     throw new Error(`Meta API (imagen): ${JSON.stringify(err)}`);
   }
   return resp.json();
+}
+
+// ─── Enviar documento PDF via Meta Graph API ─────────────────────────────────
+// A diferencia de enviarImagen (que envía por URL pública), el documento se
+// sube primero como media privada a Meta (2 pasos, igual que la recepción es
+// 2 pasos) -- nunca se expone una URL pública del archivo para que Meta lo
+// "jale"; el archivo viaja directo del storage privado de Xabor a Meta.
+//
+// META_GRAPH_BASE_URL: solo para las pruebas de documentos (permite apuntar
+// a un servidor HTTP local que simula la Graph API en vez de la real).
+// Ausente en producción -- el default es exactamente el mismo host de
+// siempre. No se usa en enviarMensaje/enviarImagen/marcarLeido (funciones
+// preexistentes, sin tocar).
+const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com';
+
+async function subirMediaAMeta(buffer, filename, credenciales) {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('file', new Blob([buffer], { type: 'application/pdf' }), filename);
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/media`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${credenciales.accessToken}` },
+    body: form,
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (subir media): ${JSON.stringify(err)}`);
+  }
+  const data = await resp.json();
+  return data.id;
+}
+
+export async function enviarDocumento(telefono, buffer, filename, caption = '', credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarDocumento sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const mediaId = await subirMediaAMeta(buffer, filename, credenciales);
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${credenciales.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: telefono,
+      type: 'document',
+      document: { id: mediaId, filename, caption },
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (documento): ${JSON.stringify(err)}`);
+  }
+  return resp.json();
+}
+
+// ─── Descargar media entrante (2 pasos: resolver URL, luego descargar) ───────
+// El token usado en AMBOS pasos es el del propio negocio (credenciales ya
+// resueltas por phone_number_id del webhook) -- nunca un token de otro
+// negocio ni una variable de entorno global.
+export async function descargarMediaDeMeta(mediaId, credenciales) {
+  if (!credenciales?.accessToken) throw new Error('descargarMediaDeMeta: credenciales requeridas');
+  const metaResp = await fetch(`${META_GRAPH_BASE_URL}/v20.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${credenciales.accessToken}` },
+  });
+  if (!metaResp.ok) throw new Error(`Meta API (resolver media): HTTP ${metaResp.status}`);
+  const meta = await metaResp.json();
+  const fileResp = await fetch(meta.url, { headers: { Authorization: `Bearer ${credenciales.accessToken}` } });
+  if (!fileResp.ok) throw new Error(`Meta API (descargar media): HTTP ${fileResp.status}`);
+  const arrayBuffer = await fileResp.arrayBuffer();
+  return { buffer: Buffer.from(arrayBuffer), mimeType: meta.mime_type, sizeBytes: meta.file_size };
+}
+
+// ─── Documento entrante ───────────────────────────────────────────────────────
+// Aditivo: no toca ni reordena el manejo de mensajes de texto. Se llama
+// desde el webhook SOLO cuando message.type === 'document'.
+//
+// Orden (igual espíritu que el gate de atención automática: guardar
+// primero, después evaluar/actuar):
+//   1) resolver negocio + validar integración        (ya hecho por el caller)
+//   2) validar chat_documentos_pdf habilitado para el negocio
+//   3) leer media_id/filename/caption/mime_type
+//   4) aceptar inicialmente solo application/pdf (mime declarado por Meta;
+//      el MIME real se revalida por magic bytes en documentos.js tras la
+//      descarga -- este primer filtro solo evita descargar basura obvia)
+//   5) guardar mensaje + documento en estado 'pendiente'
+//   6) broadcast inmediato (estado pendiente)
+//   7) descargar de Meta con el token del propio negocio
+//   8) validar MIME real + tamaño -> guardar en almacenamiento privado
+//   9) estado 'listo' (o 'error') + segundo broadcast con la tarjeta final
+async function manejarDocumentoEntrante(message, negocioId, nombreMeta) {
+  const habilitado = await moduloHabilitado(negocioId, 'chat_documentos_pdf');
+  if (!habilitado) {
+    console.log(`[Meta WA] Documento recibido pero chat_documentos_pdf no está habilitado para el negocio ${negocioId} — descartado`);
+    return;
+  }
+
+  const telefono   = message.from;
+  const mediaId    = message.document?.id;
+  const filename   = message.document?.filename || 'documento.pdf';
+  const caption    = message.document?.caption || null;
+  const mimeType   = message.document?.mime_type || '';
+  const wamid      = message.id;
+
+  if (!mediaId || mimeType !== 'application/pdf') {
+    console.log(`[Meta WA] Documento de tipo no soportado (${mimeType || 'desconocido'}) para negocio ${negocioId} — descartado`);
+    return;
+  }
+
+  if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
+
+  const documento = await crearRegistroDocumentoEntrante({ negocioId, telefono, filename, caption, wamid });
+  const msg = await guardarMensaje(telefono, nombreMeta, 'entrante', `📄 ${filename}`, negocioId, 'cliente', wamid, 'documento', documento.id);
+  if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
+
+  try {
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+    if (!credenciales?.accessToken) {
+      await marcarDocumentoError(documento.id, 'sin_credenciales');
+      if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: false, motivo: 'sin_credenciales' });
+      return;
+    }
+    const { buffer } = await descargarMediaDeMeta(mediaId, credenciales);
+    const resultado = await procesarDocumentoEntranteDescargado(documento.id, negocioId, buffer);
+    if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: resultado.ok, motivo: resultado.motivo });
+  } catch (e) {
+    console.error(`[Meta WA] Error descargando documento del negocio ${negocioId}:`, e.message);
+    await marcarDocumentoError(documento.id, 'error_descarga');
+    if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: false, motivo: 'error_descarga' });
+  }
 }
 
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
@@ -523,7 +659,9 @@ router.post('/', async (req, res) => {
 
     const value   = body.entry?.[0]?.changes?.[0]?.value;
     const message = value?.messages?.[0];
-    if (!message || message.type !== 'text') return;
+    // 'document' se acepta además de 'text' (aditivo -- cualquier otro tipo
+    // sigue descartándose exactamente igual que antes).
+    if (!message || (message.type !== 'text' && message.type !== 'document')) return;
 
     // negocioId (Incidente P0): se resuelve EXCLUSIVAMENTE contra
     // integraciones_canal usando el phone_number_id que manda Meta en el
@@ -540,6 +678,11 @@ router.post('/', async (req, res) => {
       return;
     }
     const negocioId = integracion.negocioId;
+
+    if (message.type === 'document') {
+      await manejarDocumentoEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
+      return;
+    }
 
     const telefono   = message.from;
     const texto      = message.text.body;

@@ -1101,18 +1101,18 @@ export async function actualizarFormaPago(folio, formaPago, negocioId) {
 // detecta por ON CONFLICT y se devuelve la fila ya existente en vez
 // de null, para que el llamador pueda seguir su flujo normal sin
 // tratarlo como error.
-export async function guardarMensaje(telefono, nombre, direccion, texto, negocioId, origen = null, messageIdExterno = null) {
+export async function guardarMensaje(telefono, nombre, direccion, texto, negocioId, origen = null, messageIdExterno = null, tipo = 'texto', documentoId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] guardarMensaje: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
     return null;
   }
   try {
     const result = await pool.query(`
-      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id, origen, message_id_externo)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id, origen, message_id_externo, tipo, documento_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       ON CONFLICT (message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING
       RETURNING *
-    `, [telefono, nombre || null, direccion, texto, negocioId.trim(), origen || null, messageIdExterno || null]);
+    `, [telefono, nombre || null, direccion, texto, negocioId.trim(), origen || null, messageIdExterno || null, tipo, documentoId]);
     if (result.rows[0]) return result.rows[0];
     if (messageIdExterno) {
       // ON CONFLICT no insertó nada -- ya existía este message_id (Meta
@@ -1151,9 +1151,12 @@ export async function obtenerConversacion(telefono, negocioId) {
   try {
     const incluirNull = await _esNonnaMaye(negocioId);
     const result = await pool.query(`
-      SELECT * FROM mensajes
-      WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))
-      ORDER BY timestamp ASC
+      SELECT m.*, d.id AS documento_id_real, d.filename AS documento_filename, d.size_bytes AS documento_size_bytes,
+             d.estado AS documento_estado, d.caption AS documento_caption
+      FROM mensajes m
+      LEFT JOIN documentos d ON d.id = m.documento_id
+      WHERE m.telefono = $1 AND (m.negocio_id = $2 OR ($3::boolean AND m.negocio_id IS NULL))
+      ORDER BY m.timestamp ASC
     `, [telefono, negocioId, incluirNull]);
     return result.rows;
   } catch (e) {
@@ -1176,6 +1179,255 @@ export async function obtenerPertenenciaConversacion(telefono, negocioId) {
       OR EXISTS (SELECT 1 FROM clientes WHERE telefono = $1) AS existe
   `, [telefono, negocioId.trim(), incluirNull]);
   return rows[0]?.propia ? 'propia' : (rows[0]?.existe ? 'ajena' : 'inexistente');
+}
+
+// ─── Documentos PDF en el chat ───────────────────────────────────────────────
+// Mismo criterio de pertenencia que obtenerPertenenciaConversacion: nunca se
+// confía en negocioId enviado por el frontend para decidir qué documento es
+// visible -- siempre se resuelve contra la fila real en `documentos`.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function obtenerPertenenciaDocumento(documentoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return 'inexistente';
+  if (typeof documentoId !== 'string' || !UUID_RE.test(documentoId)) return 'inexistente';
+  const { rows } = await pool.query(
+    `SELECT negocio_id FROM documentos WHERE id = $1`,
+    [documentoId]
+  );
+  if (!rows[0]) return 'inexistente';
+  return rows[0].negocio_id === negocioId.trim() ? 'propia' : 'ajena';
+}
+
+export async function obtenerDocumento(documentoId, negocioId) {
+  const pertenencia = await obtenerPertenenciaDocumento(documentoId, negocioId);
+  if (pertenencia !== 'propia') return null;
+  const { rows } = await pool.query(`SELECT * FROM documentos WHERE id = $1`, [documentoId]);
+  return rows[0] || null;
+}
+
+// Se llama ANTES de cualquier descarga/red (principio ya usado en el gate de
+// atención automática: guardar primero). Dedup por wamid igual que
+// guardarMensaje -- una reentrega del mismo webhook de Meta devuelve la fila
+// existente en vez de duplicar.
+export async function crearDocumentoPendiente({ negocioId, telefono, direccion, origen = null, filename, mimeType = 'application/pdf', caption = null, wamid = null, createdBy = null }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearDocumentoPendiente: negocioId requerido');
+  const result = await pool.query(`
+    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, caption, wamid, created_by)
+    VALUES ($1,$2,$3,$4,'pendiente',$5,$6,$7,$8,$9)
+    ON CONFLICT (wamid) WHERE wamid IS NOT NULL DO NOTHING
+    RETURNING *
+  `, [negocioId.trim(), telefono, direccion, origen, filename, mimeType, caption, wamid, createdBy]);
+  if (result.rows[0]) return result.rows[0];
+  if (wamid) {
+    const existente = await pool.query(`SELECT * FROM documentos WHERE wamid = $1`, [wamid]);
+    if (existente.rows[0]) return existente.rows[0];
+  }
+  throw new Error('crearDocumentoPendiente: no se pudo insertar ni recuperar la fila existente');
+}
+
+// Documento saliente: a diferencia del entrante (que se crea 'pendiente'
+// antes de descargar), el saliente ya tiene el archivo validado y subido a
+// Meta antes de registrarse -- se crea directamente en 'listo'.
+export async function crearDocumentoSaliente({ negocioId, telefono, filename, mimeType = 'application/pdf', sizeBytes, storageKey, caption = null, wamid = null, createdBy = null }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearDocumentoSaliente: negocioId requerido');
+  const { rows } = await pool.query(`
+    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, size_bytes, storage_key, caption, wamid, created_by)
+    VALUES ($1,$2,'saliente','humano','listo',$3,$4,$5,$6,$7,$8,$9)
+    RETURNING *
+  `, [negocioId.trim(), telefono, filename, mimeType, sizeBytes, storageKey, caption, wamid, createdBy]);
+  return rows[0];
+}
+
+export async function marcarDocumentoListo(documentoId, { sizeBytes, storageKey }) {
+  await pool.query(
+    `UPDATE documentos SET estado = 'listo', size_bytes = $2, storage_key = $3 WHERE id = $1`,
+    [documentoId, sizeBytes, storageKey]
+  );
+}
+
+export async function marcarDocumentoError(documentoId, detalle) {
+  await pool.query(
+    `UPDATE documentos SET estado = 'error', error_detalle = $2 WHERE id = $1`,
+    [documentoId, detalle]
+  );
+}
+
+export async function vincularDocumentoACotizacion(documentoId, cotizacionId) {
+  await pool.query(`UPDATE documentos SET cotizacion_id = $2 WHERE id = $1`, [documentoId, cotizacionId]);
+}
+
+export async function eliminarDocumentoRegistro(documentoId) {
+  await pool.query(`DELETE FROM documentos WHERE id = $1`, [documentoId]);
+}
+
+// ─── Cotizaciones ────────────────────────────────────────────────────────────
+export async function obtenerPertenenciaCotizacion(cotizacionId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return 'inexistente';
+  if (typeof cotizacionId !== 'string' || !UUID_RE.test(cotizacionId)) return 'inexistente';
+  const { rows } = await pool.query(`SELECT negocio_id FROM cotizaciones WHERE id = $1`, [cotizacionId]);
+  if (!rows[0]) return 'inexistente';
+  return rows[0].negocio_id === negocioId.trim() ? 'propia' : 'ajena';
+}
+
+async function _obtenerItemsCotizacion(client, cotizacionId) {
+  const { rows } = await client.query(
+    `SELECT id, tipo, descripcion, cantidad, precio_unitario, descuento, orden
+     FROM cotizacion_items WHERE cotizacion_id = $1 ORDER BY orden, id`,
+    [cotizacionId]
+  );
+  return rows;
+}
+
+// Acepta tanto items en forma de fila de DB (precio_unitario) como items tal
+// como llegan del body de la API (precioUnitario) -- ambas formas conviven
+// según el llamador (crearCotizacion recibe la forma de API; actualizarCotizacion
+// puede recibir cualquiera de las dos cuando reusa actual.items).
+function _precioUnitario(it) { return Number(it.precio_unitario ?? it.precioUnitario ?? 0); }
+
+function _calcularTotales(items, { impuestosPct = 0 } = {}) {
+  const subtotal = items.reduce((acc, it) => acc + (Number(it.cantidad) * _precioUnitario(it) - Number(it.descuento || 0)), 0);
+  const descuentos = items.reduce((acc, it) => acc + Number(it.descuento || 0), 0);
+  const impuestos = Math.round(subtotal * (Number(impuestosPct) / 100) * 100) / 100;
+  const total = Math.round((subtotal + impuestos) * 100) / 100;
+  return { subtotal: Math.round(subtotal * 100) / 100, impuestos, descuentos, total };
+}
+
+export async function obtenerCotizacion(cotizacionId, negocioId) {
+  const pertenencia = await obtenerPertenenciaCotizacion(cotizacionId, negocioId);
+  if (pertenencia !== 'propia') return null;
+  const { rows } = await pool.query(`SELECT * FROM cotizaciones WHERE id = $1`, [cotizacionId]);
+  if (!rows[0]) return null;
+  const items = await _obtenerItemsCotizacion(pool, cotizacionId);
+  return { ...rows[0], items };
+}
+
+export async function listarCotizaciones(negocioId, { telefono = null } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM cotizaciones WHERE negocio_id = $1 AND ($2::varchar IS NULL OR telefono = $2)
+     ORDER BY created_at DESC`,
+    [negocioId.trim(), telefono]
+  );
+  return rows;
+}
+
+// Folio secuencial POR NEGOCIO (nunca global) -- reintenta ante una
+// colisión de UNIQUE(negocio_id, folio) en vez de asumir concurrencia cero;
+// las cotizaciones son un evento de baja frecuencia (creadas manualmente por
+// un administrador), así que 3 reintentos con un COUNT fresco es suficiente
+// sin necesitar una secuencia dedicada por negocio.
+export async function crearCotizacion({ negocioId, telefono, createdBy, evento = {}, vigenciaHasta = null, anticipoRequerido = null, notas = null, terminos = null, items = [], impuestosPct = 0 }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearCotizacion: negocioId requerido');
+  if (!Array.isArray(items) || items.length === 0) throw new Error('crearCotizacion: al menos un item requerido');
+  const totales = _calcularTotales(items, { impuestosPct });
+  if (!Number.isFinite(totales.total)) throw new Error('crearCotizacion: totales inválidos (revisar cantidad/precioUnitario de los items)');
+
+  for (let intento = 0; intento < 3; intento++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // MAX del sufijo numérico (no COUNT): un COUNT colisiona en cuanto una
+      // cotización se borra o el conteo no refleja el folio más alto usado
+      // alguna vez -- MAX sobre el número real ya asignado es monótono
+      // incluso con huecos.
+      const { rows: maximo } = await client.query(
+        `SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM 5) AS INTEGER)), 0)::int AS n
+         FROM cotizaciones WHERE negocio_id = $1 AND folio ~ '^COT-[0-9]+$'`,
+        [negocioId.trim()]
+      );
+      const folio = `COT-${String(maximo[0].n + 1).padStart(4, '0')}`;
+      const { rows } = await client.query(`
+        INSERT INTO cotizaciones (
+          negocio_id, telefono, folio, evento_nombre, fecha_evento, lugar, cantidad_personas,
+          vigencia_hasta, subtotal, impuestos, descuentos, total, anticipo_requerido, notas, terminos, created_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        RETURNING *
+      `, [
+        negocioId.trim(), telefono, folio, evento.nombre || null, evento.fecha || null, evento.lugar || null,
+        evento.cantidadPersonas || null, vigenciaHasta, totales.subtotal, totales.impuestos, totales.descuentos,
+        totales.total, anticipoRequerido, notas, terminos, createdBy,
+      ]);
+      const cotizacion = rows[0];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        await client.query(`
+          INSERT INTO cotizacion_items (cotizacion_id, tipo, descripcion, cantidad, precio_unitario, descuento, orden)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `, [cotizacion.id, it.tipo, it.descripcion, it.cantidad, it.precioUnitario, it.descuento || 0, i]);
+      }
+      await client.query('COMMIT');
+      return { ...cotizacion, items: await _obtenerItemsCotizacion(pool, cotizacion.id) };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      if (e.code === '23505' && intento < 2) continue; // folio duplicado -- reintentar con conteo fresco
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+// Edición = nueva versión: el estado ANTERIOR completo (cotización + items)
+// se guarda en cotizaciones_historial antes de mutar la fila viva -- nunca se
+// sobrescribe sin conservar el snapshot previo.
+export async function actualizarCotizacion(cotizacionId, negocioId, cambios = {}, items = null, impuestosPct = 0) {
+  const actual = await obtenerCotizacion(cotizacionId, negocioId);
+  if (!actual) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO cotizaciones_historial (cotizacion_id, version, snapshot_json, pdf_storage_key)
+       VALUES ($1,$2,$3,$4)`,
+      [cotizacionId, actual.version, JSON.stringify(actual), actual.pdf_storage_key]
+    );
+    const itemsFinal = items || actual.items;
+    const totales = _calcularTotales(itemsFinal, { impuestosPct });
+    if (items) {
+      await client.query(`DELETE FROM cotizacion_items WHERE cotizacion_id = $1`, [cotizacionId]);
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        await client.query(`
+          INSERT INTO cotizacion_items (cotizacion_id, tipo, descripcion, cantidad, precio_unitario, descuento, orden)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `, [cotizacionId, it.tipo, it.descripcion, it.cantidad, it.precioUnitario, it.descuento || 0, i]);
+      }
+    }
+    const { rows } = await client.query(`
+      UPDATE cotizaciones SET
+        version = version + 1, estado = 'modificada', pdf_storage_key = NULL,
+        evento_nombre = COALESCE($2, evento_nombre), fecha_evento = COALESCE($3, fecha_evento),
+        lugar = COALESCE($4, lugar), cantidad_personas = COALESCE($5, cantidad_personas),
+        vigencia_hasta = COALESCE($6, vigencia_hasta), anticipo_requerido = COALESCE($7, anticipo_requerido),
+        notas = COALESCE($8, notas), terminos = COALESCE($9, terminos),
+        subtotal = $10, impuestos = $11, descuentos = $12, total = $13
+      WHERE id = $1
+      RETURNING *
+    `, [
+      cotizacionId, cambios.evento?.nombre, cambios.evento?.fecha, cambios.evento?.lugar, cambios.evento?.cantidadPersonas,
+      cambios.vigenciaHasta, cambios.anticipoRequerido, cambios.notas, cambios.terminos,
+      totales.subtotal, totales.impuestos, totales.descuentos, totales.total,
+    ]);
+    await client.query('COMMIT');
+    return { ...rows[0], items: await _obtenerItemsCotizacion(pool, cotizacionId) };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function guardarPdfCotizacion(cotizacionId, storageKey) {
+  await pool.query(`UPDATE cotizaciones SET pdf_storage_key = $2 WHERE id = $1`, [cotizacionId, storageKey]);
+}
+
+export async function marcarCotizacionEnviada(cotizacionId) {
+  const { rows } = await pool.query(
+    `UPDATE cotizaciones SET estado = 'enviada', sent_at = NOW() WHERE id = $1 RETURNING *`,
+    [cotizacionId]
+  );
+  return rows[0] || null;
 }
 
 export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
@@ -2549,7 +2801,10 @@ export async function obtenerDestinatariosCampana(segmento, negocioId) {
 // opera deliberadamente sobre cualquier negocio -- ese es el propósito de
 // este módulo, no un descuido de aislamiento.
 
-const MODULOS_VALIDOS = ['pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards'];
+const MODULOS_VALIDOS = [
+  'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
+  'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
+];
 // Incluye tanto el vocabulario heredado (usado por pos/usuarios/caja/menu/
 // impresion/whatsapp/voz/rappi/facturacion) como el vocabulario canónico
 // aprobado para Rewards (pendiente_configuracion, no_contratado) -- ambos

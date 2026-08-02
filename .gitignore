@@ -11,6 +11,7 @@ certs/
 *.p12
 *.pfx
 storage/cfdi/
+storage/documentos/
 
 # Herramientas locales y archivos sensibles SAT
 export-certs.bat
