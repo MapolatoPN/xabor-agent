@@ -193,6 +193,13 @@ export function setupVoiceWebSocket(wssVoice) {
           let textoExtra = '';
           if (resultado.orden) {
             resultado.orden.canal = 'voz';
+            // negocioId (Incidente P0, mismo patrón que whatsapp-meta.js):
+            // ya está resuelto en el scope de este handler (ver arriba),
+            // pero nunca se copiaba a resultado.orden -- registrarPedido()
+            // ya no admite ningún respaldo, así que sin esta línea el
+            // pedido se rechazaría (TENANT_CONTEXT_REQUIRED) en vez de
+            // terminar silenciosamente en el negocio equivocado.
+            resultado.orden.negocioId = negocioId;
             const pedido = registrarPedido(resultado.orden, 'voz');
 
             if (resultado.orden.programado_para) {
@@ -216,7 +223,7 @@ export function setupVoiceWebSocket(wssVoice) {
               textoExtra = `Tu número de folio es ${folioVoz}. Repito: ${folioVoz}. Mándanos ese folio por WhatsApp al mismo número y te enviamos el enlace de pago. ¿Lo anotaste?`;
               folioInfo = { texto: `Tu folio es ${folioVoz}. ¿Lo tienes anotado?` };
               if (fromNum) {
-                await setPagoPendiente(fromNum, pedido.id);
+                await setPagoPendiente(fromNum, pedido.id, negocioId);
                 console.log(`[Voz WS] Pago pendiente para ${fromNum} — pedido ${pedido.id}`);
               }
             }

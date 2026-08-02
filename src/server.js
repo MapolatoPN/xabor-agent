@@ -1017,16 +1017,20 @@ app.post('/webhook/clip', async (req, res) => {
     const ref    = evento?.me_reference_id;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
 
-    // Pago completado — persistir en BD y notificar al panel
+    // Pago completado — persistir en BD y notificar al panel.
+    // negocioId se resuelve del pedido en memoria (única fuente confiable
+    // aquí, el webhook no trae ninguna sesión) ANTES de confirmar el pago,
+    // para que confirmarPagoPedido pueda verificar que el folio realmente
+    // pertenece a ese negocio (Incidente P0, defensa en profundidad).
     if (status === 'COMPLETED' && evento?.resource === 'CHECKOUT') {
-      await confirmarPagoPedido(ref);
       const pedido = obtenerPedidoPorId(ref);
       if (pedido?.negocioId) {
+        await confirmarPagoPedido(ref, pedido.negocioId);
         broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
+        console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
       } else {
-        console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — broadcast omitido`);
+        console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — se omite confirmación y broadcast (fail closed)`);
       }
-      console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);
@@ -1583,8 +1587,8 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('po
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   // Actualizar en memoria si el pedido sigue activo
   const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
-  const p = obtenerPedidoPorId(folio);
-  if (p && p.negocioId === req.negocioId) p.forma_pago = forma_pago;
+  const p = obtenerPedidoPorId(folio, req.negocioId);
+  if (p) p.forma_pago = forma_pago;
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   res.json({ ok: true });
 });
@@ -3162,7 +3166,7 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
   if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
   const asignado = await asignarRepartidor(folio, req.repartidor.id, req.repartidor.nombre, req.repartidor.negocio_id);
   if (!asignado) return res.status(409).json({ error: 'Este pedido ya fue tomado por otro repartidor' });
-  const pedido = obtenerPedidoPorId(folio);
+  const pedido = obtenerPedidoPorId(folio, req.repartidor.negocio_id);
   if (pedido?.negocioId) {
     broadcastNegocio(pedido.negocioId, { tipo: 'repartidor_asignado', folio, repartidor: req.repartidor.nombre });
   } else {
@@ -3731,7 +3735,8 @@ app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), (req, res) =>
     costo_envio: 60,
     descuento: 0,
     total: 544,
-    canal: 'test'
+    canal: 'test',
+    negocioId: req.negocioId
   };
   const pedido = registrarPedido(ordenPrueba, 'test');
   emitirPedido(pedido);
@@ -3936,22 +3941,22 @@ async function sincronizarRappi() {
 
 // ─── Reconciliación de pagos Clip ─────────────────────────────────────────────
 // Revisa cada 5 min si algún pago con enlace ya fue completado (por si el webhook falló)
-// negocioId (Incidente P0): job programado sin request/sesión, se deriva
-// buscando el pedido por folio, mismo criterio que /webhook/clip arriba.
+// negocioId (Incidente P0): obtenerPagosPendientesConLink ya trae
+// negocio_id de la propia tabla (nunca del webhook ni de una sesión) --
+// se usa ESE para consultar Clip con las credenciales de ESE negocio
+// (nunca una cuenta global) y para verificar dueño al confirmar el pago.
 async function reconciliarPagosPendientes() {
-  if (!process.env.CLIP_API_KEY || !process.env.CLIP_API_SECRET) return;
   try {
     const pendientes = await obtenerPagosPendientesConLink();
-    for (const { folio, clip_link_id } of pendientes) {
-      const data = await consultarEstadoPago(clip_link_id);
+    for (const { folio, negocio_id, clip_link_id } of pendientes) {
+      if (!negocio_id) {
+        console.warn(`[Clip Reconciliación] ${folio} sin negocio_id resuelto — omitido (fail closed)`);
+        continue;
+      }
+      const data = await consultarEstadoPago(clip_link_id, negocio_id);
       if (data?.resource_status === 'COMPLETED' && data?.resource === 'CHECKOUT') {
-        await confirmarPagoPedido(folio);
-        const pedido = obtenerPedidoPorId(folio);
-        if (pedido?.negocioId) {
-          broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
-        } else {
-          console.warn(`[Clip Reconciliación] pago_confirmado: no se pudo resolver negocioId para ${folio} — broadcast omitido`);
-        }
+        await confirmarPagoPedido(folio, negocio_id);
+        broadcastNegocio(negocio_id, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
         console.log(`[Clip Reconciliación] ✅ Pago confirmado automáticamente: ${folio}`);
       }
     }

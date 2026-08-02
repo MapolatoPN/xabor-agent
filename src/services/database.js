@@ -911,24 +911,45 @@ export async function getBotPausado(telefono, negocioId) {
   }
 }
 
-// ─── Link de pago pendiente (pedidos por voz) ────────────────────────────────
-export async function setPagoPendiente(telefono, pedidoId) {
+// ─── Link de pago pendiente (pedidos por voz/WhatsApp) ───────────────────────
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0, causa raíz confirmada
+// del enlace de pago de Nonna Maye enviado a un cliente de Alora). Mismo
+// patrón que setBotPausado/obtenerCliente: clientes.telefono sigue siendo
+// la única PK real (global), así que sin este chequeo de dueño cualquier
+// negocio podía leer o pisar el "pago pendiente" del cliente de OTRO
+// negocio con solo compartir número de teléfono real.
+export async function setPagoPendiente(telefono, pedidoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] setPagoPendiente: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
-      INSERT INTO clientes (telefono, pedido_pago_pendiente)
-      VALUES ($1, $2)
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+    const { rowCount } = await pool.query(`
+      INSERT INTO clientes (telefono, pedido_pago_pendiente, negocio_id)
+      VALUES ($1, $2, $3)
       ON CONFLICT (telefono) DO UPDATE SET pedido_pago_pendiente = $2
-    `, [telefono, pedidoId]);
+        WHERE clientes.negocio_id = $3 OR ($4::boolean AND clientes.negocio_id IS NULL)
+    `, [telefono, pedidoId, negocioId, incluirNull]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error setPagoPendiente:', e.message);
+    return false;
   }
 }
 
-export async function getPagoPendiente(telefono) {
+export async function getPagoPendiente(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] getPagoPendiente: negocioId inválido u omitido — rechazado, sin consulta global');
+    return null;
+  }
   try {
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
     const result = await pool.query(
-      'SELECT pedido_pago_pendiente FROM clientes WHERE telefono = $1',
-      [telefono]
+      'SELECT pedido_pago_pendiente FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+      [telefono, negocioId, incluirNull]
     );
     return result.rows[0]?.pedido_pago_pendiente || null;
   } catch (e) {
@@ -937,14 +958,22 @@ export async function getPagoPendiente(telefono) {
   }
 }
 
-export async function clearPagoPendiente(telefono) {
+export async function clearPagoPendiente(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] clearPagoPendiente: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
   try {
-    await pool.query(
-      'UPDATE clientes SET pedido_pago_pendiente = NULL WHERE telefono = $1',
-      [telefono]
+    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
+    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
+    const { rowCount } = await pool.query(
+      'UPDATE clientes SET pedido_pago_pendiente = NULL WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
+      [telefono, negocioId, incluirNull]
     );
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error clearPagoPendiente:', e.message);
+    return false;
   }
 }
 
@@ -1325,24 +1354,37 @@ export async function obtenerMaxFolioNum() {
   }
 }
 
-// Guarda el Clip payment_request_id en el pedido para reconciliación
-export async function guardarLinkPago(folio, clipLinkId) {
+// Guarda el Clip payment_request_id en el pedido para reconciliación.
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0): el llamador
+// siempre conoce el negocio en este punto (viene de la misma conversación
+// que generó el link), así que no hay razón para permitir escribir en el
+// folio de otro negocio (folios son secuenciales y adivinables).
+export async function guardarLinkPago(folio, negocioId, clipLinkId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarLinkPago: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
+    const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
-      SET datos = datos || $2::jsonb, updated_at = NOW()
-      WHERE folio = $1
-    `, [folio, JSON.stringify({ clip_link_id: clipLinkId })]);
+      SET datos = datos || $3::jsonb, updated_at = NOW()
+      WHERE folio = $1 AND negocio_id = $2
+    `, [folio, negocioId.trim(), JSON.stringify({ clip_link_id: clipLinkId })]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error guardarLinkPago:', e.message);
+    return false;
   }
 }
 
-// Devuelve pedidos con pago pendiente que tienen un clip_link_id guardado
+// Devuelve pedidos con pago pendiente que tienen un clip_link_id guardado.
+// Incluye negocio_id (Incidente P0): la reconciliación en background
+// necesita saber a qué negocio pertenece cada folio para consultar Clip
+// con LAS credenciales de ESE negocio, nunca una cuenta global.
 export async function obtenerPagosPendientesConLink() {
   try {
     const result = await pool.query(`
-      SELECT folio, datos->>'clip_link_id' AS clip_link_id
+      SELECT folio, negocio_id, datos->>'clip_link_id' AS clip_link_id
       FROM pedidos_activos
       WHERE datos->>'forma_pago' = 'enlace de pago'
         AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
@@ -1356,15 +1398,25 @@ export async function obtenerPagosPendientesConLink() {
   }
 }
 
-export async function confirmarPagoPedido(folio) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0, defensa en
+// profundidad): folios son secuenciales/adivinables, así que confirmar un
+// pago sin verificar dueño permitiría marcar como pagado el pedido de
+// OTRO negocio.
+export async function confirmarPagoPedido(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] confirmarPagoPedido: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
+    return false;
+  }
   try {
-    await pool.query(`
+    const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
       SET datos = datos || '{"pago_confirmado": true}', updated_at = NOW()
-      WHERE folio = $1
-    `, [folio]);
+      WHERE folio = $1 AND negocio_id = $2
+    `, [folio, negocioId.trim()]);
+    return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error confirmarPagoPedido:', e.message);
+    return false;
   }
 }
 
@@ -1420,17 +1472,26 @@ export async function obtenerPedidoPorFolioAmplio(folio, negocioId) {
   }
 }
 
-// Busca pedidos activos por número de teléfono del cliente
-export async function obtenerPedidosActivosPorTelefono(telefono) {
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Antes buscaba solo
+// por teléfono: la consulta de "en qué va mi pedido" de un cliente de
+// Alora podía devolver el pedido activo de OTRO negocio si ese mismo
+// teléfono real también tenía un pedido abierto ahí. Un pedido de otro
+// negocio se comporta idéntico a "no tiene pedidos activos".
+export async function obtenerPedidosActivosPorTelefono(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidosActivosPorTelefono: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
   try {
     const result = await pool.query(
       `SELECT folio, estado, datos, created_at
        FROM pedidos_activos
        WHERE datos->'cliente'->>'telefono' = $1
+         AND negocio_id = $2
          AND estado NOT IN ('entregado', 'cancelado')
        ORDER BY created_at DESC
        LIMIT 3`,
-      [telefono]
+      [telefono, negocioId.trim()]
     );
     return result.rows;
   } catch (e) {
@@ -1530,16 +1591,24 @@ export async function obtenerPedidosProgramadosPendientes(negocioId) {
   }
 }
 
-// Último pedido entregado de un teléfono — para generarle factura
-export async function obtenerUltimoPedidoEntregadoPorTelefono(telefono) {
+// Último pedido entregado de un teléfono — para generarle factura.
+// negocioId OBLIGATORIO — falla cerrado (Incidente P0): sin esto, un
+// cliente de Alora podía terminar facturando el pedido entregado de OTRO
+// negocio si compartía teléfono real con un cliente de ahí.
+export async function obtenerUltimoPedidoEntregadoPorTelefono(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerUltimoPedidoEntregadoPorTelefono: negocioId inválido u omitido — rechazado, sin consulta global');
+    return null;
+  }
   try {
     const result = await pool.query(
       `SELECT folio, datos FROM pedidos_activos
        WHERE datos->'cliente'->>'telefono' = $1
+         AND negocio_id = $2
          AND estado = 'entregado'
        ORDER BY updated_at DESC
        LIMIT 1`,
-      [telefono]
+      [telefono, negocioId.trim()]
     );
     if (!result.rows[0]) return null;
     return { folio: result.rows[0].folio, ...result.rows[0].datos };

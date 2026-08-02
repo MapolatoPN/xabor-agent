@@ -9,7 +9,7 @@ import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, gu
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
-import { crearLinkDePago } from '../services/clip-api.js';
+import { crearLinkDePago, ClipNoConfiguradoError } from '../services/clip-api.js';
 import { getIntegracion } from '../server.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
@@ -243,6 +243,23 @@ async function notificarEscalacion(telefono, negocioId, credenciales) {
   }
 }
 
+// ─── Clip no configurado para este negocio (Incidente P0, Fase 7) ───────────
+// Nunca genera ni envía un enlace de otro negocio -- en vez de eso,
+// conserva el pedido, transfiere a atención humana y avisa al cliente sin
+// revelar el error técnico. Nunca lanza -- un fallo notificando la
+// escalación no debe tumbar el flujo del mensaje entrante.
+async function manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales) {
+  console.error(`[Meta WA] pago_sin_integracion_configurada — negocio=${negocioId} telefono=${telefono}`);
+  const msg = 'Permítenos un momento, por favor. Enseguida te ayudamos con el pago.';
+  try {
+    await enviarMensaje(telefono, msg, credenciales);
+    await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
+  } catch (e) {
+    console.error('[Meta WA] Error enviando aviso de Clip no configurado:', e.message);
+  }
+  await notificarEscalacion(telefono, negocioId, credenciales).catch(() => {});
+}
+
 // ─── Procesamiento con Claude (se llama tras el debounce) ────────────────────
 // negocioId (Incidente P0): resuelto UNA vez en el webhook (integraciones_canal
 // por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
@@ -265,13 +282,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
     const matchFolio = texto.match(/(?:xab[-\s]?(\d{1,4}))|(?:folio[\s:]*(?:xab[-\s]?)?(\d{1,4}))/i);
     const folioNum   = matchFolio?.[1] ?? matchFolio?.[2];
-    if (folioNum && process.env.CLIP_API_KEY) {
+    if (folioNum) {
       const folio    = `XAB-${folioNum.padStart(4, '0')}`;
       const pedidoDB = await obtenerPedidoPorFolioAmplio(folio, negocioId);
       console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
-          const clip = await crearLinkDePago({ pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
+          const clip = await crearLinkDePago({ negocioId, pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
           let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${clip.url}\n\nTotal: $${pedidoDB.total} MXN`;
           if (pedidoDB._origen === 'programado' && pedidoDB.programado_para) {
             const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
@@ -280,8 +297,12 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           await enviarMensaje(telefono, msg, credenciales);
           await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         } catch (e) {
-          console.error('[Meta WA] Error enviando link por folio:', e.message);
-          await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`, credenciales);
+          if (e instanceof ClipNoConfiguradoError) {
+            await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
+          } else {
+            console.error('[Meta WA] Error enviando link por folio:', e.message);
+            await enviarMensaje(telefono, `Encontramos tu pedido ${folio}, pero hubo un problema generando el enlace. Escríbenos y te lo enviamos manualmente.`, credenciales);
+          }
         }
         return;
       }
@@ -293,22 +314,27 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     }
 
     // Pago pendiente de llamada
-    const pedidoPendiente = await getPagoPendiente(telefono);
-    if (pedidoPendiente && process.env.CLIP_API_KEY) {
+    const pedidoPendiente = await getPagoPendiente(telefono, negocioId);
+    if (pedidoPendiente) {
       try {
         const { obtenerPedidoPorId } = await import('../orders/orderManager.js');
-        const pedido = obtenerPedidoPorId(pedidoPendiente);
+        const pedido = obtenerPedidoPorId(pedidoPendiente, negocioId);
         const total  = pedido?.total || 0;
-        const clip   = await crearLinkDePago({ pedidoId: pedidoPendiente, total, descripcion: `Pedido Xabor #${pedidoPendiente}`, cliente: pedido?.cliente || {} });
-        await clearPagoPendiente(telefono);
+        const clip   = await crearLinkDePago({ negocioId, pedidoId: pedidoPendiente, total, descripcion: `Pedido Xabor #${pedidoPendiente}`, cliente: pedido?.cliente || {} });
+        await clearPagoPendiente(telefono, negocioId);
         // Guardar link_id para reconciliación automática
-        await guardarLinkPago(pedidoPendiente, clip.linkId);
+        await guardarLinkPago(pedidoPendiente, negocioId, clip.linkId);
         const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
         await enviarMensaje(telefono, mensajePago, credenciales);
         await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId, 'bot');
         console.log(`[Meta WA] Link de pago enviado a ${telefono}`);
       } catch (e) {
-        console.error('[Meta WA] Error enviando link pendiente:', e.message);
+        if (e instanceof ClipNoConfiguradoError) {
+          await clearPagoPendiente(telefono, negocioId);
+          await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
+        } else {
+          console.error('[Meta WA] Error enviando link pendiente:', e.message);
+        }
       }
       return;
     }
@@ -317,7 +343,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Si el cliente pregunta por su pedido, respondemos directamente sin Claude
     const esConsultaEstado = /en\s*qu[eé]\s*va|estado.*pedido|cu[aá]nto\s*falta|ya\s*est[aá]\s*list|mi\s*pedido|est[aá]\s*list[oa]|lista\s*mi|list[oa]\s*mi|salió.*pedido|pedido.*salió|preparando|me\s*avis[ae]n/i.test(texto);
     if (esConsultaEstado) {
-      const pedidosActivos = await obtenerPedidosActivosPorTelefono(telefono);
+      const pedidosActivos = await obtenerPedidosActivosPorTelefono(telefono, negocioId);
       if (pedidosActivos.length > 0) {
         const etiquetas = {
           'nuevo':          'fue recibido y está en espera de preparación',
@@ -416,6 +442,14 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     if (resultado.orden) {
       resultado.orden.canal = 'whatsapp';
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || telefono;
+      // negocioId (Incidente P0, causa raíz confirmada): este era el punto
+      // exacto donde se perdía el negocio. negocioId ya está resuelto en
+      // el scope de esta función (procesarConClaude), pero nunca se
+      // copiaba a resultado.orden antes de llamar a registrarPedido() --
+      // el pedido/comanda terminaba atribuido a Nonna Maye vía el
+      // respaldo que registrarPedido tenía antes (ya eliminado). Ahora se
+      // fija explícitamente, igual que Rappi siempre lo hizo.
+      resultado.orden.negocioId = negocioId;
       const pedido = registrarPedido(resultado.orden, 'whatsapp');
 
       // Si es pedido programado, guardarlo aparte y NO enviarlo al panel todavía
@@ -439,21 +473,22 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       } else {
         emitirPedido(pedido);
       }
-      // pedido.negocioId ya viene resuelto por registrarPedido() (fallback
-      // temporal a Nonna Maye vía _negocioFallbackId, o null si ese
-      // fallback no pudo resolverse) -- nunca se inventa aquí un valor
-      // distinto. resultado.orden en sí nunca trae negocioId (registrarPedido
-      // no lo muta), por eso se toma de pedido, no de resultado.orden.
       await guardarPedido(telefono, resultado.orden, pedido.negocioId);
       if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre, negocioId);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
-      if (resultado.orden.forma_pago === 'enlace de pago' && process.env.CLIP_API_KEY && process.env.CLIP_API_SECRET) {
+      if (resultado.orden.forma_pago === 'enlace de pago') {
         try {
-          const clip = await crearLinkDePago({ pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
+          const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
           linkPago = clip.url;
-          await guardarLinkPago(pedido.id, clip.linkId);
-        } catch (e) { console.error('[Clip] Error al generar link de pago:', e.message); }
+          await guardarLinkPago(pedido.id, negocioId, clip.linkId);
+        } catch (e) {
+          if (e instanceof ClipNoConfiguradoError) {
+            await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
+          } else {
+            console.error('[Clip] Error al generar link de pago:', e.message);
+          }
+        }
       }
     }
 
@@ -472,10 +507,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         let pedido = null;
         if (datosFactura.folio) {
           const { obtenerPedidoActivoPorFolio: _paf } = await import('../services/database.js');
-          pedido = await _paf(datosFactura.folio) || await obtenerUltimoPedidoEntregadoPorTelefono(telefono);
+          pedido = await _paf(datosFactura.folio, negocioId) || await obtenerUltimoPedidoEntregadoPorTelefono(telefono, negocioId);
           if (pedido && !pedido.id) pedido.id = datosFactura.folio;
         } else {
-          pedido = await obtenerUltimoPedidoEntregadoPorTelefono(telefono);
+          pedido = await obtenerUltimoPedidoEntregadoPorTelefono(telefono, negocioId);
         }
 
         if (!pedido) {

@@ -7,7 +7,6 @@ import {
   archivarPedidoActivo,
   obtenerPedidosActivos,
   obtenerMaxFolioNum,
-  obtenerNegocioIdPorSlug,
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
@@ -29,37 +28,28 @@ export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
 }
 
-// ─── Respaldo temporal de negocio (Fase 5 — threading operativo) ───────────
-// WhatsApp y Voz todavía NO resuelven su propio negocioId en el borde del
-// canal (a diferencia de Rappi, que ya lo hace vía obtenerIntegracionCanal
-// en rappi.js) — sus pedidos siguen llegando a registrarPedido sin
-// negocioId. Para no romper su funcionamiento actual mientras se migran,
-// se cachea aquí UNA sola vez, al arrancar, el negocio por defecto (Nonna
-// Maye) y se usa como respaldo SOLO para canales distintos de 'rappi'. Si
-// no se puede resolver (p. ej. migraciones 003/004 aún no aplicadas),
-// queda en null y esos canales simplemente siguen sin negocio_id, EXACTO
-// el comportamiento de hoy — nunca se bloquea un pedido de WhatsApp/Voz
-// por esto.
+// ─── Ex-respaldo temporal de negocio — ELIMINADO (Incidente P0, 2 de
+// agosto de 2026) ────────────────────────────────────────────────────────
+// Hasta esta corrección, WhatsApp y Voz confiaban en que registrarPedido()
+// rellenara negocioId con un caché fijo al negocio Nonna Maye
+// (_negocioFallbackId) si el pedido no lo traía ya resuelto. Ese fallback
+// era la causa raíz confirmada del incidente real: una conversación de
+// WhatsApp de Alora generó un pedido y una comanda que aparecieron en el
+// panel de Nonna Maye, y un enlace de pago con las credenciales Clip de
+// Nonna Maye, porque whatsapp-meta.js nunca copiaba el negocioId ya
+// resuelto (disponible en su propio scope) hacia resultado.orden antes de
+// llamar aquí -- el fallback lo disimulaba en vez de fallar.
 //
-// Rappi NUNCA usa este respaldo: si un pedido de canal 'rappi' llega sin
-// negocioId ya resuelto, registrarPedido lo rechaza explícitamente (ver
-// abajo) en vez de adivinar un negocio.
-//
-// PENDIENTE DE ELIMINAR: cuando WhatsApp y Voz resuelvan su propio
-// negocioId en el borde del canal (mismo patrón que Rappi), esta variable,
-// su carga en cargarPedidosDesdeDB() y su uso en registrarPedido deben
-// eliminarse por completo.
-let _negocioFallbackId = null;
-
-// Carga pedidos activos desde la DB al arrancar el servidor
+// whatsapp-meta.js y voice.js ahora fijan orden.negocioId explícitamente
+// ANTES de llamar a registrarPedido (mismo patrón que Rappi, que nunca
+// tuvo este problema). registrarPedido ya no acepta ningún respaldo:
+// negocioId ausente es siempre un error para TODOS los canales.
 export async function cargarPedidosDesdeDB() {
   try {
-    const [activos, maxFolio, negocioFallback] = await Promise.all([
+    const [activos, maxFolio] = await Promise.all([
       obtenerPedidosActivos(),
-      obtenerMaxFolioNum(),
-      obtenerNegocioIdPorSlug('nonna-maye')
+      obtenerMaxFolioNum()
     ]);
-    _negocioFallbackId = negocioFallback;
 
     pedidos.length = 0;
     for (const p of activos) {
@@ -81,19 +71,17 @@ export async function cargarPedidosDesdeDB() {
 }
 
 export function registrarPedido(orden, canal = 'test') {
-  // Rappi ya resuelve negocioId de forma confiable en el borde del canal
-  // (rappi.js, vía obtenerIntegracionCanal, nunca desde datos manipulables
-  // del payload) y SIEMPRE debe traerlo en orden.negocioId al llegar aquí.
-  // Si falta, es un error real -- no un caso a rellenar -- y se rechaza
-  // ANTES de tocar memoria, DB o WebSocket.
-  if (canal === 'rappi' && !orden.negocioId) {
-    throw new Error('registrarPedido: pedido de canal "rappi" sin negocioId resuelto — se rechaza antes de persistir o emitir');
+  // Fail-closed universal (Incidente P0, Fase 0): TODO canal debe traer
+  // orden.negocioId ya resuelto por el borde del canal (WhatsApp, Voz,
+  // Rappi, presencial) -- nunca se rellena aquí con un negocio por
+  // defecto. Antes de esta corrección, canales distintos de Rappi caían a
+  // un caché fijo al negocio Nonna Maye (ver historial de este archivo);
+  // esa fue la causa raíz confirmada de que un pedido real de WhatsApp de
+  // Alora terminara como comanda de Nonna Maye.
+  if (typeof orden.negocioId !== 'string' || !orden.negocioId.trim()) {
+    throw new Error(`TENANT_CONTEXT_REQUIRED: registrarPedido sin negocioId resuelto (canal=${canal}) — se rechaza antes de persistir o emitir`);
   }
-
-  // negocioId final: el que ya trae la orden (Rappi, siempre; otros
-  // canales, cuando se migren) o el respaldo temporal solo para canales
-  // no-Rappi todavía sin migrar (ver comentario junto a _negocioFallbackId).
-  const negocioId = orden.negocioId || (canal !== 'rappi' ? _negocioFallbackId : null);
+  const negocioId = orden.negocioId.trim();
 
   const pedido = {
     ...orden,
@@ -276,8 +264,24 @@ export function obtenerTodosPedidosParaWebSocketLegacy() {
   return [...pedidos]; // copia, nunca la referencia original al arreglo global
 }
 
-export function obtenerPedidoPorId(id) {
-  return pedidos.find(p => p.id === id);
+// negocioId opcional pero VERIFICADO cuando se pasa (Incidente P0): folios
+// son secuenciales y por tanto adivinables entre negocios (XAB-0001,
+// XAB-0002...). Cuando el llamador YA conoce a qué negocio pertenece la
+// conversación/sesión en curso (p. ej. WhatsApp resolviendo un pago
+// pendiente para SU cliente), debe pasar negocioId -- un pedido de otro
+// negocio se trata idéntico a uno inexistente (undefined), nunca se
+// devuelve. Se omite (undefined) únicamente en los pocos llamadores que
+// legítimamente todavía no saben el negocio y lo van a DESCUBRIR a partir
+// del pedido devuelto (p. ej. el webhook de Clip, que solo trae el folio;
+// ver server.js) -- esos siempre usan pedido.negocioId después, nunca
+// asumen ni comparten datos entre negocios distintos.
+export function obtenerPedidoPorId(id, negocioId) {
+  const pedido = pedidos.find(p => p.id === id);
+  if (!pedido) return undefined;
+  if (typeof negocioId === 'string' && negocioId.trim() && pedido.negocioId !== negocioId.trim()) {
+    return undefined;
+  }
+  return pedido;
 }
 
 // Agrega un pedido al array en memoria sin generar folio ni guardar en DB.
