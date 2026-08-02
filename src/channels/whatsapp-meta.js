@@ -5,11 +5,18 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago, ClipNoConfiguradoError } from '../services/clip-api.js';
+// Arquitectura de pagos multiempresa (Fase 7/8): reemplaza las llamadas
+// Clip-específicas de arriba para pedidos YA en pedidos_activos --
+// crearLinkDePago/ClipNoConfiguradoError se conservan solo para pedidos
+// programados aún no activados (ver comentarios en cada sitio de uso;
+// pagosService.crearEnlacePago exige un pedido ya persistido en
+// pedidos_activos, que un programado todavía no tiene).
+import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from '../services/pagosService.js';
 import { getIntegracion } from '../server.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
@@ -288,8 +295,22 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
-          const clip = await crearLinkDePago({ negocioId, pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
-          let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${clip.url}\n\nTotal: $${pedidoDB.total} MXN`;
+          let url;
+          if (pedidoDB._origen === 'programado') {
+            // Pedido programado (aún no activado): todavía no existe en
+            // pedidos_activos, así que pagosService.crearEnlacePago (que
+            // exige un pedido ya persistido ahí) no aplica -- se conserva
+            // el flujo legacy Clip-específico como excepción documentada.
+            const clip = await crearLinkDePago({ negocioId, pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
+            url = clip.url;
+          } else {
+            // Arquitectura de pagos multiempresa (Fase 7/8/10): resuelve el
+            // proveedor PRINCIPAL del negocio (nunca asume Clip) y es
+            // idempotente -- reenviar el mismo folio nunca duplica el cobro.
+            const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: folio, descripcion: `Pedido Xabor #${folio}` });
+            url = resultadoLink.url;
+          }
+          let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${url}\n\nTotal: $${pedidoDB.total} MXN`;
           if (pedidoDB._origen === 'programado' && pedidoDB.programado_para) {
             const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
             msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
@@ -297,7 +318,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           await enviarMensaje(telefono, msg, credenciales);
           await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         } catch (e) {
-          if (e instanceof ClipNoConfiguradoError) {
+          if (e instanceof ClipNoConfiguradoError || e instanceof SinProveedorPrincipalError) {
             await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
           } else {
             console.error('[Meta WA] Error enviando link por folio:', e.message);
@@ -317,21 +338,27 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     const pedidoPendiente = await getPagoPendiente(telefono, negocioId);
     if (pedidoPendiente) {
       try {
-        const { obtenerPedidoPorId } = await import('../orders/orderManager.js');
-        const pedido = obtenerPedidoPorId(pedidoPendiente, negocioId);
-        const total  = pedido?.total || 0;
-        const clip   = await crearLinkDePago({ negocioId, pedidoId: pedidoPendiente, total, descripcion: `Pedido Xabor #${pedidoPendiente}`, cliente: pedido?.cliente || {} });
+        // Arquitectura de pagos multiempresa (Fase 7/8): se lee directo de
+        // pedidos_activos (fuente de verdad) en vez del caché en memoria de
+        // orderManager -- un pedido de llamada ya debe estar persistido
+        // para este punto (la llamada terminó hace rato), así que ya no
+        // hace falta el import perezoso ni el riesgo de un caché vacío tras
+        // un reinicio del proceso.
+        const pedidoDBPendiente = await obtenerPedidoActivoPorFolio(pedidoPendiente, negocioId);
+        const total = pedidoDBPendiente?.total || 0;
+        const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedidoPendiente, descripcion: `Pedido Xabor #${pedidoPendiente}` });
         await clearPagoPendiente(telefono, negocioId);
-        // Guardar link_id para reconciliación automática
-        await guardarLinkPago(pedidoPendiente, negocioId, clip.linkId);
-        const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${clip.url}\n\nTotal: $${total} MXN`;
+        const mensajePago = `Aquí está tu enlace de pago para tu pedido Xabor:\n${resultadoLink.url}\n\nTotal: $${total} MXN`;
         await enviarMensaje(telefono, mensajePago, credenciales);
         await guardarMensaje(telefono, null, 'saliente', mensajePago, negocioId, 'bot');
         console.log(`[Meta WA] Link de pago enviado a ${telefono}`);
       } catch (e) {
-        if (e instanceof ClipNoConfiguradoError) {
+        if (e instanceof ClipNoConfiguradoError || e instanceof SinProveedorPrincipalError) {
           await clearPagoPendiente(telefono, negocioId);
           await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
+        } else if (e instanceof PedidoInvalidoError) {
+          await clearPagoPendiente(telefono, negocioId);
+          console.error('[Meta WA] Pago pendiente sin pedido válido en pedidos_activos:', e.message);
         } else {
           console.error('[Meta WA] Error enviando link pendiente:', e.message);
         }
@@ -479,14 +506,32 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
       if (resultado.orden.forma_pago === 'enlace de pago') {
         try {
-          const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
-          linkPago = clip.url;
-          await guardarLinkPago(pedido.id, negocioId, clip.linkId);
+          if (resultado.orden.programado_para) {
+            // Pedido programado: ya se removió de pedidos_activos arriba
+            // (eliminarPedido) y vive solo en pedidos_programados hasta que
+            // se active -- pagosService.crearEnlacePago exige un pedido ya
+            // en pedidos_activos, así que aquí se conserva el flujo legacy
+            // Clip-específico (misma excepción documentada que en el bloque
+            // de "Folio para pago" arriba).
+            const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
+            linkPago = clip.url;
+            await guardarLinkPago(pedido.id, negocioId, clip.linkId);
+          } else {
+            // registrarPedido() dispara guardarPedidoActivo() sin await
+            // (fire-and-forget, para no bloquear el registro del pedido) --
+            // se re-invoca aquí con await antes de leer de vuelta (es un
+            // UPSERT idempotente, ON CONFLICT DO UPDATE) para cerrar la
+            // carrera real que existiría si crearEnlacePago leyera
+            // pedidos_activos antes de que esa escritura terminara.
+            await guardarPedidoActivo(pedido, negocioId);
+            const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedido.id, descripcion: `Pedido Xabor #${pedido.id}` });
+            linkPago = resultadoLink.url;
+          }
         } catch (e) {
-          if (e instanceof ClipNoConfiguradoError) {
+          if (e instanceof ClipNoConfiguradoError || e instanceof SinProveedorPrincipalError) {
             await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
           } else {
-            console.error('[Clip] Error al generar link de pago:', e.message);
+            console.error('[Pagos] Error al generar link de pago:', e.message);
           }
         }
       }
