@@ -11,13 +11,17 @@
 // canal='pagos' proveedor='clip'). Sin negocioId, o sin Clip configurado
 // para ESE negocio, estas funciones fallan cerrado -- nunca caen a otra
 // cuenta ni a una variable de entorno global.
-import { obtenerCredencialesClipDescifradas } from './integracionesService.js';
+import { obtenerCredencialesClipDescifradas, TenantContextRequiredError } from './integracionesService.js';
+
+export { TenantContextRequiredError };
 
 const CLIP_CHECKOUT_URL = 'https://api.payclip.com/v2/checkout';
 
 // Código de error estable para que los llamadores (whatsapp-meta.js, voice.js)
 // distingan "Clip no configurado para este negocio" (transferir a humano,
-// conservar el pedido) de un error real de red/Clip (reintentable).
+// conservar el pedido) de un error real de red/Clip (reintentable), y de
+// TenantContextRequiredError (negocioId ausente/inválido -- bug del
+// llamador, nunca un estado de negocio legítimo).
 export class ClipNoConfiguradoError extends Error {
   constructor(negocioId) {
     super(`ClipNoConfiguradoError: no hay integración Clip activa para el negocio ${negocioId}`);
@@ -26,8 +30,12 @@ export class ClipNoConfiguradoError extends Error {
 }
 
 async function obtenerAuthHeader(negocioId) {
+  // Chequeo explícito aquí ADEMÁS del que ya hace
+  // obtenerCredencialesClipDescifradas (defensa en profundidad, falla
+  // antes de tocar la base de datos) -- misma clase de error tipado en
+  // ambas capas, nunca un Error genérico ni un null silencioso.
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    throw new Error('clip-api: negocioId requerido');
+    throw new TenantContextRequiredError('clip-api.obtenerAuthHeader');
   }
   const credenciales = await obtenerCredencialesClipDescifradas(negocioId.trim());
   if (!credenciales) {

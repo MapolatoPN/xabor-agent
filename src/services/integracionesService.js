@@ -19,6 +19,28 @@ import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifrado
 
 const ESTADOS_VALIDOS = ['no_configurado', 'pendiente_configuracion', 'pendiente_activacion', 'activo', 'suspendido', 'error'];
 
+/**
+ * Corrección de contrato (seguimiento del Incidente P0, 2 de agosto de
+ * 2026): toda operación financiera o de credenciales de Clip exige
+ * negocioId -- omitirlo NUNCA es un caso normal que se resuelva con
+ * null/false en silencio, es un error de programación real (el llamador
+ * olvidó propagar el contexto de negocio, exactamente la clase de bug
+ * que causó el incidente original). Antes,
+ * obtenerCredencialesClipDescifradas(undefined) devolvía null -- idéntico
+ * a "este negocio no tiene Clip configurado" -- así que un caller con un
+ * bug real nunca se enteraba. Ahora ambos casos son distinguibles: negocioId
+ * ausente/inválido -> TenantContextRequiredError (código
+ * TENANT_CONTEXT_REQUIRED); negocio real sin Clip -> null (el llamador,
+ * ver clip-api.js, lo traduce a CLIP_NO_CONFIGURADO).
+ */
+export class TenantContextRequiredError extends Error {
+  constructor(detalle) {
+    super(`TenantContextRequiredError: negocioId requerido y válido${detalle ? ` (${detalle})` : ''}`);
+    this.name = 'TenantContextRequiredError';
+    this.code = 'TENANT_CONTEXT_REQUIRED';
+  }
+}
+
 function validarParams(negocioId, canal, proveedor) {
   return typeof negocioId === 'string' && negocioId.trim()
     && typeof canal === 'string' && canal.trim()
@@ -472,7 +494,7 @@ export async function completarActivacionWhatsapp(negocioId, actualizadoPor) {
  */
 export async function guardarCredencialesClip(negocioId, apiKey, apiSecret, actualizadoPor) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    throw new Error('guardarCredencialesClip: negocioId requerido');
+    throw new TenantContextRequiredError('guardarCredencialesClip');
   }
   if (typeof apiKey !== 'string' || !apiKey.trim()) {
     throw new Error('guardarCredencialesClip: apiKey requerido');
@@ -546,15 +568,24 @@ export async function guardarCredencialesClip(negocioId, apiKey, apiSecret, actu
 
 /**
  * ÚNICA función que devuelve las credenciales de Clip en texto plano --
- * uso exclusivo de clip-api.js (nunca un controlador HTTP). Fail-closed:
- * devuelve null si negocioId falta, si la integración no existe, no está
- * 'activo', o si el descifrado falla -- nunca cae a una credencial de
- * otro negocio ni a una variable de entorno global. El llamador debe
- * transferir a atención humana cuando esto devuelve null, nunca usar
- * un valor de respaldo.
+ * uso exclusivo de clip-api.js (nunca un controlador HTTP).
+ *
+ * Contrato (corregido -- antes negocioId ausente también devolvía null,
+ * indistinguible de "negocio sin Clip"):
+ * - negocioId ausente/inválido (no-string, vacío) -> LANZA
+ *   TenantContextRequiredError. Nunca null, nunca silencioso -- es un
+ *   bug del llamador, no un estado de negocio.
+ * - negocio válido pero sin integración Clip activa, o descifrado
+ *   fallido -> null. Estado de negocio legítimo; el llamador (ver
+ *   clip-api.js) lo traduce a CLIP_NO_CONFIGURADO.
+ * - negocio con Clip activo -> credenciales descifradas.
+ * Nunca cae a una credencial de otro negocio ni a una variable de
+ * entorno global.
  */
 export async function obtenerCredencialesClipDescifradas(negocioId) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new TenantContextRequiredError('obtenerCredencialesClipDescifradas');
+  }
   try {
     const { rows } = await pool.query(
       `SELECT ic.estado, cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version

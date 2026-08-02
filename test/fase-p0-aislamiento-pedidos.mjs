@@ -36,7 +36,7 @@ const {
   guardarLinkPago, confirmarPagoPedido, obtenerPagosPendientesConLink,
 } = await import('../src/services/database.js');
 const { registrarPedido, obtenerPedidoPorId } = await import('../src/orders/orderManager.js');
-const { obtenerCredencialesClipDescifradas, guardarCredencialesClip } = await import('../src/services/integracionesService.js');
+const { obtenerCredencialesClipDescifradas, guardarCredencialesClip, TenantContextRequiredError } = await import('../src/services/integracionesService.js');
 const { crearLinkDePago, consultarEstadoPago, ClipNoConfiguradoError } = await import('../src/services/clip-api.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 
@@ -166,10 +166,60 @@ await t('FOLIO-GUESSING', 'obtenerPagosPendientesConLink incluye negocio_id -- n
   assert.ok(fila);
   assert.strictEqual(fila.negocio_id, SEED.negocioA);
 });
+await t('CLIP', 'llamador real (reconciliarPagosPendientes en server.js): negocio_id salido de obtenerPagosPendientesConLink -- nunca escrito a mano en la prueba -- se propaga a consultarEstadoPago sin TenantContextRequiredError', async () => {
+  // A diferencia de las pruebas de arriba, que llaman al servicio con un
+  // negocioId elegido por la prueba, aquí el valor viene de la MISMA
+  // consulta SQL que usa el job real de reconciliación (server.js,
+  // reconciliarPagosPendientes) -- se ejercita el punto exacto de contacto
+  // entre ese llamador real y clip-api.js. Alora todavía no tiene Clip
+  // configurado en este punto de la suite (se configura más abajo, sección
+  // HTTP-CLIP), así que el resultado correcto es null, sin tocar la red.
+  const pendientes = await obtenerPagosPendientesConLink();
+  const fila = pendientes.find(p => p.folio === 'XABP0902');
+  assert.ok(fila, 'fixture de la prueba anterior');
+  const estado = await consultarEstadoPago(fila.clip_link_id, fila.negocio_id);
+  assert.strictEqual(estado, null);
+});
 
 // ═══════════ 6. Clip por negocio (causa raíz #2) ═══════════
-await t('CLIP', 'crearLinkDePago sin negocioId -> lanza antes de tocar la red', async () => {
-  await assert.rejects(() => crearLinkDePago({ pedidoId: 'X', total: 100 }), /negocioId requerido/);
+// Corrección de contrato (seguimiento del incidente): negocioId
+// ausente/inválido/vacío en cualquier operación de Clip debe LANZAR un
+// error tipado (TenantContextRequiredError, código TENANT_CONTEXT_REQUIRED)
+// -- nunca null silencioso, nunca fallback. null solo es válido cuando
+// negocioId es una cadena real pero el negocio no tiene Clip configurado.
+await t('CLIP', 'obtenerCredencialesClipDescifradas(undefined) -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerCredencialesClipDescifradas(undefined),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('CLIP', 'obtenerCredencialesClipDescifradas(null) -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerCredencialesClipDescifradas(null),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('CLIP', "obtenerCredencialesClipDescifradas('') -> TenantContextRequiredError tipado", async () => {
+  await assert.rejects(
+    () => obtenerCredencialesClipDescifradas(''),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('CLIP', 'obtenerCredencialesClipDescifradas(negocio inexistente) -> null (CLIP_NO_CONFIGURADO en el llamador, nunca error de sesión)', async () => {
+  const r = await obtenerCredencialesClipDescifradas('00000000-0000-0000-0000-000000000000');
+  assert.strictEqual(r, null);
+});
+await t('CLIP', 'guardarCredencialesClip sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => guardarCredencialesClip(undefined, 'k', 's', SEED.superadminUsuarioId),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('CLIP', 'crearLinkDePago sin negocioId -> TenantContextRequiredError tipado, lanza antes de tocar la red', async () => {
+  await assert.rejects(
+    () => crearLinkDePago({ pedidoId: 'X', total: 100 }),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
 });
 await t('CLIP', 'Alora sin Clip configurado -> ClipNoConfiguradoError (fail-closed, nunca usa otra cuenta)', async () => {
   await assert.rejects(
@@ -196,9 +246,6 @@ await t('CLIP', 'Alora guarda su propio Clip -> credenciales de A y Nonna Maye q
   assert.strictEqual(credNonna.apiKey, 'NONNA_CLIP_KEY_TEST');
   assert.notStrictEqual(credAlora.apiKey, credNonna.apiKey);
   assert.notStrictEqual(credAlora.apiSecret, credNonna.apiSecret);
-});
-await t('CLIP', 'obtenerCredencialesClipDescifradas sin negocioId -> null', async () => {
-  assert.strictEqual(await obtenerCredencialesClipDescifradas(), null);
 });
 await t('CLIP', 'negocio Demo (sin ninguna configuración) -> ClipNoConfiguradoError, nunca hereda de A ni de Nonna Maye', async () => {
   await assert.rejects(
