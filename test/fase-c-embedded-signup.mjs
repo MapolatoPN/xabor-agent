@@ -262,17 +262,22 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND n
     });
     await t('CALLBACK', 'state reutilizado -> 400', async () => {
       const r = await api(srv.base, rutaIniciar(SEED.negocioB), { cookie: cookieSuperadmin, method: 'POST' });
-      const primero = await api(srv.base, rutaCallback, { method: 'POST', body: { state: r.body.state, code: 'SIMULAR_EXITO', phoneNumberId: 'PNID_B_REUSO' } });
+      const primero = await api(srv.base, rutaCallback, { method: 'POST', body: { state: r.body.state, code: 'SIMULAR_EXITO', phoneNumberId: 'PNID_B_REUSO', wabaId: 'WABA_B_REUSO' } });
       assert.strictEqual(primero.status, 200);
       const segundo = await api(srv.base, rutaCallback, { method: 'POST', body: { state: r.body.state, code: 'SIMULAR_EXITO', phoneNumberId: 'PNID_B_REUSO' } });
       assert.strictEqual(segundo.status, 400);
     });
-    await t('CALLBACK', 'éxito: guarda credenciales cifradas y activa la integración', async () => {
+    await t('CALLBACK', 'éxito: guarda credenciales cifradas y completa la activación real (register + subscribed_apps) -> activo', async () => {
       const r = await api(srv.base, rutaEstado(SEED.negocioB), { cookie: cookieSuperadmin });
       assert.strictEqual(r.body.estado, 'activo');
       const { rows } = await pool.query(`SELECT cc.access_token_cifrado FROM integraciones_canal ic JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id WHERE ic.negocio_id = $1`, [SEED.negocioB]);
       assert.strictEqual(rows.length, 1);
       assert.ok(!rows[0].access_token_cifrado.includes('SIMULATED_ACCESS_TOKEN_TEST'));
+
+      const wa = await api(srv.base, `/api/superadmin/negocios/${SEED.negocioB}/integraciones/whatsapp`, { cookie: cookieSuperadmin });
+      assert.strictEqual(wa.body.integracion.numero_registrado_cloud_api, true);
+      assert.strictEqual(wa.body.integracion.app_suscrita_waba, true);
+      assert.ok(wa.body.integracion.ultimo_intento_activacion_at);
     });
     await t('CALLBACK', 'phone_number_id ya asociado a otro negocio -> 409, no toca al dueño', async () => {
       const r = await api(srv.base, rutaIniciar(SEED.negocioC), { cookie: cookieSuperadmin, method: 'POST' }); // no_contratado -> 403, forzamos vía A que sí está contratado

@@ -36,6 +36,7 @@ export const ORDEN_MIGRACIONES = [
   '021_menu_agotado_destacado.sql',
   '022_plan_comercial_negocio.sql',
   '023_prospectos_comerciales.sql',
+  '024_activacion_cloud_api_whatsapp.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

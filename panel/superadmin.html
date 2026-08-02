@@ -46,6 +46,7 @@
   .badge-plan { background:#e0e7ff; color:#4338ca; }
   .badge-no_configurado { background:#f1f5f9; color:#475569; }
   .badge-pendiente_configuracion { background:#fef3c7; color:var(--warn); }
+  .badge-pendiente_activacion { background:#fef3c7; color:var(--warn); }
   .badge-error { background:#fee2e2; color:var(--danger); }
   .badge-bot_activo { background:#dcfce7; color:var(--ok); }
   .badge-bot_apagado { background:#f1f5f9; color:#475569; }
@@ -611,7 +612,8 @@ async function cambiarChecklistItem(clave, valor) {
 const MENSAJES_ESTADO_WA = {
   no_configurado: 'Sin configurar todavía. No hay identificadores ni credenciales guardadas.',
   pendiente_configuracion: 'Configuración incompleta — faltan identificadores o credenciales para poder activarse.',
-  activo: 'Activa. Credenciales configuradas y en uso.',
+  pendiente_activacion: 'Credenciales guardadas, pero el número aún no está confirmado como registrado en Meta y/o la app aún no está suscrita a la WABA — no se puede enviar/recibir hasta completar la activación.',
+  activo: 'Activa. Credenciales configuradas, número registrado en Cloud API y app suscrita a la WABA.',
   suspendido: 'Suspendida — las credenciales se conservan pero no se pueden usar hasta reactivar.',
   error: 'En error — revisar configuración.',
 };
@@ -634,6 +636,9 @@ async function cargarIntegracionWhatsapp() {
   const estado = integracion?.estado || 'no_configurado';
   const moduloBloqueado = !estadoModulo || estadoModulo === 'no_contratado' || estadoModulo === 'suspendido';
 
+  const puedeCompletarActivacion = ['pendiente_activacion', 'activo'].includes(estado) && !!integracion?.identificador;
+  const filaCheckActivacion = (ok, texto) => `<div class="checklist-item"><span>${ok ? '✅' : '❌'} ${texto}</span></div>`;
+
   cont.innerHTML = `
     <div class="fila-lista"><span>Estado comercial del módulo</span><span>${badgeEstado(estadoModulo || 'no_contratado')}</span></div>
     <div class="fila-lista"><span>Estado técnico</span><span>${badgeEstado(estado)}</span></div>
@@ -644,6 +649,14 @@ async function cargarIntegracionWhatsapp() {
     <div class="feedback ${estado === 'error' ? 'err' : ''}" style="margin-top:6px;">${MENSAJES_ESTADO_WA[estado] || ''}</div>
     ${moduloBloqueado ? '<div class="feedback err">Este negocio no tiene el módulo de WhatsApp contratado o está suspendido — no se puede configurar ni activar.</div>' : ''}
     ${conexionPendiente ? '<div class="feedback">Hay una conexión con Meta pendiente/en curso para este negocio.</div>' : ''}
+    ${puedeCompletarActivacion ? `
+      <div style="margin:10px 0;">
+        <div style="font-size:0.78rem;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;">Activación real en Meta</div>
+        ${filaCheckActivacion(integracion?.numero_registrado_cloud_api, 'Número registrado en Cloud API (POST /register)')}
+        ${filaCheckActivacion(integracion?.app_suscrita_waba, 'App suscrita a la WABA — necesario para recibir webhooks (POST /subscribed_apps)')}
+        <div class="fila-lista"><span>Último intento de activación</span><span>${integracion?.ultimo_intento_activacion_at ? fechaCorta(integracion.ultimo_intento_activacion_at) : '—'}</span></div>
+      </div>
+    ` : ''}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
       <button class="btn secundario" ${moduloBloqueado || estado === 'no_configurado' ? 'disabled' : ''} onclick="marcarPendienteWhatsapp()">Marcar pendiente de configuración</button>
       <button class="btn secundario" ${estado !== 'activo' ? 'disabled' : ''} onclick="suspenderWhatsapp()">Suspender</button>
@@ -651,8 +664,27 @@ async function cargarIntegracionWhatsapp() {
       <button class="btn peligro" ${estado === 'no_configurado' ? 'disabled' : ''} onclick="eliminarCredencialesWhatsapp()">Eliminar credenciales</button>
       <button class="btn" id="btn-conectar-meta" ${moduloBloqueado || waSignupEnCurso || conexionPendiente ? 'disabled' : ''} onclick="abrirAvisoMigracion()">Conectar con Meta</button>
       ${conexionPendiente ? '<button class="btn secundario" onclick="cancelarConexionPendiente()">Cancelar conexión pendiente</button>' : ''}
+      ${puedeCompletarActivacion ? `<button class="btn" ${moduloBloqueado ? 'disabled' : ''} onclick="completarActivacionWhatsappUI()">${estado === 'activo' ? 'Reintentar registro' : 'Completar activación'}</button>` : ''}
     </div>
   `;
+}
+
+async function completarActivacionWhatsappUI() {
+  const fb = document.getElementById('dt-wa-feedback');
+  if (!confirm('Esto llamará a Meta en vivo para registrar el número (Cloud API) y suscribir la app a la WABA. ¿Continuar?')) return;
+  fb.className = 'feedback'; fb.textContent = 'Completando activación…';
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/integraciones/whatsapp/completar-activacion`, { method: 'POST' });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Error al completar la activación'; return; }
+  if (body.ok) {
+    fb.className = 'feedback ok'; fb.textContent = '✓ Activación completada: número registrado y app suscrita a la WABA';
+  } else {
+    const motivos = [];
+    if (!body.numeroRegistrado) motivos.push(`registro del número (${body.errorRegistro?.mensaje || 'sin detalle'})`);
+    if (!body.appSuscrita) motivos.push(`suscripción a la WABA (${body.errorSuscripcion?.mensaje || 'sin detalle'})`);
+    fb.className = 'feedback err'; fb.textContent = `Activación incompleta — falló: ${motivos.join(' y ')}`;
+  }
+  cargarIntegracionWhatsapp();
 }
 
 // ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──

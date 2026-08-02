@@ -170,7 +170,7 @@ await pool.query(`DELETE FROM auditoria_plataforma WHERE negocio_id = ANY($1) AN
     await t('HTTP', 'credenciales existentes intactas tras cancelar (no se tocan)', async () => {
       // Conecta B de verdad primero
       const rIni = await api(srv.base, rutaIniciar(SEED.negocioB), { cookie: cookieSuperadmin, method: 'POST' });
-      await api(srv.base, rutaCallback, { method: 'POST', body: { state: rIni.body.state, code: 'SIMULAR_EXITO', phoneNumberId: 'PNID_INTACTO_TEST' } });
+      await api(srv.base, rutaCallback, { method: 'POST', body: { state: rIni.body.state, code: 'SIMULAR_EXITO', phoneNumberId: 'PNID_INTACTO_TEST', wabaId: 'WABA_INTACTO_TEST' } });
       const antes = await api(srv.base, rutaWA(SEED.negocioB), { cookie: cookieSuperadmin });
       assert.strictEqual(antes.body.integracion.estado, 'activo');
       // Inicia un NUEVO intento (p. ej. para reconectar) y cancélalo

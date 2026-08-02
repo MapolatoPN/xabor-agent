@@ -131,7 +131,7 @@ await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave
 
 // ═══════════ Fase 3: servidor con la bandera 'true' -- resto de la suite ═══════════
 {
-  const srv = await arrancarServidor({ PORT: PUERTO, ALLOW_MANUAL_INTEGRATION_CREDENTIALS: 'true' });
+  const srv = await arrancarServidor({ PORT: PUERTO, ALLOW_MANUAL_INTEGRATION_CREDENTIALS: 'true', META_EMBEDDED_SIGNUP_MOCK: 'true' });
   try {
     await t('FLAG', "bandera 'true' + admin normal (no superadmin) -> 403", async () => {
       const r = await api(srv.base, rutaWA(SEED.negocioA), {
@@ -212,7 +212,7 @@ await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave
       assert.ok(!rows[0].access_token_cifrado.includes(TOKEN_A));
     });
     await t('C', 'dos cifrados del mismo valor producen ciphertext/IV distintos', async () => {
-      await api(srv.base, rutaWA(SEED.negocioA), { cookie: cookieSuperadmin, method: 'PUT', body: { phoneNumberId: 'PNID_A_123', accessToken: TOKEN_B } });
+      await api(srv.base, rutaWA(SEED.negocioA), { cookie: cookieSuperadmin, method: 'PUT', body: { phoneNumberId: 'PNID_A_123', wabaId: 'WABA_A', accessToken: TOKEN_B } });
       const { rows } = await pool.query(
         `SELECT ic.negocio_id, cc.access_token_cifrado, cc.token_iv FROM integraciones_canal ic
          JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id WHERE ic.negocio_id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]
@@ -221,7 +221,7 @@ await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave
       const [fb] = rows.filter(r => r.negocio_id === SEED.negocioB);
       assert.notStrictEqual(fa.token_iv, fb.token_iv);
       assert.notStrictEqual(fa.access_token_cifrado, fb.access_token_cifrado);
-      await api(srv.base, rutaWA(SEED.negocioA), { cookie: cookieSuperadmin, method: 'PUT', body: { phoneNumberId: 'PNID_A_123', accessToken: TOKEN_A } });
+      await api(srv.base, rutaWA(SEED.negocioA), { cookie: cookieSuperadmin, method: 'PUT', body: { phoneNumberId: 'PNID_A_123', wabaId: 'WABA_A', accessToken: TOKEN_A } });
     });
     await t('C', 'descifrado interno recupera el valor exacto', async () => {
       const cred = await obtenerCredencialesDescifradas(SEED.negocioA, 'whatsapp', 'meta');

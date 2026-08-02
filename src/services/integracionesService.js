@@ -13,10 +13,11 @@
  * HTTP.
  */
 
+import crypto from 'crypto';
 import { pool, registrarAuditoriaPlataforma } from './database.js';
 import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifradoIntegraciones.js';
 
-const ESTADOS_VALIDOS = ['no_configurado', 'pendiente_configuracion', 'activo', 'suspendido', 'error'];
+const ESTADOS_VALIDOS = ['no_configurado', 'pendiente_configuracion', 'pendiente_activacion', 'activo', 'suspendido', 'error'];
 
 function validarParams(negocioId, canal, proveedor) {
   return typeof negocioId === 'string' && negocioId.trim()
@@ -32,7 +33,8 @@ const COLUMNAS_SEGURAS = `
   id, negocio_id, canal, proveedor, estado, identificador,
   waba_id, business_id, display_phone_number, nombre,
   activo, conectado_at, created_at, updated_at, actualizado_por,
-  ultimo_error_codigo, ultimo_error_at
+  ultimo_error_codigo, ultimo_error_at,
+  numero_registrado_cloud_api, app_suscrita_waba, ultimo_intento_activacion_at
 `;
 
 /**
@@ -86,9 +88,18 @@ export async function obtenerEstadoIntegracion(negocioId, canal, proveedor) {
  * campo que se cifra; el resto son identificadores/metadatos no
  * sensibles.
  *
- * Estado resultante: 'activo' si phoneNumberId + accessToken están
- * presentes (integración completa y usable); 'pendiente_configuracion'
- * si falta alguno (guardado parcial, aún no operable).
+ * Estado resultante: 'pendiente_activacion' si phoneNumberId + accessToken
+ * están presentes (credenciales completas, pero AÚN NO confirmado que el
+ * número esté registrado en Cloud API ni que la app esté suscrita a la
+ * WABA -- ver completarActivacionWhatsapp); 'pendiente_configuracion' si
+ * falta alguno (guardado parcial, aún no operable).
+ *
+ * Nunca pasa a 'activo' aquí: tener token + phone_number_id NO significa
+ * que el número esté operable en Meta (incidente real, negocio Alora, 2
+ * de agosto de 2026 -- Meta completaba Embedded Signup, Xabor guardaba
+ * las credenciales, pero el número quedaba en Meta con estado
+ * "Pendiente" porque faltaban /register y /subscribed_apps). Ver
+ * metaEmbeddedSignup.js para el detalle de esos dos pasos.
  *
  * Transaccional: la fila de integraciones_canal y la de credenciales se
  * escriben juntas o no se escribe ninguna.
@@ -105,7 +116,7 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
     throw new Error('guardarCredencialesCifradas: accessToken requerido');
   }
 
-  const nuevoEstado = 'activo'; // ambos campos obligatorios ya están validados arriba
+  const nuevoEstado = 'pendiente_activacion'; // ambos campos obligatorios ya están validados arriba -- falta confirmar activación real (ver completarActivacionWhatsapp)
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -303,4 +314,145 @@ export async function obtenerCredencialesDescifradas(negocioId, canal, proveedor
     console.error('[Integraciones] Error obtenerCredencialesDescifradas (negocio ocultado):', e.message);
     return null;
   }
+}
+
+/**
+ * Uso interno exclusivo de completarActivacionWhatsapp -- a diferencia de
+ * obtenerCredencialesDescifradas, también acepta 'pendiente_activacion'
+ * (todavía no promovida a 'activo'), porque para completar la
+ * activación necesariamente hay que leer el token ANTES de que el
+ * estado sea 'activo'. Nunca expuesta fuera de este archivo.
+ */
+async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
+  const { rows } = await pool.query(
+    `SELECT ic.id, ic.identificador, ic.waba_id, ic.estado,
+            cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version,
+            cc.pin_verificacion_cifrado, cc.pin_iv, cc.pin_auth_tag, cc.pin_formato_version
+     FROM integraciones_canal ic
+     JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id
+     WHERE ic.negocio_id = $1 AND ic.canal = $2 AND ic.proveedor = $3`,
+    [negocioId.trim(), canal.trim(), proveedor.trim()]
+  );
+  const row = rows[0];
+  if (!row || !['pendiente_activacion', 'activo'].includes(row.estado) || !row.identificador || !row.waba_id) return null;
+
+  const accessToken = descifrarSecretoIntegracion({
+    cifrado: row.access_token_cifrado, iv: row.token_iv,
+    authTag: row.token_auth_tag, version: row.token_formato_version,
+  });
+  let pin = null;
+  if (row.pin_verificacion_cifrado) {
+    pin = descifrarSecretoIntegracion({
+      cifrado: row.pin_verificacion_cifrado, iv: row.pin_iv,
+      authTag: row.pin_auth_tag, version: row.pin_formato_version,
+    });
+  }
+  return { integracionId: row.id, phoneNumberId: row.identificador, wabaId: row.waba_id, accessToken, pin };
+}
+
+/**
+ * Completa la activación real de una integración de WhatsApp ya
+ * guardada (estado 'pendiente_activacion' o 'activo'): registra el
+ * número para Cloud API (POST /register) y suscribe la app a la WABA
+ * (POST /subscribed_apps). Solo pasa a estado 'activo' si AMBOS pasos
+ * terminan en éxito -- si cualquiera falla, se queda en
+ * 'pendiente_activacion' con el detalle (sanitizado) del error
+ * guardado, para poder reintentar más tarde sin repetir el Embedded
+ * Signup completo (ver ruta "Completar activación" en Superadmin).
+ *
+ * El PIN de verificación en dos pasos se genera una sola vez (la
+ * primera vez que se llama para esta integración) y se guarda cifrado
+ * para reutilizarse en reintentos -- Meta exige el mismo PIN en
+ * llamadas posteriores a /register una vez que el número ya tiene 2FA
+ * activado.
+ *
+ * Nunca borra ni toca las credenciales existentes (access_token,
+ * identificadores) -- solo actualiza estado/flags/auditoría.
+ */
+export async function completarActivacionWhatsapp(negocioId, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { ok: false, error: 'negocioId inválido' };
+  }
+  const datos = await obtenerCredencialesParaActivacion(negocioId.trim(), 'whatsapp', 'meta');
+  if (!datos) {
+    return { ok: false, error: 'No hay credenciales completas para activar (falta phone_number_id, waba_id o token)' };
+  }
+
+  const { registrarNumeroCloudApi, suscribirAppWaba } = await import('./metaEmbeddedSignup.js');
+
+  const pin = datos.pin || crypto.randomInt(100000, 1000000).toString();
+  const pinEsNuevo = !datos.pin;
+
+  const resultadoRegistro = await registrarNumeroCloudApi(datos.phoneNumberId, datos.accessToken, pin);
+  const resultadoSuscripcion = await suscribirAppWaba(datos.wabaId, datos.accessToken);
+  const ambosOk = resultadoRegistro.ok && resultadoSuscripcion.ok;
+  const nuevoEstado = ambosOk ? 'activo' : 'pendiente_activacion';
+
+  // Identificador controlado del error (nunca el mensaje crudo de Meta),
+  // mismo criterio que el resto de este archivo para ultimo_error_codigo.
+  const codigoErrorControlado = ambosOk ? null
+    : !resultadoRegistro.ok ? `registro:${resultadoRegistro.resumen?.codigo ?? 'red'}`
+    : `subscribed_apps:${resultadoSuscripcion.resumen?.codigo ?? 'red'}`;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // El PIN solo se persiste si el registro tuvo éxito con él -- un PIN
+    // que Meta rechazó no quedó fijado como 2FA del número, guardarlo
+    // haría que el próximo reintento fallara por un PIN incorrecto en
+    // vez de por la causa real.
+    if (pinEsNuevo && resultadoRegistro.ok) {
+      const { cifrado, iv, authTag, version } = cifrarSecretoIntegracion(pin);
+      await client.query(
+        `UPDATE integraciones_canal_credenciales SET
+           pin_verificacion_cifrado = $1, pin_iv = $2, pin_auth_tag = $3, pin_formato_version = $4,
+           actualizado_at = NOW()
+         WHERE integracion_id = $5`,
+        [cifrado, iv, authTag, version, datos.integracionId]
+      );
+    }
+
+    await client.query(
+      `UPDATE integraciones_canal SET
+         estado = $1,
+         numero_registrado_cloud_api = $2, app_suscrita_waba = $3,
+         ultimo_intento_activacion_at = NOW(),
+         ultimo_error_codigo = $4, ultimo_error_at = $5,
+         actualizado_por = $6, updated_at = NOW()
+       WHERE id = $7`,
+      [nuevoEstado, resultadoRegistro.ok, resultadoSuscripcion.ok,
+       codigoErrorControlado, ambosOk ? null : new Date(),
+       actualizadoPor || null, datos.integracionId]
+    );
+
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor,
+      accion: 'integracion_activacion_completada',
+      negocioId: negocioId.trim(),
+      estadoNuevo: { estado: nuevoEstado, numeroRegistrado: resultadoRegistro.ok, appSuscrita: resultadoSuscripcion.ok },
+      // Solo status HTTP + código/tipo de error resumidos -- nunca el
+      // access_token, el PIN, ni el cuerpo crudo de la respuesta de Meta.
+      contexto: {
+        registro: { ok: resultadoRegistro.ok, status: resultadoRegistro.status, codigo: resultadoRegistro.resumen?.codigo ?? null, tipo: resultadoRegistro.resumen?.tipo ?? null },
+        suscripcion: { ok: resultadoSuscripcion.ok, status: resultadoSuscripcion.status, codigo: resultadoSuscripcion.resumen?.codigo ?? null, tipo: resultadoSuscripcion.resumen?.tipo ?? null },
+      },
+    }, client);
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  return {
+    ok: ambosOk,
+    estado: nuevoEstado,
+    numeroRegistrado: resultadoRegistro.ok,
+    appSuscrita: resultadoSuscripcion.ok,
+    errorRegistro: resultadoRegistro.ok ? null : resultadoRegistro.resumen,
+    errorSuscripcion: resultadoSuscripcion.ok ? null : resultadoSuscripcion.resumen,
+  };
 }

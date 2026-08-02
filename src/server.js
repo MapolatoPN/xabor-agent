@@ -33,7 +33,7 @@ import {
 } from './services/database.js';
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
-  suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion,
+  suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion, completarActivacionWhatsapp,
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
@@ -2579,7 +2579,18 @@ app.put('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSup
       { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken, nombre },
       req.usuarioId
     );
-    res.json(resultado);
+    // Mismo criterio que el callback de Embedded Signup: guardar
+    // credenciales nunca deja la integración en 'activo' por sí solo (ver
+    // completarActivacionWhatsapp) -- se intenta completar la activación
+    // real de inmediato también en esta vía manual, para no tener dos
+    // rutas con comportamiento distinto.
+    let activacion = null;
+    try {
+      activacion = await completarActivacionWhatsapp(negocioId, req.usuarioId);
+    } catch (eActivacion) {
+      console.error('[PUT /api/superadmin/negocios/:id/integraciones/whatsapp] Error al completar activación:', eActivacion.message);
+    }
+    res.json({ ...resultado, estado: activacion?.estado || resultado.estado, activacion });
   } catch (e) {
     console.error('[PUT /api/superadmin/negocios/:id/integraciones/whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al guardar las credenciales' });
@@ -2781,6 +2792,26 @@ app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/estado', req
   res.json({ estado: await obtenerEstadoIntegracion(req.params.negocioId, 'whatsapp', 'meta') });
 });
 
+// "Completar activación" / "Reintentar registro" -- ejecuta los dos pasos
+// que Embedded Signup por sí solo no cubre (POST /register y POST
+// /subscribed_apps, ver metaEmbeddedSignup.js) sobre credenciales YA
+// guardadas, sin repetir el flujo de Embedded Signup ni tocar el
+// access_token/identificadores existentes. Se usa tanto automáticamente
+// tras un signup nuevo como manualmente para reintentar uno que quedó
+// pendiente (p. ej. el incidente real del negocio Alora).
+app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/completar-activacion', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const resultado = await completarActivacionWhatsapp(negocioId, req.usuarioId);
+    if (!resultado.ok && resultado.error) return res.status(400).json({ error: resultado.error });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[POST /api/superadmin/negocios/:id/integraciones/whatsapp/completar-activacion] Error:', e.message);
+    res.status(500).json({ error: 'Error al completar la activación' });
+  }
+});
+
 // Sin requireSuperadmin -- el propio state firmado es la credencial (el
 // navegador del superadmin es redirigido aquí por Meta, no llega con
 // cookie de sesión del panel en todos los flujos). Nunca confía en
@@ -2847,7 +2878,22 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
       contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
     });
     limpiarIntentoPendiente(negocioId);
-    res.json({ ok: true, estado: resultado.estado });
+
+    // Intento automático, una sola vez, de completar la activación real
+    // (POST /register + POST /subscribed_apps) -- guardarCredencialesCifradas
+    // ya NO deja la integración en 'activo' solo por tener el token, así
+    // que sin este intento el número quedaría "pendiente" en Meta igual
+    // que en el incidente real de Alora. Si falla aquí, el estado queda
+    // en 'pendiente_activacion' y el propio Superadmin puede reintentar
+    // sin repetir el Embedded Signup (ver ruta "completar-activacion").
+    let activacion = null;
+    try {
+      activacion = await completarActivacionWhatsapp(negocioId, superadminId);
+    } catch (eActivacion) {
+      console.error('[POST /api/integraciones/whatsapp/meta/callback] Error al completar activación:', eActivacion.message);
+    }
+
+    res.json({ ok: true, estado: activacion?.estado || resultado.estado, activacion });
   } catch (e) {
     console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
     await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
