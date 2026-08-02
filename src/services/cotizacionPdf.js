@@ -103,11 +103,29 @@ function construirHtml(cotizacion, negocioConfig) {
 }
 
 const TIMEOUT_GENERACION_MS = Number(process.env.COTIZACION_PDF_TIMEOUT_MS) || 20000;
+const PDF_TAMANO_MAXIMO_BYTES = (Number(process.env.PDF_TAMANO_MAXIMO_MB) || 5) * 1024 * 1024;
+
+// Límite temporal del piloto: una sola generación de PDF (proceso Chromium)
+// a la vez para todo el proceso Node, sin importar el negocio. Dos
+// cotizaciones grandes generándose en paralelo lanzarían dos Chromium
+// simultáneos -- el mismo riesgo de saturación ya identificado para el
+// bot de WhatsApp. Cola en memoria de un solo proceso: misma limitación
+// aceptada que el rate limiting existente en el resto del sistema, y
+// suficiente para el volumen esperado de un piloto de generación manual.
+let colaGeneracion = Promise.resolve();
+function serializarGeneracion(tarea) {
+  const resultado = colaGeneracion.then(tarea, tarea);
+  // Si `tarea` rechaza, la cola debe seguir avanzando para el siguiente
+  // llamador -- se absorbe el rechazo solo a efectos de encadenar, nunca
+  // se pierde ni se enmascara para quien pidió esta generación.
+  colaGeneracion = resultado.catch(() => {});
+  return resultado;
+}
 
 // Bajo contención real de recursos (CPU/memoria compartidos) un lanzamiento
 // de Chromium puede quedarse colgado indefinidamente en vez de fallar --
 // mejor un 500 claro y rápido que una request colgada para siempre.
-export async function generarPdfCotizacion(cotizacion, negocioConfig) {
+async function generarPdfCotizacionInterno(cotizacion, negocioConfig) {
   const html = construirHtml(cotizacion, negocioConfig);
   const puppeteer = await obtenerPuppeteer();
   let browser;
@@ -131,8 +149,17 @@ export async function generarPdfCotizacion(cotizacion, negocioConfig) {
     // trata un Uint8Array plano como objeto JSON en vez de binario, así
     // que se envuelve explícitamente antes de devolverlo a cualquier
     // llamador (guardarArchivo, res.send, etc.).
-    return Buffer.from(bytes);
+    const buffer = Buffer.from(bytes);
+    if (buffer.length > PDF_TAMANO_MAXIMO_BYTES) {
+      console.error(`[cotizacionPdf] PDF generado (${buffer.length} bytes) excede el máximo de ${PDF_TAMANO_MAXIMO_BYTES} bytes -- rechazado`);
+      throw new Error('El PDF generado excede el tamaño máximo permitido');
+    }
+    return buffer;
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
+}
+
+export function generarPdfCotizacion(cotizacion, negocioConfig) {
+  return serializarGeneracion(() => generarPdfCotizacionInterno(cotizacion, negocioConfig));
 }

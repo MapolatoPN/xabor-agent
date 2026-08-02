@@ -152,11 +152,23 @@ Confirmado en §2: `no_contratado` para todo negocio tras la migración
 026. **Nunca se activa solo** — requiere una acción explícita de
 Superadmin.
 
-**Comando recomendado para activar únicamente el negocio piloto**
+**Negocio piloto confirmado: Alora Florería y Eventos**
+(`slug = 'alora-floreria-y-eventos'`, ver migración 015) — encaja bien
+como piloto de cotizaciones (florería/eventos es exactamente el caso de
+uso de eventos/catering para el que se diseñó el módulo). No se usa un
+`negocioId` fijo aquí porque el UUID real varía por base de datos
+(producción vs local); se resuelve por su slug único antes de activar:
+
+```sql
+-- Confirmar el negocioId real de Alora en producción antes del PATCH
+SELECT id, nombre, slug FROM negocios WHERE slug = 'alora-floreria-y-eventos';
+```
+
+**Comando para activar únicamente ese negocio**
 (vía el endpoint ya existente, no SQL directo contra producción):
 
 ```
-PATCH /api/superadmin/negocios/:negocioPilotoId/modulos
+PATCH /api/superadmin/negocios/:negocioIdDeAlora/modulos
 Body: { "modulo": "cotizaciones", "estado": "activo" }
 ```
 (repetir para `generador_cotizaciones` y `chat_documentos_pdf` si el
@@ -166,41 +178,51 @@ cotizaciones).
 Ningún otro negocio se ve afectado — cada fila de `negocio_modulos` es
 independiente por `(negocio_id, modulo)`.
 
-## 5. Límites temporales propuestos (para autorización, no aplicados aún)
+## 5. Límites temporales — implementados y verificados
 
-### 5.1 Una generación de PDF concurrente
+### 5.1 Una generación de PDF concurrente — IMPLEMENTADO
 
-**Gap real detectado**: hoy no existe ningún límite de concurrencia ni
+**Gap real detectado**: no existía ningún límite de concurrencia ni
 `rateLimitMiddleware` sobre `GET /api/cotizaciones/:id/pdf` ni sobre el
 envío (`POST /api/cotizaciones/:id/enviar`, que también genera el PDF).
-Dos cotizaciones grandes generándose al mismo tiempo lanzan dos procesos
-Chromium simultáneos — exactamente el escenario de riesgo ya señalado
-para el bot de WhatsApp.
+Dos cotizaciones grandes generándose al mismo tiempo lanzaban dos
+procesos Chromium simultáneos — el mismo escenario de riesgo ya
+señalado para el bot de WhatsApp.
 
-**Propuesta concreta** (no aplicada, lista para autorizar): un mutex en
-proceso en `cotizacionPdf.js` que serialice las llamadas a
-`generarPdfCotizacion` — la segunda solicitud espera a que la primera
-termine en vez de lanzar un segundo Chromium en paralelo. Es un cambio
-de ~15 líneas, sin nueva dependencia (una cola simple con promesas).
-Limitación conocida y aceptada para el piloto: en memoria de un solo
-proceso, igual criterio que el rate limiting ya existente en el resto
-del sistema.
+**Implementado** en `src/services/cotizacionPdf.js`: una cola en memoria
+(`colaGeneracion`, encadenamiento de promesas) que serializa todas las
+llamadas a `generarPdfCotizacion` — la segunda solicitud espera a que la
+primera termine en vez de lanzar un segundo Chromium en paralelo.
+~20 líneas, sin nueva dependencia. Limitación conocida y aceptada para
+el piloto: en memoria de un solo proceso, mismo criterio que el rate
+limiting ya existente en el resto del sistema.
 
-### 5.2 Tamaño máximo de PDF / partidas
+### 5.2 Tamaño máximo de PDF / partidas — IMPLEMENTADO
 
 **Gap real detectado**: `POST /api/cotizaciones` y `PATCH
-/api/cotizaciones/:id` no tienen límite superior de `items.length` (solo
-exigen al menos 1). Una cotización con cientos de partidas generaría un
+/api/cotizaciones/:id` no tenían límite superior de `items.length` (solo
+exigían al menos 1). Una cotización con cientos de partidas generaría un
 PDF grande y una renderización lenta.
 
-**Propuesta**: límite de **50 partidas por cotización** (generoso para
-el caso de uso real de eventos/catering) devuelto como `400` si se
-excede, más un límite de tamaño de salida del PDF ya generado (rechazar
-y loguear si supera **5 MB** — un PDF de cotización normal pesa
-~100-150KB según el benchmark real de esta sesión, 5MB ya sería
-anómalo).
+**Implementado**: `COTIZACION_ITEMS_MAXIMO = 50` en `src/server.js`,
+devuelve `400` si se excede en creación o edición. Más un límite de
+tamaño de salida del PDF ya generado en `cotizacionPdf.js`
+(`PDF_TAMANO_MAXIMO_MB`, default **5 MB**, configurable por variable de
+entorno) — rechaza y loguea si el PDF generado supera ese tamaño; un PDF
+de cotización normal pesa ~100-150KB según el benchmark real de esta
+sesión, 5MB ya sería anómalo.
 
-### 5.3 Almacenamiento local tratado como temporal
+### 5.3 Verificación de los límites (regresión completa, dos bases nuevas)
+
+Con ambos límites ya en el código, se corrió la batería completa de
+nuevo en dos contenedores Postgres Docker frescos e independientes
+(migraciones 001-026 + seed, sin reutilizar ninguna base de corridas
+anteriores): **336/336 pruebas pasadas en ambas bases**, incluyendo
+`fase-cotizaciones.mjs` (11/11) y `fase-documentos-pdf.mjs` (13/13), las
+suites que ejercitan directamente el código modificado. Cero
+regresiones.
+
+### 5.4 Almacenamiento local tratado como temporal
 
 El piloto usa `STORAGE_DRIVER=local` (default de `almacenamiento.js`,
 sin cambios de código). **Se documenta explícitamente como temporal**:
@@ -213,7 +235,7 @@ localmente; la migración a Cloudflare R2 (ya diseñada, `STORAGE_DRIVER=s3`,
 sin cambios de código, ver `docs/decision-puppeteer-vs-pdfkit.md` §5)
 queda como el siguiente paso, no bloqueante para este piloto.
 
-### 5.4 Ninguna activación automática para otros negocios
+### 5.5 Ninguna activación automática para otros negocios
 
 Ya es el comportamiento real (§4) — se documenta aquí como límite
 operativo explícito: **ningún proceso automatizado activa módulos**, la
@@ -299,26 +321,21 @@ sobre `main`).
 
 No se ha tocado Railway, no se activó ningún módulo en producción, no se
 instaló ni ejecutó nada contra datos reales, no se hizo merge a `main`.
-Decisiones que siguen pendientes de tu autorización (no técnicas, o
+Decisión que sigue pendiente de tu autorización (no técnica, y
 explícitamente fuera de mi autonomía):
 
-1. **Negocio piloto real**: cuál negocio de producción será el elegido
-   — decisión de negocio, requiere su `negocioId` real para el comando
-   de activación (§4).
-2. **Límites temporales de §5**: autorizar aplicarlos (son ~15-20 líneas
-   de cambio, sin nueva dependencia: mutex de concurrencia + límites de
-   tamaño) — no aplicados aún, listos para implementar en cuanto se
-   autorice.
-3. **Deploy a producción**: migraciones 025/026 sobre la base real,
+1. **Deploy a producción**: migraciones 025/026 sobre la base real,
    configurar Railway para build por Dockerfile, activar el módulo para
-   el negocio piloto elegido — nada de esto se ejecuta sin tu
-   autorización explícita, incluso después del push de la rama.
+   Alora (negocio piloto ya confirmado, §4) — nada de esto se ejecuta
+   sin tu autorización explícita, incluso después del push de la rama.
 
-Resueltas de forma autónoma en esta sesión (documentadas arriba con
-razón y alternativas descartadas, no requieren tu confirmación salvo que
-quieras revisarlas):
+Resueltas de forma autónoma o confirmadas por ti en esta sesión
+(documentadas arriba con razón y alternativas descartadas):
 - Espacio en disco (§3): limpieza de Docker + compactación de VHDX.
 - Puppeteer vs PDFKit (§3.1): mantener Puppeteer, verificado
   empíricamente, PDFKit queda como mejora futura no bloqueante.
-- Push de la rama de release: autorizado por la regla de autonomía una
-  vez verde toda verificación pedida.
+- Negocio piloto (§4): Alora Florería y Eventos, confirmado por ti.
+- Límites temporales (§5): implementados (mutex de concurrencia + tope
+  de 50 partidas + tope de 5MB de PDF) y verificados con 336/336
+  pruebas en dos bases Docker frescas.
+- Push de la rama de release: confirmado por ti y ejecutado.

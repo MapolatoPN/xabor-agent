@@ -2142,6 +2142,11 @@ app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_docume
 });
 
 // ─── Cotizaciones ──────────────────────────────────────────────────────────────
+// Límite temporal del piloto: generoso para el caso de uso real de
+// eventos/catering/florería, pero evita una cotización con cientos de
+// partidas (PDF grande, renderización lenta en Chromium).
+const COTIZACION_ITEMS_MAXIMO = 50;
+
 app.get('/api/cotizaciones', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const cotizaciones = await listarCotizaciones(req.negocioId, { telefono: req.query.telefono || null });
   res.json(cotizaciones);
@@ -2160,6 +2165,7 @@ app.post('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'),
   const pertenencia = await obtenerPertenenciaConversacion(telefono, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'El cliente pertenece a otro negocio' });
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Al menos un item requerido' });
+  if (items.length > COTIZACION_ITEMS_MAXIMO) return res.status(400).json({ error: `Máximo ${COTIZACION_ITEMS_MAXIMO} partidas por cotización` });
   try {
     const cotizacion = await crearCotizacion({
       negocioId: req.negocioId, telefono, createdBy: req.usuarioId, evento, vigenciaHasta,
@@ -2177,6 +2183,7 @@ app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizacion
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
   const { evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
+  if (Array.isArray(items) && items.length > COTIZACION_ITEMS_MAXIMO) return res.status(400).json({ error: `Máximo ${COTIZACION_ITEMS_MAXIMO} partidas por cotización` });
   try {
     const cotizacion = await actualizarCotizacion(req.params.id, req.negocioId, { evento, vigenciaHasta, anticipoRequerido, notas, terminos }, items || null, impuestosPct);
     res.json(cotizacion);
