@@ -1029,6 +1029,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="bot-whatsapp-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">💳 Métodos de pago</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Esto es lo que el bot puede realmente ofrecer al cliente. "Enlace de pago" solo aparece disponible cuando Soporte/Superadmin configura y marca principal un proveedor real (Clip, etc.) — no se activa aquí.</div>
+      <div id="metodos-pago-form"></div>
+      <div id="metodos-pago-fb" style="font-size:0.85rem;margin-top:8px;"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
       <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
       <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
@@ -2092,6 +2098,7 @@ function mostrarTab(tab) {
     cargarReglasForm();
     cargarIntegracionesPanel();
     cargarBotWhatsappPanel();
+    cargarMetodosPagoPanel();
     if (MODULOS.includes('facturacion')) {
       cargarInfoCertSAT();
     } else {
@@ -3165,7 +3172,8 @@ function renderReglasForm(reglas) {
     <textarea id="reg-notas" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.notas||'').replace(/</g,'&lt;')}</textarea>
 
     <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Pagos</div>
-    <label style="${campo()}">Métodos de pago aceptados</label>
+    <div style="font-size:0.75rem;color:#888;margin-bottom:8px;">Esta lista ya no decide qué le ofrece el bot al cliente (eso ahora depende de "Config → Métodos de pago", que verifica que el proveedor esté realmente configurado). Se conserva solo para notas/instrucciones de referencia.</div>
+    <label style="${campo()}">Métodos de pago aceptados (referencia)</label>
     <div>${pagosHtml}</div>
     <label style="${campo()}">Instrucciones de pago para el cliente (opcional)</label>
     <textarea id="reg-pago-instrucciones" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.pago_instrucciones||'').replace(/</g,'&lt;')}</textarea>
@@ -3775,6 +3783,68 @@ async function cargarBotWhatsappPanel() {
       <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Pausar atención automática' : 'Activar atención automática'}</button>
     `;
   } catch {}
+}
+
+// ── Métodos de pago (arquitectura multiempresa) ─────────────────────────────
+const NOMBRES_METODO_PAGO = {
+  efectivo: 'Efectivo', terminal: 'Terminal (tarjeta presente)', enlace_pago: 'Enlace de pago (Clip u otro proveedor)',
+  transferencia: 'Transferencia bancaria', pago_en_sucursal: 'Pago en sucursal', otro_autorizado: 'Otro autorizado',
+};
+async function cargarMetodosPagoPanel() {
+  const cont = document.getElementById('metodos-pago-form');
+  if (!cont) return;
+  try {
+    const r = await apiFetch('/api/admin/metodos-pago');
+    if (!r.ok) { cont.innerHTML = ''; return; }
+    const { metodos } = await r.json();
+    if (!metodos.length) {
+      cont.innerHTML = '<div style="color:#aaa;font-size:0.85rem;">Sin métodos de pago configurados todavía. Escríbenos si necesitas que los habilitemos.</div>';
+      return;
+    }
+    cont.innerHTML = metodos.map(m => {
+      const esEnlace = m.tipo === 'enlace_pago';
+      const esTransferencia = m.tipo === 'transferencia';
+      const instr = m.instrucciones || {};
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0efe9;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:0.88rem;${esEnlace ? 'color:#999;' : ''}">
+            <input type="checkbox" id="mp-${m.tipo}" ${m.habilitado ? 'checked' : ''} ${esEnlace ? 'disabled' : ''} onchange="guardarMetodoPagoPanel('${m.tipo}')">
+            ${NOMBRES_METODO_PAGO[m.tipo] || m.tipo}
+          </label>
+          ${esEnlace ? `<span style="font-size:0.75rem;color:#999;">${m.habilitado ? '✅ disponible' : 'sin proveedor configurado'}</span>` : ''}
+        </div>
+        ${esTransferencia ? `
+          <div id="mp-transferencia-detalle" style="margin:8px 0 4px;padding:10px;background:#f7f7f9;border-radius:8px;">
+            <input type="text" id="mp-transferencia-titular" placeholder="Titular de la cuenta" value="${escaparHTML(instr.titular||'')}" style="${inp()}">
+            <input type="text" id="mp-transferencia-banco" placeholder="Banco" value="${escaparHTML(instr.banco||'')}" style="${inp()}">
+            <input type="text" id="mp-transferencia-clabe" placeholder="CLABE / número de cuenta" value="${escaparHTML(instr.clabe||'')}" style="${inp()}">
+            <button onclick="guardarMetodoPagoPanel('transferencia')" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;">Guardar datos de transferencia</button>
+          </div>
+        ` : ''}
+      `;
+    }).join('');
+  } catch {}
+}
+
+async function guardarMetodoPagoPanel(tipo) {
+  const fb = document.getElementById('metodos-pago-fb');
+  const habilitado = document.getElementById(`mp-${tipo}`)?.checked ?? true;
+  const body = { habilitado };
+  if (tipo === 'transferencia') {
+    body.instrucciones = {
+      titular: document.getElementById('mp-transferencia-titular')?.value.trim() || '',
+      banco: document.getElementById('mp-transferencia-banco')?.value.trim() || '',
+      clabe: document.getElementById('mp-transferencia-clabe')?.value.trim() || '',
+    };
+  }
+  if (fb) { fb.style.color = '#aaa'; fb.textContent = 'Guardando...'; }
+  const r = await apiFetch(`/api/admin/metodos-pago/${tipo}`, { method: 'PUT', body: JSON.stringify(body) });
+  if (r.ok) {
+    if (fb) { fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado'; setTimeout(() => { fb.textContent = ''; }, 2500); }
+  } else {
+    if (fb) { fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar'; }
+    cargarMetodosPagoPanel();
+  }
 }
 
 async function cambiarBotWhatsappPanel(nuevoValor) {
