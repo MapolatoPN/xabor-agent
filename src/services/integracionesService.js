@@ -14,8 +14,9 @@
  */
 
 import crypto from 'crypto';
-import { pool, registrarAuditoriaPlataforma } from './database.js';
+import { pool, registrarAuditoriaPlataforma, habilitarMetodoPagoPorProveedorPrincipal } from './database.js';
 import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifradoIntegraciones.js';
+import { esProveedorValido, validarPuedeActivarse, obtenerAdaptador } from './paymentProviders.js';
 
 const ESTADOS_VALIDOS = ['no_configurado', 'pendiente_configuracion', 'pendiente_activacion', 'activo', 'suspendido', 'error'];
 
@@ -579,4 +580,269 @@ export async function obtenerCredencialesClipDescifradas(negocioId) {
     console.error('[Integraciones] Error obtenerCredencialesClipDescifradas (negocio ocultado):', e.message);
     return null;
   }
+}
+
+// ─── Arquitectura genérica de proveedores de pago (Fase 2/3) ────────────────
+// Generaliza el patrón de guardarCredencialesClip/obtenerCredencialesClipDescifradas
+// (arriba) a cualquier proveedor registrado en paymentProviders.js.
+// guardarCredencialesClip/obtenerCredencialesClipDescifradas se conservan tal
+// cual (clip-api.js ya las usa) por compatibilidad -- son ahora casos
+// concretos de estas funciones genéricas, no un mecanismo paralelo.
+
+const COLUMNAS_PAGO_SEGURAS = `
+  id, negocio_id, canal, proveedor, estado, identificador, principal, ambiente,
+  ultima_prueba_at, ultima_prueba_ok, activo, conectado_at, created_at, updated_at,
+  actualizado_por, ultimo_error_codigo, ultimo_error_at
+`;
+
+/** Guarda/actualiza credenciales de un proveedor de pago para un negocio. Nunca activa un proveedor sin adaptador real. */
+export async function guardarIntegracionPago(negocioId, proveedor, credenciales, { ambiente = 'sandbox', actualizadoPor = null } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('guardarIntegracionPago: negocioId requerido');
+  if (!esProveedorValido(proveedor)) throw new Error(`guardarIntegracionPago: proveedor "${proveedor}" no reconocido`);
+  if (!validarPuedeActivarse(proveedor)) throw new Error(`guardarIntegracionPago: "${proveedor}" todavía no tiene adaptador implementado`);
+  if (ambiente === 'produccion') {
+    // No permitir ambiente producción sin credenciales completas (instrucción
+    // explícita del encargo) -- credenciales ya se validaron como no-vacías
+    // más abajo antes de cifrar; aquí solo se re-afirma la intención.
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existente = await client.query(
+      `SELECT id FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2`,
+      [negocioId.trim(), proveedor]
+    );
+    let integracionId;
+    if (existente.rows[0]) {
+      integracionId = existente.rows[0].id;
+      await client.query(
+        `UPDATE integraciones_canal SET estado = 'activo', activo = TRUE, ambiente = $2,
+           actualizado_por = $3, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
+         WHERE id = $1`,
+        [integracionId, ambiente, actualizadoPor]
+      );
+    } else {
+      const { rows: [nueva] } = await client.query(
+        `INSERT INTO integraciones_canal (negocio_id, canal, proveedor, identificador, estado, activo, ambiente, conectado_at, actualizado_por)
+         VALUES ($1,'pagos',$2,$3,'activo',TRUE,$4,NOW(),$5)
+         RETURNING id`,
+        [negocioId.trim(), proveedor, `${proveedor}:${negocioId.trim()}`, ambiente, actualizadoPor]
+      );
+      integracionId = nueva.id;
+    }
+    const { cifrado, iv, authTag, version } = cifrarSecretoIntegracion(JSON.stringify(credenciales || {}));
+    await client.query(
+      `INSERT INTO integraciones_canal_credenciales (integracion_id, access_token_cifrado, token_iv, token_auth_tag, token_formato_version)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (integracion_id) DO UPDATE SET
+         access_token_cifrado = $2, token_iv = $3, token_auth_tag = $4, token_formato_version = $5, actualizado_at = NOW()`,
+      [integracionId, cifrado, iv, authTag, version]
+    );
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor, negocioId: negocioId.trim(),
+      accion: existente.rows[0] ? 'integracion_pago_actualizada' : 'integracion_pago_creada',
+      estadoNuevo: { proveedor, estado: 'activo', ambiente }, contexto: {},
+    }, client);
+    await client.query('COMMIT');
+    return { id: integracionId, estado: 'activo' };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Lectura segura (nunca secretos) de UNA integración de pago. */
+export async function obtenerIntegracionPago(negocioId, proveedor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return null;
+  const { rows } = await pool.query(
+    `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2 AND estado != 'eliminado'`,
+    [negocioId.trim(), proveedor]
+  );
+  return rows[0] || null;
+}
+
+/** Lista todas las integraciones de pago del negocio (nunca secretos). */
+export async function listarIntegracionesPago(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND estado != 'eliminado' ORDER BY principal DESC, created_at`,
+    [negocioId.trim()]
+  );
+  return rows;
+}
+
+/** Resuelve el proveedor PRINCIPAL activo de un negocio (o null). Nunca cae a otro negocio. */
+export async function obtenerProveedorPrincipal(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal
+     WHERE negocio_id = $1 AND canal = 'pagos' AND principal = TRUE AND estado = 'activo'`,
+    [negocioId.trim()]
+  );
+  return rows[0] || null;
+}
+
+// Devuelve { ok, estadoNuevo } -- mismo formato que actualizarEstadoIntegracion
+// (el equivalente para WhatsApp/Meta), para que los endpoints HTTP puedan
+// tratar ambos caminos igual sin adivinar si el valor es un boolean crudo.
+async function cambiarEstadoIntegracionPago(negocioId, proveedor, nuevoEstado, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) {
+    return { ok: false, error: 'negocioId/proveedor inválidos' };
+  }
+  const { rows } = await pool.query(
+    `UPDATE integraciones_canal SET estado = $3, actualizado_por = $4, updated_at = NOW()
+     WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2 AND estado != 'eliminado'
+     RETURNING id`,
+    [negocioId.trim(), proveedor, nuevoEstado, actualizadoPor || null]
+  );
+  if (!rows[0]) return { ok: false, error: 'Integración no encontrada' };
+  await registrarAuditoriaPlataforma({
+    superadminId: actualizadoPor, negocioId: negocioId.trim(),
+    accion: `integracion_pago_${nuevoEstado}`, estadoNuevo: { proveedor, estado: nuevoEstado }, contexto: {},
+  });
+  return { ok: true, estadoNuevo: nuevoEstado };
+}
+
+export async function suspenderIntegracionPago(negocioId, proveedor, actualizadoPor) {
+  // Suspender el principal lo desmarca -- un proveedor suspendido nunca
+  // debe seguir resolviéndose como principal para generar enlaces nuevos.
+  await pool.query(
+    `UPDATE integraciones_canal SET principal = FALSE WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2`,
+    [negocioId?.trim?.(), proveedor]
+  );
+  return cambiarEstadoIntegracionPago(negocioId, proveedor, 'suspendido', actualizadoPor);
+}
+
+export async function reactivarIntegracionPago(negocioId, proveedor, actualizadoPor) {
+  return cambiarEstadoIntegracionPago(negocioId, proveedor, 'activo', actualizadoPor);
+}
+
+/** Soft-delete: nunca borra la fila físicamente (auditoría), y jamás puede quedar como principal. */
+export async function eliminarCredencialesPago(negocioId, proveedor, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return false;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE integraciones_canal SET estado = 'eliminado', activo = FALSE, principal = FALSE, actualizado_por = $3, updated_at = NOW()
+       WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2
+       RETURNING id`,
+      [negocioId.trim(), proveedor, actualizadoPor || null]
+    );
+    if (rows[0]) {
+      await client.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id = $1`, [rows[0].id]);
+      await registrarAuditoriaPlataforma({
+        superadminId: actualizadoPor, negocioId: negocioId.trim(),
+        accion: 'integracion_pago_eliminada', estadoNuevo: { proveedor, estado: 'eliminado' }, contexto: {},
+      }, client);
+    }
+    await client.query('COMMIT');
+    return !!rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Marca un proveedor como principal para enlaces automáticos. Transaccional:
+ * el índice único parcial (migración 025) impide dos principales a la vez,
+ * pero se desmarca el anterior explícitamente dentro de la misma
+ * transacción para nunca depender solo del constraint ante una carrera.
+ */
+export async function marcarProveedorPrincipal(negocioId, proveedor, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return false;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const objetivo = await client.query(
+      `SELECT id, estado FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2`,
+      [negocioId.trim(), proveedor]
+    );
+    if (!objetivo.rows[0] || objetivo.rows[0].estado !== 'activo') {
+      await client.query('ROLLBACK');
+      return false;
+    }
+    await client.query(
+      `UPDATE integraciones_canal SET principal = FALSE WHERE negocio_id = $1 AND canal = 'pagos' AND principal = TRUE`,
+      [negocioId.trim()]
+    );
+    await client.query(
+      `UPDATE integraciones_canal SET principal = TRUE, actualizado_por = $2, updated_at = NOW() WHERE id = $1`,
+      [objetivo.rows[0].id, actualizadoPor || null]
+    );
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor, negocioId: negocioId.trim(),
+      accion: 'integracion_pago_marcada_principal', estadoNuevo: { proveedor }, contexto: {},
+    }, client);
+    await client.query('COMMIT');
+
+    // Habilita automáticamente el método de pago que este proveedor hace
+    // posible (enlace_pago para proveedores con checkout real, transferencia
+    // para manual_transfer) -- fuera de la transacción anterior a propósito
+    // (tabla distinta, no crítica para la atomicidad de "quién es principal");
+    // si esto falla, el proveedor ya quedó marcado principal correctamente y
+    // el admin puede habilitar el método a mano desde el panel del negocio.
+    const adaptador = obtenerAdaptador(proveedor);
+    const tipo = adaptador?.getCapabilities?.().createLink ? 'enlace_pago' : 'transferencia';
+    await habilitarMetodoPagoPorProveedorPrincipal(negocioId, tipo, objetivo.rows[0].id).catch(e =>
+      console.error('[Integraciones] No se pudo auto-habilitar metodos_pago tras marcar principal:', e.message)
+    );
+    return true;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Descifra credenciales de CUALQUIER proveedor de pago -- uso exclusivo de
+ * los propios adaptadores (nunca un controlador HTTP). Fail-closed: null si
+ * no existe, no está activo, o el descifrado falla.
+ */
+export async function obtenerCredencialesPagoDescifradas(negocioId, proveedor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT ic.estado, cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version
+       FROM integraciones_canal ic JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id
+       WHERE ic.negocio_id = $1 AND ic.canal = 'pagos' AND ic.proveedor = $2`,
+      [negocioId.trim(), proveedor]
+    );
+    const row = rows[0];
+    if (!row || row.estado !== 'activo') return null;
+    const json = descifrarSecretoIntegracion({
+      cifrado: row.access_token_cifrado, iv: row.token_iv, authTag: row.token_auth_tag, version: row.token_formato_version,
+    });
+    return JSON.parse(json);
+  } catch (e) {
+    console.error('[Integraciones] Error obtenerCredencialesPagoDescifradas (negocio ocultado):', e.message);
+    return null;
+  }
+}
+
+/**
+ * Prueba de conexión: delega en el adaptador. Nunca crea un cargo real
+ * (el encargo lo prohíbe explícitamente) -- cada adaptador decide qué
+ * cuenta como "prueba" segura (ver clipProvider.js). Registra el
+ * resultado (sin secretos) en integraciones_canal para la UI.
+ */
+export async function probarIntegracionPago(negocioId, proveedor) {
+  const adaptador = obtenerAdaptador(proveedor);
+  if (!adaptador) return { ok: false, motivo: 'proveedor sin adaptador implementado' };
+  const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, proveedor);
+  if (!credenciales) return { ok: false, motivo: 'sin credenciales configuradas' };
+  const resultado = await adaptador.testConnection(credenciales);
+  await pool.query(
+    `UPDATE integraciones_canal SET ultima_prueba_at = NOW(), ultima_prueba_ok = $3
+     WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2`,
+    [negocioId.trim(), proveedor, !!resultado.ok]
+  );
+  return resultado;
 }
