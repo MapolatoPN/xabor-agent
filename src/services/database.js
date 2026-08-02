@@ -1398,6 +1398,218 @@ export async function obtenerPagosPendientesConLink() {
   }
 }
 
+// ─── Tabla `pagos` (Fase 9/10/11 -- arquitectura de pagos multiempresa) ──────
+// Reemplaza, para pagos NUEVOS, el JSONB suelto de pedidos_activos.datos
+// (forma_pago/clip_link_id/pago_confirmado) por una fuente de verdad real
+// con idempotencia y versión del pedido. Los campos legacy en
+// pedidos_activos.datos NO se tocan -- pedidos ya en curso al desplegar
+// esto siguen funcionando exactamente igual.
+export function calcularVersionPedidoHash(pedido) {
+  // Hash de (total, modalidad) -- pedidos_activos no tiene una columna de
+  // versión real y no se le agrega una (tabla protegida, ver CLAUDE.md).
+  // El ejemplo del encargo (domicilio $560 vs recoger $500) ya queda
+  // cubierto: cambiar modalidad implica un total distinto en la práctica.
+  const base = `${Number(pedido?.total || 0).toFixed(2)}|${pedido?.modalidad || ''}`;
+  return createHash('sha256').update(base).digest('hex').slice(0, 16);
+}
+
+/** Pago "vigente" (creando/pendiente) para un pedido+tipo, o null. Nunca cruza negocio. */
+// 'requiere_revision' cuenta como vigente (transferencia manual sin
+// conciliar todavía) -- sin esto, una transferencia pedida dos veces
+// generaría una fila nueva cada vez en vez de reutilizar/informar la
+// misma instrucción pendiente de revisión.
+export async function obtenerPagoVigente(negocioId, pedidoFolio, tipo = 'enlace_pago') {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos WHERE negocio_id = $1 AND pedido_folio = $2 AND tipo = $3 AND estado IN ('creando','pendiente','requiere_revision')`,
+    [negocioId.trim(), pedidoFolio, tipo]
+  );
+  return rows[0] || null;
+}
+
+export async function crearRegistroPago({ negocioId, pedidoFolio, clienteTelefono, proveedor, integracionId, referenciaInterna, tipo = 'enlace_pago', moneda = 'MXN', monto, versionPedidoHash, idempotencyKey, createdBy }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearRegistroPago: negocioId requerido');
+  const { rows } = await pool.query(`
+    INSERT INTO pagos (negocio_id, pedido_folio, cliente_telefono, proveedor, integracion_id, referencia_interna, tipo, moneda, monto, version_pedido_hash, idempotency_key, created_by, estado)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'creando')
+    RETURNING *
+  `, [negocioId.trim(), pedidoFolio, clienteTelefono, proveedor, integracionId, referenciaInterna, tipo, moneda, monto, versionPedidoHash, idempotencyKey || null, createdBy || null]);
+  return rows[0];
+}
+
+export async function actualizarPagoCreado(pagoId, { referenciaExterna, url, estado }) {
+  const { rows } = await pool.query(
+    `UPDATE pagos SET referencia_externa = $2, url = $3, estado = $4 WHERE id = $1 RETURNING *`,
+    [pagoId, referenciaExterna || null, url || null, estado]
+  );
+  return rows[0] || null;
+}
+
+export async function marcarPagoFallido(pagoId, motivo) {
+  await pool.query(`UPDATE pagos SET estado = 'fallido', metadata_sanitizada = metadata_sanitizada || $2::jsonb WHERE id = $1`,
+    [pagoId, JSON.stringify({ motivo_fallo: motivo })]);
+}
+
+/** Invalida todo pago vigente de un pedido (Fase 11): el pedido cambió, el enlace ya no es válido. Nunca se reutiliza. */
+export async function invalidarPagosVigentesDePedido(negocioId, pedidoFolio, motivo) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return 0;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = 'invalidado', invalidated_at = NOW(), motivo_invalidacion = $3
+     WHERE negocio_id = $1 AND pedido_folio = $2 AND estado IN ('creando','pendiente','requiere_revision')`,
+    [negocioId.trim(), pedidoFolio, motivo || 'pedido modificado']
+  );
+  return rowCount;
+}
+
+/** Lee un pago por negocio+referencia interna -- para el webhook: NUNCA busca solo por referencia global. */
+export async function obtenerPagoPorReferenciaInterna(negocioId, referenciaInterna) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos WHERE negocio_id = $1 AND referencia_interna = $2`,
+    [negocioId.trim(), referenciaInterna]
+  );
+  return rows[0] || null;
+}
+
+/** Confirma un pago de forma idempotente (segunda notificación del mismo evento no duplica ni retrocede el estado). */
+export async function confirmarPagoIdempotente(pagoId, { referenciaExterna } = {}) {
+  const { rows } = await pool.query(
+    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()), referencia_externa = COALESCE($2, referencia_externa)
+     WHERE id = $1 AND estado NOT IN ('pagado','cancelado','invalidado','reembolsado')
+     RETURNING *`,
+    [pagoId, referenciaExterna || null]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Conciliación manual de transferencia (Fase 12/13): a diferencia de
+ * confirmarPagoIdempotente (uso interno del webhook de Clip, sin
+ * negocio_id en el WHERE porque el negocio ya se resolvió antes de
+ * llamarla), esta función SÍ exige negocio_id -- se expone directo a un
+ * endpoint HTTP de admin, así que sin ese filtro un admin de un negocio
+ * podría confirmar (o cancelar) el pago de otro con solo adivinar un
+ * pagoId. Restringida a tipo='transferencia' y estado='requiere_revision'
+ * -- nunca se usa para "saltarse" la verificación real de un enlace Clip.
+ */
+export async function confirmarPagoManual(negocioId, pagoId, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW())
+     WHERE id = $1 AND negocio_id = $2 AND tipo = 'transferencia' AND estado = 'requiere_revision'
+     RETURNING *`,
+    [pagoId, negocioId.trim()]
+  );
+  if (rows[0]) {
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor, negocioId: negocioId.trim(),
+      accion: 'pago_transferencia_confirmado_manual', estadoNuevo: { pagoId, estado: 'pagado' }, contexto: {},
+    });
+  }
+  return rows[0] || null;
+}
+
+export async function rechazarPagoManual(negocioId, pagoId, motivo, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `UPDATE pagos SET estado = 'cancelado', cancelled_at = NOW(), motivo_invalidacion = $3
+     WHERE id = $1 AND negocio_id = $2 AND tipo = 'transferencia' AND estado = 'requiere_revision'
+     RETURNING *`,
+    [pagoId, negocioId.trim(), motivo || 'no se recibió la transferencia']
+  );
+  if (rows[0]) {
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor, negocioId: negocioId.trim(),
+      accion: 'pago_transferencia_rechazado_manual', estadoNuevo: { pagoId, estado: 'cancelado' }, contexto: { motivo },
+    });
+  }
+  return rows[0] || null;
+}
+
+export async function listarPagosPorPedido(negocioId, pedidoFolio) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos WHERE negocio_id = $1 AND pedido_folio = $2 ORDER BY created_at DESC`,
+    [negocioId.trim(), pedidoFolio]
+  );
+  return rows;
+}
+
+// ─── Métodos de pago por negocio (Fase 6) ────────────────────────────────────
+const TIPOS_METODO_VALIDOS = ['efectivo', 'terminal', 'enlace_pago', 'transferencia', 'pago_en_sucursal', 'otro_autorizado'];
+
+export async function listarMetodosPagoNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM metodos_pago WHERE negocio_id = $1 ORDER BY orden, tipo`,
+    [negocioId.trim()]
+  );
+  return rows;
+}
+
+/**
+ * Habilita (nunca deshabilita) el método de pago que un proveedor recién
+ * marcado como principal hace posible -- sin esto, marcar Clip (o
+ * manual_transfer) como principal en Superadmin no bastaría para que el
+ * agente pueda ofrecerlo: metodos_pago.habilitado seguiría en FALSE hasta
+ * un segundo paso manual en el panel del negocio (el mismo tipo de brecha
+ * que causó el incidente original). Solo toca habilitado/integracion_id
+ * -- nunca pisa instrucciones/orden ya configuradas por el admin del
+ * negocio, y nunca deshabilita OTRO método (varios pueden convivir
+ * habilitados a la vez).
+ */
+export async function habilitarMetodoPagoPorProveedorPrincipal(negocioId, tipo, integracionId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !TIPOS_METODO_VALIDOS.includes(tipo)) return null;
+  const { rows } = await pool.query(`
+    INSERT INTO metodos_pago (negocio_id, tipo, habilitado, integracion_id)
+    VALUES ($1, $2, TRUE, $3)
+    ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE, integracion_id = $3, updated_at = NOW()
+    RETURNING *
+  `, [negocioId.trim(), tipo, integracionId || null]);
+  return rows[0] || null;
+}
+
+export async function guardarMetodoPagoNegocio(negocioId, tipo, cambios = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('guardarMetodoPagoNegocio: negocioId requerido');
+  if (!TIPOS_METODO_VALIDOS.includes(tipo)) throw new Error(`guardarMetodoPagoNegocio: tipo "${tipo}" inválido`);
+  const { habilitado = false, integracionId = null, instrucciones = {}, orden = 0, disponibleParaBot = true, disponibleParaOperador = true } = cambios;
+  const { rows } = await pool.query(`
+    INSERT INTO metodos_pago (negocio_id, tipo, habilitado, integracion_id, instrucciones, orden, disponible_para_bot, disponible_para_operador)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT (negocio_id, tipo) DO UPDATE SET
+      habilitado = $3, integracion_id = $4, instrucciones = $5, orden = $6,
+      disponible_para_bot = $7, disponible_para_operador = $8, updated_at = NOW()
+    RETURNING *
+  `, [negocioId.trim(), tipo, habilitado, integracionId, JSON.stringify(instrucciones), orden, disponibleParaBot, disponibleParaOperador]);
+  return rows[0];
+}
+
+/**
+ * Métodos REALMENTE disponibles para un negocio (Fase 6/7) -- fuente de
+ * verdad que reemplaza la lista libre reglas_atencion.pago_aceptado para
+ * decidir qué puede ofrecer el agente. enlace_pago solo se incluye si
+ * además hay un proveedor principal activo (nunca solo por estar
+ * "habilitado" en la config editable).
+ */
+export async function obtenerMetodosPagoDisponibles(negocioId, { paraBot = false } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(`
+    SELECT mp.tipo, mp.instrucciones, mp.disponible_para_bot, mp.disponible_para_operador,
+           ic.estado AS proveedor_estado, ic.proveedor
+    FROM metodos_pago mp
+    LEFT JOIN integraciones_canal ic ON ic.id = mp.integracion_id AND ic.principal = TRUE
+    WHERE mp.negocio_id = $1 AND mp.habilitado = TRUE
+    ORDER BY mp.orden
+  `, [negocioId.trim()]);
+  return rows
+    .filter(r => {
+      if (paraBot && !r.disponible_para_bot) return false;
+      if (r.tipo === 'enlace_pago') return r.proveedor_estado === 'activo';
+      return true;
+    })
+    .map(r => ({ tipo: r.tipo, instrucciones: r.tipo === 'transferencia' ? r.instrucciones : undefined }));
+}
+
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0, defensa en
 // profundidad): folios son secuenciales/adivinables, así que confirmar un
 // pago sin verificar dueño permitiría marcar como pagado el pedido de
@@ -3106,6 +3318,24 @@ export async function crearNegocioCompleto({ nombre, slugDeseado, nombrePropieta
       await client.query(
         `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)`,
         [negocio.id, modulo, estadoModulo]
+      );
+    }
+
+    // Métodos de pago por defecto (mismo criterio que el backfill de la
+    // migración 025 para negocios ya existentes): efectivo/terminal
+    // habilitados desde el día uno (funcionan sin ningún proveedor);
+    // enlace_pago/transferencia deshabilitados hasta que el negocio
+    // configure un proveedor real -- sin esto, cualquier negocio creado
+    // DESPUÉS de esa migración quedaría con metodos_pago vacío y el
+    // agente no podría ofrecer NINGUNA forma de pago (peor que el
+    // incidente original, que al menos dejaba efectivo/terminal).
+    const metodosBase = [
+      ['efectivo', true, 0], ['terminal', true, 1], ['enlace_pago', false, 2], ['transferencia', false, 3],
+    ];
+    for (const [tipo, habilitado, orden] of metodosBase) {
+      await client.query(
+        `INSERT INTO metodos_pago (negocio_id, tipo, habilitado, orden) VALUES ($1,$2,$3,$4)`,
+        [negocio.id, tipo, habilitado, orden]
       );
     }
 
