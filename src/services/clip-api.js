@@ -76,7 +76,7 @@ export async function consultarEstadoPago(linkId, negocioId) {
  * @returns {Promise<{ linkId: string, url: string, status: string }>}
  * @throws {ClipNoConfiguradoError} si el negocio no tiene Clip configurado/activo
  */
-export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {} }) {
+export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {}, referenciaExterna }) {
   const auth = await obtenerAuthHeader(negocioId);
 
   const baseUrl    = process.env.PUBLIC_URL || 'https://xabor.up.railway.app';
@@ -94,7 +94,13 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
     },
     webhook_url: webhookUrl,
     metadata: {
-      external_reference: String(pedidoId),
+      // referenciaExterna (Fase 12, arquitectura de pagos multiempresa):
+      // cuando el llamador es pagosService.js, aquí viaja
+      // "negocioId:folio:versionHash" en vez del folio suelto -- así el
+      // webhook de Clip puede resolver negocio_id sin adivinar ni
+      // depender de un pedido en memoria. Default = pedidoId para no
+      // romper ningún llamador legacy que todavía no pasa este campo.
+      external_reference: String(referenciaExterna || pedidoId),
       customer_info: {}
     }
   };
