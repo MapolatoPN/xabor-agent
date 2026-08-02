@@ -1,4 +1,4 @@
-import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion } from '../services/database.js';
+import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -113,6 +113,40 @@ const DESCRIPCIONES_PAGO = {
 export function formatearPagoTexto(pagoAceptado) {
   const metodos = Array.isArray(pagoAceptado) && pagoAceptado.length ? pagoAceptado : ['efectivo'];
   return metodos.map((m, i) => `  ${i + 1}. ${DESCRIPCIONES_PAGO[m] || m}`).join('\n');
+}
+
+// Fase 7 (arquitectura de pagos multiempresa): traduce el `tipo` técnico
+// de metodos_pago (efectivo/terminal/enlace_pago/transferencia) al texto
+// descriptivo que ya usa el prompt -- nunca se reinventa el wording.
+const TIPO_METODO_A_TEXTO_PAGO = {
+  efectivo: 'efectivo',
+  terminal: 'terminal (tarjeta presente)',
+  enlace_pago: 'enlace de pago',
+  transferencia: 'transferencia',
+  pago_en_sucursal: 'pago en sucursal',
+  otro_autorizado: 'otro método autorizado',
+};
+
+/**
+ * Fuente de verdad REAL de qué puede ofrecer el agente (Incidente:
+ * Alora ofrecía "enlace de pago" sin tener ningún proveedor configurado
+ * -- el backend lo bloqueaba, pero el agente nunca debió ofrecerlo).
+ * Nunca una lista fija en el prompt: se deriva de metodos_pago +
+ * integraciones_canal.principal en tiempo real, por negocio. Sin
+ * negocioId, o si el negocio no tiene ninguna fila en metodos_pago
+ * (nunca debería pasar tras la migración 025, pero se falla cerrado
+ * de todos modos), se usa el default más conservador (solo efectivo).
+ */
+export async function obtenerPagoAceptadoReal(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return ['efectivo'];
+  try {
+    const metodos = await obtenerMetodosPagoDisponibles(negocioId, { paraBot: true });
+    if (!metodos.length) return ['efectivo'];
+    return metodos.map(m => TIPO_METODO_A_TEXTO_PAGO[m.tipo] || m.tipo);
+  } catch (e) {
+    console.error(`[Prompts] Error obteniendo métodos de pago reales para ${negocioId}, usando default seguro:`, e.message);
+    return ['efectivo'];
+  }
 }
 
 // Fase A: negocioId obligatorio. Sin él, o si el JSON guardado está
@@ -277,6 +311,11 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
     ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
   const modalidadEnumTexto = modalidadesDisponibles.map(m => `"${m}"`).join(' | ');
   const bot = (reglas.bot && typeof reglas.bot === 'object') ? reglas.bot : {};
+  // Fase 7 (pagos multiempresa): NUNCA reglas.pedidos.pago_aceptado
+  // directo -- ese campo es editable libremente y fue la causa de que
+  // un negocio sin proveedor configurado apareciera ofreciendo "enlace
+  // de pago". La lista real sale de metodos_pago + proveedor principal.
+  const pagoAceptadoReal = await obtenerPagoAceptadoReal(negocioId);
   const cfg = await obtenerConfiguracion(negocioId).catch(() => ({}));
   const nombreNegocio = cfg.nombre || 'Restaurante Xabor';
   const nombreCorto   = cfg.nombre_corto || 'Xabor';
@@ -425,11 +464,12 @@ Solicita únicamente: nombre, teléfono (si no existe), tipo de entrega, direcci
 
 ## FORMA DE PAGO
 
-Pregunta al final, una sola vez:
-"¿Pagará con efectivo o con terminal o enlace de pago?"
+Pregunta al final, una sola vez, mencionando ÚNICAMENTE las opciones de la
+lista "Formas de pago aceptadas" de este prompt -- nunca menciones una
+forma de pago que no esté en esa lista.
 Si es efectivo: "¿Con cuánto pagará?"
 Di los precios SIEMPRE en palabras: "ciento setenta y nueve pesos", nunca "$179".
-Para enlace de pago: confirma el total. NO menciones el folio — el sistema lo anuncia automáticamente.
+Para enlace de pago (solo si está en la lista): confirma el total. NO menciones el folio — el sistema lo anuncia automáticamente.
 
 ## DESPEDIDA
 
@@ -515,11 +555,14 @@ Tu única función es tomar pedidos. Sigue este flujo en orden, sin saltarte pas
    - ENTREGA A DOMICILIO: pide TODOS los datos en un SOLO mensaje, así:
      "Para tu entrega necesito: nombre completo, teléfono, calle y número, colonia, y si tienes alguna referencia o entre qué calles (opcional)."
      Espera la respuesta del cliente y extrae todos los datos de ese mensaje. No hagas preguntas separadas para cada dato.
-5. Pregunta la forma de pago. Hazlo en un solo mensaje, así:
-   "¿Cómo vas a pagar? Tenemos tres opciones: efectivo, terminal bancaria móvil o enlace de pago."
-   - Si el cliente pregunta qué es el enlace de pago: "Te enviamos un link por aquí y pagas con tu tarjeta desde el teléfono, sin necesidad de tener la tarjeta física a la mano."
-   - Si el cliente dice "transferencia", "depósito" o variantes: "Disculpa, no manejamos transferencias ni depósitos bancarios. Pero el enlace de pago es muy similar — introduces los datos de tu tarjeta y el pago queda listo al instante. ¿Te lo enviamos?"
-   - Registra la forma de pago exactamente como: "efectivo", "terminal" o "enlace de pago".
+5. Pregunta la forma de pago. Hazlo en un solo mensaje, mencionando ÚNICAMENTE
+   las opciones listadas en "Formas de pago aceptadas" más abajo -- NUNCA
+   menciones "enlace de pago", "transferencia" ni ninguna otra forma que no
+   esté en esa lista, aunque la hayas visto en una conversación anterior o
+   en otro negocio.
+   - Si el cliente pregunta qué es el enlace de pago (y SÍ está en la lista): "Te enviamos un link por aquí y pagas con tu tarjeta desde el teléfono, sin necesidad de tener la tarjeta física a la mano."
+   - Si el cliente pide una forma de pago que NO está en la lista (transferencia, depósito, enlace de pago si no lo tienes, etc.): discúlpate, aclara que por ahora no la manejamos, ofrece únicamente las que sí están en la lista, y si el cliente insiste, incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta en vez de inventar una alternativa.
+   - Registra la forma de pago exactamente como aparece en la lista (p. ej. "efectivo", "terminal" o "enlace de pago").
    - Si el canal es WhatsApp y el cliente elige enlace de pago: NO digas "te enviamos el enlace en unos momentos". El sistema lo envía automáticamente. Solo confirma el pedido con normalidad.
    - Si el canal es VOZ y el cliente elige enlace de pago: confirma el pedido y el total. El sistema anuncia el folio automáticamente — NO lo menciones tú.
 6. Repite el pedido completo con desglose de precios y total
@@ -661,7 +704,7 @@ ${formatearMenu(categorias)}
 - Tiempo de entrega estimado: ${tiempoEntregaTexto}
 - Al confirmar un pedido de domicilio, SIEMPRE informa al cliente el tiempo de elaboración y que el repartidor saldrá en cuanto esté listo.
 - Formas de pago aceptadas (mencionarlas siempre así):
-${formatearPagoTexto(reglas.pedidos.pago_aceptado)}
+${formatearPagoTexto(pagoAceptadoReal)}
 - Si el cliente pide una forma de pago que no está en la lista de arriba, discúlpate y ofrece las que sí manejamos.
 ${reglas.pedidos.pago_instrucciones ? `- ${reglas.pedidos.pago_instrucciones}\n` : ''}${Array.isArray(reglas.pedidos.zonas_entrega) && reglas.pedidos.zonas_entrega.length ? `- Zonas de entrega y costo:\n${reglas.pedidos.zonas_entrega.map(z => `  - ${z.nombre}: $${z.costo} MXN`).join('\n')}\n` : ''}${typeof reglas.pedidos.entrega_gratis_desde === 'number' && reglas.pedidos.entrega_gratis_desde > 0 ? `- Entrega gratis en pedidos a domicilio de $${reglas.pedidos.entrega_gratis_desde} MXN o más.\n` : ''}${reglas.pedidos.notas ? `- ${reglas.pedidos.notas}\n` : ''}${reglas.politicas.map(p => `- ${p}`).join('\n')}
 ${bot.informacion_importante ? `\n## INFORMACIÓN IMPORTANTE DEL NEGOCIO\n${bot.informacion_importante}\n` : ''}${Array.isArray(bot.faqs) && bot.faqs.length ? `\n## PREGUNTAS FRECUENTES\n${bot.faqs.map(f => `P: ${f.pregunta}\nR: ${f.respuesta}`).join('\n\n')}\n` : ''}${Array.isArray(bot.respuestas_prohibidas) && bot.respuestas_prohibidas.length ? `\n## NUNCA DIGAS ESTO\n${bot.respuestas_prohibidas.map(r => `- ${r}`).join('\n')}\n` : ''}${bot.transferir_a_humano ? `\n## CUÁNDO TRANSFERIR A UNA PERSONA\n${bot.transferir_a_humano}\nSi aplica, incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta.\n` : ''}${Array.isArray(bot.palabras_criticas) && bot.palabras_criticas.length ? `\n## PALABRAS O ESCENARIOS CRÍTICOS\nSi el cliente menciona cualquiera de estos temas, responde con especial cuidado y considera transferir a una persona: ${bot.palabras_criticas.join(', ')}.\n` : ''}
