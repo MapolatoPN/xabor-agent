@@ -17,6 +17,7 @@ process.env.SESSION_SECRET = process.env.SESSION_SECRET; // usado también aquí
 const { crearState, validarYConsumirState } = await import('../src/services/embeddedSignupState.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool } = await import('../src/services/database.js');
+const { guardarCredencialesCifradas } = await import('../src/services/integracionesService.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -74,6 +75,74 @@ await t('STATE', 'state vencido se rechaza', () => {
 await t('STATE', 'sin state -> rechazado', () => {
   assert.strictEqual(validarYConsumirState(undefined), null);
   assert.strictEqual(validarYConsumirState(''), null);
+});
+
+// ── Unidad: intercambiarCodigoPorToken -- logging seguro del rechazo de Meta ──
+// Cubre el incidente real (Alora, 1 de agosto de 2026): Meta rechazaba el
+// intercambio code->token y el log anterior no decía por qué. Verifica que
+// ahora sí se registra código/tipo/mensaje (útil para diagnóstico) y que
+// nunca se filtra el code, el access_token, ni el cuerpo crudo completo.
+{
+  process.env.META_EMBEDDED_SIGNUP_MOCK = 'true';
+  const { intercambiarCodigoPorToken } = await import('../src/services/metaEmbeddedSignup.js');
+
+  await t('META-ERROR', 'intercambio exitoso simulado -> devuelve accessToken', async () => {
+    const r = await intercambiarCodigoPorToken('SIMULAR_EXITO');
+    assert.strictEqual(r.accessToken, 'SIMULATED_ACCESS_TOKEN_TEST');
+  });
+
+  await t('META-ERROR', 'rechazo de Meta -> el log registra código/tipo/mensaje, y el error lanzado nunca incluye el code ni el mensaje crudo de Meta', async () => {
+    const logsCapturados = [];
+    const originalError = console.error;
+    console.error = (...args) => logsCapturados.push(args.join(' '));
+    let errorLanzado = null;
+    try {
+      await intercambiarCodigoPorToken('SIMULAR_ERROR_META');
+      assert.fail('debía lanzar');
+    } catch (e) {
+      errorLanzado = e;
+    } finally {
+      console.error = originalError;
+    }
+    assert.ok(errorLanzado);
+    // El mensaje de la excepción (lo que puede llegar a un log de nivel
+    // superior o a una respuesta) es genérico -- nunca el texto de Meta.
+    assert.ok(!/verification code/i.test(errorLanzado.message));
+
+    const textoLogs = logsCapturados.join('\n');
+    assert.ok(/etapa=token_exchange_simulado/.test(textoLogs), 'debe indicar la etapa exacta');
+    assert.ok(/codigo=100/.test(textoLogs), 'debe incluir el código numérico de Meta');
+    assert.ok(/tipo=OAuthException/.test(textoLogs), 'debe incluir el tipo de error de Meta');
+    assert.ok(/Error validating verification code\./.test(textoLogs), 'debe incluir el mensaje resumido de Meta (información de diagnóstico, no una credencial)');
+    // Nunca debe aparecer el code de entrada ni ningún access_token en el log.
+    assert.ok(!/SIMULAR_ERROR_META/.test(textoLogs));
+    assert.ok(!/access_token/i.test(textoLogs));
+  });
+
+  await t('META-ERROR', 'código simulado sin caso definido sigue fallando de forma genérica (compatibilidad con SIMULAR_TOKEN_INVALIDO)', async () => {
+    await assert.rejects(() => intercambiarCodigoPorToken('SIMULAR_TOKEN_INVALIDO'));
+  });
+
+  delete process.env.META_EMBEDDED_SIGNUP_MOCK;
+}
+
+// ── Unidad: guardarCredencialesCifradas -- error de persistencia nunca deja fila parcial ──
+await t('PERSISTENCIA', 'accessToken faltante -> lanza antes de abrir transacción, cero filas', async () => {
+  await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = $1`, [SEED.negocioA]);
+  await assert.rejects(
+    () => guardarCredencialesCifradas(SEED.negocioA, 'whatsapp', 'meta', { phoneNumberId: 'PNID_PERSIST_TEST' }, SEED.superadminUsuarioId),
+    /accessToken requerido/
+  );
+  const { rows } = await pool.query(`SELECT count(*) FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp'`, [SEED.negocioA]);
+  assert.strictEqual(Number(rows[0].count), 0);
+});
+await t('PERSISTENCIA', 'phoneNumberId faltante -> lanza antes de abrir transacción, cero filas', async () => {
+  await assert.rejects(
+    () => guardarCredencialesCifradas(SEED.negocioA, 'whatsapp', 'meta', { accessToken: 'TOKEN_TEST' }, SEED.superadminUsuarioId),
+    /phoneNumberId requerido/
+  );
+  const { rows } = await pool.query(`SELECT count(*) FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp'`, [SEED.negocioA]);
+  assert.strictEqual(Number(rows[0].count), 0);
 });
 
 // Limpieza previa
@@ -174,6 +243,22 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND n
       const r = await api(srv.base, rutaIniciar(SEED.negocioB), { cookie: cookieSuperadmin, method: 'POST' });
       const rc = await api(srv.base, rutaCallback, { method: 'POST', body: { state: r.body.state, code: 'SIMULAR_TOKEN_INVALIDO', phoneNumberId: 'PNID_B_TEST' } });
       assert.strictEqual(rc.status, 502);
+    });
+    await t('CALLBACK', 'Meta rechaza el intercambio (forma real del incidente) -> 502, cero filas parciales, bot del propio negocio y de otros sigue sin tocarse', async () => {
+      const botAntesA = await api(srv.base, `/api/superadmin/negocios/${SEED.negocioA}/bot-whatsapp`, { cookie: cookieSuperadmin });
+      const r = await api(srv.base, rutaIniciar(SEED.negocioA), { cookie: cookieSuperadmin, method: 'POST' });
+      const rc = await api(srv.base, rutaCallback, { method: 'POST', body: { state: r.body.state, code: 'SIMULAR_ERROR_META', phoneNumberId: 'PNID_A_ERROR_META' } });
+      assert.strictEqual(rc.status, 502);
+      assert.ok(!/verification code/i.test(JSON.stringify(rc.body)));
+
+      const { rows } = await pool.query(`SELECT count(*) FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp'`, [SEED.negocioA]);
+      assert.strictEqual(Number(rows[0].count), 0, 'no debe quedar ninguna fila, ni parcial, para el negocio que falló');
+
+      const botDespuesA = await api(srv.base, `/api/superadmin/negocios/${SEED.negocioA}/bot-whatsapp`, { cookie: cookieSuperadmin });
+      assert.strictEqual(botDespuesA.body.botWhatsappActivo, botAntesA.body.botWhatsappActivo, 'el interruptor del propio negocio no debe cambiar por un signup fallido');
+
+      const botB = await api(srv.base, `/api/superadmin/negocios/${SEED.negocioB}/bot-whatsapp`, { cookie: cookieSuperadmin });
+      assert.strictEqual(botB.status, 200); // otro negocio: sigue respondiendo con normalidad, sin contaminación
     });
     await t('CALLBACK', 'state reutilizado -> 400', async () => {
       const r = await api(srv.base, rutaIniciar(SEED.negocioB), { cookie: cookieSuperadmin, method: 'POST' });
