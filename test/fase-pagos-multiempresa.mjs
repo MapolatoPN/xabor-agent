@@ -35,7 +35,7 @@ const { pool, guardarPedidoActivo, crearUsuarioConPassword } = await import('../
 const {
   guardarIntegracionPago, listarIntegracionesPago, obtenerIntegracionPago, obtenerProveedorPrincipal,
   suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal,
-  probarIntegracionPago, guardarCredencialesClip,
+  probarIntegracionPago, guardarCredencialesClip, obtenerCredencialesPagoDescifradas, TenantContextRequiredError,
 } = await import('../src/services/integracionesService.js');
 const { esProveedorValido, validarPuedeActivarse, listarProveedores } = await import('../src/services/paymentProviders.js');
 const { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } = await import('../src/services/pagosService.js');
@@ -371,6 +371,103 @@ await t('WEBHOOK', 'formato nuevo con referencia inexistente -> se ignora (fail 
     body: JSON.stringify({ resource: 'CHECKOUT', resource_status: 'COMPLETED', me_reference_id: `${NEGOCIO_A}:XABPAG9999:noexiste` }),
   });
   assert.strictEqual(r.status, 200);
+});
+
+// ═══════════ TENANT-CONTEXT (reconciliación con el Incidente P0) ═══════════
+// Mismo contrato ya desplegado para Clip (obtenerCredencialesClipDescifradas/
+// guardarCredencialesClip, test/fase-p0-aislamiento-pedidos.mjs): negocioId
+// ausente/inválido/vacío en cualquier función genérica de pagos debe LANZAR
+// TenantContextRequiredError -- nunca null/[]/false silencioso. Estas
+// funciones se generalizaron a partir de las de Clip (commit
+// 8746dda/feat(pagos): credenciales genericas...) y originalmente replicaban
+// también su bug pre-fix; este bloque prueba la corrección.
+await t('TENANT-CONTEXT', 'obtenerCredencialesPagoDescifradas(undefined, clip) -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerCredencialesPagoDescifradas(undefined, 'clip'),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'obtenerCredencialesPagoDescifradas(null, clip) -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerCredencialesPagoDescifradas(null, 'clip'),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', "obtenerCredencialesPagoDescifradas('', clip) -> TenantContextRequiredError tipado", async () => {
+  await assert.rejects(
+    () => obtenerCredencialesPagoDescifradas('', 'clip'),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'obtenerCredencialesPagoDescifradas(negocio real, proveedor inválido) -> null, nunca lanza (estado legítimo)', async () => {
+  const r = await obtenerCredencialesPagoDescifradas(NEGOCIO_A, 'proveedor_que_no_existe');
+  assert.strictEqual(r, null);
+});
+await t('TENANT-CONTEXT', 'guardarIntegracionPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => guardarIntegracionPago(undefined, 'manual_transfer', {}, { actualizadoPor: SEED.superadminUsuarioId }),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'obtenerIntegracionPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerIntegracionPago(undefined, 'clip'),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'listarIntegracionesPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => listarIntegracionesPago(undefined),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'obtenerProveedorPrincipal sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => obtenerProveedorPrincipal(undefined),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'suspenderIntegracionPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => suspenderIntegracionPago(undefined, 'manual_transfer', SEED.superadminUsuarioId),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'reactivarIntegracionPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => reactivarIntegracionPago(undefined, 'manual_transfer', SEED.superadminUsuarioId),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'eliminarCredencialesPago sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => eliminarCredencialesPago(undefined, 'manual_transfer', SEED.superadminUsuarioId),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'marcarProveedorPrincipal sin negocioId -> TenantContextRequiredError tipado', async () => {
+  await assert.rejects(
+    () => marcarProveedorPrincipal(undefined, 'manual_transfer', SEED.superadminUsuarioId),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'pagosService.crearEnlacePago sin negocioId -> TenantContextRequiredError tipado, lanza antes de tocar la base', async () => {
+  await assert.rejects(
+    () => crearEnlacePago({ pedidoId: 'XABPAG0001' }),
+    (e) => e instanceof TenantContextRequiredError && e.code === 'TENANT_CONTEXT_REQUIRED'
+  );
+});
+await t('TENANT-CONTEXT', 'negocio sin proveedor principal -> SinProveedorPrincipalError (nunca TenantContextRequiredError, nunca null silencioso)', async () => {
+  // A diferencia de las pruebas de arriba (negocioId ausente = bug del
+  // llamador), aquí negocioId es real pero el negocio no tiene ningún
+  // proveedor principal activo -- estado de negocio legítimo, mismo
+  // criterio que ClipNoConfiguradoError para Clip específicamente.
+  await guardarPedidoActivo({ id: 'XABPAG9998', estado: 'nuevo', forma_pago: 'enlace de pago', cliente: { telefono: '5218780009998' }, total: 100 }, NEGOCIO_B);
+  await pool.query(`UPDATE integraciones_canal SET principal = FALSE WHERE negocio_id = $1 AND canal = 'pagos'`, [NEGOCIO_B]);
+  await assert.rejects(
+    () => crearEnlacePago({ pedidoId: 'XABPAG9998', negocioId: NEGOCIO_B }),
+    (e) => e instanceof SinProveedorPrincipalError && e.code === 'SIN_PROVEEDOR_PRINCIPAL'
+  );
 });
 
 // ═══════════ Limpieza final ═══════════

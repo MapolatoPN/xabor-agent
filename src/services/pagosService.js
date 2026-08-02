@@ -15,8 +15,10 @@ import {
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago,
 } from './database.js';
-import { obtenerProveedorPrincipal, obtenerCredencialesPagoDescifradas } from './integracionesService.js';
+import { obtenerProveedorPrincipal, obtenerCredencialesPagoDescifradas, TenantContextRequiredError } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
+
+export { TenantContextRequiredError };
 
 export class SinProveedorPrincipalError extends Error {
   constructor(negocioId) {
@@ -34,7 +36,10 @@ export class PedidoInvalidoError extends Error {
  * verdad -- siempre se recalcula desde pedidos_activos.
  */
 export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idempotencyKey = null, descripcion = null }) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearEnlacePago: negocioId requerido');
+  // Mismo contrato que crearLinkDePago (clip-api.js, Incidente P0):
+  // negocioId ausente/inválido es un bug del llamador, nunca un estado de
+  // negocio -> TenantContextRequiredError, lanzada antes de tocar la BD.
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('pagosService.crearEnlacePago');
   if (typeof pedidoId !== 'string' || !pedidoId.trim()) throw new Error('crearEnlacePago: pedidoId requerido');
 
   const pedido = await obtenerPedidoActivoPorFolio(pedidoId, negocioId);

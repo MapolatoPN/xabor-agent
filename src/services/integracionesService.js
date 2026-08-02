@@ -619,6 +619,14 @@ export async function obtenerCredencialesClipDescifradas(negocioId) {
 // guardarCredencialesClip/obtenerCredencialesClipDescifradas se conservan tal
 // cual (clip-api.js ya las usa) por compatibilidad -- son ahora casos
 // concretos de estas funciones genéricas, no un mecanismo paralelo.
+//
+// Contrato de negocioId (reconciliación con el Incidente P0, ver
+// TenantContextRequiredError arriba): idéntico al ya usado por Clip.
+// negocioId ausente/inválido es SIEMPRE un bug del llamador -> lanza
+// TenantContextRequiredError, nunca null/[]/false silencioso. proveedor
+// inválido o integración inexistente/no activa es un estado de negocio
+// legítimo -> null/[]/false, el llamador decide (ver SinProveedorPrincipalError
+// en pagosService.js, análogo a ClipNoConfiguradoError).
 
 const COLUMNAS_PAGO_SEGURAS = `
   id, negocio_id, canal, proveedor, estado, identificador, principal, ambiente,
@@ -628,7 +636,7 @@ const COLUMNAS_PAGO_SEGURAS = `
 
 /** Guarda/actualiza credenciales de un proveedor de pago para un negocio. Nunca activa un proveedor sin adaptador real. */
 export async function guardarIntegracionPago(negocioId, proveedor, credenciales, { ambiente = 'sandbox', actualizadoPor = null } = {}) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('guardarIntegracionPago: negocioId requerido');
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('guardarIntegracionPago');
   if (!esProveedorValido(proveedor)) throw new Error(`guardarIntegracionPago: proveedor "${proveedor}" no reconocido`);
   if (!validarPuedeActivarse(proveedor)) throw new Error(`guardarIntegracionPago: "${proveedor}" todavía no tiene adaptador implementado`);
   if (ambiente === 'produccion') {
@@ -686,7 +694,8 @@ export async function guardarIntegracionPago(negocioId, proveedor, credenciales,
 
 /** Lectura segura (nunca secretos) de UNA integración de pago. */
 export async function obtenerIntegracionPago(negocioId, proveedor) {
-  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return null;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('obtenerIntegracionPago');
+  if (!esProveedorValido(proveedor)) return null;
   const { rows } = await pool.query(
     `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2 AND estado != 'eliminado'`,
     [negocioId.trim(), proveedor]
@@ -696,7 +705,7 @@ export async function obtenerIntegracionPago(negocioId, proveedor) {
 
 /** Lista todas las integraciones de pago del negocio (nunca secretos). */
 export async function listarIntegracionesPago(negocioId) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('listarIntegracionesPago');
   const { rows } = await pool.query(
     `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND estado != 'eliminado' ORDER BY principal DESC, created_at`,
     [negocioId.trim()]
@@ -704,9 +713,9 @@ export async function listarIntegracionesPago(negocioId) {
   return rows;
 }
 
-/** Resuelve el proveedor PRINCIPAL activo de un negocio (o null). Nunca cae a otro negocio. */
+/** Resuelve el proveedor PRINCIPAL activo de un negocio (o null si el negocio no tiene uno). Nunca cae a otro negocio. */
 export async function obtenerProveedorPrincipal(negocioId) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('obtenerProveedorPrincipal');
   const { rows } = await pool.query(
     `SELECT ${COLUMNAS_PAGO_SEGURAS} FROM integraciones_canal
      WHERE negocio_id = $1 AND canal = 'pagos' AND principal = TRUE AND estado = 'activo'`,
@@ -737,6 +746,7 @@ async function cambiarEstadoIntegracionPago(negocioId, proveedor, nuevoEstado, a
 }
 
 export async function suspenderIntegracionPago(negocioId, proveedor, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('suspenderIntegracionPago');
   // Suspender el principal lo desmarca -- un proveedor suspendido nunca
   // debe seguir resolviéndose como principal para generar enlaces nuevos.
   await pool.query(
@@ -747,12 +757,14 @@ export async function suspenderIntegracionPago(negocioId, proveedor, actualizado
 }
 
 export async function reactivarIntegracionPago(negocioId, proveedor, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('reactivarIntegracionPago');
   return cambiarEstadoIntegracionPago(negocioId, proveedor, 'activo', actualizadoPor);
 }
 
 /** Soft-delete: nunca borra la fila físicamente (auditoría), y jamás puede quedar como principal. */
 export async function eliminarCredencialesPago(negocioId, proveedor, actualizadoPor) {
-  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return false;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('eliminarCredencialesPago');
+  if (!esProveedorValido(proveedor)) return false;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -786,7 +798,8 @@ export async function eliminarCredencialesPago(negocioId, proveedor, actualizado
  * transacción para nunca depender solo del constraint ante una carrera.
  */
 export async function marcarProveedorPrincipal(negocioId, proveedor, actualizadoPor) {
-  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return false;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('marcarProveedorPrincipal');
+  if (!esProveedorValido(proveedor)) return false;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -834,11 +847,16 @@ export async function marcarProveedorPrincipal(negocioId, proveedor, actualizado
 
 /**
  * Descifra credenciales de CUALQUIER proveedor de pago -- uso exclusivo de
- * los propios adaptadores (nunca un controlador HTTP). Fail-closed: null si
- * no existe, no está activo, o el descifrado falla.
+ * los propios adaptadores (nunca un controlador HTTP). Mismo contrato que
+ * obtenerCredencialesClipDescifradas (Incidente P0): negocioId ausente o
+ * inválido es un bug del llamador -> TenantContextRequiredError, nunca
+ * null silencioso. proveedor inválido, integración inexistente, no activa
+ * o descifrado fallido -> null (estado legítimo; el llamador lo traduce a
+ * su propio "proveedor no configurado", ver SinProveedorPrincipalError).
  */
 export async function obtenerCredencialesPagoDescifradas(negocioId, proveedor) {
-  if (typeof negocioId !== 'string' || !negocioId.trim() || !esProveedorValido(proveedor)) return null;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('obtenerCredencialesPagoDescifradas');
+  if (!esProveedorValido(proveedor)) return null;
   try {
     const { rows } = await pool.query(
       `SELECT ic.estado, cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version
