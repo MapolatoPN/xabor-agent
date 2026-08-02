@@ -22,7 +22,10 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual } from './services/database.js';
+import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
+import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
+import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -1021,20 +1024,58 @@ app.post('/webhook/clip', async (req, res) => {
     const ref    = evento?.me_reference_id;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
 
-    // Pago completado — persistir en BD y notificar al panel.
-    // negocioId se resuelve del pedido en memoria (única fuente confiable
-    // aquí, el webhook no trae ninguna sesión) ANTES de confirmar el pago,
-    // para que confirmarPagoPedido pueda verificar que el folio realmente
-    // pertenece a ese negocio (Incidente P0, defensa en profundidad).
-    if (status === 'COMPLETED' && evento?.resource === 'CHECKOUT') {
-      const pedido = obtenerPedidoPorId(ref);
-      if (pedido?.negocioId) {
-        await confirmarPagoPedido(ref, pedido.negocioId);
-        broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
-        console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref}`);
-      } else {
-        console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — se omite confirmación y broadcast (fail closed)`);
+    if (status !== 'COMPLETED' || evento?.resource !== 'CHECKOUT') return;
+
+    // Fase 12 (arquitectura de pagos multiempresa): Clip no firma sus
+    // webhooks en su API pública -- nunca se confía en el payload por sí
+    // solo. me_reference_id trae "negocioId:folio:versionHash" cuando el
+    // enlace se creó vía pagosService.crearEnlacePago(); se resuelve
+    // negocioId de ESE valor (nunca adivinado), se recupera el pago real
+    // en `pagos` por (negocioId, referencia_interna), y se re-consulta el
+    // estado REAL en Clip con las credenciales de ESE negocio antes de
+    // marcar pagado -- el webhook por sí solo nunca es suficiente.
+    const partes = String(ref || '').split(':');
+    if (partes.length === 3) {
+      const [negocioIdWebhook, folioWebhook] = partes;
+      const pago = await obtenerPagoPorReferenciaInterna(negocioIdWebhook, ref);
+      if (!pago) {
+        console.warn(`[Clip] Webhook: no existe pago registrado para referencia ${ref} — se ignora (fail closed)`);
+        return;
       }
+      if (pago.estado === 'pagado') {
+        console.log(`[Clip] Webhook duplicado para pago ya confirmado ${pago.id} — idempotente, sin acción`);
+        return;
+      }
+      const real = await consultarEstadoPago(pago.referencia_externa, negocioIdWebhook);
+      if (!real || real.resource_status !== 'COMPLETED') {
+        console.warn(`[Clip] Webhook dice COMPLETED pero la re-consulta a Clip no lo confirma para ${pago.id} — no se marca pagado`);
+        return;
+      }
+      await confirmarPagoIdempotente(pago.id, { referenciaExterna: pago.referencia_externa });
+      await confirmarPagoPedido(folioWebhook, negocioIdWebhook);
+      broadcastNegocio(negocioIdWebhook, { tipo: 'pago_confirmado', pedidoId: folioWebhook, proveedor: 'clip' });
+      console.log(`[Clip] ✅ Pago confirmado (re-verificado) para pedido ${folioWebhook}, negocio ${negocioIdWebhook}`);
+      return;
+    }
+
+    // Camino legacy: enlaces creados directamente por clip-api.js sin pasar
+    // por pagosService -- whatsapp-meta.js ya migró sus tres puntos de
+    // generación de enlace a pagosService.crearEnlacePago, salvo pedidos
+    // PROGRAMADOS aún no activados (excepción documentada ahí: todavía no
+    // existen en pedidos_activos, que crearEnlacePago exige). Ese es hoy el
+    // único caso real que sigue llegando por este camino: me_reference_id
+    // es solo el folio, sin negocioId embebido, y se resuelve por el
+    // pedido en memoria. Riesgo residual documentado (ver
+    // docs/pagos-multiempresa.md): si el proceso se reinició, este pago no
+    // se reconcilia por esta vía y depende del job de reconciliación en
+    // background (obtenerPagosPendientesConLink).
+    const pedido = obtenerPedidoPorId(ref);
+    if (pedido?.negocioId) {
+      await confirmarPagoPedido(ref, pedido.negocioId);
+      broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
+      console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref} (camino legacy)`);
+    } else {
+      console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — se omite confirmación y broadcast (fail closed)`);
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);
@@ -2566,6 +2607,89 @@ app.put('/api/superadmin/negocios/:negocioId/integraciones/clip', requireSuperad
   }
 });
 
+// ─── Pagos multiempresa (Fase 4) — Superadmin → Negocios → Integraciones → Pagos ──
+// Genérico para cualquier proveedor registrado en paymentProviders.js. No
+// reemplaza la ruta de Clip de arriba (se deja por compatibilidad hacia
+// atrás), pero a partir de aquí Clip es solo un caso más del registro
+// genérico -- el panel nuevo debe usar estas rutas, no la de Clip.
+app.get('/api/superadmin/proveedores-pago', requireSuperadmin, (req, res) => {
+  res.json({ proveedores: listarProveedores() });
+});
+
+app.get('/api/superadmin/negocios/:negocioId/integraciones/pagos', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    res.json({ integraciones: await listarIntegracionesPago(negocioId) });
+  } catch (e) {
+    console.error('[GET /api/superadmin/negocios/:id/integraciones/pagos] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener las integraciones de pago' });
+  }
+});
+
+app.put('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  const { credenciales, ambiente } = req.body || {};
+  if (!credenciales || typeof credenciales !== 'object') return res.status(400).json({ error: 'credenciales requerido' });
+  try {
+    const resultado = await guardarIntegracionPago(negocioId, proveedor, credenciales, { ambiente: ambiente === 'produccion' ? 'produccion' : 'sandbox', actualizadoPor: req.usuarioId });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PUT /api/superadmin/negocios/:id/integraciones/pagos/:proveedor] Error:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor/probar', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  try {
+    res.json(await probarIntegracionPago(negocioId, proveedor));
+  } catch (e) {
+    console.error('[POST .../pagos/:proveedor/probar] Error:', e.message);
+    res.status(500).json({ error: 'Error al probar la conexión' });
+  }
+});
+
+app.post('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor/principal', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  const ok = await marcarProveedorPrincipal(negocioId, proveedor, req.usuarioId);
+  if (!ok) return res.status(400).json({ error: 'No se pudo marcar como principal (¿está activo?)' });
+  res.json({ ok: true });
+});
+
+app.post('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor/suspender', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  const resultado = await suspenderIntegracionPago(negocioId, proveedor, req.usuarioId);
+  if (!resultado.ok) return res.status(400).json(resultado);
+  res.json(resultado);
+});
+
+app.post('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor/reactivar', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  const resultado = await reactivarIntegracionPago(negocioId, proveedor, req.usuarioId);
+  if (!resultado.ok) return res.status(400).json(resultado);
+  res.json(resultado);
+});
+
+app.delete('/api/superadmin/negocios/:negocioId/integraciones/pagos/:proveedor', requireSuperadmin, async (req, res) => {
+  const { negocioId, proveedor } = req.params;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  if (!esProveedorValido(proveedor)) return res.status(400).json({ error: 'Proveedor no reconocido' });
+  const ok = await eliminarCredencialesPago(negocioId, proveedor, req.usuarioId);
+  if (!ok) return res.status(404).json({ error: 'Integración no encontrada' });
+  res.json({ ok: true });
+});
+
 app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSuperadmin, async (req, res) => {
   if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
   try {
@@ -3081,6 +3205,140 @@ app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
   } catch (e) {
     console.error('[PATCH /api/admin/bot-whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
+  }
+});
+
+// ─── Pagos multiempresa (Fase 5/6) — panel del negocio ───────────────────────
+// A diferencia de Superadmin, el panel del negocio NUNCA ve ni edita
+// credenciales de proveedor -- solo puede ver el estado general (nombre,
+// activo/principal, sin ningún campo cifrado) y administrar sus propios
+// métodos de pago (habilitar/deshabilitar, instrucciones de transferencia,
+// orden). Configurar/objetivo un proveedor nuevo sigue siendo exclusivo de
+// Superadmin (ver rutas /api/superadmin/negocios/:id/integraciones/pagos*).
+app.get('/api/config/pagos', requireAuthSeguro, async (req, res) => {
+  try {
+    const [metodos, principal] = await Promise.all([
+      obtenerMetodosPagoDisponibles(req.negocioId),
+      obtenerProveedorPrincipal(req.negocioId),
+    ]);
+    res.json({
+      metodosDisponibles: metodos,
+      proveedorPrincipal: principal ? { proveedor: principal.proveedor, ambiente: principal.ambiente } : null,
+    });
+  } catch (e) {
+    console.error('[GET /api/config/pagos] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener la configuración de pagos' });
+  }
+});
+
+app.get('/api/admin/integraciones/pagos', requireAdminSeguro, async (req, res) => {
+  try {
+    res.json({ integraciones: await listarIntegracionesPago(req.negocioId) });
+  } catch (e) {
+    console.error('[GET /api/admin/integraciones/pagos] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener las integraciones de pago' });
+  }
+});
+
+app.get('/api/admin/metodos-pago', requireAdminSeguro, async (req, res) => {
+  try {
+    res.json({ metodos: await listarMetodosPagoNegocio(req.negocioId) });
+  } catch (e) {
+    console.error('[GET /api/admin/metodos-pago] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener los métodos de pago' });
+  }
+});
+
+// habilitar/deshabilitar y editar instrucciones -- nunca elige proveedor ni
+// toca integracion_id aquí (eso es consecuencia de marcar principal en
+// Superadmin, no una edición manual del panel del negocio).
+app.put('/api/admin/metodos-pago/:tipo', requireAdminSeguro, async (req, res) => {
+  const { tipo } = req.params;
+  const { habilitado, instrucciones, orden, disponibleParaBot, disponibleParaOperador } = req.body || {};
+  if (typeof habilitado !== 'boolean') return res.status(400).json({ error: 'habilitado debe ser boolean' });
+  if (tipo === 'enlace_pago') {
+    return res.status(400).json({ error: 'enlace_pago se activa automáticamente al marcar un proveedor como principal en Superadmin, no se edita aquí' });
+  }
+  try {
+    const existentes = await listarMetodosPagoNegocio(req.negocioId);
+    const actual = existentes.find(m => m.tipo === tipo) || {};
+    const resultado = await guardarMetodoPagoNegocio(req.negocioId, tipo, {
+      habilitado,
+      integracionId: actual.integracion_id || null,
+      instrucciones: instrucciones && typeof instrucciones === 'object' ? instrucciones : (actual.instrucciones || {}),
+      orden: Number.isFinite(orden) ? orden : (actual.orden ?? 0),
+      disponibleParaBot: typeof disponibleParaBot === 'boolean' ? disponibleParaBot : (actual.disponible_para_bot ?? true),
+      disponibleParaOperador: typeof disponibleParaOperador === 'boolean' ? disponibleParaOperador : (actual.disponible_para_operador ?? true),
+    });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PUT /api/admin/metodos-pago/:tipo] Error:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ─── Enlace de pago manual (Fase 8) ──────────────────────────────────────────
+// Vía genérica para que un operador/admin genere el enlace desde un pedido
+// del panel (no solo el agente de WhatsApp) -- misma función idempotente
+// pagosService.crearEnlacePago, así que un doble clic nunca duplica cobros.
+app.post('/api/admin/pedido/:folio/enlace-pago', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  try {
+    const resultado = await crearEnlacePago({
+      negocioId: req.negocioId, pedidoId: req.params.folio, actor: req.usuarioId,
+    });
+    res.json(resultado);
+  } catch (e) {
+    if (e instanceof SinProveedorPrincipalError) return res.status(409).json({ error: e.message, code: e.code });
+    if (e instanceof PedidoInvalidoError) return res.status(404).json({ error: e.message, code: e.code });
+    console.error('[POST /api/admin/pedido/:folio/enlace-pago] Error:', e.message);
+    res.status(500).json({ error: 'Error al generar el enlace de pago' });
+  }
+});
+
+app.get('/api/admin/pedido/:folio/pagos', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  try {
+    res.json({ pagos: await listarPagosPorPedido(req.negocioId, req.params.folio) });
+  } catch (e) {
+    console.error('[GET /api/admin/pedido/:folio/pagos] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener los pagos del pedido' });
+  }
+});
+
+// ─── Conciliación manual de transferencia (Fase 12/13) ───────────────────────
+// Transferencia manual no tiene webhook ni API que confirme el pago solo --
+// un admin verifica el depósito en el banco por fuera de Xabor y aquí
+// registra esa confirmación. Solo admin (nunca staff/operador): es la
+// acción que efectivamente marca un pedido como pagado sin evidencia
+// verificable por el sistema, a diferencia de Clip (re-verificado vía API).
+// pagoId llega como texto libre en la URL -- sin este guard, un valor no
+// UUID (p. ej. "undefined" por un bug de cliente) provoca un error de cast
+// de Postgres sin capturar, que tumba TODO el proceso (no hay
+// unhandledRejection global en este código) para TODOS los negocios, no
+// solo el que hizo la request.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+app.post('/api/admin/pagos/:pagoId/confirmar-manual', requireAdminSeguro, async (req, res) => {
+  if (!UUID_RE.test(req.params.pagoId)) return res.status(404).json({ error: 'Pago no encontrado' });
+  try {
+    const resultado = await confirmarPagoManual(req.negocioId, req.params.pagoId, req.usuarioId);
+    if (!resultado) return res.status(409).json({ error: 'No se pudo confirmar: el pago no existe, no es de transferencia manual, o ya no está pendiente de revisión' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[POST /api/admin/pagos/:pagoId/confirmar-manual] Error:', e.message);
+    res.status(500).json({ error: 'Error al confirmar el pago' });
+  }
+});
+
+app.post('/api/admin/pagos/:pagoId/rechazar-manual', requireAdminSeguro, async (req, res) => {
+  if (!UUID_RE.test(req.params.pagoId)) return res.status(404).json({ error: 'Pago no encontrado' });
+  try {
+    const { motivo } = req.body || {};
+    const resultado = await rechazarPagoManual(req.negocioId, req.params.pagoId, motivo, req.usuarioId);
+    if (!resultado) return res.status(409).json({ error: 'No se pudo rechazar: el pago no existe, no es de transferencia manual, o ya no está pendiente de revisión' });
+    res.json(resultado);
+  } catch (e) {
+    console.error('[POST /api/admin/pagos/:pagoId/rechazar-manual] Error:', e.message);
+    res.status(500).json({ error: 'Error al rechazar el pago' });
   }
 });
 
