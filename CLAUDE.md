@@ -55,8 +55,11 @@ ELEVENLABS_API_KEY       # Voz sintética para llamadas
 DEEPGRAM_API_KEY         # Speech-to-text para llamadas
 RAPPI_CLIENT_ID          # OAuth Rappi
 RAPPI_CLIENT_SECRET      # OAuth Rappi
-CLIP_API_KEY             # Pasarela de pago Clip
 ```
+> **Pagos (Clip y otros)**: ya NO se configuran por variable de entorno global.
+> Cada negocio guarda sus propias credenciales cifradas por negocio (Superadmin
+> → Negocios → Integraciones → Pagos, o `PUT /api/superadmin/negocios/:id/integraciones/pagos/:proveedor`).
+> Ver `docs/pagos-multiempresa.md` y `docs/alta-clip-negocio.md`.
 
 ## Tablas principales en PostgreSQL
 ```sql
