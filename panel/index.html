@@ -604,6 +604,100 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   </div>
 </div>
 
+<!-- Modal: adjuntar PDF en el chat -->
+<div id="modal-pdf-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:6px;font-size:1rem;">📎 Enviar documento</h3>
+    <div style="display:flex;gap:10px;align-items:center;background:#f5f4f2;border-radius:8px;padding:10px;margin:10px 0;">
+      <div style="font-size:1.6rem;">📄</div>
+      <div style="min-width:0;">
+        <div id="pdf-adjunto-nombre" style="font-weight:700;font-size:0.85rem;word-break:break-word;"></div>
+        <div id="pdf-adjunto-tamano" style="font-size:0.75rem;opacity:0.65;"></div>
+      </div>
+    </div>
+    <label style="font-size:0.82rem;color:#555;font-weight:600;">Mensaje (opcional)</label>
+    <textarea id="pdf-adjunto-caption" rows="2" placeholder="Ej: Aquí está la información que pediste"
+      style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;resize:vertical;"></textarea>
+    <div id="pdf-adjunto-error" style="display:none;color:#c0392b;font-size:0.8rem;margin-top:8px;"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button onclick="cerrarModalAdjuntoPdf()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
+      <button id="btn-confirmar-envio-pdf" onclick="confirmarEnvioPdf()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#FF6B35;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: crear/editar cotización -->
+<div id="modal-cotizacion-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:16px;padding:24px;max-width:560px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
+    <button onclick="cerrarModalCotizacion()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
+    <div id="cot-modal-titulo" style="font-size:1.05rem;font-weight:800;margin-bottom:18px;">Crear cotización</div>
+    <input type="hidden" id="cot-id">
+
+    <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Teléfono del cliente</label>
+    <input id="cot-telefono" type="text" placeholder="5218781234567"
+      style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Evento</label>
+        <input id="cot-evento-nombre" type="text" placeholder="Ej: Boda Ana y Luis"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Fecha del evento</label>
+        <input id="cot-evento-fecha" type="date"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Lugar</label>
+        <input id="cot-lugar" type="text"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Cantidad de personas</label>
+        <input id="cot-personas" type="number" min="0"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+    </div>
+
+    <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Servicios / productos</label>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+      <thead><tr style="font-size:0.72rem;color:#888;text-align:left;">
+        <th style="padding:4px;">Descripción</th><th style="padding:4px;width:70px;">Cant.</th><th style="padding:4px;width:90px;">Precio</th><th style="padding:4px;width:90px;">Desc.</th><th></th>
+      </tr></thead>
+      <tbody id="cot-items-body"></tbody>
+    </table>
+    <button onclick="agregarFilaCotizacionItem()" style="font-size:0.78rem;background:#f5f4f2;border:1px solid #e5e2da;border-radius:6px;padding:4px 10px;cursor:pointer;margin-bottom:14px;">+ Agregar línea</button>
+
+    <div id="cot-totales" style="text-align:right;font-size:0.85rem;margin-bottom:14px;color:#555;"></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Vigente hasta</label>
+        <input id="cot-vigencia" type="date"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Anticipo requerido ($)</label>
+        <input id="cot-anticipo" type="number" min="0" step="0.01"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
+    </div>
+
+    <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Notas</label>
+    <textarea id="cot-notas" rows="2" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:14px;"></textarea>
+
+    <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Términos y condiciones</label>
+    <textarea id="cot-terminos" rows="3" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:14px;"></textarea>
+
+    <div id="cot-modal-error" style="display:none;color:#c0392b;font-size:0.82rem;margin-bottom:10px;"></div>
+    <button onclick="guardarCotizacion()" id="cot-btn-guardar"
+      style="width:100%;padding:12px;border:none;border-radius:10px;background:#FF6B35;color:#fff;font-size:0.95rem;font-weight:700;cursor:pointer;">
+      Guardar cotización
+    </button>
+  </div>
+</div>
+
 <!-- Modal: devolución -->
 <div id="modal-devolucion-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
@@ -692,6 +786,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
   <button class="tab-btn admin-only" id="tab-rewards"     data-modulo="rewards" onclick="mostrarTab('rewards')">Rewards</button>
+  <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
   <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
 </div>
 
@@ -941,6 +1036,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div id="chat-mensajes"></div>
           <div id="chat-error" style="display:none;padding:6px 14px;color:#c0392b;font-size:0.78rem;background:#fdecea;"></div>
           <div id="chat-footer">
+            <button id="btn-adjuntar-pdf" data-modulo="chat_documentos_pdf" onclick="document.getElementById('input-pdf-adjunto').click()"
+                    title="Adjuntar PDF" style="align-self:flex-end;background:#f5f4f2;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;">📎</button>
+            <input type="file" id="input-pdf-adjunto" accept="application/pdf" style="display:none;" onchange="prepararPdfAdjunto(event)">
             <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2"></textarea>
             <button id="btn-chat-enviar" onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
           </div>
@@ -1027,6 +1125,31 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">Atención automática del negocio</div>
       <div id="bot-whatsapp-form"></div>
+
+      <div data-modulo="cotizaciones" style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <div data-modulo="cotizaciones" id="cfg-cotizaciones-bloque">
+        <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🧾 Cotizaciones</div>
+        <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Estos datos se usan para generar el PDF de cada cotización -- ningún negocio comparte esta configuración con otro.</div>
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Logotipo</label>
+        <input type="file" id="cfg-cot-logo-file" accept="image/png,image/jpeg" style="width:100%;padding:9px 12px;border:1px dashed #ccc;border-radius:8px;font-size:0.85rem;background:#fafaf8;cursor:pointer;margin-bottom:6px;">
+        <img id="cfg-cot-logo-preview" style="max-height:56px;display:none;margin-bottom:12px;">
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Color principal</label>
+        <input type="color" id="cfg-cot-color" value="#1c1c1c" style="width:100%;height:38px;padding:2px;border:1px solid #e5e2da;border-radius:8px;margin-bottom:12px;cursor:pointer;">
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Vigencia por defecto (días)</label>
+        <input type="number" id="cfg-cot-vigencia-dias" min="1" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;">
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Anticipo por defecto (%)</label>
+        <input type="number" id="cfg-cot-anticipo-pct" min="0" max="100" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;">
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Términos por defecto</label>
+        <textarea id="cfg-cot-terminos" rows="3" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:12px;"></textarea>
+
+        <div id="cfg-cot-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+        <button onclick="guardarConfigCotizaciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar configuración de cotizaciones</button>
+      </div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">💳 Métodos de pago</div>
@@ -1267,6 +1390,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     </div><!-- /vista-rewards -->
 
+    <div id="vista-cotizaciones" style="display:none;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:1.1rem;font-weight:800;">Cotizaciones</div>
+        <button data-modulo="generador_cotizaciones" onclick="abrirModalCotizacion()" style="padding:8px 16px;border:none;border-radius:8px;background:#1c1c1c;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:700;">+ Crear cotización</button>
+      </div>
+      <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
+        <div id="cot-lista">
+          <div style="color:#aaa;text-align:center;padding:40px;">Cargando cotizaciones...</div>
+        </div>
+      </div>
+    </div><!-- /vista-cotizaciones -->
+
     <div id="vista-usuarios" style="display:none;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
         <div style="font-size:1.1rem;font-weight:800;">Usuarios</div>
@@ -1400,7 +1535,7 @@ function aplicarModulosUI() {
 // oculto por rol o por módulo, cae al primer tab visible en vez de dejar
 // una pantalla vacía sin ninguna pestaña resaltada.
 function primerTabVisible() {
-  const orden = ['comandas','presencial','corte','chats','historial','ventas','llamadas','menu','repartidores','clientes','rewards','usuarios','config'];
+  const orden = ['comandas','presencial','corte','chats','historial','ventas','llamadas','menu','repartidores','clientes','rewards','cotizaciones','usuarios','config'];
   for (const tab of orden) {
     const btn = document.getElementById('tab-' + tab);
     if (btn && btn.style.display !== 'none') return tab;
@@ -1539,7 +1674,8 @@ function conectarWS() {
         delete pedidos[msg.id];
         actualizarContador();
       }
-      if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje);
+      if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje, msg.documento);
+      if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
       if (msg.tipo === 'repartidor_asignado') {
@@ -2051,7 +2187,7 @@ ${clienteSection}
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes','rewards'];
+const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes','rewards','cotizaciones'];
 
 function mostrarTab(tab) {
   // Ocultar vistas principales
@@ -2060,7 +2196,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','usuarios'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -2068,7 +2204,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','usuarios'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -2086,6 +2222,7 @@ function mostrarTab(tab) {
   if (tab === 'menu')      cargarMenuEditor();
   if (tab === 'entrenamiento') cargarEntrenamientoForm();
   if (tab === 'diagnostico') cargarDiagnostico();
+  if (tab === 'cotizaciones') cargarCotizaciones();
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -2099,6 +2236,7 @@ function mostrarTab(tab) {
     cargarIntegracionesPanel();
     cargarBotWhatsappPanel();
     cargarMetodosPagoPanel();
+    cargarConfigCotizaciones();
     if (MODULOS.includes('facturacion')) {
       cargarInfoCertSAT();
     } else {
@@ -2760,6 +2898,45 @@ function etiquetaOrigen(m) {
   return '';
 }
 
+function formatoTamano(bytes) {
+  if (!bytes) return '';
+  const kb = bytes / 1024;
+  return kb < 1024 ? `${kb.toFixed(0)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+}
+
+// Tarjeta de documento PDF -- entrante o saliente. m.documento_estado viene
+// del LEFT JOIN de obtenerConversacion (histórico) o del payload de
+// WebSocket (en vivo); ambos casos exponen los mismos campos.
+function contenidoTarjetaDocumento(m) {
+  const nombre  = escaparHTML(m.documento_filename || 'documento.pdf');
+  const tamano  = formatoTamano(m.documento_size_bytes);
+  const estado  = m.documento_estado || 'listo';
+  const caption = m.documento_caption ? escaparHTML(m.documento_caption) : '';
+  const remitente = m.direccion === 'saliente' ? (m.origen === 'humano' ? 'Tú' : 'Bot') : 'Cliente';
+  const etiquetaEstado = { pendiente: '⏳ Recibiendo…', descargando: '⏳ Recibiendo…', error: '⚠️ Error al procesar', listo: '' }[estado] || '';
+  const idDoc = m.documento_id_real || m.documento_id;
+  const acciones = (estado === 'listo' && idDoc)
+    ? `<a href="/api/documentos/${idDoc}/archivo" target="_blank" rel="noopener" data-doc-accion="abrir">Abrir</a>
+       <a href="/api/documentos/${idDoc}/archivo" download="${nombre}" data-doc-accion="descargar">Descargar</a>`
+    : '';
+  return `
+    <div class="tarjeta-documento" data-documento-id="${idDoc || ''}" style="display:flex;gap:10px;align-items:flex-start;min-width:200px;">
+      <div style="font-size:1.6rem;">📄</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;word-break:break-word;">${nombre}</div>
+        <div style="font-size:0.72rem;opacity:0.65;">${tamano}${remitente ? ' · ' + remitente : ''}</div>
+        ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
+        ${etiquetaEstado ? `<div class="tarjeta-documento-estado" style="font-size:0.75rem;margin-top:4px;">${etiquetaEstado}</div>` : ''}
+        <div class="tarjeta-documento-acciones" style="margin-top:6px;display:flex;gap:12px;font-size:0.78rem;font-weight:700;">${acciones}</div>
+      </div>
+    </div>`;
+}
+
+function contenidoBurbujaMensaje(m) {
+  if (m.tipo === 'documento') return contenidoTarjetaDocumento(m);
+  return escaparHTML(m.texto);
+}
+
 function renderMensajes(msgs) {
   const cont = document.getElementById('chat-mensajes');
   cont.innerHTML = msgs.map(m => {
@@ -2767,14 +2944,14 @@ function renderMensajes(msgs) {
     return `<div style="display:flex;justify-content:${sal?'flex-end':'flex-start'};">
       <div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                   background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${escaparHTML(m.texto)}
+        ${contenidoBurbujaMensaje(m)}
         <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(m)}${horaCST(m.timestamp)}</div>
       </div></div>`;
   }).join('');
   cont.scrollTop = cont.scrollHeight;
 }
 
-function recibirMensajeWS(msg) {
+function recibirMensajeWS(msg, documento) {
   const enChats = document.getElementById('tab-chats')?.classList.contains('activo');
   if (!enChats) {
     chatNuevos++;
@@ -2787,17 +2964,36 @@ function recibirMensajeWS(msg) {
   if (chatAbierto && msg.telefono === chatAbierto) {
     const cont = document.getElementById('chat-mensajes');
     const sal  = msg.direccion === 'saliente';
+    const mensajeConDocumento = documento
+      ? { ...msg, documento_id_real: documento.id, documento_filename: documento.filename, documento_size_bytes: documento.size_bytes, documento_estado: documento.estado, documento_caption: documento.caption }
+      : msg;
     const div  = document.createElement('div');
     div.style.cssText = `display:flex;justify-content:${sal?'flex-end':'flex-start'}`;
     div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
                         background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${escaparHTML(msg.texto)}
+        ${contenidoBurbujaMensaje(mensajeConDocumento)}
         <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(msg)}${horaCST(msg.timestamp)}</div>
       </div>`;
     cont.appendChild(div);
     cont.scrollTop = cont.scrollHeight;
   }
   if (enChats) cargarConversaciones();
+}
+
+// Actualiza en vivo una tarjeta ya renderizada (pendiente -> listo/error)
+// sin recargar toda la conversación.
+function actualizarTarjetaDocumentoWS({ documentoId, ok, motivo }) {
+  const tarjeta = document.querySelector(`.tarjeta-documento[data-documento-id="${documentoId}"]`);
+  if (!tarjeta) return;
+  const estadoEl = tarjeta.querySelector('.tarjeta-documento-estado');
+  const accionesEl = tarjeta.querySelector('.tarjeta-documento-acciones');
+  if (ok) {
+    if (estadoEl) estadoEl.remove();
+    if (accionesEl) accionesEl.innerHTML = `<a href="/api/documentos/${documentoId}/archivo" target="_blank" rel="noopener">Abrir</a>
+      <a href="/api/documentos/${documentoId}/archivo" download>Descargar</a>`;
+  } else if (estadoEl) {
+    estadoEl.textContent = '⚠️ Error al procesar';
+  }
 }
 
 function mostrarErrorChat(texto) {
@@ -2831,6 +3027,211 @@ async function enviarDesdeChat() {
 document.getElementById('chat-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviarDesdeChat(); }
 });
+
+// ─── Adjuntar y enviar PDF en el chat ────────────────────────────────────────
+// No se envía nada al solo seleccionar el archivo -- primero se muestra
+// esta previsualización (nombre/tamaño/caption) y hay que confirmar.
+let pdfAdjuntoPendiente = null;
+
+function archivoABase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const bytes = new Uint8Array(e.target.result);
+      let binario = '';
+      const TAM_CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += TAM_CHUNK) {
+        binario += String.fromCharCode.apply(null, bytes.subarray(i, i + TAM_CHUNK));
+      }
+      resolve(btoa(binario));
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function prepararPdfAdjunto(event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file || !chatAbierto) return;
+  pdfAdjuntoPendiente = file;
+  document.getElementById('pdf-adjunto-nombre').textContent = file.name;
+  document.getElementById('pdf-adjunto-tamano').textContent = formatoTamano(file.size);
+  document.getElementById('pdf-adjunto-caption').value = '';
+  document.getElementById('pdf-adjunto-error').style.display = 'none';
+  document.getElementById('modal-pdf-overlay').style.display = 'flex';
+}
+
+function cerrarModalAdjuntoPdf() {
+  document.getElementById('modal-pdf-overlay').style.display = 'none';
+  pdfAdjuntoPendiente = null;
+}
+
+async function confirmarEnvioPdf() {
+  if (!pdfAdjuntoPendiente || !chatAbierto) return;
+  const btn = document.getElementById('btn-confirmar-envio-pdf');
+  const errEl = document.getElementById('pdf-adjunto-error');
+  errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    const base64 = await archivoABase64(pdfAdjuntoPendiente);
+    const caption = document.getElementById('pdf-adjunto-caption').value.trim();
+    const r = await apiFetch('/api/documentos/enviar', {
+      method: 'POST',
+      body: JSON.stringify({ telefono: chatAbierto, filename: pdfAdjuntoPendiente.name, base64, caption: caption || undefined }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      errEl.textContent = d.error || 'No se pudo enviar el documento.';
+      errEl.style.display = '';
+      return;
+    }
+    cerrarModalAdjuntoPdf();
+  } catch {
+    errEl.textContent = 'Error de conexión. Intenta de nuevo.';
+    errEl.style.display = '';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar';
+  }
+}
+
+// ─── Cotizaciones ────────────────────────────────────────────────────────────
+function formatoMoneda(n) { return `$${Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+
+async function cargarCotizaciones() {
+  const cont = document.getElementById('cot-lista');
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Cargando cotizaciones...</div>';
+  const r = await apiFetch('/api/cotizaciones');
+  if (!r.ok) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No se pudieron cargar las cotizaciones.</div>'; return; }
+  const lista = await r.json();
+  if (!lista.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Aún no hay cotizaciones.</div>'; return; }
+  const puedeEditar = ROL === 'admin' && MODULOS.includes('generador_cotizaciones');
+  cont.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="font-size:0.72rem;color:#888;text-align:left;border-bottom:1px solid #f1f0ed;">
+      <th style="padding:10px 14px;">Folio</th><th>Cliente</th><th>Estado</th><th>Total</th><th>Vigencia</th><th></th>
+    </tr></thead>
+    <tbody>${lista.map(c => `
+      <tr style="border-bottom:1px solid #f7f6f3;font-size:0.85rem;">
+        <td style="padding:10px 14px;font-weight:700;">${escaparHTML(c.folio)}</td>
+        <td>${escaparHTML(c.telefono)}</td>
+        <td><span style="text-transform:capitalize;">${escaparHTML(c.estado)}</span></td>
+        <td>${formatoMoneda(c.total)}</td>
+        <td>${c.vigencia_hasta ? new Date(c.vigencia_hasta).toLocaleDateString('es-MX') : '—'}</td>
+        <td style="text-align:right;white-space:nowrap;">
+          <a href="/api/cotizaciones/${c.id}/pdf" target="_blank" rel="noopener" style="font-size:0.78rem;font-weight:700;margin-right:10px;">Ver PDF</a>
+          <button onclick="enviarCotizacion('${c.id}')" style="font-size:0.78rem;background:#f5f4f2;border:1px solid #e5e2da;border-radius:6px;padding:4px 10px;cursor:pointer;margin-right:6px;">Enviar</button>
+          ${puedeEditar ? `<button onclick="abrirModalCotizacion('${c.id}')" style="font-size:0.78rem;background:#f5f4f2;border:1px solid #e5e2da;border-radius:6px;padding:4px 10px;cursor:pointer;">Editar</button>` : ''}
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function agregarFilaCotizacionItem(item) {
+  const tbody = document.getElementById('cot-items-body');
+  const fila = document.createElement('tr');
+  fila.innerHTML = `
+    <td style="padding:4px;"><input type="text" class="cot-it-desc" value="${item ? escaparHTML(item.descripcion) : ''}" placeholder="Ej: Arreglo floral centro de mesa" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
+    <td style="padding:4px;"><input type="number" class="cot-it-cant" value="${item ? item.cantidad : 1}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
+    <td style="padding:4px;"><input type="number" class="cot-it-precio" value="${item ? item.precio_unitario : 0}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
+    <td style="padding:4px;"><input type="number" class="cot-it-desc-monto" value="${item ? item.descuento : 0}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
+    <td style="padding:4px;"><button onclick="this.closest('tr').remove(); recalcularTotalesCotizacion();" style="border:none;background:none;color:#c0392b;cursor:pointer;">✕</button></td>`;
+  tbody.appendChild(fila);
+  recalcularTotalesCotizacion();
+}
+
+function leerItemsCotizacionForm() {
+  return [...document.querySelectorAll('#cot-items-body tr')].map(fila => ({
+    tipo: 'servicio',
+    descripcion: fila.querySelector('.cot-it-desc').value.trim(),
+    cantidad: Number(fila.querySelector('.cot-it-cant').value) || 0,
+    precioUnitario: Number(fila.querySelector('.cot-it-precio').value) || 0,
+    descuento: Number(fila.querySelector('.cot-it-desc-monto').value) || 0,
+  })).filter(it => it.descripcion);
+}
+
+function recalcularTotalesCotizacion() {
+  const items = leerItemsCotizacionForm();
+  const subtotal = items.reduce((acc, it) => acc + it.cantidad * it.precioUnitario - it.descuento, 0);
+  document.getElementById('cot-totales').textContent = `Subtotal: ${formatoMoneda(subtotal)}`;
+}
+
+function abrirModalCotizacion(id) {
+  document.getElementById('cot-id').value = id || '';
+  document.getElementById('cot-modal-titulo').textContent = id ? 'Editar cotización' : 'Crear cotización';
+  document.getElementById('cot-modal-error').style.display = 'none';
+  document.getElementById('cot-items-body').innerHTML = '';
+  ['cot-telefono','cot-evento-nombre','cot-evento-fecha','cot-lugar','cot-personas','cot-vigencia','cot-anticipo','cot-notas','cot-terminos'].forEach(id2 => document.getElementById(id2).value = '');
+
+  const abrir = () => document.getElementById('modal-cotizacion-overlay').style.display = 'flex';
+
+  if (!id) { agregarFilaCotizacionItem(); abrir(); return; }
+
+  apiFetch(`/api/cotizaciones/${id}`).then(r => r.json()).then(c => {
+    document.getElementById('cot-telefono').value = c.telefono || '';
+    document.getElementById('cot-telefono').disabled = true; // no se cambia el cliente al editar
+    document.getElementById('cot-evento-nombre').value = c.evento_nombre || '';
+    document.getElementById('cot-evento-fecha').value = c.fecha_evento ? c.fecha_evento.slice(0, 10) : '';
+    document.getElementById('cot-lugar').value = c.lugar || '';
+    document.getElementById('cot-personas').value = c.cantidad_personas || '';
+    document.getElementById('cot-vigencia').value = c.vigencia_hasta ? c.vigencia_hasta.slice(0, 10) : '';
+    document.getElementById('cot-anticipo').value = c.anticipo_requerido || '';
+    document.getElementById('cot-notas').value = c.notas || '';
+    document.getElementById('cot-terminos').value = c.terminos || '';
+    (c.items || []).forEach(it => agregarFilaCotizacionItem(it));
+    abrir();
+  });
+}
+
+function cerrarModalCotizacion() {
+  document.getElementById('modal-cotizacion-overlay').style.display = 'none';
+  document.getElementById('cot-telefono').disabled = false;
+}
+
+async function guardarCotizacion() {
+  const id = document.getElementById('cot-id').value;
+  const telefono = document.getElementById('cot-telefono').value.trim();
+  const items = leerItemsCotizacionForm();
+  const errEl = document.getElementById('cot-modal-error');
+  errEl.style.display = 'none';
+  if (!telefono && !id) { errEl.textContent = 'El teléfono del cliente es requerido.'; errEl.style.display = ''; return; }
+  if (!items.length) { errEl.textContent = 'Agrega al menos una línea de servicio/producto.'; errEl.style.display = ''; return; }
+
+  const cuerpo = {
+    telefono,
+    evento: {
+      nombre: document.getElementById('cot-evento-nombre').value.trim() || undefined,
+      fecha: document.getElementById('cot-evento-fecha').value || undefined,
+      lugar: document.getElementById('cot-lugar').value.trim() || undefined,
+      cantidadPersonas: Number(document.getElementById('cot-personas').value) || undefined,
+    },
+    vigenciaHasta: document.getElementById('cot-vigencia').value || undefined,
+    anticipoRequerido: Number(document.getElementById('cot-anticipo').value) || undefined,
+    notas: document.getElementById('cot-notas').value.trim() || undefined,
+    terminos: document.getElementById('cot-terminos').value.trim() || undefined,
+    items,
+  };
+
+  const btn = document.getElementById('cot-btn-guardar');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    const r = id
+      ? await apiFetch(`/api/cotizaciones/${id}`, { method: 'PATCH', body: JSON.stringify(cuerpo) })
+      : await apiFetch('/api/cotizaciones', { method: 'POST', body: JSON.stringify(cuerpo) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { errEl.textContent = d.error || 'No se pudo guardar la cotización.'; errEl.style.display = ''; return; }
+    cerrarModalCotizacion();
+    cargarCotizaciones();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Guardar cotización';
+  }
+}
+
+async function enviarCotizacion(id) {
+  const r = await apiFetch(`/api/cotizaciones/${id}/enviar`, { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.ok) { alert(d.error || 'No se pudo enviar la cotización.'); return; }
+  cargarCotizaciones();
+}
 
 // ─── Corte de caja ───────────────────────────────────────────────────────────
 async function cargarCorte() {
@@ -3535,6 +3936,63 @@ function copiarDiagnostico() {
   if (!ultimoDiagnostico) return;
   const texto = JSON.stringify(ultimoDiagnostico, null, 2);
   navigator.clipboard?.writeText(texto).then(() => alert('Diagnóstico copiado (sin secretos).')).catch(() => alert('No se pudo copiar.'));
+}
+
+// ─── Configuración de marca para cotizaciones (logo/color/vigencia/anticipo) ──
+// Usa GET/PUT /api/config (admin-only, sin filtrar) -- nunca /api/config/
+// operativa, cuyo allowlist es deliberadamente cerrado y no incluye estas
+// claves (ver CONFIG_CLAVES_OPERATIVAS en server.js).
+function archivoADataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function cargarConfigCotizaciones() {
+  if (!MODULOS.includes('cotizaciones')) return;
+  const r = await apiFetch('/api/config');
+  if (!r.ok) return;
+  const cfg = await r.json();
+  if (cfg.logo_base64) {
+    document.getElementById('cfg-cot-logo-preview').src = cfg.logo_base64;
+    document.getElementById('cfg-cot-logo-preview').style.display = '';
+  }
+  document.getElementById('cfg-cot-color').value = cfg.color_primario || '#1c1c1c';
+  document.getElementById('cfg-cot-vigencia-dias').value = cfg.vigencia_dias_default || '';
+  document.getElementById('cfg-cot-anticipo-pct').value = cfg.anticipo_porcentaje_default || '';
+  document.getElementById('cfg-cot-terminos').value = cfg.terminos_cotizacion_default || '';
+}
+
+document.getElementById('cfg-cot-logo-file')?.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const dataUrl = await archivoADataUrl(file);
+  document.getElementById('cfg-cot-logo-preview').src = dataUrl;
+  document.getElementById('cfg-cot-logo-preview').style.display = '';
+  document.getElementById('cfg-cot-logo-preview').dataset.pendiente = dataUrl;
+});
+
+async function guardarConfigCotizaciones() {
+  const fb = document.getElementById('cfg-cot-feedback');
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  const cambios = {
+    color_primario: document.getElementById('cfg-cot-color').value,
+    vigencia_dias_default: document.getElementById('cfg-cot-vigencia-dias').value,
+    anticipo_porcentaje_default: document.getElementById('cfg-cot-anticipo-pct').value,
+    terminos_cotizacion_default: document.getElementById('cfg-cot-terminos').value,
+  };
+  const logoPendiente = document.getElementById('cfg-cot-logo-preview').dataset.pendiente;
+  if (logoPendiente) cambios.logo_base64 = logoPendiente;
+  const r = await apiFetch('/api/config', { method: 'PUT', body: JSON.stringify(cambios) });
+  if (r.ok) {
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar';
+  }
 }
 
 // ─── Usuarios (Fase 5) ───────────────────────────────────────────────────────
