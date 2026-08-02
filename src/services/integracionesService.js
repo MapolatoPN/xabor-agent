@@ -456,3 +456,127 @@ export async function completarActivacionWhatsapp(negocioId, actualizadoPor) {
     errorSuscripcion: resultadoSuscripcion.ok ? null : resultadoSuscripcion.resumen,
   };
 }
+
+/**
+ * Clip por negocio (Incidente P0, 2 de agosto de 2026): antes de esto,
+ * crearLinkDePago() (clip-api.js) usaba una única credencial GLOBAL
+ * (getIntegracion('clip_api_key'), server.js) sin ningún negocioId --
+ * causa raíz confirmada de que un cliente de WhatsApp de Alora recibiera
+ * un enlace de pago generado con la cuenta Clip de Nonna Maye. Se
+ * reutilizan integraciones_canal/integraciones_canal_credenciales
+ * (canal='pagos', proveedor='clip') -- mismo modelo que WhatsApp/Meta,
+ * mismo cifrado AES-256-GCM. Clip requiere DOS secretos (api_key +
+ * api_secret) en vez de uno solo: se serializan como un único JSON y se
+ * cifran juntos en la columna access_token_cifrado existente -- no hace
+ * falta ninguna columna ni migración nueva para esto.
+ */
+export async function guardarCredencialesClip(negocioId, apiKey, apiSecret, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('guardarCredencialesClip: negocioId requerido');
+  }
+  if (typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new Error('guardarCredencialesClip: apiKey requerido');
+  }
+  if (typeof apiSecret !== 'string' || !apiSecret.trim()) {
+    throw new Error('guardarCredencialesClip: apiSecret requerido');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const existente = await client.query(
+      `SELECT id, estado FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = 'clip'`,
+      [negocioId.trim()]
+    );
+
+    let integracionId;
+    if (existente.rows[0]) {
+      integracionId = existente.rows[0].id;
+      await client.query(
+        `UPDATE integraciones_canal SET estado = 'activo', activo = TRUE,
+           actualizado_por = $1, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
+         WHERE id = $2`,
+        [actualizadoPor || null, integracionId]
+      );
+    } else {
+      // identificador es NOT NULL en integraciones_canal (migración 008) --
+      // Clip no tiene un identificador público natural como el
+      // phone_number_id de WhatsApp, así que se usa un valor sintético
+      // determinístico ('clip:<negocioId>'), único por negocio por
+      // construcción -- nunca colisiona entre negocios ni con otros
+      // canales, y satisface también el UNIQUE(canal, identificador).
+      const { rows: [nueva] } = await client.query(
+        `INSERT INTO integraciones_canal (negocio_id, canal, proveedor, identificador, estado, activo, conectado_at, actualizado_por)
+         VALUES ($1,'pagos','clip',$2,'activo',TRUE,NOW(),$3)
+         RETURNING id`,
+        [negocioId.trim(), `clip:${negocioId.trim()}`, actualizadoPor || null]
+      );
+      integracionId = nueva.id;
+    }
+
+    const { cifrado, iv, authTag, version } = cifrarSecretoIntegracion(JSON.stringify({ apiKey: apiKey.trim(), apiSecret: apiSecret.trim() }));
+    await client.query(
+      `INSERT INTO integraciones_canal_credenciales
+         (integracion_id, access_token_cifrado, token_iv, token_auth_tag, token_formato_version)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (integracion_id) DO UPDATE SET
+         access_token_cifrado = $2, token_iv = $3, token_auth_tag = $4,
+         token_formato_version = $5, actualizado_at = NOW()`,
+      [integracionId, cifrado, iv, authTag, version]
+    );
+
+    // Auditoría: nunca apiKey/apiSecret, solo el hecho de que se guardaron.
+    await registrarAuditoriaPlataforma({
+      superadminId: actualizadoPor,
+      accion: existente.rows[0] ? 'integracion_clip_actualizada' : 'integracion_clip_creada',
+      negocioId: negocioId.trim(),
+      estadoNuevo: { estado: 'activo', canal: 'pagos', proveedor: 'clip' },
+      contexto: {},
+    }, client);
+
+    await client.query('COMMIT');
+    return { id: integracionId, estado: 'activo' };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * ÚNICA función que devuelve las credenciales de Clip en texto plano --
+ * uso exclusivo de clip-api.js (nunca un controlador HTTP). Fail-closed:
+ * devuelve null si negocioId falta, si la integración no existe, no está
+ * 'activo', o si el descifrado falla -- nunca cae a una credencial de
+ * otro negocio ni a una variable de entorno global. El llamador debe
+ * transferir a atención humana cuando esto devuelve null, nunca usar
+ * un valor de respaldo.
+ */
+export async function obtenerCredencialesClipDescifradas(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT ic.estado, cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version
+       FROM integraciones_canal ic
+       JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id
+       WHERE ic.negocio_id = $1 AND ic.canal = 'pagos' AND ic.proveedor = 'clip'`,
+      [negocioId.trim()]
+    );
+    const row = rows[0];
+    if (!row || row.estado !== 'activo') return null;
+
+    const json = descifrarSecretoIntegracion({
+      cifrado: row.access_token_cifrado,
+      iv: row.token_iv,
+      authTag: row.token_auth_tag,
+      version: row.token_formato_version,
+    });
+    const { apiKey, apiSecret } = JSON.parse(json);
+    if (!apiKey || !apiSecret) return null;
+    return { apiKey, apiSecret };
+  } catch (e) {
+    console.error('[Integraciones] Error obtenerCredencialesClipDescifradas (negocio ocultado):', e.message);
+    return null;
+  }
+}

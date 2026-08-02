@@ -34,6 +34,7 @@ import {
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
   suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion, completarActivacionWhatsapp,
+  guardarCredencialesClip,
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
@@ -84,14 +85,17 @@ async function cargarIntegraciones() {
   console.log('[Config] Integraciones cargadas:', Object.keys(integracionesCache).join(', ') || 'ninguna (usando env vars)');
 }
 
-// Mapa: clave interna → variable de entorno de respaldo
+// Mapa: clave interna → variable de entorno de respaldo.
+// clip_api_key/clip_api_secret (Incidente P0) se retiraron de este mapa a
+// propósito: eran la causa raíz de que Clip se resolviera con una única
+// cuenta GLOBAL en vez de por negocio. clip-api.js ya no lee de aquí --
+// ver integracionesService.js (canal='pagos', proveedor='clip') y la
+// ruta PUT /api/superadmin/negocios/:id/integraciones/clip.
 const ENV_MAP = {
   wa_token:          'WHATSAPP_TOKEN',
   wa_phone_id:       'WHATSAPP_PHONE_ID',
   wa_verify_token:   'WHATSAPP_VERIFY_TOKEN',
   wa_admin_numero:   'WHATSAPP_ADMIN_NUMERO',
-  clip_api_key:      'CLIP_API_KEY',
-  clip_api_secret:   'CLIP_API_SECRET',
   facturapi_key:     'FACTURAPI_KEY',
   anthropic_api_key: 'ANTHROPIC_API_KEY',
   vapid_public_key:  'VAPID_PUBLIC_KEY',
@@ -2542,6 +2546,26 @@ app.get('/api/superadmin/negocios/:negocioId/integraciones', requireSuperadmin, 
   }
 });
 
+// Clip por negocio (Incidente P0, Fase 7): guarda apiKey/apiSecret
+// cifrados exclusivamente para ESTE negocio (integraciones_canal,
+// canal='pagos' proveedor='clip'). Nunca se exponen de vuelta -- ni aquí
+// ni en GET /integraciones -- el listado general ya excluye toda columna
+// cifrada (ver COLUMNAS_SEGURAS en integracionesService.js).
+app.put('/api/superadmin/negocios/:negocioId/integraciones/clip', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const { apiKey, apiSecret } = req.body || {};
+  if (typeof apiKey !== 'string' || !apiKey.trim()) return res.status(400).json({ error: 'apiKey requerido' });
+  if (typeof apiSecret !== 'string' || !apiSecret.trim()) return res.status(400).json({ error: 'apiSecret requerido' });
+  try {
+    const resultado = await guardarCredencialesClip(negocioId, apiKey, apiSecret, req.usuarioId);
+    res.json(resultado);
+  } catch (e) {
+    console.error('[PUT /api/superadmin/negocios/:id/integraciones/clip] Error:', e.message);
+    res.status(500).json({ error: 'Error al guardar las credenciales de Clip' });
+  }
+});
+
 app.get('/api/superadmin/negocios/:negocioId/integraciones/whatsapp', requireSuperadmin, async (req, res) => {
   if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
   try {
@@ -2972,7 +2996,6 @@ app.patch('/api/superadmin/prospectos/:id', requireSuperadmin, async (req, res) 
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
-  'clip_api_key','clip_api_secret',
   'facturapi_key',
   'anthropic_api_key',
   'vapid_public_key','vapid_private_key','vapid_email',
