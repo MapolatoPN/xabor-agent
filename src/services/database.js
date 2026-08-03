@@ -1367,6 +1367,27 @@ function _calcularTotales(items, { impuestosPct = 0 } = {}) {
   return { subtotal: Math.round(subtotal * 100) / 100, impuestos, descuentos, total };
 }
 
+// Hotfix (desglose de IVA): la TASA usada se resuelve una sola vez aquí,
+// nunca se reinventa en el PDF ni en el panel -- si el caller (API) no
+// especifica una tasa explícita, se usa el default configurado para el
+// negocio (configuracion.iva_pct_default, mismo patrón clave/valor ya
+// usado para vigencia_dias_default/anticipo_porcentaje_default). Sin
+// configurar -> 0%, IDÉNTICO al comportamiento previo a este hotfix --
+// ningún negocio existente cambia solo por este cambio de código.
+async function _resolverTasaIva(negocioId, impuestosPct) {
+  if (impuestosPct !== null && impuestosPct !== undefined) {
+    const n = Number(impuestosPct);
+    return Number.isFinite(n) ? n : 0;
+  }
+  try {
+    const config = await obtenerConfiguracion(negocioId);
+    const n = Number(config.iva_pct_default);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function obtenerCotizacion(cotizacionId, negocioId) {
   const pertenencia = await obtenerPertenenciaCotizacion(cotizacionId, negocioId);
   if (pertenencia !== 'propia') return null;
@@ -1391,10 +1412,15 @@ export async function listarCotizaciones(negocioId, { telefono = null } = {}) {
 // las cotizaciones son un evento de baja frecuencia (creadas manualmente por
 // un administrador), así que 3 reintentos con un COUNT fresco es suficiente
 // sin necesitar una secuencia dedicada por negocio.
-export async function crearCotizacion({ negocioId, telefono, createdBy, evento = {}, vigenciaHasta = null, anticipoRequerido = null, notas = null, terminos = null, items = [], impuestosPct = 0, origen = 'panel' }) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearCotizacion: negocioId requerido');
+export async function crearCotizacion({ negocioId, telefono, createdBy, evento = {}, vigenciaHasta = null, anticipoRequerido = null, notas = null, terminos = null, items = [], impuestosPct = null, origen = 'panel' }) {
+  // Mismo contrato fail-closed que registrarPedido() (orderManager.js) y
+  // TenantContextRequiredError (integracionesService.js): sin negocioId
+  // válido, se rechaza antes de tocar la base -- nunca un fallback implícito
+  // a ningún negocio.
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('TENANT_CONTEXT_REQUIRED: crearCotizacion sin negocioId resuelto — se rechaza antes de persistir');
   if (!Array.isArray(items) || items.length === 0) throw new Error('crearCotizacion: al menos un item requerido');
-  const totales = _calcularTotales(items, { impuestosPct });
+  const tasaIva = await _resolverTasaIva(negocioId, impuestosPct);
+  const totales = _calcularTotales(items, { impuestosPct: tasaIva });
   if (!Number.isFinite(totales.total)) throw new Error('crearCotizacion: totales inválidos (revisar cantidad/precioUnitario de los items)');
 
   for (let intento = 0; intento < 3; intento++) {
@@ -1414,13 +1440,13 @@ export async function crearCotizacion({ negocioId, telefono, createdBy, evento =
       const { rows } = await client.query(`
         INSERT INTO cotizaciones (
           negocio_id, telefono, folio, evento_nombre, fecha_evento, lugar, cantidad_personas,
-          vigencia_hasta, subtotal, impuestos, descuentos, total, anticipo_requerido, notas, terminos, created_by, origen
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          vigencia_hasta, subtotal, impuestos, descuentos, total, anticipo_requerido, notas, terminos, created_by, origen, impuestos_tasa
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
         RETURNING *
       `, [
         negocioId.trim(), telefono, folio, evento.nombre || null, evento.fecha || null, evento.lugar || null,
         evento.cantidadPersonas || null, vigenciaHasta, totales.subtotal, totales.impuestos, totales.descuentos,
-        totales.total, anticipoRequerido, notas, terminos, createdBy, origen,
+        totales.total, anticipoRequerido, notas, terminos, createdBy, origen, tasaIva,
       ]);
       const cotizacion = rows[0];
       for (let i = 0; i < items.length; i++) {
@@ -1445,7 +1471,7 @@ export async function crearCotizacion({ negocioId, telefono, createdBy, evento =
 // Edición = nueva versión: el estado ANTERIOR completo (cotización + items)
 // se guarda en cotizaciones_historial antes de mutar la fila viva -- nunca se
 // sobrescribe sin conservar el snapshot previo.
-export async function actualizarCotizacion(cotizacionId, negocioId, cambios = {}, items = null, impuestosPct = 0) {
+export async function actualizarCotizacion(cotizacionId, negocioId, cambios = {}, items = null, impuestosPct = null) {
   const actual = await obtenerCotizacion(cotizacionId, negocioId);
   if (!actual) return null;
   const client = await pool.connect();
@@ -1457,7 +1483,14 @@ export async function actualizarCotizacion(cotizacionId, negocioId, cambios = {}
       [cotizacionId, actual.version, JSON.stringify(actual), actual.pdf_storage_key]
     );
     const itemsFinal = items || actual.items;
-    const totales = _calcularTotales(itemsFinal, { impuestosPct });
+    // Hotfix (desglose de IVA): si esta edición no especifica una tasa
+    // explícita, se REUTILIZA la tasa ya vigente de la cotización (nunca
+    // se resetea a 0) -- antes de este cambio, cada edición borraba
+    // silenciosamente el IVA ya cobrado en la versión anterior.
+    const tasaIva = (impuestosPct !== null && impuestosPct !== undefined)
+      ? Number(impuestosPct)
+      : (Number(actual.impuestos_tasa) || 0);
+    const totales = _calcularTotales(itemsFinal, { impuestosPct: tasaIva });
     if (items) {
       await client.query(`DELETE FROM cotizacion_items WHERE cotizacion_id = $1`, [cotizacionId]);
       for (let i = 0; i < items.length; i++) {
@@ -1475,13 +1508,13 @@ export async function actualizarCotizacion(cotizacionId, negocioId, cambios = {}
         lugar = COALESCE($4, lugar), cantidad_personas = COALESCE($5, cantidad_personas),
         vigencia_hasta = COALESCE($6, vigencia_hasta), anticipo_requerido = COALESCE($7, anticipo_requerido),
         notas = COALESCE($8, notas), terminos = COALESCE($9, terminos),
-        subtotal = $10, impuestos = $11, descuentos = $12, total = $13
+        subtotal = $10, impuestos = $11, descuentos = $12, total = $13, impuestos_tasa = $14
       WHERE id = $1
       RETURNING *
     `, [
       cotizacionId, cambios.evento?.nombre, cambios.evento?.fecha, cambios.evento?.lugar, cambios.evento?.cantidadPersonas,
       cambios.vigenciaHasta, cambios.anticipoRequerido, cambios.notas, cambios.terminos,
-      totales.subtotal, totales.impuestos, totales.descuentos, totales.total,
+      totales.subtotal, totales.impuestos, totales.descuentos, totales.total, tasaIva,
     ]);
     await client.query('COMMIT');
     return { ...rows[0], items: await _obtenerItemsCotizacion(pool, cotizacionId) };

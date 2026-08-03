@@ -2147,6 +2147,12 @@ app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_docume
 // eventos/catering/florería, pero evita una cotización con cientos de
 // partidas (PDF grande, renderización lenta en Chromium).
 const COTIZACION_ITEMS_MAXIMO = 50;
+// Hotfix (desglose de IVA): validado en la frontera de la API -- fail
+// closed con 400 claro en vez de dejar que una tasa inválida llegue al
+// CHECK de la base (que respondería un 500 genérico).
+function impuestosPctInvalido(valor) {
+  return valor !== undefined && (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 0 || valor > 100);
+}
 
 app.get('/api/cotizaciones', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const cotizaciones = await listarCotizaciones(req.negocioId, { telefono: req.query.telefono || null });
@@ -2163,10 +2169,21 @@ app.get('/api/cotizaciones/:id', requireAuthSeguro, requireModulo('cotizaciones'
 app.post('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
   const { telefono, evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
   if (typeof telefono !== 'string' || !telefono.trim()) return res.status(400).json({ error: 'telefono requerido' });
-  const pertenencia = await obtenerPertenenciaConversacion(telefono, req.negocioId);
-  if (pertenencia === 'ajena') return res.status(403).json({ error: 'El cliente pertenece a otro negocio' });
+  // Hotfix: NO se valida "pertenencia" del teléfono aquí a propósito.
+  // obtenerPertenenciaConversacion() responde 'ajena' si ese teléfono ya
+  // aparece en `clientes`/`mensajes` (tablas con PK global por telefono,
+  // pre-Fase-0-CRM) bajo OTRO negocio -- correcto para no filtrar el
+  // HISTORIAL de chat de otro negocio, pero equivocado aquí: un mismo
+  // teléfono puede y debe poder ser cliente de varios negocios
+  // simultáneamente. crearCotizacion() nunca lee ni escribe
+  // clientes/perfiles_clientes -- la cotización queda aislada solo por
+  // negocio_id (columna propia, con folio único por negocio), así que no
+  // hay ninguna mezcla de datos posible al quitar este gate. Ver
+  // fase-cotizaciones-multiempresa-telefono.mjs para la prueba explícita
+  // del contrato (mismo teléfono, negocios distintos, cero fuga).
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Al menos un item requerido' });
   if (items.length > COTIZACION_ITEMS_MAXIMO) return res.status(400).json({ error: `Máximo ${COTIZACION_ITEMS_MAXIMO} partidas por cotización` });
+  if (impuestosPctInvalido(impuestosPct)) return res.status(400).json({ error: 'impuestosPct debe ser un número entre 0 y 100' });
   try {
     const cotizacion = await crearCotizacion({
       negocioId: req.negocioId, telefono, createdBy: req.usuarioId, evento, vigenciaHasta,
@@ -2185,6 +2202,7 @@ app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizacion
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
   const { evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
   if (Array.isArray(items) && items.length > COTIZACION_ITEMS_MAXIMO) return res.status(400).json({ error: `Máximo ${COTIZACION_ITEMS_MAXIMO} partidas por cotización` });
+  if (impuestosPctInvalido(impuestosPct)) return res.status(400).json({ error: 'impuestosPct debe ser un número entre 0 y 100' });
   try {
     const cotizacion = await actualizarCotizacion(req.params.id, req.negocioId, { evento, vigenciaHasta, anticipoRequerido, notas, terminos }, items || null, impuestosPct);
     res.json(cotizacion);

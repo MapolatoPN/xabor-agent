@@ -30,6 +30,11 @@ function formatoMoneda(n) {
   return `$${Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatoTasaIva(n) {
+  const tasa = Number(n || 0);
+  return Number.isInteger(tasa) ? String(tasa) : tasa.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function construirHtml(cotizacion, negocioConfig) {
   const colorPrimario = negocioConfig.color_primario || '#1c1c1c';
   const logo = negocioConfig.logo_base64
@@ -90,9 +95,9 @@ function construirHtml(cotizacion, negocioConfig) {
     </table>
 
     <div class="totales">
-      <div><span>Subtotal</span><span>${formatoMoneda(cotizacion.subtotal)}</span></div>
-      <div><span>Impuestos</span><span>${formatoMoneda(cotizacion.impuestos)}</span></div>
-      <div><span>Descuentos</span><span>-${formatoMoneda(cotizacion.descuentos)}</span></div>
+      <div><span>Subtotal</span><span>${formatoMoneda(Number(cotizacion.subtotal) + Number(cotizacion.descuentos || 0))}</span></div>
+      ${Number(cotizacion.descuentos) > 0 ? `<div><span>Descuento</span><span>-${formatoMoneda(cotizacion.descuentos)}</span></div>` : ''}
+      <div><span>IVA ${formatoTasaIva(cotizacion.impuestos_tasa)}%</span><span>${formatoMoneda(cotizacion.impuestos)}</span></div>
       <div class="total-final"><span>Total</span><span>${formatoMoneda(cotizacion.total)}</span></div>
       ${cotizacion.anticipo_requerido ? `<div><span>Anticipo requerido</span><span>${formatoMoneda(cotizacion.anticipo_requerido)}</span></div>` : ''}
     </div>

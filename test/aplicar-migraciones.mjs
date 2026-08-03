@@ -39,6 +39,7 @@ export const ORDEN_MIGRACIONES = [
   '024_activacion_cloud_api_whatsapp.sql',
   '025_pagos_multiempresa.sql',
   '026_documentos_cotizaciones.sql',
+  '027_cotizaciones_iva_tasa.sql',
   '028_sesiones_comerciales.sql',
 ];
 
