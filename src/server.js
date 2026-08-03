@@ -28,6 +28,7 @@ import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPa
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
+import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
@@ -51,7 +52,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import whatsappRouter, { enviarMensaje, enviarDocumento, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -2140,6 +2141,109 @@ app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_docume
   await eliminarDocumentoRegistro(req.params.id);
   broadcastNegocio(req.negocioId, { tipo: 'documento_eliminado', documentoId: req.params.id });
   res.json({ ok: true });
+});
+
+// ─── Imágenes en el chat ───────────────────────────────────────────────────────
+// Mismo patrón que documentos PDF (arriba), gateado por 'chat_imagenes' en
+// vez de 'chat_documentos_pdf' -- son módulos independientes. Reutiliza la
+// misma tabla `documentos` (categoria='imagen') y las mismas funciones de
+// pertenencia (obtenerPertenenciaDocumento/obtenerDocumento no filtran por
+// categoria a propósito: un documento es un documento, sea PDF o imagen,
+// para efectos de aislamiento por negocio).
+//
+// Envía hasta MAX_IMAGENES_POR_ENVIO en un solo POST (un mensaje de WhatsApp
+// por imagen -- Meta no soporta múltiples adjuntos en un solo mensaje) --
+// se procesan en serie y se reporta cuáles tuvieron éxito/error, en vez de
+// abortar todo el lote ante el primer fallo.
+app.post('/api/imagenes/enviar', requireAuthSeguro, requireModulo('chat_imagenes'),
+  rateLimitMiddleware(req => `img-enviar:${req.negocioId}`, 20, 60 * 1000),
+  async (req, res) => {
+    const { telefono, imagenes, caption } = req.body || {};
+    if (typeof telefono !== 'string' || !telefono.trim()) return res.status(400).json({ error: 'telefono requerido' });
+    if (!Array.isArray(imagenes) || imagenes.length === 0) return res.status(400).json({ error: 'Al menos una imagen requerida' });
+    if (imagenes.length > MAX_IMAGENES_POR_ENVIO) return res.status(400).json({ error: `Máximo ${MAX_IMAGENES_POR_ENVIO} imágenes por envío` });
+
+    const pertenencia = await obtenerPertenenciaConversacion(telefono, req.negocioId);
+    if (pertenencia === 'ajena') return res.status(403).json({ error: 'La conversación pertenece a otro negocio' });
+
+    const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+    if (!credenciales?.accessToken) return res.status(409).json({ error: 'WhatsApp no configurado para este negocio' });
+
+    const resultados = [];
+    for (const item of imagenes) {
+      const { filename, base64 } = item || {};
+      if (typeof base64 !== 'string' || !base64.trim()) {
+        resultados.push({ ok: false, filename: filename || null, error: 'base64 requerido' });
+        continue;
+      }
+      let buffer;
+      try {
+        buffer = Buffer.from(base64, 'base64');
+      } catch {
+        resultados.push({ ok: false, filename: filename || null, error: 'base64 inválido' });
+        continue;
+      }
+
+      const resultado = await procesarImagenSaliente({ negocioId: req.negocioId, telefono, buffer, filename });
+      if (!resultado.ok) {
+        const mensajes = { archivo_vacio: 'Archivo vacío', tamano_excedido: 'El archivo excede el tamaño máximo permitido', mime_invalido: 'El archivo no es una imagen jpg/png/webp válida' };
+        resultados.push({ ok: false, filename: filename || null, error: mensajes[resultado.motivo] || 'Archivo inválido' });
+        continue;
+      }
+
+      try {
+        const envio = await enviarImagenBuffer(telefono, resultado.buffer, resultado.filename, resultado.mimeType, caption || '', credenciales);
+        const documento = await crearRegistroImagenSaliente({
+          negocioId: req.negocioId, telefono, filename: resultado.filename, mimeType: resultado.mimeType,
+          sizeBytes: resultado.sizeBytes, storageKey: resultado.storageKey, caption: caption || null,
+          wamid: envio?.messages?.[0]?.id || null, createdBy: req.usuarioId, checksum: resultado.checksum,
+        });
+        const msg = await guardarMensaje(telefono, null, 'saliente', caption ? `📷 ${caption}` : '📷 Imagen', req.negocioId, 'humano', documento.wamid, 'imagen', documento.id);
+        if (msg) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
+        resultados.push({ ok: true, documento });
+      } catch (e) {
+        console.error('[POST /api/imagenes/enviar] Error:', e.message);
+        resultados.push({ ok: false, filename: resultado.filename, error: 'No se pudo enviar la imagen a WhatsApp' });
+      }
+    }
+
+    const huboExito = resultados.some(r => r.ok);
+    res.status(huboExito ? 200 : 502).json({ ok: huboExito, resultados });
+  }
+);
+
+app.get('/api/imagenes/:id', requireAuthSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+  const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
+  if (pertenencia === 'ajena') return res.status(403).json({ error: 'La imagen pertenece a otro negocio' });
+  if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Imagen no encontrada' });
+  res.json(await obtenerDocumento(req.params.id, req.negocioId));
+});
+
+app.get('/api/imagenes/:id/archivo', requireAuthSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+  const documento = await obtenerDocumento(req.params.id, req.negocioId);
+  if (!documento) return res.status(404).json({ error: 'Imagen no encontrada' });
+  if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'La imagen no está lista todavía' });
+
+  if (driverEsLocal()) {
+    const buffer = await leerArchivo(documento.storage_key);
+    res.setHeader('Content-Type', documento.mime_type || 'image/jpeg');
+    // A diferencia de los documentos PDF, el filename de una imagen
+    // SALIENTE ya quedó saneado con su extensión real (jpg/png/webp) al
+    // crearse; una imagen ENTRANTE se registra sin extensión (Meta no
+    // manda filename para imágenes, a diferencia de documentos) -- se le
+    // agrega aquí a partir del mime_type real si todavía no la tiene.
+    // sanitizarNombreArchivo() (la de documentos.js) NO sirve porque
+    // fuerza ".pdf".
+    const extPorMime = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+    let nombreDescarga = documento.filename.replace(/[\\/"]/g, '_');
+    if (!/\.(jpe?g|png|webp)$/i.test(nombreDescarga)) {
+      nombreDescarga += `.${extPorMime[documento.mime_type] || 'jpg'}`;
+    }
+    res.setHeader('Content-Disposition', `inline; filename="${nombreDescarga}"`);
+    return res.send(buffer);
+  }
+  const url = await obtenerUrlDescarga(documento.storage_key, { ttlSegundos: 300 });
+  res.redirect(url);
 });
 
 // ─── Cotizaciones ──────────────────────────────────────────────────────────────

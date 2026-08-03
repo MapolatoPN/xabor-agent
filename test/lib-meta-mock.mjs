@@ -6,9 +6,18 @@ import { createServer } from 'http';
 
 export function arrancarMetaMock() {
   const archivosPorMediaId = {};
+  let forzarErrorSiguienteEnvio = false;
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    // Simula un fallo real de Meta (usado por pruebas de "error de Meta" /
+    // reintento) -- se autolimpia tras UNA sola respuesta, para no dejar
+    // el mock en modo fallo para el resto de la suite por accidente.
+    if (forzarErrorSiguienteEnvio && req.method === 'POST' && (/\/media$/.test(url.pathname) || /\/messages$/.test(url.pathname))) {
+      forzarErrorSiguienteEnvio = false;
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'simulado: Meta no disponible' } }));
+    }
     // Paso 1 de descarga: resolver media_id -> url + metadata
     const matchResolver = url.pathname.match(/^\/v20\.0\/([^/]+)$/);
     if (req.method === 'GET' && matchResolver && archivosPorMediaId[matchResolver[1]]) {
@@ -45,6 +54,7 @@ export function arrancarMetaMock() {
     server.listen(0, () => resolve({
       baseUrl: `http://localhost:${server.address().port}`,
       registrarArchivo: (mediaId, buffer, mimeType = 'application/pdf') => { archivosPorMediaId[mediaId] = { buffer, mimeType }; },
+      forzarErrorSiguienteEnvio: () => { forzarErrorSiguienteEnvio = true; },
       detener: () => server.close(),
     }));
   });
