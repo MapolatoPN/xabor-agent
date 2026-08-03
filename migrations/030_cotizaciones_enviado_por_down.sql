@@ -1,0 +1,3 @@
+BEGIN;
+ALTER TABLE cotizaciones DROP COLUMN IF EXISTS enviado_por;
+COMMIT;

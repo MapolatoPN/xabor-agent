@@ -1530,10 +1530,14 @@ export async function guardarPdfCotizacion(cotizacionId, storageKey) {
   await pool.query(`UPDATE cotizaciones SET pdf_storage_key = $2 WHERE id = $1`, [cotizacionId, storageKey]);
 }
 
-export async function marcarCotizacionEnviada(cotizacionId) {
+// enviadoPor SIEMPRE debe ser un usuarios.id humano autenticado -- la IA
+// del Asistente Comercial nunca aprueba ni envía por sí sola (ver
+// draftBuilder.js), así que esta función solo se llama desde el POST
+// /api/cotizaciones/:id/enviar real, nunca desde el flujo de borrador.
+export async function marcarCotizacionEnviada(cotizacionId, enviadoPor = null) {
   const { rows } = await pool.query(
-    `UPDATE cotizaciones SET estado = 'enviada', sent_at = NOW() WHERE id = $1 RETURNING *`,
-    [cotizacionId]
+    `UPDATE cotizaciones SET estado = 'enviada', sent_at = NOW(), enviado_por = $2 WHERE id = $1 RETURNING *`,
+    [cotizacionId, enviadoPor]
   );
   return rows[0] || null;
 }
