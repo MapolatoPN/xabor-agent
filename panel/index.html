@@ -643,6 +643,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   </div>
 </div>
 
+<!-- Visor de imagen a pantalla completa (tap para abrir, X o backdrop para cerrar) -->
+<div id="visor-imagen-overlay" onclick="if(event.target===this) cerrarVisorImagen();" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:500;align-items:center;justify-content:center;flex-direction:column;">
+  <button onclick="cerrarVisorImagen()" style="position:absolute;top:14px;right:14px;width:38px;height:38px;border:none;border-radius:50%;background:rgba(255,255,255,0.15);color:#fff;font-size:1.2rem;cursor:pointer;">✕</button>
+  <img id="visor-imagen-img" src="" style="max-width:94vw;max-height:80vh;object-fit:contain;border-radius:4px;">
+  <a id="visor-imagen-descargar" href="" download style="margin-top:16px;color:#fff;font-size:0.9rem;font-weight:700;background:rgba(255,255,255,0.15);padding:9px 20px;border-radius:20px;text-decoration:none;">⬇ Descargar</a>
+</div>
+
 <!-- Modal: crear/editar cotización -->
 <div id="modal-cotizacion-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:16px;padding:24px;max-width:560px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
@@ -3040,8 +3047,8 @@ function actualizarTarjetaDocumentoWS({ documentoId, ok, motivo }) {
     const caption = tarjeta.dataset.caption || '';
     if (ok) {
       tarjeta.innerHTML = `
-        <a href="/api/imagenes/${documentoId}/archivo" target="_blank" rel="noopener">
-          <img src="/api/imagenes/${documentoId}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;">
+        <a href="/api/imagenes/${documentoId}/archivo" target="_blank" rel="noopener" onclick="event.preventDefault(); abrirVisorImagen(this.href);">
+          <img src="/api/imagenes/${documentoId}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;cursor:pointer;">
         </a>
         ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
         <div style="font-size:0.72rem;opacity:0.65;margin-top:2px;">${remitente}</div>
@@ -3232,12 +3239,38 @@ function cerrarModalImagenes() {
   document.getElementById('imagenes-adjunto-caption').value = '';
 }
 
+// Miniatura inmediata + estado "enviando" -- igual que WhatsApp muestra la
+// foto de inmediato con un reloj/spinner antes de confirmar la entrega, en
+// vez de dejar la pantalla sin cambios hasta que el servidor responda.
+// Usa las mismas blob URLs del preview (nunca vuelve a leer el archivo).
+// El mensaje REAL llega después por WebSocket (recibirMensajeWS, mismo
+// camino que cualquier otro mensaje) -- esta burbuja optimista se retira
+// en cuanto la respuesta HTTP confirma éxito, para no duplicar la imagen.
+function renderBurbujaOptimista(item, tempId) {
+  const cont = document.getElementById('chat-mensajes');
+  const div = document.createElement('div');
+  div.dataset.tempId = tempId;
+  div.style.cssText = 'display:flex;justify-content:flex-end;';
+  div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:12px 12px 0 12px;background:#dcfce7;color:#1a1a1a;font-size:0.88rem;opacity:0.75;">
+    <img src="${item.previewUrl}" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;">
+    <div style="font-size:0.72rem;opacity:0.7;margin-top:4px;">⏳ Enviando…</div>
+  </div>`;
+  cont.appendChild(div);
+  cont.scrollTop = cont.scrollHeight;
+  return div;
+}
+
 async function confirmarEnvioImagenes() {
   if (!imagenesAdjuntoPendientes.length || !chatAbierto) return;
   const btn = document.getElementById('btn-confirmar-envio-imagenes');
   const errEl = document.getElementById('imagenes-adjunto-error');
   errEl.style.display = 'none';
   btn.disabled = true; btn.textContent = 'Enviando...';
+
+  const tempId = 'optimista-' + Date.now();
+  const burbujasOptimistas = imagenesAdjuntoPendientes.map(item => renderBurbujaOptimista(item, tempId));
+  const quitarOptimistas = () => burbujasOptimistas.forEach(el => el.remove());
+
   try {
     const imagenes = await Promise.all(imagenesAdjuntoPendientes.map(async item => ({
       filename: item.file.name,
@@ -3250,12 +3283,14 @@ async function confirmarEnvioImagenes() {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok && !d.ok) {
+      quitarOptimistas();
       errEl.textContent = (d.resultados && d.resultados.find(x => !x.ok)?.error) || d.error || 'No se pudieron enviar las fotos.';
       errEl.style.display = '';
       return;
     }
     const fallidas = (d.resultados || []).filter(x => !x.ok);
     if (fallidas.length) {
+      quitarOptimistas();
       errEl.textContent = `${fallidas.length} foto(s) no se enviaron: ${fallidas[0].error}. El resto sí se envió -- puedes reintentar solo las que fallaron.`;
       errEl.style.display = '';
       // Deja el modal abierto solo con las fallidas para reintentar, en vez
@@ -3264,14 +3299,41 @@ async function confirmarEnvioImagenes() {
       renderGridImagenesPendientes();
       return;
     }
+    // Éxito total: el mensaje real ya llegó (o está por llegar) vía
+    // WebSocket -- se retira la burbuja optimista para no duplicar.
+    quitarOptimistas();
     cerrarModalImagenes();
   } catch {
+    // Fallo de red real (no una respuesta de error del servidor): se deja
+    // la burbuja optimista pero marcada como error, igual que WhatsApp
+    // muestra un ícono de "no enviado" en vez de simplemente desaparecer.
+    burbujasOptimistas.forEach(el => {
+      const estado = el.querySelector('div > div');
+      if (estado) { estado.textContent = '⚠️ No se pudo enviar'; estado.style.color = '#c0392b'; }
+    });
     errEl.textContent = 'Error de conexión. Intenta de nuevo.';
     errEl.style.display = '';
   } finally {
     btn.disabled = false; btn.textContent = 'Enviar';
   }
 }
+
+// Visor de imagen a pantalla completa -- reemplaza el "abrir en pestaña
+// nueva" (context switch incómodo en móvil) por un overlay igual que
+// WhatsApp: toca la miniatura, ve la imagen completa, cierra con X o
+// tocando fuera, sin perder el chat de fondo.
+function abrirVisorImagen(url) {
+  document.getElementById('visor-imagen-img').src = url;
+  document.getElementById('visor-imagen-descargar').href = url;
+  document.getElementById('visor-imagen-overlay').style.display = 'flex';
+}
+function cerrarVisorImagen() {
+  document.getElementById('visor-imagen-overlay').style.display = 'none';
+  document.getElementById('visor-imagen-img').src = '';
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('visor-imagen-overlay').style.display === 'flex') cerrarVisorImagen();
+});
 
 // Tarjeta de imagen -- entrante o saliente. Mismo criterio que
 // contenidoTarjetaDocumento: m.documento_estado/m.documento_id_real vienen
@@ -3283,8 +3345,8 @@ function contenidoTarjetaImagen(m) {
   const idDoc = m.documento_id_real || m.documento_id;
   const etiquetaEstado = { pendiente: '⏳ Recibiendo…', descargando: '⏳ Recibiendo…', error: '⚠️ No se pudo procesar la imagen' }[estado] || '';
   const cuerpo = (estado === 'listo' && idDoc)
-    ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener">
-         <img src="/api/imagenes/${idDoc}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;">
+    ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener" onclick="event.preventDefault(); abrirVisorImagen(this.href);">
+         <img src="/api/imagenes/${idDoc}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;cursor:pointer;">
        </a>`
     : `<div style="width:180px;height:140px;border-radius:8px;background:#e5e2da;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#888;">${etiquetaEstado || '📷'}</div>`;
   const descarga = (estado === 'listo' && idDoc) ? `<a href="/api/imagenes/${idDoc}/archivo" download data-doc-accion="descargar" style="font-size:0.75rem;font-weight:700;">Descargar</a>` : '';
