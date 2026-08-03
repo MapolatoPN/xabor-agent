@@ -2,8 +2,16 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Xabor — Panel de Comandas</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#1c1c1c" />
+<link rel="icon" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Xabor" />
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -554,8 +562,26 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>
   <button class="header-btn admin-only" data-modulo="pos" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
+  <button class="header-btn" id="btn-notif" onclick="abrirModalPush()" title="Notificaciones">🔔</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
+
+<!-- Modal: notificaciones push -->
+<div id="modal-push-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:14px;font-size:1rem;">🔔 Notificaciones</h3>
+    <div id="push-estado" style="font-size:0.88rem;color:#374151;margin-bottom:14px;line-height:1.5;">Comprobando...</div>
+    <div id="push-instrucciones-ios" style="display:none;font-size:0.82rem;color:#6B7280;background:#F8F9FA;border-radius:8px;padding:12px;margin-bottom:14px;line-height:1.5;">
+      Para recibir notificaciones en iPhone: abre esta página en <b>Safari</b>, toca el ícono de compartir (<b>⬆️</b>) y elige <b>"Agregar a pantalla de inicio"</b>. Luego abre Xabor desde ese ícono y vuelve a intentar activar las notificaciones.
+    </div>
+    <div id="push-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button id="btn-activar-push" onclick="activarNotificaciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 16px;font-size:0.9rem;font-weight:700;cursor:pointer;">Activar notificaciones</button>
+      <button id="btn-probar-push" onclick="probarNotificacion()" style="background:none;border:1px solid #e5e2da;border-radius:8px;padding:10px 16px;font-size:0.88rem;font-weight:600;cursor:pointer;color:#374151;">Probar notificación</button>
+      <button onclick="cerrarModalPush()" style="background:none;border:none;font-size:0.85rem;color:#888;cursor:pointer;padding:6px;">Cerrar</button>
+    </div>
+  </div>
+</div>
 
 <!-- Modal WhatsApp -->
 <div id="modal-overlay">
@@ -1641,38 +1667,144 @@ function urlBase64ToUint8Array(base64String) {
   return output;
 }
 
+function esIOS() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    // iPadOS 13+ se reporta como Mac pero soporta multitouch real
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function esStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+function pushEsCompatible() {
+  return ('serviceWorker' in navigator) && ('PushManager' in window) && (typeof Notification !== 'undefined');
+}
+
+// Suscripción silenciosa: SOLO si el permiso ya fue concedido en una
+// sesión anterior (nunca pide permiso aquí, eso requiere un gesto
+// explícito del usuario -- imprescindible en iOS 16.4+, donde pedirlo sin
+// gesto simplemente no funciona). Se llama al cargar el panel para que un
+// operador que ya activó notificaciones antes siga suscrito sin tener que
+// volver a tocar nada.
 async function registrarPush() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (!pushEsCompatible()) return;
+  if (Notification.permission !== 'granted') return;
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js');
-    // Obtener clave pública VAPID
-    const r = await apiFetch('/api/push/vapid-public-key');
-    if (!r.ok) return; // push no configurado en servidor
-    const { key } = await r.json();
-    // Pedir permiso al usuario (solo si no lo hemos pedido antes)
-    const permiso = await Notification.requestPermission();
-    if (permiso !== 'granted') return;
-    // Suscribirse (o reusar suscripción existente)
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(key)
-    });
-    // Enviar suscripción al servidor -- el negocio lo determina el
-    // servidor a partir de la sesión (req.negocioId), nunca de lo que
-    // mande este cliente.
-    await apiFetch('/api/push/subscribe', {
-      method: 'POST',
-      body: JSON.stringify(sub.toJSON())
-    });
-    // Guardar el endpoint localmente -- solo para poder desvincularlo en
-    // logout (nunca se usa como autorización, el servidor siempre valida
-    // contra la sesión real).
-    localStorage.setItem('xabor_push_endpoint', sub.endpoint);
-    console.log('[Push] Suscripción registrada');
+    await suscribirPush();
+    console.log('[Push] Suscripción silenciosa OK (permiso ya concedido antes)');
   } catch (e) {
-    console.warn('[Push] No se pudo registrar:', e.message);
+    console.warn('[Push] No se pudo re-suscribir:', e.message);
   }
 }
+
+// Hace el registro del service worker + la suscripción real ante el
+// servidor. Asume que el permiso YA fue concedido (o se concede justo
+// antes, en activarNotificaciones) -- no pide permiso por su cuenta.
+async function suscribirPush() {
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  const r = await apiFetch('/api/push/vapid-public-key');
+  if (!r.ok) throw new Error('Push no configurado en el servidor');
+  const { key } = await r.json();
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(key)
+  });
+  // Enviar suscripción al servidor -- el negocio lo determina el
+  // servidor a partir de la sesión (req.negocioId), nunca de lo que
+  // mande este cliente.
+  await apiFetch('/api/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify(sub.toJSON())
+  });
+  // Guardar el endpoint localmente -- solo para poder desvincularlo en
+  // logout (nunca se usa como autorización, el servidor siempre valida
+  // contra la sesión real).
+  localStorage.setItem('xabor_push_endpoint', sub.endpoint);
+  return sub;
+}
+
+// Botón "Activar notificaciones" -- este SÍ corre dentro de un gesto real
+// del usuario (click), que es el único contexto en el que Safari/Chrome
+// permiten pedir permiso de notificaciones.
+async function activarNotificaciones() {
+  const fb = document.getElementById('push-feedback');
+  if (fb) { fb.style.color = '#666'; fb.textContent = 'Solicitando permiso...'; }
+  try {
+    if (!pushEsCompatible()) throw new Error('Este navegador no soporta notificaciones push');
+    if (esIOS() && !esStandalone()) throw new Error('En iPhone primero agrega Xabor a la pantalla de inicio');
+    const permiso = await Notification.requestPermission();
+    if (permiso !== 'granted') throw new Error('Permiso no concedido -- revisa los ajustes de notificaciones del navegador');
+    await suscribirPush();
+    if (fb) { fb.style.color = 'green'; fb.textContent = '✅ Notificaciones activadas.'; }
+  } catch (e) {
+    if (fb) { fb.style.color = '#c0392b'; fb.textContent = '❌ ' + e.message; }
+  }
+  actualizarEstadoPushUI();
+}
+
+async function probarNotificacion() {
+  const fb = document.getElementById('push-feedback');
+  if (fb) { fb.style.color = '#666'; fb.textContent = 'Enviando notificación de prueba...'; }
+  try {
+    const r = await apiFetch('/api/push/test', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No se pudo enviar la prueba');
+    if (fb) { fb.style.color = 'green'; fb.textContent = '✅ Notificación de prueba enviada -- debería llegar en unos segundos.'; }
+  } catch (e) {
+    if (fb) { fb.style.color = '#c0392b'; fb.textContent = '❌ ' + e.message; }
+  }
+}
+
+function actualizarEstadoPushUI() {
+  const estadoEl   = document.getElementById('push-estado');
+  const iosEl      = document.getElementById('push-instrucciones-ios');
+  const btnActivar = document.getElementById('btn-activar-push');
+  const btnProbar  = document.getElementById('btn-probar-push');
+  if (!estadoEl) return;
+  const iosNoInstalada = esIOS() && !esStandalone();
+  iosEl.style.display = iosNoInstalada ? 'block' : 'none';
+
+  if (!pushEsCompatible()) {
+    estadoEl.textContent = '⚠️ Este navegador no es compatible con notificaciones push.';
+    btnActivar.disabled = true; btnProbar.disabled = true;
+  } else if (iosNoInstalada) {
+    estadoEl.textContent = '📲 App no instalada -- sigue los pasos de abajo para poder activar notificaciones en iPhone.';
+    btnActivar.disabled = true; btnProbar.disabled = true;
+  } else if (Notification.permission === 'denied') {
+    estadoEl.textContent = '🔕 Notificaciones bloqueadas. Actívalas desde los ajustes del navegador/sistema para este sitio.';
+    btnActivar.disabled = true; btnProbar.disabled = true;
+  } else if (Notification.permission === 'granted') {
+    estadoEl.textContent = '✅ Notificaciones activadas en este dispositivo.';
+    btnActivar.disabled = true; btnActivar.textContent = 'Ya activadas'; btnProbar.disabled = false;
+  } else {
+    estadoEl.textContent = 'Las notificaciones aún no están activadas en este dispositivo.';
+    btnActivar.disabled = false; btnActivar.textContent = 'Activar notificaciones'; btnProbar.disabled = true;
+  }
+}
+
+function abrirModalPush() {
+  document.getElementById('push-feedback').textContent = '';
+  actualizarEstadoPushUI();
+  document.getElementById('modal-push-overlay').style.display = 'flex';
+}
+function cerrarModalPush() {
+  document.getElementById('modal-push-overlay').style.display = 'none';
+}
+
+// Click en una notificación (sw.js hace focus() + postMessage) -- enruta
+// al chat/pestaña exacta sin recargar toda la SPA.
+navigator.serviceWorker?.addEventListener('message', (event) => {
+  if (event.data?.tipo !== 'xabor-push-click') return;
+  const url = event.data.url || '/app';
+  const hash = url.includes('#') ? url.split('#')[1] : '';
+  if (!hash) return;
+  const [seccion, telefono] = hash.split(':');
+  const mapaTabs = { comandas: 'comandas', chats: 'chats', cotizaciones: 'cotizaciones' };
+  if (mapaTabs[seccion]) mostrarTab(mapaTabs[seccion]);
+  if (seccion === 'chats' && telefono && typeof abrirConversacion === 'function') {
+    abrirConversacion(decodeURIComponent(telefono), '');
+  }
+});
 
 // ─── Estado global ───────────────────────────────────────────────────────────
 const grid       = document.getElementById('grid-pedidos');
