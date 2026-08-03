@@ -1,4 +1,4 @@
--- Verificación de solo lectura tras la migración 027.
+-- Verificación de solo lectura tras la migración 028 (renumerada de 027).
 SELECT column_name, data_type, is_nullable, column_default
 FROM information_schema.columns WHERE table_name = 'cotizaciones' AND column_name = 'origen';
 

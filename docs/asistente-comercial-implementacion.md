@@ -52,7 +52,8 @@ borrador nunca se crea si faltan campos obligatorios).
 
 ## Fase 1 — IntentDetector y máquina de estados
 
-- **Migraciones**: `027_sesiones_comerciales.sql` (+`_down`+`_check`) —
+- **Migraciones**: `028_sesiones_comerciales.sql` (+`_down`+`_check`, renumerada
+  de 027 para no colisionar con el hotfix `027_cotizaciones_iva_tasa.sql`) —
   `cotizaciones.origen` (`panel`|`whatsapp_ia`), tabla `sesiones_comerciales`
   (estado durable, índice único parcial: una sola sesión activa por
   negocio+teléfono), tabla `sesiones_comerciales_eventos` (auditoría

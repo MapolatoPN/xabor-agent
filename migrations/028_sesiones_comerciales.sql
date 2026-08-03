@@ -1,4 +1,8 @@
--- Migración 027: Asistente Comercial de Cotizaciones por WhatsApp — Fase 1-5.
+-- Migración 028: Asistente Comercial de Cotizaciones por WhatsApp — Fase 1-5.
+-- Renumerada de 027 a 028 para no colisionar con el hotfix
+-- 027_cotizaciones_iva_tasa.sql (rama hotfix/cotizaciones-telefono-multiempresa-iva,
+-- más cercana al deploy real) -- ver también migrations/028_sesiones_comerciales_down.sql
+-- y migrations/028_check_sesiones_comerciales.sql.
 -- Agrega:
 --   1. cotizaciones.origen -- distingue una cotización creada manualmente
 --      desde el panel ('panel') de una creada por el asistente de IA a
