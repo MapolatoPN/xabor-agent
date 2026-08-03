@@ -29,6 +29,7 @@ import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
+import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -648,7 +649,7 @@ function broadcast(data) {
 // broadcast() global. El push (dispararPushParaEvento) ahora comparte el
 // mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
 // complementaria).
-function broadcastNegocio(negocioId, data, opciones = {}) {
+export function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
     return 0;
@@ -2238,6 +2239,16 @@ app.post('/api/cotizaciones/:id/enviar', requireAuthSeguro, requireModulo('cotiz
     if (msg) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
 
     const actualizada = await marcarCotizacionEnviada(req.params.id);
+
+    // Fase 5 del Asistente Comercial: si esta cotización fue generada a
+    // partir de una sesión conversacional de WhatsApp, la aprobación
+    // humana explícita (esta misma request, ya autenticada) es el
+    // momento correcto para finalizar esa sesión -- nunca antes. Nunca
+    // bloquea la respuesta al admin si falla.
+    obtenerSesionPorCotizacion(cotizacion.id, req.negocioId)
+      .then(sesion => sesion && finalizarSesion(sesion.id, req.negocioId, 'aprobada'))
+      .catch(e => console.error('[POST /api/cotizaciones/:id/enviar] Error finalizando sesión comercial:', e.message));
+
     res.json({ ok: true, cotizacion: actualizada, documento });
   } catch (e) {
     console.error('[POST /api/cotizaciones/:id/enviar] Error:', e.message);

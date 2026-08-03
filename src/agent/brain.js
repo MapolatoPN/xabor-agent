@@ -1,8 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { getIntegracion } from '../server.js';
-import { construirSystemPrompt } from './prompts.js';
+import { getIntegracion, broadcastNegocio } from '../server.js';
+import { construirSystemPrompt, construirBloqueModoComercial } from './prompts.js';
 import { agregarMensaje, getSession } from './session.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
+import { obtenerEstadoModulo } from '../services/database.js';
+import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
+import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion } from '../services/sesionComercial.js';
+import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
+import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -32,6 +37,34 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     memoriaCtx = construirContextoCliente(perfil);
   }
 
+  // Asistente Comercial de Cotizaciones (Fase 1-2): IntentDetector decide
+  // si este mensaje activa/continúa el modo comercial. Nunca se activa
+  // sin negocioId+telefono válidos, ni si el negocio no tiene
+  // 'generador_cotizaciones' habilitado (ver intentDetector.js). Ante
+  // cualquier error de clasificación, la categoría cae a 'ambiguo' y
+  // nunca se activa -- fail-closed, el flujo normal de pedidos nunca se
+  // ve interrumpido por esta pieza.
+  let sesionComercial = null;
+  let bloqueComercial = '';
+  if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
+    try {
+      const moduloHabilitado = (await obtenerEstadoModulo(negocioId, 'generador_cotizaciones')) === 'activo';
+      const sesionExistente = await obtenerSesionActiva(negocioId, telefono);
+      const categoria = await detectarIntencionComercial({
+        mensaje: mensajeUsuario,
+        moduloHabilitado,
+        estadoComercialActual: sesionExistente?.estado || null,
+        apiKey: getIntegracion('anthropic_api_key'),
+      });
+      if (activaModoComercial(categoria)) {
+        sesionComercial = sesionExistente || await obtenerOCrearSesionActiva(negocioId, telefono);
+        bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados);
+      }
+    } catch (e) {
+      console.error('[brain] Error evaluando modo comercial (se continúa sin activarlo):', e.message);
+    }
+  }
+
   // Registrar evento (asíncrono, no bloquea respuesta)
   if (telefono) {
     registrarEvento({
@@ -48,7 +81,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const respuesta = await getAnthropic().messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx,
+      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueComercial,
       messages: session.mensajes
     });
 
@@ -61,8 +94,18 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
       .catch(e => console.error('[brain] registrarIntents:', e.message));
 
+    // Extracción de campos comerciales + disparo del borrador (background,
+    // nunca bloquea la respuesta al cliente). El propio DraftBuilder
+    // (Fase 3) es quien valida que haya información suficiente antes de
+    // crear la cotización -- <BORRADOR_LISTO> es solo una señal del
+    // modelo, nunca una autorización de escritura por sí sola.
+    if (sesionComercial) {
+      procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta)
+        .catch(e => console.error('[brain] Error procesando captura comercial:', e.message));
+    }
+
     return {
-      texto: limpiarTexto(textoRespuesta),
+      texto: limpiarBloqueComercial(limpiarTexto(textoRespuesta)),
       orden,
       factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
@@ -257,6 +300,42 @@ async function registrarIntents(telefono, sessionId, canal, mensajeUsuario, text
       valor_estimado: orden?.total || null,
       folio_pedido: orden?.folio || null
     });
+  }
+}
+
+/**
+ * Fase 2-3 del Asistente Comercial: aplica los campos capturados en este
+ * turno a la sesión (nunca pierde los de turnos anteriores -- ver
+ * fusionarCamposCapturados) y, si el modelo emitió <BORRADOR_LISTO>,
+ * dispara la creación del borrador. generarBorradorDesdeSesion (Fase 3)
+ * es quien valida "información suficiente" antes de escribir nada --
+ * <BORRADOR_LISTO> es solo una señal, no una autorización.
+ * Nunca lanza: cualquier error se loguea y se descarta, para no afectar
+ * el resto del flujo de mensajería.
+ */
+async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta) {
+  const capturas = extraerCamposComerciales(textoRespuesta);
+  let camposActualizados = sesionComercial.campos_capturados;
+
+  if (capturas.length > 0) {
+    const fusionados = fusionarCamposCapturados(sesionComercial.campos_capturados, capturas);
+    const delta = {};
+    for (const { campo, valor } of capturas) {
+      if (campo !== 'item_solicitado') delta[campo] = valor;
+    }
+    if (fusionados.items) delta.items = fusionados.items;
+    await actualizarCamposSesion(sesionComercial.id, negocioId, delta);
+    camposActualizados = fusionados;
+  }
+
+  if (tieneBorradorListo(textoRespuesta)) {
+    const resultado = await generarBorradorDesdeSesion(sesionComercial.id, negocioId, camposActualizados);
+    // Solo se notifica al panel cuando el borrador es NUEVO -- si ya
+    // existía (llamada idempotente, ver draftBuilder.js) no se repite la
+    // notificación en cada turno subsecuente de la conversación.
+    if (resultado && !resultado.yaExistia) {
+      broadcastNegocio(negocioId, { tipo: 'cotizacion_borrador_ia', cotizacion: resultado });
+    }
   }
 }
 

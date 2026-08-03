@@ -1391,7 +1391,7 @@ export async function listarCotizaciones(negocioId, { telefono = null } = {}) {
 // las cotizaciones son un evento de baja frecuencia (creadas manualmente por
 // un administrador), así que 3 reintentos con un COUNT fresco es suficiente
 // sin necesitar una secuencia dedicada por negocio.
-export async function crearCotizacion({ negocioId, telefono, createdBy, evento = {}, vigenciaHasta = null, anticipoRequerido = null, notas = null, terminos = null, items = [], impuestosPct = 0 }) {
+export async function crearCotizacion({ negocioId, telefono, createdBy, evento = {}, vigenciaHasta = null, anticipoRequerido = null, notas = null, terminos = null, items = [], impuestosPct = 0, origen = 'panel' }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearCotizacion: negocioId requerido');
   if (!Array.isArray(items) || items.length === 0) throw new Error('crearCotizacion: al menos un item requerido');
   const totales = _calcularTotales(items, { impuestosPct });
@@ -1414,13 +1414,13 @@ export async function crearCotizacion({ negocioId, telefono, createdBy, evento =
       const { rows } = await client.query(`
         INSERT INTO cotizaciones (
           negocio_id, telefono, folio, evento_nombre, fecha_evento, lugar, cantidad_personas,
-          vigencia_hasta, subtotal, impuestos, descuentos, total, anticipo_requerido, notas, terminos, created_by
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+          vigencia_hasta, subtotal, impuestos, descuentos, total, anticipo_requerido, notas, terminos, created_by, origen
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
         RETURNING *
       `, [
         negocioId.trim(), telefono, folio, evento.nombre || null, evento.fecha || null, evento.lugar || null,
         evento.cantidadPersonas || null, vigenciaHasta, totales.subtotal, totales.impuestos, totales.descuentos,
-        totales.total, anticipoRequerido, notas, terminos, createdBy,
+        totales.total, anticipoRequerido, notas, terminos, createdBy, origen,
       ]);
       const cotizacion = rows[0];
       for (let i = 0; i < items.length; i++) {

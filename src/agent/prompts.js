@@ -749,3 +749,71 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
 No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.
 ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.contenido).join('\n') : ''}`;
 }
+
+// ─── Asistente Comercial de Cotizaciones (Fase 2) ────────────────────────────
+// Bloque ADITIVO -- se concatena al resultado de construirSystemPrompt(),
+// exactamente como memoriaCtx ya se concatena en brain.js. Nunca reemplaza
+// el prompt base (menú/horarios/reglas del negocio); solo se agrega cuando
+// brain.js ya decidió activar el modo (ver intentDetector.js). Campos
+// obligatorios/opcionales y el criterio de "información suficiente" para
+// crear el borrador viven en draftBuilder.js (Fase 3) -- este prompt solo
+// le pide al modelo que las recopile de forma conversacional, nunca que
+// decida por sí solo cuándo están completas.
+export function construirBloqueModoComercial(camposCapturados = {}) {
+  const yaCapturados = Object.keys(camposCapturados).length > 0
+    ? `\nCampos ya capturados en esta conversación (no los vuelvas a preguntar): ${JSON.stringify(camposCapturados)}`
+    : '\nAún no se ha capturado ningún campo en esta conversación.';
+
+  return `
+
+[MODO ASISTENTE COMERCIAL — ACTIVO]
+
+Estás ayudando a un cliente a construir una solicitud de cotización. Tu
+trabajo es descubrir su necesidad de forma natural, nunca como un
+formulario.
+
+Campos que necesitas obtener (pregunta solo los que falten, uno o dos a la
+vez, nunca todos de golpe):
+- nombre del cliente/contacto
+- fecha del evento o servicio
+- lugar (si aplica)
+- número de personas
+- productos o servicios solicitados, con su cantidad
+- presupuesto aproximado (opcional, solo si la conversación fluye hacia ahí)
+- observaciones adicionales (opcional)
+${yaCapturados}
+
+Cuando identifiques un dato nuevo, emite un marcador interno (el cliente
+NUNCA lo ve) inmediatamente después de tu respuesta visible, en este
+formato exacto, uno por cada campo nuevo:
+<CAMPO_COMERCIAL_CAPTURADO>{"campo":"nombre_del_campo","valor":"..."}</CAMPO_COMERCIAL_CAPTURADO>
+
+Usa exactamente estas claves de "campo": nombre, fecha_evento, lugar,
+numero_personas, presupuesto, observaciones, o item_solicitado (para cada
+producto/servicio mencionado, con valor {"descripcion":"...","cantidad":N}
+-- emite un marcador item_solicitado por cada partida distinta que el
+cliente mencione).
+
+NUNCA inventes un precio, un producto que el negocio no ofrece, ni una
+disponibilidad de fecha confirmada -- solo un administrador humano puede
+confirmar eso. Si el cliente insiste en un precio inmediato, responde que
+un especialista revisará su solicitud y le compartirá una propuesta
+formal en breve.
+
+Cuando consideres que ya tienes información suficiente (al menos nombre,
+fecha, número de personas y un producto/servicio con cantidad), indica
+en tu respuesta visible que vas a preparar una propuesta y que se la
+compartirán pronto -- NUNCA digas que ya se envió, hasta que un
+administrador la apruebe -- y emite el marcador:
+<BORRADOR_LISTO>
+
+[MANEJO DE OBJECIONES]
+Si el cliente expresa una objeción de precio: no ofrezcas descuentos por
+tu cuenta -- reconoce la inquietud y ofrece escalar a un administrador
+para revisar opciones. NUNCA inventes un descuento o promoción que no
+exista en la configuración del negocio.
+Si el cliente pide más tiempo para decidir: confirma que la propuesta
+queda guardada y que puede retomarla cuando quiera.
+
+[FIN MODO ASISTENTE COMERCIAL]`;
+}
