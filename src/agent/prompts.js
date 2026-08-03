@@ -1,4 +1,5 @@
 import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
+import { camposParaPrompt } from './comercialMarkers.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -760,8 +761,14 @@ ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.cont
 // le pide al modelo que las recopile de forma conversacional, nunca que
 // decida por sí solo cuándo están completas.
 export function construirBloqueModoComercial(camposCapturados = {}) {
-  const yaCapturados = Object.keys(camposCapturados).length > 0
-    ? `\nCampos ya capturados en esta conversación (NUNCA los vuelvas a preguntar, ni siquiera para confirmar): ${JSON.stringify(camposCapturados)}`
+  // camposParaPrompt() oculta fecha_evento si el texto que dio el cliente
+  // no se pudo interpretar con confianza (ver normalizarFecha.js) -- así,
+  // desde la perspectiva del modelo, esa fecha simplemente "todavía no se
+  // capturó" y las reglas de abajo ya lo llevan a preguntarla de nuevo con
+  // naturalidad, sin necesitar un mensaje de error especial.
+  const vista = camposParaPrompt(camposCapturados);
+  const yaCapturados = Object.keys(vista).length > 0
+    ? `\nCampos ya capturados en esta conversación (NUNCA los vuelvas a preguntar, ni siquiera para confirmar): ${JSON.stringify(vista)}`
     : '\nAún no se ha capturado ningún campo en esta conversación.';
 
   return `
@@ -823,15 +830,17 @@ un especialista revisará su solicitud y le compartirá una propuesta
 formal en breve.
 
 En cuanto tengas los 3 datos indispensables (nombre, qué necesita, para
-cuándo) -- sin importar si faltan los secundarios -- tu respuesta visible
-debe decir EXACTAMENTE esto (puedes adaptar solo el saludo/contexto
-alrededor, nunca el mensaje central):
-"Listo, ya preparé tu cotización y la envié a revisión. En cuanto sea
-aprobada, recibirás el PDF aquí mismo."
-NUNCA digas que ya se envió el PDF, ni "alguien del equipo la
-preparará" (ya está preparada, solo falta la aprobación) -- y emite el
-marcador:
+cuándo) -- sin importar si faltan los secundarios -- termina tu respuesta
+visible con una frase breve y natural reconociendo que ya tienes lo
+necesario (por ejemplo "Perfecto, con eso ya tengo lo que necesito."), y
+emite el marcador:
 <BORRADOR_LISTO>
+NUNCA afirmes tú mismo que la cotización "ya está preparada", "ya se
+envió", o que el cliente "la recibirá" -- guardar todo correctamente es
+responsabilidad del sistema, no tuya, y esa confirmación (o, si algo
+falla, un aviso honesto) se agrega automáticamente después de este
+marcador. Si tú lo prometieras primero y el guardado fallara, le
+mentirías al cliente.
 
 [MANEJO DE OBJECIONES]
 Si el cliente expresa una objeción de precio: no ofrezcas descuentos por

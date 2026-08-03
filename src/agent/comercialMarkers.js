@@ -12,6 +12,8 @@
  * por código disparado desde aquí.
  */
 
+import { normalizarFechaEvento } from './normalizarFecha.js';
+
 const CAMPOS_VALIDOS = ['nombre', 'fecha_evento', 'lugar', 'numero_personas', 'presupuesto', 'observaciones', 'item_solicitado'];
 
 /**
@@ -60,8 +62,18 @@ export function limpiarBloqueComercial(texto) {
  * se ACUMULA en un array `items` en vez de sobreescribir -- cada mención
  * de un producto/servicio distinto se agrega, nunca reemplaza las
  * anteriores.
+ *
+ * `fecha_evento` es especial también: el texto original SIEMPRE se
+ * conserva tal cual (para auditoría/mostrarlo en el panel), pero nunca se
+ * confía en él para escribir en una columna DATE -- se valida aquí mismo
+ * con normalizarFechaEvento() y, solo si resulta inequívoco, se agrega
+ * `fecha_evento_iso` (el único campo que draftBuilder.js tiene permitido
+ * usar para la fecha real de la cotización). Si el texto nuevo no se pudo
+ * interpretar, se BORRA cualquier `fecha_evento_iso` previo -- una fecha
+ * nueva ambigua invalida la anterior en vez de dejar una fecha vieja
+ * "atada" a un texto que el cliente ya cambió.
  */
-export function fusionarCamposCapturados(camposActuales = {}, capturas = []) {
+export function fusionarCamposCapturados(camposActuales = {}, capturas = [], opciones = {}) {
   const resultado = { ...camposActuales };
   const items = Array.isArray(resultado.items) ? [...resultado.items] : [];
   for (const { campo, valor } of capturas) {
@@ -69,12 +81,42 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = []) {
       if (valor && typeof valor === 'object' && typeof valor.descripcion === 'string') {
         items.push({ descripcion: valor.descripcion, cantidad: Number(valor.cantidad) || 1 });
       }
+    } else if (campo === 'fecha_evento') {
+      resultado.fecha_evento = valor;
+      const texto = typeof valor === 'string' ? valor : String(valor ?? '');
+      const normalizada = normalizarFechaEvento(texto, opciones);
+      if (normalizada.ok) {
+        resultado.fecha_evento_iso = normalizada.iso;
+      } else {
+        delete resultado.fecha_evento_iso;
+      }
     } else {
       resultado[campo] = valor;
     }
   }
   if (items.length > 0) resultado.items = items;
   return resultado;
+}
+
+/**
+ * Vista de campos_capturados construida específicamente para mostrarle al
+ * modelo qué ya se sabe (ver prompts.js construirBloqueModoComercial).
+ * `fecha_evento` solo aparece aquí cuando ya se validó de forma
+ * determinista (fecha_evento_iso presente) -- si el cliente dio una fecha
+ * que no se pudo interpretar con confianza, el campo se OMITE por
+ * completo, para que el modelo la trate como "todavía no capturada" y
+ * pregunte de nuevo con naturalidad, en vez de asumir que ya quedó
+ * resuelta con un texto ambiguo.
+ */
+export function camposParaPrompt(camposCapturados = {}) {
+  const vista = { ...camposCapturados };
+  delete vista.fecha_evento_iso;
+  if (camposCapturados.fecha_evento_iso) {
+    vista.fecha_evento = camposCapturados.fecha_evento_iso;
+  } else {
+    delete vista.fecha_evento;
+  }
+  return vista;
 }
 
 /**
@@ -91,7 +133,7 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = []) {
 export function camposObligatoriosCompletos(camposCapturados = {}) {
   return !!(
     camposCapturados.nombre &&
-    camposCapturados.fecha_evento &&
+    camposCapturados.fecha_evento_iso &&
     Array.isArray(camposCapturados.items) && camposCapturados.items.length > 0
   );
 }
