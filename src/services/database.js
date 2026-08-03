@@ -2952,7 +2952,7 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
 //
 // negocioId OBLIGATORIO — mismo criterio fail-closed del resto del
 // archivo: sin negocio no se registra nada.
-export async function registrarNotificacionRepartidor({ negocioId, pedidoFolio, repartidorId, canal = 'plantilla', wamid = null, estado = 'pendiente', errorCodigo = null, errorDetalle = null }) {
+export async function registrarNotificacionRepartidor({ negocioId, pedidoFolio, repartidorId, canal = 'plantilla', wamid = null, estado = 'pendiente', errorCodigo = null, errorDetalle = null, tokenAceptacion = null, tokenExpiraAt = null }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] registrarNotificacionRepartidor: negocioId inválido u omitido — rechazado');
     return null;
@@ -2960,16 +2960,49 @@ export async function registrarNotificacionRepartidor({ negocioId, pedidoFolio, 
   try {
     const r = await pool.query(
       `INSERT INTO notificaciones_repartidor
-         (negocio_id, pedido_folio, repartidor_id, canal, wamid, estado, error_codigo, error_detalle)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (negocio_id, pedido_folio, repartidor_id, canal, wamid, estado, error_codigo, error_detalle, token_aceptacion, token_expira_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [negocioId, pedidoFolio, repartidorId, canal, wamid, estado, errorCodigo, errorDetalle]
+      [negocioId, pedidoFolio, repartidorId, canal, wamid, estado, errorCodigo, errorDetalle, tokenAceptacion, tokenExpiraAt]
     );
     return r.rows[0];
   } catch (e) {
     console.error('[DB] Error registrarNotificacionRepartidor:', e.message);
     return null;
   }
+}
+
+// Consumo atómico de un solo uso: el UPDATE con el guard en la propia
+// cláusula WHERE (token_usado_at IS NULL AND no vencido) es lo que
+// garantiza que un mismo token nunca se pueda consumir dos veces, sin
+// importar cuántas peticiones concurrentes lleguen (dos clics al mismo
+// tiempo, el enlace reenviado y abierto por dos personas, etc.) -- exactamente
+// el mismo patrón ya usado en asignarRepartidor.
+export async function consumirTokenAceptacionRepartidor(token) {
+  if (!token) return null;
+  try {
+    const r = await pool.query(
+      `UPDATE notificaciones_repartidor
+       SET token_usado_at = NOW()
+       WHERE token_aceptacion = $1
+         AND token_usado_at IS NULL
+         AND token_expira_at > NOW()
+       RETURNING *`,
+      [token]
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error consumirTokenAceptacionRepartidor:', e.message);
+    return null;
+  }
+}
+
+export async function obtenerNombreNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  try {
+    const r = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [negocioId]);
+    return r.rows[0]?.nombre || null;
+  } catch (e) { return null; }
 }
 
 // Orden de avance esperado de un envío real: aceptado_meta -> entregado ->
