@@ -38,10 +38,20 @@ export const MAX_IMAGENES_POR_ENVIO = 5;
 /**
  * Valida el MIME real por magic bytes (nunca el declarado ni la
  * extensión del nombre) y el tamaño máximo ANTES de comprimir -- un
- * archivo con extensión .jpg falsa que en realidad es un ejecutable u
- * otro binario se rechaza aquí, igual que un archivo vacío o corrupto
- * (fileTypeFromBuffer no reconoce una firma válida y se trata como
- * mime_invalido).
+ * archivo con extensión .jpg falsa que en realidad es un ejecutable, un
+ * ZIP renombrado, o un SVG (vector de XSS conocido, ni siquiera tiene
+ * firma binaria reconocible) se rechaza aquí, igual que un archivo
+ * vacío (fileTypeFromBuffer no reconoce una firma válida y se trata
+ * como mime_invalido).
+ *
+ * Segunda pasada de integridad real (no solo los primeros bytes): un
+ * archivo puede tener una firma jpg/png/webp perfectamente válida en la
+ * cabecera y aun así estar corrupto/truncado en el resto del contenido
+ * -- fileTypeFromBuffer nunca lo detectaría porque solo mira los magic
+ * bytes iniciales. sharp().metadata() sí decodifica lo suficiente de la
+ * imagen real para confirmar que es reconstruible; si falla, se trata
+ * como imagen corrupta en vez de dejar que el fallo ocurra más tarde
+ * (al comprimir o al servir el archivo ya guardado).
  */
 export async function validarImagenReal(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
@@ -53,6 +63,11 @@ export async function validarImagenReal(buffer) {
   const tipo = await fileTypeFromBuffer(buffer);
   if (!tipo || !MIME_A_EXTENSION[tipo.mime]) {
     return { valido: false, motivo: 'mime_invalido' };
+  }
+  try {
+    await sharp(buffer).metadata();
+  } catch {
+    return { valido: false, motivo: 'imagen_corrupta' };
   }
   return { valido: true, mime: tipo.mime, extension: MIME_A_EXTENSION[tipo.mime] };
 }
@@ -83,13 +98,45 @@ export async function comprimirImagen(buffer, mimeOriginal) {
   return { buffer: salida, mime: 'image/jpeg', extension: 'jpg' };
 }
 
+// Calidad alta a propósito -- a diferencia de comprimirImagen() (usada en
+// envíos salientes, donde SÍ conviene reducir peso agresivamente), aquí
+// el objetivo único es eliminar metadata sensible (EXIF/GPS) de una
+// imagen que el cliente ya envió, sin degradar visiblemente su calidad.
+const CALIDAD_LIMPIEZA_ENTRANTE = 92;
+
+/**
+ * Re-encoda una imagen ENTRANTE sin tocar dimensiones, únicamente para
+ * eliminar metadata EXIF (que puede incluir GPS -- la ubicación real del
+ * cliente) antes de guardarla. sharp() nunca preserva metadata en la
+ * salida a menos que se llame .withMetadata() explícitamente (no se
+ * llama aquí a propósito), así que cualquier re-encode ya la elimina;
+ * .rotate() además aplica la orientación EXIF visualmente antes de
+ * descartar la etiqueta, para que la imagen se vea igual sin importar
+ * en qué orientación la haya tomado la cámara del cliente.
+ */
+export async function limpiarMetadatosImagen(buffer, mime) {
+  const pipeline = sharp(buffer).rotate();
+  if (mime === 'image/png') return (await pipeline.png({ compressionLevel: 6 }).toBuffer());
+  if (mime === 'image/webp') return (await pipeline.webp({ quality: CALIDAD_LIMPIEZA_ENTRANTE }).toBuffer());
+  return pipeline.jpeg({ quality: CALIDAD_LIMPIEZA_ENTRANTE, mozjpeg: true }).toBuffer();
+}
+
 function calcularChecksum(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+// Además de rutas ('/','\\') se eliminan TODOS los caracteres de control
+// (0x00-0x1F, incluidos \r\n) y comillas dobles -- el nombre termina
+// dentro de un header HTTP Content-Disposition entre comillas dobles
+// (ver /api/imagenes/:id/archivo en server.js); un \r\n sin escapar ahí
+// sería una inyección de header (response splitting), y una comilla sin
+// escapar rompería el valor del header. El storage_key real siempre es
+// un UUID generado en almacenamiento.js -- este nombre es solo metadata
+// cosmética, nunca se usa para construir una ruta de archivo real.
 export function sanitizarNombreImagen(nombre, extension) {
   const base = String(nombre || 'imagen')
-    .replace(/[\\/]/g, '_')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F"\\/]/g, '_')
     .replace(/\.[a-z0-9]+$/i, '')
     .replace(/\s+/g, '')
     .trim()
@@ -100,10 +147,12 @@ export function sanitizarNombreImagen(nombre, extension) {
 /**
  * Pipeline completo para una imagen entrante ya descargada de Meta (el
  * llamador -- whatsapp-meta.js -- ya creó la fila 'pendiente' antes de
- * esta llamada). A diferencia del envío desde el panel, NO se
- * recomprime la imagen recibida -- el cliente ya la envió en el tamaño
- * que Meta entrega; recomprimir una imagen ya comprimida por WhatsApp
- * solo perdería calidad sin beneficio real de espacio.
+ * esta llamada). No se redimensiona (el cliente ya la envió en el
+ * tamaño que Meta entrega; recomprimir agresivamente una imagen ya
+ * comprimida por WhatsApp solo perdería calidad sin beneficio real de
+ * espacio), pero SÍ se re-encoda a calidad alta para eliminar EXIF/GPS
+ * -- un dato de ubicación real del cliente que de otro modo quedaría
+ * guardado sin que nadie lo haya pedido ni lo sepa.
  */
 export async function procesarImagenEntranteDescargada(documentoId, negocioId, telefono, buffer) {
   const validacion = await validarImagenReal(buffer);
@@ -111,13 +160,24 @@ export async function procesarImagenEntranteDescargada(documentoId, negocioId, t
     await marcarDocumentoError(documentoId, validacion.motivo);
     return { ok: false, motivo: validacion.motivo };
   }
-  const checksum = calcularChecksum(buffer);
-  const storageKey = await guardarArchivo(buffer, {
+  let limpia;
+  try {
+    limpia = await limpiarMetadatosImagen(buffer, validacion.mime);
+  } catch {
+    // metadata() ya validó que sharp puede leerla, pero el re-encode es
+    // una segunda pasada real sobre el contenido completo -- si aun así
+    // falla, se trata como corrupta en vez de guardar un archivo a medio
+    // procesar o dejar una excepción sin capturar.
+    await marcarDocumentoError(documentoId, 'imagen_corrupta');
+    return { ok: false, motivo: 'imagen_corrupta' };
+  }
+  const checksum = calcularChecksum(limpia);
+  const storageKey = await guardarArchivo(limpia, {
     negocioId, extension: validacion.extension, mimeType: validacion.mime,
     categoria: 'imagen', conversacionId: telefono,
   });
-  await marcarDocumentoListo(documentoId, { sizeBytes: buffer.length, storageKey, checksum });
-  return { ok: true, storageKey, sizeBytes: buffer.length, checksum };
+  await marcarDocumentoListo(documentoId, { sizeBytes: limpia.length, storageKey, checksum });
+  return { ok: true, storageKey, sizeBytes: limpia.length, checksum };
 }
 
 /**
@@ -129,7 +189,12 @@ export async function procesarImagenSaliente({ negocioId, telefono, buffer, file
   const validacion = await validarImagenReal(buffer);
   if (!validacion.valido) return { ok: false, motivo: validacion.motivo };
 
-  const comprimida = await comprimirImagen(buffer, validacion.mime);
+  let comprimida;
+  try {
+    comprimida = await comprimirImagen(buffer, validacion.mime);
+  } catch {
+    return { ok: false, motivo: 'imagen_corrupta' };
+  }
   const checksum = calcularChecksum(comprimida.buffer);
   const storageKey = await guardarArchivo(comprimida.buffer, {
     negocioId, extension: comprimida.extension, mimeType: comprimida.mime,

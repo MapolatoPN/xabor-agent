@@ -2186,7 +2186,7 @@ app.post('/api/imagenes/enviar', requireAuthSeguro, requireModulo('chat_imagenes
 
       const resultado = await procesarImagenSaliente({ negocioId: req.negocioId, telefono, buffer, filename });
       if (!resultado.ok) {
-        const mensajes = { archivo_vacio: 'Archivo vacío', tamano_excedido: 'El archivo excede el tamaño máximo permitido', mime_invalido: 'El archivo no es una imagen jpg/png/webp válida' };
+        const mensajes = { archivo_vacio: 'Archivo vacío', tamano_excedido: 'El archivo excede el tamaño máximo permitido', mime_invalido: 'El archivo no es una imagen jpg/png/webp válida', imagen_corrupta: 'La imagen está dañada o incompleta' };
         resultados.push({ ok: false, filename: filename || null, error: mensajes[resultado.motivo] || 'Archivo inválido' });
         continue;
       }
