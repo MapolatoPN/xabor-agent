@@ -1284,14 +1284,14 @@ export async function obtenerDocumento(documentoId, negocioId) {
 // atención automática: guardar primero). Dedup por wamid igual que
 // guardarMensaje -- una reentrega del mismo webhook de Meta devuelve la fila
 // existente en vez de duplicar.
-export async function crearDocumentoPendiente({ negocioId, telefono, direccion, origen = null, filename, mimeType = 'application/pdf', caption = null, wamid = null, createdBy = null }) {
+export async function crearDocumentoPendiente({ negocioId, telefono, direccion, origen = null, filename, mimeType = 'application/pdf', caption = null, wamid = null, createdBy = null, categoria = 'documento', mediaId = null }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearDocumentoPendiente: negocioId requerido');
   const result = await pool.query(`
-    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, caption, wamid, created_by)
-    VALUES ($1,$2,$3,$4,'pendiente',$5,$6,$7,$8,$9)
+    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, caption, wamid, created_by, categoria, media_id)
+    VALUES ($1,$2,$3,$4,'pendiente',$5,$6,$7,$8,$9,$10,$11)
     ON CONFLICT (wamid) WHERE wamid IS NOT NULL DO NOTHING
     RETURNING *
-  `, [negocioId.trim(), telefono, direccion, origen, filename, mimeType, caption, wamid, createdBy]);
+  `, [negocioId.trim(), telefono, direccion, origen, filename, mimeType, caption, wamid, createdBy, categoria, mediaId]);
   if (result.rows[0]) return result.rows[0];
   if (wamid) {
     const existente = await pool.query(`SELECT * FROM documentos WHERE wamid = $1`, [wamid]);
@@ -1303,20 +1303,20 @@ export async function crearDocumentoPendiente({ negocioId, telefono, direccion, 
 // Documento saliente: a diferencia del entrante (que se crea 'pendiente'
 // antes de descargar), el saliente ya tiene el archivo validado y subido a
 // Meta antes de registrarse -- se crea directamente en 'listo'.
-export async function crearDocumentoSaliente({ negocioId, telefono, filename, mimeType = 'application/pdf', sizeBytes, storageKey, caption = null, wamid = null, createdBy = null }) {
+export async function crearDocumentoSaliente({ negocioId, telefono, filename, mimeType = 'application/pdf', sizeBytes, storageKey, caption = null, wamid = null, createdBy = null, categoria = 'documento', checksum = null }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearDocumentoSaliente: negocioId requerido');
   const { rows } = await pool.query(`
-    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, size_bytes, storage_key, caption, wamid, created_by)
-    VALUES ($1,$2,'saliente','humano','listo',$3,$4,$5,$6,$7,$8,$9)
+    INSERT INTO documentos (negocio_id, telefono, direccion, origen, estado, filename, mime_type, size_bytes, storage_key, caption, wamid, created_by, categoria, checksum)
+    VALUES ($1,$2,'saliente','humano','listo',$3,$4,$5,$6,$7,$8,$9,$10,$11)
     RETURNING *
-  `, [negocioId.trim(), telefono, filename, mimeType, sizeBytes, storageKey, caption, wamid, createdBy]);
+  `, [negocioId.trim(), telefono, filename, mimeType, sizeBytes, storageKey, caption, wamid, createdBy, categoria, checksum]);
   return rows[0];
 }
 
-export async function marcarDocumentoListo(documentoId, { sizeBytes, storageKey }) {
+export async function marcarDocumentoListo(documentoId, { sizeBytes, storageKey, checksum = null }) {
   await pool.query(
-    `UPDATE documentos SET estado = 'listo', size_bytes = $2, storage_key = $3 WHERE id = $1`,
-    [documentoId, sizeBytes, storageKey]
+    `UPDATE documentos SET estado = 'listo', size_bytes = $2, storage_key = $3, checksum = COALESCE($4, checksum) WHERE id = $1`,
+    [documentoId, sizeBytes, storageKey, checksum]
   );
 }
 
