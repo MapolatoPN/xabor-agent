@@ -15,6 +15,7 @@ import assert from 'assert';
 import {
   extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial,
   fusionarCamposCapturados, camposObligatoriosCompletos, camposSecundariosFaltantes,
+  camposParaPrompt,
 } from '../src/agent/comercialMarkers.js';
 import { construirBloqueModoComercial } from '../src/agent/prompts.js';
 
@@ -99,6 +100,41 @@ t('fusionarCamposCapturados ignora un item_solicitado sin descripcion', () => {
   assert.strictEqual(campos.items, undefined);
 });
 
+// ─── Hotfix migración 031: fecha_evento nunca llega a DB como texto libre ───
+
+const OPTS_FECHA = { ahora: new Date('2026-08-03T12:00:00Z') };
+
+t('fusionarCamposCapturados: fecha en texto natural válido -- agrega fecha_evento_iso además de conservar el texto original', () => {
+  const resultado = fusionarCamposCapturados({}, [{ campo: 'fecha_evento', valor: '20 de septiembre' }], OPTS_FECHA);
+  assert.strictEqual(resultado.fecha_evento, '20 de septiembre', 'el texto original se conserva para auditoría');
+  assert.strictEqual(resultado.fecha_evento_iso, '2026-09-20', 'debe quedar normalizada a ISO');
+});
+
+t('fusionarCamposCapturados: fecha ambigua -- se conserva el texto pero NUNCA se agrega fecha_evento_iso', () => {
+  const resultado = fusionarCamposCapturados({}, [{ campo: 'fecha_evento', valor: 'la próxima semana' }], OPTS_FECHA);
+  assert.strictEqual(resultado.fecha_evento, 'la próxima semana');
+  assert.strictEqual(resultado.fecha_evento_iso, undefined, 'una fecha ambigua nunca debe producir un valor ISO inventado');
+});
+
+t('fusionarCamposCapturados: si el cliente da una fecha ambigua DESPUÉS de una válida, se borra la fecha_evento_iso anterior', () => {
+  let campos = fusionarCamposCapturados({}, [{ campo: 'fecha_evento', valor: '20 de septiembre' }], OPTS_FECHA);
+  assert.strictEqual(campos.fecha_evento_iso, '2026-09-20');
+  campos = fusionarCamposCapturados(campos, [{ campo: 'fecha_evento', valor: 'en octubre, no estoy segura' }], OPTS_FECHA);
+  assert.strictEqual(campos.fecha_evento_iso, undefined, 'una fecha nueva ambigua debe invalidar la ISO previa, nunca dejar una fecha vieja "pegada" a un texto que el cliente ya cambió');
+});
+
+t('camposParaPrompt: oculta fecha_evento por completo si nunca se normalizó', () => {
+  const vista = camposParaPrompt({ nombre: 'Ana', fecha_evento: 'la próxima semana' });
+  assert.strictEqual('fecha_evento' in vista, false, 'el modelo debe ver la fecha como si aún no se hubiera capturado');
+  assert.strictEqual(vista.nombre, 'Ana');
+});
+
+t('camposParaPrompt: muestra fecha_evento (como ISO) solo cuando sí se normalizó, y nunca expone fecha_evento_iso por separado', () => {
+  const vista = camposParaPrompt({ nombre: 'Ana', fecha_evento: '20 de septiembre', fecha_evento_iso: '2026-09-20' });
+  assert.strictEqual(vista.fecha_evento, '2026-09-20');
+  assert.strictEqual('fecha_evento_iso' in vista, false);
+});
+
 t('camposObligatoriosCompletos: false si falta cualquier obligatorio (nombre/fecha/items)', () => {
   assert.strictEqual(camposObligatoriosCompletos({}), false);
   assert.strictEqual(camposObligatoriosCompletos({ nombre: 'Ana' }), false);
@@ -108,10 +144,22 @@ t('camposObligatoriosCompletos: false si falta cualquier obligatorio (nombre/fec
 
 t('camposObligatoriosCompletos: true con solo los 3 obligatorios (nombre+fecha+items) -- numero_personas/lugar/presupuesto NUNCA bloquean', () => {
   const completos = {
-    nombre: 'Ana', fecha_evento: '2026-09-20',
+    // fecha_evento_iso (no fecha_evento a secas) es lo que exige
+    // camposObligatoriosCompletos desde el hotfix de la migración 031 --
+    // ver test/fase-normalizar-fecha.mjs para la validación determinista
+    // que produce este valor a partir del texto natural del cliente.
+    nombre: 'Ana', fecha_evento: '2026-09-20', fecha_evento_iso: '2026-09-20',
     items: [{ descripcion: 'Banquete', cantidad: 150 }],
   };
   assert.strictEqual(camposObligatoriosCompletos(completos), true, 'debe crear borrador aunque falten numero_personas/lugar/presupuesto');
+});
+
+t('camposObligatoriosCompletos: false si fecha_evento existe pero fecha_evento_iso no se pudo normalizar', () => {
+  const conFechaAmbigua = {
+    nombre: 'Ana', fecha_evento: 'la próxima semana', // nunca se normalizó -- ver normalizarFecha.js
+    items: [{ descripcion: 'Banquete', cantidad: 150 }],
+  };
+  assert.strictEqual(camposObligatoriosCompletos(conFechaAmbigua), false, 'una fecha sin normalizar nunca debe contar como completa');
 });
 
 t('camposSecundariosFaltantes: lista los que faltan sin bloquear', () => {
