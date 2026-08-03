@@ -20,7 +20,8 @@ const PUERTO = process.env.TEST_PORT || '4160';
 
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool, actualizarConfiguracion, crearUsuarioConPassword } = await import('../src/services/database.js');
-const { validarImagenReal, comprimirImagen, MAX_IMAGENES_POR_ENVIO } = await import('../src/services/imagenes.js');
+const { validarImagenReal, comprimirImagen, limpiarMetadatosImagen, sanitizarNombreImagen, procesarImagenSaliente, procesarImagenEntranteDescargada, MAX_IMAGENES_POR_ENVIO } = await import('../src/services/imagenes.js');
+const { createHash } = await import('crypto');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -96,6 +97,59 @@ await t('COMPRESION', 'una imagen ya pequeña no se agranda (withoutEnlargement)
   const meta = await sharp(buffer).metadata();
   assert.strictEqual(meta.width, 20);
   assert.strictEqual(meta.height, 20);
+});
+
+// ═══════════ Endurecimiento de seguridad (auditoría de producción) ═══════
+await t('SEGURIDAD', 'imagen corrupta (cabecera jpg real, cuerpo truncado) se rechaza como imagen_corrupta, no como válida', async () => {
+  // Cabecera jpg real intacta, pero se corta el archivo a la mitad --
+  // fileTypeFromBuffer (solo mira los primeros bytes) la aceptaría, pero
+  // sharp().metadata() sí debe fallar al no poder decodificarla completa.
+  const truncada = JPG_REAL.subarray(0, Math.floor(JPG_REAL.length / 2));
+  const r = await validarImagenReal(truncada);
+  assert.strictEqual(r.valido, false);
+  assert.strictEqual(r.motivo, 'imagen_corrupta');
+});
+await t('SEGURIDAD', 'un ZIP renombrado como .jpg se rechaza (firma real de ZIP, nunca se confía en el nombre)', async () => {
+  const zipReal = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00]); // firma real de ZIP (PK..)
+  const r = await validarImagenReal(zipReal);
+  assert.strictEqual(r.valido, false);
+  assert.strictEqual(r.motivo, 'mime_invalido');
+});
+await t('SEGURIDAD', 'un SVG se rechaza (no tiene firma binaria reconocible y no está en el allowlist -- vector de XSS conocido)', async () => {
+  const svgMalicioso = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(document.cookie)</script></svg>', 'utf8');
+  const r = await validarImagenReal(svgMalicioso);
+  assert.strictEqual(r.valido, false);
+  assert.strictEqual(r.motivo, 'mime_invalido');
+});
+await t('SEGURIDAD', 'EXIF/GPS se elimina de una imagen SALIENTE (comprimirImagen nunca preserva metadata)', async () => {
+  const conExif = await sharp({ create: { width: 30, height: 30, channels: 3, background: { r: 10, g: 20, b: 30 } } })
+    .withMetadata({ exif: { IFD0: { Make: 'TestCamera' }, GPS: { GPSLatitude: '25.500000' } } })
+    .jpeg().toBuffer();
+  const antes = await sharp(conExif).metadata();
+  assert.ok(antes.exif, 'la imagen de prueba debe tener EXIF antes de procesar (o la prueba no prueba nada)');
+  const { buffer: salida } = await comprimirImagen(conExif, 'image/jpeg');
+  const despues = await sharp(salida).metadata();
+  assert.ok(!despues.exif, 'la imagen comprimida para envío NO debe conservar EXIF/GPS');
+});
+await t('SEGURIDAD', 'EXIF/GPS también se elimina de una imagen ENTRANTE (no solo de las salientes)', async () => {
+  const conExif = await sharp({ create: { width: 30, height: 30, channels: 3, background: { r: 10, g: 20, b: 30 } } })
+    .withMetadata({ exif: { GPS: { GPSLatitude: '19.400000' } } })
+    .jpeg().toBuffer();
+  const limpia = await limpiarMetadatosImagen(conExif, 'image/jpeg');
+  const meta = await sharp(limpia).metadata();
+  assert.ok(!meta.exif, 'una imagen recibida de un cliente no debe conservar su GPS real tras guardarse');
+});
+await t('SEGURIDAD', 'sanitizarNombreImagen elimina caracteres de control (evita inyección en el header Content-Disposition)', async () => {
+  const nombrePeligroso = 'foto.jpg\r\nX-Injected-Header: si-esto-aparece-es-un-bug';
+  const limpio = sanitizarNombreImagen(nombrePeligroso, 'jpg');
+  assert.doesNotMatch(limpio, /[\r\n]/, 'el nombre saneado nunca debe contener \\r ni \\n');
+  assert.doesNotMatch(limpio, /"/, 'el nombre saneado nunca debe contener comillas dobles');
+});
+await t('SEGURIDAD', 'checksum SHA-256 corresponde exactamente al contenido realmente guardado (saliente)', async () => {
+  const resultado = await procesarImagenSaliente({ negocioId: SEED.negocioA, telefono: '5218789950999', buffer: JPG_REAL, filename: 'checksum-test.jpg' });
+  assert.strictEqual(resultado.ok, true);
+  const checksumReal = createHash('sha256').update(resultado.buffer).digest('hex');
+  assert.strictEqual(resultado.checksum, checksumReal, 'el checksum guardado debe ser el sha-256 real del buffer final (ya comprimido), no del original');
 });
 
 // ═══════════ Setup de negocios/módulos/credenciales ═══════════
@@ -293,6 +347,35 @@ try {
     assert.strictEqual(r.headers.get('content-type'), 'image/jpeg');
   });
 
+  await t('SEGURIDAD', 'nombre de archivo con intento de inyección de header nunca llega crudo al Content-Disposition real', async () => {
+    const r = await api(srv.base, '/api/imagenes/enviar', {
+      cookie: cookieAdminA, method: 'POST',
+      body: { telefono: TEL_A1, imagenes: [{ filename: 'x.jpg\r\nX-Injected: 1', base64: JPG_REAL.toString('base64') }] },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const idInyeccion = r.body.resultados[0].documento.id;
+    const rArchivo = await fetch(`${srv.base}/api/imagenes/${idInyeccion}/archivo`, { headers: { Cookie: cookieAdminA } });
+    const disposicion = rArchivo.headers.get('content-disposition');
+    assert.ok(disposicion, 'debe existir el header Content-Disposition');
+    assert.doesNotMatch(disposicion, /\r|\n/, 'el header real nunca debe contener un salto de línea crudo -- eso es lo que haría posible una inyección');
+    // El texto "X-Injected" puede aparecer como parte INERTE del nombre de
+    // archivo (una sola línea, entre comillas) -- eso es seguro. Lo que NO
+    // debe pasar es que se haya colado como un header HTTP real, separado.
+    assert.strictEqual(rArchivo.headers.get('x-injected'), null, 'nunca debe haberse creado un header HTTP real a partir del nombre de archivo');
+  });
+
+  await t('SEGURIDAD', 'la misma imagen (contenido idéntico) enviada dos veces crea dos archivos distintos con el mismo checksum -- no es un duplicado de webhook, es contenido repetido legítimo', async () => {
+    const telDup = '5218789950066'; // dentro del prefijo 52187899500% que limpia el setup de esta suite
+    const r1 = await api(srv.base, '/api/imagenes/enviar', { cookie: cookieAdminA, method: 'POST', body: { telefono: telDup, imagenes: [{ filename: 'repetida.jpg', base64: JPG_REAL.toString('base64') }] } });
+    const r2 = await api(srv.base, '/api/imagenes/enviar', { cookie: cookieAdminA, method: 'POST', body: { telefono: telDup, imagenes: [{ filename: 'repetida.jpg', base64: JPG_REAL.toString('base64') }] } });
+    assert.strictEqual(r1.status, 200);
+    assert.strictEqual(r2.status, 200);
+    const { rows } = await pool.query(`SELECT storage_key, checksum FROM documentos WHERE telefono = $1 ORDER BY created_at`, [telDup]);
+    assert.strictEqual(rows.length, 2, 'deben existir dos filas -- ambos envíos son legítimos, ninguno se descarta como duplicado');
+    assert.notStrictEqual(rows[0].storage_key, rows[1].storage_key, 'cada envío debe tener su propio storage_key único');
+    assert.strictEqual(rows[0].checksum, rows[1].checksum, 'el checksum sí debe coincidir -- el contenido es idéntico');
+  });
+
   // ═══════════ Recepción vía webhook (Meta simulada) ═══════════
   async function simularWebhookImagen(phoneNumberId, telefono, mediaId, wamid, caption) {
     const payload = {
@@ -325,6 +408,21 @@ try {
     assert.ok(rows[0].checksum, 'debe haberse calculado un checksum SHA-256');
     const r = await fetch(`${srv.base}/api/imagenes/${rows[0].id}/archivo`, { headers: { Cookie: cookieAdminA } });
     assert.strictEqual(r.status, 200);
+  });
+
+  await t('SEGURIDAD', 'una imagen entrante real con GPS embebido queda guardada SIN esa metadata (privacidad del cliente)', async () => {
+    const telGps = '5218789950055';
+    const conGps = await sharp({ create: { width: 25, height: 25, channels: 3, background: { r: 5, g: 5, b: 5 } } })
+      .withMetadata({ exif: { GPS: { GPSLatitude: '25.686614' } } }).jpeg().toBuffer();
+    const mediaId = 'MEDIA_IMG_GPS_1';
+    metaMock.registrarArchivo(mediaId, conGps, 'image/jpeg');
+    await simularWebhookImagen(PNID_A, telGps, mediaId, 'wamid.IMG-GPS-1', null);
+    const { rows } = await pool.query(`SELECT id FROM documentos WHERE telefono = $1 AND categoria = 'imagen'`, [telGps]);
+    assert.strictEqual(rows.length, 1);
+    const r = await fetch(`${srv.base}/api/imagenes/${rows[0].id}/archivo`, { headers: { Cookie: cookieAdminA } });
+    const bufGuardado = Buffer.from(await r.arrayBuffer());
+    const metaGuardada = await sharp(bufGuardado).metadata();
+    assert.ok(!metaGuardada.exif, 'la imagen entrante guardada nunca debe conservar el GPS real del cliente');
   });
 
   await t('DEDUP', 'reentrega del mismo webhook (mismo wamid) no duplica la imagen', async () => {
