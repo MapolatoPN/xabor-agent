@@ -5,7 +5,7 @@ import { Router } from 'express';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -165,6 +165,59 @@ export async function enviarMensaje(telefono, texto, credenciales) {
     throw new Error(`Meta API: ${JSON.stringify(err)}`);
   }
   return resp.json();
+}
+
+// ─── Enviar plantilla nuevo_servicio_reparto ────────────────────────────────
+// Diagnóstico repartidores (ver reporte): un mensaje de texto libre a un
+// repartidor que no le ha escrito al bot en las últimas 24h queda sujeto a
+// la ventana de servicio al cliente de WhatsApp -- Meta puede aceptar la
+// petición HTTP (200) y aun así no entregarlo. Una plantilla aprobada por
+// Meta es el único tipo de mensaje que puede iniciar conversación fuera de
+// esa ventana. El enlace a /repartidor.html va fijo en el cuerpo de la
+// plantilla (no como variable) -- es el mismo dominio siempre, y menos
+// variables agiliza la revisión de Meta.
+//
+// Devuelve el wamid (string) si Meta acepta el envío. Lanza si Meta
+// rechaza (mismo criterio que enviarMensaje) -- el llamador decide qué
+// registrar en notificaciones_repartidor según éxito/fallo.
+export async function enviarPlantillaNuevoServicioReparto(telefono, { resumen, direccion }, credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarPlantillaNuevoServicioReparto sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const { phoneNumberId, accessToken } = credenciales;
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: telefono,
+      type: 'template',
+      template: {
+        name: 'nuevo_servicio_reparto',
+        language: { code: 'es_MX' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: resumen },
+            { type: 'text', text: direccion || 'Sin dirección especificada' }
+          ]
+        }]
+      }
+    })
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (plantilla): ${JSON.stringify(err)}`);
+  }
+  const data = await resp.json();
+  return data?.messages?.[0]?.id || null;
 }
 
 // ─── Enviar imagen via Meta Graph API ────────────────────────────────────────
@@ -795,6 +848,16 @@ router.post('/', async (req, res) => {
     if (body.object !== 'whatsapp_business_account') return;
 
     const value   = body.entry?.[0]?.changes?.[0]?.value;
+
+    // Estado de entrega (sent/delivered/read/failed) -- payload distinto
+    // al de mensajes entrantes (ver diagnóstico repartidores: esto se
+    // descartaba en silencio antes). Se procesa aparte y siempre, exista o
+    // no un mensaje entrante en el mismo payload (Meta nunca manda ambos
+    // juntos en la práctica, pero no se asume).
+    if (value?.statuses?.length) {
+      await procesarStatusesWebhook(value.statuses);
+    }
+
     const message = value?.messages?.[0];
     // 'document'/'image' se aceptan además de 'text' (aditivo -- cualquier
     // otro tipo sigue descartándose exactamente igual que antes).
@@ -964,16 +1027,86 @@ export async function notificarRepartidoresPorWA(pedido) {
     const direccion = pedido.direccion ? `\n📍 ${pedido.direccion}` : '';
     const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\n⏱ El pedido estará listo para recoger en *15-20 minutos*.\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
 
+    // Piloto (diagnóstico repartidores): flag por negocio, apagado por
+    // defecto -- solo Nonna Maye lo activa durante el piloto. Con el flag
+    // apagado, el comportamiento es EXACTAMENTE el de antes (texto libre,
+    // sin registro), para no arriesgar a ningún otro negocio con
+    // repartidores configurados.
+    const cfg = await obtenerConfiguracion(pedido.negocioId);
+    const usarPlantilla = cfg.repartidor_notif_plantilla_activo === 'true';
+
     for (const r of repartidores) {
+      if (!usarPlantilla) {
+        try {
+          await enviarMensaje(r.telefono, texto, credenciales);
+          console.log(`[WA Repartidor] Notificación enviada a ${r.nombre} (${r.telefono})`);
+        } catch (e) {
+          console.error(`[WA Repartidor] Error al notificar a ${r.nombre}: ${e.message}`);
+        }
+        continue;
+      }
+
       try {
-        await enviarMensaje(r.telefono, texto, credenciales);
-        console.log(`[WA Repartidor] Notificación enviada a ${r.nombre} (${r.telefono})`);
+        const wamid = await enviarPlantillaNuevoServicioReparto(
+          r.telefono,
+          { resumen, direccion: pedido.direccion || null },
+          credenciales
+        );
+        await registrarNotificacionRepartidor({
+          negocioId: pedido.negocioId,
+          pedidoFolio: pedido.id,
+          repartidorId: r.id,
+          canal: 'plantilla',
+          wamid,
+          estado: wamid ? 'aceptado_meta' : 'error_envio'
+        });
+        console.log(`[WA Repartidor] Plantilla aceptada por Meta para ${r.nombre} (${r.telefono}) wamid=${wamid}`);
       } catch (e) {
-        console.error(`[WA Repartidor] Error al notificar a ${r.nombre}: ${e.message}`);
+        await registrarNotificacionRepartidor({
+          negocioId: pedido.negocioId,
+          pedidoFolio: pedido.id,
+          repartidorId: r.id,
+          canal: 'plantilla',
+          estado: 'error_envio',
+          errorDetalle: e.message
+        });
+        console.error(`[WA Repartidor] Error al notificar (plantilla) a ${r.nombre}: ${e.message}`);
       }
     }
   } catch (e) {
     console.error('[WA Repartidor] Error general:', e.message);
+  }
+}
+
+// ─── Procesar webhook de estado de mensaje (sent/delivered/read/failed) ─────
+// Meta reporta el resultado REAL de un envío de forma asíncrona en
+// value.statuses -- separado de value.messages. El webhook anterior
+// descartaba estos payloads por completo (early-return por falta de
+// `messages`), que es exactamente por qué Xabor nunca se enteraba de un
+// envío aceptado-pero-no-entregado (ver diagnóstico repartidores). Esta
+// función solo actualiza notificaciones_repartidor por wamid -- no toca
+// nada del flujo de mensajes de cliente.
+export async function procesarStatusesWebhook(statuses) {
+  for (const s of statuses) {
+    if (!s?.id || !s?.status) continue;
+    const estado = s.status; // 'sent' | 'delivered' | 'read' | 'failed'
+    const estadoMapeado = estado === 'sent' ? 'aceptado_meta'
+      : estado === 'delivered' ? 'entregado'
+      : estado === 'read' ? 'leido'
+      : estado === 'failed' ? 'fallido'
+      : null;
+    if (!estadoMapeado) continue;
+    const errorInfo = estado === 'failed' && s.errors?.[0]
+      ? { errorCodigo: String(s.errors[0].code || ''), errorDetalle: s.errors[0].title || s.errors[0].message || '' }
+      : {};
+    try {
+      const actualizado = await actualizarEstadoNotificacionPorWamid(s.id, estadoMapeado, errorInfo);
+      if (actualizado) {
+        console.log(`[WA Status] ${s.id} -> ${estadoMapeado}`);
+      }
+    } catch (e) {
+      console.error('[WA Status] Error procesando status:', e.message);
+    }
   }
 }
 
