@@ -1679,14 +1679,23 @@ function pushEsCompatible() {
   return ('serviceWorker' in navigator) && ('PushManager' in window) && (typeof Notification !== 'undefined');
 }
 
-// Suscripción silenciosa: SOLO si el permiso ya fue concedido en una
-// sesión anterior (nunca pide permiso aquí, eso requiere un gesto
-// explícito del usuario -- imprescindible en iOS 16.4+, donde pedirlo sin
-// gesto simplemente no funciona). Se llama al cargar el panel para que un
-// operador que ya activó notificaciones antes siga suscrito sin tener que
-// volver a tocar nada.
+// El service worker se registra SIEMPRE que sea compatible, sin importar
+// el permiso de notificaciones -- registrarlo no pide nada al usuario, y
+// Chrome/Android exigen un service worker activo (con el scope del
+// manifest) como parte de los criterios de instalación de la PWA. Pedir
+// permiso de notificaciones es una acción aparte, sí sujeta a gesto
+// explícito (ver activarNotificaciones), imprescindible en iOS 16.4+.
 async function registrarPush() {
   if (!pushEsCompatible()) return;
+  try {
+    await navigator.serviceWorker.register('/sw.js');
+  } catch (e) {
+    console.warn('[Push] No se pudo registrar el service worker:', e.message);
+    return;
+  }
+  // Suscripción silenciosa: SOLO si el permiso ya fue concedido en una
+  // sesión anterior -- para que un operador que ya activó notificaciones
+  // antes siga suscrito sin tener que volver a tocar nada.
   if (Notification.permission !== 'granted') return;
   try {
     await suscribirPush();
