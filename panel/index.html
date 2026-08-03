@@ -3284,7 +3284,13 @@ async function confirmarEnvioImagenes() {
     const d = await r.json().catch(() => ({}));
     if (!r.ok && !d.ok) {
       quitarOptimistas();
-      errEl.textContent = (d.resultados && d.resultados.find(x => !x.ok)?.error) || d.error || 'No se pudieron enviar las fotos.';
+      // r.status===413: el body nunca llega a nuestro handler (lo
+      // rechaza el body-parser de Express antes), asi que d.error
+      // siempre viene vacio aqui -- sin este caso especial el usuario
+      // veia solo el generico "No se pudieron enviar las fotos.".
+      errEl.textContent = r.status === 413
+        ? 'La foto es demasiado grande para enviarse. Intenta con una de menor resolución o envía menos fotos juntas.'
+        : (d.resultados && d.resultados.find(x => !x.ok)?.error) || d.error || `No se pudieron enviar las fotos (error ${r.status}).`;
       errEl.style.display = '';
       return;
     }
