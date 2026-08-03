@@ -143,7 +143,7 @@ export async function enviarMensaje(telefono, texto, credenciales) {
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
-  const url = `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -173,7 +173,7 @@ export async function enviarImagen(telefono, imageUrl, caption = '', credenciale
     console.error('[Meta WA] enviarImagen sin credenciales resueltas — envío omitido (fail closed)');
     return null;
   }
-  const url = `https://graph.facebook.com/v20.0/${credenciales.phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -201,11 +201,12 @@ export async function enviarImagen(telefono, imageUrl, caption = '', credenciale
 // 2 pasos) -- nunca se expone una URL pública del archivo para que Meta lo
 // "jale"; el archivo viaja directo del storage privado de Xabor a Meta.
 //
-// META_GRAPH_BASE_URL: solo para las pruebas de documentos (permite apuntar
-// a un servidor HTTP local que simula la Graph API en vez de la real).
-// Ausente en producción -- el default es exactamente el mismo host de
-// siempre. No se usa en enviarMensaje/enviarImagen/marcarLeido (funciones
-// preexistentes, sin tocar).
+// META_GRAPH_BASE_URL: solo para pruebas (permite apuntar a un servidor
+// HTTP local que simula la Graph API en vez de la real). Ausente en
+// producción -- el default es exactamente el mismo host de siempre. Se
+// usa en todas las funciones de envío/recepción de esta capa
+// (enviarMensaje/enviarImagen/marcarLeido incluidas, extendido para la
+// prueba end-to-end del Asistente Comercial de Cotizaciones).
 const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com';
 
 async function subirMediaAMeta(buffer, filename, credenciales) {
@@ -335,7 +336,7 @@ async function manejarDocumentoEntrante(message, negocioId, nombreMeta) {
 async function marcarLeido(messageId, credenciales) {
   if (!credenciales?.phoneNumberId || !credenciales?.accessToken) return;
   try {
-    await fetch(`https://graph.facebook.com/v20.0/${credenciales.phoneNumberId}/messages`, {
+    await fetch(`${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${credenciales.accessToken}`,
@@ -556,7 +557,16 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono, negocioId);
     const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono, negocioId) : [];
-    const clienteCtx = clienteDB ? { nombre: clienteDB.nombre || nombreMeta, pedidos: pedidosAnteriores } : null;
+    // Bug preexistente corregido: clienteCtx nunca incluía `telefono`, así
+    // que procesarMensaje's `clienteCtx?.telefono` (usado tanto por la
+    // memoria de cliente existente como por el Asistente Comercial nuevo)
+    // siempre era undefined viniendo del canal de WhatsApp -- ninguna de
+    // las dos funciones podía activarse nunca desde un mensaje real. Se
+    // agrega solo dentro de la rama con clienteDB ya existente -- se
+    // preserva clienteCtx=null cuando el cliente es nuevo, para no alterar
+    // el bloque "cliente recurrente" de construirSystemPrompt (que usa
+    // `if (clienteCtx)` como señal de "ya lo conocemos").
+    const clienteCtx = clienteDB ? { telefono, nombre: clienteDB.nombre || nombreMeta, pedidos: pedidosAnteriores } : null;
     if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
 
     // Fase A: sessionId incluye negocioId -- antes era solo `meta-${telefono}`,
