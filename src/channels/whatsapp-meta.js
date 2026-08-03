@@ -210,51 +210,15 @@ export async function enviarImagen(telefono, imageUrl, caption = '', credenciale
 // prueba end-to-end del Asistente Comercial de Cotizaciones).
 const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com';
 
-async function subirMediaAMeta(buffer, filename, credenciales, mimeType = 'application/pdf') {
-  const form = new FormData();
-  form.append('messaging_product', 'whatsapp');
-  form.append('file', new Blob([buffer], { type: mimeType }), filename);
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/media`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${credenciales.accessToken}` },
-    body: form,
-  });
-  if (!resp.ok) {
-    const err = await resp.json();
-    throw new Error(`Meta API (subir media): ${JSON.stringify(err)}`);
-  }
-  const data = await resp.json();
-  return data.id;
-}
-
-export async function enviarDocumento(telefono, buffer, filename, caption = '', credenciales) {
-  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
-    console.error('[Meta WA] enviarDocumento sin credenciales resueltas — envío omitido (fail closed)');
-    return null;
-  }
-  const mediaId = await subirMediaAMeta(buffer, filename, credenciales);
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${credenciales.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: telefono,
-      type: 'document',
-      document: { id: mediaId, filename, caption },
-    }),
-  });
-  if (!resp.ok) {
-    const err = await resp.json();
-    throw new Error(`Meta API (documento): ${JSON.stringify(err)}`);
-  }
-  return resp.json();
-}
+// enviarDocumento (y su helper subirMediaAMeta, reutilizado abajo por
+// enviarImagenBuffer) viven en metaEnvioDocumentos.js -- extraídos sin
+// cambio de comportamiento (ver ese archivo para la razón: permite que
+// un servicio externo los importe sin arrastrar el resto de este
+// archivo, que a su vez importa server.js). Se reexporta enviarDocumento
+// aquí para que server.js (y cualquier otro import existente de
+// whatsapp-meta.js) no necesite ningún cambio.
+import { subirMediaAMeta } from '../services/metaEnvioDocumentos.js';
+export { enviarDocumento } from '../services/metaEnvioDocumentos.js';
 
 // ─── Enviar imagen ya comprimida (buffer privado) via Meta Graph API ────────
 // A diferencia de enviarImagen() de arriba (URL pública, usada por el
