@@ -682,6 +682,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <input id="cot-anticipo" type="number" min="0" step="0.01"
           style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
       </div>
+      <div>
+        <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">IVA (%)</label>
+        <input id="cot-iva-pct" type="number" min="0" max="100" step="0.01" oninput="recalcularTotalesCotizacion()"
+          style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+      </div>
     </div>
 
     <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Notas</label>
@@ -1143,6 +1148,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
         <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Anticipo por defecto (%)</label>
         <input type="number" id="cfg-cot-anticipo-pct" min="0" max="100" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;">
+
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">IVA por defecto (%)</label>
+        <input type="number" id="cfg-cot-iva-pct" min="0" max="100" step="0.01" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;">
 
         <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Términos por defecto</label>
         <textarea id="cfg-cot-terminos" rows="3" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:12px;"></textarea>
@@ -3151,8 +3159,21 @@ function leerItemsCotizacionForm() {
 
 function recalcularTotalesCotizacion() {
   const items = leerItemsCotizacionForm();
-  const subtotal = items.reduce((acc, it) => acc + it.cantidad * it.precioUnitario - it.descuento, 0);
-  document.getElementById('cot-totales').textContent = `Subtotal: ${formatoMoneda(subtotal)}`;
+  // Mismo criterio que _calcularTotales() en el backend (database.js):
+  // subtotal ya neto de descuento por línea, descuentos como bruto-neto,
+  // IVA sobre el subtotal neto, para que panel y PDF muestren los mismos
+  // números con el mismo desglose Subtotal/Descuento/IVA/Total.
+  const descuentos = items.reduce((acc, it) => acc + it.descuento, 0);
+  const subtotalNeto = items.reduce((acc, it) => acc + it.cantidad * it.precioUnitario - it.descuento, 0);
+  const subtotalBruto = subtotalNeto + descuentos;
+  const tasaIva = Number(document.getElementById('cot-iva-pct').value) || 0;
+  const impuestos = Math.round(subtotalNeto * tasaIva / 100 * 100) / 100;
+  const total = Math.round((subtotalNeto + impuestos) * 100) / 100;
+  const partes = [`Subtotal: ${formatoMoneda(subtotalBruto)}`];
+  if (descuentos > 0) partes.push(`Descuento: -${formatoMoneda(descuentos)}`);
+  partes.push(`IVA ${tasaIva}%: ${formatoMoneda(impuestos)}`);
+  partes.push(`Total: ${formatoMoneda(total)}`);
+  document.getElementById('cot-totales').innerHTML = partes.join('<br>');
 }
 
 function abrirModalCotizacion(id) {
@@ -3160,11 +3181,23 @@ function abrirModalCotizacion(id) {
   document.getElementById('cot-modal-titulo').textContent = id ? 'Editar cotización' : 'Crear cotización';
   document.getElementById('cot-modal-error').style.display = 'none';
   document.getElementById('cot-items-body').innerHTML = '';
-  ['cot-telefono','cot-evento-nombre','cot-evento-fecha','cot-lugar','cot-personas','cot-vigencia','cot-anticipo','cot-notas','cot-terminos'].forEach(id2 => document.getElementById(id2).value = '');
+  ['cot-telefono','cot-evento-nombre','cot-evento-fecha','cot-lugar','cot-personas','cot-vigencia','cot-anticipo','cot-iva-pct','cot-notas','cot-terminos'].forEach(id2 => document.getElementById(id2).value = '');
 
   const abrir = () => document.getElementById('modal-cotizacion-overlay').style.display = 'flex';
 
-  if (!id) { agregarFilaCotizacionItem(); abrir(); return; }
+  if (!id) {
+    agregarFilaCotizacionItem();
+    // Al crear, se precarga la tasa de IVA por defecto del negocio (misma
+    // clave configuracion.iva_pct_default que usa el backend cuando no se
+    // envía impuestosPct) -- si el operador no la toca, el número mostrado
+    // en el modal ya coincide con el que terminará usando la API.
+    apiFetch('/api/config').then(r => r.json()).then(cfg => {
+      document.getElementById('cot-iva-pct').value = cfg.iva_pct_default || '';
+      recalcularTotalesCotizacion();
+    }).catch(() => {});
+    abrir();
+    return;
+  }
 
   apiFetch(`/api/cotizaciones/${id}`).then(r => r.json()).then(c => {
     document.getElementById('cot-telefono').value = c.telefono || '';
@@ -3175,9 +3208,11 @@ function abrirModalCotizacion(id) {
     document.getElementById('cot-personas').value = c.cantidad_personas || '';
     document.getElementById('cot-vigencia').value = c.vigencia_hasta ? c.vigencia_hasta.slice(0, 10) : '';
     document.getElementById('cot-anticipo').value = c.anticipo_requerido || '';
+    document.getElementById('cot-iva-pct').value = c.impuestos_tasa || '';
     document.getElementById('cot-notas').value = c.notas || '';
     document.getElementById('cot-terminos').value = c.terminos || '';
     (c.items || []).forEach(it => agregarFilaCotizacionItem(it));
+    recalcularTotalesCotizacion();
     abrir();
   });
 }
@@ -3209,6 +3244,7 @@ async function guardarCotizacion() {
     notas: document.getElementById('cot-notas').value.trim() || undefined,
     terminos: document.getElementById('cot-terminos').value.trim() || undefined,
     items,
+    impuestosPct: document.getElementById('cot-iva-pct').value !== '' ? Number(document.getElementById('cot-iva-pct').value) : undefined,
   };
 
   const btn = document.getElementById('cot-btn-guardar');
@@ -3963,6 +3999,7 @@ async function cargarConfigCotizaciones() {
   document.getElementById('cfg-cot-color').value = cfg.color_primario || '#1c1c1c';
   document.getElementById('cfg-cot-vigencia-dias').value = cfg.vigencia_dias_default || '';
   document.getElementById('cfg-cot-anticipo-pct').value = cfg.anticipo_porcentaje_default || '';
+  document.getElementById('cfg-cot-iva-pct').value = cfg.iva_pct_default || '';
   document.getElementById('cfg-cot-terminos').value = cfg.terminos_cotizacion_default || '';
 }
 
@@ -3982,6 +4019,7 @@ async function guardarConfigCotizaciones() {
     color_primario: document.getElementById('cfg-cot-color').value,
     vigencia_dias_default: document.getElementById('cfg-cot-vigencia-dias').value,
     anticipo_porcentaje_default: document.getElementById('cfg-cot-anticipo-pct').value,
+    iva_pct_default: document.getElementById('cfg-cot-iva-pct').value,
     terminos_cotizacion_default: document.getElementById('cfg-cot-terminos').value,
   };
   const logoPendiente = document.getElementById('cfg-cot-logo-preview').dataset.pendiente;
