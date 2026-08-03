@@ -22,7 +22,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, obtenerSuscripcionesPushUsuario, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -597,9 +597,16 @@ server.on('upgrade', (req, socket, head) => {
 // disparaba enviarPushATodos() sin filtrar, incluso desde
 // broadcastNegocio() ya aislado por negocio. Ahora: sin negocioId válido
 // no se envía nada (fail closed, nunca cae a broadcast() global ni a
-// Nonna Maye como relleno), y el contenido se redujo a lo genérico —
-// nunca teléfono, texto del mensaje, nombre completo de cliente ni monto.
-// El detalle real se consulta dentro del panel ya autenticado.
+// Nonna Maye como relleno), y el TEXTO visible del banner se mantiene
+// genérico a propósito -- nunca teléfono, texto del mensaje, nombre
+// completo de cliente ni monto (puede verse en la pantalla de bloqueo de
+// cualquiera). `data.url`/`data.tag` SÍ pueden llevar el teléfono -- ese
+// campo nunca se renderiza como texto visible, solo lo usa sw.js para
+// enfocar/abrir la conversación exacta al hacer click (Bloque 4) y para
+// que notificaciones de conversaciones distintas no se reemplacen entre
+// sí (cada tag es su propia notificación en la bandeja del sistema). El
+// detalle real siempre se consulta dentro del panel ya autenticado.
+const ETIQUETA_TIPO_MENSAJE = { imagen: '📷 Nueva foto', documento: '📄 Nuevo documento', texto: '💬 Nuevo mensaje' };
 function dispararPushParaEvento(data, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return;
   if (data.tipo === 'nuevo_pedido') {
@@ -607,15 +614,26 @@ function dispararPushParaEvento(data, negocioId) {
       negocioId,
       '🛎 Nuevo pedido',
       'Tienes un nuevo pedido en Xabor',
-      {}
+      { url: '/app#comandas', tag: 'xabor-pedido' }
     ).catch(() => {});
   }
   if (data.tipo === 'nuevo_mensaje' && data.mensaje?.direccion === 'entrante') {
+    const telefono = data.mensaje.telefono;
+    const tipoMsg = data.mensaje.tipo || 'texto';
     enviarPushANegocio(
       negocioId,
-      '💬 Nuevo mensaje de WhatsApp',
+      ETIQUETA_TIPO_MENSAJE[tipoMsg] || ETIQUETA_TIPO_MENSAJE.texto,
       'Tienes una conversación nueva en Xabor',
-      {}
+      { url: `/app#chats:${telefono}`, tag: `xabor-chat-${telefono}` }
+    ).catch(() => {});
+  }
+  if (data.tipo === 'cotizacion_borrador_ia') {
+    const folio = data.cotizacion?.folio || data.cotizacion?.cotizacion?.folio;
+    enviarPushANegocio(
+      negocioId,
+      '🤖 Cotización pendiente de aprobar',
+      'El Asistente Comercial preparó una propuesta -- revísala antes de que se envíe.',
+      { url: '/app#cotizaciones', tag: `xabor-cotizacion-${folio || 'nueva'}` }
     ).catch(() => {});
   }
 }
@@ -1968,7 +1986,7 @@ app.post('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
     return res.status(403).json({ error: 'Negocio suspendido o inactivo' });
   }
   try {
-    await guardarSuscripcionPush({ endpoint, auth: keys.auth, p256dh: keys.p256dh }, req.negocioId);
+    await guardarSuscripcionPush({ endpoint, auth: keys.auth, p256dh: keys.p256dh }, req.negocioId, req.usuarioId);
     res.json({ ok: true });
   } catch (e) {
     console.error('[Push] Error guardando suscripción:', e.message);
@@ -1984,6 +2002,38 @@ app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
   if (!endpoint) return res.status(400).json({ error: 'endpoint requerido' });
   await eliminarSuscripcionPush(endpoint, req.negocioId).catch(() => {});
   res.json({ ok: true });
+});
+
+// Envía un push de prueba SOLO a las suscripciones del propio usuario que
+// lo solicita (nunca a todo el negocio) -- botón "Probar notificación" del
+// panel, para que cada operador pueda confirmar su propio dispositivo sin
+// molestar a los demás.
+app.post('/api/push/test', requireAuthSeguro, async (req, res) => {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return res.status(503).json({ error: 'Push no configurado' });
+  let subs;
+  try { subs = await obtenerSuscripcionesPushUsuario(req.negocioId, req.usuarioId); }
+  catch (e) { return res.status(500).json({ error: e.message }); }
+  if (!subs.length) return res.status(404).json({ error: 'Sin suscripción activa en este dispositivo' });
+  const payload = JSON.stringify({
+    titulo: 'Xabor',
+    cuerpo: 'Notificación de prueba -- si ves esto, las notificaciones están funcionando.',
+    data: { tag: 'xabor-test', url: '/app' },
+  });
+  let enviados = 0;
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification({ endpoint: sub.endpoint, keys: { auth: sub.auth, p256dh: sub.p256dh } }, payload);
+      enviados++;
+    } catch (e) {
+      if (e.statusCode === 410 || e.statusCode === 404) {
+        await eliminarSuscripcionPush(sub.endpoint, req.negocioId).catch(() => {});
+      } else {
+        console.error('[Push] Error en prueba:', e.message);
+      }
+    }
+  }
+  if (!enviados) return res.status(502).json({ error: 'No se pudo entregar la notificación de prueba' });
+  res.json({ ok: true, enviados });
 });
 
 // Corte de caja — disponible para staff (resumen del día por forma de pago)
