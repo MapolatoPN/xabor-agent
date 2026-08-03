@@ -2,10 +2,11 @@
 // Twilio se conserva SOLO para llamadas de voz
 
 import { Router } from 'express';
+import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -167,22 +168,26 @@ export async function enviarMensaje(telefono, texto, credenciales) {
   return resp.json();
 }
 
-// ─── Enviar plantilla nuevo_servicio_reparto ────────────────────────────────
+// ─── Enviar plantilla xabor_nuevo_servicio_reparto (oferta, SIN datos sensibles) ──
 // Diagnóstico repartidores (ver reporte): un mensaje de texto libre a un
 // repartidor que no le ha escrito al bot en las últimas 24h queda sujeto a
 // la ventana de servicio al cliente de WhatsApp -- Meta puede aceptar la
 // petición HTTP (200) y aun así no entregarlo. Una plantilla aprobada por
 // Meta es el único tipo de mensaje que puede iniciar conversación fuera de
-// esa ventana. El enlace a /repartidor.html va fijo en el cuerpo de la
-// plantilla (no como variable) -- es el mismo dominio siempre, y menos
-// variables agiliza la revisión de Meta.
+// esa ventana.
+//
+// Requisito explícito del usuario: este PRIMER mensaje (la oferta) nunca
+// debe llevar nombre/teléfono/dirección del cliente -- solo el negocio, el
+// pago estimado, y un enlace de un solo uso para aceptar. Los datos
+// completos se envían después, en enviarPlantillaXaborDetalleServicioReparto,
+// y solo si el repartidor efectivamente acepta (ver procesarAceptacionTokenRepartidor).
 //
 // Devuelve el wamid (string) si Meta acepta el envío. Lanza si Meta
 // rechaza (mismo criterio que enviarMensaje) -- el llamador decide qué
 // registrar en notificaciones_repartidor según éxito/fallo.
-export async function enviarPlantillaNuevoServicioReparto(telefono, { resumen, direccion }, credenciales) {
+export async function enviarPlantillaXaborNuevoServicioReparto(telefono, { nombreNegocio, pagoEstimado, enlaceAceptar }, credenciales) {
   if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
-    console.error('[Meta WA] enviarPlantillaNuevoServicioReparto sin credenciales resueltas — envío omitido (fail closed)');
+    console.error('[Meta WA] enviarPlantillaXaborNuevoServicioReparto sin credenciales resueltas — envío omitido (fail closed)');
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
@@ -199,13 +204,14 @@ export async function enviarPlantillaNuevoServicioReparto(telefono, { resumen, d
       to: telefono,
       type: 'template',
       template: {
-        name: 'nuevo_servicio_reparto',
+        name: 'xabor_nuevo_servicio_reparto',
         language: { code: 'es_MX' },
         components: [{
           type: 'body',
           parameters: [
-            { type: 'text', text: resumen },
-            { type: 'text', text: direccion || 'Sin dirección especificada' }
+            { type: 'text', text: nombreNegocio },
+            { type: 'text', text: pagoEstimado },
+            { type: 'text', text: enlaceAceptar }
           ]
         }]
       }
@@ -214,7 +220,58 @@ export async function enviarPlantillaNuevoServicioReparto(telefono, { resumen, d
 
   if (!resp.ok) {
     const err = await resp.json();
-    throw new Error(`Meta API (plantilla): ${JSON.stringify(err)}`);
+    throw new Error(`Meta API (plantilla xabor_nuevo_servicio_reparto): ${JSON.stringify(err)}`);
+  }
+  const data = await resp.json();
+  return data?.messages?.[0]?.id || null;
+}
+
+// ─── Enviar plantilla xabor_detalle_servicio_reparto (datos completos, post-aceptar) ──
+// Se envía SOLO después de que procesarAceptacionTokenRepartidor consume el
+// token con éxito y asigna el pedido -- nunca antes. Es una plantilla (no
+// texto libre) por la misma razón que la de oferta: el repartidor pudo
+// haber aceptado desde una página web (no le escribió nada al bot), así
+// que su ventana de 24h puede seguir cerrada y un texto libre aquí podría
+// fallar exactamente igual que el problema original que se está corrigiendo.
+export async function enviarPlantillaXaborDetalleServicioReparto(telefono, { folio, nombreCliente, telefonoCliente, direccion, observaciones, monto }, credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarPlantillaXaborDetalleServicioReparto sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const { phoneNumberId, accessToken } = credenciales;
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: telefono,
+      type: 'template',
+      template: {
+        name: 'xabor_detalle_servicio_reparto',
+        language: { code: 'es_MX' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: folio },
+            { type: 'text', text: nombreCliente || 'No proporcionado' },
+            { type: 'text', text: telefonoCliente || 'No proporcionado' },
+            { type: 'text', text: direccion || 'No proporcionada' },
+            { type: 'text', text: observaciones || 'Ninguna' },
+            { type: 'text', text: monto }
+          ]
+        }]
+      }
+    })
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (plantilla xabor_detalle_servicio_reparto): ${JSON.stringify(err)}`);
   }
   const data = await resp.json();
   return data?.messages?.[0]?.id || null;
@@ -1035,6 +1092,15 @@ export async function notificarRepartidoresPorWA(pedido) {
     const cfg = await obtenerConfiguracion(pedido.negocioId);
     const usarPlantilla = cfg.repartidor_notif_plantilla_activo === 'true';
 
+    // Requisito explícito del usuario: el mensaje de oferta NUNCA lleva
+    // nombre/teléfono/dirección del cliente -- solo negocio y pago
+    // estimado. "Pago estimado" hoy es pedido.total (no existe todavía un
+    // cálculo de comisión/pago propio del repartidor, separado del total
+    // que paga el cliente -- fuera de alcance de este cambio).
+    const nombreNegocio = usarPlantilla ? (await obtenerNombreNegocio(pedido.negocioId)) || 'Xabor' : null;
+    const pagoEstimado = `$${pedido.total} MXN`;
+    const TOKEN_EXPIRACION_MINUTOS = 30;
+
     for (const r of repartidores) {
       if (!usarPlantilla) {
         try {
@@ -1046,10 +1112,16 @@ export async function notificarRepartidoresPorWA(pedido) {
         continue;
       }
 
+      // Token de aceptación de un solo uso, propio de ESTE repartidor y
+      // ESTE pedido -- ver migración 033 y consumirTokenAceptacionRepartidor.
+      const token = randomBytes(24).toString('base64url');
+      const tokenExpiraAt = new Date(Date.now() + TOKEN_EXPIRACION_MINUTOS * 60 * 1000);
+      const enlaceAceptar = `${BASE_URL}/repartidor/aceptar/${token}`;
+
       try {
-        const wamid = await enviarPlantillaNuevoServicioReparto(
+        const wamid = await enviarPlantillaXaborNuevoServicioReparto(
           r.telefono,
-          { resumen, direccion: pedido.direccion || null },
+          { nombreNegocio, pagoEstimado, enlaceAceptar },
           credenciales
         );
         await registrarNotificacionRepartidor({
@@ -1058,7 +1130,9 @@ export async function notificarRepartidoresPorWA(pedido) {
           repartidorId: r.id,
           canal: 'plantilla',
           wamid,
-          estado: wamid ? 'aceptado_meta' : 'error_envio'
+          estado: wamid ? 'aceptado_meta' : 'error_envio',
+          tokenAceptacion: token,
+          tokenExpiraAt
         });
         console.log(`[WA Repartidor] Plantilla aceptada por Meta para ${r.nombre} (${r.telefono}) wamid=${wamid}`);
       } catch (e) {
@@ -1068,7 +1142,9 @@ export async function notificarRepartidoresPorWA(pedido) {
           repartidorId: r.id,
           canal: 'plantilla',
           estado: 'error_envio',
-          errorDetalle: e.message
+          errorDetalle: e.message,
+          tokenAceptacion: token,
+          tokenExpiraAt
         });
         console.error(`[WA Repartidor] Error al notificar (plantilla) a ${r.nombre}: ${e.message}`);
       }
@@ -1076,6 +1152,67 @@ export async function notificarRepartidoresPorWA(pedido) {
   } catch (e) {
     console.error('[WA Repartidor] Error general:', e.message);
   }
+}
+
+// ─── Procesar aceptación de un servicio de reparto vía token ────────────────
+// Llamado por GET /repartidor/aceptar/:token (server.js, ruta pública -- el
+// token en sí es la credencial de un solo uso, no requiere sesión de
+// repartidor). Consumo atómico primero (nunca se reintenta ni se
+// reutiliza), luego asignación atómica (ya existente, ver asignarRepartidor
+// -- si otro repartidor ya se adelantó, esto falla aunque el token propio
+// haya sido válido), y solo si ambas cosas tienen éxito se envía la
+// plantilla con los datos completos.
+export async function procesarAceptacionTokenRepartidor(token) {
+  const fila = await consumirTokenAceptacionRepartidor(token);
+  if (!fila) {
+    return { ok: false, motivo: 'token_invalido', mensaje: 'Este enlace ya no es válido, ya fue usado, o expiró.' };
+  }
+
+  // El repartidor y su nombre real vienen de la propia fila/tabla, nunca
+  // del token ni de un valor externo.
+  const [repartidores, credenciales, pedido] = await Promise.all([
+    obtenerRepartidores(fila.negocio_id),
+    obtenerCredencialesWhatsappNegocio(fila.negocio_id),
+    obtenerPedidoActivoPorFolio(fila.pedido_folio, fila.negocio_id),
+  ]);
+  const rep = repartidores.find(r => r.id === fila.repartidor_id);
+  if (!rep) {
+    return { ok: false, motivo: 'repartidor_no_encontrado', mensaje: 'No se encontró tu registro de repartidor.' };
+  }
+
+  const asignado = await asignarRepartidor(fila.pedido_folio, rep.id, rep.nombre, fila.negocio_id);
+  if (!asignado) {
+    return { ok: false, motivo: 'ya_tomado', mensaje: 'Este pedido ya fue tomado por otro repartidor.' };
+  }
+
+  if (!pedido) {
+    // Caso extremo: el pedido desapareció entre la asignación y esta
+    // lectura. La asignación en sí ya tuvo éxito -- no se revierte -- pero
+    // no hay datos que enviar en la plantilla de detalle.
+    console.error(`[Repartidor Token] Pedido ${fila.pedido_folio} asignado pero no encontrado al leer detalle`);
+    return { ok: true, motivo: 'asignado_sin_detalle', mensaje: '¡Listo! El pedido quedó asignado. Contacta al negocio para los detalles.' };
+  }
+
+  if (credenciales) {
+    const direccion = [pedido.cliente?.calle, pedido.cliente?.colonia, pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null]
+      .filter(Boolean).join(', ');
+    try {
+      await enviarPlantillaXaborDetalleServicioReparto(rep.telefono, {
+        folio: fila.pedido_folio,
+        nombreCliente: pedido.cliente?.nombre,
+        telefonoCliente: pedido.cliente?.telefono,
+        direccion,
+        observaciones: pedido.notas,
+        monto: `$${pedido.total} MXN`,
+      }, credenciales);
+    } catch (e) {
+      console.error(`[Repartidor Token] Error enviando plantilla de detalle a ${rep.nombre}: ${e.message}`);
+    }
+  } else {
+    console.log(`[Repartidor Token] Notificación de detalle omitida — sin integración propia verificada para negocio ${fila.negocio_id}`);
+  }
+
+  return { ok: true, motivo: 'asignado', mensaje: '¡Listo! El pedido quedó asignado. Revisa tu WhatsApp para los detalles completos.' };
 }
 
 // ─── Procesar webhook de estado de mensaje (sent/delivered/read/failed) ─────
