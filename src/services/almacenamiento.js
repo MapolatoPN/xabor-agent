@@ -1,6 +1,7 @@
 /**
  * almacenamiento.js — Capa de almacenamiento de archivos privados
- * (documentos PDF de chat y PDFs de cotizaciones), con dos drivers:
+ * (documentos PDF de chat, PDFs de cotizaciones, e imágenes de chat),
+ * con dos drivers:
  *
  *   STORAGE_DRIVER=local (default) — filesystem local bajo storage/,
  *   mismo patrón que storage/cfdi/ (satSync.js). Pensado para
@@ -32,13 +33,35 @@ function asegurarDirectorio(dirPath) {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+// Sanea un segmento de ruta (telefono, negocioId) para que nunca pueda
+// escapar el prefijo esperado ni inyectar '..'/'/' -- defensa en
+// profundidad además de que ambos valores ya vienen validados por sus
+// respectivos callers.
+function sanearSegmentoRuta(valor) {
+  return String(valor || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'na';
+}
+
 // storage_key para el driver local es una ruta relativa dentro de
 // storage/documentos/; para s3 es la key del objeto en el bucket.
-// En ambos casos usa un UUID (nunca el nombre de archivo original)
-// para que la ruta no sea adivinable ni filtre el nombre real.
-function generarStorageKey(negocioId, extension) {
+// En ambos casos usa un UUID (nunca el nombre de archivo original) para
+// que la ruta no sea adivinable ni filtre el nombre real.
+//
+// Documentos PDF (legado): {negocioId}/{uuid}.{ext} -- sin cambios, para
+// no invalidar storage_keys ya persistidos en producción.
+//
+// Imágenes de chat (nuevo): {STORAGE_ENV_PREFIX}/negocios/{negocioId}/
+// chats/{conversacionId}/{uuid}.{ext} -- ruta lógica pedida explícitamente
+// (conversacionId = teléfono saneado, ya que este esquema no tiene una
+// tabla `conversaciones` separada -- la conversación real ES el par
+// negocio_id+telefono en todo el resto del código).
+function generarStorageKey(negocioId, extension, { categoria = 'documento', conversacionId = null } = {}) {
   const ext = (extension || 'pdf').replace(/[^a-z0-9]/gi, '') || 'pdf';
-  return `${negocioId}/${crypto.randomUUID()}.${ext}`;
+  const archivoId = crypto.randomUUID();
+  if (categoria === 'imagen') {
+    const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
+    return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/chats/${sanearSegmentoRuta(conversacionId)}/${archivoId}.${ext}`;
+  }
+  return `${negocioId}/${archivoId}.${ext}`;
 }
 
 let clienteS3 = null;
@@ -57,19 +80,24 @@ async function obtenerClienteS3() {
   return clienteS3;
 }
 
-/** Guarda un buffer y devuelve el storage_key para persistir en DB. */
-export async function guardarArchivo(buffer, { negocioId, extension } = {}) {
+/**
+ * Guarda un buffer y devuelve el storage_key para persistir en DB.
+ * `categoria`/`conversacionId` solo afectan la ruta lógica (ver
+ * generarStorageKey) -- documentos PDF existentes no pasan estos
+ * parámetros y conservan su ruta legado sin cambios.
+ */
+export async function guardarArchivo(buffer, { negocioId, extension, mimeType, categoria = 'documento', conversacionId = null } = {}) {
   if (!negocioId) throw new Error('almacenamiento.guardarArchivo: negocioId requerido');
-  const storageKey = generarStorageKey(negocioId, extension);
+  const storageKey = generarStorageKey(negocioId, extension, { categoria, conversacionId });
 
   if (driverActivo() === 's3') {
-    const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const cliente = await obtenerClienteS3();
     await cliente.send(new PutObjectCommand({
       Bucket: process.env.S3_BUCKET,
       Key: storageKey,
       Body: buffer,
-      ContentType: 'application/pdf',
+      ContentType: mimeType || 'application/pdf',
     }));
     return storageKey;
   }
