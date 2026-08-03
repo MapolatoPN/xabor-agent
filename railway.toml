@@ -7,4 +7,4 @@ healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-preDeployCommand = "node scripts/predeploy-030-cotizaciones-enviado-por.mjs"
+preDeployCommand = "node scripts/predeploy-031-sesiones-comerciales-error-recuperable.mjs"
