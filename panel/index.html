@@ -626,6 +626,23 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   </div>
 </div>
 
+<!-- Modal: adjuntar fotos en el chat (carrete o cámara, hasta 5) -->
+<div id="modal-imagenes-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:24px;width:92%;max-width:420px;max-height:88vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <h3 style="margin-bottom:10px;font-size:1rem;">📷 Enviar fotos</h3>
+    <div id="imagenes-adjunto-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;margin-bottom:10px;"></div>
+    <div id="imagenes-adjunto-contador" style="font-size:0.75rem;opacity:0.65;margin-bottom:10px;"></div>
+    <label style="font-size:0.82rem;color:#555;font-weight:600;">Mensaje (opcional)</label>
+    <textarea id="imagenes-adjunto-caption" rows="2" placeholder="Ej: Aquí tienes las fotos que pediste"
+      style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;resize:vertical;"></textarea>
+    <div id="imagenes-adjunto-error" style="display:none;color:#c0392b;font-size:0.8rem;margin-top:8px;"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button onclick="cerrarModalImagenes()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
+      <button id="btn-confirmar-envio-imagenes" onclick="confirmarEnvioImagenes()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#FF6B35;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Enviar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: crear/editar cotización -->
 <div id="modal-cotizacion-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:16px;padding:24px;max-width:560px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
@@ -1044,6 +1061,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <button id="btn-adjuntar-pdf" data-modulo="chat_documentos_pdf" onclick="document.getElementById('input-pdf-adjunto').click()"
                     title="Adjuntar PDF" style="align-self:flex-end;background:#f5f4f2;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;">📎</button>
             <input type="file" id="input-pdf-adjunto" accept="application/pdf" style="display:none;" onchange="prepararPdfAdjunto(event)">
+            <div style="position:relative;align-self:flex-end;">
+              <button id="btn-adjuntar-imagen" data-modulo="chat_imagenes" onclick="toggleMenuAdjuntarImagen(event)"
+                      title="Adjuntar foto" style="background:#f5f4f2;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;">📷</button>
+              <div id="menu-adjuntar-imagen" style="display:none;position:absolute;bottom:100%;left:0;margin-bottom:6px;background:#fff;border:1px solid #e5e2da;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.12);overflow:hidden;white-space:nowrap;z-index:50;">
+                <button onclick="document.getElementById('input-imagenes-camara').click(); cerrarMenuAdjuntarImagen();" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.85rem;">📸 Tomar foto</button>
+                <button onclick="document.getElementById('input-imagenes-galeria').click(); cerrarMenuAdjuntarImagen();" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.85rem;border-top:1px solid #f1f0ed;">🖼️ Elegir de la galería</button>
+              </div>
+            </div>
+            <input type="file" id="input-imagenes-camara" accept="image/jpeg,image/jpg,image/png,image/webp" capture="environment" style="display:none;" onchange="agregarImagenesAlPendiente(event.target.files); event.target.value='';">
+            <input type="file" id="input-imagenes-galeria" accept="image/jpeg,image/jpg,image/png,image/webp" multiple style="display:none;" onchange="agregarImagenesAlPendiente(event.target.files); event.target.value='';">
             <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2"></textarea>
             <button id="btn-chat-enviar" onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
           </div>
@@ -2937,7 +2964,7 @@ function contenidoTarjetaDocumento(m) {
        <a href="/api/documentos/${idDoc}/archivo" download="${nombre}" data-doc-accion="descargar">Descargar</a>`
     : '';
   return `
-    <div class="tarjeta-documento" data-documento-id="${idDoc || ''}" style="display:flex;gap:10px;align-items:flex-start;min-width:200px;">
+    <div class="tarjeta-documento" data-documento-id="${idDoc || ''}" data-categoria="documento" style="display:flex;gap:10px;align-items:flex-start;min-width:200px;">
       <div style="font-size:1.6rem;">📄</div>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;word-break:break-word;">${nombre}</div>
@@ -2951,6 +2978,7 @@ function contenidoTarjetaDocumento(m) {
 
 function contenidoBurbujaMensaje(m) {
   if (m.tipo === 'documento') return contenidoTarjetaDocumento(m);
+  if (m.tipo === 'imagen') return contenidoTarjetaImagen(m);
   return escaparHTML(m.texto);
 }
 
@@ -3002,6 +3030,31 @@ function recibirMensajeWS(msg, documento) {
 function actualizarTarjetaDocumentoWS({ documentoId, ok, motivo }) {
   const tarjeta = document.querySelector(`.tarjeta-documento[data-documento-id="${documentoId}"]`);
   if (!tarjeta) return;
+
+  // Imágenes: el estado "pendiente" es un placeholder gris completo (aún
+  // no hay bytes que mostrar), no solo un texto -- se reconstruye toda la
+  // tarjeta en vez de parchear un sub-elemento, usando los data-* que
+  // contenidoTarjetaImagen ya dejó en el propio nodo.
+  if (tarjeta.dataset.categoria === 'imagen') {
+    const remitente = tarjeta.dataset.direccion === 'saliente' ? (tarjeta.dataset.origen === 'humano' ? 'Tú' : 'Bot') : 'Cliente';
+    const caption = tarjeta.dataset.caption || '';
+    if (ok) {
+      tarjeta.innerHTML = `
+        <a href="/api/imagenes/${documentoId}/archivo" target="_blank" rel="noopener">
+          <img src="/api/imagenes/${documentoId}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;">
+        </a>
+        ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
+        <div style="font-size:0.72rem;opacity:0.65;margin-top:2px;">${remitente}</div>
+        <div class="tarjeta-documento-acciones" style="margin-top:4px;"><a href="/api/imagenes/${documentoId}/archivo" download style="font-size:0.75rem;font-weight:700;">Descargar</a></div>`;
+    } else {
+      tarjeta.innerHTML = `
+        <div style="width:180px;height:140px;border-radius:8px;background:#fdecea;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#c0392b;text-align:center;padding:8px;">⚠️ No se pudo procesar la imagen</div>
+        ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
+        <div style="font-size:0.72rem;opacity:0.65;margin-top:2px;">${remitente}</div>`;
+    }
+    return;
+  }
+
   const estadoEl = tarjeta.querySelector('.tarjeta-documento-estado');
   const accionesEl = tarjeta.querySelector('.tarjeta-documento-acciones');
   if (ok) {
@@ -3110,6 +3163,140 @@ async function confirmarEnvioPdf() {
   } finally {
     btn.disabled = false; btn.textContent = 'Enviar';
   }
+}
+
+// ─── Adjuntar y enviar fotos en el chat (carrete/cámara, hasta 5) ────────────
+// Chat multimedia básico: sin IA visual, sin catálogo, sin video/audio --
+// solo enviar/recibir/ver fotos, igual que un WhatsApp normal.
+const MAX_IMAGENES_ENVIO = 5;
+let imagenesAdjuntoPendientes = []; // [{file, previewUrl}]
+
+function toggleMenuAdjuntarImagen(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('menu-adjuntar-imagen');
+  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+}
+function cerrarMenuAdjuntarImagen() {
+  document.getElementById('menu-adjuntar-imagen').style.display = 'none';
+}
+document.addEventListener('click', () => cerrarMenuAdjuntarImagen());
+
+function renderGridImagenesPendientes() {
+  const grid = document.getElementById('imagenes-adjunto-grid');
+  grid.innerHTML = imagenesAdjuntoPendientes.map((item, i) => `
+    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:#f5f4f2;">
+      <img src="${item.previewUrl}" style="width:100%;height:100%;object-fit:cover;">
+      <button onclick="quitarImagenPendiente(${i})" title="Quitar"
+        style="position:absolute;top:3px;right:3px;width:22px;height:22px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;cursor:pointer;font-size:0.75rem;line-height:1;">✕</button>
+    </div>`).join('');
+  document.getElementById('imagenes-adjunto-contador').textContent = `${imagenesAdjuntoPendientes.length} / ${MAX_IMAGENES_ENVIO} fotos`;
+}
+
+function agregarImagenesAlPendiente(fileList) {
+  if (!chatAbierto) return;
+  const errEl = document.getElementById('imagenes-adjunto-error');
+  errEl.style.display = 'none';
+  const archivos = Array.from(fileList || []);
+  if (!archivos.length) return;
+
+  const tiposValidos = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  for (const file of archivos) {
+    if (imagenesAdjuntoPendientes.length >= MAX_IMAGENES_ENVIO) {
+      errEl.textContent = `Máximo ${MAX_IMAGENES_ENVIO} fotos por envío.`;
+      errEl.style.display = '';
+      break;
+    }
+    if (!tiposValidos.includes(file.type)) {
+      errEl.textContent = `"${file.name}" no es jpg/png/webp -- se omitió.`;
+      errEl.style.display = '';
+      continue;
+    }
+    imagenesAdjuntoPendientes.push({ file, previewUrl: URL.createObjectURL(file) });
+  }
+  renderGridImagenesPendientes();
+  document.getElementById('modal-imagenes-overlay').style.display = 'flex';
+}
+
+function quitarImagenPendiente(index) {
+  const item = imagenesAdjuntoPendientes[index];
+  if (item) URL.revokeObjectURL(item.previewUrl);
+  imagenesAdjuntoPendientes.splice(index, 1);
+  renderGridImagenesPendientes();
+  if (imagenesAdjuntoPendientes.length === 0) cerrarModalImagenes();
+}
+
+function cerrarModalImagenes() {
+  document.getElementById('modal-imagenes-overlay').style.display = 'none';
+  imagenesAdjuntoPendientes.forEach(item => URL.revokeObjectURL(item.previewUrl));
+  imagenesAdjuntoPendientes = [];
+  document.getElementById('imagenes-adjunto-caption').value = '';
+}
+
+async function confirmarEnvioImagenes() {
+  if (!imagenesAdjuntoPendientes.length || !chatAbierto) return;
+  const btn = document.getElementById('btn-confirmar-envio-imagenes');
+  const errEl = document.getElementById('imagenes-adjunto-error');
+  errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    const imagenes = await Promise.all(imagenesAdjuntoPendientes.map(async item => ({
+      filename: item.file.name,
+      base64: await archivoABase64(item.file),
+    })));
+    const caption = document.getElementById('imagenes-adjunto-caption').value.trim();
+    const r = await apiFetch('/api/imagenes/enviar', {
+      method: 'POST',
+      body: JSON.stringify({ telefono: chatAbierto, imagenes, caption: caption || undefined }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok && !d.ok) {
+      errEl.textContent = (d.resultados && d.resultados.find(x => !x.ok)?.error) || d.error || 'No se pudieron enviar las fotos.';
+      errEl.style.display = '';
+      return;
+    }
+    const fallidas = (d.resultados || []).filter(x => !x.ok);
+    if (fallidas.length) {
+      errEl.textContent = `${fallidas.length} foto(s) no se enviaron: ${fallidas[0].error}. El resto sí se envió -- puedes reintentar solo las que fallaron.`;
+      errEl.style.display = '';
+      // Deja el modal abierto solo con las fallidas para reintentar, en vez
+      // de forzar a adjuntar todo el lote de nuevo.
+      imagenesAdjuntoPendientes = imagenesAdjuntoPendientes.filter((_, i) => fallidas.some(f => f.filename === imagenesAdjuntoPendientes[i].file.name));
+      renderGridImagenesPendientes();
+      return;
+    }
+    cerrarModalImagenes();
+  } catch {
+    errEl.textContent = 'Error de conexión. Intenta de nuevo.';
+    errEl.style.display = '';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar';
+  }
+}
+
+// Tarjeta de imagen -- entrante o saliente. Mismo criterio que
+// contenidoTarjetaDocumento: m.documento_estado/m.documento_id_real vienen
+// del LEFT JOIN histórico o del payload de WebSocket en vivo.
+function contenidoTarjetaImagen(m) {
+  const estado  = m.documento_estado || 'listo';
+  const caption = m.documento_caption ? escaparHTML(m.documento_caption) : '';
+  const remitente = m.direccion === 'saliente' ? (m.origen === 'humano' ? 'Tú' : 'Bot') : 'Cliente';
+  const idDoc = m.documento_id_real || m.documento_id;
+  const etiquetaEstado = { pendiente: '⏳ Recibiendo…', descargando: '⏳ Recibiendo…', error: '⚠️ No se pudo procesar la imagen' }[estado] || '';
+  const cuerpo = (estado === 'listo' && idDoc)
+    ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener">
+         <img src="/api/imagenes/${idDoc}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;">
+       </a>`
+    : `<div style="width:180px;height:140px;border-radius:8px;background:#e5e2da;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#888;">${etiquetaEstado || '📷'}</div>`;
+  const descarga = (estado === 'listo' && idDoc) ? `<a href="/api/imagenes/${idDoc}/archivo" download data-doc-accion="descargar" style="font-size:0.75rem;font-weight:700;">Descargar</a>` : '';
+  return `
+    <div class="tarjeta-documento tarjeta-imagen" data-documento-id="${idDoc || ''}" data-categoria="imagen"
+         data-direccion="${m.direccion || ''}" data-origen="${m.origen || ''}" data-caption="${caption}" style="min-width:150px;">
+      ${cuerpo}
+      ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
+      <div style="font-size:0.72rem;opacity:0.65;margin-top:2px;">${remitente}</div>
+      ${estado === 'listo' ? `<div class="tarjeta-documento-acciones" style="margin-top:4px;">${descarga}</div>` : ''}
+      ${estado === 'error' ? `<div class="tarjeta-documento-estado" style="font-size:0.75rem;color:#c0392b;margin-top:4px;">${etiquetaEstado}</div>` : ''}
+    </div>`;
 }
 
 // ─── Cotizaciones ────────────────────────────────────────────────────────────
