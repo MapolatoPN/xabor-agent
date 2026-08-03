@@ -896,7 +896,12 @@ wss.on('connection', (ws) => {
 });
 
 // ─── Middlewares ─────────────────────────────────────────────────────────────
-app.use(express.json());
+// Límite elevado porque /api/imagenes/enviar y /api/documentos/enviar
+// reciben el archivo como base64 dentro del body JSON (sin multipart) --
+// el default de Express (100kb) rechazaba cualquier foto o PDF real
+// antes de que la validación propia de tamaño (MEDIA_MAX_IMAGE_MB /
+// PDF_TAMANO_MAXIMO_MB) tuviera oportunidad de correr.
+app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded
 
 // Archivos estáticos: panel y audios generados por ElevenLabs
