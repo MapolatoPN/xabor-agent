@@ -42,6 +42,7 @@ export const ORDEN_MIGRACIONES = [
   '027_cotizaciones_iva_tasa.sql',
   '028_sesiones_comerciales.sql',
   '029_chat_imagenes.sql',
+  '030_push_subscriptions_usuario.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

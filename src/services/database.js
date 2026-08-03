@@ -746,16 +746,23 @@ export async function duplicarProducto(id, negocioId) {
 // negocio (cambio de negocio legítimo), es correcto que la fila se
 // reasigne, no es un vector de secuestro como sí lo sería con un teléfono
 // que cualquiera puede enviar sin probar nada.
-export async function guardarSuscripcionPush({ endpoint, auth, p256dh }, negocioId) {
+// usuarioId (Bloque 4 -- PWA/push): opcional a propósito (una
+// suscripción vieja, o una creada antes de este cambio, sigue siendo
+// válida sin usuario asociado) -- pero cuando SÍ se conoce (siempre que
+// la sesión venga autenticada, que es el único caso real ya que este
+// endpoint exige requireAuthSeguro), se guarda para poder distinguir
+// "varios dispositivos del mismo operador" y futuras preferencias por
+// usuario, sin perder el aislamiento por negocio_id ya existente.
+export async function guardarSuscripcionPush({ endpoint, auth, p256dh }, negocioId, usuarioId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] guardarSuscripcionPush: negocioId inválido u omitido — rechazado, no se guarda sin negocio');
     return false;
   }
   await pool.query(
-    `INSERT INTO push_subscriptions (endpoint, auth, p256dh, negocio_id)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (endpoint) DO UPDATE SET auth=$2, p256dh=$3, negocio_id=$4`,
-    [endpoint, auth, p256dh, negocioId.trim()]
+    `INSERT INTO push_subscriptions (endpoint, auth, p256dh, negocio_id, usuario_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (endpoint) DO UPDATE SET auth=$2, p256dh=$3, negocio_id=$4, usuario_id=$5`,
+    [endpoint, auth, p256dh, negocioId.trim(), usuarioId || null]
   );
   return true;
 }
@@ -768,6 +775,21 @@ export async function obtenerSuscripcionesPush(negocioId) {
   const { rows } = await pool.query(
     'SELECT endpoint, auth, p256dh FROM push_subscriptions WHERE negocio_id = $1',
     [negocioId.trim()]
+  );
+  return rows;
+}
+
+// Para "Probar notificación": solo las suscripciones del propio usuario
+// que hace la prueba (nunca las de todo el negocio) -- así el botón de
+// prueba de un operador no le dispara un push a los demás dispositivos
+// del negocio.
+export async function obtenerSuscripcionesPushUsuario(negocioId, usuarioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || typeof usuarioId !== 'string' || !usuarioId.trim()) {
+    return [];
+  }
+  const { rows } = await pool.query(
+    'SELECT endpoint, auth, p256dh FROM push_subscriptions WHERE negocio_id = $1 AND usuario_id = $2',
+    [negocioId.trim(), usuarioId.trim()]
   );
   return rows;
 }
