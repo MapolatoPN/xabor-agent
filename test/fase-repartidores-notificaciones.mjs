@@ -147,6 +147,84 @@ await t('PLANTILLA-ENVIO', 'crear pedido de domicilio con el flag activo registr
   assert.strictEqual(fila.canal, 'plantilla');
   assert.strictEqual(fila.estado, 'aceptado_meta');
   assert.ok(fila.wamid, 'debe traer el wamid devuelto por Meta');
+  assert.ok(fila.token_aceptacion, 'debe generar un token de aceptación de un solo uso');
+  assert.ok(fila.token_expira_at, 'el token debe traer una expiración');
+  assert.strictEqual(fila.token_usado_at, null, 'el token recién generado no debe estar usado');
+});
+
+// ═══════════ SENSIBLE-NO-EN-OFERTA: la plantilla de oferta nunca lleva datos del cliente ═══════════
+await t('SENSIBLE-NO-EN-OFERTA', 'la plantilla xabor_nuevo_servicio_reparto nunca incluye nombre/teléfono/dirección del cliente', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.length ? r : null;
+  });
+  const enviados = metaMock.obtenerMensajesEnviados().filter(m => m.template?.name === 'xabor_nuevo_servicio_reparto');
+  assert.ok(enviados.length > 0, 'debía haberse enviado al menos una plantilla xabor_nuevo_servicio_reparto');
+  const textoCompleto = JSON.stringify(enviados);
+  assert.ok(!textoCompleto.includes('Cliente Prueba'), 'el nombre del cliente nunca debe viajar en la plantilla de oferta');
+  assert.ok(!textoCompleto.includes('8781234567'), 'el teléfono del cliente nunca debe viajar en la plantilla de oferta');
+  assert.ok(!textoCompleto.includes('Tecnológico'), 'la dirección del cliente nunca debe viajar en la plantilla de oferta');
+  const params = enviados[enviados.length - 1].template.components[0].parameters.map(p => p.text);
+  assert.strictEqual(params.length, 3, 'la plantilla de oferta debe traer exactamente 3 variables: negocio, pago, enlace');
+  assert.ok(params[2].includes('/repartidor/aceptar/'), 'la tercera variable debe ser el enlace de aceptación de un solo uso');
+});
+
+// ═══════════ ACEPTAR-TOKEN: aceptar por el enlace asigna y envía la plantilla de detalle ═══════════
+await t('ACEPTAR-TOKEN', 'abrir el enlace de aceptación asigna el pedido y envía xabor_detalle_servicio_reparto con los datos completos', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.find(f => f.repartidor_id === repA.id && f.token_aceptacion) || null;
+  });
+  assert.ok(fila, 'debía existir el token antes de aceptar');
+
+  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(r.status, 200, 'aceptar con un token válido debe responder 200');
+
+  const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_nombre' AS nombre FROM pedidos_activos WHERE folio = $1`, [folio]);
+  assert.strictEqual(pedidoDB.nombre, repA.nombre, 'aceptar por el enlace debe asignar el pedido (misma asignarRepartidor de siempre)');
+
+  const detalle = metaMock.obtenerMensajesEnviados().filter(m => m.template?.name === 'xabor_detalle_servicio_reparto');
+  assert.ok(detalle.length > 0, 'debía enviarse la plantilla de detalle tras aceptar');
+  const paramsDetalle = detalle[detalle.length - 1].template.components[0].parameters.map(p => p.text);
+  assert.strictEqual(paramsDetalle[0], folio, 'el primer parámetro de la plantilla de detalle debe ser el folio');
+  assert.strictEqual(paramsDetalle[1], 'Cliente Prueba', 'la plantilla de detalle SÍ debe incluir el nombre del cliente (solo después de aceptar)');
+});
+
+// ═══════════ TOKEN-REUSO: el mismo enlace no puede aceptarse dos veces ═══════════
+await t('TOKEN-REUSO', 'reutilizar el mismo token (mensaje reenviado o doble clic) la segunda vez es rechazado', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.find(f => f.repartidor_id === repA.id && f.token_aceptacion) || null;
+  });
+  assert.ok(fila, 'debía existir el token antes de aceptar');
+
+  const r1 = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(r1.status, 200, 'el primer uso del token debe aceptarse');
+
+  const r2 = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(r2.status, 409, 'un segundo uso del mismo token debe rechazarse');
+});
+
+// ═══════════ TOKEN-EXPIRADO / TOKEN-INVALIDO ═══════════
+await t('TOKEN-EXPIRADO', 'un token vencido se rechaza aunque nunca se haya usado', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.find(f => f.repartidor_id === repA.id && f.token_aceptacion) || null;
+  });
+  assert.ok(fila, 'debía existir el token antes de vencerlo');
+  await pool.query(`UPDATE notificaciones_repartidor SET token_expira_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, [fila.id]);
+
+  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(r.status, 409, 'un token vencido debe rechazarse aunque nunca se haya consumido');
+});
+
+await t('TOKEN-INVALIDO', 'un token que nunca existió se rechaza sin lanzar', async () => {
+  const r = await fetch(`${base}/repartidor/aceptar/esto-nunca-fue-un-token-real`);
+  assert.strictEqual(r.status, 409, 'un token inexistente debe rechazarse con 409, nunca 500');
 });
 
 // ═══════════ REGISTRO-FALLO: Meta rechaza el envío ═══════════

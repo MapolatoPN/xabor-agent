@@ -7,6 +7,10 @@ import { createServer } from 'http';
 export function arrancarMetaMock() {
   const archivosPorMediaId = {};
   let forzarErrorSiguienteEnvio = false;
+  // Captura cada POST /messages (texto o plantilla) para que las pruebas
+  // puedan verificar EXACTAMENTE qué se le mandó a Meta -- p.ej. confirmar
+  // que un dato sensible nunca viaja en los parámetros de una plantilla.
+  const mensajesEnviados = [];
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -41,10 +45,16 @@ export function arrancarMetaMock() {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ id: 'MEDIA_ID_SALIENTE_FAKE' }));
     }
-    // Envío de mensaje (texto/imagen/documento)
+    // Envío de mensaje (texto/imagen/documento/plantilla)
     if (req.method === 'POST' && /\/messages$/.test(url.pathname)) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ messages: [{ id: 'wamid.SALIENTE_FAKE_' + Date.now() }] }));
+      let cuerpo = '';
+      req.on('data', (chunk) => { cuerpo += chunk; });
+      req.on('end', () => {
+        try { mensajesEnviados.push(JSON.parse(cuerpo)); } catch { /* ignorar body no-JSON */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ messages: [{ id: 'wamid.SALIENTE_FAKE_' + Date.now() + '_' + mensajesEnviados.length }] }));
+      });
+      return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'not_found_en_mock' } }));
@@ -55,6 +65,7 @@ export function arrancarMetaMock() {
       baseUrl: `http://localhost:${server.address().port}`,
       registrarArchivo: (mediaId, buffer, mimeType = 'application/pdf') => { archivosPorMediaId[mediaId] = { buffer, mimeType }; },
       forzarErrorSiguienteEnvio: () => { forzarErrorSiguienteEnvio = true; },
+      obtenerMensajesEnviados: () => mensajesEnviados,
       detener: () => server.close(),
     }));
   });
