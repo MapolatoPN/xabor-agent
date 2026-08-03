@@ -10,10 +10,12 @@
  *   - 'ambiguo' NUNCA activa el modo comercial -- se trata como
  *     pedido_normal. Ante duda, no activar.
  *   - 'solicitud_comercial'/'continuacion_comercial' solo activan el modo
- *     si el negocio tiene el módulo 'generador_cotizaciones' habilitado
- *     -- nunca se activa un flujo comercial para un negocio que no lo
- *     contrató. Esta condición se evalúa ANTES de llamar al modelo (si el
- *     módulo no está habilitado, ni siquiera vale la pena clasificar).
+ *     si el negocio tiene el módulo dedicado 'asistente_comercial_cotizaciones'
+ *     habilitado (migración 028, separado de 'generador_cotizaciones' --
+ *     ese solo gatea el generador manual del panel) -- nunca se activa un
+ *     flujo comercial para un negocio que no lo contrató. Esta condición
+ *     se evalúa ANTES de llamar al modelo (si el módulo no está
+ *     habilitado, ni siquiera vale la pena clasificar).
  *   - Cualquier error de la llamada al modelo -> 'ambiguo' (fail-closed:
  *     ante un fallo, nunca activar el modo comercial).
  */
@@ -54,7 +56,7 @@ function construirPromptClasificacion(moduloHabilitado, estadoComercialActual) {
 - ambiguo: no se puede determinar con confianza
 
 [CONTEXTO]
-Módulo generador_cotizaciones habilitado: ${moduloHabilitado ? 'si' : 'no'}
+Módulo asistente_comercial_cotizaciones habilitado: ${moduloHabilitado ? 'si' : 'no'}
 Estado comercial actual de esta conversación: ${estadoComercialActual || 'ninguno'}`;
 }
 

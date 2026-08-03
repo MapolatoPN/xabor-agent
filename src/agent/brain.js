@@ -39,16 +39,19 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
 
   // Asistente Comercial de Cotizaciones (Fase 1-2): IntentDetector decide
   // si este mensaje activa/continúa el modo comercial. Nunca se activa
-  // sin negocioId+telefono válidos, ni si el negocio no tiene
-  // 'generador_cotizaciones' habilitado (ver intentDetector.js). Ante
-  // cualquier error de clasificación, la categoría cae a 'ambiguo' y
-  // nunca se activa -- fail-closed, el flujo normal de pedidos nunca se
-  // ve interrumpido por esta pieza.
+  // sin negocioId+telefono válidos, ni si el negocio no tiene el módulo
+  // dedicado 'asistente_comercial_cotizaciones' habilitado (migración 028
+  // -- separado de 'generador_cotizaciones', que solo gatea el generador
+  // MANUAL del panel; el asistente por WhatsApp es una capacidad
+  // independiente, activable/desactivable por negocio sin afectar al
+  // generador manual). Ante cualquier error de clasificación, la
+  // categoría cae a 'ambiguo' y nunca se activa -- fail-closed, el flujo
+  // normal de pedidos nunca se ve interrumpido por esta pieza.
   let sesionComercial = null;
   let bloqueComercial = '';
   if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
     try {
-      const moduloHabilitado = (await obtenerEstadoModulo(negocioId, 'generador_cotizaciones')) === 'activo';
+      const moduloHabilitado = (await obtenerEstadoModulo(negocioId, 'asistente_comercial_cotizaciones')) === 'activo';
       const sesionExistente = await obtenerSesionActiva(negocioId, telefono);
       const categoria = await detectarIntencionComercial({
         mensaje: mensajeUsuario,

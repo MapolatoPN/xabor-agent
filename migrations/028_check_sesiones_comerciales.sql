@@ -8,3 +8,7 @@ SELECT table_name FROM information_schema.tables
 WHERE table_name IN ('sesiones_comerciales', 'sesiones_comerciales_eventos');
 
 SELECT indexname FROM pg_indexes WHERE tablename = 'sesiones_comerciales';
+
+SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check';
+
+SELECT estado, count(*) FROM negocio_modulos WHERE modulo = 'asistente_comercial_cotizaciones' GROUP BY estado;

@@ -57,6 +57,11 @@ async function fijarModulo(negocioId, modulo, estado) {
 await fijarModulo(SEED.negocioA, 'cotizaciones', 'activo');
 await fijarModulo(SEED.negocioA, 'generador_cotizaciones', 'activo');
 await fijarModulo(SEED.negocioA, 'chat_documentos_pdf', 'activo');
+// El asistente por WhatsApp lo gatea su PROPIO módulo dedicado (migración
+// 028), separado de 'generador_cotizaciones' (ese solo gatea el POST
+// manual /api/cotizaciones, ya usado más abajo en esta misma prueba para
+// la aprobación) -- brain.js nunca activa el modo comercial sin este.
+await fijarModulo(SEED.negocioA, 'asistente_comercial_cotizaciones', 'activo');
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = true WHERE id = $1`, [SEED.negocioA]);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Prueba asistente comercial A', TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, PNID]);
 await actualizarConfiguracion({ int_wa_phone_id: PNID, int_wa_token: 'fake-token-asistente-a' }, SEED.negocioA);
@@ -212,6 +217,36 @@ await t('APROBACION', 'una segunda solicitud del mismo cliente abre una sesión 
 // ═══════════ Resumen ═══════════
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
+
+// ═══════════ Módulo apagado: el asistente nunca se activa sin él ═══════════
+// Regresión directa del cambio de esta noche: brain.js ahora gatea el modo
+// comercial con 'asistente_comercial_cotizaciones' (migración 028), no con
+// 'generador_cotizaciones'. Verifica con un mensaje real vía webhook --
+// no solo la llamada directa a detectarIntencionComercial (ya cubierta en
+// fase-asistente-comercial-1-sesiones.mjs) -- que apagar el módulo real del
+// negocio impide que se abra una sesión comercial nueva.
+const TELEFONO_SIN_MODULO = '5218789940099';
+await t('MODULO', 'con asistente_comercial_cotizaciones=no_contratado, un mensaje claro de cotización NO abre sesión comercial', async () => {
+  await pool.query(
+    `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'asistente_comercial_cotizaciones','no_contratado')
+     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'no_contratado'`,
+    [SEED.negocioA]
+  );
+  await pool.query(`INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Cliente Sin Modulo',$2) ON CONFLICT (telefono) DO UPDATE SET negocio_id = $2`, [TELEFONO_SIN_MODULO, SEED.negocioA]);
+  // No se encola respuesta de clasificación -- si brain.js llegara a llamar
+  // al modelo (bug), el mock lanzaría por cola vacía y la prueba fallaría
+  // igual, evidenciando la regresión.
+  await fetch(base + '/webhook/whatsapp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(webhookTexto(PNID, TELEFONO_SIN_MODULO, 'Necesito una cotización para 300 personas, evento el 5 de octubre', 'wamid.E2E-SIN-MODULO', 'Cliente Sin Modulo')),
+  });
+  await esperar(7500);
+  const { rows } = await pool.query(
+    `SELECT id FROM sesiones_comerciales WHERE negocio_id=$1 AND telefono=$2`,
+    [SEED.negocioA, TELEFONO_SIN_MODULO]
+  );
+  assert.strictEqual(rows.length, 0, 'sin el módulo activo, nunca debe crearse una sesión comercial, aunque el mensaje sea inequívoco');
+});
 
 await srv.detener();
 await metaMock.detener();

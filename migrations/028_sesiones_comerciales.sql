@@ -91,4 +91,29 @@ CREATE INDEX IF NOT EXISTS idx_sesiones_comerciales_eventos_sesion
 CREATE INDEX IF NOT EXISTS idx_sesiones_comerciales_eventos_negocio
   ON sesiones_comerciales_eventos (negocio_id);
 
+-- ── Paso 4: módulo activable por negocio (asistente_comercial_cotizaciones) ──
+-- Mismo patrón que el paso 1/2 de la migración 026 (chat_documentos_pdf/
+-- cotizaciones/generador_cotizaciones): opt-in, 'no_contratado' por defecto
+-- para TODO negocio existente -- se activa explícitamente por negocio desde
+-- Superadmin después del deploy, nunca automáticamente.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check'
+  ) THEN
+    ALTER TABLE negocio_modulos DROP CONSTRAINT negocio_modulos_modulo_check;
+  END IF;
+  ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check
+    CHECK (modulo IN (
+      'pos','usuarios','caja','menu','impresion','whatsapp','voz','rappi','facturacion','rewards',
+      'chat_imagenes','chat_documentos_pdf','cotizaciones','generador_cotizaciones','pagos','repartidores',
+      'asistente_comercial_cotizaciones'
+    ));
+END $$;
+
+INSERT INTO negocio_modulos (negocio_id, modulo, estado)
+SELECT n.id, 'asistente_comercial_cotizaciones', 'no_contratado'
+FROM negocios n
+ON CONFLICT (negocio_id, modulo) DO NOTHING;
+
 COMMIT;

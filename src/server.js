@@ -2585,6 +2585,7 @@ async function requireSuperadmin(req, res, next) {
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
+  'asistente_comercial_cotizaciones',
 ];
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
