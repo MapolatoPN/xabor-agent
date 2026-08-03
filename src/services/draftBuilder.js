@@ -115,7 +115,12 @@ export async function generarBorradorDesdeSesion(sesionId, negocioId, camposCapt
     telefono: sesion.telefono,
     createdBy: null,
     evento: {
-      fecha: campos.fecha_evento || null,
+      // fecha_evento_iso es el ÚNICO campo autorizado para escribir en la
+      // columna DATE -- ya pasó por normalizarFechaEvento() en
+      // comercialMarkers.js. camposObligatoriosCompletos() ya garantiza
+      // que existe antes de llegar aquí; el `|| null` es solo defensivo,
+      // nunca se espera que dispare en la práctica.
+      fecha: campos.fecha_evento_iso || null,
       lugar: campos.lugar || null,
       cantidadPersonas: Number(campos.numero_personas) || null,
     },

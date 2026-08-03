@@ -117,7 +117,7 @@ export async function actualizarCamposSesion(sesionId, negocioId, camposNuevos) 
   return rows[0];
 }
 
-const ESTADOS_VALIDOS = ['descubriendo_necesidad', 'construyendo_borrador', 'esperando_aprobacion', 'finalizada', 'abandonada'];
+const ESTADOS_VALIDOS = ['descubriendo_necesidad', 'construyendo_borrador', 'esperando_aprobacion', 'error_recuperable', 'finalizada', 'abandonada'];
 
 export async function cambiarEstadoSesion(sesionId, negocioId, nuevoEstado, detalle = {}) {
   const nid = exigirNegocioId(negocioId, 'cambiarEstadoSesion');
@@ -130,6 +130,36 @@ export async function cambiarEstadoSesion(sesionId, negocioId, nuevoEstado, deta
   );
   if (!rows[0]) return null;
   await registrarEventoSesion(sesionId, nid, 'cambio_estado', { ...detalle, estado: nuevoEstado });
+  return rows[0];
+}
+
+/**
+ * Transición segura ante un error real construyendo el borrador (fecha
+ * inválida que se coló, fallo de DB, catálogo, etc.) -- NUNCA deja la
+ * sesión atorada en un estado intermedio (p.ej. 'construyendo_borrador')
+ * sin salida. 'error_recuperable' sigue contando como sesión ACTIVA (no
+ * está en finalizada/abandonada), así que obtenerSesionActiva() la sigue
+ * encontrando en el siguiente mensaje del mismo cliente -- el mismo
+ * teléfono retoma la MISMA sesión (nunca crea una segunda), con
+ * campos_capturados intactos, y generarBorradorDesdeSesion() puede
+ * reintentar sin duplicar nada porque solo se salta como "yaExistia"
+ * cuando cotizacion_id YA está poblado (ver draftBuilder.js).
+ */
+export async function marcarSesionComoErrorRecuperable(sesionId, negocioId, error) {
+  const nid = exigirNegocioId(negocioId, 'marcarSesionComoErrorRecuperable');
+  const codigo = String(error?.code || error?.motivo || error?.message || 'error_desconocido').slice(0, 200);
+  const { rows } = await pool.query(
+    `UPDATE sesiones_comerciales
+     SET estado = 'error_recuperable',
+         ultimo_error_codigo = $3,
+         ultimo_error_at = NOW(),
+         intentos_fallidos = intentos_fallidos + 1
+     WHERE id = $1 AND negocio_id = $2
+     RETURNING *`,
+    [sesionId, nid, codigo]
+  );
+  if (!rows[0]) return null;
+  await registrarEventoSesion(sesionId, nid, 'error_recuperable', { codigo, intentosFallidos: rows[0].intentos_fallidos });
   return rows[0];
 }
 

@@ -5,7 +5,7 @@ import { agregarMensaje, getSession } from './session.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
-import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion } from '../services/sesionComercial.js';
+import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
@@ -26,12 +26,24 @@ const MODELO = 'claude-haiku-4-5-20251001';
 // integraciones_canal para WhatsApp, sesión autenticada para el panel).
 // Nunca se resuelve aquí, nunca cae a un negocio por defecto -- ver
 // construirSystemPrompt para el detalle de fail-closed en Rewards.
-export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null) {
+//
+// telefonoExplicito (P1, hotfix): el número real del remitente, pasado
+// SIEMPRE que el llamador lo tenga disponible -- independiente de
+// clienteCtx, que solo existe cuando el cliente YA tenía un registro
+// previo (clienteCtx null es la señal intencional de "cliente nuevo" para
+// el bloque "cliente recurrente" de construirSystemPrompt, y eso NO
+// cambia aquí). Antes, tanto la memoria de cliente como el Asistente
+// Comercial derivaban `telefono` únicamente de `clienteCtx?.telefono`, así
+// que el primer mensaje de un cliente genuinamente nuevo (clienteCtx aún
+// null en ese instante) nunca podía activar ninguna de las dos, sin
+// importar lo que dijera -- ver whatsapp-meta.js, que ahora sí pasa el
+// teléfono real del webhook en todos los casos.
+export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
   // Enriquecer contexto con memoria del cliente (no bloquea si falla)
-  const telefono = clienteCtx?.telefono;
+  const telefono = telefonoExplicito || clienteCtx?.telefono;
   let memoriaCtx = '';
   if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
     const perfil = await obtenerPerfilCliente(telefono, negocioId);
@@ -98,18 +110,33 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
       .catch(e => console.error('[brain] registrarIntents:', e.message));
 
-    // Extracción de campos comerciales + disparo del borrador (background,
-    // nunca bloquea la respuesta al cliente). El propio DraftBuilder
-    // (Fase 3) es quien valida que haya información suficiente antes de
-    // crear la cotización -- <BORRADOR_LISTO> es solo una señal del
+    // Extracción de campos comerciales + disparo del borrador. Fase 3
+    // (DraftBuilder) es quien valida que haya información suficiente antes
+    // de crear la cotización -- <BORRADOR_LISTO> es solo una señal del
     // modelo, nunca una autorización de escritura por sí sola.
+    //
+    // ESTO SE ESPERA (await), a propósito -- ya NO es fire-and-forget.
+    // Antes, la respuesta al cliente (que el propio modelo ya redactaba
+    // como "Listo, ya preparé tu cotización...") se enviaba ANTES de que
+    // esto siquiera empezara a correr, así que un fallo de guardado dejaba
+    // al cliente con una promesa falsa y a la sesión atorada en silencio.
+    // Ahora la confirmación real (éxito o aviso honesto de error) la
+    // agrega este código DESPUÉS de confirmar qué pasó de verdad, nunca el
+    // modelo por su cuenta (ver prompts.js).
+    let textoFinal = limpiarBloqueComercial(limpiarTexto(textoRespuesta));
     if (sesionComercial) {
-      procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta)
-        .catch(e => console.error('[brain] Error procesando captura comercial:', e.message));
+      try {
+        const resultadoComercial = await procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta);
+        if (resultadoComercial?.mensajeCliente) {
+          textoFinal = `${textoFinal}\n\n${resultadoComercial.mensajeCliente}`.trim();
+        }
+      } catch (e) {
+        console.error('[brain] Error inesperado procesando captura comercial:', e.message);
+      }
     }
 
     return {
-      texto: limpiarBloqueComercial(limpiarTexto(textoRespuesta)),
+      texto: textoFinal,
       orden,
       factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
@@ -307,45 +334,88 @@ async function registrarIntents(telefono, sessionId, canal, mensajeUsuario, text
   }
 }
 
+// Mensajes de cara al cliente controlados por CÓDIGO, nunca por el modelo
+// (ver prompts.js -- el modelo tiene prohibido afirmar esto por su
+// cuenta). El de éxito es el texto exacto exigido por el encargo; el de
+// error nunca promete un PDF ni miente sobre el estado, y dirige al
+// cliente a esperar seguimiento humano en vez de reintentar él mismo.
+const MENSAJE_BORRADOR_LISTO = 'Listo, ya preparé tu cotización y la envié a revisión. En cuanto sea aprobada, recibirás el PDF aquí mismo.';
+const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu cotización en este momento, pero ya guardamos la información que nos diste. En breve alguien de nuestro equipo la revisa contigo -- no hace falta que la repitas.';
+
 /**
  * Fase 2-3 del Asistente Comercial: aplica los campos capturados en este
  * turno a la sesión (nunca pierde los de turnos anteriores -- ver
  * fusionarCamposCapturados) y, si el modelo emitió <BORRADOR_LISTO>,
- * dispara la creación del borrador. generarBorradorDesdeSesion (Fase 3)
- * es quien valida "información suficiente" antes de escribir nada --
+ * intenta crear el borrador. generarBorradorDesdeSesion (Fase 3) es quien
+ * valida "información suficiente" (incluida una fecha ya normalizada, ver
+ * comercialMarkers.js/normalizarFecha.js) antes de escribir nada --
  * <BORRADOR_LISTO> es solo una señal, no una autorización.
- * Nunca lanza: cualquier error se loguea y se descarta, para no afectar
- * el resto del flujo de mensajería.
+ *
+ * Devuelve `null` si no hubo intento de borrador este turno (conversación
+ * sigue normal), o `{ ok, mensajeCliente, cotizacion? }` cuando SÍ hubo
+ * intento -- `mensajeCliente` es el único texto autorizado a confirmar (o
+ * desmentir) la creación del borrador, y brain.js lo agrega a la
+ * respuesta SOLO después de que esta función ya terminó (nunca antes).
+ *
+ * Nunca lanza fuera de esta función: cualquier error real (fallo de DB,
+ * catálogo, etc.) se captura aquí mismo y transiciona la sesión a
+ * 'error_recuperable' (ver sesionComercial.js) en vez de dejarla atorada
+ * en 'construyendo_borrador' sin salida.
  */
 async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta) {
   const capturas = extraerCamposComerciales(textoRespuesta);
   let camposActualizados = sesionComercial.campos_capturados;
 
   if (capturas.length > 0) {
+    // Se persiste el objeto fusionado completo (no solo los campos nuevos
+    // de este turno) -- fusionarCamposCapturados ya deriva fecha_evento_iso
+    // a partir de fecha_evento, y ese campo derivado solo llega a la BD si
+    // viaja dentro del objeto completo, nunca reconstruyendo un delta a
+    // mano campo por campo (ese delta manual era exactamente el bug que
+    // hacía que fecha_evento_iso nunca se guardara).
     const fusionados = fusionarCamposCapturados(sesionComercial.campos_capturados, capturas);
-    const delta = {};
-    for (const { campo, valor } of capturas) {
-      if (campo !== 'item_solicitado') delta[campo] = valor;
-    }
-    if (fusionados.items) delta.items = fusionados.items;
-    await actualizarCamposSesion(sesionComercial.id, negocioId, delta);
+    await actualizarCamposSesion(sesionComercial.id, negocioId, fusionados);
     camposActualizados = fusionados;
   }
 
-  if (tieneBorradorListo(textoRespuesta)) {
+  if (!tieneBorradorListo(textoRespuesta)) return null; // sin intento de borrador este turno
+
+  try {
     const resultado = await generarBorradorDesdeSesion(sesionComercial.id, negocioId, camposActualizados);
-    // Solo se notifica al panel cuando el borrador es NUEVO -- si ya
-    // existía (llamada idempotente, ver draftBuilder.js) no se repite la
-    // notificación en cada turno subsecuente de la conversación.
-    if (resultado && !resultado.yaExistia) {
-      broadcastNegocio(negocioId, { tipo: 'cotizacion_borrador_ia', cotizacion: resultado });
-      // Nunca bloquea el flujo conversacional: si el admin no tiene
-      // WhatsApp configurado, o Meta falla, el borrador ya quedó creado
-      // en la base de todos modos -- el admin siempre puede verlo y
-      // aprobarlo desde el panel aunque esta notificación falle.
-      notificarBorradorAlAdmin({ cotizacion: resultado, negocioId, camposCapturados: camposActualizados })
-        .catch(e => console.error('[brain] Error notificando borrador al admin:', e.message));
+    if (!resultado) {
+      // Información aún insuficiente (p.ej. la fecha no se pudo
+      // interpretar con confianza) -- NO es un error: la conversación
+      // sigue con naturalidad, el modelo verá en el siguiente turno que
+      // ese campo sigue faltando (camposParaPrompt) y volverá a
+      // preguntarlo. Ningún mensaje de "listo" ni de error aquí.
+      return null;
     }
+
+    // Solo se notifica (panel + admin) cuando el borrador es NUEVO -- si
+    // ya existía (llamada idempotente de un reintento, ver
+    // draftBuilder.js) no se repite en cada turno subsecuente.
+    if (!resultado.yaExistia) {
+      broadcastNegocio(negocioId, { tipo: 'cotizacion_borrador_ia', cotizacion: resultado });
+      // El PDF/aviso al administrador SÍ se espera aquí (a diferencia de
+      // antes) para que el orden "crear -> avisar admin -> confirmar al
+      // cliente" sea real y no solo aparente -- pero que Meta/WhatsApp
+      // fallen en avisarle al admin NUNCA hace que le neguemos al cliente
+      // la confirmación: el borrador ya existe de verdad en la base y
+      // siempre es revisable/aprobable desde el panel aunque esta
+      // notificación puntual no llegue.
+      const notif = await notificarBorradorAlAdmin({ cotizacion: resultado, negocioId, camposCapturados: camposActualizados })
+        .catch((e) => ({ ok: false, motivo: e.message }));
+      if (!notif?.ok) {
+        console.warn(`[brain] Borrador ${resultado.folio} creado OK pero no se pudo confirmar el aviso al admin (motivo=${notif?.motivo || 'desconocido'}) -- sigue siendo revisable desde el panel.`);
+      }
+    }
+
+    return { ok: true, cotizacion: resultado, mensajeCliente: MENSAJE_BORRADOR_LISTO };
+  } catch (e) {
+    await marcarSesionComoErrorRecuperable(sesionComercial.id, negocioId, e)
+      .catch((err) => console.error('[brain] Error marcando sesión como error_recuperable:', err.message));
+    console.error(`[brain] Error creando borrador para sesión ${sesionComercial.id}:`, e.message);
+    return { ok: false, motivo: e.message, mensajeCliente: MENSAJE_BORRADOR_ERROR };
   }
 }
 
