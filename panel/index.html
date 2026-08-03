@@ -1693,6 +1693,15 @@ function conectarWS() {
         document.body.appendChild(toast);
         setTimeout(() => toast.remove(), 5000);
       }
+      if (msg.tipo === 'cotizacion_borrador_ia') {
+        sonarAlerta();
+        const toast = document.createElement('div');
+        toast.textContent = `🤖 Nueva cotización borrador generada por el Asistente Comercial (${escaparHTML(msg.cotizacion.folio)}) -- revisar antes de enviar`;
+        toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1c1c1c;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:0.9rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.2);max-width:90vw;';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 7000);
+        if (document.getElementById('vista-cotizaciones').style.display !== 'none') cargarCotizaciones();
+      }
       if (msg.tipo === 'actualizar_pago') {
         if (pedidos[msg.id]) {
           pedidos[msg.id].forma_pago = msg.forma_pago;
@@ -3112,7 +3121,7 @@ async function cargarCotizaciones() {
     </tr></thead>
     <tbody>${lista.map(c => `
       <tr style="border-bottom:1px solid #f7f6f3;font-size:0.85rem;">
-        <td style="padding:10px 14px;font-weight:700;">${escaparHTML(c.folio)}</td>
+        <td style="padding:10px 14px;font-weight:700;">${escaparHTML(c.folio)}${c.origen === 'whatsapp_ia' ? ' <span title="Generada por el Asistente Comercial de WhatsApp -- revisar antes de enviar" style="background:#eef2ff;color:#4338ca;font-size:0.68rem;font-weight:700;padding:2px 6px;border-radius:5px;margin-left:4px;">🤖 IA</span>' : ''}</td>
         <td>${escaparHTML(c.telefono)}</td>
         <td><span style="text-transform:capitalize;">${escaparHTML(c.estado)}</span></td>
         <td>${formatoMoneda(c.total)}</td>
@@ -3129,10 +3138,14 @@ async function cargarCotizaciones() {
 function agregarFilaCotizacionItem(item) {
   const tbody = document.getElementById('cot-items-body');
   const fila = document.createElement('tr');
+  // Partida generada por el Asistente Comercial sin coincidencia en el
+  // catálogo (draftBuilder.js la deja con precio_unitario=0) -- se
+  // resalta para que el administrador la complete antes de aprobar.
+  const precioPendiente = item && Number(item.precio_unitario) === 0;
   fila.innerHTML = `
     <td style="padding:4px;"><input type="text" class="cot-it-desc" value="${item ? escaparHTML(item.descripcion) : ''}" placeholder="Ej: Arreglo floral centro de mesa" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
     <td style="padding:4px;"><input type="number" class="cot-it-cant" value="${item ? item.cantidad : 1}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
-    <td style="padding:4px;"><input type="number" class="cot-it-precio" value="${item ? item.precio_unitario : 0}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
+    <td style="padding:4px;"><input type="number" class="cot-it-precio" value="${item ? item.precio_unitario : 0}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" title="${precioPendiente ? 'Precio pendiente de revisión -- el Asistente Comercial no encontró este producto en el catálogo' : ''}" style="width:100%;padding:6px;border:1px solid ${precioPendiente ? '#dc2626' : '#e5e2da'};${precioPendiente ? 'background:#fef2f2;' : ''}border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
     <td style="padding:4px;"><input type="number" class="cot-it-desc-monto" value="${item ? item.descuento : 0}" min="0" step="0.01" oninput="recalcularTotalesCotizacion()" style="width:100%;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;box-sizing:border-box;"></td>
     <td style="padding:4px;"><button onclick="this.closest('tr').remove(); recalcularTotalesCotizacion();" style="border:none;background:none;color:#c0392b;cursor:pointer;">✕</button></td>`;
   tbody.appendChild(fila);
