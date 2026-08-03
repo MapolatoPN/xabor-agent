@@ -1189,6 +1189,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Términos por defecto</label>
         <textarea id="cfg-cot-terminos" rows="3" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:12px;"></textarea>
 
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;display:block;margin-bottom:6px;">WhatsApp del administrador (borradores del Asistente Comercial)</label>
+        <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Cuando el Asistente Comercial arma una propuesta, el PDF marcado "BORRADOR" llega aquí para tu revisión -- nunca al cliente hasta que la apruebes.</div>
+        <input id="cfg-cot-admin-whatsapp" type="text" placeholder="5218781234567" style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;">
+
         <div id="cfg-cot-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
         <button onclick="guardarConfigCotizaciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar configuración de cotizaciones</button>
       </div>
@@ -4269,6 +4273,7 @@ async function cargarConfigCotizaciones() {
   document.getElementById('cfg-cot-anticipo-pct').value = cfg.anticipo_porcentaje_default || '';
   document.getElementById('cfg-cot-iva-pct').value = cfg.iva_pct_default || '';
   document.getElementById('cfg-cot-terminos').value = cfg.terminos_cotizacion_default || '';
+  document.getElementById('cfg-cot-admin-whatsapp').value = cfg.admin_whatsapp_telefono || '';
 }
 
 document.getElementById('cfg-cot-logo-file')?.addEventListener('change', async (e) => {
@@ -4289,6 +4294,7 @@ async function guardarConfigCotizaciones() {
     anticipo_porcentaje_default: document.getElementById('cfg-cot-anticipo-pct').value,
     iva_pct_default: document.getElementById('cfg-cot-iva-pct').value,
     terminos_cotizacion_default: document.getElementById('cfg-cot-terminos').value,
+    admin_whatsapp_telefono: document.getElementById('cfg-cot-admin-whatsapp').value.trim(),
   };
   const logoPendiente = document.getElementById('cfg-cot-logo-preview').dataset.pendiente;
   if (logoPendiente) cambios.logo_base64 = logoPendiente;

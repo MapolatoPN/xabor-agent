@@ -35,8 +35,22 @@ function formatoTasaIva(n) {
   return Number.isInteger(tasa) ? String(tasa) : tasa.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-function construirHtml(cotizacion, negocioConfig) {
+// Exportado (además de usarse internamente) para poder probar el
+// contenido HTML directamente en tests -- verificar el banner de
+// "BORRADOR" a nivel de texto es mucho más preciso y rápido que
+// intentar extraer texto de un PDF binario real generado por Chromium.
+export function construirHtml(cotizacion, negocioConfig, { esBorrador = false } = {}) {
   const colorPrimario = negocioConfig.color_primario || '#1c1c1c';
+  // Banner + marca de agua diagonal -- inconfundible incluso si alguien
+  // reenvía el PDF por error. Nunca se aplica al PDF final del cliente
+  // (esBorrador siempre false ahí, ver cotizaciones.js
+  // obtenerOGenerarPdfCotizacion vs. generarPdfBorradorParaAdmin).
+  const bannerBorrador = esBorrador ? `
+    <div style="background:#c0392b;color:#fff;text-align:center;font-weight:800;font-size:0.95rem;padding:10px;letter-spacing:0.03em;margin-bottom:18px;">
+      ⚠ BORRADOR — NO ENVIAR AL CLIENTE — pendiente de aprobación
+    </div>
+    <div style="position:fixed;top:40%;left:50%;transform:translate(-50%,-50%) rotate(-30deg);font-size:5rem;font-weight:900;color:rgba(192,57,43,0.15);z-index:-1;white-space:nowrap;">BORRADOR</div>
+  ` : '';
   const logo = negocioConfig.logo_base64
     ? `<img src="${negocioConfig.logo_base64}" style="max-height:64px;max-width:200px;object-fit:contain;">`
     : `<div style="font-size:1.4rem;font-weight:800;">${escaparHtml(negocioConfig.nombre || 'Cotización')}</div>`;
@@ -68,6 +82,7 @@ function construirHtml(cotizacion, negocioConfig) {
     .footer { margin-top: 28px; font-size: 0.78rem; color: #555; white-space: pre-wrap; }
   </style></head>
   <body>
+    ${bannerBorrador}
     <div class="encabezado">
       <div>
         ${logo}
@@ -130,8 +145,8 @@ function serializarGeneracion(tarea) {
 // Bajo contención real de recursos (CPU/memoria compartidos) un lanzamiento
 // de Chromium puede quedarse colgado indefinidamente en vez de fallar --
 // mejor un 500 claro y rápido que una request colgada para siempre.
-async function generarPdfCotizacionInterno(cotizacion, negocioConfig) {
-  const html = construirHtml(cotizacion, negocioConfig);
+async function generarPdfCotizacionInterno(cotizacion, negocioConfig, opciones) {
+  const html = construirHtml(cotizacion, negocioConfig, opciones);
   const puppeteer = await obtenerPuppeteer();
   let browser;
   const lanzamiento = puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
@@ -165,6 +180,6 @@ async function generarPdfCotizacionInterno(cotizacion, negocioConfig) {
   }
 }
 
-export function generarPdfCotizacion(cotizacion, negocioConfig) {
-  return serializarGeneracion(() => generarPdfCotizacionInterno(cotizacion, negocioConfig));
+export function generarPdfCotizacion(cotizacion, negocioConfig, opciones = {}) {
+  return serializarGeneracion(() => generarPdfCotizacionInterno(cotizacion, negocioConfig, opciones));
 }

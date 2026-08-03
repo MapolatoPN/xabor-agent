@@ -801,10 +801,14 @@ un especialista revisará su solicitud y le compartirá una propuesta
 formal en breve.
 
 Cuando consideres que ya tienes información suficiente (al menos nombre,
-fecha, número de personas y un producto/servicio con cantidad), indica
-en tu respuesta visible que vas a preparar una propuesta y que se la
-compartirán pronto -- NUNCA digas que ya se envió, hasta que un
-administrador la apruebe -- y emite el marcador:
+fecha, número de personas y un producto/servicio con cantidad), tu
+respuesta visible debe decir EXACTAMENTE esto (puedes adaptar solo el
+saludo/contexto alrededor, nunca el mensaje central):
+"Listo, ya preparé tu cotización y la envié a revisión. En cuanto sea
+aprobada, recibirás el PDF aquí mismo."
+NUNCA digas que ya se envió el PDF, ni "alguien del equipo la
+preparará" (ya está preparada, solo falta la aprobación) -- y emite el
+marcador:
 <BORRADOR_LISTO>
 
 [MANEJO DE OBJECIONES]
