@@ -8,6 +8,7 @@ import { detectarIntencionComercial, activaModoComercial } from './intentDetecto
 import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
+import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -338,6 +339,12 @@ async function procesarCapturaComercial(sesionComercial, negocioId, textoRespues
     // notificación en cada turno subsecuente de la conversación.
     if (resultado && !resultado.yaExistia) {
       broadcastNegocio(negocioId, { tipo: 'cotizacion_borrador_ia', cotizacion: resultado });
+      // Nunca bloquea el flujo conversacional: si el admin no tiene
+      // WhatsApp configurado, o Meta falla, el borrador ya quedó creado
+      // en la base de todos modos -- el admin siempre puede verlo y
+      // aprobarlo desde el panel aunque esta notificación falle.
+      notificarBorradorAlAdmin({ cotizacion: resultado, negocioId, camposCapturados: camposActualizados })
+        .catch(e => console.error('[brain] Error notificando borrador al admin:', e.message));
     }
   }
 }

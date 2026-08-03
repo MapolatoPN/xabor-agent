@@ -2365,7 +2365,7 @@ app.post('/api/cotizaciones/:id/enviar', requireAuthSeguro, requireModulo('cotiz
     const msg = await guardarMensaje(cotizacion.telefono, null, 'saliente', `📄 ${filename}`, req.negocioId, 'humano', documento.wamid, 'documento', documento.id);
     if (msg) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
 
-    const actualizada = await marcarCotizacionEnviada(req.params.id);
+    const actualizada = await marcarCotizacionEnviada(req.params.id, req.usuarioId);
 
     // Fase 5 del Asistente Comercial: si esta cotización fue generada a
     // partir de una sesión conversacional de WhatsApp, la aprobación

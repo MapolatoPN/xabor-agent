@@ -36,4 +36,25 @@ export async function obtenerOGenerarPdfCotizacion(cotizacionId, negocioId) {
   return { cotizacion, storageKey, generado: true, buffer };
 }
 
+/**
+ * PDF con marca de agua "BORRADOR — NO ENVIAR AL CLIENTE" para notificar
+ * al administrador (nunca al cliente). Deliberadamente NUNCA cachea en
+ * cotizaciones.pdf_storage_key -- ese campo es solo para el PDF final
+ * limpio que ve el cliente (obtenerOGenerarPdfCotizacion arriba). Si
+ * este PDF borrador se guardara ahí, la aprobación reutilizaría por
+ * error el PDF marcado como borrador en vez de regenerar uno limpio.
+ * Se regenera cada vez que se pide (solo ocurre una vez por borrador
+ * nuevo en el flujo automático, y ocasionalmente si el admin pide
+ * reenviarlo manualmente) -- no vale la pena una segunda columna de
+ * caché para un PDF que existe para dejar de existir en cuanto se
+ * aprueba.
+ */
+export async function generarPdfBorradorParaAdmin(cotizacionId, negocioId) {
+  const cotizacion = await obtenerCotizacion(cotizacionId, negocioId);
+  if (!cotizacion) return null;
+  const marca = await obtenerConfigMarca(negocioId);
+  const buffer = await generarPdfCotizacion(cotizacion, marca, { esBorrador: true });
+  return { cotizacion, buffer };
+}
+
 export { marcarCotizacionEnviada };
