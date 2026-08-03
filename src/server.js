@@ -52,7 +52,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, procesarAceptacionTokenRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -3711,6 +3711,36 @@ app.delete('/api/admin/bot-simulador/:sessionId', requireAdminSeguro, (req, res)
   if (!sessionIdPerteneceANegocio(req.params.sessionId, req.negocioId)) return res.status(400).json({ error: 'sessionId inválido para este negocio' });
   deleteSession(req.params.sessionId);
   res.json({ ok: true });
+});
+
+// Página simple (no JSON) porque se abre directo desde el enlace de la
+// plantilla de WhatsApp en el navegador del celular del repartidor.
+function paginaAceptarRepartidor(titulo, mensaje, emoji) {
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${titulo}</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
+.tarjeta{max-width:420px}.emoji{font-size:56px;margin-bottom:16px}h1{font-size:1.3rem;margin:0 0 12px}p{color:#ccc;line-height:1.5}</style>
+</head><body><div class="tarjeta"><div class="emoji">${emoji}</div><h1>${titulo}</h1><p>${mensaje}</p></div></body></html>`;
+}
+
+// ─── Aceptación de servicio de reparto vía token de un solo uso ────────────────
+// Pública a propósito: el token en sí (aleatorio, de un solo uso, con
+// vencimiento) es la credencial -- ver migración 033 y
+// procesarAceptacionTokenRepartidor en whatsapp-meta.js. No usa
+// requireRepartidor porque este enlace se abre directo desde WhatsApp, sin
+// sesión previa del repartidor en el navegador.
+app.get('/repartidor/aceptar/:token', async (req, res) => {
+  try {
+    const resultado = await procesarAceptacionTokenRepartidor(req.params.token);
+    if (resultado.ok) {
+      return res.send(paginaAceptarRepartidor('¡Servicio asignado!', resultado.mensaje, '✅'));
+    }
+    return res.status(409).send(paginaAceptarRepartidor('No se pudo aceptar', resultado.mensaje, '⚠️'));
+  } catch (e) {
+    console.error('[Repartidor Token] Error en /repartidor/aceptar:', e.message);
+    return res.status(500).send(paginaAceptarRepartidor('Error', 'Ocurrió un error inesperado. Intenta de nuevo o contacta al negocio.', '❌'));
+  }
 });
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
