@@ -2945,6 +2945,90 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   } catch (e) { return []; }
 }
 
+// ─── Notificaciones a repartidores: registro de intentos y estado real ──────
+// (Diagnóstico repartidores: Xabor daba por entregado un mensaje solo
+// porque Meta aceptó la petición HTTP. Esta tabla registra cada intento y
+// se actualiza con el estado real que Meta reporta después vía webhook.)
+//
+// negocioId OBLIGATORIO — mismo criterio fail-closed del resto del
+// archivo: sin negocio no se registra nada.
+export async function registrarNotificacionRepartidor({ negocioId, pedidoFolio, repartidorId, canal = 'plantilla', wamid = null, estado = 'pendiente', errorCodigo = null, errorDetalle = null }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] registrarNotificacionRepartidor: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  try {
+    const r = await pool.query(
+      `INSERT INTO notificaciones_repartidor
+         (negocio_id, pedido_folio, repartidor_id, canal, wamid, estado, error_codigo, error_detalle)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [negocioId, pedidoFolio, repartidorId, canal, wamid, estado, errorCodigo, errorDetalle]
+    );
+    return r.rows[0];
+  } catch (e) {
+    console.error('[DB] Error registrarNotificacionRepartidor:', e.message);
+    return null;
+  }
+}
+
+// Orden de avance esperado de un envío real: aceptado_meta -> entregado ->
+// leido. 'fallido' se acepta siempre, sin importar el estado anterior,
+// porque Meta puede reportar una falla en cualquier punto y es la señal
+// más importante para no perder. El único caso que se ignora es un
+// retroceso fuera de orden (p.ej. llega 'entregado' después de 'leido' por
+// reordenamiento de red) -- se descarta en vez de pisar un estado más
+// avanzado con uno más viejo.
+const ORDEN_ESTADO_NOTIFICACION = ['pendiente', 'aceptado_meta', 'entregado', 'leido'];
+
+export async function actualizarEstadoNotificacionPorWamid(wamid, nuevoEstado, { errorCodigo = null, errorDetalle = null } = {}) {
+  if (!wamid) return null;
+  try {
+    if (nuevoEstado === 'fallido') {
+      const r = await pool.query(
+        `UPDATE notificaciones_repartidor
+         SET estado = 'fallido', error_codigo = $2, error_detalle = $3
+         WHERE wamid = $1
+         RETURNING *`,
+        [wamid, errorCodigo, errorDetalle]
+      );
+      return r.rows[0] || null;
+    }
+    const rango = ORDEN_ESTADO_NOTIFICACION.indexOf(nuevoEstado);
+    if (rango < 0) return null;
+    const r = await pool.query(
+      `UPDATE notificaciones_repartidor
+       SET estado = $2
+       WHERE wamid = $1
+         AND estado != 'fallido'
+         AND array_position($3::text[], estado) <= $4
+       RETURNING *`,
+      [wamid, nuevoEstado, ORDEN_ESTADO_NOTIFICACION, rango]
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error actualizarEstadoNotificacionPorWamid:', e.message);
+    return null;
+  }
+}
+
+// negocioId OBLIGATORIO — falla cerrado, mismo criterio del resto del
+// archivo. Uso: panel/diagnóstico, nunca expone datos de otro negocio.
+export async function obtenerNotificacionesPedido(pedidoFolio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  try {
+    const r = await pool.query(
+      `SELECT n.*, r.nombre AS repartidor_nombre
+       FROM notificaciones_repartidor n
+       JOIN repartidores r ON r.id = n.repartidor_id
+       WHERE n.pedido_folio = $1 AND n.negocio_id = $2
+       ORDER BY n.created_at ASC`,
+      [pedidoFolio, negocioId]
+    );
+    return r.rows;
+  } catch (e) { return []; }
+}
+
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0). Sin esto, cualquier
 // negocio podía borrar el repartidor de OTRO negocio con solo conocer su id
 // (escritura sin validar dueño).
