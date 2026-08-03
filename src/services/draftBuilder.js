@@ -22,7 +22,7 @@
  */
 import { pool, crearCotizacion } from './database.js';
 import { obtenerSesion, cambiarEstadoSesion, vincularCotizacion } from './sesionComercial.js';
-import { camposObligatoriosCompletos } from '../agent/comercialMarkers.js';
+import { camposObligatoriosCompletos, camposSecundariosFaltantes } from '../agent/comercialMarkers.js';
 import { TenantContextRequiredError } from './integracionesService.js';
 
 /**
@@ -63,11 +63,21 @@ async function construirItemsConPrecio(negocioId, itemsCapturados) {
   return items;
 }
 
+const ETIQUETAS_SECUNDARIOS = { numero_personas: 'número de personas', lugar: 'lugar', presupuesto: 'presupuesto' };
+
 function construirNotas(camposCapturados) {
   const lineas = ['Solicitud generada por el Asistente Comercial de WhatsApp.'];
   if (camposCapturados.nombre) lineas.push(`Cliente: ${camposCapturados.nombre}`);
   if (camposCapturados.presupuesto) lineas.push(`Presupuesto aproximado indicado: ${camposCapturados.presupuesto}`);
   if (camposCapturados.observaciones) lineas.push(`Observaciones: ${camposCapturados.observaciones}`);
+  // Los campos secundarios (numero_personas/lugar/presupuesto) nunca
+  // bloquean la creación del borrador -- si el asistente avanzó sin
+  // ellos, se listan aquí para que el administrador los complete al
+  // revisar, en vez de perderse silenciosamente.
+  const faltantes = camposSecundariosFaltantes(camposCapturados);
+  if (faltantes.length > 0) {
+    lineas.push(`Pendiente de revisión (no confirmado por el cliente): ${faltantes.map((f) => ETIQUETAS_SECUNDARIOS[f] || f).join(', ')}.`);
+  }
   return lineas.join('\n');
 }
 
