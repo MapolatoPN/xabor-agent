@@ -77,12 +77,27 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = []) {
   return resultado;
 }
 
-/** Criterio de "información suficiente" para pasar a construir el borrador. */
+/**
+ * Criterio de "información suficiente" para pasar a construir el
+ * borrador. Deliberadamente mínimo -- solo lo que un negocio como Alora
+ * (florería/eventos) necesita para que un administrador pueda revisar
+ * una propuesta con sentido: quién es, qué quiere, y cuándo. Todo lo
+ * demás (número de personas, lugar, presupuesto) es información valiosa
+ * pero secundaria -- se captura si la conversación fluye ahí de forma
+ * natural, nunca bloquea la creación del borrador (ver
+ * camposSecundariosFaltantes(), que el panel usa para marcar pendientes
+ * en vez de exigirlos antes de avanzar).
+ */
 export function camposObligatoriosCompletos(camposCapturados = {}) {
   return !!(
     camposCapturados.nombre &&
     camposCapturados.fecha_evento &&
-    camposCapturados.numero_personas &&
     Array.isArray(camposCapturados.items) && camposCapturados.items.length > 0
   );
+}
+
+/** Campos secundarios (nunca bloqueantes) que faltan -- para marcar "pendiente de revisión" en el panel. */
+export function camposSecundariosFaltantes(camposCapturados = {}) {
+  const secundarios = ['numero_personas', 'lugar', 'presupuesto'];
+  return secundarios.filter((campo) => !camposCapturados[campo]);
 }

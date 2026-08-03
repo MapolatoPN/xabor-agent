@@ -94,6 +94,44 @@ await t('SIN-CATALOGO', 'item que NO coincide con el catálogo queda con precio 
   assert.strictEqual(Number(cotizacion.total), 0);
 });
 
+await t('MENOS-FRICCION', 'crea el borrador SOLO con nombre+fecha+items -- numero_personas/lugar/presupuesto NUNCA bloquean', async () => {
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120005');
+  await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
+    nombre: 'Cliente Rápido', fecha_evento: '2026-09-15',
+    items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 3 }],
+  });
+  const cotizacion = await generarBorradorDesdeSesion(sesion.id, NEGOCIO_A);
+  assert.ok(cotizacion && cotizacion.estado === 'borrador', 'debe crear el borrador aunque falten los 3 campos secundarios');
+  assert.ok(
+    cotizacion.notas.includes('Pendiente de revisión') && cotizacion.notas.includes('número de personas') && cotizacion.notas.includes('lugar') && cotizacion.notas.includes('presupuesto'),
+    'las notas deben marcar los 3 secundarios faltantes para que el administrador los complete'
+  );
+});
+
+await t('MENOS-FRICCION', 'sin secundarios faltantes -- las notas NO incluyen la línea de pendientes', async () => {
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120006');
+  await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
+    nombre: 'Cliente Completo', fecha_evento: '2026-12-01', numero_personas: 40, lugar: 'Jardín Los Pinos', presupuesto: '20000',
+    items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 5 }],
+  });
+  const cotizacion = await generarBorradorDesdeSesion(sesion.id, NEGOCIO_A);
+  assert.ok(!cotizacion.notas.includes('Pendiente de revisión'), 'no debe marcar pendientes si ya se capturó todo');
+});
+
+await t('CATALOGO-VACIO', 'negocio sin ningún producto en el catálogo -- todos los items quedan pendientes, nunca inventa precio', async () => {
+  const { rows: [negocioVacio] } = await pool.query(
+    `INSERT INTO negocios (nombre, slug) VALUES ('Negocio Sin Catalogo (prueba)', 'negocio-sin-catalogo-prueba') RETURNING id`
+  );
+  const sesion = await obtenerOCrearSesionActiva(negocioVacio.id, '+528781120099');
+  await actualizarCamposSesion(sesion.id, negocioVacio.id, {
+    nombre: 'Cliente Catalogo Vacio', fecha_evento: '2026-08-15',
+    items: [{ descripcion: 'Cualquier producto', cantidad: 2 }],
+  });
+  const cotizacion = await generarBorradorDesdeSesion(sesion.id, negocioVacio.id);
+  assert.strictEqual(Number(cotizacion.items[0].precio_unitario), 0, 'sin catalogo, nunca inventa un precio');
+  assert.ok(cotizacion.items[0].descripcion.includes('precio pendiente de revisión'));
+});
+
 await t('AISLAMIENTO', 'una sesión de negocio A no genera un borrador si se invoca con negocioId de B', async () => {
   const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120004');
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {

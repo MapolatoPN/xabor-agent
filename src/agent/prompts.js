@@ -761,7 +761,7 @@ ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.cont
 // decida por sí solo cuándo están completas.
 export function construirBloqueModoComercial(camposCapturados = {}) {
   const yaCapturados = Object.keys(camposCapturados).length > 0
-    ? `\nCampos ya capturados en esta conversación (no los vuelvas a preguntar): ${JSON.stringify(camposCapturados)}`
+    ? `\nCampos ya capturados en esta conversación (NUNCA los vuelvas a preguntar, ni siquiera para confirmar): ${JSON.stringify(camposCapturados)}`
     : '\nAún no se ha capturado ningún campo en esta conversación.';
 
   return `
@@ -769,23 +769,45 @@ export function construirBloqueModoComercial(camposCapturados = {}) {
 [MODO ASISTENTE COMERCIAL — ACTIVO]
 
 Estás ayudando a un cliente a construir una solicitud de cotización. Tu
-trabajo es descubrir su necesidad de forma natural, nunca como un
-formulario.
+trabajo es descubrir su necesidad de forma natural y RÁPIDA, nunca como
+un formulario ni un interrogatorio.
 
-Campos que necesitas obtener (pregunta solo los que falten, uno o dos a la
-vez, nunca todos de golpe):
+Solo 3 datos son realmente indispensables para avanzar:
 - nombre del cliente/contacto
-- fecha del evento o servicio
-- lugar (si aplica)
+- qué producto o servicio necesita (con cantidad si aplica)
+- fecha del evento o servicio (necesitas un día concreto para poder
+  registrarla -- "el 15 de septiembre" sirve, "en septiembre" no; si el
+  cliente da solo el mes, pide que te ayude a concretar un día
+  aproximado, pero no insistas más de una vez)
+
+Estos son útiles pero NUNCA bloquean el avance -- pregúntalos solo si la
+conversación fluye naturalmente hacia ahí, y si el cliente no los sabe o
+no responde, sigue adelante sin insistir:
+- lugar o modalidad de entrega
 - número de personas
-- productos o servicios solicitados, con su cantidad
-- presupuesto aproximado (opcional, solo si la conversación fluye hacia ahí)
-- observaciones adicionales (opcional)
+- presupuesto aproximado
+- observaciones adicionales
 ${yaCapturados}
 
-Cuando identifiques un dato nuevo, emite un marcador interno (el cliente
-NUNCA lo ve) inmediatamente después de tu respuesta visible, en este
-formato exacto, uno por cada campo nuevo:
+Reglas de conversación (estrictas):
+- Una sola pregunta por turno. Solo agrupa 2 datos en la misma pregunta
+  cuando surgen naturalmente juntos (ej. "¿para cuándo lo necesitas y
+  cuántas personas serían?" si el cliente ya habló de un evento con
+  invitados) -- nunca hagas una lista de 3+ preguntas de golpe.
+- NUNCA repitas una pregunta sobre un campo que ya está en "Campos ya
+  capturados" arriba, aunque el cliente no lo haya mencionado en su
+  último mensaje.
+- Si el cliente ya dio los 3 datos indispensables (nombre, qué necesita,
+  cuándo), NO sigas preguntando por los datos secundarios -- pasa
+  directamente a preparar la propuesta. Los secundarios que falten
+  quedan marcados para que el administrador los complete al revisar.
+- Si el cliente cambia de idea sobre lo que quiere, o corrige un dato ya
+  capturado, actualiza ese campo (emite el marcador de nuevo con el
+  valor corregido) en vez de preguntar de nuevo desde cero.
+
+Cuando identifiques un dato nuevo o corregido, emite un marcador interno
+(el cliente NUNCA lo ve) inmediatamente después de tu respuesta visible,
+en este formato exacto, uno por cada campo:
 <CAMPO_COMERCIAL_CAPTURADO>{"campo":"nombre_del_campo","valor":"..."}</CAMPO_COMERCIAL_CAPTURADO>
 
 Usa exactamente estas claves de "campo": nombre, fecha_evento, lugar,
@@ -800,9 +822,9 @@ confirmar eso. Si el cliente insiste en un precio inmediato, responde que
 un especialista revisará su solicitud y le compartirá una propuesta
 formal en breve.
 
-Cuando consideres que ya tienes información suficiente (al menos nombre,
-fecha, número de personas y un producto/servicio con cantidad), indica
-en tu respuesta visible que vas a preparar una propuesta y que se la
+En cuanto tengas los 3 datos indispensables (nombre, qué necesita, para
+cuándo) -- sin importar si faltan los secundarios -- indica en tu
+respuesta visible que vas a preparar una propuesta y que se la
 compartirán pronto -- NUNCA digas que ya se envió, hasta que un
 administrador la apruebe -- y emite el marcador:
 <BORRADOR_LISTO>

@@ -14,8 +14,9 @@
 import assert from 'assert';
 import {
   extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial,
-  fusionarCamposCapturados, camposObligatoriosCompletos,
+  fusionarCamposCapturados, camposObligatoriosCompletos, camposSecundariosFaltantes,
 } from '../src/agent/comercialMarkers.js';
+import { construirBloqueModoComercial } from '../src/agent/prompts.js';
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -86,23 +87,61 @@ t('fusionarCamposCapturados acumula items_solicitados en un array, sin reemplaza
   assert.deepStrictEqual(campos.items[1], { descripcion: 'Centros de mesa', cantidad: 20 });
 });
 
+t('fusionarCamposCapturados: el cliente cambia de idea -- el nuevo valor reemplaza al anterior (no acumula, salvo items)', () => {
+  const actuales = { nombre: 'Ana', fecha_evento: '2026-09-20' };
+  const resultado = fusionarCamposCapturados(actuales, [{ campo: 'fecha_evento', valor: '2026-10-05' }]);
+  assert.strictEqual(resultado.fecha_evento, '2026-10-05', 'debe quedar la fecha corregida, no la original');
+  assert.strictEqual(resultado.nombre, 'Ana', 'los demas campos no capturados de nuevo no se pierden');
+});
+
 t('fusionarCamposCapturados ignora un item_solicitado sin descripcion', () => {
   const campos = fusionarCamposCapturados({}, [{ campo: 'item_solicitado', valor: { cantidad: 5 } }]);
   assert.strictEqual(campos.items, undefined);
 });
 
-t('camposObligatoriosCompletos: false si falta cualquier obligatorio', () => {
+t('camposObligatoriosCompletos: false si falta cualquier obligatorio (nombre/fecha/items)', () => {
   assert.strictEqual(camposObligatoriosCompletos({}), false);
   assert.strictEqual(camposObligatoriosCompletos({ nombre: 'Ana' }), false);
-  assert.strictEqual(camposObligatoriosCompletos({ nombre: 'Ana', fecha_evento: '2026-09-20', numero_personas: 150 }), false, 'falta items');
+  assert.strictEqual(camposObligatoriosCompletos({ nombre: 'Ana', fecha_evento: '2026-09-20' }), false, 'falta items');
+  assert.strictEqual(camposObligatoriosCompletos({ fecha_evento: '2026-09-20', items: [{ descripcion: 'Banquete', cantidad: 1 }] }), false, 'falta nombre');
 });
 
-t('camposObligatoriosCompletos: true con los 4 obligatorios presentes', () => {
+t('camposObligatoriosCompletos: true con solo los 3 obligatorios (nombre+fecha+items) -- numero_personas/lugar/presupuesto NUNCA bloquean', () => {
   const completos = {
-    nombre: 'Ana', fecha_evento: '2026-09-20', numero_personas: 150,
+    nombre: 'Ana', fecha_evento: '2026-09-20',
     items: [{ descripcion: 'Banquete', cantidad: 150 }],
   };
-  assert.strictEqual(camposObligatoriosCompletos(completos), true);
+  assert.strictEqual(camposObligatoriosCompletos(completos), true, 'debe crear borrador aunque falten numero_personas/lugar/presupuesto');
+});
+
+t('camposSecundariosFaltantes: lista los que faltan sin bloquear', () => {
+  const parcial = { nombre: 'Ana', fecha_evento: '2026-09-20', items: [{ descripcion: 'x', cantidad: 1 }] };
+  assert.deepStrictEqual(camposSecundariosFaltantes(parcial).sort(), ['lugar', 'numero_personas', 'presupuesto']);
+});
+
+t('camposSecundariosFaltantes: vacío si ya se capturaron todos', () => {
+  const completo = { numero_personas: 10, lugar: 'Salón X', presupuesto: '5000' };
+  assert.deepStrictEqual(camposSecundariosFaltantes(completo), []);
+});
+
+// El comportamiento de "menos fricción" del modelo (una pregunta por
+// turno, no repetir, no bloquear por secundarios) se instruye via
+// prompt, no via código que se pueda invocar deterministicamente sin
+// una llamada real a Claude (mismo criterio documentado arriba sobre no
+// probar el modelo real aquí) -- lo que SÍ se puede probar sin llamar al
+// modelo es que el texto del prompt efectivamente contiene esas
+// instrucciones, para detectar una regresión si alguien las borra sin
+// querer en un refactor futuro.
+t('construirBloqueModoComercial: instruye una pregunta por turno y no bloquear por secundarios', () => {
+  const prompt = construirBloqueModoComercial({});
+  assert.ok(prompt.includes('Una sola pregunta por turno'), 'debe instruir una pregunta a la vez');
+  assert.ok(/NUNCA.*bloquean/.test(prompt) || /nunca bloquean/i.test(prompt), 'debe aclarar que los secundarios nunca bloquean');
+  assert.ok(prompt.includes('NUNCA repitas una pregunta'), 'debe instruir no repetir preguntas ya capturadas');
+});
+
+t('construirBloqueModoComercial: incluye los campos ya capturados para no volver a preguntarlos', () => {
+  const prompt = construirBloqueModoComercial({ nombre: 'Ana', fecha_evento: '2026-09-20' });
+  assert.ok(prompt.includes('"nombre":"Ana"'), 'debe listar el campo ya capturado en el prompt');
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
