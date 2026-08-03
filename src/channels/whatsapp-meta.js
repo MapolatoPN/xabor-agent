@@ -637,7 +637,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
     }, 8000);
 
-    const resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId);
+    const resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId, telefono);
     clearTimeout(waitTimer);
 
     // Detección de confirmación verbal sin JSON — alerta al admin
