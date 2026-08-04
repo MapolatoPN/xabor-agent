@@ -1,0 +1,35 @@
+// Runner del Pre-Deploy Command de Railway para este release.
+//
+// Railway NO interpreta "&&" como un shell (comprobado en el deploy de
+// hoy: con preDeployCommand="node a.mjs && node b.mjs" solo corrio a.mjs
+// -- el resto quedo como argv ignorado, sin error, sin abortar). Este
+// runner ejecuta cada script como su PROPIO proceso hijo (execFileSync),
+// para que el process.exit(0) interno de cada uno nunca mate al runner
+// antes de tiempo, y se detiene (exit 1) si cualquiera de los dos falla.
+//
+// Cada migracion sigue viviendo en su propio script angosto
+// (predeploy-032-notificaciones-repartidor.mjs, predeploy-033-token-
+// aceptacion-repartidor.mjs) -- este runner no duplica su logica, solo
+// los invoca en orden.
+import { execFileSync } from 'child_process';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCRIPTS = [
+  '032-notificaciones-repartidor',
+  '033-token-aceptacion-repartidor',
+];
+
+for (const nombre of SCRIPTS) {
+  const ruta = join(__dirname, `predeploy-${nombre}.mjs`);
+  console.log(`[predeploy-run] Ejecutando predeploy-${nombre}...`);
+  try {
+    execFileSync(process.execPath, [ruta], { stdio: 'inherit', env: process.env });
+  } catch (e) {
+    console.error(`[predeploy-run] FALLO en predeploy-${nombre} -- se aborta el deploy.`);
+    process.exit(1);
+  }
+}
+console.log('[predeploy-run] Todos los pasos completados.');
+process.exit(0);

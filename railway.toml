@@ -7,4 +7,4 @@ healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-preDeployCommand = "node scripts/predeploy-032-notificaciones-repartidor.mjs && node scripts/predeploy-033-token-aceptacion-repartidor.mjs"
+preDeployCommand = "node scripts/predeploy-run-032-033.mjs"
