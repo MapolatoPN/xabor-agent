@@ -1232,3 +1232,108 @@ footer {
   .cta-btn-group .btn { width: 100%; max-width: 320px; justify-content: center; }
   .mobile-menu-inner { width: 100vw; }
 }
+
+/* ── Placeholders de fotografía real (sin stock, sin ilustraciones) ──── */
+.photo-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  background: var(--bg-alt);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-3);
+  padding: 32px 24px;
+}
+.photo-placeholder .icon { width: 32px; height: 32px; color: var(--text-3); }
+.photo-placeholder p { font-size: .82rem; line-height: 1.5; max-width: 320px; }
+.photo-placeholder p strong { color: var(--text-2); }
+
+.photo-tall { width: 100%; aspect-ratio: 4 / 5; }
+.photo-square { aspect-ratio: 1 / 1; }
+.photo-screenshot { aspect-ratio: 16 / 10; padding: 24px 20px; }
+
+/* ── Fotografía real (de stock temporal, o producto real) ──────────── */
+.photo-real {
+  width: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+}
+.photo-real img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-real.photo-tall { aspect-ratio: 4 / 5; }
+.photo-real.photo-square { aspect-ratio: 1 / 1; }
+.photo-real.photo-screenshot { aspect-ratio: 16 / 10; padding: 0; }
+
+/* ── Capturas reales del producto ─────────────────────────────────── */
+.capturas-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+.captura-card figcaption {
+  margin-top: 12px;
+  font-size: .85rem;
+  color: var(--text-2);
+  text-align: center;
+}
+.captura-card figcaption strong { color: var(--text); }
+
+/* ── Creado desde la operación real ───────────────────────────────── */
+.historia-inner {
+  display: grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap: 56px;
+  align-items: center;
+}
+.historia-copy p { color: var(--text-2); font-size: 1rem; margin-top: 14px; }
+.historia-copy p:first-of-type { margin-top: 14px; }
+.historia-firma { margin-top: 20px; font-weight: 700; color: var(--text) !important; }
+.historia-fotos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+/* ── Prueba social ─────────────────────────────────────────────────── */
+.social-proof-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+.social-proof-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+.social-proof-name { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.social-proof-card p { font-size: .88rem; color: var(--text-2); }
+
+/* ── Distintivo de promoción vigente ───────────────────────────────── */
+.promo-badge-live {
+  display: inline-block;
+  background: var(--text);
+  color: var(--white);
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 6px 16px;
+  border-radius: 20px;
+  margin-bottom: 18px;
+}
+
+.precio-strike { color: var(--text-3); font-size: .6em; margin-right: 6px; font-weight: 400; }
+
+@media (max-width: 860px) {
+  .capturas-grid { grid-template-columns: 1fr 1fr; }
+  .social-proof-grid { grid-template-columns: 1fr; }
+  .historia-inner { grid-template-columns: 1fr; gap: 32px; }
+  .historia-fotos { order: -1; }
+}
+@media (max-width: 480px) {
+  .capturas-grid { grid-template-columns: 1fr; }
+  .historia-fotos { grid-template-columns: 1fr; }
+}
