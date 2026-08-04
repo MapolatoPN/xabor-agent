@@ -78,6 +78,13 @@ await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identifica
 
 // Piloto: SOLO negocioA activa el envío por plantilla.
 await actualizarConfiguracion({ repartidor_notif_plantilla_activo: 'true' }, SEED.negocioA);
+// Lista blanca del piloto: por defecto, en este archivo, el único teléfono
+// autorizado es el repartidor de prueba A -- así todas las pruebas que ya
+// existían (PLANTILLA-ENVIO, ACEPTAR-TOKEN, etc.) siguen notificando
+// exactamente a quien siempre notificaron, ahora bajo el nuevo requisito
+// de lista blanca. El bloque PILOTO-WHITELIST más abajo ejercita el filtro
+// en sí y reconfigura esta clave según cada caso.
+await actualizarConfiguracion({ repartidor_notif_piloto_telefonos: '5210000900001' }, SEED.negocioA);
 
 // Repartidores de prueba (telefono es único global en la tabla). Se borra
 // primero notificaciones_repartidor de una corrida anterior (FK RESTRICT)
@@ -380,6 +387,114 @@ await t('VISIBILIDAD-COMANDAS', 'tras asignar, el pedido expone repartidor_nombr
   const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_nombre' AS nombre FROM pedidos_activos WHERE folio = $1`, [folio]);
   assert.strictEqual(pedidoDB.nombre, repA.nombre, 'datos.repartidor_nombre debe reflejar quién tomó el pedido (lo que el panel ya renderiza en la comanda)');
 });
+
+// ═══════════ PILOTO-WHITELIST: filtro de lista blanca de teléfonos ═══════════
+// Repartidores adicionales exclusivos de este bloque, para ejercitar el
+// filtro en sí (además de repA, ya usado en el resto de la suite bajo la
+// whitelist por defecto configurada en el Setup). telefono es único global
+// en la tabla -- se limpia primero para que el archivo sea re-ejecutable.
+const TELS_WHITELIST_BLOQUE = ['5210000900010', '5210000900011', '5210000900012', '9000900013', '5219000900013', '5210000900014'];
+await pool.query(`DELETE FROM notificaciones_repartidor WHERE repartidor_id IN (SELECT id FROM repartidores WHERE telefono = ANY($1))`, [TELS_WHITELIST_BLOQUE]);
+await pool.query(`DELETE FROM repartidores WHERE telefono = ANY($1)`, [TELS_WHITELIST_BLOQUE]);
+
+async function crearRepartidorPrueba(nombre, telefono, token, activo = true) {
+  const { rows: [r] } = await pool.query(
+    `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [nombre, telefono, token, activo, SEED.negocioA]
+  );
+  return r;
+}
+const repFuera1 = await crearRepartidorPrueba('Repartidor Fuera Whitelist 1', '5210000900010', 'tok-fuera-1');
+const repFuera2 = await crearRepartidorPrueba('Repartidor Fuera Whitelist 2', '5210000900011', 'tok-fuera-2');
+const repEnWhitelist2 = await crearRepartidorPrueba('Repartidor En Whitelist 2', '5210000900012', 'tok-en-wl-2');
+// Mismo teléfono real, dos formatos distintos (10 dígitos vs con prefijo
+// 521) -- normalizarTelefonoMX debe verlos como el mismo destinatario.
+const repDup1 = await crearRepartidorPrueba('Repartidor Duplicado 1', '9000900013', 'tok-dup-1');
+const repDup2 = await crearRepartidorPrueba('Repartidor Duplicado 2', '5219000900013', 'tok-dup-2');
+const repInactivo = await crearRepartidorPrueba('Repartidor Inactivo En Whitelist', '5210000900014', 'tok-inactivo', false);
+
+async function fijarWhitelist(valor) {
+  await actualizarConfiguracion({ repartidor_notif_piloto_telefonos: valor }, SEED.negocioA);
+}
+
+await t('PILOTO-WHITELIST', '30 registrados, solo 2 en whitelist → solo esos 2 reciben la plantilla', async () => {
+  await fijarWhitelist('5210000900001,5210000900012'); // repA + repEnWhitelist2
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const filas = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.length ? r : null;
+  });
+  assert.ok(filas, 'debía notificarse al menos a los repartidores en whitelist');
+  const idsNotificados = new Set(filas.map(f => f.repartidor_id));
+  assert.strictEqual(filas.length, 2, `esperaba exactamente 2 intentos, hubo ${filas.length}`);
+  assert.ok(idsNotificados.has(repA.id), 'repA (en whitelist) debía recibir la plantilla');
+  assert.ok(idsNotificados.has(repEnWhitelist2.id), 'repEnWhitelist2 (en whitelist) debía recibir la plantilla');
+  assert.ok(!idsNotificados.has(repFuera1.id), 'repFuera1 (fuera de whitelist) NO debía recibir nada');
+  assert.ok(!idsNotificados.has(repFuera2.id), 'repFuera2 (fuera de whitelist) NO debía recibir nada');
+});
+
+await t('PILOTO-WHITELIST', 'lista vacía → 0 envíos (fail closed, nunca "a todos")', async () => {
+  await fijarWhitelist('');
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  await esperar(2000); // no hay nada que esperar a que aparezca -- se espera 0
+  const filas = await notifsDe(folio);
+  assert.strictEqual(filas.length, 0, 'con la lista vacía, nadie debe ser notificado (nunca fallback a todos)');
+});
+
+await t('PILOTO-WHITELIST', 'lista ilegible/mal formada → 0 envíos (fail closed)', async () => {
+  await fijarWhitelist('esto no es una lista de telefonos valida');
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  await esperar(2000);
+  const filas = await notifsDe(folio);
+  assert.strictEqual(filas.length, 0, 'con una lista ilegible, nadie debe ser notificado (fail closed, nunca a todos)');
+});
+
+await t('PILOTO-WHITELIST', 'el mismo teléfono en dos filas (formatos distintos) recibe un solo envío', async () => {
+  await fijarWhitelist('9000900013');
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const filas = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.length ? r : null;
+  });
+  assert.ok(filas, 'debía notificarse al teléfono duplicado al menos una vez');
+  const deLosDuplicados = filas.filter(f => f.repartidor_id === repDup1.id || f.repartidor_id === repDup2.id);
+  assert.strictEqual(deLosDuplicados.length, 1, `un mismo teléfono en dos filas debe recibir un solo envío, hubo ${deLosDuplicados.length}`);
+});
+
+await t('PILOTO-WHITELIST', 'repartidor inactivo aunque esté en whitelist → no recibe', async () => {
+  await fijarWhitelist('5210000900014'); // teléfono de repInactivo, único en esta lista
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  await esperar(2000);
+  const filas = await notifsDe(folio);
+  assert.strictEqual(filas.length, 0, 'un repartidor inactivo nunca debe recibir la plantilla aunque su teléfono esté en la whitelist');
+});
+
+await t('PILOTO-WHITELIST', 'otro negocio con el mismo teléfono en la whitelist de este negocio → no recibe', async () => {
+  // repB pertenece a negocioB. Que su teléfono termine (por error de captura)
+  // en la whitelist de negocioA nunca debe hacer que reciba nada -- no
+  // pertenece al roster de repartidores de negocioA (obtenerRepartidores ya
+  // aísla por negocio_id antes de que el filtro de whitelist siquiera corra).
+  await fijarWhitelist('5210000900001,5210000900002'); // repA (negocioA) + repB (negocioB)
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const filas = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.length ? r : null;
+  });
+  assert.ok(filas, 'repA debía recibir la plantilla');
+  assert.ok(!filas.some(f => f.repartidor_id === repB.id), 'repB (de otro negocio) nunca debe aparecer notificado desde un pedido de negocioA');
+});
+
+await t('PILOTO-WHITELIST', 'retirar la lista (con el flag aún activo) no habilita el envío a todos', async () => {
+  await fijarWhitelist(''); // "retirar el piloto" -- el flag sigue en true
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  await esperar(2000);
+  const filas = await notifsDe(folio);
+  assert.strictEqual(filas.length, 0, 'sin lista, incluso con el flag activo, nadie debe recibir nada -- el rollout completo requiere una configuración explícita aparte, no implementada todavía');
+});
+
+// Deja la whitelist en el estado que el resto del archivo espera, por si se
+// re-ejecuta este archivo o se agregan pruebas después.
+await fijarWhitelist('5210000900001');
 
 // ═══════════ Resumen ═══════════
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

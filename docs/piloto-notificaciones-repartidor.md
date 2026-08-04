@@ -112,9 +112,36 @@ plantilla 2 con los datos completos.
   ya mostraba el badge 🛵, ya existía). Ambas se cubren con pruebas de
   regresión, no con código nuevo.
 
-## 5. Activación — SOLO Nonna Maye
+## 5. Activación — SOLO Nonna Maye, y solo 1-2 números autorizados primero
+
+Antes de abrir el piloto a los repartidores reales de Nonna Maye, se agregó
+una segunda clave obligatoria: `configuracion.repartidor_notif_piloto_telefonos`
+(texto plano, teléfonos separados por comas — mismo formato que el resto de
+la tabla `configuracion`, sin precedente de JSON en ella). Con el flag
+`repartidor_notif_plantilla_activo=true`, **nunca** se notifica a todos los
+repartidores del negocio por ausencia de esta lista: si la lista está
+ausente, vacía, o no puede interpretarse como teléfonos, el envío falla
+cerrado a **0 destinatarios** (con una alerta clara en logs) — jamás cae de
+vuelta a "notificar a todos". El envío a todos los repartidores en
+producción requerirá, más adelante, una configuración de rollout completo
+aparte y explícita, todavía no implementada.
+
+El filtro, además de la lista blanca, exige `activo = true` en la fila del
+repartidor y deduplica por teléfono (dos filas con el mismo teléfono en
+formatos distintos — con o sin prefijo de país — solo generan un envío).
+Ver `src/channels/whatsapp-meta.js` (`normalizarTelefonoMX`,
+`parsearListaPilotoTelefonos`) y la suite `PILOTO-WHITELIST` en
+`test/fase-repartidores-notificaciones.mjs`.
 
 ```sql
+-- 1. Configurar primero la lista blanca (1-2 números autorizados,
+--    formato E.164, p. ej. +528781234567) -- SIN esto, el paso 2 no
+--    notificará a nadie (fail closed), lo cual es intencional.
+INSERT INTO configuracion (negocio_id, clave, valor)
+VALUES ('<negocio_id_nonna_maye>', 'repartidor_notif_piloto_telefonos', '+52XXXXXXXXXX,+52YYYYYYYYYY')
+ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = EXCLUDED.valor;
+
+-- 2. Solo después, activar el flag.
 INSERT INTO configuracion (negocio_id, clave, valor)
 VALUES ('<negocio_id_nonna_maye>', 'repartidor_notif_plantilla_activo', 'true')
 ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = 'true';

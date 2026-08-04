@@ -1056,6 +1056,55 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ─── Piloto de notificaciones por plantilla: lista blanca de teléfonos ──────
+// Mientras el piloto está en curso, repartidor_notif_plantilla_activo=true
+// NUNCA notifica a todos por ausencia de lista -- solo a los teléfonos
+// explícitamente listados en configuracion.repartidor_notif_piloto_telefonos
+// (texto plano separado por comas, mismo formato que el resto de la tabla
+// configuracion -- no hay precedente de JSON en esa tabla). Habilitar el
+// envío a todos los repartidores en producción requerirá, más adelante, una
+// configuración de "rollout completo" aparte y explícita -- no se implementa
+// todavía, y la ausencia de lista NUNCA debe interpretarse como "enviar a
+// todos".
+//
+// Normaliza a los últimos 10 dígitos para poder comparar sin importar si el
+// teléfono viene con o sin código de país (los datos reales en
+// `repartidores.telefono` están mezclados: algunas filas tienen 10 dígitos,
+// otras traen el prefijo 521 -- higiene de datos fuera de alcance de este
+// cambio, ver docs/piloto-notificaciones-repartidor.md sección 10).
+function normalizarTelefonoMX(telefono) {
+  if (typeof telefono !== 'string') return null;
+  const soloDigitos = telefono.replace(/\D/g, '');
+  if (soloDigitos.length < 10) return null;
+  return soloDigitos.slice(-10);
+}
+
+// Lee configuracion.repartidor_notif_piloto_telefonos y devuelve el conjunto
+// de teléfonos normalizados autorizados. Falla cerrado: si el valor está
+// ausente, vacío, o cada elemento resulta ilegible como teléfono, devuelve
+// un conjunto vacío -- nunca lanza, nunca autoriza "a todos" por defecto.
+function parsearListaPilotoTelefonos(valorConfig) {
+  if (typeof valorConfig !== 'string' || !valorConfig.trim()) {
+    return { telefonos: new Set(), malformada: false };
+  }
+  const partes = valorConfig.split(',').map(s => s.trim()).filter(Boolean);
+  if (partes.length === 0) return { telefonos: new Set(), malformada: false };
+
+  const telefonos = new Set();
+  let huboInvalido = false;
+  for (const parte of partes) {
+    const normalizado = normalizarTelefonoMX(parte);
+    if (!normalizado) { huboInvalido = true; continue; }
+    telefonos.add(normalizado);
+  }
+  // Si NINGÚN elemento pudo interpretarse como teléfono, la lista completa
+  // se trata como mal formada (fail closed a 0, nunca a "todos").
+  if (telefonos.size === 0 && huboInvalido) {
+    return { telefonos: new Set(), malformada: true };
+  }
+  return { telefonos, malformada: false };
+}
+
 // ─── Notificar repartidores activos por WhatsApp ─────────────────────────────
 export async function notificarRepartidoresPorWA(pedido) {
   try {
@@ -1101,17 +1150,57 @@ export async function notificarRepartidoresPorWA(pedido) {
     const pagoEstimado = `$${pedido.total} MXN`;
     const TOKEN_EXPIRACION_MINUTOS = 30;
 
-    for (const r of repartidores) {
-      if (!usarPlantilla) {
+    // Comportamiento anterior EXACTO cuando el flag está apagado -- ningún
+    // filtro, ningún registro, texto libre a todos los repartidores del
+    // negocio, tal como antes de este piloto.
+    if (!usarPlantilla) {
+      for (const r of repartidores) {
         try {
           await enviarMensaje(r.telefono, texto, credenciales);
           console.log(`[WA Repartidor] Notificación enviada a ${r.nombre} (${r.telefono})`);
         } catch (e) {
           console.error(`[WA Repartidor] Error al notificar a ${r.nombre}: ${e.message}`);
         }
+      }
+      return;
+    }
+
+    // Piloto: con el flag encendido, SOLO se notifica a los teléfonos de la
+    // lista blanca -- nunca "a todos" por ausencia/lista vacía/lista
+    // ilegible (fail closed). El rollout completo (sin lista) requerirá más
+    // adelante una configuración explícita aparte, todavía no implementada.
+    const { telefonos: listaPiloto, malformada } = parsearListaPilotoTelefonos(cfg.repartidor_notif_piloto_telefonos);
+    if (malformada) {
+      console.warn(`[WA Repartidor][Piloto] configuracion.repartidor_notif_piloto_telefonos ilegible para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed)`);
+    } else if (listaPiloto.size === 0) {
+      console.warn(`[WA Repartidor][Piloto] Sin lista de piloto (o vacía) para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed). El envío a todos los repartidores requiere una configuración de rollout completo aparte, no implementada todavía.`);
+    }
+
+    const telefonosNotificados = new Set();
+    const repartidoresPermitidos = [];
+    for (const r of repartidores) {
+      const normalizado = normalizarTelefonoMX(r.telefono);
+      if (!normalizado) {
+        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- teléfono inválido`);
         continue;
       }
+      if (!r.activo) {
+        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- repartidor inactivo`);
+        continue;
+      }
+      if (!listaPiloto.has(normalizado)) {
+        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- no está en la lista blanca del piloto`);
+        continue;
+      }
+      if (telefonosNotificados.has(normalizado)) {
+        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- teléfono duplicado, ya notificado en esta misma fila de otro repartidor`);
+        continue;
+      }
+      telefonosNotificados.add(normalizado);
+      repartidoresPermitidos.push(r);
+    }
 
+    for (const r of repartidoresPermitidos) {
       // Token de aceptación de un solo uso, propio de ESTE repartidor y
       // ESTE pedido -- ver migración 033 y consumirTokenAceptacionRepartidor.
       const token = randomBytes(24).toString('base64url');
