@@ -9,8 +9,10 @@
 //
 // Cada migracion sigue viviendo en su propio script angosto
 // (predeploy-032-notificaciones-repartidor.mjs, predeploy-033-token-
-// aceptacion-repartidor.mjs) -- este runner no duplica su logica, solo
-// los invoca en orden.
+// aceptacion-repartidor.mjs, predeploy-034-modo-conversacion-repartidor.mjs)
+// -- este runner no duplica su logica, solo los invoca en orden. El nombre
+// de archivo se quedo en "032-033" por no generar un rename innecesario;
+// la lista SCRIPTS de abajo es la fuente de verdad de qué corre.
 import { execFileSync } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +21,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = [
   '032-notificaciones-repartidor',
   '033-token-aceptacion-repartidor',
+  '034-modo-conversacion-repartidor',
 ];
 
 for (const nombre of SCRIPTS) {

@@ -46,6 +46,7 @@ export const ORDEN_MIGRACIONES = [
   '031_sesiones_comerciales_error_recuperable.sql',
   '032_notificaciones_repartidor.sql',
   '033_token_aceptacion_repartidor.sql',
+  '034_modo_conversacion_repartidor.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

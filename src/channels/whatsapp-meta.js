@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -896,6 +896,18 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
   }
 }
 
+// ─── Enrutamiento repartidor/cliente — patrones de comandos de modo ─────────
+// Declarados ANTES del webhook porque el regex de auto-registro de abajo
+// ("... repartidor") también matchea por accidente frases como "modo
+// repartidor" o "salir de modo repartidor" (ambas terminan en la palabra
+// "repartidor") -- sin este guard, esas frases se interpretarían como un
+// intento de registrar a alguien llamado "modo" o "salir de modo". Ver
+// enrutarMensajeRepartidor más abajo para el resto de la máquina de estados.
+const RE_SALIR_MODO_REPARTIDOR = /^sal(ir)?\s+(de\s+)?modo\s+repartidor[.,!]?$/i;
+const RE_ENTRAR_MODO_REPARTIDOR = /^(modo\s+repartidor|disponible)[.,!]?$/i;
+const RE_MIS_ENTREGAS = /^mis\s+entregas[.,!]?$/i;
+const RE_INTENCION_CLIENTE = /quiero\s+(hacer\s+)?(un\s+)?pedido|quiero\s+ordenar|qu[eé]\s+venden|\bmen[uú]\b|quiero\s+(una\s+)?cotizaci[oó]n|quiero\s+comprar/i;
+
 // ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
 router.post('/', async (req, res) => {
   res.sendStatus(200); // Meta requiere 200 inmediato
@@ -995,8 +1007,13 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Detectar auto-registro: "repartidor Nombre Apellido"
-    const matchRep = texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i);
+    // Detectar auto-registro: "repartidor Nombre Apellido" -- nunca para
+    // los comandos de modo (ver comentario en las constantes RE_* arriba),
+    // que también contienen la palabra "repartidor" pero significan otra
+    // cosa para un repartidor ya registrado.
+    const textoTrim = texto.trim();
+    const esComandoDeModo = RE_ENTRAR_MODO_REPARTIDOR.test(textoTrim) || RE_SALIR_MODO_REPARTIDOR.test(textoTrim);
+    const matchRep = !esComandoDeModo && (texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i));
     if (matchRep) {
       const nombreRep = matchRep[1].trim();
       const rep = await registrarRepartidor(nombreRep, telefono, negocioId);
@@ -1014,34 +1031,11 @@ router.post('/', async (req, res) => {
     // Si el número ya es un repartidor registrado (de ESTE negocio)
     const repartidor = await obtenerRepartidorPorTelefono(telefono, negocioId);
     if (repartidor) {
-      // Detectar confirmación de entrega
-      if (/entregu[eé]|entregado|ya entregué|listo[.,!]?$/i.test(texto.trim())) {
-        const misPedidos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
-        const activo = misPedidos.find(p => !['entregado','cancelado'].includes(p.estado));
-        let msgEntrega;
-        if (activo) {
-          const { actualizarEstadoPedido } = await import('../orders/orderManager.js');
-          actualizarEstadoPedido(activo.folio, 'entregado');
-          msgEntrega = `✅ Perfecto ${repartidor.nombre}, el pedido ${activo.folio} quedó marcado como entregado. ¡Buen trabajo!`;
-          console.log(`[WA Repartidor] ${repartidor.nombre} confirmó entrega de ${activo.folio}`);
-        } else {
-          msgEntrega = `No tienes pedidos activos asignados en este momento.`;
-        }
-        await enviarMensaje(telefono, msgEntrega, credenciales);
-        await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId, 'cliente');
-        await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgEntrega, negocioId, 'bot');
-        return;
-      }
-      // Cualquier otro mensaje — mandar link
-      const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-        : 'https://xabor-agent-production.up.railway.app';
-      const msgLink = `Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`;
-      await enviarMensaje(telefono, msgLink, credenciales);
-      await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId, 'cliente');
-      await guardarMensaje(telefono, repartidor.nombre, 'saliente', msgLink, negocioId, 'bot');
-      console.log(`[Meta WA] Repartidor ${repartidor.nombre} detectado, se saltó el bot.`);
-      return;
+      const irAFlujoCliente = await enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId, credenciales });
+      if (!irAFlujoCliente) return;
+      // Intención de cliente detectada (o sin_modo/sin reparto activo/sin
+      // comando) -- cae al mismo flujo de IA que cualquier cliente normal,
+      // más abajo. No hay "return" aquí a propósito.
     }
 
     // Procesamiento con Claude — debounced 6 segundos
@@ -1055,6 +1049,106 @@ router.post('/', async (req, res) => {
     console.error('[Meta WA] Error:', error.message);
   }
 });
+
+// ─── Enrutamiento repartidor/cliente (incidencia real, piloto Nonna Maye) ───
+// Antes de este cambio, la sola existencia de una fila en `repartidores`
+// interceptaba TODOS los mensajes de ese teléfono salvo "entregué" -- un
+// repartidor no podía escribir "quiero hacer un pedido" y llegar al bot de
+// cliente, quedaba encerrado en el flujo de repartidor mientras la fila
+// existiera. Esta función reemplaza esa intercepción incondicional por
+// prioridades explícitas (acción de reparto activo > comando explícito de
+// repartidor > intención de cliente > modo_actual persistido). Devuelve
+// `true` si el mensaje debe continuar al flujo normal de cliente/IA (el
+// llamador NO hace return en ese caso), o `false` si ya se atendió aquí.
+// (RE_* declarados arriba, antes del webhook -- ver ahí el porqué.)
+async function enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId, credenciales }) {
+  const textoNorm = texto.trim();
+  const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : 'https://xabor-agent-production.up.railway.app';
+
+  async function responder(msg) {
+    await enviarMensaje(telefono, msg, credenciales);
+    await guardarMensaje(telefono, repartidor.nombre, 'entrante', texto, negocioId, 'cliente');
+    await guardarMensaje(telefono, repartidor.nombre, 'saliente', msg, negocioId, 'bot');
+  }
+
+  // Prioridad A — acción de un reparto activo. Se mantiene EXACTAMENTE
+  // igual que antes (no se toca el flujo de asignación/entrega ya
+  // probado): si no hay pedido activo asignado, informa y no falla.
+  if (/entregu[eé]|entregado|ya entregué|listo[.,!]?$/i.test(textoNorm)) {
+    const misPedidos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
+    const activo = misPedidos.find(p => !['entregado', 'cancelado'].includes(p.estado));
+    if (activo) {
+      // negocioId ya viene resuelto y confiable del propio webhook (Meta
+      // phone_number_id -> integraciones_canal), y `repartidor` ya se
+      // encontró filtrando por ese mismo negocioId (obtenerRepartidorPorTelefono)
+      // -- pasarlo aquí es la corrección correcta, no un bypass: hallazgo
+      // real (no introducido por este cambio) de que esta llamada nunca
+      // traía el tercer argumento que actualizarEstadoPedido exige desde
+      // el endurecimiento P0, así que "ya entregué" por WhatsApp nunca
+      // marcaba nada -- quedaba rechazado en silencio (ver warning en
+      // orderManager.js). No se toca actualizarEstadoPedidoLegacySinNegocio
+      // (reservada exclusivamente para /api/repartidor/pedido/:folio/entregado).
+      const { actualizarEstadoPedido } = await import('../orders/orderManager.js');
+      actualizarEstadoPedido(activo.folio, 'entregado', negocioId);
+      await responder(`✅ Perfecto ${repartidor.nombre}, el pedido ${activo.folio} quedó marcado como entregado. ¡Buen trabajo!`);
+      console.log(`[WA Repartidor] ${repartidor.nombre} confirmó entrega de ${activo.folio}`);
+    } else {
+      await responder('No tienes pedidos activos asignados en este momento.');
+    }
+    return false;
+  }
+
+  // Prioridad B — comandos explícitos de repartidor. Siempre se procesan,
+  // sin importar el modo_actual previo.
+  if (RE_SALIR_MODO_REPARTIDOR.test(textoNorm)) {
+    await actualizarModoConversacionRepartidor(repartidor.id, 'cliente');
+    await responder(`Listo ${repartidor.nombre}, saliste del modo repartidor. Ya puedes escribirme como cliente (por ejemplo, "quiero hacer un pedido").`);
+    return false;
+  }
+  if (RE_ENTRAR_MODO_REPARTIDOR.test(textoNorm)) {
+    await actualizarModoConversacionRepartidor(repartidor.id, 'repartidor');
+    await responder(`Hola ${repartidor.nombre} 👋 Quedaste en modo repartidor.\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html\n\nEscribe "salir de modo repartidor" cuando quieras volver a escribirme como cliente.`);
+    return false;
+  }
+  if (RE_MIS_ENTREGAS.test(textoNorm)) {
+    const misPedidos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
+    const msg = misPedidos.length
+      ? `Tienes ${misPedidos.length} pedido(s) asignado(s):\n` + misPedidos.map(p => `• ${p.folio} — ${p.estado}`).join('\n')
+      : 'No tienes pedidos asignados en este momento.';
+    await responder(msg);
+    return false;
+  }
+
+  // Prioridad C — intención de cliente: siempre gana, aunque haya un
+  // reparto activo o el modo previo fuera 'repartidor' (requisito
+  // explícito: nunca debe quedar encerrado en el rol de repartidor).
+  if (RE_INTENCION_CLIENTE.test(textoNorm)) {
+    await actualizarModoConversacionRepartidor(repartidor.id, 'cliente');
+    return true;
+  }
+
+  // Sin comando ni intención clara -- resolver por modo_actual persistido.
+  if (repartidor.modo_actual === 'cliente') return true;
+
+  if (repartidor.modo_actual === 'repartidor') {
+    await responder(`Hola ${repartidor.nombre} 👋\nEntra aquí para ver los pedidos disponibles:\n${BASE_URL}/repartidor.html`);
+    console.log(`[Meta WA] Repartidor ${repartidor.nombre} en modo repartidor, se saltó el bot.`);
+    return false;
+  }
+
+  // modo_actual === 'sin_modo': solo preguntamos si de verdad hay
+  // ambigüedad real (un reparto activo pendiente). Sin reparto activo, un
+  // mensaje neutro se trata como cliente por defecto -- nunca se encierra
+  // en un rol por la sola existencia del registro.
+  const misPedidosActivos = await obtenerPedidosAsignadosARepartidor(repartidor.id);
+  if (misPedidosActivos.length > 0) {
+    await responder('¿Quieres continuar como repartidor o realizar un pedido?');
+    return false;
+  }
+  return true;
+}
 
 // ─── Piloto de notificaciones por plantilla: lista blanca de teléfonos ──────
 // Mientras el piloto está en curso, repartidor_notif_plantilla_activo=true

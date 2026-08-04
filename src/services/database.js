@@ -2945,6 +2945,31 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   } catch (e) { return []; }
 }
 
+// ─── Modo de conversación repartidor/cliente (migración 034) ────────────────
+// Incidencia real: un teléfono registrado como repartidor quedaba
+// interceptado permanentemente por el flujo de repartidor en
+// whatsapp-meta.js, sin importar la intención real del mensaje. modo_actual
+// permite que el mismo teléfono sea cliente Y repartidor sin que uno
+// bloquee al otro -- ver enrutarMensajeEntrante en whatsapp-meta.js.
+const MODOS_CONVERSACION_VALIDOS = ['cliente', 'repartidor', 'sin_modo'];
+
+export async function actualizarModoConversacionRepartidor(repartidorId, modo) {
+  if (!MODOS_CONVERSACION_VALIDOS.includes(modo)) {
+    console.warn(`[DB] actualizarModoConversacionRepartidor: modo inválido "${modo}" -- rechazado`);
+    return false;
+  }
+  try {
+    await pool.query(
+      `UPDATE repartidores SET modo_actual = $1, modo_actualizado_at = NOW() WHERE id = $2`,
+      [modo, repartidorId]
+    );
+    return true;
+  } catch (e) {
+    console.error('[DB] Error actualizarModoConversacionRepartidor:', e.message);
+    return false;
+  }
+}
+
 // ─── Notificaciones a repartidores: registro de intentos y estado real ──────
 // (Diagnóstico repartidores: Xabor daba por entregado un mensaje solo
 // porque Meta aceptó la petición HTTP. Esta tabla registra cada intento y
