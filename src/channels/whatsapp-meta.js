@@ -21,6 +21,7 @@ import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from
 import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } from '../services/documentos.js';
 import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '../services/imagenes.js';
 import { getIntegracion } from '../server.js';
+import { normalizarTelefonoMX } from '../utils/telefono.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -1161,18 +1162,6 @@ async function enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId
 // todavía, y la ausencia de lista NUNCA debe interpretarse como "enviar a
 // todos".
 //
-// Normaliza a los últimos 10 dígitos para poder comparar sin importar si el
-// teléfono viene con o sin código de país (los datos reales en
-// `repartidores.telefono` están mezclados: algunas filas tienen 10 dígitos,
-// otras traen el prefijo 521 -- higiene de datos fuera de alcance de este
-// cambio, ver docs/piloto-notificaciones-repartidor.md sección 10).
-function normalizarTelefonoMX(telefono) {
-  if (typeof telefono !== 'string') return null;
-  const soloDigitos = telefono.replace(/\D/g, '');
-  if (soloDigitos.length < 10) return null;
-  return soloDigitos.slice(-10);
-}
-
 // Lee configuracion.repartidor_notif_piloto_telefonos y devuelve el conjunto
 // de teléfonos normalizados autorizados. Falla cerrado: si el valor está
 // ausente, vacío, o cada elemento resulta ilegible como teléfono, devuelve

@@ -1,0 +1,9 @@
+BEGIN;
+
+ALTER TABLE repartidores
+  DROP COLUMN IF EXISTS estado,
+  DROP COLUMN IF EXISTS ciudad,
+  DROP COLUMN IF EXISTS zona,
+  DROP COLUMN IF EXISTS vehiculo;
+
+COMMIT;

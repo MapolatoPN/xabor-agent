@@ -10,6 +10,7 @@ import {
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
+import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 // wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, inyectado
 // desde server.js, aislado por negocio. Usado por nuevo_pedido,
@@ -109,27 +110,13 @@ export function registrarPedido(orden, canal = 'test') {
 }
 
 // ─── Elegibilidad para la red de repartidores de Xabor ──────────────────────
-// Única fuente de verdad: notificación automática (emitirPedido, abajo),
-// notificarRepartidoresPorWA (whatsapp-meta.js, la vuelve a llamar como
-// defensa en profundidad), y cualquier consumidor futuro (reenvío manual,
-// botón "Buscar repartidor", rollout piloto/completo) deben decidir a
-// través de esta función -- nunca repetir el criterio por su cuenta.
-//
-// Regla crítica: un pedido de Rappi NUNCA debe entrar a la red de
-// repartidores de Xabor -- Rappi ya administra y asigna sus propios
-// repartidores. Se verifica canal='rappi' Y la presencia de
-// rappi_order_id por separado (defensa en profundidad: un pedido de Rappi
-// con el canal mal etiquetado por error igual queda excluido porque
-// mapearOrdenRappi siempre pobla rappi_order_id).
-export function esPedidoElegibleParaRedRepartidores(pedido) {
-  if (!pedido) return false;
-  if (pedido.modalidad !== 'entrega a domicilio') return false;
-  if (['cancelado', 'entregado'].includes(pedido.estado)) return false;
-  if (pedido.canal === 'rappi') return false;
-  if (pedido.rappi_order_id) return false;
-  if (pedido.repartidor_externo || pedido.integracion_externa === 'rappi') return false;
-  return true;
-}
+// Implementación movida a utils/elegibilidadRepartidor.js (leaf util, sin
+// dependencias) para que database.js (Red de Repartidores Superadmin)
+// pueda importarla también sin crear un ciclo (este módulo ya importa de
+// forma estática desde database.js). Se re-exporta aquí para no romper a
+// los consumidores existentes (whatsapp-meta.js, pruebas) que ya importan
+// esPedidoElegibleParaRedRepartidores desde orderManager.js.
+export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 export async function emitirPedido(pedido) {
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {

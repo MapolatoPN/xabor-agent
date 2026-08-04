@@ -1,6 +1,8 @@
 import pkg from 'pg';
 import { createHmac, createHash, randomBytes } from 'crypto';
 import { hashPassword } from './password.js';
+import { normalizarTelefonoMX } from '../utils/telefono.js';
+import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 const { Pool } = pkg;
 
 export const pool = new Pool({
@@ -2843,6 +2845,230 @@ export async function obtenerRepartidores(negocioId) {
   } catch (e) { return []; }
 }
 
+// ─── Red de Repartidores — Superadmin (roster y administración) ─────────────
+// A diferencia de obtenerRepartidores/guardarPushRepartidor (negocioId
+// OBLIGATORIO, falla cerrado — regla P0), estas funciones aceptan negocioId
+// OPCIONAL a propósito: el Superadmin necesita una vista global entre
+// negocios. Esto es una excepción deliberada, nunca un descuido — el
+// aislamiento se sigue garantizando en la capa de rutas (server.js): las
+// rutas /api/superadmin/* llaman sin negocioId tras pasar requireSuperadmin,
+// las rutas /api/admin/* SIEMPRE pasan el negocioId de la sesión y nunca
+// exponen el parámetro al cliente.
+
+export const ESTADOS_REPARTIDOR_VALIDOS = ['disponible', 'pausado', 'suspendido', 'baja'];
+
+// Única función que escribe `estado`. Sincroniza atómicamente `estado` y
+// `activo` en una sola UPDATE — disponible⇒activo=true, cualquier otro
+// valor⇒activo=false — para que el motor de notificaciones (que solo lee
+// `activo`, sin cambios) nunca quede desincronizado del estado administrativo.
+// Nunca reutiliza eliminarRepartidor (hard delete): "baja" es un estado, la
+// fila y su historial en notificaciones_repartidor/pedidos_activos permanecen.
+export async function cambiarEstadoRepartidor(id, nuevoEstado, { negocioId } = {}) {
+  if (!ESTADOS_REPARTIDOR_VALIDOS.includes(nuevoEstado)) {
+    console.warn(`[DB] cambiarEstadoRepartidor: estado inválido "${nuevoEstado}" — rechazado`);
+    return null;
+  }
+  const activo = nuevoEstado === 'disponible';
+  try {
+    const params = [nuevoEstado, activo, id];
+    let where = 'id = $3';
+    if (negocioId) {
+      params.push(negocioId);
+      where += ` AND negocio_id = $${params.length}`;
+    }
+    const r = await pool.query(
+      `UPDATE repartidores SET estado = $1, activo = $2 WHERE ${where} RETURNING *`,
+      params
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error cambiarEstadoRepartidor:', e.message);
+    return null;
+  }
+}
+
+export async function editarPerfilRepartidor(id, cambios, { negocioId } = {}) {
+  const camposPermitidos = ['nombre', 'ciudad', 'zona', 'vehiculo'];
+  const sets = [];
+  const params = [];
+  for (const campo of camposPermitidos) {
+    if (cambios[campo] !== undefined) {
+      params.push(cambios[campo]);
+      sets.push(`${campo} = $${params.length}`);
+    }
+  }
+  if (!sets.length) return null;
+  params.push(id);
+  let where = `id = $${params.length}`;
+  if (negocioId) {
+    params.push(negocioId);
+    where += ` AND negocio_id = $${params.length}`;
+  }
+  try {
+    const r = await pool.query(`UPDATE repartidores SET ${sets.join(', ')} WHERE ${where} RETURNING *`, params);
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error editarPerfilRepartidor:', e.message);
+    return null;
+  }
+}
+
+// Agrupa repartidores por teléfono normalizado (mismo criterio que
+// normalizarTelefonoMX, usado también por whatsapp-meta.js para el dedupe de
+// envío) y devuelve solo los grupos con más de una fila — nunca elimina ni
+// modifica nada, es de solo lectura.
+export async function detectarDuplicadosRepartidor(negocioId = null) {
+  try {
+    const where = negocioId ? 'WHERE negocio_id = $1' : '';
+    const params = negocioId ? [negocioId] : [];
+    const r = await pool.query(`
+      SELECT id, nombre, telefono, negocio_id, activo, estado, created_at
+      FROM repartidores
+      ${where}
+      ORDER BY activo DESC, nombre ASC
+    `, params);
+    const grupos = new Map();
+    for (const fila of r.rows) {
+      const norm = normalizarTelefonoMX(fila.telefono);
+      if (!norm) continue;
+      if (!grupos.has(norm)) grupos.set(norm, []);
+      grupos.get(norm).push(fila);
+    }
+    return [...grupos.entries()]
+      .filter(([, filas]) => filas.length > 1)
+      .map(([telefonoNormalizado, filas]) => ({ telefonoNormalizado, filas }));
+  } catch (e) {
+    console.error('[DB] Error detectarDuplicadosRepartidor:', e.message);
+    return [];
+  }
+}
+
+// Tarjetas resumen del roster. "ocupado" es derivado (disponible + pedido
+// activo asignado), nunca un valor persistido — ver migración 035.
+export async function obtenerResumenRosterRepartidores(negocioId = null) {
+  try {
+    const where = negocioId ? 'WHERE negocio_id = $1' : '';
+    const params = negocioId ? [negocioId] : [];
+    const r = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE estado = 'disponible' AND NOT EXISTS (
+          SELECT 1 FROM pedidos_activos pa
+          WHERE pa.datos->>'repartidor_id' = repartidores.id::text
+            AND pa.negocio_id = repartidores.negocio_id
+            AND pa.estado NOT IN ('entregado', 'cancelado')
+        ))::int AS disponibles,
+        COUNT(*) FILTER (WHERE estado = 'disponible' AND EXISTS (
+          SELECT 1 FROM pedidos_activos pa
+          WHERE pa.datos->>'repartidor_id' = repartidores.id::text
+            AND pa.negocio_id = repartidores.negocio_id
+            AND pa.estado NOT IN ('entregado', 'cancelado')
+        ))::int AS ocupados,
+        COUNT(*) FILTER (WHERE estado = 'pausado')::int AS pausados,
+        COUNT(*) FILTER (WHERE estado = 'suspendido')::int AS suspendidos,
+        COUNT(*) FILTER (WHERE estado = 'baja')::int AS bajas
+      FROM repartidores
+      ${where}
+    `, params);
+    const duplicados = await detectarDuplicadosRepartidor(negocioId);
+    return { ...r.rows[0], duplicados: duplicados.length };
+  } catch (e) {
+    console.error('[DB] Error obtenerResumenRosterRepartidores:', e.message);
+    return { total: 0, disponibles: 0, ocupados: 0, pausados: 0, suspendidos: 0, bajas: 0, duplicados: 0 };
+  }
+}
+
+// Roster con filtros y paginación. Replica EXACTAMENTE el ORDER BY de
+// obtenerRepartidores (activo DESC, nombre ASC) para que la fila "canónica"
+// en caso de duplicados sea siempre la misma que ya usa el motor de envío.
+// actividad: 'reciente' (<=7 días), 'inactivo' (>30 días o nunca), null (todos).
+export async function obtenerRosterRepartidores({
+  negocioId = null,
+  estado = null,
+  actividad = null,
+  soloDuplicados = false,
+  busqueda = null,
+  page = 1,
+  pageSize = 50,
+} = {}) {
+  try {
+    const condiciones = [];
+    const params = [];
+    if (negocioId) { params.push(negocioId); condiciones.push(`r.negocio_id = $${params.length}`); }
+    if (estado) { params.push(estado); condiciones.push(`r.estado = $${params.length}`); }
+    if (busqueda) {
+      params.push(`%${busqueda.toLowerCase()}%`);
+      const idxNombre = params.length;
+      const soloDigitos = busqueda.replace(/\D/g, '');
+      params.push(`%${soloDigitos}%`);
+      const idxTel = params.length;
+      condiciones.push(`(LOWER(r.nombre) LIKE $${idxNombre} OR r.telefono LIKE $${idxTel})`);
+    }
+    const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+
+    const r = await pool.query(`
+      WITH base AS (
+        SELECT r.id, r.nombre, r.telefono, r.activo, r.estado, r.negocio_id, r.ciudad, r.zona,
+          r.vehiculo, r.created_at, r.modo_actual,
+          n.nombre AS negocio_nombre,
+          (SELECT MAX(m.timestamp) FROM mensajes m
+           WHERE RIGHT(regexp_replace(m.telefono, '\\D', '', 'g'), 10) = RIGHT(regexp_replace(r.telefono, '\\D', '', 'g'), 10)
+             AND m.direccion = 'entrante') AS ultima_actividad,
+          (SELECT MAX(nr.created_at) FROM notificaciones_repartidor nr WHERE nr.repartidor_id = r.id) AS ultima_notificacion,
+          COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.repartidor_id = r.id AND nr.token_usado_at IS NOT NULL), 0)::int AS servicios_aceptados,
+          COALESCE((SELECT COUNT(*) FROM pedidos_activos pa WHERE pa.datos->>'repartidor_id' = r.id::text AND pa.estado = 'entregado'), 0)::int AS servicios_entregados,
+          EXISTS(SELECT 1 FROM pedidos_activos pa WHERE pa.datos->>'repartidor_id' = r.id::text AND pa.negocio_id = r.negocio_id AND pa.estado NOT IN ('entregado', 'cancelado')) AS ocupado_derivado
+        FROM repartidores r
+        LEFT JOIN negocios n ON n.id = r.negocio_id
+        ${where}
+      )
+      SELECT *,
+        CASE WHEN estado = 'disponible' AND ocupado_derivado THEN 'ocupado' ELSE estado END AS estado_operativo,
+        COUNT(*) OVER () AS total_filtrado
+      FROM base
+      ${actividad === 'reciente' ? "WHERE ultima_actividad >= NOW() - INTERVAL '7 days'" : ''}
+      ${actividad === 'inactivo' ? "WHERE (ultima_actividad IS NULL OR ultima_actividad < NOW() - INTERVAL '30 days')" : ''}
+      ORDER BY activo DESC, nombre ASC
+      LIMIT ${Number(pageSize)} OFFSET ${Number((page - 1) * pageSize)}
+    `, params);
+
+    let filas = r.rows;
+    const total = filas.length ? Number(filas[0].total_filtrado) : 0;
+    filas = filas.map(({ total_filtrado, ...resto }) => resto);
+
+    if (soloDuplicados) {
+      const grupos = await detectarDuplicadosRepartidor(negocioId);
+      const idsDuplicados = new Set(grupos.flatMap((g) => g.filas.map((f) => f.id)));
+      filas = filas.filter((f) => idsDuplicados.has(f.id));
+    }
+
+    return { filas, total, page, pageSize };
+  } catch (e) {
+    console.error('[DB] Error obtenerRosterRepartidores:', e.message);
+    return { filas: [], total: 0, page, pageSize };
+  }
+}
+
+export async function obtenerDetalleRepartidor(id, negocioId = null) {
+  try {
+    const where = negocioId ? 'r.id = $1 AND r.negocio_id = $2' : 'r.id = $1';
+    const params = negocioId ? [id, negocioId] : [id];
+    const r = await pool.query(`
+      SELECT r.*, n.nombre AS negocio_nombre,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.repartidor_id = r.id), 0)::int AS servicios_notificados,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.repartidor_id = r.id AND nr.token_usado_at IS NOT NULL), 0)::int AS servicios_aceptados,
+        COALESCE((SELECT COUNT(*) FROM pedidos_activos pa WHERE pa.datos->>'repartidor_id' = r.id::text AND pa.estado = 'entregado'), 0)::int AS servicios_entregados
+      FROM repartidores r
+      LEFT JOIN negocios n ON n.id = r.negocio_id
+      WHERE ${where}
+    `, params);
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerDetalleRepartidor:', e.message);
+    return null;
+  }
+}
+
 // negocioId OBLIGATORIO — falla cerrado (Auditoría P0 complementaria,
 // push). El llamador debe derivarlo del propio repartidor autenticado
 // (req.repartidor.negocio_id), nunca de un valor enviado aparte.
@@ -3103,6 +3329,156 @@ export async function obtenerNotificacionesPedido(pedidoFolio, negocioId) {
     );
     return r.rows;
   } catch (e) { return []; }
+}
+
+// ─── Red de Repartidores — Superadmin (Fase B mínima: servicios de reparto) ─
+// negocioId OPCIONAL a propósito (ver nota junto a cambiarEstadoRepartidor):
+// Superadmin ve todos los negocios, negocio-admin siempre pasa el suyo desde
+// la sesión. Nunca se guarda ningún estado nuevo aquí — todo se DERIVA de
+// pedidos_activos + notificaciones_repartidor en el momento de la consulta.
+//
+// Exclusión de Rappi: se reutiliza esPedidoDeRedExterna (misma fuente que
+// esPedidoElegibleParaRedRepartidores, usada por la notificación real) sobre
+// un objeto reconstruido de campos de datos JSONB — nunca se reimplementa el
+// criterio con SQL aparte. Los pedidos de Rappi se separan a `externas`,
+// jamás se cuentan en la lista principal ni en sus agregados.
+function derivarEstadoServicioReparto(row, tieneAsignado) {
+  if (row.estado === 'cancelado') return 'cancelado';
+  if (row.estado === 'entregado') return 'entregado';
+  if (tieneAsignado) return 'asignado';
+  const intentos = Number(row.intentos) || 0;
+  if (intentos > 0 && Number(row.failed) === intentos) return 'sin_cobertura';
+  return 'buscando';
+}
+
+export async function obtenerServiciosReparto({
+  negocioId = null,
+  desde = null,
+  hasta = null,
+  page = 1,
+  pageSize = 50,
+} = {}) {
+  try {
+    const condiciones = [`datos->>'modalidad' = 'entrega a domicilio'`];
+    const params = [];
+    if (negocioId) { params.push(negocioId); condiciones.push(`negocio_id = $${params.length}`); }
+    if (desde) { params.push(desde); condiciones.push(`created_at >= $${params.length}`); }
+    if (hasta) { params.push(hasta); condiciones.push(`created_at <= $${params.length}`); }
+
+    const r = await pool.query(`
+      SELECT pa.folio, pa.negocio_id, pa.estado, pa.created_at, pa.datos, n.nombre AS negocio_nombre,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio), 0)::int AS intentos,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado IN ('entregado', 'leido')), 0)::int AS delivered,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado = 'leido'), 0)::int AS leido,
+        COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado IN ('fallido', 'error_envio')), 0)::int AS failed,
+        (SELECT MIN(nr.token_usado_at) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.token_usado_at IS NOT NULL) AS hora_aceptacion
+      FROM pedidos_activos pa
+      LEFT JOIN negocios n ON n.id = pa.negocio_id
+      WHERE ${condiciones.join(' AND ')}
+      ORDER BY pa.created_at DESC
+      LIMIT ${Number(pageSize)} OFFSET ${Number((page - 1) * pageSize)}
+    `, params);
+
+    const redXabor = [];
+    const externas = [];
+    for (const row of r.rows) {
+      const pedidoShape = {
+        modalidad: row.datos?.modalidad,
+        canal: row.datos?.canal,
+        rappi_order_id: row.datos?.rappi_order_id,
+        repartidor_externo: row.datos?.repartidor_externo,
+        integracion_externa: row.datos?.integracion_externa,
+      };
+      if (esPedidoDeRedExterna(pedidoShape)) {
+        externas.push({
+          folio: row.folio, negocioId: row.negocio_id, negocioNombre: row.negocio_nombre, fecha: row.created_at,
+          monto: row.datos?.total, etiqueta: 'Entrega gestionada por Rappi',
+        });
+        continue;
+      }
+      const asignado = row.datos?.repartidor_id
+        ? { id: row.datos.repartidor_id, nombre: row.datos.repartidor_nombre || null }
+        : null;
+      redXabor.push({
+        folio: row.folio,
+        negocioId: row.negocio_id,
+        negocioNombre: row.negocio_nombre,
+        fecha: row.created_at,
+        monto: row.datos?.total,
+        estadoDerivado: derivarEstadoServicioReparto(row, !!asignado),
+        // En esta fase mínima "elegibles notificados" se aproxima al número
+        // real de intentos generados (a quién se le envió) -- un conteo de
+        // "quién pudo ser elegible en ese momento" requeriría una foto
+        // histórica del roster que hoy no se captura; fuera de alcance de
+        // Fase B mínima.
+        intentosNotificados: row.intentos,
+        delivered: row.delivered,
+        leido: row.leido,
+        failed: row.failed,
+        repartidorAsignado: asignado,
+        horaAceptacion: row.hora_aceptacion,
+      });
+    }
+    return { redXabor, externas, page, pageSize };
+  } catch (e) {
+    console.error('[DB] Error obtenerServiciosReparto:', e.message);
+    return { redXabor: [], externas: [], page, pageSize };
+  }
+}
+
+// Detalle básico de un servicio: pedido + lista de repartidores realmente
+// notificados con su estado real (Meta) y si aceptaron. NO incluye una
+// línea de tiempo visual avanzada ni "motivo de exclusión" para
+// repartidores que nunca llegaron a generar una fila aquí (p.ej. excluidos
+// por no estar en la whitelist en modo piloto) -- eso requeriría capturar
+// las exclusiones en el momento de decidir, algo que hoy solo se loguea a
+// consola; queda fuera de esta Fase B mínima, documentado como límite
+// conocido.
+export async function obtenerDetalleServicioReparto(folio, negocioId = null) {
+  try {
+    const wherePedido = negocioId ? 'folio = $1 AND negocio_id = $2' : 'folio = $1';
+    const paramsPedido = negocioId ? [folio, negocioId] : [folio];
+    const { rows: pedidoRows } = await pool.query(
+      `SELECT folio, negocio_id, estado, created_at, datos FROM pedidos_activos WHERE ${wherePedido}`,
+      paramsPedido
+    );
+    const pedido = pedidoRows[0];
+    if (!pedido) return null;
+
+    const { rows: notificados } = await pool.query(`
+      SELECT nr.id, nr.repartidor_id, r.nombre, r.telefono, nr.canal, nr.estado, nr.wamid,
+        nr.error_codigo, nr.error_detalle, nr.created_at, nr.updated_at, nr.token_usado_at
+      FROM notificaciones_repartidor nr
+      JOIN repartidores r ON r.id = nr.repartidor_id
+      WHERE nr.pedido_folio = $1 AND nr.negocio_id = $2
+      ORDER BY nr.created_at ASC
+    `, [pedido.folio, pedido.negocio_id]);
+
+    return {
+      folio: pedido.folio,
+      negocioId: pedido.negocio_id,
+      estado: pedido.estado,
+      creadoEn: pedido.created_at,
+      repartidorAsignado: pedido.datos?.repartidor_id
+        ? { id: pedido.datos.repartidor_id, nombre: pedido.datos.repartidor_nombre || null }
+        : null,
+      notificados: notificados.map((n) => ({
+        repartidorId: n.repartidor_id,
+        nombre: n.nombre,
+        telefonoOculto: n.telefono ? `...${n.telefono.slice(-4)}` : null,
+        canal: n.canal,
+        estado: n.estado,
+        wamid: n.wamid,
+        error: (n.error_codigo || n.error_detalle) ? `${n.error_codigo || ''} ${n.error_detalle || ''}`.trim() : null,
+        creadoEn: n.created_at,
+        actualizadoEn: n.updated_at,
+        acepto: !!n.token_usado_at,
+      })),
+    };
+  } catch (e) {
+    console.error('[DB] Error obtenerDetalleServicioReparto:', e.message);
+    return null;
+  }
 }
 
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0). Sin esto, cualquier

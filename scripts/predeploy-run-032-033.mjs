@@ -22,6 +22,7 @@ const SCRIPTS = [
   '032-notificaciones-repartidor',
   '033-token-aceptacion-repartidor',
   '034-modo-conversacion-repartidor',
+  '035-perfil-repartidor',
 ];
 
 for (const nombre of SCRIPTS) {
