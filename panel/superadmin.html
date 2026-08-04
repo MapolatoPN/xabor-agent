@@ -56,6 +56,16 @@
   .badge-prospecto-seguimiento { background:#ffedd5; color:#c2410c; }
   .badge-prospecto-convertido { background:#dcfce7; color:var(--ok); }
   .badge-prospecto-descartado { background:#f1f5f9; color:#475569; }
+  .badge-rep-disponible { background:#dcfce7; color:var(--ok); }
+  .badge-rep-ocupado { background:#dbeafe; color:#1d4ed8; }
+  .badge-rep-pausado { background:#fef3c7; color:var(--warn); }
+  .badge-rep-suspendido { background:#fee2e2; color:var(--danger); }
+  .badge-rep-baja { background:#f1f5f9; color:#475569; }
+  .badge-svc-buscando { background:#fef3c7; color:var(--warn); }
+  .badge-svc-asignado { background:#dbeafe; color:#1d4ed8; }
+  .badge-svc-entregado { background:#dcfce7; color:var(--ok); }
+  .badge-svc-cancelado { background:#f1f5f9; color:#475569; }
+  .badge-svc-sin_cobertura { background:#fee2e2; color:var(--danger); }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
   input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
   input[type=search] { width:220px; }
@@ -107,6 +117,7 @@
     <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Dashboard</button>
     <button class="tab" data-tab="negocios" onclick="irVista('negocios')">Negocios</button>
     <button class="tab" data-tab="prospectos" onclick="irVista('prospectos')">Prospectos</button>
+    <button class="tab" data-tab="repartidores" onclick="irVista('repartidores')">Red de Repartidores</button>
     <button class="tab" data-tab="auditoria" onclick="irVista('auditoria')">Auditoría</button>
   </nav>
   <main>
@@ -288,6 +299,112 @@
       </div>
     </div>
 
+    <!-- RED DE REPARTIDORES -->
+    <div id="vista-repartidores" class="vista">
+      <h1>Red de Repartidores</h1>
+      <div class="grid-stats" id="rp-stats"></div>
+      <div class="toolbar">
+        <button class="tab activo" data-subtab="roster" style="border-bottom:2px solid var(--accent);" onclick="cambiarSubvistaRepartidores('roster')">Repartidores</button>
+        <button class="tab" data-subtab="servicios" onclick="cambiarSubvistaRepartidores('servicios')">Servicios de reparto</button>
+      </div>
+
+      <!-- Sub-vista: roster -->
+      <div id="rp-sub-roster">
+        <div class="toolbar">
+          <select id="rp-negocio" onchange="cargarResumenRepartidores(); cargarRosterRepartidores();"><option value="">Todos los negocios</option></select>
+          <select id="rp-estado" onchange="cargarRosterRepartidores()">
+            <option value="">Todos los estados</option>
+            <option value="disponible">Disponible</option>
+            <option value="pausado">Pausado</option>
+            <option value="suspendido">Suspendido</option>
+            <option value="baja">Baja</option>
+          </select>
+          <select id="rp-actividad" onchange="cargarRosterRepartidores()">
+            <option value="">Cualquier actividad</option>
+            <option value="reciente">Activo últimos 7 días</option>
+            <option value="inactivo">Inactivo (30+ días o nunca)</option>
+          </select>
+          <input type="search" id="rp-buscar" placeholder="Buscar por nombre o teléfono…" oninput="cargarRosterRepartidores()">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.83rem;color:var(--muted);">
+            <input type="checkbox" id="rp-solo-duplicados" onchange="cargarRosterRepartidores()"> Solo duplicados
+          </label>
+        </div>
+        <div class="card" style="padding:0;overflow-x:auto;">
+          <table>
+            <thead><tr><th>Nombre</th><th>Teléfono</th><th>Negocio</th><th>Estado</th><th>Ciudad/Zona/Vehículo</th><th>Última actividad</th><th>Aceptados / Entregados</th></tr></thead>
+            <tbody id="rp-tabla"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sub-vista: servicios de reparto -->
+      <div id="rp-sub-servicios" style="display:none;">
+        <div class="toolbar">
+          <select id="sv-negocio" onchange="cargarServiciosReparto()"><option value="">Todos los negocios</option></select>
+          <input type="date" id="sv-desde" onchange="cargarServiciosReparto()">
+          <input type="date" id="sv-hasta" onchange="cargarServiciosReparto()">
+        </div>
+        <div class="card" style="padding:0;overflow-x:auto;">
+          <table>
+            <thead><tr><th>Folio</th><th>Fecha</th><th>Negocio</th><th>Estado</th><th>Repartidor asignado</th><th>Notificados</th><th>Entregado/Leído/Falló</th></tr></thead>
+            <tbody id="sv-tabla"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Entregas gestionadas por plataformas externas</h2>
+          <div style="font-size:0.8rem;color:var(--muted);margin-bottom:10px;">
+            Pedidos de Rappi u otra plataforma externa — nunca forman parte de la Red Xabor ni de sus métricas de cobertura.
+          </div>
+          <div id="sv-externas" class="empty">Cargando…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DETALLE REPARTIDOR -->
+    <div id="vista-repartidor-detalle" class="vista">
+      <div class="back-link" onclick="irVista('repartidores')">← Volver a Red de Repartidores</div>
+      <h1 id="rd-titulo">Detalle del repartidor</h1>
+      <div class="card seccion-detalle">
+        <h2>Estado</h2>
+        <div class="fila-lista"><span>Estado actual</span><span id="rd-estado-actual"></span></div>
+        <div class="toolbar">
+          <select id="rd-estado-select">
+            <option value="disponible">Disponible</option>
+            <option value="pausado">Pausado</option>
+            <option value="suspendido">Suspendido</option>
+            <option value="baja">Baja</option>
+          </select>
+          <button class="btn secundario" onclick="cambiarEstadoRepartidorUI()">Guardar estado</button>
+        </div>
+        <div style="font-size:0.78rem;color:var(--muted);">"Baja" no borra historial — el repartidor deja de recibir servicios pero su registro de entregas se conserva.</div>
+        <div class="feedback" id="rd-feedback"></div>
+      </div>
+      <div class="card seccion-detalle">
+        <h2>Perfil</h2>
+        <div class="campo"><label>Nombre</label><input id="rd-nombre"></div>
+        <div class="campo"><label>Ciudad</label><input id="rd-ciudad"></div>
+        <div class="campo"><label>Zona</label><input id="rd-zona"></div>
+        <div class="campo"><label>Vehículo</label><input id="rd-vehiculo"></div>
+        <button class="btn secundario" onclick="guardarPerfilRepartidorUI()">Guardar perfil</button>
+        <div class="feedback" id="rd-perfil-feedback"></div>
+      </div>
+      <div class="card seccion-detalle">
+        <h2>Historial</h2>
+        <div id="rd-historial"></div>
+      </div>
+    </div>
+
+    <!-- DETALLE SERVICIO DE REPARTO -->
+    <div id="vista-servicio-detalle" class="vista">
+      <div class="back-link" onclick="volverAServiciosReparto()">← Volver a servicios de reparto</div>
+      <h1 id="svd-titulo">Detalle del servicio</h1>
+      <div class="card seccion-detalle" id="svd-info"></div>
+      <div class="card seccion-detalle">
+        <h2>Repartidores notificados</h2>
+        <div id="svd-notificados"></div>
+      </div>
+    </div>
+
     <!-- AUDITORIA -->
     <div id="vista-auditoria" class="vista">
       <h1>Auditoría de plataforma</h1>
@@ -460,6 +577,7 @@ function irVista(nombre) {
   if (nombre === 'dashboard') api('/api/superadmin/dashboard').then(r => r.json()).then(renderDashboard);
   if (nombre === 'negocios') cargarNegocios();
   if (nombre === 'prospectos') cargarProspectos();
+  if (nombre === 'repartidores') cargarVistaRepartidores();
   if (nombre === 'auditoria') cargarAuditoria();
 }
 
@@ -1220,6 +1338,216 @@ async function cargarAuditoria() {
       <td data-label="Negocio">${a.negocio_nombre ? escaparHTML(a.negocio_nombre) : '—'}</td>
     </tr>
   `).join('') : '<tr><td colspan="4" class="empty">Sin actividad todavía</td></tr>';
+}
+
+// ─── Red de Repartidores ────────────────────────────────────────────────────
+let negociosCacheRepartidores = null;
+async function obtenerNegociosParaFiltro() {
+  if (negociosCacheRepartidores) return negociosCacheRepartidores;
+  const r = await api('/api/superadmin/negocios');
+  negociosCacheRepartidores = await r.json();
+  return negociosCacheRepartidores;
+}
+
+async function poblarSelectsNegocioRepartidores() {
+  const negocios = await obtenerNegociosParaFiltro();
+  const opciones = '<option value="">Todos los negocios</option>' + negocios.map(n => `<option value="${n.id}">${escaparHTML(n.nombre)}</option>`).join('');
+  const selRp = document.getElementById('rp-negocio');
+  const selSv = document.getElementById('sv-negocio');
+  if (selRp && selRp.options.length <= 1) selRp.innerHTML = opciones;
+  if (selSv && selSv.options.length <= 1) selSv.innerHTML = opciones;
+}
+
+function cambiarSubvistaRepartidores(sub) {
+  document.getElementById('rp-sub-roster').style.display = sub === 'roster' ? 'block' : 'none';
+  document.getElementById('rp-sub-servicios').style.display = sub === 'servicios' ? 'block' : 'none';
+  document.querySelectorAll('button[data-subtab]').forEach(b => {
+    const activo = b.dataset.subtab === sub;
+    b.classList.toggle('activo', activo);
+    b.style.borderBottom = activo ? '2px solid var(--accent)' : '2px solid transparent';
+  });
+  if (sub === 'roster') cargarRosterRepartidores();
+  if (sub === 'servicios') cargarServiciosReparto();
+}
+
+async function cargarVistaRepartidores() {
+  await poblarSelectsNegocioRepartidores();
+  await cargarResumenRepartidores();
+  cambiarSubvistaRepartidores('roster');
+}
+
+// Distinto de irVista('repartidores') (que siempre vuelve a la sub-vista
+// roster): este es el "volver" desde el detalle de un servicio, que debe
+// reabrir específicamente la sub-vista de servicios. Secuencial y sin
+// condición de carrera con cargarVistaRepartidores (que también es async).
+async function volverAServiciosReparto() {
+  document.querySelectorAll('.vista').forEach(v => v.classList.remove('activa'));
+  document.getElementById('vista-repartidores').classList.add('activa');
+  document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === 'repartidores'));
+  await poblarSelectsNegocioRepartidores();
+  await cargarResumenRepartidores();
+  cambiarSubvistaRepartidores('servicios');
+}
+
+async function cargarResumenRepartidores() {
+  const negocioId = document.getElementById('rp-negocio')?.value || '';
+  const params = new URLSearchParams(negocioId ? { negocioId } : {});
+  const r = await api('/api/superadmin/red-repartidores/resumen?' + params);
+  const d = await r.json();
+  document.getElementById('rp-stats').innerHTML = `
+    <div class="stat"><div class="num">${d.total}</div><div class="lbl">Total</div></div>
+    <div class="stat"><div class="num">${d.disponibles}</div><div class="lbl">Disponibles</div></div>
+    <div class="stat"><div class="num">${d.ocupados}</div><div class="lbl">Ocupados</div></div>
+    <div class="stat"><div class="num">${d.pausados}</div><div class="lbl">Pausados</div></div>
+    <div class="stat"><div class="num">${d.suspendidos}</div><div class="lbl">Suspendidos</div></div>
+    <div class="stat"><div class="num">${d.bajas}</div><div class="lbl">Bajas</div></div>
+    <div class="stat"><div class="num">${d.duplicados}</div><div class="lbl">Grupos duplicados</div></div>
+  `;
+}
+
+function badgeEstadoOperativoRepartidor(estado) {
+  const etiquetas = { disponible:'Disponible', ocupado:'Ocupado', pausado:'Pausado', suspendido:'Suspendido', baja:'Baja' };
+  return `<span class="badge badge-rep-${estado}">${etiquetas[estado] || estado}</span>`;
+}
+
+async function cargarRosterRepartidores() {
+  const negocioId = document.getElementById('rp-negocio').value;
+  const estado = document.getElementById('rp-estado').value;
+  const actividad = document.getElementById('rp-actividad').value;
+  const busqueda = document.getElementById('rp-buscar').value;
+  const soloDuplicados = document.getElementById('rp-solo-duplicados').checked;
+  const params = new URLSearchParams({ estado, actividad, busqueda, soloDuplicados: soloDuplicados ? 'true' : 'false' });
+  if (negocioId) params.set('negocioId', negocioId);
+  const r = await api('/api/superadmin/red-repartidores/roster?' + params);
+  const { filas } = await r.json();
+  const tbody = document.getElementById('rp-tabla');
+  if (!filas.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">Sin resultados</td></tr>'; return; }
+  tbody.innerHTML = filas.map(f => `
+    <tr class="clickable" onclick="verDetalleRepartidor('${f.id}')">
+      <td data-label="Nombre">${escaparHTML(f.nombre)}</td>
+      <td data-label="Teléfono">${escaparHTML(f.telefono)}</td>
+      <td data-label="Negocio">${f.negocio_nombre ? escaparHTML(f.negocio_nombre) : '—'}</td>
+      <td data-label="Estado">${badgeEstadoOperativoRepartidor(f.estado_operativo)}</td>
+      <td data-label="Ciudad/Zona/Vehículo">${[f.ciudad, f.zona, f.vehiculo].filter(Boolean).map(escaparHTML).join(' · ') || '—'}</td>
+      <td data-label="Última actividad">${f.ultima_actividad ? fechaCorta(f.ultima_actividad) : 'Nunca'}</td>
+      <td data-label="Aceptados / Entregados">${f.servicios_aceptados} / ${f.servicios_entregados}</td>
+    </tr>
+  `).join('');
+}
+
+let repartidorActualId = null;
+async function verDetalleRepartidor(id) {
+  repartidorActualId = id;
+  irVista('repartidor-detalle');
+  const r = await api('/api/superadmin/red-repartidores/roster/' + id);
+  if (!r.ok) { alert('No se pudo cargar el repartidor'); return; }
+  const d = await r.json();
+  document.getElementById('rd-titulo').textContent = d.nombre + ' — ' + d.telefono;
+  const operativo = d.estado === 'disponible' ? 'disponible' : d.estado;
+  document.getElementById('rd-estado-actual').innerHTML = badgeEstadoOperativoRepartidor(operativo);
+  document.getElementById('rd-estado-select').value = d.estado;
+  document.getElementById('rd-nombre').value = d.nombre || '';
+  document.getElementById('rd-ciudad').value = d.ciudad || '';
+  document.getElementById('rd-zona').value = d.zona || '';
+  document.getElementById('rd-vehiculo').value = d.vehiculo || '';
+  document.getElementById('rd-feedback').textContent = '';
+  document.getElementById('rd-perfil-feedback').textContent = '';
+  document.getElementById('rd-historial').innerHTML = `
+    <div class="fila-lista"><span>Negocio</span><span>${d.negocio_nombre ? escaparHTML(d.negocio_nombre) : '—'}</span></div>
+    <div class="fila-lista"><span>Servicios notificados</span><span>${d.servicios_notificados}</span></div>
+    <div class="fila-lista"><span>Servicios aceptados</span><span>${d.servicios_aceptados}</span></div>
+    <div class="fila-lista"><span>Servicios entregados</span><span>${d.servicios_entregados}</span></div>
+    <div class="fila-lista"><span>Alta</span><span>${fechaCorta(d.created_at)}</span></div>
+  `;
+}
+
+async function cambiarEstadoRepartidorUI() {
+  const estado = document.getElementById('rd-estado-select').value;
+  const fb = document.getElementById('rd-feedback');
+  fb.textContent = 'Guardando…'; fb.className = 'feedback';
+  const r = await api('/api/superadmin/red-repartidores/roster/' + repartidorActualId + '/estado', { method:'PATCH', body: JSON.stringify({ estado }) });
+  if (!r.ok) { const e = await r.json().catch(()=>({})); fb.textContent = e.error || 'No se pudo cambiar el estado'; fb.className = 'feedback err'; return; }
+  const d = await r.json();
+  document.getElementById('rd-estado-actual').innerHTML = badgeEstadoOperativoRepartidor(d.estado);
+  fb.textContent = 'Estado actualizado'; fb.className = 'feedback ok';
+}
+
+async function guardarPerfilRepartidorUI() {
+  const cambios = {
+    nombre: document.getElementById('rd-nombre').value.trim(),
+    ciudad: document.getElementById('rd-ciudad').value.trim() || null,
+    zona: document.getElementById('rd-zona').value.trim() || null,
+    vehiculo: document.getElementById('rd-vehiculo').value.trim() || null,
+  };
+  const fb = document.getElementById('rd-perfil-feedback');
+  fb.textContent = 'Guardando…'; fb.className = 'feedback';
+  const r = await api('/api/superadmin/red-repartidores/roster/' + repartidorActualId + '/perfil', { method:'PATCH', body: JSON.stringify(cambios) });
+  if (!r.ok) { const e = await r.json().catch(()=>({})); fb.textContent = e.error || 'No se pudo guardar'; fb.className = 'feedback err'; return; }
+  fb.textContent = 'Perfil actualizado'; fb.className = 'feedback ok';
+}
+
+function badgeEstadoServicio(estado) {
+  const etiquetas = { buscando:'Buscando repartidor', asignado:'Asignado', entregado:'Entregado', cancelado:'Cancelado', sin_cobertura:'Sin cobertura' };
+  return `<span class="badge badge-svc-${estado}">${etiquetas[estado] || estado}</span>`;
+}
+
+async function cargarServiciosReparto() {
+  const negocioId = document.getElementById('sv-negocio').value;
+  const desde = document.getElementById('sv-desde').value;
+  const hasta = document.getElementById('sv-hasta').value;
+  const params = new URLSearchParams();
+  if (negocioId) params.set('negocioId', negocioId);
+  if (desde) params.set('desde', desde);
+  if (hasta) params.set('hasta', hasta);
+  const r = await api('/api/superadmin/red-repartidores/servicios?' + params);
+  const { redXabor, externas } = await r.json();
+  const tbody = document.getElementById('sv-tabla');
+  tbody.innerHTML = redXabor.length ? redXabor.map(s => `
+    <tr class="clickable" onclick="verDetalleServicio('${s.folio}')">
+      <td data-label="Folio">${escaparHTML(s.folio)}</td>
+      <td data-label="Fecha">${new Date(s.fecha).toLocaleString('es-MX')}</td>
+      <td data-label="Negocio">${s.negocioNombre ? escaparHTML(s.negocioNombre) : '—'}</td>
+      <td data-label="Estado">${badgeEstadoServicio(s.estadoDerivado)}</td>
+      <td data-label="Repartidor asignado">${s.repartidorAsignado ? escaparHTML(s.repartidorAsignado.nombre || ('#' + s.repartidorAsignado.id)) : '—'}</td>
+      <td data-label="Notificados">${s.intentosNotificados}</td>
+      <td data-label="Entregado/Leído/Falló">${s.delivered} / ${s.leido} / ${s.failed}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="7" class="empty">Sin servicios en este rango</td></tr>';
+
+  const cont = document.getElementById('sv-externas');
+  cont.innerHTML = externas.length ? externas.map(e => `
+    <div class="fila-lista"><span>${escaparHTML(e.folio)} · ${fechaCorta(e.fecha)}</span><span>${escaparHTML(e.etiqueta)}</span></div>
+  `).join('') : '<div class="empty">Sin entregas externas en este rango</div>';
+}
+
+let servicioActualFolio = null;
+async function verDetalleServicio(folio) {
+  servicioActualFolio = folio;
+  irVista('servicio-detalle');
+  const r = await api('/api/superadmin/red-repartidores/servicios/' + encodeURIComponent(folio));
+  if (!r.ok) { alert('No se pudo cargar el servicio'); return; }
+  const d = await r.json();
+  document.getElementById('svd-titulo').textContent = 'Servicio ' + d.folio;
+  document.getElementById('svd-info').innerHTML = `
+    <div class="fila-lista"><span>Estado</span><span>${escaparHTML(d.estado)}</span></div>
+    <div class="fila-lista"><span>Creado</span><span>${new Date(d.creadoEn).toLocaleString('es-MX')}</span></div>
+    <div class="fila-lista"><span>Repartidor asignado</span><span>${d.repartidorAsignado ? escaparHTML(d.repartidorAsignado.nombre || ('#' + d.repartidorAsignado.id)) : 'Sin asignar'}</span></div>
+  `;
+  const cont = document.getElementById('svd-notificados');
+  cont.innerHTML = d.notificados.length ? `
+    <table><thead><tr><th>Repartidor</th><th>Teléfono</th><th>Canal</th><th>Estado</th><th>Aceptó</th><th>Error</th><th>Enviado</th></tr></thead>
+    <tbody>${d.notificados.map(n => `
+      <tr>
+        <td data-label="Repartidor">${escaparHTML(n.nombre)}</td>
+        <td data-label="Teléfono">${escaparHTML(n.telefonoOculto || '')}</td>
+        <td data-label="Canal">${escaparHTML(n.canal)}</td>
+        <td data-label="Estado">${escaparHTML(n.estado)}</td>
+        <td data-label="Aceptó">${n.acepto ? 'Sí' : 'No'}</td>
+        <td data-label="Error">${n.error ? escaparHTML(n.error) : '—'}</td>
+        <td data-label="Enviado">${new Date(n.creadoEn).toLocaleString('es-MX')}</td>
+      </tr>
+    `).join('')}</tbody></table>
+  ` : '<div class="empty">Ningún repartidor fue notificado para este servicio (los excluidos por whitelist o modo apagado no generan fila aquí — límite conocido de esta fase mínima).</div>';
 }
 
 function sugerirSlug() {
