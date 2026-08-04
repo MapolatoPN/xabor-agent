@@ -100,7 +100,10 @@ const base = srv.base;
 // Negocio B no tiene usuario propio en el seed compartido -- se crea uno
 // dedicado aquí (mismo patrón que fase-chat-manual.mjs) porque este test
 // SÍ necesita crear un pedido real como negocioB, no solo verificar 403.
-const adminNegocioB = await crearUsuarioConPassword({
+// Idempotente (igual criterio que la limpieza de repartidores de prueba
+// más abajo) para que la suite se pueda re-ejecutar sin recrear la base.
+const { rows: [adminBExistente] } = await pool.query(`SELECT id FROM usuarios WHERE email = 'admin-b-repartidores@test.local'`);
+const adminNegocioB = adminBExistente || await crearUsuarioConPassword({
   negocioId: SEED.negocioB, nombre: 'Admin Negocio B (repartidores)', email: 'admin-b-repartidores@test.local',
   password: 'ClaveAdminBPrueba123!', rol: 'admin',
 });
@@ -225,6 +228,30 @@ await t('TOKEN-EXPIRADO', 'un token vencido se rechaza aunque nunca se haya usad
 await t('TOKEN-INVALIDO', 'un token que nunca existió se rechaza sin lanzar', async () => {
   const r = await fetch(`${base}/repartidor/aceptar/esto-nunca-fue-un-token-real`);
   assert.strictEqual(r.status, 409, 'un token inexistente debe rechazarse con 409, nunca 500');
+});
+
+// ═══════════ PEDIDO-VENCIDO: el pedido ya no está disponible cuando se usa el token ═══════════
+await t('PEDIDO-VENCIDO', 'si el pedido ya fue entregado/cancelado antes de usar el token, la asignación falla sin corromper nada', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => {
+    const r = await notifsDe(folio);
+    return r.find(f => f.repartidor_id === repA.id && f.token_aceptacion) || null;
+  });
+  assert.ok(fila, 'debía existir el token antes de vencer el pedido');
+
+  // El pedido se entrega/cancela por otra vía ANTES de que se use el enlace
+  // (p. ej. el negocio lo entregó por mostrador, o se canceló).
+  await pool.query(`UPDATE pedidos_activos SET estado = 'cancelado' WHERE folio = $1`, [folio]);
+
+  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(r.status, 409, 'un pedido ya no disponible debe rechazar la aceptación (409), nunca asignarlo');
+
+  const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_id' AS rid, estado FROM pedidos_activos WHERE folio = $1`, [folio]);
+  assert.strictEqual(pedidoDB.rid, null, 'el pedido cancelado nunca debe quedar asignado a un repartidor');
+  assert.strictEqual(pedidoDB.estado, 'cancelado', 'el estado del pedido no debe alterarse por el intento de aceptación');
+
+  const { rows: [notifRow] } = await pool.query(`SELECT token_usado_at FROM notificaciones_repartidor WHERE id = $1`, [fila.id]);
+  assert.ok(notifRow.token_usado_at, 'el token se consume (un solo uso) aunque la asignación falle -- no debe quedar reutilizable');
 });
 
 // ═══════════ REGISTRO-FALLO: Meta rechaza el envío ═══════════
