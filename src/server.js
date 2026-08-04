@@ -64,7 +64,7 @@ import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRap
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
 import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas, obtenerOportunidadesPendientes } from './services/memory.js';
-import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor } from './services/database.js';
+import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor, ESTADOS_REPARTIDOR_VALIDOS, cambiarEstadoRepartidor, editarPerfilRepartidor, detectarDuplicadosRepartidor, obtenerResumenRosterRepartidores, obtenerRosterRepartidores, obtenerDetalleRepartidor, obtenerServiciosReparto, obtenerDetalleServicioReparto } from './services/database.js';
 
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3448,6 +3448,88 @@ app.patch('/api/superadmin/prospectos/:id', requireSuperadmin, async (req, res) 
   }
 });
 
+// ─── Red de Repartidores (Superadmin) ──────────────────────────────────────
+// Exclusivo de Superadmin -- requireSuperadmin ya valida esto en backend.
+// Todas las consultas aquí se llaman SIN negocioId a propósito: el
+// Superadmin ve la red completa entre negocios (ver nota junto a
+// cambiarEstadoRepartidor en database.js). El equivalente para un
+// negocio-admin vive en /api/admin/repartidores/:id/estado más abajo, y ese
+// SIEMPRE pasa el negocioId de su propia sesión.
+app.get('/api/superadmin/red-repartidores/resumen', requireSuperadmin, async (req, res) => {
+  const negocioId = req.query.negocioId || null;
+  res.json(await obtenerResumenRosterRepartidores(negocioId));
+});
+
+app.get('/api/superadmin/red-repartidores/roster', requireSuperadmin, async (req, res) => {
+  const { negocioId, estado, actividad, busqueda, page, pageSize } = req.query;
+  if (estado && !ESTADOS_REPARTIDOR_VALIDOS.includes(estado)) {
+    return res.status(400).json({ error: 'Estado inválido' });
+  }
+  const resultado = await obtenerRosterRepartidores({
+    negocioId: negocioId || null,
+    estado: estado || null,
+    actividad: actividad || null,
+    soloDuplicados: req.query.soloDuplicados === 'true',
+    busqueda: busqueda || null,
+    page: page ? parseInt(page, 10) : 1,
+    pageSize: pageSize ? parseInt(pageSize, 10) : 50,
+  });
+  res.json(resultado);
+});
+
+app.get('/api/superadmin/red-repartidores/duplicados', requireSuperadmin, async (req, res) => {
+  res.json(await detectarDuplicadosRepartidor(req.query.negocioId || null));
+});
+
+app.get('/api/superadmin/red-repartidores/roster/:id', requireSuperadmin, async (req, res) => {
+  const detalle = await obtenerDetalleRepartidor(req.params.id, null);
+  if (!detalle) return res.status(404).json({ error: 'Repartidor no encontrado' });
+  res.json(detalle);
+});
+
+app.patch('/api/superadmin/red-repartidores/roster/:id/estado', requireSuperadmin, async (req, res) => {
+  const { estado } = req.body || {};
+  if (!ESTADOS_REPARTIDOR_VALIDOS.includes(estado)) {
+    return res.status(400).json({ error: 'Estado inválido' });
+  }
+  const actualizado = await cambiarEstadoRepartidor(req.params.id, estado, {});
+  if (!actualizado) return res.status(404).json({ error: 'Repartidor no encontrado' });
+  res.json(actualizado);
+});
+
+app.patch('/api/superadmin/red-repartidores/roster/:id/perfil', requireSuperadmin, async (req, res) => {
+  const { nombre, ciudad, zona, vehiculo } = req.body || {};
+  const cambios = {};
+  if (nombre !== undefined) {
+    if (typeof nombre !== 'string' || !nombre.trim()) return res.status(400).json({ error: 'Nombre inválido' });
+    cambios.nombre = nombre.trim();
+  }
+  if (ciudad !== undefined) cambios.ciudad = ciudad ? String(ciudad).trim() : null;
+  if (zona !== undefined) cambios.zona = zona ? String(zona).trim() : null;
+  if (vehiculo !== undefined) cambios.vehiculo = vehiculo ? String(vehiculo).trim() : null;
+  const actualizado = await editarPerfilRepartidor(req.params.id, cambios, {});
+  if (!actualizado) return res.status(404).json({ error: 'Repartidor no encontrado o sin cambios válidos' });
+  res.json(actualizado);
+});
+
+app.get('/api/superadmin/red-repartidores/servicios', requireSuperadmin, async (req, res) => {
+  const { negocioId, desde, hasta, page, pageSize } = req.query;
+  const resultado = await obtenerServiciosReparto({
+    negocioId: negocioId || null,
+    desde: desde || null,
+    hasta: hasta || null,
+    page: page ? parseInt(page, 10) : 1,
+    pageSize: pageSize ? parseInt(pageSize, 10) : 50,
+  });
+  res.json(resultado);
+});
+
+app.get('/api/superadmin/red-repartidores/servicios/:folio', requireSuperadmin, async (req, res) => {
+  const detalle = await obtenerDetalleServicioReparto(req.params.folio, null);
+  if (!detalle) return res.status(404).json({ error: 'Servicio no encontrado' });
+  res.json(detalle);
+});
+
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
@@ -3964,6 +4046,23 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, requireModulo('pos
     console.error('[repartidores/estado]', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Cambia disponible/pausado/suspendido/baja — reusa la MISMA función que la
+// ruta de Superadmin (cambiarEstadoRepartidor), pasando siempre el
+// negocioId de la sesión del propio admin. Nunca puede tocar un repartidor
+// de otro negocio (el WHERE de la función lo garantiza). "Baja" es un
+// estado, no un DELETE — el historial nunca se pierde. Distinto del
+// endpoint DELETE de abajo, que sigue siendo el hard-delete legado y no se
+// reutiliza para esto.
+app.patch('/api/admin/repartidores/:id/estado', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  const { estado } = req.body || {};
+  if (!ESTADOS_REPARTIDOR_VALIDOS.includes(estado)) {
+    return res.status(400).json({ error: 'Estado inválido' });
+  }
+  const actualizado = await cambiarEstadoRepartidor(req.params.id, estado, { negocioId: req.negocioId });
+  if (!actualizado) return res.status(404).json({ error: 'Repartidor no encontrado en este negocio' });
+  res.json(actualizado);
 });
 
 app.delete('/api/admin/repartidores/:id', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
