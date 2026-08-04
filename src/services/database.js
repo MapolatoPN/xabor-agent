@@ -2997,6 +2997,24 @@ export async function registrarNotificacionRepartidor({ negocioId, pedidoFolio, 
   }
 }
 
+// Idempotencia (rollout completo): un mismo pedido nunca debe generar más
+// de un intento de notificación por repartidor -- guard de aplicación
+// antes de enviar, no una UNIQUE de base de datos, porque intento_numero
+// ya está pensado para soportar reintentos legítimos más adelante (un
+// UNIQUE(pedido_folio, repartidor_id) los bloquearía por diseño).
+export async function existeNotificacionRepartidor(pedidoFolio, repartidorId) {
+  try {
+    const r = await pool.query(
+      `SELECT EXISTS(SELECT 1 FROM notificaciones_repartidor WHERE pedido_folio = $1 AND repartidor_id = $2) AS existe`,
+      [pedidoFolio, repartidorId]
+    );
+    return r.rows[0].existe;
+  } catch (e) {
+    console.error('[DB] Error existeNotificacionRepartidor:', e.message);
+    return false;
+  }
+}
+
 // Consumo atómico de un solo uso: el UPDATE con el guard en la propia
 // cláusula WHERE (token_usado_at IS NULL AND no vencido) es lo que
 // garantiza que un mismo token nunca se pueda consumir dos veces, sin

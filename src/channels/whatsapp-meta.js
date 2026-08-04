@@ -5,8 +5,8 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
-import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor } from '../services/database.js';
+import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -1206,6 +1206,14 @@ export async function notificarRepartidoresPorWA(pedido) {
       console.warn('[WA Repartidor] notificarRepartidoresPorWA: pedido sin negocioId — no se notifica a nadie (fail closed)');
       return;
     }
+    // Defensa en profundidad: esPedidoElegibleParaRedRepartidores ya se
+    // evalúa en emitirPedido antes de llamar aquí, pero esta función debe
+    // ser segura de invocar directamente (reenvío manual futuro, etc.) --
+    // un pedido de Rappi nunca debe llegar a notificar repartidores de Xabor.
+    if (!esPedidoElegibleParaRedRepartidores(pedido)) {
+      console.log(`[WA Repartidor] Pedido ${pedido.id} no elegible para la red de repartidores (canal=${pedido.canal}, modalidad=${pedido.modalidad}, estado=${pedido.estado}) — omitido`);
+      return;
+    }
     const repartidores = await obtenerRepartidores(pedido.negocioId);
     if (!repartidores.length) return;
 
@@ -1227,13 +1235,20 @@ export async function notificarRepartidoresPorWA(pedido) {
     const direccion = pedido.direccion ? `\n📍 ${pedido.direccion}` : '';
     const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\n⏱ El pedido estará listo para recoger en *15-20 minutos*.\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
 
-    // Piloto (diagnóstico repartidores): flag por negocio, apagado por
-    // defecto -- solo Nonna Maye lo activa durante el piloto. Con el flag
-    // apagado, el comportamiento es EXACTAMENTE el de antes (texto libre,
-    // sin registro), para no arriesgar a ningún otro negocio con
-    // repartidores configurados.
+    // Modo de notificación por negocio: 'apagado' | 'piloto' | 'completo'.
+    // Retrocompatibilidad: si repartidor_notif_modo no está configurado
+    // (negocios que nunca tocaron este piloto, o que lo activaron antes de
+    // que existiera esta clave), se deriva del flag booleano anterior --
+    // 'true' equivale a 'piloto' (que es exactamente lo que ese flag
+    // activaba hasta ahora), ausente/'false' equivale a 'apagado'. La
+    // ausencia de whitelist NUNCA activa 'completo' -- ese modo exige la
+    // clave nueva explícita.
     const cfg = await obtenerConfiguracion(pedido.negocioId);
-    const usarPlantilla = cfg.repartidor_notif_plantilla_activo === 'true';
+    const MODOS_VALIDOS = ['apagado', 'piloto', 'completo'];
+    const modo = MODOS_VALIDOS.includes(cfg.repartidor_notif_modo)
+      ? cfg.repartidor_notif_modo
+      : (cfg.repartidor_notif_plantilla_activo === 'true' ? 'piloto' : 'apagado');
+    const usarPlantilla = modo !== 'apagado';
 
     // Requisito explícito del usuario: el mensaje de oferta NUNCA lleva
     // nombre/teléfono/dirección del cliente -- solo negocio y pago
@@ -1244,7 +1259,7 @@ export async function notificarRepartidoresPorWA(pedido) {
     const pagoEstimado = `$${pedido.total} MXN`;
     const TOKEN_EXPIRACION_MINUTOS = 30;
 
-    // Comportamiento anterior EXACTO cuando el flag está apagado -- ningún
+    // Comportamiento anterior EXACTO cuando el modo es 'apagado' -- ningún
     // filtro, ningún registro, texto libre a todos los repartidores del
     // negocio, tal como antes de este piloto.
     if (!usarPlantilla) {
@@ -1259,35 +1274,40 @@ export async function notificarRepartidoresPorWA(pedido) {
       return;
     }
 
-    // Piloto: con el flag encendido, SOLO se notifica a los teléfonos de la
-    // lista blanca -- nunca "a todos" por ausencia/lista vacía/lista
-    // ilegible (fail closed). El rollout completo (sin lista) requerirá más
-    // adelante una configuración explícita aparte, todavía no implementada.
-    const { telefonos: listaPiloto, malformada } = parsearListaPilotoTelefonos(cfg.repartidor_notif_piloto_telefonos);
-    if (malformada) {
-      console.warn(`[WA Repartidor][Piloto] configuracion.repartidor_notif_piloto_telefonos ilegible para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed)`);
-    } else if (listaPiloto.size === 0) {
-      console.warn(`[WA Repartidor][Piloto] Sin lista de piloto (o vacía) para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed). El envío a todos los repartidores requiere una configuración de rollout completo aparte, no implementada todavía.`);
+    // 'piloto': SOLO se notifica a los teléfonos de la lista blanca --
+    // nunca "a todos" por ausencia/lista vacía/lista ilegible (fail
+    // closed). 'completo' reutiliza el mismo filtro de activo/válido/
+    // duplicado, pero sin la condición de whitelist.
+    let listaPiloto = new Set();
+    if (modo === 'piloto') {
+      const parseo = parsearListaPilotoTelefonos(cfg.repartidor_notif_piloto_telefonos);
+      listaPiloto = parseo.telefonos;
+      if (parseo.malformada) {
+        console.warn(`[WA Repartidor][Piloto] configuracion.repartidor_notif_piloto_telefonos ilegible para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed)`);
+      } else if (listaPiloto.size === 0) {
+        console.warn(`[WA Repartidor][Piloto] Sin lista de piloto (o vacía) para negocio ${pedido.negocioId} -- 0 destinatarios (fail closed). El envío a todos los repartidores requiere modo 'completo' explícito.`);
+      }
     }
 
+    const etiqueta = modo === 'completo' ? 'Completo' : 'Piloto';
     const telefonosNotificados = new Set();
     const repartidoresPermitidos = [];
     for (const r of repartidores) {
       const normalizado = normalizarTelefonoMX(r.telefono);
       if (!normalizado) {
-        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- teléfono inválido`);
+        console.log(`[WA Repartidor][${etiqueta}] ${r.nombre} (id=${r.id}) excluido -- teléfono inválido`);
         continue;
       }
       if (!r.activo) {
-        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- repartidor inactivo`);
+        console.log(`[WA Repartidor][${etiqueta}] ${r.nombre} (id=${r.id}) excluido -- repartidor inactivo`);
         continue;
       }
-      if (!listaPiloto.has(normalizado)) {
+      if (modo === 'piloto' && !listaPiloto.has(normalizado)) {
         console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- no está en la lista blanca del piloto`);
         continue;
       }
       if (telefonosNotificados.has(normalizado)) {
-        console.log(`[WA Repartidor][Piloto] ${r.nombre} (id=${r.id}) excluido -- teléfono duplicado, ya notificado en esta misma fila de otro repartidor`);
+        console.log(`[WA Repartidor][${etiqueta}] ${r.nombre} (id=${r.id}) excluido -- teléfono duplicado, ya notificado en esta misma fila de otro repartidor`);
         continue;
       }
       telefonosNotificados.add(normalizado);
@@ -1295,6 +1315,13 @@ export async function notificarRepartidoresPorWA(pedido) {
     }
 
     for (const r of repartidoresPermitidos) {
+      // Idempotencia: un mismo pedido nunca debe generar un segundo intento
+      // para el mismo repartidor (p. ej. si notificarRepartidoresPorWA se
+      // invocara dos veces por error para el mismo pedido).
+      if (await existeNotificacionRepartidor(pedido.id, r.id)) {
+        console.log(`[WA Repartidor][${etiqueta}] ${r.nombre} (id=${r.id}) excluido -- ya existe un intento de notificación para este pedido`);
+        continue;
+      }
       // Token de aceptación de un solo uso, propio de ESTE repartidor y
       // ESTE pedido -- ver migración 033 y consumirTokenAceptacionRepartidor.
       const token = randomBytes(24).toString('base64url');
