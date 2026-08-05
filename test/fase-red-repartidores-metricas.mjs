@@ -106,7 +106,7 @@ await t('metricas', 'Periodo sin datos: todo en cero, tasas null (no división e
   const desde = new Date(Date.now() + 365 * 86400000).toISOString(); // futuro -- garantiza cero filas
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&desde=${encodeURIComponent(desde)}`, { cookie: cookieSuperadmin });
   assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.body.tarjetas.serviciosCreados, 0);
+  assert.strictEqual(r.body.tarjetas.serviciosRedCreados, 0);
   assert.strictEqual(r.body.tarjetas.tasaAceptacion, null, 'sin denominador la tasa debe ser null, nunca 0/NaN');
   assert.strictEqual(r.body.tarjetas.tiempoPromedioAceptacionSeg, null);
 });
@@ -119,16 +119,16 @@ await t('metricas', 'Periodo con datos: servicio creado y ofrecido se refleja en
   await notificar(SEED.negocioA, folio, repA1.id, { estado: 'entregado', creadoAt });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}`, { cookie: cookieSuperadmin });
   assert.strictEqual(r.status, 200);
-  assert.ok(r.body.tarjetas.serviciosCreados >= 1);
-  assert.ok(r.body.tarjetas.serviciosOfrecidos >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedCreados >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedOfrecidos >= 1);
 });
 
 // ═══════════ 3. Filtro por negocio ═══════════
 await t('metricas', 'Filtro por negocio: negocioB no ve el servicio creado para negocioA', async () => {
   const rA = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}`, { cookie: cookieSuperadmin });
   const rB = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioB}`, { cookie: cookieSuperadmin });
-  assert.ok(rA.body.tarjetas.serviciosCreados >= 1, 'negocioA debe tener al menos el servicio creado en la prueba anterior');
-  assert.strictEqual(rB.body.tarjetas.serviciosCreados, 0, 'negocioB no debe ver ningún servicio de negocioA');
+  assert.ok(rA.body.tarjetas.serviciosRedCreados >= 1, 'negocioA debe tener al menos el servicio creado en la prueba anterior');
+  assert.strictEqual(rB.body.tarjetas.serviciosRedCreados, 0, 'negocioB no debe ver ningún servicio de negocioA');
   assert.strictEqual(rB.body.porNegocio, null, 'con negocioId explícito no debe incluirse el desglose cross-negocio');
 });
 
@@ -138,22 +138,22 @@ await t('metricas', 'Filtro por ciudad: solo cuenta servicios de repartidores co
   await notificar(SEED.negocioA, folio, repA1.id, { estado: 'entregado', creadoAt });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&ciudad=Matamoros`, { cookie: cookieSuperadmin });
   assert.strictEqual(r.status, 200);
-  assert.ok(r.body.tarjetas.serviciosOfrecidos >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedOfrecidos >= 1);
   const rNoMatch = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&ciudad=CiudadQueNoExiste`, { cookie: cookieSuperadmin });
-  assert.strictEqual(rNoMatch.body.tarjetas.serviciosOfrecidos, 0);
+  assert.strictEqual(rNoMatch.body.tarjetas.serviciosRedOfrecidos, 0);
 });
 
 await t('metricas', 'Filtro por zona: análogo a ciudad', async () => {
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&zona=ZonaTest${sufijo}`, { cookie: cookieSuperadmin });
-  assert.ok(r.body.tarjetas.serviciosOfrecidos >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedOfrecidos >= 1);
 });
 
 // ═══════════ 6. Filtro por repartidor ═══════════
 await t('metricas', 'Filtro por repartidor: acota a los pedidos donde participó', async () => {
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&repartidorId=${repA1.id}`, { cookie: cookieSuperadmin });
-  assert.ok(r.body.tarjetas.serviciosOfrecidos >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedOfrecidos >= 1);
   const rOtro = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&repartidorId=999999`, { cookie: cookieSuperadmin });
-  assert.strictEqual(rOtro.body.tarjetas.serviciosOfrecidos, 0);
+  assert.strictEqual(rOtro.body.tarjetas.serviciosRedOfrecidos, 0);
 });
 
 // ═══════════ 7/8. Entregas propias vs Rappi excluido ═══════════
@@ -177,7 +177,7 @@ await t('metricas', 'Servicio aceptado: token_usado_at cuenta en serviciosAcepta
   const { folio, creadoAt } = await crearPedidoDirecto(SEED.negocioA, { total: 150 });
   await notificar(SEED.negocioA, folio, repA1.id, { estado: 'leido', tokenUsadoAt: new Date(creadoAt.getTime() + 60000), creadoAt });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&repartidorId=${repA1.id}`, { cookie: cookieSuperadmin });
-  assert.ok(r.body.tarjetas.serviciosAceptados >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedAceptados >= 1);
   assert.ok(r.body.embudo.aceptados >= 1);
 });
 
@@ -204,23 +204,25 @@ await t('metricas', 'Fallo de notificación y sin cobertura cuando todos los int
   await notificar(SEED.negocioA, folio, repA1.id, { estado: 'fallido', creadoAt });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&repartidorId=${repA1.id}`, { cookie: cookieSuperadmin });
   assert.ok(r.body.embudo.fallidos >= 1);
-  assert.ok(r.body.tarjetas.serviciosSinCobertura >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedSinCobertura >= 1);
 });
 
 // ═══════════ 14. Pedido cancelado ═══════════
 await t('metricas', 'Pedido cancelado cuenta en serviciosCancelados', async () => {
   await crearPedidoDirecto(SEED.negocioA, { estado: 'cancelado', total: 220 });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}`, { cookie: cookieSuperadmin });
-  assert.ok(r.body.tarjetas.serviciosCancelados >= 1);
+  assert.ok(r.body.tarjetas.serviciosRedCancelados >= 1);
 });
 
 // ═══════════ 15. Entregado sin entregado_at ═══════════
 await t('metricas', 'Entregado sin entregado_at (histórico) se excluye del promedio, no cuenta como 0', async () => {
   const { folio, creadoAt } = await crearPedidoDirecto(SEED.negocioA, { estado: 'entregado', total: 130 });
-  // estado='entregado' escrito directamente por SQL (no vía actualizarEstadoPedidoDB) -- entregado_at queda NULL, simulando un registro histórico anterior a la migración 036.
+  // estado='entregado' escrito directamente por SQL (no vía actualizarEstadoPedidoDB) -- entregado_at queda NULL, simulando un registro histórico anterior a la migración 036. Se asigna repartidor_id para que cuente como serviciosRedEntregados (evidencia real de asignación por la red), igual que ocurriría en el flujo real de aceptación.
+  await asignarRepartidorDirecto(folio, repA1.id, repA1.nombre);
   await notificar(SEED.negocioA, folio, repA1.id, { estado: 'leido', tokenUsadoAt: new Date(creadoAt.getTime() + 60000), creadoAt });
   const r = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}&repartidorId=${repA1.id}`, { cookie: cookieSuperadmin });
   assert.ok(r.body.tarjetas.tiempoPromedioEntregaSeg === null || Number.isFinite(r.body.tarjetas.tiempoPromedioEntregaSeg), 'debe ser null o un número finito, nunca NaN por un registro sin entregado_at');
+  assert.ok(r.body.tarjetas.serviciosRedEntregados >= 1, 'con repartidor_id asignado, debe contar como entregado por la red aunque falte entregado_at');
 });
 
 // ═══════════ 16. Registro histórico 0/0/0 ═══════════
@@ -228,8 +230,8 @@ await t('metricas', 'Pedido sin ninguna notificación (0/0/0) se cuenta como cre
   const antes = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}`, { cookie: cookieSuperadmin });
   await crearPedidoDirecto(SEED.negocioA, { total: 60 });
   const despues = await api(base, `/api/superadmin/red-repartidores/metricas?negocioId=${SEED.negocioA}`, { cookie: cookieSuperadmin });
-  assert.strictEqual(despues.body.tarjetas.serviciosCreados, antes.body.tarjetas.serviciosCreados + 1);
-  assert.strictEqual(despues.body.tarjetas.serviciosOfrecidos, antes.body.tarjetas.serviciosOfrecidos, 'sin notificaciones, ofrecidos no debe subir');
+  assert.strictEqual(despues.body.tarjetas.serviciosRedCreados, antes.body.tarjetas.serviciosRedCreados + 1);
+  assert.strictEqual(despues.body.tarjetas.serviciosRedOfrecidos, antes.body.tarjetas.serviciosRedOfrecidos, 'sin notificaciones, ofrecidos no debe subir');
 });
 
 // ═══════════ 17/18. Muestra suficiente / insuficiente ═══════════
@@ -313,7 +315,7 @@ await t('csv', 'Exportación CSV responde con encabezado y content-type correcto
   assert.strictEqual(r.status, 200);
   assert.ok(r.headers.get('content-type').includes('text/csv'));
   const texto = await r.text();
-  assert.ok(texto.includes('Repartidor,NegocioId,Ciudad,Zona,Estado,Ofrecidos'));
+  assert.ok(texto.includes('Repartidor,Negocio,NegocioId,Ciudad,Zona,Estado,Ofrecidos'));
 });
 
 await t('csv', 'Caracteres especiales (coma, comillas) en nombre se escapan correctamente (RFC 4180)', async () => {
