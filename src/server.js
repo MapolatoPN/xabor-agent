@@ -18,6 +18,7 @@ import {
   obtenerPedidoPorId,
   obtenerTodosPedidosParaWebSocketLegacy,
   setWsBroadcast,
+  setWsBroadcastSuperadmin,
   cargarPedidosDesdeDB
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
@@ -52,7 +53,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, procesarAceptacionTokenRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -551,6 +552,44 @@ async function autenticarUpgradePanel(req, socket, head) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO (Fase C, Red de Repartidores) — autenticación del handshake
+// WebSocket de Superadmin (/ws/superadmin). Mismo patrón que
+// autenticarUpgradePanel: nunca confía en nada que el cliente envíe, todo
+// se deriva de la cookie de sesión httpOnly ya firmada. A diferencia del
+// panel, NO exige negocioId de la sesión coincidente con nada -- el
+// privilegio de Superadmin es cross-negocio por diseño (mismo criterio que
+// requireSuperadmin, HTTP). Rechaza antes de completar el upgrade.
+async function autenticarUpgradeSuperadmin(req, socket, head) {
+  function rechazar(status, motivo) {
+    socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  }
+
+  const token = leerCookieSesion(req);
+  if (!token) return rechazar(401, 'Unauthorized');
+
+  const payload = verificarTokenSesion(token);
+  if (!payload || !payload.usuarioId) return rechazar(401, 'Unauthorized');
+
+  const esSuper = await esSuperadmin(payload.usuarioId);
+  if (!esSuper) return rechazar(403, 'Forbidden');
+
+  const contextoWS = {
+    tipo: 'superadmin',
+    usuarioId: payload.usuarioId,
+    negocioId: null, // cross-negocio a propósito -- ver comentario arriba
+    rol: 'superadmin',
+    sucursalId: null,
+    terminalId: null,
+  };
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.contextoWS = contextoWS;
+    wss.emit('connection', ws, req);
+  });
+}
+
 // Enrutar conexiones WebSocket por path
 server.on('upgrade', (req, socket, head) => {
   const pathname = req.url.split('?')[0];
@@ -564,6 +603,11 @@ server.on('upgrade', (req, socket, head) => {
 
   if (pathname === '/ws/panel') {
     autenticarUpgradePanel(req, socket, head);
+    return;
+  }
+
+  if (pathname === '/ws/superadmin') {
+    autenticarUpgradeSuperadmin(req, socket, head);
     return;
   }
 
@@ -662,6 +706,12 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     if (client.readyState !== 1) return; // 1 = OPEN
     if (client.tipo !== 'panel') return;
     if (client.negocioId !== negocioIdNorm) return;
+    // opciones.soloAdmin (Fase C, Red de Repartidores): algunos eventos de
+    // administración de repartidores no deben llegar a staff aunque
+    // comparta la misma conexión /ws/panel que el admin de su negocio --
+    // staff nunca administra la red, solo ve la comanda (badge ya
+    // existente). Ningún otro tipo de evento usa esta opción todavía.
+    if (opciones.soloAdmin && client.rol === 'staff') return;
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
     // no solicitado en esta fase).
@@ -669,6 +719,25 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     enviados++;
   });
   dispararPushParaEvento(data, negocioIdNorm);
+  return enviados;
+}
+
+// ✅ NUEVO (Fase C, Red de Repartidores) — broadcast global exclusivo para
+// Superadmin. A diferencia de broadcastNegocio, NUNCA filtra por negocio a
+// propósito (el privilegio de Superadmin es cross-negocio por diseño) --
+// pero SÍ sigue exigiendo ws.tipo==='superadmin' (nunca 'panel', 'legacy'
+// ni ninguna otra conexión). Los payloads que se envían por aquí deben ser
+// siempre mínimos (folio/negocioId/repartidorId) -- nunca teléfonos,
+// tokens, credenciales ni datos completos del cliente (ver cada llamador).
+export function broadcastSuperadmin(data) {
+  const mensaje = JSON.stringify(data);
+  let enviados = 0;
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return;
+    if (client.tipo !== 'superadmin') return;
+    client.send(mensaje);
+    enviados++;
+  });
   return enviados;
 }
 
@@ -740,6 +809,10 @@ export { broadcastPrintAgentNegocio };
 setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcastNegocio);
 setWsBroadcastRappi(broadcastNegocio, broadcast);
+// Fase C (tiempo real, Red de Repartidores): canal global de Superadmin,
+// inyectado por separado del broadcast por-negocio de arriba.
+setWsBroadcastSuperadmin(broadcastSuperadmin);
+setWsBroadcastSuperadminWA(broadcastSuperadmin);
 
 // Inyectar los broadcasts de impresión en printRouter -- una sola vez al
 // arrancar, nunca por pedido. printRouter decide legacy vs. autenticado;
@@ -796,6 +869,18 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
     });
     ws.on('close', () => console.log('[WS] Panel autenticado desconectado'));
+    return;
+  }
+
+  // ✅ NUEVO (Fase C, Red de Repartidores) — sin volcado inicial: el cliente
+  // (panel/superadmin.html) hace su propio fetch HTTP al conectar/reconectar
+  // (mismos endpoints ya existentes de roster/servicios), el WS solo avisa
+  // "algo cambió, vuelve a pedir" -- así el canal en tiempo real nunca es
+  // la única fuente de verdad y la operación completa sigue funcionando
+  // por HTTP si este WS falla o tarda en reconectar.
+  if (ws.tipo === 'superadmin') {
+    console.log(`[WS] Superadmin conectado — usuario=${ws.usuarioId}`);
+    ws.on('close', () => console.log('[WS] Superadmin desconectado'));
     return;
   }
 
@@ -3494,6 +3579,13 @@ app.patch('/api/superadmin/red-repartidores/roster/:id/estado', requireSuperadmi
   }
   const actualizado = await cambiarEstadoRepartidor(req.params.id, estado, {});
   if (!actualizado) return res.status(404).json({ error: 'Repartidor no encontrado' });
+  // Fase C: evento de tiempo real -- payload mínimo, nunca teléfono.
+  try {
+    broadcastSuperadmin({ tipo: 'red_repartidores_estado_cambiado', repartidorId: actualizado.id, negocioId: actualizado.negocio_id, estado: actualizado.estado });
+    if (actualizado.negocio_id) broadcastNegocio(actualizado.negocio_id, { tipo: 'red_repartidores_estado_cambiado', repartidorId: actualizado.id, estado: actualizado.estado }, { soloAdmin: true });
+  } catch (e) {
+    console.error('[WS] Error emitiendo red_repartidores_estado_cambiado:', e.message);
+  }
   res.json(actualizado);
 });
 
@@ -4062,6 +4154,13 @@ app.patch('/api/admin/repartidores/:id/estado', requireAdminSeguro, requireModul
   }
   const actualizado = await cambiarEstadoRepartidor(req.params.id, estado, { negocioId: req.negocioId });
   if (!actualizado) return res.status(404).json({ error: 'Repartidor no encontrado en este negocio' });
+  // Fase C: mismo evento que la ruta de Superadmin -- payload mínimo.
+  try {
+    broadcastSuperadmin({ tipo: 'red_repartidores_estado_cambiado', repartidorId: actualizado.id, negocioId: req.negocioId, estado: actualizado.estado });
+    broadcastNegocio(req.negocioId, { tipo: 'red_repartidores_estado_cambiado', repartidorId: actualizado.id, estado: actualizado.estado }, { soloAdmin: true });
+  } catch (e) {
+    console.error('[WS] Error emitiendo red_repartidores_estado_cambiado:', e.message);
+  }
   res.json(actualizado);
 });
 
