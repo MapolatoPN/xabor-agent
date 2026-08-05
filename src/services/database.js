@@ -3314,6 +3314,34 @@ export async function actualizarEstadoNotificacionPorWamid(wamid, nuevoEstado, {
   }
 }
 
+// Fase C (tiempo real): ¿este pedido está AHORA "sin cobertura"? Mismo
+// criterio que derivarEstadoServicioReparto (obtenerServiciosReparto) --
+// todos los intentos de notificación fallaron y todavía no hay repartidor
+// asignado -- expuesto aparte para que el webhook de status pueda decidir
+// si dispara el evento red_repartidores_sin_cobertura justo cuando el
+// ÚLTIMO intento pendiente se marca fallido, sin duplicar la lógica de
+// agregación en dos lugares.
+export async function esPedidoSinCoberturaAhora(pedidoFolio) {
+  if (!pedidoFolio) return false;
+  try {
+    const { rows: [pedido] } = await pool.query(
+      `SELECT estado, datos->>'repartidor_id' AS repartidor_id FROM pedidos_activos WHERE folio = $1`,
+      [pedidoFolio]
+    );
+    if (!pedido || pedido.repartidor_id || ['entregado', 'cancelado'].includes(pedido.estado)) return false;
+    const { rows: [agg] } = await pool.query(
+      `SELECT COUNT(*)::int AS intentos,
+              COUNT(*) FILTER (WHERE estado IN ('fallido', 'error_envio'))::int AS fallidos
+       FROM notificaciones_repartidor WHERE pedido_folio = $1`,
+      [pedidoFolio]
+    );
+    return agg.intentos > 0 && agg.fallidos === agg.intentos;
+  } catch (e) {
+    console.error('[DB] Error esPedidoSinCoberturaAhora:', e.message);
+    return false;
+  }
+}
+
 // negocioId OBLIGATORIO — falla cerrado, mismo criterio del resto del
 // archivo. Uso: panel/diagnóstico, nunca expone datos de otro negocio.
 export async function obtenerNotificacionesPedido(pedidoFolio, negocioId) {

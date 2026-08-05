@@ -29,6 +29,14 @@ export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
 }
 
+// Fase C (tiempo real, Red de Repartidores): eventos globales para
+// Superadmin, inyectado por separado de wsBroadcastNegocio (que es
+// por-negocio) -- mismo patrón de inyección ya usado en este archivo.
+let wsBroadcastSuperadmin = null;
+export function setWsBroadcastSuperadmin(fn) {
+  wsBroadcastSuperadmin = fn;
+}
+
 // ─── Ex-respaldo temporal de negocio — ELIMINADO (Incidente P0, 2 de
 // agosto de 2026) ────────────────────────────────────────────────────────
 // Hasta esta corrección, WhatsApp y Voz confiaban en que registrarPedido()
@@ -138,6 +146,16 @@ export async function emitirPedido(pedido) {
 
   // Notificar a repartidores -- única fuente de verdad: esPedidoElegibleParaRedRepartidores.
   if (esPedidoElegibleParaRedRepartidores(pedido)) {
+    // Fase C: el servicio ya existe como "buscando" desde este momento
+    // (independiente de si la notificación por WhatsApp más abajo tiene
+    // éxito o no -- ver derivarEstadoServicioReparto en database.js).
+    // Payload mínimo, nunca datos del cliente ni del repartidor.
+    try {
+      wsBroadcastSuperadmin?.({ tipo: 'red_repartidores_nuevo_servicio', folio: pedido.id, negocioId: pedido.negocioId });
+      wsBroadcastNegocio?.(pedido.negocioId, { tipo: 'red_repartidores_nuevo_servicio', folio: pedido.id }, { soloAdmin: true });
+    } catch (e) {
+      console.error('[WS] Error emitiendo red_repartidores_nuevo_servicio:', e.message);
+    }
     import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
       notificarRepartidoresPorWA(pedido).catch(() => {});
     }).catch(() => {});

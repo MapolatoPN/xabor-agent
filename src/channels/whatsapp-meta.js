@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -22,6 +22,7 @@ import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } f
 import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '../services/imagenes.js';
 import { getIntegracion } from '../server.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
+import { formatearUbicacionRepartidor, formatearTarifaRepartidor } from '../utils/direccionRepartidor.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -29,6 +30,15 @@ import { normalizarTelefonoMX } from '../utils/telefono.js';
 // conectados (fuga en vivo confirmada).
 let wsBroadcast = null;
 export function setWsBroadcastWA(fn) { wsBroadcast = fn; }
+
+// Fase C (tiempo real): eventos globales de Red de Repartidores para
+// Superadmin, inyectado por separado de wsBroadcast (que es por-negocio) --
+// mismo patrón de inyección que el resto de este archivo, nunca un import
+// estático de server.js para el broadcast en sí (solo getIntegracion ya
+// se importa así, de forma segura -- ver nota de import circular en
+// orderManager.js/database.js).
+let wsBroadcastSuperadmin = null;
+export function setWsBroadcastSuperadminWA(fn) { wsBroadcastSuperadmin = fn; }
 
 // ─── Monitor de errores críticos ─────────────────────────────────────────────
 // Fase A (aislamiento de WhatsApp): antes era un único arreglo global —
@@ -222,6 +232,71 @@ export async function enviarPlantillaXaborNuevoServicioReparto(telefono, { nombr
   if (!resp.ok) {
     const err = await resp.json();
     throw new Error(`Meta API (plantilla xabor_nuevo_servicio_reparto): ${JSON.stringify(err)}`);
+  }
+  const data = await resp.json();
+  return data?.messages?.[0]?.id || null;
+}
+
+// ─── Plantilla xabor_nuevo_servicio_reparto_v2 (oferta con calle/colonia/tarifa/folio) ──
+// Fase C, Red de Repartidores: requisito nuevo del usuario -- desde el
+// PRIMER mensaje el repartidor debe conocer negocio, folio, calle/colonia
+// de entrega y tarifa, además del enlace. La plantilla v1 (arriba) ya está
+// aprobada por Meta con exactamente 3 variables (negocio/pago/enlace) --
+// agregar variables nuevas exige someter una plantilla NUEVA a revisión de
+// Meta (no editar la ya aprobada). El usuario autorizó redactar y preparar
+// esta plantilla v2 (ver docs/plantilla-nueva-servicio-reparto-v2-propuesta.md
+// para el texto exacto a someter y los pasos) -- someterla y aprobarla en
+// Meta Business Manager es un paso manual fuera de esta sesión de código.
+//
+// Por eso esta función existe YA, lista para usarse, pero
+// notificarRepartidoresPorWA solo la invoca cuando
+// configuracion.repartidor_notif_plantilla_v2_activo === 'true' (default:
+// ausente/false -- sigue usando la v1 tal cual, sin ningún cambio de
+// comportamiento en producción hasta que el negocio confirme que Meta
+// aprobó la plantilla nueva y active la clave manualmente).
+//
+// ubicacion ya viene pre-formateada por formatearUbicacionRepartidor
+// (incluye el fallback "Ubicación pendiente de confirmar") -- esta función
+// nunca decide el texto de ubicación, solo lo transporta como parámetro
+// de plantilla.
+export async function enviarPlantillaXaborNuevoServicioRepartoV2(telefono, { nombreNegocio, folio, ubicacion, tarifa, enlaceAceptar }, credenciales) {
+  if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
+    console.error('[Meta WA] enviarPlantillaXaborNuevoServicioRepartoV2 sin credenciales resueltas — envío omitido (fail closed)');
+    return null;
+  }
+  const { phoneNumberId, accessToken } = credenciales;
+  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: telefono,
+      type: 'template',
+      template: {
+        name: 'xabor_nuevo_servicio_reparto_v2',
+        language: { code: 'es_MX' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nombreNegocio },
+            { type: 'text', text: folio },
+            { type: 'text', text: ubicacion },
+            { type: 'text', text: tarifa },
+            { type: 'text', text: enlaceAceptar }
+          ]
+        }]
+      }
+    })
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(`Meta API (plantilla xabor_nuevo_servicio_reparto_v2): ${JSON.stringify(err)}`);
   }
   const data = await resp.json();
   return data?.messages?.[0]?.id || null;
@@ -1248,6 +1323,23 @@ export async function notificarRepartidoresPorWA(pedido) {
     const pagoEstimado = `$${pedido.total} MXN`;
     const TOKEN_EXPIRACION_MINUTOS = 30;
 
+    // Fase C: plantilla v2 (negocio/folio/ubicación/tarifa/enlace) -- apagada
+    // por defecto (ver enviarPlantillaXaborNuevoServicioRepartoV2 arriba,
+    // requiere que Meta apruebe la plantilla nueva primero). Mientras el
+    // negocio no active esta clave explícitamente, el comportamiento es
+    // IDÉNTICO al actual (plantilla v1, 3 variables).
+    const usarPlantillaV2 = usarPlantilla && cfg.repartidor_notif_plantilla_v2_activo === 'true';
+    let ubicacionOferta = null;
+    let tarifaOferta = null;
+    if (usarPlantillaV2) {
+      const { texto, ubicacionPendiente } = formatearUbicacionRepartidor(pedido.cliente?.calle, pedido.cliente?.colonia);
+      ubicacionOferta = texto;
+      tarifaOferta = formatearTarifaRepartidor(pedido.total);
+      if (ubicacionPendiente) {
+        console.warn(`[WA Repartidor][V2] Pedido ${pedido.id}: sin calle ni colonia -- se envía "Ubicación pendiente de confirmar" (registrado)`);
+      }
+    }
+
     // Comportamiento anterior EXACTO cuando el modo es 'apagado' -- ningún
     // filtro, ningún registro, texto libre a todos los repartidores del
     // negocio, tal como antes de este piloto.
@@ -1318,11 +1410,17 @@ export async function notificarRepartidoresPorWA(pedido) {
       const enlaceAceptar = `${BASE_URL}/repartidor/aceptar/${token}`;
 
       try {
-        const wamid = await enviarPlantillaXaborNuevoServicioReparto(
-          r.telefono,
-          { nombreNegocio, pagoEstimado, enlaceAceptar },
-          credenciales
-        );
+        const wamid = usarPlantillaV2
+          ? await enviarPlantillaXaborNuevoServicioRepartoV2(
+              r.telefono,
+              { nombreNegocio, folio: pedido.id, ubicacion: ubicacionOferta, tarifa: tarifaOferta, enlaceAceptar },
+              credenciales
+            )
+          : await enviarPlantillaXaborNuevoServicioReparto(
+              r.telefono,
+              { nombreNegocio, pagoEstimado, enlaceAceptar },
+              credenciales
+            );
         await registrarNotificacionRepartidor({
           negocioId: pedido.negocioId,
           pedidoFolio: pedido.id,
@@ -1384,6 +1482,18 @@ export async function procesarAceptacionTokenRepartidor(token) {
     return { ok: false, motivo: 'ya_tomado', mensaje: 'Este pedido ya fue tomado por otro repartidor.' };
   }
 
+  // Fase C: evento de tiempo real -- payload mínimo (folio/negocio/
+  // repartidorId), nunca teléfono/token/datos del cliente. Superadmin ve
+  // todos los negocios; el negocio-admin del propio negocio lo recibe vía
+  // broadcastNegocio con soloAdmin (staff no administra la red). Nunca
+  // bloquea el flujo si el WS falla -- ambas llamadas son fire-and-forget.
+  try {
+    wsBroadcastSuperadmin?.({ tipo: 'red_repartidores_servicio_aceptado', folio: fila.pedido_folio, negocioId: fila.negocio_id, repartidorId: rep.id });
+    wsBroadcast?.(fila.negocio_id, { tipo: 'red_repartidores_servicio_aceptado', folio: fila.pedido_folio, repartidorId: rep.id }, { soloAdmin: true });
+  } catch (e) {
+    console.error('[WS] Error emitiendo red_repartidores_servicio_aceptado:', e.message);
+  }
+
   if (!pedido) {
     // Caso extremo: el pedido desapareció entre la asignación y esta
     // lectura. La asignación en sí ya tuvo éxito -- no se revierte -- pero
@@ -1439,6 +1549,20 @@ export async function procesarStatusesWebhook(statuses) {
       const actualizado = await actualizarEstadoNotificacionPorWamid(s.id, estadoMapeado, errorInfo);
       if (actualizado) {
         console.log(`[WA Status] ${s.id} -> ${estadoMapeado}`);
+        // Fase C: si este era el último intento pendiente y ahora TODOS
+        // los intentos de este pedido fallaron (y sigue sin repartidor
+        // asignado), el servicio pasa a "sin cobertura" -- se avisa en
+        // tiempo real para que Superadmin/negocio-admin puedan reaccionar
+        // (p. ej. reenvío manual futuro), sin esperar a que alguien
+        // refresque la pantalla manualmente.
+        if (estadoMapeado === 'fallido' && await esPedidoSinCoberturaAhora(actualizado.pedido_folio)) {
+          try {
+            wsBroadcastSuperadmin?.({ tipo: 'red_repartidores_sin_cobertura', folio: actualizado.pedido_folio, negocioId: actualizado.negocio_id });
+            wsBroadcast?.(actualizado.negocio_id, { tipo: 'red_repartidores_sin_cobertura', folio: actualizado.pedido_folio }, { soloAdmin: true });
+          } catch (e) {
+            console.error('[WS] Error emitiendo red_repartidores_sin_cobertura:', e.message);
+          }
+        }
       }
     } catch (e) {
       console.error('[WA Status] Error procesando status:', e.message);
