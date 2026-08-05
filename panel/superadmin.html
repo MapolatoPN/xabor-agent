@@ -310,6 +310,7 @@
       <div class="toolbar">
         <button class="tab activo" data-subtab="roster" style="border-bottom:2px solid var(--accent);" onclick="cambiarSubvistaRepartidores('roster')">Repartidores</button>
         <button class="tab" data-subtab="servicios" onclick="cambiarSubvistaRepartidores('servicios')">Servicios de reparto</button>
+        <button class="tab" data-subtab="metricas" onclick="cambiarSubvistaRepartidores('metricas')">Métricas y ranking</button>
       </div>
 
       <!-- Sub-vista: roster -->
@@ -360,6 +361,67 @@
             Pedidos de Rappi u otra plataforma externa — nunca forman parte de la Red Xabor ni de sus métricas de cobertura.
           </div>
           <div id="sv-externas" class="empty">Cargando…</div>
+        </div>
+      </div>
+
+      <!-- Sub-vista: métricas y ranking (Fase D) -->
+      <div id="rp-sub-metricas" style="display:none;">
+        <div class="toolbar">
+          <select id="mt-negocio"><option value="">Todos los negocios</option></select>
+          <input type="text" id="mt-ciudad" placeholder="Ciudad">
+          <input type="text" id="mt-zona" placeholder="Zona">
+          <input type="date" id="mt-desde">
+          <input type="date" id="mt-hasta">
+          <button class="btn secundario" onclick="cargarMetricasReparto()">Aplicar filtros</button>
+          <button class="btn secundario" onclick="exportarRankingCSV()">Exportar CSV</button>
+        </div>
+        <div class="grid-stats" id="mt-stats"></div>
+
+        <div class="card">
+          <h2>Embudo de notificaciones</h2>
+          <div style="font-size:0.78rem;color:var(--muted);margin-bottom:8px;">Una ausencia de respuesta nunca se muestra como rechazo — "Rechazados" solo cuenta un rechazo explícito, algo que el sistema todavía no permite registrar.</div>
+          <div id="mt-embudo" class="empty">Cargando…</div>
+        </div>
+
+        <div class="card">
+          <h2>Entregas propias vs. plataformas externas</h2>
+          <div id="mt-externas" class="empty">Cargando…</div>
+        </div>
+
+        <div class="card">
+          <h2>Desempeño por ciudad/zona</h2>
+          <div style="font-size:0.78rem;color:var(--muted);margin-bottom:8px;">Se agrupa por la ciudad/zona capturada en el perfil del repartidor. Sin captura, cae en "Sin ciudad o zona registrada" — nunca se muestra "—" como si fuera un valor real.</div>
+          <div id="mt-geo" class="empty">Cargando…</div>
+        </div>
+
+        <div class="card" id="mt-negocio-card" style="display:none;">
+          <h2>Desempeño por negocio</h2>
+          <div id="mt-por-negocio"></div>
+        </div>
+
+        <div class="card" style="padding:0;overflow-x:auto;">
+          <h2 style="padding:14px 14px 0;">Ranking — muestra suficiente</h2>
+          <div style="font-size:0.78rem;color:var(--muted);padding:0 14px 10px;">Mínimo para entrar aquí: 10 servicios ofrecidos y 5 entregados en el período. La puntuación combina tasa de aceptación, tasa de finalización, velocidad de respuesta y cancelaciones — nunca solo volumen.</div>
+          <table>
+            <thead><tr><th>#</th><th>Repartidor</th><th>Negocio</th><th>Ciudad/Zona</th><th>Ofrecidos</th><th>Aceptados</th><th>Entregados</th><th>Ignorados</th><th>Tasa aceptación</th><th>Tasa finalización</th><th>Tiempo prom. aceptación</th><th>Última actividad</th></tr></thead>
+            <tbody id="mt-ranking-elegible"><tr><td colspan="12" class="empty">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="card" style="padding:0;overflow-x:auto;">
+          <h2 style="padding:14px 14px 0;">Muestra insuficiente</h2>
+          <table>
+            <thead><tr><th>Repartidor</th><th>Negocio</th><th>Ofrecidos</th><th>Entregados</th></tr></thead>
+            <tbody id="mt-ranking-insuficiente"><tr><td colspan="4" class="empty">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="card" style="padding:0;overflow-x:auto;">
+          <h2 style="padding:14px 14px 0;">Suspendidos o dados de baja</h2>
+          <table>
+            <thead><tr><th>Repartidor</th><th>Negocio</th><th>Estado</th><th>Última actividad</th></tr></thead>
+            <tbody id="mt-ranking-suspendidos"><tr><td colspan="4" class="empty">Cargando…</td></tr></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1431,13 +1493,16 @@ async function poblarSelectsNegocioRepartidores() {
   const opciones = '<option value="">Todos los negocios</option>' + negocios.map(n => `<option value="${n.id}">${escaparHTML(n.nombre)}</option>`).join('');
   const selRp = document.getElementById('rp-negocio');
   const selSv = document.getElementById('sv-negocio');
+  const selMt = document.getElementById('mt-negocio');
   if (selRp && selRp.options.length <= 1) selRp.innerHTML = opciones;
   if (selSv && selSv.options.length <= 1) selSv.innerHTML = opciones;
+  if (selMt && selMt.options.length <= 1) selMt.innerHTML = opciones;
 }
 
 function cambiarSubvistaRepartidores(sub) {
   document.getElementById('rp-sub-roster').style.display = sub === 'roster' ? 'block' : 'none';
   document.getElementById('rp-sub-servicios').style.display = sub === 'servicios' ? 'block' : 'none';
+  document.getElementById('rp-sub-metricas').style.display = sub === 'metricas' ? 'block' : 'none';
   document.querySelectorAll('button[data-subtab]').forEach(b => {
     const activo = b.dataset.subtab === sub;
     b.classList.toggle('activo', activo);
@@ -1445,6 +1510,7 @@ function cambiarSubvistaRepartidores(sub) {
   });
   if (sub === 'roster') cargarRosterRepartidores();
   if (sub === 'servicios') cargarServiciosReparto();
+  if (sub === 'metricas') cargarMetricasReparto();
 }
 
 async function cargarVistaRepartidores() {
@@ -1595,6 +1661,131 @@ async function cargarServiciosReparto() {
   cont.innerHTML = externas.length ? externas.map(e => `
     <div class="fila-lista"><span>${escaparHTML(e.folio)} · ${fechaCorta(e.fecha)}</span><span>${escaparHTML(e.etiqueta)}</span></div>
   `).join('') : '<div class="empty">Sin entregas externas en este rango</div>';
+}
+
+// ─── Red de Repartidores — Fase D: Métricas y ranking ──────────────────────
+function fmtPct(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
+function fmtSeg(v) {
+  if (v == null) return '—';
+  const s = Math.round(v);
+  if (s < 60) return s + ' s';
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function _filtrosMetricas() {
+  const params = new URLSearchParams();
+  const negocioId = document.getElementById('mt-negocio').value;
+  const ciudad = document.getElementById('mt-ciudad').value.trim();
+  const zona = document.getElementById('mt-zona').value.trim();
+  const desde = document.getElementById('mt-desde').value;
+  const hasta = document.getElementById('mt-hasta').value;
+  if (negocioId) params.set('negocioId', negocioId);
+  if (ciudad) params.set('ciudad', ciudad);
+  if (zona) params.set('zona', zona);
+  if (desde) params.set('desde', desde);
+  if (hasta) params.set('hasta', hasta);
+  return params;
+}
+
+async function cargarMetricasReparto() {
+  const params = _filtrosMetricas();
+
+  const [rMetricas, rRanking] = await Promise.all([
+    api('/api/superadmin/red-repartidores/metricas?' + params),
+    api('/api/superadmin/red-repartidores/ranking?' + params),
+  ]);
+  if (!rMetricas.ok) { document.getElementById('mt-stats').innerHTML = '<div class="empty">No se pudieron cargar las métricas</div>'; return; }
+  const d = await rMetricas.json();
+
+  const t = d.tarjetas;
+  document.getElementById('mt-stats').innerHTML = `
+    <div class="stat"><div class="num">${t.serviciosCreados}</div><div class="lbl">Servicios creados</div></div>
+    <div class="stat"><div class="num">${t.serviciosOfrecidos}</div><div class="lbl">Servicios ofrecidos</div></div>
+    <div class="stat"><div class="num">${t.repartidoresNotificados}</div><div class="lbl">Repartidores notificados</div></div>
+    <div class="stat"><div class="num">${t.serviciosAceptados}</div><div class="lbl">Servicios aceptados</div></div>
+    <div class="stat"><div class="num">${t.serviciosEntregados}</div><div class="lbl">Servicios entregados</div></div>
+    <div class="stat"><div class="num">${t.serviciosCancelados}</div><div class="lbl">Cancelados</div></div>
+    <div class="stat"><div class="num">${t.serviciosSinCobertura}</div><div class="lbl">Sin cobertura</div></div>
+    <div class="stat"><div class="num">${fmtPct(t.tasaAceptacion)}</div><div class="lbl">Tasa de aceptación</div></div>
+    <div class="stat"><div class="num">${fmtPct(t.tasaEntrega)}</div><div class="lbl">Tasa de finalización</div></div>
+    <div class="stat"><div class="num">${fmtSeg(t.tiempoPromedioAceptacionSeg)}</div><div class="lbl">Tiempo prom. aceptación</div></div>
+    <div class="stat"><div class="num">${fmtSeg(t.tiempoPromedioEntregaSeg)}</div><div class="lbl">Tiempo prom. entrega</div></div>
+  `;
+
+  const e = d.embudo;
+  document.getElementById('mt-embudo').innerHTML = `
+    <div class="fila-lista"><span>Intentados</span><span>${e.intentados}</span></div>
+    <div class="fila-lista"><span>Entregados por WhatsApp</span><span>${e.entregadosWA}</span></div>
+    <div class="fila-lista"><span>Leídos</span><span>${e.leidos}</span></div>
+    <div class="fila-lista"><span>Fallidos</span><span>${e.fallidos}</span></div>
+    <div class="fila-lista"><span>Aceptados</span><span>${e.aceptados}</span></div>
+    <div class="fila-lista"><span>Ignorados (sin respuesta antes de vencer)</span><span>${e.ignorados}</span></div>
+    <div class="fila-lista"><span>Rechazados</span><span>${e.rechazados == null ? 'No disponible (sin mecanismo de rechazo aún)' : e.rechazados}</span></div>
+  `;
+
+  document.getElementById('mt-externas').innerHTML = `<div class="fila-lista"><span>Entregas gestionadas por plataformas externas (p. ej. Rappi)</span><span>${d.externas.total}</span></div>`;
+
+  const geoCont = document.getElementById('mt-geo');
+  geoCont.innerHTML = d.porCiudadZona.length ? d.porCiudadZona.map(g => `
+    <div class="fila-lista"><span>${escaparHTML(g.etiqueta)}</span><span>${g.servicios} servicio(s)</span></div>
+  `).join('') : '<div class="empty">Sin datos en este rango</div>';
+
+  const negCard = document.getElementById('mt-negocio-card');
+  if (d.porNegocio) {
+    negCard.style.display = 'block';
+    document.getElementById('mt-por-negocio').innerHTML = d.porNegocio.map(n => `
+      <div class="fila-lista"><span>${escaparHTML(n.negocioId)}</span><span>${n.serviciosTotales} totales · ${n.entregados} entregados · ${n.sinCobertura} sin cobertura · cobertura ${fmtPct(n.tasaCobertura)}</span></div>
+    `).join('') || '<div class="empty">Sin datos</div>';
+  } else {
+    negCard.style.display = 'none';
+  }
+
+  if (rRanking.ok) {
+    const rk = await rRanking.json();
+    const tbodyE = document.getElementById('mt-ranking-elegible');
+    tbodyE.innerHTML = rk.rankingElegible.length ? rk.rankingElegible.map((f, i) => `
+      <tr>
+        <td data-label="#">${i + 1}</td>
+        <td data-label="Repartidor">${escaparHTML(f.nombre)}${f.posibleDuplicado ? ' <span title="Posible duplicado detectado" style="color:var(--warn,#c77);">⚠</span>' : ''}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Ciudad/Zona">${[f.ciudad, f.zona].filter(Boolean).join(' / ') || '—'}</td>
+        <td data-label="Ofrecidos">${f.serviciosOfrecidos}</td>
+        <td data-label="Aceptados">${f.serviciosAceptados}</td>
+        <td data-label="Entregados">${f.serviciosEntregados}</td>
+        <td data-label="Ignorados">${f.serviciosIgnorados}</td>
+        <td data-label="Tasa aceptación">${fmtPct(f.tasaAceptacion)}</td>
+        <td data-label="Tasa finalización">${fmtPct(f.tasaFinalizacion)}</td>
+        <td data-label="Tiempo prom. aceptación">${fmtSeg(f.tiempoPromedioAceptacionSeg)}</td>
+        <td data-label="Última actividad">${f.ultimaActividad ? fechaCorta(f.ultimaActividad) : 'Nunca'}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="12" class="empty">Sin repartidores con muestra suficiente en este rango</td></tr>';
+
+    const tbodyI = document.getElementById('mt-ranking-insuficiente');
+    tbodyI.innerHTML = rk.muestraInsuficiente.length ? rk.muestraInsuficiente.map(f => `
+      <tr>
+        <td data-label="Repartidor">${escaparHTML(f.nombre)}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Ofrecidos">${f.serviciosOfrecidos}</td>
+        <td data-label="Entregados">${f.serviciosEntregados}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="empty">Ninguno</td></tr>';
+
+    const tbodyS = document.getElementById('mt-ranking-suspendidos');
+    tbodyS.innerHTML = rk.suspendidosOBaja.length ? rk.suspendidosOBaja.map(f => `
+      <tr>
+        <td data-label="Repartidor">${escaparHTML(f.nombre)}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Estado">${escaparHTML(f.estadoRepartidor)}</td>
+        <td data-label="Última actividad">${f.ultimaActividad ? fechaCorta(f.ultimaActividad) : 'Nunca'}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="empty">Ninguno</td></tr>';
+  }
+}
+
+function exportarRankingCSV() {
+  const params = _filtrosMetricas();
+  window.open('/api/superadmin/red-repartidores/ranking/exportar.csv?' + params, '_blank');
 }
 
 let servicioActualFolio = null;
