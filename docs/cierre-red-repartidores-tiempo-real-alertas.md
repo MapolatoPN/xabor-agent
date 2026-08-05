@@ -2,9 +2,62 @@
 
 ## Estado
 
-**Fase C desarrollada, probada, desplegada y verificada técnicamente en
-producción. La plantilla v2 de WhatsApp permanece apagada hasta su
-aprobación en Meta y activación controlada.**
+**Fase C desarrollada, probada, desplegada, verificada técnicamente y
+validada visualmente en producción. La plantilla v2 de WhatsApp permanece
+apagada hasta su aprobación en Meta y activación controlada.**
+
+## Validación visual en producción (realizada por el propietario)
+
+El propietario confirmó visualmente, en sesión real de Superadmin contra
+`https://xabor.mx`, lo que esta sesión no pudo validar de forma segura
+(ver sección "Validaciones post-deploy" más abajo, que dejó esto como
+pendiente):
+
+1. La pestaña "Red de Repartidores" carga correctamente.
+2. Las tarjetas resumen se muestran con datos reales.
+3. El roster carga y muestra **31 repartidores**.
+4. La detección de duplicados identifica **7 grupos** de posibles
+   duplicados.
+5. Los filtros por negocio, estado, actividad, búsqueda y duplicados
+   funcionan correctamente.
+6. La subvista "Servicios de reparto" carga correctamente.
+7. Se muestran folio, fecha, negocio, estado, repartidor asignado,
+   notificados y métricas de entregado/leído/falló por servicio.
+8. Se observan servicios históricos con repartidor asignado y otros sin
+   repartidor visible.
+9. Se observan servicios antiguos con métricas 0/0/0.
+10. El indicador de conexión WebSocket aparece activo (verde).
+11. No se detectaron errores visuales bloqueantes.
+
+### Observaciones de calidad de datos encontradas (sin modificar producción)
+
+Estas situaciones se registran tal como se encontraron, **sin alterar
+retrospectivamente ningún dato histórico sin evidencia** — se investigan
+y se proponen soluciones en la Fase D, nunca se corrigen de forma
+automática ni silenciosa:
+
+- Existen **7 grupos** de repartidores que la detección de duplicados
+  (`detectarDuplicadosRepartidor`, ya construida en la fase Superadmin
+  anterior) identifica como posibles duplicados.
+- Varios repartidores no tienen `ciudad`, `zona` ni `vehiculo` capturados
+  (columnas nullable agregadas en la migración 035, informativas, nunca
+  usadas como criterio de elegibilidad).
+- Algunos servicios con estado `entregado` no muestran un repartidor
+  asignado visible en `pedidos_activos.datos->>'repartidor_id'` — esto es
+  consistente con pedidos entregados por vías distintas a la Red de
+  Repartidores (p. ej. presencial, o asignación manual anterior a este
+  módulo) y no necesariamente indica un error; se documenta para
+  análisis, no se asume una causa sin evidencia.
+- Algunos registros históricos de `notificaciones_repartidor` muestran
+  métricas 0/0/0 (sin intentos entregados/leídos/fallidos) — consistente
+  con pedidos anteriores a la migración 032 (que introdujo este
+  registro) o con notificaciones enviadas en el modo `texto_libre`
+  anterior al piloto de plantillas, que no generaban estas filas.
+
+Ver `docs/plan-fase-d-metricas-ranking.md` (actualizado) para el plan de
+investigación y las propuestas de normalización — ninguna fusión,
+eliminación o corrección retroactiva se ejecutó ni se ejecutará sin un
+plan aprobado explícitamente por el propietario.
 
 ## Objetivo de la fase
 
@@ -206,12 +259,11 @@ Build Docker de producción: **exitoso**.
   anterior (`c4563a01`) no se detuvo hasta que el nuevo pasó a
   `RUNNING` (comportamiento estándar de Railway, sin interrupción
   observada).
-- **Pendiente, no ejecutado**: validación interactiva con sesión real de
-  Superadmin (login, pestaña Red de Repartidores, indicador WS en vivo,
-  roster, cambio de estado, aislamiento visual) — no se dispone de
-  credenciales de Superadmin de producción en esta sesión y no se
-  crearon, adivinaron ni restablecieron por política explícita. Ver
-  checklist para el propietario en el reporte de esta conversación.
+- **Validación interactiva con sesión real de Superadmin: completada por
+  el propietario** (esta sesión no dispone de credenciales de Superadmin
+  de producción y no las creó, adivinó ni restableció, por política
+  explícita — el propietario ejecutó el checklist entregado y confirmó
+  los 11 puntos listados en "Validación visual en producción" arriba).
 
 ## Riesgos conocidos
 
