@@ -66,6 +66,10 @@
   .badge-svc-entregado { background:#dcfce7; color:var(--ok); }
   .badge-svc-cancelado { background:#f1f5f9; color:#475569; }
   .badge-svc-sin_cobertura { background:#fee2e2; color:var(--danger); }
+  .ws-indicador { font-size:0.7rem; vertical-align:middle; margin-left:6px; cursor:default; }
+  .ws-indicador.ws-conectado { color:var(--ok); }
+  .ws-indicador.ws-reconectando { color:var(--warn); }
+  .ws-indicador.ws-desconectado { color:var(--danger); }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
   input, select, textarea { border:1px solid var(--border); border-radius:7px; padding:8px 11px; font-size:0.85rem; font-family:inherit; }
   input[type=search] { width:220px; }
@@ -301,7 +305,7 @@
 
     <!-- RED DE REPARTIDORES -->
     <div id="vista-repartidores" class="vista">
-      <h1>Red de Repartidores</h1>
+      <h1>Red de Repartidores <span id="rp-ws-indicador" class="ws-indicador ws-desconectado" title="Tiempo real">●</span></h1>
       <div class="grid-stats" id="rp-stats"></div>
       <div class="toolbar">
         <button class="tab activo" data-subtab="roster" style="border-bottom:2px solid var(--accent);" onclick="cambiarSubvistaRepartidores('roster')">Repartidores</button>
@@ -559,6 +563,7 @@ async function verificarAcceso() {
     renderDashboard(await r.json());
     cargarNegocios();
     cargarAuditoria();
+    conectarWebSocketSuperadmin();
     // Enlace directo desde el correo de notificación de un nuevo
     // prospecto (ver enviarNotificacionNuevoProspecto en email.js): si
     // llega con ?prospecto=<id>, abre esa vista y ese detalle directo.
@@ -1340,7 +1345,79 @@ async function cargarAuditoria() {
   `).join('') : '<tr><td colspan="4" class="empty">Sin actividad todavía</td></tr>';
 }
 
-// ─── Red de Repartidores ────────────────────────────────────────────────────
+// ─── Red de Repartidores — tiempo real (Fase C) ─────────────────────────────
+// /ws/superadmin es SOLO un aviso de "algo cambió, vuelve a pedir" -- el
+// payload real siempre se obtiene por HTTP (mismos endpoints de
+// roster/servicios/resumen ya existentes). Esto garantiza que la operación
+// completa sigue funcionando por HTTP aunque este socket nunca conecte,
+// tarde en reconectar, o el navegador lo bloquee.
+let wsRepartidores = null;
+let wsRepartidoresReconectarMs = 1000;
+const WS_RECONECTAR_MS_MAXIMO = 30000;
+let wsRepartidoresReconectarTimer = null;
+let wsRepartidoresRefrescarTimer = null;
+
+function actualizarIndicadorWS(estado) {
+  // estado: 'conectado' | 'reconectando' | 'desconectado'
+  const el = document.getElementById('rp-ws-indicador');
+  if (!el) return;
+  el.classList.remove('ws-conectado', 'ws-reconectando', 'ws-desconectado');
+  el.classList.add('ws-' + estado);
+  const etiquetas = { conectado: 'Tiempo real: conectado', reconectando: 'Tiempo real: reconectando…', desconectado: 'Tiempo real: desconectado (sigue funcionando por HTTP)' };
+  el.title = etiquetas[estado] || '';
+}
+
+// Único punto de entrada -- si ya hay un socket abierto o conectando, no
+// abre uno nuevo (evita listeners/conexiones duplicadas por doble llamada,
+// p. ej. una reconexión en curso más un evento visibilitychange).
+function conectarWebSocketSuperadmin() {
+  if (wsRepartidores && (wsRepartidores.readyState === WebSocket.OPEN || wsRepartidores.readyState === WebSocket.CONNECTING)) return;
+  const protocolo = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocolo}//${location.host}/ws/superadmin`);
+  wsRepartidores = socket;
+
+  socket.onopen = () => {
+    wsRepartidoresReconectarMs = 1000; // reset del backoff tras conectar con éxito
+    actualizarIndicadorWS('conectado');
+  };
+
+  socket.onmessage = (ev) => {
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
+    const EVENTOS_RED_REPARTIDORES = ['red_repartidores_nuevo_servicio', 'red_repartidores_servicio_aceptado', 'red_repartidores_estado_cambiado', 'red_repartidores_sin_cobertura'];
+    if (!EVENTOS_RED_REPARTIDORES.includes(data?.tipo)) return;
+    refrescarVistaRepartidoresPorEvento();
+  };
+
+  const programarReconexion = () => {
+    actualizarIndicadorWS('reconectando');
+    if (wsRepartidoresReconectarTimer) return; // ya hay una reconexión programada -- nunca apilar timers
+    wsRepartidoresReconectarTimer = setTimeout(() => {
+      wsRepartidoresReconectarTimer = null;
+      wsRepartidoresReconectarMs = Math.min(wsRepartidoresReconectarMs * 2, WS_RECONECTAR_MS_MAXIMO);
+      conectarWebSocketSuperadmin();
+    }, wsRepartidoresReconectarMs);
+  };
+
+  socket.onclose = () => { actualizarIndicadorWS('desconectado'); programarReconexion(); };
+  socket.onerror = () => { try { socket.close(); } catch {} };
+}
+
+// Debounce corto: varios eventos pueden llegar en ráfaga (p. ej. un pedido
+// nuevo dispara nuevo_servicio y, casi de inmediato, varios intentos de
+// notificación) -- una sola recarga es suficiente y evita machacar la API.
+function refrescarVistaRepartidoresPorEvento() {
+  if (wsRepartidoresRefrescarTimer) clearTimeout(wsRepartidoresRefrescarTimer);
+  wsRepartidoresRefrescarTimer = setTimeout(() => {
+    wsRepartidoresRefrescarTimer = null;
+    if (!document.getElementById('vista-repartidores')?.classList.contains('activa')) return;
+    cargarResumenRepartidores();
+    const subvistaServicios = document.getElementById('rp-sub-servicios')?.style.display !== 'none';
+    if (subvistaServicios) cargarServiciosReparto();
+    else cargarRosterRepartidores();
+  }, 300);
+}
+
 let negociosCacheRepartidores = null;
 async function obtenerNegociosParaFiltro() {
   if (negociosCacheRepartidores) return negociosCacheRepartidores;
