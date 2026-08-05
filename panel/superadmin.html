@@ -375,7 +375,13 @@
           <button class="btn secundario" onclick="cargarMetricasReparto()">Aplicar filtros</button>
           <button class="btn secundario" onclick="exportarRankingCSV()">Exportar CSV</button>
         </div>
+        <div id="mt-aviso-historico" style="display:none;background:var(--warn-bg,#3a2a10);color:var(--warn-fg,#e0b060);border:1px solid var(--warn-border,#7a5a20);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:0.85rem;"></div>
+        <h2 style="margin-bottom:4px;">Pedidos y servicios (universo general)</h2>
+        <div class="grid-stats" id="mt-stats-universo"></div>
+        <h2 style="margin:16px 0 4px;">Red de Repartidores (propia)</h2>
         <div class="grid-stats" id="mt-stats"></div>
+        <h2 style="margin:16px 0 4px;">Tasas de la red</h2>
+        <div class="grid-stats" id="mt-stats-tasas"></div>
 
         <div class="card">
           <h2>Embudo de notificaciones</h2>
@@ -1699,27 +1705,50 @@ async function cargarMetricasReparto() {
   const d = await rMetricas.json();
 
   const t = d.tarjetas;
+
+  const avisoCont = document.getElementById('mt-aviso-historico');
+  if (d.avisos && d.avisos.datosHistoricosIncompletos) {
+    avisoCont.style.display = 'block';
+    avisoCont.textContent = '⚠ ' + d.avisos.mensaje;
+  } else {
+    avisoCont.style.display = 'none';
+  }
+
+  // Universo general -- nunca se usa para calcular tasas de la red (solo
+  // contexto: cuántos pedidos hubo en total, y cómo se reparten entre red
+  // propia / externas / entregas manuales sin evidencia de asignación).
+  document.getElementById('mt-stats-universo').innerHTML = `
+    <div class="stat"><div class="num">${t.pedidosCreados}</div><div class="lbl">Pedidos creados (todos los canales)</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedCreados}</div><div class="lbl">Servicios creados para la red</div></div>
+    <div class="stat"><div class="num">${t.entregasExternas}</div><div class="lbl">Entregas externas (Rappi, etc.)</div></div>
+    <div class="stat"><div class="num">${t.entregasManuales}</div><div class="lbl">Entregas manuales / sin evidencia de red</div></div>
+  `;
+
   document.getElementById('mt-stats').innerHTML = `
-    <div class="stat"><div class="num">${t.serviciosCreados}</div><div class="lbl">Servicios creados</div></div>
-    <div class="stat"><div class="num">${t.serviciosOfrecidos}</div><div class="lbl">Servicios ofrecidos</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedOfrecidos}</div><div class="lbl">Servicios ofrecidos a la red</div></div>
     <div class="stat"><div class="num">${t.repartidoresNotificados}</div><div class="lbl">Repartidores notificados</div></div>
-    <div class="stat"><div class="num">${t.serviciosAceptados}</div><div class="lbl">Servicios aceptados</div></div>
-    <div class="stat"><div class="num">${t.serviciosEntregados}</div><div class="lbl">Servicios entregados</div></div>
-    <div class="stat"><div class="num">${t.serviciosCancelados}</div><div class="lbl">Cancelados</div></div>
-    <div class="stat"><div class="num">${t.serviciosSinCobertura}</div><div class="lbl">Sin cobertura</div></div>
-    <div class="stat"><div class="num">${fmtPct(t.tasaAceptacion)}</div><div class="lbl">Tasa de aceptación</div></div>
-    <div class="stat"><div class="num">${fmtPct(t.tasaEntrega)}</div><div class="lbl">Tasa de finalización</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedAceptados}</div><div class="lbl">Servicios aceptados</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedEntregados}</div><div class="lbl">Entregas completadas por la red</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedCancelados}</div><div class="lbl">Cancelados</div></div>
+    <div class="stat"><div class="num">${t.serviciosRedSinCobertura}</div><div class="lbl">Sin cobertura</div></div>
+  `;
+
+  document.getElementById('mt-stats-tasas').innerHTML = `
+    <div class="stat"><div class="num">${fmtPct(t.tasaAceptacion)}</div><div class="lbl">Tasa de aceptación<br><small>aceptados / ofrecidos a la red</small></div></div>
+    <div class="stat"><div class="num">${fmtPct(t.tasaFinalizacionRed)}</div><div class="lbl">Tasa de finalización de la red<br><small>entregados / aceptados (solo red propia)</small></div></div>
+    <div class="stat"><div class="num">${fmtPct(t.coberturaRed)}</div><div class="lbl">Cobertura de la red<br><small>aceptados / creados para la red</small></div></div>
     <div class="stat"><div class="num">${fmtSeg(t.tiempoPromedioAceptacionSeg)}</div><div class="lbl">Tiempo prom. aceptación</div></div>
     <div class="stat"><div class="num">${fmtSeg(t.tiempoPromedioEntregaSeg)}</div><div class="lbl">Tiempo prom. entrega</div></div>
   `;
 
   const e = d.embudo;
   document.getElementById('mt-embudo').innerHTML = `
+    <div style="font-size:0.75rem;color:var(--muted);margin-bottom:6px;">Cuenta destinatarios/intentos individuales de notificación -- NO servicios (un mismo servicio puede notificar a varios repartidores).</div>
     <div class="fila-lista"><span>Intentados</span><span>${e.intentados}</span></div>
-    <div class="fila-lista"><span>Entregados por WhatsApp</span><span>${e.entregadosWA}</span></div>
-    <div class="fila-lista"><span>Leídos</span><span>${e.leidos}</span></div>
-    <div class="fila-lista"><span>Fallidos</span><span>${e.fallidos}</span></div>
-    <div class="fila-lista"><span>Aceptados</span><span>${e.aceptados}</span></div>
+    <div class="fila-lista"><span>Entregados por WhatsApp</span><span>${e.entregadosWA} (${fmtPct(e.tasaEntregaNotif)})</span></div>
+    <div class="fila-lista"><span>Leídos</span><span>${e.leidos} (${fmtPct(e.tasaLecturaNotif)} de los entregados)</span></div>
+    <div class="fila-lista"><span>Fallidos</span><span>${e.fallidos} (${fmtPct(e.tasaFalloNotif)})</span></div>
+    <div class="fila-lista"><span>Aceptaciones</span><span>${e.aceptados}</span></div>
     <div class="fila-lista"><span>Ignorados (sin respuesta antes de vencer)</span><span>${e.ignorados}</span></div>
     <div class="fila-lista"><span>Rechazados</span><span>${e.rechazados == null ? 'No disponible (sin mecanismo de rechazo aún)' : e.rechazados}</span></div>
   `;
@@ -1735,7 +1764,7 @@ async function cargarMetricasReparto() {
   if (d.porNegocio) {
     negCard.style.display = 'block';
     document.getElementById('mt-por-negocio').innerHTML = d.porNegocio.map(n => `
-      <div class="fila-lista"><span>${escaparHTML(n.negocioId)}</span><span>${n.serviciosTotales} totales · ${n.entregados} entregados · ${n.sinCobertura} sin cobertura · cobertura ${fmtPct(n.tasaCobertura)}</span></div>
+      <div class="fila-lista"><span>${escaparHTML(n.negocioNombre)}</span><span>${n.serviciosRedCreados} creados · ${n.serviciosRedEntregados} entregados por la red · ${n.entregasManuales} manuales · ${n.sinCobertura} sin cobertura · cobertura ${fmtPct(n.coberturaRed)}</span></div>
     `).join('') || '<div class="empty">Sin datos</div>';
   } else {
     negCard.style.display = 'none';
@@ -1748,7 +1777,7 @@ async function cargarMetricasReparto() {
       <tr>
         <td data-label="#">${i + 1}</td>
         <td data-label="Repartidor">${escaparHTML(f.nombre)}${f.posibleDuplicado ? ' <span title="Posible duplicado detectado" style="color:var(--warn,#c77);">⚠</span>' : ''}</td>
-        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioNombre)}</td>
         <td data-label="Ciudad/Zona">${[f.ciudad, f.zona].filter(Boolean).join(' / ') || '—'}</td>
         <td data-label="Ofrecidos">${f.serviciosOfrecidos}</td>
         <td data-label="Aceptados">${f.serviciosAceptados}</td>
@@ -1765,7 +1794,7 @@ async function cargarMetricasReparto() {
     tbodyI.innerHTML = rk.muestraInsuficiente.length ? rk.muestraInsuficiente.map(f => `
       <tr>
         <td data-label="Repartidor">${escaparHTML(f.nombre)}</td>
-        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioNombre)}</td>
         <td data-label="Ofrecidos">${f.serviciosOfrecidos}</td>
         <td data-label="Entregados">${f.serviciosEntregados}</td>
       </tr>
@@ -1775,7 +1804,7 @@ async function cargarMetricasReparto() {
     tbodyS.innerHTML = rk.suspendidosOBaja.length ? rk.suspendidosOBaja.map(f => `
       <tr>
         <td data-label="Repartidor">${escaparHTML(f.nombre)}</td>
-        <td data-label="Negocio">${escaparHTML(f.negocioId)}</td>
+        <td data-label="Negocio">${escaparHTML(f.negocioNombre)}</td>
         <td data-label="Estado">${escaparHTML(f.estadoRepartidor)}</td>
         <td data-label="Última actividad">${f.ultimaActividad ? fechaCorta(f.ultimaActividad) : 'Nunca'}</td>
       </tr>
