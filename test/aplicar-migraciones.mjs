@@ -48,6 +48,7 @@ export const ORDEN_MIGRACIONES = [
   '033_token_aceptacion_repartidor.sql',
   '034_modo_conversacion_repartidor.sql',
   '035_perfil_repartidor.sql',
+  '036_entregado_at_pedidos.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

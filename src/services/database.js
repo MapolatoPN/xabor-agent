@@ -1596,8 +1596,20 @@ export async function guardarPedidoActivo(pedido, negocioId) {
 
 export async function actualizarEstadoPedidoDB(folio, estado) {
   try {
+    // entregado_at (migración 036): se puebla únicamente hacia adelante, en
+    // la propia transición a 'entregado' -- nunca se backfillea con una
+    // fecha inventada para pedidos ya entregados antes de esta columna.
+    // El guard `entregado_at IS NULL` evita pisar el primer valor real si
+    // por algún motivo esta función se invocara más de una vez con
+    // estado='entregado' para el mismo folio.
     await pool.query(`
-      UPDATE pedidos_activos SET estado = $1, updated_at = NOW()
+      UPDATE pedidos_activos
+      SET estado = $1::text,
+          updated_at = NOW(),
+          entregado_at = CASE
+            WHEN $1::text = 'entregado' AND entregado_at IS NULL THEN NOW()
+            ELSE entregado_at
+          END
       WHERE folio = $2
     `, [estado, folio]);
   } catch (e) {
@@ -3507,6 +3519,413 @@ export async function obtenerDetalleServicioReparto(folio, negocioId = null) {
     console.error('[DB] Error obtenerDetalleServicioReparto:', e.message);
     return null;
   }
+}
+
+// ─── Red de Repartidores — Fase D: Métricas y ranking ──────────────────────
+// Decisiones funcionales ya aprobadas por el propietario (ver
+// docs/plan-fase-d-metricas-ranking.md):
+//   - "sin cobertura" reutiliza EXACTAMENTE derivarEstadoServicioReparto
+//     (mismo criterio que ya usa obtenerServiciosReparto y el evento WS
+//     red_repartidores_sin_cobertura -- nunca una segunda implementación).
+//   - "rechazado" no existe como concepto en el sistema (ningún repartidor
+//     puede ejecutar un rechazo explícito hoy) -- se reporta como `null`,
+//     NUNCA como 0, para no insinuar "cero rechazos" cuando en realidad es
+//     "no medible todavía". Ver docs/plan-fase-d-metricas-ranking.md
+//     decisión #2.
+//   - "ignorado" = la oferta se registró (fila en notificaciones_repartidor)
+//     y su token ya venció sin haberse usado y sin haber fallado el envío.
+//   - Exclusión de Rappi: reutiliza esPedidoDeRedExterna, igual que
+//     obtenerServiciosReparto -- nunca un criterio SQL paralelo.
+//   - Ranking: umbral de muestra mínima 10 ofrecidos / 5 entregados
+//     (aprobado explícitamente); repartidores por debajo van a "muestra
+//     insuficiente"; suspendido/baja van a su propio grupo, sin importar
+//     su volumen.
+//   - Ningún dato histórico se modifica aquí -- todo se deriva en el
+//     momento de la consulta, igual que el resto del módulo.
+
+const UMBRAL_RANKING_OFRECIDOS = 10;
+const UMBRAL_RANKING_ENTREGADOS = 5;
+// Ventana de referencia para normalizar "velocidad de aceptación" en el
+// score -- reutiliza el mismo valor ya usado como expiración del token de
+// aceptación (TOKEN_EXPIRACION_MINUTOS en whatsapp-meta.js), no un número
+// arbitrario nuevo.
+const VENTANA_RESPUESTA_SEG = 30 * 60;
+// Tamaño de muestra a partir del cual el factor de confianza del score deja
+// de crecer (3x el umbral mínimo de "ofrecidos") -- evita que el volumen por
+// sí solo siga inflando el score indefinidamente, sin excluir a quien apenas
+// cumple el mínimo.
+const MUESTRA_CONFIANZA_PLENA = UMBRAL_RANKING_OFRECIDOS * 3;
+
+function construirCondicionesPeriodo({ negocioId, desde, hasta }, alias, params, condiciones) {
+  if (negocioId) { params.push(negocioId); condiciones.push(`${alias}.negocio_id = $${params.length}`); }
+  if (desde) { params.push(desde); condiciones.push(`${alias}.created_at >= $${params.length}`); }
+  if (hasta) { params.push(hasta); condiciones.push(`${alias}.created_at <= $${params.length}`); }
+}
+
+// Trae todos los pedidos de "entrega a domicilio" del período/negocio, ya
+// separados en redXabor/externas (mismo criterio de exclusión de Rappi que
+// obtenerServiciosReparto) -- función interna, reutilizada por las tres
+// funciones públicas de esta sección para no triplicar la misma consulta.
+async function _pedidosRedRepartoEnPeriodo({ negocioId = null, desde = null, hasta = null } = {}) {
+  const condiciones = [`datos->>'modalidad' = 'entrega a domicilio'`];
+  const params = [];
+  construirCondicionesPeriodo({ negocioId, desde, hasta }, 'pa', params, condiciones);
+
+  const r = await pool.query(`
+    SELECT pa.folio, pa.negocio_id, pa.estado, pa.created_at, pa.entregado_at, pa.datos,
+      COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio), 0)::int AS intentos,
+      COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado IN ('entregado', 'leido')), 0)::int AS delivered,
+      COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado = 'leido'), 0)::int AS leido,
+      COALESCE((SELECT COUNT(*) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.estado IN ('fallido', 'error_envio')), 0)::int AS failed,
+      (SELECT MIN(nr.token_usado_at) FROM notificaciones_repartidor nr WHERE nr.pedido_folio = pa.folio AND nr.token_usado_at IS NOT NULL) AS hora_aceptacion
+    FROM pedidos_activos pa
+    WHERE ${condiciones.join(' AND ')}
+  `, params);
+
+  const redXabor = [];
+  const externas = [];
+  for (const row of r.rows) {
+    const pedidoShape = {
+      modalidad: row.datos?.modalidad,
+      canal: row.datos?.canal,
+      rappi_order_id: row.datos?.rappi_order_id,
+      repartidor_externo: row.datos?.repartidor_externo,
+      integracion_externa: row.datos?.integracion_externa,
+    };
+    if (esPedidoDeRedExterna(pedidoShape)) { externas.push(row); continue; }
+    redXabor.push(row);
+  }
+  return { redXabor, externas };
+}
+
+function _promedioSegundos(pares) {
+  // pares: array de [inicio, fin] (Date|string|null) -- ignora cualquier par
+  // incompleto en vez de tratarlo como 0 (evita sesgar el promedio a la
+  // baja con datos faltantes, p. ej. entregas sin entregado_at histórico).
+  const validos = pares
+    .filter(([a, b]) => a && b)
+    .map(([a, b]) => (new Date(b).getTime() - new Date(a).getTime()) / 1000)
+    .filter((seg) => Number.isFinite(seg) && seg >= 0);
+  if (validos.length === 0) return null;
+  return validos.reduce((s, v) => s + v, 0) / validos.length;
+}
+
+function _tasa(numerador, denominador) {
+  // Nunca división entre cero: sin denominador, la tasa es "no disponible"
+  // (null), nunca 0 (0 insinuaría "0% de éxito" en vez de "sin datos").
+  if (!denominador) return null;
+  return numerador / denominador;
+}
+
+export async function obtenerMetricasRedRepartidores({
+  negocioId = null,
+  ciudad = null,
+  zona = null,
+  repartidorId = null,
+  desde = null,
+  hasta = null,
+} = {}) {
+  try {
+    const { redXabor, externas } = await _pedidosRedRepartoEnPeriodo({ negocioId, desde, hasta });
+
+    // Filtro opcional por repartidor (solo afecta a los pedidos donde ese
+    // repartidor participó, ya sea notificado o asignado) -- ciudad/zona se
+    // aplican más abajo, sobre el propio repartidor, no sobre el pedido (el
+    // pedido no tiene una ciudad/zona estructurada propia, ver plan de Fase D).
+    let foliosDeRepartidor = null;
+    if (repartidorId) {
+      const { rows } = await pool.query(
+        `SELECT DISTINCT pedido_folio FROM notificaciones_repartidor WHERE repartidor_id = $1`,
+        [repartidorId]
+      );
+      foliosDeRepartidor = new Set(rows.map(r => r.pedido_folio));
+    }
+
+    let ciudadZonaFolios = null;
+    if (ciudad || zona) {
+      const cond = [];
+      const params = [];
+      if (ciudad) { params.push(ciudad); cond.push(`ciudad = $${params.length}`); }
+      if (zona) { params.push(zona); cond.push(`zona = $${params.length}`); }
+      const { rows: repsFiltrados } = await pool.query(
+        `SELECT id FROM repartidores WHERE ${cond.join(' AND ')}`, params
+      );
+      const idsFiltrados = new Set(repsFiltrados.map(r => String(r.id)));
+      const { rows: notifs } = await pool.query(`SELECT DISTINCT pedido_folio, repartidor_id FROM notificaciones_repartidor`);
+      ciudadZonaFolios = new Set(notifs.filter(n => idsFiltrados.has(String(n.repartidor_id))).map(n => n.pedido_folio));
+    }
+
+    const pedidosFiltrados = redXabor.filter(row => {
+      if (foliosDeRepartidor && !foliosDeRepartidor.has(row.folio)) return false;
+      if (ciudadZonaFolios && !ciudadZonaFolios.has(row.folio)) return false;
+      return true;
+    });
+
+    const serviciosCreados = pedidosFiltrados.length;
+    const serviciosOfrecidos = pedidosFiltrados.filter(r => r.intentos > 0).length;
+    const serviciosAceptados = pedidosFiltrados.filter(r => r.hora_aceptacion).length;
+    const serviciosEntregados = pedidosFiltrados.filter(r => r.estado === 'entregado').length;
+    const serviciosCancelados = pedidosFiltrados.filter(r => r.estado === 'cancelado').length;
+    const serviciosSinCobertura = pedidosFiltrados.filter(r => {
+      const asignado = !!r.datos?.repartidor_id;
+      return derivarEstadoServicioReparto(r, asignado) === 'sin_cobertura';
+    }).length;
+
+    const tiempoPromedioAceptacionSeg = _promedioSegundos(
+      pedidosFiltrados.filter(r => r.hora_aceptacion).map(r => [r.created_at, r.hora_aceptacion])
+    );
+    const tiempoPromedioEntregaSeg = _promedioSegundos(
+      pedidosFiltrados.filter(r => r.hora_aceptacion && r.entregado_at).map(r => [r.hora_aceptacion, r.entregado_at])
+    );
+
+    const foliosEnScope = pedidosFiltrados.map(r => r.folio);
+    let repartidoresNotificados = 0;
+    if (foliosEnScope.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(DISTINCT repartidor_id)::int AS total FROM notificaciones_repartidor WHERE pedido_folio = ANY($1::text[])`,
+        [foliosEnScope]
+      );
+      repartidoresNotificados = rows[0]?.total || 0;
+    }
+
+    // Embudo de notificaciones -- a nivel de intento (fila), no de pedido.
+    let embudo = { intentados: 0, entregadosWA: 0, leidos: 0, fallidos: 0, aceptados: 0, ignorados: 0, rechazados: null };
+    if (foliosEnScope.length > 0) {
+      const { rows: filas } = await pool.query(
+        `SELECT estado, token_usado_at, token_expira_at FROM notificaciones_repartidor WHERE pedido_folio = ANY($1::text[])`,
+        [foliosEnScope]
+      );
+      embudo.intentados = filas.length;
+      embudo.entregadosWA = filas.filter(f => f.estado === 'entregado' || f.estado === 'leido').length;
+      embudo.leidos = filas.filter(f => f.estado === 'leido').length;
+      embudo.fallidos = filas.filter(f => f.estado === 'fallido' || f.estado === 'error_envio').length;
+      embudo.aceptados = filas.filter(f => f.token_usado_at).length;
+      embudo.ignorados = filas.filter(f =>
+        !f.token_usado_at &&
+        f.estado !== 'fallido' && f.estado !== 'error_envio' &&
+        f.token_expira_at && new Date(f.token_expira_at).getTime() < Date.now()
+      ).length;
+      // rechazados: permanece `null` a propósito -- no existe mecanismo de
+      // rechazo explícito en el sistema (ver comentario de sección arriba).
+    }
+
+    const porNegocio = negocioId ? null : (() => {
+      const grupos = new Map();
+      for (const row of redXabor) {
+        if (!grupos.has(row.negocio_id)) grupos.set(row.negocio_id, []);
+        grupos.get(row.negocio_id).push(row);
+      }
+      return [...grupos.entries()].map(([id, filas]) => ({
+        negocioId: id,
+        serviciosTotales: filas.length,
+        entregados: filas.filter(f => f.estado === 'entregado').length,
+        sinCobertura: filas.filter(f => derivarEstadoServicioReparto(f, !!f.datos?.repartidor_id) === 'sin_cobertura').length,
+        tasaCobertura: _tasa(filas.filter(f => !!f.datos?.repartidor_id).length, filas.length),
+        tiempoPromedioAsignacionSeg: _promedioSegundos(filas.filter(f => f.hora_aceptacion).map(f => [f.created_at, f.hora_aceptacion])),
+      }));
+    })();
+
+    // Ciudad/zona: SOLO sobre metadata real del repartidor -- nunca "—"
+    // como valor válido; todo lo sin capturar cae en un único bucket
+    // explícito "Sin ciudad o zona registrada" (nunca se inventa un valor).
+    const { rows: repsParaGeo } = await pool.query(
+      negocioId ? `SELECT id, ciudad, zona FROM repartidores WHERE negocio_id = $1` : `SELECT id, ciudad, zona FROM repartidores`,
+      negocioId ? [negocioId] : []
+    );
+    const geoPorId = new Map(repsParaGeo.map(r => [String(r.id), r]));
+    const { rows: notifsGeo } = await pool.query(
+      foliosEnScope.length > 0
+        ? `SELECT DISTINCT pedido_folio, repartidor_id FROM notificaciones_repartidor WHERE pedido_folio = ANY($1::text[])`
+        : `SELECT DISTINCT pedido_folio, repartidor_id FROM notificaciones_repartidor WHERE FALSE`,
+      foliosEnScope.length > 0 ? [foliosEnScope] : []
+    );
+    const gruposGeo = new Map();
+    for (const n of notifsGeo) {
+      const rep = geoPorId.get(String(n.repartidor_id));
+      const clave = (rep?.ciudad || rep?.zona) ? `${rep.ciudad || ''}|${rep.zona || ''}` : 'SIN_REGISTRAR';
+      if (!gruposGeo.has(clave)) gruposGeo.set(clave, { ciudad: rep?.ciudad || null, zona: rep?.zona || null, folios: new Set() });
+      gruposGeo.get(clave).folios.add(n.pedido_folio);
+    }
+    const porCiudadZona = [...gruposGeo.entries()].map(([clave, info]) => ({
+      etiqueta: clave === 'SIN_REGISTRAR' ? 'Sin ciudad o zona registrada' : `${info.ciudad || '(sin ciudad)'} / ${info.zona || '(sin zona)'}`,
+      ciudad: info.ciudad,
+      zona: info.zona,
+      servicios: info.folios.size,
+    }));
+
+    return {
+      tarjetas: {
+        serviciosCreados,
+        serviciosOfrecidos,
+        repartidoresNotificados,
+        serviciosAceptados,
+        serviciosEntregados,
+        serviciosCancelados,
+        serviciosSinCobertura,
+        tasaAceptacion: _tasa(serviciosAceptados, serviciosOfrecidos),
+        tasaEntrega: _tasa(serviciosEntregados, serviciosAceptados),
+        tiempoPromedioAceptacionSeg,
+        tiempoPromedioEntregaSeg,
+      },
+      embudo,
+      porNegocio,
+      porCiudadZona,
+      externas: {
+        total: externas.length,
+        nota: 'Entregas gestionadas por plataformas externas (p. ej. Rappi) -- nunca incluidas en las tarjetas, embudo ni ranking de la red propia.',
+      },
+    };
+  } catch (e) {
+    console.error('[DB] Error obtenerMetricasRedRepartidores:', e.message);
+    return null;
+  }
+}
+
+export async function obtenerRankingRepartidores({
+  negocioId = null,
+  ciudad = null,
+  zona = null,
+  desde = null,
+  hasta = null,
+} = {}) {
+  try {
+    const condRep = [];
+    const paramsRep = [];
+    if (negocioId) { paramsRep.push(negocioId); condRep.push(`negocio_id = $${paramsRep.length}`); }
+    if (ciudad) { paramsRep.push(ciudad); condRep.push(`ciudad = $${paramsRep.length}`); }
+    if (zona) { paramsRep.push(zona); condRep.push(`zona = $${paramsRep.length}`); }
+    const { rows: repartidores } = await pool.query(
+      `SELECT id, nombre, telefono, negocio_id, estado, ciudad, zona FROM repartidores${condRep.length ? ' WHERE ' + condRep.join(' AND ') : ''}`,
+      paramsRep
+    );
+    if (repartidores.length === 0) return { rankingElegible: [], muestraInsuficiente: [], suspendidosOBaja: [] };
+
+    // Duplicados (mismo teléfono normalizado, mismo negocio) -- solo para
+    // marcar una advertencia visible, NUNCA para fusionar ni combinar cifras
+    // (ver docs/plan-calidad-datos-repartidores.md).
+    const dupNegocios = new Set(repartidores.map(r => r.negocio_id));
+    const dupPorNegocio = new Map();
+    for (const n of dupNegocios) {
+      dupPorNegocio.set(n, await detectarDuplicadosRepartidor(n));
+    }
+    function esPosibleDuplicado(rep) {
+      const grupos = dupPorNegocio.get(rep.negocio_id) || [];
+      return grupos.some(g => g.filas.some(f => f.id === rep.id));
+    }
+
+    const condPeriodo = [];
+    const paramsPeriodo = [];
+    if (desde) { paramsPeriodo.push(desde); condPeriodo.push(`nr.created_at >= $${paramsPeriodo.length}`); }
+    if (hasta) { paramsPeriodo.push(hasta); condPeriodo.push(`nr.created_at <= $${paramsPeriodo.length}`); }
+    const wherePeriodo = condPeriodo.length ? ' AND ' + condPeriodo.join(' AND ') : '';
+
+    const resultado = [];
+    for (const rep of repartidores) {
+      const { rows: notifs } = await pool.query(
+        `SELECT nr.pedido_folio, nr.estado, nr.token_usado_at, nr.token_expira_at, nr.created_at
+         FROM notificaciones_repartidor nr WHERE nr.repartidor_id = $1 ${wherePeriodo}`,
+        [rep.id, ...paramsPeriodo]
+      );
+      const foliosOfrecidos = new Set(notifs.map(n => n.pedido_folio));
+      const foliosAceptados = new Set(notifs.filter(n => n.token_usado_at).map(n => n.pedido_folio));
+      const ignorados = notifs.filter(n =>
+        !n.token_usado_at && n.estado !== 'fallido' && n.estado !== 'error_envio' &&
+        n.token_expira_at && new Date(n.token_expira_at).getTime() < Date.now()
+      ).length;
+
+      let entregados = 0, cancelados = 0, ultimaEntrega = null;
+      if (foliosAceptados.size > 0) {
+        const condPed = [`datos->>'repartidor_id' = $1`];
+        const paramsPed = [String(rep.id)];
+        if (desde) { paramsPed.push(desde); condPed.push(`created_at >= $${paramsPed.length}`); }
+        if (hasta) { paramsPed.push(hasta); condPed.push(`created_at <= $${paramsPed.length}`); }
+        const { rows: pedidosRep } = await pool.query(
+          `SELECT folio, estado, entregado_at FROM pedidos_activos WHERE ${condPed.join(' AND ')}`,
+          paramsPed
+        );
+        entregados = pedidosRep.filter(p => p.estado === 'entregado').length;
+        cancelados = pedidosRep.filter(p => p.estado === 'cancelado').length;
+        const entregas = pedidosRep.filter(p => p.entregado_at).map(p => p.entregado_at);
+        if (entregas.length) ultimaEntrega = entregas.reduce((a, b) => (new Date(b) > new Date(a) ? b : a));
+      }
+
+      const tiempoPromedioAceptacionSeg = _promedioSegundos(
+        notifs.filter(n => n.token_usado_at).map(n => [n.created_at, n.token_usado_at])
+      );
+      const ultimaNotif = notifs.length ? notifs.map(n => n.created_at).reduce((a, b) => (new Date(b) > new Date(a) ? b : a)) : null;
+      const ultimaActividad = [ultimaNotif, ultimaEntrega].filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null;
+
+      const tasaAceptacion = _tasa(foliosAceptados.size, foliosOfrecidos.size);
+      const tasaFinalizacion = _tasa(entregados, foliosAceptados.size);
+      const tasaCancelacion = _tasa(cancelados, foliosAceptados.size) || 0;
+
+      // Score balanceado -- nunca solo volumen. Ver
+      // docs/plan-fase-d-metricas-ranking.md / reporte de esta fase para la
+      // fórmula exacta y su justificación.
+      const velocidadNormalizada = tiempoPromedioAceptacionSeg != null
+        ? Math.max(0, Math.min(1, 1 - (tiempoPromedioAceptacionSeg / VENTANA_RESPUESTA_SEG)))
+        : null;
+      const factorConfianza = Math.min(1, foliosOfrecidos.size / MUESTRA_CONFIANZA_PLENA);
+      const score = (tasaAceptacion == null && tasaFinalizacion == null) ? null : (
+        (0.35 * (tasaAceptacion ?? 0) +
+         0.35 * (tasaFinalizacion ?? 0) +
+         0.20 * (velocidadNormalizada ?? 0) +
+         0.10 * (1 - tasaCancelacion)) * factorConfianza
+      );
+
+      const fila = {
+        repartidorId: rep.id,
+        nombre: rep.nombre,
+        negocioId: rep.negocio_id,
+        ciudad: rep.ciudad,
+        zona: rep.zona,
+        estadoRepartidor: rep.estado,
+        posibleDuplicado: esPosibleDuplicado(rep),
+        serviciosOfrecidos: foliosOfrecidos.size,
+        serviciosAceptados: foliosAceptados.size,
+        serviciosEntregados: entregados,
+        serviciosRechazados: null,
+        serviciosIgnorados: ignorados,
+        tasaAceptacion,
+        tasaFinalizacion,
+        tiempoPromedioAceptacionSeg,
+        ultimaActividad,
+        score,
+      };
+
+      if (rep.estado === 'suspendido' || rep.estado === 'baja') {
+        resultado.push({ grupo: 'suspendidosOBaja', fila });
+      } else if (foliosOfrecidos.size >= UMBRAL_RANKING_OFRECIDOS && entregados >= UMBRAL_RANKING_ENTREGADOS) {
+        resultado.push({ grupo: 'rankingElegible', fila });
+      } else {
+        resultado.push({ grupo: 'muestraInsuficiente', fila });
+      }
+    }
+
+    const rankingElegible = resultado.filter(r => r.grupo === 'rankingElegible').map(r => r.fila).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const muestraInsuficiente = resultado.filter(r => r.grupo === 'muestraInsuficiente').map(r => r.fila);
+    const suspendidosOBaja = resultado.filter(r => r.grupo === 'suspendidosOBaja').map(r => r.fila);
+
+    return { rankingElegible, muestraInsuficiente, suspendidosOBaja };
+  } catch (e) {
+    console.error('[DB] Error obtenerRankingRepartidores:', e.message);
+    return { rankingElegible: [], muestraInsuficiente: [], suspendidosOBaja: [] };
+  }
+}
+
+// CSV simple, sin dependencias -- escapa comillas dobles y envuelve en
+// comillas cualquier valor con coma/comilla/salto de línea (RFC 4180
+// mínimo). No usa ninguna librería nueva para un formato tan simple.
+export function filasARegistrosCSV(filas, columnas) {
+  const escapar = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const encabezado = columnas.map(c => escapar(c.titulo)).join(',');
+  const lineas = filas.map(fila => columnas.map(c => escapar(c.valor(fila))).join(','));
+  return [encabezado, ...lineas].join('\r\n') + '\r\n';
 }
 
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0). Sin esto, cualquier
