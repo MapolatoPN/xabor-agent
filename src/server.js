@@ -3659,6 +3659,9 @@ app.get('/api/superadmin/red-repartidores/ranking/exportar.csv', requireSuperadm
   const todas = [...rankingElegible, ...muestraInsuficiente, ...suspendidosOBaja];
   const columnas = [
     { titulo: 'Repartidor', valor: (f) => f.nombre },
+    // Nombre legible como etiqueta principal -- el UUID se conserva aparte
+    // como identificador interno, nunca como la única referencia al negocio.
+    { titulo: 'Negocio', valor: (f) => f.negocioNombre },
     { titulo: 'NegocioId', valor: (f) => f.negocioId },
     { titulo: 'Ciudad', valor: (f) => f.ciudad || '' },
     { titulo: 'Zona', valor: (f) => f.zona || '' },
