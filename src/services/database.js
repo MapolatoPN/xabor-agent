@@ -3661,16 +3661,57 @@ export async function obtenerMetricasRedRepartidores({
       return true;
     });
 
-    const serviciosCreados = pedidosFiltrados.length;
-    const serviciosOfrecidos = pedidosFiltrados.filter(r => r.intentos > 0).length;
-    const serviciosAceptados = pedidosFiltrados.filter(r => r.hora_aceptacion).length;
-    const serviciosEntregados = pedidosFiltrados.filter(r => r.estado === 'entregado').length;
-    const serviciosCancelados = pedidosFiltrados.filter(r => r.estado === 'cancelado').length;
-    const serviciosSinCobertura = pedidosFiltrados.filter(r => {
-      const asignado = !!r.datos?.repartidor_id;
-      return derivarEstadoServicioReparto(r, asignado) === 'sin_cobertura';
-    }).length;
+    // Corrección D.1 -- causa raíz confirmada (ver
+    // docs/correccion-d1-universos-metricas.md): la definición anterior de
+    // "servicios entregados" contaba CUALQUIER pedido de entrega a domicilio
+    // (no-Rappi) en estado 'entregado', sin exigir evidencia de que la
+    // entrega la hizo la Red de Repartidores -- mezclando entregas
+    // manuales/presenciales/históricas (nunca ofrecidas ni aceptadas por un
+    // repartidor) con las realmente gestionadas por la red. Eso producía
+    // denominadores/numeradores de universos distintos (p. ej. 35 entregados
+    // "de cualquier tipo" contra apenas 2 aceptados por la red = 1750%).
+    //
+    // `asignadoPorRed(row)` es la ÚNICA señal confiable de que un pedido fue
+    // realmente asignado a través del flujo de la red (asignarRepartidor,
+    // vía aceptación de token) -- se reutiliza tal cual la usa
+    // derivarEstadoServicioReparto, nunca un criterio nuevo en paralelo.
+    const asignadoPorRed = (row) => !!row.datos?.repartidor_id;
 
+    const serviciosRedCreados = pedidosFiltrados.length;
+    const serviciosRedOfrecidos = pedidosFiltrados.filter(r => r.intentos > 0).length;
+    const serviciosRedAceptados = pedidosFiltrados.filter(r => r.hora_aceptacion).length;
+    // Entregado Y asignado por la red -- nunca solo "estado=entregado".
+    const serviciosRedEntregados = pedidosFiltrados.filter(r => r.estado === 'entregado' && asignadoPorRed(r)).length;
+    // Entregado pero SIN evidencia de asignación por la red (ni Rappi, ya
+    // excluido antes) -- entrega manual/presencial/histórica no comparable.
+    const entregasManuales = pedidosFiltrados.filter(r => r.estado === 'entregado' && !asignadoPorRed(r)).length;
+    const serviciosRedCancelados = pedidosFiltrados.filter(r => r.estado === 'cancelado').length;
+    const serviciosRedSinCobertura = pedidosFiltrados.filter(r => {
+      return derivarEstadoServicioReparto(r, asignadoPorRed(r)) === 'sin_cobertura';
+    }).length;
+    // Advertencia de datos históricos: si algún servicio del universo nunca
+    // generó ni un solo intento de notificación, es anterior a la ventana de
+    // instrumentación real (ver migración 032) -- nunca se asume "sin
+    // actividad", se marca explícitamente como no comparable.
+    const hayServiciosSinInstrumentar = pedidosFiltrados.some(r => r.intentos === 0);
+
+    // Universo más amplio: TODOS los pedidos del período/negocio, sin filtrar
+    // por modalidad -- puramente informativo, nunca se usa como denominador
+    // de ninguna tasa de la red.
+    let pedidosCreados = 0;
+    {
+      const condTodos = [];
+      const paramsTodos = [];
+      construirCondicionesPeriodo({ negocioId, desde, hasta }, 'pa', paramsTodos, condTodos);
+      const { rows: totalRows } = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM pedidos_activos pa${condTodos.length ? ' WHERE ' + condTodos.join(' AND ') : ''}`,
+        paramsTodos
+      );
+      pedidosCreados = totalRows[0]?.total || 0;
+    }
+
+    // Tiempos: ya acotados correctamente -- solo pedidos con hora_aceptacion
+    // (es decir, aceptados por la red), nunca entregas manuales/externas.
     const tiempoPromedioAceptacionSeg = _promedioSegundos(
       pedidosFiltrados.filter(r => r.hora_aceptacion).map(r => [r.created_at, r.hora_aceptacion])
     );
@@ -3688,8 +3729,15 @@ export async function obtenerMetricasRedRepartidores({
       repartidoresNotificados = rows[0]?.total || 0;
     }
 
-    // Embudo de notificaciones -- a nivel de intento (fila), no de pedido.
-    let embudo = { intentados: 0, entregadosWA: 0, leidos: 0, fallidos: 0, aceptados: 0, ignorados: 0, rechazados: null };
+    // Embudo de notificaciones -- a nivel de intento/destinatario individual,
+    // NUNCA de pedido/servicio (un mismo servicio puede notificar a varios
+    // repartidores) -- por eso nunca se usan estas cifras como numerador o
+    // denominador de una tasa "por servicio" (tasaAceptacion/coberturaRed
+    // usan exclusivamente los conteos de pedidosFiltrados, no de esta tabla).
+    let embudo = {
+      intentados: 0, entregadosWA: 0, leidos: 0, fallidos: 0, aceptados: 0, ignorados: 0, rechazados: null,
+      tasaEntregaNotif: null, tasaLecturaNotif: null, tasaFalloNotif: null,
+    };
     if (foliosEnScope.length > 0) {
       const { rows: filas } = await pool.query(
         `SELECT estado, token_usado_at, token_expira_at FROM notificaciones_repartidor WHERE pedido_folio = ANY($1::text[])`,
@@ -3707,22 +3755,40 @@ export async function obtenerMetricasRedRepartidores({
       ).length;
       // rechazados: permanece `null` a propósito -- no existe mecanismo de
       // rechazo explícito en el sistema (ver comentario de sección arriba).
+      embudo.tasaEntregaNotif = _tasa(embudo.entregadosWA, embudo.intentados);
+      embudo.tasaLecturaNotif = _tasa(embudo.leidos, embudo.entregadosWA);
+      embudo.tasaFalloNotif = _tasa(embudo.fallidos, embudo.intentados);
     }
 
-    const porNegocio = negocioId ? null : (() => {
+    const porNegocio = negocioId ? null : await (async () => {
       const grupos = new Map();
       for (const row of redXabor) {
         if (!grupos.has(row.negocio_id)) grupos.set(row.negocio_id, []);
         grupos.get(row.negocio_id).push(row);
       }
-      return [...grupos.entries()].map(([id, filas]) => ({
-        negocioId: id,
-        serviciosTotales: filas.length,
-        entregados: filas.filter(f => f.estado === 'entregado').length,
-        sinCobertura: filas.filter(f => derivarEstadoServicioReparto(f, !!f.datos?.repartidor_id) === 'sin_cobertura').length,
-        tasaCobertura: _tasa(filas.filter(f => !!f.datos?.repartidor_id).length, filas.length),
-        tiempoPromedioAsignacionSeg: _promedioSegundos(filas.filter(f => f.hora_aceptacion).map(f => [f.created_at, f.hora_aceptacion])),
-      }));
+      const ids = [...grupos.keys()];
+      let nombresPorId = new Map();
+      if (ids.length > 0) {
+        const { rows: negs } = await pool.query(
+          `SELECT id, nombre FROM negocios WHERE id = ANY($1::uuid[])`, [ids]
+        );
+        nombresPorId = new Map(negs.map(n => [n.id, n.nombre]));
+      }
+      return [...grupos.entries()].map(([id, filas]) => {
+        const aceptados = filas.filter(f => f.hora_aceptacion).length;
+        return {
+          negocioId: id,
+          // Nombre legible para mostrar -- el UUID se conserva en negocioId
+          // como identificador interno, nunca como etiqueta principal.
+          negocioNombre: nombresPorId.get(id) || 'Negocio sin nombre',
+          serviciosRedCreados: filas.length,
+          serviciosRedEntregados: filas.filter(f => f.estado === 'entregado' && !!f.datos?.repartidor_id).length,
+          entregasManuales: filas.filter(f => f.estado === 'entregado' && !f.datos?.repartidor_id).length,
+          sinCobertura: filas.filter(f => derivarEstadoServicioReparto(f, !!f.datos?.repartidor_id) === 'sin_cobertura').length,
+          coberturaRed: _tasa(aceptados, filas.length),
+          tiempoPromedioAsignacionSeg: _promedioSegundos(filas.filter(f => f.hora_aceptacion).map(f => [f.created_at, f.hora_aceptacion])),
+        };
+      });
     })();
 
     // Ciudad/zona: SOLO sobre metadata real del repartidor -- nunca "—"
@@ -3755,17 +3821,37 @@ export async function obtenerMetricasRedRepartidores({
 
     return {
       tarjetas: {
-        serviciosCreados,
-        serviciosOfrecidos,
+        pedidosCreados,
+        serviciosRedCreados,
+        serviciosRedOfrecidos,
         repartidoresNotificados,
-        serviciosAceptados,
-        serviciosEntregados,
-        serviciosCancelados,
-        serviciosSinCobertura,
-        tasaAceptacion: _tasa(serviciosAceptados, serviciosOfrecidos),
-        tasaEntrega: _tasa(serviciosEntregados, serviciosAceptados),
+        serviciosRedAceptados,
+        serviciosRedEntregados,
+        entregasExternas: externas.length,
+        entregasManuales,
+        serviciosRedCancelados,
+        serviciosRedSinCobertura,
+        // Tasa de aceptación: de lo que SÍ se ofreció a la red, cuánto aceptó
+        // un repartidor. Nunca 0% engañoso -- null si no hubo ofrecidos.
+        tasaAceptacion: _tasa(serviciosRedAceptados, serviciosRedOfrecidos),
+        // Tasa de finalización de la red: de lo aceptado por un repartidor,
+        // cuánto se completó -- SOLO servicios propios y comparables (nunca
+        // incluye entregas manuales/externas/históricas sin evidencia).
+        tasaFinalizacionRed: _tasa(serviciosRedEntregados, serviciosRedAceptados),
+        // Cobertura de la red: de todo lo creado para la red, cuánto llegó a
+        // tener un repartidor asignado (fórmula pedida explícitamente).
+        coberturaRed: _tasa(serviciosRedAceptados, serviciosRedCreados),
         tiempoPromedioAceptacionSeg,
         tiempoPromedioEntregaSeg,
+      },
+      avisos: {
+        // Nunca se inventa ni reconstruye historia -- solo se advierte que
+        // el período incluye servicios sin ningún intento de notificación
+        // registrado (anteriores a la instrumentación real, migración 032).
+        datosHistoricosIncompletos: hayServiciosSinInstrumentar,
+        mensaje: hayServiciosSinInstrumentar
+          ? 'Las métricas históricas pueden estar incompletas para pedidos anteriores al registro detallado de notificaciones y entregas.'
+          : null,
       },
       embudo,
       porNegocio,
@@ -3799,6 +3885,14 @@ export async function obtenerRankingRepartidores({
       paramsRep
     );
     if (repartidores.length === 0) return { rankingElegible: [], muestraInsuficiente: [], suspendidosOBaja: [] };
+
+    // Nombre legible del negocio -- el UUID (negocioId) se conserva como
+    // identificador interno, nunca como etiqueta principal en la UI/CSV.
+    const idsNegociosRanking = [...new Set(repartidores.map(r => r.negocio_id))];
+    const { rows: negociosRanking } = await pool.query(
+      `SELECT id, nombre FROM negocios WHERE id = ANY($1::uuid[])`, [idsNegociosRanking]
+    );
+    const nombreNegocioPorId = new Map(negociosRanking.map(n => [n.id, n.nombre]));
 
     // Duplicados (mismo teléfono normalizado, mismo negocio) -- solo para
     // marcar una advertencia visible, NUNCA para fusionar ni combinar cifras
@@ -3877,6 +3971,7 @@ export async function obtenerRankingRepartidores({
         repartidorId: rep.id,
         nombre: rep.nombre,
         negocioId: rep.negocio_id,
+        negocioNombre: nombreNegocioPorId.get(rep.negocio_id) || 'Negocio sin nombre',
         ciudad: rep.ciudad,
         zona: rep.zona,
         estadoRepartidor: rep.estado,
