@@ -65,7 +65,7 @@ import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRap
 import { consultarEstadoPago } from './services/clip-api.js';
 import { analizarSemana } from './services/learner.js';
 import { enriquecerTodosLosPerfiles, detectarConversacionesAbandonadas, obtenerOportunidadesPendientes } from './services/memory.js';
-import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor, ESTADOS_REPARTIDOR_VALIDOS, cambiarEstadoRepartidor, editarPerfilRepartidor, detectarDuplicadosRepartidor, obtenerResumenRosterRepartidores, obtenerRosterRepartidores, obtenerDetalleRepartidor, obtenerServiciosReparto, obtenerDetalleServicioReparto } from './services/database.js';
+import { registrarRepartidor, obtenerRepartidorPorToken, obtenerRepartidorPorTelefono, obtenerRepartidores, guardarPushRepartidor, obtenerPushRepartidores, asignarRepartidor, obtenerPedidosParaRepartidor, obtenerPedidosAsignadosARepartidor, obtenerCandidatosRepartidor, eliminarRepartidor, ESTADOS_REPARTIDOR_VALIDOS, cambiarEstadoRepartidor, editarPerfilRepartidor, detectarDuplicadosRepartidor, obtenerResumenRosterRepartidores, obtenerRosterRepartidores, obtenerDetalleRepartidor, obtenerServiciosReparto, obtenerDetalleServicioReparto, obtenerMetricasRedRepartidores, obtenerRankingRepartidores, filasARegistrosCSV } from './services/database.js';
 
 import { readFileSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3622,6 +3622,64 @@ app.get('/api/superadmin/red-repartidores/servicios/:folio', requireSuperadmin, 
   res.json(detalle);
 });
 
+// ─── Red de Repartidores — Fase D: Métricas y ranking (Superadmin) ─────────
+// negocioId es OPCIONAL para Superadmin (cross-negocio por diseño, igual que
+// el resto de este módulo) -- la ruta de negocio-admin equivalente vive más
+// abajo y SIEMPRE usa req.negocioId de la sesión, nunca el query param.
+function _parametrosMetricasDesdeQuery(req, negocioIdForzado) {
+  return {
+    negocioId: negocioIdForzado !== undefined ? negocioIdForzado : (req.query.negocioId || null),
+    ciudad: req.query.ciudad || null,
+    zona: req.query.zona || null,
+    repartidorId: req.query.repartidorId || null,
+    desde: req.query.desde || null,
+    hasta: req.query.hasta || null,
+  };
+}
+
+app.get('/api/superadmin/red-repartidores/metricas', requireSuperadmin, async (req, res) => {
+  const resultado = await obtenerMetricasRedRepartidores(_parametrosMetricasDesdeQuery(req));
+  if (!resultado) return res.status(500).json({ error: 'Error calculando métricas' });
+  res.json(resultado);
+});
+
+app.get('/api/superadmin/red-repartidores/ranking', requireSuperadmin, async (req, res) => {
+  const { negocioId, ciudad, zona, desde, hasta } = req.query;
+  const resultado = await obtenerRankingRepartidores({
+    negocioId: negocioId || null, ciudad: ciudad || null, zona: zona || null, desde: desde || null, hasta: hasta || null,
+  });
+  res.json(resultado);
+});
+
+app.get('/api/superadmin/red-repartidores/ranking/exportar.csv', requireSuperadmin, async (req, res) => {
+  const { negocioId, ciudad, zona, desde, hasta } = req.query;
+  const { rankingElegible, muestraInsuficiente, suspendidosOBaja } = await obtenerRankingRepartidores({
+    negocioId: negocioId || null, ciudad: ciudad || null, zona: zona || null, desde: desde || null, hasta: hasta || null,
+  });
+  const todas = [...rankingElegible, ...muestraInsuficiente, ...suspendidosOBaja];
+  const columnas = [
+    { titulo: 'Repartidor', valor: (f) => f.nombre },
+    { titulo: 'NegocioId', valor: (f) => f.negocioId },
+    { titulo: 'Ciudad', valor: (f) => f.ciudad || '' },
+    { titulo: 'Zona', valor: (f) => f.zona || '' },
+    { titulo: 'Estado', valor: (f) => f.estadoRepartidor },
+    { titulo: 'Ofrecidos', valor: (f) => f.serviciosOfrecidos },
+    { titulo: 'Aceptados', valor: (f) => f.serviciosAceptados },
+    { titulo: 'Entregados', valor: (f) => f.serviciosEntregados },
+    { titulo: 'Rechazados', valor: (f) => f.serviciosRechazados === null ? 'No disponible' : f.serviciosRechazados },
+    { titulo: 'Ignorados', valor: (f) => f.serviciosIgnorados },
+    { titulo: 'TasaAceptacion', valor: (f) => f.tasaAceptacion == null ? '' : (f.tasaAceptacion * 100).toFixed(1) + '%' },
+    { titulo: 'TasaFinalizacion', valor: (f) => f.tasaFinalizacion == null ? '' : (f.tasaFinalizacion * 100).toFixed(1) + '%' },
+    { titulo: 'TiempoPromedioAceptacionSeg', valor: (f) => f.tiempoPromedioAceptacionSeg == null ? '' : Math.round(f.tiempoPromedioAceptacionSeg) },
+    { titulo: 'UltimaActividad', valor: (f) => f.ultimaActividad || '' },
+    { titulo: 'PosibleDuplicado', valor: (f) => f.posibleDuplicado ? 'sí' : 'no' },
+  ];
+  const csv = filasARegistrosCSV(todas, columnas);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="ranking-repartidores.csv"');
+  res.send('﻿' + csv);
+});
+
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
@@ -4176,6 +4234,66 @@ app.get('/api/admin/repartidores/candidatos', requireAdminSeguro, requireModulo(
     const rows = await obtenerCandidatosRepartidor(req.negocioId);
     res.json(rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── Red de Repartidores — Fase D: Métricas y ranking (negocio-admin) ──────
+// negocioId SIEMPRE viene de req.negocioId (sesión) -- nunca de
+// req.query.negocioId, aunque el cliente lo mande. Esto es lo que garantiza
+// que un negocio-admin jamás vea agregados de otro negocio, sin importar lo
+// que envíe el navegador. requireAdminSeguro ya bloquea a staff (403).
+app.get('/api/admin/repartidores/metricas', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  const resultado = await obtenerMetricasRedRepartidores({
+    negocioId: req.negocioId,
+    ciudad: req.query.ciudad || null,
+    zona: req.query.zona || null,
+    repartidorId: req.query.repartidorId || null,
+    desde: req.query.desde || null,
+    hasta: req.query.hasta || null,
+  });
+  if (!resultado) return res.status(500).json({ error: 'Error calculando métricas' });
+  res.json(resultado);
+});
+
+app.get('/api/admin/repartidores/ranking', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  const resultado = await obtenerRankingRepartidores({
+    negocioId: req.negocioId,
+    ciudad: req.query.ciudad || null,
+    zona: req.query.zona || null,
+    desde: req.query.desde || null,
+    hasta: req.query.hasta || null,
+  });
+  res.json(resultado);
+});
+
+app.get('/api/admin/repartidores/ranking/exportar.csv', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  const { rankingElegible, muestraInsuficiente, suspendidosOBaja } = await obtenerRankingRepartidores({
+    negocioId: req.negocioId,
+    ciudad: req.query.ciudad || null,
+    zona: req.query.zona || null,
+    desde: req.query.desde || null,
+    hasta: req.query.hasta || null,
+  });
+  const todas = [...rankingElegible, ...muestraInsuficiente, ...suspendidosOBaja];
+  const columnas = [
+    { titulo: 'Repartidor', valor: (f) => f.nombre },
+    { titulo: 'Ciudad', valor: (f) => f.ciudad || '' },
+    { titulo: 'Zona', valor: (f) => f.zona || '' },
+    { titulo: 'Estado', valor: (f) => f.estadoRepartidor },
+    { titulo: 'Ofrecidos', valor: (f) => f.serviciosOfrecidos },
+    { titulo: 'Aceptados', valor: (f) => f.serviciosAceptados },
+    { titulo: 'Entregados', valor: (f) => f.serviciosEntregados },
+    { titulo: 'Rechazados', valor: (f) => f.serviciosRechazados === null ? 'No disponible' : f.serviciosRechazados },
+    { titulo: 'Ignorados', valor: (f) => f.serviciosIgnorados },
+    { titulo: 'TasaAceptacion', valor: (f) => f.tasaAceptacion == null ? '' : (f.tasaAceptacion * 100).toFixed(1) + '%' },
+    { titulo: 'TasaFinalizacion', valor: (f) => f.tasaFinalizacion == null ? '' : (f.tasaFinalizacion * 100).toFixed(1) + '%' },
+    { titulo: 'TiempoPromedioAceptacionSeg', valor: (f) => f.tiempoPromedioAceptacionSeg == null ? '' : Math.round(f.tiempoPromedioAceptacionSeg) },
+    { titulo: 'UltimaActividad', valor: (f) => f.ultimaActividad || '' },
+    { titulo: 'PosibleDuplicado', valor: (f) => f.posibleDuplicado ? 'sí' : 'no' },
+  ];
+  const csv = filasARegistrosCSV(todas, columnas);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="ranking-repartidores.csv"');
+  res.send('﻿' + csv);
 });
 
 // DEBUG TEMPORAL — diagnóstico de un pedido en pedidos_activos
