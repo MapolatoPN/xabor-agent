@@ -56,9 +56,16 @@ export function revocarTokenSesion(token) {
   tokensRevocados.set(token, exp);
 }
 
-export function crearTokenSesion({ usuarioId, negocioId, rol }) {
+// sop (opcional): marca el token como sesión de SOPORTE (Superadmin
+// operando el panel de un negocio ajeno). Los middlewares que lo acepten
+// deben validarlo ADEMÁS contra sesiones_soporte (revocación server-side)
+// y re-verificar el privilegio de superadmin en cada request — el flag
+// solo nunca basta. duracionMs (opcional): las sesiones de soporte viven
+// menos que las 12h estándar; el default de las sesiones normales no cambia.
+export function crearTokenSesion({ usuarioId, negocioId, rol, sop }, duracionMs = DURACION_MS) {
   const now = Date.now();
-  const payload = { usuarioId, negocioId, rol, iat: now, exp: now + DURACION_MS };
+  const payload = { usuarioId, negocioId, rol, iat: now, exp: now + duracionMs };
+  if (sop === true) payload.sop = true;
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = firmar(payloadB64);
   return `${payloadB64}.${sig}`;
