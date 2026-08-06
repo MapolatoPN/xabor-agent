@@ -173,7 +173,7 @@
       </div>
       <div class="card" style="padding:0;overflow-x:auto;">
         <table>
-          <thead><tr><th>Negocio</th><th>Onboarding</th><th>Progreso</th><th>Responsable</th><th>Siguiente acción</th><th>Bloq.</th><th>Última actividad</th><th>Red</th><th>Rest.</th><th></th></tr></thead>
+          <thead><tr><th>Negocio</th><th>Onboarding</th><th>Acceso</th><th>Responsable</th><th>Siguiente acción</th><th>Bloq.</th><th>Última actividad</th><th>Red</th><th>Rest.</th><th></th></tr></thead>
           <tbody id="ce-tabla"><tr><td colspan="10" class="empty">Cargando…</td></tr></tbody>
         </table>
       </div>
@@ -788,11 +788,11 @@ async function abrirFicha(negocioId) {
         <td>${p.automatico ? '' : `<button class="btn" onclick="marcarPaso('${p.clave}')">Marcar</button>`}</td>
       </tr>`).join('') + '</tbody></table>';
   document.getElementById('fi-impl').innerHTML = `
-    <p><strong>Responsable implementación:</strong> ${escaparHTML(f.implementacion.siguiente_accion !== undefined ? (f.general.responsable_implementacion || '—') : '—')}
+    <p><strong>Responsable implementación:</strong> ${escaparHTML(f.general.responsable_implementacion || '—')}
        · <strong>Comercial:</strong> ${escaparHTML(f.general.responsable_comercial || '—')}</p>
     <p><strong>Fecha objetivo:</strong> ${f.implementacion.fecha_objetivo ? escaparHTML(f.implementacion.fecha_objetivo) : '—'}
        · <strong>Siguiente acción:</strong> ${escaparHTML(f.implementacion.siguiente_accion || '—')}</p>
-    <p><strong>Bloqueantes:</strong> ${f.implementacion.bloqueantes.length ? f.implementacion.bloqueantes.map(esc).join(' · ') : 'ninguno'}</p>
+    <p><strong>Bloqueantes:</strong> ${f.implementacion.bloqueantes.length ? f.implementacion.bloqueantes.map(escaparHTML).join(' · ') : 'ninguno'}</p>
     <p><strong>Notas:</strong> ${escaparHTML(f.implementacion.notas || '—')}</p>
     <p>
       <button class="btn" onclick="editarImplementacion()">Editar implementación</button>
