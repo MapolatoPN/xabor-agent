@@ -1647,8 +1647,12 @@ export async function obtenerPedidosActivos() {
     const result = await pool.query(`
       SELECT datos, negocio_id FROM pedidos_activos
       WHERE estado != 'entregado'
+        AND folio NOT LIKE 'RM-%'
       ORDER BY created_at ASC
     `);
+    // Los folios RM- son ventas consolidadas de restaurante: nacen
+    // 'entregado' y un reverso admin las deja 'cancelado' -- en ningún caso
+    // son pedidos operables del tablero de comandas.
     // Fallback para pedidos activos pre-migración: su JSON nunca tuvo
     // negocioId (se guardó antes de que ese concepto existiera), pero la
     // columna SQL sí quedó backfilleada por la migración 007. Sin este
@@ -1668,12 +1672,16 @@ export async function obtenerPedidosActivos() {
 }
 
 // Devuelve el número más alto de folio guardado (ej. 3 si el último es XAB-0003)
-// Sirve para que el contador nunca repita un folio tras un reinicio
+// Sirve para que el contador nunca repita un folio tras un reinicio.
+// Solo cuenta folios XAB- numéricos: la tabla también guarda ventas
+// consolidadas de restaurante (folio RM-...) que romperían el CAST y, vía el
+// catch, resetearían el contador a 0 (colisiones de folio).
 export async function obtenerMaxFolioNum() {
   try {
     const result = await pool.query(`
-      SELECT COALESCE(MAX(CAST(REPLACE(folio, 'XAB-', '') AS INTEGER)), 0) AS max_num
+      SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS INTEGER)), 0) AS max_num
       FROM pedidos_activos
+      WHERE folio ~ '^XAB-[0-9]+$'
     `);
     return result.rows[0]?.max_num || 0;
   } catch (e) {

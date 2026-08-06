@@ -58,6 +58,7 @@ import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentral
 import {
   listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
+  revertirVentaCuenta,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
@@ -1717,6 +1718,7 @@ function manejarErrorRestaurante(res, e) {
     METODO_NO_HABILITADO: 400, MONTO_INVALIDO: 400, MESA_INVALIDA: 400,
     MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
     MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, PARTES_INVALIDAS: 400,
+    VENTA_CONTABILIZADA: 409, SIN_VENTA_QUE_REVERTIR: 409,
   };
   const status = mapa[e.code];
   if (status) return res.status(status).json({ error: e.message, code: e.code });
@@ -1819,8 +1821,35 @@ app.get('/api/restaurante/cuentas/:cuentaId/dividir', requireAuthSeguro, require
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
-  try { res.json(await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId)); }
-  catch (e) { manejarErrorRestaurante(res, e); }
+  try {
+    const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId);
+    // Ticket final de cuenta (tipo 'cuenta_final'): UNA sola vez, solo cuando
+    // este request fue el que cerró (un reintento idempotente responde
+    // yaCerrada y NO reimprime). Nunca reimprime comandas de cocina, y usa
+    // el contrato C8 (printRouter no lanza; sin impresora => 'omitido').
+    if (!r.yaCerrada) {
+      const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
+      await emitirTrabajoImpresion({
+        id: r.ventaFolio,
+        negocioId: req.negocioId,
+        canal: 'restaurante',
+        tipo_comanda: 'cuenta_final',
+        mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
+        items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+          nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
+          notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', '),
+        })),
+        total: r.total,
+        propina: r.propinas,
+        pagos: r.pagos,
+        folio_venta: r.ventaFolio,
+        cliente: { nombre: `Mesa ${cuenta?.mesa ?? ''}`.trim() },
+        modalidad: 'mesa',
+        estado: 'entregado',
+      });
+    }
+    res.json(r);
+  } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/mover', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
@@ -1830,6 +1859,16 @@ app.post('/api/restaurante/cuentas/:cuentaId/mover', requireAuthSeguro, requireM
 
 app.post('/api/restaurante/cuentas/:cuentaId/reabrir', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
   try { res.json({ ok: true, cuenta: await reabrirCuenta(req.params.cuentaId, req.negocioId) }); }
+  catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Reverso de venta contabilizada (SOLO admin, motivo obligatorio): cancela
+// la venta consolidada en reportes (estado 'cancelado' + auditoría en
+// datos.cancelacion), reabre la cuenta y garantiza folio nuevo en un
+// re-cierre (reversos+1). Es el ÚNICO camino para deshacer una cuenta ya
+// contabilizada -- reabrir directo responde 409 VENTA_CONTABILIZADA.
+app.post('/api/restaurante/cuentas/:cuentaId/revertir-venta', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await revertirVentaCuenta(req.params.cuentaId, req.negocioId, req.usuarioId, req.body?.motivo)); }
   catch (e) { manejarErrorRestaurante(res, e); }
 });
 

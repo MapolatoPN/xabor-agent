@@ -128,6 +128,9 @@ export async function obtenerCuenta(cuentaId, negocioId) {
     mesero: { id: cuenta.mesero_usuario_id, nombre: cuenta.mesero_nombre },
     abiertaAt: cuenta.abierta_at, cerradaAt: cuenta.cerrada_at, comandasEmitidas: cuenta.comandas_emitidas,
     notas: cuenta.notas, total, pagado, propinas: Number(cuenta.propinas), saldo: total - pagado,
+    // Contabilización (migración 040): folio de la venta consolidada en
+    // reportes y su timestamp -- null mientras la cuenta no cierre.
+    ventaFolio: cuenta.venta_folio || null, contabilizadaAt: cuenta.contabilizada_at || null,
     items: items.rows, pagos: pagos.rows,
   };
 }
@@ -301,20 +304,48 @@ export function dividirEnPartesIguales(saldo, partes) {
 }
 
 // ─── Cierre y movimiento ────────────────────────────────────────────────────
+// Cierre CONTABLE (integración caja/reportes): en la MISMA transacción se
+// cierra la cuenta Y se inserta exactamente UNA venta consolidada en
+// pedidos_activos -- la fuente de verdad real de /api/ventas y el resumen.
+// Garantías:
+//   - Atómico: si falla el insert de la venta, la cuenta NO queda cerrada
+//     (rollback de todo); si falla el UPDATE, la venta tampoco queda.
+//   - Exactly-once: folio DETERMINISTA por cuenta+reversos ('RM-' + 8 hex
+//     del id + '-' + reversos) con UNIQUE en la cuenta y ON CONFLICT
+//     (folio) DO NOTHING en pedidos_activos -- un reintento tras timeout
+//     re-produce el mismo folio y no duplica nada.
+//   - Reintento tras respuesta perdida: si la cuenta YA está cerrada y
+//     contabilizada, responde idempotente ({ok, yaCerrada:true,
+//     ventaFolio}) en vez de error.
+//   - La fila de venta nace estado='entregado' + entregado_at: el tablero
+//     de comandas (obtenerPedidosActivos filtra != 'entregado') y el
+//     arranque del OrderManager JAMÁS la cargan; la impresión de cocina no
+//     se dispara (solo pasa vía emitirPedido); métricas D.1 y la red la
+//     ignoran (modalidad 'mesa', canal 'restaurante_mesa'); el prefijo RM-
+//     nunca toca el contador XAB-.
+//   - Dinero: importes recalculados aquí (SUM en SQL sobre NUMERIC); jamás
+//     se confía en totales del cliente. La propina viaja SEPARADA
+//     (datos.propinas y datos.pagos[].propina) y NO se suma al total.
 export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
   const nid = validarNegocioId(negocioId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Mismo patrón que registrarPago: lock primero, totales en consulta
-    // separada (snapshot fresco) -- un pago concurrente que acaba de entrar
-    // nunca queda fuera del saldo con el que se decide el cierre.
     const { rows } = await client.query(
-      `SELECT c.id, c.estado FROM restaurante_cuentas c WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE`,
+      `SELECT c.id, c.estado, c.mesa_numero, c.personas, c.mesero_usuario_id, c.abierta_at,
+              c.venta_folio, c.reversos
+       FROM restaurante_cuentas c WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE`,
       [cuentaId, nid]
     );
     if (!rows.length) throw errorCodigo('Cuenta no encontrada', 'CUENTA_NO_ENCONTRADA');
-    if (rows[0].estado !== 'abierta') throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    const cta = rows[0];
+    if (cta.estado !== 'abierta') {
+      if (cta.estado === 'cerrada' && cta.venta_folio) {
+        await client.query('COMMIT');
+        return { ok: true, yaCerrada: true, ventaFolio: cta.venta_folio };
+      }
+      throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    }
     const { rows: [tot] } = await client.query(
       `SELECT ${SQL_TOTALES} FROM restaurante_cuentas c WHERE c.id = $1`, [cuentaId]
     );
@@ -322,14 +353,112 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
     if (Math.abs(saldo) > 0.005) {
       throw errorCodigo(`No se puede cerrar con saldo pendiente ($${saldo.toFixed(2)})`, 'SALDO_PENDIENTE');
     }
+    // Secuencial a propósito: un client de pg no admite queries en paralelo
+    // dentro de la misma transacción.
+    const itemsQ = await client.query(
+      `SELECT producto AS nombre, cantidad, precio_unitario, modificadores, notas
+       FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado != 'cancelado' ORDER BY created_at`,
+      [cuentaId]
+    );
+    const pagosQ = await client.query(
+      `SELECT metodo, SUM(monto)::numeric(12,2) AS monto, SUM(propina)::numeric(12,2) AS propina
+       FROM restaurante_cuenta_pagos WHERE cuenta_id = $1 GROUP BY metodo ORDER BY metodo`,
+      [cuentaId]
+    );
+    const meseroQ = await client.query('SELECT nombre FROM usuarios WHERE id = $1', [cta.mesero_usuario_id]);
+    const items = itemsQ.rows, pagos = pagosQ.rows, mesero = meseroQ.rows[0];
+    const metodos = pagos.map(pg => pg.metodo);
+    const formaPago = metodos.length === 0 ? 'sin pago' : (metodos.length === 1 ? metodos[0] : 'mixto');
+    const ventaFolio = `RM-${String(cta.id).replace(/-/g, '').slice(0, 8).toUpperCase()}-${cta.reversos}`;
+    const datosVenta = {
+      id: ventaFolio,
+      origen: 'restaurante',
+      canal: 'restaurante_mesa',
+      modalidad: 'mesa',
+      mesa: cta.mesa_numero,
+      personas: cta.personas,
+      mesero: mesero ? mesero.nombre : null,
+      cuenta_id: cta.id,
+      abierta_at: cta.abierta_at,
+      cliente: { nombre: `Mesa ${cta.mesa_numero}` },
+      items: items.map(i => ({
+        nombre: i.nombre, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
+        notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') || undefined,
+      })),
+      total: Number(tot.total),
+      propinas: Number(tot.propinas),
+      costo_envio: 0,
+      forma_pago: formaPago,
+      pagos: pagos.map(pg => ({ metodo: pg.metodo, monto: Number(pg.monto), propina: Number(pg.propina) })),
+      estado: 'entregado',
+    };
     await client.query(
-      `UPDATE restaurante_cuentas SET estado = 'cerrada', cerrada_por = $2, cerrada_at = NOW(), updated_at = NOW() WHERE id = $1`,
-      [cuentaId, usuarioId]
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id, entregado_at)
+       VALUES ($1, 'entregado', $2, $3, NOW())
+       ON CONFLICT (folio) DO NOTHING`,
+      [ventaFolio, JSON.stringify(datosVenta), nid]
+    );
+    await client.query(
+      `UPDATE restaurante_cuentas
+       SET estado = 'cerrada', cerrada_por = $2, cerrada_at = NOW(),
+           venta_folio = $3, contabilizada_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [cuentaId, usuarioId, ventaFolio]
     );
     await client.query('COMMIT');
-    return { ok: true, total: Number(tot.total), propinas: Number(tot.propinas) };
+    return { ok: true, total: Number(tot.total), propinas: Number(tot.propinas), ventaFolio, pagos: datosVenta.pagos };
   } catch (e) {
     await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Reverso de la venta consolidada (SOLO admin, en la ruta): marca la fila
+// de pedidos_activos como 'cancelado' con motivo (deja de contar en ventas,
+// conserva historial), reabre la cuenta e incrementa `reversos` para que un
+// nuevo cierre genere un folio NUEVO. Nunca borra pagos ni items.
+export async function revertirVentaCuenta(cuentaId, negocioId, usuarioId, motivo) {
+  const nid = validarNegocioId(negocioId);
+  if (!motivo || !String(motivo).trim()) throw errorCodigo('El motivo del reverso es obligatorio', 'MOTIVO_REQUERIDO');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT id, estado, venta_folio, reversos FROM restaurante_cuentas
+       WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+      [cuentaId, nid]
+    );
+    if (!rows.length) throw errorCodigo('Cuenta no encontrada', 'CUENTA_NO_ENCONTRADA');
+    const cta = rows[0];
+    if (cta.estado !== 'cerrada' || !cta.venta_folio) {
+      throw errorCodigo('La cuenta no tiene una venta contabilizada que revertir', 'SIN_VENTA_QUE_REVERTIR');
+    }
+    const { rowCount } = await client.query(
+      `UPDATE pedidos_activos
+       SET estado = 'cancelado',
+           datos = jsonb_set(jsonb_set(datos, '{estado}', '"cancelado"'),
+                             '{cancelacion}', jsonb_build_object('motivo', $3::text, 'por', $4::text, 'at', NOW()::text)),
+           updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $2 AND estado != 'cancelado'`,
+      [cta.venta_folio, nid, String(motivo).trim(), String(usuarioId)]
+    );
+    // La reapertura respeta el índice único de mesa abierta: si la mesa ya
+    // fue tomada por otra cuenta, el reverso falla completo (rollback) con
+    // MESA_OCUPADA -- mover la otra cuenta primero.
+    await client.query(
+      `UPDATE restaurante_cuentas
+       SET estado = 'abierta', cerrada_por = NULL, cerrada_at = NULL,
+           venta_folio = NULL, contabilizada_at = NULL, reversos = reversos + 1, updated_at = NOW()
+       WHERE id = $1`,
+      [cuentaId]
+    );
+    await client.query('COMMIT');
+    return { ok: true, ventaRevertida: cta.venta_folio, ventaCancelada: rowCount === 1 };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e.code === '23505') throw errorCodigo('La mesa ya tiene otra cuenta abierta — mueve esa cuenta antes de revertir', 'MESA_OCUPADA');
     throw e;
   } finally {
     client.release();
@@ -361,12 +490,25 @@ export async function moverMesa(cuentaId, negocioId, nuevaMesa) {
 export async function reabrirCuenta(cuentaId, negocioId) {
   const nid = validarNegocioId(negocioId);
   try {
+    // Una cuenta con venta CONTABILIZADA nunca se reabre en silencio: la
+    // venta ya vive en reportes -- reabrirla sin reverso duplicaría el
+    // ingreso al volver a cerrar. El camino correcto es el reverso
+    // explícito de admin (revertirVentaCuenta).
     const { rows } = await pool.query(
       `UPDATE restaurante_cuentas SET estado = 'abierta', cerrada_por = NULL, cerrada_at = NULL, updated_at = NOW()
-       WHERE id = $1 AND negocio_id = $2 AND estado = 'cerrada'
+       WHERE id = $1 AND negocio_id = $2 AND estado = 'cerrada' AND venta_folio IS NULL
        RETURNING id, mesa_numero`,
       [cuentaId, nid]
     );
+    if (!rows.length) {
+      const { rows: chk } = await pool.query(
+        `SELECT venta_folio FROM restaurante_cuentas WHERE id = $1 AND negocio_id = $2 AND estado = 'cerrada'`,
+        [cuentaId, nid]
+      );
+      if (chk.length && chk[0].venta_folio) {
+        throw errorCodigo('La cuenta tiene una venta contabilizada — usa el reverso de venta (admin) en vez de reabrir', 'VENTA_CONTABILIZADA');
+      }
+    }
     if (!rows.length) throw errorCodigo('Cuenta no encontrada o no cerrada', 'CUENTA_NO_ENCONTRADA');
     return rows[0];
   } catch (e) {
