@@ -49,6 +49,7 @@ export const ORDEN_MIGRACIONES = [
   '034_modo_conversacion_repartidor.sql',
   '035_perfil_repartidor.sql',
   '036_entregado_at_pedidos.sql',
+  '039_restaurante_mesas.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
