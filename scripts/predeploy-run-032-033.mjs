@@ -24,6 +24,7 @@ const SCRIPTS = [
   '034-modo-conversacion-repartidor',
   '035-perfil-repartidor',
   '036-entregado-at-pedidos',
+  '037-central-operaciones',
 ];
 
 for (const nombre of SCRIPTS) {
