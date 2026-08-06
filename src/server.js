@@ -2863,6 +2863,16 @@ async function requireSuperadmin(req, res, next) {
   const token = leerCookieSesion(req);
   const payload = token ? verificarTokenSesion(token) : null;
   if (payload && payload.usuarioId) {
+    // Una sesión de SOPORTE está acotada a operar el panel de UN negocio --
+    // nunca vale como sesión de la consola Superadmin. Sin este rechazo,
+    // una cookie de soporte (cuyo usuarioId ES un superadmin) podría
+    // encadenar una segunda sesión de soporte hacia otro negocio o tocar
+    // cualquier endpoint /api/superadmin/* mientras "está dentro" de un
+    // negocio. Para volver a la consola: salir de soporte (que revoca y
+    // limpia la cookie) e iniciar sesión normal.
+    if (payload.sop === true) {
+      return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
+    }
     const esSuper = await esSuperadmin(payload.usuarioId);
     if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
     return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });

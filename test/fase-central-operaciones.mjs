@@ -141,10 +141,14 @@ await t('ONBOARDING', 'estado manual se fija y queda auditado; automático e inv
 });
 
 await t('ONBOARDING', 'derivación automática avanza (admin con password -> configuracion_en_proceso) pero nunca retrocede un manual', async () => {
-  // negocioA: su admin del seed tiene password -> derivado = configuracion_en_proceso
+  // Determinista en ambos entornos (base recién migrada O base con backfill
+  // posterior al seed): se fija el persistido en un estado TEMPRANO y se
+  // verifica que el derivado (admin con password) lo AVANZA al leer.
+  await pool.query(`UPDATE negocios SET onboarding_estado = 'alta_iniciada' WHERE id = $1`, [SEED.negocioA]);
   const fichaA = await obtenerFichaNegocio(SEED.negocioA);
-  assert.strictEqual(fichaA.implementacion.onboarding_estado, 'configuracion_en_proceso');
-  // negocioB quedó manualmente en 'pruebas' (posterior) -- el derivado no lo baja
+  assert.strictEqual(fichaA.implementacion.onboarding_estado, 'configuracion_en_proceso', 'el derivado avanza sobre un persistido anterior');
+  assert.strictEqual(fichaA.implementacion.onboarding_persistido, 'alta_iniciada', 'sin escribir: la derivación es de lectura');
+  // negocioB quedó manualmente en 'pruebas' (posterior al derivado) -- el derivado no lo baja
   const fichaB = await obtenerFichaNegocio(SEED.negocioB);
   assert.strictEqual(fichaB.implementacion.onboarding_estado, 'pruebas');
 });
@@ -239,6 +243,78 @@ await t('SOPORTE', 'cierre por servicio (cerrarSesionSoporte) también revoca', 
   assert.ok(await sesionSoporteVigente(s.token));
   await cerrarSesionSoporte(s.token, SEED.superadminUsuarioId, 'cierre de prueba');
   assert.strictEqual(await sesionSoporteVigente(s.token), null);
+});
+
+// ═══════════ Endurecimiento (revisión de integración) ═══════════
+await t('SOPORTE-CADENA', 'una sesión de soporte NUNCA usa la consola Superadmin ni encadena otra sesión de soporte', async () => {
+  const s = await crearSesionSoporte(SEED.superadminUsuarioId, SEED.negocioA, 'prueba de encadenamiento');
+  const cookieSop = `xabor_sesion=${encodeURIComponent(s.token)}`;
+  const rConsola = await api('/api/superadmin/central/negocios', { cookie: cookieSop });
+  assert.strictEqual(rConsola.status, 403, 'la consola Superadmin rechaza cookies de soporte');
+  const rCadena = await api(`/api/superadmin/negocios/${SEED.negocioB}/sesion-soporte`, { cookie: cookieSop, method: 'POST' });
+  assert.strictEqual(rCadena.status, 403, 'soporte -> soporte hacia otro negocio queda bloqueado');
+  await cerrarSesionSoporte(s.token, SEED.superadminUsuarioId, 'fin prueba encadenamiento');
+});
+
+await t('SOPORTE-DEGRADADO', 'si el usuario pierde el privilegio de superadmin, su sesión de soporte muere al instante', async () => {
+  const s = await crearSesionSoporte(SEED.superadminUsuarioId, SEED.negocioA, 'prueba degradación');
+  const cookieSop = `xabor_sesion=${encodeURIComponent(s.token)}`;
+  assert.strictEqual((await api('/api/auth/me', { cookie: cookieSop })).status, 200, 'con privilegio, la sesión opera');
+  await pool.query(`UPDATE administradores_plataforma SET activo = false WHERE usuario_id = $1`, [SEED.superadminUsuarioId]);
+  try {
+    const me = await api('/api/auth/me', { cookie: cookieSop });
+    assert.strictEqual(me.status, 401, 'sin privilegio vivo, la sesión de soporte se rechaza en la siguiente request');
+  } finally {
+    await pool.query(`UPDATE administradores_plataforma SET activo = true WHERE usuario_id = $1`, [SEED.superadminUsuarioId]);
+  }
+  await cerrarSesionSoporte(s.token, SEED.superadminUsuarioId, 'fin prueba degradación');
+});
+
+await t('SOPORTE-EXPIRA', 'la expiración server-side (tabla) mata la sesión aunque el HMAC siga vigente', async () => {
+  const s = await crearSesionSoporte(SEED.superadminUsuarioId, SEED.negocioA, 'prueba expiración');
+  const cookieSop = `xabor_sesion=${encodeURIComponent(s.token)}`;
+  assert.strictEqual((await api('/api/auth/me', { cookie: cookieSop })).status, 200);
+  // Simular el paso del tiempo del lado servidor: el HMAC del token sigue
+  // siendo válido (exp a 2h), pero la fila ya venció -- debe rechazarse.
+  await pool.query(`UPDATE sesiones_soporte SET expires_at = NOW() - INTERVAL '1 minute' WHERE token_hash = encode(sha256($1::bytea), 'hex')`, [s.token]);
+  const me = await api('/api/auth/me', { cookie: cookieSop });
+  assert.strictEqual(me.status, 401, 'fila expirada = sesión muerta, sin esperar la expiración del HMAC');
+});
+
+await t('SOPORTE-MANIPULACION', 'negocioId inalterable por query/body/header/cookie secundaria', async () => {
+  const s = await crearSesionSoporte(SEED.superadminUsuarioId, SEED.negocioA, 'prueba manipulación');
+  const cookieSop = `xabor_sesion=${encodeURIComponent(s.token)}`;
+  // query + body + header hostiles a la vez: el negocio sigue siendo el del token.
+  const r = await fetch(base + `/api/auth/me?negocioId=${SEED.negocioB}`, {
+    method: 'GET',
+    headers: {
+      'Cookie': cookieSop,
+      'X-Negocio-Id': SEED.negocioB,
+      'X-Forwarded-Negocio': SEED.negocioB,
+    },
+  });
+  const me = await r.json();
+  assert.strictEqual(me.negocioId, SEED.negocioA, 'headers/query jamás cambian el negocio');
+  // Cookie secundaria: un segundo xabor_sesion (forjado con sop hacia B, sin
+  // fila) DESPUÉS del legítimo -- el parser toma el primero; y aunque se
+  // ponga primero, ese token forjado no tiene fila en sesiones_soporte.
+  const forjado = crearTokenSesion({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioB, rol: 'admin', sop: true });
+  const rDoble = await fetch(base + '/api/auth/me', {
+    headers: { 'Cookie': `${cookieSop}; xabor_sesion=${encodeURIComponent(forjado)}` },
+  });
+  const meDoble = await rDoble.json();
+  assert.strictEqual(meDoble.negocioId, SEED.negocioA, 'la cookie secundaria no gana');
+  const rPrimero = await fetch(base + '/api/auth/me', {
+    headers: { 'Cookie': `xabor_sesion=${encodeURIComponent(forjado)}; ${cookieSop}` },
+  });
+  assert.strictEqual(rPrimero.status, 401, 'si la forjada va primero, se rechaza por falta de fila -- nunca opera B');
+  await cerrarSesionSoporte(s.token, SEED.superadminUsuarioId, 'fin prueba manipulación');
+});
+
+await t('LISTADO', 'orden inválido cae al orden por defecto sin error (lista blanca)', async () => {
+  const r = await api('/api/superadmin/central/negocios?orden=;DROP TABLE negocios;--&limit=5', { cookie: cookieSuperadmin });
+  assert.strictEqual(r.status, 200, 'un orden hostil jamás llega al SQL');
+  assert.ok(Array.isArray(r.body.negocios));
 });
 
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
