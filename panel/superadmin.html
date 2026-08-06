@@ -362,6 +362,7 @@
         <button class="tab activo" data-subtab="roster" style="border-bottom:2px solid var(--accent);" onclick="cambiarSubvistaRepartidores('roster')">Repartidores</button>
         <button class="tab" data-subtab="servicios" onclick="cambiarSubvistaRepartidores('servicios')">Servicios de reparto</button>
         <button class="tab" data-subtab="metricas" onclick="cambiarSubvistaRepartidores('metricas')">Métricas y ranking</button>
+        <button class="tab" data-subtab="central" onclick="cambiarSubvistaRepartidores('central')">Central de reparto</button>
       </div>
 
       <!-- Sub-vista: roster -->
@@ -484,7 +485,30 @@
     </div>
 
     <!-- DETALLE REPARTIDOR -->
-    <div id="vista-repartidor-detalle" class="vista">
+    
+    <!-- CENTRAL DE REPARTO (Frente B) -->
+    <div id="rp-sub-central" style="display:none;">
+      <div class="toolbar">
+        <select id="cr-estado" onchange="cargarCentralReparto()">
+          <option value="">Todos los estados</option>
+          <option value="buscando">Buscando repartidor</option>
+          <option value="asignado">Asignado</option>
+          <option value="recogido">Recogido</option>
+          <option value="entregado">Entregado</option>
+          <option value="incidencia">Incidencia</option>
+        </select>
+        <input type="text" id="cr-negocio" placeholder="negocioId (opcional)" onchange="cargarCentralReparto()">
+        <button class="btn" onclick="cargarCentralReparto()">Actualizar</button>
+      </div>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Folio</th><th>Negocio</th><th>Estado</th><th>Repartidor</th><th>Cliente</th><th>Total</th><th>Transcurrido</th><th>Ofertas</th></tr></thead>
+          <tbody id="cr-tabla"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+<div id="vista-repartidor-detalle" class="vista">
       <div class="back-link" onclick="irVista('repartidores')">← Volver a Red de Repartidores</div>
       <h1 id="rd-titulo">Detalle del repartidor</h1>
       <div class="card seccion-detalle">
@@ -1712,6 +1736,7 @@ function cambiarSubvistaRepartidores(sub) {
   document.getElementById('rp-sub-roster').style.display = sub === 'roster' ? 'block' : 'none';
   document.getElementById('rp-sub-servicios').style.display = sub === 'servicios' ? 'block' : 'none';
   document.getElementById('rp-sub-metricas').style.display = sub === 'metricas' ? 'block' : 'none';
+  document.getElementById('rp-sub-central').style.display = sub === 'central' ? 'block' : 'none';
   document.querySelectorAll('button[data-subtab]').forEach(b => {
     const activo = b.dataset.subtab === sub;
     b.classList.toggle('activo', activo);
@@ -1720,6 +1745,32 @@ function cambiarSubvistaRepartidores(sub) {
   if (sub === 'roster') cargarRosterRepartidores();
   if (sub === 'servicios') cargarServiciosReparto();
   if (sub === 'metricas') cargarMetricasReparto();
+  if (sub === 'central') cargarCentralReparto();
+}
+
+async function cargarCentralReparto() {
+  const q = new URLSearchParams({
+    estado: document.getElementById('cr-estado').value || '',
+    negocioId: document.getElementById('cr-negocio').value.trim() || '',
+    limit: 50,
+  });
+  const r = await api('/api/superadmin/red-repartidores/central?' + q.toString());
+  if (!r.ok) return;
+  const { servicios } = await r.json();
+  const tbody = document.getElementById('cr-tabla');
+  if (!servicios.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">Sin servicios</td></tr>'; return; }
+  const fmtMin = (seg) => `${Math.floor(seg / 60)} min`;
+  tbody.innerHTML = servicios.map(sv => `
+    <tr>
+      <td>${escaparHTML(sv.folio)}</td>
+      <td>${escaparHTML(sv.negocio_nombre)}</td>
+      <td>${escaparHTML(sv.estado_reparto)}</td>
+      <td>${escaparHTML(sv.repartidor_nombre || '—')}</td>
+      <td>${escaparHTML(sv.cliente_nombre || '—')}</td>
+      <td>$${escaparHTML(sv.total || '0')}</td>
+      <td>${fmtMin(sv.segundos_transcurridos)}</td>
+      <td>${escaparHTML(String(sv.ofertas_enviadas))}</td>
+    </tr>`).join('');
 }
 
 async function cargarVistaRepartidores() {
