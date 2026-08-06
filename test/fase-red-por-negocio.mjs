@@ -68,6 +68,16 @@ await t('EVALUACION', 'cobertura por colonia: incluida procede, excluida no, sin
   assert.strictEqual(evaluarSolicitudRed({ cliente: { colonia: 'Otra' } }, cfg, 'auto').razon, 'fuera_de_cobertura');
   assert.strictEqual(evaluarSolicitudRed({ cliente: {} }, cfg, 'auto').razon, 'sin_colonia_para_evaluar_cobertura');
 });
+await t('EVALUACION', 'error real de configuración (undefined) -> NUNCA oferta, ni en manual (fail closed)', async () => {
+  assert.strictEqual(evaluarSolicitudRed({}, undefined, 'auto').razon, 'error_configuracion');
+  assert.strictEqual(evaluarSolicitudRed({}, undefined, 'manual').procede, false);
+});
+await t('EVALUACION', 'obtenerConfigRed distingue sin-fila (null, legado) de error real (undefined, no ofertar)', async () => {
+  const sinFila = await obtenerConfigRed('00000000-0000-0000-0000-000000000000');
+  assert.strictEqual(sinFila, null, 'uuid válido sin fila = legado');
+  const conError = await obtenerConfigRed('esto-no-es-un-uuid');
+  assert.strictEqual(conError, undefined, 'error de cast en la consulta = undefined = el gate no oferta');
+});
 await t('COSTO', 'costo base + por km y quién absorbe', async () => {
   const cfg = { costo_base: 35, costo_por_km: 8, quien_absorbe: 'compartido' };
   assert.deepStrictEqual(calcularCostoRed(cfg), { costo: 35, quienAbsorbe: 'compartido' });
@@ -180,6 +190,26 @@ await t('E2E', 'solicitud_automatica=false: el pedido no oferta solo; el endpoin
   assert.ok(n, 'la solicitud manual debía generar la oferta');
   const r404 = await api('/api/pedidos/XAB-9999/solicitar-repartidor', { cookie: cookieAdminA, method: 'POST' });
   assert.strictEqual(r404.status, 404);
+});
+
+await t('E2E', 'solicitud manual DUPLICADA: la segunda responde ok sin duplicar ofertas (idempotencia por pedido/repartidor)', async () => {
+  const { rows } = await pool.query(`SELECT pedido_folio FROM notificaciones_repartidor ORDER BY created_at DESC LIMIT 1`);
+  const folio = rows[0].pedido_folio;
+  const antes = await conteoNotificaciones(folio);
+  assert.ok(antes > 0);
+  const r2 = await api(`/api/pedidos/${folio}/solicitar-repartidor`, { cookie: cookieAdminA, method: 'POST' });
+  assert.strictEqual(r2.status, 200, 'reintentar la solicitud es válido');
+  await esperar(2000);
+  assert.strictEqual(await conteoNotificaciones(folio), antes, 'ningún repartidor recibe una segunda oferta del mismo pedido');
+});
+
+await t('HTTP-CONFIG', 'GET expone camposDeclarativos: la interfaz nunca puede presentarlos como funcionales', async () => {
+  const r = await api('/api/config/red-repartidores', { cookie: cookieAdminA });
+  assert.strictEqual(r.status, 200);
+  assert.ok(Array.isArray(r.body.camposDeclarativos));
+  for (const campo of ['radio_km', 'fuentes.red_xabor', 'fuentes.externas']) {
+    assert.ok(r.body.camposDeclarativos.includes(campo), `${campo} debe declararse como no ejecutado`);
+  }
 });
 
 // ═══════════ Central de reparto (Superadmin) ═══════════

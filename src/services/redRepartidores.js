@@ -18,8 +18,14 @@ export const CAMPOS_CONFIG_RED = [
   'tiempo_preparacion_min', 'solicitud_automatica', 'prioridad_modalidad',
 ];
 
-// null => el negocio nunca configuró su red => comportamiento legado
-// (el motor de notificación decide solo por repartidor_notif_modo).
+// Contrato de retorno de tres estados (revisión de integración):
+//   fila      => el negocio configuró su red -> se evalúa esa config.
+//   null      => el negocio NUNCA configuró su red -> comportamiento legado
+//                (el motor de notificación decide solo por repartidor_notif_modo).
+//   undefined => ERROR real leyendo la configuración (base caída, etc.) --
+//                distinto de "sin fila": no sabemos si el negocio tenía la
+//                red desactivada, así que el gate debe fallar hacia NO
+//                ofertar (nunca hacia el legado, que sí oferta). Nunca lanza.
 export async function obtenerConfigRed(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   try {
@@ -27,9 +33,17 @@ export async function obtenerConfigRed(negocioId) {
     return rows[0] || null;
   } catch (e) {
     console.error('[RedNegocio] Error obtenerConfigRed:', e.message);
-    return null; // fail hacia el comportamiento legado, nunca lanza al motor
+    return undefined; // error real -> el gate falla hacia no ofertar
   }
 }
+
+// Campos de red_repartidores_config que hoy son DECLARATIVOS: el panel los
+// captura y persiste, pero el motor de ofertas todavía NO los ejecuta.
+// Cualquier interfaz que los muestre debe marcarlos como "configuración
+// declarativa, sin ejecución automática todavía" -- nunca presentarlos como
+// plenamente funcionales. GET /api/config/red-repartidores los expone para
+// que el consumidor de la API no tenga que adivinarlo.
+export const CAMPOS_DECLARATIVOS_RED = ['radio_km', 'fuentes.red_xabor', 'fuentes.externas', 'politica_reasignacion:reofertar'];
 
 const VALIDA_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -80,7 +94,14 @@ export async function guardarConfigRed(negocioId, cambios) {
 // "no ofrecer" con razón registrable, jamás a ofrecer por accidente.
 export function evaluarSolicitudRed(pedido, config, origen = 'auto', ahora = new Date()) {
   try {
-    if (!config) {
+    if (config === undefined) {
+      // Error real leyendo la configuración (ver obtenerConfigRed): no
+      // sabemos si el negocio tenía la red desactivada -- fallar hacia NO
+      // ofertar, jamás hacia el legado (que sí oferta). El pedido principal
+      // no se ve afectado: este gate solo decide la oferta de reparto.
+      return { procede: false, razon: 'error_configuracion' };
+    }
+    if (config === null) {
       // Sin configuración => comportamiento legado intacto: el motor de
       // notificación decide solo (repartidor_notif_modo).
       return { procede: true, razon: 'sin_config_legado' };

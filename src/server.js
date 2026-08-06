@@ -54,7 +54,7 @@ import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbedd
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
-import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto } from './services/redRepartidores.js';
+import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -3744,7 +3744,13 @@ app.get('/api/superadmin/red-repartidores/central', requireSuperadmin, async (re
 // requireModulo('repartidores'): la pantalla solo existe para negocios con
 // el módulo habilitado. Un negocio sin fila = comportamiento legado.
 app.get('/api/config/red-repartidores', requireAdminSeguro, requireModulo('repartidores'), async (req, res) => {
-  res.json({ config: await obtenerConfigRed(req.negocioId) });
+  const config = await obtenerConfigRed(req.negocioId);
+  // undefined = error real de lectura (distinto de "sin configurar" = null).
+  if (config === undefined) return res.status(500).json({ error: 'Error al leer la configuración de la red' });
+  // camposDeclarativos: qué campos captura la API pero el motor todavía NO
+  // ejecuta -- cualquier interfaz debe mostrarlos como "declarativo /
+  // próximamente", nunca como plenamente funcionales.
+  res.json({ config, camposDeclarativos: CAMPOS_DECLARATIVOS_RED });
 });
 
 app.put('/api/config/red-repartidores', requireAdminSeguro, requireModulo('repartidores'), async (req, res) => {
