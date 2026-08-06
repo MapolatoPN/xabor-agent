@@ -27,6 +27,7 @@ const SCRIPTS = [
   '037-central-operaciones',
   '038-red-repartidores-config',
   '039-restaurante-mesas',
+  '040-restaurante-integracion-ventas',
 ];
 
 for (const nombre of SCRIPTS) {

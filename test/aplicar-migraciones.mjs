@@ -52,6 +52,7 @@ export const ORDEN_MIGRACIONES = [
   '037_central_operaciones_onboarding.sql',
   '038_red_repartidores_config.sql',
   '039_restaurante_mesas.sql',
+  '040_restaurante_integracion_ventas.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
