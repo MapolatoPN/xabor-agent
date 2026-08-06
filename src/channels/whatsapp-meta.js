@@ -22,6 +22,7 @@ import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } f
 import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '../services/imagenes.js';
 import { getIntegracion } from '../server.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
+import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
 import { formatearUbicacionRepartidor, formatearTarifaRepartidor } from '../utils/direccionRepartidor.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
@@ -1272,8 +1273,16 @@ function parsearListaPilotoTelefonos(valorConfig) {
 }
 
 // ─── Notificar repartidores activos por WhatsApp ─────────────────────────────
-export async function notificarRepartidoresPorWA(pedido) {
+// opts.origen: 'auto' (disparado por emitirPedido, comportamiento original)
+// o 'manual' (el negocio solicitó repartidor explícitamente para este
+// pedido, vía POST /api/pedidos/:folio/solicitar-repartidor). La distinción
+// existe SOLO para la configuración por negocio (red_repartidores_config,
+// migración 038): con solicitud_automatica=false, 'auto' se bloquea y
+// 'manual' pasa; el resto de la evaluación (red activa, horario, cobertura)
+// aplica igual para ambos orígenes.
+export async function notificarRepartidoresPorWA(pedido, opts = {}) {
   try {
+    const origen = opts.origen === 'manual' ? 'manual' : 'auto';
     if (!pedido?.negocioId) {
       console.warn('[WA Repartidor] notificarRepartidoresPorWA: pedido sin negocioId — no se notifica a nadie (fail closed)');
       return;
@@ -1284,6 +1293,17 @@ export async function notificarRepartidoresPorWA(pedido) {
     // un pedido de Rappi nunca debe llegar a notificar repartidores de Xabor.
     if (!esPedidoElegibleParaRedRepartidores(pedido)) {
       console.log(`[WA Repartidor] Pedido ${pedido.id} no elegible para la red de repartidores (canal=${pedido.canal}, modalidad=${pedido.modalidad}, estado=${pedido.estado}) — omitido`);
+      return;
+    }
+    // Configuración de red POR NEGOCIO (migración 038): un negocio sin fila
+    // conserva el comportamiento actual exacto (evaluarSolicitudRed devuelve
+    // procede=true con razon 'sin_config_legado'). Con fila: red inactiva,
+    // fuera de horario, fuera de cobertura o solicitud manual requerida
+    // bloquean la oferta ANTES de tocar repartidores o credenciales.
+    const configRed = await obtenerConfigRed(pedido.negocioId);
+    const evaluacion = evaluarSolicitudRed(pedido, configRed, origen);
+    if (!evaluacion.procede) {
+      console.log(`[WA Repartidor] Pedido ${pedido.id} no ofrecido a la red (${evaluacion.razon}, origen=${origen}) — negocio ${pedido.negocioId}`);
       return;
     }
     const repartidores = await obtenerRepartidores(pedido.negocioId);
