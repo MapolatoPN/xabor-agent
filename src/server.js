@@ -50,6 +50,7 @@ import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbedd
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
+import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto } from './services/redRepartidores.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -3549,6 +3550,73 @@ app.patch('/api/superadmin/prospectos/:id', requireSuperadmin, async (req, res) 
 app.get('/api/superadmin/red-repartidores/resumen', requireSuperadmin, async (req, res) => {
   const negocioId = req.query.negocioId || null;
   res.json(await obtenerResumenRosterRepartidores(negocioId));
+});
+
+// ─── Central de reparto (Superadmin, Frente B) ──────────────────────────────
+// Vista operativa cross-negocio de los servicios de reparto: estado
+// derivado (buscando/asignado/recogido/entregado/incidencia), tiempo
+// transcurrido, ofertas enviadas y filtros por negocio/repartidor/estado/
+// fecha. Solo lectura -- las acciones (reofertar, reasignar) siguen
+// viviendo en sus flujos existentes.
+app.get('/api/superadmin/red-repartidores/central', requireSuperadmin, async (req, res) => {
+  const { estado, negocioId, repartidorId, desde, hasta, limit, offset } = req.query;
+  try {
+    res.json(await obtenerCentralReparto({
+      estado: estado ? String(estado) : '', negocioId: negocioId ? String(negocioId) : '',
+      repartidorId: repartidorId ? String(repartidorId) : '',
+      desde: desde ? String(desde) : null, hasta: hasta ? String(hasta) : null,
+      limit, offset,
+    }));
+  } catch (e) {
+    console.error('[Central reparto] Error:', e.message);
+    res.status(500).json({ error: 'Error al consultar la central de reparto' });
+  }
+});
+
+// ─── Configuración de red de repartidores POR NEGOCIO (Frente B) ────────────
+// Solo el admin del negocio (o una sesión de soporte) la lee y edita.
+// requireModulo('repartidores'): la pantalla solo existe para negocios con
+// el módulo habilitado. Un negocio sin fila = comportamiento legado.
+app.get('/api/config/red-repartidores', requireAdminSeguro, requireModulo('repartidores'), async (req, res) => {
+  res.json({ config: await obtenerConfigRed(req.negocioId) });
+});
+
+app.put('/api/config/red-repartidores', requireAdminSeguro, requireModulo('repartidores'), async (req, res) => {
+  try {
+    const config = await guardarConfigRed(req.negocioId, req.body || {});
+    res.json({ ok: true, config });
+  } catch (e) {
+    if (e.code === 'CONFIG_INVALIDA') return res.status(400).json({ error: e.message });
+    console.error('[RedNegocio] Error guardando config:', e.message);
+    res.status(500).json({ error: 'Error al guardar la configuración de la red' });
+  }
+});
+
+// Solicitud MANUAL de repartidor para un pedido concreto (modo
+// solicitud_automatica=false, o reoferta explícita). El folio se valida
+// contra el negocio de la sesión (folio ajeno = 404 idéntico a
+// inexistente). La respuesta confirma la SOLICITUD, no la aceptación: las
+// ofertas viajan por WhatsApp y la aceptación llega por token, igual que en
+// el flujo automático.
+app.post('/api/pedidos/:folio/solicitar-repartidor', requireAdminSeguro, requireModulo('repartidores'),
+  rateLimitMiddleware(req => `solicitar-rep:${req.negocioId}`, 30, 60 * 1000), async (req, res) => {
+  const pedido = obtenerPedidoPorId(req.params.folio, req.negocioId);
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  const { esPedidoElegibleParaRedRepartidores } = await import('./orders/orderManager.js');
+  if (!esPedidoElegibleParaRedRepartidores(pedido)) {
+    return res.status(409).json({ error: 'El pedido no es elegible para la red (canal, modalidad o estado)' });
+  }
+  const configRed = await obtenerConfigRed(req.negocioId);
+  const evaluacion = evaluarSolicitudRed(pedido, configRed, 'manual');
+  if (!evaluacion.procede) {
+    return res.status(409).json({ error: `No se puede solicitar repartidor: ${evaluacion.razon}` });
+  }
+  const { notificarRepartidoresPorWA } = await import('./channels/whatsapp-meta.js');
+  // Se espera el resultado para poder responder con la verdad (idempotencia
+  // interna incluida: repartidores ya notificados para este folio no
+  // reciben una segunda oferta).
+  await notificarRepartidoresPorWA(pedido, { origen: 'manual' });
+  res.json({ ok: true, folio: pedido.id, evaluacion: evaluacion.razon });
 });
 
 app.get('/api/superadmin/red-repartidores/roster', requireSuperadmin, async (req, res) => {
