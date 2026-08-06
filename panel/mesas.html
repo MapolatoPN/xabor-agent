@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mesas · Xabor</title>
+<style>
+  :root { --bg:#111827; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#9ca3af; --ok:#10b981; --ocupada:#f59e0b; --accent:#f97316; --rojo:#ef4444; }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; }
+  body { background:var(--bg); color:var(--texto); min-height:100vh; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:18px; }
+  header a { color:var(--sub); text-decoration:none; font-size:14px; }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .mesa { background:var(--card); border:2px solid var(--line); border-radius:12px; padding:14px; cursor:pointer; text-align:center; }
+  .mesa.ocupada { border-color:var(--ocupada); }
+  .mesa .num { font-size:22px; font-weight:800; }
+  .mesa .info { font-size:12px; color:var(--sub); margin-top:6px; line-height:1.5; }
+  .mesa .saldo { font-weight:700; color:var(--ocupada); }
+  .badge { display:inline-block; font-size:11px; font-weight:700; border-radius:99px; padding:2px 8px; margin-top:6px; }
+  .badge.libre { background:rgba(16,185,129,.15); color:var(--ok); }
+  .badge.ocu { background:rgba(245,158,11,.15); color:var(--ocupada); }
+  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:18px; width:min(560px,94vw); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog h2 { font-size:16px; margin-bottom:10px; }
+  label { display:block; font-size:12px; color:var(--sub); margin:10px 0 4px; }
+  input, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:14px; }
+  .fila { display:flex; gap:8px; }
+  .fila > * { flex:1; }
+  button { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:9px 14px; font-weight:700; cursor:pointer; font-size:14px; }
+  button.sec { background:var(--line); }
+  button.peligro { background:var(--rojo); }
+  .acciones { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
+  .tachado { text-decoration:line-through; color:var(--sub); }
+  .tot { display:flex; justify-content:space-between; font-size:14px; margin-top:10px; padding-top:8px; border-top:1px solid var(--line); }
+  .tot strong { font-size:16px; }
+  #msg { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); background:var(--card); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:99; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🍽 Mesas</h1>
+  <a href="/index.html">← Volver al panel</a>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+</main>
+
+<dialog id="dlg-abrir">
+  <h2>Abrir mesa <span id="ab-num"></span></h2>
+  <label>Personas</label>
+  <input type="number" id="ab-personas" min="1" max="100" value="2">
+  <div class="acciones">
+    <button onclick="confirmarAbrir()">Abrir cuenta</button>
+    <button class="sec" onclick="document.getElementById('dlg-abrir').close()">Cancelar</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-cuenta">
+  <h2>Mesa <span id="cu-mesa"></span> · <span id="cu-mesero"></span> · <span id="cu-personas"></span> personas</h2>
+  <div id="cu-items"></div>
+  <div class="tot"><span>Total: $<span id="cu-total"></span> · Pagado: $<span id="cu-pagado"></span></span><strong>Saldo: $<span id="cu-saldo"></span></strong></div>
+  <label>Agregar producto</label>
+  <div class="fila">
+    <input id="it-producto" placeholder="Producto">
+    <input id="it-cantidad" type="number" min="1" value="1" style="max-width:70px;">
+    <input id="it-precio" type="number" min="0" step="0.01" placeholder="$" style="max-width:90px;">
+  </div>
+  <label>Notas / modificadores (opcional)</label>
+  <input id="it-notas" placeholder="sin cebolla, extra queso…">
+  <div class="acciones">
+    <button class="sec" onclick="agregarItem()">+ Agregar</button>
+    <button onclick="enviarComanda()">Enviar comanda</button>
+  </div>
+  <label>Registrar pago (división: cada pago indica qué cubre)</label>
+  <div class="fila">
+    <select id="pg-metodo"><option value="efectivo">Efectivo</option><option value="terminal">Terminal</option><option value="transferencia">Transferencia</option><option value="enlace_pago">Enlace de pago</option></select>
+    <input id="pg-monto" type="number" min="0.01" step="0.01" placeholder="Monto">
+    <input id="pg-propina" type="number" min="0" step="0.01" placeholder="Propina" style="max-width:90px;">
+  </div>
+  <input id="pg-cubre" placeholder="Qué cubre (ej. '2 refrescos', 'persona 1')" style="margin-top:6px;">
+  <div class="acciones">
+    <button class="sec" onclick="registrarPago()">Registrar pago</button>
+    <button class="sec" onclick="dividirIguales()">Dividir en partes iguales</button>
+  </div>
+  <div class="acciones">
+    <button onclick="cerrarCuenta()">Cerrar cuenta</button>
+    <button class="sec" onclick="moverMesa()">Mover de mesa</button>
+    <button class="sec" onclick="document.getElementById('dlg-cuenta').close()">Salir</button>
+  </div>
+</dialog>
+
+<div id="msg"></div>
+
+<script>
+let CUENTA = null;
+let ROL = 'staff';
+
+function msg(t) {
+  const el = document.getElementById('msg');
+  el.textContent = t; el.style.display = 'block';
+  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = 'none', 3200);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { msg(j.error || 'Error'); throw new Error(j.error || r.status); }
+  return j;
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function cargarMesas() {
+  const { mesas } = await api('/api/restaurante/mesas');
+  document.getElementById('grid').innerHTML = mesas.map(m => m.ocupada ? `
+    <div class="mesa ocupada" onclick="abrirCuenta('${m.cuentaId}')">
+      <div class="num">Mesa ${m.mesa}</div>
+      <div class="info">${esc(m.mesero)} · ${m.personas} pers<br>Total $${m.total.toFixed(2)} · <span class="saldo">Saldo $${m.saldo.toFixed(2)}</span></div>
+      <span class="badge ocu">Ocupada</span>
+    </div>` : `
+    <div class="mesa" onclick="abrirMesaDlg(${m.mesa})">
+      <div class="num">Mesa ${m.mesa}</div>
+      <span class="badge libre">Disponible</span>
+    </div>`).join('');
+}
+
+let MESA_POR_ABRIR = null;
+function abrirMesaDlg(n) { MESA_POR_ABRIR = n; document.getElementById('ab-num').textContent = n; document.getElementById('dlg-abrir').showModal(); }
+async function confirmarAbrir() {
+  const personas = document.getElementById('ab-personas').value;
+  const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify({ mesa: MESA_POR_ABRIR, personas }) });
+  document.getElementById('dlg-abrir').close();
+  await cargarMesas();
+  abrirCuenta(cuenta.id);
+}
+
+async function abrirCuenta(cuentaId) {
+  const c = await api('/api/restaurante/cuentas/' + cuentaId);
+  CUENTA = c;
+  document.getElementById('cu-mesa').textContent = c.mesa;
+  document.getElementById('cu-mesero').textContent = c.mesero.nombre;
+  document.getElementById('cu-personas').textContent = c.personas;
+  document.getElementById('cu-total').textContent = c.total.toFixed(2);
+  document.getElementById('cu-pagado').textContent = c.pagado.toFixed(2);
+  document.getElementById('cu-saldo').textContent = c.saldo.toFixed(2);
+  const filas = c.items.map(i => `
+    <tr class="${i.estado === 'cancelado' ? 'tachado' : ''}">
+      <td>${i.cantidad}× ${esc(i.producto)}${i.notas ? `<br><small>${esc(i.notas)}</small>` : ''}</td>
+      <td>$${(i.cantidad * Number(i.precio_unitario)).toFixed(2)}</td>
+      <td>${i.estado === 'pendiente' ? '🕐 por enviar' : i.estado === 'enviado' ? `📤 comanda ${i.comanda_num}` : `❌ ${esc(i.motivo_cancelacion || '')}`}</td>
+      <td>${(i.estado !== 'cancelado' && ROL === 'admin') ? `<button class="sec" style="padding:2px 8px;font-size:11px;" onclick="cancelarItem('${i.id}')">Cancelar</button>` : ''}</td>
+    </tr>`).join('');
+  document.getElementById('cu-items').innerHTML = c.items.length
+    ? `<table><thead><tr><th>Producto</th><th>Importe</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table>`
+    : '<p style="color:var(--sub);font-size:13px;">Sin productos todavía.</p>';
+  const pagos = c.pagos.map(p => `${p.metodo} $${Number(p.monto).toFixed(2)}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
+  if (pagos) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--sub);margin-top:6px;">Pagos: ${pagos}</p>`;
+  document.getElementById('dlg-cuenta').showModal();
+}
+
+async function agregarItem() {
+  const producto = document.getElementById('it-producto').value.trim();
+  const cantidad = document.getElementById('it-cantidad').value;
+  const precio = document.getElementById('it-precio').value;
+  const notas = document.getElementById('it-notas').value.trim();
+  if (!producto || precio === '') { msg('Producto y precio son obligatorios'); return; }
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [{ producto, cantidad, precio_unitario: precio, notas }] }) });
+  ['it-producto', 'it-precio', 'it-notas'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('it-cantidad').value = 1;
+  abrirCuenta(CUENTA.id);
+}
+
+async function enviarComanda() {
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/comanda`, { method: 'POST' });
+  msg(`Comanda ${r.comanda} (${r.tipo}) enviada a cocina — ${r.items.length} producto(s)`);
+  abrirCuenta(CUENTA.id);
+}
+
+async function cancelarItem(itemId) {
+  const motivo = prompt('Motivo de la cancelación (obligatorio):');
+  if (!motivo) return;
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo }) });
+  abrirCuenta(CUENTA.id);
+}
+
+async function registrarPago() {
+  const metodo = document.getElementById('pg-metodo').value;
+  const monto = document.getElementById('pg-monto').value;
+  const propina = document.getElementById('pg-propina').value || 0;
+  const cubre = document.getElementById('pg-cubre').value.trim() || null;
+  if (!monto) { msg('Indica el monto'); return; }
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify({ metodo, monto, propina, cubre }) });
+  msg(`Pago registrado. Saldo restante: $${r.saldoRestante.toFixed(2)}`);
+  document.getElementById('pg-monto').value = ''; document.getElementById('pg-propina').value = ''; document.getElementById('pg-cubre').value = '';
+  abrirCuenta(CUENTA.id);
+}
+
+async function dividirIguales() {
+  const partes = prompt('¿Entre cuántas personas?', CUENTA.personas);
+  if (!partes) return;
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/dividir?partes=${encodeURIComponent(partes)}`);
+  msg(`Saldo $${r.saldo.toFixed(2)} → ${r.partes.map(p => '$' + p.toFixed(2)).join(' + ')}`);
+}
+
+async function cerrarCuenta() {
+  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero.')) return;
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/cerrar`, { method: 'POST' });
+  msg(`Cuenta cerrada. Total $${r.total.toFixed(2)}, propinas $${r.propinas.toFixed(2)}`);
+  document.getElementById('dlg-cuenta').close();
+  cargarMesas();
+}
+
+async function moverMesa() {
+  const mesa = prompt('¿A qué mesa mover la cuenta?');
+  if (!mesa) return;
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/mover`, { method: 'POST', body: JSON.stringify({ mesa }) });
+  msg(`Cuenta movida a la mesa ${mesa}`);
+  document.getElementById('dlg-cuenta').close();
+  cargarMesas();
+}
+
+fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
+  if (!r.ok) { window.location.href = '/login-negocio.html'; return; }
+  const me = await r.json();
+  ROL = me.rol || 'staff';
+  if (!Array.isArray(me.modulos) || !me.modulos.includes('restaurante')) {
+    document.querySelector('main').innerHTML = '<p style="color:var(--sub);">El módulo de restaurante no está habilitado para este negocio.</p>';
+    return;
+  }
+  cargarMesas();
+  setInterval(cargarMesas, 30000);
+});
+</script>
+</body>
+</html>
