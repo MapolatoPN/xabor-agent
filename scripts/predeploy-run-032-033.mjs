@@ -25,6 +25,7 @@ const SCRIPTS = [
   '035-perfil-repartidor',
   '036-entregado-at-pedidos',
   '037-central-operaciones',
+  '038-red-repartidores-config',
 ];
 
 for (const nombre of SCRIPTS) {
