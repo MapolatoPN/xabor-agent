@@ -554,6 +554,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>
   <button class="header-btn admin-only" data-modulo="pos" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
+  <button class="header-btn" id="btn-reimprimir-cuenta" style="display:none;" onclick="reimprimirUltimaCuentaFinal()" title="Reimprimir el último ticket de cuenta de mesa (reimpresión controlada, solo manual)">🧾↺</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
 
@@ -1732,7 +1733,15 @@ function conectarWS() {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
-      if (msg.tipo === 'nuevo_pedido')    agregarPedido(msg.pedido);
+      // El ticket final de cuenta de restaurante llega por el mismo canal de
+      // impresión que las comandas, pero NO es un pedido operable: no entra
+      // al tablero y se imprime con su propia plantilla (una sola vez -- el
+      // servidor solo lo emite en el cierre real, nunca en reintentos).
+      if (msg.tipo === 'nuevo_pedido' && msg.pedido?.tipo_comanda === 'cuenta_final') {
+        recibirCuentaFinal(msg.pedido);
+      } else if (msg.tipo === 'nuevo_pedido') {
+        agregarPedido(msg.pedido);
+      }
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'eliminar_pedido') {
         const card = document.getElementById(`comanda-${msg.id}`);
@@ -1855,6 +1864,97 @@ function agregarPedido(pedido) {
     sonarAlerta();
     setTimeout(() => imprimirComanda(pedido.id), 800);
   }
+}
+
+// ─── Ticket final de cuenta (restaurante/mesa) ───────────────────────────────
+// Reimpresión CONTROLADA: solo se conserva el último ticket recibido y solo
+// se reimprime con acción manual explícita -- jamás automática.
+let ultimaCuentaFinal = null;
+
+function recibirCuentaFinal(trabajo) {
+  ultimaCuentaFinal = trabajo;
+  const btn = document.getElementById('btn-reimprimir-cuenta');
+  if (btn) btn.style.display = '';
+  // Mismo guard de replay que las comandas: los trabajos reenviados por el
+  // servidor en los primeros segundos de conexión no se imprimen solos.
+  if (panelListo) {
+    sonarAlerta();
+    setTimeout(() => abrirPopupImpresion(cuentaFinalHTML(trabajo)), 400);
+  }
+}
+
+function reimprimirUltimaCuentaFinal() {
+  if (!ultimaCuentaFinal) return;
+  abrirPopupImpresion(cuentaFinalHTML(ultimaCuentaFinal));
+}
+
+function cuentaFinalHTML(p) {
+  const ahora = new Date().toLocaleString('es-MX', { timeZone:'America/Matamoros', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+  const total = parseFloat(p.total || 0);
+  const propina = parseFloat(p.propina || 0);
+  const pagos = Array.isArray(p.pagos) ? p.pagos : [];
+  const totalArt = (p.items || []).reduce((s, i) => s + (i.cantidad || 1), 0);
+  const et = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const etiquetaMetodo = m => ({ efectivo:'Efectivo', terminal:'Terminal', transferencia:'Transferencia', enlace_pago:'Enlace de pago' }[m] || m);
+
+  const itemsRows = (p.items || []).map(item => `
+    <tr>
+      <td style="width:24px;vertical-align:top;font-weight:900;">${item.cantidad||1}</td>
+      <td style="vertical-align:top;">${et(item.nombre||'Producto')}${item.notas ? `<br><span style="font-size:9px;font-style:italic;">${et(item.notas)}</span>` : ''}</td>
+      <td style="width:56px;text-align:right;vertical-align:top;font-weight:900;">$${((item.cantidad||1)*parseFloat(item.precio_unitario||0)).toFixed(2)}</td>
+    </tr>`).join('');
+
+  const pagosRows = pagos.map(pg => `
+    <tr><td>${et(etiquetaMetodo(pg.metodo))}</td><td class="r">$${parseFloat(pg.monto||0).toFixed(2)}${parseFloat(pg.propina||0) > 0 ? ` (+$${parseFloat(pg.propina).toFixed(2)} propina)` : ''}</td></tr>`).join('');
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+@page{size:80mm auto;margin:0 2mm;}
+body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.5;color:#000;background:#fff;padding:4mm 2mm;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+table{width:100%;border-collapse:collapse;}
+td{padding:1px 0;font-size:11px;}
+.c{text-align:center;}.r{text-align:right;}.b{font-weight:900;}
+hr{border:none;border-top:1px solid #000;margin:4px 0;}
+.dash{border-top:1px dashed #000 !important;}
+.marca{font-size:24px;font-weight:900;letter-spacing:4px;text-align:center;}
+.dir{font-size:9px;text-align:center;}
+.folio{font-size:22px;font-weight:900;text-align:center;letter-spacing:1px;}
+.badge{display:block;width:100%;text-align:center;background:#000;color:#fff;font-weight:900;font-size:11px;padding:3px 0;margin:5px 0;letter-spacing:1px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.ih td{font-size:10px;font-weight:900;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;}
+.gt-row td{font-size:17px;font-weight:900;border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;}
+.letras{font-size:9px;text-align:center;display:block;margin:3px 0 5px;text-transform:uppercase;}
+.footer{text-align:center;font-size:10px;margin-top:8px;border-top:1px dashed #000;padding-top:5px;}
+</style></head><body>
+<div class="marca">${et((negocio.nombre_corto||negocio.nombre||'').toLowerCase())}</div>
+<div class="dir">${et((negocio.nombre||'').toUpperCase())}</div>
+${negocio.direccion ? `<div class="dir">${et(negocio.direccion.toUpperCase())}</div>` : ''}
+${negocio.ciudad ? `<div class="dir">${et(negocio.ciudad.toUpperCase())}</div>` : ''}
+${negocio.telefono ? `<div class="dir">TEL: ${et(negocio.telefono)}</div>` : ''}
+<hr>
+<div class="c" style="font-size:11px;">CUENTA DE MESA — VENTA</div>
+<div class="folio">${et(p.folio_venta || p.id || '—')}</div>
+<div class="c" style="font-size:9px;">Fecha: ${ahora}</div>
+<hr class="dash">
+<table>
+  <tr><td>Mesa:</td><td class="r b" style="font-size:14px;">${et(p.mesa ?? '—')}</td></tr>
+  <tr><td>Personas:</td><td class="r">${et(p.personas ?? '—')}</td></tr>
+  <tr><td>Mesero:</td><td class="r">${et(p.mesero || '—')}</td></tr>
+</table>
+<div class="badge">CUENTA CERRADA</div>
+<table>
+  <thead><tr class="ih"><td style="width:24px;">Cant</td><td>Descripción</td><td class="r" style="width:56px;">Importe</td></tr></thead>
+  <tbody>${itemsRows}</tbody>
+</table>
+<div style="font-size:10px;margin-top:3px;">Artículos: ${totalArt}</div>
+<hr>
+<table><tr class="gt-row"><td><b>Total:</b></td><td class="r"><b>$${total.toFixed(2)}</b></td></tr></table>
+<span class="letras">${totalEnLetras(total)} pesos ${String(Math.round((total % 1) * 100)).padStart(2,'0')}/100 m.n.</span>
+${pagosRows ? `<div class="c" style="font-size:9px;font-weight:900;letter-spacing:1px;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0;margin:6px 0 3px;">PAGOS POR MÉTODO</div><table>${pagosRows}</table>` : ''}
+${propina > 0 ? `<table><tr><td>Propina (no incluida en el total):</td><td class="r b">$${propina.toFixed(2)}</td></tr></table>` : ''}
+<table><tr><td>Saldo:</td><td class="r">$0.00</td></tr></table>
+<div class="footer">Venta registrada en reportes con folio ${et(p.folio_venta || p.id || '')}<br>— Gracias por su visita —</div>
+</body></html>`;
 }
 
 // Convierte número entero a letras en español (para el ticket)

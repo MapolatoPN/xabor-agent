@@ -20,3 +20,4 @@ validate-sat.bat
 validate-sat-result.txt
 cert_b64.txt
 key_b64.txt
+test/.preview-ticket-*.html
