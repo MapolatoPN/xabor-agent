@@ -4271,7 +4271,7 @@ export async function obtenerDestinatariosCampana(segmento, negocioId) {
 const MODULOS_VALIDOS = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
-  'asistente_comercial_cotizaciones',
+  'asistente_comercial_cotizaciones', 'restaurante',
 ];
 // Incluye tanto el vocabulario heredado (usado por pos/usuarios/caja/menu/
 // impresion/whatsapp/voz/rappi/facturacion) como el vocabulario canónico
