@@ -68,15 +68,19 @@ async function api(base, path, { cookie, method = 'GET', body } = {}) {
 // ═══════════ 1. registrarPedido: fail-closed universal (causa raíz #1) ═══════════
 await t('PEDIDO', 'registrarPedido sin negocioId (canal whatsapp) -> TENANT_CONTEXT_REQUIRED, no se persiste', async () => {
   const orden = { cliente: { nombre: 'Cliente Test', telefono: TEL_COMPARTIDO }, total: 100, items: [] };
-  assert.throws(() => registrarPedido(orden, 'whatsapp'), /TENANT_CONTEXT_REQUIRED/);
+  // registrarPedido es async (Fase 2 de la corrección de carrera) -- un
+  // throw dentro de una función async siempre produce una promesa
+  // rechazada, nunca un throw síncrono, así que la aserción debe ser
+  // assert.rejects (no assert.throws con un callback síncrono).
+  await assert.rejects(() => registrarPedido(orden, 'whatsapp'), /TENANT_CONTEXT_REQUIRED/);
 });
 await t('PEDIDO', 'registrarPedido sin negocioId (canal voz) -> TENANT_CONTEXT_REQUIRED', async () => {
   const orden = { cliente: { nombre: 'Cliente Test', telefono: TEL_COMPARTIDO }, total: 100, items: [] };
-  assert.throws(() => registrarPedido(orden, 'voz'), /TENANT_CONTEXT_REQUIRED/);
+  await assert.rejects(() => registrarPedido(orden, 'voz'), /TENANT_CONTEXT_REQUIRED/);
 });
 await t('PEDIDO', 'registrarPedido con negocioId real -> pedido.negocioId = ese negocio, nunca otro', async () => {
   const orden = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 250, items: [], negocioId: SEED.negocioA };
-  const pedido = registrarPedido(orden, 'whatsapp');
+  const pedido = await registrarPedido(orden, 'whatsapp');
   assert.strictEqual(pedido.negocioId, SEED.negocioA);
   assert.notStrictEqual(pedido.negocioId, SEED.nonnaMayeId);
 });
@@ -84,13 +88,13 @@ await t('PEDIDO', 'registrarPedido con negocioId real -> pedido.negocioId = ese 
 // ═══════════ 2. obtenerPedidoPorId: verificación de dueño (defensa en profundidad) ═══════════
 await t('PEDIDO', 'obtenerPedidoPorId con negocioId equivocado -> undefined (idéntico a inexistente)', async () => {
   const ordenA = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 300, items: [], negocioId: SEED.negocioA };
-  const pedidoA = registrarPedido(ordenA, 'whatsapp');
+  const pedidoA = await registrarPedido(ordenA, 'whatsapp');
   assert.strictEqual(obtenerPedidoPorId(pedidoA.id, SEED.nonnaMayeId), undefined);
   assert.strictEqual(obtenerPedidoPorId(pedidoA.id, SEED.negocioA)?.id, pedidoA.id);
 });
 await t('PEDIDO', 'obtenerPedidoPorId sin negocioId (descubrimiento legítimo, p. ej. webhook) sigue funcionando', async () => {
   const ordenA = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 300, items: [], negocioId: SEED.negocioA };
-  const pedidoA = registrarPedido(ordenA, 'whatsapp');
+  const pedidoA = await registrarPedido(ordenA, 'whatsapp');
   const encontrado = obtenerPedidoPorId(pedidoA.id);
   assert.strictEqual(encontrado.negocioId, SEED.negocioA);
 });

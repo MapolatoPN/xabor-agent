@@ -41,7 +41,7 @@ router.post('/', async (req, res) => {
     if (resultado.orden) {
       resultado.orden.canal = 'whatsapp';
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || waId;
-      const pedido = registrarPedido(resultado.orden, 'whatsapp');
+      const pedido = await registrarPedido(resultado.orden, 'whatsapp');
       emitirPedido(pedido);
     }
 

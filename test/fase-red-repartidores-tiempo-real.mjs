@@ -192,6 +192,17 @@ await t('MENSAJE-V2', 'incluye-negocio-folio-ubicacion-tarifa-enlace-en-5-parame
 // ═══════════ Carrera de aceptación y enlaces (12-16) ═══════════
 await t('CARRERA', '12-PEDIDO-YA-ASIGNADO-NO-SE-REASIGNA', async () => {
   const folio = await crearPedidoPrueba();
+  // Espera explícita y determinista (por evento, no por tiempo fijo) a que
+  // la fila exista en pedidos_activos antes de intentar asignar --
+  // registrarPedido() ahora espera su propia persistencia inicial antes de
+  // responder /test/pedido (segunda corrección de la carrera), así que en
+  // el flujo normal esto ya debería cumplirse de inmediato; esta espera
+  // documenta esa garantía en vez de asumirla en silencio.
+  const existe = await esperarHasta(async () => {
+    const r = await pool.query('SELECT 1 FROM pedidos_activos WHERE folio = $1', [folio]);
+    return r.rows.length > 0;
+  });
+  assert.ok(existe, `la fila de ${folio} debía existir en pedidos_activos antes de intentar asignar`);
   const ok1 = await asignarRepartidor(folio, repDisponible.id, repDisponible.nombre, SEED.negocioA);
   assert.strictEqual(ok1, true);
   const ok2 = await asignarRepartidor(folio, repPausado.id, repPausado.nombre, SEED.negocioA);

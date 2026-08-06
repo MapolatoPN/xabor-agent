@@ -204,7 +204,7 @@ async function procesarOrdenRappi(data) {
     const orden = mapearOrdenRappi(data);
 
     // Registrar y emitir al panel de comandas
-    const pedido = registrarPedido(orden, 'rappi');
+    const pedido = await registrarPedido(orden, 'rappi');
     emitirPedido(pedido);
 
     // Guardar en BD (teléfono ficticio para órdenes Rappi).

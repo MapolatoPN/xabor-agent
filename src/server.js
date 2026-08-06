@@ -1537,7 +1537,7 @@ app.post('/chat', async (req, res) => {
     const resultado = await procesarMensaje(sessionId, mensaje);
 
     if (resultado.orden) {
-      const pedido = registrarPedido(resultado.orden, 'api');
+      const pedido = await registrarPedido(resultado.orden, 'api');
       emitirPedido(pedido);
       return res.json({ ...resultado, pedido });
     }
@@ -1665,7 +1665,13 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     costo_envio: 0,
     negocioId: req.negocioId
   };
-  const pedido = registrarPedido(orden, 'presencial');
+  let pedido;
+  try {
+    pedido = await registrarPedido(orden, 'presencial');
+  } catch (e) {
+    console.error('[Panel] Error registrando pedido presencial:', e.message);
+    return res.status(500).json({ error: 'No se pudo registrar el pedido' });
+  }
   emitirPedido(pedido);
   // Persistencia en el historial (tabla pedidos) -- en segundo plano, no
   // bloquea la respuesta ni la emisión al panel (igual que antes). Se debe
@@ -4683,7 +4689,7 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
   }
 });
 
-app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), (req, res) => {
+app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   const ordenPrueba = {
     cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
     modalidad: 'entrega a domicilio',
@@ -4699,9 +4705,14 @@ app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), (req, res) =>
     canal: 'test',
     negocioId: req.negocioId
   };
-  const pedido = registrarPedido(ordenPrueba, 'test');
-  emitirPedido(pedido);
-  res.json({ ok: true, pedido });
+  try {
+    const pedido = await registrarPedido(ordenPrueba, 'test');
+    emitirPedido(pedido);
+    res.json({ ok: true, pedido });
+  } catch (e) {
+    console.error('[server] Error en /test/pedido:', e.message);
+    res.status(500).json({ error: 'No se pudo registrar el pedido de prueba' });
+  }
 });
 
 // ─── Job: activar pedidos programados ────────────────────────────────────────

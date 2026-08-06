@@ -1583,11 +1583,12 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 // cada cambio de estado) no reescribe negocio_id; sería redundante, no
 // arriesgado, pero se omite para mantener el UPDATE mínimo y explícito.
 // Persistencia INICIAL de un folio nuevo en pedidos_activos -- nunca una
-// actualización. Causa raíz de la carrera de asignación de repartidor
-// (12-PEDIDO-YA-ASIGNADO-NO-SE-REASIGNA): registrarPedido() dispara esta
-// función sin esperarla (fire-and-forget), así que su escritura puede
-// resolver DESPUÉS de que asignarRepartidor() ya asignó el pedido -- el
-// antiguo "ON CONFLICT DO UPDATE SET datos = $3" sobrescribía TODO el
+// actualización. Causa raíz original de la carrera de asignación de
+// repartidor (12-PEDIDO-YA-ASIGNADO-NO-SE-REASIGNA): registrarPedido()
+// disparaba esta función sin esperarla (fire-and-forget), así que su
+// escritura podía resolver DESPUÉS de que asignarRepartidor() ya había
+// asignado el pedido -- el antiguo "ON CONFLICT DO UPDATE SET datos = $3"
+// sobrescribía TODO el
 // JSONB con la copia vieja del pedido en memoria (sin repartidor_id),
 // borrando la asignación ya confirmada y dejando la fila "sin asignar"
 // otra vez para el siguiente repartidor. Los tres llamadores de esta
@@ -1597,6 +1598,13 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 // misma función llegando tarde, o de asignarRepartidor/
 // actualizarEstadoPedidoDB, que sí actualizan con jsonb_set/UPDATE
 // condicionado) y no hay nada que sobrescribir.
+// Devuelve true si, al terminar, la fila existe en pedidos_activos (recién
+// insertada por esta llamada o ya presente de una llamada anterior/carrera
+// ganada por otra) -- false SOLO si la consulta a la base de datos falló
+// de verdad (conexión caída, etc). Nunca lanza: los llamadores que ya
+// existían antes de este campo de retorno (whatsapp-meta.js, server.js)
+// siguen funcionando igual ignorándolo; registrarPedido() (orderManager.js)
+// es el único que lo usa para decidir si puede exponer el pedido.
 export async function guardarPedidoActivo(pedido, negocioId) {
   try {
     await pool.query(`
@@ -1604,8 +1612,10 @@ export async function guardarPedidoActivo(pedido, negocioId) {
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (folio) DO NOTHING
     `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
+    return true;
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
+    return false;
   }
 }
 

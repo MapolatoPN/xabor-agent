@@ -79,7 +79,25 @@ export async function cargarPedidosDesdeDB() {
   }
 }
 
-export function registrarPedido(orden, canal = 'test') {
+// ASYNC a propósito (segunda corrección de la carrera de asignación de
+// repartidor, tras 12-PEDIDO-YA-ASIGNADO-NO-SE-REASIGNA): la persistencia
+// inicial en pedidos_activos (guardarPedidoActivo) ahora se espera AQUÍ,
+// antes de devolver el pedido -- ya no es fire-and-forget. Todo lo que
+// depende del pedido devuelto (ofrecerlo a la red de repartidores, generar
+// tokens de aceptación, emitir eventos WebSocket, confirmar al cliente que
+// quedó registrado) pasa por callers que usan el valor de retorno de esta
+// función, así que ninguno de ellos puede ocurrir antes de que la fila
+// exista en la base de datos. Cierra la ventana residual que quedaba tras
+// el primer fix (ON CONFLICT DO NOTHING): antes, si asignarRepartidor()
+// corría antes de que este INSERT llegara a existir, su UPDATE condicionado
+// afectaba cero filas y rechazaba una aceptación válida como si el pedido
+// no existiera.
+//
+// TODOS los llamadores (whatsapp-meta.js, voice.js, rappi.js, whatsapp.js,
+// server.js, chat-test.js) deben usar `await registrarPedido(...)` --
+// llamarla sin await ahora devuelve una Promise, no el pedido, y
+// pedido.id sería undefined.
+export async function registrarPedido(orden, canal = 'test') {
   // Fail-closed universal (Incidente P0, Fase 0): TODO canal debe traer
   // orden.negocioId ya resuelto por el borde del canal (WhatsApp, Voz,
   // Rappi, presencial) -- nunca se rellena aquí con un negocio por
@@ -101,13 +119,19 @@ export function registrarPedido(orden, canal = 'test') {
     estado: 'nuevo'
   };
 
+  // Persistencia inicial ANTES de tocar el estado en memoria: si falla de
+  // verdad (error de base de datos, no un simple conflicto de folio), no
+  // se consume el folio ni se agrega nada a `pedidos` -- el llamador recibe
+  // un error explícito en vez de un pedido "confirmado" que nunca quedó
+  // guardado. guardarPedidoActivo() nunca lanza (ver su propio comentario
+  // en database.js); su valor de retorno es la única señal de éxito/fallo.
+  const persistido = await guardarPedidoActivo(pedido, negocioId);
+  if (!persistido) {
+    throw new Error(`PEDIDO_NO_PERSISTIDO: no se pudo guardar ${pedido.id} en pedidos_activos — pedido rechazado antes de ofrecerlo a repartidores o confirmarlo al cliente`);
+  }
+
   pedidos.push(pedido);
   contadorPedidos++;
-
-  // Guardar en DB para que sobreviva reinicios
-  guardarPedidoActivo(pedido, negocioId).catch(e =>
-    console.error(`[OrderManager] ❌ Error guardando ${pedido.id} en DB:`, e.message)
-  );
 
   console.log('\n' + '='.repeat(50));
   console.log(`🎉 NUEVO PEDIDO: ${pedido.id} [${canal}]`);

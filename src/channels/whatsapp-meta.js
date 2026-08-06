@@ -856,7 +856,14 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // respaldo que registrarPedido tenía antes (ya eliminado). Ahora se
       // fija explícitamente, igual que Rappi siempre lo hizo.
       resultado.orden.negocioId = negocioId;
-      const pedido = registrarPedido(resultado.orden, 'whatsapp');
+      let pedido;
+      try {
+        pedido = await registrarPedido(resultado.orden, 'whatsapp');
+      } catch (e) {
+        console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
+        await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
+        return;
+      }
 
       // Si es pedido programado, guardarlo aparte y NO enviarlo al panel todavía
       if (resultado.orden.programado_para) {
@@ -896,12 +903,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             linkPago = clip.url;
             await guardarLinkPago(pedido.id, negocioId, clip.linkId);
           } else {
-            // registrarPedido() dispara guardarPedidoActivo() sin await
-            // (fire-and-forget, para no bloquear el registro del pedido) --
-            // se re-invoca aquí con await antes de leer de vuelta (es un
-            // UPSERT idempotente, ON CONFLICT DO UPDATE) para cerrar la
-            // carrera real que existiría si crearEnlacePago leyera
-            // pedidos_activos antes de que esa escritura terminara.
+            // registrarPedido() ya espera (await) su propia persistencia
+            // inicial antes de devolver "pedido" -- esta re-invocación es
+            // ahora un no-op idempotente y defensivo (ON CONFLICT DO
+            // NOTHING contra una fila que ya existe), no una corrección de
+            // carrera real como antes. Se conserva sin cambios de
+            // comportamiento por si algún día vuelve a haber un camino que
+            // llegue aquí sin pasar por registrarPedido.
             await guardarPedidoActivo(pedido, negocioId);
             const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedido.id, descripcion: `Pedido Xabor #${pedido.id}` });
             linkPago = resultadoLink.url;

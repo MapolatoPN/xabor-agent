@@ -54,7 +54,7 @@ function preguntarAlUsuario() {
       console.log(`\n🤖 Xabor: ${resultado.texto}\n`);
 
       if (resultado.orden) {
-        const pedido = registrarPedido(resultado.orden, 'test');
+        const pedido = await registrarPedido(resultado.orden, 'test');
         console.log(`\n✅ Pedido registrado con ID: ${pedido.id}\n`);
       }
 

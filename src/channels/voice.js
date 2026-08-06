@@ -200,7 +200,7 @@ export function setupVoiceWebSocket(wssVoice) {
             // pedido se rechazaría (TENANT_CONTEXT_REQUIRED) en vez de
             // terminar silenciosamente en el negocio equivocado.
             resultado.orden.negocioId = negocioId;
-            const pedido = registrarPedido(resultado.orden, 'voz');
+            const pedido = await registrarPedido(resultado.orden, 'voz');
 
             if (resultado.orden.programado_para) {
               // Pedido programado: guardar aparte, no emitir al panel todavía
