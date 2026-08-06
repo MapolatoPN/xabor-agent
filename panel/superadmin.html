@@ -119,6 +119,7 @@
   </header>
   <nav>
     <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Dashboard</button>
+    <button class="tab" data-tab="central" onclick="irVista('central')">Central de Operaciones</button>
     <button class="tab" data-tab="negocios" onclick="irVista('negocios')">Negocios</button>
     <button class="tab" data-tab="prospectos" onclick="irVista('prospectos')">Prospectos</button>
     <button class="tab" data-tab="repartidores" onclick="irVista('repartidores')">Red de Repartidores</button>
@@ -142,6 +143,56 @@
         <h2>Sin terminal o sin menú</h2>
         <div id="da-sin-instalar" class="empty">Cargando…</div>
       </div>
+    </div>
+
+    <!-- CENTRAL DE OPERACIONES -->
+    <div id="vista-central" class="vista">
+      <h1>Central de Operaciones</h1>
+      <div class="toolbar">
+        <input type="search" id="ce-buscar" placeholder="Buscar negocio…" oninput="cargarCentral()">
+        <select id="ce-onboarding" onchange="cargarCentral()">
+          <option value="">Todo el pipeline</option>
+          <option value="prospecto">Prospecto</option>
+          <option value="alta_iniciada">Alta iniciada</option>
+          <option value="invitacion_enviada">Invitación enviada</option>
+          <option value="cuenta_creada">Cuenta creada</option>
+          <option value="configuracion_en_proceso">Configuración en proceso</option>
+          <option value="integraciones">Integraciones</option>
+          <option value="pruebas">Pruebas</option>
+          <option value="listo_para_operar">Listo para operar</option>
+          <option value="activo">Activo</option>
+          <option value="pausado">Pausado</option>
+          <option value="cancelado">Cancelado</option>
+        </select>
+        <select id="ce-orden" onchange="cargarCentral()">
+          <option value="created_at">Más recientes</option>
+          <option value="nombre">Nombre</option>
+          <option value="onboarding">Etapa</option>
+          <option value="actividad">Última actividad</option>
+        </select>
+      </div>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Negocio</th><th>Onboarding</th><th>Progreso</th><th>Responsable</th><th>Siguiente acción</th><th>Bloq.</th><th>Última actividad</th><th>Red</th><th>Rest.</th><th></th></tr></thead>
+          <tbody id="ce-tabla"><tr><td colspan="10" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="toolbar" style="justify-content:flex-end;">
+        <button class="btn" id="ce-prev" onclick="paginarCentral(-1)">← Anterior</button>
+        <span id="ce-pagina" style="align-self:center;"></span>
+        <button class="btn" id="ce-next" onclick="paginarCentral(1)">Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- FICHA (Central) -->
+    <div id="vista-ficha" class="vista">
+      <div class="back-link" onclick="irVista('central')">← Volver a la Central</div>
+      <h1 id="fi-titulo">Ficha del negocio</h1>
+      <div class="grid-stats" id="fi-stats"></div>
+      <div class="card"><h2>Cuenta y acceso</h2><div id="fi-cuenta" class="empty">Cargando…</div></div>
+      <div class="card"><h2>Checklist operativo</h2><div id="fi-checklist" class="empty">Cargando…</div></div>
+      <div class="card"><h2>Implementación</h2><div id="fi-impl" class="empty">Cargando…</div></div>
+      <div class="card"><h2>Acciones</h2><div id="fi-acciones"></div></div>
     </div>
 
     <!-- NEGOCIOS -->
@@ -648,10 +699,162 @@ function irVista(nombre) {
   document.getElementById('vista-' + nombre).classList.add('activa');
   document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === nombre));
   if (nombre === 'dashboard') api('/api/superadmin/dashboard').then(r => r.json()).then(renderDashboard);
+  if (nombre === 'central') cargarCentral();
   if (nombre === 'negocios') cargarNegocios();
   if (nombre === 'prospectos') cargarProspectos();
   if (nombre === 'repartidores') cargarVistaRepartidores();
   if (nombre === 'auditoria') cargarAuditoria();
+}
+
+// ─── Central de Operaciones ─────────────────────────────────────────────────
+let CE_OFFSET = 0;
+const CE_LIMIT = 25;
+const CE_ETIQUETAS_ONBOARDING = {
+  prospecto: 'Prospecto', alta_iniciada: 'Alta iniciada', invitacion_enviada: 'Invitación enviada',
+  cuenta_creada: 'Cuenta creada', configuracion_en_proceso: 'Configuración', integraciones: 'Integraciones',
+  pruebas: 'Pruebas', listo_para_operar: 'Listo para operar', activo: 'Activo', pausado: 'Pausado', cancelado: 'Cancelado',
+};
+
+function paginarCentral(dir) {
+  CE_OFFSET = Math.max(0, CE_OFFSET + dir * CE_LIMIT);
+  cargarCentral(true);
+}
+
+async function cargarCentral(mantenerPagina) {
+  if (!mantenerPagina) CE_OFFSET = 0;
+  const q = new URLSearchParams({
+    buscar: document.getElementById('ce-buscar').value || '',
+    onboarding: document.getElementById('ce-onboarding').value || '',
+    orden: document.getElementById('ce-orden').value || 'created_at',
+    limit: CE_LIMIT, offset: CE_OFFSET,
+  });
+  const r = await api('/api/superadmin/central/negocios?' + q.toString());
+  if (!r.ok) return;
+  const { total, negocios } = await r.json();
+  const tbody = document.getElementById('ce-tabla');
+  if (!negocios.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">Sin negocios</td></tr>'; }
+  else {
+    tbody.innerHTML = negocios.map(n => `
+      <tr>
+        <td><strong>${escaparHTML(n.nombre)}</strong><br><small>${escaparHTML(n.slug)}</small></td>
+        <td>${CE_ETIQUETAS_ONBOARDING[n.onboarding_estado] || escaparHTML(n.onboarding_estado)}</td>
+        <td>${n.admin_con_acceso ? '✅ acceso' : '⏳ sin acceso'}</td>
+        <td>${escaparHTML(n.responsable_implementacion || '—')}</td>
+        <td>${escaparHTML(n.siguiente_accion || '—')}</td>
+        <td>${Number(n.num_bloqueantes) > 0 ? `⚠ ${n.num_bloqueantes}` : '—'}</td>
+        <td>${n.ultima_actividad ? new Date(n.ultima_actividad).toLocaleString('es-MX') : '—'}</td>
+        <td>${n.red_activa ? '🛵' : '—'}</td>
+        <td>${n.restaurante_activo ? '🍽' : '—'}</td>
+        <td><button class="btn" onclick="abrirFicha('${n.id}')">Ficha</button></td>
+      </tr>`).join('');
+  }
+  const pagina = Math.floor(CE_OFFSET / CE_LIMIT) + 1;
+  const paginas = Math.max(1, Math.ceil(total / CE_LIMIT));
+  document.getElementById('ce-pagina').textContent = `Página ${pagina} de ${paginas} (${total})`;
+  document.getElementById('ce-prev').disabled = CE_OFFSET === 0;
+  document.getElementById('ce-next').disabled = CE_OFFSET + CE_LIMIT >= total;
+}
+
+let FICHA_NEGOCIO_ID = null;
+async function abrirFicha(negocioId) {
+  FICHA_NEGOCIO_ID = negocioId;
+  document.querySelectorAll('.vista').forEach(v => v.classList.remove('activa'));
+  document.getElementById('vista-ficha').classList.add('activa');
+  const r = await api(`/api/superadmin/negocios/${negocioId}/ficha`);
+  if (!r.ok) return;
+  const f = await r.json();
+  document.getElementById('fi-titulo').textContent = `${f.general.nombre} — ficha`;
+  document.getElementById('fi-stats').innerHTML = `
+    <div class="stat"><div class="num">${CE_ETIQUETAS_ONBOARDING[f.implementacion.onboarding_estado] || f.implementacion.onboarding_estado}</div><div class="lbl">Onboarding</div></div>
+    <div class="stat"><div class="num">${f.implementacion.progreso}%</div><div class="lbl">Progreso</div></div>
+    <div class="stat"><div class="num">${f.operacion.pedidos_totales}</div><div class="lbl">Pedidos</div></div>
+    <div class="stat"><div class="num">${f.configuracion.menu_productos}</div><div class="lbl">Productos en menú</div></div>
+    <div class="stat"><div class="num">${f.configuracion.repartidores_activos}</div><div class="lbl">Repartidores</div></div>
+    <div class="stat"><div class="num">${escaparHTML(f.general.plan)}</div><div class="lbl">Plan</div></div>`;
+  const inv = f.cuenta.invitacion;
+  document.getElementById('fi-cuenta').innerHTML = `
+    <p><strong>Admin:</strong> ${f.cuenta.admin_principal ? escaparHTML(f.cuenta.admin_principal.nombre) + ' · ' + escaparHTML(f.cuenta.admin_principal.email) : '—'}
+       · ${f.cuenta.admin_principal?.tiene_password ? 'con acceso' : 'SIN acceso todavía'}</p>
+    <p><strong>Invitación:</strong> ${inv.enviada ? (inv.aceptada ? 'aceptada' : (inv.vigente ? `vigente hasta ${new Date(inv.expira_at).toLocaleString('es-MX')}` : 'expirada/revocada')) : 'nunca enviada'}</p>
+    <p><strong>Usuarios:</strong> ${f.cuenta.num_usuarios}</p>`;
+  document.getElementById('fi-checklist').innerHTML = '<table><thead><tr><th>Paso</th><th>Estado</th><th>Tipo</th><th>Responsable</th><th>Notas</th><th></th></tr></thead><tbody>' +
+    f.checklist_operativo.map(p => `
+      <tr>
+        <td>${escaparHTML(p.clave.replace(/_/g, ' '))}</td>
+        <td>${escaparHTML(p.estado)}</td>
+        <td>${p.automatico ? 'auto' : 'manual'}</td>
+        <td>${escaparHTML(p.responsable || '—')}</td>
+        <td>${escaparHTML(p.notas || '—')}</td>
+        <td>${p.automatico ? '' : `<button class="btn" onclick="marcarPaso('${p.clave}')">Marcar</button>`}</td>
+      </tr>`).join('') + '</tbody></table>';
+  document.getElementById('fi-impl').innerHTML = `
+    <p><strong>Responsable implementación:</strong> ${escaparHTML(f.implementacion.siguiente_accion !== undefined ? (f.general.responsable_implementacion || '—') : '—')}
+       · <strong>Comercial:</strong> ${escaparHTML(f.general.responsable_comercial || '—')}</p>
+    <p><strong>Fecha objetivo:</strong> ${f.implementacion.fecha_objetivo ? escaparHTML(f.implementacion.fecha_objetivo) : '—'}
+       · <strong>Siguiente acción:</strong> ${escaparHTML(f.implementacion.siguiente_accion || '—')}</p>
+    <p><strong>Bloqueantes:</strong> ${f.implementacion.bloqueantes.length ? f.implementacion.bloqueantes.map(esc).join(' · ') : 'ninguno'}</p>
+    <p><strong>Notas:</strong> ${escaparHTML(f.implementacion.notas || '—')}</p>
+    <p>
+      <button class="btn" onclick="editarImplementacion()">Editar implementación</button>
+      <button class="btn" onclick="cambiarOnboarding()">Cambiar etapa</button>
+    </p>`;
+  document.getElementById('fi-acciones').innerHTML = `
+    <button class="btn" onclick="verDetalleNegocio('${negocioId}')">Detalle técnico</button>
+    <button class="btn" onclick="reenviarInvitacionFicha('${negocioId}')">Reenviar invitación</button>
+    <button class="btn" style="background:#b45309;color:#fff;" onclick="entrarComoSoporte('${negocioId}', '${escaparHTML(f.general.nombre)}')">Entrar como soporte</button>`;
+}
+
+async function marcarPaso(clave) {
+  const estado = prompt(`Estado para "${clave}" (pendiente / en_proceso / bloqueado / completado / no_aplica):`, 'completado');
+  if (!estado) return;
+  const notas = prompt('Notas (opcional):') || undefined;
+  const responsable = prompt('Responsable (opcional):') || undefined;
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/checklist-operativo/${clave}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ estado, notas, responsable, fecha: new Date().toISOString().slice(0, 10) }),
+  });
+  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function cambiarOnboarding() {
+  const estado = prompt('Nueva etapa (prospecto / alta_iniciada / integraciones / pruebas / listo_para_operar / activo / pausado / cancelado):');
+  if (!estado) return;
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/onboarding`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estado }),
+  });
+  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function editarImplementacion() {
+  const responsable_implementacion = prompt('Responsable de implementación:') || undefined;
+  const siguiente_accion = prompt('Siguiente acción:') || undefined;
+  const fecha_objetivo = prompt('Fecha objetivo (YYYY-MM-DD):') || undefined;
+  const notas = prompt('Notas:') || undefined;
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/implementacion`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ responsable_implementacion, siguiente_accion, fecha_objetivo, notas }),
+  });
+  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function reenviarInvitacionFicha(negocioId) {
+  if (!confirm('¿Reenviar la invitación al administrador de este negocio?')) return;
+  const r = await api(`/api/superadmin/negocios/${negocioId}/reenviar-invitacion`, { method: 'POST' });
+  const j = await r.json().catch(() => ({}));
+  alert(r.ok ? 'Invitación reenviada' : (j.error || 'Error al reenviar'));
+}
+
+async function entrarComoSoporte(negocioId, nombre) {
+  if (!confirm(`Vas a entrar al panel de "${nombre}" como Superadmin.\n\nTu sesión de Superadmin se reemplaza por una sesión de soporte temporal (2h) y todo queda auditado. ¿Continuar?`)) return;
+  const motivo = prompt('Motivo (opcional, queda en auditoría):') || undefined;
+  const r = await api(`/api/superadmin/negocios/${negocioId}/sesion-soporte`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ motivo }),
+  });
+  if (!r.ok) { alert((await r.json()).error || 'Error al crear la sesión de soporte'); return; }
+  window.location.href = '/index.html';
 }
 
 function renderDashboard(d) {

@@ -41,6 +41,10 @@ import {
   obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio, obtenerChecklistActivacionBot,
 } from './services/database.js';
 import {
+  obtenerFichaNegocio, actualizarPasoChecklistOperativo, actualizarOnboardingEstado, actualizarImplementacion,
+  listarNegociosCentral, crearSesionSoporte, sesionSoporteVigente, cerrarSesionSoporte, listarSesionesSoporte,
+} from './services/centralOperaciones.js';
+import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
   suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion, completarActivacionWhatsapp,
   guardarCredencialesClip,
@@ -222,6 +226,29 @@ function requireSesionNegocio(rolMinimo) {
       return res.status(401).json({ error: 'Sesión inválida o expirada' });
     }
 
+    // Sesión de SOPORTE (Central de Operaciones): un superadmin operando el
+    // panel de un negocio ajeno. No hay membresía usuario↔negocio que
+    // verificar (por diseño: el superadmin no pertenece al negocio) — en su
+    // lugar se re-verifica en CADA request que (1) la sesión siga viva en
+    // sesiones_soporte (no cerrada manualmente, no expirada — revocación
+    // server-side real, no solo la expiración del HMAC) y (2) el usuario
+    // siga siendo superadmin. El negocioId sale EXCLUSIVAMENTE del token
+    // firmado — URL/query/body/headers no pueden cambiarlo.
+    if (payload.sop === true) {
+      const [vigente, esSuper] = await Promise.all([
+        sesionSoporteVigente(token),
+        esSuperadmin(payload.usuarioId),
+      ]);
+      if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
+        return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
+      }
+      req.usuarioId = payload.usuarioId;
+      req.negocioId = payload.negocioId;
+      req.rol = 'admin';
+      req.esSoporte = true;
+      return next();
+    }
+
     // Verificar que el usuario de la sesión SIGUE perteneciendo al negocio
     // que la sesión indica — no basta con confiar en el token: la membresía
     // pudo revocarse después de emitido.
@@ -312,6 +339,27 @@ function resolverNegocioSeguro(rolMinimo) {
         // Credencial de sesión nueva presente pero inválida/expirada — no
         // caer al legado silenciosamente.
         return res.status(401).json({ error: 'Sesión inválida o expirada' });
+      }
+      // Sesión de SOPORTE — mismo contrato que en requireSesionNegocio: sin
+      // membresía (por diseño), re-validada server-side en cada request
+      // contra sesiones_soporte + privilegio superadmin vivo. negocioId
+      // sale solo del token firmado.
+      if (payload.sop === true) {
+        const [vigente, esSuper] = await Promise.all([
+          sesionSoporteVigente(tokenSesionNueva),
+          esSuperadmin(payload.usuarioId),
+        ]);
+        if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
+          return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
+        }
+        const negocioDefaultId = await resolverNegocioActualPorDefecto();
+        req.usuarioId = payload.usuarioId;
+        req.negocioId = payload.negocioId;
+        req.rol = 'admin';
+        req.esSoporte = true;
+        req.esNegocioPorDefecto = payload.negocioId === negocioDefaultId;
+        req.sesionNueva = true;
+        return next();
       }
       const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
       if (!membresia || !membresia.activo) {
@@ -1358,7 +1406,34 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   const whatsappConfigurado = modulos.includes('whatsapp')
     ? !!(await obtenerCredencialesWhatsappNegocio(req.negocioId))
     : false;
-  res.json({ usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado });
+  // soporte: true cuando la sesión es de la Central de Operaciones (un
+  // superadmin dentro del panel de este negocio). El panel usa esto para
+  // mostrar la barra "Estás administrando [NEGOCIO] como Superadmin" con el
+  // botón de salida — nunca es información sensible (el propio usuario de
+  // la sesión ya lo sabe).
+  const respuesta = { usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado };
+  if (req.esSoporte) {
+    const { rows } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
+    respuesta.soporte = { activo: true, negocioNombre: rows[0]?.nombre || req.negocioId };
+  }
+  res.json(respuesta);
+});
+
+// Cierre manual de una sesión de soporte desde el panel del negocio (botón
+// "Salir y volver a Superadmin" de la barra). Solo tiene efecto si la
+// sesión actual ES de soporte — una sesión normal recibe 400 y no se toca.
+app.post('/api/auth/soporte/salir', requireSesionNegocio(), async (req, res) => {
+  if (!req.esSoporte) return res.status(400).json({ error: 'La sesión actual no es de soporte' });
+  try {
+    const token = leerCookieSesion(req);
+    await cerrarSesionSoporte(token, req.usuarioId, 'salida manual desde el panel');
+    revocarTokenSesion(token);
+    limpiarCookieSesion(res);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[Soporte] Error al salir:', e.message);
+    res.status(500).json({ error: 'Error al cerrar la sesión de soporte' });
+  }
 });
 
 // Diagnóstico de solo lectura para validar la exigencia de rol del nuevo
@@ -3484,6 +3559,87 @@ app.get('/api/superadmin/auditoria', requireSuperadmin, async (req, res) => {
   const { limit, offset, negocioId } = req.query;
   const auditoria = await obtenerAuditoriaPlataforma({ limit, offset, negocioId: negocioId || null });
   res.json(auditoria);
+});
+
+// ─── Central de Operaciones (Superadmin) ────────────────────────────────────
+// Implementación/acompañamiento de negocios a escala: listado con pipeline,
+// ficha agregada, checklist operativo, estado de onboarding, campos de
+// implementación y sesiones temporales de soporte. Ver
+// services/centralOperaciones.js para el contrato completo.
+
+app.get('/api/superadmin/central/negocios', requireSuperadmin, async (req, res) => {
+  const { buscar = '', onboarding = '', estado = '', responsable = '', orden = '', limit, offset } = req.query;
+  res.json(await listarNegociosCentral({
+    buscar: String(buscar), onboarding: String(onboarding), estado: String(estado),
+    responsable: String(responsable), orden: String(orden), limit, offset,
+  }));
+});
+
+app.get('/api/superadmin/negocios/:negocioId/ficha', requireSuperadmin, async (req, res) => {
+  const ficha = await obtenerFichaNegocio(req.params.negocioId);
+  if (!ficha) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json(ficha);
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/onboarding', requireSuperadmin, async (req, res) => {
+  const { estado } = req.body || {};
+  if (!estado) return res.status(400).json({ error: 'estado requerido' });
+  try {
+    const r = await actualizarOnboardingEstado(req.params.negocioId, String(estado), req.usuarioId);
+    if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    if (e.code === 'ESTADO_INVALIDO' || e.code === 'ESTADO_AUTOMATICO') return res.status(400).json({ error: e.message });
+    console.error('[Central] onboarding:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el estado de onboarding' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/checklist-operativo/:paso', requireSuperadmin, async (req, res) => {
+  try {
+    const r = await actualizarPasoChecklistOperativo(req.params.negocioId, req.params.paso, req.body || {}, req.usuarioId);
+    if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ok: true, paso: r });
+  } catch (e) {
+    if (['PASO_INVALIDO', 'ESTADO_INVALIDO', 'PASO_AUTOMATICO'].includes(e.code)) return res.status(400).json({ error: e.message });
+    console.error('[Central] checklist-operativo:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el paso' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/implementacion', requireSuperadmin, async (req, res) => {
+  try {
+    const r = await actualizarImplementacion(req.params.negocioId, req.body || {}, req.usuarioId);
+    if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ok: true, implementacion: r });
+  } catch (e) {
+    console.error('[Central] implementacion:', e.message);
+    res.status(500).json({ error: 'Error al actualizar la implementación' });
+  }
+});
+
+// Entrar como soporte: emite la sesión temporal (cookie httpOnly con flag
+// sop) y redirige al panel del negocio. La cookie REEMPLAZA la sesión de
+// superadmin en el navegador — al salir (o expirar), el superadmin vuelve a
+// iniciar su sesión normal. rate limit bajo: es una acción administrativa
+// puntual, no un flujo de alto volumen.
+app.post('/api/superadmin/negocios/:negocioId/sesion-soporte', requireSuperadmin,
+  rateLimitMiddleware(req => `soporte:${req.usuarioId}`, 20, 60 * 1000), async (req, res) => {
+  const { motivo } = req.body || {};
+  const r = await crearSesionSoporte(req.usuarioId, req.params.negocioId, motivo ? String(motivo).slice(0, 300) : null);
+  if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
+  setCookieSesion(res, r.token);
+  // El token nunca viaja en el cuerpo — solo como cookie httpOnly.
+  res.json({ ok: true, negocio: r.negocio, expiresAt: r.expiresAt });
+});
+
+app.get('/api/superadmin/sesiones-soporte', requireSuperadmin, async (req, res) => {
+  const { negocioId, vigentes, limit } = req.query;
+  res.json(await listarSesionesSoporte({
+    negocioId: negocioId ? String(negocioId) : null,
+    soloVigentes: vigentes === 'true' || vigentes === '1',
+    limit,
+  }));
 });
 
 // ─── Prospectos comerciales (Superadmin) ───────────────────────────────────

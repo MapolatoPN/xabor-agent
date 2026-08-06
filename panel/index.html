@@ -1596,6 +1596,26 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   NEGOCIO_ID = data.negocioId;
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
+  // Barra de sesión de soporte (Central de Operaciones): visible SIEMPRE
+  // que la sesión sea de un superadmin operando este negocio. data.soporte
+  // solo lo pone el servidor cuando la cookie trae el flag firmado -- no
+  // hay forma de activarla desde el cliente.
+  if (data.soporte && data.soporte.activo) {
+    const barra = document.createElement('div');
+    barra.id = 'barra-soporte';
+    barra.style.cssText = 'position:sticky;top:0;z-index:9999;background:#b45309;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:14px;font-weight:600;';
+    const texto = document.createElement('span');
+    texto.textContent = `Estás administrando ${data.soporte.negocioNombre} como Superadmin`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Salir y volver a Superadmin';
+    btn.style.cssText = 'background:#fff;color:#b45309;border:none;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer;';
+    btn.onclick = async () => {
+      try { await fetch('/api/auth/soporte/salir', { method: 'POST', credentials: 'same-origin' }); } catch {}
+      window.location.href = '/superadmin.html';
+    };
+    barra.appendChild(texto); barra.appendChild(btn);
+    document.body.prepend(barra);
+  }
   // Deshabilitar el compositor de chat si este negocio no tiene su propia
   // integración de WhatsApp -- refuerzo de UX, el backend ya rechaza el
   // envío (409) de cualquier forma.
