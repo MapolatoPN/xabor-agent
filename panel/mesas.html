@@ -46,13 +46,13 @@
   <a href="/index.html">← Volver al panel</a>
 </header>
 <main>
-  <!-- Bloqueo documentado (piloto): las cuentas de mesa viven en sus propias
-       tablas y NO alimentan /api/ventas ni cortes de caja (que leen de
-       pedidos_activos). Hasta que exista la integracion contable, el modulo
-       lo dice de frente -- nunca presentar una cuenta cerrada como venta
-       reportada. -->
-  <div style="background:rgba(245,158,11,.12);border:1px solid var(--ocupada);color:var(--ocupada);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;font-weight:600;">
-    ⚠ Piloto: las cuentas de restaurante todavía no se integran al cierre de caja ni a los reportes generales de ventas.
+  <!-- Integración contable activa: cerrar una cuenta genera EXACTAMENTE UNA
+       venta consolidada (folio RM-) en la fuente de ventas del negocio
+       (/api/ventas y resumen), separada de las comandas de cocina. La
+       propina se registra por separado y NO se suma a la venta; su reparto
+       es una política del negocio, no del sistema. -->
+  <div style="background:rgba(16,185,129,.10);border:1px solid var(--line);color:var(--sub);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;">
+    Al cerrar una cuenta se registra una sola venta consolidada (folio RM-) en los reportes de ventas del negocio. Las propinas se guardan por separado como dato informativo — su reparto lo define el negocio.
   </div>
   <div class="grid" id="grid"></div>
 </main>
@@ -165,6 +165,10 @@ async function abrirCuenta(cuentaId) {
     : '<p style="color:var(--sub);font-size:13px;">Sin productos todavía.</p>';
   const pagos = c.pagos.map(p => `${p.metodo} $${Number(p.monto).toFixed(2)}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
   if (pagos) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--sub);margin-top:6px;">Pagos: ${pagos}</p>`;
+  if (c.propinas > 0) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--sub);margin-top:2px;">Propinas: $${c.propinas.toFixed(2)} (separadas de la venta)</p>`;
+  // Estado de contabilización: solo existe cuando la cuenta ya cerró y su
+  // venta consolidada quedó registrada en reportes.
+  if (c.ventaFolio) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--ok);margin-top:2px;">✅ Venta registrada: ${esc(c.ventaFolio)}</p>`;
   document.getElementById('dlg-cuenta').showModal();
 }
 
@@ -213,9 +217,15 @@ async function dividirIguales() {
 }
 
 async function cerrarCuenta() {
-  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero.')) return;
+  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero. Se registrará una venta consolidada en reportes.')) return;
+  // Reintento SEGURO: si el primer request cerró pero la respuesta se perdió,
+  // volver a pulsar responde yaCerrada con el MISMO folio -- no duplica venta.
   const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/cerrar`, { method: 'POST' });
-  msg(`Cuenta cerrada. Total $${r.total.toFixed(2)}, propinas $${r.propinas.toFixed(2)}`);
+  if (r.yaCerrada) {
+    msg(`La cuenta ya estaba cerrada y contabilizada. Venta registrada: ${r.ventaFolio}`);
+  } else {
+    msg(`Cuenta cerrada. Venta registrada: ${r.ventaFolio} — Total $${r.total.toFixed(2)}, propinas $${r.propinas.toFixed(2)}`);
+  }
   document.getElementById('dlg-cuenta').close();
   cargarMesas();
 }
