@@ -1582,12 +1582,27 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 // en el primer INSERT) — por eso el UPDATE del ON CONFLICT (reutilizado en
 // cada cambio de estado) no reescribe negocio_id; sería redundante, no
 // arriesgado, pero se omite para mantener el UPDATE mínimo y explícito.
+// Persistencia INICIAL de un folio nuevo en pedidos_activos -- nunca una
+// actualización. Causa raíz de la carrera de asignación de repartidor
+// (12-PEDIDO-YA-ASIGNADO-NO-SE-REASIGNA): registrarPedido() dispara esta
+// función sin esperarla (fire-and-forget), así que su escritura puede
+// resolver DESPUÉS de que asignarRepartidor() ya asignó el pedido -- el
+// antiguo "ON CONFLICT DO UPDATE SET datos = $3" sobrescribía TODO el
+// JSONB con la copia vieja del pedido en memoria (sin repartidor_id),
+// borrando la asignación ya confirmada y dejando la fila "sin asignar"
+// otra vez para el siguiente repartidor. Los tres llamadores de esta
+// función (orderManager.js, whatsapp-meta.js, server.js) siempre la usan
+// para el primer INSERT de ese folio en esta tabla -- si la fila ya
+// existe, la base de datos ya tiene la verdad correcta (venga de esta
+// misma función llegando tarde, o de asignarRepartidor/
+// actualizarEstadoPedidoDB, que sí actualizan con jsonb_set/UPDATE
+// condicionado) y no hay nada que sobrescribir.
 export async function guardarPedidoActivo(pedido, negocioId) {
   try {
     await pool.query(`
       INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
       VALUES ($1, $2, $3, $4)
-      ON CONFLICT (folio) DO UPDATE SET datos = $3, updated_at = NOW()
+      ON CONFLICT (folio) DO NOTHING
     `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
