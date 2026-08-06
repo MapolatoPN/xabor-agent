@@ -46,6 +46,14 @@
   <a href="/index.html">← Volver al panel</a>
 </header>
 <main>
+  <!-- Bloqueo documentado (piloto): las cuentas de mesa viven en sus propias
+       tablas y NO alimentan /api/ventas ni cortes de caja (que leen de
+       pedidos_activos). Hasta que exista la integracion contable, el modulo
+       lo dice de frente -- nunca presentar una cuenta cerrada como venta
+       reportada. -->
+  <div style="background:rgba(245,158,11,.12);border:1px solid var(--ocupada);color:var(--ocupada);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;font-weight:600;">
+    ⚠ Piloto: las cuentas de restaurante todavía no se integran al cierre de caja ni a los reportes generales de ventas.
+  </div>
   <div class="grid" id="grid"></div>
 </main>
 

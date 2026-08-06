@@ -242,6 +242,69 @@ await t('MOVER', 'a mesa ocupada 409; a libre ok; reabrir choca si la mesa ya fu
   await cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A);
 });
 
+// ═══════════ Concurrencia ampliada (revisión de integración) ═══════════
+await t('CONCURRENCIA', 'cierre y pago simultáneos: jamás queda una cuenta cerrada con saldo pendiente', async () => {
+  const cta = await abrirMesa(SEED.negocioA, { mesaNumero: 12, personas: 2, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+  await agregarItems(cta.id, SEED.negocioA, [{ producto: 'Plato', cantidad: 1, precio_unitario: 80 }], ADMIN_A);
+  // Pagar y cerrar A LA VEZ: FOR UPDATE serializa. O el pago entra primero
+  // (cierre gana después) o el cierre corre primero (falla SALDO_PENDIENTE
+  // y el pago entra; se cierra después). Nunca ambas cosas inconsistentes.
+  const [rPago, rCierre] = await Promise.allSettled([
+    registrarPago(cta.id, SEED.negocioA, { metodo: 'efectivo', monto: 80 }, ADMIN_A),
+    cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A),
+  ]);
+  const cuenta = await obtenerCuenta(cta.id, SEED.negocioA);
+  if (cuenta.estado === 'cerrada') {
+    assert.strictEqual(cuenta.saldo, 0, 'cerrada implica saldo exactamente cero');
+  } else {
+    assert.strictEqual(rCierre.status, 'rejected', 'si sigue abierta es porque el cierre perdió la carrera');
+    assert.strictEqual(cuenta.pagado, 80);
+    await cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A);
+  }
+});
+
+await t('CONCURRENCIA', 'dos cuentas se mueven a la misma mesa libre al mismo tiempo -> exactamente una gana', async () => {
+  const a = await abrirMesa(SEED.negocioA, { mesaNumero: 13, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+  const b = await abrirMesa(SEED.negocioA, { mesaNumero: 14, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+  const [r1, r2] = await Promise.allSettled([
+    moverMesa(a.id, SEED.negocioA, 15),
+    moverMesa(b.id, SEED.negocioA, 15),
+  ]);
+  const ok = [r1, r2].filter(r => r.status === 'fulfilled');
+  const fallo = [r1, r2].filter(r => r.status === 'rejected');
+  assert.strictEqual(ok.length, 1, 'la mesa 15 solo puede quedar con una cuenta');
+  assert.strictEqual(fallo[0].reason.code, 'MESA_OCUPADA');
+  await cerrarCuenta(a.id, SEED.negocioA, ADMIN_A);
+  await cerrarCuenta(b.id, SEED.negocioA, ADMIN_A);
+});
+
+await t('CONCURRENCIA', 'cancelación durante envío de comanda: estados finales consistentes, sin duplicados', async () => {
+  const cta = await abrirMesa(SEED.negocioA, { mesaNumero: 16, personas: 2, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+  const [item] = await agregarItems(cta.id, SEED.negocioA, [{ producto: 'Sopa', cantidad: 1, precio_unitario: 45 }], ADMIN_A);
+  await Promise.allSettled([
+    enviarComanda(cta.id, SEED.negocioA, ADMIN_A),
+    cancelarItem(item.id, cta.id, SEED.negocioA, ADMIN_A, 'cliente se arrepintió'),
+  ]);
+  const cuenta = await obtenerCuenta(cta.id, SEED.negocioA);
+  const fila = cuenta.items.find(i => i.id === item.id);
+  assert.strictEqual(fila.estado, 'cancelado', 'la cancelación siempre prevalece (guard estado != cancelado)');
+  assert.strictEqual(cuenta.total, 0, 'el item cancelado nunca suma');
+  assert.ok(cuenta.comandasEmitidas <= 1, 'a lo sumo una comanda emitida, jamás duplicada');
+  await cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A);
+});
+
+await t('CONCURRENCIA', 'reapertura concurrente de la misma cuenta -> exactamente una gana', async () => {
+  const cta = await abrirMesa(SEED.negocioA, { mesaNumero: 17, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+  await cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A);
+  const [r1, r2] = await Promise.allSettled([
+    reabrirCuenta(cta.id, SEED.negocioA),
+    reabrirCuenta(cta.id, SEED.negocioA),
+  ]);
+  const ok = [r1, r2].filter(r => r.status === 'fulfilled');
+  assert.strictEqual(ok.length, 1, 'solo una reapertura procede; la otra ya no encuentra la cuenta cerrada');
+  await cerrarCuenta(cta.id, SEED.negocioA, ADMIN_A);
+});
+
 // ═══════════ Aislamiento multiempresa (C9) ═══════════
 await t('AISLAMIENTO', 'dos negocios abren su propia Mesa 1 a la vez; la cuenta de A es invisible e intocable desde B', async () => {
   const ctaB = await abrirMesa(SEED.negocioB, { mesaNumero: 1, personas: 2, meseroUsuarioId: ADMIN_B, abiertaPor: ADMIN_B });
