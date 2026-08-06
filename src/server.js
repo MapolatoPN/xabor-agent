@@ -55,6 +55,10 @@ import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendient
 import { enviarCorreoInvitacion, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
+import {
+  listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
+  registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
+} from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
@@ -1699,6 +1703,140 @@ function idClienteTecnicoPresencial(negocioId) {
 // Pedido presencial — capturado desde el panel sin pasar por el bot
 // rewards_telefono y rewards_nombre son opcionales — si se envían, el cliente
 // quedará asignado en el pedido y los puntos se acumularán al entregar.
+// ─── Módulo de restaurante: mesas, meseros, comandas, pagos divididos ───────
+// (Frente C). Roles con el vocabulario actual (admin/staff): mesero=staff
+// (abrir mesa, agregar, enviar comanda, ver mesas), caja/encargado=staff
+// (cobrar, dividir, mover, cerrar -- hoy staff cubre ambos papeles),
+// admin (cancelar items, reabrir, configurar). La separación fina
+// mesero/caja llegará con la arquitectura de roles futura -- documentada,
+// no bloqueada por este MVP. Todo gateado por requireModulo('restaurante').
+function manejarErrorRestaurante(res, e) {
+  const mapa = {
+    MESA_OCUPADA: 409, CUENTA_NO_ENCONTRADA: 404, CUENTA_NO_ABIERTA: 409,
+    SIN_ITEMS_PENDIENTES: 409, SALDO_PENDIENTE: 409, PAGO_EXCEDE_SALDO: 409,
+    METODO_NO_HABILITADO: 400, MONTO_INVALIDO: 400, MESA_INVALIDA: 400,
+    MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
+    MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, PARTES_INVALIDAS: 400,
+  };
+  const status = mapa[e.code];
+  if (status) return res.status(status).json({ error: e.message, code: e.code });
+  console.error('[Restaurante] Error:', e.message);
+  return res.status(500).json({ error: 'Error interno del módulo de restaurante' });
+}
+
+app.get('/api/restaurante/mesas', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await listarMesas(req.negocioId)); } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/mesas/abrir', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  const { mesa, personas, meseroUsuarioId } = req.body || {};
+  try {
+    const cuenta = await abrirMesa(req.negocioId, {
+      mesaNumero: mesa, personas,
+      // Sin mesero explícito, el que abre ES el mesero (flujo de un solo
+      // dispositivo por mesero).
+      meseroUsuarioId: meseroUsuarioId || req.usuarioId,
+      abiertaPor: req.usuarioId,
+    });
+    res.status(201).json({ ok: true, cuenta });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.get('/api/restaurante/cuentas/:cuentaId', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
+    if (!cuenta) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    res.json(cuenta);
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/items', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const items = await agregarItems(req.params.cuentaId, req.negocioId, req.body?.items, req.usuarioId);
+    res.json({ ok: true, items });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const comanda = await enviarComanda(req.params.cuentaId, req.negocioId, req.usuarioId);
+    // Impresión: SOLO los items de esta comanda, con mesa/personas/mesero.
+    // Contrato C8 sobre printRouter existente -- nunca lanza; si el negocio
+    // no tiene impresión configurada, el resultado es 'omitido' y la
+    // comanda digital sigue siendo la fuente de verdad.
+    await emitirTrabajoImpresion({
+      id: `MESA${comanda.mesa}-C${comanda.comanda}`,
+      negocioId: req.negocioId,
+      canal: 'restaurante',
+      tipo_comanda: comanda.tipo,
+      mesa: comanda.mesa, personas: comanda.personas, mesero: comanda.mesero,
+      items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
+      total: comanda.items.reduce((s, i) => s + i.cantidad * Number(i.precio_unitario), 0),
+      cliente: { nombre: `Mesa ${comanda.mesa}` },
+      modalidad: 'mesa',
+      estado: 'nuevo',
+    });
+    res.json({ ok: true, ...comanda });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Cancelar un item exige rol admin y motivo -- queda auditado quién agregó,
+// quién canceló y por qué. Si el item ya había salido a cocina, se emite la
+// comanda de cancelación (solo ese item).
+app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const item = await cancelarItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId, req.body?.motivo);
+    if (item.ya_enviado) {
+      await emitirTrabajoImpresion({
+        id: `CANCEL-${String(item.id).slice(0, 8)}`,
+        negocioId: req.negocioId,
+        canal: 'restaurante',
+        tipo_comanda: 'cancelacion',
+        items: [{ nombre: `CANCELADO: ${item.producto}`, cantidad: item.cantidad, precio_unitario: 0, notas: req.body?.motivo || '' }],
+        total: 0, cliente: { nombre: 'Cocina' }, modalidad: 'mesa', estado: 'nuevo',
+      });
+    }
+    res.json({ ok: true, item });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const r = await registrarPago(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    res.json({ ok: true, ...r });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// División en partes iguales -- cálculo de solo lectura (los cobros reales
+// se registran uno a uno con /pagos, cada quien con su método).
+app.get('/api/restaurante/cuentas/:cuentaId/dividir', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
+    if (!cuenta) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    const partes = dividirEnPartesIguales(cuenta.saldo, req.query.partes || cuenta.personas);
+    res.json({ saldo: cuenta.saldo, partes });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId)); }
+  catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/mover', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json({ ok: true, cuenta: await moverMesa(req.params.cuentaId, req.negocioId, req.body?.mesa) }); }
+  catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/cuentas/:cuentaId/reabrir', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json({ ok: true, cuenta: await reabrirCuenta(req.params.cuentaId, req.negocioId) }); }
+  catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.get('/api/restaurante/indicadores', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await indicadoresRestaurante(req.negocioId)); } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
 app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
   // negocioId EXCLUSIVAMENTE de req.negocioId (sesión/membresía ya
   // validada por requireAuthSeguro) -- nunca de body/query/headers. Falla
@@ -2889,7 +3027,7 @@ async function requireSuperadmin(req, res, next) {
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
-  'asistente_comercial_cotizaciones',
+  'asistente_comercial_cotizaciones', 'restaurante',
 ];
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];

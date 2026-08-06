@@ -51,6 +51,7 @@ export const ORDEN_MIGRACIONES = [
   '036_entregado_at_pedidos.sql',
   '037_central_operaciones_onboarding.sql',
   '038_red_repartidores_config.sql',
+  '039_restaurante_mesas.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
