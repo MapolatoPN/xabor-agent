@@ -295,6 +295,155 @@ await t('WEBHOOK', 'el pedido sigue pago pendiente hasta que el webhook de Clip 
   assert.ok(confirmado, 'el webhook marca el pago como pagado');
 });
 
+// ═══════════ Búsqueda por folio y simulación del incidente XAB-0114 ═══════════
+// Fixture SANITIZADO que replica el incidente real: teléfono de entrega
+// DICTADO en el chat (10 dígitos, sin prefijo 521) distinto en formato al
+// remitente del webhook; pedido archivado como 'entregado' sin pagar; y una
+// fila de pago previa en estado 'fallido' (la del CHECK roto) que debe
+// reutilizarse -- jamás una segunda fila.
+const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+
+await t('FOLIO', 'incidente XAB-0114 simulado: entregado sin pagar + tel dictado sin prefijo + fila fallida -> el folio recupera el pedido y REUTILIZA el pago', async () => {
+  const remitente = '5218780010009';           // como llega del webhook
+  const telDictado = '8780010009';             // como lo dictó en el chat (10 dígitos)
+  const folio = 'XAB-9300';
+  await guardarPedidoActivo({
+    id: folio, negocioId: SEED.negocioA, canal: 'whatsapp', estado: 'en_preparacion',
+    modalidad: 'entrega a domicilio', forma_pago: 'enlace de pago', total: 310,
+    cliente: { nombre: 'Alina Prueba', telefono: telDictado, calle: 'Boulevard Sanitizado 208', colonia: 'Guillén' },
+    items: [{ nombre: 'Combo Focaccia + Media Ensalada', cantidad: 1, precio_unitario: 310 }],
+    timestamp: new Date().toISOString(),
+  }, SEED.negocioA);
+  // Archivado prematuro (como el real, 3 segundos después del "Folio 114").
+  await pool.query(`UPDATE pedidos_activos SET estado = 'entregado' WHERE folio = $1`, [folio]);
+  // Fila de pago FALLIDA previa con la referencia determinista real.
+  const { rows: [pRow] } = await pool.query(`SELECT datos FROM pedidos_activos WHERE folio = $1`, [folio]);
+  const hash = calcularVersionPedidoHash(pRow.datos);
+  const refInterna = `${SEED.negocioA}:${folio}:${hash}`;
+  const { rows: [fallida] } = await pool.query(
+    `INSERT INTO pagos (negocio_id, pedido_folio, cliente_telefono, proveedor, integracion_id, referencia_interna, tipo, moneda, monto, version_pedido_hash, estado)
+     SELECT $1, $2, $3, 'clip', ic.id, $4, 'enlace_pago', 'MXN', 310, $5, 'fallido'
+     FROM integraciones_canal ic WHERE ic.negocio_id = $1 AND ic.canal = 'pagos' AND ic.proveedor = 'clip' LIMIT 1
+     RETURNING id`,
+    [SEED.negocioA, folio, telDictado, refInterna, hash]
+  );
+  assert.ok(fallida?.id, 'fixture: fila fallida sembrada');
+
+  const antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'Mándame el enlace de pago del pedido XAB-9300');
+  const r = await respuestaDelBot(remitente, antes);
+  const conUrl = r.filter(m => m.includes('https://pago.mock.clip/'));
+  if (!conUrl.length) {
+    const lineas = (srv.obtenerSalida?.() || '').split(String.fromCharCode(10));
+    console.log('--- ERRORES SERVIDOR (XAB-9300) ---');
+    console.log(lineas.filter(l => /Error|Clip|folio/i.test(l)).slice(-8).join(String.fromCharCode(10)));
+  }
+  assert.ok(conUrl.length >= 1, `esperaba URL; respondió ${JSON.stringify(r)}`);
+  assert.ok(conUrl[0].includes(folio) && conUrl[0].includes('$310'), 'folio y total reales en el mensaje');
+  // REUTILIZÓ la fila fallida: mismo id, ahora pendiente, una sola fila.
+  const { rows: pagosRows } = await pool.query(`SELECT id, estado, url FROM pagos WHERE pedido_folio = $1`, [folio]);
+  assert.strictEqual(pagosRows.length, 1, 'jamás una segunda fila de pago');
+  assert.strictEqual(pagosRows[0].id, fallida.id, 'se reutilizó exactamente el registro fallido');
+  assert.strictEqual(pagosRows[0].estado, 'pendiente', 'reactivado y pendiente hasta el webhook');
+  assert.ok(pagosRows[0].url.includes('pago.mock.clip'));
+  // Sigue sin marcarse pagado.
+  const { rows: [ped2] } = await pool.query(`SELECT (datos->>'pago_confirmado') AS pc FROM pedidos_activos WHERE folio = $1`, [folio]);
+  assert.notStrictEqual(ped2.pc, 'true');
+});
+
+await t('FOLIO', 'variantes "Folio 9300" y "XAB 9300" encuentran el mismo pedido (reutilizan el MISMO enlace)', async () => {
+  const remitente = '5218780010009';
+  for (const texto of ['Folio 9300', 'mandame el link del XAB 9300']) {
+    const antes = metaMock.obtenerMensajesEnviados().length;
+    await mensajeEntrante(remitente, texto);
+    const r = await respuestaDelBot(remitente, antes);
+    assert.ok(r.some(m => m.includes('https://pago.mock.clip/')), `"${texto}" debía devolver el enlace; respondió ${JSON.stringify(r)}`);
+  }
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM pagos WHERE pedido_folio = 'XAB-9300'`);
+  assert.strictEqual(rows[0].n, 1, 'las variantes reutilizan, jamás duplican');
+});
+
+await t('FOLIO', 'atajo por teléfono: el remitente 521 recupera su pedido aunque el pedido guarde el tel dictado de 10 dígitos', async () => {
+  const remitente = '5218780010010';
+  const telDictado = '8780010010';
+  const folio = 'XAB-9301';
+  await guardarPedidoActivo({
+    id: folio, negocioId: SEED.negocioA, canal: 'whatsapp', estado: 'nuevo',
+    modalidad: 'entrega a domicilio', forma_pago: 'enlace de pago', total: 120,
+    cliente: { nombre: 'Cliente Formato', telefono: telDictado },
+    items: [{ nombre: 'Item', cantidad: 1, precio_unitario: 120 }],
+    timestamp: new Date().toISOString(),
+  }, SEED.negocioA);
+  const antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'quiero pagar con enlace');
+  const r = await respuestaDelBot(remitente, antes);
+  assert.ok(r.some(m => m.includes('https://pago.mock.clip/') && m.includes(folio)), `esperaba el enlace de ${folio}; respondió ${JSON.stringify(r)}`);
+});
+
+await t('FOLIO', 'telefono_conversacion: si el tel de entrega es de OTRA persona, el remitente sigue encontrando SU pedido', async () => {
+  const remitente = '5218780010011';
+  const folio = 'XAB-9302';
+  await guardarPedidoActivo({
+    id: folio, negocioId: SEED.negocioA, canal: 'whatsapp', estado: 'nuevo',
+    modalidad: 'entrega a domicilio', forma_pago: 'enlace de pago', total: 150,
+    cliente: { nombre: 'Destinataria Distinta', telefono: '8999999999' },
+    telefono_conversacion: remitente,
+    items: [{ nombre: 'Item', cantidad: 1, precio_unitario: 150 }],
+    timestamp: new Date().toISOString(),
+  }, SEED.negocioA);
+  const antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'pásame la liga para pagar');
+  const r = await respuestaDelBot(remitente, antes);
+  assert.ok(r.some(m => m.includes('https://pago.mock.clip/') && m.includes(folio)), `esperaba ${folio}; respondió ${JSON.stringify(r)}`);
+  // Y un tercero con OTRO número jamás lo ve.
+  const intruso = '5215550001111';
+  const antes2 = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(intruso, 'quiero pagar con enlace');
+  const r2 = await respuestaDelBot(intruso, antes2);
+  assert.ok(!r2.some(m => m.includes(folio)), 'el pedido de otro cliente es invisible');
+});
+
+await t('FOLIO', 'folio ya pagado responde "ya está pagado"; cancelado responde no encontrado; otro negocio no lo ve', async () => {
+  const remitente = '5218780010012';
+  // Pagado.
+  const fPag = 'XAB-9303';
+  await guardarPedidoActivo({ id: fPag, negocioId: SEED.negocioA, canal: 'whatsapp', estado: 'entregado', modalidad: 'recoger en tienda', total: 80, pago_confirmado: true, cliente: { nombre: 'X', telefono: remitente }, items: [], timestamp: new Date().toISOString() }, SEED.negocioA);
+  let antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'Folio 9303');
+  let r = await respuestaDelBot(remitente, antes);
+  assert.ok(r.some(m => m.includes('ya está pagado')), `esperaba ya pagado; respondió ${JSON.stringify(r)}`);
+  assert.ok(!r.some(m => m.includes('pago.mock.clip')), 'sin enlace para pagado');
+  // Cancelado.
+  const fCan = 'XAB-9304';
+  await guardarPedidoActivo({ id: fCan, negocioId: SEED.negocioA, canal: 'whatsapp', estado: 'nuevo', modalidad: 'recoger en tienda', total: 90, cliente: { nombre: 'X', telefono: remitente }, items: [], timestamp: new Date().toISOString() }, SEED.negocioA);
+  await pool.query(`UPDATE pedidos_activos SET estado = 'cancelado' WHERE folio = $1`, [fCan]);
+  antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'Folio 9304');
+  r = await respuestaDelBot(remitente, antes);
+  assert.ok(r.some(m => m.includes('No encontramos')), 'cancelado = no elegible para pago');
+  // Otro negocio: pedido de B invisible desde el chat de A.
+  const fB = 'XAB-9305';
+  await guardarPedidoActivo({ id: fB, negocioId: SEED.negocioB, canal: 'whatsapp', estado: 'nuevo', modalidad: 'recoger en tienda', total: 70, cliente: { nombre: 'X', telefono: remitente }, items: [], timestamp: new Date().toISOString() }, SEED.negocioB);
+  antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(remitente, 'Folio 9305');
+  r = await respuestaDelBot(remitente, antes);
+  assert.ok(r.some(m => m.includes('No encontramos')), 'el folio de otro negocio es inexistente aquí');
+});
+
+await t('IDENTIDAD', 'el nombre de ENTREGA jamás pisa el nombre ya conocido del interlocutor', async () => {
+  const { upsertCliente, upsertClienteNombreEntrega, obtenerCliente } = await import('../src/services/database.js');
+  const tel = '5218780010013';
+  await upsertCliente(tel, 'Mario Interlocutor', SEED.negocioA);
+  await upsertClienteNombreEntrega(tel, 'Alina Destinataria', SEED.negocioA);
+  const c = await obtenerCliente(tel, SEED.negocioA);
+  assert.strictEqual(c.nombre, 'Mario Interlocutor', 'el interlocutor conserva su nombre');
+  // Perfil vacío: el nombre de entrega SÍ llena el hueco.
+  const tel2 = '5218780010014';
+  await upsertClienteNombreEntrega(tel2, 'Alina Nueva', SEED.negocioA);
+  const c2 = await obtenerCliente(tel2, SEED.negocioA);
+  assert.strictEqual(c2.nombre, 'Alina Nueva');
+});
+
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(` - ${f}`)); }
 clipMock.close();
