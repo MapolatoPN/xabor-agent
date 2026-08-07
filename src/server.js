@@ -39,6 +39,7 @@ import {
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
   obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio, obtenerChecklistActivacionBot,
+  actualizarDatosNegocioSuperadmin, actualizarAdminNegocioSuperadmin, obtenerInvitacionesNegocio,
 } from './services/database.js';
 import {
   obtenerFichaNegocio, actualizarPasoChecklistOperativo, actualizarOnboardingEstado, actualizarImplementacion,
@@ -3167,7 +3168,7 @@ app.post('/api/superadmin/negocios/:negocioId/reenviar-invitacion', requireSuper
       enlaceInvitacion: entregado ? undefined : enlace,
     });
   } catch (e) {
-    if (e.code === 'SIN_ADMIN') return res.status(409).json({ error: e.message });
+    if (e.code === 'SIN_ADMIN' || e.code === 'INVITACION_ACEPTADA') return res.status(409).json({ error: e.message, codigo: e.code });
     console.error('[POST /api/superadmin/negocios/:id/reenviar-invitacion] Error:', e.message);
     res.status(500).json({ error: 'Error al reenviar la invitación' });
   }
@@ -3177,6 +3178,80 @@ app.get('/api/superadmin/negocios/:negocioId', requireSuperadmin, async (req, re
   const detalle = await obtenerNegocioDetalleSuperadmin(req.params.negocioId);
   if (!detalle) return res.status(404).json({ error: 'Negocio no encontrado' });
   res.json(detalle);
+});
+
+// ─── Edición de negocios (Superadmin) ───────────────────────────────────────
+// PATCH parcial: solo los campos enviados se tocan; validaciones con códigos
+// explícitos → 400/409; todo cambio queda en auditoría de plataforma.
+const CODIGOS_EDICION_400 = ['NOMBRE_INVALIDO', 'SLUG_INVALIDO', 'SLUG_RESERVADO', 'EMAIL_INVALIDO'];
+const CODIGOS_EDICION_409 = ['SLUG_DUPLICADO', 'EMAIL_EN_USO', 'SIN_ADMIN', 'INVITACION_ACEPTADA'];
+function responderErrorEdicion(res, e, fallback) {
+  if (CODIGOS_EDICION_400.includes(e.code)) return res.status(400).json({ error: e.message, codigo: e.code });
+  if (CODIGOS_EDICION_409.includes(e.code)) return res.status(409).json({ error: e.message, codigo: e.code });
+  console.error(fallback, e.message);
+  return res.status(500).json({ error: 'Error interno' });
+}
+
+app.patch('/api/superadmin/negocios/:negocioId', requireSuperadmin, async (req, res) => {
+  try {
+    const { nombre, slug, contacto } = req.body || {};
+    if (nombre === undefined && slug === undefined && (contacto === undefined || typeof contacto !== 'object')) {
+      return res.status(400).json({ error: 'Nada que editar: envía nombre, slug y/o contacto' });
+    }
+    const resultado = await actualizarDatosNegocioSuperadmin(req.params.negocioId, { nombre, slug, contacto }, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ok: true, ...resultado });
+  } catch (e) {
+    responderErrorEdicion(res, e, '[PATCH /api/superadmin/negocios/:id] Error:');
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/admin', requireSuperadmin, async (req, res) => {
+  try {
+    const { email, nombre } = req.body || {};
+    if (email === undefined && nombre === undefined) {
+      return res.status(400).json({ error: 'Nada que editar: envía email y/o nombre' });
+    }
+    const resultado = await actualizarAdminNegocioSuperadmin(req.params.negocioId, { email, nombre }, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ok: true, ...resultado });
+  } catch (e) {
+    responderErrorEdicion(res, e, '[PATCH /api/superadmin/negocios/:id/admin] Error:');
+  }
+});
+
+app.get('/api/superadmin/negocios/:negocioId/invitaciones', requireSuperadmin, async (req, res) => {
+  const detalle = await obtenerNegocioDetalleSuperadmin(req.params.negocioId);
+  if (!detalle) return res.status(404).json({ error: 'Negocio no encontrado' });
+  res.json({ invitaciones: await obtenerInvitacionesNegocio(req.params.negocioId) });
+});
+
+// "Generar nueva invitación": mismo núcleo transaccional que reenviar (la
+// creación interna ya revoca las pendientes del usuario), pensada para
+// usarse DESPUÉS de corregir el correo del admin. Guard compartido: si la
+// invitación ya fue aceptada, 409 — jamás dos admins ni contraseñas pisadas.
+app.post('/api/superadmin/negocios/:negocioId/invitaciones/nueva', requireSuperadmin,
+  rateLimitMiddleware(req => `inv-nueva:${req.usuarioId}`, 10, 60 * 1000), async (req, res) => {
+  try {
+    const resultado = await reenviarInvitacion(req.params.negocioId, req.usuarioId);
+    if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    const baseUrl = process.env.PUBLIC_URL || 'https://xabor.mx';
+    const enlace = `${baseUrl}/crear-password?token=${resultado.token}`;
+    let entregado = false;
+    try {
+      const r = await enviarCorreoInvitacion({ to: resultado.usuario.email, nombre: resultado.usuario.nombre, negocioNombre: resultado.negocioNombre, enlace });
+      entregado = r.enviado;
+    } catch (errCorreo) {
+      console.error('[POST /api/superadmin/negocios/:id/invitaciones/nueva] Error al enviar:', errCorreo.message);
+    }
+    res.json({
+      ok: true, negocioNombre: resultado.negocioNombre, correoDestino: resultado.usuario.email,
+      expiresAt: resultado.expiresAt, correoEntregado: entregado,
+      enlaceInvitacion: entregado ? undefined : enlace,
+    });
+  } catch (e) {
+    responderErrorEdicion(res, e, '[POST /api/superadmin/negocios/:id/invitaciones/nueva] Error:');
+  }
 });
 
 app.patch('/api/superadmin/negocios/:negocioId/estado', requireSuperadmin, async (req, res) => {

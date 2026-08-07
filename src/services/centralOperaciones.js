@@ -106,7 +106,9 @@ async function hechosDeNegocio(negocioId) {
       (SELECT count(*) FROM metodos_pago mpg WHERE mpg.negocio_id = n.id AND mpg.habilitado = true) AS metodos_pago_habilitados,
       (SELECT count(*) FROM terminales t JOIN sucursales s ON s.id = t.sucursal_id WHERE s.negocio_id = n.id AND t.activo = true) AS terminales_activas,
       EXISTS (SELECT 1 FROM configuracion c WHERE c.negocio_id = n.id AND c.clave = 'horario' AND c.valor IS NOT NULL AND c.valor != '') AS tiene_horario,
-      EXISTS (SELECT 1 FROM configuracion c WHERE c.negocio_id = n.id AND c.clave = 'telefono' AND c.valor IS NOT NULL AND c.valor != '') AS tiene_telefono
+      EXISTS (SELECT 1 FROM configuracion c WHERE c.negocio_id = n.id AND c.clave = 'telefono' AND c.valor IS NOT NULL AND c.valor != '') AS tiene_telefono,
+      (SELECT jsonb_object_agg(c.clave, c.valor) FROM configuracion c
+        WHERE c.negocio_id = n.id AND c.clave IN ('ciudad','telefono','direccion','nombre_corto')) AS contacto
     FROM negocios n WHERE n.id = $1
   `, [negocioId]);
   return rows[0] || null;
@@ -190,6 +192,7 @@ export async function obtenerFichaNegocio(negocioId) {
   return {
     general: {
       id: hechos.id, nombre: hechos.nombre, slug: hechos.slug,
+      contacto: hechos.contacto || {},
       estado: hechos.estado, plan: hechos.plan, activo: hechos.activo,
       mensualidad: impl.mensualidad ?? null,
       fecha_alta: hechos.created_at,

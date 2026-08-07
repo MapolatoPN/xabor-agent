@@ -5246,7 +5246,7 @@ export async function reenviarInvitacion(negocioId, superadminId) {
     const negocio = negocioRows[0];
 
     const { rows: adminRows } = await client.query(
-      `SELECT u.id, u.nombre, u.email FROM usuario_negocios un
+      `SELECT u.id, u.nombre, u.email, (u.password_hash IS NOT NULL) AS ya_acepto FROM usuario_negocios un
        JOIN usuarios u ON u.id = un.usuario_id
        WHERE un.negocio_id = $1 AND un.rol = 'admin'
        ORDER BY un.created_at ASC LIMIT 1`,
@@ -5256,6 +5256,14 @@ export async function reenviarInvitacion(negocioId, superadminId) {
       const err = new Error('Este negocio no tiene ningún administrador registrado'); err.code = 'SIN_ADMIN'; throw err;
     }
     const admin = adminRows[0];
+    // Edición de negocios (Superadmin): una invitación ya ACEPTADA jamás se
+    // reenvía ni se regenera -- el admin ya tiene contraseña y sesión
+    // propias; un enlace nuevo de crear_password_inicial solo permitiría
+    // pisar esa contraseña desde un correo viejo. 409 explícito.
+    if (admin.ya_acepto) {
+      const err = new Error('El administrador ya aceptó su invitación y tiene contraseña — no hay nada que reenviar');
+      err.code = 'INVITACION_ACEPTADA'; throw err;
+    }
 
     const invitacion = await crearInvitacionInterna(client, {
       usuarioId: admin.id, negocioId, tipo: 'crear_password_inicial', createdBy: superadminId,
@@ -5275,11 +5283,201 @@ export async function reenviarInvitacion(negocioId, superadminId) {
     };
   } catch (e) {
     await client.query('ROLLBACK');
-    if (e.code !== 'SIN_ADMIN') console.error('[DB] Error reenviarInvitacion:', e.message);
+    if (e.code !== 'SIN_ADMIN' && e.code !== 'INVITACION_ACEPTADA') console.error('[DB] Error reenviarInvitacion:', e.message);
     throw e;
   } finally {
     client.release();
   }
+}
+
+// ─── Edición de negocios desde Superadmin ───────────────────────────────────
+// El id (UUID) es la única clave: cambiar nombre/slug/correo jamás toca
+// relaciones (todas las FKs apuntan a negocios.id / usuarios.id).
+const SLUGS_RESERVADOS = new Set(['admin', 'api', 'superadmin', 'panel', 'test', 'xabor', 'www', 'webhook', 'repartidor', 'auth', 'health']);
+const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]{1,58})[a-z0-9]$/;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// Claves de contacto/operación que viven en `configuracion` (el modelo de
+// negocios NO tiene columnas dedicadas para esto -- documentado en
+// docs/superadmin-edicion-negocios.md; no se crean columnas nuevas).
+const CLAVES_CONTACTO_NEGOCIO = ['ciudad', 'telefono', 'direccion', 'nombre_corto'];
+
+// Edición parcial: SOLO los campos presentes en `cambios` se tocan; los
+// ausentes jamás se sobreescriben. Auditoría campo a campo (antes/después)
+// en una sola fila de auditoría de plataforma. Nunca guarda tokens ni
+// secretos (los campos editables aquí no los contienen).
+export async function actualizarDatosNegocioSuperadmin(negocioId, cambios = {}, superadminId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id, nombre, slug FROM negocios WHERE id = $1 FOR UPDATE', [negocioId]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const actual = rows[0];
+    const auditoria = [];
+
+    if (cambios.nombre !== undefined) {
+      const nombre = String(cambios.nombre || '').trim();
+      if (!nombre || nombre.length > 120) {
+        const err = new Error('Nombre comercial inválido (1-120 caracteres)'); err.code = 'NOMBRE_INVALIDO'; throw err;
+      }
+      if (nombre !== actual.nombre) {
+        await client.query('UPDATE negocios SET nombre = $2, updated_at = NOW() WHERE id = $1', [negocioId, nombre]);
+        auditoria.push({ campo: 'nombre', antes: actual.nombre, despues: nombre });
+      }
+    }
+
+    // Slug estable por diseño: NUNCA se recalcula al cambiar el nombre; solo
+    // cambia si el superadmin lo envía explícitamente, validado y con
+    // advertencia en la UI (las URLs públicas que lo usan cambian).
+    if (cambios.slug !== undefined) {
+      const slug = String(cambios.slug || '').trim().toLowerCase();
+      if (!SLUG_REGEX.test(slug)) {
+        const err = new Error('Slug inválido (3-60 caracteres, minúsculas/números/guiones, sin guion al inicio o final)'); err.code = 'SLUG_INVALIDO'; throw err;
+      }
+      if (SLUGS_RESERVADOS.has(slug)) {
+        const err = new Error(`El slug "${slug}" está reservado por la plataforma`); err.code = 'SLUG_RESERVADO'; throw err;
+      }
+      if (slug !== actual.slug) {
+        const { rows: dup } = await client.query('SELECT 1 FROM negocios WHERE slug = $1 AND id <> $2', [slug, negocioId]);
+        if (dup.length) { const err = new Error('Ya existe otro negocio con ese slug'); err.code = 'SLUG_DUPLICADO'; throw err; }
+        await client.query('UPDATE negocios SET slug = $2, updated_at = NOW() WHERE id = $1', [negocioId, slug]);
+        auditoria.push({ campo: 'slug', antes: actual.slug, despues: slug });
+      }
+    }
+
+    const contacto = (cambios.contacto && typeof cambios.contacto === 'object') ? cambios.contacto : {};
+    for (const clave of CLAVES_CONTACTO_NEGOCIO) {
+      if (contacto[clave] === undefined) continue;
+      const valor = String(contacto[clave] ?? '').trim().slice(0, 300);
+      const { rows: prevRows } = await client.query(
+        'SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = $2', [negocioId, clave]);
+      const antes = prevRows[0]?.valor ?? null;
+      if (antes === valor) continue;
+      await client.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,$2,$3)
+         ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $3`,
+        [negocioId, clave, valor]);
+      auditoria.push({ campo: `contacto.${clave}`, antes, despues: valor });
+    }
+
+    if (auditoria.length) {
+      await registrarAuditoriaPlataforma({
+        superadminId, accion: 'editar_negocio', negocioId,
+        estadoAnterior: null, estadoNuevo: null,
+        contexto: { cambios: auditoria },
+      }, client);
+    }
+
+    await client.query('COMMIT');
+    const { rows: final } = await pool.query('SELECT id, nombre, slug, estado, activo, updated_at FROM negocios WHERE id = $1', [negocioId]);
+    return { ...final[0], cambiosAplicados: auditoria.length };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!['NOMBRE_INVALIDO', 'SLUG_INVALIDO', 'SLUG_RESERVADO', 'SLUG_DUPLICADO'].includes(e.code)) {
+      console.error('[DB] Error actualizarDatosNegocioSuperadmin:', e.message);
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Corrige el CORREO (y opcionalmente el nombre) del administrador invitado
+// -- el caso Carnitas Moreno: el correo quedó mal capturado en el alta y el
+// "reenviar" solo reenviaba al correo equivocado. Mismo criterio de admin
+// que reenviarInvitacion (primer admin por antigüedad). Nunca crea un
+// segundo admin: edita el usuario existente por su UUID.
+export async function actualizarAdminNegocioSuperadmin(negocioId, { email, nombre } = {}, superadminId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: negocioRows } = await client.query('SELECT id, nombre FROM negocios WHERE id = $1', [negocioId]);
+    if (!negocioRows.length) { await client.query('ROLLBACK'); return null; }
+
+    const { rows: adminRows } = await client.query(
+      `SELECT u.id, u.nombre, u.email, (u.password_hash IS NOT NULL) AS ya_acepto
+       FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id
+       WHERE un.negocio_id = $1 AND un.rol = 'admin'
+       ORDER BY un.created_at ASC LIMIT 1 FOR UPDATE OF u`,
+      [negocioId]
+    );
+    if (!adminRows.length) {
+      const err = new Error('Este negocio no tiene ningún administrador registrado'); err.code = 'SIN_ADMIN'; throw err;
+    }
+    const admin = adminRows[0];
+    const auditoria = [];
+
+    if (email !== undefined) {
+      const emailNorm = String(email || '').trim().toLowerCase();
+      if (!EMAIL_REGEX.test(emailNorm)) {
+        const err = new Error('Correo inválido'); err.code = 'EMAIL_INVALIDO'; throw err;
+      }
+      if (emailNorm !== admin.email) {
+        const { rows: dup } = await client.query('SELECT 1 FROM usuarios WHERE email = $1 AND id <> $2', [emailNorm, admin.id]);
+        if (dup.length) { const err = new Error('Ya existe otro usuario con ese correo'); err.code = 'EMAIL_EN_USO'; throw err; }
+        await client.query('UPDATE usuarios SET email = $2, updated_at = NOW() WHERE id = $1', [admin.id, emailNorm]);
+        auditoria.push({ campo: 'admin.email', antes: admin.email, despues: emailNorm });
+      }
+    }
+
+    if (nombre !== undefined) {
+      const nombreNorm = String(nombre || '').trim();
+      if (!nombreNorm || nombreNorm.length > 120) {
+        const err = new Error('Nombre del administrador inválido'); err.code = 'NOMBRE_INVALIDO'; throw err;
+      }
+      if (nombreNorm !== admin.nombre) {
+        await client.query('UPDATE usuarios SET nombre = $2, updated_at = NOW() WHERE id = $1', [admin.id, nombreNorm]);
+        auditoria.push({ campo: 'admin.nombre', antes: admin.nombre, despues: nombreNorm });
+      }
+    }
+
+    if (auditoria.length) {
+      await registrarAuditoriaPlataforma({
+        superadminId, accion: 'editar_admin_negocio', negocioId, usuarioId: admin.id,
+        estadoAnterior: null, estadoNuevo: null,
+        contexto: { cambios: auditoria, yaAcepto: admin.ya_acepto },
+      }, client);
+    }
+
+    await client.query('COMMIT');
+    return {
+      usuarioId: admin.id, yaAcepto: admin.ya_acepto, cambiosAplicados: auditoria.length,
+      email: auditoria.find(c => c.campo === 'admin.email')?.despues ?? admin.email,
+      nombre: auditoria.find(c => c.campo === 'admin.nombre')?.despues ?? admin.nombre,
+    };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!['SIN_ADMIN', 'EMAIL_INVALIDO', 'EMAIL_EN_USO', 'NOMBRE_INVALIDO'].includes(e.code)) {
+      console.error('[DB] Error actualizarAdminNegocioSuperadmin:', e.message);
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Historial de invitaciones del negocio para la UI de Superadmin: estados
+// derivados y correo destino -- JAMÁS expone token_hash ni token alguno.
+export async function obtenerInvitacionesNegocio(negocioId) {
+  const { rows } = await pool.query(
+    `SELECT i.id, i.created_at, i.expires_at, i.used_at, i.revoked_at,
+            u.email AS correo_destino, u.nombre AS usuario_nombre,
+            cb.nombre AS creada_por,
+            CASE
+              WHEN i.used_at IS NOT NULL THEN 'aceptada'
+              WHEN i.revoked_at IS NOT NULL THEN 'cancelada'
+              WHEN i.expires_at < NOW() THEN 'expirada'
+              ELSE 'pendiente'
+            END AS estado
+     FROM invitaciones_usuario i
+     JOIN usuarios u ON u.id = i.usuario_id
+     LEFT JOIN usuarios cb ON cb.id = i.created_by
+     WHERE i.negocio_id = $1
+     ORDER BY i.created_at DESC
+     LIMIT 50`,
+    [negocioId]
+  );
+  return rows;
 }
 
 // Pública indirectamente (vía GET /api/auth/invitacion/:token) -- solo
