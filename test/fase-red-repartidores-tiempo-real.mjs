@@ -176,17 +176,23 @@ await t('ESTADO', '11-INACTIVO-LEGADO-NUNCA-NOTIFICADO', async () => {
 });
 
 // ═══════════ Mensaje enriquecido (plantilla v2) ═══════════
-await t('MENSAJE-V2', 'incluye-negocio-folio-ubicacion-tarifa-enlace-en-5-parametros', async () => {
+// Contrato NUEVO (cierre primer-mensaje-repartidores): la v2 lleva 4
+// variables (negocio, ubicación resumida SIN número exterior, pago, enlace)
+// y el folio ya no viaja en la oferta -- el repartidor lo ve en la pantalla
+// del enlace y en el portal.
+await t('MENSAJE-V2', 'incluye-negocio-ubicacion-sin-numero-pago-enlace-en-4-parametros', async () => {
+  const antes = metaMock.obtenerMensajesEnviados().filter(m => m.template?.name === 'xabor_nuevo_servicio_reparto_v2').length;
   const folio = await crearPedidoPrueba();
   await esperarHasta(() => existeNotificacionRepartidor(folio, repDisponible.id));
-  const enviados = metaMock.obtenerMensajesEnviados();
-  const envio = enviados.find(m => m.template?.name === 'xabor_nuevo_servicio_reparto_v2' && m.template.components[0].parameters[1].text === folio);
-  assert.ok(envio, 'debe haberse enviado la plantilla v2 con el folio correcto');
+  const enviados = metaMock.obtenerMensajesEnviados().filter(m => m.template?.name === 'xabor_nuevo_servicio_reparto_v2');
+  assert.ok(enviados.length > antes, 'debe haberse enviado la plantilla v2 para el pedido nuevo');
+  const envio = enviados[enviados.length - 1];
   const params = envio.template.components[0].parameters.map(p => p.text);
-  assert.strictEqual(params.length, 5);
-  assert.strictEqual(params[2], 'Av. Tecnológico 123, Col. Centro', 'la ubicación debe venir ya formateada (calle+colonia del fixture /test/pedido)');
-  assert.match(params[3], /^\$\d+\.\d{2} MXN$/);
-  assert.match(params[4], /\/repartidor\/aceptar\//);
+  assert.strictEqual(params.length, 4, 'la v2 lleva exactamente 4 variables (sin folio)');
+  assert.strictEqual(params[1], 'Col. Centro, calle Av. Tecnológico', 'la ubicación viene de formatearEntregaOferta: SIN el número exterior del fixture');
+  assert.ok(!params[1].includes('123'), 'el número exterior jamás viaja en la oferta');
+  assert.match(params[2], /^\$\d+\.\d{2} MXN$/);
+  assert.match(params[3], /\/repartidor\/aceptar\//);
 });
 
 // ═══════════ Carrera de aceptación y enlaces (12-16) ═══════════

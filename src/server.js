@@ -5332,8 +5332,12 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
 });
 
 app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  // Overrides opcionales SOLO de esta ruta de prueba (ya protegida con
+  // admin): las suites del primer mensaje a repartidores necesitan crear
+  // pedidos con calle/colonia controladas por el flujo real completo.
+  const clienteOverride = (req.body && typeof req.body.cliente === 'object' && req.body.cliente !== null) ? req.body.cliente : {};
   const ordenPrueba = {
-    cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos' },
+    cliente: { nombre: 'Cliente Prueba', telefono: '8781234567', calle: 'Av. Tecnológico 123', colonia: 'Centro', entre_calles: 'Juárez y Morelos', ...clienteOverride },
     modalidad: 'entrega a domicilio',
     items: [
       { nombre: 'Chicken Louisiana', cantidad: 1, precio_unitario: 180, notas: '' },

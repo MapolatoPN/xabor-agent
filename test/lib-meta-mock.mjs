@@ -7,6 +7,11 @@ import { createServer } from 'http';
 export function arrancarMetaMock() {
   const archivosPorMediaId = {};
   let forzarErrorSiguienteEnvio = false;
+  // Fallos por nombre de plantilla (persisten hasta limpiarse): simulan los
+  // estados reales de Meta en el ERROR DE ENVÍO -- 132001 (no aprobada/
+  // inexistente/pendiente/rechazada), 132000 (variables no coinciden),
+  // 132015 (pausada), 132016 (deshabilitada). Clave = template.name.
+  const fallosPorPlantilla = new Map();
   // Captura cada POST /messages (texto o plantilla) para que las pruebas
   // puedan verificar EXACTAMENTE qué se le mandó a Meta -- p.ej. confirmar
   // que un dato sensible nunca viaja en los parámetros de una plantilla.
@@ -50,7 +55,18 @@ export function arrancarMetaMock() {
       let cuerpo = '';
       req.on('data', (chunk) => { cuerpo += chunk; });
       req.on('end', () => {
-        try { mensajesEnviados.push(JSON.parse(cuerpo)); } catch { /* ignorar body no-JSON */ }
+        let body = null;
+        try { body = JSON.parse(cuerpo); } catch { /* ignorar body no-JSON */ }
+        const nombrePlantilla = body?.template?.name;
+        if (nombrePlantilla && fallosPorPlantilla.has(nombrePlantilla)) {
+          const codigo = fallosPorPlantilla.get(nombrePlantilla);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: {
+            message: `(#${codigo}) simulado por el mock para ${nombrePlantilla}`,
+            code: codigo, type: 'OAuthException'
+          } }));
+        }
+        if (body) mensajesEnviados.push(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ messages: [{ id: 'wamid.SALIENTE_FAKE_' + Date.now() + '_' + mensajesEnviados.length }] }));
       });
@@ -65,6 +81,8 @@ export function arrancarMetaMock() {
       baseUrl: `http://localhost:${server.address().port}`,
       registrarArchivo: (mediaId, buffer, mimeType = 'application/pdf') => { archivosPorMediaId[mediaId] = { buffer, mimeType }; },
       forzarErrorSiguienteEnvio: () => { forzarErrorSiguienteEnvio = true; },
+      fallarPlantilla: (nombre, codigo = 132001) => { fallosPorPlantilla.set(nombre, codigo); },
+      limpiarFallosPlantilla: () => { fallosPorPlantilla.clear(); },
       obtenerMensajesEnviados: () => mensajesEnviados,
       detener: () => server.close(),
     }));
