@@ -1009,7 +1009,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             // NOTHING contra una fila que ya existe), no una corrección de
             // carrera real como antes. Se conserva sin cambios de
             // comportamiento por si algún día vuelve a haber un camino que
-            // llegue aquí sin pasar por registrarPedido.
+            // llegue aquí sin pasar por registrarPedido. El retorno se
+            // ignora a propósito: aquí el "conflicto" es el resultado
+            // NORMAL (la fila del MISMO pedido ya existe), no un folio
+            // ajeno que haya que reintentar — la reserva de folio es
+            // responsabilidad exclusiva de registrarPedido().
             await guardarPedidoActivo(pedido, negocioId);
             const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedido.id, descripcion: `Pedido Xabor #${pedido.id}` });
             linkPago = resultadoLink.url;

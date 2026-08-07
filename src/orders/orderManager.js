@@ -25,6 +25,14 @@ let wsBroadcastNegocio = null;
 const pedidos = [];
 let contadorPedidos = 1;
 
+// Hotfix P0 folio: tope duro de reintentos al reservar folio en
+// registrarPedido(). Un conflicto real es rarísimo (solo si otra instancia
+// del deploy o una fila residual ya tomó ese número); 20 candidatos
+// consecutivos ocupados significa que el contador quedó muy por detrás de la
+// realidad, y en ese caso es preferible fallar explícito
+// (FOLIO_NO_DISPONIBLE) que girar sin límite dentro de un webhook.
+const MAX_REINTENTOS_FOLIO = 20;
+
 export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
 }
@@ -110,10 +118,9 @@ export async function registrarPedido(orden, canal = 'test') {
   }
   const negocioId = orden.negocioId.trim();
 
-  const pedido = {
+  const base = {
     ...orden,
     negocioId,
-    id: `XAB-${String(contadorPedidos).padStart(4, '0')}`,
     canal,
     timestamp: new Date().toISOString(),
     estado: 'nuevo'
@@ -121,17 +128,45 @@ export async function registrarPedido(orden, canal = 'test') {
 
   // Persistencia inicial ANTES de tocar el estado en memoria: si falla de
   // verdad (error de base de datos, no un simple conflicto de folio), no
-  // se consume el folio ni se agrega nada a `pedidos` -- el llamador recibe
-  // un error explícito en vez de un pedido "confirmado" que nunca quedó
-  // guardado. guardarPedidoActivo() nunca lanza (ver su propio comentario
-  // en database.js); su valor de retorno es la única señal de éxito/fallo.
-  const persistido = await guardarPedidoActivo(pedido, negocioId);
-  if (!persistido) {
-    throw new Error(`PEDIDO_NO_PERSISTIDO: no se pudo guardar ${pedido.id} en pedidos_activos — pedido rechazado antes de ofrecerlo a repartidores o confirmarlo al cliente`);
+  // se agrega nada a `pedidos` -- el llamador recibe un error explícito en
+  // vez de un pedido "confirmado" que nunca quedó guardado.
+  // guardarPedidoActivo() nunca lanza (ver su propio comentario en
+  // database.js); su valor de retorno estructurado es la única señal.
+  //
+  // Hotfix P0 folio: el folio se RESERVA de forma síncrona (se toma el
+  // contador y se incrementa en la misma vuelta del event loop, antes del
+  // primer await), así dos creaciones concurrentes en este proceso ya no
+  // pueden leer el mismo número. Contra la otra instancia del deploy (o
+  // filas residuales) queda el conflicto real de base de datos: si el
+  // INSERT no escribió fila, ese folio es de OTRO pedido y se reintenta con
+  // el siguiente candidato. NUNCA se adopta el pedido existente que comparte
+  // folio (podría ser de otro negocio) ni se devuelve éxito sin fila propia.
+  let pedido = null;
+  let intento = 0;
+  while (intento < MAX_REINTENTOS_FOLIO) {
+    intento++;
+    const folio = `XAB-${String(contadorPedidos).padStart(4, '0')}`;
+    contadorPedidos++;
+    const candidato = { ...base, id: folio };
+
+    const r = await guardarPedidoActivo(candidato, negocioId);
+    if (r.insertado) {
+      pedido = candidato;
+      break;
+    }
+    if (!r.ok) {
+      // Error real de base de datos: no es un conflicto de folio, así que
+      // reintentar con otro número no arregla nada y podría enmascararlo.
+      throw new Error(`PEDIDO_NO_PERSISTIDO: no se pudo guardar ${folio} en pedidos_activos — pedido rechazado antes de ofrecerlo a repartidores o confirmarlo al cliente`);
+    }
+    console.warn(`[Pedido] Conflicto de folio ${folio}, reintentando (intento ${intento}/${MAX_REINTENTOS_FOLIO}, canal=${canal})`);
+  }
+
+  if (!pedido) {
+    throw new Error(`FOLIO_NO_DISPONIBLE: ${MAX_REINTENTOS_FOLIO} folios consecutivos ya existían en pedidos_activos (canal=${canal}) — pedido rechazado sin confirmar al cliente`);
   }
 
   pedidos.push(pedido);
-  contadorPedidos++;
 
   console.log('\n' + '='.repeat(50));
   console.log(`🎉 NUEVO PEDIDO: ${pedido.id} [${canal}]`);
