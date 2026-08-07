@@ -23,7 +23,8 @@ import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '.
 import { getIntegracion } from '../server.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
-import { formatearUbicacionRepartidor, formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
+import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
+import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
@@ -239,29 +240,32 @@ export async function enviarPlantillaXaborNuevoServicioReparto(telefono, { nombr
   return data?.messages?.[0]?.id || null;
 }
 
-// ─── Plantilla xabor_nuevo_servicio_reparto_v2 (oferta con calle/colonia/tarifa/folio) ──
-// Fase C, Red de Repartidores: requisito nuevo del usuario -- desde el
-// PRIMER mensaje el repartidor debe conocer negocio, folio, calle/colonia
-// de entrega y tarifa, además del enlace. La plantilla v1 (arriba) ya está
-// aprobada por Meta con exactamente 3 variables (negocio/pago/enlace) --
-// agregar variables nuevas exige someter una plantilla NUEVA a revisión de
-// Meta (no editar la ya aprobada). El usuario autorizó redactar y preparar
-// esta plantilla v2 (ver docs/plantilla-nueva-servicio-reparto-v2-propuesta.md
-// para el texto exacto a someter y los pasos) -- someterla y aprobarla en
-// Meta Business Manager es un paso manual fuera de esta sesión de código.
+// ─── Plantilla xabor_nuevo_servicio_reparto_v2 (oferta con colonia/calle) ──
+// Cierre primer-mensaje-repartidores: desde el PRIMER mensaje el repartidor
+// debe conocer negocio, colonia+calle (SIN número exterior) y pago, además
+// del enlace. La plantilla v1 (arriba) ya está aprobada por Meta con
+// exactamente 3 variables (negocio/pago/enlace) -- agregar variables exige
+// someter una plantilla NUEVA a revisión de Meta (no editar la aprobada).
+// El texto exacto a someter vive en
+// docs/plantilla-nueva-servicio-reparto-v2-propuesta.md; someterla y
+// aprobarla en Meta Business Manager es un paso manual del propietario.
 //
-// Por eso esta función existe YA, lista para usarse, pero
+// Cuerpo objetivo (4 variables, requisito del propietario):
+//   {{1}} negocio · {{2}} ubicación resumida (formatearEntregaOferta, sin
+//   número exterior) · {{3}} pago ("$150.00 MXN") · {{4}} enlace.
+// El folio NO viaja en la oferta: el repartidor lo ve en la pantalla del
+// enlace y en el portal después de aceptar.
+//
 // notificarRepartidoresPorWA solo la invoca cuando
 // configuracion.repartidor_notif_plantilla_v2_activo === 'true' (default:
-// ausente/false -- sigue usando la v1 tal cual, sin ningún cambio de
-// comportamiento en producción hasta que el negocio confirme que Meta
-// aprobó la plantilla nueva y active la clave manualmente).
+// ausente/false). Si Meta rechaza el envío v2 (no aprobada/inexistente/
+// pausada), el llamador cae a v1 con registro auditable -- ver el fallback
+// en notificarRepartidoresPorWA.
 //
-// ubicacion ya viene pre-formateada por formatearUbicacionRepartidor
-// (incluye el fallback "Ubicación pendiente de confirmar") -- esta función
-// nunca decide el texto de ubicación, solo lo transporta como parámetro
-// de plantilla.
-export async function enviarPlantillaXaborNuevoServicioRepartoV2(telefono, { nombreNegocio, folio, ubicacion, tarifa, enlaceAceptar }, credenciales) {
+// ubicacion ya viene pre-formateada por formatearEntregaOferta (incluye el
+// fallback "Zona por confirmar") -- esta función nunca decide el texto de
+// ubicación, solo lo transporta como parámetro de plantilla.
+export async function enviarPlantillaXaborNuevoServicioRepartoV2(telefono, { nombreNegocio, ubicacion, pago, enlaceAceptar }, credenciales) {
   if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
     console.error('[Meta WA] enviarPlantillaXaborNuevoServicioRepartoV2 sin credenciales resueltas — envío omitido (fail closed)');
     return null;
@@ -286,9 +290,8 @@ export async function enviarPlantillaXaborNuevoServicioRepartoV2(telefono, { nom
           type: 'body',
           parameters: [
             { type: 'text', text: nombreNegocio },
-            { type: 'text', text: folio },
             { type: 'text', text: ubicacion },
-            { type: 'text', text: tarifa },
+            { type: 'text', text: pago },
             { type: 'text', text: enlaceAceptar }
           ]
         }]
@@ -1453,20 +1456,25 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
     const pagoEstimado = `$${pedido.total} MXN`;
     const TOKEN_EXPIRACION_MINUTOS = 30;
 
-    // Fase C: plantilla v2 (negocio/folio/ubicación/tarifa/enlace) -- apagada
-    // por defecto (ver enviarPlantillaXaborNuevoServicioRepartoV2 arriba,
-    // requiere que Meta apruebe la plantilla nueva primero). Mientras el
-    // negocio no active esta clave explícitamente, el comportamiento es
-    // IDÉNTICO al actual (plantilla v1, 3 variables).
+    // Plantilla v2 (negocio/ubicación/pago/enlace) -- apagada por defecto
+    // (requiere que Meta apruebe la plantilla nueva primero; flag POR
+    // NEGOCIO, rollback sin deploy apagándolo). Mientras el negocio no
+    // active esta clave explícitamente, el comportamiento es IDÉNTICO al
+    // actual (plantilla v1, 3 variables).
+    //
+    // Cierre primer-mensaje-repartidores: la ubicación de la oferta usa la
+    // MISMA función que el mensaje libre (formatearEntregaOferta: colonia +
+    // calle SIN número exterior, fallback "Zona por confirmar") -- nunca
+    // formatearUbicacionRepartidor, que conserva el número y es solo para
+    // contextos post-aceptación.
     const usarPlantillaV2 = usarPlantilla && cfg.repartidor_notif_plantilla_v2_activo === 'true';
     let ubicacionOferta = null;
-    let tarifaOferta = null;
+    let pagoOferta = null;
     if (usarPlantillaV2) {
-      const { texto, ubicacionPendiente } = formatearUbicacionRepartidor(pedido.cliente?.calle, pedido.cliente?.colonia);
-      ubicacionOferta = texto;
-      tarifaOferta = formatearTarifaRepartidor(pedido.total);
-      if (ubicacionPendiente) {
-        console.warn(`[WA Repartidor][V2] Pedido ${pedido.id}: sin calle ni colonia -- se envía "Ubicación pendiente de confirmar" (registrado)`);
+      ubicacionOferta = entregaEn;
+      pagoOferta = formatearTarifaRepartidor(pedido.total);
+      if (ubicacionOferta === 'Zona por confirmar') {
+        console.warn(`[WA Repartidor][V2] Pedido ${pedido.id}: sin calle ni colonia -- se envía "Zona por confirmar" (registrado)`);
       }
     }
 
@@ -1540,17 +1548,47 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
       const enlaceAceptar = `${BASE_URL}/repartidor/aceptar/${token}`;
 
       try {
-        const wamid = usarPlantillaV2
-          ? await enviarPlantillaXaborNuevoServicioRepartoV2(
+        let wamid = null;
+        let plantillaUtilizada = null;
+        let auditoriaFallback = null;
+        if (usarPlantillaV2) {
+          try {
+            wamid = await enviarPlantillaXaborNuevoServicioRepartoV2(
               r.telefono,
-              { nombreNegocio, folio: pedido.id, ubicacion: ubicacionOferta, tarifa: tarifaOferta, enlaceAceptar },
+              { nombreNegocio, ubicacion: ubicacionOferta, pago: pagoOferta, enlaceAceptar },
               credenciales
-            )
-          : await enviarPlantillaXaborNuevoServicioReparto(
+            );
+            plantillaUtilizada = 'xabor_nuevo_servicio_reparto_v2';
+          } catch (eV2) {
+            // Fallback auditable: si Meta rechaza la v2 (no aprobada,
+            // inexistente, pausada, deshabilitada, variables que no
+            // coinciden), la oferta NO se pierde -- sale por la v1 aprobada.
+            // El registro es un JSON SIN datos sensibles (nunca dirección,
+            // nunca teléfonos): queda en el log y en error_detalle de la
+            // fila de notificaciones_repartidor de este intento.
+            auditoriaFallback = {
+              plantillaSolicitada: 'xabor_nuevo_servicio_reparto_v2',
+              plantillaUtilizada: 'xabor_nuevo_servicio_reparto',
+              ubicacionIncluida: false,
+              fallback: true,
+              razonFallback: clasificarErrorPlantillaMeta(eV2.message)
+            };
+            console.warn(`[WA Repartidor][V2->V1] pedido=${pedido.id} ${JSON.stringify(auditoriaFallback)}`);
+            wamid = await enviarPlantillaXaborNuevoServicioReparto(
               r.telefono,
               { nombreNegocio, pagoEstimado, enlaceAceptar },
               credenciales
             );
+            plantillaUtilizada = 'xabor_nuevo_servicio_reparto';
+          }
+        } else {
+          wamid = await enviarPlantillaXaborNuevoServicioReparto(
+            r.telefono,
+            { nombreNegocio, pagoEstimado, enlaceAceptar },
+            credenciales
+          );
+          plantillaUtilizada = 'xabor_nuevo_servicio_reparto';
+        }
         await registrarNotificacionRepartidor({
           negocioId: pedido.negocioId,
           pedidoFolio: pedido.id,
@@ -1558,10 +1596,16 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
           canal: 'plantilla',
           wamid,
           estado: wamid ? 'aceptado_meta' : 'error_envio',
+          errorDetalle: auditoriaFallback ? JSON.stringify(auditoriaFallback) : null,
           tokenAceptacion: token,
           tokenExpiraAt
         });
-        console.log(`[WA Repartidor] Plantilla aceptada por Meta para ${r.nombre} (${r.telefono}) wamid=${wamid}`);
+        // Auditoría de plantilla usada: nunca dirección ni teléfono en el log.
+        console.log(`[WA Repartidor] Plantilla aceptada por Meta para ${r.nombre} (id=${r.id}) wamid=${wamid} ${JSON.stringify({
+          plantillaUtilizada,
+          ubicacionIncluida: plantillaUtilizada === 'xabor_nuevo_servicio_reparto_v2',
+          fallback: !!auditoriaFallback
+        })}`);
       } catch (e) {
         await registrarNotificacionRepartidor({
           negocioId: pedido.negocioId,
