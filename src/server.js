@@ -41,6 +41,7 @@ import {
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
   obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio, obtenerChecklistActivacionBot,
   actualizarDatosNegocioSuperadmin, actualizarAdminNegocioSuperadmin, obtenerInvitacionesNegocio,
+  listarModulosDisponibles,
 } from './services/database.js';
 import {
   obtenerFichaNegocio, actualizarPasoChecklistOperativo, actualizarOnboardingEstado, actualizarImplementacion,
@@ -3316,6 +3317,73 @@ app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, asyn
     if (e.code === 'MODULO_INVALIDO' || e.code === 'ESTADO_MODULO_INVALIDO') return res.status(400).json({ error: e.message });
     console.error('[PATCH /api/superadmin/negocios/:id/modulos] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar los módulos' });
+  }
+});
+
+// Fuente única de módulos para la UI (fix readiness restaurante): la lista
+// y las etiquetas salen del backend (MODULOS_VALIDOS) -- el frontend deja
+// de duplicarlas hardcodeadas, que es exactamente el desfase que dejó a
+// 'restaurante' invisible en el panel.
+app.get('/api/superadmin/modulos-disponibles', requireSuperadmin, (req, res) => {
+  res.json({ modulos: listarModulosDisponibles() });
+});
+
+// ─── Readiness del módulo Restaurante (Superadmin, solo lectura) ────────────
+// Criterio mínimo para operar: módulo activo + >=1 usuario activo +
+// >=1 producto disponible + número de mesas válido (default 12 si no se
+// configuró -- el default nunca bloquea la activación).
+app.get('/api/superadmin/negocios/:negocioId/restaurante-readiness', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  const { rows: existe } = await pool.query('SELECT 1 FROM negocios WHERE id = $1', [negocioId]);
+  if (!existe.length) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const [modulo, cfg, usuarios, productos] = await Promise.all([
+      pool.query(`SELECT estado FROM negocio_modulos WHERE negocio_id = $1 AND modulo = 'restaurante'`, [negocioId]),
+      pool.query(`SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [negocioId]),
+      pool.query(`SELECT COUNT(*)::int c FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id WHERE un.negocio_id = $1 AND un.activo AND u.activo`, [negocioId]),
+      pool.query(`SELECT COUNT(*)::int c FROM menu_productos WHERE negocio_id = $1 AND disponible AND NOT COALESCE(agotado, FALSE)`, [negocioId]),
+    ]);
+    const estadoModulo = modulo.rows[0]?.estado || 'no_contratado';
+    const numMesasConfigurado = parseInt(cfg.rows[0]?.valor, 10);
+    const usandoDefault = !Number.isInteger(numMesasConfigurado) || numMesasConfigurado < 1;
+    const numMesas = usandoDefault ? 12 : Math.min(numMesasConfigurado, 500);
+    const usuariosActivos = usuarios.rows[0].c;
+    const productosActivos = productos.rows[0].c;
+    const listo = estadoModulo === 'activo' && usuariosActivos >= 1 && productosActivos >= 1 && numMesas >= 1 && numMesas <= 500;
+    res.json({
+      moduloEstado: estadoModulo, numMesas, usandoDefault,
+      usuariosActivos, productosActivos,
+      estado: listo ? 'LISTO' : 'CONFIGURACION_PENDIENTE',
+    });
+  } catch (e) {
+    console.error('[GET /api/superadmin/negocios/:id/restaurante-readiness] Error:', e.message);
+    res.status(500).json({ error: 'Error al calcular el readiness' });
+  }
+});
+
+// Número de mesas: entero estricto 1-500 (decimales y fuera de rango se
+// rechazan). Reutiliza configuracion (clave restaurante_num_mesas que
+// listarMesas ya lee); sin migración, sin tabla de mesas. Auditado.
+app.put('/api/superadmin/negocios/:negocioId/restaurante-config', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  const { rows: existe } = await pool.query('SELECT 1 FROM negocios WHERE id = $1', [negocioId]);
+  if (!existe.length) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const crudo = req.body?.numMesas;
+  const numMesas = Number(crudo);
+  if (!Number.isInteger(numMesas) || String(crudo).includes('.') || numMesas < 1 || numMesas > 500) {
+    return res.status(400).json({ error: 'Número de mesas inválido: entero entre 1 y 500' });
+  }
+  try {
+    const { rows: prev } = await pool.query(`SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [negocioId]);
+    await actualizarConfiguracion({ restaurante_num_mesas: String(numMesas) }, negocioId);
+    await registrarAuditoriaPlataforma({
+      superadminId: req.usuarioId, accion: 'restaurante_num_mesas', negocioId,
+      estadoAnterior: { numMesas: prev[0]?.valor ?? null }, estadoNuevo: { numMesas },
+    });
+    res.json({ ok: true, numMesas });
+  } catch (e) {
+    console.error('[PUT /api/superadmin/negocios/:id/restaurante-config] Error:', e.message);
+    res.status(500).json({ error: 'Error al guardar el número de mesas' });
   }
 });
 
