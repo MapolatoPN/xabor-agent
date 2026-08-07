@@ -229,10 +229,12 @@ await t('CARRERA', '13-PEDIDO-CANCELADO-NO-SE-PUEDE-ACEPTAR', async () => {
 // documentado para otras suites de esta batería. La ruta HTTP corre
 // dentro del proceso hijo de arrancarServidor, donde server.js SÍ es el
 // punto de entrada real -- misma cobertura, sin el riesgo.
+// Contrato nuevo (hotfix oferta): la aceptación real es el POST del botón;
+// el GET del enlace es solo la pantalla de revisión.
 async function aceptarPorToken(token) {
-  const r = await fetch(`${base}/repartidor/aceptar/${encodeURIComponent(token)}`);
-  const texto = await r.text();
-  return { status: r.status, texto };
+  const r = await fetch(`${base}/api/repartidor/oferta/${encodeURIComponent(token)}/aceptar`, { method: 'POST' });
+  const body = await r.json();
+  return { status: r.status, body };
 }
 
 await t('CARRERA', '14-ACEPTACION-SIMULTANEA-SOLO-UNO-GANA', async () => {
@@ -247,12 +249,12 @@ await t('CARRERA', '14-ACEPTACION-SIMULTANEA-SOLO-UNO-GANA', async () => {
   const fallidos = [r1, r2].filter(r => r.status === 409);
   assert.strictEqual(oks.length, 1, 'exactamente uno debe ganar la carrera (200)');
   assert.strictEqual(fallidos.length, 1, 'el otro debe fallar con 409');
-  assert.match(fallidos[0].texto, /ya fue tomado/i);
+  assert.strictEqual(fallidos[0].body.estado, 'cubierto_por_otro', 'el perdedor recibe el estado estructurado con quién ganó');
 });
 await t('ENLACE', '15-ENLACE-INCORRECTO', async () => {
   const r = await aceptarPorToken('token-que-jamas-existio-' + sufijo);
   assert.strictEqual(r.status, 409);
-  assert.match(r.texto, /ya no es válido/i);
+  assert.strictEqual(r.body.estado, 'invalido');
 });
 await t('ENLACE', '16-ENLACE-VENCIDO', async () => {
   const folio = await crearPedidoPrueba();
@@ -260,7 +262,7 @@ await t('ENLACE', '16-ENLACE-VENCIDO', async () => {
   await registrarNotificacionRepartidor({ negocioId: SEED.negocioA, pedidoFolio: folio, repartidorId: repDisponible.id, canal: 'plantilla', estado: 'aceptado_meta', tokenAceptacion: tokenVencido, tokenExpiraAt: new Date(Date.now() - 60 * 1000) });
   const r = await aceptarPorToken(tokenVencido);
   assert.strictEqual(r.status, 409);
-  assert.match(r.texto, /ya no es válido/i);
+  assert.strictEqual(r.body.estado, 'expirado');
 });
 
 // ═══════════ Aislamiento entre negocios (17) ═══════════

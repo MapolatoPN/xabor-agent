@@ -189,8 +189,15 @@ await t('ACEPTAR-TOKEN', 'abrir el enlace de aceptación asigna el pedido y env�
   });
   assert.ok(fila, 'debía existir el token antes de aceptar');
 
-  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  // Contrato nuevo (hotfix oferta): el GET es la pantalla de revisión y NO
+  // consume el token; la aceptación real es el POST del botón.
+  const pagina = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  assert.strictEqual(pagina.status, 200, 'la pantalla del enlace debe responder 200');
+  const { rows: [sinConsumir] } = await pool.query(`SELECT token_usado_at FROM notificaciones_repartidor WHERE id = $1`, [fila.id]);
+  assert.strictEqual(sinConsumir.token_usado_at, null, 'abrir la pantalla JAMÁS consume el token');
+  const r = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
   assert.strictEqual(r.status, 200, 'aceptar con un token válido debe responder 200');
+  assert.strictEqual((await r.json()).estado, 'asignado_a_mi');
 
   const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_nombre' AS nombre FROM pedidos_activos WHERE folio = $1`, [folio]);
   assert.strictEqual(pedidoDB.nombre, repA.nombre, 'aceptar por el enlace debe asignar el pedido (misma asignarRepartidor de siempre)');
@@ -211,11 +218,14 @@ await t('TOKEN-REUSO', 'reutilizar el mismo token (mensaje reenviado o doble cli
   });
   assert.ok(fila, 'debía existir el token antes de aceptar');
 
-  const r1 = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  const r1 = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
   assert.strictEqual(r1.status, 200, 'el primer uso del token debe aceptarse');
 
-  const r2 = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
-  assert.strictEqual(r2.status, 409, 'un segundo uso del mismo token debe rechazarse');
+  // Doble clic del GANADOR: idempotente (asignado_a_mi), nunca una segunda
+  // asignación ni un error confuso.
+  const r2 = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
+  assert.strictEqual(r2.status, 200, 'el reintento del ganador es idempotente');
+  assert.strictEqual((await r2.json()).estado, 'asignado_a_mi');
 });
 
 // ═══════════ TOKEN-EXPIRADO / TOKEN-INVALIDO ═══════════
@@ -228,13 +238,15 @@ await t('TOKEN-EXPIRADO', 'un token vencido se rechaza aunque nunca se haya usad
   assert.ok(fila, 'debía existir el token antes de vencerlo');
   await pool.query(`UPDATE notificaciones_repartidor SET token_expira_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, [fila.id]);
 
-  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  const r = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
   assert.strictEqual(r.status, 409, 'un token vencido debe rechazarse aunque nunca se haya consumido');
+  assert.strictEqual((await r.json()).estado, 'expirado');
 });
 
 await t('TOKEN-INVALIDO', 'un token que nunca existió se rechaza sin lanzar', async () => {
-  const r = await fetch(`${base}/repartidor/aceptar/esto-nunca-fue-un-token-real`);
+  const r = await fetch(`${base}/api/repartidor/oferta/esto-nunca-fue-un-token-real/aceptar`, { method: 'POST' });
   assert.strictEqual(r.status, 409, 'un token inexistente debe rechazarse con 409, nunca 500');
+  assert.strictEqual((await r.json()).estado, 'invalido');
 });
 
 // ═══════════ PEDIDO-VENCIDO: el pedido ya no está disponible cuando se usa el token ═══════════
@@ -250,8 +262,9 @@ await t('PEDIDO-VENCIDO', 'si el pedido ya fue entregado/cancelado antes de usar
   // (p. ej. el negocio lo entregó por mostrador, o se canceló).
   await pool.query(`UPDATE pedidos_activos SET estado = 'cancelado' WHERE folio = $1`, [folio]);
 
-  const r = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
+  const r = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
   assert.strictEqual(r.status, 409, 'un pedido ya no disponible debe rechazar la aceptación (409), nunca asignarlo');
+  assert.strictEqual((await r.json()).estado, 'cancelado');
 
   const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_id' AS rid, estado FROM pedidos_activos WHERE folio = $1`, [folio]);
   assert.strictEqual(pedidoDB.rid, null, 'el pedido cancelado nunca debe quedar asignado a un repartidor');
