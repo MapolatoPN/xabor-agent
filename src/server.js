@@ -23,7 +23,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -4452,7 +4452,8 @@ function pintar(r) {
       + (p.telefonoCliente ? '<div class="dato"><span>Teléfono</span><span>'+esc(p.telefonoCliente)+'</span></div>' : '')
       + (p.observaciones ? '<div class="dato"><span>Notas</span><span>'+esc(p.observaciones)+'</span></div>' : '')
       + (p.pago ? '<div class="dato"><span>Cobro</span><span>'+esc(p.pago)+'</span></div>' : '')
-      + '<p>Los detalles completos también llegaron a tu WhatsApp.</p>');
+      + '<p>Los detalles completos también llegaron a tu WhatsApp.</p>'
+      + '<a href="/repartidor.html" style="display:block;background:#22c55e;color:#111;border-radius:12px;padding:14px;font-weight:800;text-decoration:none;margin-top:12px;">Ver mi entrega</a>');
   } else if (r.estado === 'cubierto_por_otro') {
     const nombre = r.repartidorAsignado && r.repartidorAsignado.nombre;
     pantalla('🤝', 'Este pedido ya fue cubierto',
@@ -4490,21 +4491,39 @@ cargar();
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
 // Registro público (el repartidor accede al link y llena nombre+teléfono)
-app.post('/api/repartidor/registro', async (req, res) => {
-  const { nombre, telefono } = req.body;
+// Registro con NEGOCIO obligatorio (causa raíz de la regresión del portal:
+// el alta pública sin negocio creaba repartidores con negocio_id NULL que
+// el refactor P0 bloquea con 403 en todos los endpoints). El negocio llega
+// por slug en el enlace que el propio negocio comparte
+// (/repartidor.html?negocio=<slug>); sin slug válido no hay alta.
+app.post('/api/repartidor/registro',
+  rateLimitMiddleware(req => `rep-reg:${req.ip}`, 5, 10 * 60 * 1000),
+  async (req, res) => {
+  const { nombre, telefono, negocioSlug } = req.body;
   if (!nombre || !telefono) return res.status(400).json({ error: 'nombre y telefono requeridos' });
-  const rep = await registrarRepartidor(nombre.trim(), telefono.trim());
+  const negocioId = typeof negocioSlug === 'string' && negocioSlug.trim()
+    ? await obtenerNegocioIdPorSlug(negocioSlug.trim().toLowerCase()) : null;
+  if (!negocioId) {
+    return res.status(400).json({ error: 'Falta el negocio. Pide a tu negocio el enlace de registro (incluye ?negocio=...).' });
+  }
+  const rep = await registrarRepartidor(nombre.trim(), telefono.trim(), negocioId);
   if (!rep) return res.status(500).json({ error: 'Error al registrar' });
   res.json({ ok: true, token: rep.token, nombre: rep.nombre });
 });
 
 // Login por teléfono — devuelve token
-app.post('/api/repartidor/login', async (req, res) => {
+// Rate limit: el login por teléfono es la credencial más débil del sistema
+// (pendiente documentado: código de verificación por WhatsApp) -- al menos
+// no debe permitir enumerar/adivinar números en ráfaga.
+app.post('/api/repartidor/login',
+  rateLimitMiddleware(req => `rep-login:${req.ip}`, 10, 10 * 60 * 1000),
+  async (req, res) => {
   const { telefono } = req.body;
   if (!telefono) return res.status(400).json({ error: 'telefono requerido' });
   const rep = await obtenerRepartidorPorTelefono(telefono.trim());
   if (!rep) return res.status(404).json({ error: 'No registrado' });
-  res.json({ ok: true, token: rep.token, nombre: rep.nombre });
+  const negocioNombre = rep.negocio_id ? await obtenerNombreNegocio(rep.negocio_id) : null;
+  res.json({ ok: true, token: rep.token, nombre: rep.nombre, negocio: negocioNombre });
 });
 
 // Middleware para rutas de repartidor
@@ -4594,8 +4613,23 @@ app.post('/api/repartidor/pedido/:folio/aceptar', requireRepartidor, async (req,
 app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (req, res) => {
   const { folio } = req.params;
   if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
-  const pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id);
-  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  // Transición terminal ATÓMICA en DB (dueño + no terminal en el mismo
+  // UPDATE) -- la memoria del OrderManager se sincroniza después y el
+  // broadcast al panel sale igual aunque el proceso se haya reiniciado.
+  const datosEntregado = await marcarEntregadoRepartidor(folio, req.repartidor.negocio_id, req.repartidor.id);
+  if (!datosEntregado) {
+    const { rows: [row] } = await pool.query(
+      `SELECT estado, datos->>'repartidor_id' AS rid FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`,
+      [folio, req.repartidor.negocio_id]
+    );
+    if (!row) return res.status(404).json({ error: 'Pedido no encontrado' });
+    if (String(row.rid) !== String(req.repartidor.id)) return res.status(403).json({ error: 'Este pedido está asignado a otro repartidor' });
+    if (row.estado === 'cancelado') return res.status(409).json({ error: 'El pedido fue cancelado por el negocio' });
+    if (row.estado === 'entregado') return res.json({ ok: true, ya: true });
+    return res.status(409).json({ error: 'El pedido no se pudo marcar entregado' });
+  }
+  const pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id) || { ...datosEntregado, id: folio };
+  broadcastNegocio(req.repartidor.negocio_id, { tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   // Este broadcast() directo se queda legado a propósito (misma razón que
   // el comentario de arriba: sin req.negocioId real). No es una fuga real:
   // _persistirCambioEstado (orderManager.js) YA emitió este mismo
@@ -4635,6 +4669,110 @@ app.post('/api/repartidor/push/subscribe', requireRepartidor, async (req, res) =
   if (!subscription) return res.status(400).json({ error: 'subscription requerida' });
   if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
   await guardarPushRepartidor(req.repartidor.id, subscription, req.repartidor.negocio_id);
+  res.json({ ok: true });
+});
+
+// ─── Portal operativo del repartidor (restauración) ─────────────────────────
+// Todas estas rutas derivan repartidor y negocio del TOKEN autenticado
+// (req.repartidor) -- jamás de ids del navegador.
+app.get('/api/repartidor/me', requireRepartidor, async (req, res) => {
+  const negocio = req.repartidor.negocio_id ? await obtenerNombreNegocio(req.repartidor.negocio_id) : null;
+  res.json({
+    nombre: req.repartidor.nombre,
+    negocio,
+    estado: req.repartidor.estado || (req.repartidor.activo ? 'disponible' : 'suspendido'),
+  });
+});
+
+// Pedido(s) actual(es) con el detalle COMPLETO -- solo del repartidor
+// asignado (política de privacidad: la dirección completa y el teléfono
+// del cliente existen únicamente aquí y solo mientras la entrega está viva).
+app.get('/api/repartidor/pedido-actual', requireRepartidor, async (req, res) => {
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const filas = await obtenerPedidosAsignadosARepartidor(req.repartidor.id);
+  const propios = filas.filter(f => true); // ya filtradas por repartidor_id
+  const cfg = await obtenerConfiguracion(req.repartidor.negocio_id);
+  const negocioNombre = await obtenerNombreNegocio(req.repartidor.negocio_id);
+  res.json({
+    negocio: { nombre: negocioNombre, direccion: cfg?.direccion || null },
+    pedidos: propios.map(f => {
+      const d = f.datos || {};
+      const c = d.cliente || {};
+      const tel = c.telefono && c.telefono !== '—' && !String(c.telefono).startsWith('rappi-') ? c.telefono : null;
+      return {
+        folio: f.folio,
+        estado: f.estado,
+        entregaEstado: d.entrega_estado || 'asignado',
+        creadoAt: f.created_at,
+        cliente: c.nombre || null,
+        telefono: tel,
+        calle: c.calle || null,
+        colonia: c.colonia || null,
+        entreCalles: c.entre_calles || null,
+        referencia: c.referencia || c.referencias || null,
+        lat: (typeof c.lat === 'number' ? c.lat : null),
+        lng: (typeof c.lng === 'number' ? c.lng : null),
+        total: d.total,
+        costoEnvio: d.costo_envio || 0,
+        formaPago: d.forma_pago || null,
+        pagoConfirmado: d.pago_confirmado === true || d.pago_confirmado === 'true',
+        notas: d.notas || null,
+        items: Array.isArray(d.items) ? d.items.length : 0,
+      };
+    }),
+  });
+});
+
+// Historial "Mis entregas": terminales propios, paginado, con campos
+// reducidos por privacidad (sin teléfono ni calle/número/referencias).
+app.get('/api/repartidor/entregas', requireRepartidor, async (req, res) => {
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const { rango, estado, pagina } = req.query;
+  const r = await obtenerEntregasRepartidor(req.repartidor.id, req.repartidor.negocio_id, {
+    rango: ['hoy', '7d', '30d'].includes(rango) ? rango : '7d',
+    filtroEstado: ['entregados', 'cancelados', 'todos'].includes(estado) ? estado : 'todos',
+    pagina: pagina,
+  });
+  res.json({
+    total: r.total,
+    entregas: r.entregas.map(e => ({
+      folio: e.folio,
+      estado: e.estado,
+      colonia: e.colonia || null,
+      total: e.total,
+      creadoAt: e.created_at,
+      aceptadoAt: e.hora_aceptacion || null,
+      entregadoAt: e.entregado_at || null,
+      cancelacionMotivo: e.cancelacion_motivo || null,
+    })),
+  });
+});
+
+// Sub-estados de la entrega (recogido / en_camino): validados en DB con
+// dueño + no terminal, idempotentes, y anunciados al panel del negocio.
+async function marcarSubEstadoEntrega(req, res, nuevo) {
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const r = await marcarEstadoEntrega(req.params.folio, req.repartidor.negocio_id, req.repartidor.id, nuevo);
+  if (!r.ok) {
+    return res.status(r.motivo === 'no_elegible' ? 409 : 400).json({ error: 'No se pudo actualizar la entrega (verifica que el pedido siga activo y asignado a ti)' });
+  }
+  broadcastNegocio(req.repartidor.negocio_id, { tipo: 'entrega_estado', folio: req.params.folio, entregaEstado: nuevo, repartidor: req.repartidor.nombre });
+  res.json({ ok: true, entregaEstado: nuevo });
+}
+app.post('/api/repartidor/pedido/:folio/recogido', requireRepartidor, (req, res) => marcarSubEstadoEntrega(req, res, 'recogido'));
+app.post('/api/repartidor/pedido/:folio/en-camino', requireRepartidor, (req, res) => marcarSubEstadoEntrega(req, res, 'en_camino'));
+
+// Incidencia operativa: se registra en el pedido (auditoría) y se avisa a
+// la Central del negocio y a Superadmin. Jamás cambia estados ni reasigna.
+app.post('/api/repartidor/pedido/:folio/incidencia', requireRepartidor, async (req, res) => {
+  if (!req.repartidor.negocio_id) return res.status(403).json({ error: 'Repartidor sin negocio resuelto' });
+  const { tipo, detalle } = req.body || {};
+  if (!TIPOS_INCIDENCIA.includes(tipo)) return res.status(400).json({ error: 'Tipo de incidencia inválido', tipos: TIPOS_INCIDENCIA });
+  const r = await registrarIncidenciaEntrega(req.params.folio, req.repartidor.negocio_id, req.repartidor.id, tipo, detalle);
+  if (!r.ok) return res.status(409).json({ error: 'No se pudo registrar la incidencia (el pedido debe estar asignado a ti)' });
+  broadcastNegocio(req.repartidor.negocio_id, { tipo: 'repartidor_incidencia', folio: req.params.folio, tipoIncidencia: tipo, repartidor: req.repartidor.nombre }, { soloAdmin: true });
+  try { broadcastSuperadmin({ tipo: 'repartidor_incidencia', folio: req.params.folio, negocioId: req.repartidor.negocio_id, tipoIncidencia: tipo }); } catch {}
+  console.log(`[Repartidor] Incidencia '${tipo}' en ${req.params.folio} por ${req.repartidor.nombre}`);
   res.json({ ok: true });
 });
 

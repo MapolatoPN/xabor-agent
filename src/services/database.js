@@ -3236,7 +3236,10 @@ export async function asignarRepartidor(folio, repartidorId, nombreRepartidor, n
     // del mismo negocio que el repartidor autenticado
     const result = await pool.query(
       `UPDATE pedidos_activos
-       SET datos = jsonb_set(jsonb_set(datos, '{repartidor_id}', $2::jsonb), '{repartidor_nombre}', $3::jsonb),
+       SET datos = jsonb_set(jsonb_set(jsonb_set(datos,
+             '{repartidor_id}', $2::jsonb),
+             '{repartidor_nombre}', $3::jsonb),
+             '{entrega_estado}', '"asignado"'),
            updated_at = NOW()
        WHERE folio = $1
          AND negocio_id = $4
@@ -3277,7 +3280,7 @@ export async function obtenerPedidosParaRepartidor(negocioId) {
 export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   try {
     const r = await pool.query(
-      `SELECT folio, datos, estado FROM pedidos_activos
+      `SELECT folio, datos, estado, created_at FROM pedidos_activos
        WHERE estado NOT IN ('entregado','cancelado')
          AND datos->>'modalidad' = 'entrega a domicilio'
          AND datos->>'repartidor_id' = $1
@@ -3287,6 +3290,142 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
     return r.rows;
   } catch (e) { return []; }
 }
+
+// ─── Portal operativo del repartidor ────────────────────────────────────────
+// Historial "Mis entregas": SOLO pedidos terminales (entregado/cancelado)
+// del propio repartidor, con campos REDUCIDOS por política de privacidad
+// (sin teléfono del cliente, sin calle/número/referencias -- solo colonia,
+// folio, tiempos, pago y estado). hora_aceptacion se deriva de
+// notificaciones_repartidor (token usado), igual que las métricas D.1; las
+// aceptaciones hechas desde el propio portal no tienen token y quedan sin
+// duración -- documentado, no se inventa. Paginado SIEMPRE.
+export async function obtenerEntregasRepartidor(repartidorId, negocioId, { rango = '7d', filtroEstado = 'todos', pagina = 1, porPagina = 20 } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { entregas: [], total: 0 };
+  const dias = rango === 'hoy' ? 1 : (rango === '30d' ? 30 : 7);
+  const estados = filtroEstado === 'entregados' ? ['entregado']
+    : filtroEstado === 'cancelados' ? ['cancelado'] : ['entregado', 'cancelado'];
+  const offset = (Math.max(1, parseInt(pagina, 10) || 1) - 1) * porPagina;
+  try {
+    const params = [String(repartidorId), negocioId.trim(), estados, String(dias)];
+    const filtroSQL = `
+      FROM pedidos_activos pa
+      WHERE pa.datos->>'repartidor_id' = $1
+        AND pa.negocio_id = $2
+        AND pa.estado = ANY($3)
+        AND pa.created_at > NOW() - ($4 || ' days')::interval`;
+    const [filas, conteo] = await Promise.all([
+      pool.query(
+        `SELECT pa.folio, pa.estado, pa.created_at, pa.entregado_at,
+                pa.datos->'cliente'->>'colonia' AS colonia,
+                pa.datos->>'total' AS total,
+                pa.datos->'cancelacion'->>'motivo' AS cancelacion_motivo,
+                (SELECT MIN(nr.token_usado_at) FROM notificaciones_repartidor nr
+                 WHERE nr.pedido_folio = pa.folio AND nr.negocio_id = pa.negocio_id
+                   AND nr.token_usado_at IS NOT NULL) AS hora_aceptacion
+         ${filtroSQL}
+         ORDER BY pa.created_at DESC
+         LIMIT ${porPagina} OFFSET ${offset}`,
+        params
+      ),
+      pool.query(`SELECT count(*)::int AS n ${filtroSQL}`, params),
+    ]);
+    return { entregas: filas.rows, total: conteo.rows[0].n };
+  } catch (e) {
+    console.error('[DB] Error obtenerEntregasRepartidor:', e.message);
+    return { entregas: [], total: 0 };
+  }
+}
+
+// Sub-estado de la ENTREGA (asignado -> recogido -> en_camino -> entregado)
+// dentro de datos, sin tocar el estado principal del pedido (que sigue
+// gobernando cocina/corte/ventas). Atómico y con dueño: solo el repartidor
+// ASIGNADO puede avanzar, jamás sobre un pedido terminal, y repetir la
+// misma transición es un no-op idempotente (el timestamp original se
+// conserva vía COALESCE).
+const ORDEN_ENTREGA = { asignado: 0, recogido: 1, en_camino: 2 };
+export async function marcarEstadoEntrega(folio, negocioId, repartidorId, nuevoEstado) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, motivo: 'sin_negocio' };
+  if (!(nuevoEstado in ORDEN_ENTREGA) || nuevoEstado === 'asignado') return { ok: false, motivo: 'estado_invalido' };
+  const tsCampo = nuevoEstado === 'recogido' ? 'recogido_at' : 'en_camino_at';
+  try {
+    const r = await pool.query(
+      `UPDATE pedidos_activos
+       SET datos = jsonb_set(
+             jsonb_set(datos, '{entrega_estado}', to_jsonb($4::text)),
+             ('{' || $5 || '}')::text[], to_jsonb(COALESCE(datos->>$5, NOW()::text))
+           ),
+           updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $2
+         AND datos->>'repartidor_id' = $3
+         AND estado NOT IN ('entregado','cancelado')
+       RETURNING datos->>'entrega_estado' AS entrega_estado`,
+      [folio, negocioId.trim(), String(repartidorId), nuevoEstado, tsCampo]
+    );
+    if (!r.rows[0]) return { ok: false, motivo: 'no_elegible' };
+    return { ok: true, entregaEstado: r.rows[0].entrega_estado };
+  } catch (e) {
+    console.error('[DB] Error marcarEstadoEntrega:', e.message);
+    return { ok: false, motivo: 'error' };
+  }
+}
+
+// Transición TERMINAL de la entrega hecha por el repartidor: atómica y con
+// dueño en el mismo UPDATE (asignación + no terminal), fija entregado_at
+// solo la primera vez (mismo guard que la migración 036) y deja el
+// sub-estado de entrega en 'entregado'. Devuelve los datos para el aviso
+// al cliente; 0 filas => el llamador diagnostica (404/403/409/idempotente).
+export async function marcarEntregadoRepartidor(folio, negocioId, repartidorId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  try {
+    const r = await pool.query(
+      `UPDATE pedidos_activos
+       SET estado = 'entregado',
+           entregado_at = COALESCE(entregado_at, NOW()),
+           datos = jsonb_set(datos, '{entrega_estado}', '"entregado"'),
+           updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $2
+         AND datos->>'repartidor_id' = $3
+         AND estado NOT IN ('entregado','cancelado')
+       RETURNING datos`,
+      [folio, negocioId.trim(), String(repartidorId)]
+    );
+    return r.rows[0]?.datos || null;
+  } catch (e) {
+    console.error('[DB] Error marcarEntregadoRepartidor:', e.message);
+    return null;
+  }
+}
+
+// Incidencia operativa del repartidor sobre SU pedido: se anexa a
+// datos.incidencias (auditoría dentro del propio pedido, sin migración) y
+// jamás cambia estados ni reasigna -- la Central decide qué hacer.
+const TIPOS_INCIDENCIA = ['direccion_no_encontrada', 'cliente_no_responde', 'pedido_no_listo', 'problema_cobro', 'vehiculo', 'otro'];
+export async function registrarIncidenciaEntrega(folio, negocioId, repartidorId, tipo, detalle) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, motivo: 'sin_negocio' };
+  if (!TIPOS_INCIDENCIA.includes(tipo)) return { ok: false, motivo: 'tipo_invalido' };
+  const texto = typeof detalle === 'string' ? detalle.trim().slice(0, 300) : '';
+  try {
+    const r = await pool.query(
+      `UPDATE pedidos_activos
+       SET datos = jsonb_set(datos, '{incidencias}',
+             COALESCE(datos->'incidencias', '[]'::jsonb) ||
+             jsonb_build_object('tipo', $4::text, 'detalle', $5::text,
+                                'repartidor_id', $3::text, 'at', NOW()::text)),
+           updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $2
+         AND datos->>'repartidor_id' = $3
+         AND estado != 'cancelado'
+       RETURNING folio`,
+      [folio, negocioId.trim(), String(repartidorId), tipo, texto]
+    );
+    if (!r.rows[0]) return { ok: false, motivo: 'no_elegible' };
+    return { ok: true };
+  } catch (e) {
+    console.error('[DB] Error registrarIncidenciaEntrega:', e.message);
+    return { ok: false, motivo: 'error' };
+  }
+}
+export { TIPOS_INCIDENCIA };
 
 // ─── Modo de conversación repartidor/cliente (migración 034) ────────────────
 // Incidencia real: un teléfono registrado como repartidor quedaba
