@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -23,7 +23,7 @@ import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '.
 import { getIntegracion } from '../server.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
-import { formatearUbicacionRepartidor, formatearTarifaRepartidor } from '../utils/direccionRepartidor.js';
+import { formatearUbicacionRepartidor, formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -1323,9 +1323,15 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
       ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
       : 'https://xabor-agent-production.up.railway.app';
 
-    const resumen = `${pedido.id} — ${pedido.cliente?.nombre || 'Cliente'} — $${pedido.total} MXN`;
-    const direccion = pedido.direccion ? `\n📍 ${pedido.direccion}` : '';
-    const texto = `🛵 *Nuevo pedido de domicilio disponible*\n${resumen}${direccion}\n\n⏱ El pedido estará listo para recoger en *15-20 minutos*.\n\nEntra aquí para tomarlo:\n${BASE_URL}/repartidor.html`;
+    // Hotfix oferta-repartidor: el PRIMER mensaje jamás lleva nombre del
+    // cliente, número exterior/interior, referencias, teléfono ni la
+    // dirección completa -- solo negocio, colonia/calle y pago. La
+    // dirección completa llega únicamente al repartidor que GANA la
+    // asignación (plantilla de detalle / pantalla asignado_a_mi).
+    const nombreNegocioOferta = (await obtenerNombreNegocio(pedido.negocioId)) || 'Xabor';
+    const entregaEn = formatearEntregaOferta(pedido.cliente?.calle, pedido.cliente?.colonia);
+    const lineaPago = Number.isFinite(Number(pedido.total)) ? `\nPago por entrega: $${Number(pedido.total).toFixed(2)} MXN` : '';
+    const texto = `🛵 *NUEVO PEDIDO DISPONIBLE*\n\nRecoge en: ${nombreNegocioOferta}\nEntrega en: ${entregaEn}${lineaPago}\n\n¿Deseas cubrir este pedido?\nEntra aquí para consultar y aceptar:\n${BASE_URL}/repartidor.html\n\nLa asignación se confirma al primer repartidor que lo acepte.`;
 
     // Modo de notificación por negocio: 'apagado' | 'piloto' | 'completo'.
     // Retrocompatibilidad: si repartidor_notif_modo no está configurado
@@ -1347,7 +1353,7 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
     // estimado. "Pago estimado" hoy es pedido.total (no existe todavía un
     // cálculo de comisión/pago propio del repartidor, separado del total
     // que paga el cliente -- fuera de alcance de este cambio).
-    const nombreNegocio = usarPlantilla ? (await obtenerNombreNegocio(pedido.negocioId)) || 'Xabor' : null;
+    const nombreNegocio = usarPlantilla ? nombreNegocioOferta : null;
     const pagoEstimado = `$${pedido.total} MXN`;
     const TOKEN_EXPIRACION_MINUTOS = 30;
 
@@ -1477,6 +1483,70 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
   } catch (e) {
     console.error('[WA Repartidor] Error general:', e.message);
   }
+}
+
+// ─── Consulta de oferta por token (pantalla del enlace, SIN consumir) ───────
+// La pantalla que abre el repartidor desde el enlace ya NO consume el token
+// al cargar: consulta este resolutor (recargable, multi-dispositivo) y solo
+// el botón "Aceptar pedido" dispara la aceptación real. Estados
+// estructurados para el frontend: disponible / asignado_a_mi /
+// cubierto_por_otro / cancelado / expirado / completado / invalido.
+// Regla de privacidad: antes de aceptar solo negocio+colonia/calle+pago;
+// para cubierto_por_otro SOLO el nombre legible del asignado (jamás
+// teléfono, vehículo, ids internos); la dirección completa solo la ve el
+// repartidor asignado.
+export async function consultarOfertaRepartidor(token) {
+  const fila = await obtenerOfertaPorToken(token);
+  if (!fila) return { estado: 'invalido' };
+
+  const asignadoId = fila.asignado_id || null;
+  const esMio = asignadoId !== null && String(asignadoId) === String(fila.repartidor_id);
+
+  // La asignación manda sobre expiración/cancelación posteriores: un
+  // repartidor que ya ganó conserva su pantalla aunque el token venza.
+  if (esMio) {
+    if (fila.pedido_estado === 'entregado') return { estado: 'completado' };
+    const pedido = await obtenerPedidoActivoPorFolio(fila.pedido_folio, fila.negocio_id);
+    const direccion = pedido ? [
+      pedido.cliente?.calle, pedido.cliente?.colonia,
+      pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null,
+    ].filter(Boolean).join(', ') : null;
+    return {
+      estado: 'asignado_a_mi',
+      pedido: pedido ? {
+        folio: fila.pedido_folio,
+        negocio: fila.negocio_nombre || null,
+        direccion: direccion || null,
+        telefonoCliente: pedido.cliente?.telefono || null,
+        nombreCliente: pedido.cliente?.nombre || null,
+        observaciones: pedido.notas || null,
+        pago: Number.isFinite(Number(pedido.total)) ? `$${Number(pedido.total).toFixed(2)} MXN` : null,
+      } : null,
+    };
+  }
+
+  if (asignadoId !== null) {
+    // Nombre legible o texto neutro -- nunca null/UUID/datos de contacto.
+    const nombre = (typeof fila.asignado_nombre === 'string' && fila.asignado_nombre.trim())
+      ? fila.asignado_nombre.trim() : null;
+    return { estado: 'cubierto_por_otro', repartidorAsignado: nombre ? { nombre } : null };
+  }
+
+  if (fila.pedido_estado === null) return { estado: 'invalido' };
+  if (fila.pedido_estado === 'cancelado') return { estado: 'cancelado' };
+  if (fila.pedido_estado === 'entregado') return { estado: 'completado' };
+  if (fila.token_usado_at !== null) return { estado: 'expirado' };
+  if (fila.token_expira_at && new Date(fila.token_expira_at).getTime() <= Date.now()) return { estado: 'expirado' };
+
+  return {
+    estado: 'disponible',
+    oferta: {
+      negocio: fila.negocio_nombre || 'Negocio',
+      entregaEn: formatearEntregaOferta(fila.calle, fila.colonia),
+      pago: Number.isFinite(Number(fila.total)) ? `$${Number(fila.total).toFixed(2)} MXN` : null,
+      ofertadaAt: fila.created_at || null,
+    },
+  };
 }
 
 // ─── Procesar aceptación de un servicio de reparto vía token ────────────────

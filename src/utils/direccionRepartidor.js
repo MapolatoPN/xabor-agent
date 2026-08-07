@@ -35,6 +35,31 @@ export function formatearUbicacionRepartidor(calle, colonia) {
   };
 }
 
+// Línea "Entrega en:" del PRIMER mensaje de oferta (hotfix
+// oferta-repartidor): solo colonia y calle -- nunca número, referencias,
+// teléfono ni nombre del cliente antes de la aceptación. Formatos exactos:
+//   ambas          -> "Col. <colonia>, calle <calle>"
+//   solo colonia   -> "Col. <colonia>"
+//   solo calle     -> "Calle <calle>"
+//   ninguna        -> "Zona por confirmar"
+// Nunca "null"/"undefined", comas duplicadas ni "Col. Col.". Pura, sin I/O.
+export function formatearEntregaOferta(calle, colonia) {
+  const limpiar = v => (typeof v === 'string' ? v.trim() : '');
+  let c = limpiar(calle).replace(/^calle\s+/i, '').trim();
+  // La calle capturada suele incluir el número exterior ("Av. Tecnológico
+  // 123", "Carranza #245 int 2") -- se recorta el número FINAL para no
+  // exponerlo antes de la aceptación. Solo si lo que queda sigue siendo un
+  // nombre real (contiene letras): "Calle 21" no se vacía.
+  const sinNumero = c.replace(/[\s,]*(?:#|n[oº]\.?|num\.?|n[uú]mero)?\s*\d+\s*[a-z]?(?:\s*(?:int(?:erior)?|ext(?:erior)?|depto\.?|local)\.?\s*\S*)?\s*$/i, '').trim();
+  if (sinNumero && /[a-záéíóúñ]/i.test(sinNumero)) c = sinNumero;
+  let col = limpiar(colonia).replace(/^col\.?\s*/i, '').trim();
+  if (c && col && c.toLowerCase() === col.toLowerCase()) col = '';
+  if (c && col) return `Col. ${col}, calle ${c}`;
+  if (col) return `Col. ${col}`;
+  if (c) return `Calle ${c}`;
+  return 'Zona por confirmar';
+}
+
 // "Tarifa" hoy sigue siendo pedido.total (no existe todavía un cálculo de
 // comisión propia del repartidor separado del total que paga el cliente --
 // ya documentado como fuera de alcance en el piloto original). Esta función

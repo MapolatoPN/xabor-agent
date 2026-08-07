@@ -63,7 +63,7 @@ import {
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -4371,34 +4371,121 @@ app.delete('/api/admin/bot-simulador/:sessionId', requireAdminSeguro, (req, res)
   res.json({ ok: true });
 });
 
-// Página simple (no JSON) porque se abre directo desde el enlace de la
-// plantilla de WhatsApp en el navegador del celular del repartidor.
-function paginaAceptarRepartidor(titulo, mensaje, emoji) {
-  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${titulo}</title>
-<style>body{font-family:system-ui,-apple-system,sans-serif;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
-.tarjeta{max-width:420px}.emoji{font-size:56px;margin-bottom:16px}h1{font-size:1.3rem;margin:0 0 12px}p{color:#ccc;line-height:1.5}</style>
-</head><body><div class="tarjeta"><div class="emoji">${emoji}</div><h1>${titulo}</h1><p>${mensaje}</p></div></body></html>`;
-}
-
 // ─── Aceptación de servicio de reparto vía token de un solo uso ────────────────
 // Pública a propósito: el token en sí (aleatorio, de un solo uso, con
 // vencimiento) es la credencial -- ver migración 033 y
 // procesarAceptacionTokenRepartidor en whatsapp-meta.js. No usa
 // requireRepartidor porque este enlace se abre directo desde WhatsApp, sin
 // sesión previa del repartidor en el navegador.
-app.get('/repartidor/aceptar/:token', async (req, res) => {
+// Hotfix oferta-repartidor: abrir el enlace YA NO acepta el pedido. El GET
+// solo pinta la pantalla de revisión (recargable, multi-dispositivo, y a
+// prueba de los bots de vista previa de WhatsApp que antes podían quemar el
+// token con un GET); la aceptación real es el POST del botón. El backend
+// sigue siendo la única fuente de verdad de la carrera (token de un solo
+// uso + asignación atómica, sin cambios).
+app.get('/api/repartidor/oferta/:token', async (req, res) => {
+  try {
+    res.json(await consultarOfertaRepartidor(req.params.token));
+  } catch (e) {
+    console.error('[Repartidor Oferta] Error consultando oferta:', e.message);
+    res.status(500).json({ estado: 'error' });
+  }
+});
+
+app.post('/api/repartidor/oferta/:token/aceptar', async (req, res) => {
   try {
     const resultado = await procesarAceptacionTokenRepartidor(req.params.token);
     if (resultado.ok) {
-      return res.send(paginaAceptarRepartidor('¡Servicio asignado!', resultado.mensaje, '✅'));
+      // Re-consulta para devolver el detalle completo ya como asignado.
+      return res.json(await consultarOfertaRepartidor(req.params.token));
     }
-    return res.status(409).send(paginaAceptarRepartidor('No se pudo aceptar', resultado.mensaje, '⚠️'));
+    // Perdió la carrera o el token ya no sirve: el estado REAL (quién ganó,
+    // cancelado, expirado...) sale de la consulta, nunca de un genérico.
+    const estadoReal = await consultarOfertaRepartidor(req.params.token);
+    // Doble clic del GANADOR: su token ya está consumido pero el pedido es
+    // suyo -- idempotente, jamás un error.
+    if (estadoReal.estado === 'asignado_a_mi') return res.json(estadoReal);
+    return res.status(409).json(estadoReal.estado === 'disponible' ? { estado: 'expirado' } : estadoReal);
   } catch (e) {
-    console.error('[Repartidor Token] Error en /repartidor/aceptar:', e.message);
-    return res.status(500).send(paginaAceptarRepartidor('Error', 'Ocurrió un error inesperado. Intenta de nuevo o contacta al negocio.', '❌'));
+    console.error('[Repartidor Oferta] Error aceptando oferta:', e.message);
+    res.status(500).json({ estado: 'error' });
   }
+});
+
+app.get('/repartidor/aceptar/:token', (req, res) => {
+  res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oferta de reparto · Xabor</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
+.tarjeta{max-width:420px;width:100%}.emoji{font-size:56px;margin-bottom:16px}h1{font-size:1.3rem;margin:0 0 12px}p{color:#ccc;line-height:1.5;margin:6px 0}
+.dato{display:flex;justify-content:space-between;gap:12px;background:#1c1c1c;border:1px solid #333;border-radius:10px;padding:10px 14px;margin:8px 0;text-align:left;font-size:0.95rem}
+.dato span:first-child{color:#888}.dato span:last-child{font-weight:700;text-align:right}
+button{background:#22c55e;color:#111;border:none;border-radius:12px;padding:14px 28px;font-size:1.05rem;font-weight:800;cursor:pointer;width:100%;margin-top:14px}
+button:disabled{opacity:.5;cursor:wait}
+.sec{background:#333;color:#fff;font-weight:600}
+</style></head><body><div class="tarjeta" id="app"><div class="emoji">⏳</div><h1>Consultando oferta…</h1></div>
+<script>
+const app = document.getElementById('app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const token = location.pathname.split('/').pop();
+function pantalla(emoji, titulo, cuerpo) { app.innerHTML = '<div class="emoji">'+emoji+'</div><h1>'+titulo+'</h1>'+cuerpo; }
+function pintar(r) {
+  if (r.estado === 'disponible') {
+    const o = r.oferta || {};
+    const hora = o.ofertadaAt ? new Date(o.ofertadaAt).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : null;
+    pantalla('🛵', 'Pedido disponible',
+      '<div class="dato"><span>Recoge en</span><span>'+esc(o.negocio)+'</span></div>'
+      + '<div class="dato"><span>Entrega en</span><span>'+esc(o.entregaEn)+'</span></div>'
+      + (o.pago ? '<div class="dato"><span>Pago por entrega</span><span>'+esc(o.pago)+'</span></div>' : '')
+      + (hora ? '<div class="dato"><span>Ofertado a las</span><span>'+esc(hora)+'</span></div>' : '')
+      + '<p>La asignación se confirma al primer repartidor que lo acepte.</p>'
+      + '<button id="btn-aceptar">Aceptar pedido</button>');
+    document.getElementById('btn-aceptar').onclick = aceptar;
+  } else if (r.estado === 'asignado_a_mi') {
+    const p = r.pedido || {};
+    pantalla('✅', 'Pedido asignado a ti',
+      (p.folio ? '<div class="dato"><span>Folio</span><span>'+esc(p.folio)+'</span></div>' : '')
+      + (p.negocio ? '<div class="dato"><span>Recoge en</span><span>'+esc(p.negocio)+'</span></div>' : '')
+      + (p.direccion ? '<div class="dato"><span>Dirección</span><span>'+esc(p.direccion)+'</span></div>' : '')
+      + (p.nombreCliente ? '<div class="dato"><span>Cliente</span><span>'+esc(p.nombreCliente)+'</span></div>' : '')
+      + (p.telefonoCliente ? '<div class="dato"><span>Teléfono</span><span>'+esc(p.telefonoCliente)+'</span></div>' : '')
+      + (p.observaciones ? '<div class="dato"><span>Notas</span><span>'+esc(p.observaciones)+'</span></div>' : '')
+      + (p.pago ? '<div class="dato"><span>Cobro</span><span>'+esc(p.pago)+'</span></div>' : '')
+      + '<p>Los detalles completos también llegaron a tu WhatsApp.</p>');
+  } else if (r.estado === 'cubierto_por_otro') {
+    const nombre = r.repartidorAsignado && r.repartidorAsignado.nombre;
+    pantalla('🤝', 'Este pedido ya fue cubierto',
+      '<div class="dato sec"><span>' + (nombre ? 'Asignado a' : '') + '</span><span>'+esc(nombre || 'Asignado a otro repartidor')+'</span></div>'
+      + '<p>Otro repartidor confirmó la entrega antes. Gracias por tu disponibilidad.</p>');
+  } else if (r.estado === 'cancelado') {
+    pantalla('🚫', 'Pedido cancelado', '<p>Este pedido fue cancelado y ya no requiere repartidor.</p>');
+  } else if (r.estado === 'expirado') {
+    pantalla('⌛', 'Oferta vencida', '<p>La oferta ya venció.</p>');
+  } else if (r.estado === 'completado') {
+    pantalla('📦', 'Pedido completado', '<p>Este pedido ya fue completado.</p>');
+  } else if (r.estado === 'invalido') {
+    pantalla('⚠️', 'Enlace no válido', '<p>Este enlace no es válido. Si crees que es un error, contacta al negocio.</p>');
+  } else {
+    pantalla('❌', 'Error temporal', '<p>Ocurrió un error del servidor. Intenta de nuevo.</p><button onclick="cargar()">Reintentar</button>');
+  }
+}
+async function cargar() {
+  try {
+    const r = await fetch('/api/repartidor/oferta/' + encodeURIComponent(token));
+    pintar(await r.json());
+  } catch { pintar({ estado: 'error' }); }
+}
+async function aceptar() {
+  const btn = document.getElementById('btn-aceptar');
+  btn.disabled = true; btn.textContent = 'Confirmando…';
+  try {
+    const r = await fetch('/api/repartidor/oferta/' + encodeURIComponent(token) + '/aceptar', { method: 'POST' });
+    pintar(await r.json());
+  } catch { pintar({ estado: 'error' }); }
+}
+cargar();
+</script></body></html>`);
 });
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────

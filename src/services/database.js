@@ -3311,6 +3311,39 @@ export async function consumirTokenAceptacionRepartidor(token) {
   }
 }
 
+// Consulta de SOLO LECTURA de una oferta por token (hotfix
+// oferta-repartidor): a diferencia de consumirTokenAceptacionRepartidor,
+// NUNCA marca el token como usado -- alimenta la pantalla de revisión que
+// el repartidor abre desde el enlace, que ahora se puede abrir/recargar
+// cuantas veces sea sin quemar la oferta. Trae el estado real del pedido y
+// a quién quedó asignado (id + nombre legible) para poder distinguir
+// disponible / asignado a mí / cubierto por otro / cancelado / entregado.
+export async function obtenerOfertaPorToken(token) {
+  if (!token) return null;
+  try {
+    const r = await pool.query(
+      `SELECT nr.negocio_id, nr.pedido_folio, nr.repartidor_id,
+              nr.token_usado_at, nr.token_expira_at, nr.created_at,
+              pa.estado AS pedido_estado,
+              pa.datos->>'repartidor_id'     AS asignado_id,
+              pa.datos->>'repartidor_nombre' AS asignado_nombre,
+              pa.datos->'cliente'->>'calle'   AS calle,
+              pa.datos->'cliente'->>'colonia' AS colonia,
+              pa.datos->>'total'              AS total,
+              n.nombre AS negocio_nombre
+       FROM notificaciones_repartidor nr
+       LEFT JOIN pedidos_activos pa ON pa.folio = nr.pedido_folio AND pa.negocio_id = nr.negocio_id
+       LEFT JOIN negocios n ON n.id = nr.negocio_id
+       WHERE nr.token_aceptacion = $1`,
+      [token]
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerOfertaPorToken:', e.message);
+    return null;
+  }
+}
+
 export async function obtenerNombreNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   try {
