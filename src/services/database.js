@@ -1598,24 +1598,39 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 // misma función llegando tarde, o de asignarRepartidor/
 // actualizarEstadoPedidoDB, que sí actualizan con jsonb_set/UPDATE
 // condicionado) y no hay nada que sobrescribir.
-// Devuelve true si, al terminar, la fila existe en pedidos_activos (recién
-// insertada por esta llamada o ya presente de una llamada anterior/carrera
-// ganada por otra) -- false SOLO si la consulta a la base de datos falló
-// de verdad (conexión caída, etc). Nunca lanza: los llamadores que ya
-// existían antes de este campo de retorno (whatsapp-meta.js, server.js)
-// siguen funcionando igual ignorándolo; registrarPedido() (orderManager.js)
-// es el único que lo usa para decidir si puede exponer el pedido.
+// Hotfix P0 folio-conflicto-silencioso: el retorno ahora distingue
+// inequívocamente INSERT real, CONFLICTO de folio y ERROR SQL. Antes
+// devolvía `true` incondicional: un conflicto (DO NOTHING → rowCount 0) se
+// reportaba como éxito y el caller confirmaba un pedido cuya fila en BD era
+// OTRO pedido — reproducido con pérdida silenciosa 10/20 en concurrencia e
+// incluso con cruce de tenant.
+//
+// Contrato (sigue sin lanzar JAMÁS):
+//   { ok:true,  insertado:true,  conflicto:false } → fila nueva escrita.
+//   { ok:true,  insertado:false, conflicto:true  } → el folio ya existía.
+//       Para los re-guardados idempotentes del MISMO pedido (re-save
+//       defensivo de whatsapp-meta.js y scheduler de programados en
+//       server.js — ambos ignoran el retorno) este es el caso esperado y
+//       NO es un error. Para folios recién tomados del contador significa
+//       "ese folio es de OTRO pedido": registrarPedido reintenta con el
+//       siguiente — nunca se reutiliza el pedido existente (sería
+//       contaminación, incluso entre tenants).
+//   { ok:false, insertado:false, conflicto:false } → error SQL real
+//       (conexión caída, etc.) — jamás debe tratarse como conflicto ni
+//       reintentarse con otro folio.
 export async function guardarPedidoActivo(pedido, negocioId) {
   try {
-    await pool.query(`
+    const r = await pool.query(`
       INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (folio) DO NOTHING
+      RETURNING folio
     `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
-    return true;
+    if (r.rowCount === 1) return { ok: true, insertado: true, conflicto: false };
+    return { ok: true, insertado: false, conflicto: true };
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
-    return false;
+    return { ok: false, insertado: false, conflicto: false };
   }
 }
 
