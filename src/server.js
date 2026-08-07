@@ -27,6 +27,7 @@ import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obte
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
+import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, buscarIdempotencia } from './services/posEnvios.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -4041,6 +4042,174 @@ app.post('/api/pedidos/:folio/solicitar-repartidor', requireAdminSeguro, require
   // reciben una segunda oferta).
   await notificarRepartidoresPorWA(pedido, { origen: 'manual' });
   res.json({ ok: true, folio: pedido.id, evaluacion: evaluacion.razon });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POS — Envíos / Pedidos a domicilio
+// Un operador captura pedidos telefónicos / de mostrador. NO es un motor
+// paralelo: reutiliza registrarPedido/emitirPedido (folio, comanda,
+// impresión, tablero), pagosService (enlace con guard de duplicado),
+// notificarRepartidoresPorWA (red validada) y cancelarPedidoActivo. El único
+// diferencial es canal='pos' / origen='manual'. negocioId SIEMPRE de la
+// sesión (req.negocioId), jamás del body.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Estados de entrega visibles, derivados del modelo real (datos.entrega_estado
+// del portal del repartidor + estado del pedido). Nunca crea estados nuevos.
+function estadoEntregaPOS(pedido) {
+  if (pedido.estado === 'cancelado') return 'cancelado';
+  if (pedido.estado === 'entregado') return 'entregado';
+  const sub = pedido.datos?.entrega_estado || pedido.entrega_estado || null;
+  if (sub) return sub; // asignado | recogido | en_camino | entregado
+  if (pedido.datos?.repartidor_id || pedido.repartidor_id) return 'asignado';
+  return 'sin_repartidor';
+}
+
+function vistaEnvioPOS(pedido) {
+  const c = pedido.cliente || pedido.datos?.cliente || {};
+  return {
+    folio: pedido.id || pedido.folio,
+    creadoAt: pedido.timestamp || pedido.created_at,
+    modalidad: pedido.modalidad || pedido.datos?.modalidad,
+    canal: pedido.canal || pedido.datos?.canal,
+    estado: pedido.estado,
+    entregaEstado: estadoEntregaPOS(pedido),
+    cliente: c.nombre || null,
+    telefono: c.telefono || null,
+    colonia: c.colonia || null,
+    total: Number(pedido.total ?? pedido.datos?.total ?? 0),
+    costoEnvio: Number(pedido.costo_envio ?? pedido.datos?.costo_envio ?? 0),
+    formaPago: pedido.forma_pago || pedido.datos?.forma_pago || null,
+    pagoConfirmado: pedido.pago_confirmado === true || pedido.datos?.pago_confirmado === true,
+    repartidorNombre: pedido.datos?.repartidor_nombre || pedido.repartidor_nombre || null,
+  };
+}
+
+// POST /api/pos/pedidos — crear pedido POS (recoger | domicilio)
+app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  const negocioId = req.negocioId;
+  const idemKey = req.headers['idempotency-key'] || req.body?.idempotencyKey || null;
+
+  // Idempotencia: doble clic / reintento devuelve el MISMO folio, sin crear
+  // un segundo pedido.
+  const folioPrevio = buscarIdempotencia(negocioId, idemKey);
+  if (folioPrevio) {
+    const yaExiste = obtenerPedidoPorId(folioPrevio, negocioId);
+    if (yaExiste) return res.json({ ok: true, pedido: yaExiste, idempotente: true });
+  }
+
+  try {
+    const { tipo, cliente, direccion, items, costoEnvio, descuento, formaPago, notas } = req.body || {};
+    // Recalcular precios SIEMPRE desde el menú del propio negocio (rechaza
+    // productos ajenos / no disponibles) — nunca se confía en el total del
+    // frontend.
+    const { items: itemsValidados, subtotal } = await recalcularItemsDesdeMenu(negocioId, items);
+    const orden = construirOrdenPOS({
+      negocioId, tipo, items: itemsValidados, subtotal,
+      costoEnvio, descuento, cliente, direccion, formaPago, notas,
+    });
+
+    const pedido = await registrarPedido(orden, 'pos');
+    emitirPedido(pedido); // comanda + impresión + tablero (no bloquea si no hay impresora)
+    recordarIdempotencia(negocioId, idemKey, pedido.id);
+
+    // Persistencia en historial (mismo patrón que presencial: upsertCliente
+    // antes de guardarPedido por la FK pedidos.telefono → clientes.telefono).
+    (async () => {
+      try {
+        const { upsertCliente, guardarPedido } = await import('./services/database.js');
+        await upsertCliente(orden.cliente.telefono, orden.cliente.nombre, negocioId);
+        await guardarPedido(orden.cliente.telefono, pedido, negocioId);
+      } catch (e) {
+        console.error('[POS] Error persistiendo pedido POS en historial:', e.message);
+      }
+    })();
+
+    console.log(`[POS Audit] pedido_pos_creado negocio=${negocioId} usuario=${req.usuarioId} folio=${pedido.id} tipo=${tipo} total=${pedido.total}`);
+    res.json({ ok: true, pedido });
+  } catch (e) {
+    if (e instanceof POSValidacionError) return res.status(400).json({ error: e.message, codigo: e.codigo });
+    console.error('[POS] Error creando pedido POS:', e.message);
+    res.status(500).json({ error: 'No se pudo crear el pedido' });
+  }
+});
+
+// GET /api/pos/envios — envíos activos del negocio (domicilio y recoger POS)
+app.get('/api/pos/envios', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  const pedidos = obtenerPedidos(req.negocioId)
+    .filter(p => (p.canal === 'pos') || (p.modalidad || '').includes('domicilio'))
+    .map(vistaEnvioPOS);
+  res.json({ envios: pedidos });
+});
+
+// GET /api/pos/envios/:folio — detalle (tenant-checked: folio ajeno = 404)
+app.get('/api/pos/envios/:folio', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  const pedido = obtenerPedidoPorId(req.params.folio, req.negocioId);
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  res.json({ pedido });
+});
+
+// POST /api/pos/envios/:folio/enlace-pago — reutiliza pagosService (guard de
+// enlace vigente: NO genera un segundo checkout si ya hay uno).
+app.post('/api/pos/envios/:folio/enlace-pago', requireAuthSeguro, requireModulo('pos'),
+  rateLimitMiddleware(req => `pos-enlace:${req.negocioId}`, 30, 60 * 1000), async (req, res) => {
+  const pedido = obtenerPedidoPorId(req.params.folio, req.negocioId);
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  try {
+    const r = await crearEnlacePago({
+      negocioId: req.negocioId, pedidoId: pedido.id, actor: req.usuarioId,
+      idempotencyKey: req.headers['idempotency-key'] || null,
+    });
+    console.log(`[POS Audit] ${r.reutilizado ? 'pago_link_reutilizado' : 'pago_link_generado'} negocio=${req.negocioId} usuario=${req.usuarioId} folio=${pedido.id}`);
+    // Nunca se loguea la URL/token; solo se devuelve al operador que la pidió.
+    res.json({ ok: true, url: r.url, estado: r.estado, reutilizado: r.reutilizado,
+      mensaje: r.reutilizado ? 'Este pedido ya tenía un enlace de pago vigente' : 'Enlace de pago generado' });
+  } catch (e) {
+    if (e instanceof PedidoInvalidoError) return res.status(409).json({ error: e.message });
+    if (e instanceof SinProveedorPrincipalError) return res.status(409).json({ error: 'Este negocio no tiene un proveedor de pago principal activo' });
+    console.error('[POS] Error enlace de pago:', e.message);
+    res.status(500).json({ error: 'No se pudo generar el enlace de pago' });
+  }
+});
+
+// POST /api/pos/envios/:folio/solicitar-repartidor — mismo flujo validado de
+// la red (plantilla v2, aceptación atómica, portal). No modifica Meta.
+app.post('/api/pos/envios/:folio/solicitar-repartidor', requireAdminSeguro, requireModulo('repartidores'),
+  rateLimitMiddleware(req => `pos-solicitar-rep:${req.negocioId}`, 30, 60 * 1000), async (req, res) => {
+  const pedido = obtenerPedidoPorId(req.params.folio, req.negocioId);
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  const { esPedidoElegibleParaRedRepartidores } = await import('./orders/orderManager.js');
+  if (!esPedidoElegibleParaRedRepartidores(pedido)) {
+    return res.status(409).json({ error: 'El pedido no es elegible para la red (canal, modalidad o estado)' });
+  }
+  const configRed = await obtenerConfigRed(req.negocioId);
+  const evaluacion = evaluarSolicitudRed(pedido, configRed, 'manual');
+  if (!evaluacion.procede) {
+    return res.status(409).json({ error: `No se puede solicitar repartidor: ${evaluacion.razon}` });
+  }
+  const { notificarRepartidoresPorWA } = await import('./channels/whatsapp-meta.js');
+  await notificarRepartidoresPorWA(pedido, { origen: 'manual' });
+  console.log(`[POS Audit] repartidor_solicitado negocio=${req.negocioId} usuario=${req.usuarioId} folio=${pedido.id}`);
+  res.json({ ok: true, folio: pedido.id, evaluacion: evaluacion.razon });
+});
+
+// POST /api/pos/envios/:folio/cancelar — reutiliza cancelarPedidoActivo (no
+// borra; conserva historial). Requiere admin y motivo.
+app.post('/api/pos/envios/:folio/cancelar', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  const pedido = obtenerPedidoPorId(req.params.folio, req.negocioId);
+  if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+  if (pedido.pago_confirmado === true) return res.status(409).json({ error: 'No se puede cancelar un pedido ya pagado sin una regla explícita' });
+  if (pedido.estado === 'entregado') return res.status(409).json({ error: 'No se puede cancelar un pedido ya entregado' });
+  const motivo = String(req.body?.motivo || '').trim();
+  if (!motivo) return res.status(400).json({ error: 'El motivo de cancelación es obligatorio' });
+  const ok = await cancelarPedidoActivo(pedido.id, motivo, req.negocioId);
+  if (!ok) return res.status(409).json({ error: 'No se pudo cancelar (el pedido ya no está activo)' });
+  actualizarEstadoPedido(pedido.id, 'cancelado', req.negocioId);
+  console.log(`[POS Audit] pedido_pos_cancelado negocio=${req.negocioId} usuario=${req.usuarioId} folio=${pedido.id} motivo="${motivo.slice(0,80)}"`);
+  res.json({ ok: true });
 });
 
 app.get('/api/superadmin/red-repartidores/roster', requireSuperadmin, async (req, res) => {
