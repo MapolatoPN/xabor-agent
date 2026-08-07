@@ -11,7 +11,7 @@
  * el enlace anterior se invalida y se genera uno nuevo.
  */
 import {
-  obtenerPedidoActivoPorFolio, calcularVersionPedidoHash, obtenerPagoVigente,
+  obtenerPedidoParaPagoPorFolio, calcularVersionPedidoHash, obtenerPagoVigente,
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
 } from './database.js';
@@ -49,8 +49,15 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('pagosService.crearEnlacePago');
   if (typeof pedidoId !== 'string' || !pedidoId.trim()) throw new Error('crearEnlacePago: pedidoId requerido');
 
-  const pedido = await obtenerPedidoActivoPorFolio(pedidoId, negocioId);
+  // Incidente XAB-0114: el lookup anterior (obtenerPedidoActivoPorFolio)
+  // excluía pedidos 'entregado' pero ACEPTABA 'cancelado' -- exactamente al
+  // revés de lo que el dinero necesita: un pedido entregado SIN pagar es el
+  // caso típico que pide el enlace, y uno cancelado jamás debe cobrarse.
+  const pedido = await obtenerPedidoParaPagoPorFolio(pedidoId, negocioId);
   if (!pedido) throw new PedidoInvalidoError(`Pedido ${pedidoId} no encontrado para este negocio`);
+  if (pedido.pago_confirmado === true || pedido.pago_confirmado === 'true') {
+    throw new PedidoInvalidoError(`Pedido ${pedidoId} ya está pagado`);
+  }
   const total = Number(pedido.total);
   if (!Number.isFinite(total) || total <= 0) throw new PedidoInvalidoError(`Pedido ${pedidoId} tiene un total inválido`);
 

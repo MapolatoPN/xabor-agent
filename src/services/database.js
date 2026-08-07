@@ -1804,7 +1804,7 @@ export async function invalidarPagosVigentesDePedido(negocioId, pedidoFolio, mot
 // jamás se "reactiva" un pago pagado o todavía vigente.
 export async function reactivarRegistroPago(pagoId) {
   const { rowCount } = await pool.query(
-    `UPDATE pagos SET estado = 'creando', updated_at = NOW()
+    `UPDATE pagos SET estado = 'creando'
      WHERE id = $1 AND estado IN ('fallido','invalidado','vencido','cancelado')`,
     [pagoId]
   );
@@ -2045,10 +2045,24 @@ export async function obtenerPedidosActivosPorTelefono(telefono, negocioId) {
     return [];
   }
   try {
+    // Incidente XAB-0114: el remitente del webhook llega como
+    // '521<10 dígitos>' pero el pedido puede guardar el teléfono DICTADO en
+    // el chat ('<10 dígitos>' sin prefijo) -- la igualdad exacta dejaba al
+    // cliente sin su propio pedido. Se compara por los últimos 10 dígitos
+    // (el número nacional real) en ambos lados, y también contra
+    // telefono_conversacion (identidad del REMITENTE, sellada al registrar
+    // pedidos de WhatsApp) para el caso en que el teléfono de entrega
+    // dictado sea el de OTRA persona. Siempre dentro del negocio.
     const result = await pool.query(
       `SELECT folio, estado, datos, created_at
        FROM pedidos_activos
-       WHERE datos->'cliente'->>'telefono' = $1
+       WHERE (
+           right(regexp_replace(COALESCE(datos->'cliente'->>'telefono',''), '\\D', '', 'g'), 10)
+             = right(regexp_replace($1, '\\D', '', 'g'), 10)
+        OR right(regexp_replace(COALESCE(datos->>'telefono_conversacion',''), '\\D', '', 'g'), 10)
+             = right(regexp_replace($1, '\\D', '', 'g'), 10)
+       )
+         AND right(regexp_replace($1, '\\D', '', 'g'), 10) <> ''
          AND negocio_id = $2
          AND estado NOT IN ('entregado', 'cancelado')
        ORDER BY created_at DESC
@@ -2059,6 +2073,50 @@ export async function obtenerPedidosActivosPorTelefono(telefono, negocioId) {
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivosPorTelefono:', e.message);
     return [];
+  }
+}
+
+// Búsqueda de un pedido PARA PAGO por folio (incidente XAB-0114): a
+// diferencia de obtenerPedidoPorFolioAmplio, un pedido 'entregado' SIN
+// pagar sigue siendo elegible -- ese es exactamente el caso que necesita el
+// enlace (entrega contra pago, o archivado prematuro en el panel, como el
+// XAB-0114 real, archivado 3 segundos después del "Folio 114"). Solo
+// 'cancelado' queda fuera. Siempre dentro del negocio de la conversación.
+export async function obtenerPedidoParaPagoPorFolio(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidoParaPagoPorFolio: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  try {
+    const r = await pool.query(
+      `SELECT datos, estado FROM pedidos_activos
+       WHERE folio = $1 AND negocio_id = $2 AND estado != 'cancelado'`,
+      [folio, negocioId.trim()]
+    );
+    if (!r.rows[0]) return null;
+    return { ...r.rows[0].datos, _estado: r.rows[0].estado, _origen: 'activo' };
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidoParaPagoPorFolio:', e.message);
+    return null;
+  }
+}
+
+// Variante de upsertCliente para el NOMBRE DE ENTREGA de un pedido
+// (incidente Alina/Mario): el destinatario dictado jamás sustituye al
+// nombre ya conocido del interlocutor -- solo llena el perfil si estaba
+// vacío. upsertCliente (arriba) conserva su semántica original para los
+// flujos donde el nombre SÍ viene del propio interlocutor.
+export async function upsertClienteNombreEntrega(telefono, nombreEntrega, negocioId) {
+  try {
+    await pool.query(`
+      INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
+      VALUES ($1, $2, NOW(), $3)
+      ON CONFLICT (telefono) DO UPDATE SET
+        nombre = COALESCE(clientes.nombre, NULLIF($2, '')),
+        ultima_visita = NOW()
+    `, [telefono, nombreEntrega || null, negocioId || null]);
+  } catch (e) {
+    console.error('[DB] Error upsertClienteNombreEntrega:', e.message);
   }
 }
 
