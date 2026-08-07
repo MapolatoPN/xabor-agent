@@ -75,7 +75,8 @@ c. **`eliminarPedido('PILOTO-0001')`** (mecanismo estándar de borrado
    documento y el reporte del piloto quedarían como único registro).
 
 Recomendación: (b) si la prioridad es reportes limpios, (a) si la
-prioridad es auditoría. Nota: el teléfono ficticio 8787899919 también dejó
+prioridad es auditoría. Nota: el teléfono ficticio del cliente piloto
+(878***9919, dato inventado — no corresponde a ninguna persona) también dejó
 perfil en la memoria de clientes (solo recálculo interno; sin mensajes).
 
 ## 4. Plantilla inicial de WhatsApp para repartidores — propuesta ACTUALIZADA ✔
