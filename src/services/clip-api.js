@@ -15,7 +15,11 @@ import { obtenerCredencialesClipDescifradas, TenantContextRequiredError } from '
 
 export { TenantContextRequiredError };
 
-const CLIP_CHECKOUT_URL = 'https://api.payclip.com/v2/checkout';
+// CLIP_API_BASE_URL: override EXCLUSIVO de pruebas (mock local de Clip,
+// mismo patrón que META_GRAPH_BASE_URL/ANTHROPIC_BASE_URL). Producción no
+// define la variable y usa la API real.
+const CLIP_API_BASE = process.env.CLIP_API_BASE_URL || 'https://api.payclip.com';
+const CLIP_CHECKOUT_URL = `${CLIP_API_BASE}/v2/checkout`;
 
 // Código de error estable para que los llamadores (whatsapp-meta.js, voice.js)
 // distingan "Clip no configurado para este negocio" (transferir a humano,
@@ -54,7 +58,7 @@ async function obtenerAuthHeader(negocioId) {
 export async function consultarEstadoPago(linkId, negocioId) {
   try {
     const auth = await obtenerAuthHeader(negocioId);
-    const resp = await fetch(`https://api.payclip.com/v2/checkout/${linkId}`, {
+    const resp = await fetch(`${CLIP_CHECKOUT_URL}/${linkId}`, {
       headers: { 'Authorization': auth }
     });
     if (!resp.ok) return null;

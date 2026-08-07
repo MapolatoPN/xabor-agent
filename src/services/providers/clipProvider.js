@@ -7,7 +7,14 @@ import { crearLinkDePago, consultarEstadoPago, ClipNoConfiguradoError } from '..
 
 export async function createPaymentLink({ negocioId, pedidoId, total, descripcion, cliente, referencia }) {
   const r = await crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente, referenciaExterna: referencia });
-  return { referenciaExterna: r.linkId, url: r.url, estado: r.status };
+  // Causa raíz del incidente "el bot no envió el enlace": aquí se devolvía
+  // r.status CRUDO de Clip ('CHECKOUT'), que pagosService escribía tal
+  // cual en pagos.estado y violaba su CHECK -- el enlace se creaba en
+  // Clip pero el registro explotaba y la URL jamás llegaba al cliente.
+  // Un link recién creado es, por definición del vocabulario interno,
+  // 'pendiente'; el estado del proveedor se reconcilia después por
+  // getPaymentStatus/webhook, nunca guardándolo crudo aquí.
+  return { referenciaExterna: r.linkId, url: r.url, estado: 'pendiente' };
 }
 
 export async function getPaymentStatus(referenciaExterna, negocioId) {

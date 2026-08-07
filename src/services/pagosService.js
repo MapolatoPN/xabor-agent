@@ -13,8 +13,15 @@
 import {
   obtenerPedidoActivoPorFolio, calcularVersionPedidoHash, obtenerPagoVigente,
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
-  guardarLinkPago,
+  guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
 } from './database.js';
+
+// Estados internos válidos de pagos.estado (CHECK de la migración 025). Un
+// adaptador jamás debe poder colar el vocabulario crudo de su proveedor
+// ('CHECKOUT' de Clip fue la causa raíz del incidente del enlace no
+// enviado): cualquier valor fuera de esta lista se normaliza a 'pendiente'.
+const ESTADOS_PAGO_VALIDOS = new Set(['creando', 'pendiente', 'pagado', 'fallido', 'vencido', 'cancelado', 'invalidado', 'reembolsado', 'requiere_revision']);
+const normalizarEstadoPago = e => (ESTADOS_PAGO_VALIDOS.has(e) ? e : 'pendiente');
 import { obtenerProveedorPrincipal, obtenerCredencialesPagoDescifradas, TenantContextRequiredError } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
 
@@ -76,12 +83,33 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   }
 
   const referenciaInterna = `${negocioId.trim()}:${pedidoId}:${versionHash}`;
-  const registro = await crearRegistroPago({
-    negocioId, pedidoFolio: pedidoId, clienteTelefono: pedido.cliente?.telefono || null,
-    proveedor: principal.proveedor, integracionId: principal.id, referenciaInterna,
-    tipo, moneda: 'MXN', monto: total, versionPedidoHash: versionHash,
-    idempotencyKey, createdBy: actor,
-  });
+  // Reintento tras un intento FALLIDO (segunda causa del incidente del
+  // enlace): la fila fallida conserva la referencia_interna única, así que
+  // un segundo intento con el pedido sin cambios chocaba contra el UNIQUE y
+  // fallaba para siempre. Si la referencia ya existe en un estado terminal
+  // no cobrable, se REUTILIZA esa fila (vuelve a 'creando') en vez de
+  // insertar; si ya está pagada, se devuelve tal cual (jamás re-cobrar).
+  const previo = await obtenerPagoPorReferenciaInterna(negocioId, referenciaInterna);
+  let registro;
+  if (previo && previo.estado === 'pagado') {
+    return { pagoId: previo.id, url: previo.url, reutilizado: true, referenciaExterna: previo.referencia_externa, estado: 'pagado' };
+  }
+  if (previo && ['fallido', 'invalidado', 'vencido', 'cancelado'].includes(previo.estado)) {
+    await reactivarRegistroPago(previo.id);
+    registro = previo;
+  } else if (previo) {
+    // 'creando'/'pendiente'/'requiere_revision' con la misma referencia ya
+    // se habría reutilizado arriba como vigente; llegar aquí es una carrera
+    // mínima entre dos requests -- se reutiliza igual, sin insertar.
+    registro = previo;
+  } else {
+    registro = await crearRegistroPago({
+      negocioId, pedidoFolio: pedidoId, clienteTelefono: pedido.cliente?.telefono || null,
+      proveedor: principal.proveedor, integracionId: principal.id, referenciaInterna,
+      tipo, moneda: 'MXN', monto: total, versionPedidoHash: versionHash,
+      idempotencyKey, createdBy: actor,
+    });
+  }
 
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
@@ -91,7 +119,7 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
     });
     await actualizarPagoCreado(registro.id, {
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
-      estado: resultado.estado || 'pendiente',
+      estado: normalizarEstadoPago(resultado.estado || 'pendiente'),
     });
     // Compatibilidad: mismo campo legacy que ya usa la reconciliación en
     // background (obtenerPagosPendientesConLink) para negocios que no han
@@ -99,7 +127,7 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
     // de proveedor (Clip) -- transferencia manual no tiene nada que
     // reconciliar por esa vía.
     if (resultado.referenciaExterna) await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
-    return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: resultado.estado || 'pendiente', instrucciones: resultado.instrucciones || null };
+    return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {
     await marcarPagoFallido(registro.id, e.code || e.message);
     throw e;

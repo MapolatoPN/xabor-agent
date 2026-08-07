@@ -1797,6 +1797,20 @@ export async function invalidarPagosVigentesDePedido(negocioId, pedidoFolio, mot
   return rowCount;
 }
 
+// Reactiva un registro de pago en estado terminal NO cobrable para
+// reintentarlo (hotfix bot-envio-enlace-pago): la fila conserva su
+// referencia_interna única, así que reutilizarla es la única forma de
+// reintentar sin chocar con el UNIQUE. El guard de estados garantiza que
+// jamás se "reactiva" un pago pagado o todavía vigente.
+export async function reactivarRegistroPago(pagoId) {
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = 'creando', updated_at = NOW()
+     WHERE id = $1 AND estado IN ('fallido','invalidado','vencido','cancelado')`,
+    [pagoId]
+  );
+  return rowCount > 0;
+}
+
 /** Lee un pago por negocio+referencia interna -- para el webhook: NUNCA busca solo por referencia global. */
 export async function obtenerPagoPorReferenciaInterna(negocioId, referenciaInterna) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
