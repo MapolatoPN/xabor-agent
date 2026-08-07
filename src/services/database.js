@@ -4525,6 +4525,25 @@ const MODULOS_VALIDOS = [
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
   'asistente_comercial_cotizaciones', 'restaurante',
 ];
+
+// Fuente ÚNICA de módulos para la UI de Superadmin (fix readiness
+// restaurante): el frontend construye su lista desde aquí en vez de
+// duplicarla hardcodeada -- así el desfase que dejó a 'restaurante'
+// invisible en el panel no puede repetirse con el próximo módulo. Las
+// etiquetas viven junto a la lista para que agregar un módulo sea UN solo
+// cambio en UN solo archivo.
+const NOMBRES_MODULOS_UI = {
+  pos: 'POS', usuarios: 'Usuarios', caja: 'Caja', menu: 'Menú', impresion: 'Impresión',
+  whatsapp: 'WhatsApp', voz: 'Voz', rappi: 'Rappi', facturacion: 'Facturación', rewards: 'Rewards',
+  chat_imagenes: 'Chat — Imágenes', chat_documentos_pdf: 'Chat — Documentos PDF',
+  cotizaciones: 'Cotizaciones', generador_cotizaciones: 'Generador de cotizaciones',
+  pagos: 'Pagos', repartidores: 'Repartidores',
+  asistente_comercial_cotizaciones: 'Asistente Comercial (IA)',
+  restaurante: 'Restaurante (mesas y meseros)',
+};
+export function listarModulosDisponibles() {
+  return MODULOS_VALIDOS.map(clave => ({ clave, nombre: NOMBRES_MODULOS_UI[clave] || clave }));
+}
 // Incluye tanto el vocabulario heredado (usado por pos/usuarios/caja/menu/
 // impresion/whatsapp/voz/rappi/facturacion) como el vocabulario canónico
 // aprobado para Rewards (pendiente_configuracion, no_contratado) -- ambos
