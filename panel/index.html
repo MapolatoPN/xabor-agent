@@ -125,6 +125,16 @@ header {
   font-size: 0.8rem; font-weight: 600; cursor: pointer; color: #888; transition: all .15s;
 }
 .rep-fil-btn.activo-fil { background: #fff; color: #1c1c1c; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.env-sub-btn { border:none; background:none; padding:5px 12px; border-radius:6px; font-size:.8rem; font-weight:600; cursor:pointer; color:#888; }
+.env-sub-btn.activo-fil { background:#fff; color:#1c1c1c; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+.env-card { background:#fff; border:1px solid #eee; border-radius:12px; padding:14px; }
+.env-lbl { font-size:.75rem; font-weight:800; text-transform:uppercase; letter-spacing:.5px; color:#999; margin-bottom:8px; }
+.env-inp { width:100%; padding:9px 10px; border:1px solid #e5e2da; border-radius:8px; font-size:.95rem; box-sizing:border-box; }
+.env-tipo-btn { flex:1; padding:12px; border:1px solid #e5e2da; border-radius:10px; background:#fff; cursor:pointer; font-weight:700; font-size:.95rem; }
+.env-tipo-btn.activo { border-color:#16a34a; background:#f0fdf4; color:#15803d; }
+.env-qty { width:26px; height:26px; border:1px solid #e5e2da; border-radius:6px; background:#fff; cursor:pointer; font-weight:800; }
+.env-accion { padding:4px 8px; border:1px solid #e5e2da; border-radius:6px; background:#fff; cursor:pointer; font-size:.8rem; margin-left:4px; }
+@media (max-width:900px){ #env-vista-nuevo > div { grid-template-columns:1fr !important; } }
 .tab-btn.activo::before {
   content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
   width: 3px; border-radius: 0 3px 3px 0; background: var(--color-brand);
@@ -804,6 +814,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <div id="tabs-nav">
   <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Comandas</button>
   <button class="tab-btn"        id="tab-presencial" data-modulo="pos" onclick="mostrarTab('presencial')">POS</button>
+  <button class="tab-btn"        id="tab-envios"     data-modulo="pos" onclick="mostrarTab('envios')">Envíos</button>
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
   <button class="tab-btn"        id="tab-chats"      data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
@@ -1264,6 +1275,99 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
       <div id="tabla-repartidores"><div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div></div>
+    </div>
+
+    <!-- Tab Envíos (POS pedidos a domicilio) -->
+    <div id="vista-envios" style="display:none;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+        <div style="font-size:1.1rem;font-weight:800;">Envíos</div>
+        <div style="display:flex;background:#f1f0ed;border-radius:8px;padding:3px;gap:2px;margin-left:auto;">
+          <button id="env-sub-nuevo"    onclick="envSub('nuevo')"    class="env-sub-btn activo-fil">Nuevo pedido</button>
+          <button id="env-sub-activos"  onclick="envSub('activos')"  class="env-sub-btn">Envíos activos</button>
+          <button id="env-sub-historial" onclick="envSub('historial')" class="env-sub-btn">Historial</button>
+        </div>
+      </div>
+
+      <!-- NUEVO PEDIDO -->
+      <div id="env-vista-nuevo">
+        <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start;">
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <!-- Tipo -->
+            <div class="env-card">
+              <div class="env-lbl">Tipo de pedido</div>
+              <div style="display:flex;gap:8px;">
+                <button id="env-tipo-recoger"  onclick="envTipo('recoger')"  class="env-tipo-btn">🏪 Recoger</button>
+                <button id="env-tipo-domicilio" onclick="envTipo('domicilio')" class="env-tipo-btn activo">🛵 A domicilio</button>
+              </div>
+            </div>
+            <!-- Cliente -->
+            <div class="env-card">
+              <div class="env-lbl">Cliente</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <input id="env-nombre" placeholder="Nombre *" class="env-inp">
+                <input id="env-telefono" placeholder="Teléfono *" inputmode="tel" class="env-inp" onblur="envBuscarCliente()">
+              </div>
+              <div id="env-cliente-hint" style="font-size:.8rem;color:#15803d;margin-top:4px;display:none;"></div>
+            </div>
+            <!-- Domicilio -->
+            <div class="env-card" id="env-domicilio-card">
+              <div class="env-lbl">Domicilio</div>
+              <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
+                <input id="env-calle" placeholder="Calle *" class="env-inp">
+                <input id="env-numext" placeholder="No. ext" class="env-inp">
+                <input id="env-numint" placeholder="No. int" class="env-inp">
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+                <input id="env-colonia" placeholder="Colonia *" class="env-inp">
+                <input id="env-entrecalles" placeholder="Entre calles" class="env-inp">
+              </div>
+              <input id="env-referencia" placeholder="Referencia (portón, color…)" class="env-inp" style="margin-top:8px;">
+              <input id="env-notas-entrega" placeholder="Notas de entrega" class="env-inp" style="margin-top:8px;">
+            </div>
+            <!-- Productos -->
+            <div class="env-card">
+              <div class="env-lbl">Productos</div>
+              <input id="env-buscar-prod" placeholder="Buscar producto… (ej. chila)" class="env-inp" oninput="envFiltrarProductos()" onkeydown="if(event.key==='Escape'){this.value='';envFiltrarProductos();}">
+              <div id="env-lista-productos" style="max-height:260px;overflow:auto;margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
+            </div>
+          </div>
+          <!-- Resumen lateral -->
+          <div class="env-card" style="position:sticky;top:10px;">
+            <div class="env-lbl">Resumen</div>
+            <div id="env-carrito" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;"></div>
+            <div id="env-carrito-vacio" style="color:#aaa;text-align:center;padding:20px;font-size:.9rem;">Agrega productos</div>
+            <hr style="border:none;border-top:1px solid #eee;margin:10px 0;">
+            <div id="env-fila-envio" style="display:flex;justify-content:space-between;align-items:center;font-size:.9rem;margin-bottom:6px;">
+              <span>Envío</span>
+              <span style="display:flex;align-items:center;gap:4px;">$<input id="env-costo-envio" type="number" min="0" step="1" value="0" style="width:64px;padding:4px;border:1px solid #e5e2da;border-radius:6px;text-align:right;"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-weight:800;font-size:1.05rem;margin:6px 0;">
+              <span>Total</span><span id="env-total">$0.00</span>
+            </div>
+            <div class="env-lbl" style="margin-top:8px;">Método de pago</div>
+            <select id="env-metodo-pago" class="env-inp">
+              <option value="efectivo">Efectivo</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="enlace_pago">Enlace de pago</option>
+            </select>
+            <button onclick="envCrearPedido()" id="env-btn-crear" style="width:100%;margin-top:12px;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:14px;font-weight:800;font-size:1.05rem;cursor:pointer;">Crear pedido</button>
+            <div id="env-error" style="color:#b91c1c;font-size:.85rem;margin-top:8px;text-align:center;display:none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ENVÍOS ACTIVOS -->
+      <div id="env-vista-activos" style="display:none;">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><button onclick="cargarEnviosActivos()" style="padding:6px 10px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;">↻</button></div>
+        <div id="env-tabla-activos"><div style="color:#aaa;text-align:center;padding:30px;">Cargando…</div></div>
+      </div>
+
+      <!-- HISTORIAL -->
+      <div id="env-vista-historial" style="display:none;">
+        <p style="color:#888;font-size:.9rem;">El historial de entregas usa la sección <b>Historial</b> del panel (mismo motor, filtrado por negocio). Aquí verás un resumen próximamente.</p>
+        <div id="env-tabla-historial"></div>
+      </div>
     </div>
 
     <!-- Tab Clientes -->
@@ -2371,7 +2475,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios'].forEach(v => {
+  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -2379,7 +2483,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -2398,6 +2502,7 @@ function mostrarTab(tab) {
   if (tab === 'entrenamiento') cargarEntrenamientoForm();
   if (tab === 'diagnostico') cargarDiagnostico();
   if (tab === 'cotizaciones') cargarCotizaciones();
+  if (tab === 'envios') abrirEnvios();
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -5940,6 +6045,167 @@ function setRepFiltro(f) {
   document.querySelectorAll('.rep-fil-btn').forEach(b => b.classList.remove('activo-fil'));
   document.getElementById('repfil-' + f)?.classList.add('activo-fil');
   cargarRepartidores();
+}
+
+// ─── Envíos (POS pedidos a domicilio) ───────────────────────────────────────
+let ENV_TIPO = 'domicilio';
+let ENV_CARRITO = [];          // { producto_id, nombre, precio, cantidad }
+let ENV_PRODUCTOS = [];        // catálogo del menú (del propio negocio)
+const ENV_ESTADOS_LBL = { sin_repartidor:'Esperando repartidor', asignado:'Repartidor asignado', recogido:'Recogido', en_camino:'En camino', entregado:'Entregado', cancelado:'Cancelado' };
+function envEsc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function abrirEnvios(){ envSub('nuevo'); await envCargarMenu(); }
+
+function envSub(sub){
+  ['nuevo','activos','historial'].forEach(s => {
+    const v = document.getElementById('env-vista-'+s); if (v) v.style.display = (s===sub)?'':'none';
+    const b = document.getElementById('env-sub-'+s); if (b) b.classList.toggle('activo-fil', s===sub);
+  });
+  if (sub === 'activos') cargarEnviosActivos();
+}
+
+function envTipo(t){
+  ENV_TIPO = t;
+  document.getElementById('env-tipo-recoger').classList.toggle('activo', t==='recoger');
+  document.getElementById('env-tipo-domicilio').classList.toggle('activo', t==='domicilio');
+  document.getElementById('env-domicilio-card').style.display = (t==='domicilio')?'':'none';
+  document.getElementById('env-fila-envio').style.display = (t==='domicilio')?'flex':'none';
+  envRecalcular();
+}
+
+async function envCargarMenu(){
+  try {
+    const r = await apiFetch('/api/menu'); if (!r.ok) return;
+    const menu = await r.json();
+    ENV_PRODUCTOS = (menu.categorias || menu || []).flatMap(c => (c.productos || []).map(p => ({ id: p.id, nombre: p.nombre, precio: Number(p.precio), disponible: p.disponible !== false && !p.agotado })));
+    if (!ENV_PRODUCTOS.length && Array.isArray(menu.productos)) ENV_PRODUCTOS = menu.productos.map(p => ({ id:p.id, nombre:p.nombre, precio:Number(p.precio), disponible:p.disponible!==false && !p.agotado }));
+    envFiltrarProductos();
+  } catch {}
+}
+
+function envFiltrarProductos(){
+  const q = (document.getElementById('env-buscar-prod').value || '').toLowerCase().trim();
+  const cont = document.getElementById('env-lista-productos');
+  const lista = ENV_PRODUCTOS.filter(p => p.disponible && (!q || p.nombre.toLowerCase().includes(q)));
+  cont.innerHTML = lista.length ? lista.map(p => `
+    <button onclick="envAgregar(${p.id})" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fff;cursor:pointer;text-align:left;">
+      <span>${envEsc(p.nombre)}</span><span style="font-weight:700;">$${p.precio.toFixed(2)}</span>
+    </button>`).join('') : '<div style="color:#aaa;text-align:center;padding:14px;font-size:.85rem;">Sin productos</div>';
+}
+
+function envAgregar(id){
+  const p = ENV_PRODUCTOS.find(x => x.id === id); if (!p) return;
+  const ex = ENV_CARRITO.find(x => x.producto_id === id);
+  if (ex) ex.cantidad++; else ENV_CARRITO.push({ producto_id: id, nombre: p.nombre, precio: p.precio, cantidad: 1 });
+  envRenderCarrito();
+}
+function envCambiarCant(id, d){
+  const it = ENV_CARRITO.find(x => x.producto_id === id); if (!it) return;
+  it.cantidad += d; if (it.cantidad <= 0) ENV_CARRITO = ENV_CARRITO.filter(x => x.producto_id !== id);
+  envRenderCarrito();
+}
+function envRenderCarrito(){
+  const cont = document.getElementById('env-carrito');
+  document.getElementById('env-carrito-vacio').style.display = ENV_CARRITO.length ? 'none' : '';
+  cont.innerHTML = ENV_CARRITO.map(it => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:.9rem;">
+      <span style="flex:1;">${envEsc(it.nombre)}</span>
+      <button onclick="envCambiarCant(${it.producto_id},-1)" class="env-qty">−</button>
+      <span style="min-width:18px;text-align:center;">${it.cantidad}</span>
+      <button onclick="envCambiarCant(${it.producto_id},1)" class="env-qty">+</button>
+      <span style="min-width:56px;text-align:right;font-weight:700;">$${(it.precio*it.cantidad).toFixed(2)}</span>
+    </div>`).join('');
+  envRecalcular();
+}
+function envRecalcular(){
+  const subtotal = ENV_CARRITO.reduce((s,it) => s + it.precio*it.cantidad, 0);
+  const envio = ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0;
+  document.getElementById('env-total').textContent = '$' + (subtotal + envio).toFixed(2);
+}
+document.addEventListener('input', e => { if (e.target && e.target.id === 'env-costo-envio') envRecalcular(); });
+
+async function envBuscarCliente(){
+  const tel = (document.getElementById('env-telefono').value || '').replace(/\D/g,'').slice(-10);
+  const hint = document.getElementById('env-cliente-hint');
+  if (tel.length !== 10) { hint.style.display = 'none'; return; }
+  try {
+    const r = await apiFetch('/api/clientes/' + tel); if (!r.ok) { hint.style.display='none'; return; }
+    const c = await r.json();
+    if (c && c.nombre) {
+      if (!document.getElementById('env-nombre').value) document.getElementById('env-nombre').value = c.nombre;
+      hint.textContent = '✓ Cliente encontrado: ' + c.nombre; hint.style.display = '';
+    } else hint.style.display = 'none';
+  } catch { hint.style.display = 'none'; }
+}
+
+async function envCrearPedido(){
+  const btn = document.getElementById('env-btn-crear');
+  const err = document.getElementById('env-error');
+  err.style.display = 'none';
+  if (!ENV_CARRITO.length) { err.textContent = 'Agrega al menos un producto'; err.style.display=''; return; }
+  const body = {
+    tipo: ENV_TIPO,
+    cliente: { nombre: document.getElementById('env-nombre').value, telefono: document.getElementById('env-telefono').value },
+    items: ENV_CARRITO.map(it => ({ producto_id: it.producto_id, cantidad: it.cantidad })),
+    formaPago: document.getElementById('env-metodo-pago').value,
+    costoEnvio: ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0,
+  };
+  if (ENV_TIPO === 'domicilio') body.direccion = {
+    calle: document.getElementById('env-calle').value, numero_exterior: document.getElementById('env-numext').value,
+    numero_interior: document.getElementById('env-numint').value, colonia: document.getElementById('env-colonia').value,
+    entre_calles: document.getElementById('env-entrecalles').value, referencia: document.getElementById('env-referencia').value,
+  };
+  btn.disabled = true; btn.textContent = 'Creando…';
+  try {
+    // Idempotency-Key por intento: doble clic = mismo folio.
+    const r = await apiFetch('/api/pos/pedidos', { method:'POST', headers: { 'Content-Type':'application/json', 'Idempotency-Key': 'pos-' + Date.now() + '-' + Math.random().toString(36).slice(2,8) }, body: JSON.stringify(body) });
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) { err.textContent = j.error || 'No se pudo crear el pedido'; err.style.display=''; return; }
+    alert('Pedido creado: ' + j.pedido.id + (j.idempotente ? ' (ya existía, no se duplicó)' : ''));
+    ENV_CARRITO = []; ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega'].forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
+    document.getElementById('env-costo-envio').value = '0';
+    envRenderCarrito(); envSub('activos');
+  } catch (e) { err.textContent = 'Error de red'; err.style.display=''; }
+  finally { btn.disabled = false; btn.textContent = 'Crear pedido'; }
+}
+
+async function cargarEnviosActivos(){
+  const cont = document.getElementById('env-tabla-activos');
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando…</div>';
+  try {
+    const r = await apiFetch('/api/pos/envios'); if (!r.ok) { cont.innerHTML = '<p style="color:#b91c1c;">No se pudo cargar</p>'; return; }
+    const { envios } = await r.json();
+    if (!envios.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Sin envíos activos</div>'; return; }
+    cont.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:.9rem;"><thead><tr style="text-align:left;color:#888;"><th>Folio</th><th>Cliente</th><th>Colonia</th><th>Total</th><th>Pago</th><th>Entrega</th><th>Repartidor</th><th></th></tr></thead><tbody>' +
+      envios.map(e => `<tr style="border-top:1px solid #eee;">
+        <td style="padding:8px 4px;font-weight:700;">${envEsc(e.folio)}</td>
+        <td>${envEsc(e.cliente||'—')}<br><span style="color:#999;font-size:.8rem;">${envEsc(e.telefono||'')}</span></td>
+        <td>${envEsc(e.colonia||'—')}</td>
+        <td>$${e.total.toFixed(2)}</td>
+        <td>${envEsc(e.formaPago||'—')}${e.pagoConfirmado?' ✓':''}</td>
+        <td><span style="background:#f1f0ed;border-radius:8px;padding:2px 8px;font-size:.8rem;">${envEsc(ENV_ESTADOS_LBL[e.entregaEstado]||e.entregaEstado)}</span></td>
+        <td>${envEsc(e.repartidorNombre||'—')}</td>
+        <td style="white-space:nowrap;">
+          ${e.telefono?`<button class="env-accion" onclick="navigator.clipboard.writeText('${envEsc(e.telefono)}')">📋 Tel</button>`:''}
+          ${e.modalidad&&e.modalidad.includes('domicilio')&&e.entregaEstado==='sin_repartidor'?`<button class="env-accion" onclick="envSolicitarRep('${envEsc(e.folio)}')">🛵 Repartidor</button>`:''}
+          <button class="env-accion" onclick="envEnlacePago('${envEsc(e.folio)}')">💳 Enlace</button>
+        </td></tr>`).join('') + '</tbody></table>';
+  } catch { cont.innerHTML = '<p style="color:#b91c1c;">Error de red</p>'; }
+}
+
+async function envSolicitarRep(folio){
+  if (!confirm('¿Solicitar repartidor de la red para ' + folio + '?')) return;
+  const r = await apiFetch(`/api/pos/envios/${encodeURIComponent(folio)}/solicitar-repartidor`, { method:'POST' });
+  const j = await r.json().catch(()=>({}));
+  alert(r.ok ? 'Solicitud enviada a la red' : (j.error || 'No se pudo solicitar'));
+  if (r.ok) cargarEnviosActivos();
+}
+async function envEnlacePago(folio){
+  const r = await apiFetch(`/api/pos/envios/${encodeURIComponent(folio)}/enlace-pago`, { method:'POST', headers:{'Idempotency-Key':'pos-link-'+folio} });
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) { alert(j.error || 'No se pudo generar el enlace'); return; }
+  const msg = (j.reutilizado ? 'Este pedido YA tenía un enlace vigente (no se creó otro).\n\n' : 'Enlace generado.\n\n') + j.url;
+  if (confirm(msg + '\n\n¿Copiar el enlace?')) navigator.clipboard.writeText(j.url);
 }
 
 async function cargarRepartidores() {
