@@ -1734,13 +1734,27 @@ export async function procesarAceptacionTokenRepartidor(token) {
 
   if (!pedido) {
     // Caso extremo: el pedido desapareció entre la asignación y esta
-    // lectura. La asignación en sí ya tuvo éxito -- no se revierte -- pero
-    // no hay datos que enviar en la plantilla de detalle.
+    // lectura. La asignación en sí ya tuvo éxito -- no se revierte.
     console.error(`[Repartidor Token] Pedido ${fila.pedido_folio} asignado pero no encontrado al leer detalle`);
     return { ok: true, motivo: 'asignado_sin_detalle', mensaje: '¡Listo! El pedido quedó asignado. Contacta al negocio para los detalles.' };
   }
 
-  if (credenciales) {
+  // Cierre primer-mensaje-repartidores (decisión del propietario): el ganador
+  // ya tiene TODOS los datos en fuentes autenticadas y recuperables --
+  // (a) la pantalla del enlace conserva asignado_a_mi con la dirección aunque
+  //     el token esté usado o vencido (multi-recarga/multi-dispositivo),
+  // (b) el Portal Operativo (/repartidor.html) muestra "Mi entrega" completa
+  //     tras login por teléfono, desde cualquier dispositivo.
+  // Por privacidad, los datos del cliente YA NO se persisten en el historial
+  // de WhatsApp: la plantilla de detalle queda APAGADA por defecto. Se
+  // conserva como respaldo re-activable POR NEGOCIO sin deploy con
+  // configuracion.repartidor_notif_detalle_wa_activo === 'true'; la
+  // plantilla en Meta queda intacta.
+  const cfgNegocio = await obtenerConfiguracion(fila.negocio_id);
+  const detalleWaActivo = cfgNegocio.repartidor_notif_detalle_wa_activo === 'true';
+  if (!detalleWaActivo) {
+    console.log(`[Repartidor Token] Detalle por WhatsApp desactivado (el portal es la fuente de datos del ganador) — negocio ${fila.negocio_id}`);
+  } else if (credenciales) {
     const direccion = [pedido.cliente?.calle, pedido.cliente?.colonia, pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null]
       .filter(Boolean).join(', ');
     try {
@@ -1759,7 +1773,7 @@ export async function procesarAceptacionTokenRepartidor(token) {
     console.log(`[Repartidor Token] Notificación de detalle omitida — sin integración propia verificada para negocio ${fila.negocio_id}`);
   }
 
-  return { ok: true, motivo: 'asignado', mensaje: '¡Listo! El pedido quedó asignado. Revisa tu WhatsApp para los detalles completos.' };
+  return { ok: true, motivo: 'asignado', mensaje: '¡Listo! El pedido quedó asignado. Toca "Ver mi entrega" para los detalles completos.' };
 }
 
 // ─── Procesar webhook de estado de mensaje (sent/delivered/read/failed) ─────

@@ -4452,7 +4452,7 @@ function pintar(r) {
       + (p.telefonoCliente ? '<div class="dato"><span>Teléfono</span><span>'+esc(p.telefonoCliente)+'</span></div>' : '')
       + (p.observaciones ? '<div class="dato"><span>Notas</span><span>'+esc(p.observaciones)+'</span></div>' : '')
       + (p.pago ? '<div class="dato"><span>Cobro</span><span>'+esc(p.pago)+'</span></div>' : '')
-      + '<p>Los detalles completos también llegaron a tu WhatsApp.</p>'
+      + '<p>Consulta y gestiona tu entrega en el portal — también puedes entrar después en /repartidor.html con tu teléfono.</p>'
       + '<a href="/repartidor.html" style="display:block;background:#22c55e;color:#111;border-radius:12px;padding:14px;font-weight:800;text-decoration:none;margin-top:12px;">Ver mi entrega</a>');
   } else if (r.estado === 'cubierto_por_otro') {
     const nombre = r.repartidorAsignado && r.repartidorAsignado.nombre;

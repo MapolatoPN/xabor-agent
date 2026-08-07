@@ -9,7 +9,7 @@ commit desplegado en producción). Sin deploy, sin cambios en Meta.
 |---|---|---|
 | Nombre | `xabor_nuevo_servicio_reparto` (v1) | `xabor_detalle_servicio_reparto` |
 | Propósito | Oferta del pedido a la red | Datos completos SOLO al ganador |
-| Se envía cuándo | Al ofertar (emitirPedido → `notificarRepartidoresPorWA`, o re-solicitud manual del panel) | Solo tras `procesarAceptacionTokenRepartidor` con éxito |
+| Se envía cuándo | Al ofertar (emitirPedido → `notificarRepartidoresPorWA`, o re-solicitud manual del panel) | ~~Solo tras aceptar~~ → **YA NO se envía automáticamente** (ver "Decisión de arquitectura"); respaldo por flag |
 | ¿Primera? | **SÍ** (en modo plantilla: `repartidor_notif_modo` piloto/completo) | NO — siempre posterior a la aceptación |
 | Variables | 3: negocio, pago, enlace — **SIN ubicación** | 6: folio, nombre cliente, tel cliente, dirección completa, observaciones, monto |
 | Idioma / botón | es_MX / sin botón (enlace como texto) | es_MX / sin botón |
@@ -47,6 +47,33 @@ sin `target_ids`, `me/businesses` devuelve 0 y la fila de Nonna Maye en
 la v1 entrega mensajes reales hoy (APPROVED de facto); la v2 no existe en
 el WABA (jamás sometida). Verificar el estado exacto requiere WhatsApp
 Manager (paso manual del propietario).
+
+## Decisión de arquitectura: el portal reemplaza a la plantilla de detalle
+
+Decisión del propietario (2026-08-07): `xabor_detalle_servicio_reparto`
+queda **obsoleta como mensaje automático al ganador**. Tras aceptar, el
+ganador ya dispone de TODOS los datos por vías autenticadas y recuperables:
+
+1. **Pantalla del enlace** ("Pedido asignado a ti" + botón "Ver mi
+   entrega"): `consultarOfertaRepartidor` devuelve `asignado_a_mi` con la
+   dirección completa AUNQUE el token esté consumido o vencido — reabrir el
+   mismo enlace de WhatsApp desde cualquier dispositivo recupera la
+   pantalla.
+2. **Portal Operativo** (`/repartidor.html`): login por teléfono desde
+   cualquier dispositivo → "Mi entrega" con cliente, teléfono, dirección
+   con número, entre calles, referencia, notas, pago, ruta, estados e
+   historial (validado además en el piloto real de producción).
+
+Por privacidad, los datos del cliente **ya no se persisten en el historial
+de WhatsApp** del repartidor. El envío automático queda APAGADO por
+defecto; se conserva como respaldo re-activable POR NEGOCIO sin deploy con
+`configuracion.repartidor_notif_detalle_wa_activo === 'true'`. La
+plantilla en Meta queda **intacta** (no se toca ni se borra).
+
+Flujo definitivo: pedido → oferta v2 (negocio/colonia+calle/pago/enlace) →
+pantalla de revisión (GET sin consumir) → POST aceptar → carrera atómica →
+perdedor ve solo el nombre del ganador → ganador: "Ver mi entrega" →
+portal con datos completos → recogido → en camino → entregado → historial.
 
 ## Cambio de código (esta rama)
 

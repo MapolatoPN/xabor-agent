@@ -92,9 +92,12 @@ suite `test/fase-primer-mensaje-repartidores.mjs`):
   `Carranza #245 int 2` → `Carranza`).
 
 **Nunca se incluye:** nombre del cliente, teléfono del cliente, referencias
-completas ni notas privadas — eso sigue reservado para la plantilla de
-detalle (`xabor_detalle_servicio_reparto`), enviada solo después de que el
-repartidor acepta.
+completas ni notas privadas — eso vive en el Portal Operativo autenticado
+("Ver mi entrega" en `/repartidor.html`), solo para el ganador. La antigua
+plantilla de detalle (`xabor_detalle_servicio_reparto`) ya NO se envía
+automáticamente (decisión del propietario, 2026-08-07): queda en Meta como
+respaldo, re-activable por negocio con
+`repartidor_notif_detalle_wa_activo='true'` sin deploy.
 
 ## Verificación de formato de `{{2}}` (cierre primer-mensaje-repartidores)
 

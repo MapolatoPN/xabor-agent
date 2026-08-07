@@ -74,12 +74,12 @@ await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identifica
 // A = negocio PILOTO de la plantilla v2; B = negocio en v1 (fallback anterior).
 await actualizarConfiguracion({
   repartidor_notif_modo: 'piloto',
-  repartidor_notif_piloto_telefonos: '5210000910001,5210000910003',
+  repartidor_notif_piloto_telefonos: '8711000901,8711000903',
   repartidor_notif_plantilla_v2_activo: 'true',
 }, SEED.negocioA);
 await actualizarConfiguracion({
   repartidor_notif_modo: 'piloto',
-  repartidor_notif_piloto_telefonos: '5210000910002',
+  repartidor_notif_piloto_telefonos: '8711000902',
 }, SEED.negocioB);
 
 // La red configurable (migración 038) podría venir apagada de otra suite en
@@ -89,16 +89,16 @@ await pool.query(`DELETE FROM red_repartidores_config WHERE negocio_id IN ($1,$2
 
 // Repartidores exclusivos de esta suite (telefono único global) + limpieza
 // para que el archivo sea re-ejecutable.
-const TELS = ['5210000910001', '5210000910002', '5210000910003'];
+const TELS = ['8711000901', '8711000902', '8711000903'];
 await pool.query(`DELETE FROM notificaciones_repartidor WHERE repartidor_id IN (SELECT id FROM repartidores WHERE telefono = ANY($1))`, [TELS]);
 await pool.query(`DELETE FROM repartidores WHERE telefono = ANY($1)`, [TELS]);
 await pool.query(`DELETE FROM pedidos_activos WHERE folio LIKE 'PM-9%'`);
 const { rows: [repPA] } = await pool.query(
-  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj A','5210000910001','tok-pm-a',TRUE,$1) RETURNING *`, [SEED.negocioA]);
+  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj A','8711000901','tok-pm-a',TRUE,$1) RETURNING *`, [SEED.negocioA]);
 const { rows: [repPB] } = await pool.query(
-  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj B','5210000910002','tok-pm-b',TRUE,$1) RETURNING *`, [SEED.negocioB]);
+  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj B','8711000902','tok-pm-b',TRUE,$1) RETURNING *`, [SEED.negocioB]);
 const { rows: [repPA2] } = await pool.query(
-  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj A2','5210000910003','tok-pm-a2',TRUE,$1) RETURNING *`, [SEED.negocioA]);
+  `INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id) VALUES ('Rep PrimerMsj A2','8711000903','tok-pm-a2',TRUE,$1) RETURNING *`, [SEED.negocioA]);
 
 const metaMock = await arrancarMetaMock();
 const srv = await arrancarServidor({ PORT: PUERTO, META_GRAPH_BASE_URL: metaMock.baseUrl }, { timeoutMs: 30000 });
@@ -147,31 +147,92 @@ await t('PLANTILLA-REAL', 'pedido del negocio piloto: el primer mensaje es xabor
   assert.strictEqual(plantillasEnviadas('xabor_detalle_servicio_reparto').length, antesDetalle, 'la plantilla de detalle NO debe salir antes de aceptar (orden de envío)');
 });
 
-// ═══════════ ORDEN-ENVIO: detalle solo tras aceptar; GET no consume; POST acepta ═══════════
-await t('ORDEN-ENVIO', 'GET del enlace no consume; POST acepta; solo entonces sale xabor_detalle_servicio_reparto con los datos completos', async () => {
+// ═══════════ ORDEN-ENVIO: GET no consume; POST acepta; el portal reemplaza al detalle ═══════════
+await t('ORDEN-ENVIO', 'GET del enlace no consume; POST acepta; y la plantilla de detalle YA NO se envía (el portal es la fuente del ganador)', async () => {
   const folio = await crearPedidoPrueba(cookieAdminA);
   const fila = await esperarHasta(async () => (await notifsDe(folio)).find(f => f.repartidor_id === repPA.id && f.token_aceptacion) || null);
   assert.ok(fila, 'debía existir el token');
 
   const pagina = await fetch(`${base}/repartidor/aceptar/${fila.token_aceptacion}`);
   assert.strictEqual(pagina.status, 200);
+  const html = await pagina.text();
+  assert.ok(html.includes('Pedido asignado a ti'), 'la pantalla del enlace trae el estado "Pedido asignado a ti"');
+  assert.ok(html.includes('Ver mi entrega'), 'la pantalla del enlace trae la acción "Ver mi entrega" → /repartidor.html');
+  assert.ok(!html.includes('llegaron a tu WhatsApp'), 'la pantalla ya no promete detalles por WhatsApp');
   const { rows: [sinConsumir] } = await pool.query(`SELECT token_usado_at FROM notificaciones_repartidor WHERE id = $1`, [fila.id]);
   assert.strictEqual(sinConsumir.token_usado_at, null, 'el GET jamás consume el token');
 
   const antes = plantillasEnviadas('xabor_detalle_servicio_reparto').length;
   const r = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
   assert.strictEqual(r.status, 200);
-  assert.strictEqual((await r.json()).estado, 'asignado_a_mi');
+  const cuerpo = await r.json();
+  assert.strictEqual(cuerpo.estado, 'asignado_a_mi');
+  assert.ok(cuerpo.pedido?.direccion?.includes('123'), 'el GANADOR sí ve la dirección completa (con número) en su pantalla');
 
-  const detalle = await esperarHasta(async () => {
-    const d = plantillasEnviadas('xabor_detalle_servicio_reparto');
-    return d.length > antes ? d : null;
-  });
-  assert.ok(detalle, 'la plantilla de detalle debía salir tras aceptar (segunda plantilla, posterior)');
-  const paramsDetalle = paramsDe(detalle[detalle.length - 1]);
-  assert.strictEqual(paramsDetalle[0], folio, 'detalle lleva folio');
-  assert.strictEqual(paramsDetalle[1], 'Cliente Prueba', 'detalle SÍ lleva nombre del cliente (solo después de aceptar)');
-  assert.ok(paramsDetalle[3].includes('123'), 'detalle SÍ lleva la dirección completa con número (solo el ganador)');
+  await esperar(1500); // margen: si el detalle fuera a enviarse, ya habría salido (el envío es awaited)
+  assert.strictEqual(plantillasEnviadas('xabor_detalle_servicio_reparto').length, antes,
+    'la plantilla de detalle NO debe enviarse al ganador: sus datos viven en el portal autenticado');
+});
+
+// ═══════════ RECUPERACION: el ganador nunca pierde acceso a su pedido ═══════════
+await t('RECUPERACION', 'cerrar la pantalla no pierde nada: reabrir el MISMO enlace da asignado_a_mi con la dirección completa (token ya usado)', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => (await notifsDe(folio)).find(f => f.repartidor_id === repPA.id && f.token_aceptacion) || null);
+  assert.ok(fila, 'debía existir el token');
+  const r1 = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
+  assert.strictEqual(r1.status, 200);
+
+  // "Cerró la pestaña": vuelve a abrir el enlace de WhatsApp más tarde.
+  const r2 = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}`);
+  assert.strictEqual(r2.status, 200);
+  const estado = await r2.json();
+  assert.strictEqual(estado.estado, 'asignado_a_mi', 'el ganador conserva su pantalla aunque el token ya esté consumido');
+  assert.ok(estado.pedido?.direccion?.includes('123'), 'la pantalla recuperada trae la dirección completa');
+  assert.strictEqual(estado.pedido?.nombreCliente, 'Cliente Prueba', 'la pantalla recuperada trae al cliente');
+});
+
+await t('RECUPERACION', 'login posterior (otro dispositivo): /api/repartidor/login con su teléfono + pedido-actual muestra el pedido completo', async () => {
+  const folio = await crearPedidoPrueba(cookieAdminA);
+  const fila = await esperarHasta(async () => (await notifsDe(folio)).find(f => f.repartidor_id === repPA.id && f.token_aceptacion) || null);
+  assert.ok(fila, 'debía existir el token');
+  await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
+
+  // Dispositivo nuevo: sin token guardado, entra a /repartidor.html y hace
+  // login con su teléfono -- el mismo flujo del portal real.
+  const login = await api(base, '/api/repartidor/login', { method: 'POST', body: { telefono: '8711000901' } });
+  assert.strictEqual(login.status, 200, `el login por teléfono debe responder 200, dio ${login.status}`);
+  assert.ok(login.body.token, 'el login devuelve el token del repartidor');
+
+  const actual = await fetch(`${base}/api/repartidor/pedido-actual`, { headers: { 'x-rep-token': login.body.token } });
+  assert.strictEqual(actual.status, 200);
+  const cuerpo = await actual.json();
+  const pedido = (cuerpo.pedidos || []).find(p => p.folio === folio);
+  assert.ok(pedido, `"Mi entrega" debe mostrar el pedido ${folio} tras el login`);
+  assert.strictEqual(pedido.calle, 'Av. Tecnológico 123', 'el portal muestra la calle completa CON número al ganador');
+  assert.strictEqual(pedido.cliente, 'Cliente Prueba', 'el portal muestra al cliente');
+  assert.ok(pedido.telefono, 'el portal muestra el teléfono del cliente');
+});
+
+// ═══════════ RESPALDO: el flag por negocio reactiva el detalle por WhatsApp sin deploy ═══════════
+await t('RESPALDO', 'repartidor_notif_detalle_wa_activo=true reactiva la plantilla de detalle (respaldo, sin deploy)', async () => {
+  await actualizarConfiguracion({ repartidor_notif_detalle_wa_activo: 'true' }, SEED.negocioA);
+  try {
+    const folio = await crearPedidoPrueba(cookieAdminA);
+    const fila = await esperarHasta(async () => (await notifsDe(folio)).find(f => f.repartidor_id === repPA.id && f.token_aceptacion) || null);
+    assert.ok(fila, 'debía existir el token');
+    const antes = plantillasEnviadas('xabor_detalle_servicio_reparto').length;
+    const r = await fetch(`${base}/api/repartidor/oferta/${fila.token_aceptacion}/aceptar`, { method: 'POST' });
+    assert.strictEqual(r.status, 200);
+    const detalle = await esperarHasta(async () => {
+      const d = plantillasEnviadas('xabor_detalle_servicio_reparto');
+      return d.length > antes ? d : null;
+    });
+    assert.ok(detalle, 'con el flag de respaldo activo, la plantilla de detalle SÍ debe enviarse');
+    const params = paramsDe(detalle[detalle.length - 1]);
+    assert.strictEqual(params[0], folio, 'el detalle de respaldo lleva el folio');
+  } finally {
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'repartidor_notif_detalle_wa_activo'`, [SEED.negocioA]);
+  }
 });
 
 // ═══════════ UBICACION: formatearEntregaOferta (misma función que alimenta {{2}}) ═══════════

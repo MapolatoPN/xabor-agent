@@ -181,7 +181,7 @@ await t('SENSIBLE-NO-EN-OFERTA', 'la plantilla xabor_nuevo_servicio_reparto nunc
 });
 
 // ═══════════ ACEPTAR-TOKEN: aceptar por el enlace asigna y envía la plantilla de detalle ═══════════
-await t('ACEPTAR-TOKEN', 'abrir el enlace de aceptación asigna el pedido y envía xabor_detalle_servicio_reparto con los datos completos', async () => {
+await t('ACEPTAR-TOKEN', 'abrir el enlace de aceptación asigna el pedido y ya NO envía la plantilla de detalle (el portal es la fuente del ganador)', async () => {
   const folio = await crearPedidoPrueba(cookieAdminA);
   const fila = await esperarHasta(async () => {
     const r = await notifsDe(folio);
@@ -202,11 +202,14 @@ await t('ACEPTAR-TOKEN', 'abrir el enlace de aceptación asigna el pedido y env�
   const { rows: [pedidoDB] } = await pool.query(`SELECT datos->>'repartidor_nombre' AS nombre FROM pedidos_activos WHERE folio = $1`, [folio]);
   assert.strictEqual(pedidoDB.nombre, repA.nombre, 'aceptar por el enlace debe asignar el pedido (misma asignarRepartidor de siempre)');
 
+  // Cierre primer-mensaje-repartidores: los datos completos viven en el
+  // portal autenticado (asignado_a_mi recuperable + /repartidor.html); la
+  // plantilla de detalle queda apagada por defecto (flag de respaldo
+  // repartidor_notif_detalle_wa_activo, cubierto en la suite del primer
+  // mensaje) para no persistir datos del cliente en WhatsApp.
+  await esperar(1500);
   const detalle = metaMock.obtenerMensajesEnviados().filter(m => m.template?.name === 'xabor_detalle_servicio_reparto');
-  assert.ok(detalle.length > 0, 'debía enviarse la plantilla de detalle tras aceptar');
-  const paramsDetalle = detalle[detalle.length - 1].template.components[0].parameters.map(p => p.text);
-  assert.strictEqual(paramsDetalle[0], folio, 'el primer parámetro de la plantilla de detalle debe ser el folio');
-  assert.strictEqual(paramsDetalle[1], 'Cliente Prueba', 'la plantilla de detalle SÍ debe incluir el nombre del cliente (solo después de aceptar)');
+  assert.strictEqual(detalle.length, 0, 'la plantilla de detalle ya NO debe enviarse tras aceptar (portal como fuente)');
 });
 
 // ═══════════ TOKEN-REUSO: el mismo enlace no puede aceptarse dos veces ═══════════
