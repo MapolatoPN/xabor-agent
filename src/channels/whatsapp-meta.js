@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -24,6 +24,7 @@ import { getIntegracion } from '../server.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
 import { formatearUbicacionRepartidor, formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
+import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -735,6 +736,71 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         }
       }
       return;
+    }
+
+    // ── Solicitud de enlace de pago (hotfix bot-envio-enlace-pago) ────────────
+    // Incidente real: una clienta con pedido activo pidió "pagar con enlace
+    // de pago" y el bot no envió la URL -- la intención caía a la IA, que
+    // no tiene ninguna herramienta para generarlo. Este atajo DETERMINISTA
+    // corre antes de la IA (y antes de la consulta de estado, cuyo regex
+    // "mi pedido" se comería frases como "el enlace de mi pedido").
+    // Respeta el mismo gating que todo procesarConClaude: bot activo y sin
+    // takeover (bot_pausado) -- ambos se validan antes de encolar.
+    if (detectarSolicitudEnlacePago(texto)) {
+      const activos = (await obtenerPedidosActivosPorTelefono(telefono, negocioId)) || [];
+      const sinPagar = activos.filter(p => !(p.datos?.pago_confirmado === true || p.datos?.pago_confirmado === 'true'));
+      if (activos.length > 0 && sinPagar.length === 0) {
+        const msg = `Tu pedido ${activos[0].folio} ya está pagado ✔. No necesitas hacer nada más.`;
+        await enviarMensaje(telefono, msg, credenciales);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
+        return;
+      }
+      if (sinPagar.length === 1) {
+        const folioActivo = sinPagar[0].folio;
+        // El método debe estar habilitado para ESTE negocio -- nunca se
+        // ofrece un enlace que el negocio no maneja.
+        const metodos = await obtenerMetodosPagoDisponibles(negocioId);
+        const tieneEnlace = metodos.some(m => m.tipo === 'enlace_pago');
+        if (!tieneEnlace) {
+          const otras = metodos.map(m => m.tipo === 'terminal' ? 'terminal' : m.tipo).join(', ') || 'efectivo';
+          const msg = `Por ahora no manejamos pago con enlace. Puedes pagar con: ${otras}.`;
+          await enviarMensaje(telefono, msg, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
+          return;
+        }
+        try {
+          // crearEnlacePago es idempotente: "mándame el enlace otra vez"
+          // devuelve el MISMO enlace vigente, jamás un cobro duplicado. El
+          // pedido queda pago pendiente hasta que el webhook de la pasarela
+          // confirme -- pedir el enlace nunca marca pagado.
+          const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: folioActivo, descripcion: `Pedido Xabor #${folioActivo}` });
+          const totalPedido = sinPagar[0].datos?.total;
+          const msg = resultadoLink.url
+            ? `Aquí está tu enlace de pago para el pedido ${folioActivo}:\n${resultadoLink.url}\n\nTotal: $${totalPedido} MXN`
+            : `${resultadoLink.instrucciones || 'Te compartimos los datos de pago en un momento.'}\n\nPedido ${folioActivo} — Total: $${totalPedido} MXN`;
+          await enviarMensaje(telefono, msg, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
+          console.log(`[Meta WA] Enlace de pago enviado por solicitud del cliente — pedido ${folioActivo} (negocio ${negocioId})`);
+        } catch (e) {
+          if (e instanceof ClipNoConfiguradoError || e instanceof SinProveedorPrincipalError) {
+            await manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenciales);
+          } else {
+            console.error('[Meta WA] Error generando enlace solicitado:', e.message);
+            await enviarMensaje(telefono, `Tuvimos un problema generando tu enlace de pago. Escríbenos y te lo enviamos manualmente.`, credenciales);
+          }
+        }
+        return;
+      }
+      if (sinPagar.length > 1) {
+        const folios = sinPagar.map(p => p.folio).join(', ');
+        const msg = `Tienes más de un pedido activo (${folios}). ¿De cuál quieres el enlace de pago? Mándame el folio, por ejemplo: ${sinPagar[0].folio}`;
+        await enviarMensaje(telefono, msg, credenciales);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
+        return;
+      }
+      // Sin pedidos activos: el cliente probablemente está eligiendo forma
+      // de pago ANTES de confirmar un pedido -- ese flujo es de la IA y se
+      // conserva tal cual (sin return).
     }
 
     // ── Consulta de estado de pedido ──────────────────────────────────────────
