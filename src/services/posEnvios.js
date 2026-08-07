@@ -147,6 +147,43 @@ export function construirOrdenPOS({
 const _idempotencia = new Map(); // `${negocioId}:${key}` -> { folio, expira }
 const IDEMPOTENCIA_TTL_MS = 60 * 1000;
 
+// Hotfix P0 folio: la reserva de la clave ocurre AHORA antes del primer
+// await (misma idea que la reserva de folio en registrarPedido). El flujo
+// anterior era buscar → crear (dos awaits) → recordar: dos clics realmente
+// simultáneos pasaban los dos por ese hueco. El bug de folio lo disimulaba
+// (ambos obtenían el MISMO folio porque el contador se incrementaba después
+// del await, y el segundo INSERT se perdía en silencio, así que la respuesta
+// parecía idempotente); corregido el folio, ese mismo hueco crearía DOS
+// pedidos reales. Con la reserva, el segundo request espera el resultado del
+// primero y responde con su folio.
+//   { reservado: true,  confirmar(folio), liberar(error) } → este request crea.
+//   { reservado: false, folio, enCurso }                   → ya hay otro; si
+//     enCurso no es null, la creación sigue en vuelo y hay que esperarla.
+export function reservarIdempotencia(negocioId, key) {
+  if (!key) return { reservado: true, confirmar: () => {}, liberar: () => {} };
+  const k = `${negocioId}:${key}`;
+  const v = _idempotencia.get(k);
+  if (v && Date.now() <= v.expira) return { reservado: false, folio: v.folio, enCurso: v.enCurso };
+  let resolver, rechazar;
+  const enCurso = new Promise((res, rej) => { resolver = res; rechazar = rej; });
+  enCurso.catch(() => {}); // nadie más puede estar esperándola todavía
+  const entrada = { folio: null, enCurso, expira: Date.now() + IDEMPOTENCIA_TTL_MS };
+  _idempotencia.set(k, entrada);
+  return {
+    reservado: true,
+    confirmar(folio) {
+      entrada.folio = folio;
+      entrada.enCurso = null;
+      entrada.expira = Date.now() + IDEMPOTENCIA_TTL_MS;
+      resolver(folio);
+    },
+    liberar(e) {
+      _idempotencia.delete(k); // el pedido no existió: un reintento debe poder crearlo
+      rechazar(e instanceof Error ? e : new Error('POS_CREACION_FALLIDA'));
+    },
+  };
+}
+
 export function recordarIdempotencia(negocioId, key, folio) {
   if (!key) return;
   _idempotencia.set(`${negocioId}:${key}`, { folio, expira: Date.now() + IDEMPOTENCIA_TTL_MS });

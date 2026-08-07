@@ -27,7 +27,7 @@ import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obte
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
-import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, buscarIdempotencia } from './services/posEnvios.js';
+import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, reservarIdempotencia } from './services/posEnvios.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -4094,10 +4094,18 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
   const idemKey = req.headers['idempotency-key'] || req.body?.idempotencyKey || null;
 
   // Idempotencia: doble clic / reintento devuelve el MISMO folio, sin crear
-  // un segundo pedido.
-  const folioPrevio = buscarIdempotencia(negocioId, idemKey);
-  if (folioPrevio) {
-    const yaExiste = obtenerPedidoPorId(folioPrevio, negocioId);
+  // un segundo pedido. La clave se reserva antes de cualquier await, así que
+  // dos clics simultáneos no pueden colarse los dos (ver reservarIdempotencia).
+  const reserva = reservarIdempotencia(negocioId, idemKey);
+  if (!reserva.reservado) {
+    let folio = reserva.folio;
+    if (!folio && reserva.enCurso) {
+      // La creación del primer request sigue en vuelo: se espera su folio en
+      // vez de crear un segundo pedido. Si aquella falló, se sigue de largo
+      // y este request crea normalmente.
+      try { folio = await reserva.enCurso; } catch { folio = null; }
+    }
+    const yaExiste = folio ? obtenerPedidoPorId(folio, negocioId) : null;
     if (yaExiste) return res.json({ ok: true, pedido: yaExiste, idempotente: true });
   }
 
@@ -4114,7 +4122,8 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
 
     const pedido = await registrarPedido(orden, 'pos');
     emitirPedido(pedido); // comanda + impresión + tablero (no bloquea si no hay impresora)
-    recordarIdempotencia(negocioId, idemKey, pedido.id);
+    if (reserva.reservado) reserva.confirmar(pedido.id);
+    else recordarIdempotencia(negocioId, idemKey, pedido.id);
 
     // Persistencia en historial (mismo patrón que presencial: upsertCliente
     // antes de guardarPedido por la FK pedidos.telefono → clientes.telefono).
@@ -4131,6 +4140,10 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     console.log(`[POS Audit] pedido_pos_creado negocio=${negocioId} usuario=${req.usuarioId} folio=${pedido.id} tipo=${tipo} total=${pedido.total}`);
     res.json({ ok: true, pedido });
   } catch (e) {
+    // El pedido no llegó a existir: se libera la clave para que un reintento
+    // del operador sí pueda crearlo (y para no dejar esperando a un request
+    // gemelo que hubiera quedado en cola detrás de esta reserva).
+    if (reserva.reservado) reserva.liberar(e);
     if (e instanceof POSValidacionError) return res.status(400).json({ error: e.message, codigo: e.codigo });
     console.error('[POS] Error creando pedido POS:', e.message);
     res.status(500).json({ error: 'No se pudo crear el pedido' });
@@ -5635,6 +5648,10 @@ async function activarPedidosProgramados() {
       // NULL para siempre (única escritura de esta fila -- ON CONFLICT
       // DO UPDATE nunca corrige negocio_id después). pedido.negocioId ya
       // fue validado como string no vacío arriba, nunca inventado aquí.
+      // El retorno se ignora a propósito: el folio de un pedido programado
+      // ya fue asignado cuando se creó (no viene del contador), así que un
+      // conflicto aquí solo puede ser la misma fila re-insertada — nunca un
+      // folio ajeno que haya que reintentar.
       const { guardarPedidoActivo } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
       await guardarPedidoActivo(pedido, pedido.negocioId);
