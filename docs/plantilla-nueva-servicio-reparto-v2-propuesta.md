@@ -22,97 +22,134 @@ hay que someter una plantilla nueva (o una nueva versión) a revisión.
 | **Nombre** | `xabor_nuevo_servicio_reparto_v2` |
 | **Categoría recomendada** | **UTILITY** — es una notificación operativa a un repartidor sobre un pedido concreto ya existente, no contenido promocional. Meta suele rechazar como MARKETING cualquier plantilla con este perfil si se somete en esa categoría; UTILITY es la misma categoría ya usada (y aprobada) en la v1 y en `xabor_detalle_servicio_reparto`. |
 | **Idioma** | `es_MX` |
-| **Botón / enlace** | **Sin botón de plantilla (`call_to_action`/URL button) en esta propuesta.** El enlace `{{5}}` viaja como texto plano dentro del cuerpo, igual que en la v1 ya aprobada — mismo patrón que ya funciona en producción, sin depender de que Meta apruebe un botón dinámico aparte. Si más adelante se quiere un botón "Ver pedido" con URL dinámica, requeriría someter una plantilla adicional distinta; no se incluye aquí para no ampliar el alcance de esta aprobación. |
+| **Botón / enlace** | **Sin botón de plantilla (`call_to_action`/URL button) en esta propuesta.** El enlace `{{4}}` viaja como texto plano dentro del cuerpo, igual que en la v1 ya aprobada — mismo patrón que ya funciona en producción, sin depender de que Meta apruebe un botón dinámico aparte. Si más adelante se quiere un botón "Ver pedido" con URL dinámica, requeriría someter una plantilla adicional distinta; no se incluye aquí para no ampliar el alcance de esta aprobación. |
 
-## Cuerpo exacto
+## Cuerpo exacto (cierre primer-mensaje-repartidores: 4 variables, sin folio)
 
 ```
-🛵 Nuevo pedido disponible
+🛵 NUEVO PEDIDO DISPONIBLE
 
-Negocio: {{1}}
-Pedido: #{{2}}
-Entrega: {{3}}
-Tarifa: {{4}}
+Recoge en:
+{{1}}
 
-¿Deseas cubrir este pedido? Da clic en el siguiente enlace:
+Entrega en:
+{{2}}
 
-{{5}}
+Pago por entrega:
+{{3}}
+
+Revisa y acepta aquí:
+{{4}}
+
+La asignación se confirma al primer repartidor que lo acepte.
 ```
+
+El folio NO viaja en la oferta: el repartidor lo ve en la pantalla del
+enlace y en el portal después de aceptar. Menos variables = menos
+superficie de rechazo en la revisión de Meta y ningún dato que no
+necesite antes de aceptar.
 
 ## Variables — origen, formato y ejemplos
 
 | Variable | Origen | Función que la produce | Ejemplo para Meta |
 |---|---|---|---|
 | `{{1}}` negocio | `obtenerNombreNegocio(pedido.negocioId)` | sin cambios, ya existía en v1 | `Nonna Maye` |
-| `{{2}}` folio | `pedido.id` | directo, sin transformación | `XAB-0123` |
-| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearUbicacionRepartidor()` — `src/utils/direccionRepartidor.js` | `Av. Tecnológico 123, Col. Centro` |
-| `{{4}}` tarifa | `pedido.total` | `formatearTarifaRepartidor()` | `$544.00 MXN` |
-| `{{5}}` enlace | token de aceptación de un solo uso | sin cambios respecto a v1 | `https://xabor.mx/repartidor/aceptar/AbC123XyZ` |
+| `{{2}}` ubicación resumida | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearEntregaOferta()` — `src/utils/direccionRepartidor.js` (**sin número exterior**, misma función que el mensaje libre desplegado) | `Col. Centro, calle Av. Tecnológico` |
+| `{{3}}` pago | `pedido.total` | `formatearTarifaRepartidor()` (incluye `$` y `MXN`, por eso el cuerpo no antepone `$`) | `$544.00 MXN` |
+| `{{4}}` enlace | token de oferta (la pantalla del enlace NO consume el token; aceptar es un POST explícito) | igual que v1 | `https://xabor.mx/repartidor/aceptar/AbC123XyZ` |
 
 ## Ejemplo completo renderizado (con los valores de ejemplo de arriba)
 
 ```
-🛵 Nuevo pedido disponible
+🛵 NUEVO PEDIDO DISPONIBLE
 
-Negocio: Nonna Maye
-Pedido: #XAB-0123
-Entrega: Av. Tecnológico 123, Col. Centro
-Tarifa: $544.00 MXN
+Recoge en:
+Nonna Maye
 
-¿Deseas cubrir este pedido? Da clic en el siguiente enlace:
+Entrega en:
+Col. Centro, calle Av. Tecnológico
 
+Pago por entrega:
+$544.00 MXN
+
+Revisa y acepta aquí:
 https://xabor.mx/repartidor/aceptar/AbC123XyZ
+
+La asignación se confirma al primer repartidor que lo acepte.
 ```
 
-Otros tres renderizados reales, para cubrir los casos de fallback de `{{3}}`
-(verificados directamente contra el código de `formatearUbicacionRepartidor`,
-`src/utils/direccionRepartidor.js`):
+Otros tres renderizados reales, para cubrir los casos de fallback de `{{2}}`
+(verificados contra el código de `formatearEntregaOferta` y cubiertos por la
+suite `test/fase-primer-mensaje-repartidores.mjs`):
 
-- **Solo calle** (colonia vacía/null): `Entrega: Av. Tecnológico 123`
-- **Solo colonia** (calle vacía/null): `Entrega: Col. Centro`
-- **Ninguna de las dos**: `Entrega: Ubicación pendiente de confirmar`
+- **Solo calle** (colonia vacía/null): `Entrega en: Calle Av. Tecnológico`
+- **Solo colonia** (calle vacía/null): `Entrega en: Col. Centro`
+- **Ninguna de las dos**: `Entrega en: Zona por confirmar`
   (y se registra un `console.warn` para el caso, sin bloquear el envío)
+- **Calles con número en el nombre**: `Calle 5 de Mayo` y
+  `Avenida 20 de Noviembre` se preservan tal cual (solo se recorta el
+  número exterior FINAL: `Av. Tecnológico 123` → `Av. Tecnológico`,
+  `Carranza #245 int 2` → `Carranza`).
 
 **Nunca se incluye:** nombre del cliente, teléfono del cliente, referencias
 completas ni notas privadas — eso sigue reservado para la plantilla de
 detalle (`xabor_detalle_servicio_reparto`), enviada solo después de que el
 repartidor acepta.
 
-## Verificación de formato de `{{3}}` (código ya revisado, Fase C — cierre)
+## Verificación de formato de `{{2}}` (cierre primer-mensaje-repartidores)
 
-Confirmado leyendo `src/utils/direccionRepartidor.js` línea por línea:
+**`{{2}}` usa `formatearEntregaOferta()`** — la misma función que produce la
+línea "Entrega en:" del mensaje libre desplegado en producción
+(`whatsapp-meta.js`). Reglas exactas, confirmadas en código:
 
-- **Nunca `null`/`undefined` literales**: la función siempre retorna un
-  `string` — si no hay calle ni colonia, retorna el literal
-  `'Ubicación pendiente de confirmar'`, nunca el valor `null` sin envolver.
-- **Nunca comas duplicadas**: la coma solo se agrega en la rama
-  `calle + ', Col. ' + colonia`; las ramas de un solo campo no llevan coma.
-- **Nunca "Col. Col."**: la colonia se limpia con
-  `.replace(/^col\.?\s*/i, '')` antes de re-anteponer `"Col. "` — si el
-  dato ya venía como `"Col. Centro"`, el resultado es `"Col. Centro"`, no
-  `"Col. Col. Centro"`.
-- **Nunca calle/colonia repetidas**: si `calle` y `colonia` son el mismo
-  texto (comparación case-insensitive), la colonia se descarta antes de
-  construir el texto — evita `"Centro, Col. Centro"` cuando ambos campos
-  traen el mismo valor por error de captura.
-- **Sin saltos de línea defectuosos**: la función retorna una sola línea de
-  texto (trim aplicado a ambas entradas); es el cuerpo de la plantilla el
-  que decide el salto de línea antes de `Tarifa:`, no la función.
-- Truncado a 300 caracteres con `…` para direcciones excesivamente largas.
+- **Sin número exterior antes de aceptar**: el número FINAL de la calle se
+  recorta (la regex también cubre `#`, `no.`, `núm.`, `int`, `depto`,
+  `local`) — "Av. Tecnológico 123" se ofrece como "calle Av. Tecnológico".
+  Excepción segura: si al recortar no quedan letras ("Calle 21"), se
+  conserva tal cual para no vaciar el dato.
+- Formatos: ambas → `Col. <colonia>, calle <calle>`; solo colonia →
+  `Col. <colonia>`; solo calle → `Calle <calle>`; ninguna →
+  `Zona por confirmar`.
+- **Nunca `null`/`undefined` literales, comas duplicadas ni "Col. Col."**
+  (la colonia se limpia de su prefijo antes de re-anteponerlo); si calle y
+  colonia traen el mismo texto, la colonia se descarta.
+- Cubierto por `test/fase-primer-mensaje-repartidores.mjs` (formatos,
+  número oculto, "Calle 5 de Mayo"/"Avenida 20 de Noviembre" preservadas,
+  nulls/espacios, y el payload real capturado del flujo completo).
 
-Esto ya está cubierto por pruebas automatizadas (casos 1-6 de la suite
-`test/fase-red-repartidores-tiempo-real.mjs`: calle+colonia, solo calle,
-solo colonia, sin ninguna, dirección larga, caracteres especiales).
-
-## Mapeo de variables (ya implementado en el código, sin cambios pendientes)
+## Mapeo de variables (ya implementado en el código de la rama)
 
 | Variable | Origen | Función |
 |---|---|---|
 | `{{1}}` negocio | `obtenerNombreNegocio(pedido.negocioId)` | (sin cambios, ya existía) |
-| `{{2}}` folio | `pedido.id` | directo |
-| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearUbicacionRepartidor()` |
-| `{{4}}` tarifa | `pedido.total` | `formatearTarifaRepartidor()` — mismo valor que hoy usa "Pago estimado" en la v1, solo reformateado; sigue sin existir un cálculo de comisión propia del repartidor separado del total del cliente (fuera de alcance, ya documentado en el piloto original) |
-| `{{5}}` enlace | token de aceptación de un solo uso | sin cambios respecto a la v1 |
+| `{{2}}` ubicación resumida | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearEntregaOferta()` |
+| `{{3}}` pago | `pedido.total` | `formatearTarifaRepartidor()` — mismo valor que hoy usa "Pago estimado" en la v1, solo reformateado; sigue sin existir un cálculo de comisión propia del repartidor separado del total del cliente (fuera de alcance, ya documentado en el piloto original) |
+| `{{4}}` enlace | token de oferta de un solo uso | sin cambios respecto a la v1 |
+
+### Fallback auditable v2→v1 (nuevo en esta rama)
+
+Si Meta rechaza el envío v2 (no aprobada, inexistente, pendiente,
+rechazada, pausada, deshabilitada o variables que no coinciden), la oferta
+NO se pierde: sale por la v1 aprobada y el intento queda auditado en el
+log y en `notificaciones_repartidor.error_detalle` con un JSON sin datos
+sensibles:
+
+```json
+{
+  "plantillaSolicitada": "xabor_nuevo_servicio_reparto_v2",
+  "plantillaUtilizada": "xabor_nuevo_servicio_reparto",
+  "ubicacionIncluida": false,
+  "fallback": true,
+  "razonFallback": "template_not_approved_or_missing"
+}
+```
+
+Razones posibles: `template_not_approved_or_missing` (132001),
+`template_param_mismatch` (132000), `template_paused` (132015),
+`template_disabled` (132016), `error_meta_<código>` / `error_desconocido`.
+Cada envío exitoso también registra en el log qué plantilla se usó
+(`plantillaUtilizada`, `ubicacionIncluida`, `fallback`) — nunca dirección
+ni teléfonos.
 
 ## Pasos manuales para someter la plantilla a Meta (fuera de esta sesión)
 
@@ -122,7 +159,7 @@ solo colonia, sin ninguna, dirección larga, caracteres especiales).
 3. Categoría: **Utilidad** (UTILITY). Idioma: **Español (México)**.
 4. Pegar el cuerpo exacto de la sección "Cuerpo exacto" de este documento,
    sin modificar espacios, saltos de línea ni emoji.
-5. Completar los 5 valores de ejemplo de la tabla de variables (Meta los
+5. Completar los 4 valores de ejemplo de la tabla de variables (Meta los
    exige para aprobar).
 6. **No agregar botones** — esta propuesta no los incluye (ver ficha técnica).
 7. Enviar a revisión y esperar la resolución de Meta (usualmente minutos a
@@ -163,8 +200,11 @@ piloto v1 ya funcionando en producción:
    teléfono del cliente, nombre del cliente, referencias completas ni
    notas privadas — solo lo que la plantilla ya define.
 8. **Abrir el enlace con el repartidor de prueba correcto** y confirmar
-   que el flujo de aceptación funciona (mismo endpoint `GET
-   /repartidor/aceptar/:token` ya probado en Fase C).
+   el flujo de aceptación vigente: `GET /repartidor/aceptar/:token`
+   muestra la pantalla de revisión SIN consumir el token; la aceptación es
+   el botón que hace `POST /api/repartidor/oferta/:token/aceptar`. Tras
+   aceptar, la pantalla ganadora ofrece "Ver mi entrega" → Portal
+   Operativo (`/repartidor.html`) con la dirección completa.
 9. **Verificar aceptación única**: confirmar que una vez aceptado, el
    pedido queda asignado y no puede volver a aceptarse.
 10. **Probar intento de un segundo repartidor** sobre el mismo enlace (o
