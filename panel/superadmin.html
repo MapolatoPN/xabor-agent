@@ -190,6 +190,8 @@
       <h1 id="fi-titulo">Ficha del negocio</h1>
       <div class="grid-stats" id="fi-stats"></div>
       <div class="card"><h2>Cuenta y acceso</h2><div id="fi-cuenta" class="empty">Cargando…</div></div>
+      <div class="card"><h2>Editar negocio</h2><div id="fi-edicion" class="empty">Cargando…</div></div>
+      <div class="card"><h2>Invitaciones</h2><div id="fi-invitaciones" class="empty">Cargando…</div></div>
       <div class="card"><h2>Checklist operativo</h2><div id="fi-checklist" class="empty">Cargando…</div></div>
       <div class="card"><h2>Implementación</h2><div id="fi-impl" class="empty">Cargando…</div></div>
       <div class="card"><h2>Acciones</h2><div id="fi-acciones"></div></div>
@@ -825,7 +827,120 @@ async function abrirFicha(negocioId) {
   document.getElementById('fi-acciones').innerHTML = `
     <button class="btn" onclick="verDetalleNegocio('${negocioId}')">Detalle técnico</button>
     <button class="btn" onclick="reenviarInvitacionFicha('${negocioId}')">Reenviar invitación</button>
-    <button class="btn" style="background:#b45309;color:#fff;" onclick="entrarComoSoporte('${negocioId}', '${escaparHTML(f.general.nombre)}')">Entrar como soporte</button>`;
+    <button class="btn" style="background:#b45309;color:#fff;" onclick="entrarComoSoporte('${negocioId}', '${escaparHTML(f.general.nombre)}')">Entrar como soporte</button>
+    ${f.general.estado === 'suspendido'
+      ? `<button class="btn" style="background:#15803d;color:#fff;" onclick="cambiarEstadoNegocioFicha('activo')">Reactivar negocio</button>`
+      : `<button class="btn" style="background:#b91c1c;color:#fff;" onclick="cambiarEstadoNegocioFicha('suspendido')">Desactivar negocio</button>`}`;
+  renderEdicionNegocio(f);
+  cargarInvitacionesFicha(negocioId);
+}
+
+// ─── Edición del negocio (Superadmin) ────────────────────────────────────────
+function renderEdicionNegocio(f) {
+  const c = f.general.contacto || {};
+  const admin = f.cuenta.admin_principal;
+  document.getElementById('fi-edicion').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;">
+      <label>Nombre comercial<input id="ed-nombre" value="${escaparHTML(f.general.nombre)}"></label>
+      <label>Slug <span style="color:var(--muted);font-size:.85em;">(cambiarlo afecta URLs)</span><input id="ed-slug" value="${escaparHTML(f.general.slug)}"></label>
+      <label>Ciudad<input id="ed-ciudad" value="${escaparHTML(c.ciudad || '')}"></label>
+      <label>Teléfono<input id="ed-telefono" value="${escaparHTML(c.telefono || '')}"></label>
+      <label>Dirección<input id="ed-direccion" value="${escaparHTML(c.direccion || '')}"></label>
+      <label>Nombre corto<input id="ed-nombre-corto" value="${escaparHTML(c.nombre_corto || '')}"></label>
+    </div>
+    <p><button class="btn" onclick="guardarEdicionNegocio()">Guardar cambios del negocio</button></p>
+    <hr style="border-color:var(--border,#333);opacity:.4;">
+    <h3 style="margin:8px 0 6px;">Administrador invitado</h3>
+    ${admin ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;">
+      <label>Nombre<input id="ed-admin-nombre" value="${escaparHTML(admin.nombre)}"></label>
+      <label>Correo de invitación<input id="ed-admin-email" type="email" value="${escaparHTML(admin.email)}"></label>
+    </div>
+    <p style="color:var(--muted);font-size:.9em;">${admin.tiene_password
+      ? 'Este administrador ya aceptó su invitación y tiene contraseña: el correo puede corregirse (queda auditado), pero no se generan invitaciones nuevas.'
+      : 'La invitación sigue pendiente: si corriges el correo, usa "Generar nueva invitación" para que llegue al correo corregido.'}</p>
+    <p>
+      <button class="btn" onclick="guardarAdminNegocio()">Guardar administrador</button>
+      <button class="btn" onclick="generarNuevaInvitacion()">Generar nueva invitación</button>
+    </p>` : '<p class="empty">Este negocio no tiene administrador registrado.</p>'}`;
+}
+
+async function guardarEdicionNegocio() {
+  const body = {
+    nombre: document.getElementById('ed-nombre').value,
+    slug: document.getElementById('ed-slug').value,
+    contacto: {
+      ciudad: document.getElementById('ed-ciudad').value,
+      telefono: document.getElementById('ed-telefono').value,
+      direccion: document.getElementById('ed-direccion').value,
+      nombre_corto: document.getElementById('ed-nombre-corto').value,
+    },
+  };
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.error || 'Error al guardar'); return; }
+  alert(j.cambiosAplicados ? `Guardado (${j.cambiosAplicados} cambio(s), auditado)` : 'Sin cambios que guardar');
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function guardarAdminNegocio() {
+  const body = {
+    nombre: document.getElementById('ed-admin-nombre').value,
+    email: document.getElementById('ed-admin-email').value,
+  };
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/admin`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.error || 'Error al guardar el administrador'); return; }
+  alert(j.cambiosAplicados ? 'Administrador actualizado (auditado). Si cambiaste el correo y la invitación sigue pendiente, genera una nueva invitación.' : 'Sin cambios que guardar');
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function generarNuevaInvitacion() {
+  if (!confirm('Se revocará cualquier invitación pendiente y se generará una nueva al correo actual del administrador. ¿Continuar?')) return;
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/invitaciones/nueva`, { method: 'POST' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.error || 'Error al generar la invitación'); return; }
+  let msj = `Invitación nueva para ${j.correoDestino} (expira ${new Date(j.expiresAt).toLocaleString('es-MX')}).`;
+  if (!j.correoEntregado && j.enlaceInvitacion) {
+    msj += `\n\nSin proveedor de correo: copia este enlace y hazlo llegar de forma segura (no se volverá a mostrar):\n${j.enlaceInvitacion}`;
+  }
+  alert(msj);
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function cambiarEstadoNegocioFicha(estado) {
+  const verbo = estado === 'suspendido' ? 'DESACTIVAR' : 'REACTIVAR';
+  if (!confirm(`¿${verbo} este negocio?\n\n${estado === 'suspendido'
+    ? 'Se bloquea el acceso operativo y los módulos; NO se borra nada: pedidos, pagos, usuarios e historial se conservan.'
+    : 'El negocio recupera el acceso operativo.'}`)) return;
+  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/estado`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estado }),
+  });
+  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
+  abrirFicha(FICHA_NEGOCIO_ID);
+}
+
+async function cargarInvitacionesFicha(negocioId) {
+  const cont = document.getElementById('fi-invitaciones');
+  const r = await api(`/api/superadmin/negocios/${negocioId}/invitaciones`);
+  if (!r.ok) { cont.innerHTML = '<p class="empty">No se pudo cargar el historial.</p>'; return; }
+  const { invitaciones } = await r.json();
+  if (!invitaciones.length) { cont.innerHTML = '<p class="empty">Sin invitaciones registradas.</p>'; return; }
+  const badge = e => ({ aceptada: '#15803d', pendiente: '#b45309', expirada: '#6b7280', cancelada: '#6b7280' }[e] || '#6b7280');
+  cont.innerHTML = '<table><thead><tr><th>Estado</th><th>Correo destino</th><th>Creada</th><th>Expira</th><th>Generada por</th></tr></thead><tbody>' +
+    invitaciones.map(i => `
+      <tr>
+        <td><span style="background:${badge(i.estado)};color:#fff;border-radius:8px;padding:2px 8px;font-size:.85em;">${escaparHTML(i.estado)}</span></td>
+        <td>${escaparHTML(i.correo_destino)}</td>
+        <td>${new Date(i.created_at).toLocaleString('es-MX')}</td>
+        <td>${new Date(i.expires_at).toLocaleString('es-MX')}</td>
+        <td>${escaparHTML(i.creada_por || '—')}</td>
+      </tr>`).join('') + '</tbody></table>' +
+    '<p style="color:var(--muted);font-size:.85em;">Los enlaces/tokens nunca se muestran aquí; reenviar o generar una invitación revoca las pendientes anteriores.</p>';
 }
 
 async function marcarPaso(clave) {
