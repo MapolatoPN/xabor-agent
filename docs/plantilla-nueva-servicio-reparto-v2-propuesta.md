@@ -45,9 +45,9 @@ Tarifa: {{4}}
 |---|---|---|---|
 | `{{1}}` negocio | `obtenerNombreNegocio(pedido.negocioId)` | sin cambios, ya existía en v1 | `Nonna Maye` |
 | `{{2}}` folio | `pedido.id` | directo, sin transformación | `XAB-0123` |
-| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearUbicacionRepartidor()` — `src/utils/direccionRepartidor.js` | `Av. Tecnológico 123, Col. Centro` |
+| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearEntregaOferta()` — `src/utils/direccionRepartidor.js` (hotfix oferta-repartidor, 8d8af3f: **sin número exterior antes de aceptar**) | `Col. Centro, calle Av. Tecnológico` |
 | `{{4}}` tarifa | `pedido.total` | `formatearTarifaRepartidor()` | `$544.00 MXN` |
-| `{{5}}` enlace | token de aceptación de un solo uso | sin cambios respecto a v1 | `https://xabor.mx/repartidor/aceptar/AbC123XyZ` |
+| `{{5}}` enlace | token de oferta (la pantalla del enlace ya NO consume el token al abrirse; la aceptación es un POST explícito desde esa pantalla) | `https://xabor.mx/repartidor/aceptar/AbC123XyZ` | `https://xabor.mx/repartidor/aceptar/AbC123XyZ` |
 
 ## Ejemplo completo renderizado (con los valores de ejemplo de arriba)
 
@@ -56,7 +56,7 @@ Tarifa: {{4}}
 
 Negocio: Nonna Maye
 Pedido: #XAB-0123
-Entrega: Av. Tecnológico 123, Col. Centro
+Entrega: Col. Centro, calle Av. Tecnológico
 Tarifa: $544.00 MXN
 
 ¿Deseas cubrir este pedido? Da clic en el siguiente enlace:
@@ -65,44 +65,43 @@ https://xabor.mx/repartidor/aceptar/AbC123XyZ
 ```
 
 Otros tres renderizados reales, para cubrir los casos de fallback de `{{3}}`
-(verificados directamente contra el código de `formatearUbicacionRepartidor`,
+(verificados directamente contra el código de `formatearEntregaOferta`,
 `src/utils/direccionRepartidor.js`):
 
-- **Solo calle** (colonia vacía/null): `Entrega: Av. Tecnológico 123`
+- **Solo calle** (colonia vacía/null): `Entrega: Calle Av. Tecnológico`
 - **Solo colonia** (calle vacía/null): `Entrega: Col. Centro`
-- **Ninguna de las dos**: `Entrega: Ubicación pendiente de confirmar`
-  (y se registra un `console.warn` para el caso, sin bloquear el envío)
+- **Ninguna de las dos**: `Entrega: Zona por confirmar`
+
+La dirección completa (número exterior, entre calles, referencia, teléfono
+del cliente) solo se muestra DESPUÉS de aceptar: en la pantalla ganadora y
+en el Portal Operativo del Repartidor (`/repartidor.html`, botón
+"Ver mi entrega" — feat/portal-operativo-repartidor, 98c2758).
 
 **Nunca se incluye:** nombre del cliente, teléfono del cliente, referencias
 completas ni notas privadas — eso sigue reservado para la plantilla de
 detalle (`xabor_detalle_servicio_reparto`), enviada solo después de que el
 repartidor acepta.
 
-## Verificación de formato de `{{3}}` (código ya revisado, Fase C — cierre)
+## Verificación de formato de `{{3}}` (actualizado post-hotfix 8d8af3f y piloto del portal)
 
-Confirmado leyendo `src/utils/direccionRepartidor.js` línea por línea:
+**`{{3}}` usa `formatearEntregaOferta()`** — la misma función que ya produce
+la línea "Entrega en:" del mensaje libre desplegado en producción
+(`whatsapp-meta.js:1428`). Reglas exactas, confirmadas leyendo
+`src/utils/direccionRepartidor.js`:
 
-- **Nunca `null`/`undefined` literales**: la función siempre retorna un
-  `string` — si no hay calle ni colonia, retorna el literal
-  `'Ubicación pendiente de confirmar'`, nunca el valor `null` sin envolver.
-- **Nunca comas duplicadas**: la coma solo se agrega en la rama
-  `calle + ', Col. ' + colonia`; las ramas de un solo campo no llevan coma.
-- **Nunca "Col. Col."**: la colonia se limpia con
-  `.replace(/^col\.?\s*/i, '')` antes de re-anteponer `"Col. "` — si el
-  dato ya venía como `"Col. Centro"`, el resultado es `"Col. Centro"`, no
-  `"Col. Col. Centro"`.
-- **Nunca calle/colonia repetidas**: si `calle` y `colonia` son el mismo
-  texto (comparación case-insensitive), la colonia se descarta antes de
-  construir el texto — evita `"Centro, Col. Centro"` cuando ambos campos
-  traen el mismo valor por error de captura.
-- **Sin saltos de línea defectuosos**: la función retorna una sola línea de
-  texto (trim aplicado a ambas entradas); es el cuerpo de la plantilla el
-  que decide el salto de línea antes de `Tarifa:`, no la función.
-- Truncado a 300 caracteres con `…` para direcciones excesivamente largas.
-
-Esto ya está cubierto por pruebas automatizadas (casos 1-6 de la suite
-`test/fase-red-repartidores-tiempo-real.mjs`: calle+colonia, solo calle,
-solo colonia, sin ninguna, dirección larga, caracteres especiales).
+- **Sin número exterior antes de aceptar**: el número FINAL de la calle se
+  recorta (regex que también cubre `#`, `no.`, `núm.`, `int`, `depto`,
+  `local`) — "Av. Tecnológico 123" se ofrece como "calle Av. Tecnológico".
+  Excepción segura: si al recortar no quedan letras ("Calle 21"), se
+  conserva tal cual para no vaciar el dato.
+- Formatos: ambas → `Col. <colonia>, calle <calle>`; solo colonia →
+  `Col. <colonia>`; solo calle → `Calle <calle>`; ninguna →
+  `Zona por confirmar`.
+- **Nunca `null`/`undefined` literales, comas duplicadas ni "Col. Col."**
+  (la colonia se limpia de su prefijo antes de re-anteponerlo); si calle y
+  colonia traen el mismo texto, la colonia se descarta.
+- Cubierto por la suite `test/fase-oferta-repartidor-estados.mjs` (caso
+  [MENSAJE]: "Col./calle sin número + CERO datos del cliente").
 
 ## Mapeo de variables (ya implementado en el código, sin cambios pendientes)
 
@@ -110,7 +109,7 @@ solo colonia, sin ninguna, dirección larga, caracteres especiales).
 |---|---|---|
 | `{{1}}` negocio | `obtenerNombreNegocio(pedido.negocioId)` | (sin cambios, ya existía) |
 | `{{2}}` folio | `pedido.id` | directo |
-| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearUbicacionRepartidor()` |
+| `{{3}}` ubicación | `pedido.cliente.calle` / `pedido.cliente.colonia` | `formatearEntregaOferta()` |
 | `{{4}}` tarifa | `pedido.total` | `formatearTarifaRepartidor()` — mismo valor que hoy usa "Pago estimado" en la v1, solo reformateado; sigue sin existir un cálculo de comisión propia del repartidor separado del total del cliente (fuera de alcance, ya documentado en el piloto original) |
 | `{{5}}` enlace | token de aceptación de un solo uso | sin cambios respecto a la v1 |
 
@@ -163,8 +162,13 @@ piloto v1 ya funcionando en producción:
    teléfono del cliente, nombre del cliente, referencias completas ni
    notas privadas — solo lo que la plantilla ya define.
 8. **Abrir el enlace con el repartidor de prueba correcto** y confirmar
-   que el flujo de aceptación funciona (mismo endpoint `GET
-   /repartidor/aceptar/:token` ya probado en Fase C).
+   el flujo de aceptación vigente (hotfix 8d8af3f): `GET
+   /repartidor/aceptar/:token` muestra una pantalla de revisión SIN
+   consumir el token; la aceptación es el botón que hace `POST
+   /api/repartidor/oferta/:token/aceptar`. Tras aceptar, la pantalla
+   ganadora ofrece "Ver mi entrega" → Portal Operativo
+   (`/repartidor.html`) con la dirección completa (validado en el piloto
+   controlado del portal, 2026-08-07).
 9. **Verificar aceptación única**: confirmar que una vez aceptado, el
    pedido queda asignado y no puede volver a aceptarse.
 10. **Probar intento de un segundo repartidor** sobre el mismo enlace (o
