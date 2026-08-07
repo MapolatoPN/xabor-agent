@@ -150,9 +150,10 @@ await t('CARRERA-INSERCION-INICIAL', 'ERROR-DE-BASE-DE-DATOS-EN-LA-INSERCION-INI
 
   try {
     // guardarPedidoActivo() nunca relanza (atrapa su propio error y
-    // devuelve false) -- registrarPedido() debe convertir ese false en un
-    // rechazo explícito y propio, nunca en una promesa que se cuelga ni en
-    // un pedido "confirmado" sin fila real.
+    // devuelve { ok:false }) -- registrarPedido() debe convertir ese error
+    // en un rechazo explícito y propio, nunca en una promesa que se cuelga,
+    // en un pedido "confirmado" sin fila real, ni en un reintento con otro
+    // folio (un error de base de datos no es un conflicto de folio).
     await assert.rejects(
       () => registrarPedido({
         cliente: { nombre: 'Fallo DB', telefono: '8781119997' },
