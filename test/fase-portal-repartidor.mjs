@@ -230,6 +230,11 @@ await t('FRONTEND', 'el portal escapa TODO dato del pedido y trae ruta/confirmac
   assert.ok(html.includes('tel:'), 'teléfono clicable');
 });
 
+// Limpieza: las entregas ficticias de esta suite (folios XAB-94xx)
+// inflarían las tasas de la suite de métricas/universos que comparte la
+// misma base -- se retiran para dejar el terreno neutro.
+await pool.query(`DELETE FROM pedidos_activos WHERE folio LIKE 'XAB-94%'`);
+
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(` - ${f}`)); }
 await srv.detener();
