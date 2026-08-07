@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -663,8 +663,29 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     const folioNum   = matchFolio?.[1] ?? matchFolio?.[2];
     if (folioNum) {
       const folio    = `XAB-${folioNum.padStart(4, '0')}`;
-      const pedidoDB = await obtenerPedidoPorFolioAmplio(folio, negocioId);
+      // Incidente XAB-0114: la búsqueda amplia excluía pedidos 'entregado',
+      // pero un pedido entregado SIN pagar es exactamente el que necesita
+      // el enlace (el XAB-0114 real fue archivado en el panel 3 segundos
+      // después del "Folio 114"). Primero la búsqueda para PAGO (incluye
+      // entregado, solo negocio propio); los programados siguen por la vía
+      // amplia de siempre.
+      let pedidoDB = await obtenerPedidoParaPagoPorFolio(folio, negocioId);
+      if (!pedidoDB) {
+        // La vía amplia solo aporta los PROGRAMADOS (aún no activados).
+        // Un activo que la búsqueda de pago rechazó está cancelado -- la
+        // amplia lo devolvería y se cobraría un pedido cancelado.
+        const amplio = await obtenerPedidoPorFolioAmplio(folio, negocioId);
+        if (amplio?._origen === 'programado') pedidoDB = amplio;
+      }
       console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
+      if (pedidoDB && pedidoDB.pago_confirmado) {
+        // Antes este caso caía a la IA sin respuesta útil: un folio ya
+        // pagado se responde de frente y jamás genera otro cobro.
+        const msgPagado = `Tu pedido ${folio} ya está pagado ✔. No necesitas hacer nada más.`;
+        await enviarMensaje(telefono, msgPagado, credenciales);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', msgPagado, negocioId, 'bot');
+        return;
+      }
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
           let url;
@@ -923,6 +944,12 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // respaldo que registrarPedido tenía antes (ya eliminado). Ahora se
       // fija explícitamente, igual que Rappi siempre lo hizo.
       resultado.orden.negocioId = negocioId;
+      // Incidente XAB-0114: cliente.telefono puede ser el teléfono de
+      // ENTREGA dictado en el chat (dato logístico) -- la identidad real de
+      // la conversación es el remitente del webhook y se sella aparte para
+      // que el cliente siempre pueda recuperar SU pedido ("mándame el
+      // enlace") aunque haya dictado otro número o formato.
+      resultado.orden.telefono_conversacion = telefono;
       let pedido;
       try {
         pedido = await registrarPedido(resultado.orden, 'whatsapp');
@@ -954,7 +981,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         emitirPedido(pedido);
       }
       await guardarPedido(telefono, resultado.orden, pedido.negocioId);
-      if (resultado.orden.cliente?.nombre) await upsertCliente(telefono, resultado.orden.cliente.nombre, negocioId);
+      // Incidente Alina/Mario: el nombre dictado para la ENTREGA no
+      // sustituye al nombre ya conocido del interlocutor -- solo llena el
+      // perfil si estaba vacío.
+      if (resultado.orden.cliente?.nombre) await upsertClienteNombreEntrega(telefono, resultado.orden.cliente.nombre, negocioId);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
       if (resultado.orden.forma_pago === 'enlace de pago') {
