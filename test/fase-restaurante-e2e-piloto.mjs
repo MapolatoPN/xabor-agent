@@ -310,7 +310,9 @@ await t('MULTITENANT', 'con B activo: no ve las mesas ocupadas de A ni puede lee
 });
 await t('MULTITENANT', 'B no puede usar al mesero de A ni ver las ventas RM- de A', async () => {
   const abrir = await api(base, '/api/restaurante/mesas/abrir', { cookie: adminB, method: 'POST', body: { mesa: 2, personas: 2, meseroUsuarioId: A.mesero } });
-  assert.strictEqual(abrir.status, 400, 'un usuario de otro negocio jamás puede ser mesero aquí');
+  // 401 desde que el mesero se identifica con PIN: un usuario ajeno y un PIN
+  // incorrecto se ven igual desde afuera, a propósito.
+  assert.ok([400, 401].includes(abrir.status), `un usuario de otro negocio jamás puede ser mesero aquí (dio ${abrir.status})`);
   const ventas = await api(base, '/api/ventas', { cookie: adminB });
   assert.strictEqual(ventas.status, 200);
   assert.ok(!JSON.stringify(ventas.body).includes(ventaFolio), 'las ventas de A no aparecen en la caja de B');

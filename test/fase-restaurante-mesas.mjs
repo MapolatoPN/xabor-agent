@@ -110,7 +110,9 @@ await t('APERTURA', 'HTTP: 201 al abrir, 409 en mesa ocupada, 400 mesa inválida
   const r3 = await api('/api/restaurante/mesas/abrir', { cookie: cookieAdminA, method: 'POST', body: { mesa: 0 } });
   assert.strictEqual(r3.status, 400);
   const r4 = await api('/api/restaurante/mesas/abrir', { cookie: cookieAdminA, method: 'POST', body: { mesa: 3, meseroUsuarioId: ADMIN_B } });
-  assert.strictEqual(r4.status, 400, 'un usuario de otro negocio jamás puede ser mesero aquí');
+  // 401 desde que el mesero se identifica con PIN: un usuario de otro negocio
+  // y un PIN incorrecto responden IGUAL, para no revelar quién existe aquí.
+  assert.ok([400, 401].includes(r4.status), `un usuario de otro negocio jamás puede ser mesero aquí (dio ${r4.status})`);
 });
 
 // ═══════════ Comanda (C4/C9) ═══════════

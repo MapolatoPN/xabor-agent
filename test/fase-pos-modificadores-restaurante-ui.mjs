@@ -325,7 +325,8 @@ await t('RESTAURANTE', '24. el mesero sale de los usuarios activos del negocio: 
   const c = await api(base, `/api/restaurante/cuentas/${propio.body.cuenta.id}`, { cookie: adminA });
   assert.ok(c.body.mesero?.nombre, 'la cuenta guarda al mesero');
   const ajeno = await api(base, '/api/restaurante/mesas/abrir', { cookie: adminA, method: 'POST', body: { mesa: 3, personas: 2, meseroUsuarioId: uB.id } });
-  assert.strictEqual(ajeno.status, 400, 'un usuario de otro negocio nunca es mesero aquí');
+  // 401: un mesero de otro negocio se rechaza igual que un PIN incorrecto.
+  assert.ok([400, 401].includes(ajeno.status), `un usuario de otro negocio nunca es mesero aquí (dio ${ajeno.status})`);
 });
 await t('RESTAURANTE', '25. sin número de mesas configurado se muestran las 12 por defecto', async () => {
   const r = await api(base, '/api/restaurante/mesas', { cookie: adminA });
