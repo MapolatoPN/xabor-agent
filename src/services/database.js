@@ -2723,6 +2723,49 @@ export async function listarMeserosDelNegocio(negocioId) {
   }
 }
 
+// Meseros elegibles para la ESTACIÓN (login por PIN): solo rol 'mesero',
+// activos y con PIN configurado, del negocio indicado. Devuelve id y nombre
+// -- jamás el hash ni el correo.
+export async function listarMeserosEstacion(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.nombre
+         FROM usuarios u
+         JOIN usuario_negocios un ON un.usuario_id = u.id
+        WHERE un.negocio_id = $1 AND un.rol = 'mesero'
+          AND un.activo = TRUE AND u.activo = TRUE AND u.pin_hash IS NOT NULL
+        ORDER BY u.nombre ASC`,
+      [negocioId.trim()]
+    );
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error listarMeserosEstacion:', e.message);
+    return [];
+  }
+}
+
+// Estado vigente de un mesero, releído en CADA request protegido: si un
+// admin lo desactiva (o le quita el rol), su sesión abierta deja de operar
+// aunque la cookie siga siendo criptográficamente válida.
+export async function meseroVigente(usuarioId, negocioId) {
+  if (typeof usuarioId !== 'string' || typeof negocioId !== 'string') return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.nombre
+         FROM usuarios u
+         JOIN usuario_negocios un ON un.usuario_id = u.id
+        WHERE u.id = $1 AND un.negocio_id = $2 AND un.rol = 'mesero'
+          AND un.activo = TRUE AND u.activo = TRUE AND u.pin_hash IS NOT NULL`,
+      [usuarioId, negocioId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error meseroVigente:', e.message);
+    return null;
+  }
+}
+
 // Valida el PIN de un mesero DE ESTE NEGOCIO. Nunca revela si el usuario
 // existe: un id ajeno y un PIN incorrecto se ven igual desde afuera.
 export async function verificarPinMesero(usuarioId, negocioId, pin) {

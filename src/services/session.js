@@ -62,10 +62,15 @@ export function revocarTokenSesion(token) {
 // y re-verificar el privilegio de superadmin en cada request — el flag
 // solo nunca basta. duracionMs (opcional): las sesiones de soporte viven
 // menos que las 12h estándar; el default de las sesiones normales no cambia.
-export function crearTokenSesion({ usuarioId, negocioId, rol, sop }, duracionMs = DURACION_MS) {
+// `est: true` marca una sesión de ESTACIÓN DE MESEROS: se emite con PIN en
+// /api/auth/mesero/login y solo abre la operación de Restaurante, nunca el
+// panel administrativo. Va dentro del payload firmado, así que el cliente no
+// puede fabricarla ni convertir una sesión normal en una de mesero.
+export function crearTokenSesion({ usuarioId, negocioId, rol, sop, est }, duracionMs = DURACION_MS) {
   const now = Date.now();
   const payload = { usuarioId, negocioId, rol, iat: now, exp: now + duracionMs };
   if (sop === true) payload.sop = true;
+  if (est === true) payload.est = true;
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = firmar(payloadB64);
   return `${payloadB64}.${sig}`;
