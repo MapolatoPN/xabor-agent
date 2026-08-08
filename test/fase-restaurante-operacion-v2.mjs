@@ -400,7 +400,10 @@ await t('RENDER', '27. el panel abre Restaurante como parte de Xabor, con el mis
   assert.match(texto, /id="tab-restaurante"[^>]*data-modulo="restaurante"/);
   assert.ok(texto.includes("location.href='/restaurante'"));
   const { texto: rest } = await traer('/restaurante');
-  assert.ok(rest.includes('XABOR') && rest.includes('Restaurante'), 'la barra es de Xabor, no de otro producto');
+  // La marca es el isotipo canónico + "Xabor" (ver docs/branding.md): la
+  // barra tiene que identificar al producto, no solo decir "Restaurante".
+  assert.ok(rest.includes('/public/brand/xabor-icono.svg') && rest.includes('Xabor') && rest.includes('Restaurante'),
+    'la barra es de Xabor, no de otro producto');
 });
 
 // ── 28-30. Aislamiento, turnos y estado compartido ─────────────────────────
