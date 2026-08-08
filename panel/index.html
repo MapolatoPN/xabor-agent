@@ -554,6 +554,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   .comanda-footer { display: none !important; }
 }
 </style>
+<!-- Modal de modificadores compartido con /mesas.html. Va aqui, en la
+     cabecera REAL de la pagina: mas abajo hay literales de plantilla de
+     JavaScript que arman tickets imprimibles y contienen cabeceras HTML como
+     texto. Una etiqueta de script colocada ahi dentro cerraria el bloque de
+     script inline de la pagina -- el parser HTML corta en la primera etiqueta
+     de cierre aunque este dentro de un string -- y el resto del codigo se
+     pintaria como texto. (Esta nota no usa etiquetas literales a proposito.) -->
+<script src="/modificadores.js"></script>
 </head>
 <body>
 
@@ -2034,9 +2042,7 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 .gt-row td{font-size:17px;font-weight:900;border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;}
 .letras{font-size:9px;text-align:center;display:block;margin:3px 0 5px;text-transform:uppercase;}
 .footer{text-align:center;font-size:10px;margin-top:8px;border-top:1px dashed #000;padding-top:5px;}
-</style>
-<script src="/modificadores.js"></script>
-</head><body>
+</style></head><body>
 <div class="marca">${et((negocio.nombre_corto||negocio.nombre||'').toLowerCase())}</div>
 <div class="dir">${et((negocio.nombre||'').toUpperCase())}</div>
 ${negocio.direccion ? `<div class="dir">${et(negocio.direccion.toUpperCase())}</div>` : ''}
