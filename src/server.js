@@ -471,6 +471,10 @@ function requireOperacionRestaurante(req, res, next) {
     req.negocioId = payload.negocioId;
     req.rol = 'mesero';
     req.esMesero = true;
+    // Nombre vigente del mesero (releído en cada request, igual que el resto
+    // del estado): la estación lo muestra en la barra para que la tablet
+    // compartida deje claro quién está trabajando.
+    req.meseroNombre = mesero.nombre;
     req.sesionNueva = true;
     next();
   })().catch((e) => {
@@ -1640,6 +1644,14 @@ app.get('/mesero', (req, res) => {
   res.sendFile(join(__dirname, '../panel/mesero.html'));
 });
 
+// Espacio de trabajo de Restaurante. Es la MISMA pantalla para el mesero que
+// entró por /mesero/<slug> y para el admin que la abre desde /app: una sola
+// UI operativa, con las acciones que cada rol puede ejecutar de verdad.
+// /mesas.html sigue sirviendo el mismo archivo (enlaces y tablets antiguas).
+app.get('/restaurante', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/mesas.html'));
+});
+
 app.get('/superadmin', (req, res) => {
   res.sendFile(join(__dirname, '../panel/superadmin.html'));
 });
@@ -1886,9 +1898,24 @@ app.get('/api/restaurante/meseros', requireOperacionRestaurante, requireModulo('
     // negocio: un superadmin en sesión de soporte no puede autoasignarse.
     // En sesión de estación no hay nada que elegir: el mesero ya se identificó
     // con su PIN al entrar.
-    if (req.esMesero) return res.json({ meseros: [], sugerido: req.usuarioId, sesionMesero: true });
+    // El nombre del negocio y el de quien opera son datos que esa persona ya
+    // tiene delante (está dentro del local, con su sesión abierta): sirven
+    // para que la barra diga "Xabor · Restaurante — <negocio>" y "Mesero:
+    // <nombre>" sin pedir otra ruta del panel, que un mesero no puede usar.
+    const { rows: neg } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
+    const negocio = neg[0]?.nombre || null;
+    if (req.esMesero) {
+      return res.json({
+        meseros: [], sugerido: req.usuarioId, sesionMesero: true,
+        negocio, yo: { id: req.usuarioId, nombre: req.meseroNombre || null },
+      });
+    }
     const propio = await esMiembroActivoDelNegocio(req.usuarioId, req.negocioId);
-    res.json({ meseros, sugerido: propio ? req.usuarioId : null, sesionMesero: false });
+    const yo = propio ? (meseros.find(m => m.id === req.usuarioId) || null) : null;
+    res.json({
+      meseros, sugerido: propio ? req.usuarioId : null, sesionMesero: false,
+      negocio, yo: yo ? { id: yo.id, nombre: yo.nombre } : null,
+    });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 

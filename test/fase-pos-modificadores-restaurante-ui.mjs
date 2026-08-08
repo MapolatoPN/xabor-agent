@@ -348,7 +348,7 @@ await t('NAVEGACION', '26. el panel enlaza Restaurante y solo se muestra con el 
   const html = await (await fetch(base + '/index.html')).text();
   assert.ok(html.includes('id="tab-restaurante"'), 'la pestaña debe existir');
   assert.match(html, /id="tab-restaurante"[^>]*data-modulo="restaurante"/, 'gateada por módulo');
-  assert.ok(html.includes("location.href='/mesas.html'"), 'abre la UI operativa existente');
+  assert.ok(html.includes("location.href='/restaurante'"), 'abre el espacio de trabajo de Restaurante');
   assert.ok(html.includes('modificadores.js'), 'el panel carga el modal compartido');
   // aplicarModulosUI oculta cualquier [data-modulo] que el negocio no tenga:
   // es el mismo mecanismo del resto de las pestañas, no uno nuevo.
@@ -357,7 +357,7 @@ await t('NAVEGACION', '26. el panel enlaza Restaurante y solo se muestra con el 
 await t('NAVEGACION', '27. la UI de mesas se sirve y usa el mismo modal de modificadores', async () => {
   const html = await (await fetch(base + '/mesas.html')).text();
   assert.ok(html.includes('modificadores.js'), 'mismo componente que POS, sin implementación paralela');
-  assert.ok(html.includes('agregarDesdeMenu'), 'permite agregar desde el menú del negocio');
+  assert.ok(html.includes('elegirProducto'), 'permite agregar desde el menú del negocio');
   assert.ok(html.includes('/api/restaurante/mesas'), 'consume las rutas existentes');
 });
 await t('NAVEGACION', '28. con el módulo apagado la operación responde 403 (fail-closed real, no solo UI)', async () => {

@@ -85,7 +85,13 @@ async function entrar() {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { $('pin').value = ''; error(d.error || 'Mesero o PIN incorrecto'); return; }
-    location.href = '/mesas.html';
+    // Se guarda el slug para que "Salir" devuelva a la pantalla de acceso de
+    // ESTE restaurante (no es credencial: la sesión vive en la cookie
+    // firmada y el backend la revalida en cada request).
+    try { localStorage.setItem('xb_mesero_slug', SLUG); } catch {}
+    // Mismo espacio de trabajo de Xabor que abre un administrador: el mesero
+    // entra por otra puerta, no a otra aplicación.
+    location.href = '/restaurante';
   } catch {
     error('No se pudo conectar.');
   } finally {
