@@ -1512,7 +1512,10 @@ app.get('/crear-password', (req, res) => {
 });
 
 // Salud del servidor
-app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+// El puerto solo se abre cuando el bootstrap terminó (ver "Inicio" al final
+// del archivo), así que si esta ruta responde, la aplicación ya está lista:
+// `listo` lo hace explícito para quien mire el healthcheck.
+app.get('/health', (req, res) => res.json({ status: 'ok', listo: appReady, timestamp: new Date().toISOString() }));
 
 // ─── Captura pública de prospectos (landing) ───────────────────────────────
 // Endpoint público (sin sesión) -- reemplaza el flujo anterior de mailto:.
@@ -5926,41 +5929,77 @@ async function enviarSeguimientoOportunidades() {
 }
 
 // ─── Inicio ──────────────────────────────────────────────────────────────────
-initDB()
-  .then(() => resolverNegocioActualPorDefecto())
-  .then((negocioId) => seedMenuDesdeJSON(menuJSON, negocioId))
-  .then(() => cargarPedidosDesdeDB())
-  .then(() => cargarConfig())
-  .then(() => cargarIntegraciones())
-  .then(() => {
-    // Activar pedidos programados cada 5 minutos
-    activarPedidosProgramados();
-    setInterval(activarPedidosProgramados, 5 * 60 * 1000);
-    // Sincronizar horario de Rappi al arrancar y cada 5 minutos
-    sincronizarRappi();
-    setInterval(sincronizarRappi, 5 * 60 * 1000);
-    // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
-    reconciliarPagosPendientes();
-    setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
-    // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
-    setInterval(async () => {
-      await detectarConversacionesAbandonadas(30);
-      await enviarSeguimientoOportunidades();
-    }, 10 * 60 * 1000);
-    // Memory Engine: enriquecer perfiles de clientes cada 2 horas
-    setTimeout(() => {
-      enriquecerTodosLosPerfiles(); // primer cálculo inicial (con delay para no sobrecargar arranque)
-      setInterval(enriquecerTodosLosPerfiles, 2 * 60 * 60 * 1000);
-    }, 30 * 1000);
-  })
-  .catch(e => console.error('[DB] Error al inicializar:', e.message));
+// El servidor NO abre el puerto hasta terminar el bootstrap. Antes,
+// server.listen corría EN PARALELO a esta cadena: /health ya respondía y
+// podían entrar pedidos (POS, WhatsApp, Rappi) mientras cargarPedidosDesdeDB()
+// seguía leyendo. Esa carga reemplazaba el estado en memoria con la
+// fotografía previa, así que el pedido recién creado quedaba persistido en
+// pedidos_activos pero desaparecía de memoria, y la API respondía después
+// "Pedido no encontrado" sobre una fila que sí existía. Lo mismo aplicaba a
+// la configuración y a las integraciones, que también se cargan aquí.
+//
+// Con listen al final, la ventana no existe: mientras el bootstrap corre, el
+// puerto está cerrado (Railway reintenta el healthcheck hasta
+// healthcheckTimeout = 60s, ver railway.toml; el bootstrap tarda ~1s). Si el
+// bootstrap falla, el proceso NO se queda escuchando como si estuviera sano:
+// loguea y sale con código 1 para que Railway conserve el deployment previo.
+let appReady = false;
+export function aplicacionLista() { return appReady; }
 
-server.listen(PORT, () => {
-  console.log(`
+async function arrancar() {
+  console.log('[Startup] Inicializando base...');
+  await initDB();
+  const negocioId = await resolverNegocioActualPorDefecto();
+  await seedMenuDesdeJSON(menuJSON, negocioId);
+  console.log('[Startup] Cargando pedidos...');
+  const cargados = await cargarPedidosDesdeDB();
+  console.log(`[Startup] Pedidos cargados: ${cargados}`);
+  await cargarConfig();
+  await cargarIntegraciones();
+
+  appReady = true;
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT, () => {
+      console.log(`
 🌮 =============================================
    Agente Xabor corriendo en puerto ${PORT}
    Panel: http://localhost:${PORT}
    API:   http://localhost:${PORT}/health
 🌮 =============================================
   `);
+      resolve();
+    });
+  });
+  console.log('[Startup] Aplicación lista para tráfico');
+
+  // Trabajos periódicos: después de escuchar, para que nada de esto pueda
+  // retrasar la disponibilidad del servicio.
+  // Activar pedidos programados cada 5 minutos
+  activarPedidosProgramados();
+  setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+  // Sincronizar horario de Rappi al arrancar y cada 5 minutos
+  sincronizarRappi();
+  setInterval(sincronizarRappi, 5 * 60 * 1000);
+  // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
+  reconciliarPagosPendientes();
+  setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
+  // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
+  setInterval(async () => {
+    await detectarConversacionesAbandonadas(30);
+    await enviarSeguimientoOportunidades();
+  }, 10 * 60 * 1000);
+  // Memory Engine: enriquecer perfiles de clientes cada 2 horas
+  setTimeout(() => {
+    enriquecerTodosLosPerfiles(); // primer cálculo inicial (con delay para no sobrecargar arranque)
+    setInterval(enriquecerTodosLosPerfiles, 2 * 60 * 60 * 1000);
+  }, 30 * 1000);
+}
+
+arrancar().catch(e => {
+  // Sin estado inicial completo no se acepta tráfico: nunca se sirve un
+  // servicio "sano" que perdería o duplicaría pedidos. Solo el mensaje del
+  // error, jamás credenciales ni la URL de conexión.
+  console.error('[Startup] ERROR durante el arranque — la aplicación no acepta tráfico:', e.message);
+  process.exit(1);
 });
