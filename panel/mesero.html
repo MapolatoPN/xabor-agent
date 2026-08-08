@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Acceso de meseros · Xabor</title>
+<style>
+  :root { --bg:#111827; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#9ca3af; --accent:#f97316; --rojo:#ef4444; }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; }
+  body { background:var(--bg); color:var(--texto); min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .caja { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; width:min(400px,100%); }
+  .marca { font-size:26px; font-weight:900; letter-spacing:3px; text-align:center; }
+  .negocio { text-align:center; color:var(--sub); font-size:14px; margin-top:2px; }
+  h1 { font-size:16px; font-weight:700; margin:18px 0 14px; text-align:center; }
+  label { display:block; font-size:12px; color:var(--sub); margin:12px 0 5px; }
+  select, input { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line); border-radius:10px; padding:13px 12px; font-size:16px; }
+  input[type=password] { letter-spacing:8px; text-align:center; font-size:22px; }
+  button { width:100%; margin-top:18px; background:var(--accent); color:#fff; border:none; border-radius:10px; padding:14px; font-weight:800; font-size:16px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #msg { margin-top:12px; font-size:13px; min-height:18px; text-align:center; color:var(--rojo); }
+  .pie { margin-top:16px; font-size:11px; color:var(--sub); text-align:center; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="caja">
+  <div class="marca">XABOR</div>
+  <div class="negocio" id="negocio">…</div>
+  <h1>Acceso de meseros</h1>
+
+  <div id="formulario" style="display:none;">
+    <label for="mesero">Mesero</label>
+    <select id="mesero"></select>
+    <label for="pin">PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+    <button id="btn" onclick="entrar()">Entrar</button>
+  </div>
+
+  <div id="msg"></div>
+  <div class="pie" id="pie"></div>
+</div>
+
+<script>
+// El negocio sale del slug de la URL (/mesero/<slug>): la autenticación
+// SIEMPRE está acotada a un negocio, porque dos restaurantes pueden tener un
+// "Juan" con el mismo PIN y ambos son válidos.
+const SLUG = decodeURIComponent(location.pathname.replace(/^\/mesero\/?/, '')).trim().toLowerCase();
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function error(t) { $('msg').textContent = t; }
+
+async function cargar() {
+  if (!SLUG) {
+    error('Falta el negocio en la dirección.');
+    $('pie').textContent = 'Pide a tu administrador el enlace de tu restaurante (termina en /mesero/tu-negocio).';
+    return;
+  }
+  try {
+    const r = await fetch('/api/auth/mesero/opciones?negocio=' + encodeURIComponent(SLUG));
+    const d = await r.json();
+    if (!r.ok) { $('negocio').textContent = ''; error(d.error || 'Restaurante no disponible'); return; }
+    $('negocio').textContent = d.negocio || '';
+    document.title = `Acceso de meseros · ${d.negocio || 'Xabor'}`;
+    if (!d.meseros.length) {
+      error('Todavía no hay meseros dados de alta.');
+      $('pie').textContent = 'El administrador los crea en Usuarios → Nuevo usuario → Mesero.';
+      return;
+    }
+    $('mesero').innerHTML = d.meseros.map(m => `<option value="${m.id}">${esc(m.nombre)}</option>`).join('');
+    $('formulario').style.display = '';
+    $('pie').textContent = 'Tu PIN es personal. Al terminar tu turno, cierra la sesión desde Mesas.';
+  } catch {
+    error('No se pudo conectar.');
+  }
+}
+
+async function entrar() {
+  error('');
+  const pin = $('pin').value;
+  if (!/^[0-9]{4,6}$/.test(pin)) { error('El PIN son 4 a 6 dígitos.'); return; }
+  $('btn').disabled = true;
+  try {
+    const r = await fetch('/api/auth/mesero/login', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ negocio: SLUG, meseroUsuarioId: $('mesero').value, pin }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $('pin').value = ''; error(d.error || 'Mesero o PIN incorrecto'); return; }
+    location.href = '/mesas.html';
+  } catch {
+    error('No se pudo conectar.');
+  } finally {
+    $('btn').disabled = false;
+  }
+}
+
+$('pin').addEventListener('keydown', (e) => { if (e.key === 'Enter') entrar(); });
+cargar();
+</script>
+</body>
+</html>

@@ -44,7 +44,8 @@
 <body>
 <header>
   <h1>🍽 Mesas</h1>
-  <a href="/index.html">← Volver al panel</a>
+  <a id="link-panel" href="/index.html">← Volver al panel</a>
+  <button id="btn-salir-mesero" style="display:none;background:var(--line);color:var(--texto);border:none;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer;" onclick="salirMesero()">Salir</button>
 </header>
 <main>
   <!-- Integración contable activa: cerrar una cuenta genera EXACTAMENTE UNA
@@ -118,6 +119,15 @@
 <script>
 let CUENTA = null;
 let ROL = 'staff';
+// Sesión de estación: el mesero ya se identificó con su PIN, así que no se le
+// vuelve a preguntar quién es al abrir mesa ni se le ofrece el panel.
+let SESION_MESERO = false;
+let NOMBRE_MESERO = '';
+
+async function salirMesero() {
+  try { await fetch('/api/auth/mesero/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
+  location.href = '/mesero/' + (localStorage.getItem('xb_mesero_slug') || '');
+}
 
 function msg(t) {
   const el = document.getElementById('msg');
@@ -158,7 +168,15 @@ async function cargarMeseros() {
     const r = await api('/api/restaurante/meseros');
     MESEROS = r.meseros || [];
     MESERO_SUGERIDO = r.sugerido || null;
+    SESION_MESERO = r.sesionMesero === true;
   } catch { MESEROS = []; MESERO_SUGERIDO = null; }
+  if (SESION_MESERO) {
+    // El backend asigna al mesero autenticado; el selector sobra.
+    document.getElementById('ab-mesero').closest('dialog').querySelectorAll('label')[0].style.display = 'none';
+    document.getElementById('ab-mesero').style.display = 'none';
+    document.getElementById('ab-pin-bloque').style.display = 'none';
+    return;
+  }
   const sel = document.getElementById('ab-mesero');
   // Solo se ofrece a quien puede identificarse: el usuario de la sesión (ya
   // autenticado) y quienes tienen PIN. Un compañero sin PIN todavía no puede
@@ -184,10 +202,14 @@ function abrirMesaDlg(n) {
 }
 async function confirmarAbrir() {
   const personas = document.getElementById('ab-personas').value;
-  const meseroUsuarioId = document.getElementById('ab-mesero').value || null;
-  const pin = document.getElementById('ab-pin').value || null;
-  if (!meseroUsuarioId) { msg('Selecciona el mesero que abre la mesa'); return; }
-  const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify({ mesa: MESA_POR_ABRIR, personas, meseroUsuarioId, pin }) });
+  const cuerpo = { mesa: MESA_POR_ABRIR, personas };
+  if (!SESION_MESERO) {
+    const meseroUsuarioId = document.getElementById('ab-mesero').value || null;
+    if (!meseroUsuarioId) { msg('Selecciona el mesero que abre la mesa'); return; }
+    cuerpo.meseroUsuarioId = meseroUsuarioId;
+    cuerpo.pin = document.getElementById('ab-pin').value || null;
+  }
+  const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify(cuerpo) });
   document.getElementById('ab-pin').value = '';
   document.getElementById('dlg-abrir').close();
   await cargarMesas();
@@ -328,17 +350,35 @@ async function moverMesa() {
   cargarMesas();
 }
 
-fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
-  if (!r.ok) { window.location.href = '/login-negocio.html'; return; }
-  const me = await r.json();
-  ROL = me.rol || 'staff';
-  if (!Array.isArray(me.modulos) || !me.modulos.includes('restaurante')) {
-    document.querySelector('main').innerHTML = '<p style="color:var(--sub);">El módulo de restaurante no está habilitado para este negocio.</p>';
+// Arranque: /api/auth/me es del panel administrativo y una sesión de estación
+// no pasa por ahí (a propósito). Si falla, se prueba la operación real: si
+// /api/restaurante/meseros responde con sesionMesero, es una tablet de
+// meseros y la pantalla se adapta; si tampoco, se manda a iniciar sesión.
+(async () => {
+  const arrancarOperacion = () => { cargarMesas(); setInterval(cargarMesas, 30000); };
+  const r = await fetch('/api/auth/me', { credentials: 'same-origin' }).catch(() => null);
+  if (r && r.ok) {
+    const me = await r.json();
+    ROL = me.rol || 'staff';
+    if (!Array.isArray(me.modulos) || !me.modulos.includes('restaurante')) {
+      document.querySelector('main').innerHTML = '<p style="color:var(--sub);">El módulo de restaurante no está habilitado para este negocio.</p>';
+      return;
+    }
+    arrancarOperacion();
     return;
   }
-  cargarMesas();
-  setInterval(cargarMesas, 30000);
-});
+  const sesion = await fetch('/api/restaurante/meseros', { credentials: 'same-origin' }).catch(() => null);
+  const datos = sesion && sesion.ok ? await sesion.json().catch(() => ({})) : null;
+  if (datos && datos.sesionMesero) {
+    SESION_MESERO = true;
+    ROL = 'mesero';
+    document.getElementById('link-panel').style.display = 'none';
+    document.getElementById('btn-salir-mesero').style.display = '';
+    arrancarOperacion();
+    return;
+  }
+  window.location.href = '/login-negocio.html';
+})();
 </script>
 </body>
 </html>
