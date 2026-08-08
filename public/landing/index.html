@@ -585,6 +585,7 @@
 
     <div class="precio-grid">
       <div class="tarjeta-precio">
+        <p class="tarjeta-sello">Precio regular</p>
         <div class="precio-fila">
           <div>
             <div class="precio-etiqueta">Mensualidad</div>
@@ -615,28 +616,33 @@
       </div>
 
       <div class="tarjeta-promo">
-        <p class="antetitulo">Promoción de lanzamiento</p>
-        <h3>Instalación sin costo para 5 negocios</h3>
-        <p>Estamos seleccionando cinco negocios que reciben pedidos todos los días y quieren ordenar su operación sin contratar más personal.</p>
+        <p class="tarjeta-sello promo">Promoción temporal</p>
+        <p class="antetitulo">Promoción agosto + septiembre</p>
+        <h3>Empieza con Xabor por $990</h3>
+        <p>Activa Xabor en agosto y obtén agosto y septiembre por $990 MXN, con la instalación incluida.</p>
+
+        <!-- El dato que tiene que entenderse de un vistazo: 990 son los DOS
+             meses juntos, no la mensualidad de cada uno. -->
+        <div class="promo-destacado">
+          <p class="promo-meses">Agosto + septiembre</p>
+          <p class="promo-monto">$990 <span>MXN</span></p>
+          <p class="promo-total">Total por los dos meses juntos, no por mes</p>
+        </div>
 
         <div class="promo-precios">
           <div class="promo-item">
-            <span class="promo-tag no">Bonificada</span>
-            <span>Instalación $2,500 MXN</span>
+            <span class="promo-item-etiqueta">Instalación</span>
+            <span class="promo-item-valor">Sin costo <s>$2,500</s></span>
           </div>
           <div class="promo-item">
-            <span class="promo-tag si">Sí aplica</span>
-            <span>Mensualidad $990 MXN al mes</span>
+            <span class="promo-item-etiqueta">Después de septiembre</span>
+            <span class="promo-item-valor">$990 MXN / mes</span>
           </div>
         </div>
 
-        <ul class="promo-lista">
-          <li><svg class="icono" aria-hidden="true"><use href="#i-check"/></svg> Sujeto a evaluación previa</li>
-          <li><svg class="icono" aria-hidden="true"><use href="#i-check"/></svg> Ideal para negocios pequeños</li>
-          <li><svg class="icono" aria-hidden="true"><use href="#i-check"/></svg> Disponibilidad limitada</li>
-        </ul>
+        <p class="promo-vigencia">Promoción válida durante agosto de 2026.</p>
 
-        <a href="#demo" class="btn btn-claro" id="promo-btn" style="width:100%">Postular mi negocio</a>
+        <a href="#demo" class="btn btn-claro" id="promo-btn" style="width:100%">Solicitar una demostración</a>
       </div>
     </div>
   </div>
@@ -958,13 +964,13 @@
     });
   });
 
-  /* Promoción: prellenar el comentario al llegar desde "Postular mi negocio" */
+  /* Promoción: prellenar el comentario al llegar desde la tarjeta promocional */
   var promoBtn = document.getElementById('promo-btn');
   var comentario = document.getElementById('f-comentario');
   if (promoBtn && comentario) {
     promoBtn.addEventListener('click', function () {
       if (!comentario.value) {
-        comentario.value = 'Me interesa la promoción de instalación sin costo para los primeros 5 negocios.';
+        comentario.value = 'Me interesa la promocion de agosto y septiembre por $990 con la instalacion incluida.';
       }
     });
   }

@@ -135,11 +135,56 @@ await t('ACCION', '11. el formulario de demostración sigue apuntando al endpoin
 });
 
 // ── 12-13. Precio y legal ──────────────────────────────────────────────────
-await t('PRECIO', '12. el precio publicado es el real y no aparece comisión por pedido', async () => {
-  assert.ok(/\$990/.test(soloTexto), 'mensualidad de $990 MXN');
-  assert.ok(/\$2,500/.test(soloTexto), 'instalación de $2,500 MXN');
+await t('PRECIO', '12. el precio regular publicado es el real y no aparece comisión por pedido', async () => {
+  const regular = html.match(/<div class="tarjeta-precio">[\s\S]*?<\/div>\s*<div class="tarjeta-promo"/)?.[0] || '';
+  const textoRegular = regular.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.ok(/precio regular/i.test(textoRegular), 'la tarjeta permanente se identifica como el precio regular');
+  assert.ok(/\$990\s*MXN \/ mes/.test(textoRegular), 'mensualidad regular de $990 MXN al mes');
+  assert.ok(/\$2,500\s*MXN/.test(textoRegular), 'instalación regular de $2,500 MXN');
   assert.ok(/sin comisi[oó]n/i.test(soloTexto), 'se dice explícitamente que no hay comisión por pedido');
   assert.ok(!/enterprise/i.test(soloTexto), 'no se inventan planes que no existen');
+});
+
+// La promoción se prestaba a leerse como "$990 en agosto y otros $990 en
+// septiembre". Estos casos vigilan justo esa lectura.
+await t('PROMO', '12b. la promoción cubre agosto Y septiembre por $990 en total', async () => {
+  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)?.[0];
+  assert.ok(promo, 'existe la tarjeta promocional');
+  const texto = promo.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+  assert.ok(/promoci[oó]n temporal/i.test(texto), 'se marca como promoción temporal, no como el precio de siempre');
+  assert.ok(/agosto\s*\+\s*septiembre/i.test(texto), 'nombra los dos meses que cubre');
+  assert.ok(/\$990/.test(texto), 'el monto promocional es $990');
+
+  // Lo importante: que diga TOTAL por los dos meses juntos.
+  assert.ok(/total por los dos meses/i.test(texto),
+    'debe decir que $990 es el total de los dos meses, no la mensualidad de cada uno');
+  assert.ok(!/\$990\s*MXN al mes/i.test(texto),
+    'la tarjeta promocional no debe decir "mensualidad $990 al mes": es lo que causaba la confusión');
+  assert.ok(!/s[ií] aplica/i.test(texto), 'fuera la etiqueta "Sí aplica" que sugería pago mensual');
+
+  assert.ok(/instalaci[oó]n/i.test(texto) && /sin costo/i.test(texto), 'la instalación promocional es sin costo');
+  assert.ok(/despu[eé]s de septiembre/i.test(texto) && /\$990 MXN \/ mes/.test(texto),
+    'después de septiembre arranca la mensualidad de $990');
+  assert.ok(/agosto de 2026/i.test(texto), 'la vigencia declarada es agosto de 2026');
+  assert.ok(!/5 negocios|cinco negocios/i.test(texto), 'el cupo de 5 negocios se retiró: la promoción es por tiempo');
+});
+
+await t('PROMO', '12c. el monto promocional domina visualmente y el CTA es el de siempre', async () => {
+  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)[0];
+  assert.ok(/class="promo-monto">\$990/.test(promo), 'el $990 va en el elemento destacado de la tarjeta');
+
+  // El destacado debe ser tipográficamente mayor que el precio regular.
+  const css = (await traer('/public/landing/styles.css')).texto;
+  const promoMonto = css.match(/\.promo-monto\s*{[^}]*font-size:\s*clamp\(([\d.]+)rem/)?.[1];
+  const precioMonto = css.match(/\.precio-monto\s*{[^}]*font-size:\s*([\d.]+)rem/)?.[1];
+  assert.ok(promoMonto && precioMonto, 'ambos montos declaran tamaño');
+  assert.ok(Number(promoMonto) > Number(precioMonto),
+    `el monto promocional (${promoMonto}rem) debe dominar sobre el regular (${precioMonto}rem)`);
+
+  const cta = promo.match(/id="promo-btn"[^>]*>([^<]+)</)?.[1].trim();
+  assert.strictEqual(cta, 'Solicitar una demostración', 'el CTA promocional es el mismo de la landing');
+  assert.ok(/href="#demo"/.test(promo), 'y lleva al formulario');
 });
 
 await t('LEGAL', '13. el aviso de privacidad sigue enlazado y se sirve', async () => {

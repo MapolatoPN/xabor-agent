@@ -42,8 +42,9 @@ toda la historia.
    asistente de modificadores.
 6. **Para quién es** — seis segmentos concretos de negocios de comida.
 7. **Por qué Xabor** — seis diferenciadores, sin cifras inventadas.
-8. **Precio** — $990 MXN al mes + $2,500 de instalación, y la promoción de
-   lanzamiento. Se dice explícitamente que **no hay comisión por pedido**.
+8. **Precio** — dos tarjetas. La izquierda es el **precio regular** ($990 MXN
+   al mes + $2,500 de instalación); la derecha va marcada como **promoción
+   temporal**. Se dice explícitamente que **no hay comisión por pedido**.
 9. **Diseñado para operación real** — señales de confianza honestas.
 10. **Preguntas** — ocho dudas reales, respondidas con lo que el sistema hace.
 11. **CTA final + formulario** — el mismo `POST /api/public/prospectos`.
@@ -77,7 +78,7 @@ operación sin conexión.
 - El **formulario de demostración** completo: mismos campos, mismo honeypot,
   mismo consentimiento y el mismo `POST /api/public/prospectos`. Solo cambió
   su presentación.
-- Los **precios publicados** y la promoción de lanzamiento.
+- Los **precios publicados**: $990 al mes y $2,500 de instalación.
 - El **aviso de privacidad** y su enlace.
 
 ## Pruebas
@@ -90,3 +91,27 @@ consistente y no aparecen flujos inexistentes, el formulario sigue apuntando
 al endpoint que guarda, el precio es el real, el aviso de privacidad responde,
 la marca y el SEO están declarados, ningún asset da 404, el HTML no está roto
 y no se coló un framework.
+
+## La promoción de agosto
+
+La tarjeta promocional tenía un problema de lectura: decía *"Bonificada ·
+Instalación $2,500"* y *"Sí aplica · Mensualidad $990 MXN al mes"*, lo que se
+entendía como **$990 en agosto y otros $990 en septiembre**. No es la oferta.
+
+La oferta es: **$990 MXN cubre agosto y septiembre juntos**, con la
+instalación incluida; a partir de octubre corre la mensualidad normal de $990.
+
+Por eso el monto va en un bloque propio, más grande que el precio regular
+(54 px contra 34 px en escritorio), con los dos meses arriba y la frase
+"Total por los dos meses juntos, no por mes" debajo. Las dos filas de abajo
+resuelven las dudas inmediatas —qué pasa con la instalación y qué pasa
+después— y la vigencia declara *agosto de 2026*.
+
+El **cupo de "5 negocios" se retiró**: la promoción ahora se limita por
+tiempo, no por número de negocios. Estaba escrito a mano en la landing (nada
+en backend ni en la base), así que quitarlo no tuvo más efecto que el texto.
+
+`fase-landing-v2` vigila la lectura ambigua explícitamente: falla si la
+tarjeta vuelve a decir "mensualidad $990 al mes", si desaparece la frase de
+"total por los dos meses", o si el monto promocional deja de dominar
+tipográficamente sobre el regular.
