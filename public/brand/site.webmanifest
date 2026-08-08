@@ -1,0 +1,16 @@
+{
+  "name": "Xabor",
+  "short_name": "Xabor",
+  "description": "Convierte WhatsApp en pedidos organizados.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FAFAF8",
+  "theme_color": "#C96220",
+  "lang": "es-MX",
+  "icons": [
+    { "src": "/public/brand/xabor-icono.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/public/brand/xabor-icono-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/public/brand/xabor-icono-512.png", "type": "image/png", "sizes": "512x512" }
+  ]
+}
