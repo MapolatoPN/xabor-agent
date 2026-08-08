@@ -47,6 +47,8 @@ export async function listarMesas(negocioId) {
     pool.query(`SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [nid]),
     pool.query(`
       SELECT c.id, c.mesa_numero, c.personas, c.abierta_at, u.nombre AS mesero_nombre, c.mesero_usuario_id,
+             (SELECT COUNT(*) FROM restaurante_cuenta_items i
+              WHERE i.cuenta_id = c.id AND i.estado = 'pendiente') AS pendientes,
              ${SQL_TOTALES}
       FROM restaurante_cuentas c
       JOIN usuarios u ON u.id = c.mesero_usuario_id
@@ -61,7 +63,12 @@ export async function listarMesas(negocioId) {
     const c = porMesa.get(n);
     mesas.push(c ? {
       mesa: n, ocupada: true, cuentaId: c.id, personas: c.personas,
-      mesero: c.mesero_nombre, abiertaAt: c.abierta_at,
+      // meseroUsuarioId: para que el tablero pueda separar "mis mesas" de
+      // "todas" sin pedir la cuenta de cada mesa. pendientes: cuántos items
+      // todavía no salieron a cocina -- lo que hace visible de un vistazo la
+      // mesa que tiene comanda por enviar.
+      mesero: c.mesero_nombre, meseroUsuarioId: c.mesero_usuario_id, abiertaAt: c.abierta_at,
+      pendientes: Number(c.pendientes) || 0,
       total: Number(c.total), pagado: Number(c.pagado), saldo: Number(c.total) - Number(c.pagado),
     } : { mesa: n, ocupada: false });
   }
