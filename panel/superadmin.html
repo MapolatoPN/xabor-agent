@@ -1165,7 +1165,17 @@ function copiarEnlaceInvitacion() {
 }
 
 async function cambiarModulo(modulo, estado) {
-  await api(`/api/superadmin/negocios/${negocioActualId}/modulos`, { method:'PATCH', body: JSON.stringify({ modulos: { [modulo]: estado } }) });
+  const r = await api(`/api/superadmin/negocios/${negocioActualId}/modulos`, { method:'PATCH', body: JSON.stringify({ modulos: { [modulo]: estado } }) });
+  if (!r.ok) {
+    // El caso esperado es 409 al apagar Restaurante con mesas abiertas: el
+    // backend no cambió nada, así que se recarga la ficha para que el
+    // selector vuelva a mostrar el estado real en vez de uno que no ocurrió.
+    let msg = 'No se pudo cambiar el módulo.';
+    try { const e = await r.json(); if (e?.error) msg = e.error; } catch {}
+    alert(msg);
+    verDetalleNegocio(negocioActualId);
+    return;
+  }
   // El readiness de Restaurante depende del estado del módulo — refrescarlo
   // al cambiar cualquier módulo mantiene la tarjeta veraz sin recargar.
   if (modulo === 'restaurante') cargarRestauranteReadiness(negocioActualId);

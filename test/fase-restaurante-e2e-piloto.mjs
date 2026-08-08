@@ -316,6 +316,66 @@ await t('MULTITENANT', 'B no puede usar al mesero de A ni ver las ventas RM- de 
   assert.ok(!JSON.stringify(ventas.body).includes(ventaFolio), 'las ventas de A no aparecen en la caja de B');
 });
 
+// ═════════ Desactivación segura del módulo ═════════
+let cuentaAbiertaId = null;
+await t('DESACTIVAR', 'con una mesa abierta, apagar Restaurante responde 409 y no cambia nada', async () => {
+  const cta = await api(base, '/api/restaurante/mesas/abrir', { cookie: meseroA, method: 'POST', body: { mesa: 2, personas: 2 } });
+  assert.strictEqual(cta.status, 201, JSON.stringify(cta.body));
+  cuentaAbiertaId = cta.body.cuenta.id;
+  await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}/items`, { cookie: meseroA, method: 'POST', body: { items: [
+    { producto: A.productos.A.nombre, cantidad: 1, precio_unitario: A.productos.A.precio },
+  ] } });
+  await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}/pagos`, { cookie: meseroA, method: 'POST', body: { metodo: 'efectivo', monto: 20, cubre: 'anticipo' } });
+
+  for (const estado of ['no_contratado', 'suspendido']) {
+    const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: estado } } });
+    assert.strictEqual(r.status, 409, `apagar a ${estado} con mesas abiertas debe dar 409, dio ${r.status}`);
+    assert.match(r.body.error, /cuenta\(s\) abiertas\. Cierra las mesas antes de desactivar Restaurante/);
+    assert.strictEqual(r.body.codigo, 'RESTAURANTE_CON_CUENTAS_ABIERTAS');
+  }
+  const { rows } = await pool.query(`SELECT estado FROM negocio_modulos WHERE negocio_id=$1 AND modulo='restaurante'`, [A.id]);
+  assert.strictEqual(rows[0].estado, 'activo', 'el módulo NO cambió de estado');
+  const c = await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}`, { cookie: adminA });
+  assert.strictEqual(c.status, 200, 'la operación sigue funcionando');
+  assert.strictEqual(c.body.estado, 'abierta', 'la cuenta sigue abierta: nadie la cerró ni la borró');
+  assert.strictEqual(c.body.total, A.productos.A.precio, 'el consumo queda intacto');
+  assert.strictEqual(c.body.pagado, 20, 'el pago queda intacto');
+});
+await t('DESACTIVAR', 'al cerrar la cuenta sí se puede desactivar, y el historial se conserva', async () => {
+  const saldo = (await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}`, { cookie: adminA })).body.saldo;
+  await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}/pagos`, { cookie: adminA, method: 'POST', body: { metodo: 'efectivo', monto: saldo } });
+  const cierre = await api(base, `/api/restaurante/cuentas/${cuentaAbiertaId}/cerrar`, { cookie: adminA, method: 'POST' });
+  assert.strictEqual(cierre.status, 200, JSON.stringify(cierre.body));
+
+  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'no_contratado' } } });
+  assert.strictEqual(r.status, 200, 'sin cuentas abiertas, desactivar es normal');
+  const bloqueado = await api(base, '/api/restaurante/mesas', { cookie: adminA });
+  assert.strictEqual(bloqueado.status, 403, 'con el módulo apagado la operación queda cerrada');
+  const { rows } = await pool.query(`SELECT COUNT(*)::int c FROM restaurante_cuentas WHERE negocio_id=$1`, [A.id]);
+  assert.ok(rows[0].c >= 3, 'las cuentas históricas NO se borran al desactivar');
+  const ventas = await pool.query(`SELECT COUNT(*)::int c FROM pedidos_activos WHERE negocio_id=$1 AND folio LIKE 'RM-%'`, [A.id]);
+  assert.ok(ventas.rows[0].c >= 1, 'las ventas RM- siguen en Caja');
+});
+await t('DESACTIVAR', 'reactivar conserva la configuración de mesas y el historial', async () => {
+  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'activo' } } });
+  assert.strictEqual(r.status, 200);
+  const mesas = await api(base, '/api/restaurante/mesas', { cookie: adminA });
+  assert.strictEqual(mesas.status, 200);
+  assert.strictEqual(mesas.body.mesas.length, 5, 'las 5 mesas configuradas se conservaron');
+  const readiness = await api(base, `/api/superadmin/negocios/${A.id}/restaurante-readiness`, { cookie: superadmin });
+  assert.strictEqual(readiness.body.numMesas, 5);
+  assert.strictEqual(readiness.body.usandoDefault, false);
+});
+await t('DESACTIVAR', 'apagar otro módulo no se ve afectado por las mesas abiertas de Restaurante', async () => {
+  const cta = await api(base, '/api/restaurante/mesas/abrir', { cookie: meseroA, method: 'POST', body: { mesa: 3, personas: 1 } });
+  assert.strictEqual(cta.status, 201);
+  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { pos: 'suspendido' } } });
+  assert.strictEqual(r.status, 200, 'el guard es solo para el módulo restaurante');
+  await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { pos: 'activo' } } });
+  // Cerrar la mesa de esta prueba para no dejar la cuenta colgada.
+  await api(base, `/api/restaurante/cuentas/${cta.body.cuenta.id}/cerrar`, { cookie: adminA, method: 'POST' });
+});
+
 // ═════════ Readiness (la pantalla que decide el piloto) ═════════
 await t('READINESS', 'el negocio operado reporta LISTO; uno sin productos ni mesas reporta configuración pendiente', async () => {
   const listo = await api(base, `/api/superadmin/negocios/${A.id}/restaurante-readiness`, { cookie: superadmin });

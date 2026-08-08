@@ -3315,6 +3315,11 @@ app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, asyn
     res.json(resultado);
   } catch (e) {
     if (e.code === 'MODULO_INVALIDO' || e.code === 'ESTADO_MODULO_INVALIDO') return res.status(400).json({ error: e.message });
+    // Desactivación segura de Restaurante: mesas abiertas bloquean el apagado
+    // del módulo. No se cierra ni se borra nada; el operador decide.
+    if (e.code === 'RESTAURANTE_CON_CUENTAS_ABIERTAS') {
+      return res.status(409).json({ error: e.message, codigo: e.code, cuentasAbiertas: e.cuentasAbiertas });
+    }
     console.error('[PATCH /api/superadmin/negocios/:id/modulos] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar los módulos' });
   }

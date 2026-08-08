@@ -5170,6 +5170,26 @@ export async function actualizarModulosNegocioSuperadmin(negocioId, modulos, sup
     const { rows: anteriorRows } = await client.query('SELECT modulo, estado FROM negocio_modulos WHERE negocio_id = $1', [negocioId]);
     const anteriorMapa = Object.fromEntries(anteriorRows.map(r => [r.modulo, r.estado]));
 
+    // Desactivación segura de Restaurante: apagar el módulo con mesas
+    // abiertas dejaría cuentas vivas sin forma de cobrarlas ni cerrarlas
+    // (requireModulo devolvería 403 a toda la operación). Se bloquea el
+    // cambio y se pide cerrarlas primero -- nunca se cierran solas, ni se
+    // borran cuentas, pagos o historial.
+    const apagaRestaurante = entradas.some(([m, e]) => m === 'restaurante' && e !== 'activo');
+    if (apagaRestaurante && anteriorMapa.restaurante === 'activo') {
+      const { rows: abiertas } = await client.query(
+        `SELECT COUNT(*)::int c FROM restaurante_cuentas WHERE negocio_id = $1 AND estado = 'abierta'`,
+        [negocioId]
+      );
+      if (abiertas[0].c > 0) {
+        await client.query('ROLLBACK');
+        throw Object.assign(
+          new Error(`Hay ${abiertas[0].c} cuenta(s) abiertas. Cierra las mesas antes de desactivar Restaurante.`),
+          { code: 'RESTAURANTE_CON_CUENTAS_ABIERTAS', cuentasAbiertas: abiertas[0].c }
+        );
+      }
+    }
+
     for (const [modulo, estado] of entradas) {
       await client.query(
         `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)
