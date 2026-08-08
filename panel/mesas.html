@@ -160,8 +160,12 @@ async function cargarMeseros() {
     MESERO_SUGERIDO = r.sugerido || null;
   } catch { MESEROS = []; MESERO_SUGERIDO = null; }
   const sel = document.getElementById('ab-mesero');
-  sel.innerHTML = (MESEROS.length ? '' : '<option value="">— No hay meseros dados de alta —</option>')
-    + MESEROS.map(m => `<option value="${m.id}" ${m.id === MESERO_SUGERIDO ? 'selected' : ''}>${esc(m.nombre)}${m.rol === 'mesero' ? '' : ' (usuario del panel)'}</option>`).join('');
+  // Solo se ofrece a quien puede identificarse: el usuario de la sesión (ya
+  // autenticado) y quienes tienen PIN. Un compañero sin PIN todavía no puede
+  // hacerse responsable de una mesa -- se le crea en Usuarios.
+  const elegibles = MESEROS.filter(m => m.tiene_pin || m.id === MESERO_SUGERIDO);
+  sel.innerHTML = (elegibles.length ? '' : '<option value="">— Da de alta un mesero en Usuarios —</option>')
+    + elegibles.map(m => `<option value="${m.id}" ${m.id === MESERO_SUGERIDO ? 'selected' : ''}>${esc(m.nombre)}${m.rol === 'mesero' ? '' : ' (tú)'}</option>`).join('');
   cambiarMeseroSeleccionado();
 }
 // El PIN solo se pide cuando el mesero elegido NO es quien tiene la sesión:

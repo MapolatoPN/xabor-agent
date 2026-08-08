@@ -1795,6 +1795,19 @@ app.post('/api/restaurante/mesas/abrir', requireAuthSeguro, requireModulo('resta
     } else if (meseroId !== req.usuarioId) {
       const pinOk = await verificarPinMesero(meseroId, req.negocioId, pin);
       if (!pinOk) {
+        // Si es alguien de ESTE negocio pero todavía sin PIN, se dice con
+        // claridad (es un problema de configuración, no un intento fallido).
+        // Para cualquier otro caso el mensaje es el genérico: un usuario de
+        // otro negocio y un PIN equivocado se ven igual desde afuera.
+        if (await esMiembroActivoDelNegocio(meseroId, req.negocioId)) {
+          const { rows } = await pool.query('SELECT pin_hash FROM usuarios WHERE id = $1', [meseroId]);
+          if (rows.length && !rows[0].pin_hash) {
+            return res.status(400).json({
+              error: 'Ese usuario todavía no tiene PIN. Créaselo en Usuarios o abre la mesa con tu propia sesión.',
+              code: 'MESERO_SIN_PIN',
+            });
+          }
+        }
         // Mismo mensaje para PIN incorrecto y para un usuario que no es de
         // este negocio: desde afuera no se distingue qué falló.
         console.warn(`[Restaurante] PIN de mesero rechazado negocio=${req.negocioId} mesa=${mesa}`);

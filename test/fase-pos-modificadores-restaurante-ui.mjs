@@ -320,7 +320,13 @@ await t('RESTAURANTE', '23. B no puede agregar productos de A ni tocar la cuenta
   assert.strictEqual(cuentaAjena.status, 404, 'una cuenta de A no existe para B');
 });
 await t('RESTAURANTE', '24. el mesero sale de los usuarios activos del negocio: uno ajeno se rechaza', async () => {
-  const propio = await api(base, '/api/restaurante/mesas/abrir', { cookie: adminA, method: 'POST', body: { mesa: 2, personas: 2, meseroUsuarioId: SEED.staffNegocioAUsuarioId } });
+  // Elegir a OTRO usuario del negocio exige su PIN; si aún no tiene, el
+  // backend lo dice con claridad en vez de un "PIN incorrecto" confuso.
+  const sinPin = await api(base, '/api/restaurante/mesas/abrir', { cookie: adminA, method: 'POST', body: { mesa: 2, personas: 2, meseroUsuarioId: SEED.staffNegocioAUsuarioId } });
+  assert.strictEqual(sinPin.status, 400, JSON.stringify(sinPin.body));
+  assert.strictEqual(sinPin.body.code, 'MESERO_SIN_PIN');
+  // El propio usuario de la sesión sí abre sin PIN (ya está autenticado).
+  const propio = await api(base, '/api/restaurante/mesas/abrir', { cookie: adminA, method: 'POST', body: { mesa: 2, personas: 2, meseroUsuarioId: SEED.adminNegocioAUsuarioId } });
   assert.strictEqual(propio.status, 201, JSON.stringify(propio.body));
   const c = await api(base, `/api/restaurante/cuentas/${propio.body.cuenta.id}`, { cookie: adminA });
   assert.ok(c.body.mesero?.nombre, 'la cuenta guarda al mesero');
