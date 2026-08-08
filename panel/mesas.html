@@ -60,6 +60,12 @@
 
 <dialog id="dlg-abrir">
   <h2>Abrir mesa <span id="ab-num"></span></h2>
+  <label>Mesero</label>
+  <select id="ab-mesero" onchange="cambiarMeseroSeleccionado()"></select>
+  <div id="ab-pin-bloque" style="display:none;">
+    <label>PIN del mesero</label>
+    <input type="password" id="ab-pin" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+  </div>
   <label>Personas</label>
   <input type="number" id="ab-personas" min="1" max="100" value="2">
   <div class="acciones">
@@ -141,10 +147,44 @@ async function cargarMesas() {
 }
 
 let MESA_POR_ABRIR = null;
-function abrirMesaDlg(n) { MESA_POR_ABRIR = n; document.getElementById('ab-num').textContent = n; document.getElementById('dlg-abrir').showModal(); }
+// Meseros del negocio + a quién se puede sugerir. El servidor solo sugiere
+// al usuario de la sesión si REALMENTE pertenece a este negocio: en una
+// sesión de soporte (superadmin) no hay sugerido y hay que elegir a alguien
+// del local, para que nunca quede un superadmin como mesero de otro tenant.
+let MESEROS = [];
+let MESERO_SUGERIDO = null;
+async function cargarMeseros() {
+  try {
+    const r = await api('/api/restaurante/meseros');
+    MESEROS = r.meseros || [];
+    MESERO_SUGERIDO = r.sugerido || null;
+  } catch { MESEROS = []; MESERO_SUGERIDO = null; }
+  const sel = document.getElementById('ab-mesero');
+  sel.innerHTML = (MESEROS.length ? '' : '<option value="">— No hay meseros dados de alta —</option>')
+    + MESEROS.map(m => `<option value="${m.id}" ${m.id === MESERO_SUGERIDO ? 'selected' : ''}>${esc(m.nombre)}${m.rol === 'mesero' ? '' : ' (usuario del panel)'}</option>`).join('');
+  cambiarMeseroSeleccionado();
+}
+// El PIN solo se pide cuando el mesero elegido NO es quien tiene la sesión:
+// ese ya se autenticó al entrar al panel.
+function cambiarMeseroSeleccionado() {
+  const id = document.getElementById('ab-mesero').value;
+  const pide = !!id && id !== MESERO_SUGERIDO;
+  document.getElementById('ab-pin-bloque').style.display = pide ? '' : 'none';
+  if (!pide) document.getElementById('ab-pin').value = '';
+}
+function abrirMesaDlg(n) {
+  MESA_POR_ABRIR = n;
+  document.getElementById('ab-num').textContent = n;
+  cargarMeseros();
+  document.getElementById('dlg-abrir').showModal();
+}
 async function confirmarAbrir() {
   const personas = document.getElementById('ab-personas').value;
-  const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify({ mesa: MESA_POR_ABRIR, personas }) });
+  const meseroUsuarioId = document.getElementById('ab-mesero').value || null;
+  const pin = document.getElementById('ab-pin').value || null;
+  if (!meseroUsuarioId) { msg('Selecciona el mesero que abre la mesa'); return; }
+  const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify({ mesa: MESA_POR_ABRIR, personas, meseroUsuarioId, pin }) });
+  document.getElementById('ab-pin').value = '';
   document.getElementById('dlg-abrir').close();
   await cargarMesas();
   abrirCuenta(cuenta.id);

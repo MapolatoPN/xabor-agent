@@ -1588,10 +1588,28 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <input id="usr-nombre" type="text" placeholder="Nombre completo"
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
 
-          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Correo</label>
+          <label id="usr-label-email" style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Correo</label>
           <input id="usr-email" type="email" placeholder="operador@negocio.com"
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
 
+          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Tipo de usuario</label>
+          <select id="usr-tipo" onchange="cambiarTipoUsuario()"
+            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;background:#fff;">
+            <option value="operador">Operador (correo y contraseña)</option>
+            <option value="mesero">Mesero (solo nombre y PIN)</option>
+          </select>
+
+          <div id="usr-campos-mesero" style="display:none;">
+            <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">PIN de acceso (4 a 6 dígitos)</label>
+            <input id="usr-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••"
+              style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+            <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Confirmar PIN</label>
+            <input id="usr-pin2" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••"
+              style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
+            <div style="font-size:0.78rem;color:#888;margin-bottom:14px;">El mesero no necesita correo ni invitación: usa su PIN para abrir mesas en este negocio. No tiene acceso a configuración ni al resto del panel.</div>
+          </div>
+
+          <div id="usr-campos-operador">
           <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Contraseña temporal</label>
           <input id="usr-password" type="password" placeholder="Mínimo 8 caracteres"
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
@@ -1601,6 +1619,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
 
           <div style="font-size:0.78rem;color:#888;margin-bottom:14px;">Se creará con rol <b>Operador</b>. El operador puede cambiarla al iniciar sesión.</div>
+          </div><!-- /usr-campos-operador -->
 
           <div id="usr-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
           <button onclick="crearUsuarioStaff()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Crear usuario</button>
@@ -4604,7 +4623,7 @@ async function cargarUsuarios() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid #f0ede6;flex-wrap:wrap;">
         <div>
           <div style="font-weight:700;font-size:0.92rem;">${escaparHTML(u.nombre)} ${u.activo ? '' : '<span style="color:#ef4444;font-size:0.75rem;font-weight:600;">(inactivo)</span>'}</div>
-          <div style="color:#888;font-size:0.8rem;">${escaparHTML(u.email)} · Operador · alta ${new Date(u.created_at).toLocaleDateString('es-MX')}</div>
+          <div style="color:#888;font-size:0.8rem;">${u.rol === 'mesero' ? 'Mesero · acceso por PIN' : escaparHTML(u.email || '') + ' · Operador'} · alta ${new Date(u.created_at).toLocaleDateString('es-MX')}</div>
         </div>
         <button onclick="toggleUsuarioEstado('${u.id}', ${!u.activo})"
           style="padding:6px 14px;border-radius:8px;border:1px solid ${u.activo ? '#ef4444' : '#22c55e'};background:#fff;color:${u.activo ? '#ef4444' : '#22c55e'};cursor:pointer;font-size:0.8rem;font-weight:700;">
@@ -4640,7 +4659,41 @@ function cerrarModalNuevoUsuario() {
   document.getElementById('usr-modal').style.display = 'none';
 }
 
+// Mesero vs operador: el mesero no lleva correo ni contraseña, así que sus
+// campos son los únicos visibles cuando se elige ese tipo.
+function cambiarTipoUsuario() {
+  const esMesero = document.getElementById('usr-tipo').value === 'mesero';
+  document.getElementById('usr-campos-mesero').style.display = esMesero ? '' : 'none';
+  document.getElementById('usr-campos-operador').style.display = esMesero ? 'none' : '';
+  const email = document.getElementById('usr-email');
+  const labelEmail = document.getElementById('usr-label-email');
+  if (email) email.style.display = esMesero ? 'none' : '';
+  if (labelEmail) labelEmail.style.display = esMesero ? 'none' : '';
+}
+
+async function crearMeseroConPin() {
+  const nombre = document.getElementById('usr-nombre').value.trim();
+  const pin = document.getElementById('usr-pin').value;
+  const pin2 = document.getElementById('usr-pin2').value;
+  const fb = document.getElementById('usr-feedback');
+  if (!nombre) { fb.style.color = '#ef4444'; fb.textContent = 'El nombre es obligatorio'; return; }
+  if (!/^[0-9]{4,6}$/.test(pin)) { fb.style.color = '#ef4444'; fb.textContent = 'El PIN debe tener entre 4 y 6 dígitos'; return; }
+  if (pin !== pin2) { fb.style.color = '#ef4444'; fb.textContent = 'Los PIN no coinciden'; return; }
+
+  fb.style.color = '#aaa'; fb.textContent = 'Creando...';
+  const r = await apiFetch('/api/admin/usuarios', { method: 'POST', body: JSON.stringify({ tipo: 'mesero', nombre, pin }) });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok) {
+    fb.style.color = '#22c55e'; fb.textContent = '✓ Mesero creado';
+    document.getElementById('usr-pin').value = ''; document.getElementById('usr-pin2').value = '';
+    setTimeout(() => { cerrarModalNuevoUsuario(); cargarUsuarios(); }, 700);
+  } else {
+    fb.style.color = '#ef4444'; fb.textContent = body.error || 'No se pudo crear el mesero';
+  }
+}
+
 async function crearUsuarioStaff() {
+  if (document.getElementById('usr-tipo')?.value === 'mesero') return crearMeseroConPin();
   const nombre = document.getElementById('usr-nombre').value.trim();
   const email = document.getElementById('usr-email').value.trim();
   const password = document.getElementById('usr-password').value;
