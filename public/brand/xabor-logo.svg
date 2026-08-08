@@ -1,5 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 132 32" role="img" aria-label="Xabor">
-  <rect width="32" height="32" rx="8" fill="#C96220"/>
-  <text x="16" y="23" text-anchor="middle" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="19" font-weight="900" fill="#FFFFFF">X</text>
-  <text x="42" y="23" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.4" fill="#111111">Xabor</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 100" role="img" aria-label="Xabor">
+  <g fill="none" stroke="#FF6B35" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 14 L58 50 L14 86"/>
+    <path d="M86 14 L68.5 31.5"/>
+    <path d="M86 86 L68.5 68.5"/>
+  </g>
+  <text x="126" y="70" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="3" fill="#111111">XABOR</text>
 </svg>

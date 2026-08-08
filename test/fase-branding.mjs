@@ -31,15 +31,18 @@ const PAGINAS = [
   '/crear-password', '/restablecer-contrasena',
 ];
 
-// Marca aprobada (la misma de la landing): isotipo cuadrado #C96220 con la X.
-const ACENTO = '#C96220';
+// Marca aprobada: la X de Xabor en el naranja de marca. El isotipo es el
+// archivo real que entregó el negocio, no una reconstrucción tipográfica.
+const ACENTO = '#FF6B35';
 const ICONO = '/public/brand/xabor-icono.svg';
 
 // Lo que ya no debe aparecer en ninguna superficie.
 const LEGADO = [
   { patron: /🌮/, que: 'el taco que se usaba como logo' },
   { patron: /\/public\/landing\/favicon\.svg/, que: 'la copia del favicon dentro de la landing' },
-  { patron: />\s*XABOR\s*</, que: 'el wordmark en mayúsculas (la marca es "Xabor")' },
+  // El isotipo real es una X transparente: si alguien vuelve a recortarlo
+  // con border-radius es que quedó pensando en el cuadrado anterior.
+  { patron: /xabor-icono[^"]*"[^>]*border-radius/, que: 'el recorte redondeado del isotipo anterior' },
 ];
 
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
@@ -53,8 +56,8 @@ await t('ASSETS', '1. el isotipo canónico se sirve como SVG y es la marca aprob
   assert.strictEqual(r.status, 200);
   assert.match(r.tipo, /svg/);
   assert.ok(r.texto.includes(ACENTO), `el isotipo debe usar el acento de marca ${ACENTO}`);
-  assert.ok(/rx="8"/.test(r.texto), 'cuadrado redondeado');
-  assert.ok(/>X</.test(r.texto), 'con la X');
+  assert.ok(/stroke-linecap="round"/.test(r.texto), 'trazos redondeados, como el logotipo original');
+  assert.ok((r.texto.match(/<path/g) || []).length === 3, 'la X se dibuja con sus tres trazos');
 });
 
 await t('ASSETS', '2. cada derivado del isotipo existe y no está vacío', async () => {
@@ -106,7 +109,7 @@ await t('PANTALLAS', '5. todas las superficies declaran favicon, apple-touch-ico
     if (!/<link rel="icon"[^>]*xabor-icono\.svg/.test(texto)) falta.push('favicon svg');
     if (!/<link rel="apple-touch-icon"/.test(texto)) falta.push('apple-touch-icon');
     if (!/<link rel="manifest"/.test(texto)) falta.push('manifest');
-    if (!/<meta name="theme-color" content="#C96220">/.test(texto)) falta.push('theme-color');
+    if (!/<meta name="theme-color" content="#FF6B35">/.test(texto)) falta.push('theme-color');
     if (falta.length) sinMarca.push(`${ruta} (${falta.join(', ')})`);
   }
   assert.deepStrictEqual(sinMarca, [], 'pantallas sin la marca declarada');

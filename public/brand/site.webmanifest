@@ -6,7 +6,7 @@
   "scope": "/",
   "display": "standalone",
   "background_color": "#FAFAF8",
-  "theme_color": "#C96220",
+  "theme_color": "#FF6B35",
   "lang": "es-MX",
   "icons": [
     { "src": "/public/brand/xabor-icono.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },

@@ -16,9 +16,9 @@ la pestaña se queda con el icono que tuviera guardado, y ese icono podía ser
 de cualquier despliegue anterior.
 
 Encima, la marca gráfica estaba copiada a mano en cada pantalla: cuatro
-pantallas de acceso usaban un **emoji de taco (🌮)** como logotipo y cinco
-cabeceras escribían **"XABOR"** en mayúsculas, mientras la identidad aprobada
-(la de la landing) es el **isotipo naranja con la X** y la palabra **"Xabor"**.
+pantallas de acceso usaban un **emoji de taco (🌮)** como logotipo, y ninguna
+usaba el isotipo real. La identidad correcta es la **X naranja** del logotipo
+del negocio junto a la palabra **XABOR**.
 
 ## Fuente única
 
@@ -26,7 +26,7 @@ Todo vive en **`public/brand/`** y se sirve bajo `/public/brand/`:
 
 | Archivo | Qué es |
 |---|---|
-| `xabor-icono.svg` | **isotipo**: cuadrado redondeado `#C96220` con la X blanca. La fuente de todo lo demás |
+| `xabor-icono.svg` | **isotipo**: la X de Xabor en `#FF6B35`, redibujada del logotipo original del negocio. La fuente de todo lo demás |
 | `xabor-logo.svg` | **logotipo**: isotipo + palabra "Xabor" |
 | `xabor-icono-32/180/192/512.png` | derivados para favicon PNG, apple-touch-icon y manifest |
 | `favicon.ico` | contenedor ICO con el PNG de 32 px, para lo que pide `.ico` a la fuerza |
@@ -41,18 +41,20 @@ vuelve a correr el script — no se retoca ningún PNG a mano.
 Se eliminó `public/landing/favicon.svg`: era una **segunda copia** del mismo
 isotipo y es justo lo que hace que las marcas se desincronicen.
 
-Color de marca: **`#C96220`** (el `--accent` de la landing).
+Color de marca: **`#FF6B35`** — el del logotipo que entregó el negocio, que
+resultó ser el mismo naranja que el panel ya usaba. El `#C96220` que traía la
+landing era una reconstrucción anterior y quedó retirado.
 
 ## Qué declara cada pantalla
 
 Las doce superficies llevan el mismo bloque en el `<head>`:
 
 ```html
-<link rel="icon" type="image/svg+xml" href="/public/brand/xabor-icono.svg?v=2">
-<link rel="icon" type="image/png" sizes="32x32" href="/public/brand/xabor-icono-32.png?v=2">
-<link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=2">
-<link rel="manifest" href="/public/brand/site.webmanifest?v=2">
-<meta name="theme-color" content="#C96220">
+<link rel="icon" type="image/svg+xml" href="/public/brand/xabor-icono.svg?v=3">
+<link rel="icon" type="image/png" sizes="32x32" href="/public/brand/xabor-icono-32.png?v=3">
+<link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=3">
+<link rel="manifest" href="/public/brand/site.webmanifest?v=3">
+<meta name="theme-color" content="#FF6B35">
 ```
 
 Y el servidor responde las tres direcciones que los navegadores piden **sin
@@ -64,7 +66,7 @@ archivos de `public/brand/`.
 
 El favicon se cachea con fuerza, así que reemplazar el archivo no basta:
 
-- Los `<link>` llevan **`?v=2`**. Al subir ese número el navegador considera
+- Los `<link>` llevan **`?v=3`**. Al subir ese número el navegador considera
   que es otra URL y vuelve a pedirla. **Es el único paso necesario** cuando la
   marca cambie en el futuro.
 - `/favicon.ico` no admite query (el navegador pide esa ruta exacta), así que
@@ -84,11 +86,10 @@ recibe el correcto. No hay que pedirle a nadie que limpie su caché.
   *(Pendiente aparte: hoy es un archivo único para todos los negocios, así que
   todos imprimen el mismo logotipo. Es un asunto de multi-tenant, no de
   marca.)*
-- **Los colores de la interfaz.** El panel usa `#FF6B35` y Restaurante
-  `#f97316` como naranja de acento, distintos del `#C96220` de la marca.
-  Unificarlos cambiaría el color de **todos** los botones del producto: es una
-  decisión de diseño, no un intercambio de assets, y se deja fuera de esta
-  microfase. Queda anotado como el siguiente paso natural de consistencia.
+- **Los colores de la interfaz.** El panel ya usaba `#FF6B35`, así que con el
+  logotipo real quedó alineado solo. Restaurante sigue con `#f97316`:
+  unificarlo cambiaría el color de sus botones y es trabajo de la fase de
+  design tokens, no de un intercambio de assets.
 - Pedidos, Restaurante, meseros, POS, pagos, folios, arranque, impresión,
   autenticación (más allá del logotipo en el marcado) y migraciones.
 
@@ -96,7 +97,7 @@ recibe el correcto. No hay que pedirle a nadie que limpie su caché.
 
 Las plantillas no traían logotipo antiguo — no traían ninguno. Se dejó el
 texto igual y solo se cambió el botón principal de negro genérico a
-**`#C96220`**, para que el correo se parezca al producto. No se incrusta el
+**`#FF6B35`**, para que el correo se parezca al producto. No se incrusta el
 isotipo como imagen: los clientes de correo bloquean imágenes remotas por
 omisión y un logotipo roto se ve peor que ninguno.
 
