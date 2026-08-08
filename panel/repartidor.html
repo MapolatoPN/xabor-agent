@@ -63,11 +63,19 @@
     dialog::backdrop { background: rgba(0,0,0,.45); }
     .loader { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 14px; }
   </style>
+  <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
+       docs/branding.md). El ?v= existe porque el favicon se cachea con
+       fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
+  <link rel="icon" type="image/svg+xml" href="/public/brand/xabor-icono.svg?v=2">
+  <link rel="icon" type="image/png" sizes="32x32" href="/public/brand/xabor-icono-32.png?v=2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=2">
+  <link rel="manifest" href="/public/brand/site.webmanifest?v=2">
+  <meta name="theme-color" content="#C96220">
 </head>
 <body>
 
 <div class="header">
-  <h1>🛵 Repartidor</h1>
+  <h1><img src="/public/brand/xabor-icono.svg?v=2" alt="" width="22" height="22" style="vertical-align:-5px;border-radius:6px;"> Repartidor</h1>
   <span class="chip" id="chip-estado" style="margin-left:auto;">…</span>
   <button class="btn btn-gris btn-mini" onclick="refrescarTodo()" title="Actualizar">↻</button>
   <button class="btn btn-gris btn-mini" id="btn-salir" style="display:none;" onclick="cerrarSesion()">Salir</button>

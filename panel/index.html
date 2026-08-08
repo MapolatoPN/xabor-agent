@@ -562,12 +562,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      de cierre aunque este dentro de un string -- y el resto del codigo se
      pintaria como texto. (Esta nota no usa etiquetas literales a proposito.) -->
 <script src="/modificadores.js"></script>
+  <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
+       docs/branding.md). El ?v= existe porque el favicon se cachea con
+       fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
+  <link rel="icon" type="image/svg+xml" href="/public/brand/xabor-icono.svg?v=2">
+  <link rel="icon" type="image/png" sizes="32x32" href="/public/brand/xabor-icono-32.png?v=2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=2">
+  <link rel="manifest" href="/public/brand/site.webmanifest?v=2">
+  <meta name="theme-color" content="#C96220">
 </head>
 <body>
 
 <!-- Header -->
 <header>
-  <div class="header-brand">XABOR<span>·</span></div>
+  <div class="header-brand"><img src="/public/brand/xabor-icono.svg?v=2" alt="" width="22" height="22" style="vertical-align:-5px;border-radius:6px;"> Xabor<span>·</span></div>
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>

@@ -21,7 +21,7 @@ function plantillaInvitacion({ nombre, negocioNombre, enlace }) {
   <p>${saludo}</p>
   <p>Te invitaron a acceder al panel de <strong>${escapeHtml(negocioNombre)}</strong> en Xabor.</p>
   <p style="text-align:center;margin:28px 0;">
-    <a href="${enlace}" style="background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Crear contraseña</a>
+    <a href="${enlace}" style="background:#C96220;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Crear contraseña</a>
   </p>
   <p style="font-size:0.85rem;color:#666;">Este enlace expira pronto y solo puede usarse una vez.</p>
   <p style="font-size:0.85rem;color:#666;">Si no esperabas este correo, puedes ignorarlo con confianza.</p>
@@ -97,7 +97,7 @@ function plantillaResetPassword({ nombre, enlace, minutos }) {
   <p>${saludo}</p>
   <p>Recibimos una solicitud para cambiar la contraseña de tu cuenta de Xabor.</p>
   <p style="text-align:center;margin:28px 0;">
-    <a href="${enlace}" style="background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Restablecer contraseña</a>
+    <a href="${enlace}" style="background:#C96220;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Restablecer contraseña</a>
   </p>
   <p style="font-size:0.85rem;color:#666;">Este enlace vence en ${minutos} minutos y solo puede usarse una vez.</p>
   <p style="font-size:0.85rem;color:#666;">Si no fuiste tú, ignora este mensaje: tu contraseña sigue igual.</p>
@@ -161,7 +161,7 @@ function plantillaNuevoProspecto(p) {
   <p>Nuevo prospecto capturado desde la landing de Xabor:</p>
   <table style="border-collapse:collapse;width:100%;margin:16px 0;">${filasHtml}</table>
   <p style="text-align:center;margin:28px 0;">
-    <a href="${enlace}" style="background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Ver en Superadmin</a>
+    <a href="${enlace}" style="background:#C96220;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Ver en Superadmin</a>
   </p>
   <p style="font-size:0.8rem;color:#888;">Este correo es solo una notificación. El registro completo ya está guardado en Xabor.</p>
 </div>`.trim();

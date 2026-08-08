@@ -122,12 +122,20 @@
   .toast { position: fixed; bottom: 24px; right: 24px; background: #1c1c1c; color: #fff; padding: 12px 18px; border-radius: 10px; font-size: 0.88rem; z-index: 9999; display: none; }
   .toast.show { display: block; }
 </style>
+  <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
+       docs/branding.md). El ?v= existe porque el favicon se cachea con
+       fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
+  <link rel="icon" type="image/svg+xml" href="/public/brand/xabor-icono.svg?v=2">
+  <link rel="icon" type="image/png" sizes="32x32" href="/public/brand/xabor-icono-32.png?v=2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=2">
+  <link rel="manifest" href="/public/brand/site.webmanifest?v=2">
+  <meta name="theme-color" content="#C96220">
 </head>
 <body>
 
 <!-- Sidebar -->
 <nav class="sidebar">
-  <div class="sidebar-logo">XABOR<span>Finanzas</span></div>
+  <div class="sidebar-logo"><img src="/public/brand/xabor-icono.svg?v=2" alt="" width="22" height="22" style="vertical-align:-5px;border-radius:6px;"> Xabor<span>Finanzas</span></div>
   <div class="sidebar-nav">
     <div class="nav-item active" onclick="mostrarTab('facturas')" id="nav-facturas">📄 Facturas</div>
     <div class="nav-item" onclick="mostrarTab('config')" id="nav-config">⚙️ Configuración</div>

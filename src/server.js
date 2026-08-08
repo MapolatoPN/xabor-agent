@@ -1716,6 +1716,25 @@ app.get('/aviso-privacidad.html', (req, res) => {
   res.sendFile(join(__dirname, '../public/landing/aviso-privacidad.html'));
 });
 
+// ─── Marca ──────────────────────────────────────────────────────────────────
+// Los assets viven en public/brand (fuente única) y ya se sirven bajo
+// /public/brand. Estas tres rutas existen porque los navegadores, los
+// lectores de RSS y los bots piden estas direcciones EXACTAS sin mirar el
+// HTML: /favicon.ico es la que pide una pestaña antes de leer la página, y
+// hasta ahora respondía 404 — por eso seguía viéndose el icono viejo que el
+// navegador tenía guardado. No se duplica el archivo: se sirve el mismo.
+//
+// Cache-Control corto: si la marca vuelve a cambiar, un día basta para que
+// todos lo vean sin tener que pedirle a nadie que limpie su caché.
+const ASSET_MARCA = (archivo) => (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.sendFile(join(__dirname, '../public/brand/', archivo));
+};
+app.get('/favicon.ico', ASSET_MARCA('favicon.ico'));
+app.get('/apple-touch-icon.png', ASSET_MARCA('xabor-icono-180.png'));
+app.get('/apple-touch-icon-precomposed.png', ASSET_MARCA('xabor-icono-180.png'));
+app.get('/site.webmanifest', ASSET_MARCA('site.webmanifest'));
+
 app.get('/login', (req, res) => {
   res.sendFile(join(__dirname, '../panel/login-negocio.html'));
 });
