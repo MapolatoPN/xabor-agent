@@ -105,6 +105,21 @@ button:disabled { background: var(--color-border-strong); color: var(--color-tex
 .sesion-activa .negocio-nombre { font-size: 1.1rem; font-weight: 700; margin: 10px 0 2px; }
 .sesion-activa .negocio-rol { color: var(--color-text-secondary); font-size: 0.85rem; margin-bottom: 22px; }
 .hidden { display: none; }
+.enlace-olvide {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 0.83rem;
+  font-family: inherit;
+  cursor: pointer;
+  margin-top: 14px;
+  padding: 6px;
+  width: 100%;
+  text-decoration: underline;
+}
+.enlace-olvide:hover { color: var(--color-brand); }
+.mensaje-generico { color: var(--color-text-secondary); font-size: 0.9rem; line-height: 1.5; margin: 18px 0 4px; }
+#error-olvide { color: var(--color-danger); font-size: 0.83rem; margin-top: 10px; min-height: 18px; }
 </style>
 </head>
 <body>
@@ -122,6 +137,24 @@ button:disabled { background: var(--color-border-strong); color: var(--color-tex
     <input type="password" id="password" placeholder="••••••••" autocomplete="current-password" />
     <div id="error"></div>
     <button id="btn-login" onclick="login()">Entrar</button>
+    <button class="enlace-olvide" id="btn-olvide" onclick="mostrarOlvide()">¿Olvidaste tu contraseña?</button>
+  </div>
+
+  <!-- Paso alterno: pedir el enlace de recuperación. La respuesta es la
+       misma exista o no la cuenta — esta pantalla nunca confirma si un
+       correo está registrado en Xabor. -->
+  <div id="paso-olvide" class="hidden">
+    <label for="email-olvide">Correo de tu cuenta</label>
+    <input type="email" id="email-olvide" placeholder="correo@negocio.com" autocomplete="username" />
+    <div id="error-olvide"></div>
+    <button id="btn-enviar-enlace" onclick="pedirEnlace()">Enviar enlace</button>
+    <button class="btn-secondary" onclick="volverALogin()">Volver</button>
+  </div>
+
+  <!-- Confirmación genérica -->
+  <div id="paso-olvide-enviado" class="hidden" style="text-align:center;">
+    <p class="mensaje-generico" id="mensaje-olvide"></p>
+    <button onclick="volverALogin()">Volver a iniciar sesión</button>
   </div>
 
   <!-- Paso 2: selección de negocio (solo si el usuario pertenece a varios) -->
@@ -246,8 +279,63 @@ async function seleccionarNegocio(negocioId) {
   }
 }
 
+// ─── ¿Olvidaste tu contraseña? ─────────────────────────────────────────────
+// El enlace llega por correo; esta pantalla nunca lo muestra ni confirma si
+// el correo existe. El mensaje de confirmación es el mismo siempre.
+function mostrarOlvide() {
+  document.getElementById('error-olvide').textContent = '';
+  document.getElementById('email-olvide').value = document.getElementById('email').value.trim();
+  document.getElementById('paso-login').classList.add('hidden');
+  document.getElementById('paso-olvide-enviado').classList.add('hidden');
+  document.getElementById('paso-olvide').classList.remove('hidden');
+  document.getElementById('email-olvide').focus();
+}
+
+function volverALogin() {
+  document.getElementById('paso-olvide').classList.add('hidden');
+  document.getElementById('paso-olvide-enviado').classList.add('hidden');
+  document.getElementById('paso-login').classList.remove('hidden');
+}
+
+async function pedirEnlace() {
+  const email = document.getElementById('email-olvide').value.trim();
+  const err = document.getElementById('error-olvide');
+  const btn = document.getElementById('btn-enviar-enlace');
+  err.textContent = '';
+  if (!email) { err.textContent = 'Escribe tu correo'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Enviando...';
+  let mensaje = 'Si existe una cuenta asociada a ese correo, enviaremos instrucciones para restablecer la contraseña.';
+  try {
+    const resp = await fetch('/api/auth/negocio/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    // 429 es lo único que se distingue: es información sobre el uso del
+    // formulario, no sobre si la cuenta existe.
+    if (resp.status === 429) {
+      err.textContent = data.error || 'Demasiados intentos. Espera un momento.';
+      btn.disabled = false; btn.textContent = 'Enviar enlace';
+      return;
+    }
+    if (data.mensaje) mensaje = data.mensaje;
+  } catch (e) {
+    err.textContent = 'Error de conexión';
+    btn.disabled = false; btn.textContent = 'Enviar enlace';
+    return;
+  }
+  btn.disabled = false; btn.textContent = 'Enviar enlace';
+  document.getElementById('mensaje-olvide').textContent = mensaje;
+  document.getElementById('paso-olvide').classList.add('hidden');
+  document.getElementById('paso-olvide-enviado').classList.remove('hidden');
+}
+
 document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
 document.getElementById('email').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+document.getElementById('email-olvide').addEventListener('keydown', e => { if (e.key === 'Enter') pedirEnlace(); });
 </script>
 </body>
 </html>

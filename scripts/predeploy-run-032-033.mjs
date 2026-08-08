@@ -29,6 +29,7 @@ const SCRIPTS = [
   '039-restaurante-mesas',
   '040-restaurante-integracion-ventas',
   '041-usuarios-mesero-pin',
+  '042-password-reset',
 ];
 
 for (const nombre of SCRIPTS) {
