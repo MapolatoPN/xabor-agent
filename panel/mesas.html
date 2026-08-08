@@ -39,6 +39,7 @@
   .tot strong { font-size:16px; }
   #msg { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); background:var(--card); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:99; }
 </style>
+<script src="/modificadores.js"></script>
 </head>
 <body>
 <header>
@@ -71,7 +72,12 @@
   <h2>Mesa <span id="cu-mesa"></span> · <span id="cu-mesero"></span> · <span id="cu-personas"></span> personas</h2>
   <div id="cu-items"></div>
   <div class="tot"><span>Total: $<span id="cu-total"></span> · Pagado: $<span id="cu-pagado"></span></span><strong>Saldo: $<span id="cu-saldo"></span></strong></div>
-  <label>Agregar producto</label>
+  <label>Agregar del menú</label>
+  <div class="fila">
+    <select id="it-menu"><option value="">— Selecciona un producto —</option></select>
+    <button class="sec" style="max-width:110px;" onclick="agregarDesdeMenu()">+ Agregar</button>
+  </div>
+  <label>O capturar libre (lo que no está en el menú)</label>
   <div class="fila">
     <input id="it-producto" placeholder="Producto">
     <input id="it-cantidad" type="number" min="1" value="1" style="max-width:70px;">
@@ -155,7 +161,7 @@ async function abrirCuenta(cuentaId) {
   document.getElementById('cu-saldo').textContent = c.saldo.toFixed(2);
   const filas = c.items.map(i => `
     <tr class="${i.estado === 'cancelado' ? 'tachado' : ''}">
-      <td>${i.cantidad}× ${esc(i.producto)}${i.notas ? `<br><small>${esc(i.notas)}</small>` : ''}</td>
+      <td>${i.cantidad}× ${esc(i.producto)}${(Array.isArray(i.modificadores) && i.modificadores.length) ? `<br><small>${esc(i.modificadores.join(' · '))}</small>` : ''}${i.notas ? `<br><small>${esc(i.notas)}</small>` : ''}</td>
       <td>$${(i.cantidad * Number(i.precio_unitario)).toFixed(2)}</td>
       <td>${i.estado === 'pendiente' ? '🕐 por enviar' : i.estado === 'enviado' ? `📤 comanda ${i.comanda_num}` : `❌ ${esc(i.motivo_cancelacion || '')}`}</td>
       <td>${(i.estado !== 'cancelado' && ROL === 'admin') ? `<button class="sec" style="padding:2px 8px;font-size:11px;" onclick="cancelarItem('${i.id}')">Cancelar</button>` : ''}</td>
@@ -169,6 +175,7 @@ async function abrirCuenta(cuentaId) {
   // Estado de contabilización: solo existe cuando la cuenta ya cerró y su
   // venta consolidada quedó registrada en reportes.
   if (c.ventaFolio) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--ok);margin-top:2px;">✅ Venta registrada: ${esc(c.ventaFolio)}</p>`;
+  cargarMenu();
   document.getElementById('dlg-cuenta').showModal();
 }
 
@@ -181,6 +188,44 @@ async function agregarItem() {
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [{ producto, cantidad, precio_unitario: precio, notas }] }) });
   ['it-producto', 'it-precio', 'it-notas'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('it-cantidad').value = 1;
+  abrirCuenta(CUENTA.id);
+}
+
+// Menu del negocio: mismo endpoint que POS y mismo modal de modificadores
+// (panel/modificadores.js), para que Mesas y POS no diverjan. El precio y la
+// validacion definitiva los hace el servidor con los ids de opcion.
+let MENU = null;
+async function cargarMenu() {
+  if (MENU) return MENU;
+  try { MENU = await api('/api/menu'); } catch { MENU = []; }
+  const sel = document.getElementById('it-menu');
+  sel.innerHTML = '<option value="">— Selecciona un producto —</option>' + MENU.map(c =>
+    `<optgroup label="${esc(c.nombre)}">` +
+    (c.productos || []).filter(p => p.disponible).map(p =>
+      `<option value="${p.id}">${esc(p.nombre)} — $${Number(p.precio).toFixed(2)}${(p.modificadores || []).length ? ' (opciones)' : ''}</option>`
+    ).join('') + '</optgroup>').join('');
+  return MENU;
+}
+function productoDelMenu(id) {
+  for (const c of (MENU || [])) {
+    const p = (c.productos || []).find(x => String(x.id) === String(id));
+    if (p) return p;
+  }
+  return null;
+}
+async function agregarDesdeMenu() {
+  const id = document.getElementById('it-menu').value;
+  if (!id) { msg('Elige un producto del menú'); return; }
+  const p = productoDelMenu(id);
+  if (!p) return;
+  let cuerpo = { producto_id: p.id, cantidad: 1 };
+  if (window.XaborModificadores && XaborModificadores.tieneModificadores(p)) {
+    const r = await XaborModificadores.abrirModal(p, { oscuro: true });
+    if (!r) return;
+    cuerpo = { producto_id: p.id, cantidad: r.cantidad, modificadores: r.modificadores };
+  }
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [cuerpo] }) });
+  document.getElementById('it-menu').value = '';
   abrirCuenta(CUENTA.id);
 }
 

@@ -14,6 +14,7 @@
 // precio).
 import { pool } from './database.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
+import { cargarGruposDeProductos, resolverSeleccion, ModificadoresError } from './modificadores.js';
 
 export class POSValidacionError extends Error {
   constructor(mensaje, codigo) { super(mensaje); this.name = 'POSValidacionError'; this.codigo = codigo; }
@@ -43,6 +44,9 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
     [negocioId, ids.map(Number)]
   );
   const porId = new Map(rows.map(r => [String(r.id), r]));
+  // Grupos y opciones reales de estos productos (una sola consulta): el
+  // precio de cada modificador SIEMPRE sale de aqui, nunca del frontend.
+  const gruposPorProducto = await cargarGruposDeProductos(negocioId, rows.map(r => r.id));
 
   let subtotal = 0;
   const items = itemsCrudos.map((crudo) => {
@@ -55,26 +59,28 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
       throw new POSValidacionError(`El producto "${prod.nombre}" no está disponible`, 'PRODUCTO_NO_DISPONIBLE');
     }
     const cantidad = Math.max(1, Math.min(99, parseInt(crudo.cantidad, 10) || 1));
-    // Extras: solo se suman los que traen precio_extra numérico; el nombre
-    // se conserva para la comanda pero el precio SIEMPRE es el enviado por
-    // el operador validado a número (no hay tabla de extras con precio fijo
-    // por id en este MVP — documentado como mejora futura).
-    const extras = Array.isArray(crudo.extras) ? crudo.extras.map(e => ({
-      nombre: String(e.nombre || '').slice(0, 80),
-      precio_extra: Number.isFinite(Number(e.precio_extra)) ? Number(e.precio_extra) : 0,
-    })) : [];
+    // Modificadores: el frontend manda SOLO ids de opcion. Nombres, precios
+    // extra, pertenencia al producto, minimos/maximos y disponibilidad salen
+    // de la base (resolverSeleccion, modificadores.js). Antes se aceptaba un
+    // arreglo "extras" con el precio que mandara el cliente HTTP -- se podia
+    // cobrar "Bistec en Salsa" con precio_extra 0. Ese camino ya no existe.
+    const grupos = gruposPorProducto.get(prod.id) || [];
+    const { modificadores, precioExtras, texto } = resolverSeleccion(prod, grupos, crudo.modificadores);
+
     const precioBase = Number(prod.precio);
-    const precioExtras = extras.reduce((s, e) => s + e.precio_extra, 0);
-    const precioUnitario = precioBase + precioExtras;
+    const precioUnitario = Math.round((precioBase + precioExtras) * 100) / 100;
     subtotal += precioUnitario * cantidad;
+    const notasLibres = String(crudo.notas || '').slice(0, 300);
     return {
       producto_id: Number(pid),
       nombre: prod.nombre,
       cantidad,
       precio_unitario: precioUnitario,
       precio_base: precioBase,
-      extras,
-      notas: String(crudo.notas || '').slice(0, 300),
+      // Snapshot: el pedido conserva lo elegido aunque el menu cambie manana.
+      modificadores,
+      extras: modificadores.map(m => ({ nombre: m.opcion, precio_extra: m.precio_extra })),
+      notas: [texto, notasLibres].filter(Boolean).join(' · ').slice(0, 400),
     };
   });
 

@@ -28,6 +28,7 @@ import { listarProveedores, esProveedorValido } from './services/paymentProvider
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, reservarIdempotencia } from './services/posEnvios.js';
+import { resolverProductoConModificadores, ModificadoresError } from './services/modificadores.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -1728,6 +1729,8 @@ function manejarErrorRestaurante(res, e) {
   };
   const status = mapa[e.code];
   if (status) return res.status(status).json({ error: e.message, code: e.code });
+  // Modificadores de menu: mismas reglas que en POS (una sola implementacion).
+  if (e instanceof ModificadoresError) return res.status(400).json({ error: e.message, code: e.codigo });
   console.error('[Restaurante] Error:', e.message);
   return res.status(500).json({ error: 'Error interno del módulo de restaurante' });
 }
@@ -1760,8 +1763,31 @@ app.get('/api/restaurante/cuentas/:cuentaId', requireAuthSeguro, requireModulo('
 
 app.post('/api/restaurante/cuentas/:cuentaId/items', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const items = await agregarItems(req.params.cuentaId, req.negocioId, req.body?.items, req.usuarioId);
-    res.json({ ok: true, items });
+    // Dos caminos, misma cuenta:
+    //  - item del MENU (producto_id): el servidor resuelve nombre, precio y
+    //    modificadores desde la base -- identico a POS, sin implementacion
+    //    divergente. El precio que mande el frontend se ignora.
+    //  - item libre (producto + precio_unitario): flujo manual de siempre,
+    //    para lo que no esta en el menu.
+    const crudos = Array.isArray(req.body?.items) ? req.body.items : [];
+    const items = [];
+    for (const it of crudos) {
+      if (it && (it.producto_id !== undefined && it.producto_id !== null && it.producto_id !== '')) {
+        const r = await resolverProductoConModificadores(req.negocioId, it.producto_id, it.modificadores);
+        const notasLibres = String(it.notas || '').slice(0, 300);
+        items.push({
+          producto: r.producto.nombre,
+          cantidad: it.cantidad,
+          precio_unitario: r.precioUnitario,
+          modificadores: r.modificadores.map(m => `${m.grupo}: ${m.opcion}`),
+          notas: notasLibres || null,
+        });
+      } else {
+        items.push(it);
+      }
+    }
+    const guardados = await agregarItems(req.params.cuentaId, req.negocioId, items, req.usuarioId);
+    res.json({ ok: true, items: guardados });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
@@ -1898,6 +1924,39 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
           mixto_efectivo, mixto_terminal, rewards_telefono, rewards_nombre,
           rewards_canje_puntos } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Sin items' });
+  // Items del MENU (producto_id): el servidor resuelve nombre, precio base y
+  // modificadores desde la base del propio negocio -- el precio que mande el
+  // frontend se ignora. Los items libres (sin producto_id) conservan el
+  // comportamiento manual de siempre para lo que no esta en el menu.
+  let itemsResueltos;
+  try {
+    itemsResueltos = [];
+    for (const it of items) {
+      if (it && it.producto_id !== undefined && it.producto_id !== null && it.producto_id !== '') {
+        const r = await resolverProductoConModificadores(req.negocioId, it.producto_id, it.modificadores);
+        const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
+        const notasLibres = String(it.notas || '').slice(0, 300);
+        itemsResueltos.push({
+          producto_id: r.producto.id,
+          nombre: r.producto.nombre,
+          cantidad,
+          precio_unitario: r.precioUnitario,
+          precio_base: r.precioBase,
+          modificadores: r.modificadores,
+          notas: [r.texto, notasLibres].filter(Boolean).join(' · ').slice(0, 400),
+        });
+      } else {
+        itemsResueltos.push(it);
+      }
+    }
+  } catch (e) {
+    if (e instanceof ModificadoresError) return res.status(400).json({ error: e.message, codigo: e.codigo });
+    console.error('[Panel] Error resolviendo items presenciales:', e.message);
+    return res.status(500).json({ error: 'No se pudo preparar el pedido' });
+  }
+  const todosDelMenu = itemsResueltos.length > 0 && itemsResueltos.every(i => i && i.producto_id);
+  items.length = 0;
+  items.push(...itemsResueltos);
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
   // Si hay cliente Rewards asignado (teléfono real), usarlo como cliente
@@ -1916,7 +1975,10 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     cambio: parseFloat(cambio) || 0,
     mixto_efectivo: parseFloat(mixto_efectivo) || null,
     mixto_terminal: parseFloat(mixto_terminal) || null,
-    total: total ?? (subtotal - desc),
+    // Con un pedido 100% de menu el total lo fija el servidor (subtotal
+    // recalculado - descuento): el frontend no puede mandar un total propio.
+    // Con items libres se conserva el comportamiento manual de siempre.
+    total: todosDelMenu ? Math.round((subtotal - desc) * 100) / 100 : (total ?? (subtotal - desc)),
     modalidad: 'recoger en tienda',
     canal: 'presencial',
     forma_pago: forma_pago || 'efectivo',
@@ -4221,6 +4283,10 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     // gemelo que hubiera quedado en cola detrás de esta reserva).
     if (reserva.reservado) reserva.liberar(e);
     if (e instanceof POSValidacionError) return res.status(400).json({ error: e.message, codigo: e.codigo });
+    // Seleccion de modificadores invalida (grupo requerido vacio, minimo,
+    // maximo, opcion ajena o no disponible): es un 400 del operador, no un
+    // fallo del servidor.
+    if (e instanceof ModificadoresError) return res.status(400).json({ error: e.message, codigo: e.codigo });
     console.error('[POS] Error creando pedido POS:', e.message);
     res.status(500).json({ error: 'No se pudo crear el pedido' });
   }
