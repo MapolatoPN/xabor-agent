@@ -85,6 +85,47 @@ export async function enviarCorreoInvitacion({ to, nombre, negocioNombre, enlace
   return resultado;
 }
 
+// ─── Restablecer contraseña ─────────────────────────────────────────────────
+// Misma infraestructura que la invitación (Resend por fetch, mismo
+// remitente, mismo manejo de fallos): no se agrega proveedor nuevo. El correo
+// NUNCA lleva contraseña, hash, datos del negocio ni nada interno — solo el
+// enlace y cuánto dura.
+function plantillaResetPassword({ nombre, enlace, minutos }) {
+  const saludo = nombre ? `Hola ${escapeHtml(nombre)},` : 'Hola,';
+  const html = `
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a;line-height:1.5;">
+  <p>${saludo}</p>
+  <p>Recibimos una solicitud para cambiar la contraseña de tu cuenta de Xabor.</p>
+  <p style="text-align:center;margin:28px 0;">
+    <a href="${enlace}" style="background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;">Restablecer contraseña</a>
+  </p>
+  <p style="font-size:0.85rem;color:#666;">Este enlace vence en ${minutos} minutos y solo puede usarse una vez.</p>
+  <p style="font-size:0.85rem;color:#666;">Si no fuiste tú, ignora este mensaje: tu contraseña sigue igual.</p>
+  <p style="font-size:0.85rem;color:#666;">¿Dudas? Escríbenos a hola@xabor.mx</p>
+</div>`.trim();
+  return { subject: 'Restablecer tu contraseña de Xabor', html };
+}
+
+// Nunca lanza y NUNCA imprime el enlace ni el token, en ningún entorno: la
+// respuesta HTTP tampoco los devuelve, así que el correo es el único camino
+// por el que ese enlace sale del servidor.
+export async function enviarCorreoResetPassword({ to, nombre, enlace, minutos = 60 }) {
+  const esProduccion = process.env.NODE_ENV === 'production';
+
+  if (!esProduccion) {
+    console.log(`[email:dev] Enlace de recuperación preparado para ${nombre || 'un usuario'} (fuera de producción no se envía correo, y el enlace no se imprime)`);
+    return { enviado: false, modo: 'consola-local' };
+  }
+  if (!RESEND_API_KEY) {
+    console.warn('[email] RESEND_API_KEY no configurada -- no se envió el enlace de recuperación.');
+    return { enviado: false, motivo: 'proveedor_no_configurado' };
+  }
+  const { subject, html } = plantillaResetPassword({ nombre, enlace, minutos });
+  const resultado = await enviarViaResend({ to, subject, html });
+  if (resultado.enviado) console.log('[email] Enlace de recuperación enviado');
+  return resultado;
+}
+
 // ─── Notificación de nuevo prospecto comercial ──────────────────────────────
 // Secundaria por diseño: la persistencia en `prospectos_comerciales` (ver
 // crearProspectoComercial en database.js) YA ocurrió antes de llamar esta

@@ -2567,7 +2567,11 @@ export async function obtenerIntegracionCanal(canal, identificador) {
 export async function obtenerMembresiaUsuarioNegocio(usuarioId, negocioId) {
   try {
     const { rows } = await pool.query(
-      `SELECT un.rol, un.activo
+      // sesiones_invalidas_antes (042): marca puesta al restablecer la
+      // contraseña. Viaja aquí porque esta consulta ya se hace en cada
+      // request autenticado -- así revocar las sesiones abiertas no cuesta
+      // una consulta extra ni obliga a inventar un registro de sesiones.
+      `SELECT un.rol, un.activo, u.sesiones_invalidas_antes
        FROM usuario_negocios un
        JOIN negocios n ON n.id = un.negocio_id
        JOIN usuarios u ON u.id = un.usuario_id
@@ -5744,6 +5748,157 @@ export async function crearPasswordDesdeInvitacion(token, password) {
   } catch (e) {
     await client.query('ROLLBACK');
     if (!e.code) console.error('[DB] Error crearPasswordDesdeInvitacion:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Recuperación de contraseña ─────────────────────────────────────────────
+// Mismo mecanismo probado de las invitaciones (012): token aleatorio de 256
+// bits enviado por correo, del que la base guarda ÚNICAMENTE su SHA-256.
+// Diferencias con una invitación: lo pide el propio usuario (no un
+// superadmin), vive mucho menos y no activa membresías.
+//
+// Quién puede recuperar: una cuenta ADMINISTRATIVA — con correo, con
+// contraseña y con al menos una membresía activa en un negocio activo. Un
+// mesero no entra por aquí: no tiene correo ni contraseña, su acceso es un
+// PIN y quien se lo repone es un administrador desde Usuarios. Son dos
+// sistemas separados a propósito y esta función nunca toca pin_hash.
+const RESET_DURACION_MS = 60 * 60 * 1000; // 1 hora
+
+export function normalizarEmail(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+// Devuelve { creado, token, usuario } — el token EN CRUDO solo en este
+// retorno, para que el llamador lo mande por correo; nunca se guarda ni se
+// devuelve por HTTP. Si el correo no corresponde a una cuenta que pueda
+// recuperar, devuelve { creado: false } SIN decir por qué: la respuesta
+// pública es la misma en todos los casos.
+export async function crearSolicitudResetPassword(email) {
+  const normalizado = normalizarEmail(email);
+  if (!normalizado) return { creado: false };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Elegible = correo + contraseña + membresía viva. Se compara en
+    // minúsculas porque quien olvidó su contraseña también teclea su correo
+    // como se le ocurre.
+    const { rows } = await client.query(
+      `SELECT u.id, u.nombre, u.email
+         FROM usuarios u
+        WHERE LOWER(u.email) = $1
+          AND u.activo = TRUE
+          AND u.password_hash IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM usuario_negocios un
+              JOIN negocios n ON n.id = un.negocio_id
+             WHERE un.usuario_id = u.id AND un.activo = TRUE AND n.activo = TRUE
+               AND un.rol <> 'mesero'
+          )
+        LIMIT 1`,
+      [normalizado]
+    );
+    if (!rows.length) { await client.query('COMMIT'); return { creado: false }; }
+    const usuario = rows[0];
+    // Solo el último enlace sirve: pedir otro invalida los anteriores.
+    await client.query(
+      `UPDATE password_reset_tokens SET revoked_at = NOW()
+        WHERE usuario_id = $1 AND used_at IS NULL AND revoked_at IS NULL`,
+      [usuario.id]
+    );
+    const token = randomBytes(32).toString('base64url');
+    const expiresAt = new Date(Date.now() + RESET_DURACION_MS);
+    await client.query(
+      `INSERT INTO password_reset_tokens (usuario_id, token_hash, expires_at) VALUES ($1,$2,$3)`,
+      [usuario.id, hashToken(token), expiresAt]
+    );
+    await client.query('COMMIT');
+    return { creado: true, token, expiresAt, usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email } };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error crearSolicitudResetPassword:', e.message);
+    return { creado: false };
+  } finally {
+    client.release();
+  }
+}
+
+// Para que la pantalla sepa qué mostrar antes de pedir la contraseña nueva.
+// Nunca devuelve el correo ni el negocio: solo el primer nombre, igual que
+// la validación de invitaciones.
+export async function validarTokenReset(token) {
+  if (!token || typeof token !== 'string') return { estado: 'invalido' };
+  try {
+    const { rows } = await pool.query(
+      `SELECT t.used_at, t.revoked_at, t.expires_at, u.nombre
+         FROM password_reset_tokens t JOIN usuarios u ON u.id = t.usuario_id
+        WHERE t.token_hash = $1`,
+      [hashToken(token)]
+    );
+    if (!rows.length) return { estado: 'invalido' };
+    const t = rows[0];
+    if (t.used_at) return { estado: 'usado' };
+    // Un enlace revocado (porque se pidió otro) no se distingue de uno
+    // inválido: no hay razón para contarle a nadie que existió.
+    if (t.revoked_at) return { estado: 'invalido' };
+    if (new Date(t.expires_at) < new Date()) return { estado: 'expirado' };
+    return { estado: 'valido', nombreParcial: (t.nombre || '').trim().split(/\s+/)[0] || '' };
+  } catch (e) {
+    console.error('[DB] Error validarTokenReset:', e.message);
+    return { estado: 'invalido' };
+  }
+}
+
+// Consume el enlace y cambia la contraseña. Todo en UNA transacción con
+// SELECT ... FOR UPDATE sobre el token, para que dos solicitudes simultáneas
+// con el mismo enlace no lo usen las dos.
+//
+// Al terminar se marca `sesiones_invalidas_antes`: las sesiones abiertas con
+// la contraseña vieja dejan de servir de inmediato (ver
+// obtenerMembresiaUsuarioNegocio). El PIN de un mesero nunca se toca aquí.
+export async function restablecerPasswordConToken(token, password) {
+  if (!token || typeof token !== 'string') { const e = new Error('Enlace inválido'); e.code = 'INVALIDO'; throw e; }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT t.id, t.usuario_id, t.used_at, t.revoked_at, t.expires_at, u.email, u.activo
+         FROM password_reset_tokens t JOIN usuarios u ON u.id = t.usuario_id
+        WHERE t.token_hash = $1 FOR UPDATE`,
+      [hashToken(token)]
+    );
+    if (!rows.length) { const e = new Error('Enlace inválido'); e.code = 'INVALIDO'; throw e; }
+    const t = rows[0];
+    if (t.used_at) { const e = new Error('Este enlace ya fue utilizado'); e.code = 'USADO'; throw e; }
+    if (t.revoked_at) { const e = new Error('Enlace inválido'); e.code = 'INVALIDO'; throw e; }
+    if (new Date(t.expires_at) < new Date()) { const e = new Error('Este enlace expiró'); e.code = 'EXPIRADO'; throw e; }
+    if (!t.activo) { const e = new Error('Enlace inválido'); e.code = 'INVALIDO'; throw e; }
+    // Mismas reglas que al crear la contraseña inicial: una sola política.
+    if (typeof password !== 'string' || password.length < 8) {
+      const e = new Error('La contraseña debe tener al menos 8 caracteres'); e.code = 'PASSWORD_INVALIDA'; throw e;
+    }
+    if (t.email && password.toLowerCase() === t.email.toLowerCase()) {
+      const e = new Error('La contraseña no puede ser igual a tu correo'); e.code = 'PASSWORD_INVALIDA'; throw e;
+    }
+
+    await client.query(
+      `UPDATE usuarios SET password_hash = $1, sesiones_invalidas_antes = NOW(), updated_at = NOW() WHERE id = $2`,
+      [hashPassword(password), t.usuario_id]
+    );
+    await client.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1', [t.id]);
+    // Defensivo: cualquier otro enlace vigente del mismo usuario muere aquí.
+    await client.query(
+      `UPDATE password_reset_tokens SET revoked_at = NOW()
+        WHERE usuario_id = $1 AND id <> $2 AND used_at IS NULL AND revoked_at IS NULL`,
+      [t.usuario_id, t.id]
+    );
+    await client.query('COMMIT');
+    return { usuarioId: t.usuario_id };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (!e.code) console.error('[DB] Error restablecerPasswordConToken:', e.message);
     throw e;
   } finally {
     client.release();

@@ -23,7 +23,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -56,7 +56,7 @@ import {
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
-import { enviarCorreoInvitacion, enviarNotificacionNuevoProspecto } from './services/email.js';
+import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -223,6 +223,19 @@ async function resolverNegocio(req, res, next) {
 // 'staff' solo satisface requerimientos de 'staff' o ninguno.
 const JERARQUIA_ROLES = { admin: 2, staff: 1 };
 
+// Sesiones emitidas ANTES de que el usuario restableciera su contraseña
+// (migración 042). Las sesiones de Xabor son tokens firmados sin registro
+// server-side, así que no hay una lista que borrar: se compara el `iat` del
+// token con la marca que dejó el restablecimiento. La membresía ya se
+// consulta en cada request, así que esto no agrega ninguna consulta.
+// Cambiar la contraseña cierra las sesiones abiertas con la anterior --
+// incluida la de quien haya entrado con ella.
+function sesionAnteriorAlCambioDePassword(payload, membresia) {
+  const marca = membresia?.sesiones_invalidas_antes;
+  if (!marca) return false;
+  return Number(payload?.iat || 0) < new Date(marca).getTime();
+}
+
 function requireSesionNegocio(rolMinimo) {
   return async (req, res, next) => {
     const auth = req.headers['authorization'];
@@ -265,6 +278,10 @@ function requireSesionNegocio(rolMinimo) {
     const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
     if (!membresia || !membresia.activo) {
       return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+    }
+    if (sesionAnteriorAlCambioDePassword(payload, membresia)) {
+      limpiarCookieSesion(res);
+      return res.status(401).json({ error: 'Tu contraseña cambió: inicia sesión de nuevo', code: 'SESION_REVOCADA' });
     }
 
     // Un mesero NO es una cuenta de panel: no tiene correo ni contraseña, así
@@ -387,6 +404,10 @@ function resolverNegocioSeguro(rolMinimo) {
       const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
       if (!membresia || !membresia.activo) {
         return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+      }
+      if (sesionAnteriorAlCambioDePassword(payload, membresia)) {
+        limpiarCookieSesion(res);
+        return res.status(401).json({ error: 'Tu contraseña cambió: inicia sesión de nuevo', code: 'SESION_REVOCADA' });
       }
       // Mismo candado que en requireSesionNegocio: el rol 'mesero' nunca
       // navega el panel. Su identidad viaja como meseroUsuarioId + PIN.
@@ -670,6 +691,9 @@ async function autenticarUpgradePanel(req, socket, head) {
   const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
   if (!membresia || !membresia.activo) return rechazar(403, 'Forbidden');
   if (!JERARQUIA_ROLES[membresia.rol]) return rechazar(403, 'Forbidden'); // rol corrupto/desconocido
+  // Misma revocación que en las rutas HTTP: una contraseña restablecida
+  // cierra también los WebSocket abiertos con la sesión anterior.
+  if (sesionAnteriorAlCambioDePassword(payload, membresia)) return rechazar(401, 'Unauthorized');
 
   const contextoWS = {
     tipo: 'panel',
@@ -1537,6 +1561,81 @@ app.post('/api/auth/crear-password', rateLimitMiddleware(req => `crear-pw:${req.
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RECUPERACIÓN DE CONTRASEÑA — "¿Olvidaste tu contraseña?"
+//
+// Solo para cuentas ADMINISTRATIVAS (correo + contraseña). Un mesero no
+// entra por aquí: su acceso es un PIN sin correo y quien se lo repone es un
+// administrador desde Usuarios. Son dos sistemas separados y este flujo
+// nunca toca pin_hash.
+//
+// La respuesta de la solicitud es SIEMPRE la misma, exista o no la cuenta,
+// esté activa o no, pertenezca a un negocio o a ninguno: decir "ese correo
+// no existe" convierte el formulario en un detector de clientes de Xabor.
+// Por la misma razón el trabajo (buscar, generar, enviar) se hace igual
+// antes de responder, para no regalar la respuesta por su tiempo.
+const RESET_MINUTOS = 60;
+
+app.post('/api/auth/negocio/forgot-password',
+  // Dos llaves a la vez: por IP (freno grueso al tanteo automatizado) y por
+  // correo normalizado (evita bombardear el buzón de una persona concreta).
+  // El límite por correo es el que de verdad protege al usuario; el de IP se
+  // deja holgado a propósito porque un restaurante entero sale por la misma
+  // IP y no debe quedarse sin recuperar contraseñas por culpa de un
+  // compañero. Ninguno de los dos deja sin servicio a otros negocios.
+  rateLimitMiddleware(req => `forgot-ip:${req.ip}`, 20, 15 * 60 * 1000),
+  rateLimitMiddleware(req => `forgot-mail:${normalizarEmail(req.body?.email)}`, 3, 15 * 60 * 1000),
+  async (req, res) => {
+    const respuestaGenerica = { ok: true, mensaje: 'Si existe una cuenta asociada a ese correo, enviaremos instrucciones para restablecer la contraseña.' };
+    try {
+      const solicitud = await crearSolicitudResetPassword(req.body?.email);
+      if (solicitud.creado) {
+        const baseUrl = process.env.PUBLIC_URL || 'https://xabor.mx';
+        const enlace = `${baseUrl}/restablecer-contrasena?token=${solicitud.token}`;
+        // El correo puede fallar; la respuesta pública no cambia por eso.
+        // El enlace NO se devuelve nunca por HTTP ni se escribe en logs.
+        await enviarCorreoResetPassword({
+          to: solicitud.usuario.email, nombre: solicitud.usuario.nombre, enlace, minutos: RESET_MINUTOS,
+        }).catch(() => {});
+      }
+      res.json(respuestaGenerica);
+    } catch (e) {
+      // Ni siquiera un error interno debe distinguirse desde afuera.
+      console.error('[POST /api/auth/negocio/forgot-password] Error:', e.message);
+      res.json(respuestaGenerica);
+    }
+  });
+
+// Estado del enlace, para que la pantalla sepa qué mostrar antes de pedir la
+// contraseña nueva. Nunca devuelve correo ni negocio: solo el primer nombre.
+app.get('/api/auth/reset-password/:token',
+  rateLimitMiddleware(req => `val-reset:${req.ip}`, 20, 60 * 1000),
+  async (req, res) => {
+    res.json(await validarTokenReset(req.params.token));
+  });
+
+app.post('/api/auth/negocio/reset-password',
+  rateLimitMiddleware(req => `reset-pw:${req.ip}`, 10, 60 * 1000),
+  async (req, res) => {
+    const { token, password, passwordConfirm } = req.body || {};
+    if (typeof token !== 'string' || !token) return res.status(400).json({ error: 'Token requerido' });
+    if (typeof password !== 'string' || typeof passwordConfirm !== 'string') return res.status(400).json({ error: 'Contraseña requerida' });
+    if (password !== passwordConfirm) return res.status(400).json({ error: 'Las contraseñas no coinciden' });
+    try {
+      await restablecerPasswordConToken(token, password);
+      // Mismos códigos que el flujo de invitación, para que la pantalla no
+      // tenga que aprender un vocabulario nuevo.
+      res.json({ ok: true });
+    } catch (e) {
+      if (e.code === 'USADO') return res.status(409).json({ error: 'Este enlace ya fue utilizado' });
+      if (e.code === 'EXPIRADO') return res.status(410).json({ error: 'Este enlace expiró' });
+      if (e.code === 'INVALIDO') return res.status(404).json({ error: 'Enlace inválido' });
+      if (e.code === 'PASSWORD_INVALIDA') return res.status(400).json({ error: e.message });
+      console.error('[POST /api/auth/negocio/reset-password] Error:', e.message);
+      res.status(500).json({ error: 'No se pudo restablecer la contraseña' });
+    }
+  });
+
 app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   const modulos = await obtenerModulosHabilitados(req.negocioId);
   // Nunca expone phone_number_id/token -- solo si el negocio tiene AMBOS
@@ -1649,6 +1748,13 @@ app.get('/superadmin', (req, res) => {
 // HTML en sí no contiene ningún dato sensible.
 app.get('/crear-password', (req, res) => {
   res.sendFile(join(__dirname, '../panel/crear-password.html'));
+});
+
+// Página pública para restablecer la contraseña olvidada. Mismo criterio que
+// /crear-password: el token viaja en la query string y se valida contra
+// GET /api/auth/reset-password/:token; el HTML en sí no contiene nada.
+app.get('/restablecer-contrasena', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/restablecer-password.html'));
 });
 
 // Salud del servidor
