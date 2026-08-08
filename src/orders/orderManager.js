@@ -61,6 +61,17 @@ export function setWsBroadcastSuperadmin(fn) {
 // ANTES de llamar a registrarPedido (mismo patrón que Rappi, que nunca
 // tuvo este problema). registrarPedido ya no acepta ningún respaldo:
 // negocioId ausente es siempre un error para TODOS los canales.
+// Reconcilia el estado en memoria con la base. Devuelve cuántos pedidos
+// quedaron en memoria (lo usa el arranque para su log).
+//
+// Hotfix carrera de arranque: antes hacía `pedidos.length = 0` y repoblaba
+// con la fotografía leída de la base. Como server.listen aceptaba tráfico en
+// paralelo a esta carga, un pedido creado durante la ventana quedaba
+// persistido en pedidos_activos pero se BORRABA de memoria (la fotografía es
+// anterior a él), y la API respondía después "Pedido no encontrado" sobre una
+// fila que sí existía. La causa principal se corrigió en server.js (no se
+// escucha hasta terminar el bootstrap); esto es la segunda barrera: lo que
+// se creó después de la fotografía se conserva, nunca se descarta.
 export async function cargarPedidosDesdeDB() {
   try {
     const [activos, maxFolio] = await Promise.all([
@@ -68,22 +79,39 @@ export async function cargarPedidosDesdeDB() {
       obtenerMaxFolioNum()
     ]);
 
+    const foliosEnDB = new Set(activos.map(p => p.id));
+    // Pedidos que esta instancia creó mientras se leía la base: no están en
+    // la fotografía, pero su fila ya existe (registrarPedido solo agrega a
+    // memoria después de un INSERT real), así que perderlos sería dejar
+    // huérfano un pedido vivo.
+    const creadosDuranteLaCarga = pedidos.filter(p => !foliosEnDB.has(p.id));
+
     pedidos.length = 0;
     for (const p of activos) {
       pedidos.push(p);
     }
+    for (const p of creadosDuranteLaCarga) {
+      pedidos.push(p);
+    }
+    if (creadosDuranteLaCarga.length) {
+      console.log(`[OrderManager] ${creadosDuranteLaCarga.length} pedido(s) creados durante la carga inicial conservados en memoria`);
+    }
 
     // El contador siempre arranca por encima del folio más alto en DB
     // Esto previene duplicados aunque haya pedidos entregados/archivados
-    const maxDesdeActivos = activos.reduce((max, p) => {
+    const maxDeLista = (lista) => lista.reduce((max, p) => {
       const num = parseInt(p.id?.replace('XAB-', '')) || 0;
       return num > max ? num : max;
     }, 0);
-    contadorPedidos = Math.max(maxFolio, maxDesdeActivos) + 1;
+    // Los creados durante la carga también cuentan: el contador nunca debe
+    // retroceder por debajo de un folio ya entregado a un cliente.
+    contadorPedidos = Math.max(maxFolio, maxDeLista(activos), maxDeLista(creadosDuranteLaCarga), contadorPedidos - 1) + 1;
 
     console.log(`[OrderManager] ${pedidos.length} pedidos activos cargados desde DB — próximo folio: XAB-${String(contadorPedidos).padStart(4, '0')}`);
+    return pedidos.length;
   } catch (e) {
     console.error('[OrderManager] Error cargando pedidos desde DB:', e.message);
+    throw e;
   }
 }
 
