@@ -30,7 +30,8 @@ Todo vive en **`public/brand/`** y se sirve bajo `/public/brand/`:
 | `xabor-logo.svg` | **logotipo**: isotipo + palabra "Xabor" |
 | `xabor-icono-32/180/192/512.png` | derivados para favicon PNG, apple-touch-icon y manifest |
 | `favicon.ico` | contenedor ICO con el PNG de 32 px, para lo que pide `.ico` a la fuerza |
-| `xabor-social.png` (+ `.svg`) | **vista previa social** 1200×630 |
+| `xabor-social-v2.png` | **vista previa social** 1200×630 (arte aprobado) |
+| `xabor-social.png` (+ `.svg`) | vista previa anterior — **sin consumidores** |
 | `site.webmanifest` | nombre, colores e iconos de la app |
 
 Los PNG, el `.ico` y la imagen social **se generan** del SVG con
@@ -128,3 +129,24 @@ logotipo del negocio—, pero no se notó hasta la revisión.
 
 La prueba también vigila la frontera contraria: que los estilos y la
 estructura de la landing **no** se filtren a ninguna pantalla del producto.
+
+## Vista previa social
+
+`public/brand/xabor-social-v2.png` (1200×630) es lo que ven WhatsApp,
+Facebook, LinkedIn y X cuando alguien comparte https://xabor.mx/. No se
+genera con `generar-assets-marca.mjs`: es arte terminado, entregado por el
+dueño, y solo se reescaló a la medida de Open Graph.
+
+**El nombre lleva `-v2` a propósito.** Las redes cachean la imagen *por URL*
+y no vuelven a pedirla durante días aunque el archivo cambie. Reusar el
+nombre anterior habría seguido mostrando la vista previa vieja. Regla para la
+próxima vez: **cambiar la imagen social significa cambiar el nombre del
+archivo**, no sobrescribirlo.
+
+`xabor-social.png` y `xabor-social.svg` (la vista previa anterior) **ya no
+los referencia ninguna página**. Se conservan porque el generador de assets
+todavía los produce; retirarlos es una limpieza aparte, no un cambio de
+marca.
+
+Esto no toca el favicon, el isotipo, el manifest ni el `theme-color`: son
+cosas distintas, y `fase-scope-marca` lo comprueba.

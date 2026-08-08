@@ -209,10 +209,47 @@ await t('SEO', '15. title, description, canonical y Open Graph describen el prod
   const desc = (html.match(/<meta name="description" content="([^"]+)"/) || [])[1] || '';
   assert.ok(desc.length > 80 && desc.length < 200, `description fuera de rango (${desc.length})`);
   assert.ok(/<link rel="canonical" href="https:\/\/xabor\.mx\/">/.test(html), 'canonical');
-  assert.ok(/<meta property="og:image" content="https:\/\/xabor\.mx\/public\/brand\/xabor-social\.png">/.test(html), 'og:image');
   assert.ok(/summary_large_image/.test(html), 'twitter card grande');
-  const social = await pesar('/public/brand/xabor-social.png');
-  assert.strictEqual(social.status, 200);
+});
+
+// La vista previa social es lo primero que ve alguien a quien le comparten el
+// enlace por WhatsApp. Estos casos comprueban lo que realmente sale servido,
+// no solo que el archivo exista en el repositorio.
+await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en absoluto y por HTTPS', async () => {
+  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-v2.png';
+  const meta = (p, n = 'property') => (html.match(new RegExp(`<meta ${n}="${p}" content="([^"]+)"`)) || [])[1];
+
+  assert.strictEqual(meta('og:image'), IMAGEN, 'og:image');
+  assert.strictEqual(meta('og:image:secure_url'), IMAGEN, 'og:image:secure_url');
+  assert.strictEqual(meta('twitter:image', 'name'), IMAGEN, 'twitter:image coincide con og:image');
+  assert.strictEqual(meta('og:image:type'), 'image/png');
+  assert.strictEqual(meta('og:image:width'), '1200');
+  assert.strictEqual(meta('og:image:height'), '630');
+  assert.strictEqual(meta('og:url'), 'https://xabor.mx/');
+  assert.ok(meta('og:image:alt') && meta('twitter:image:alt', 'name'), 'ambas imágenes declaran alt');
+
+  // Facebook, WhatsApp y LinkedIn descargan la imagen desde fuera: una ruta
+  // relativa o un http:// pelado los deja sin vista previa.
+  for (const url of [meta('og:image'), meta('twitter:image', 'name')]) {
+    assert.ok(url.startsWith('https://xabor.mx/'), `${url} debe ser absoluta y HTTPS`);
+  }
+
+  // El nombre lleva -v2 a propósito: las redes cachean por URL.
+  assert.ok(/xabor-social-v2\.png/.test(html), 'la imagen nueva estrena nombre para saltarse la caché social');
+  assert.ok(!/xabor-social\.png/.test(html), 'la imagen anterior ya no se referencia en la landing');
+});
+
+await t('SOCIAL', '15c. el servidor entrega la imagen social como PNG y sin pedir sesión', async () => {
+  const r = await fetch(base + '/public/brand/xabor-social-v2.png');   // sin cookies
+  assert.strictEqual(r.status, 200, 'la imagen responde 200');
+  assert.match(r.headers.get('content-type') || '', /image\/png/, 'Content-Type image/png');
+  const bytes = Buffer.from(await r.arrayBuffer());
+  assert.ok(bytes.length > 50000, `la imagen llegó demasiado pequeña (${bytes.length} bytes)`);
+
+  // Cabecera PNG e IHDR: ancho y alto reales del archivo servido.
+  assert.ok(bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), 'firma PNG');
+  assert.strictEqual(bytes.readUInt32BE(16), 1200, 'ancho real del archivo');
+  assert.strictEqual(bytes.readUInt32BE(20), 630, 'alto real del archivo');
 });
 
 await t('SEO', '16. la jerarquía de encabezados es sensata', async () => {
