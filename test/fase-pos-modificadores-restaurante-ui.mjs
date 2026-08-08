@@ -87,6 +87,9 @@ async function crearCatalogo(negocioId, etiqueta) {
 async function limpiar() {
   await pool.query(`DELETE FROM menu_categorias WHERE nombre LIKE 'Cat mods %' AND negocio_id = ANY($1)`, [[A, B]]);
   await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND datos->>'canal' IN ('pos','presencial')`, [[A, B]]);
+  // Incluye las cuentas ABIERTAS que dejan las pruebas de mesa: si quedaran,
+  // la siguiente suite no podría desactivar el módulo (guard de mesas
+  // abiertas) y fallaría por contaminación entre archivos.
   await pool.query(`DELETE FROM restaurante_cuentas WHERE negocio_id = ANY($1)`, [[A, B]]);
   await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave = 'restaurante_num_mesas'`, [[A, B]]);
 }

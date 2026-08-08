@@ -549,6 +549,11 @@ await t('INDICADORES', 'expone modulo/mesas/meseros/pagos/prueba para el onboard
   assert.strictEqual(rHttp.status, 200);
 });
 
+// Estas pruebas dejan mesas abiertas a proposito (carreras de apertura). Se
+// cierran aqui: con el guard de desactivacion segura, una cuenta abierta
+// olvidada impide apagar el modulo y romperia otra suite por contaminacion.
+await pool.query(`DELETE FROM restaurante_cuentas WHERE negocio_id = ANY($1) AND estado = 'abierta'`, [[SEED.negocioA, SEED.negocioB]]);
+
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(` - ${f}`)); }
 await srv.detener();

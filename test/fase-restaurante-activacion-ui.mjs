@@ -85,6 +85,11 @@ await t('MODULO', 'con restaurante ACTIVO, /api/restaurante/mesas responde 200 p
   assert.strictEqual(r.body.numMesas, 12, 'sin configurar usa el default 12');
 });
 await t('DESACTIVAR', 'suspendido dos veces (idempotente) y requireModulo vuelve a 403', async () => {
+  // Desactivar exige que no queden mesas abiertas (guard de desactivación
+  // segura). Esta prueba es sobre estados del módulo, no sobre cuentas, así
+  // que se parte de un negocio sin cuentas abiertas sin importar qué haya
+  // dejado otra suite antes.
+  await pool.query(`DELETE FROM restaurante_cuentas WHERE negocio_id = $1 AND estado = 'abierta'`, [A]);
   for (let i = 0; i < 2; i++) {
     const r = await api(base, `/api/superadmin/negocios/${A}/modulos`, { cookie: cookieSuperadmin, method: 'PATCH', body: { modulos: { restaurante: 'suspendido' } } });
     assert.strictEqual(r.status, 200);
