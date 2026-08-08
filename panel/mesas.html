@@ -2,137 +2,322 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mesas · Xabor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Restaurante · Xabor</title>
 <style>
-  :root { --bg:#111827; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#9ca3af; --ok:#10b981; --ocupada:#f59e0b; --accent:#f97316; --rojo:#ef4444; }
-  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; }
-  body { background:var(--bg); color:var(--texto); min-height:100vh; }
-  header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:10; }
-  header h1 { font-size:18px; }
-  header a { color:var(--sub); text-decoration:none; font-size:14px; }
-  main { padding:16px; max-width:1100px; margin:0 auto; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
-  .mesa { background:var(--card); border:2px solid var(--line); border-radius:12px; padding:14px; cursor:pointer; text-align:center; }
-  .mesa.ocupada { border-color:var(--ocupada); }
-  .mesa .num { font-size:22px; font-weight:800; }
-  .mesa .info { font-size:12px; color:var(--sub); margin-top:6px; line-height:1.5; }
-  .mesa .saldo { font-weight:700; color:var(--ocupada); }
-  .badge { display:inline-block; font-size:11px; font-weight:700; border-radius:99px; padding:2px 8px; margin-top:6px; }
-  .badge.libre { background:rgba(16,185,129,.15); color:var(--ok); }
-  .badge.ocu { background:rgba(245,158,11,.15); color:var(--ocupada); }
-  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:18px; width:min(560px,94vw); }
-  dialog::backdrop { background:rgba(0,0,0,.6); }
-  dialog h2 { font-size:16px; margin-bottom:10px; }
-  label { display:block; font-size:12px; color:var(--sub); margin:10px 0 4px; }
-  input, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:14px; }
-  .fila { display:flex; gap:8px; }
-  .fila > * { flex:1; }
-  button { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:9px 14px; font-weight:700; cursor:pointer; font-size:14px; }
-  button.sec { background:var(--line); }
-  button.peligro { background:var(--rojo); }
-  .acciones { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
-  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
-  .tachado { text-decoration:line-through; color:var(--sub); }
-  .tot { display:flex; justify-content:space-between; font-size:14px; margin-top:10px; padding-top:8px; border-top:1px solid var(--line); }
-  .tot strong { font-size:16px; }
-  #msg { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); background:var(--card); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:99; }
+  :root {
+    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
+    --ok:#10b981; --aviso:#f59e0b; --accent:#f97316; --rojo:#ef4444; --azul:#38bdf8;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  html, body { overflow-x:hidden; }
+  body { background:var(--bg); color:var(--texto); min-height:100dvh; display:flex; flex-direction:column; }
+
+  /* ── Barra Xabor: la misma marca del panel. Restaurante es un espacio de
+        trabajo de Xabor, no otra aplicación. ───────────────────────────── */
+  header.xb { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--sup);
+              border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
+  header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  header.xb .negocio { color:var(--sub); font-size:13px; border-left:1px solid var(--line); padding-left:12px; }
+  header.xb .der { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  header.xb .quien { font-size:13px; font-weight:700; }
+  header.xb .quien small { display:block; font-weight:500; color:var(--sub); font-size:11px; }
+  header.xb a, header.xb button.enlace { color:var(--sub); text-decoration:none; font-size:13px; background:none; border:none; cursor:pointer; }
+  header.xb button.salir { background:var(--line); color:var(--texto); border:none; border-radius:9px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; min-height:40px; }
+
+  main { flex:1; padding:14px; width:100%; max-width:1400px; margin:0 auto; }
+  .oculto { display:none !important; }
+
+  /* ── Tablero de mesas ─────────────────────────────────────────────────── */
+  .filtros { display:flex; gap:8px; margin-bottom:12px; align-items:center; flex-wrap:wrap; }
+  .chip { background:var(--sup); color:var(--sub); border:1px solid var(--line); border-radius:99px;
+          padding:9px 16px; font-size:14px; font-weight:700; cursor:pointer; min-height:42px; }
+  .chip.activo { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .filtros .cuenta-libres { margin-left:auto; color:var(--sub); font-size:13px; }
+
+  .mesas { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:12px; }
+  .mesa { background:var(--card); border:2px solid var(--line); border-radius:14px; padding:14px 12px;
+          cursor:pointer; text-align:left; color:inherit; min-height:118px; display:flex; flex-direction:column; gap:4px; }
+  .mesa .num { font-size:20px; font-weight:900; }
+  .mesa .quien { font-size:14px; font-weight:700; color:var(--texto); }
+  .mesa .dato { font-size:13px; color:var(--sub); }
+  .mesa .importe { font-size:18px; font-weight:800; margin-top:auto; }
+  .mesa .estado { font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; }
+  .mesa.libre { border-style:dashed; }
+  .mesa.libre .estado { color:var(--ok); }
+  .mesa.ocupada { border-color:var(--line); }
+  .mesa.ocupada .estado { color:var(--sub); }
+  .mesa.porenviar { border-color:var(--aviso); }
+  .mesa.porenviar .estado { color:var(--aviso); }
+  .mesa.cobrando { border-color:var(--azul); }
+  .mesa.cobrando .estado { color:var(--azul); }
+  .vacio { color:var(--sub); font-size:14px; padding:18px 2px; }
+
+  /* ── Toma de orden: categorías · productos · cuenta ───────────────────── */
+  .orden-barra { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  .orden-barra .volver { background:var(--sup); border:1px solid var(--line); color:var(--texto);
+                         border-radius:10px; padding:10px 14px; font-size:14px; font-weight:700; cursor:pointer; min-height:44px; }
+  .orden-barra .titulo { font-size:18px; font-weight:800; }
+  .orden-barra .meta { font-size:13px; color:var(--sub); }
+
+  .cols { display:grid; grid-template-columns:190px 1fr 340px; gap:12px; align-items:start; }
+  .panelito { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:10px; }
+  #cats { display:grid; gap:6px; max-height:calc(100dvh - 190px); overflow-y:auto; }
+  #cats button { width:100%; text-align:left; background:transparent; border:1px solid transparent; color:var(--texto);
+                 border-radius:10px; padding:12px 12px; font-size:15px; font-weight:700; cursor:pointer; min-height:48px; }
+  #cats button.activo { background:var(--accent); color:#fff; }
+
+  .buscador { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+              border-radius:10px; padding:11px 12px; font-size:15px; margin-bottom:10px; }
+  #prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;
+           max-height:calc(100dvh - 240px); overflow-y:auto; }
+  .prod { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 12px; min-height:92px;
+          display:flex; flex-direction:column; gap:6px; text-align:left; color:inherit; cursor:pointer; }
+  .prod .nom { font-size:15px; font-weight:700; line-height:1.25; }
+  .prod .pre { margin-top:auto; font-size:16px; font-weight:800; color:var(--accent); }
+  .prod .ops { font-size:11px; color:var(--sub); text-transform:uppercase; letter-spacing:.4px; }
+
+  #cuenta { position:sticky; top:74px; max-height:calc(100dvh - 96px); display:flex; flex-direction:column; }
+  #cuenta h3 { font-size:15px; margin-bottom:2px; }
+  #cuenta .sub { font-size:12px; color:var(--sub); margin-bottom:8px; }
+  .lineas { overflow-y:auto; flex:1; }
+  .ronda { border-top:1px solid var(--line); padding-top:8px; margin-top:8px; }
+  .ronda:first-child { border-top:none; margin-top:0; padding-top:0; }
+  .ronda .cab { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:800;
+                text-transform:uppercase; letter-spacing:.5px; color:var(--sub); margin-bottom:6px; }
+  .ronda.pend .cab { color:var(--aviso); }
+  .ronda .cab .sello { margin-left:auto; font-weight:700; }
+  .ronda.enviada .cab .sello { color:var(--ok); }
+  .linea { display:flex; gap:8px; font-size:14px; padding:4px 0; align-items:flex-start; }
+  .linea .cant { font-weight:800; min-width:26px; }
+  .linea .nom small { display:block; color:var(--sub); font-size:12px; line-height:1.35; }
+  .linea .imp { margin-left:auto; font-weight:700; white-space:nowrap; }
+  .linea.cancelada { text-decoration:line-through; color:var(--sub); }
+  .linea .quitar { background:none; border:none; color:var(--rojo); font-size:12px; cursor:pointer; padding:0 2px; }
+  .totales { border-top:1px solid var(--line); margin-top:10px; padding-top:10px; font-size:13px; color:var(--sub); }
+  .totales .gran { display:flex; justify-content:space-between; font-size:20px; font-weight:900; color:var(--texto); margin-top:4px; }
+  .accion-principal { width:100%; background:var(--accent); color:#fff; border:none; border-radius:12px;
+                      padding:16px; font-size:17px; font-weight:900; cursor:pointer; margin-top:10px; min-height:58px; }
+  .accion-principal:disabled { opacity:.4; cursor:not-allowed; }
+  .secundarias { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .secundarias button { flex:1; min-width:120px; background:var(--line); color:var(--texto); border:none;
+                        border-radius:10px; padding:12px; font-size:13px; font-weight:700; cursor:pointer; min-height:46px; }
+
+  /* Barra inferior: en celular la cuenta no cabe al lado, así que el total y
+     la acción principal viven siempre a la vista. */
+  .barra-inf { display:none; position:sticky; bottom:0; background:var(--sup); border-top:1px solid var(--line);
+               padding:10px 14px; gap:10px; align-items:center; z-index:15; }
+  .barra-inf .tot { font-size:18px; font-weight:900; }
+  .barra-inf .tot small { display:block; font-size:11px; color:var(--sub); font-weight:600; }
+  .barra-inf button { min-height:52px; border:none; border-radius:11px; font-weight:800; font-size:15px; cursor:pointer; }
+  .barra-inf .ver { background:var(--line); color:var(--texto); padding:0 14px; }
+  .barra-inf .enviar { background:var(--accent); color:#fff; flex:1; }
+  .barra-inf .enviar:disabled { opacity:.4; }
+
+  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:16px;
+           padding:18px; width:min(460px,94vw); }
+  dialog::backdrop { background:rgba(0,0,0,.65); }
+  dialog h2 { font-size:17px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--sub); margin:12px 0 5px; }
+  input, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+                  border-radius:10px; padding:12px; font-size:16px; }
+  .numeros { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .numeros button { min-height:54px; background:var(--sup); border:2px solid var(--line); color:var(--texto);
+                    border-radius:12px; font-size:18px; font-weight:800; cursor:pointer; }
+  .numeros button.activo { border-color:var(--accent); background:rgba(249,115,22,.16); }
+  .acciones { display:flex; gap:8px; margin-top:16px; }
+  .acciones button { flex:1; min-height:52px; background:var(--accent); color:#fff; border:none;
+                     border-radius:11px; font-size:16px; font-weight:800; cursor:pointer; }
+  .acciones button.sec { background:var(--line); }
+  #msg { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#111827; color:#fff;
+         border:1px solid var(--line); padding:12px 18px; border-radius:12px; display:none; z-index:99;
+         font-size:15px; font-weight:700; max-width:92vw; text-align:center; }
+
+  /* Tablet horizontal (1024×768): sigue cabiendo la cuenta al lado, solo se
+     aprietan las columnas laterales. */
+  @media (max-width:1200px) {
+    .cols { grid-template-columns:150px 1fr 290px; }
+  }
+  /* Debajo de esto la cuenta ya no cabe al lado: pasa a hoja inferior y la
+     barra fija se hace cargo del total y de la acción principal. */
+  @media (max-width:960px) {
+    .cols { grid-template-columns:150px 1fr; }
+    #cuenta { display:none; }
+    .barra-inf { display:flex; }
+    #cuenta.abierta { display:flex; position:fixed; inset:auto 0 0 0; top:56px; z-index:30;
+                      max-height:none; border-radius:16px 16px 0 0; }
+  }
+  @media (max-width:720px) {
+    main { padding:10px; }
+    .cols { grid-template-columns:1fr; }
+    #cats { display:flex; overflow-x:auto; max-height:none; padding-bottom:4px; }
+    #cats button { width:auto; white-space:nowrap; border:1px solid var(--line); }
+    #prods { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); max-height:none; overflow:visible; }
+    .mesas { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+    header.xb .negocio { display:none; }
+  }
 </style>
 <script src="/modificadores.js"></script>
 </head>
 <body>
-<header>
-  <h1>🍽 Mesas</h1>
-  <a id="link-panel" href="/index.html">← Volver al panel</a>
-  <button id="btn-salir-mesero" style="display:none;background:var(--line);color:var(--texto);border:none;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer;" onclick="salirMesero()">Salir</button>
-</header>
-<main>
-  <!-- Integración contable activa: cerrar una cuenta genera EXACTAMENTE UNA
-       venta consolidada (folio RM-) en la fuente de ventas del negocio
-       (/api/ventas y resumen), separada de las comandas de cocina. La
-       propina se registra por separado y NO se suma a la venta; su reparto
-       es una política del negocio, no del sistema. -->
-  <div style="background:rgba(16,185,129,.10);border:1px solid var(--line);color:var(--sub);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;">
-    Al cerrar una cuenta se registra una sola venta consolidada (folio RM-) en los reportes de ventas del negocio. Las propinas se guardan por separado como dato informativo — su reparto lo define el negocio.
+
+<header class="xb">
+  <div class="marca">XABOR <span>Restaurante</span></div>
+  <div class="negocio" id="negocio"></div>
+  <div class="der">
+    <div class="quien" id="quien"></div>
+    <a id="link-panel" href="/app">← Panel</a>
+    <button class="salir oculto" id="btn-salir-mesero" onclick="salirMesero()">Salir</button>
   </div>
-  <div class="grid" id="grid"></div>
+</header>
+
+<main>
+  <!-- ── Tablero ─────────────────────────────────────────────────────────── -->
+  <section id="v-tablero">
+    <div class="filtros">
+      <button class="chip" id="f-mias" onclick="fijarFiltro('mias')">Mis mesas</button>
+      <button class="chip activo" id="f-todas" onclick="fijarFiltro('todas')">Todas</button>
+      <span class="cuenta-libres" id="resumen-mesas"></span>
+    </div>
+    <div class="mesas" id="grid"></div>
+  </section>
+
+  <!-- ── Toma de orden ───────────────────────────────────────────────────── -->
+  <section id="v-orden" class="oculto">
+    <div class="orden-barra">
+      <button class="volver" onclick="verTablero()">← Mesas</button>
+      <div>
+        <div class="titulo" id="or-mesa"></div>
+        <div class="meta" id="or-meta"></div>
+      </div>
+    </div>
+    <div class="cols">
+      <nav class="panelito" id="cats"></nav>
+      <div>
+        <input class="buscador" id="buscar" placeholder="Buscar producto…" oninput="pintarProductos()" autocomplete="off">
+        <div id="prods"></div>
+      </div>
+      <aside class="panelito" id="cuenta">
+        <h3 id="cu-titulo"></h3>
+        <div class="sub" id="cu-sub"></div>
+        <div class="lineas" id="cu-lineas"></div>
+        <div class="totales" id="cu-totales"></div>
+        <button class="accion-principal" id="btn-comanda" onclick="enviarComanda()">Enviar comanda</button>
+        <div class="secundarias" id="cu-secundarias"></div>
+      </aside>
+    </div>
+  </section>
 </main>
 
+<div class="barra-inf oculto" id="barra-inf">
+  <div class="tot"><span id="bi-total">$0.00</span><small id="bi-sub">Sin productos</small></div>
+  <button class="ver" onclick="alternarCuenta()">Ver cuenta</button>
+  <button class="enviar" id="bi-comanda" onclick="enviarComanda()">Enviar comanda</button>
+</div>
+
+<!-- Abrir mesa: cuántas personas y, solo fuera de la estación, quién la abre -->
 <dialog id="dlg-abrir">
   <h2>Abrir mesa <span id="ab-num"></span></h2>
-  <label>Mesero</label>
-  <select id="ab-mesero" onchange="cambiarMeseroSeleccionado()"></select>
-  <div id="ab-pin-bloque" style="display:none;">
-    <label>PIN del mesero</label>
-    <input type="password" id="ab-pin" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+  <div id="ab-mesero-bloque">
+    <label for="ab-mesero">Mesero</label>
+    <select id="ab-mesero" onchange="cambiarMeseroSeleccionado()"></select>
+    <div id="ab-pin-bloque" class="oculto">
+      <label for="ab-pin">PIN del mesero</label>
+      <input type="password" id="ab-pin" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+    </div>
   </div>
   <label>Personas</label>
-  <input type="number" id="ab-personas" min="1" max="100" value="2">
+  <div class="numeros" id="ab-personas-btns"></div>
   <div class="acciones">
-    <button onclick="confirmarAbrir()">Abrir cuenta</button>
     <button class="sec" onclick="document.getElementById('dlg-abrir').close()">Cancelar</button>
+    <button onclick="confirmarAbrir()">Abrir mesa</button>
   </div>
 </dialog>
 
-<dialog id="dlg-cuenta">
-  <h2>Mesa <span id="cu-mesa"></span> · <span id="cu-mesero"></span> · <span id="cu-personas"></span> personas</h2>
-  <div id="cu-items"></div>
-  <div class="tot"><span>Total: $<span id="cu-total"></span> · Pagado: $<span id="cu-pagado"></span></span><strong>Saldo: $<span id="cu-saldo"></span></strong></div>
-  <label>Agregar del menú</label>
-  <div class="fila">
-    <select id="it-menu"><option value="">— Selecciona un producto —</option></select>
-    <button class="sec" style="max-width:110px;" onclick="agregarDesdeMenu()">+ Agregar</button>
-  </div>
-  <label>O capturar libre (lo que no está en el menú)</label>
-  <div class="fila">
-    <input id="it-producto" placeholder="Producto">
-    <input id="it-cantidad" type="number" min="1" value="1" style="max-width:70px;">
-    <input id="it-precio" type="number" min="0" step="0.01" placeholder="$" style="max-width:90px;">
-  </div>
-  <label>Notas / modificadores (opcional)</label>
-  <input id="it-notas" placeholder="sin cebolla, extra queso…">
+<!-- Caja: registrar pago. Nunca se muestra en sesión de mesero. -->
+<dialog id="dlg-pago">
+  <h2>Registrar pago</h2>
+  <label for="pg-metodo">Método</label>
+  <select id="pg-metodo">
+    <option value="efectivo">Efectivo</option><option value="terminal">Terminal</option>
+    <option value="transferencia">Transferencia</option><option value="enlace_pago">Enlace de pago</option>
+  </select>
+  <label for="pg-monto">Monto</label>
+  <input id="pg-monto" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00">
+  <label for="pg-propina">Propina (opcional)</label>
+  <input id="pg-propina" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+  <label for="pg-cubre">Qué cubre (opcional)</label>
+  <input id="pg-cubre" placeholder="ej. persona 1, los refrescos">
   <div class="acciones">
-    <button class="sec" onclick="agregarItem()">+ Agregar</button>
-    <button onclick="enviarComanda()">Enviar comanda</button>
+    <button class="sec" onclick="document.getElementById('dlg-pago').close()">Cancelar</button>
+    <button onclick="registrarPago()">Registrar</button>
   </div>
-  <label>Registrar pago (división: cada pago indica qué cubre)</label>
-  <div class="fila">
-    <select id="pg-metodo"><option value="efectivo">Efectivo</option><option value="terminal">Terminal</option><option value="transferencia">Transferencia</option><option value="enlace_pago">Enlace de pago</option></select>
-    <input id="pg-monto" type="number" min="0.01" step="0.01" placeholder="Monto">
-    <input id="pg-propina" type="number" min="0" step="0.01" placeholder="Propina" style="max-width:90px;">
-  </div>
-  <input id="pg-cubre" placeholder="Qué cubre (ej. '2 refrescos', 'persona 1')" style="margin-top:6px;">
+</dialog>
+
+<!-- Caja/admin: producto que no está en el menú -->
+<dialog id="dlg-libre">
+  <h2>Captura libre</h2>
+  <label for="li-producto">Producto</label>
+  <input id="li-producto" placeholder="Nombre del producto">
+  <label for="li-cantidad">Cantidad</label>
+  <input id="li-cantidad" type="number" min="1" value="1" inputmode="numeric">
+  <label for="li-precio">Precio unitario</label>
+  <input id="li-precio" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+  <label for="li-notas">Notas (opcional)</label>
+  <input id="li-notas" placeholder="sin cebolla, extra queso…">
   <div class="acciones">
-    <button class="sec" onclick="registrarPago()">Registrar pago</button>
-    <button class="sec" onclick="dividirIguales()">Dividir en partes iguales</button>
+    <button class="sec" onclick="document.getElementById('dlg-libre').close()">Cancelar</button>
+    <button onclick="agregarLibre()">Agregar</button>
   </div>
+</dialog>
+
+<dialog id="dlg-mover">
+  <h2>Mover de mesa</h2>
+  <label for="mv-mesa">Nueva mesa</label>
+  <input id="mv-mesa" type="number" min="1" inputmode="numeric" placeholder="Número de mesa">
   <div class="acciones">
-    <button onclick="cerrarCuenta()">Cerrar cuenta</button>
-    <button class="sec" onclick="moverMesa()">Mover de mesa</button>
-    <button class="sec" onclick="document.getElementById('dlg-cuenta').close()">Salir</button>
+    <button class="sec" onclick="document.getElementById('dlg-mover').close()">Cancelar</button>
+    <button onclick="moverMesa()">Mover</button>
   </div>
 </dialog>
 
 <div id="msg"></div>
 
 <script>
+// ═══════════════════════════════════════════════════════════════════════════
+// Xabor · Restaurante — espacio de trabajo operativo.
+//
+// UNA sola pantalla para las dos formas de entrar:
+//   - mesero: entra por /mesero/<slug> con su PIN y aterriza aquí; no ve
+//     panel administrativo ni acciones de caja.
+//   - admin/staff: entra por /app y abre Restaurante; ve lo mismo, más las
+//     acciones que su rol autoriza.
+// El backend sigue siendo la autoridad: ocultar un botón es comodidad, no
+// seguridad (pagos y cierre responden 403 a un mesero aunque se llamen).
+// ═══════════════════════════════════════════════════════════════════════════
 let CUENTA = null;
 let ROL = 'staff';
-// Sesión de estación: el mesero ya se identificó con su PIN, así que no se le
-// vuelve a preguntar quién es al abrir mesa ni se le ofrece el panel.
 let SESION_MESERO = false;
-let NOMBRE_MESERO = '';
+let YO = null;            // id del usuario de la sesión
+let MESAS = [];
+let FILTRO = 'todas';     // 'mias' | 'todas'
+let MENU = null;
+let CAT_ACTIVA = null;
+let TIMER = null;
 
-async function salirMesero() {
-  try { await fetch('/api/auth/mesero/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
-  location.href = '/mesero/' + (localStorage.getItem('xb_mesero_slug') || '');
-}
+// Permisos de UI, derivados del rol real de la sesión.
+const puedeCobrar    = () => !SESION_MESERO;   // pago, cierre, captura libre
+const puedeCancelar  = () => ROL === 'admin';  // cancelar un item ya capturado
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = (n) => '$' + (Math.round(Number(n || 0) * 100) / 100).toFixed(2);
 
 function msg(t) {
-  const el = document.getElementById('msg');
+  const el = $('msg');
   el.textContent = t; el.style.display = 'block';
-  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = 'none', 3200);
+  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = 'none', 3000);
 }
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -140,137 +325,185 @@ async function api(path, opts = {}) {
   if (!r.ok) { msg(j.error || 'Error'); throw new Error(j.error || r.status); }
   return j;
 }
-function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function minutosDesde(iso) {
+  if (!iso) return null;
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  return m < 0 ? 0 : m;
+}
+const hora = (iso) => iso ? new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '';
+
+async function salirMesero() {
+  try { await fetch('/api/auth/mesero/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
+  location.href = '/mesero/' + (localStorage.getItem('xb_mesero_slug') || '');
+}
+
+// ─── Tablero de mesas ───────────────────────────────────────────────────────
+// Estados visibles y accionables, sin decorar de más:
+//   disponible · por enviar (hay comanda sin mandar) · cobrando (ya hay pagos
+//   parciales) · ocupada.
+function estadoMesa(m) {
+  if (!m.ocupada) return { clase: 'libre', texto: 'Disponible' };
+  if (m.pendientes > 0) return { clase: 'porenviar', texto: 'Por enviar' };
+  if (m.pagado > 0 && m.saldo > 0) return { clase: 'cobrando', texto: 'Cobrando' };
+  return { clase: 'ocupada', texto: 'Ocupada' };
+}
 
 async function cargarMesas() {
   const { mesas } = await api('/api/restaurante/mesas');
-  document.getElementById('grid').innerHTML = mesas.map(m => m.ocupada ? `
-    <div class="mesa ocupada" onclick="abrirCuenta('${m.cuentaId}')">
-      <div class="num">Mesa ${m.mesa}</div>
-      <div class="info">${esc(m.mesero)} · ${m.personas} pers<br>Total $${m.total.toFixed(2)} · <span class="saldo">Saldo $${m.saldo.toFixed(2)}</span></div>
-      <span class="badge ocu">Ocupada</span>
-    </div>` : `
-    <div class="mesa" onclick="abrirMesaDlg(${m.mesa})">
-      <div class="num">Mesa ${m.mesa}</div>
-      <span class="badge libre">Disponible</span>
-    </div>`).join('');
+  MESAS = mesas;
+  pintarMesas();
 }
 
+function fijarFiltro(f) {
+  FILTRO = f;
+  $('f-mias').classList.toggle('activo', f === 'mias');
+  $('f-todas').classList.toggle('activo', f === 'todas');
+  pintarMesas();
+}
+
+function pintarMesas() {
+  const mias = FILTRO === 'mias' && YO;
+  // "Mis mesas" nunca esconde las mesas libres: desde ahí se abre una nueva.
+  const visibles = MESAS.filter(m => !mias || !m.ocupada || m.meseroUsuarioId === YO);
+  const ocupadas = MESAS.filter(m => m.ocupada).length;
+  $('resumen-mesas').textContent = `${MESAS.length - ocupadas} disponibles · ${ocupadas} ocupadas`;
+  $('grid').innerHTML = visibles.map(m => {
+    const e = estadoMesa(m);
+    if (!m.ocupada) {
+      return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, disponible" onclick="abrirMesaDlg(${m.mesa})">
+        <div class="num">Mesa ${m.mesa}</div>
+        <div class="estado">${e.texto}</div>
+      </button>`;
+    }
+    const min = minutosDesde(m.abiertaAt);
+    return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, ${e.texto}, ${esc(m.mesero)}, ${money(m.total)}" onclick="abrirCuenta('${m.cuentaId}')">
+      <div class="num">Mesa ${m.mesa}</div>
+      <div class="quien">${esc(m.mesero)}</div>
+      <div class="dato">${m.personas} ${m.personas === 1 ? 'persona' : 'personas'}${min !== null ? ` · ${min} min` : ''}</div>
+      <div class="importe">${money(m.total)}</div>
+      <div class="estado">${e.texto}${m.pendientes > 0 ? ` · ${m.pendientes}` : ''}</div>
+    </button>`;
+  }).join('') || '<p class="vacio">No hay mesas para mostrar.</p>';
+}
+
+// ─── Abrir mesa ─────────────────────────────────────────────────────────────
 let MESA_POR_ABRIR = null;
-// Meseros del negocio + a quién se puede sugerir. El servidor solo sugiere
-// al usuario de la sesión si REALMENTE pertenece a este negocio: en una
-// sesión de soporte (superadmin) no hay sugerido y hay que elegir a alguien
-// del local, para que nunca quede un superadmin como mesero de otro tenant.
+let PERSONAS = 2;
 let MESEROS = [];
 let MESERO_SUGERIDO = null;
+
+function pintarPersonas() {
+  $('ab-personas-btns').innerHTML = [1,2,3,4,5,6,8,10].map(n =>
+    `<button type="button" class="${n === PERSONAS ? 'activo' : ''}" onclick="fijarPersonas(${n})">${n}</button>`).join('');
+}
+function fijarPersonas(n) { PERSONAS = n; pintarPersonas(); }
+
 async function cargarMeseros() {
   try {
     const r = await api('/api/restaurante/meseros');
     MESEROS = r.meseros || [];
     MESERO_SUGERIDO = r.sugerido || null;
-    SESION_MESERO = r.sesionMesero === true;
   } catch { MESEROS = []; MESERO_SUGERIDO = null; }
-  if (SESION_MESERO) {
-    // El backend asigna al mesero autenticado; el selector sobra.
-    document.getElementById('ab-mesero').closest('dialog').querySelectorAll('label')[0].style.display = 'none';
-    document.getElementById('ab-mesero').style.display = 'none';
-    document.getElementById('ab-pin-bloque').style.display = 'none';
-    return;
-  }
-  const sel = document.getElementById('ab-mesero');
+  if (SESION_MESERO) { $('ab-mesero-bloque').classList.add('oculto'); return; }
+  $('ab-mesero-bloque').classList.remove('oculto');
   // Solo se ofrece a quien puede identificarse: el usuario de la sesión (ya
-  // autenticado) y quienes tienen PIN. Un compañero sin PIN todavía no puede
-  // hacerse responsable de una mesa -- se le crea en Usuarios.
+  // autenticado) y quienes tienen PIN.
   const elegibles = MESEROS.filter(m => m.tiene_pin || m.id === MESERO_SUGERIDO);
-  sel.innerHTML = (elegibles.length ? '' : '<option value="">— Da de alta un mesero en Usuarios —</option>')
+  $('ab-mesero').innerHTML = (elegibles.length ? '' : '<option value="">— Da de alta un mesero en Usuarios —</option>')
     + elegibles.map(m => `<option value="${m.id}" ${m.id === MESERO_SUGERIDO ? 'selected' : ''}>${esc(m.nombre)}${m.rol === 'mesero' ? '' : ' (tú)'}</option>`).join('');
   cambiarMeseroSeleccionado();
 }
-// El PIN solo se pide cuando el mesero elegido NO es quien tiene la sesión:
-// ese ya se autenticó al entrar al panel.
+// El PIN solo se pide cuando el mesero elegido NO es quien tiene la sesión.
 function cambiarMeseroSeleccionado() {
-  const id = document.getElementById('ab-mesero').value;
+  const id = $('ab-mesero').value;
   const pide = !!id && id !== MESERO_SUGERIDO;
-  document.getElementById('ab-pin-bloque').style.display = pide ? '' : 'none';
-  if (!pide) document.getElementById('ab-pin').value = '';
+  $('ab-pin-bloque').classList.toggle('oculto', !pide);
+  if (!pide) $('ab-pin').value = '';
 }
+
 function abrirMesaDlg(n) {
   MESA_POR_ABRIR = n;
-  document.getElementById('ab-num').textContent = n;
+  PERSONAS = 2;
+  $('ab-num').textContent = n;
+  pintarPersonas();
   cargarMeseros();
-  document.getElementById('dlg-abrir').showModal();
+  $('dlg-abrir').showModal();
 }
+
 async function confirmarAbrir() {
-  const personas = document.getElementById('ab-personas').value;
-  const cuerpo = { mesa: MESA_POR_ABRIR, personas };
+  const cuerpo = { mesa: MESA_POR_ABRIR, personas: PERSONAS };
   if (!SESION_MESERO) {
-    const meseroUsuarioId = document.getElementById('ab-mesero').value || null;
+    const meseroUsuarioId = $('ab-mesero').value || null;
     if (!meseroUsuarioId) { msg('Selecciona el mesero que abre la mesa'); return; }
     cuerpo.meseroUsuarioId = meseroUsuarioId;
-    cuerpo.pin = document.getElementById('ab-pin').value || null;
+    cuerpo.pin = $('ab-pin').value || null;
   }
   const { cuenta } = await api('/api/restaurante/mesas/abrir', { method: 'POST', body: JSON.stringify(cuerpo) });
-  document.getElementById('ab-pin').value = '';
-  document.getElementById('dlg-abrir').close();
+  $('ab-pin').value = '';
+  $('dlg-abrir').close();
   await cargarMesas();
   abrirCuenta(cuenta.id);
 }
 
+// ─── Vistas ─────────────────────────────────────────────────────────────────
+function verTablero() {
+  CUENTA = null;
+  $('v-orden').classList.add('oculto');
+  $('v-tablero').classList.remove('oculto');
+  $('barra-inf').classList.add('oculto');
+  $('cuenta').classList.remove('abierta');
+  cargarMesas();
+}
+function alternarCuenta() { $('cuenta').classList.toggle('abierta'); }
+
 async function abrirCuenta(cuentaId) {
   const c = await api('/api/restaurante/cuentas/' + cuentaId);
   CUENTA = c;
-  document.getElementById('cu-mesa').textContent = c.mesa;
-  document.getElementById('cu-mesero').textContent = c.mesero.nombre;
-  document.getElementById('cu-personas').textContent = c.personas;
-  document.getElementById('cu-total').textContent = c.total.toFixed(2);
-  document.getElementById('cu-pagado').textContent = c.pagado.toFixed(2);
-  document.getElementById('cu-saldo').textContent = c.saldo.toFixed(2);
-  const filas = c.items.map(i => `
-    <tr class="${i.estado === 'cancelado' ? 'tachado' : ''}">
-      <td>${i.cantidad}× ${esc(i.producto)}${(Array.isArray(i.modificadores) && i.modificadores.length) ? `<br><small>${esc(i.modificadores.join(' · '))}</small>` : ''}${i.notas ? `<br><small>${esc(i.notas)}</small>` : ''}</td>
-      <td>$${(i.cantidad * Number(i.precio_unitario)).toFixed(2)}</td>
-      <td>${i.estado === 'pendiente' ? '🕐 por enviar' : i.estado === 'enviado' ? `📤 comanda ${i.comanda_num}` : `❌ ${esc(i.motivo_cancelacion || '')}`}</td>
-      <td>${(i.estado !== 'cancelado' && ROL === 'admin') ? `<button class="sec" style="padding:2px 8px;font-size:11px;" onclick="cancelarItem('${i.id}')">Cancelar</button>` : ''}</td>
-    </tr>`).join('');
-  document.getElementById('cu-items').innerHTML = c.items.length
-    ? `<table><thead><tr><th>Producto</th><th>Importe</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table>`
-    : '<p style="color:var(--sub);font-size:13px;">Sin productos todavía.</p>';
-  const pagos = c.pagos.map(p => `${p.metodo} $${Number(p.monto).toFixed(2)}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
-  if (pagos) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--sub);margin-top:6px;">Pagos: ${pagos}</p>`;
-  if (c.propinas > 0) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--sub);margin-top:2px;">Propinas: $${c.propinas.toFixed(2)} (separadas de la venta)</p>`;
-  // Estado de contabilización: solo existe cuando la cuenta ya cerró y su
-  // venta consolidada quedó registrada en reportes.
-  if (c.ventaFolio) document.getElementById('cu-items').innerHTML += `<p style="font-size:12px;color:var(--ok);margin-top:2px;">✅ Venta registrada: ${esc(c.ventaFolio)}</p>`;
-  cargarMenu();
-  document.getElementById('dlg-cuenta').showModal();
+  $('v-tablero').classList.add('oculto');
+  $('v-orden').classList.remove('oculto');
+  $('barra-inf').classList.remove('oculto');
+  $('or-mesa').textContent = `Mesa ${c.mesa}`;
+  $('or-meta').textContent = `${c.mesero.nombre} · ${c.personas} ${c.personas === 1 ? 'persona' : 'personas'}`;
+  await cargarMenu();
+  pintarCuenta();
 }
 
-async function agregarItem() {
-  const producto = document.getElementById('it-producto').value.trim();
-  const cantidad = document.getElementById('it-cantidad').value;
-  const precio = document.getElementById('it-precio').value;
-  const notas = document.getElementById('it-notas').value.trim();
-  if (!producto || precio === '') { msg('Producto y precio son obligatorios'); return; }
-  await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [{ producto, cantidad, precio_unitario: precio, notas }] }) });
-  ['it-producto', 'it-precio', 'it-notas'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('it-cantidad').value = 1;
-  abrirCuenta(CUENTA.id);
-}
-
-// Menu del negocio: mismo endpoint que POS y mismo modal de modificadores
-// (panel/modificadores.js), para que Mesas y POS no diverjan. El precio y la
-// validacion definitiva los hace el servidor con los ids de opcion.
-let MENU = null;
+// ─── Menú: categorías y productos táctiles ──────────────────────────────────
 async function cargarMenu() {
-  if (MENU) return MENU;
+  if (MENU) { pintarCategorias(); pintarProductos(); return; }
   try { MENU = await api('/api/menu'); } catch { MENU = []; }
-  const sel = document.getElementById('it-menu');
-  sel.innerHTML = '<option value="">— Selecciona un producto —</option>' + MENU.map(c =>
-    `<optgroup label="${esc(c.nombre)}">` +
-    (c.productos || []).filter(p => p.disponible).map(p =>
-      `<option value="${p.id}">${esc(p.nombre)} — $${Number(p.precio).toFixed(2)}${(p.modificadores || []).length ? ' (opciones)' : ''}</option>`
-    ).join('') + '</optgroup>').join('');
-  return MENU;
+  CAT_ACTIVA = (MENU[0] || {}).id ?? null;
+  pintarCategorias();
+  pintarProductos();
+}
+function pintarCategorias() {
+  $('cats').innerHTML = (MENU || []).map(c =>
+    `<button class="${c.id === CAT_ACTIVA ? 'activo' : ''}" data-cat="${esc(c.id)}" onclick="elegirCategoria('${esc(c.id)}')">${esc(c.nombre)}</button>`
+  ).join('') || '<p class="vacio">Sin categorías.</p>';
+}
+function elegirCategoria(id) {
+  const cat = (MENU || []).find(c => String(c.id) === String(id));
+  CAT_ACTIVA = cat ? cat.id : null;
+  $('buscar').value = '';
+  pintarCategorias();
+  pintarProductos();
+}
+function productosVisibles() {
+  const q = ($('buscar').value || '').trim().toLowerCase();
+  const todos = (MENU || []).flatMap(c => (c.productos || []).filter(p => p.disponible));
+  if (q) return todos.filter(p => String(p.nombre).toLowerCase().includes(q));
+  const cat = (MENU || []).find(c => c.id === CAT_ACTIVA);
+  return (cat?.productos || []).filter(p => p.disponible);
+}
+function pintarProductos() {
+  const lista = productosVisibles();
+  $('prods').innerHTML = lista.map(p => `
+    <button class="prod" data-producto="${esc(p.id)}" aria-label="${esc(p.nombre)}, ${money(p.precio)}" onclick="elegirProducto('${esc(p.id)}')">
+      <div class="nom">${esc(p.nombre)}</div>
+      ${(p.modificadores || []).length ? '<div class="ops">Con opciones</div>' : ''}
+      <div class="pre">${money(p.precio)}</div>
+    </button>`).join('')
+    || `<p class="vacio">${MENU && MENU.length ? 'Sin productos disponibles aquí.' : 'Este negocio todavía no tiene menú cargado.'}</p>`;
 }
 function productoDelMenu(id) {
   for (const c of (MENU || [])) {
@@ -279,92 +512,223 @@ function productoDelMenu(id) {
   }
   return null;
 }
-async function agregarDesdeMenu() {
-  const id = document.getElementById('it-menu').value;
-  if (!id) { msg('Elige un producto del menú'); return; }
+
+// Un toque agrega el producto simple. Si tiene modificadores, se abre el
+// wizard secuencial compartido (panel/modificadores.js): un grupo por
+// pantalla, con avance automático cuando ya no queda nada que decidir.
+async function elegirProducto(id) {
   const p = productoDelMenu(id);
-  if (!p) return;
+  if (!p || !CUENTA) return;
   let cuerpo = { producto_id: p.id, cantidad: 1 };
   if (window.XaborModificadores && XaborModificadores.tieneModificadores(p)) {
-    const r = await XaborModificadores.abrirModal(p, { oscuro: true });
+    const r = await XaborModificadores.abrirWizard(p, { oscuro: true });
     if (!r) return;
     cuerpo = { producto_id: p.id, cantidad: r.cantidad, modificadores: r.modificadores };
   }
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [cuerpo] }) });
-  document.getElementById('it-menu').value = '';
-  abrirCuenta(CUENTA.id);
+  await refrescarCuenta();
+  msg(`${p.nombre} agregado`);
+}
+
+async function agregarLibre() {
+  const producto = $('li-producto').value.trim();
+  const cantidad = $('li-cantidad').value;
+  const precio = $('li-precio').value;
+  const notas = $('li-notas').value.trim();
+  if (!producto || precio === '') { msg('Producto y precio son obligatorios'); return; }
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST',
+    body: JSON.stringify({ items: [{ producto, cantidad, precio_unitario: precio, notas }] }) });
+  ['li-producto','li-precio','li-notas'].forEach(i => $(i).value = '');
+  $('li-cantidad').value = 1;
+  $('dlg-libre').close();
+  await refrescarCuenta();
+}
+
+// ─── Cuenta: rondas enviadas vs pendiente ───────────────────────────────────
+async function refrescarCuenta() {
+  if (!CUENTA) return;
+  CUENTA = await api('/api/restaurante/cuentas/' + CUENTA.id);
+  pintarCuenta();
+}
+
+// Los modificadores se guardan como "Grupo: opción" (uno por opción). Para
+// leerlos rápido se juntan por grupo: "Guarniciones: Frijoles, Papas".
+function resumirModificadores(lista) {
+  if (!Array.isArray(lista) || !lista.length) return '';
+  const porGrupo = new Map();
+  for (const m of lista) {
+    const corte = String(m).indexOf(': ');
+    const grupo = corte > 0 ? String(m).slice(0, corte) : '';
+    const opcion = corte > 0 ? String(m).slice(corte + 2) : String(m);
+    if (!porGrupo.has(grupo)) porGrupo.set(grupo, []);
+    porGrupo.get(grupo).push(opcion);
+  }
+  return [...porGrupo.entries()].map(([g, ops]) => (g ? `${g}: ` : '') + ops.join(', ')).join(' · ');
+}
+
+function lineaHTML(i) {
+  const mods = resumirModificadores(i.modificadores);
+  const extra = [mods, i.notas].filter(Boolean).join(' · ');
+  const cancelable = puedeCancelar() && i.estado !== 'cancelado';
+  return `<div class="linea ${i.estado === 'cancelado' ? 'cancelada' : ''}">
+    <span class="cant">${i.cantidad}×</span>
+    <span class="nom">${esc(i.producto)}${extra ? `<small>${esc(extra)}</small>` : ''}</span>
+    <span class="imp">${money(i.cantidad * Number(i.precio_unitario))}</span>
+    ${cancelable ? `<button class="quitar" onclick="cancelarItem('${i.id}')" title="Cancelar">✕</button>` : ''}
+  </div>`;
+}
+
+function pintarCuenta() {
+  const c = CUENTA;
+  if (!c) return;
+  $('cu-titulo').textContent = `Mesa ${c.mesa}`;
+  $('cu-sub').textContent = `${c.mesero.nombre} · ${c.personas} ${c.personas === 1 ? 'persona' : 'personas'}`;
+
+  const pendientes = c.items.filter(i => i.estado === 'pendiente');
+  const rondas = new Map();
+  for (const i of c.items) {
+    if (i.estado === 'pendiente') continue;
+    const k = i.comanda_num || 0;
+    if (!rondas.has(k)) rondas.set(k, []);
+    rondas.get(k).push(i);
+  }
+  const bloques = [...rondas.keys()].sort((a, b) => a - b).map(k => {
+    const items = rondas.get(k);
+    // La ronda no guarda su propia hora: se usa la del primer item que salió
+    // en ella, que es lo que el mesero reconoce ("la de las 7:42").
+    const t = hora(items.map(i => i.created_at).sort()[0]);
+    return `<div class="ronda enviada">
+      <div class="cab"><span>${k ? `Ronda ${k}` : 'Cancelados'}</span><span>${t}</span><span class="sello">${k ? '✓ Cocina' : ''}</span></div>
+      ${items.map(lineaHTML).join('')}
+    </div>`;
+  });
+  if (pendientes.length) {
+    bloques.push(`<div class="ronda pend">
+      <div class="cab"><span>Pendiente de enviar</span><span class="sello">${pendientes.length}</span></div>
+      ${pendientes.map(lineaHTML).join('')}
+    </div>`);
+  }
+  $('cu-lineas').innerHTML = bloques.join('') || '<p class="vacio">Toca un producto para empezar la orden.</p>';
+
+  const pagos = c.pagos.map(p => `${p.metodo} ${money(p.monto)}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
+  $('cu-totales').innerHTML = `
+    ${pagos ? `<div>Pagos: ${pagos}</div>` : ''}
+    ${c.propinas > 0 ? `<div>Propinas: ${money(c.propinas)} (aparte de la venta)</div>` : ''}
+    ${c.ventaFolio ? `<div style="color:var(--ok)">Venta registrada: ${esc(c.ventaFolio)}</div>` : ''}
+    <div class="gran"><span>Total</span><span>${money(c.total)}</span></div>
+    ${c.pagado > 0 ? `<div class="gran" style="font-size:15px"><span>Saldo</span><span>${money(c.saldo)}</span></div>` : ''}`;
+
+  const hayPendientes = pendientes.length > 0;
+  $('btn-comanda').disabled = !hayPendientes;
+  $('btn-comanda').textContent = hayPendientes ? `Enviar comanda (${pendientes.length})` : 'Sin nada por enviar';
+  $('bi-comanda').disabled = !hayPendientes;
+  $('bi-comanda').textContent = hayPendientes ? `Enviar comanda (${pendientes.length})` : 'Sin nada por enviar';
+  $('bi-total').textContent = money(c.total);
+  $('bi-sub').textContent = hayPendientes ? `${pendientes.length} por enviar` : `${c.items.filter(i => i.estado === 'enviado').length} en cocina`;
+
+  // Acciones secundarias: lo que el rol de esta sesión puede hacer de verdad.
+  // Un mesero no ve cobrar, cerrar ni captura libre (el backend igual los
+  // rechaza con 403; esto evita ofrecerle lo que no le toca).
+  const botones = [`<button onclick="dividirIguales()">Dividir cuenta</button>`,
+                   `<button onclick="abrirMover()">Mover de mesa</button>`];
+  if (puedeCobrar()) {
+    botones.unshift(`<button onclick="abrirPago()">Registrar pago</button>`);
+    botones.push(`<button onclick="document.getElementById('dlg-libre').showModal()">Captura libre</button>`);
+    botones.push(`<button onclick="cerrarCuenta()">Cerrar cuenta</button>`);
+  }
+  $('cu-secundarias').innerHTML = botones.join('');
 }
 
 async function enviarComanda() {
+  if (!CUENTA) return;
   const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/comanda`, { method: 'POST' });
-  msg(`Comanda ${r.comanda} (${r.tipo}) enviada a cocina — ${r.items.length} producto(s)`);
-  abrirCuenta(CUENTA.id);
+  msg(`Comanda ${r.comanda} enviada a cocina · ${r.items.length} producto(s)`);
+  await refrescarCuenta();
 }
 
 async function cancelarItem(itemId) {
   const motivo = prompt('Motivo de la cancelación (obligatorio):');
   if (!motivo) return;
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo }) });
-  abrirCuenta(CUENTA.id);
+  await refrescarCuenta();
 }
 
+function abrirPago() {
+  $('pg-monto').value = CUENTA ? CUENTA.saldo.toFixed(2) : '';
+  $('dlg-pago').showModal();
+}
 async function registrarPago() {
-  const metodo = document.getElementById('pg-metodo').value;
-  const monto = document.getElementById('pg-monto').value;
-  const propina = document.getElementById('pg-propina').value || 0;
-  const cubre = document.getElementById('pg-cubre').value.trim() || null;
+  const monto = $('pg-monto').value;
   if (!monto) { msg('Indica el monto'); return; }
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify({ metodo, monto, propina, cubre }) });
-  msg(`Pago registrado. Saldo restante: $${r.saldoRestante.toFixed(2)}`);
-  document.getElementById('pg-monto').value = ''; document.getElementById('pg-propina').value = ''; document.getElementById('pg-cubre').value = '';
-  abrirCuenta(CUENTA.id);
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify({
+    metodo: $('pg-metodo').value, monto, propina: $('pg-propina').value || 0, cubre: $('pg-cubre').value.trim() || null,
+  }) });
+  ['pg-monto','pg-propina','pg-cubre'].forEach(i => $(i).value = '');
+  $('dlg-pago').close();
+  msg(`Pago registrado. Saldo: ${money(r.saldoRestante)}`);
+  await refrescarCuenta();
 }
 
 async function dividirIguales() {
   const partes = prompt('¿Entre cuántas personas?', CUENTA.personas);
   if (!partes) return;
   const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/dividir?partes=${encodeURIComponent(partes)}`);
-  msg(`Saldo $${r.saldo.toFixed(2)} → ${r.partes.map(p => '$' + p.toFixed(2)).join(' + ')}`);
+  msg(`${money(r.saldo)} → ${r.partes.map(money).join(' + ')}`);
 }
 
 async function cerrarCuenta() {
-  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero. Se registrará una venta consolidada en reportes.')) return;
+  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero. Se registrará una venta consolidada.')) return;
   // Reintento SEGURO: si el primer request cerró pero la respuesta se perdió,
   // volver a pulsar responde yaCerrada con el MISMO folio -- no duplica venta.
   const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/cerrar`, { method: 'POST' });
-  if (r.yaCerrada) {
-    msg(`La cuenta ya estaba cerrada y contabilizada. Venta registrada: ${r.ventaFolio}`);
-  } else {
-    msg(`Cuenta cerrada. Venta registrada: ${r.ventaFolio} — Total $${r.total.toFixed(2)}, propinas $${r.propinas.toFixed(2)}`);
-  }
-  document.getElementById('dlg-cuenta').close();
-  cargarMesas();
+  msg(r.yaCerrada
+    ? `La cuenta ya estaba cerrada. Venta: ${r.ventaFolio}`
+    : `Cuenta cerrada. Venta ${r.ventaFolio} — ${money(r.total)}`);
+  verTablero();
 }
 
+function abrirMover() { $('mv-mesa').value = ''; $('dlg-mover').showModal(); }
 async function moverMesa() {
-  const mesa = prompt('¿A qué mesa mover la cuenta?');
+  const mesa = $('mv-mesa').value;
   if (!mesa) return;
   await api(`/api/restaurante/cuentas/${CUENTA.id}/mover`, { method: 'POST', body: JSON.stringify({ mesa }) });
+  $('dlg-mover').close();
   msg(`Cuenta movida a la mesa ${mesa}`);
-  document.getElementById('dlg-cuenta').close();
-  cargarMesas();
+  verTablero();
 }
 
-// Arranque: /api/auth/me es del panel administrativo y una sesión de estación
-// no pasa por ahí (a propósito). Si falla, se prueba la operación real: si
+// ─── Arranque ───────────────────────────────────────────────────────────────
+// /api/auth/me es del panel administrativo y una sesión de estación no pasa
+// por ahí (a propósito). Si falla, se prueba la operación real: si
 // /api/restaurante/meseros responde con sesionMesero, es una tablet de
 // meseros y la pantalla se adapta; si tampoco, se manda a iniciar sesión.
 (async () => {
-  const arrancarOperacion = () => { cargarMesas(); setInterval(cargarMesas, 30000); };
+  const arrancarOperacion = async (yaConsultado) => {
+    try {
+      // En la estación ya se consultó para saber qué sesión es: no se vuelve
+      // a pedir (la tablet arranca en cada turno y cada request cuenta).
+      const r = yaConsultado || await api('/api/restaurante/meseros');
+      SESION_MESERO = r.sesionMesero === true;
+      YO = r.sugerido || null;
+      $('negocio').textContent = r.negocio || '';
+      const etiquetaRol = { mesero: 'Mesero', admin: 'Administrador', staff: 'Personal' };
+      if (r.yo?.nombre) $('quien').innerHTML = `${esc(r.yo.nombre)}<small>${etiquetaRol[SESION_MESERO ? 'mesero' : ROL] || 'Personal'}</small>`;
+    } catch {}
+    // El mesero suele querer ver primero lo suyo; quien administra, todo.
+    fijarFiltro(SESION_MESERO ? 'mias' : 'todas');
+    await cargarMesas();
+    TIMER = setInterval(() => { if (!CUENTA) cargarMesas().catch(() => {}); }, 20000);
+  };
   const r = await fetch('/api/auth/me', { credentials: 'same-origin' }).catch(() => null);
   if (r && r.ok) {
     const me = await r.json();
     ROL = me.rol || 'staff';
+    YO = me.usuarioId || null;
     if (!Array.isArray(me.modulos) || !me.modulos.includes('restaurante')) {
-      document.querySelector('main').innerHTML = '<p style="color:var(--sub);">El módulo de restaurante no está habilitado para este negocio.</p>';
+      document.querySelector('main').innerHTML = '<p class="vacio">El módulo de restaurante no está habilitado para este negocio.</p>';
       return;
     }
-    arrancarOperacion();
+    await arrancarOperacion();
     return;
   }
   const sesion = await fetch('/api/restaurante/meseros', { credentials: 'same-origin' }).catch(() => null);
@@ -372,9 +736,9 @@ async function moverMesa() {
   if (datos && datos.sesionMesero) {
     SESION_MESERO = true;
     ROL = 'mesero';
-    document.getElementById('link-panel').style.display = 'none';
-    document.getElementById('btn-salir-mesero').style.display = '';
-    arrancarOperacion();
+    $('link-panel').classList.add('oculto');
+    $('btn-salir-mesero').classList.remove('oculto');
+    await arrancarOperacion(datos);
     return;
   }
   window.location.href = '/login-negocio.html';
