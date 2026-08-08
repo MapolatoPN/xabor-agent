@@ -111,3 +111,20 @@ doce superficies declaren icono/apple-touch/manifest/theme-color con versión,
 que no quede ningún resto de la identidad anterior, que **ningún asset
 referenciado responda 404** y que nadie sirva marcas fuera de
 `/public/brand/`.
+
+## Cambiar la identidad a propósito
+
+`test/fase-scope-marca.mjs` fija la identidad canónica (isotipo, iconos,
+manifest, `theme-color`, versión y wordmark) en una sola constante y
+comprueba que **todas** las superficies del producto la declaren igual.
+
+Eso significa que la marca **sí se puede cambiar**, pero ya no de forma
+invisible: hay que editar `IDENTIDAD` en esa prueba, y ese cambio aparece en
+el diff de la rama. Nació de un caso real: una rama cuyo objetivo era
+rediseñar la landing acabó cambiando también el favicon y el `theme-color`
+de `/app`, Superadmin, Restaurante y la estación de meseros. Fue una decisión
+consciente y autorizada —el isotipo anterior era una reconstrucción, no el
+logotipo del negocio—, pero no se notó hasta la revisión.
+
+La prueba también vigila la frontera contraria: que los estilos y la
+estructura de la landing **no** se filtren a ninguna pantalla del producto.
