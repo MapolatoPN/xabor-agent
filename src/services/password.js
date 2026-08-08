@@ -32,3 +32,32 @@ export function verifyPassword(password, storedHash) {
     return false;
   }
 }
+
+// ─── PIN de acceso local (meseros) ──────────────────────────────────────────
+// Mismo primitivo que las contraseñas (scrypt con salt por registro), otra
+// política de longitud: un PIN de mostrador son 4-6 dígitos. No se guarda ni
+// se transmite nunca en claro, y vive en usuarios.pin_hash — separado de
+// password_hash para que un PIN jamás sirva para iniciar sesión.
+export function pinValido(pin) {
+  return typeof pin === 'string' && /^[0-9]{4,6}$/.test(pin);
+}
+
+export function hashPin(pin) {
+  if (!pinValido(pin)) throw new Error('El PIN debe tener entre 4 y 6 dígitos');
+  const salt = randomBytes(16).toString('hex');
+  return `${salt}:${scryptSync(pin, salt, KEYLEN).toString('hex')}`;
+}
+
+// Nunca lanza: un PIN o hash mal formado simplemente no valida.
+export function verifyPin(pin, storedHash) {
+  try {
+    if (!pinValido(pin) || !storedHash) return false;
+    const [salt, hash] = String(storedHash).split(':');
+    if (!salt || !hash) return false;
+    const esperado = Buffer.from(hash, 'hex');
+    const calculado = scryptSync(pin, salt, KEYLEN);
+    return esperado.length === calculado.length && timingSafeEqual(esperado, calculado);
+  } catch {
+    return false;
+  }
+}

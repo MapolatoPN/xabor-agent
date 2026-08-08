@@ -1,6 +1,6 @@
 import pkg from 'pg';
 import { createHmac, createHash, randomBytes } from 'crypto';
-import { hashPassword } from './password.js';
+import { hashPassword, hashPin, verifyPin, pinValido } from './password.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 const { Pool } = pkg;
@@ -2669,6 +2669,98 @@ export async function crearUsuarioConPassword({ negocioId, nombre, email, passwo
 // nunca uno arbitrario) con su rol y estado de membresía. Nunca incluye
 // password_hash ni ninguna otra columna sensible -- la consulta ni siquiera
 // la selecciona.
+// ─── Meseros: usuarios del negocio con PIN local, sin correo ───────────────
+// Un mesero es un usuario normal (mismo UUID, mismo aislamiento por
+// negocio_id) con rol 'mesero' en usuario_negocios y un PIN hasheado en vez
+// de correo/contraseña: no inicia sesión, solo se identifica al abrir mesa.
+// Migración 041 permitió email NULL para no inventarle un correo falso.
+export async function crearMeseroConPin({ negocioId, nombre, pin }) {
+  if (!pinValido(pin)) {
+    throw Object.assign(new Error('El PIN debe tener entre 4 y 6 dígitos'), { code: 'PIN_INVALIDO' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [usuario] } = await client.query(
+      `INSERT INTO usuarios (negocio_id, nombre, email, pin_hash) VALUES ($1,$2,NULL,$3)
+       RETURNING id, negocio_id, nombre, created_at`,
+      [negocioId, nombre, hashPin(pin)]
+    );
+    await client.query(
+      `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol) VALUES ($1,$2,'mesero')`,
+      [usuario.id, negocioId]
+    );
+    await client.query('COMMIT');
+    // Nunca se devuelve el hash ni el PIN.
+    return { id: usuario.id, nombre: usuario.nombre, rol: 'mesero', activo: true, created_at: usuario.created_at };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error crearMeseroConPin:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Personas que pueden atender mesas en ESTE negocio: meseros con PIN y
+// también el resto de usuarios activos (un admin puede levantar una mesa).
+// Devuelve solo lo que la pantalla necesita -- jamás el hash.
+export async function listarMeserosDelNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.nombre, un.rol, (u.pin_hash IS NOT NULL) AS tiene_pin
+         FROM usuarios u
+         JOIN usuario_negocios un ON un.usuario_id = u.id
+        WHERE un.negocio_id = $1 AND un.activo = TRUE AND u.activo = TRUE
+        ORDER BY (un.rol = 'mesero') DESC, u.nombre ASC`,
+      [negocioId.trim()]
+    );
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error listarMeserosDelNegocio:', e.message);
+    return [];
+  }
+}
+
+// Valida el PIN de un mesero DE ESTE NEGOCIO. Nunca revela si el usuario
+// existe: un id ajeno y un PIN incorrecto se ven igual desde afuera.
+export async function verificarPinMesero(usuarioId, negocioId, pin) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.pin_hash FROM usuarios u
+         JOIN usuario_negocios un ON un.usuario_id = u.id
+        WHERE u.id = $1 AND un.negocio_id = $2 AND un.activo = TRUE AND u.activo = TRUE`,
+      [usuarioId, negocioId.trim()]
+    );
+    if (!rows.length || !rows[0].pin_hash) return false;
+    return verifyPin(pin, rows[0].pin_hash);
+  } catch (e) {
+    console.error('[DB] Error verificarPinMesero:', e.message);
+    return false;
+  }
+}
+
+// ¿El usuario de la sesión es miembro activo de este negocio? Distingue a un
+// admin/staff propio (que puede atender su mesa sin PIN) de un superadmin en
+// sesión de soporte, que NO pertenece al negocio y por lo tanto nunca puede
+// quedar registrado como su mesero.
+export async function esMiembroActivoDelNegocio(usuarioId, negocioId) {
+  if (typeof usuarioId !== 'string' || typeof negocioId !== 'string') return false;
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id
+        WHERE un.usuario_id = $1 AND un.negocio_id = $2 AND un.activo = TRUE AND u.activo = TRUE`,
+      [usuarioId, negocioId]
+    );
+    return rows.length === 1;
+  } catch (e) {
+    console.error('[DB] Error esMiembroActivoDelNegocio:', e.message);
+    return false;
+  }
+}
+
 export async function obtenerUsuariosDeNegocio(negocioId) {
   try {
     const { rows } = await pool.query(

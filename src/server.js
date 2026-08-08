@@ -23,7 +23,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -267,6 +267,19 @@ function requireSesionNegocio(rolMinimo) {
       return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
     }
 
+    // Un mesero NO es una cuenta de panel: no tiene correo ni contraseña, así
+    // que no puede iniciar sesión por diseño. Esta comprobación es la barrera
+    // de fondo -- si alguna vez apareciera una sesión con rol 'mesero' (token
+    // viejo, alta manual en base, error futuro), se rechaza aquí en vez de
+    // heredar los permisos de staff. Su identidad viaja como meseroUsuarioId
+    // + PIN al abrir mesa, nunca como sesión.
+    if (membresia.rol === 'mesero') {
+      return res.status(403).json({
+        error: 'Los meseros no acceden al panel: se identifican con su PIN al abrir una mesa',
+        code: 'MESERO_SIN_ACCESO_PANEL',
+      });
+    }
+
     if (rolMinimo) {
       const nivelUsuario  = JERARQUIA_ROLES[membresia.rol] || 0;
       const nivelRequerido = JERARQUIA_ROLES[rolMinimo] || 0;
@@ -374,6 +387,14 @@ function resolverNegocioSeguro(rolMinimo) {
       const membresia = await obtenerMembresiaUsuarioNegocio(payload.usuarioId, payload.negocioId);
       if (!membresia || !membresia.activo) {
         return res.status(403).json({ error: 'El usuario ya no pertenece a este negocio' });
+      }
+      // Mismo candado que en requireSesionNegocio: el rol 'mesero' nunca
+      // navega el panel. Su identidad viaja como meseroUsuarioId + PIN.
+      if (membresia.rol === 'mesero') {
+        return res.status(403).json({
+          error: 'Los meseros no acceden al panel: se identifican con su PIN al abrir una mesa',
+          code: 'MESERO_SIN_ACCESO_PANEL',
+        });
       }
       if (rolMinimo) {
         const nivelUsuario   = JERARQUIA_ROLES[membresia.rol] || 0;
@@ -1739,14 +1760,50 @@ app.get('/api/restaurante/mesas', requireAuthSeguro, requireModulo('restaurante'
   try { res.json(await listarMesas(req.negocioId)); } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
-app.post('/api/restaurante/mesas/abrir', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
-  const { mesa, personas, meseroUsuarioId } = req.body || {};
+// Personas que pueden atender una mesa en este negocio (para el selector).
+// Nunca expone PIN ni hash: solo id, nombre, rol y si tiene PIN configurado.
+app.get('/api/restaurante/meseros', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
+    const meseros = await listarMeserosDelNegocio(req.negocioId);
+    // El usuario de la sesión solo se sugiere si REALMENTE pertenece a este
+    // negocio: un superadmin en sesión de soporte no puede autoasignarse.
+    const propio = await esMiembroActivoDelNegocio(req.usuarioId, req.negocioId);
+    res.json({ meseros, sugerido: propio ? req.usuarioId : null });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.post('/api/restaurante/mesas/abrir', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  const { mesa, personas, meseroUsuarioId, pin } = req.body || {};
+  try {
+    // Quién queda registrado como mesero -- decidido SIEMPRE en el servidor:
+    //  a) sin mesero explícito: solo puede ser el usuario de la sesión, y
+    //     solo si de verdad pertenece a este negocio. Un superadmin operando
+    //     por soporte no pertenece, así que debe elegir un mesero local en
+    //     vez de quedar él registrado en un tenant ajeno.
+    //  b) el propio usuario de la sesión: ya está autenticado, no pide PIN.
+    //  c) cualquier otro mesero del negocio: exige su PIN.
+    const propio = await esMiembroActivoDelNegocio(req.usuarioId, req.negocioId);
+    let meseroId = meseroUsuarioId;
+    if (!meseroId) {
+      if (!propio) {
+        return res.status(400).json({
+          error: 'Selecciona el mesero que abre la mesa',
+          code: 'MESERO_REQUERIDO',
+        });
+      }
+      meseroId = req.usuarioId;
+    } else if (meseroId !== req.usuarioId) {
+      const pinOk = await verificarPinMesero(meseroId, req.negocioId, pin);
+      if (!pinOk) {
+        // Mismo mensaje para PIN incorrecto y para un usuario que no es de
+        // este negocio: desde afuera no se distingue qué falló.
+        console.warn(`[Restaurante] PIN de mesero rechazado negocio=${req.negocioId} mesa=${mesa}`);
+        return res.status(401).json({ error: 'PIN incorrecto', code: 'PIN_INCORRECTO' });
+      }
+    }
     const cuenta = await abrirMesa(req.negocioId, {
       mesaNumero: mesa, personas,
-      // Sin mesero explícito, el que abre ES el mesero (flujo de un solo
-      // dispositivo por mesero).
-      meseroUsuarioId: meseroUsuarioId || req.usuarioId,
+      meseroUsuarioId: meseroId,
       abiertaPor: req.usuarioId,
     });
     res.status(201).json({ ok: true, cuenta });
@@ -3040,10 +3097,30 @@ app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), a
 });
 
 app.post('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
-  const { nombre, email, password } = req.body;
+  const { nombre, email, password, tipo, pin } = req.body;
   if (typeof nombre !== 'string' || !nombre.trim()) {
     return res.status(400).json({ error: 'El nombre es obligatorio' });
   }
+
+  // Mesero: persona de piso. Nombre + PIN, sin correo, sin invitación. El
+  // rol se fija aquí ('mesero'), nunca se lee del body -- esta ruta no puede
+  // usarse para fabricar un admin. El PIN se guarda hasheado (scrypt) y no
+  // vuelve a salir por ninguna API.
+  if (tipo === 'mesero') {
+    if (typeof pin !== 'string' || !/^[0-9]{4,6}$/.test(pin)) {
+      return res.status(400).json({ error: 'El PIN debe tener entre 4 y 6 dígitos', codigo: 'PIN_INVALIDO' });
+    }
+    try {
+      const mesero = await crearMeseroConPin({ negocioId: req.negocioId, nombre: nombre.trim(), pin });
+      console.log(`[Usuarios] mesero_creado negocio=${req.negocioId} usuario=${req.usuarioId} mesero=${mesero.id}`);
+      return res.status(201).json(mesero);
+    } catch (e) {
+      if (e.code === 'PIN_INVALIDO') return res.status(400).json({ error: e.message, codigo: e.code });
+      console.error('[POST /api/admin/usuarios] Error creando mesero:', e.message);
+      return res.status(500).json({ error: 'Error al crear el mesero' });
+    }
+  }
+
   if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
     return res.status(400).json({ error: 'Correo inválido' });
   }
