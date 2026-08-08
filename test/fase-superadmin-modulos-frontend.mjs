@@ -28,7 +28,10 @@ const matchBackend = serverSrc.match(/const MODULOS_VALIDOS_API = \[([\s\S]*?)\]
 assert.ok(matchBackend, 'no se encontró MODULOS_VALIDOS_API en server.js');
 const modulosBackend = [...matchBackend[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
 
-const matchFrontendModulos = htmlSuperadmin.match(/const MODULOS = \[([\s\S]*?)\];/);
+// `let` desde que la lista del frontend pasó a ser solo un FALLBACK que se
+// reemplaza con la que devuelve la API. La suite buscaba `const` y llevaba
+// tiempo abortando sin comprobar nada; acepta las dos formas.
+const matchFrontendModulos = htmlSuperadmin.match(/(?:const|let) MODULOS = \[([\s\S]*?)\];/);
 assert.ok(matchFrontendModulos, 'no se encontró MODULOS en superadmin.html');
 const modulosFrontend = [...matchFrontendModulos[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
 
@@ -42,7 +45,7 @@ t('superadmin.html MODULOS incluye TODOS los módulos válidos del backend', () 
 });
 
 t('NOMBRES_MODULO tiene una entrada para cada módulo del backend', () => {
-  const matchNombres = htmlSuperadmin.match(/const NOMBRES_MODULO = \{([\s\S]*?)\};/);
+  const matchNombres = htmlSuperadmin.match(/(?:const|let) NOMBRES_MODULO = \{([\s\S]*?)\};/);
   assert.ok(matchNombres, 'no se encontró NOMBRES_MODULO');
   const faltantes = modulosBackend.filter(m => !new RegExp(`\\b${m}\\s*:`).test(matchNombres[1]));
   assert.deepStrictEqual(faltantes, [], `sin nombre legible: ${faltantes.join(', ')}`);
