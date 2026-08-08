@@ -28,6 +28,7 @@ const SCRIPTS = [
   '038-red-repartidores-config',
   '039-restaurante-mesas',
   '040-restaurante-integracion-ventas',
+  '041-usuarios-mesero-pin',
 ];
 
 for (const nombre of SCRIPTS) {
