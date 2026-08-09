@@ -154,9 +154,9 @@ await t('INTEGRIDAD', '8. ningún asset referenciado por las pantallas responde 
 
 await t('INTEGRIDAD', '9. la vista previa social está declarada y la imagen existe', async () => {
   const { texto } = await traer('/');
-  assert.match(texto, /<meta property="og:image" content="https:\/\/xabor\.mx\/public\/brand\/xabor-social-v2\.png">/);
+  assert.match(texto, /<meta property="og:image" content="https:\/\/xabor\.mx\/public\/brand\/xabor-social-v3\.png">/);
   assert.match(texto, /<meta name="twitter:card" content="summary_large_image">/);
-  const img = await cabeza('/public/brand/xabor-social-v2.png');
+  const img = await cabeza('/public/brand/xabor-social-v3.png');
   assert.strictEqual(img.status, 200);
   assert.ok(img.bytes > 5000, 'la imagen social llegó demasiado pequeña');
 });

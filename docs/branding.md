@@ -30,8 +30,9 @@ Todo vive en **`public/brand/`** y se sirve bajo `/public/brand/`:
 | `xabor-logo.svg` | **logotipo**: isotipo + palabra "Xabor" |
 | `xabor-icono-32/180/192/512.png` | derivados para favicon PNG, apple-touch-icon y manifest |
 | `favicon.ico` | contenedor ICO con el PNG de 32 px, para lo que pide `.ico` a la fuerza |
-| `xabor-social-v2.png` | **vista previa social** 1200×630 (arte aprobado) |
-| `xabor-social.png` (+ `.svg`) | vista previa anterior — **sin consumidores** |
+| `xabor-social-v3.png` | **vista previa social vigente** 1200×630 |
+| `xabor-social-v2.png` | vista previa anterior — sin consumidores |
+| `xabor-social.png` (+ `.svg`) | vista previa original — sin consumidores |
 | `site.webmanifest` | nombre, colores e iconos de la app |
 
 Los PNG, el `.ico` y la imagen social **se generan** del SVG con
@@ -132,21 +133,42 @@ estructura de la landing **no** se filtren a ninguna pantalla del producto.
 
 ## Vista previa social
 
-`public/brand/xabor-social-v2.png` (1200×630) es lo que ven WhatsApp,
+`public/brand/xabor-social-v3.png` (1200×630) es lo que ven WhatsApp,
 Facebook, LinkedIn y X cuando alguien comparte https://xabor.mx/. No se
 genera con `generar-assets-marca.mjs`: es arte terminado, entregado por el
-dueño, y solo se reescaló a la medida de Open Graph.
+dueño; el repositorio solo lo reescala a la medida de Open Graph y reescribe
+la banda de precio.
 
-**El nombre lleva `-v2` a propósito.** Las redes cachean la imagen *por URL*
-y no vuelven a pedirla durante días aunque el archivo cambie. Reusar el
-nombre anterior habría seguido mostrando la vista previa vieja. Regla para la
-próxima vez: **cambiar la imagen social significa cambiar el nombre del
-archivo**, no sobrescribirlo.
+### El copy aprobado de la banda
 
-`xabor-social.png` y `xabor-social.svg` (la vista previa anterior) **ya no
-los referencia ninguna página**. Se conservan porque el generador de assets
-todavía los produce; retirarlos es una limpieza aparte, no un cambio de
-marca.
+La v2 decía **"$990 al mes · Promoción agosto y septiembre"**, que se lee
+como $990 en agosto *más* otros $990 en septiembre. No es la oferta. El copy
+vigente, en este orden de jerarquía:
+
+1. **$990 TOTAL**
+2. **Agosto + septiembre**
+3. **Instalación incluida · Después $990/mes**
+
+Importa porque mucha gente ve la imagen en WhatsApp y nunca abre la página:
+la promoción tiene que entenderse sin contexto. La tarjeta de precio de la
+landing dice lo mismo, y `fase-landing-v2` comprueba que no se separen.
+
+`scripts/banda-social-v3.mjs` reescribe esa banda sobre el arte original a
+resolución completa y reescala a 1200×630. Lleva anotada la geometría medida
+del original (banda `x 63..776, y 702..819`, icono en `(122,761)`), de modo
+que el marco y el icono se conservan intactos y solo cambia el texto. La
+tipografía de la banda es **Century Gothic**, la geométrica más cercana a la
+del arte; el resto de la imagen conserva su tipografía original.
+
+### El nombre cambia en cada versión
+
+Las redes cachean la vista previa *por URL* y no vuelven a pedirla durante
+días aunque el archivo cambie. Por eso `-v2` y luego `-v3`: **cambiar la
+imagen social significa cambiar el nombre del archivo**, nunca sobrescribirlo.
+
+`xabor-social.png`, `xabor-social.svg` y `xabor-social-v2.png` **ya no los
+referencia ninguna página**. Se conservan como histórico; retirarlos es una
+limpieza aparte, no un cambio de marca.
 
 Esto no toca el favicon, el isotipo, el manifest ni el `theme-color`: son
 cosas distintas, y `fase-scope-marca` lo comprueba.

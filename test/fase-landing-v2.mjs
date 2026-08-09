@@ -216,7 +216,7 @@ await t('SEO', '15. title, description, canonical y Open Graph describen el prod
 // enlace por WhatsApp. Estos casos comprueban lo que realmente sale servido,
 // no solo que el archivo exista en el repositorio.
 await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en absoluto y por HTTPS', async () => {
-  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-v2.png';
+  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-v3.png';
   const meta = (p, n = 'property') => (html.match(new RegExp(`<meta ${n}="${p}" content="([^"]+)"`)) || [])[1];
 
   assert.strictEqual(meta('og:image'), IMAGEN, 'og:image');
@@ -234,13 +234,36 @@ await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en a
     assert.ok(url.startsWith('https://xabor.mx/'), `${url} debe ser absoluta y HTTPS`);
   }
 
-  // El nombre lleva -v2 a propósito: las redes cachean por URL.
-  assert.ok(/xabor-social-v2\.png/.test(html), 'la imagen nueva estrena nombre para saltarse la caché social');
-  assert.ok(!/xabor-social\.png/.test(html), 'la imagen anterior ya no se referencia en la landing');
+  // Cada versión estrena nombre a propósito: las redes cachean por URL, así
+  // que sobrescribir el archivo anterior no cambia nada de lo que ya circula.
+  assert.ok(/xabor-social-v3\.png/.test(html), 'la imagen vigente estrena nombre para saltarse la caché social');
+  for (const vieja of ['xabor-social.png', 'xabor-social-v2.png']) {
+    assert.ok(!html.includes(vieja), `${vieja} ya no debe referenciarse en la landing`);
+  }
+});
+
+// Guardia documental del arte aprobado. No hay OCR: haría la suite frágil.
+// Lo que se fija aquí es la DECISIÓN de producto, para que quien cambie la
+// imagen sepa qué tiene que seguir diciendo.
+await t('SOCIAL', '15d. el arte vigente y la landing cuentan la misma promoción', async () => {
+  // La v2 decía "$990 al mes · Promoción agosto y septiembre", que se lee
+  // como $990 en agosto MÁS $990 en septiembre. La v3 dice "$990 TOTAL /
+  // Agosto + septiembre / Instalación incluida · Después $990/mes".
+  const doc = await import('node:fs/promises').then(fs => fs.readFile('docs/branding.md', 'utf8'));
+  for (const frase of ['$990 TOTAL', 'Agosto + septiembre', 'Instalación incluida', 'Después $990/mes']) {
+    assert.ok(doc.includes(frase), `docs/branding.md debe dejar constancia del copy aprobado: "${frase}"`);
+  }
+  assert.ok(/xabor-social-v3\.png/.test(doc), 'la documentación nombra el archivo vigente');
+
+  // Y la landing no puede contradecir a la imagen.
+  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)[0]
+    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.ok(/agosto\s*\+\s*septiembre/i.test(promo) && /total por los dos meses/i.test(promo),
+    'la tarjeta de precio dice lo mismo que la imagen social');
 });
 
 await t('SOCIAL', '15c. el servidor entrega la imagen social como PNG y sin pedir sesión', async () => {
-  const r = await fetch(base + '/public/brand/xabor-social-v2.png');   // sin cookies
+  const r = await fetch(base + '/public/brand/xabor-social-v3.png');   // sin cookies
   assert.strictEqual(r.status, 200, 'la imagen responde 200');
   assert.match(r.headers.get('content-type') || '', /image\/png/, 'Content-Type image/png');
   const bytes = Buffer.from(await r.arrayBuffer());
