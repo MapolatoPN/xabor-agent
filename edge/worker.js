@@ -55,20 +55,23 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
       );
     } catch (e) {
       // Un transporte no debería lanzar; si lo hace, se trata como fallo
-      // normal en vez de tumbar el worker entero.
-      r = { ok: false, codigo: 'TRANSPORTE_EXCEPCION', detalle: e.message };
+      // ambiguo (no sabemos en qué punto reventó) en vez de tumbar el worker.
+      r = { resultado: 'incierto', codigo: 'TRANSPORTE_EXCEPCION', detalle: e.message };
     }
 
-    if (r.ok) {
-      const final = almacen.actualizar(trabajo.id, { estado: 'impreso', intentos: intento, ultimoError: null });
-      logger?.info('worker.impreso', { jobId: trabajo.id, impresora: trabajo.impresoraNombre, intento });
-      alResolver?.({ trabajo: final, resultado: 'impreso' });
+    if (r.resultado === 'enviado') {
+      // 'enviado', no 'impreso': los bytes salieron sin que nadie protestara.
+      // Con RAW TCP no hay forma de saber si salió papel, y llamarlo impreso
+      // sería afirmar algo que no se puede observar.
+      const final = almacen.actualizar(trabajo.id, { estado: 'enviado', intentos: intento, ultimoError: null });
+      logger?.info('worker.enviado', { jobId: trabajo.id, impresora: trabajo.impresoraNombre, intento });
+      alResolver?.({ trabajo: final, resultado: 'enviado' });
       return final;
     }
 
     const error = `${r.codigo || 'ERROR'}: ${r.detalle || 'sin detalle'}`;
 
-    if (r.incierto) {
+    if (r.resultado === 'incierto') {
       const final = almacen.actualizar(trabajo.id, { estado: 'incierto', intentos: intento, ultimoError: error });
       logger?.warn('worker.incierto', { jobId: trabajo.id, impresora: trabajo.impresoraNombre, intento, codigo: r.codigo });
       alResolver?.({ trabajo: final, resultado: 'incierto', error });

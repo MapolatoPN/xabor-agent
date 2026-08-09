@@ -23,6 +23,9 @@ UNION ALL SELECT 'puerto sin default 9100', NOT EXISTS (
 UNION ALL SELECT 'estado incierto permitido', EXISTS (
   SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
    WHERE t.relname = 'impresion_trabajos' AND pg_get_constraintdef(c.oid) ILIKE '%incierto%')
+UNION ALL SELECT 'no existe estado impreso (seria una certeza inventada)', NOT EXISTS (
+  SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+   WHERE t.relname = 'impresion_trabajos' AND pg_get_constraintdef(c.oid) ILIKE '%impreso%')
 UNION ALL SELECT 'trabajos sobreviven a borrar impresora', EXISTS (
   SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
    WHERE t.relname = 'impresion_trabajos' AND c.contype = 'f'

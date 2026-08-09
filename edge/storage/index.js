@@ -12,20 +12,40 @@
 //   cerrar()
 import { crearAlmacenSqlite, sqliteDisponible, rutaPorDefectoSqlite } from './sqlite.js';
 import { crearAlmacenJson, rutaPorDefectoJson } from './jsonFile.js';
+import { tomarBloqueo } from './bloqueo.js';
 
-export function crearAlmacen({ almacen = 'auto', rutaDatos, logger } = {}) {
-  const quiereSqlite = almacen === 'sqlite' || (almacen === 'auto' && sqliteDisponible());
+// `bloquear: false` solo para pruebas que abren varios almacenes a la vez
+// sobre carpetas distintas y no necesitan la exclusión.
+export function crearAlmacen({ almacen = 'auto', rutaDatos, logger, bloquear = true } = {}) {
+  // El bloqueo va PRIMERO: si hay otro Edge usando esta carpeta hay que
+  // fallar antes de tocar la cola, no después de haberla abierto.
+  const bloqueo = bloquear ? tomarBloqueo(rutaDatos, { logger }) : null;
 
-  if (quiereSqlite) {
-    if (!sqliteDisponible()) {
-      throw new Error('XABOR_EDGE_ALMACEN=sqlite pero este Node no trae node:sqlite (hace falta Node 22.5 o superior)');
+  let base;
+  try {
+    const quiereSqlite = almacen === 'sqlite' || (almacen === 'auto' && sqliteDisponible());
+    if (quiereSqlite) {
+      if (!sqliteDisponible()) {
+        throw new Error('XABOR_EDGE_ALMACEN=sqlite pero este Node no trae node:sqlite (hace falta Node 22.5 o superior)');
+      }
+      const ruta = rutaPorDefectoSqlite(rutaDatos);
+      logger?.info('almacen.abierto', { tipo: 'sqlite', ruta });
+      base = crearAlmacenSqlite({ ruta });
+    } else {
+      const ruta = rutaPorDefectoJson(rutaDatos);
+      logger?.info('almacen.abierto', { tipo: 'json', ruta, motivo: almacen === 'auto' ? 'node:sqlite no disponible' : 'configurado' });
+      base = crearAlmacenJson({ ruta, logger });
     }
-    const ruta = rutaPorDefectoSqlite(rutaDatos);
-    logger?.info('almacen.abierto', { tipo: 'sqlite', ruta });
-    return crearAlmacenSqlite({ ruta });
+  } catch (e) {
+    bloqueo?.liberar();
+    throw e;
   }
 
-  const ruta = rutaPorDefectoJson(rutaDatos);
-  logger?.info('almacen.abierto', { tipo: 'json', ruta, motivo: almacen === 'auto' ? 'node:sqlite no disponible' : 'configurado' });
-  return crearAlmacenJson({ ruta });
+  // Se envuelve `cerrar` para que liberar el bloqueo no dependa de que quien
+  // llama se acuerde: cerrar el almacén y soltar la carpeta son la misma cosa.
+  const cerrarBase = base.cerrar.bind(base);
+  base.cerrar = () => { try { cerrarBase(); } finally { bloqueo?.liberar(); } };
+  return base;
 }
+
+export { BloqueoOcupado } from './bloqueo.js';

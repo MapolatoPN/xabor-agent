@@ -309,10 +309,10 @@ await t('ENTREGA', '26. marcar entregado solo funciona para la terminal dueña',
   assert.strictEqual(propio.estado, 'entregado');
 });
 
-await t('ACK', '27. el ACK de impreso cierra el trabajo', async () => {
+await t('ACK', '27. el ACK de enviado cierra el trabajo', async () => {
   const trabajo = trabajosRonda[0];
-  const r = await registrarAckDeTerminal(edgeA.id, { trabajoId: trabajo.id, resultado: 'impreso' });
-  assert.strictEqual(r.estado, 'impreso');
+  const r = await registrarAckDeTerminal(edgeA.id, { trabajoId: trabajo.id, resultado: 'enviado' });
+  assert.strictEqual(r.estado, 'enviado');
   assert.strictEqual(r.intentos, 1);
   const { rows } = await pool.query('SELECT acked_at FROM impresion_trabajos WHERE id = $1', [trabajo.id]);
   assert.ok(rows[0].acked_at, 'queda la hora de confirmación');
@@ -320,13 +320,13 @@ await t('ACK', '27. el ACK de impreso cierra el trabajo', async () => {
 
 await t('ACK', '28. un Edge ajeno NO puede confirmar el trabajo de otro', async () => {
   const trabajo = trabajosRonda[1];
-  const r = await registrarAckDeTerminal(edgeB.id, { trabajoId: trabajo.id, resultado: 'impreso' });
+  const r = await registrarAckDeTerminal(edgeB.id, { trabajoId: trabajo.id, resultado: 'enviado' });
   assert.strictEqual(r, null, 'el filtro por terminal_id es lo que impide falsear resultados de otro negocio');
   const { rows } = await pool.query('SELECT estado FROM impresion_trabajos WHERE id = $1', [trabajo.id]);
-  assert.notStrictEqual(rows[0].estado, 'impreso');
+  assert.notStrictEqual(rows[0].estado, 'enviado');
 });
 
-await t('ACK', '29. un trabajo ya impreso no se puede "des-imprimir"', async () => {
+await t('ACK', '29. un trabajo ya enviado no se puede "des-imprimir"', async () => {
   const trabajo = trabajosRonda[0];
   const r = await registrarAckDeTerminal(edgeA.id, { trabajoId: trabajo.id, resultado: 'fallido', error: 'tarde' });
   assert.strictEqual(r, null, 'un ACK tardío no puede reabrir algo ya confirmado');
@@ -346,7 +346,7 @@ await t('ACK', '30. tras MAX_INTENTOS fallos el trabajo queda agotado, no perdid
   assert.match(rows[0].ultimo_error, /ECONNREFUSED/);
 });
 
-await t('ACK', '31. el estado incierto existe y no se confunde con impreso ni con fallido', async () => {
+await t('ACK', '31. el estado incierto existe y no se confunde con enviado ni con fallido', async () => {
   const r = await crearTrabajosDeComanda({
     negocioId: A.negocioId, cuentaId: randomUUID(),
     comanda: { comanda: 1, tipo: 'inicial', mesa: 3, mesero: 'Z', items: [{ producto: 'Coca-Cola', categoria: 'Bebidas', cantidad: 1 }] },
@@ -373,7 +373,7 @@ await t('REIMPRESION', '33. reimprimir crea un trabajo NUEVO y conserva el origi
   assert.strictEqual(copia.payload.reimpresion, true, 'el papel sale marcado como reimpresión');
 
   const { rows } = await pool.query('SELECT estado FROM impresion_trabajos WHERE id = $1', [original.id]);
-  assert.strictEqual(rows[0].estado, 'impreso', 'el original NO se resetea: es la evidencia de lo que pasó');
+  assert.strictEqual(rows[0].estado, 'enviado', 'el original NO se resetea: es la evidencia de lo que pasó');
 });
 
 await t('REIMPRESION', '34. dos reimpresiones seguidas son dos intenciones distintas', async () => {

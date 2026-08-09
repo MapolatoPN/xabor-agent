@@ -90,7 +90,7 @@ export function crearAlmacenSqlite({ ruta }) {
      ORDER BY creado_en`);
   const todos = db.prepare('SELECT * FROM trabajos');
   const conteo = db.prepare('SELECT estado, count(*) AS n FROM trabajos GROUP BY estado');
-  const borrarViejos = db.prepare(`DELETE FROM trabajos WHERE estado IN ('impreso','cancelado') AND actualizado_en < ?`);
+  const borrarViejos = db.prepare(`DELETE FROM trabajos WHERE estado IN ('enviado','cancelado') AND actualizado_en < ?`);
   const leerEstado = db.prepare('SELECT valor FROM estado_edge WHERE clave = ?');
   const escribirEstado = db.prepare('INSERT INTO estado_edge (clave, valor) VALUES (?,?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor');
 

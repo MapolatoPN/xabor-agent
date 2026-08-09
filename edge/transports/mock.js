@@ -22,7 +22,10 @@ export function crearTransporteMock({ logger } = {}) {
         if (programado.veces > 0) programado.veces -= 1;
         if (programado.veces === 0) fallosProgramados.delete(impresora);
         logger?.warn('transporte.mock.fallo', { impresora, codigo: programado.codigo, jobId: contexto.jobId });
-        return { ok: false, codigo: programado.codigo, detalle: programado.detalle, incierto: !!programado.incierto };
+        return {
+          resultado: programado.incierto ? 'incierto' : 'fallido',
+          codigo: programado.codigo, detalle: programado.detalle,
+        };
       }
 
       enviados.push({
@@ -31,7 +34,7 @@ export function crearTransporteMock({ logger } = {}) {
         en: Date.now(),
       });
       logger?.debug('transporte.mock.enviado', { impresora, jobId: contexto.jobId, bytes: bytes.length });
-      return { ok: true };
+      return { resultado: 'enviado', codigo: null, detalle: `${bytes.length} bytes (simulado)` };
     },
 
     // ── Ayudas para pruebas ──

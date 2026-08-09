@@ -82,20 +82,20 @@ await t(`${TRABAJOS} trabajos con fallos periódicos: 0 perdidos, 0 duplicados`,
   }
 
   const conteo = edge.almacen.contarPorEstado();
-  const impresos = conteo.impreso || 0;
+  const resueltos = conteo.enviado || 0;
   const agotados = conteo.agotado || 0;
 
-  assert.strictEqual(impresos + agotados, TRABAJOS,
-    `se esperaban ${TRABAJOS} trabajos resueltos y hay ${impresos} impresos + ${agotados} agotados`);
+  assert.strictEqual(resueltos + agotados, TRABAJOS,
+    `se esperaban ${TRABAJOS} trabajos resueltos y hay ${resueltos} enviados + ${agotados} agotados`);
   assert.strictEqual(agotados, 0, `ningún trabajo debía agotarse: los fallos eran temporales (hay ${agotados})`);
 
   // Ni uno perdido, ni uno duplicado.
-  const enviados = mock.enviados.map(e => e.jobId);
-  assert.strictEqual(new Set(enviados).size, enviados.length,
-    `hay ${enviados.length - new Set(enviados).size} impresiones duplicadas`);
-  const faltantes = [...esperados].filter(id => !enviados.includes(id));
+  const salidos = mock.enviados.map(e => e.jobId);
+  assert.strictEqual(new Set(salidos).size, salidos.length,
+    `hay ${salidos.length - new Set(salidos).size} impresiones duplicadas`);
+  const faltantes = [...esperados].filter(id => !salidos.includes(id));
   assert.strictEqual(faltantes.length, 0, `se perdieron ${faltantes.length} trabajos`);
-  assert.strictEqual(enviados.length, TRABAJOS, `salieron ${enviados.length} papeles y se esperaban ${TRABAJOS}`);
+  assert.strictEqual(salidos.length, TRABAJOS, `salieron ${salidos.length} papeles y se esperaban ${TRABAJOS}`);
 });
 
 await t('cada impresora recibió exactamente su parte', async () => {

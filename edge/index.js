@@ -61,8 +61,9 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       log.info('trabajo.duplicado', { jobId: trabajo.id, estado: existente?.estado });
       // Si ya terminó, se reafirma el resultado para que la nube pueda
       // cerrarlo. Si sigue en cola, no se dice nada: ya llegará su ACK.
-      if (existente && ['impreso', 'agotado', 'incierto'].includes(existente.estado)) {
-        enviarAck({ trabajoId: trabajo.id, resultado: existente.estado === 'impreso' ? 'impreso' : (existente.estado === 'incierto' ? 'incierto' : 'fallido'), error: existente.ultimoError });
+      if (existente && ['enviado', 'agotado', 'incierto'].includes(existente.estado)) {
+        const resultado = existente.estado === 'agotado' ? 'fallido' : existente.estado;
+        enviarAck({ trabajoId: trabajo.id, resultado, error: existente.ultimoError });
       }
       return;
     }
@@ -88,14 +89,10 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       // Solo se confirma un desenlace definitivo. Un 'fallido' que todavía
       // tiene reintentos por delante no se reporta como fracaso: la nube no
       // debe pintar en rojo algo que va a salir en treinta segundos.
-      const definitivo = resultado === 'impreso' || resultado === 'incierto' ||
+      const definitivo = resultado === 'enviado' || resultado === 'incierto' ||
                          (resultado === 'fallido' && trabajo.estado === 'agotado');
       if (!definitivo) return;
-      enviarAck({
-        trabajoId: trabajo.id,
-        resultado: resultado === 'fallido' ? 'fallido' : resultado,
-        error: error || trabajo.ultimoError || null,
-      });
+      enviarAck({ trabajoId: trabajo.id, resultado, error: error || trabajo.ultimoError || null });
     },
   });
 

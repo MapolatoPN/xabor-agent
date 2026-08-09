@@ -444,17 +444,32 @@ export async function reimprimirTrabajo(negocioId, trabajoId, { usuarioId = null
 // la noche.
 export async function trabajosPendientesDeTerminal(terminalId, { limite = 50, desde = null } = {}) {
   const { rows } = await pool.query(
-    `SELECT t.*, i.transporte, i.host, i.puerto, i.ancho_columnas, i.config AS impresora_config
+    `SELECT t.*, t.created_at::text AS cursor_created_at,
+            i.transporte, i.host, i.puerto, i.ancho_columnas, i.config AS impresora_config
        FROM impresion_trabajos t
        LEFT JOIN impresoras i ON i.id = t.impresora_id
       WHERE t.terminal_id = $1
         AND t.estado IN ('pendiente','entregado','fallido')
-        AND ($3::timestamptz IS NULL OR (t.created_at, t.id) > ($3::timestamptz, $4::uuid))
+        AND ($3::text IS NULL OR (t.created_at, t.id) > ($3::timestamptz, $4::uuid))
       ORDER BY t.created_at, t.id
       LIMIT $2`,
     [terminalId, limite, desde?.createdAt ?? null, desde?.id ?? null]
   );
   return rows;
+}
+
+// El cursor DEBE construirse con esta función, nunca con `fila.created_at`.
+//
+// Postgres guarda TIMESTAMPTZ con microsegundos y el driver lo entrega como
+// un Date de JavaScript, que solo tiene milisegundos. Un cursor construido
+// con ese Date queda por DEBAJO del valor real de la fila, así que la
+// comparación `(created_at, id) > cursor` vuelve a incluirla: la última fila
+// de cada página se entregaba dos veces. Con 100 pendientes salían 102.
+//
+// Por eso se arrastra `created_at::text`, que conserva la precisión completa
+// y vuelve a timestamptz sin perder nada.
+export function cursorDeTrabajo(fila) {
+  return { createdAt: fila.cursor_created_at, id: fila.id };
 }
 
 export async function marcarEntregado(trabajoId, terminalId) {
@@ -468,7 +483,7 @@ export async function marcarEntregado(trabajoId, terminalId) {
   return rows[0] || null;
 }
 
-const ESTADOS_ACK = new Set(['impreso', 'fallido', 'incierto']);
+const ESTADOS_ACK = new Set(['enviado', 'fallido', 'incierto']);
 
 // ACK del Edge. `terminalId` viene de la conexión autenticada, jamás del
 // mensaje: un Edge no puede confirmar ni tocar el trabajo de otro. Si el
@@ -480,7 +495,7 @@ export async function registrarAckDeTerminal(terminalId, { trabajoId, resultado,
   const { rows } = await pool.query(
     `UPDATE impresion_trabajos
         SET estado = CASE
-                       WHEN $3 = 'impreso'  THEN 'impreso'
+                       WHEN $3 = 'enviado'  THEN 'enviado'
                        WHEN $3 = 'incierto' THEN 'incierto'
                        WHEN $4 AND intentos + 1 >= $5 THEN 'agotado'
                        ELSE 'fallido'
@@ -488,7 +503,7 @@ export async function registrarAckDeTerminal(terminalId, { trabajoId, resultado,
             intentos = intentos + 1,
             ultimo_error = $6,
             acked_at = NOW()
-      WHERE id = $1 AND terminal_id = $2 AND estado NOT IN ('impreso','cancelado')
+      WHERE id = $1 AND terminal_id = $2 AND estado NOT IN ('enviado','cancelado')
       RETURNING id, estado, intentos, ultimo_error`,
     [trabajoId, terminalId, resultado, agotarSiToca, MAX_INTENTOS, error ? String(error).slice(0, 500) : null]
   );
@@ -510,7 +525,7 @@ export async function estadoImpresion(negocioId, { sucursalId = null } = {}) {
             (SELECT count(*)::int FROM impresion_trabajos j
               WHERE j.impresora_id = i.id AND j.estado IN ('agotado','incierto')) AS requieren_atencion,
             (SELECT max(j.acked_at) FROM impresion_trabajos j
-              WHERE j.impresora_id = i.id AND j.estado = 'impreso') AS ultima_impresion,
+              WHERE j.impresora_id = i.id AND j.estado = 'enviado') AS ultimo_envio,
             (SELECT j.ultimo_error FROM impresion_trabajos j
               WHERE j.impresora_id = i.id AND j.ultimo_error IS NOT NULL
               ORDER BY j.updated_at DESC LIMIT 1) AS ultimo_error

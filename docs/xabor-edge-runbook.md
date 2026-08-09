@@ -57,6 +57,13 @@ Panel → **Estado**. Cada impresora muestra su último error:
 
 Al resolverlo, el Edge reintenta solo. No hace falta reiniciarlo.
 
+### Hay trabajos en `enviado`
+
+Es el desenlace bueno: los bytes salieron y la impresora no protestó. **No
+significa que se haya confirmado el papel** — una térmica no lo confirma. Si
+el papel no salió estando en `enviado`, es cosa del hardware (sin papel,
+atasco) y se resuelve reimprimiendo.
+
 ### Hay trabajos en `agotado`
 
 Se acabaron los reintentos automáticos. **No se perdió nada.** Arreglar la

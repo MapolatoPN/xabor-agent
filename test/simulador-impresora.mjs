@@ -7,12 +7,15 @@
 //
 // Modos que sabe simular, que son los fallos reales que va a haber en sitio:
 //
-//   online     acepta la conexión y guarda los bytes
-//   offline    cierra el puerto: el Edge verá ECONNREFUSED
-//   timeout    acepta la conexión y no responde nunca
-//   cortar     acepta, lee unos bytes y destruye el socket a media
-//              transmisión (el caso ambiguo: ¿salió papel o no?)
-//   lento      responde, pero con retraso
+//   online                acepta, guarda los bytes y cierra ordenadamente
+//   silenciosa            acepta, lee TODO y NUNCA cierra. Es el
+//                         comportamiento de muchas térmicas reales, y el que
+//                         destapó que exigir el FIN del peer no era genérico
+//   timeout               acepta y no lee ni responde nunca
+//   cortar                lee y revienta la conexión con RST (caso ambiguo)
+//   rechazar_al_conectar  acepta y revienta ANTES de leer un solo byte
+//   cerrar_al_conectar    cierra ordenadamente antes de que terminemos
+//   lento                 responde, pero con retraso
 import net from 'node:net';
 
 export function crearImpresoraSimulada({ nombre = 'simulada', puerto = 0 } = {}) {
@@ -29,6 +32,17 @@ export function crearImpresoraSimulada({ nombre = 'simulada', puerto = 0 } = {})
     socket.on('error', () => {});
 
     if (modo === 'timeout') return;                  // ni una respuesta
+
+    // RST inmediato, sin leer nada: el Edge no llegó a enviar un byte, así
+    // que el resultado NO es ambiguo -- es un fallo reintentable.
+    if (modo === 'rechazar_al_conectar') {
+      if (typeof socket.resetAndDestroy === 'function') socket.resetAndDestroy();
+      else socket.destroy();
+      return;
+    }
+
+    // Cierre ordenado antes de tiempo.
+    if (modo === 'cerrar_al_conectar') { socket.end(); return; }
 
     const trozos = [];
     socket.on('data', (d) => {
@@ -50,6 +64,13 @@ export function crearImpresoraSimulada({ nombre = 'simulada', puerto = 0 } = {})
 
     socket.on('end', () => {
       if (modo === 'cortar') return;
+      // La impresora que NUNCA cierra: registra lo recibido y deja el socket
+      // abierto. El transporte tiene que dar el envío por bueno igual.
+      if (modo === 'silenciosa') {
+        const bytes = Buffer.concat(trozos);
+        recibidos.push({ nombre, bytes, texto: bytes.toString('latin1'), parcial: false, en: Date.now() });
+        return;
+      }
       const bytes = Buffer.concat(trozos);
       const guardar = () => {
         recibidos.push({ nombre, bytes, texto: bytes.toString('latin1'), parcial: false, en: Date.now() });

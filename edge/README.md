@@ -107,6 +107,8 @@ edge/
 
 ## Cosas que conviene saber
 
+- **No arrancar dos Edges con la misma carpeta de datos.** El proceso toma
+  un bloqueo y el segundo se niega a arrancar diciendo qué pid la tiene.
 - **La cola sobrevive a todo.** Si se corta la luz a media comanda, al volver
   el Edge retoma lo que quedó. Nunca da por impreso lo que no confirmó.
 - **Una impresora caída no detiene a las demás.** Cada destino es un trabajo

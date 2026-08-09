@@ -85,24 +85,59 @@ decía anoche.
 |---|---|
 | `pendiente` | creado, ningún Edge lo ha recibido |
 | `entregado` | enviado por WebSocket, sin confirmar |
-| `impreso` | el Edge confirmó que los bytes salieron |
+| `enviado` | el Edge volcó los bytes y nadie protestó |
 | `incierto` | los bytes salieron y se perdió la confirmación |
 | `fallido` | error definido, con reintentos por delante |
 | `agotado` | se acabaron los reintentos; **no se pierde**, se revisa |
 | `cancelado` | lo canceló una persona |
 
-### `incierto`: la parte honesta
+### Por qué NO existe el estado "impreso"
 
-Una impresora térmica **no confirma que salió papel**. Lo máximo que se puede
-afirmar es que recibió los bytes y cerró la conexión ordenadamente.
+Con RAW TCP no hay protocolo de aplicación: se abre un socket, se vuelcan
+bytes y la impresora no contesta. Hay cinco cosas distintas y solo tres se
+pueden observar:
 
-Cuando el Edge escribe los bytes y la conexión se rompe antes de ese cierre
-—se soltó el cable, se apagó a media transmisión— **no hay forma de saber si
-imprimió**. Reintentar podría sacar el mismo platillo dos veces en cocina;
-darlo por impreso podría perder una comanda. Se marca `incierto`, **no se
-reintenta solo**, y aparece en el estado como algo que decide una persona.
+| | Qué es | ¿Observable? |
+|---|---|---|
+| A | `write()` aceptó los bytes en Node | sí |
+| B | el buffer local se vació (`finish`) | sí |
+| C | el TCP del otro extremo los aceptó | solo por ausencia de error/RST |
+| D | la impresora los procesó | **no** |
+| E | salió papel | **no** |
 
-Prometer *exactly-once* físico sería mentira. Lo que Xabor garantiza es
+Por eso el desenlace bueno se llama **`enviado`**, no "impreso": afirma A + B
++ C y nada más. Llamarlo impreso sería inventar una certeza.
+
+**El criterio NO es esperar el FIN de la impresora.** La primera versión lo
+exigía y estaba mal: muchas térmicas mantienen la conexión abierta después de
+un trabajo, así que contra ese hardware TODOS los trabajos habrían quedado
+inciertos. Funcionaba solo porque el simulador cerraba — era diseñar contra el
+simulador, y el fallo se habría visto en Obispado con la impresora delante.
+
+El criterio real es: **se escribieron todos los bytes, el buffer local se
+vació y no llegó ningún error.** Tras el vaciado se espera una ventana corta
+(~1,2 s) por si llega un RST tardío; si no llega nada, es `enviado` y se
+cierra por nuestro lado.
+
+### Matriz de desenlaces
+
+| Situación | Resultado | ¿Reintenta? |
+|---|---|---|
+| Puerto cerrado (`ECONNREFUSED`) | `fallido` | **sí** |
+| Timeout antes de escribir | `fallido` | **sí** |
+| RST antes de escribir un byte | `fallido` | **sí** |
+| Sin host o sin puerto | `fallido` | sí (y seguirá fallando hasta configurarlo) |
+| Todo escrito, la impresora cierra | `enviado` | no hace falta |
+| Todo escrito, la impresora NO cierra | `enviado` | no hace falta |
+| RST **después** de escribir | `incierto` | **no** |
+| Cierre a media transmisión | `incierto` | **no** |
+| Timeout con bytes ya escritos | `incierto` | **no** |
+
+La línea que separa `fallido` de `incierto` es una sola pregunta: **¿salió
+algún byte?** Si no salió ninguno, reintentar es seguro. Si salió alguno,
+puede haber papel, y reintentar sacaría el mismo platillo dos veces.
+
+Prometer *exactly-once* físico sería mentira. Xabor garantiza
 **at-least-once en el transporte + deduplicación lógica por id**, y un estado
 explícito para el caso ambiguo.
 
@@ -128,9 +163,23 @@ tres trabajos, no treinta (probado en `fase-print-jobs`, caso 18).
 nube puede reenviar un trabajo cuantas veces quiera; el papel sale una.
 
 **Una conexión por terminal**: al autenticarse un Edge, el servidor cierra
-cualquier otra conexión de esa misma terminal. Dos procesos con la misma
-credencial recibirían los mismos trabajos y sacarían **cada comanda por
-duplicado** — pasa de verdad cuando alguien deja el agente viejo abierto.
+cualquier otra conexión de esa misma terminal **con el código 4001**, y el
+Edge desplazado **deja de reconectar**. Sin esa segunda mitad los dos se
+turnarían la conexión, cada uno recibiría trabajos en su cola local y la
+comanda saldría dos veces igual: uno tiene que perder y quedarse perdido.
+
+**Un proceso por carpeta de datos**: el Edge toma un bloqueo exclusivo
+(`open(..., 'wx')`, sin primitivas de Unix) sobre su carpeta. Dos procesos en
+la misma PC consumirían la misma cola y duplicarían todo, y eso el servidor no
+puede evitarlo: para la nube es la misma terminal. Si el bloqueo quedó
+huérfano tras un corte de luz, se comprueba si ese pid sigue vivo y se toma el
+relevo — quedarse sin imprimir por un archivo olvidado sería peor.
+
+**Paginación del backlog**: se recorre con un cursor por `(created_at, id)`, y
+ese cursor viaja como **texto**, no como `Date`. Postgres guarda microsegundos
+y `Date` de JavaScript solo tiene milisegundos: con el cursor truncado, la
+última fila de cada página volvía a entrar en la siguiente. Con 100 pendientes
+se entregaban 102.
 
 ## Reintentos
 

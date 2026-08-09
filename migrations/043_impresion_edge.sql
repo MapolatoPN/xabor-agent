@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS impresion_trabajos (
   -- agotado     → se acabaron los reintentos; no se pierde, se revisa
   -- cancelado   → lo canceló una persona
   estado           TEXT NOT NULL DEFAULT 'pendiente'
-                     CHECK (estado IN ('pendiente','entregado','impreso','incierto','fallido','agotado','cancelado')),
+                     CHECK (estado IN ('pendiente','entregado','enviado','incierto','fallido','agotado','cancelado')),
   intentos         INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
   ultimo_error     TEXT,
 

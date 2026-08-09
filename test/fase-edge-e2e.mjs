@@ -205,15 +205,15 @@ await t('E2E', '5. el papel de cada impresora lleva exactamente lo suyo', async 
   assert.ok(!bebidas.includes('ENSALADA'));
 });
 
-await t('E2E', '6. la nube recibe el ACK y marca los tres trabajos como impresos', async () => {
+await t('E2E', '6. la nube recibe el ACK y marca los tres trabajos como enviados', async () => {
   await hasta(async () => {
     const estados = await Promise.all(trabajosDemo.map(x => estadoDe(x.id)));
-    return estados.every(e => e.estado === 'impreso');
+    return estados.every(e => e.estado === 'enviado');
   }, { que: 'los ACK de los tres trabajos', limiteMs: 10000 });
 
   for (const x of trabajosDemo) {
     const e = await estadoDe(x.id);
-    assert.strictEqual(e.estado, 'impreso');
+    assert.strictEqual(e.estado, 'enviado');
     assert.strictEqual(e.intentos, 1, 'una impresora en línea no necesita reintentos');
   }
 });
@@ -280,11 +280,11 @@ await t('AISLAMIENTO', '10. un Edge no puede confirmar el trabajo de otro negoci
   const ajeno = r.creados[0];
 
   // El Edge de A manda un ACK sobre un trabajo de B, sabiendo su uuid.
-  edgeA.conexion.confirmar({ trabajoId: ajeno.id, resultado: 'impreso' });
+  edgeA.conexion.confirmar({ trabajoId: ajeno.id, resultado: 'enviado' });
   await esperar(500);
 
   const e = await estadoDe(ajeno.id);
-  assert.notStrictEqual(e.estado, 'impreso',
+  assert.notStrictEqual(e.estado, 'enviado',
     'el servidor filtra por la terminal de la conexión: el ACK ajeno no puede tener efecto');
 });
 
@@ -309,7 +309,7 @@ await t('CAOS', '11. impresora apagada: las demás imprimen y la caída se recup
   await SIM['CHILAQUILES'].reencender();
   await hasta(() => SIM['CHILAQUILES'].recibidos.length === 1, { que: 'la impresión tras recuperarse', limiteMs: 12000 });
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 1, 'una sola vez, sin duplicar');
-  await hasta(async () => (await estadoDe(chila.id)).estado === 'impreso', { que: 'el ACK tardío' });
+  await hasta(async () => (await estadoDe(chila.id)).estado === 'enviado', { que: 'el ACK tardío' });
 });
 
 await t('CAOS', '12. la nube se cae y vuelve: el Edge reconecta y nada se pierde', async () => {
@@ -325,7 +325,7 @@ await t('CAOS', '12. la nube se cae y vuelve: el Edge reconecta y nada se pierde
   edgeA.conexion.iniciar();
   await hasta(() => SIM['BEBIDAS'].recibidos.length >= 1 && SIM['CHILAQUILES'].recibidos.length >= 1,
     { que: 'la entrega tras reconectar', limiteMs: 12000 });
-  await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'impreso'),
+  await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'enviado'),
     { que: 'los ACK tras reconectar', limiteMs: 12000 });
 });
 
@@ -363,7 +363,7 @@ await t('CAOS', '13. matar el Edge a media cola: al reiniciar termina el trabajo
     assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 1, 'exactamente una, sin duplicar por el reinicio');
     assert.strictEqual(SIM['COCINA GENERAL'].recibidos.length, 1);
     assert.strictEqual(SIM['BEBIDAS'].recibidos.length, 1);
-    await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'impreso'),
+    await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'enviado'),
       { que: 'los ACK tras el reinicio', limiteMs: 12000 });
   } finally {
     await revivido.detener();
@@ -395,7 +395,7 @@ await t('CAOS', '13b. dos procesos Edge con la misma credencial NO imprimen por 
 
     const r = await crearTrabajosDeComanda({ negocioId: A.negocioId, cuentaId: randomUUID(), comanda: RONDA(17) });
     intruso.conexion.cerrar(); intruso.conexion.iniciar();
-    await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'impreso'),
+    await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'enviado'),
       { que: 'la impresión con dos Edges dados de alta', limiteMs: 15000 });
     await esperar(800);
 
@@ -415,8 +415,8 @@ await t('CAOS', '14. entrega duplicada desde la nube: una sola impresión', asyn
 
   // Tres reconexiones seguidas: el servidor reenvía los pendientes cada vez.
   for (let i = 0; i < 3; i++) { edgeA.conexion.cerrar(); edgeA.conexion.iniciar(); await esperar(200); }
-  await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'impreso'),
-    { que: 'los tres impresos', limiteMs: 15000 });
+  await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'enviado'),
+    { que: 'los tres enviados', limiteMs: 15000 });
   await esperar(500);   // margen por si llegara una entrega tardía
 
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 1, 'tres reenvíos, un solo papel');
@@ -453,10 +453,10 @@ await t('CONCURRENCIA', '16. 20 rondas simultáneas: 60 trabajos exactos, 0 dupl
   edgeA.conexion.cerrar(); edgeA.conexion.iniciar();
   await hasta(async () => {
     const { rows } = await pool.query(
-      `SELECT count(*)::int AS n FROM impresion_trabajos WHERE id = ANY($1::uuid[]) AND estado = 'impreso'`,
+      `SELECT count(*)::int AS n FROM impresion_trabajos WHERE id = ANY($1::uuid[]) AND estado = 'enviado'`,
       [creados.map(c => c.id)]);
     return rows[0].n === 60;
-  }, { que: 'que los 60 trabajos queden impresos', limiteMs: 40000 });
+  }, { que: 'que los 60 trabajos queden enviados', limiteMs: 40000 });
 
   const total = SIM['CHILAQUILES'].recibidos.length + SIM['COCINA GENERAL'].recibidos.length + SIM['BEBIDAS'].recibidos.length;
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 20, 'una comanda por mesa en chilaquiles');

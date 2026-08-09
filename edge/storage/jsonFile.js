@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 
 const VACIO = () => ({ version: 1, trabajos: {}, estado: {} });
 
-export function crearAlmacenJson({ ruta }) {
+export function crearAlmacenJson({ ruta, logger = null }) {
   mkdirSync(dirname(ruta), { recursive: true });
   let datos = VACIO();
 
@@ -36,6 +36,7 @@ export function crearAlmacenJson({ ruta }) {
       try {
         copyFileSync(ruta, respaldo);
         console.error(`[Edge] cola local ilegible (${e.message}) -- respaldada en ${respaldo}, se arranca vacía`);
+        logger?.error('almacen.corrupto', { motivo: e.message, respaldo });
       } catch (fallo) {
         console.error(`[Edge] cola local ilegible (${e.message}) y NO se pudo respaldar (${fallo.message}) -- se arranca vacía`);
       }
@@ -104,7 +105,7 @@ export function crearAlmacenJson({ ruta }) {
     purgar({ antesDe }) {
       let borrados = 0;
       for (const [id, t] of Object.entries(datos.trabajos)) {
-        if ((t.estado === 'impreso' || t.estado === 'cancelado') && t.actualizadoEn < antesDe) {
+        if ((t.estado === 'enviado' || t.estado === 'cancelado') && t.actualizadoEn < antesDe) {
           delete datos.trabajos[id]; borrados++;
         }
       }

@@ -2,7 +2,14 @@
 //
 // Contrato de un transporte (`PrinterTransport`):
 //
-//   async enviar(config, bytes, contexto) -> { ok, detalle?, codigo?, incierto? }
+//   async enviar(config, bytes, contexto)
+//     -> { resultado: 'enviado' | 'incierto' | 'fallido', codigo, detalle }
+//
+//     'enviado'   los bytes salieron y nadie protestó. NO significa que haya
+//                 salido papel: con RAW TCP eso no se puede saber.
+//     'incierto'  salieron bytes y luego algo se torció. Puede haber papel o
+//                 no. NO se reintenta solo.
+//     'fallido'   se sabe que no llegó nada. Reintentar es seguro.
 //
 //     config   { host, puerto, timeoutMs, config }  -- lo que define el destino
 //     bytes    Buffer ya renderizado
@@ -11,10 +18,9 @@
 // Un transporte NO sabe qué es una comanda, una mesa ni un negocio. Solo
 // sabe mover bytes a un destino y decir si lo consiguió.
 //
-// `incierto: true` es la respuesta honesta al caso en que los bytes salieron
-// pero la conexión murió antes de poder confirmarlo: puede que el papel haya
-// salido y puede que no. Reintentar a ciegas duplicaría comandas; darlo por
-// impreso perdería una. Se marca y lo decide una persona.
+// Ningún transporte devuelve "impreso": con RAW TCP no existe forma de saber
+// si salió papel. Reintentar un 'incierto' a ciegas duplicaría comandas;
+// darlo por impreso perdería una. Se marca y lo decide una persona.
 import { crearTransporteMock } from './mock.js';
 import { crearTransporteTcpRaw } from './tcpRaw.js';
 
@@ -30,7 +36,9 @@ export function crearTransportes({ logger, timeoutMs } = {}) {
     windows_spooler: {
       nombre: 'windows_spooler',
       async enviar() {
-        return { ok: false, codigo: 'TRANSPORTE_NO_IMPLEMENTADO',
+        // 'fallido' y no 'incierto': no se intentó nada, así que reintentar es
+        // seguro (aunque volverá a fallar hasta que se implemente).
+        return { resultado: 'fallido', codigo: 'TRANSPORTE_NO_IMPLEMENTADO',
                  detalle: 'windows_spooler llega en la visita a sitio; usa tcp_raw o mock' };
       },
     },

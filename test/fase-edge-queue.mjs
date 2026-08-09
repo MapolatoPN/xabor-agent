@@ -94,15 +94,15 @@ for (const [nombre, abrir] of BACKENDS) {
     almacen.cerrar();
   });
 
-  await t('ALMACEN', `5.${nombre} purgar limpia lo impreso viejo y NUNCA lo pendiente`, async () => {
+  await t('ALMACEN', `5.${nombre} purgar limpia lo enviado viejo y NUNCA lo pendiente`, async () => {
     const almacen = abrir(dirTemporal());
     almacen.registrarTrabajo(trabajo('viejo'));
     almacen.registrarTrabajo(trabajo('pendiente'));
     almacen.registrarTrabajo(trabajo('agotado'));
-    almacen.actualizar('viejo', { estado: 'impreso' });
+    almacen.actualizar('viejo', { estado: 'enviado' });
     almacen.actualizar('agotado', { estado: 'agotado' });
     const borrados = almacen.purgar({ antesDe: Date.now() + 1000 });
-    assert.strictEqual(borrados, 1, 'solo el impreso');
+    assert.strictEqual(borrados, 1, 'solo el enviado');
     assert.ok(almacen.obtener('pendiente'), 'lo pendiente no se toca');
     assert.ok(almacen.obtener('agotado'), 'lo que necesita atención NUNCA se borra');
     almacen.cerrar();
@@ -127,7 +127,7 @@ await t('WORKER', '6. un trabajo con la impresora en línea sale a la primera', 
 
   await worker.pasada();
 
-  assert.strictEqual(almacen.obtener('j1').estado, 'impreso');
+  assert.strictEqual(almacen.obtener('j1').estado, 'enviado');
   assert.strictEqual(mock.porImpresora('COCINA').length, 1);
   // El renderer pone el platillo en mayúsculas para que se lea de lejos.
   assert.ok(mock.enviados[0].texto.includes('CHILAQUILES'), 'salieron los bytes del platillo');
@@ -183,7 +183,7 @@ await t('WORKER', '9. la impresora que vuelve imprime lo que quedó esperando', 
   await worker.pasada();
   assert.strictEqual(almacen.obtener('j1').estado, 'fallido');
   await worker.pasada(Date.now() + 999_999);       // ya venció la espera
-  assert.strictEqual(almacen.obtener('j1').estado, 'impreso');
+  assert.strictEqual(almacen.obtener('j1').estado, 'enviado');
   assert.strictEqual(mock.porImpresora('COCINA').length, 1, 'una sola impresión, no dos');
   almacen.cerrar();
 });
@@ -200,8 +200,8 @@ await t('WORKER', '10. una impresora caída NO detiene a las demás (fan-out rea
 
   await worker.pasada();
 
-  assert.strictEqual(almacen.obtener('j-general').estado, 'impreso', 'cocina general imprime igual');
-  assert.strictEqual(almacen.obtener('j-bebidas').estado, 'impreso', 'bebidas imprime igual');
+  assert.strictEqual(almacen.obtener('j-general').estado, 'enviado', 'cocina general imprime igual');
+  assert.strictEqual(almacen.obtener('j-bebidas').estado, 'enviado', 'bebidas imprime igual');
   assert.strictEqual(almacen.obtener('j-chila').estado, 'fallido', 'chilaquiles queda pendiente');
   assert.strictEqual(mock.enviados.length, 2);
   almacen.cerrar();
@@ -248,14 +248,14 @@ await t('REINICIO', '13. un trabajo interrumpido a media impresión se recupera 
   const recuperados = recuperarInterrumpidos(a2, loggerSilencioso);
   assert.strictEqual(recuperados, 1);
   const t1 = a2.obtener('j1');
-  assert.strictEqual(t1.estado, 'fallido', 'vuelve a la cola en vez de darse por impreso');
+  assert.strictEqual(t1.estado, 'fallido', 'vuelve a la cola en vez de darse por enviado');
   assert.strictEqual(t1.intentos, 1, 'el intento a medias cuenta: si no, podría girar para siempre');
   assert.match(t1.ultimoError, /reinici/i);
 
   const mock = crearTransporteMock();
   const { worker } = montarWorker({ almacen: a2, mock });
   await worker.pasada(Date.now() + 999_999);
-  assert.strictEqual(a2.obtener('j1').estado, 'impreso', 'y termina imprimiéndose');
+  assert.strictEqual(a2.obtener('j1').estado, 'enviado', 'y termina imprimiéndose');
   a2.cerrar();
 });
 
@@ -305,7 +305,7 @@ await t('EDGE', '17. el Edge arranca y procesa su cola sin necesidad de internet
   edge._recibirTrabajo(trabajo('j1', 'COCINA'));
   await edge.worker.pasada();
 
-  assert.strictEqual(edge.almacen.obtener('j1').estado, 'impreso');
+  assert.strictEqual(edge.almacen.obtener('j1').estado, 'enviado');
   assert.strictEqual(mock.enviados.length, 1);
   await edge.detener();
 });
@@ -327,7 +327,7 @@ await t('EDGE', '18. una entrega duplicada de la nube no imprime dos veces', asy
   await edge.detener();
 });
 
-await t('EDGE', '19. un trabajo ya impreso que se reenvía no vuelve a salir', async () => {
+await t('EDGE', '19. un trabajo ya enviado que se reenvía no vuelve a salir', async () => {
   const dir = dirTemporal();
   const mock = crearTransporteMock();
   const edge = crearEdge({ config: { ...CONFIG, rutaDatos: dir, almacen: BACKENDS[0][0] }, logger: loggerSilencioso, transportes: { mock } });
@@ -339,7 +339,7 @@ await t('EDGE', '19. un trabajo ya impreso que se reenvía no vuelve a salir', a
 
   edge._recibirTrabajo(trabajo('ABC'));            // reenvío tras reconectar
   await edge.worker.pasada();
-  assert.strictEqual(mock.enviados.length, 1, 'la reconexión no puede reimprimir lo ya impreso');
+  assert.strictEqual(mock.enviados.length, 1, 'la reconexión no puede reimprimir lo ya enviado');
   await edge.detener();
 });
 
@@ -388,8 +388,8 @@ await t('CONCURRENCIA', '22. 20 rondas simultáneas: 60 trabajos exactos, 0 dupl
   await Promise.all([edge.worker.pasada(), edge.worker.pasada(), edge.worker.pasada()]);
   await edge.worker.pasada();
 
-  const impresos = edge.almacen.todos().filter(x => x.estado === 'impreso');
-  assert.strictEqual(impresos.length, 60, `se esperaban 60 impresos y hay ${impresos.length}`);
+  const enviados = edge.almacen.todos().filter(x => x.estado === 'enviado');
+  assert.strictEqual(enviados.length, 60, `se esperaban 60 enviados y hay ${enviados.length}`);
   assert.strictEqual(mock.enviados.length, 60, 'ni uno de más');
   assert.strictEqual(new Set(mock.enviados.map(e => e.jobId)).size, 60, 'ni un duplicado');
   const faltantes = esperados.filter(id => !mock.enviados.some(e => e.jobId === id));
