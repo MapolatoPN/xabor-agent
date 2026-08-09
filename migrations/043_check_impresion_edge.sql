@@ -3,6 +3,7 @@ SELECT 'tabla impresoras'           AS check, (to_regclass('impresoras')        
 UNION ALL SELECT 'tabla impresion_rutas',     (to_regclass('impresion_rutas')     IS NOT NULL)
 UNION ALL SELECT 'tabla impresion_trabajos',  (to_regclass('impresion_trabajos')  IS NOT NULL)
 UNION ALL SELECT 'tabla edge_emparejamientos', (to_regclass('edge_emparejamientos') IS NOT NULL)
+UNION ALL SELECT 'tabla edge_instalaciones', (to_regclass('edge_instalaciones') IS NOT NULL)
 UNION ALL SELECT 'un solo codigo vigente por terminal', EXISTS (
   SELECT 1 FROM pg_indexes WHERE tablename = 'edge_emparejamientos'
     AND indexdef ILIKE '%UNIQUE%' AND indexdef ILIKE '%usado_at IS NULL%')
@@ -25,7 +26,8 @@ UNION ALL SELECT 'estado incierto permitido', EXISTS (
    WHERE t.relname = 'impresion_trabajos' AND pg_get_constraintdef(c.oid) ILIKE '%incierto%')
 UNION ALL SELECT 'no existe estado impreso (seria una certeza inventada)', NOT EXISTS (
   SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
-   WHERE t.relname = 'impresion_trabajos' AND pg_get_constraintdef(c.oid) ILIKE '%impreso%')
+   WHERE t.relname = 'impresion_trabajos' AND c.contype = 'c'
+     AND pg_get_constraintdef(c.oid) LIKE '%''impreso''%')
 UNION ALL SELECT 'trabajos sobreviven a borrar impresora', EXISTS (
   SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
    WHERE t.relname = 'impresion_trabajos' AND c.contype = 'f'

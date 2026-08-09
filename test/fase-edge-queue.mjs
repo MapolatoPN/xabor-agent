@@ -141,11 +141,15 @@ await t('WORKER', '7. una impresora caída reintenta con espera creciente y no m
   const { worker } = montarWorker({ almacen, mock });
   almacen.registrarTrabajo(trabajo('j1', 'COCINA'));
 
+  const antes = Date.now();
   await worker.pasada();
   const tras1 = almacen.obtener('j1');
   assert.strictEqual(tras1.estado, 'fallido');
   assert.strictEqual(tras1.intentos, 1);
-  assert.ok(tras1.proximoIntentoEn > Date.now(), 'tiene que esperar antes del siguiente intento');
+  // Se comprueba que quedó programado en el futuro RESPECTO AL INTENTO, no
+  // respecto a "ahora": con esperas de milisegundos, el propio assert puede
+  // ejecutarse después de que venza, y eso no significa que no esperara.
+  assert.ok(tras1.proximoIntentoEn > antes, 'tiene que quedar programado para más tarde');
   assert.match(tras1.ultimoError, /ECONNREFUSED/);
 
   // Sin esperar, la cola no lo devuelve: eso es lo que evita el bucle
@@ -237,25 +241,90 @@ await t('WORKER', '12. dos trabajos para la MISMA impresora se imprimen en serie
   almacen.cerrar();
 });
 
-await t('REINICIO', '13. un trabajo interrumpido a media impresión se recupera al arrancar', async () => {
+await t('CRASH', '13. crash ANTES de que salga un byte -> vuelve a la cola y se reintenta', async () => {
   const dir = dirTemporal();
   const a1 = BACKENDS[0][1](dir);
   a1.registrarTrabajo(trabajo('j1'));
-  a1.actualizar('j1', { estado: 'procesando' });   // el proceso muere justo aquí
+  a1.actualizar('j1', { estado: 'enviando' });   // socket sin escribir: 0 bytes
   a1.cerrar();
 
   const a2 = BACKENDS[0][1](dir);
-  const recuperados = recuperarInterrumpidos(a2, loggerSilencioso);
-  assert.strictEqual(recuperados, 1);
+  const r = recuperarInterrumpidos(a2, loggerSilencioso);
+  assert.strictEqual(r.reintentables, 1);
+  assert.strictEqual(r.ambiguos, 0);
   const t1 = a2.obtener('j1');
-  assert.strictEqual(t1.estado, 'fallido', 'vuelve a la cola en vez de darse por enviado');
+  assert.strictEqual(t1.estado, 'fallido', 'no salió papel con certeza: reintentar es seguro');
   assert.strictEqual(t1.intentos, 1, 'el intento a medias cuenta: si no, podría girar para siempre');
-  assert.match(t1.ultimoError, /reinici/i);
 
   const mock = crearTransporteMock();
   const { worker } = montarWorker({ almacen: a2, mock });
   await worker.pasada(Date.now() + 999_999);
-  assert.strictEqual(a2.obtener('j1').estado, 'enviado', 'y termina imprimiéndose');
+  assert.strictEqual(a2.obtener('j1').estado, 'enviado', 'y termina saliendo');
+  a2.cerrar();
+});
+
+await t('CRASH', '13b. crash CON BYTES YA EN VUELO -> incierto, NUNCA reintento automático', async () => {
+  const dir = dirTemporal();
+  const a1 = BACKENDS[0][1](dir);
+  a1.registrarTrabajo(trabajo('j1'));
+  a1.actualizar('j1', { estado: 'en_vuelo' });   // los bytes ya salían
+  a1.cerrar();
+
+  const a2 = BACKENDS[0][1](dir);
+  const r = recuperarInterrumpidos(a2, loggerSilencioso);
+  assert.strictEqual(r.ambiguos, 1);
+  assert.strictEqual(r.reintentables, 0);
+  const t1 = a2.obtener('j1');
+  assert.strictEqual(t1.estado, 'incierto',
+    'pudo haber salido papel: reimprimir por nuestra cuenta sacaría la comanda dos veces');
+  assert.match(t1.ultimoError, /puede haber salido papel/i);
+
+  const mock = crearTransporteMock();
+  const { worker } = montarWorker({ almacen: a2, mock });
+  await worker.pasada(Date.now() + 999_999);
+  assert.strictEqual(mock.enviados.length, 0, 'el worker NO lo toca');
+  assert.strictEqual(a2.obtener('j1').estado, 'incierto');
+  a2.cerrar();
+});
+
+await t('CRASH', '13c. el worker graba "en vuelo" ANTES de que el transporte devuelva nada', async () => {
+  // Esta es la pieza que hace posible 13b: el transporte avisa en cuanto sale
+  // el primer byte, y el worker lo persiste sin esperar el resultado. Si no
+  // fuera así, un kill -9 en ese instante dejaría el trabajo como
+  // reintentable y saldría un segundo papel.
+  const dir = dirTemporal();
+  const almacen = BACKENDS[0][1](dir);
+  almacen.registrarTrabajo(trabajo('j1'));
+
+  let estadoAlEscribir = null;
+  const transporteLento = {
+    nombre: 'mock',
+    async enviar(config, bytes, contexto) {
+      contexto.alEscribir?.();                       // salen los bytes
+      estadoAlEscribir = almacen.obtener('j1').estado;
+      return { resultado: 'enviado', codigo: null, detalle: 'ok' };
+    },
+  };
+  const worker = crearWorker({ almacen, transportes: { mock: transporteLento }, config: CONFIG, logger: loggerSilencioso });
+  await worker.pasada();
+
+  assert.strictEqual(estadoAlEscribir, 'en_vuelo',
+    'en el instante en que salen los bytes, el disco ya tiene que decirlo');
+  assert.strictEqual(almacen.obtener('j1').estado, 'enviado');
+  almacen.cerrar();
+});
+
+await t('CRASH', '13d. una cola de una versión anterior ("procesando") se trata como ambigua', async () => {
+  const dir = dirTemporal();
+  const a1 = BACKENDS[0][1](dir);
+  a1.registrarTrabajo(trabajo('j1'));
+  a1.actualizar('j1', { estado: 'procesando' });
+  a1.cerrar();
+
+  const a2 = BACKENDS[0][1](dir);
+  recuperarInterrumpidos(a2, loggerSilencioso);
+  assert.strictEqual(a2.obtener('j1').estado, 'incierto',
+    'ante la duda, nunca reimprimir por nuestra cuenta');
   a2.cerrar();
 });
 

@@ -23,7 +23,8 @@ import { loggerSilencioso } from '../edge/logger.js';
 const PUERTO = process.env.TEST_PORT || '4973';
 const { pool } = await import('../src/services/database.js');
 const { crearImpresora, crearRuta, crearTrabajosDeComanda, trabajosPendientesDeTerminal,
-        cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal } = await import('../src/services/impresionService.js');
+        cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
+        registrarInstalacion } = await import('../src/services/impresionService.js');
 const { crearEdge: altaEdge, generarEmparejamiento, canjearEmparejamiento } =
   await import('../src/services/edgeService.js');
 
@@ -223,7 +224,7 @@ const limpiarTrabajos = () => pool.query('DELETE FROM impresion_trabajos WHERE n
 // ════════════════════════════════════════════════════════════════════════════
 // 4. PAGINACIÓN
 // ════════════════════════════════════════════════════════════════════════════
-for (const n of [0, 1, 49, 50, 51, 60, 100]) {
+for (const n of [0, 1, 49, 50, 51, 99, 100, 101]) {
   await t('PAGINACION', `11.${n} con ${n} pendientes se entregan ${n}, sin saltos ni repetidos`, async () => {
     await limpiarTrabajos();
     const esperados = await crearNTrabajos(n);
@@ -311,6 +312,145 @@ await t('PAGINACION', '14. el cursor no puede entrar en bucle', async () => {
   }
   assert.strictEqual(total, 120, `el cursor recorrió ${total} de 120`);
   assert.ok(vueltas <= 3, `bastan 3 vueltas para 120 con lotes de 50, hizo ${vueltas}`);
+});
+
+
+await t('PAGINACION', '14b. bordes grandes: 499, 500, 501 y 1000 pendientes', async () => {
+  for (const n of [499, 500, 501, 1000]) {
+    await limpiarTrabajos();
+    const esperados = await crearNTrabajos(n);
+    const entregados = await paginarComoElServidor(edgeDb.id, { tope: 2000 });
+    assert.strictEqual(entregados.length, n, `con ${n} pendientes se entregaron ${entregados.length}`);
+    assert.strictEqual(new Set(entregados).size, n, `con ${n} hubo repetidos`);
+    const faltan = esperados.filter(id => !entregados.includes(id));
+    assert.deepStrictEqual(faltan, [], `con ${n} se perdieron ${faltan.length}`);
+  }
+});
+
+await t('PAGINACION', '14c. filas que solo difieren en MICROSEGUNDOS: ninguna repetida ni saltada', async () => {
+  // Este es el caso que rompía el cursor cuando viajaba como Date de
+  // JavaScript. Se fuerzan created_at que comparten milisegundo y difieren en
+  // microsegundos, que es justo lo que produce un INSERT en ráfaga.
+  await limpiarTrabajos();
+  const esperados = await crearNTrabajos(120);
+
+  const micros = ['.396000', '.396566', '.396999', '.397000', '.397001'];
+  for (let i = 0; i < esperados.length; i++) {
+    const us = micros[i % micros.length];
+    const segundo = String(Math.floor(i / micros.length)).padStart(2, '0');
+    await pool.query(
+      `UPDATE impresion_trabajos SET created_at = ('2026-08-09 12:00:' || $2 || $3)::timestamptz WHERE id = $1`,
+      [esperados[i], segundo, us]);
+  }
+
+  const entregados = await paginarComoElServidor(edgeDb.id, { lote: 7, tope: 500 });
+  assert.strictEqual(entregados.length, 120, `se entregaron ${entregados.length} de 120`);
+  assert.strictEqual(new Set(entregados).size, 120, 'ninguna fila repetida pese a compartir milisegundo');
+  const faltan = esperados.filter(id => !entregados.includes(id));
+  assert.deepStrictEqual(faltan, [], 'ninguna saltada');
+});
+
+await t('PAGINACION', '14d. inserciones concurrentes mientras se consume el backlog', async () => {
+  await limpiarTrabajos();
+  const previos = await crearNTrabajos(200);
+
+  const nuevos = [];
+  const entregados = [];
+  let cursor = null;
+
+  const insertando = (async () => {
+    for (let i = 0; i < 25; i++) nuevos.push(...(await crearNTrabajos(1)));
+  })();
+
+  for (let vuelta = 0; vuelta < 60; vuelta++) {
+    const pagina = await trabajosPendientesDeTerminal(edgeDb.id, { limite: 25, desde: cursor });
+    if (!pagina.length) break;
+    for (const fila of pagina) { entregados.push(fila.id); await marcarEntregado(fila.id, edgeDb.id); }
+    cursor = cursorDeTrabajo(pagina[pagina.length - 1]);
+    if (pagina.length < 25) break;
+  }
+  await insertando;
+
+  assert.strictEqual(new Set(entregados).size, entregados.length, 'ningún duplicado por el cursor en movimiento');
+
+  // El backlog viejo no puede sufrir starvation por culpa de lo nuevo.
+  const viejosSinEntregar = previos.filter(id => !entregados.includes(id));
+  assert.deepStrictEqual(viejosSinEntregar, [], `${viejosSinEntregar.length} del backlog quedaron sin entregar`);
+
+  // Y lo que entró a mitad: o salió ya, o sigue pendiente. Nunca desaparece.
+  const nuevosSinEntregar = nuevos.filter(id => !entregados.includes(id));
+  if (nuevosSinEntregar.length) {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM impresion_trabajos WHERE id = ANY($1::uuid[]) AND estado = 'pendiente'`,
+      [nuevosSinEntregar]);
+    assert.strictEqual(rows[0].n, nuevosSinEntregar.length,
+      'lo que entró durante la paginación sigue pendiente para la próxima vuelta');
+  }
+});
+
+// ── Edge amnésico ───────────────────────────────────────────────────────────
+await t('AMNESIA', '14e. un Edge que vuelve con la cola borrada NO recibe lo ya entregado', async () => {
+  await limpiarTrabajos();
+  const trabajos = await crearNTrabajos(3);
+  for (const id of trabajos) await marcarEntregado(id, edgeDb.id);
+
+  const primera = await registrarInstalacion(edgeDb.id, 'instalacion-A');
+  assert.strictEqual(primera.amnesia, false, 'la primera vez no hay nada que sospechar');
+
+  const igual = await registrarInstalacion(edgeDb.id, 'instalacion-A');
+  assert.strictEqual(igual.amnesia, false);
+  assert.strictEqual(igual.trabajosMarcados, 0);
+  const antes = await trabajosPendientesDeTerminal(edgeDb.id, { limite: 50 });
+  assert.strictEqual(antes.length, 3, 'un Edge con memoria sí recupera lo suyo');
+
+  // Alguien borra la carpeta de datos: vuelve con otra instalación.
+  const amnesico = await registrarInstalacion(edgeDb.id, 'instalacion-B');
+  assert.strictEqual(amnesico.amnesia, true, 'la nube tiene que darse cuenta');
+  assert.strictEqual(amnesico.trabajosMarcados, 3);
+
+  const { rows } = await pool.query(
+    `SELECT estado FROM impresion_trabajos WHERE id = ANY($1::uuid[])`, [trabajos]);
+  assert.ok(rows.every(r => r.estado === 'incierto'),
+    'lo entregado sin confirmar pudo haber salido en papel antes del borrado');
+
+  const despues = await trabajosPendientesDeTerminal(edgeDb.id, { limite: 50 });
+  assert.strictEqual(despues.length, 0,
+    'y NO se reenvían: reimprimirlos a ciegas sacaría comandas repetidas en cocina');
+});
+
+await t('AMNESIA', '14f. lo PENDIENTE sí se entrega a un Edge amnésico: nunca llegó a salir', async () => {
+  await limpiarTrabajos();
+  const entregado = (await crearNTrabajos(1))[0];
+  await marcarEntregado(entregado, edgeDb.id);
+  const nuncaEntregado = (await crearNTrabajos(1))[0];
+
+  await registrarInstalacion(edgeDb.id, 'instalacion-C');
+  const r = await registrarInstalacion(edgeDb.id, 'instalacion-D');
+  assert.strictEqual(r.amnesia, true);
+
+  const ids = (await trabajosPendientesDeTerminal(edgeDb.id, { limite: 50 })).map(p => p.id);
+  assert.ok(ids.includes(nuncaEntregado), 'lo que nunca se entregó no es ambiguo: hay que imprimirlo');
+  assert.ok(!ids.includes(entregado), 'lo que sí se entregó queda para revisión humana');
+});
+
+await t('AMNESIA', '14g. el Edge guarda su identidad DENTRO de la cola local', async () => {
+  // Tiene que desaparecer junto con la cola: si viviera fuera, borrar los
+  // datos no se notaría y volveríamos a reimprimir lo ambiguo.
+  const src = readFileSync('edge/index.js', 'utf8');
+  assert.ok(src.includes("almacen.leerEstado('instalacion_id')"));
+  assert.ok(src.includes("almacen.escribirEstado('instalacion_id'"));
+  assert.ok(readFileSync('edge/connection.js', 'utf8').includes('instalacionId'),
+    'y viaja en el mensaje de autenticación');
+});
+
+await t('LEDGER', '14h. el registro local distingue las fases del envio', async () => {
+  const worker = readFileSync('edge/worker.js', 'utf8');
+  assert.ok(/estado: 'enviando'/.test(worker), "fase 1: se va a intentar, 0 bytes fuera");
+  assert.ok(/estado: 'en_vuelo'/.test(worker), 'fase 2: ya salieron bytes');
+  assert.ok(/alEscribir\s*=/.test(worker), 'el transporte avisa en cuanto sale el primer byte');
+  // Y la recuperación las trata distinto.
+  assert.ok(/'enviando'[\s\S]{0,400}estado: 'fallido'/.test(worker), 'sin bytes fuera -> reintentable');
+  assert.ok(/'en_vuelo'[\s\S]{0,400}estado: 'incierto'/.test(worker), 'con bytes fuera -> ambiguo');
 });
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -22,7 +22,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-const TABLAS = ['impresoras', 'impresion_rutas', 'impresion_trabajos', 'edge_emparejamientos'];
+const TABLAS = ['impresoras', 'impresion_rutas', 'impresion_trabajos', 'edge_emparejamientos', 'edge_instalaciones'];
 
 async function yaAplicada() {
   const { rows } = await pool.query(
@@ -66,7 +66,7 @@ try {
       if (n !== 0) throw new Error(`${t} debe nacer vacía (hay ${n} filas)`);
     }
 
-    console.log(`[predeploy-043] Verificación OK. ${despues.terminales} terminales y ${despues.sucursales} sucursales intactas, 4 tablas nuevas vacías.`);
+    console.log(`[predeploy-043] Verificación OK. ${despues.terminales} terminales y ${despues.sucursales} sucursales intactas, 5 tablas nuevas vacías.`);
   }
   await pool.end();
   process.exit(0);

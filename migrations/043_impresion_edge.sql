@@ -261,3 +261,30 @@ CREATE INDEX IF NOT EXISTS idx_emparejamientos_terminal ON edge_emparejamientos 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_emparejamiento_vigente
   ON edge_emparejamientos (terminal_id)
   WHERE usado_at IS NULL;
+
+
+-- ── edge_instalaciones ───────────────────────────────────────────────
+-- Detecta un "Edge amnésico": el mismo terminal, pero con la cola local
+-- borrada o regenerada.
+--
+-- El problema: la nube guarda trabajos como 'entregado' (mandados al Edge,
+-- sin confirmar). Si alguien borra la carpeta de datos del Edge, ese Edge
+-- vuelve sin memoria y la nube le reenviaría todo lo no confirmado -- pero
+-- algunos de esos trabajos PUDIERON haber salido en papel. Reimprimirlos
+-- automáticamente sacaría comandas repetidas en cocina.
+--
+-- El Edge genera un `instalacion_id` la primera vez y lo guarda en su
+-- propia cola. Si al autenticarse presenta uno distinto del último visto,
+-- la nube sabe que perdió la memoria: los trabajos ya entregados y sin
+-- confirmar pasan a 'incierto' en vez de volver a enviarse, y quedan para
+-- que una persona decida.
+--
+-- Una fila por terminal. No guarda secretos: el id de instalación es un
+-- identificador opaco, no una credencial.
+CREATE TABLE IF NOT EXISTS edge_instalaciones (
+  terminal_id     UUID PRIMARY KEY REFERENCES terminales(id) ON DELETE CASCADE,
+  instalacion_id  TEXT NOT NULL,
+  primera_vista   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ultima_vista    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reinicios       INTEGER NOT NULL DEFAULT 0
+);

@@ -550,3 +550,53 @@ export async function listarTrabajos(negocioId, { limite = 50, estado = null } =
   );
   return rows;
 }
+
+// ─── Identidad de instalación del Edge ──────────────────────────────────────
+//
+// Detecta un Edge que perdió su memoria local. Si vuelve con un
+// `instalacionId` distinto del último visto, no se le puede reenviar a ciegas
+// lo que quedó en 'entregado': algunos de esos trabajos pudieron haber salido
+// en papel antes de que se borrara su cola, y reenviarlos sacaría comandas
+// repetidas en cocina.
+//
+// Lo conservador es marcarlos 'incierto' y que lo decida una persona. Es
+// justo la misma regla que se aplica a un corte a media transmisión.
+export async function registrarInstalacion(terminalId, instalacionId) {
+  if (typeof instalacionId !== 'string' || !instalacionId.trim()) {
+    return { conocida: false, amnesia: false, trabajosMarcados: 0 };
+  }
+  const id = instalacionId.trim().slice(0, 100);
+
+  const { rows: previa } = await pool.query(
+    `SELECT instalacion_id FROM edge_instalaciones WHERE terminal_id = $1`, [terminalId]);
+
+  // Primera vez que se ve esta terminal: no hay nada que sospechar.
+  if (!previa.length) {
+    await pool.query(
+      `INSERT INTO edge_instalaciones (terminal_id, instalacion_id) VALUES ($1,$2)
+       ON CONFLICT (terminal_id) DO UPDATE SET instalacion_id = $2, ultima_vista = NOW()`,
+      [terminalId, id]);
+    return { conocida: false, amnesia: false, trabajosMarcados: 0 };
+  }
+
+  if (previa[0].instalacion_id === id) {
+    await pool.query(`UPDATE edge_instalaciones SET ultima_vista = NOW() WHERE terminal_id = $1`, [terminalId]);
+    return { conocida: true, amnesia: false, trabajosMarcados: 0 };
+  }
+
+  // Instalación distinta: el Edge perdió su cola local.
+  const { rowCount } = await pool.query(
+    `UPDATE impresion_trabajos
+        SET estado = 'incierto',
+            ultimo_error = 'el Edge volvió con su cola local borrada: no se puede saber si este trabajo llegó a imprimirse'
+      WHERE terminal_id = $1 AND estado = 'entregado'`,
+    [terminalId]);
+
+  await pool.query(
+    `UPDATE edge_instalaciones
+        SET instalacion_id = $2, ultima_vista = NOW(), reinicios = reinicios + 1
+      WHERE terminal_id = $1`,
+    [terminalId, id]);
+
+  return { conocida: true, amnesia: true, trabajosMarcados: rowCount };
+}

@@ -7,7 +7,7 @@
 //
 // Protocolo (sobre el WebSocket /ws/print-agent que ya existía):
 //
-//   Edge  → { tipo:'autenticar_terminal', terminalId, token }
+//   Edge  → { tipo:'autenticar_terminal', terminalId, token, instalacionId }
 //   Nube  → { tipo:'terminal_autenticada', terminalId, negocioId, sucursalId }
 //   Nube  → { tipo:'trabajo_impresion', trabajo:{...} }
 //   Edge  → { tipo:'ack_impresion', trabajoId, resultado, error? }
@@ -23,7 +23,7 @@ import { calcularEspera } from './config.js';
 // terminal". Está en el rango 4000-4999, reservado para la aplicación.
 export const CODIGO_DESPLAZADA = 4001;
 
-export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null }) {
+export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null, instalacionId = null }) {
   let ws = null;
   let intentos = 0;
   let cerradoAdrede = false;
@@ -58,24 +58,43 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
     if (cerradoAdrede) return;
     logger?.info('conexion.abriendo', { url: config.urlNube.replace(/\/\/[^@]*@/, '//') });
 
+    let socket;
     try {
-      ws = new WebSocket(config.urlNube);
+      socket = new WebSocket(config.urlNube);
     } catch (e) {
       logger?.error('conexion.error', { error: e.message });
       return programarReconexion();
     }
+    ws = socket;
 
-    ws.on('open', () => {
+    // TODOS los handlers usan `socket`, su propio WebSocket, y no la variable
+    // `ws` del módulo. Con reconexiones rápidas (cerrar + iniciar seguidos)
+    // `ws` ya apunta al socket NUEVO cuando llega el 'open' del anterior, y
+    // enviar por él lanza "WebSocket is not open: readyState 0" -- una
+    // excepción no capturada que mata el proceso del Edge. Lo encontró el
+    // chaos con 500 rondas, no una prueba dirigida.
+    const vigente = () => ws === socket;
+
+    socket.on('open', () => {
+      if (!vigente()) { try { socket.close(); } catch {} return; }
       // El token viaja aquí y en ningún otro sitio: no se loguea, no se
       // guarda en disco por el Edge, no se manda en ningún otro mensaje.
-      ws.send(JSON.stringify({
-        tipo: 'autenticar_terminal',
-        terminalId: config.terminalId,
-        token: config.terminalToken,
-      }));
+      try {
+        socket.send(JSON.stringify({
+          tipo: 'autenticar_terminal',
+          terminalId: config.terminalId,
+          token: config.terminalToken,
+          // Identifica ESTA cola local. Si cambia, la nube sabe que el Edge
+          // perdió la memoria de lo que ya mandó a las impresoras.
+          instalacionId,
+        }));
+      } catch (e) {
+        logger?.warn('conexion.autenticacion.fallo', { error: e.message });
+      }
     });
 
-    ws.on('message', (crudo) => {
+    socket.on('message', (crudo) => {
+      if (!vigente()) return;
       let msg;
       try { msg = JSON.parse(crudo.toString()); } catch {
         return logger?.warn('conexion.mensaje.invalido', { bytes: crudo.length });
@@ -90,8 +109,8 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
 
         limpiarTemporizadores();
         temporizadorLatido = setInterval(() => {
-          if (ws?.readyState === WebSocket.OPEN) {
-            try { ws.send(JSON.stringify({ tipo: 'latido' })); } catch {}
+          if (vigente() && socket.readyState === WebSocket.OPEN) {
+            try { socket.send(JSON.stringify({ tipo: 'latido' })); } catch {}
           }
         }, config.heartbeatMs);
         temporizadorLatido.unref?.();
@@ -110,7 +129,10 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
       }
     });
 
-    ws.on('close', (codigo) => {
+    socket.on('close', (codigo) => {
+      // Un 'close' de un socket ya reemplazado no debe tocar el estado ni
+      // programar reconexiones: el vigente sigue su propio ciclo.
+      if (!vigente()) return;
       logger?.warn('conexion.cerrada', { codigo, autenticada: !!identidad });
       identidad = null;
       limpiarTemporizadores();
@@ -132,7 +154,8 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
       programarReconexion();
     });
 
-    ws.on('error', (e) => {
+    socket.on('error', (e) => {
+      if (!vigente()) return;
       logger?.warn('conexion.socket.error', { error: e.message });
       // 'close' llega siempre después de 'error': la reconexión se programa
       // allí una sola vez.

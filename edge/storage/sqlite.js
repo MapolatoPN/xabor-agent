@@ -94,10 +94,25 @@ export function crearAlmacenSqlite({ ruta }) {
   const leerEstado = db.prepare('SELECT valor FROM estado_edge WHERE clave = ?');
   const escribirEstado = db.prepare('INSERT INTO estado_edge (clave, valor) VALUES (?,?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor');
 
+  let cerrado = false;
+  // Tras cerrar, cualquier uso es un error del llamador, no una corrupción.
+  // Se avisa con un error identificable en vez de dejar que node:sqlite lance
+  // "statement has been finalized" desde dentro de un handler y tumbe el
+  // proceso.
+  const exigirAbierto = () => {
+    if (cerrado) {
+      const e = new Error('el almacén local ya está cerrado');
+      e.code = 'ALMACEN_CERRADO';
+      throw e;
+    }
+  };
+
   return {
     tipo: 'sqlite',
+    get cerrado() { return cerrado; },
 
     registrarTrabajo(t) {
+      exigirAbierto();
       const ahora = Date.now();
       // INSERT OR IGNORE + comprobar de verdad si se insertó: `changes` es
       // 0 cuando el id ya existía. Sin esta comprobación tendríamos el mismo
@@ -110,11 +125,12 @@ export function crearAlmacenSqlite({ ruta }) {
       return r.changes === 1;
     },
 
-    obtener(id) { const f = porId.get(id); return f ? aFila(f) : null; },
-    pendientes(ahora = Date.now()) { return listos.all(ahora).map(aFila); },
-    todos() { return todos.all().map(aFila); },
+    obtener(id) { exigirAbierto(); const f = porId.get(id); return f ? aFila(f) : null; },
+    pendientes(ahora = Date.now()) { exigirAbierto(); return listos.all(ahora).map(aFila); },
+    todos() { exigirAbierto(); return todos.all().map(aFila); },
 
     actualizar(id, cambios) {
+      exigirAbierto();
       const mapa = {
         estado: 'estado', intentos: 'intentos', ultimoError: 'ultimo_error',
         proximoIntentoEn: 'proximo_intento_en',
@@ -140,7 +156,7 @@ export function crearAlmacenSqlite({ ruta }) {
     leerEstado(clave) { const r = leerEstado.get(clave); return r ? r.valor : null; },
     escribirEstado(clave, valor) { escribirEstado.run(clave, String(valor)); },
 
-    cerrar() { try { db.close(); } catch {} },
+    cerrar() { cerrado = true; try { db.close(); } catch {} },
   };
 }
 

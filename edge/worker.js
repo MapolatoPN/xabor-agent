@@ -15,6 +15,12 @@
 //      una persona.
 //   5. Todo cambio de estado se persiste ANTES de seguir. Si el proceso muere
 //      en medio, al arrancar se retoma desde el disco.
+//   6. El registro local distingue DOS momentos del envío, y esa distinción
+//      es lo que hace segura la recuperación tras un crash:
+//        'enviando'  socket todavía sin escribir -> 0 bytes salieron
+//        'en_vuelo'  ya salieron bytes hacia la impresora
+//      Si el proceso muere en 'enviando', reintentar es seguro. Si muere en
+//      'en_vuelo', pudo haber salido papel y el trabajo queda 'incierto'.
 import { renderizar } from './renderers/index.js';
 import { calcularEspera } from './config.js';
 
@@ -27,10 +33,9 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
   async function procesar(trabajo) {
     const contexto = { jobId: trabajo.id, impresora: trabajo.impresoraNombre };
 
-    // Marcar 'procesando' antes de tocar la impresora: si el proceso muere
-    // justo ahora, al reiniciar veremos un trabajo a medias y no uno
-    // pendiente que se mandaría otra vez sin más.
-    almacen.actualizar(trabajo.id, { estado: 'procesando' });
+    // Fase 1: se va a intentar, pero NO ha salido ni un byte. Si el proceso
+    // muere aquí, reintentar es seguro.
+    almacen.actualizar(trabajo.id, { estado: 'enviando' });
 
     let bytes;
     try {
@@ -47,6 +52,15 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
     const intento = trabajo.intentos + 1;
     logger?.info('worker.intento', { jobId: trabajo.id, impresora: trabajo.impresoraNombre, transporte: trabajo.transporte, intento, bytes: bytes.length });
 
+    // Fase 2: el transporte avisa en cuanto salen bytes. Se persiste ANTES de
+    // continuar, de forma síncrona: es la única manera de que un kill -9 en
+    // ese instante deje constancia de que pudo haber papel.
+    let bytesEnVuelo = false;
+    contexto.alEscribir = () => {
+      bytesEnVuelo = true;
+      almacen.actualizar(trabajo.id, { estado: 'en_vuelo' });
+    };
+
     let r;
     try {
       r = await transporte.enviar(
@@ -56,7 +70,9 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
     } catch (e) {
       // Un transporte no debería lanzar; si lo hace, se trata como fallo
       // ambiguo (no sabemos en qué punto reventó) en vez de tumbar el worker.
-      r = { resultado: 'incierto', codigo: 'TRANSPORTE_EXCEPCION', detalle: e.message };
+      // Si ya habían salido bytes, es ambiguo; si no, es seguro reintentar.
+      r = { resultado: bytesEnVuelo ? 'incierto' : 'fallido',
+            codigo: 'TRANSPORTE_EXCEPCION', detalle: e.message };
     }
 
     if (r.resultado === 'enviado') {
@@ -163,24 +179,56 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
   };
 }
 
-// Al arrancar, cualquier trabajo que quedara en 'procesando' es de una
-// ejecución anterior que murió a mitad. Se devuelve a la cola con un
-// intento consumido: es la decisión conservadora frente a "asumir impreso"
-// (perdería la comanda) y frente a "reintentar sin contar el intento" (podría
-// dar vueltas para siempre).
+// Al arrancar, los trabajos que quedaron a medias se resuelven según HASTA
+// DÓNDE llegaron, que es justo lo que el registro local guarda:
+//
+//   'enviando'  el proceso murió antes de escribir un solo byte. No salió
+//               papel con certeza -> vuelve a la cola y se reintenta.
+//   'en_vuelo'  ya habían salido bytes cuando murió el proceso. Puede haber
+//               papel y puede que no -> 'incierto', SIN reintento automático.
+//
+// Esta distinción es la que impide que un crash entre el envío físico y el
+// ACK a la nube se convierta en una segunda comanda en cocina.
 export function recuperarInterrumpidos(almacen, logger) {
-  let recuperados = 0;
+  let reintentables = 0, ambiguos = 0;
+
   for (const t of almacen.todos()) {
-    if (t.estado === 'procesando') {
+    if (t.estado === 'enviando') {
       almacen.actualizar(t.id, {
         estado: 'fallido',
         intentos: (t.intentos || 0) + 1,
-        ultimoError: 'el Edge se reinició mientras se enviaba este trabajo',
+        ultimoError: 'el Edge se reinició antes de enviar nada a la impresora',
         proximoIntentoEn: 0,
       });
-      recuperados++;
+      reintentables++;
+      continue;
+    }
+
+    if (t.estado === 'en_vuelo') {
+      almacen.actualizar(t.id, {
+        estado: 'incierto',
+        intentos: (t.intentos || 0) + 1,
+        ultimoError: 'el Edge se reinició cuando los datos ya iban camino de la impresora: puede haber salido papel',
+      });
+      ambiguos++;
+      continue;
+    }
+
+    // Compatibilidad con colas escritas por una versión anterior, que usaba
+    // 'procesando' sin distinguir la fase. Ante la duda, lo conservador es
+    // tratarlo como ambiguo: nunca reimprimir por nuestra cuenta.
+    if (t.estado === 'procesando') {
+      almacen.actualizar(t.id, {
+        estado: 'incierto',
+        intentos: (t.intentos || 0) + 1,
+        ultimoError: 'trabajo a medias de una versión anterior del Edge: no se puede saber si salió papel',
+      });
+      ambiguos++;
     }
   }
-  if (recuperados) logger?.warn('worker.recuperados', { trabajos: recuperados });
-  return recuperados;
+
+  if (reintentables || ambiguos) {
+    logger?.warn('worker.recuperados', { reintentables, ambiguos });
+  }
+  return { reintentables, ambiguos, total: reintentables + ambiguos };
 }

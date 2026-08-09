@@ -31,6 +31,7 @@ import {
   listarRutas, crearRuta, eliminarRuta,
   crearTrabajosDeComanda, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo,
   trabajosPendientesDeTerminal, cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
+  registrarInstalacion,
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
@@ -1294,13 +1295,20 @@ wss.on('connection', (ws) => {
 
       console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id}`);
 
-      // Al conectar se le entrega lo que quedó sin imprimir. Esto NO es el
-      // "volcado inicial" que sufría el agente legacy (que reimprimía todos
-      // los pedidos activos): aquí solo salen trabajos con estado pendiente,
-      // fallido o entregado-sin-confirmar, y el Edge los deduplica por id
-      // antes de tocar papel. Un trabajo ya impreso no vuelve a salir.
-      entregarTrabajosPendientes(ws).catch((e) =>
-        console.error(`[PrintAgent] No se pudieron entregar los pendientes a terminal=${fila.terminal_id}: ${e.message}`));
+      // Antes de entregar nada: ¿este Edge conserva su memoria local? Si
+      // vuelve con otra instalación, su cola se borró y lo que quedó como
+      // 'entregado' pudo haber salido en papel. Esos trabajos pasan a
+      // 'incierto' y NO se reenvían -- reenviarlos sacaría comandas
+      // repetidas en cocina.
+      registrarInstalacion(fila.terminal_id, msg.instalacionId)
+        .then((r) => {
+          if (r.amnesia) {
+            console.warn(`[Edge] terminal=${fila.terminal_id} volvió con la cola local borrada: ${r.trabajosMarcados} trabajo(s) sin confirmar pasan a incierto y NO se reenvían`);
+          }
+          return entregarTrabajosPendientes(ws);
+        })
+        .catch((e) =>
+          console.error(`[PrintAgent] No se pudieron entregar los pendientes a terminal=${fila.terminal_id}: ${e.message}`));
     });
 
     ws.on('close', () => { limpiarTimer(); console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`); });

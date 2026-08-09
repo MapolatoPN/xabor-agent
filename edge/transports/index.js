@@ -13,7 +13,11 @@
 //
 //     config   { host, puerto, timeoutMs, config }  -- lo que define el destino
 //     bytes    Buffer ya renderizado
-//     contexto { jobId, impresora }                 -- solo para logging
+//     contexto { jobId, impresora, alEscribir }
+//              `alEscribir()` DEBE llamarse en cuanto salga el primer byte
+//              hacia la impresora, antes de resolver. El worker lo usa para
+//              dejar grabado que a partir de ese punto ya no es seguro
+//              reintentar sin que lo decida una persona.
 //
 // Un transporte NO sabe qué es una comanda, una mesa ni un negocio. Solo
 // sabe mover bytes a un destino y decir si lo consiguió.

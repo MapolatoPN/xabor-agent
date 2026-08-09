@@ -21,12 +21,17 @@ export function crearTransporteMock({ logger } = {}) {
       if (programado) {
         if (programado.veces > 0) programado.veces -= 1;
         if (programado.veces === 0) fallosProgramados.delete(impresora);
+        // Un fallo 'incierto' simula que los bytes YA salieron.
+        if (programado.incierto) { try { contexto.alEscribir?.(); } catch {} }
         logger?.warn('transporte.mock.fallo', { impresora, codigo: programado.codigo, jobId: contexto.jobId });
         return {
           resultado: programado.incierto ? 'incierto' : 'fallido',
           codigo: programado.codigo, detalle: programado.detalle,
         };
       }
+
+      // Mismo contrato que el transporte real: se avisa antes de "entregar".
+      try { contexto.alEscribir?.(); } catch {}
 
       enviados.push({
         impresora, jobId: contexto.jobId ?? null,

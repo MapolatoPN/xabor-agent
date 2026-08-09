@@ -19,12 +19,25 @@ import { crearAlmacen } from './storage/index.js';
 import { crearTransportes } from './transports/index.js';
 import { crearWorker, recuperarInterrumpidos } from './worker.js';
 import { crearConexion } from './connection.js';
+import { randomUUID } from 'node:crypto';
 
 export function crearEdge({ config, logger, transportes: transportesInyectados = null } = {}) {
   const cfg = config || cargarConfig();
   const log = logger || crearLogger({ nivel: cfg.nivelLog });
 
   const almacen = crearAlmacen({ almacen: cfg.almacen, rutaDatos: cfg.rutaDatos, logger: log });
+
+  // Identidad de ESTA cola local, no del equipo ni de la terminal. Vive
+  // dentro del propio almacén, así que si alguien borra la carpeta de datos
+  // desaparece con ella -- que es exactamente lo que se quiere detectar: al
+  // volver, el Edge presentará una identidad nueva y la nube sabrá que perdió
+  // la memoria de lo que ya había mandado a las impresoras.
+  let instalacionId = almacen.leerEstado('instalacion_id');
+  if (!instalacionId) {
+    instalacionId = randomUUID();
+    almacen.escribirEstado('instalacion_id', instalacionId);
+    log.info('edge.instalacion.nueva', { instalacionId });
+  }
   const transportes = transportesInyectados || crearTransportes({ logger: log, timeoutMs: cfg.timeoutImpresoraMs });
 
   // ACKs que no se pudieron mandar (la nube estaba caída). Se guardan y se
@@ -32,13 +45,20 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   // internet se quedaría marcado como pendiente en la nube para siempre.
   const acksPendientes = new Map();
 
+  // Un Edge detenido no toca nada más. Cerrar el WebSocket no cancela los
+  // mensajes que ya venían en camino: sin esta bandera, uno que llegue justo
+  // después de cerrar el almacén intenta escribir en una base cerrada y mata
+  // el proceso. Lo encontró el chaos al reiniciar el Edge en caliente.
+  let detenido = false;
+
   const conexion = crearConexion({
-    config: cfg, logger: log,
+    config: cfg, logger: log, instalacionId,
     alRecibirTrabajo: (trabajo) => recibirTrabajo(trabajo),
     alAutenticar: () => vaciarAcksPendientes(),
   });
 
   function recibirTrabajo(trabajo) {
+    if (detenido) return log.debug('trabajo.ignorado', { motivo: 'el Edge ya se detuvo', jobId: trabajo?.id });
     if (!trabajo?.id) return log.warn('trabajo.invalido', { motivo: 'sin id' });
 
     // Deduplicación de ENTREGA: la nube puede reenviar el mismo trabajo si no
@@ -72,6 +92,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   }
 
   function enviarAck(ack) {
+    if (detenido) return;
     const mandado = conexion.confirmar(ack);
     if (!mandado) acksPendientes.set(ack.trabajoId, ack);
     else acksPendientes.delete(ack.trabajoId);
@@ -119,6 +140,10 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     },
 
     async detener() {
+      // El orden importa: primero se deja de aceptar nada nuevo, después se
+      // corta la conexión, luego se espera a que termine el envío en curso, y
+      // solo al final se cierra el almacén.
+      detenido = true;
       conexion.cerrar();
       await worker.detener();
       almacen.cerrar();
@@ -131,6 +156,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
         conectado: conexion.conectado,
         identidad: conexion.identidad,
         almacen: almacen.tipo,
+        instalacionId,
         trabajos: almacen.contarPorEstado(),
         acksPendientes: acksPendientes.size,
       };

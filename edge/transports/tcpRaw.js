@@ -138,6 +138,11 @@ export function crearTransporteTcpRaw({ logger, timeoutMs = 10000, graciaMs = GR
           socket.write(bytes, (err) => {
             if (err) return;                 // lo recoge el handler de 'error'
             escrito = true;
+            // A partir de aquí ya salieron bytes hacia la impresora. Se avisa
+            // ANTES de resolver para que el worker pueda dejarlo grabado: si
+            // el proceso muere en este instante, al reiniciar hay que saber
+            // que este trabajo pudo haber sacado papel y NO reintentarlo solo.
+            try { contexto.alEscribir?.(); } catch { /* nunca frena el envío */ }
             // end() cierra NUESTRO lado. No se espera el FIN de la impresora:
             // no está obligada a mandarlo.
             socket.end();

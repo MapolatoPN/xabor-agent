@@ -4,6 +4,7 @@
 -- quedan exactamente como estaban.
 --
 -- El orden importa: rutas y trabajos referencian impresoras.
+DROP TABLE IF EXISTS edge_instalaciones;
 DROP TABLE IF EXISTS edge_emparejamientos;
 DROP TABLE IF EXISTS impresion_rutas;
 DROP TABLE IF EXISTS impresion_trabajos;
