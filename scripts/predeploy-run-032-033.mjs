@@ -30,6 +30,7 @@ const SCRIPTS = [
   '040-restaurante-integracion-ventas',
   '041-usuarios-mesero-pin',
   '042-password-reset',
+  '043-impresion-edge',
 ];
 
 for (const nombre of SCRIPTS) {
