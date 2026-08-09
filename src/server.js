@@ -23,6 +23,16 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
+import {
+  listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
+} from './services/edgeService.js';
+import {
+  listarImpresoras, crearImpresora, actualizarImpresora,
+  listarRutas, crearRuta, eliminarRuta,
+  crearTrabajosDeComanda, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo,
+  trabajosPendientesDeTerminal, marcarEntregado, registrarAckDeTerminal,
+  estadoImpresion, listarTrabajos,
+} from './services/impresionService.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
@@ -956,11 +966,134 @@ function broadcastPrintAgentNegocio(negocioId, sucursalId, data) {
   console.log(`[PrintAgent] broadcastPrintAgentNegocio — negocio=${negocioIdNorm} sucursal=${sucursalIdNorm} tipo=${data?.tipo} folio=${folio || '-'} destinatarios=${enviados}`);
   return enviados;
 }
-// Exportada únicamente para poder probarla de forma aislada y para que la
-// siguiente fase (todavía no autorizada) la conecte a un emisor real de
-// pedidos -- mismo patrón ya usado en este archivo para
-// enviarPushARepartidores. Ningún llamador real la invoca todavía.
 export { broadcastPrintAgentNegocio };
+
+// ─── Xabor Edge: entrega de trabajos de impresión ───────────────────────────
+//
+// Envía un trabajo a la terminal (Edge) DUEÑA de la impresora, no a todas las
+// del negocio: cada impresora cuelga de una terminal concreta. El filtro por
+// `terminalId` es lo que impide que el Edge de un negocio reciba trabajos de
+// otro, y ese id sale de la fila de la impresora, nunca del cliente.
+function enviarTrabajoATerminal(terminalId, trabajo) {
+  let enviados = 0;
+  const mensaje = JSON.stringify({ tipo: 'trabajo_impresion', trabajo });
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return;
+    if (client.tipo !== 'print-agent' || !client.autenticado) return;
+    if (client.terminalId !== terminalId) return;
+    client.send(mensaje);
+    enviados++;
+  });
+  // Log sin payload: lleva nombres de platillos y notas de clientes.
+  console.log(`[Edge] trabajo=${trabajo.id} documento=${trabajo.documento} impresora=${trabajo.impresoraNombre} terminal=${terminalId} entregado_a=${enviados}`);
+  return enviados;
+}
+
+// Da forma al trabajo tal como lo espera el Edge. host/puerto viajan como
+// DATOS de configuración: quien abre el socket es el Edge dentro de la LAN,
+// jamás este proceso (ver docs/xabor-edge-arquitectura.md, sección SSRF).
+function trabajoParaEdge(fila) {
+  return {
+    id: fila.id,
+    documento: fila.documento,
+    impresoraId: fila.impresora_id,
+    impresoraNombre: fila.impresora_nombre,
+    transporte: fila.transporte || 'mock',
+    host: fila.host ?? null,
+    puerto: fila.puerto ?? null,
+    anchoColumnas: fila.ancho_columnas ?? 42,
+    payload: fila.payload,
+  };
+}
+
+// Entrega inmediata tras crear los trabajos. Si no hay ningún Edge conectado
+// el trabajo se queda en 'pendiente' y saldrá en cuanto uno se conecte: por
+// eso la comanda nunca se pierde aunque la PC del restaurante esté apagada.
+async function entregarTrabajos(trabajos) {
+  for (const t of trabajos) {
+    if (!t.terminal_id) continue;
+    let fila = t;
+    if (fila.transporte === undefined) {
+      const { rows } = await pool.query(
+        `SELECT transporte, host, puerto, ancho_columnas FROM impresoras WHERE id = $1`, [t.impresora_id]);
+      fila = { ...t, ...(rows[0] || {}) };
+    }
+    const enviados = enviarTrabajoATerminal(t.terminal_id, trabajoParaEdge(fila));
+    if (enviados > 0) await marcarEntregado(t.id, t.terminal_id);
+  }
+}
+
+// Tope de cordura para la recuperación al conectar. No es un límite de
+// diseño: si un local acumuló más que esto sin imprimir, lo que necesita es
+// que alguien mire por qué, no que le entren mil comandas viejas de golpe.
+const MAX_RECUPERACION_POR_CONEXION = 500;
+const LOTE_RECUPERACION = 50;
+
+async function entregarTrabajosPendientes(ws) {
+  let cursor = null;
+  let enviados = 0;
+
+  // Se pagina con cursor por (created_at, id). Hace falta porque marcar un
+  // trabajo como 'entregado' NO lo saca de la consulta -- entregado sin
+  // confirmar sigue siendo trabajo por resolver. Sin cursor, un lote fijo se
+  // repetiría en bucle y una cola mayor que el lote dejaría trabajos
+  // esperando a la siguiente reconexión, que podía no llegar en toda la noche.
+  while (enviados < MAX_RECUPERACION_POR_CONEXION) {
+    const lote = await trabajosPendientesDeTerminal(ws.terminalId, { limite: LOTE_RECUPERACION, desde: cursor });
+    if (!lote.length) break;
+
+    for (const fila of lote) {
+      if (ws.readyState !== 1) return;
+      ws.send(JSON.stringify({ tipo: 'trabajo_impresion', trabajo: trabajoParaEdge(fila) }));
+      await marcarEntregado(fila.id, ws.terminalId);
+      enviados++;
+    }
+    const ultimo = lote[lote.length - 1];
+    cursor = { createdAt: ultimo.created_at, id: ultimo.id };
+    if (lote.length < LOTE_RECUPERACION) break;
+  }
+
+  if (enviados) console.log(`[Edge] terminal=${ws.terminalId} recupera ${enviados} trabajo(s) sin confirmar`);
+  if (enviados >= MAX_RECUPERACION_POR_CONEXION) {
+    console.warn(`[Edge] terminal=${ws.terminalId} superó ${MAX_RECUPERACION_POR_CONEXION} trabajos sin confirmar: revisar por qué estuvo tanto tiempo sin imprimir`);
+  }
+}
+
+// Mensajes que un Edge ya autenticado puede mandar. Todo lo que necesita
+// identidad se toma de `ws` -- el mensaje solo aporta a QUÉ trabajo se
+// refiere, y el UPDATE filtra por terminal_id: un Edge no puede confirmar,
+// cancelar ni tocar el trabajo de otro aunque conozca su uuid.
+async function manejarMensajeDeEdge(ws, raw) {
+  let msg;
+  try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+  if (msg.tipo === 'latido') {
+    marcarUltimaConexionTerminal(ws.terminalId);
+    return;
+  }
+
+  if (msg.tipo === 'ack_impresion') {
+    if (typeof msg.trabajoId !== 'string' || !msg.trabajoId) return;
+    try {
+      const actualizado = await registrarAckDeTerminal(ws.terminalId, {
+        trabajoId: msg.trabajoId,
+        resultado: msg.resultado,
+        error: msg.error,
+      });
+      if (!actualizado) {
+        // Ni existe, ni es suyo, ni estaba en un estado que admita ACK.
+        console.warn(`[Edge] ACK rechazado — terminal=${ws.terminalId} trabajo=${msg.trabajoId} resultado=${msg.resultado}`);
+        return;
+      }
+      console.log(`[Edge] ACK terminal=${ws.terminalId} trabajo=${msg.trabajoId} estado=${actualizado.estado} intentos=${actualizado.intentos}`);
+    } catch (e) {
+      console.error(`[Edge] error procesando ACK de terminal=${ws.terminalId}: ${e.message}`);
+    }
+    return;
+  }
+
+  console.warn(`[Edge] mensaje no reconocido de terminal=${ws.terminalId} tipo=${msg.tipo}`);
+}
 
 // Inyectar broadcast en el orderManager, whatsapp y rappi
 // negocioId (Incidente P0): setWsBroadcastWA(broadcast) era la fuga en vivo
@@ -1071,9 +1204,15 @@ wss.on('connection', (ws) => {
     };
 
     ws.on('message', async (raw) => {
+      // Después de autenticar, la conexión SÍ acepta mensajes: son los ACK
+      // de impresión y los latidos de Xabor Edge. Lo que sigue prohibido es
+      // volver a autenticarse como otra terminal en la misma conexión -- la
+      // identidad se fija una vez y no se cambia.
+      if (procesado && ws.autenticado) {
+        return manejarMensajeDeEdge(ws, raw);
+      }
       if (procesado) {
-        // Ya se procesó un mensaje en esta conexión -- ni reautenticación
-        // como otra terminal, ni mensajes adicionales en esta fase.
+        // Un segundo mensaje sin haber autenticado: nada legítimo hace eso.
         return rechazar('mensaje adicional tras el primero');
       }
       procesado = true;
@@ -1108,6 +1247,35 @@ wss.on('connection', (ws) => {
 
       // Éxito -- limpiar timer inmediatamente.
       limpiarTimer();
+
+      // UNA conexión viva por terminal. Si ya había otra con esta misma
+      // identidad, se cierra: dos procesos Edge con la misma credencial
+      // recibirían los mismos trabajos y sacarían CADA COMANDA POR
+      // DUPLICADO. Pasa de verdad -- alguien deja el agente viejo abierto,
+      // o el servicio de Windows arranca dos veces -- y el restaurante lo
+      // descubre con dos papeles idénticos en cocina.
+      //
+      // Gana la conexión nueva: si el proceso anterior se colgó, su socket
+      // puede seguir "abierto" para el servidor durante minutos, y nadie
+      // debería quedarse sin imprimir por eso.
+      let desplazadas = 0;
+      wss.clients.forEach(otro => {
+        if (otro === ws) return;
+        if (otro.tipo !== 'print-agent' || !otro.autenticado) return;
+        if (otro.terminalId !== fila.terminal_id) return;
+        desplazadas++;
+        try { otro.send(JSON.stringify({ tipo: 'desplazada', mensaje: 'Otra conexión tomó esta terminal' })); } catch {}
+        // 4001 es el código acordado con el Edge: significa "otro proceso
+        // tomó tu identidad, NO reconectes". Sin él, el desplazado vuelve a
+        // conectar, desplaza al nuevo, y los dos se turnan la conexión
+        // recibiendo trabajos por separado -- cada uno con su cola local, y
+        // la comanda acaba saliendo dos veces igual.
+        try { otro.close(4001, 'Reemplazada por una conexión nueva'); } catch { otro.terminate(); }
+      });
+      if (desplazadas) {
+        console.warn(`[PrintAgent] terminal=${fila.terminal_id} tenía ${desplazadas} conexión(es) previa(s): se cierran para no imprimir por duplicado`);
+      }
+
       ws.tipo        = 'print-agent';
       ws.autenticado = true;
       ws.terminalId  = fila.terminal_id;
@@ -1126,6 +1294,14 @@ wss.on('connection', (ws) => {
       marcarUltimaConexionTerminal(fila.terminal_id);
 
       console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id}`);
+
+      // Al conectar se le entrega lo que quedó sin imprimir. Esto NO es el
+      // "volcado inicial" que sufría el agente legacy (que reimprimía todos
+      // los pedidos activos): aquí solo salen trabajos con estado pendiente,
+      // fallido o entregado-sin-confirmar, y el Edge los deduplica por id
+      // antes de tocar papel. Un trabajo ya impreso no vuelve a salir.
+      entregarTrabajosPendientes(ws).catch((e) =>
+        console.error(`[PrintAgent] No se pudieron entregar los pendientes a terminal=${fila.terminal_id}: ${e.message}`));
     });
 
     ws.on('close', () => { limpiarTimer(); console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`); });
@@ -2160,7 +2336,30 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
       modalidad: 'mesa',
       estado: 'nuevo',
     });
-    res.json({ ok: true, ...comanda });
+
+    // Xabor Edge: además del broadcast legacy, se crean trabajos persistentes
+    // -- uno por cada impresora destino según las reglas de routing. Corre en
+    // paralelo con el camino anterior a propósito: un negocio que todavía usa
+    // print-agent.js sigue igual, y uno con Edge configurado obtiene la
+    // comanda repartida por estaciones. Ninguno de los dos puede tumbar al
+    // otro ni a la comanda.
+    const impresion = await crearTrabajosDeComanda({
+      negocioId: req.negocioId, cuentaId: req.params.cuentaId, comanda,
+    });
+    await entregarTrabajos(impresion.creados);
+
+    // La respuesta lleva el aviso, no un error: la ronda YA está guardada y
+    // el mesero necesita seguir trabajando. Si falta configurar una
+    // impresora, se dice, pero no se le devuelve un fallo.
+    res.json({
+      ok: true, ...comanda,
+      impresion: {
+        trabajos: impresion.creados.length,
+        duplicados: impresion.duplicados.length,
+        sinRuta: impresion.sinRuta,
+        avisos: impresion.avisos,
+      },
+    });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
@@ -2229,6 +2428,28 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
         modalidad: 'mesa',
         estado: 'entregado',
       });
+
+      // Xabor Edge: la cuenta va SOLO a las impresoras declaradas para el
+      // documento 'cuenta' (normalmente la de tickets, junto a la caja).
+      // Nunca hereda las reglas de categoría, así que jamás aparece en
+      // cocina -- eso está garantizado por destinosDeDocumento().
+      const impresionCuenta = await crearTrabajosDeDocumento({
+        negocioId: req.negocioId,
+        documento: 'cuenta',
+        origenTipo: 'restaurante_cuenta',
+        origenId: String(r.ventaFolio),
+        payload: {
+          negocio: cuenta?.negocioNombre || null,
+          mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
+          folio: r.ventaFolio,
+          items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+            producto: i.producto, cantidad: i.cantidad, precioUnitario: Number(i.precio_unitario),
+            modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+          })),
+          subtotal: r.total, propina: r.propinas, total: r.total, pagos: r.pagos,
+        },
+      });
+      await entregarTrabajos(impresionCuenta.creados);
     }
     res.json(r);
   } catch (e) { manejarErrorRestaurante(res, e); }
@@ -2242,6 +2463,137 @@ app.post('/api/restaurante/cuentas/:cuentaId/mover', requireOperacionRestaurante
 app.post('/api/restaurante/cuentas/:cuentaId/reabrir', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
   try { res.json({ ok: true, cuenta: await reabrirCuenta(req.params.cuentaId, req.negocioId) }); }
   catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// ─── Xabor Edge: administración de impresión ────────────────────────────────
+//
+// Todo lo de aquí exige sesión de administrador del negocio y toma el
+// negocioId de la SESIÓN, nunca del cuerpo del request: un administrador de
+// un restaurante no puede tocar las impresoras de otro aunque conozca sus
+// uuid. Cada servicio vuelve a comprobar la pertenencia por su cuenta.
+function manejarErrorImpresion(res, e) {
+  const mapa = {
+    TENANT_CONTEXT_REQUIRED: 401,
+    TERMINAL_NO_ENCONTRADA: 404,
+    IMPRESORA_NO_ENCONTRADA: 404,
+    RUTA_NO_ENCONTRADA: 404,
+    TRABAJO_NO_ENCONTRADO: 404,
+    NOMBRE_DUPLICADO: 409,
+    RUTA_DUPLICADA: 409,
+    IMPRESORA_INACTIVA: 409,
+    TRABAJO_NO_PERSISTIDO: 500,
+  };
+  const status = mapa[e.code] || 400;
+  if (status >= 500) console.error(`[Impresion] ${e.code}: ${e.message}`);
+  res.status(status).json({ error: e.message, code: e.code || null });
+}
+
+// ── Dispositivos Edge y su credencial ──
+app.get('/api/impresion/edges', requireAdminSeguro, async (req, res) => {
+  try { res.json({ edges: await listarEdges(req.negocioId) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/impresion/edges', requireAdminSeguro, async (req, res) => {
+  try { res.status(201).json({ ok: true, edge: await crearEdge(req.negocioId, req.body || {}) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// Devuelve el código EN CLARO una sola vez. No se guarda: si se pierde, se
+// genera otro. Se responde con no-store para que ningún proxy lo cachee.
+app.post('/api/impresion/edges/:id/emparejar', requireAdminSeguro, async (req, res) => {
+  try {
+    const r = await generarEmparejamiento(req.negocioId, req.params.id, { usuarioId: req.usuarioId });
+    res.set('Cache-Control', 'no-store');
+    res.status(201).json({ ok: true, ...r });
+  } catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/impresion/edges/:id/revocar', requireAdminSeguro, async (req, res) => {
+  try { res.json(await revocarCredencial(req.negocioId, req.params.id)); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// PÚBLICO por necesidad: el Edge todavía no tiene credencial cuando llama
+// aquí -- eso es justo lo que viene a obtener. Lo que lo protege es el
+// código: de un solo uso, con caducidad de minutos, buscado por hash y
+// canjeado de forma atómica. Con límite de intentos por IP para que nadie
+// pruebe códigos a lo bruto.
+app.post('/api/edge/emparejar', rateLimitMiddleware(req => `edge-emparejar:${req.ip}`, 10, 15 * 60 * 1000), async (req, res) => {
+  try {
+    const r = await canjearEmparejamiento(req.body?.codigo || '');
+    res.set('Cache-Control', 'no-store');
+    res.status(201).json({ ok: true, ...r });
+  } catch (e) {
+    // Un solo mensaje para todos los motivos: no se revela si el código
+    // existía, si ya se usó o si venció.
+    console.warn(`[Edge] emparejamiento rechazado (${e.code || 'ERROR'})`);
+    res.status(400).json({ error: 'Código de emparejamiento inválido o vencido' });
+  }
+});
+
+app.get('/api/impresion/impresoras', requireAdminSeguro, async (req, res) => {
+  try { res.json({ impresoras: await listarImpresoras(req.negocioId) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/impresion/impresoras', requireAdminSeguro, async (req, res) => {
+  try { res.status(201).json({ ok: true, impresora: await crearImpresora(req.negocioId, req.body || {}) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.patch('/api/impresion/impresoras/:id', requireAdminSeguro, async (req, res) => {
+  try { res.json({ ok: true, impresora: await actualizarImpresora(req.negocioId, req.params.id, req.body || {}) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.get('/api/impresion/rutas', requireAdminSeguro, async (req, res) => {
+  try { res.json({ rutas: await listarRutas(req.negocioId) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/impresion/rutas', requireAdminSeguro, async (req, res) => {
+  try { res.status(201).json({ ok: true, ruta: await crearRuta(req.negocioId, req.body || {}) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.delete('/api/impresion/rutas/:id', requireAdminSeguro, async (req, res) => {
+  try { res.json(await eliminarRuta(req.negocioId, req.params.id)); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// Prueba de impresora: pasa por la MISMA tubería que una comanda real
+// (trabajo persistente -> entrega al Edge -> ACK). Si usara un atajo estaría
+// probando un camino que la operación nunca recorre.
+app.post('/api/impresion/impresoras/:id/prueba', requireAdminSeguro, async (req, res) => {
+  try {
+    const trabajo = await crearTrabajoDePrueba(req.negocioId, req.params.id, { solicitadoPor: req.usuarioId });
+    await entregarTrabajos([trabajo]);
+    res.status(201).json({ ok: true, trabajo: { id: trabajo.id, estado: trabajo.estado, impresora: trabajo.impresora_nombre } });
+  } catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.get('/api/impresion/estado', requireAdminSeguro, async (req, res) => {
+  try { res.json(await estadoImpresion(req.negocioId)); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.get('/api/impresion/trabajos', requireAdminSeguro, async (req, res) => {
+  try { res.json({ trabajos: await listarTrabajos(req.negocioId, { limite: req.query.limite, estado: req.query.estado || null }) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// Reimprimir crea un trabajo NUEVO que apunta al original; nunca resetea el
+// viejo. Así queda registrado que hubo que reimprimir, quién lo pidió y por
+// qué -- información que se perdería al reutilizar el trabajo anterior.
+app.post('/api/impresion/trabajos/:id/reimprimir', requireAdminSeguro, async (req, res) => {
+  try {
+    const trabajo = await reimprimirTrabajo(req.negocioId, req.params.id, {
+      usuarioId: req.usuarioId, motivo: req.body?.motivo || null,
+    });
+    await entregarTrabajos([trabajo]);
+    res.status(201).json({ ok: true, trabajo: { id: trabajo.id, estado: trabajo.estado, original: trabajo.trabajo_original_id } });
+  } catch (e) { manejarErrorImpresion(res, e); }
 });
 
 // Reverso de venta contabilizada (SOLO admin, motivo obligatorio): cancela
