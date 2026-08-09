@@ -21,3 +21,7 @@ validate-sat-result.txt
 cert_b64.txt
 key_b64.txt
 test/.preview-ticket-*.html
+
+# Cola local de Xabor Edge: es estado del equipo del restaurante, nunca del repo.
+edge/datos/
+edge/.env
