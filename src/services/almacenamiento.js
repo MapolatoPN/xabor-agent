@@ -57,6 +57,13 @@ function sanearSegmentoRuta(valor) {
 function generarStorageKey(negocioId, extension, { categoria = 'documento', conversacionId = null } = {}) {
   const ext = (extension || 'pdf').replace(/[^a-z0-9]/gi, '') || 'pdf';
   const archivoId = crypto.randomUUID();
+  if (categoria === 'menu') {
+    // Menú automático: uno por negocio, pero con UUID nuevo en cada
+    // reemplazo -- así una imagen vieja nunca queda accesible por adivinar
+    // la ruta, y el reemplazo no depende de sobrescribir un objeto en R2.
+    const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
+    return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/menu/${archivoId}.${ext}`;
+  }
   if (categoria === 'imagen') {
     const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
     return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/chats/${sanearSegmentoRuta(conversacionId)}/${archivoId}.${ext}`;
@@ -108,10 +115,25 @@ export async function guardarArchivo(buffer, { negocioId, extension, mimeType, c
   return storageKey;
 }
 
-/** Lee un archivo del driver local. El driver s3 no lo soporta -- usar obtenerUrlDescarga. */
+/**
+ * Lee un archivo y devuelve su buffer, en cualquiera de los dos drivers.
+ *
+ * El driver s3 se agregó para el menú automático: la imagen viaja del storage
+ * privado directo a Meta (subirMediaAMeta), igual que los documentos PDF y las
+ * imágenes de chat. La alternativa -- darle a Meta una URL prefirmada para que
+ * la descargue -- funcionaría, pero convierte un objeto privado en algo que un
+ * tercero descarga desde fuera, y ata el envío a que la URL siga viva. Traer
+ * los bytes nosotros es el mismo patrón que ya usa el resto del media privado.
+ */
 export async function leerArchivo(storageKey) {
   if (driverActivo() === 's3') {
-    throw new Error('almacenamiento.leerArchivo: no soportado en driver s3, usar obtenerUrlDescarga');
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const cliente = await obtenerClienteS3();
+    const salida = await cliente.send(new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET, Key: storageKey }));
+    const partes = [];
+    for await (const parte of salida.Body) partes.push(parte);
+    return Buffer.concat(partes);
   }
   const rutaAbsoluta = path.join(LOCAL_STORAGE_DIR, storageKey);
   return fs.readFileSync(rutaAbsoluta);

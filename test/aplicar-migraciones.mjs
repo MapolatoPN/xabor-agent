@@ -58,6 +58,7 @@ export const ORDEN_MIGRACIONES = [
   '043_impresion_edge.sql',
   '045_whatsapp_nombre_visible.sql',
   '046_auditoria_actor_negocio.sql',
+  '048_whatsapp_menu_automatico.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

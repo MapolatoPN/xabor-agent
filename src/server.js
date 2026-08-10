@@ -43,6 +43,7 @@ import { resolverProductoConModificadores, ModificadoresError } from './services
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
+import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
@@ -4699,6 +4700,91 @@ app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModu
     const traducido = traducirErrorMeta(e);
     console.error('[WA autoservicio] verificar:', e.message);
     res.status(502).json({ ok: false, mensaje: traducido.mensaje });
+  }
+});
+
+// ─── Menú automático de WhatsApp (autoservicio del negocio) ─────────────────
+//
+// El negocio_id sale SIEMPRE de req.negocioId (la sesión), nunca del cuerpo ni
+// de la URL: un admin de un negocio no tiene forma de nombrar el menú de otro.
+// Mismo trío de middlewares que el resto del autoservicio de WhatsApp, así que
+// mesero/operador/repartidor reciben 403 por requireAdminNegocio.
+
+app.get('/api/config/whatsapp/menu', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    res.json(await obtenerMenuNegocio(req.negocioId));
+  } catch (e) {
+    console.error('[Menu WA] estado:', e.message);
+    res.status(500).json({ error: 'No pudimos leer la configuración de tu menú' });
+  }
+});
+
+app.post('/api/config/whatsapp/menu', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  const { activo, frases } = req.body || {};
+  try {
+    const r = await guardarConfigMenu(req.negocioId, { activo, frases }, req.usuarioId);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r.menu);
+  } catch (e) {
+    console.error('[Menu WA] guardar config:', e.message);
+    res.status(500).json({ error: 'No pudimos guardar la configuración de tu menú' });
+  }
+});
+
+// La imagen llega en base64 dentro del JSON, igual que /api/imagenes/enviar --
+// se reutiliza el parser que ya existe en vez de meter multipart nuevo.
+app.post('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio,
+  rateLimitMiddleware(req => `menu-imagen:${req.negocioId}`, 10, 60 * 1000),
+  async (req, res) => {
+    const { base64, filename } = req.body || {};
+    if (typeof base64 !== 'string' || !base64.trim()) {
+      return res.status(400).json({ error: 'No recibimos ninguna imagen' });
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(base64, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'La imagen no se pudo leer' });
+    }
+    if (buffer.length > menuTamanoMaximoBytes()) {
+      return res.status(413).json({ error: `La imagen pesa más de ${Math.round(menuTamanoMaximoBytes() / 1024 / 1024)} MB` });
+    }
+    try {
+      const r = await guardarImagenMenu(req.negocioId, buffer, filename, req.usuarioId);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json(r.menu);
+    } catch (e) {
+      console.error('[Menu WA] subir imagen:', e.message);
+      res.status(500).json({ error: 'No pudimos guardar la imagen de tu menú' });
+    }
+  });
+
+app.delete('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const r = await eliminarImagenMenu(req.negocioId, req.usuarioId);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r.menu);
+  } catch (e) {
+    console.error('[Menu WA] eliminar imagen:', e.message);
+    res.status(500).json({ error: 'No pudimos quitar la imagen de tu menú' });
+  }
+});
+
+// Vista previa. Sirve los bytes por el propio backend re-validando la sesión
+// en cada request: nunca se le entrega al navegador la storage_key ni una URL
+// del bucket. Con driver s3 se leen los bytes y se reenvían, para que la
+// imagen del menú de un negocio no exista jamás como enlace compartible.
+app.get('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const imagen = await leerImagenMenu(req.negocioId);
+    if (!imagen) return res.status(404).json({ error: 'Todavía no has subido tu menú' });
+    res.setHeader('Content-Type', imagen.mimeType);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Disposition', `inline; filename="${String(imagen.nombre).replace(/[\/"]/g, '_')}"`);
+    res.send(imagen.buffer);
+  } catch (e) {
+    console.error('[Menu WA] vista previa:', e.message);
+    res.status(500).json({ error: 'No pudimos mostrar tu menú' });
   }
 });
 

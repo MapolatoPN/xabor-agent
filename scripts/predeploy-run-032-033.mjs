@@ -33,6 +33,7 @@ const SCRIPTS = [
   '043-impresion-edge',
   '045-nombre-visible',
   '046-auditoria-actor',
+  '048-menu-automatico',
 ];
 
 for (const nombre of SCRIPTS) {

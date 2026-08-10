@@ -1194,6 +1194,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
       <div id="wa-autoservicio"></div>
+      <div id="wa-menu"></div>
       <div id="int-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
@@ -4820,6 +4821,148 @@ function pintarWhatsappAutoservicio() {
     '</div>';
 }
 
+// --- Menu automatico de WhatsApp ------------------------------------------
+// Una imagen por negocio, servida por el backend (nunca una URL del bucket).
+let menuEstado = null;
+let menuOcupado = false;
+
+function menuProgreso(txt, error) {
+  const el = document.getElementById('menu-progreso');
+  if (el) { el.textContent = txt || ''; el.style.color = error ? '#ef4444' : '#666'; }
+}
+
+function pintarMenuAutomatico() {
+  const cont = document.getElementById('wa-menu');
+  if (!cont || ROL !== 'admin') return;
+  const m = menuEstado;
+  if (!m) { cont.innerHTML = ''; return; }
+
+  const marco = 'border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:18px;background:#fff;';
+  const btn = (txt, fn, primario) => '<button onclick="' + fn + '" ' + (menuOcupado ? 'disabled' : '') +
+    ' style="background:' + (primario ? '#1c1c1c' : '#fff') + ';color:' + (primario ? '#fff' : '#1c1c1c') +
+    ';border:1px solid #1c1c1c;border-radius:8px;padding:10px 18px;font-size:0.9rem;font-weight:700;cursor:' +
+    (menuOcupado ? 'not-allowed' : 'pointer') + ';opacity:' + (menuOcupado ? '.5' : '1') +
+    ';margin-right:8px;margin-bottom:8px;">' + txt + '</button>';
+
+  const frases = (m.frases || []).join('\n');
+  // La vista previa lleva un parametro anti-cache para que, al reemplazar la
+  // imagen, el admin vea la nueva y no la que el navegador ya tenia guardada.
+  const previa = m.tieneImagen
+    ? '<img src="/api/config/whatsapp/menu/imagen?v=' + encodeURIComponent(m.actualizadoEn || Date.now()) + '" alt="Vista previa del menu" ' +
+      'style="max-width:100%;width:280px;border-radius:10px;border:1px solid #e5e2da;display:block;margin:10px 0;">'
+    : '<div style="color:#888;font-size:0.85rem;margin:10px 0;">Todav&iacute;a no has subido tu men&uacute;.</div>';
+
+  cont.innerHTML = '<div style="' + marco + '">' +
+    '<div style="font-weight:800;font-size:1rem;margin-bottom:6px;">Men&uacute; autom&aacute;tico</div>' +
+    '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">Env&iacute;a autom&aacute;ticamente tu men&uacute; cuando un cliente lo solicite por WhatsApp.</div>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
+      '<span style="width:9px;height:9px;border-radius:50%;background:' + (m.activo ? '#22c55e' : '#c9c5bc') + ';display:inline-block;"></span>' +
+      '<span style="font-weight:700;">' + (m.activo ? 'Activo' : 'Inactivo') + '</span></div>' +
+    '<div style="font-size:0.85rem;font-weight:700;margin-top:14px;">Imagen del men&uacute;</div>' +
+    previa +
+    (m.nombreArchivo ? '<div style="color:#888;font-size:0.78rem;margin-bottom:8px;">' + m.nombreArchivo + '</div>' : '') +
+    '<input type="file" id="menu-archivo" accept="image/jpeg,image/png,image/webp" style="display:none;" onchange="subirImagenMenu(this)">' +
+    btn(m.tieneImagen ? 'Reemplazar imagen' : 'Subir imagen', "document.getElementById('menu-archivo').click()") +
+    (m.tieneImagen ? btn('Quitar imagen', 'quitarImagenMenu()') : '') +
+    '<div style="font-size:0.85rem;font-weight:700;margin-top:16px;">Frases que activan el env&iacute;o</div>' +
+    '<div style="color:#888;font-size:0.78rem;margin-bottom:6px;">Una por l&iacute;nea. No importan may&uacute;sculas ni acentos.</div>' +
+    '<textarea id="menu-frases" rows="6" style="width:100%;max-width:420px;border:1px solid #e5e2da;border-radius:8px;padding:10px;font-size:0.9rem;font-family:inherit;box-sizing:border-box;">' +
+      frases.replace(/</g, '&lt;') + '</textarea>' +
+    '<div id="menu-progreso" style="font-size:0.85rem;color:#666;margin:10px 0;"></div>' +
+    '<div style="margin-top:8px;">' +
+      btn('Guardar', 'guardarMenuAutomatico()', true) +
+      (m.tieneImagen ? btn(m.activo ? 'Desactivar' : 'Activar', 'alternarMenuAutomatico()') : '') +
+    '</div>' +
+    (!m.tieneImagen ? '<div style="color:#888;font-size:0.78rem;margin-top:10px;">Sube una imagen para poder activarlo.</div>' : '') +
+    '</div>';
+}
+
+async function cargarMenuAutomatico() {
+  if (ROL !== 'admin') return;
+  try {
+    const r = await apiFetch('/api/config/whatsapp/menu');
+    menuEstado = r.ok ? await r.json() : null;
+  } catch { menuEstado = null; }
+  pintarMenuAutomatico();
+}
+
+function frasesDelTextarea() {
+  const el = document.getElementById('menu-frases');
+  if (!el) return undefined;
+  return el.value.split('\n').map(f => f.trim()).filter(Boolean);
+}
+
+async function guardarMenuAutomatico() {
+  if (menuOcupado) return;
+  menuOcupado = true; pintarMenuAutomatico(); menuProgreso('Guardando...');
+  try {
+    const r = await apiFetch('/api/config/whatsapp/menu', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frases: frasesDelTextarea() }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo guardar');
+    menuEstado = data; menuOcupado = false; pintarMenuAutomatico(); menuProgreso('Guardado.');
+  } catch (e) {
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
+  }
+}
+
+async function alternarMenuAutomatico() {
+  if (menuOcupado) return;
+  menuOcupado = true; pintarMenuAutomatico(); menuProgreso('Guardando...');
+  try {
+    const r = await apiFetch('/api/config/whatsapp/menu', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activo: !menuEstado.activo, frases: frasesDelTextarea() }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo guardar');
+    menuEstado = data; menuOcupado = false; pintarMenuAutomatico();
+    menuProgreso(data.activo ? 'Menu automatico activo.' : 'Menu automatico desactivado.');
+  } catch (e) {
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
+  }
+}
+
+async function subirImagenMenu(input) {
+  const archivo = input.files && input.files[0];
+  if (!archivo) return;
+  menuOcupado = true; pintarMenuAutomatico(); menuProgreso('Subiendo imagen...');
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const lector = new FileReader();
+      lector.onload = () => resolve(String(lector.result).split(',')[1] || '');
+      lector.onerror = () => reject(new Error('No pudimos leer el archivo'));
+      lector.readAsDataURL(archivo);
+    });
+    const r = await apiFetch('/api/config/whatsapp/menu/imagen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64, filename: archivo.name }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo subir la imagen');
+    menuEstado = data; menuOcupado = false; pintarMenuAutomatico();
+    menuProgreso('Imagen actualizada. Los clientes veran esta a partir de ahora.');
+  } catch (e) {
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
+  }
+}
+
+async function quitarImagenMenu() {
+  if (menuOcupado) return;
+  if (!confirm('Quitar la imagen del menu? El envio automatico quedara desactivado.')) return;
+  menuOcupado = true; pintarMenuAutomatico(); menuProgreso('Quitando imagen...');
+  try {
+    const r = await apiFetch('/api/config/whatsapp/menu/imagen', { method: 'DELETE' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo quitar la imagen');
+    menuEstado = data; menuOcupado = false; pintarMenuAutomatico(); menuProgreso('Imagen quitada.');
+  } catch (e) {
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
+  }
+}
+
 async function cargarWhatsappAutoservicio() {
   if (ROL !== 'admin') return;
   try {
@@ -4827,6 +4970,7 @@ async function cargarWhatsappAutoservicio() {
     waEstadoActual = r.ok ? await r.json() : null;
   } catch { waEstadoActual = null; }
   pintarWhatsappAutoservicio();
+  await cargarMenuAutomatico();
 }
 
 async function conectarWhatsapp() {

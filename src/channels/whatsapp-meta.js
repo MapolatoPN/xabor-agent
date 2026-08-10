@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
+import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
@@ -878,6 +879,37 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
     }
 
+    // ── Menú automático (regla determinista, antes de la IA) ────────────────
+    //
+    // Va DESPUÉS de las reglas críticas (folio/pago, rewards) y ANTES de
+    // Claude, y termina con `return`: esa es la garantía de que el cliente
+    // recibe UNA respuesta y no tres (texto del bot + menú + respuesta de IA).
+    // Si el negocio no tiene el menú activo, esto no hace nada y el mensaje
+    // sigue exactamente el camino de siempre.
+    //
+    // No gasta una llamada a la IA para decidir si alguien pidió el menú.
+    const menuCfg = await obtenerMenuParaEnvio(negocioId);
+    if (menuCfg?.activo && menuCfg.storage_key && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
+      const envio = await enviarMenuAutomatico({
+        negocioId, telefono, credenciales,
+        enviarTexto: enviarMensaje,
+        enviarImagenBuffer,
+      });
+      if (envio.textoEnviado) {
+        await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoEnviado, negocioId, 'bot');
+      }
+      if (envio.ok) {
+        await guardarMensaje(telefono, nombreMeta, 'saliente', '📷 Menú', negocioId, 'bot');
+        console.log(`[Menu WA] Menú enviado a ${telefono} (negocio ${negocioId})`);
+      } else {
+        if (envio.textoFallback) {
+          await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoFallback, negocioId, 'bot');
+        }
+        console.error(`[Menu WA] No se pudo enviar el menú a ${telefono} (negocio ${negocioId}): ${envio.motivo}`);
+      }
+      return;
+    }
+
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono, negocioId);
     const pedidosAnteriores = clienteDB ? await obtenerUltimosPedidos(telefono, negocioId) : [];
@@ -1030,9 +1062,25 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
 
     if (resultado.escalar) await notificarEscalacion(telefono, negocioId, credenciales);
 
-    const baseUrl = process.env.PUBLIC_URL || 'https://xabor-agent-production.up.railway.app';
+    // El marcador <ENVIAR_MENU> de la IA (para frases que la lista del negocio
+    // no cubre) ahora manda el menú DE ESTE NEGOCIO. Antes mandaba siempre
+    // `${PUBLIC_URL}/public/menu.png`: un único archivo del repositorio,
+    // idéntico para todos -- es decir, el menú equivocado para cualquier
+    // negocio que no fuera el dueño de ese PNG. Si el negocio no tiene menú
+    // configurado no se manda ninguna imagen: la respuesta de texto de la IA
+    // sale igual, pero nadie recibe el menú de otro.
     if (resultado.enviarMenu) {
-      try { await enviarImagen(telefono, `${baseUrl}/public/menu.png`, '', credenciales); } catch (e) { console.error('[Meta WA] Error enviando menú:', e.message); }
+      const cfg = await obtenerMenuParaEnvio(negocioId);
+      if (cfg?.activo && cfg.storage_key) {
+        try {
+          const { buffer, mimeType, nombre } = await leerImagenMenu(negocioId);
+          await enviarImagenBuffer(telefono, buffer, nombre, mimeType, '', credenciales);
+        } catch (e) {
+          console.error(`[Menu WA] Error enviando menú (marcador IA) del negocio ${negocioId}:`, e.message);
+        }
+      } else {
+        console.log(`[Menu WA] La IA pidió mandar el menú pero el negocio ${negocioId} no lo tiene configurado -- no se manda nada`);
+      }
     }
 
     // ── Factura CFDI solicitada por WhatsApp ──────────────────────────────────
