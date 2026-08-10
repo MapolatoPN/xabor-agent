@@ -1196,6 +1196,25 @@ router.post('/', async (req, res) => {
     return;
   }
 
+  // 5. Procesar. Se llama a la MISMA funcion que usa el worker de
+  //    recuperacion: si hubiera dos caminos distintos, el que se recorre
+  //    tras un reinicio seria justo el que nunca se prueba.
+  procesarWebhookPersistido(body).catch((e) =>
+    console.error('[Meta WA] fallo el procesamiento del webhook:', e.message));
+});
+
+// Procesamiento de un webhook YA PERSISTIDO.
+//
+// Se exporta porque el worker del buzon durable la invoca para los eventos
+// que quedaron pendientes: el webhook guarda y contesta 200, y si el proceso
+// muere justo ahi, Meta no reintenta -- el unico que puede terminar el
+// trabajo es el worker, recorriendo este mismo codigo.
+//
+// Tiene que ser IDEMPOTENTE: puede ejecutarse dos veces sobre el mismo
+// evento si el proceso muere entre aplicar el efecto y marcar el evento como
+// procesado. Lo es porque cada efecto deduplica por su cuenta (los mensajes
+// por message_id_externo, los pedidos por su clave de idempotencia).
+export async function procesarWebhookPersistido(body) {
   try {
 
     const value   = body.entry?.[0]?.changes?.[0]?.value;
@@ -1330,7 +1349,8 @@ router.post('/', async (req, res) => {
   } catch (error) {
     console.error('[Meta WA] Error:', error.message);
   }
-});
+}
+
 
 // ─── Enrutamiento repartidor/cliente (incidencia real, piloto Nonna Maye) ───
 // Antes de este cambio, la sola existencia de una fila en `repartidores`

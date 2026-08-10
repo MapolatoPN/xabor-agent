@@ -32,8 +32,30 @@ export function crearAlmacen({ almacen = 'auto', rutaDatos, logger, bloquear = t
       logger?.info('almacen.abierto', { tipo: 'sqlite', ruta });
       base = crearAlmacenSqlite({ ruta });
     } else {
+      // 'auto' + sin node:sqlite significa que este Node no llega a 22.5. El
+      // respaldo JSON existe y funciona, pero NO da las mismas garantias que
+      // SQLite en WAL con synchronous=FULL, y caer a el sin decir nada es la
+      // peor version del problema: el Edge arranca "bien", nadie se entera, y
+      // la diferencia solo se descubre el dia que hay un corte de luz a mitad
+      // de un turno.
+      //
+      // Si alguien quiere JSON, que lo pida explicitamente.
+      if (almacen === 'auto') {
+        const e = new Error(
+          `Este Node (${process.version}) no trae node:sqlite, que necesita Node 22.5 o superior.
+` +
+          `  Xabor Edge no arranca con una cola de menor garantia sin que alguien lo decida.
+` +
+          `  Opciones:
+` +
+          `    1. Instalar Node 22.5+ en este equipo (recomendado).
+` +
+          `    2. Aceptar el respaldo JSON a proposito: XABOR_EDGE_ALMACEN=json`);
+        e.code = 'EDGE_NODE_INCOMPATIBLE';
+        throw e;
+      }
       const ruta = rutaPorDefectoJson(rutaDatos);
-      logger?.info('almacen.abierto', { tipo: 'json', ruta, motivo: almacen === 'auto' ? 'node:sqlite no disponible' : 'configurado' });
+      logger?.info('almacen.abierto', { tipo: 'json', ruta, motivo: 'configurado explicitamente' });
       base = crearAlmacenJson({ ruta, logger });
     }
   } catch (e) {
