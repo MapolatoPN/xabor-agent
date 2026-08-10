@@ -16,6 +16,36 @@ cambia una IP, no desinstala nada, no reinicia ninguna impresora.
 
 ## Fase 1 — Levantamiento (solo lectura)
 
+> Toda esta fase está automatizada en `scripts/inventario-edge-windows.ps1`.
+>
+> **Cómo llevarlo**: copiar *solo ese archivo* a la PC del restaurante — en una
+> USB, por correo, como sea. No hace falta clonar Xabor, ni Node, ni npm, ni
+> internet: es PowerShell puro. Después, en esa carpeta:
+>
+> ```powershell
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\inventario-edge-windows.ps1
+> ```
+>
+> El `-ExecutionPolicy Bypass` aplica **solo a esa ejecución**; no cambia la
+> política de la máquina. **No necesita administrador**: lo que requiera
+> permisos que no haya se reporta como PENDIENTE en vez de exigir elevación
+> para todo.
+>
+> Deja `Xabor-Obispado-Inventario-YYYYMMDD-HHMM.md` en el Escritorio con la PC,
+> la red, si Wansoft sigue ahí, cada impresora con su puerto real, la tabla de
+> puertos, un ping/TCP **solo** contra las IPs que ya estaban configuradas
+> (no escanea la subred), y un resumen de qué transporte podría usar cada una.
+>
+> Es estrictamente de solo lectura: solo `Get-*` y `Test-*`. No crea ni cambia
+> impresoras, puertos, IPs, reglas de firewall ni servicios, y **no imprime**.
+> Se puede correr en pleno turno.
+>
+> Dos cosas que el script no hace a propósito: no convierte un puerto sin
+> número en 9100 (escribe que Windows lo asume y hay que confirmarlo), y no
+> adivina cuál impresora es Tickets, Chilaquiles, Cocina General o Bebidas —
+> eso se mira. Los comandos sueltos de abajo siguen aquí por si hay que
+> verificar algo a mano.
+
 ### 1.1 Datos de la PC
 
 ```powershell
