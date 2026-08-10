@@ -51,7 +51,14 @@ const bearerLegacyAdmin = legacyBearer(process.env.ADMIN_PASSWORD);
 await t('STATE', 'crea y consume un state válido una sola vez', () => {
   const s = crearState({ negocioId: SEED.negocioA, superadminId: SEED.superadminUsuarioId });
   const r1 = validarYConsumirState(s);
-  assert.deepStrictEqual(r1, { negocioId: SEED.negocioA, superadminId: SEED.superadminUsuarioId });
+  // Desde el autoservicio, el state tambien dice QUIEN lo inicio: Superadmin
+  // (superadminId) o el admin del propio negocio (usuarioId).
+  assert.deepStrictEqual(r1, {
+    negocioId: SEED.negocioA,
+    superadminId: SEED.superadminUsuarioId,
+    usuarioId: null,
+    actor: 'superadmin',
+  });
   const r2 = validarYConsumirState(s); // reutilización
   assert.strictEqual(r2, null);
 });

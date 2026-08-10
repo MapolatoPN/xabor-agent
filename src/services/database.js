@@ -4799,6 +4799,75 @@ function slugify(texto) {
     .slice(0, 60);
 }
 
+/**
+ * Contrato explícito de ACTOR para toda la cadena de integraciones.
+ *
+ * Antes, las funciones de servicio recibían un `actualizadoPor` suelto que
+ * significaba EXCLUSIVAMENTE "superadmin". Cuando el autoservicio de WhatsApp
+ * dejó que el administrador del propio negocio hiciera su onboarding, ese
+ * parámetro llegaba en null y la auditoría lanzaba dentro de la transacción:
+ * rollback de las credenciales y 502 al cliente (incidente Mapolato, 10 de
+ * agosto de 2026, 16:39 UTC).
+ *
+ * Acepta dos formas:
+ *   - objeto: { superadminId, actorUsuarioId } -- exactamente uno de los dos
+ *   - string: se interpreta como superadminId (compatibilidad con los ~25
+ *     llamadores de Superadmin que ya existían y que no cambian)
+ *
+ * Devuelve además `actualizadoPorId`, que es lo que va a la columna
+ * `actualizado_por` de integraciones_canal: esa columna guarda "quién tocó
+ * esto por última vez" y admite cualquier usuario, sea o no superadmin.
+ */
+export function normalizarActor(actor) {
+  if (!actor) return { superadminId: null, actorUsuarioId: null, actualizadoPorId: null };
+  if (typeof actor === 'string') {
+    const id = actor.trim() || null;
+    return { superadminId: id, actorUsuarioId: null, actualizadoPorId: id };
+  }
+  const superadminId = actor.superadminId || null;
+  const actorUsuarioId = actor.actorUsuarioId || null;
+  if (superadminId && actorUsuarioId) {
+    throw new Error('normalizarActor: no puede haber dos actores (superadminId y actorUsuarioId)');
+  }
+  return { superadminId, actorUsuarioId, actualizadoPorId: superadminId || actorUsuarioId };
+}
+
+/**
+ * Auditoría SECUNDARIA: deja rastro, pero jamás tumba la operación crítica
+ * que ya se completó.
+ *
+ * Dentro de una transacción no basta con un try/catch en JS: si el INSERT de
+ * auditoría falla, Postgres aborta la transacción entera y el COMMIT posterior
+ * también falla ("current transaction is aborted"). Por eso se envuelve en un
+ * SAVEPOINT: un fallo de bitácora retrocede SOLO la bitácora y las credenciales
+ * válidas siguen su camino al COMMIT.
+ *
+ * Lo que NO hace: tragarse el error. Se registra siempre, y si es un error de
+ * programación (TypeError/RangeError/ReferenceError -- p. ej. la recursión de
+ * `auditar` que estuvo viva en df95af1) se marca como [BUG] con el stack, para
+ * que no pase inadvertido en los logs.
+ */
+export async function registrarAuditoriaSecundaria(datos, client = pool) {
+  const enTransaccion = client !== pool && typeof client.query === 'function';
+  const punto = `aud_${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    if (enTransaccion) await client.query(`SAVEPOINT ${punto}`);
+    const fila = await registrarAuditoriaPlataforma(datos, client);
+    if (enTransaccion) await client.query(`RELEASE SAVEPOINT ${punto}`);
+    return fila;
+  } catch (e) {
+    if (enTransaccion) {
+      try { await client.query(`ROLLBACK TO SAVEPOINT ${punto}`); }
+      catch (eRollback) { console.error(`[AUDITORIA] no se pudo deshacer el savepoint: ${eRollback.message}`); }
+    }
+    const esBug = e instanceof TypeError || e instanceof RangeError || e instanceof ReferenceError;
+    const etiqueta = esBug ? '[AUDITORIA][BUG]' : '[AUDITORIA]';
+    console.error(`${etiqueta} no se pudo registrar "${datos?.accion}" para el negocio ${datos?.negocioId || 'desconocido'}: ${e.message}`);
+    if (esBug) console.error(e.stack);
+    return null;
+  }
+}
+
 export async function registrarAuditoriaPlataforma({ superadminId = null, actorUsuarioId = null, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null }, client = pool) {
   // Dos actores posibles y exactamente uno obligatorio: Xabor (superadminId)
   // o el administrador del propio negocio (actorUsuarioId). `usuarioId` es
@@ -5225,12 +5294,14 @@ export async function obtenerBotWhatsappActivoNegocio(negocioId) {
   }
 }
 
-// actorUsuarioId: puede ser un superadmin o el administrador del propio
-// negocio -- registrarAuditoriaPlataforma solo exige un usuario válido,
-// no un rol específico (ver migración 011: la columna es superadmin_id
-// mas la FK es genérica hacia usuarios).
-export async function actualizarBotWhatsappActivoNegocio(negocioId, activo, actorUsuarioId) {
+// El interruptor lo puede mover Superadmin O el administrador del propio
+// negocio. Hasta la 046 no había dónde distinguirlos y el admin del negocio
+// se guardaba en superadmin_id (la FK es genérica hacia usuarios, así que
+// "funcionaba" pero mentía sobre quién había actuado). Ahora usa el contrato
+// de actor: cada uno cae en su columna.
+export async function actualizarBotWhatsappActivoNegocio(negocioId, activo, actor) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { superadminId, actorUsuarioId } = normalizarActor(actor);
   if (typeof activo !== 'boolean') throw Object.assign(new Error('activo debe ser boolean'), { code: 'VALOR_INVALIDO' });
   const client = await pool.connect();
   try {
@@ -5240,7 +5311,7 @@ export async function actualizarBotWhatsappActivoNegocio(negocioId, activo, acto
     const anterior = rows[0];
     await client.query('UPDATE negocios SET bot_whatsapp_activo = $2 WHERE id = $1', [negocioId.trim(), activo]);
     await registrarAuditoriaPlataforma({
-      superadminId: actorUsuarioId, accion: 'cambiar_bot_whatsapp_activo_negocio', negocioId: negocioId.trim(),
+      superadminId, actorUsuarioId, accion: 'cambiar_bot_whatsapp_activo_negocio', negocioId: negocioId.trim(),
       estadoAnterior: { bot_whatsapp_activo: anterior.bot_whatsapp_activo },
       estadoNuevo: { bot_whatsapp_activo: activo },
     }, client);

@@ -4504,7 +4504,7 @@ app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin,
   // no puede verificarse contra sus datos reales de producción desde
   // este entorno de trabajo local.
   try {
-    const resultado = await actualizarBotWhatsappActivoNegocio(req.params.negocioId, activo, req.usuarioId);
+    const resultado = await actualizarBotWhatsappActivoNegocio(req.params.negocioId, activo, { superadminId: req.usuarioId });
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
     res.json(resultado);
   } catch (e) {
@@ -4718,13 +4718,23 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   //
   // Se intenta siempre, se registra el fallo con detalle, y se sigue. No es
   // un catch silencioso: deja rastro y no se traga la causa.
+  // OJO: llama DIRECTAMENTE a registrarAuditoriaPlataforma. En df95af1 esta
+  // función se llamaba a sí misma (recursión infinita -> RangeError: Maximum
+  // call stack size exceeded) y ninguna auditoría del callback llegó a
+  // escribirse en producción. Hay una prueba explícita que falla si vuelve.
   const auditar = async (datos) => {
     try {
-      await auditar({ actorUsuarioId, ...datos });
+      await registrarAuditoriaPlataforma({ superadminId, actorUsuarioId, ...datos });
     } catch (e) {
-      console.error(`[AUDITORIA] no se pudo registrar "${datos.accion}" para el negocio ${datos.negocioId || negocioId}: ${e.message}`);
+      const esBug = e instanceof TypeError || e instanceof RangeError || e instanceof ReferenceError;
+      console.error(`[AUDITORIA]${esBug ? '[BUG]' : ''} no se pudo registrar "${datos.accion}" para el negocio ${datos.negocioId || negocioId}: ${e.message}`);
+      if (esBug) console.error(e.stack);
     }
   };
+
+  // El actor viaja por TODA la cadena de servicios. Sale del state ya
+  // validado/consumido -- nunca del cuerpo de la petición.
+  const actor = { superadminId, actorUsuarioId };
 
   // Capa de aplicación (además de la firma/vencimiento/uso único ya
   // verificados arriba): ¿sigue siendo ESTE el intento vigente del
@@ -4756,7 +4766,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
       [phoneNumberId.trim()]
     );
     if (dueno.rows[0] && dueno.rows[0].negocio_id !== negocioId) {
-      await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
+      await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', actor).catch(() => {});
       limpiarIntentoPendiente(negocioId);
       return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
     }
@@ -4765,7 +4775,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     const resultado = await guardarCredencialesCifradas(
       negocioId, 'whatsapp', 'meta',
       { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken },
-      superadminId
+      actor
     );
     await auditar({ accion: 'integracion_embedded_signup_completado', negocioId,
       contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
@@ -4781,7 +4791,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     // sin repetir el Embedded Signup (ver ruta "completar-activacion").
     let activacion = null;
     try {
-      activacion = await completarActivacionWhatsapp(negocioId, superadminId);
+      activacion = await completarActivacionWhatsapp(negocioId, actor);
     } catch (eActivacion) {
       console.error('[POST /api/integraciones/whatsapp/meta/callback] Error al completar activación:', eActivacion.message);
     }
@@ -4789,7 +4799,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     res.json({ ok: true, estado: activacion?.estado || resultado.estado, activacion });
   } catch (e) {
     console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
-    await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
+    await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', actor).catch(() => {});
     await auditar({ accion: 'integracion_embedded_signup_fallido', negocioId,
       contexto: { motivo: 'error_intercambio_o_guardado' },
     });
@@ -5428,7 +5438,7 @@ app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
   // Ver nota equivalente en PATCH /api/superadmin/.../bot-whatsapp: el
   // checklist gatea el botón en el panel, no esta API.
   try {
-    const resultado = await actualizarBotWhatsappActivoNegocio(req.negocioId, activo, req.usuarioId);
+    const resultado = await actualizarBotWhatsappActivoNegocio(req.negocioId, activo, { actorUsuarioId: req.usuarioId });
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
     res.json(resultado);
   } catch (e) {

@@ -14,7 +14,7 @@
  */
 
 import crypto from 'crypto';
-import { pool, registrarAuditoriaPlataforma, habilitarMetodoPagoPorProveedorPrincipal } from './database.js';
+import { pool, registrarAuditoriaPlataforma, registrarAuditoriaSecundaria, normalizarActor, habilitarMetodoPagoPorProveedorPrincipal } from './database.js';
 import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifradoIntegraciones.js';
 import { esProveedorValido, validarPuedeActivarse, obtenerAdaptador } from './paymentProviders.js';
 
@@ -127,10 +127,12 @@ export async function obtenerEstadoIntegracion(negocioId, canal, proveedor) {
  * Transaccional: la fila de integraciones_canal y la de credenciales se
  * escriben juntas o no se escribe ninguna.
  */
-export async function guardarCredencialesCifradas(negocioId, canal, proveedor, datos, actualizadoPor) {
+export async function guardarCredencialesCifradas(negocioId, canal, proveedor, datos, actor) {
   if (!validarParams(negocioId, canal, proveedor)) {
     throw new Error('guardarCredencialesCifradas: negocioId/canal/proveedor inválidos u omitidos');
   }
+  // El actor puede ser Superadmin o el administrador del propio negocio.
+  const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
   const { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken, nombre } = datos || {};
   if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
     throw new Error('guardarCredencialesCifradas: phoneNumberId requerido');
@@ -159,7 +161,7 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
            actualizado_por = $7, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
          WHERE id = $8`,
         [phoneNumberId.trim(), wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, actualizadoPor || null, integracionId]
+         nombre || null, nuevoEstado, actualizadoPorId, integracionId]
       );
     } else {
       const { rows: [nueva] } = await client.query(
@@ -170,7 +172,7 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
          RETURNING id`,
         [negocioId.trim(), canal.trim(), proveedor.trim(), phoneNumberId.trim(),
          wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, actualizadoPor || null]
+         nombre || null, nuevoEstado, actualizadoPorId]
       );
       integracionId = nueva.id;
     }
@@ -187,9 +189,10 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
     );
 
     // Auditoría: nunca el token ni ningún campo cifrado -- solo
-    // identificadores no sensibles y el estado resultante.
-    await registrarAuditoriaPlataforma({
-      superadminId: actualizadoPor,
+    // identificadores no sensibles y el estado resultante. SECUNDARIA: si la
+    // bitácora falla, las credenciales válidas igual se guardan (savepoint).
+    await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
       accion: existente.rows[0] ? 'integracion_credenciales_actualizadas' : 'integracion_credenciales_creadas',
       negocioId: negocioId.trim(),
       estadoAnterior: existente.rows[0] ? { estado: existente.rows[0].estado } : null,
@@ -217,9 +220,10 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
  * - 'pendiente_configuracion'/'no_configurado'/'error': sin
  *   requisitos adicionales.
  */
-export async function actualizarEstadoIntegracion(negocioId, canal, proveedor, nuevoEstado, actualizadoPor) {
+export async function actualizarEstadoIntegracion(negocioId, canal, proveedor, nuevoEstado, actor) {
   if (!validarParams(negocioId, canal, proveedor)) return { ok: false, error: 'negocioId/canal/proveedor inválidos' };
   if (!ESTADOS_VALIDOS.includes(nuevoEstado)) return { ok: false, error: 'Estado inválido' };
+  const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
 
   const actual = await obtenerIntegracionNegocio(negocioId, canal, proveedor);
   if (!actual) return { ok: false, error: 'Integración no encontrada' };
@@ -241,10 +245,10 @@ export async function actualizarEstadoIntegracion(negocioId, canal, proveedor, n
     await client.query(
       `UPDATE integraciones_canal SET estado = $1, activo = $2, actualizado_por = $3, updated_at = NOW()
        WHERE id = $4`,
-      [nuevoEstado, nuevoEstado === 'activo', actualizadoPor || null, actual.id]
+      [nuevoEstado, nuevoEstado === 'activo', actualizadoPorId, actual.id]
     );
-    await registrarAuditoriaPlataforma({
-      superadminId: actualizadoPor,
+    await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
       accion: 'integracion_estado_actualizado',
       negocioId: negocioId.trim(),
       estadoAnterior: { estado: estadoAnterior },
@@ -261,8 +265,8 @@ export async function actualizarEstadoIntegracion(negocioId, canal, proveedor, n
   return { ok: true, estadoAnterior, estadoNuevo: nuevoEstado };
 }
 
-export async function suspenderIntegracion(negocioId, canal, proveedor, actualizadoPor) {
-  return actualizarEstadoIntegracion(negocioId, canal, proveedor, 'suspendido', actualizadoPor);
+export async function suspenderIntegracion(negocioId, canal, proveedor, actor) {
+  return actualizarEstadoIntegracion(negocioId, canal, proveedor, 'suspendido', actor);
 }
 
 /**
@@ -271,8 +275,9 @@ export async function suspenderIntegracion(negocioId, canal, proveedor, actualiz
  * routing (identificador/waba_id/business_id) se conserva -- solo se
  * borra el secreto y se baja el estado a 'no_configurado'.
  */
-export async function eliminarCredencialesIntegracion(negocioId, canal, proveedor, actualizadoPor) {
+export async function eliminarCredencialesIntegracion(negocioId, canal, proveedor, actor) {
   if (!validarParams(negocioId, canal, proveedor)) return { ok: false, error: 'negocioId/canal/proveedor inválidos' };
+  const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
   const actual = await obtenerIntegracionNegocio(negocioId, canal, proveedor);
   if (!actual) return { ok: false, error: 'Integración no encontrada' };
 
@@ -283,10 +288,10 @@ export async function eliminarCredencialesIntegracion(negocioId, canal, proveedo
     await client.query(
       `UPDATE integraciones_canal SET estado = 'no_configurado', activo = FALSE, actualizado_por = $1, updated_at = NOW()
        WHERE id = $2`,
-      [actualizadoPor || null, actual.id]
+      [actualizadoPorId, actual.id]
     );
-    await registrarAuditoriaPlataforma({
-      superadminId: actualizadoPor,
+    await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
       accion: 'integracion_credenciales_eliminadas',
       negocioId: negocioId.trim(),
       estadoAnterior: { estado: actual.estado },
@@ -392,10 +397,11 @@ async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
  * Nunca borra ni toca las credenciales existentes (access_token,
  * identificadores) -- solo actualiza estado/flags/auditoría.
  */
-export async function completarActivacionWhatsapp(negocioId, actualizadoPor) {
+export async function completarActivacionWhatsapp(negocioId, actor) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
   }
+  const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
   const datos = await obtenerCredencialesParaActivacion(negocioId.trim(), 'whatsapp', 'meta');
   if (!datos) {
     return { ok: false, error: 'No hay credenciales completas para activar (falta phone_number_id, waba_id o token)' };
@@ -446,11 +452,11 @@ export async function completarActivacionWhatsapp(negocioId, actualizadoPor) {
        WHERE id = $7`,
       [nuevoEstado, resultadoRegistro.ok, resultadoSuscripcion.ok,
        codigoErrorControlado, ambosOk ? null : new Date(),
-       actualizadoPor || null, datos.integracionId]
+       actualizadoPorId, datos.integracionId]
     );
 
-    await registrarAuditoriaPlataforma({
-      superadminId: actualizadoPor,
+    await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
       accion: 'integracion_activacion_completada',
       negocioId: negocioId.trim(),
       estadoNuevo: { estado: nuevoEstado, numeroRegistrado: resultadoRegistro.ok, appSuscrita: resultadoSuscripcion.ok },
