@@ -301,7 +301,7 @@ await t('CAOS', '11. impresora apagada: las demás imprimen y la caída se recup
     { que: 'que las impresoras vivas impriman', limiteMs: 12000 });
 
   const local = edgeA.almacen.obtener(chila.id);
-  assert.ok(['fallido', 'procesando', 'pendiente'].includes(local.estado),
+  assert.ok(['fallido', 'enviando', 'pendiente'].includes(local.estado),
     `la caída debe quedar en cola y quedó "${local?.estado}"`);
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 0);
 
@@ -434,6 +434,20 @@ await t('CAOS', '15. una impresora desactivada no rompe la ronda del resto', asy
       'una impresora desactivada deja de recibir trabajos nuevos');
     edgeA.conexion.cerrar(); edgeA.conexion.iniciar();
     await hasta(() => SIM['COCINA GENERAL'].recibidos.length >= 1, { que: 'la impresión del resto', limiteMs: 12000 });
+
+    // Y ademas se espera a que TODOS los trabajos que creo este caso lleguen
+    // a un estado terminal. Sin esto, el de BEBIDAS seguia en vuelo al
+    // terminar el caso y su papel aparecia despues del limpiar() del
+    // siguiente, contaminando su conteo. No es un sleep: es la condicion
+    // real de "este caso ya termino".
+    const idsDelCaso = r.creados.map(x => x.id);
+    await hasta(async () => {
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM impresion_trabajos
+          WHERE id = ANY($1::uuid[]) AND estado NOT IN ('enviado','agotado','cancelado','incierto')`,
+        [idsDelCaso]);
+      return rows[0].n === 0;
+    }, { que: 'que los trabajos de este caso queden resueltos', limiteMs: 20000 });
   } finally {
     await pool.query('UPDATE impresoras SET activa = true WHERE id = $1', [IMP['CHILAQUILES'].id]);
   }
@@ -457,6 +471,17 @@ await t('CONCURRENCIA', '16. 20 rondas simultáneas: 60 trabajos exactos, 0 dupl
       [creados.map(c => c.id)]);
     return rows[0].n === 60;
   }, { que: 'que los 60 trabajos queden enviados', limiteMs: 40000 });
+
+  // Un papel de mas puede ser una duplicacion o un rezagado de otro caso.
+  // Son cosas distintas y se comprueban por separado: cada ronda usa una mesa
+  // propia (20+i), asi que una mesa repetida SI es una impresion duplicada.
+  const mesaDe = (txt) => (txt.match(/Mesa\s*:?\s*(\d+)/i) || [])[1] || '?';
+  for (const nom of ['CHILAQUILES', 'COCINA GENERAL', 'BEBIDAS']) {
+    const hist = {};
+    for (const rec of SIM[nom].recibidos) { const m = mesaDe(rec.texto); hist[m] = (hist[m] || 0) + 1; }
+    const repetidas = Object.entries(hist).filter(([, n]) => n > 1);
+    assert.deepStrictEqual(repetidas, [], `${nom} imprimio dos veces la misma mesa: ${JSON.stringify(repetidas)}`);
+  }
 
   const total = SIM['CHILAQUILES'].recibidos.length + SIM['COCINA GENERAL'].recibidos.length + SIM['BEBIDAS'].recibidos.length;
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 20, 'una comanda por mesa en chilaquiles');
