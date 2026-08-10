@@ -4728,6 +4728,43 @@ async function crearUsuarioStaff() {
 }
 
 
+
+// El SDK de Meta se carga bajo demanda, la primera vez que alguien pulsa
+// Conectar. No va en el <head> porque la inmensa mayoria de las visitas al
+// panel no lo necesitan, y un script de terceros en cada carga es peso y
+// superficie que no hace falta.
+//
+// Es el mismo cargador que ya usa panel/superadmin.html: mismo dominio
+// oficial de Meta, mismo id de script para no insertarlo dos veces, misma
+// espera a fbAsyncInit.
+let fbSdkPromesa = null;
+
+function cargarSdkMeta(appId, version) {
+  if (fbSdkPromesa) return fbSdkPromesa;
+  fbSdkPromesa = new Promise(function (resolver, rechazar) {
+    function inicializar() {
+      try {
+        window.FB.init({ appId: appId, cookie: true, xfbml: false, version: version });
+        resolver();
+      } catch (e) { rechazar(e); }
+    }
+    if (window.FB) { inicializar(); return; }
+    window.fbAsyncInit = inicializar;
+    if (document.getElementById('facebook-jssdk')) return;   // ya lo inserto otro clic
+    const js = document.createElement('script');
+    js.id = 'facebook-jssdk';
+    js.src = 'https://connect.facebook.net/es_LA/sdk.js';
+    js.onerror = function () {
+      rechazar(new Error('El SDK de Meta no pudo cargarse (bloqueado por el navegador o sin conexión).'));
+    };
+    document.body.appendChild(js);
+    setTimeout(function () {
+      if (!window.FB) rechazar(new Error('Tiempo de espera agotado cargando el SDK de Meta.'));
+    }, 10000);
+  });
+  return fbSdkPromesa;
+}
+
 // ─── WhatsApp autoservicio (Embedded Signup desde el panel del negocio) ──────
 //
 // Lo que ve el cliente: un botón. Lo que NO ve: access token, phone number id,
@@ -4806,6 +4843,10 @@ async function conectarWhatsapp() {
     const inicio = await ini.json();
 
     waProgreso('Abriendo Meta...');
+    // Si el SDK no carga (extension del navegador, sin conexion), esto lanza
+    // con un mensaje que el cliente puede entender, en vez de dejar el boton
+    // sin hacer nada.
+    await cargarSdkMeta(cfg.appId, cfg.graphApiVersion);
     const datos = await abrirEmbeddedSignup(cfg, inicio.state);
     if (!datos) {
       // El cliente cerró la ventana: no se deja un intento colgando.
@@ -4865,7 +4906,6 @@ function abrirEmbeddedSignup(cfg, state) {
     }
     window.addEventListener('message', alMensaje);
 
-    if (!window.FB) { terminar(null); return; }
     window.FB.login(function (respuesta) {
       const code = respuesta && respuesta.authResponse && respuesta.authResponse.code;
       if (!code) { terminar(null); return; }
