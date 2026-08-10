@@ -1193,6 +1193,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
+      <div id="wa-autoservicio"></div>
       <div id="int-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
@@ -4538,7 +4539,6 @@ async function cargarDiagnostico() {
     ${fila('Entregas configuradas', op.modalidades_entrega ? '✅ Sí' : '⬜ No', op.modalidades_entrega?'#22c55e':'#888')}
     ${fila('Bot listo para activar', op.reglas_operativas && op.integracion_conectada ? '✅ Sí' : '⬜ No', (op.reglas_operativas && op.integracion_conectada)?'#22c55e':'#888')}
 
-    <div id="wa-autoservicio"></div>
     <div style="font-weight:700;font-size:0.85rem;margin:18px 0 6px;">Integraciones</div>
     ${Object.entries(d.integraciones).map(([mod,estado]) => fila(mod.charAt(0).toUpperCase()+mod.slice(1), estado)).join('') || '<div style="font-size:0.8rem;color:#aaa;">Sin módulos adicionales</div>'}
   `;
