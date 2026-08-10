@@ -150,6 +150,47 @@ await t('RESILIENCIA', '12. y cuando la tabla vuelve, la auditoria se escribe ot
   assert.ok(r?.id, 'el fallo era temporal, no permanente');
 });
 
+
+// ─── La FK del actor no puede pelearse con el CHECK (047) ───────────────────
+
+await t('FK', '13. la FK del actor RETIENE, no anula', async () => {
+  // La 046 dejo la FK como ON DELETE SET NULL y a la vez el CHECK exigiendo
+  // exactamente un actor. Para una fila de actor negocio -- superadmin_id
+  // NULL -- borrar al usuario habria intentado dejar AMBAS columnas nulas, y
+  // el CHECK habria abortado el DELETE. Las dos reglas se contradecian.
+  //
+  // La 047 la pasa a RESTRICT, que es el mismo criterio que superadmin_id ya
+  // tenia desde la 011: una bitacora retiene a su autor.
+  const { rows } = await pool.query(
+    `SELECT c.confdeltype AS tipo FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY (c.conkey)
+      WHERE t.relname='auditoria_plataforma' AND c.contype='f' AND a.attname='actor_usuario_id'`);
+  assert.ok(rows[0], 'la FK del actor tiene que existir');
+  assert.ok(['a', 'r'].includes(rows[0].tipo),
+    `la FK es '${rows[0].tipo}': con SET NULL, borrar al actor romperia el CHECK`);
+});
+
+await t('FK', '14. borrar al actor falla explicito, no deja la fila sin autor', async () => {
+  const victima = await crearUsuarioConPassword({
+    negocioId: NEG, nombre: 'Actor Efimero', email: `efimero-${Date.now()}@test.local`,
+    password: 'ClaveEfimera123!', rol: 'admin' });
+  await registrarAuditoriaPlataforma({
+    actorUsuarioId: victima.id, accion: 'deja_rastro', negocioId: NEG });
+
+  await assert.rejects(
+    () => pool.query(`DELETE FROM usuarios WHERE id = $1`, [victima.id]),
+    /viola|violates|foreign key/i,
+    'perder al autor en silencio seria peor que impedir el borrado');
+});
+
+await t('FK', '15. y la fila de auditoria sigue con su actor intacto', async () => {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS n FROM auditoria_plataforma
+      WHERE accion='deja_rastro' AND actor_usuario_id IS NOT NULL`);
+  assert.ok(rows[0].n >= 1, 'el rastro no se perdio');
+});
+
 console.log(`\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallos.length) for (const f of fallos) console.log(`  - ${f}`);
 await pool.end();
