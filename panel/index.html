@@ -2555,6 +2555,7 @@ function mostrarTab(tab) {
     renderConfigForm();
     cargarReglasForm();
     cargarIntegracionesPanel();
+    cargarWhatsappAutoservicio();
     cargarBotWhatsappPanel();
     cargarMetodosPagoPanel();
     cargarConfigCotizaciones();
@@ -4537,6 +4538,7 @@ async function cargarDiagnostico() {
     ${fila('Entregas configuradas', op.modalidades_entrega ? '✅ Sí' : '⬜ No', op.modalidades_entrega?'#22c55e':'#888')}
     ${fila('Bot listo para activar', op.reglas_operativas && op.integracion_conectada ? '✅ Sí' : '⬜ No', (op.reglas_operativas && op.integracion_conectada)?'#22c55e':'#888')}
 
+    <div id="wa-autoservicio"></div>
     <div style="font-weight:700;font-size:0.85rem;margin:18px 0 6px;">Integraciones</div>
     ${Object.entries(d.integraciones).map(([mod,estado]) => fila(mod.charAt(0).toUpperCase()+mod.slice(1), estado)).join('') || '<div style="font-size:0.8rem;color:#aaa;">Sin módulos adicionales</div>'}
   `;
@@ -4725,13 +4727,223 @@ async function crearUsuarioStaff() {
   }
 }
 
+
+
+// El SDK de Meta se carga bajo demanda, la primera vez que alguien pulsa
+// Conectar. No va en el <head> porque la inmensa mayoria de las visitas al
+// panel no lo necesitan, y un script de terceros en cada carga es peso y
+// superficie que no hace falta.
+//
+// Es el mismo cargador que ya usa panel/superadmin.html: mismo dominio
+// oficial de Meta, mismo id de script para no insertarlo dos veces, misma
+// espera a fbAsyncInit.
+let fbSdkPromesa = null;
+
+function cargarSdkMeta(appId, version) {
+  if (fbSdkPromesa) return fbSdkPromesa;
+  fbSdkPromesa = new Promise(function (resolver, rechazar) {
+    function inicializar() {
+      try {
+        window.FB.init({ appId: appId, cookie: true, xfbml: false, version: version });
+        resolver();
+      } catch (e) { rechazar(e); }
+    }
+    if (window.FB) { inicializar(); return; }
+    window.fbAsyncInit = inicializar;
+    if (document.getElementById('facebook-jssdk')) return;   // ya lo inserto otro clic
+    const js = document.createElement('script');
+    js.id = 'facebook-jssdk';
+    js.src = 'https://connect.facebook.net/es_LA/sdk.js';
+    js.onerror = function () {
+      rechazar(new Error('El SDK de Meta no pudo cargarse (bloqueado por el navegador o sin conexión).'));
+    };
+    document.body.appendChild(js);
+    setTimeout(function () {
+      if (!window.FB) rechazar(new Error('Tiempo de espera agotado cargando el SDK de Meta.'));
+    }, 10000);
+  });
+  return fbSdkPromesa;
+}
+
+// ─── WhatsApp autoservicio (Embedded Signup desde el panel del negocio) ──────
+//
+// Lo que ve el cliente: un botón. Lo que NO ve: access token, phone number id,
+// waba id ni verify token -- el backend ni siquiera se los manda.
+let waEstadoActual = null;
+let waConectando = false;
+
+function waProgreso(txt) {
+  const el = document.getElementById('wa-progreso');
+  if (el) el.textContent = txt || '';
+}
+
+function pintarWhatsappAutoservicio() {
+  const cont = document.getElementById('wa-autoservicio');
+  if (!cont || ROL !== 'admin') return;
+  const e = waEstadoActual;
+  if (!e) { cont.innerHTML = ''; return; }
+
+  const marco = 'border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:18px;background:#fff;';
+  const btn = (txt, fn, primario) => '<button onclick="' + fn + '" ' + (waConectando ? 'disabled' : '') +
+    ' style="background:' + (primario ? '#1c1c1c' : '#fff') + ';color:' + (primario ? '#fff' : '#1c1c1c') +
+    ';border:1px solid #1c1c1c;border-radius:8px;padding:10px 18px;font-size:0.9rem;font-weight:700;cursor:' +
+    (waConectando ? 'not-allowed' : 'pointer') + ';opacity:' + (waConectando ? '.5' : '1') +
+    ';margin-right:8px;margin-bottom:8px;">' + txt + '</button>';
+
+  if (!e.conectado) {
+    cont.innerHTML = '<div style="' + marco + '">' +
+      '<div style="font-weight:800;font-size:1rem;margin-bottom:6px;">WhatsApp</div>' +
+      '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">Conecta el número de WhatsApp de tu negocio para recibir pedidos y mensajes en Xabor.</div>' +
+      '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin-bottom:10px;"></div>' +
+      btn('Conectar WhatsApp', 'conectarWhatsapp()', true) +
+      '<div style="color:#888;font-size:0.78rem;margin-top:12px;line-height:1.5;">Tu cuenta, tu página y tu número siguen siendo tuyos. Xabor solo recibe los permisos necesarios para operar la integración.</div>' +
+      '</div>';
+    return;
+  }
+
+  const tonos = { ok: '#22c55e', espera: '#f59e0b', problema: '#ef4444' };
+  const en = e.estadoNombre || { etiqueta: 'Desconocido', tono: 'espera' };
+  cont.innerHTML = '<div style="' + marco + '">' +
+    '<div style="font-weight:800;font-size:1rem;margin-bottom:10px;">WhatsApp</div>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
+      '<span style="width:9px;height:9px;border-radius:50%;background:#22c55e;display:inline-block;"></span>' +
+      '<span style="font-weight:700;">Conectado</span></div>' +
+    '<div style="font-size:0.9rem;line-height:1.9;color:#333;">' +
+      (e.nombreVisible ? '<div><strong>' + e.nombreVisible + '</strong></div>' : '') +
+      (e.numero ? '<div>' + e.numero + '</div>' : '') +
+      '<div>Nombre visible: <span style="color:' + (tonos[en.tono] || '#666') + ';font-weight:600;">' + en.etiqueta + '</span></div>' +
+      '<div>Mensajes: ' + (e.appSuscrita ? 'Activo' : 'Pendiente') + '</div>' +
+      '<div>Atención automática: ' + (e.botActivo ? 'Activa' : 'Pausada') + '</div>' +
+    '</div>' +
+    '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin:12px 0;"></div>' +
+    '<div style="margin-top:12px;">' + btn('Verificar conexión', 'verificarWhatsapp()') + btn('Reconectar', 'conectarWhatsapp()') + '</div>' +
+    '</div>';
+}
+
+async function cargarWhatsappAutoservicio() {
+  if (ROL !== 'admin') return;
+  try {
+    const r = await apiFetch('/api/integraciones/whatsapp/estado');
+    waEstadoActual = r.ok ? await r.json() : null;
+  } catch { waEstadoActual = null; }
+  pintarWhatsappAutoservicio();
+}
+
+async function conectarWhatsapp() {
+  if (waConectando) return;                 // sin dobles clicks
+  waConectando = true; pintarWhatsappAutoservicio();
+  waProgreso('Preparando conexión...');
+  try {
+    const cfgRes = await apiFetch('/api/integraciones/whatsapp/config');
+    const cfg = await cfgRes.json();
+    if (!cfg.listo) throw new Error('Xabor todavía no tiene configurada la conexión con Meta.');
+
+    const ini = await apiFetch('/api/integraciones/whatsapp/iniciar', { method: 'POST' });
+    if (!ini.ok) throw new Error('No pudimos preparar la conexión.');
+    const inicio = await ini.json();
+
+    waProgreso('Abriendo Meta...');
+    // Si el SDK no carga (extension del navegador, sin conexion), esto lanza
+    // con un mensaje que el cliente puede entender, en vez de dejar el boton
+    // sin hacer nada.
+    await cargarSdkMeta(cfg.appId, cfg.graphApiVersion);
+    const datos = await abrirEmbeddedSignup(cfg, inicio.state);
+    if (!datos) {
+      // El cliente cerró la ventana: no se deja un intento colgando.
+      await apiFetch('/api/integraciones/whatsapp/conexion-pendiente', { method: 'DELETE' });
+      waProgreso('Conexión cancelada.');
+      return;
+    }
+
+    waProgreso('Configurando WhatsApp...');
+    const res = await apiFetch('/api/integraciones/whatsapp/meta/callback', {
+      method: 'POST',
+      body: JSON.stringify(Object.assign({ state: inicio.state }, datos)),
+    });
+    const cuerpo = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(cuerpo.error || 'No pudimos completar la conexión con Meta.');
+
+    waProgreso('Verificando conexión...');
+    await cargarWhatsappAutoservicio();
+    waProgreso('');
+  } catch (err) {
+    waProgreso(err.message || 'No pudimos completar la conexión con Meta.');
+  } finally {
+    waConectando = false; pintarWhatsappAutoservicio();
+  }
+}
+
+// Abre el Embedded Signup oficial de Meta. Resuelve con los datos que Meta
+// devuelve, o con null si el cliente cerró la ventana.
+function abrirEmbeddedSignup(cfg, state) {
+  return new Promise(function (resolver) {
+    let resuelto = false;
+    let datosSesion = null;
+
+    function terminar(v) {
+      if (resuelto) return;
+      resuelto = true;
+      window.removeEventListener('message', alMensaje);
+      resolver(v);
+    }
+
+    function alMensaje(ev) {
+      // Solo se acepta lo que venga de Facebook. Sin esta comprobación,
+      // cualquier pestaña podría inyectar los datos de otra cuenta.
+      if (!/^https:\/\/(www\.)?facebook\.com$/.test(ev.origin)) return;
+      let d;
+      try { d = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data; } catch (_) { return; }
+      if (!d || d.type !== 'WA_EMBEDDED_SIGNUP') return;
+      if (d.event === 'FINISH' && d.data) {
+        datosSesion = {
+          phoneNumberId: d.data.phone_number_id,
+          wabaId: d.data.waba_id,
+          businessId: d.data.business_id,
+        };
+      } else if (d.event === 'CANCEL' || d.event === 'ERROR') {
+        terminar(null);
+      }
+    }
+    window.addEventListener('message', alMensaje);
+
+    window.FB.login(function (respuesta) {
+      const code = respuesta && respuesta.authResponse && respuesta.authResponse.code;
+      if (!code) { terminar(null); return; }
+      // El code llega por el callback del SDK; el número y la WABA por
+      // postMessage. Se espera un instante a que lleguen los dos.
+      setTimeout(function () {
+        terminar(Object.assign({ code: code }, datosSesion || {}));
+      }, 500);
+    }, {
+      config_id: cfg.configId,
+      response_type: 'code',
+      override_default_response_type: true,
+      extras: { setup: {}, sessionInfoVersion: 3 },
+    });
+  });
+}
+
+async function verificarWhatsapp() {
+  waProgreso('Verificando...');
+  try {
+    const r = await apiFetch('/api/integraciones/whatsapp/verificar', { method: 'POST' });
+    const d = await r.json();
+    if (d.estado) waEstadoActual = d.estado;
+    pintarWhatsappAutoservicio();
+    waProgreso(d.ok ? 'Todo listo.' : (d.acciones || []).join(' '));
+  } catch (_) {
+    waProgreso('No pudimos verificar la conexión.');
+  }
+}
+
 // ─── Integraciones ───────────────────────────────────────────────────────────
 const INT_CAMPOS = [
-  { grupo: 'WhatsApp (Meta Cloud API)', campos: [
-    { clave: 'wa_token',         label: 'Access Token',       placeholder: 'EAAxxxxxxx...' },
-    { clave: 'wa_phone_id',      label: 'Phone Number ID',    placeholder: '123456789012345' },
-    { clave: 'wa_verify_token',  label: 'Verify Token',       placeholder: 'mi-token-secreto' },
-    { clave: 'wa_admin_numero',  label: 'Número admin (reporte)', placeholder: '528781234567' },
+  // Access Token, Phone Number ID y Verify Token YA NO se le piden al negocio:
+  // los obtiene Xabor por Embedded Signup (ver la tarjeta de arriba). El
+  // backend los sigue aceptando para soporte, pero un cliente no tiene por qué
+  // saber qué es un Phone Number ID ni copiarlo a mano desde Meta.
+  { grupo: 'WhatsApp', campos: [
+    { clave: 'wa_admin_numero',  label: 'Número para reportes internos', placeholder: '528781234567' },
   ]},
   { grupo: 'Facturapi (CFDI)', campos: [
     { clave: 'facturapi_key', label: 'API Key', placeholder: '••••••••' },

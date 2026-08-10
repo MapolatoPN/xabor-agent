@@ -17,13 +17,35 @@ function limpiarUsados() {
   for (const [s, exp] of usados) if (exp < ahora) usados.delete(s);
 }
 
-export function crearState({ negocioId, superadminId }) {
+/**
+ * Crea el state firmado del Embedded Signup.
+ *
+ * El negocio va DENTRO del state firmado, no en el cuerpo de la petición.
+ * Es lo que permite que el callback sea público sin ser inseguro: quien
+ * responde no puede elegir a qué negocio conectar el WhatsApp, porque esa
+ * decisión ya viaja firmada desde que se abrió la ventana de Meta.
+ *
+ * Dos actores pueden iniciarlo y la diferencia importa para la auditoría:
+ *
+ *   superadminId  lo inició Xabor desde el panel de plataforma
+ *   usuarioId     lo inició el propio negocio desde su panel (autoservicio)
+ *
+ * Se exige exactamente uno de los dos. Un state sin actor no se puede
+ * auditar, y uno con los dos no se sabe a quién atribuir.
+ */
+export function crearState({ negocioId, superadminId = null, usuarioId = null }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('crearState: negocioId requerido');
-  if (typeof superadminId !== 'string' || !superadminId.trim()) throw new Error('crearState: superadminId requerido');
+  const sup = typeof superadminId === 'string' && superadminId.trim() ? superadminId.trim() : null;
+  const usr = typeof usuarioId === 'string' && usuarioId.trim() ? usuarioId.trim() : null;
+  if (!sup && !usr) throw new Error('crearState: hace falta superadminId o usuarioId');
+  if (sup && usr) throw new Error('crearState: no puede haber dos actores en el mismo state');
+
   const now = Date.now();
   const payload = {
     negocioId: negocioId.trim(),
-    superadminId: superadminId.trim(),
+    superadminId: sup,
+    usuarioId: usr,
+    actor: sup ? 'superadmin' : 'negocio',
     nonce: randomBytes(16).toString('hex'),
     iat: now,
     exp: now + DURACION_MS,
@@ -51,11 +73,22 @@ export function validarYConsumirState(state) {
     if (sigBuf.length !== espBuf.length || !timingSafeEqual(sigBuf, espBuf)) return null; // alterado
 
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-    if (!payload.negocioId || !payload.superadminId || !payload.exp) return null;
+    // Un state sin actor no se puede auditar. Vale cualquiera de los dos,
+    // pero tiene que haber uno: los de Superadmin traen superadminId, los del
+    // autoservicio del negocio traen usuarioId.
+    const tieneActor = Boolean(payload.superadminId || payload.usuarioId);
+    if (!payload.negocioId || !tieneActor || !payload.exp) return null;
     if (Date.now() > payload.exp) return null; // vencido
 
     usados.set(state, payload.exp); // marca como consumido -- un solo uso
-    return { negocioId: payload.negocioId, superadminId: payload.superadminId };
+    return {
+      negocioId: payload.negocioId,
+      superadminId: payload.superadminId || null,
+      usuarioId: payload.usuarioId || null,
+      // Los states viejos (anteriores al autoservicio) no traen `actor`; si
+      // falta, viene de Superadmin, que era el unico que existia.
+      actor: payload.actor || 'superadmin',
+    };
   } catch {
     return null;
   }

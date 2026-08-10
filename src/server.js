@@ -78,6 +78,7 @@ import {
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
+import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -4606,6 +4607,101 @@ const MENSAJES_INTENTO_INVALIDO = {
   reemplazado: 'Esta conexión fue reemplazada por un intento más reciente',
 };
 
+
+// ─── Autoservicio de WhatsApp para el negocio ────────────────────────────────
+//
+// Mismo flujo de Embedded Signup que ya usa Superadmin, con otro actor. NO se
+// duplica el backend: el callback publico
+// (/api/integraciones/whatsapp/meta/callback) es el mismo, y sigue derivando
+// el negocio del `state` firmado -- nunca del cuerpo de la peticion. Eso es
+// lo que permite que el popup de Meta responda a un endpoint sin sesion sin
+// que nadie pueda conectar WhatsApp al negocio de otro.
+//
+// Aqui solo se agrega la puerta de entrada del cliente y la lectura de estado
+// sin secretos.
+
+// El negocio SIEMPRE sale de la sesion. Un negocioId en el cuerpo o en la
+// query se ignora por completo: no es un dato, es un intento.
+function requireAdminNegocio(req, res, next) {
+  if (!puedeAdministrarWhatsapp(req.rol)) {
+    return res.status(403).json({
+      error: 'Solo un administrador del negocio puede conectar WhatsApp',
+    });
+  }
+  next();
+}
+
+// Datos publicos que necesita el SDK de Meta en el navegador. No son
+// secretos: el App ID viaja en cualquier integracion de Facebook Login.
+app.get('/api/integraciones/whatsapp/config', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, (req, res) => {
+  const appId = process.env.META_APP_ID || null;
+  const configId = process.env.META_CONFIG_ID || null;   // la misma que usa Superadmin
+  res.json({
+    appId, configId,
+    graphApiVersion: GRAPH_VERSION,
+    listo: Boolean(appId && configId),
+  });
+});
+
+// Arranca un intento. Devuelve el state firmado que el navegador le pasa a
+// Meta y que volvera en el callback.
+app.post('/api/integraciones/whatsapp/iniciar', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  const negocioId = req.negocioId;      // de la sesion, jamas del cuerpo
+  try {
+    const state = crearState({ negocioId, usuarioId: req.usuarioId });
+    registrarIntentoPendiente(negocioId, state);
+    res.json({ state });
+  } catch (e) {
+    console.error('[WA autoservicio] no se pudo iniciar:', e.message);
+    res.status(500).json({ error: 'No pudimos preparar la conexion con Meta' });
+  }
+});
+
+// Cancelar: el cliente cerro la ventana de Meta. Idempotente.
+app.delete('/api/integraciones/whatsapp/conexion-pendiente', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, (req, res) => {
+  cancelarIntentoPendiente(req.negocioId);
+  res.json({ ok: true });
+});
+
+// Estado para pintar la seccion. Sin un solo secreto dentro.
+app.get('/api/integraciones/whatsapp/estado', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    res.json(await estadoWhatsappNegocio(req.negocioId));
+  } catch (e) {
+    console.error('[WA autoservicio] estado:', e.message);
+    res.status(500).json({ error: 'No pudimos leer el estado de la conexion' });
+  }
+});
+
+// Verificar conexion: comprueba lo que ya sabemos sin mandar un mensaje real
+// al cliente. Un "verificar" que le escribe a alguien no es una verificacion,
+// es un mensaje no solicitado.
+app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const estado = await estadoWhatsappNegocio(req.negocioId);
+    const faltantes = [];
+    if (!estado.wabaConfigurada) faltantes.push('Falta terminar la conexion con Meta.');
+    if (!estado.appSuscrita) faltantes.push('La cuenta de WhatsApp aun no esta suscrita para recibir mensajes.');
+    if (!estado.numeroRegistrado) faltantes.push('Falta completar el registro del numero en Meta.');
+
+    await pool.query(
+      `UPDATE integraciones_canal SET ultima_prueba_at = NOW(), ultima_prueba_ok = $2
+        WHERE negocio_id = $1 AND canal = 'whatsapp'`,
+      [req.negocioId, faltantes.length === 0]).catch(() => {});
+
+    res.json({
+      ok: faltantes.length === 0,
+      mensaje: faltantes.length === 0 ? 'Todo listo' : 'Hay algo pendiente',
+      acciones: faltantes,
+      estado,
+    });
+  } catch (e) {
+    const traducido = traducirErrorMeta(e);
+    console.error('[WA autoservicio] verificar:', e.message);
+    res.status(502).json({ ok: false, mensaje: traducido.mensaje });
+  }
+});
+
 app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   const { state, code, phoneNumberId, wabaId, businessId, displayPhoneNumber } = req.body || {};
   const consumido = validarYConsumirState(state);
@@ -6843,6 +6939,7 @@ async function arrancar() {
     });
   });
   console.log('[Startup] Aplicación lista para tráfico');
+
 
   // Trabajos periódicos: después de escuchar, para que nada de esto pueda
   // retrasar la disponibilidad del servicio.
