@@ -8,6 +8,7 @@ import { procesarMensaje } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
+import { encolarEntrante, claveEvento } from '../services/whatsappDurable.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago, ClipNoConfiguradoError } from '../services/clip-api.js';
@@ -1096,13 +1097,106 @@ const RE_ENTRAR_MODO_REPARTIDOR = /^(modo\s+repartidor|disponible)[.,!]?$/i;
 const RE_MIS_ENTREGAS = /^mis\s+entregas[.,!]?$/i;
 const RE_INTENCION_CLIENTE = /quiero\s+(hacer\s+)?(un\s+)?pedido|quiero\s+ordenar|qu[eé]\s+venden|\bmen[uú]\b|quiero\s+(una\s+)?cotizaci[oó]n|quiero\s+comprar/i;
 
+
+// ─── Identidad durable de los eventos de un webhook ──────────────────────────
+//
+// Un mismo POST de Meta puede traer varios eventos (mensajes y estados) y NO
+// todos comparten el mismo tipo de identificador. Los mensajes se identifican
+// por su wamid; los estados NO pueden identificarse solo por el wamid, porque
+// el mismo mensaje pasa por sent, delivered y read y los tres son eventos
+// distintos: deduplicar por wamid a secas tiraria dos de cada tres.
+//
+// Fuente oficial (consultada el 10 de agosto de 2026):
+//   https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks
+//     "Meta retries delivery with decreasing frequency until the request
+//      succeeds, for up to 7 days"
+//     "These retries can result in duplicate webhook notifications."
+//   https://developers.facebook.com/docs/graph-api/webhooks/getting-started
+//     "Your server should handle deduplication in these cases."
+//
+// El ORDEN de entrega no esta documentado: se trata cada evento por su
+// identidad, nunca por su posicion.
+function eventosDelWebhook(value) {
+  const eventos = [];
+  for (const m of value?.messages ?? []) {
+    if (!m?.id) continue;
+    eventos.push({ tipo: 'mensaje', eventoId: claveEvento('mensaje', m), payload: m });
+  }
+  for (const st of value?.statuses ?? []) {
+    if (!st?.id) continue;
+    eventos.push({ tipo: 'estado', eventoId: claveEvento('estado', st), payload: st });
+  }
+  return eventos;
+}
+
+// Persiste TODO lo que trae el webhook antes de que nadie conteste 200.
+//
+// Devuelve ok:false cuando no se pudo confirmar la escritura. En ese caso el
+// handler NO responde 200: Meta reintenta durante hasta 7 dias, y un reintento
+// es infinitamente mejor que un mensaje perdido en silencio.
+async function persistirEventosDelWebhook(body) {
+  const value = body?.entry?.[0]?.changes?.[0]?.value;
+  const phoneNumberId = value?.metadata?.phone_number_id ?? null;
+  const eventos = eventosDelWebhook(value);
+  if (!eventos.length) return { ok: true, eventos: 0, nuevos: 0, duplicados: 0 };
+
+  // Un evento cuyo phone_number_id no esta mapeado se guarda igual, como
+  // huerfano. Perder el mensaje de un cliente porque falta una fila de
+  // configuracion es peor que guardarlo sin dueno y reasignarlo despues.
+  let negocioId = null;
+  try {
+    const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp', phoneNumberId) : null;
+    negocioId = integracion?.negocioId ?? null;
+  } catch (e) {
+    console.error('[Meta WA] No se pudo resolver el negocio del webhook:', e.message);
+    return { ok: false, motivo: 'no se pudo resolver el negocio' };
+  }
+
+  let nuevos = 0, duplicados = 0;
+  for (const ev of eventos) {
+    let r;
+    try {
+      r = await encolarEntrante({ negocioId, eventoId: ev.eventoId, tipo: ev.tipo,
+                                  phoneNumberId, payload: ev.payload });
+    } catch (e) {
+      console.error('[Meta WA] Fallo al persistir el evento entrante:', e.message);
+      return { ok: false, motivo: 'la base no confirmo la escritura' };
+    }
+    if (!r?.ok) return { ok: false, motivo: r?.motivo || 'persistencia no confirmada' };
+    if (r.duplicado) duplicados++; else nuevos++;
+  }
+  return { ok: true, eventos: eventos.length, nuevos, duplicados, negocioId };
+}
+
 // ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
 router.post('/', async (req, res) => {
-  res.sendStatus(200); // Meta requiere 200 inmediato
+  const body = req.body;
+  if (body?.object !== 'whatsapp_business_account') return res.sendStatus(200);
+
+  // 1. PERSISTIR. Recibir un evento y procesarlo son cosas distintas, y el 200
+  //    solo puede significar "lo tengo guardado". Antes se contestaba en la
+  //    primera linea: si el proceso moria despues, Meta ya tenia su acuse, no
+  //    reintentaba, y el mensaje del cliente desaparecia sin dejar rastro.
+  const persistencia = await persistirEventosDelWebhook(body);
+
+  // 2. Si no se pudo guardar, NO fingir exito. Meta reintenta hasta 7 dias.
+  if (!persistencia.ok) {
+    console.error(`[Meta WA] Webhook NO persistido (${persistencia.motivo}) -- se responde 503 para que Meta reintente`);
+    return res.sendStatus(503);
+  }
+
+  // 3. Ahora si, el acuse.
+  res.sendStatus(200);
+
+  // 4. Reentrega de Meta: el evento ya estaba guardado y ya se proceso. Cortar
+  //    aqui es justo lo que faltaba: antes se seguia hasta el bot y una
+  //    reentrega podia acabar en un pedido repetido.
+  if (persistencia.eventos > 0 && persistencia.nuevos === 0) {
+    console.log(`[Meta WA] Webhook duplicado (${persistencia.duplicados} evento(s) ya conocidos) -- no se vuelve a procesar`);
+    return;
+  }
 
   try {
-    const body = req.body;
-    if (body.object !== 'whatsapp_business_account') return;
 
     const value   = body.entry?.[0]?.changes?.[0]?.value;
 
