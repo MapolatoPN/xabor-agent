@@ -78,6 +78,9 @@ import {
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
+import { crearWorkerWhatsapp } from './services/whatsappWorker.js';
+import { procesarWebhookPersistido } from './channels/whatsapp-meta.js';
+let workerWhatsapp = null;
 import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -6843,6 +6846,33 @@ async function arrancar() {
     });
   });
   console.log('[Startup] Aplicación lista para tráfico');
+
+  // Worker del buzón durable de WhatsApp. Va DESPUÉS de escuchar y después
+  // del bootstrap de la base: si arrancara antes, su primera consulta se
+  // encontraría con un esquema a medio migrar.
+  //
+  // Es lo que cierra el agujero de verdad. El webhook ya persiste antes de
+  // contestar 200, pero si el proceso muere justo después del acuse, Meta no
+  // reintenta y nadie más va a tocar ese evento. Al arrancar de nuevo, este
+  // worker lo encuentra pendiente y lo termina.
+  workerWhatsapp = crearWorkerWhatsapp({
+    procesarEvento: async (fila) => {
+      // Se reconstruye la forma que espera el procesamiento a partir de lo
+      // que se guardó. El worker recorre EXACTAMENTE el mismo código que el
+      // camino rápido: dos caminos distintos significaría que el de la
+      // recuperación es el que nunca se prueba.
+      const value = {
+        metadata: { phone_number_id: fila.phone_number_id },
+        contacts: [],
+        [fila.tipo === 'estado' ? 'statuses' : 'messages']: [fila.payload],
+      };
+      await procesarWebhookPersistido({
+        object: 'whatsapp_business_account',
+        entry: [{ changes: [{ value }] }],
+      });
+    },
+  });
+  workerWhatsapp.iniciar();
 
   // Trabajos periódicos: después de escuchar, para que nada de esto pueda
   // retrasar la disponibilidad del servicio.

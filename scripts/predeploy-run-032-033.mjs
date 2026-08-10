@@ -31,6 +31,7 @@ const SCRIPTS = [
   '041-usuarios-mesero-pin',
   '042-password-reset',
   '043-impresion-edge',
+  '044-resiliencia',
 ];
 
 for (const nombre of SCRIPTS) {
