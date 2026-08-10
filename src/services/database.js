@@ -4799,13 +4799,26 @@ function slugify(texto) {
     .slice(0, 60);
 }
 
-export async function registrarAuditoriaPlataforma({ superadminId, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null }, client = pool) {
-  await client.query(
-    `INSERT INTO auditoria_plataforma (superadmin_id, accion, negocio_id, usuario_id, estado_anterior, estado_nuevo, contexto)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [superadminId, accion, negocioId, usuarioId, estadoAnterior, estadoNuevo, contexto]
-  );
+export async function registrarAuditoriaPlataforma({ superadminId = null, actorUsuarioId = null, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null }, client = pool) {
+  // Dos actores posibles y exactamente uno obligatorio: Xabor (superadminId)
+  // o el administrador del propio negocio (actorUsuarioId). `usuarioId` es
+  // otra cosa -- el usuario AFECTADO por la accion -- y no sirve como actor.
+  const sup = superadminId || null;
+  const act = actorUsuarioId || null;
+  if (!sup && !act) throw new Error('registrarAuditoriaPlataforma: hace falta superadminId o actorUsuarioId');
+  if (sup && act) throw new Error('registrarAuditoriaPlataforma: no puede haber dos actores');
+
+  const { rows } = await client.query(
+    `INSERT INTO auditoria_plataforma
+       (superadmin_id, actor_usuario_id, accion, negocio_id, usuario_id, estado_anterior, estado_nuevo, contexto)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [sup, act, accion, negocioId, usuarioId,
+     estadoAnterior ? JSON.stringify(estadoAnterior) : null,
+     estadoNuevo ? JSON.stringify(estadoNuevo) : null,
+     contexto ? JSON.stringify(contexto) : null]);
+  return rows[0];
 }
+
 
 export async function obtenerDashboardSuperadmin() {
   const [totales, recientes, sinAdmin, sinTerminalOMenu] = await Promise.all([

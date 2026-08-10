@@ -4708,7 +4708,23 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   if (!consumido) {
     return res.status(400).json({ error: 'state inválido, vencido o ya utilizado' });
   }
-  const { negocioId, superadminId } = consumido;
+  const { negocioId, superadminId, usuarioId: actorUsuarioId } = consumido;
+
+  // La bitacora es importante, pero NO es la integracion. Si Meta ya devolvio
+  // la WABA y el numero, y subscribe_apps ya funciono, tumbar la respuesta
+  // porque no se pudo escribir una fila de auditoria empuja al cliente a
+  // repetir todo el onboarding -- que es justo lo que paso en produccion con
+  // Mapolato: 500 despues de que lo critico ya estaba hecho.
+  //
+  // Se intenta siempre, se registra el fallo con detalle, y se sigue. No es
+  // un catch silencioso: deja rastro y no se traga la causa.
+  const auditar = async (datos) => {
+    try {
+      await auditar({ actorUsuarioId, ...datos });
+    } catch (e) {
+      console.error(`[AUDITORIA] no se pudo registrar "${datos.accion}" para el negocio ${datos.negocioId || negocioId}: ${e.message}`);
+    }
+  };
 
   // Capa de aplicación (además de la firma/vencimiento/uso único ya
   // verificados arriba): ¿sigue siendo ESTE el intento vigente del
@@ -4716,10 +4732,9 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   // registra el state completo, solo el motivo de rechazo.
   const vigente = validarIntentoVigente(negocioId, state);
   if (!vigente.ok) {
-    await registrarAuditoriaPlataforma({
-      superadminId, accion: 'integracion_embedded_signup_fallido', negocioId,
+    await auditar({ accion: 'integracion_embedded_signup_fallido', negocioId,
       contexto: { motivo: vigente.motivo },
-    }).catch(() => {});
+    });
     return res.status(400).json({ error: MENSAJES_INTENTO_INVALIDO[vigente.motivo] || 'Conexión pendiente inválida' });
   }
 
@@ -4752,8 +4767,7 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
       { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken },
       superadminId
     );
-    await registrarAuditoriaPlataforma({
-      superadminId, accion: 'integracion_embedded_signup_completado', negocioId,
+    await auditar({ accion: 'integracion_embedded_signup_completado', negocioId,
       contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
     });
     limpiarIntentoPendiente(negocioId);
@@ -4776,10 +4790,9 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   } catch (e) {
     console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
     await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', superadminId).catch(() => {});
-    await registrarAuditoriaPlataforma({
-      superadminId, accion: 'integracion_embedded_signup_fallido', negocioId,
+    await auditar({ accion: 'integracion_embedded_signup_fallido', negocioId,
       contexto: { motivo: 'error_intercambio_o_guardado' },
-    }).catch(() => {});
+    });
     limpiarIntentoPendiente(negocioId);
     res.status(502).json({ error: 'No se pudo completar la conexión con Meta' });
   }

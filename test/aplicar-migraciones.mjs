@@ -57,6 +57,7 @@ export const ORDEN_MIGRACIONES = [
   '042_password_reset_tokens.sql',
   '043_impresion_edge.sql',
   '045_whatsapp_nombre_visible.sql',
+  '046_auditoria_actor_negocio.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {

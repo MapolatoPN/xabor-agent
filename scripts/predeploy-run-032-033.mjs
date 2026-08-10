@@ -32,6 +32,7 @@ const SCRIPTS = [
   '042-password-reset',
   '043-impresion-edge',
   '045-nombre-visible',
+  '046-auditoria-actor',
 ];
 
 for (const nombre of SCRIPTS) {
