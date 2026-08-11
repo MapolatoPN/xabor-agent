@@ -97,6 +97,14 @@ Source: "XaborEdgeService.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; El canje del emparejamiento, que corre durante la instalacion.
 Source: "canjear.mjs"; DestDir: "{app}\app"; Flags: ignoreversion
 
+; Y las MISMAS dos piezas, extraibles a temporal. El canje ocurre en
+; PrepareToInstall, antes de copiar un solo archivo al disco, asi que ahi
+; todavia no existe ni {app}\node\node.exe ni {app}\app\canjear.mjs. Con
+; dontcopy quedan dentro del Setup sin instalarse, disponibles para
+; ExtractTemporaryFile, y Windows limpia {tmp} al terminar.
+Source: "{#OrigenNode}\node.exe"; Flags: dontcopy noencryption
+Source: "canjear.mjs"; Flags: dontcopy noencryption
+
 [Dirs]
 ; Los datos viven fuera de {app} para sobrevivir a una reinstalacion. La cola
 ; SQLite en particular puede tener comandas sin imprimir.
@@ -146,42 +154,56 @@ begin
   end;
 end;
 
-// El canje y la instalacion del servicio, en el orden que importa.
-procedure CurStepChanged(PasoActual: TSetupStep);
+// ─── El canje, ANTES de tocar el disco ──────────────────────────────────────
+//
+// Estaba en ssPostInstall, que se ejecuta DESPUES de copiar los archivos. Un
+// Abort ahi no deshace la copia: Inno solo revierte si el fallo ocurre
+// durante la instalacion de archivos, no despues. Un codigo vencido habria
+// dejado 107 MB en Archivos de programa, una entrada en Agregar o quitar
+// programas y ningun servicio -- una instalacion muerta que el restaurante no
+// sabe que tiene.
+//
+// PrepareToInstall corre ANTES de esa fase. Si devuelve un texto, Inno
+// cancela y no ha escrito nada todavia: no hay residuos que limpiar porque
+// nunca se creo ninguno. El runtime y el script se sacan a la carpeta
+// temporal del instalador, que Windows borra sola.
+function PrepareToInstall(var NecesitaReinicio: Boolean): String;
 var
   Codigo: Integer;
   Comando: String;
 begin
-  if PasoActual <> ssPostInstall then Exit;
+  Result := '';
+  ExtractTemporaryFile('node.exe');
+  ExtractTemporaryFile('canjear.mjs');
 
-  // 1. Canjear. Se le pasa el codigo por argumento porque es de un solo uso y
-  //    caduca en minutos; el TOKEN, en cambio, nunca viaja por linea de
-  //    comandos: lo escribe canjear.mjs directamente en config.json.
-  Comando := '"' + ExpandConstant('{app}\app\canjear.mjs') + '"' +
+  Comando := '"' + ExpandConstant('{tmp}\canjear.mjs') + '"' +
              ' --codigo "' + Trim(PaginaVinculo.Values[0]) + '"' +
              ' --nombre "' + Trim(PaginaVinculo.Values[1]) + '"';
 
-  if not Exec(ExpandConstant('{app}\node\node.exe'), Comando,
-              ExpandConstant('{app}\app'), SW_HIDE, ewWaitUntilTerminated, Codigo) then
+  if not Exec(ExpandConstant('{tmp}\node.exe'), Comando,
+              ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Codigo) then
   begin
-    MsgBox('No se pudo ejecutar el paso de conexion con Xabor.', mbCriticalError, MB_OK);
-    Abort;
+    Result := 'No se pudo ejecutar el paso de conexion con Xabor.';
+    Exit;
   end;
 
-  if Codigo <> 0 then
-  begin
-    case Codigo of
-      2: MsgBox('El codigo de conexion no es valido o ya vencio.' #13#13 'Genera uno nuevo en Xabor (Config -> Impresoras -> Conectar equipo) y vuelve a ejecutar el instalador.', mbCriticalError, MB_OK);
-      3: MsgBox('Este equipo no pudo contactar con Xabor.' #13#13 'Revisa la conexion a internet y vuelve a intentarlo.', mbCriticalError, MB_OK);
-      4: MsgBox('No se pudo guardar la configuracion.' #13#13 'Ejecuta el instalador como administrador.', mbCriticalError, MB_OK);
-    else
-      MsgBox('No se pudo conectar este equipo con Xabor.', mbCriticalError, MB_OK);
-    end;
-    // Abort revierte la instalacion completa. NO queda servicio instalado.
-    Abort;
+  case Codigo of
+    0: Result := '';   // vinculado (o ya lo estaba): se puede instalar
+    2: Result := 'El codigo de conexion no es valido o ya vencio.' #13#13 'Genera uno nuevo en Xabor (Config -> Impresoras -> Conectar equipo) y vuelve a ejecutar el instalador.';
+    3: Result := 'Este equipo no pudo contactar con Xabor.' #13#13 'Revisa la conexion a internet y vuelve a intentarlo.';
+    4: Result := 'No se pudo guardar la configuracion.' #13#13 'Ejecuta el instalador como administrador.';
+  else
+    Result := 'No se pudo conectar este equipo con Xabor.';
   end;
+end;
 
-  // 2. Solo ahora, con el equipo ya vinculado, se registra el servicio.
+// El servicio, ya con los archivos en su sitio y el equipo vinculado.
+procedure CurStepChanged(PasoActual: TSetupStep);
+var
+  Codigo: Integer;
+begin
+  if PasoActual <> ssPostInstall then Exit;
+
   if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'install',
               ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
   begin
@@ -189,9 +211,8 @@ begin
     Abort;
   end;
 
-  // 3. Y se arranca. Si esto falla, el servicio queda instalado y en
-  //    automatico: arrancara solo en el proximo reinicio, asi que no se
-  //    aborta la instalacion por esto.
+  // Si arrancar falla, el servicio ya quedo registrado y en automatico:
+  // arrancara solo en el proximo reinicio. No se aborta por esto.
   if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'start',
               ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
     MsgBox('Xabor Edge se instalo pero no arranco todavia. Se iniciara solo al reiniciar el equipo.', mbInformation, MB_OK);
