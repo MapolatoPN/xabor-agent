@@ -10,6 +10,7 @@ import {
   eliminarPedido as eliminarPedidoDB
 } from '../services/database.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
+import { emitirComandaDePedidoPorEdge } from '../printing/edgeComanda.js';
 import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 // wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, inyectado
@@ -214,8 +215,17 @@ export async function registrarPedido(orden, canal = 'test') {
 export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 export async function emitirPedido(pedido) {
+  // PRIMERO Edge, DESPUÉS el panel. El orden no es estético: el evento que
+  // recibe el panel tiene que decir la verdad sobre si el papel ya está en
+  // camino, y eso solo se sabe cuando el trabajo existe. Avisar antes
+  // obligaría al navegador a adivinar, que es exactamente lo que provocaba
+  // el diálogo de Chrome sobre una comanda que Edge iba a imprimir sola.
+  const edge = await emitirComandaDePedidoPorEdge(pedido);
+
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
-    if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
+    if (wsBroadcastNegocio) {
+      wsBroadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo });
+    }
   } else {
     // Fail closed: nunca se emite al panel sin negocioId ni se usa Nonna
     // Maye como relleno aquí — esto no debería pasar hoy (Rappi siempre lo
@@ -224,12 +234,19 @@ export async function emitirPedido(pedido) {
     console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite al panel (fail closed)`);
   }
 
-  // Impresión física (legacy vs. autenticado, por sucursal, con
-  // printJobId): decidida por completo dentro de printRouter.js. Nunca
+  // Impresión física por el camino anterior (print-agent legacy o
+  // autenticado): decidida por completo dentro de printRouter.js. Nunca
   // lanza -- cualquier error de configuración/sucursal/broadcast ya se
-  // captura ahí y se traduce en un resultado 'omitido', así que esperar su
-  // resultado aquí no puede romper la creación del pedido.
-  await emitirTrabajoImpresion(pedido);
+  // captura ahí y se traduce en un resultado 'omitido'.
+  //
+  // Solo se dispara si Edge NO se hizo cargo. Un negocio que todavía usa
+  // print-agent.js sigue igual que siempre; uno que ya migró a Edge no
+  // recibe la misma comanda por dos vías. La exclusión vale para los tres
+  // consumidores del camino viejo: print-agent legacy, print-agent
+  // autenticado y el navegador.
+  if (!edge.seHizoCargo) {
+    await emitirTrabajoImpresion(pedido);
+  }
 
   // Notificar a repartidores -- única fuente de verdad: esPedidoElegibleParaRedRepartidores.
   if (esPedidoElegibleParaRedRepartidores(pedido)) {

@@ -12,6 +12,12 @@
 // Las reglas se guardan y se comparan normalizadas: "Bebidas", "bebidas" y
 // "BEBIDAS " son la misma regla. Sin acentos porque nadie va a escribir
 // "Café" igual dos veces al configurar.
+// La clave del documento 'comanda' es la misma que escribe el panel al asignar
+// una impresora al destino "Cocina" (impresionSelfService.DESTINOS). No se
+// inventa nomenclatura: si esa constante cambiara, esta tiene que cambiar con
+// ella, y la prueba de contrato lo detecta.
+export const CLAVE_COMANDA = 'comanda';
+
 export function normalizarClave(valor) {
   if (typeof valor !== 'string') return '';
   return valor
@@ -40,8 +46,20 @@ export function normalizarClave(valor) {
 //      aparece UNA vez. Nunca dos papeles idénticos por una configuración
 //      redundante.
 //
-// Un item sin ninguna ruta NO es un error: se devuelve en `sinRuta` y quien
-// llama decide (la comanda ya está guardada; lo que falta es papel).
+//   4. Si el item no encontró NADA por categoría ni por producto, cae al
+//      destino por defecto de la comanda: las reglas ambito='documento',
+//      clave='comanda'. Es la impresora que el restaurante eligió como
+//      "Cocina" desde el panel, sin declarar ni una categoría.
+//
+//      El orden importa y es el que pidió el negocio: una regla específica
+//      SIEMPRE gana. El defecto recoge lo que nadie reclamó, no sustituye a
+//      nadie. Un restaurante con tres estaciones configuradas sigue
+//      repartiendo exactamente igual; lo único que cambia es que los items
+//      que antes se perdían en `sinRuta` ahora salen en papel.
+//
+// Un item sin ninguna ruta NI destino por defecto NO es un error: se devuelve
+// en `sinRuta` y quien llama decide (la comanda ya está guardada; lo que
+// falta es papel).
 export function resolverDestinosDeItem(item, reglas) {
   const producto = normalizarClave(item.producto ?? item.nombre);
   const categoria = normalizarClave(item.categoria);
@@ -61,6 +79,13 @@ export function resolverDestinosDeItem(item, reglas) {
     }
   } else {
     base = [...deCategoria, ...aditivas];
+  }
+
+  // El defecto solo entra cuando no hubo NINGUNA regla específica. Nunca se
+  // suma a una que sí existe: eso duplicaría el papel de un item que ya tiene
+  // su estación.
+  if (!base.length) {
+    base = reglas.documento.get(CLAVE_COMANDA) || [];
   }
 
   // Una impresora, un destino -- aunque la categoría y el producto apunten

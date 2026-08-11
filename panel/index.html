@@ -1885,10 +1885,14 @@ function conectarWS() {
       // impresión que las comandas, pero NO es un pedido operable: no entra
       // al tablero y se imprime con su propia plantilla (una sola vez -- el
       // servidor solo lo emite en el cierre real, nunca en reintentos).
+      // `impresionEdge` lo decide el servidor, nunca este código: es true
+      // solo cuando ya existe un trabajo de impresión para esta comanda. El
+      // navegador se limita a obedecer. Si el servidor no manda el campo
+      // (versión anterior), es false y todo sigue como siempre.
       if (msg.tipo === 'nuevo_pedido' && msg.pedido?.tipo_comanda === 'cuenta_final') {
-        recibirCuentaFinal(msg.pedido);
+        recibirCuentaFinal(msg.pedido, msg.impresionEdge === true);
       } else if (msg.tipo === 'nuevo_pedido') {
-        agregarPedido(msg.pedido);
+        agregarPedido(msg.pedido, msg.impresionEdge === true);
       }
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'eliminar_pedido') {
@@ -1998,7 +2002,7 @@ function getPrecioItem(item) {
 // Pedidos recibidos en los primeros 3s de conexión son "replay" del servidor — no imprimir
 let panelListo = false;
 
-function agregarPedido(pedido) {
+function agregarPedido(pedido, impresionEdge = false) {
   if (document.getElementById(`comanda-${pedido.id}`)) return; // ya existe en DOM
   pedidos[pedido.id] = pedido;
   actualizarContador();
@@ -2010,7 +2014,14 @@ function agregarPedido(pedido) {
   grid.prepend(card);
   if (panelListo) {
     sonarAlerta();
-    setTimeout(() => imprimirComanda(pedido.id), 800);
+    // El aviso sonoro se queda SIEMPRE: quien está en la barra necesita
+    // enterarse de que entró un pedido, imprima quien imprima.
+    //
+    // La impresión no. Si Edge se hizo cargo, el papel ya está saliendo por
+    // la térmica y abrir el diálogo del navegador sería pedirle permiso al
+    // cajero para imprimir por segunda vez lo mismo. El botón 🍽️ Comanda
+    // sigue ahí para reimprimir a mano si hace falta.
+    if (!impresionEdge) setTimeout(() => imprimirComanda(pedido.id), 800);
   }
 }
 
@@ -2019,7 +2030,7 @@ function agregarPedido(pedido) {
 // se reimprime con acción manual explícita -- jamás automática.
 let ultimaCuentaFinal = null;
 
-function recibirCuentaFinal(trabajo) {
+function recibirCuentaFinal(trabajo, impresionEdge = false) {
   ultimaCuentaFinal = trabajo;
   const btn = document.getElementById('btn-reimprimir-cuenta');
   if (btn) btn.style.display = '';
@@ -2027,7 +2038,9 @@ function recibirCuentaFinal(trabajo) {
   // servidor en los primeros segundos de conexión no se imprimen solos.
   if (panelListo) {
     sonarAlerta();
-    setTimeout(() => abrirPopupImpresion(cuentaFinalHTML(trabajo)), 400);
+    // Y el mismo criterio: si la impresora de Caja ya lo está sacando por
+    // Edge, el navegador no imprime. El botón de reimpresión no se toca.
+    if (!impresionEdge) setTimeout(() => abrirPopupImpresion(cuentaFinalHTML(trabajo)), 400);
   }
 }
 

@@ -23,6 +23,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
+import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -1203,6 +1204,12 @@ setWsBroadcastSuperadminWA(broadcastSuperadmin);
 // arrancar, nunca por pedido. printRouter decide legacy vs. autenticado;
 // aquí solo se le da acceso a los dos canales WebSocket reales.
 setBroadcastsImpresion({ legacy: broadcastPrintAgentLegacy, autenticado: broadcastPrintAgentNegocio });
+
+// Entregar un trabajo al Edge conectado exige el WebSocket, que solo existe
+// aquí. Se inyecta con el mismo patrón que los broadcasts de arriba, para que
+// orderManager pueda decidir si Edge se hace cargo de un pedido sin tener que
+// importar server.js -- eso sería un ciclo.
+setEntregaEdge(entregarTrabajos);
 
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);
@@ -2417,33 +2424,37 @@ app.post('/api/restaurante/cuentas/:cuentaId/items', requireOperacionRestaurante
 app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
     const comanda = await enviarComanda(req.params.cuentaId, req.negocioId, req.usuarioId);
-    // Impresión: SOLO los items de esta comanda, con mesa/personas/mesero.
-    // Contrato C8 sobre printRouter existente -- nunca lanza; si el negocio
-    // no tiene impresión configurada, el resultado es 'omitido' y la
-    // comanda digital sigue siendo la fuente de verdad.
-    await emitirTrabajoImpresion({
-      id: `MESA${comanda.mesa}-C${comanda.comanda}`,
-      negocioId: req.negocioId,
-      canal: 'restaurante',
-      tipo_comanda: comanda.tipo,
-      mesa: comanda.mesa, personas: comanda.personas, mesero: comanda.mesero,
-      items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
-      total: comanda.items.reduce((s, i) => s + i.cantidad * Number(i.precio_unitario), 0),
-      cliente: { nombre: `Mesa ${comanda.mesa}` },
-      modalidad: 'mesa',
-      estado: 'nuevo',
-    });
 
-    // Xabor Edge: además del broadcast legacy, se crean trabajos persistentes
-    // -- uno por cada impresora destino según las reglas de routing. Corre en
-    // paralelo con el camino anterior a propósito: un negocio que todavía usa
-    // print-agent.js sigue igual, y uno con Edge configurado obtiene la
-    // comanda repartida por estaciones. Ninguno de los dos puede tumbar al
-    // otro ni a la comanda.
+    // Xabor Edge PRIMERO: se crean trabajos persistentes, uno por impresora
+    // destino según las reglas de routing. Un negocio con estaciones las
+    // reparte; uno con una sola impresora de cocina recibe la ronda entera.
     const impresion = await crearTrabajosDeComanda({
       negocioId: req.negocioId, cuentaId: req.params.cuentaId, comanda,
     });
     await entregarTrabajos(impresion.creados);
+    const edgeSeHizoCargo = impresion.creados.length + impresion.duplicados.length > 0;
+
+    // Y el camino anterior SOLO si Edge no se hizo cargo. Antes corrían los
+    // dos siempre: un negocio con print-agent.js viejo Y Edge configurado
+    // sacaba la misma ronda dos veces en la misma cocina.
+    //
+    // Contrato C8 sobre printRouter -- nunca lanza; si el negocio no tiene
+    // impresión configurada, el resultado es 'omitido' y la comanda digital
+    // sigue siendo la fuente de verdad.
+    if (!edgeSeHizoCargo) {
+      await emitirTrabajoImpresion({
+        id: `MESA${comanda.mesa}-C${comanda.comanda}`,
+        negocioId: req.negocioId,
+        canal: 'restaurante',
+        tipo_comanda: comanda.tipo,
+        mesa: comanda.mesa, personas: comanda.personas, mesero: comanda.mesero,
+        items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
+        total: comanda.items.reduce((s, i) => s + i.cantidad * Number(i.precio_unitario), 0),
+        cliente: { nombre: `Mesa ${comanda.mesa}` },
+        modalidad: 'mesa',
+        estado: 'nuevo',
+      });
+    }
 
     // La respuesta lleva el aviso, no un error: la ronda YA está guardada y
     // el mesero necesita seguir trabajando. Si falta configurar una
@@ -2507,24 +2518,6 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
     // el contrato C8 (printRouter no lanza; sin impresora => 'omitido').
     if (!r.yaCerrada) {
       const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
-      await emitirTrabajoImpresion({
-        id: r.ventaFolio,
-        negocioId: req.negocioId,
-        canal: 'restaurante',
-        tipo_comanda: 'cuenta_final',
-        mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
-        items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
-          nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
-          notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', '),
-        })),
-        total: r.total,
-        propina: r.propinas,
-        pagos: r.pagos,
-        folio_venta: r.ventaFolio,
-        cliente: { nombre: `Mesa ${cuenta?.mesa ?? ''}`.trim() },
-        modalidad: 'mesa',
-        estado: 'entregado',
-      });
 
       // Xabor Edge: la cuenta va SOLO a las impresoras declaradas para el
       // documento 'cuenta' (normalmente la de tickets, junto a la caja).
@@ -2547,6 +2540,31 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
         },
       });
       await entregarTrabajos(impresionCuenta.creados);
+      const edgeSeHizoCargoDeLaCuenta =
+        impresionCuenta.creados.length + impresionCuenta.duplicados.length > 0;
+
+      // El ticket por el camino anterior SOLO si Edge no lo tomó. Los dos
+      // caminos corrían siempre en la misma petición: en cuanto alguien
+      // asignara una impresora al destino "Caja", el cliente recibía dos
+      // tickets del mismo cierre.
+      if (!edgeSeHizoCargoDeLaCuenta) await emitirTrabajoImpresion({
+        id: r.ventaFolio,
+        negocioId: req.negocioId,
+        canal: 'restaurante',
+        tipo_comanda: 'cuenta_final',
+        mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
+        items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+          nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
+          notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', '),
+        })),
+        total: r.total,
+        propina: r.propinas,
+        pagos: r.pagos,
+        folio_venta: r.ventaFolio,
+        cliente: { nombre: `Mesa ${cuenta?.mesa ?? ''}`.trim() },
+        modalidad: 'mesa',
+        estado: 'entregado',
+      });
     }
     res.json(r);
   } catch (e) { manejarErrorRestaurante(res, e); }
@@ -6864,16 +6882,25 @@ async function activarPedidosProgramados() {
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
       await guardarPedidoActivo(pedido, pedido.negocioId);
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
+
+      // Mismo orden y misma autoridad que emitirPedido(): Edge primero, y el
+      // panel se entera de si ya se hizo cargo. Un pedido programado que se
+      // activa solo a las 8 de la mañana tiene que imprimirse igual que uno
+      // que entra en vivo -- y por el mismo sitio.
+      const edgePedidoProgramado = await emitirComandaDePedidoPorEdge(pedido);
+
       // Aislado por negocio (mismo patrón que emitirPedido en
       // orderManager.js). Ya no se usa broadcast() global para este evento.
-      broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido });
-      // Impresión física: decidida por completo en printRouter.js (legacy
-      // vs. autenticado). Nunca lanza -- si la impresión queda omitida
-      // (sin configuración, sin sucursal resuelta, sin terminal conectada),
-      // el pedido igual se marca activado abajo: la activación representa
-      // que el pedido ya entró a operación, no que la impresora confirmó
-      // éxito. No se reintenta por esto en la siguiente corrida del job.
-      await emitirTrabajoImpresion(pedido);
+      broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido, impresionEdge: edgePedidoProgramado.seHizoCargo });
+
+      // Impresión física por el camino anterior: decidida por completo en
+      // printRouter.js (legacy vs. autenticado), y solo si Edge no la tomó.
+      // Nunca lanza -- si la impresión queda omitida (sin configuración, sin
+      // sucursal resuelta, sin terminal conectada), el pedido igual se marca
+      // activado abajo: la activación representa que el pedido ya entró a
+      // operación, no que la impresora confirmó éxito. No se reintenta por
+      // esto en la siguiente corrida del job.
+      if (!edgePedidoProgramado.seHizoCargo) await emitirTrabajoImpresion(pedido);
       await marcarPedidoProgramadoActivado(row.folio);
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }

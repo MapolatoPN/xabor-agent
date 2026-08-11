@@ -311,6 +311,76 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
   return resumen;
 }
 
+// ─── Comanda de un PEDIDO (WhatsApp, POS, Rappi, voz) ───────────────────────
+//
+// Un pedido a domicilio o para recoger no tiene mesa ni rondas, pero en cocina
+// se lee igual que una comanda: qué preparar y para quién. Por eso reutiliza
+// el mismo motor de routing y el mismo documento 'comanda' -- no hay un
+// segundo sistema de impresión, ni una segunda nomenclatura.
+//
+// Idempotencia: el origen es el FOLIO, que es único y estable por pedido. Un
+// pedido reenviado (reconexión, replay del scheduler, doble webhook) produce
+// la misma clave y por tanto el mismo trabajo, nunca dos papeles.
+export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedido }) {
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  try {
+    const nid = exigirNegocio(negocioId);
+    const folio = typeof pedido?.id === 'string' ? pedido.id : null;
+    if (!folio) { resumen.avisos.push('el pedido no tiene folio: no se generaron trabajos'); return resumen; }
+
+    const sid = await resolverSucursal(nid, sucursalId);
+    if (!sid) { resumen.avisos.push('el negocio no tiene sucursal activa: no se generaron trabajos'); return resumen; }
+
+    const reglas = await cargarReglas(nid, sid);
+    const items = Array.isArray(pedido.items) ? pedido.items : [];
+    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
+    resumen.sinRuta = sinRuta;
+    resumen.avisos.push(...avisos);
+    if (!grupos.length) return resumen;
+
+    const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
+
+    for (const grupo of grupos) {
+      const imp = impresoras.get(grupo.impresoraId);
+      if (!imp) { resumen.avisos.push(`impresora ${grupo.impresoraId} ya no existe`); continue; }
+
+      const payload = {
+        documento: 'comanda',
+        negocioId: nid,
+        folio,
+        canal: pedido.canal ?? null,
+        modalidad: pedido.modalidad ?? null,
+        // El nombre del cliente sí va al papel de cocina: es como se canta el
+        // pedido cuando se recoge. El teléfono y la dirección no: en la
+        // estación no sirven para nada y son datos personales de más.
+        cliente: pedido.cliente?.nombre ?? null,
+        emitidoAt: new Date().toISOString(),
+        impresora: imp.nombre,
+        items: grupo.items.map(i => ({
+          producto: i.producto ?? i.nombre,
+          cantidad: i.cantidad,
+          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+          notas: i.notas ?? null,
+        })),
+      };
+
+      const { trabajo, duplicado } = await insertarTrabajo(pool, {
+        negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
+        impresoraId: imp.id, impresoraNombre: imp.nombre,
+        documento: 'comanda', origenTipo: 'pedido', origenId: folio,
+        idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'pedido', origenId: folio, impresoraId: imp.id }),
+        payload,
+      });
+      (duplicado ? resumen.duplicados : resumen.creados).push(trabajo);
+    }
+  } catch (e) {
+    // Igual que la comanda de mesa: se registra y se sigue. El pedido manda.
+    resumen.error = e.code || 'ERROR_IMPRESION';
+    console.error(`[Impresion] no se pudieron crear los trabajos del pedido (negocio=${negocioId}): ${e.message}`);
+  }
+  return resumen;
+}
+
 // ─── Documento completo (cuenta, cancelación) ───────────────────────────────
 export async function crearTrabajosDeDocumento({ negocioId, sucursalId = null, documento, origenTipo, origenId, payload }) {
   const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
