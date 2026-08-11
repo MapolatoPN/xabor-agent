@@ -13,7 +13,7 @@
       agente entra en su ciclo de reconexión y se puede comprobar que WinSW NO
       lo reinicia por eso (eso lo resuelve el Edge solo).
 
-  Todo lo demás -- cuenta, arranque, dependencia, recovery, logs -- es
+  Todo lo demás — cuenta, arranque, dependencia, recovery, logs — es
   idéntico al XML de producción, que es justo lo que se quiere probar.
 -->
 <service>
