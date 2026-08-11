@@ -53,9 +53,9 @@
     eventos y castigaría al equipo. Diez segundos es imperceptible en la
     operación y suficiente para no martillear.
   -->
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="5 sec"/>
   <onfailure action="restart" delay="10 sec"/>
-  <onfailure action="restart" delay="10 sec"/>
-  <onfailure action="restart" delay="30 sec"/>
   <resetfailure>1 hour</resetfailure>
 
   <!--
@@ -71,6 +71,17 @@
     reinstalación y se pueden leer sin permisos de administrador.
     Rotación por tamaño para que no crezcan sin fin en un equipo que puede
     pasar meses sin que nadie lo mire.
+
+    Los archivos se llaman por el EJECUTABLE, no por el id del servicio.
+    Comprobado en staging con WinSW 2.12.0, que genera:
+
+      XaborEdgeService.out.log      la salida del agente
+      XaborEdgeService.err.log      sus errores
+      XaborEdgeService.wrapper.log  lo que hace el propio WinSW
+
+    Cualquier instrucción de soporte tiene que nombrar ESOS archivos: pedirle
+    a alguien en un restaurante que busque 'XaborEdge.out.log' es mandarlo a
+    una carpeta donde ese archivo no existe.
   -->
   <logpath>C:\ProgramData\Xabor\Edge\logs</logpath>
   <log mode="roll-by-size">
