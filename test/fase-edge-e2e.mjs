@@ -30,8 +30,40 @@ const { crearEdge: altaEdge, generarEmparejamiento, canjearEmparejamiento } =
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
-async function t(cat, nombre, fn) {
-  try { await fn(); console.log(`  OK  [${cat}] ${nombre}`); pasadas++; }
+// Postcondición común a todos los casos: ninguno puede terminar dejando
+// trabajo SUYO todavía en movimiento.
+//
+// 'pendiente' y 'entregado' son los dos estados desde los que aún puede salir
+// papel más tarde. Ese papel tardío no lo ve el caso que lo provocó: lo ve el
+// siguiente, que ya limpió los contadores de las impresoras y lo cuenta como
+// propio. Así fue como un rezagado del caso 15 aparecía en el 16 como una
+// comanda de más -- un fallo de contabilidad de la suite que durante días
+// pareció una duplicación real del producto.
+//
+// Comprobarlo aquí hace que la contaminación falle en el caso culpable.
+async function enMovimientoDesde(marca) {
+  const { rows } = await pool.query(
+    `SELECT id, impresora_nombre, estado FROM impresion_trabajos
+      WHERE created_at >= $1 AND estado IN ('pendiente','entregado')
+      ORDER BY created_at`, [marca]);
+  return rows;
+}
+
+// Un caso puede dejar trabajo abierto A PROPÓSITO -- pero tiene que declararlo
+// y decir por qué; entonces la comprobación no aplica.
+async function t(cat, nombre, fn, { dejaAbierto = null } = {}) {
+  const { rows: [marca] } = await pool.query('SELECT now() AS ahora');
+  try {
+    await fn();
+    if (!dejaAbierto) {
+      const abiertos = await enMovimientoDesde(marca.ahora);
+      assert.strictEqual(abiertos.length, 0,
+        `terminó dejando ${abiertos.length} trabajo(s) en movimiento ` +
+        `(${abiertos.map(x => `${x.impresora_nombre}:${x.estado}`).join(', ')}): ` +
+        'el papel que salga después lo va a contar el caso siguiente');
+    }
+    console.log(`  OK  [${cat}] ${nombre}`); pasadas++;
+  }
   catch (e) { console.log(`FALLO [${cat}] ${nombre}: ${e.message}`); fallidas++; fallos.push(`[${cat}] ${nombre}: ${e.message}`); }
 }
 
@@ -188,6 +220,11 @@ await t('E2E', '4. la ronda demo llega a las tres impresoras correctas y a ningu
   assert.strictEqual(SIM['COCINA GENERAL'].recibidos.length, 1);
   assert.strictEqual(SIM['BEBIDAS'].recibidos.length, 1);
   assert.strictEqual(SIM['TICKETS'].recibidos.length, 0, 'la cuenta no sale al mandar la comanda');
+}, {
+  // El papel ya salió aquí, así que no hay nada que se le pueda colar al caso
+  // siguiente. Lo que queda abierto es el ACK, y ESO es justamente lo que
+  // comprueba el caso 6: esperarlo aquí vaciaría de contenido al 6.
+  dejaAbierto: 'los ACK de la ronda demo los verifica el caso 6',
 });
 
 await t('E2E', '5. el papel de cada impresora lleva exactamente lo suyo', async () => {
@@ -233,14 +270,22 @@ await t('E2E', '7. la cuenta sale por TICKETS y por ninguna de cocina', async ()
     assert.strictEqual(SIM[nombre].recibidos.length, antes[nombre], `${nombre} no debe recibir la cuenta`);
   }
   assert.ok(SIM['TICKETS'].recibidos.at(-1).texto.includes('$195.00'), 'la cuenta sí lleva importes');
+
+  // Y no se sale de aquí hasta que la nube lo dé por cerrado: nadie más va a
+  // hacerse cargo de este trabajo.
+  await hasta(async () => (await estadoDe(r.creados[0].id)).estado === 'enviado',
+    { que: 'el ACK de la cuenta', limiteMs: 10000 });
 });
 
 await t('E2E', '8. la prueba de impresora sale por la impresora elegida', async () => {
   const antes = SIM['BEBIDAS'].recibidos.length;
-  await crearTrabajoDePrueba(A.negocioId, IMP['BEBIDAS'].id);
+  const prueba = await crearTrabajoDePrueba(A.negocioId, IMP['BEBIDAS'].id);
   edgeA.conexion.cerrar(); edgeA.conexion.iniciar();
   await hasta(() => SIM['BEBIDAS'].recibidos.length === antes + 1, { que: 'la prueba de impresora' });
   assert.ok(SIM['BEBIDAS'].recibidos.at(-1).texto.includes('PRUEBA DE IMPRESORA'));
+
+  await hasta(async () => (await estadoDe(prueba.id)).estado === 'enviado',
+    { que: 'el ACK de la prueba de impresora', limiteMs: 10000 });
 });
 
 // ─── Aislamiento entre negocios ─────────────────────────────────────────────
@@ -286,6 +331,12 @@ await t('AISLAMIENTO', '10. un Edge no puede confirmar el trabajo de otro negoci
   const e = await estadoDe(ajeno.id);
   assert.notStrictEqual(e.estado, 'enviado',
     'el servidor filtra por la terminal de la conexión: el ACK ajeno no puede tener efecto');
+}, {
+  // Este caso deja a propósito el trabajo del vecino sin resolver: el Edge de
+  // B ya se detuvo en el caso 9 y nadie va a recogerlo. Que se quede
+  // 'pendiente' para siempre ES el resultado que se está comprobando, y no
+  // puede contaminar a nadie porque sin Edge de B no sale papel.
+  dejaAbierto: 'el trabajo del vecino queda pendiente porque su Edge no está conectado',
 });
 
 // ─── Caos ───────────────────────────────────────────────────────────────────
@@ -301,7 +352,7 @@ await t('CAOS', '11. impresora apagada: las demás imprimen y la caída se recup
     { que: 'que las impresoras vivas impriman', limiteMs: 12000 });
 
   const local = edgeA.almacen.obtener(chila.id);
-  assert.ok(['fallido', 'procesando', 'pendiente'].includes(local.estado),
+  assert.ok(['fallido', 'enviando', 'pendiente'].includes(local.estado),
     `la caída debe quedar en cola y quedó "${local?.estado}"`);
   assert.strictEqual(SIM['CHILAQUILES'].recibidos.length, 0);
 
@@ -434,6 +485,13 @@ await t('CAOS', '15. una impresora desactivada no rompe la ronda del resto', asy
       'una impresora desactivada deja de recibir trabajos nuevos');
     edgeA.conexion.cerrar(); edgeA.conexion.iniciar();
     await hasta(() => SIM['COCINA GENERAL'].recibidos.length >= 1, { que: 'la impresión del resto', limiteMs: 12000 });
+
+    // Y se espera a TODOS los trabajos de este caso, no solo al primero que
+    // imprime, igual que hace el 14. Salir en cuanto COCINA GENERAL saca papel
+    // dejaba el de BEBIDAS todavía en vuelo: llegaba unos milisegundos después,
+    // ya dentro del caso siguiente, que lo contaba como comanda suya.
+    await hasta(async () => (await Promise.all(r.creados.map(x => estadoDe(x.id)))).every(e => e.estado === 'enviado'),
+      { que: 'que los trabajos de este caso queden enviados', limiteMs: 15000 });
   } finally {
     await pool.query('UPDATE impresoras SET activa = true WHERE id = $1', [IMP['CHILAQUILES'].id]);
   }
