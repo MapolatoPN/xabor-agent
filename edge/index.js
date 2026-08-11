@@ -52,6 +52,9 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   // después de cerrar el almacén intenta escribir en una base cerrada y mata
   // el proceso. Lo encontró el chaos al reiniciar el Edge en caliente.
   let detenido = false;
+  // Ver iniciar(): lo único que mantiene vivo el proceso mientras no haya
+  // socket abierto. Sin esto, una caída de Cloud mata al agente.
+  let anclaVida = null;
 
   const conexion = crearConexion({
     config: cfg, logger: log, instalacionId,
@@ -146,6 +149,26 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
 
       recuperarInterrumpidos(almacen, log);
       worker.iniciar();
+
+      // El ancla: mientras el agente esté vivo, Node tiene que quedarse.
+      //
+      // Todos los temporizadores del Edge llevan .unref() -- el de la cola y
+      // el de reconexión incluidos -- para no estorbar a las pruebas, que lo
+      // embeben dentro de otro proceso. El efecto secundario, en producción,
+      // era letal: cuando el WebSocket se cerraba, el socket dejaba de ser un
+      // handle activo y NO QUEDABA NINGUNO. Node se daba por terminado y el
+      // proceso salía con código 0 en el mismo instante en que acababa de
+      // registrar "conexion.reintento intento=1". El reintento nunca llegaba
+      // a ocurrir, y el restaurante se quedaba sin impresión hasta que
+      // alguien volvía a arrancar el agente a mano. Fue exactamente lo que
+      // pasó en Acuña tras el deploy del 11 de agosto.
+      //
+      // Este intervalo no hace nada y no se le pone .unref() a propósito: es
+      // lo único que declara "este proceso todavía tiene trabajo pendiente".
+      // Se apaga en detener(), así que las pruebas que detienen su Edge
+      // siguen terminando solas.
+      if (!anclaVida) anclaVida = setInterval(() => {}, 60000);
+
       log.info('edge.listo', { almacen: almacen.tipo, pendientes: almacen.pendientes().length });
 
       if (conectar) conexion.iniciar();
@@ -156,6 +179,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       // corta la conexión, luego se espera a que termine el envío en curso, y
       // solo al final se cierra el almacén.
       detenido = true;
+      if (anclaVida) { clearInterval(anclaVida); anclaVida = null; }
       conexion.cerrar();
       await worker.detener();
       almacen.cerrar();
