@@ -78,6 +78,13 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       host: trabajo.host ?? null,
       puerto: trabajo.puerto ?? null,
       anchoColumnas: trabajo.anchoColumnas ?? 42,
+      // Lo específico del destino según el transporte (para windows_spooler,
+      // el nombre con el que Windows conoce la impresora). Esta lista es
+      // explícita a propósito -- no se copia el sobre entero -- y por eso hay
+      // que acordarse de añadir aquí cada campo nuevo. Cuando faltó, el dato
+      // llegaba bien por el cable, se perdía justo aquí, y el transporte se
+      // quedaba sin saber a qué impresora hablarle.
+      config: trabajo.config ?? {},
       payload: trabajo.payload ?? {},
     });
 
