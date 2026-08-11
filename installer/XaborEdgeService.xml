@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Servicio de Windows de Xabor Edge, sobre WinSW.
+
+  El agente tiene que estar corriendo cuando entra una comanda, y eso son las
+  dos de la tarde de un sábado con la cocina llena. Nadie va a abrir una
+  consola. Por eso: arranque automático con Windows, reinicio ante cualquier
+  fallo, y cero dependencias del PATH o del perfil de nadie.
+
+  %BASE% lo resuelve WinSW a la carpeta donde está su propio .exe, es decir
+  C:\Program Files\Xabor\Edge. Ni una ruta de desarrollo, ni una ruta absoluta
+  escrita a mano: si mañana se instala en otra unidad, esto sigue funcionando.
+
+  La cuenta es LocalSystem, y no por comodidad: se comprobó en la Surface de
+  Acuña con una sonda que ejecutó la secuencia Win32 RAW completa bajo
+  NT AUTHORITY\SYSTEM contra la térmica real, y salió papel. La térmica está
+  instalada como impresora 'Local' (HKLM), no como 'Connection' (HKCU), que es
+  la diferencia entre que SYSTEM la vea o no. Ver tools/probe-system-printer.ps1.
+-->
+<service>
+  <id>XaborEdge</id>
+  <name>Xabor Edge</name>
+  <description>Imprime las comandas de Xabor en las impresoras de este equipo.</description>
+
+  <!-- Runtime PRIVADO. No se usa el Node del sistema: el equipo del
+       restaurante no tiene Node, y si algún día lo instalan o lo actualizan,
+       no puede afectar a la impresión. -->
+  <executable>%BASE%\node\node.exe</executable>
+  <arguments>"%BASE%\app\edge\index.js"</arguments>
+  <workingdirectory>%BASE%\app</workingdirectory>
+
+  <!-- Arranca con Windows, antes de que nadie inicie sesión. La caja puede
+       reiniciarse de madrugada y a las 8 tiene que estar lista. -->
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>false</delayedAutoStart>
+
+  <!-- El servicio depende del spooler: sin él no hay impresora que abrir. -->
+  <depend>Spooler</depend>
+
+  <serviceaccount>
+    <username>LocalSystem</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <!--
+    Recuperación: reiniciar SIEMPRE, no solo las dos primeras veces. El
+    comportamiento por defecto de Windows ("reiniciar dos veces y luego no
+    hacer nada") deja al restaurante sin impresión de forma permanente tras
+    dos fallos seguidos, que es exactamente lo que hay que evitar.
+
+    El retardo de 10 s es deliberado: si el agente muriera en un bucle por un
+    problema de configuración, un reinicio instantáneo llenaría el visor de
+    eventos y castigaría al equipo. Diez segundos es imperceptible en la
+    operación y suficiente para no martillear.
+  -->
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <!--
+    Parada ordenada: se le da tiempo al agente a terminar el trabajo que tenga
+    en la impresora antes de matarlo. Cortar a media escritura deja media
+    comanda en el papel y un trabajo en estado 'incierto'.
+  -->
+  <stoptimeout>20 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <!--
+    Logs en ProgramData, no junto a los binarios: sobreviven a una
+    reinstalación y se pueden leer sin permisos de administrador.
+    Rotación por tamaño para que no crezcan sin fin en un equipo que puede
+    pasar meses sin que nadie lo mire.
+  -->
+  <logpath>C:\ProgramData\Xabor\Edge\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!--
+    Configuración por entorno. El TOKEN NO ESTÁ AQUÍ: lo lee el agente de
+    %ProgramData%\Xabor\Edge\config\config.json, que tiene ACL restringida.
+    Un token en este XML sería legible por cualquiera que abriera la carpeta
+    de instalación, y aparecería en la línea de comandos del proceso.
+  -->
+  <env name="XABOR_EDGE_PROGRAMDATA" value="C:\ProgramData\Xabor\Edge"/>
+  <env name="XABOR_EDGE_LOG" value="info"/>
+</service>

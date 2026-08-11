@@ -35,9 +35,48 @@ function entero(valor, porDefecto) {
   return Number.isFinite(n) && n > 0 ? n : porDefecto;
 }
 
+// Configuración escrita por el instalador de Windows, en ProgramData.
+//
+// Cuando el agente corre como servicio, sus credenciales NO pueden estar en
+// un .env junto a los binarios ni en las variables del servicio: lo primero
+// es legible por cualquiera que abra la carpeta de instalación y lo segundo
+// deja el token a la vista en la línea de comandos del proceso. Van en un
+// JSON aparte con ACL restringida a SYSTEM y administradores.
+//
+// Solo se mira si XABOR_EDGE_PROGRAMDATA está definida, que es algo que hace
+// el servicio y nadie más. Ejecutar `node edge/index.js` a mano sigue
+// funcionando exactamente igual que hasta hoy.
+function cargarConfigInstalada(env) {
+  const base = env.XABOR_EDGE_PROGRAMDATA;
+  if (!base) return {};
+  const ruta = join(base, 'config', 'config.json');
+  if (!existsSync(ruta)) return {};
+  try {
+    const j = JSON.parse(readFileSync(ruta, 'utf8'));
+    const salida = {};
+    // Se traduce a las mismas claves que usa el resto: una sola forma de leer
+    // la configuración, venga de donde venga.
+    if (j.terminalId)    salida.XABOR_TERMINAL_ID = j.terminalId;
+    if (j.terminalToken) salida.XABOR_TERMINAL_TOKEN = j.terminalToken;
+    if (j.urlNube)       salida.XABOR_EDGE_WS_URL = j.urlNube;
+    // La cola y los datos también viven en ProgramData: sobreviven a una
+    // reinstalación, que es justo lo que hace falta si dentro hay comandas
+    // sin imprimir.
+    salida.XABOR_EDGE_DATOS = join(base, 'data');
+    return salida;
+  } catch {
+    // Config ilegible: se ignora y el agente se negará a arrancar por falta
+    // de credenciales, diciendo qué le falta. Mejor eso que arrancar a medias.
+    return {};
+  }
+}
+
 export function cargarConfig({ env = process.env, rutaEnv = join(AQUI, '.env') } = {}) {
   const archivo = cargarEnvLocal(rutaEnv);
-  const leer = (clave, porDefecto = '') => (env[clave] ?? archivo[clave] ?? porDefecto);
+  const instalada = cargarConfigInstalada(env);
+  // Precedencia: entorno explícito > .env local > config del instalador. Así
+  // se puede depurar en sitio sobrescribiendo una variable sin tocar el JSON.
+  const leer = (clave, porDefecto = '') => (env[clave] ?? archivo[clave] ?? instalada[clave] ?? porDefecto);
 
   const config = {
     // Conexión con la nube. Siempre SALIENTE: el Edge llama, nadie lo llama.
