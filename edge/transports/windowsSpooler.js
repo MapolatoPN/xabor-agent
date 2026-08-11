@@ -77,94 +77,78 @@ export function escaparNombrePs(nombre) {
   return String(nombre).replace(/'/g, "''");
 }
 
+// La firma P/Invoke, en UNA sola linea. C# no necesita saltos de linea y el
+// literal va entre comillas SIMPLES de PowerShell, asi que las dobles de
+// DllImport("winspool.drv") viajan sin escapar.
+const FIRMA_WIN32 = 'using System; using System.Runtime.InteropServices; public class XaborRawPrint { '
+  + '[DllImport("winspool.drv", EntryPoint="OpenPrinterA", SetLastError=true)] public static extern bool OpenPrinter(string pName, out IntPtr phPrinter, IntPtr pDefault); '
+  + '[DllImport("winspool.drv", EntryPoint="StartDocPrinterA", SetLastError=true)] public static extern int StartDocPrinter(IntPtr hPrinter, int Level, ref DOCINFO di); '
+  + '[DllImport("winspool.drv", SetLastError=true)] public static extern bool StartPagePrinter(IntPtr hPrinter); '
+  + '[DllImport("winspool.drv", SetLastError=true)] public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten); '
+  + '[DllImport("winspool.drv", SetLastError=true)] public static extern bool EndPagePrinter(IntPtr hPrinter); '
+  + '[DllImport("winspool.drv", SetLastError=true)] public static extern bool EndDocPrinter(IntPtr hPrinter); '
+  + '[DllImport("winspool.drv", SetLastError=true)] public static extern bool ClosePrinter(IntPtr hPrinter); '
+  + '[StructLayout(LayoutKind.Sequential)] public struct DOCINFO { '
+  + '[MarshalAs(UnmanagedType.LPStr)] public string pDocName; '
+  + '[MarshalAs(UnmanagedType.LPStr)] public string pOutputFile; '
+  + '[MarshalAs(UnmanagedType.LPStr)] public string pDataType; } }';
+
 /**
- * El script es fijo. Cloud no lo envía, no lo compone y no puede influir en
- * él: lo único variable son el nombre de la impresora y la ruta del archivo
- * temporal que este mismo proceso acaba de escribir.
+ * El script es fijo y va en UNA sola sentencia por linea, unidas por `;`.
+ *
+ * La primera version era un bloque con `$ErrorActionPreference = "Stop"` y
+ * try/catch/finally multilinea. Alimentado por stdin (`powershell -Command -`),
+ * PowerShell procesa la entrada como si se tecleara en consola y ese bloque
+ * puede terminar con codigo 0 y stdout VACIO: ni OK ni ERROR, silencio. Es
+ * exactamente el mismo fallo que ya habia roto la enumeracion de impresoras, y
+ * aqui costo un GATE 5 entero -- el trabajo llegaba con su destino correcto y
+ * el transporte no sabia decir que habia pasado.
+ *
+ * Ahora cada etapa cierra sus handles y emite su propia linea antes de salir:
+ * el script SIEMPRE dice algo reconocible. Verificado contra una impresora
+ * inexistente en Windows real: `ERROR:OPEN:1801`, exit 1, sin silencio.
+ *
+ * Cloud no lo envia, no lo compone y no puede influir en el: lo unico variable
+ * son el nombre de la impresora y la ruta del temporal que este mismo proceso
+ * acaba de escribir, y los dos entran como literales escapados.
  */
 export function construirScript(nombreImpresora, rutaBytes) {
+  const prn = escaparNombrePs(nombreImpresora);
+  const src = escaparNombrePs(rutaBytes);
   return [
-    '$ErrorActionPreference = "Stop"',
-    'Add-Type -TypeDefinition @"',
-    'using System;',
-    'using System.Runtime.InteropServices;',
-    'public class XaborRawPrint {',
-    '    [DllImport("winspool.drv", EntryPoint="OpenPrinterA", SetLastError=true)]',
-    '    public static extern bool OpenPrinter(string pName, out IntPtr phPrinter, IntPtr pDefault);',
-    '    [DllImport("winspool.drv", EntryPoint="StartDocPrinterA", SetLastError=true)]',
-    '    public static extern int StartDocPrinter(IntPtr hPrinter, int Level, ref DOCINFO di);',
-    '    [DllImport("winspool.drv", SetLastError=true)]',
-    '    public static extern bool StartPagePrinter(IntPtr hPrinter);',
-    '    [DllImport("winspool.drv", SetLastError=true)]',
-    '    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);',
-    '    [DllImport("winspool.drv", SetLastError=true)]',
-    '    public static extern bool EndPagePrinter(IntPtr hPrinter);',
-    '    [DllImport("winspool.drv", SetLastError=true)]',
-    '    public static extern bool EndDocPrinter(IntPtr hPrinter);',
-    '    [DllImport("winspool.drv", SetLastError=true)]',
-    '    public static extern bool ClosePrinter(IntPtr hPrinter);',
-    '    [StructLayout(LayoutKind.Sequential)]',
-    '    public struct DOCINFO {',
-    '        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;',
-    '        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;',
-    '        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;',
-    '    }',
-    '}',
-    '"@',
-    `$prn = '${escaparNombrePs(nombreImpresora)}'`,
-    `$src = '${escaparNombrePs(rutaBytes)}'`,
+    `Add-Type -TypeDefinition '${FIRMA_WIN32}'`,
+    `$prn = '${prn}'`,
+    `$src = '${src}'`,
+    '$bytes = [System.IO.File]::ReadAllBytes($src)',
     '$ph = [IntPtr]::Zero',
-    '$abierta = $false',
-    '$docIniciado = $false',
-    'try {',
-    '    $bytes = [System.IO.File]::ReadAllBytes($src)',
-    '    if (-not [XaborRawPrint]::OpenPrinter($prn, [ref]$ph, [IntPtr]::Zero)) {',
-    '        $e = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()',
-    '        Write-Output "ERROR:OPEN:$e"',
-    '        exit 1',
-    '    }',
-    '    $abierta = $true',
-    '    $di = New-Object XaborRawPrint+DOCINFO',
-    '    $di.pDocName  = "Xabor"',
-    // RAW: el spooler pasa los bytes tal cual, sin que ningún driver los
+    // Etapa 1: abrir la cola. Si falla, no salio ni un byte -> `fallido`.
+    'if (-not [XaborRawPrint]::OpenPrinter($prn, [ref]$ph, [IntPtr]::Zero)) { Write-Output ("ERROR:OPEN:" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 1 }',
+    '$di = New-Object XaborRawPrint+DOCINFO',
+    "$di.pDocName = 'Xabor'",
+    // RAW: el spooler pasa los bytes tal cual, sin que ningun driver los
     // reinterprete. Es lo que hace que el ESC/POS llegue intacto.
-    '    $di.pDataType = "RAW"',
-    '    $job = [XaborRawPrint]::StartDocPrinter($ph, 1, [ref]$di)',
-    '    if ($job -le 0) {',
-    '        $e = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()',
-    '        Write-Output "ERROR:STARTDOC:$e"',
-    '        exit 1',
-    '    }',
-    '    $docIniciado = $true',
-    '    [XaborRawPrint]::StartPagePrinter($ph) | Out-Null',
-    // Frontera: a partir de la línea siguiente ya no se puede afirmar que no
-    // salió nada. Se anuncia ANTES de escribir, no después.
-    '    Write-Output "ESCRIBIENDO"',
-    '    $escritos = 0',
-    '    $ok = [XaborRawPrint]::WritePrinter($ph, $bytes, $bytes.Length, [ref]$escritos)',
-    '    if (-not $ok) {',
-    '        $e = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()',
-    '        Write-Output "ERROR:WRITE:$e"',
-    '        exit 1',
-    '    }',
-    '    if ($escritos -ne $bytes.Length) {',
-    '        Write-Output "ERROR:PARCIAL:$escritos de $($bytes.Length)"',
-    '        exit 1',
-    '    }',
-    '    Write-Output "OK:$escritos"',
-    '} catch {',
-    '    Write-Output "ERROR:EXCEPCION:$($_.Exception.Message)"',
-    '    exit 1',
-    '} finally {',
-    // Los handles se cierran pase lo que pase. Un handle filtrado deja el
-    // trabajo colgado en la cola de Windows y bloquea el siguiente.
-    '    if ($docIniciado) {',
-    '        try { [XaborRawPrint]::EndPagePrinter($ph) | Out-Null } catch {}',
-    '        try { [XaborRawPrint]::EndDocPrinter($ph) | Out-Null } catch {}',
-    '    }',
-    '    if ($abierta) { try { [XaborRawPrint]::ClosePrinter($ph) | Out-Null } catch {} }',
-    '}',
-  ].join('\r\n');
+    "$di.pDataType = 'RAW'",
+    '$job = [XaborRawPrint]::StartDocPrinter($ph, 1, [ref]$di)',
+    // Etapa 2: si el spooler no acepta el documento, se cierra la cola y se
+    // sale. Tampoco salio nada -> `fallido`.
+    'if ($job -le 0) { $e = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error(); [XaborRawPrint]::ClosePrinter($ph) | Out-Null; Write-Output ("ERROR:STARTDOC:" + $e); exit 1 }',
+    '[XaborRawPrint]::StartPagePrinter($ph) | Out-Null',
+    // Frontera: a partir de la linea siguiente ya no se puede afirmar que no
+    // salio nada. Se anuncia ANTES de escribir, no despues.
+    "Write-Output 'ESCRIBIENDO'",
+    '$escritos = 0',
+    '$ok = [XaborRawPrint]::WritePrinter($ph, $bytes, $bytes.Length, [ref]$escritos)',
+    '$err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()',
+    // Los handles se cierran SIEMPRE, tambien cuando la escritura fallo: un
+    // handle filtrado deja el trabajo colgado en la cola de Windows y bloquea
+    // el siguiente.
+    '[XaborRawPrint]::EndPagePrinter($ph) | Out-Null',
+    '[XaborRawPrint]::EndDocPrinter($ph) | Out-Null',
+    '[XaborRawPrint]::ClosePrinter($ph) | Out-Null',
+    'if (-not $ok) { Write-Output ("ERROR:WRITE:" + $err); exit 1 }',
+    'if ($escritos -ne $bytes.Length) { Write-Output ("ERROR:PARCIAL:" + $escritos + " de " + $bytes.Length); exit 1 }',
+    'Write-Output ("OK:" + $escritos)',
+  ].join('; ');
 }
 
 /**

@@ -442,10 +442,14 @@ export async function reimprimirTrabajo(negocioId, trabajoId, { usuarioId = null
 // pendiente de confirmar. Sin cursor, una cola mayor que el límite dejaría
 // trabajos esperando a la siguiente reconexión, que podía no llegar en toda
 // la noche.
+// Recuperacion al reconectar. El alias de `config` importa: trabajoParaEdge()
+// lo busca con ese nombre exacto. Con el alias anterior (`impresora_config`)
+// un trabajo recuperado tras una desconexion llegaba al Edge sin destino --
+// el mismo dato perdido una sexta vez, esta unica vez solo en este camino.
 export async function trabajosPendientesDeTerminal(terminalId, { limite = 50, desde = null } = {}) {
   const { rows } = await pool.query(
     `SELECT t.*, t.created_at::text AS cursor_created_at,
-            i.transporte, i.host, i.puerto, i.ancho_columnas, i.config AS impresora_config
+            i.transporte, i.host, i.puerto, i.ancho_columnas, i.config AS config
        FROM impresion_trabajos t
        LEFT JOIN impresoras i ON i.id = t.impresora_id
       WHERE t.terminal_id = $1

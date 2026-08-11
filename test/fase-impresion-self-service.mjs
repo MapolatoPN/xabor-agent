@@ -17,7 +17,8 @@
 //
 // Uso: DATABASE_URL=... PANEL_SECRET=... SESSION_SECRET=... ADMIN_PASSWORD=...
 //      node test/fase-impresion-self-service.mjs
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
@@ -39,6 +40,8 @@ const { crearTransporteWindowsSpooler, interpretarSalida, escaparNombrePs, const
 const { sanitizarImpresoras, normalizarEstado, listarImpresorasWindows } =
   await import('../edge/impresorasWindows.js');
 const { envolver, bloque } = await import('../edge/renderers/escpos.js');
+const { crearEdge: crearAgenteEdge } = await import('../edge/index.js');
+const { cargarConfig: cargarConfigEdge } = await import('../edge/config.js');
 const { renderComanda } = await import('../edge/renderers/index.js');
 
 let pasadas = 0, fallidas = 0;
@@ -146,14 +149,20 @@ await t('SPOOLER', '10. el nombre de impresora se escapa y no puede inyectar', a
   assert.strictEqual(escaparNombrePs("Impresora'; rm -rf /"), "Impresora''; rm -rf /");
   const script = construirScript("O'Brien HP", 'C:/tmp/x.bin');
   assert.ok(script.includes("$prn = 'O''Brien HP'"), 'la comilla se duplica dentro del literal');
-  assert.ok(script.includes("pDataType = \"RAW\""), 'siempre RAW: el driver no debe reinterpretar ESC/POS');
+  assert.ok(/pDataType = 'RAW'/.test(script), 'siempre RAW: el driver no debe reinterpretar ESC/POS');
   assert.ok(!/Out-Printer/.test(script), 'nada de Out-Printer: convertiría el ESC/POS en basura impresa');
 });
 
-await t('SPOOLER', '11. el script cierra handles pase lo que pase', () => {
+await t('SPOOLER', '11. el script cierra handles en todos los caminos de salida', () => {
+  // Ya no hay try/finally: ese bloque multilinea era justo lo que hacia que
+  // PowerShell saliera con 0 y sin decir nada. Ahora cada etapa cierra lo suyo
+  // antes de salir, y eso es lo que se comprueba.
   const script = construirScript('X', 'C:/tmp/x.bin');
-  assert.ok(script.includes('} finally {'));
-  assert.ok(script.includes('ClosePrinter'));
+  assert.ok(/ClosePrinter\(\$ph\) \| Out-Null; Write-Output \("ERROR:STARTDOC/.test(script),
+    'si el spooler rechaza el documento hay que cerrar la impresora igual');
+  const trasEscribir = script.slice(script.indexOf('WritePrinter'));
+  assert.ok(trasEscribir.indexOf('ClosePrinter') < trasEscribir.indexOf('ERROR:WRITE'),
+    'los handles se cierran ANTES de decidir si hubo error: uno filtrado bloquea la cola');
   assert.ok(script.includes('EndDocPrinter'));
 });
 
@@ -679,7 +688,7 @@ await t('CONTRATO', '43c. el transporte encuentra el nombre en el sobre real', a
   let nombreUsado = null;
   const tr = crearTransporteWindowsSpooler({
     ejecutor: async ({ script }) => {
-      nombreUsado = (script.match(/\$prn = '(.*)'/) || [])[1] || null;
+      nombreUsado = (script.match(/\$prn = '([^']*)'/) || [])[1] || null;
       return { salida: 'ESCRIBIENDO\r\nOK:10', codigoSalida: 0 };
     },
   });
@@ -689,6 +698,83 @@ await t('CONTRATO', '43c. el transporte encuentra el nombre en el sobre real', a
   assert.strictEqual(r.resultado, 'enviado');
   assert.strictEqual(nombreUsado, NOMBRE_REAL,
     'se abre la cola con el identificador técnico, NUNCA con el nombre visible');
+});
+
+// ─── Recuperacion tras reconexion, con un Edge REAL ─────────────────────────
+//
+// El sexto sitio donde se perdio el mismo dato. La ruta de recuperacion tiene
+// su propia consulta, y aliaseaba la columna como `impresora_config` mientras
+// trabajoParaEdge() la busca como `config`. Resultado: un trabajo creado
+// mientras el equipo estaba apagado llegaba, al reconectar, sin destino.
+//
+// Este caso NO construye el objeto final a mano: levanta un agente Edge de
+// verdad contra el servidor de pruebas y mira lo que recibe su transporte al
+// final del camino de recuperacion.
+
+await t('CONTRATO', '43d. un trabajo recuperado tras reconexion conserva su destino', async () => {
+  const NOMBRE_REAL = 'POS Printer 203DPI  Series 2';
+  await api(BASE, RUTA + '/asignar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: NOMBRE_REAL, destino: 'cocina', anchoMm: 58 },
+  });
+  const imp = (await listarImpresoras(NEG_A)).find((i) => i.config?.spoolerNombre === NOMBRE_REAL);
+  assert.ok(imp, 'la impresora tiene que estar configurada');
+
+  // 1) El equipo esta APAGADO: el trabajo se crea y se queda pendiente.
+  const antesTrabajo = await api(BASE, `/api/impresion/impresoras/${imp.id}/prueba`,
+    { cookie: ckAdminA, method: 'POST' });
+  assert.strictEqual(antesTrabajo.status, 201);
+  const jobId = antesTrabajo.body.trabajo.id;
+  const { rows: [pend] } = await pool.query(
+    `SELECT estado FROM impresion_trabajos WHERE id = $1`, [jobId]);
+  assert.strictEqual(pend.estado, 'pendiente',
+    'sin Edge conectado el trabajo espera: por eso una comanda no se pierde con la PC apagada');
+
+  // 2) El equipo se conecta. La nube le reenvia lo pendiente.
+  const recibidos = [];
+  const espia = {
+    nombre: 'windows_spooler',
+    async enviar(destino, bytes, contexto) {
+      recibidos.push(destino);
+      contexto.alEscribir?.();
+      return { resultado: 'enviado', codigo: null, detalle: 'espia' };
+    },
+  };
+  const dirEdge = mkdtempSync(join(tmpdir(), 'xabor-reconexion-'));
+  const agente = crearAgenteEdge({
+    config: {
+      ...cargarConfigEdge({ env: {} }),
+      urlNube: `ws://localhost:${PUERTO}/ws/print-agent`,
+      terminalId: credA.terminalId, terminalToken: credA.token,
+      rutaDatos: dirEdge, almacen: 'sqlite',
+      reintentoBaseMs: 20, reintentoMaximoMs: 80, maxIntentos: 3,
+      intervaloColaMs: 20, reconexionBaseMs: 30, reconexionMaximaMs: 200,
+      heartbeatMs: 5000, timeoutImpresoraMs: 500,
+    },
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    transportes: { mock: espia, windows_spooler: espia },
+  });
+  await agente.iniciar();
+
+  try {
+    // 3) Se espera a que la recuperacion complete el viaje hasta el transporte.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000 && recibidos.length === 0) {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    assert.ok(recibidos.length > 0,
+      'el trabajo pendiente tenia que recuperarse y llegar al transporte al reconectar');
+
+    const destino = recibidos[0];
+    assert.ok(destino.config, 'el destino recuperado llego SIN config: el camino de recuperacion lo perdio');
+    assert.strictEqual(destino.config.spoolerNombre, NOMBRE_REAL,
+      'tras la reconexion el nombre de Windows sigue completo');
+    assert.ok(/203DPI {2}Series/.test(destino.config.spoolerNombre),
+      'con los DOS espacios: es lo que Windows necesita para encontrar la cola');
+  } finally {
+    await agente.detener();
+    rmSync(dirEdge, { recursive: true, force: true });
+  }
 });
 
 // ═══════════ 9. Protocolo cerrado ═══════════
