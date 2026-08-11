@@ -64,7 +64,8 @@ export function crearWorker({ almacen, transportes, config, logger, alResolver =
     let r;
     try {
       r = await transporte.enviar(
-        { host: trabajo.host, puerto: trabajo.puerto, timeoutMs: config.timeoutImpresoraMs, nombre: trabajo.impresoraNombre },
+        { host: trabajo.host, puerto: trabajo.puerto, timeoutMs: config.timeoutImpresoraMs,
+          nombre: trabajo.impresoraNombre, config: trabajo.config || {} },
         bytes, contexto
       );
     } catch (e) {

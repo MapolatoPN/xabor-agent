@@ -1006,6 +1006,14 @@ function trabajoParaEdge(fila) {
     host: fila.host ?? null,
     puerto: fila.puerto ?? null,
     anchoColumnas: fila.ancho_columnas ?? 42,
+    // Lo específico del destino según el transporte: para windows_spooler, el
+    // nombre con el que Windows conoce la impresora. Va aparte de
+    // `impresoraNombre` a propósito -- ese es el nombre VISIBLE, que el dueño
+    // puede renombrar en el panel, y `config.spoolerNombre` es el
+    // identificador técnico con el que se abre la cola. Hoy coinciden porque
+    // el self-service los crea iguales; confiar en esa coincidencia sería un
+    // atajo que se rompe la primera vez que alguien renombre su impresora.
+    config: fila.config ?? {},
     payload: fila.payload,
   };
 }
@@ -1019,7 +1027,7 @@ async function entregarTrabajos(trabajos) {
     let fila = t;
     if (fila.transporte === undefined) {
       const { rows } = await pool.query(
-        `SELECT transporte, host, puerto, ancho_columnas FROM impresoras WHERE id = $1`, [t.impresora_id]);
+        `SELECT transporte, host, puerto, ancho_columnas, config FROM impresoras WHERE id = $1`, [t.impresora_id]);
       fila = { ...t, ...(rows[0] || {}) };
     }
     const enviados = enviarTrabajoATerminal(t.terminal_id, trabajoParaEdge(fila));

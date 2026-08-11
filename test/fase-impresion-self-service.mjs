@@ -619,6 +619,78 @@ await t('ROUTING', '40. el mismo documento dos veces no duplica el trabajo', asy
   assert.ok((dos.duplicados || []).length > 0, 'se reconoce como duplicado');
 });
 
+// ─── El sobre que llega al Edge ─────────────────────────────────────────────
+//
+// Este caso existe por un fallo real de GATE 5. La impresora estaba bien
+// configurada, el nombre de Windows estaba bien guardado (con sus dos
+// espacios) y el trabajo llegaba al Edge con el transporte correcto -- pero
+// el sobre no llevaba `config`, asi que el transporte no encontraba el
+// nombre y devolvia SIN_IMPRESORA_ASIGNADA antes de tocar el spooler.
+//
+// El sobre lo arma trabajoParaEdge() en la nube; la suite lo verifica sobre
+// el mensaje REAL que sale por el WebSocket.
+
+await t('CONTRATO', '43b. el trabajo entregado al Edge lleva config.spoolerNombre exacto', async () => {
+  const NOMBRE_REAL = 'POS Printer 203DPI  Series 2';   // dos espacios, como Windows
+  await api(BASE, RUTA + '/asignar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: NOMBRE_REAL, destino: 'cocina', anchoMm: 80 },
+  });
+
+  const agenteContrato = await agenteFalso(credA, { impresoras: [{ nombre: NOMBRE_REAL }] });
+  try {
+    const imp = (await listarImpresoras(NEG_A)).find((i) => i.config?.spoolerNombre === NOMBRE_REAL);
+    assert.ok(imp, 'la impresora tiene que existir con su nombre de Windows');
+
+    const antes = agenteContrato.recibidos.filter((m) => m.tipo === 'trabajo_impresion').length;
+    const r = await api(BASE, `/api/impresion/impresoras/${imp.id}/prueba`, { cookie: ckAdminA, method: 'POST' });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+    await new Promise((res) => setTimeout(res, 800));
+
+    // Al conectar, la nube reenvia los pendientes de casos anteriores: hay que
+    // quedarse con el trabajo de ESTA impresora, no con el ultimo que llegue.
+    const entregados = agenteContrato.recibidos.filter((m) => m.tipo === 'trabajo_impresion');
+    assert.ok(entregados.length > antes, 'el trabajo tiene que llegar al Edge');
+    const propio = entregados.filter((m) => m.trabajo?.impresoraId === imp.id);
+    assert.ok(propio.length, `no llego ningun trabajo para esta impresora (llegaron ${entregados.length})`);
+    const trabajo = propio.at(-1).trabajo;
+
+    assert.strictEqual(trabajo.transporte, 'windows_spooler');
+    assert.ok(trabajo.config, 'el sobre TIENE que llevar config: sin eso el transporte no sabe a qué impresora hablarle');
+    assert.strictEqual(trabajo.config.spoolerNombre, NOMBRE_REAL,
+      'el nombre de Windows viaja intacto, con sus dos espacios');
+    assert.ok(/203DPI {2}Series/.test(trabajo.config.spoolerNombre),
+      'exactamente DOS espacios: uno solo no abre la cola');
+
+    // Y el nombre visible sigue siendo un campo distinto, no el identificador.
+    assert.ok('impresoraNombre' in trabajo, 'el nombre visible sigue viajando aparte');
+  } finally {
+    agenteContrato.cerrar();
+    await new Promise((res) => setTimeout(res, 200));
+  }
+});
+
+await t('CONTRATO', '43c. el transporte encuentra el nombre en el sobre real', async () => {
+  // Se arma el destino igual que lo arma el worker y se comprueba que el
+  // transporte ya no se queda sin impresora.
+  const NOMBRE_REAL = 'POS Printer 203DPI  Series 2';
+  const trabajo = { host: null, puerto: null, impresoraNombre: 'Como se ve en el panel',
+                    config: { spoolerNombre: NOMBRE_REAL } };
+  let nombreUsado = null;
+  const tr = crearTransporteWindowsSpooler({
+    ejecutor: async ({ script }) => {
+      nombreUsado = (script.match(/\$prn = '(.*)'/) || [])[1] || null;
+      return { salida: 'ESCRIBIENDO\r\nOK:10', codigoSalida: 0 };
+    },
+  });
+  const r = await tr.enviar(
+    { host: trabajo.host, puerto: trabajo.puerto, nombre: trabajo.impresoraNombre, config: trabajo.config },
+    Buffer.from('hola'), {});
+  assert.strictEqual(r.resultado, 'enviado');
+  assert.strictEqual(nombreUsado, NOMBRE_REAL,
+    'se abre la cola con el identificador técnico, NUNCA con el nombre visible');
+});
+
 // ═══════════ 9. Protocolo cerrado ═══════════
 
 await t('PROTOCOLO', '41. el agente ignora cualquier mensaje que no sea del contrato', async () => {

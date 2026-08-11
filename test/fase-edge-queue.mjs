@@ -64,6 +64,39 @@ for (const [nombre, abrir] of BACKENDS) {
     almacen.cerrar();
   });
 
+  await t('ALMACEN', `1b.${nombre} config sobrevive el viaje de ida y vuelta`, async () => {
+    // GATE 5 fallo por aqui: la nube mandaba bien el nombre de Windows y el
+    // worker no lo veia, porque NO procesa el mensaje del cable sino lo que
+    // hay en esta cola -- y la cola se comia `config` al persistir. El
+    // transporte se quedaba sin destino y devolvia SIN_IMPRESORA_ASIGNADA.
+    const NOMBRE_WINDOWS = 'POS Printer 203DPI  Series 2';   // DOS espacios, como Windows
+    const almacen = abrir(dirTemporal());
+    almacen.registrarTrabajo(trabajo('j-cfg', 'CAJA', {
+      transporte: 'windows_spooler',
+      config: { spoolerNombre: NOMBRE_WINDOWS },
+    }));
+
+    for (const via of [almacen.obtener('j-cfg'), almacen.pendientes()[0]]) {
+      assert.ok(via.config, 'config tiene que volver del almacen');
+      assert.strictEqual(via.config.spoolerNombre, NOMBRE_WINDOWS,
+        'el nombre de Windows vuelve EXACTAMENTE como entro');
+      assert.ok(/203DPI {2}Series/.test(via.config.spoolerNombre),
+        'los dos espacios se conservan: con uno solo no abre la cola de Windows');
+    }
+    almacen.cerrar();
+  });
+
+  await t('ALMACEN', `1c.${nombre} un trabajo sin config no revienta al releerse`, async () => {
+    // tcp_raw y mock no llevan config: la ausencia es normal, no un error.
+    const almacen = abrir(dirTemporal());
+    almacen.registrarTrabajo(trabajo('j-sin-cfg'));
+    const leido = almacen.obtener('j-sin-cfg');
+    assert.ok(leido, 'el trabajo existe');
+    assert.ok(leido.config === undefined || typeof leido.config === 'object',
+      'sin config se devuelve indefinido o un objeto vacio, nunca una excepcion');
+    almacen.cerrar();
+  });
+
   await t('ALMACEN', `2.${nombre} el MISMO trabajo entregado dos veces se registra UNA vez`, async () => {
     const almacen = abrir(dirTemporal());
     assert.strictEqual(almacen.registrarTrabajo(trabajo('j1')), true, 'primera entrega: nuevo');

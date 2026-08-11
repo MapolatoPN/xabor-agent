@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS trabajos (
   host              TEXT,
   puerto            INTEGER,
   ancho_columnas    INTEGER,
+  -- Lo especifico del destino segun el transporte (para windows_spooler, el
+  -- nombre con el que Windows conoce la impresora). Se guarda porque el
+  -- worker NO procesa el mensaje que llego por el cable: procesa lo que hay
+  -- en esta cola. Sin esta columna el dato llegaba bien de la nube y se
+  -- perdia al persistirlo, y el transporte se quedaba sin saber a que
+  -- impresora hablarle.
+  config            TEXT,
   payload           TEXT NOT NULL,
   estado            TEXT NOT NULL DEFAULT 'pendiente',
   intentos          INTEGER NOT NULL DEFAULT 0,
@@ -47,6 +54,11 @@ CREATE INDEX IF NOT EXISTS idx_trabajos_cola ON trabajos (estado, proximo_intent
 CREATE TABLE IF NOT EXISTS estado_edge (clave TEXT PRIMARY KEY, valor TEXT);
 `;
 
+function leerConfig(crudo) {
+  if (!crudo) return {};
+  try { return JSON.parse(crudo); } catch { return {}; }
+}
+
 function aFila(t) {
   return {
     id: t.id,
@@ -57,6 +69,9 @@ function aFila(t) {
     host: t.host,
     puerto: t.puerto,
     anchoColumnas: t.ancho_columnas,
+    // Se devuelve tal cual entro. Un config ilegible no debe tumbar la cola
+    // entera: se degrada a {} y el transporte decidira que hacer sin destino.
+    config: leerConfig(t.config),
     payload: JSON.parse(t.payload),
     estado: t.estado,
     intentos: t.intentos,
@@ -78,11 +93,18 @@ export function crearAlmacenSqlite({ ruta }) {
   db.exec('PRAGMA synchronous = FULL');
   db.exec(ESQUEMA);
 
+  // Una cola creada antes de esta version no tiene la columna `config`. Se
+  // agrega en caliente: ALTER TABLE ADD COLUMN es instantaneo en SQLite y no
+  // toca las filas existentes, asi que un Edge que se actualiza conserva sus
+  // trabajos pendientes en vez de empezar de cero.
+  const columnas = db.prepare('PRAGMA table_info(trabajos)').all().map((c) => c.name);
+  if (!columnas.includes('config')) db.exec('ALTER TABLE trabajos ADD COLUMN config TEXT');
+
   const insertar = db.prepare(`
     INSERT OR IGNORE INTO trabajos
       (id, documento, impresora_id, impresora_nombre, transporte, host, puerto, ancho_columnas,
-       payload, estado, intentos, proximo_intento_en, creado_en, actualizado_en)
-    VALUES (?,?,?,?,?,?,?,?,?,'pendiente',0,0,?,?)`);
+       config, payload, estado, intentos, proximo_intento_en, creado_en, actualizado_en)
+    VALUES (?,?,?,?,?,?,?,?,?,?,'pendiente',0,0,?,?)`);
   const porId = db.prepare('SELECT * FROM trabajos WHERE id = ?');
   const listos = db.prepare(`
     SELECT * FROM trabajos
@@ -120,6 +142,7 @@ export function crearAlmacenSqlite({ ruta }) {
       const r = insertar.run(
         t.id, t.documento, t.impresoraId ?? null, t.impresoraNombre ?? null,
         t.transporte ?? null, t.host ?? null, t.puerto ?? null, t.anchoColumnas ?? null,
+        t.config ? JSON.stringify(t.config) : null,
         JSON.stringify(t.payload), ahora, ahora
       );
       return r.changes === 1;
