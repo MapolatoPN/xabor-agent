@@ -28,3 +28,6 @@ edge/.env
 
 # Salida de la sonda de diagnostico: es un resultado local, no codigo.
 probe-system-result.txt
+
+# Staging del servicio de Windows: se arma con un comando, no viaja al repo.
+staging-service/

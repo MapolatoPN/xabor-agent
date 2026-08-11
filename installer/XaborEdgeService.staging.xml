@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  STAGING. No es el XML que se instala en un restaurante: es su gemelo para
+  validar WinSW v2.12.0 en la máquina de desarrollo.
+
+  Diferencias deliberadas con installer/XaborEdgeService.xml:
+    - id y nombre distintos, para que no se pueda confundir con el servicio
+      real ni pisarlo si algún día conviven;
+    - datos y logs dentro de la propia carpeta de staging, no en ProgramData,
+      para que limpiar sea borrar una carpeta;
+    - credenciales de prueba que no valen en ningún Xabor real;
+    - apunta a un WebSocket local donde no escucha nadie, a propósito: así el
+      agente entra en su ciclo de reconexión y se puede comprobar que WinSW NO
+      lo reinicia por eso (eso lo resuelve el Edge solo).
+
+  Todo lo demás -- cuenta, arranque, dependencia, recovery, logs -- es
+  idéntico al XML de producción, que es justo lo que se quiere probar.
+-->
+<service>
+  <id>XaborEdgeStaging</id>
+  <name>Xabor Edge (STAGING - borrable)</name>
+  <description>Servicio de prueba para validar WinSW. No es la instalación real.</description>
+
+  <executable>%BASE%\node\node.exe</executable>
+  <arguments>"%BASE%\app\edge\index.js"</arguments>
+  <workingdirectory>%BASE%\app</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <depend>Spooler</depend>
+
+  <serviceaccount>
+    <username>LocalSystem</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <stoptimeout>20 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!-- Credenciales de PRUEBA. No sirven en ningún Xabor real: el terminalId
+       es un UUID de ceros y el token son 64 letras 'e'. El puerto 45999 no
+       tiene nadie escuchando. -->
+  <env name="XABOR_EDGE_WS_URL" value="ws://127.0.0.1:45999/ws/print-agent"/>
+  <env name="XABOR_TERMINAL_ID" value="00000000-0000-0000-0000-00000000staging"/>
+  <env name="XABOR_TERMINAL_TOKEN" value="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"/>
+  <env name="XABOR_EDGE_DATOS" value="%BASE%\data"/>
+  <env name="XABOR_EDGE_RECONEXION_MS" value="3000"/>
+  <env name="XABOR_EDGE_LOG" value="info"/>
+</service>
