@@ -21,6 +21,7 @@ import { crearWorker, recuperarInterrumpidos } from './worker.js';
 import { crearConexion } from './connection.js';
 import { listarImpresorasWindows } from './impresorasWindows.js';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 export function crearEdge({ config, logger, transportes: transportesInyectados = null } = {}) {
   const cfg = config || cargarConfig();
@@ -172,7 +173,17 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
 }
 
 // Arranque como proceso, solo si se ejecuta directamente.
-const esEjecucionDirecta = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
+//
+// La URL se construye con pathToFileURL y NO a mano. Armarla concatenando
+// `file://` + la ruta funciona en Linux por casualidad -- ahí la ruta absoluta
+// ya empieza por `/` y salen las tres barras -- pero en Windows la ruta empieza
+// por letra de unidad, así que quedaba `file://C:/...` (dos barras) frente al
+// `file:///C:/...` real de import.meta.url. Nunca coincidían: en Windows este
+// bloque no se ejecutaba y `node edge/index.js` salía con 0 sin imprimir nada,
+// como si todo hubiera ido bien. Lo descubrió el primer arranque real en la
+// Surface, no las pruebas: las suites importan crearEdge() como módulo y nunca
+// lanzan el agente como proceso.
+const esEjecucionDirecta = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (esEjecucionDirecta) {
   const edge = crearEdge();
   const apagar = async (senal) => {

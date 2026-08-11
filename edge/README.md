@@ -35,6 +35,13 @@ emparejamiento en el panel; no hay forma de recuperarlo.
 node edge/index.js
 ```
 
+En Windows es el mismo comando. Si prefieres pasar la configuración por
+variables en vez de por `.env`, en PowerShell:
+
+```powershell
+cd C:\ruta\al\repo; $env:XABOR_EDGE_WS_URL='wss://xabor.mx/ws/print-agent'; $env:XABOR_TERMINAL_ID='…'; $env:XABOR_TERMINAL_TOKEN='…'; node edge/index.js
+```
+
 Al arrancar debe verse:
 
 ```
@@ -44,6 +51,12 @@ Al arrancar debe verse:
 ```
 
 Si falta configuración no arranca a medias: dice exactamente qué falta.
+
+Si el comando vuelve al prompt **sin imprimir nada y con código 0**, eso ya
+no debería pasar: era un fallo del arranque en Windows (la URL del módulo se
+armaba a mano y nunca coincidía con `import.meta.url`, así que el bloque de
+arranque no se ejecutaba). Lo cubre `test/fase-edge-arranque-directo.mjs`,
+que lanza el agente como proceso de verdad.
 
 ## Probarlo en local, sin impresoras
 
