@@ -12,6 +12,13 @@
 //   Nube  → { tipo:'trabajo_impresion', trabajo:{...} }
 //   Edge  → { tipo:'ack_impresion', trabajoId, resultado, error? }
 //   Edge  → { tipo:'latido', pendientes }
+//   Nube  → { tipo:'solicitar_impresoras', solicitudId }
+//   Edge  → { tipo:'impresoras_detectadas', solicitudId, ok, impresoras[], error? }
+//
+// `solicitar_impresoras` NO lleva parámetros: no es "ejecuta esto", es "dime
+// qué impresoras tienes". El cómo (PowerShell, WMI) vive entero en el Edge y
+// la nube no puede influir en él. Esa es la diferencia entre una capacidad
+// cerrada y una ejecución remota.
 //
 // El `terminalId` del ACK lo pone el servidor a partir de la conexión
 // autenticada, nunca este cliente: por eso un Edge no puede confirmar el
@@ -23,7 +30,8 @@ import { calcularEspera } from './config.js';
 // terminal". Está en el rango 4000-4999, reservado para la aplicación.
 export const CODIGO_DESPLAZADA = 4001;
 
-export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null, instalacionId = null }) {
+export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null, instalacionId = null,
+                               alListarImpresoras = async () => ({ ok: false, impresoras: [], error: 'no disponible' }) }) {
   let ws = null;
   let intentos = 0;
   let cerradoAdrede = false;
@@ -119,6 +127,27 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
 
       if (msg.tipo === 'trabajo_impresion' && msg.trabajo) {
         return alRecibirTrabajo(msg.trabajo);
+      }
+
+      if (msg.tipo === 'solicitar_impresoras') {
+        // Se responde SIEMPRE, también cuando falla: un panel esperando en
+        // silencio es peor que uno que dice "no pude preguntarle al equipo".
+        const solicitudId = typeof msg.solicitudId === 'string' ? msg.solicitudId.slice(0, 64) : null;
+        alListarImpresoras()
+          .then((r) => {
+            if (!vigente() || socket.readyState !== WebSocket.OPEN) return;
+            try {
+              socket.send(JSON.stringify({
+                tipo: 'impresoras_detectadas',
+                solicitudId,
+                ok: r.ok === true,
+                impresoras: r.impresoras || [],
+                error: r.error || null,
+              }));
+            } catch (e) { logger?.warn('impresoras.respuesta.error', { error: e.message }); }
+          })
+          .catch((e) => logger?.warn('impresoras.enumeracion.error', { error: e.message }));
+        return;
       }
 
       if (msg.tipo === 'error') {

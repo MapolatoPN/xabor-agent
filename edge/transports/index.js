@@ -27,25 +27,17 @@
 // darlo por impreso perdería una. Se marca y lo decide una persona.
 import { crearTransporteMock } from './mock.js';
 import { crearTransporteTcpRaw } from './tcpRaw.js';
+import { crearTransporteWindowsSpooler } from './windowsSpooler.js';
 
 export function crearTransportes({ logger, timeoutMs } = {}) {
   const mock = crearTransporteMock({ logger });
   return {
     mock,
     tcp_raw: crearTransporteTcpRaw({ logger, timeoutMs }),
-    // El spooler de Windows sí existe hoy en print-agent.js, pero depende de
-    // PowerShell y de un nombre de impresora instalada. No se porta aquí
-    // hasta poder probarlo contra la PC real de Obispado: prometer un
-    // transporte que no se ha ejecutado ni una vez sería falso.
-    windows_spooler: {
-      nombre: 'windows_spooler',
-      async enviar() {
-        // 'fallido' y no 'incierto': no se intentó nada, así que reintentar es
-        // seguro (aunque volverá a fallar hasta que se implemente).
-        return { resultado: 'fallido', codigo: 'TRANSPORTE_NO_IMPLEMENTADO',
-                 detalle: 'windows_spooler llega en la visita a sitio; usa tcp_raw o mock' };
-      },
-    },
+    // Impresoras instaladas en Windows (USB, Bluetooth emparejado, red del
+    // sistema -- da igual: si Windows la ve, esto la usa). Entrega por la API
+    // de impresión en modo RAW, para que el driver no reinterprete el ESC/POS.
+    windows_spooler: crearTransporteWindowsSpooler({ logger, timeoutMs }),
   };
 }
 

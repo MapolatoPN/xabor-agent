@@ -1195,6 +1195,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
       <div id="wa-autoservicio"></div>
       <div id="wa-menu"></div>
+      <div id="impresoras-panel"></div>
       <div id="int-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
@@ -4963,6 +4964,174 @@ async function quitarImagenMenu() {
   }
 }
 
+// --- Config -> Impresoras -------------------------------------------------
+// El restaurante ve nombres de Windows y funciones. Nunca ve terminal ids,
+// transportes, columnas, GUIDs ni nada del spooler.
+let impEstado = null;
+let impOcupado = false;
+
+function impProgreso(txt, error) {
+  const el = document.getElementById('imp-progreso');
+  if (el) { el.textContent = txt || ''; el.style.color = error ? '#ef4444' : '#666'; }
+}
+
+function impBoton(txt, fn, primario) {
+  return '<button onclick="' + fn + '" ' + (impOcupado ? 'disabled' : '') +
+    ' style="background:' + (primario ? '#1c1c1c' : '#fff') + ';color:' + (primario ? '#fff' : '#1c1c1c') +
+    ';border:1px solid #1c1c1c;border-radius:8px;padding:8px 14px;font-size:0.85rem;font-weight:700;cursor:' +
+    (impOcupado ? 'not-allowed' : 'pointer') + ';opacity:' + (impOcupado ? '.5' : '1') +
+    ';margin-right:6px;margin-top:6px;">' + txt + '</button>';
+}
+
+function impSelect(id, opciones, valor) {
+  return '<select id="' + id + '" style="border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;' +
+    'font-size:0.85rem;font-family:inherit;margin-right:6px;margin-top:6px;">' +
+    opciones.map(function (o) {
+      return '<option value="' + o.v + '"' + (String(o.v) === String(valor) ? ' selected' : '') + '>' + o.t + '</option>';
+    }).join('') + '</select>';
+}
+
+function impFilaImpresora(equipoId, nombre, destinoActual, anchoActual, aviso) {
+  var idSeguro = 'imp-' + btoa(unescape(encodeURIComponent(nombre))).replace(/[^A-Za-z0-9]/g, '');
+  var destinos = Object.keys(impEstado.destinos).map(function (k) {
+    return { v: k, t: impEstado.destinos[k].etiqueta };
+  });
+  destinos.unshift({ v: '', t: 'Sin usar' });
+  return '<div style="border-top:1px solid #f0ede6;padding:12px 0;">' +
+    '<div style="font-weight:700;font-size:0.95rem;">' + nombre + '</div>' +
+    (aviso ? '<div style="color:#f59e0b;font-size:0.82rem;margin-top:4px;">' + aviso + '</div>' : '') +
+    '<div style="display:flex;flex-wrap:wrap;align-items:center;">' +
+      '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">Destino:</span>' +
+      impSelect(idSeguro + '-destino', destinos, destinoActual || '') +
+      '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">Papel:</span>' +
+      impSelect(idSeguro + '-ancho', impEstado.anchos.map(function (a) { return { v: a, t: a + ' mm' }; }), anchoActual || 58) +
+      impBoton('Guardar', "guardarImpresora('" + equipoId + "','" + idSeguro + "'," + JSON.stringify(nombre).replace(/"/g, '&quot;') + ')', true) +
+      (destinoActual ? impBoton('Imprimir prueba', "probarImpresora('" + equipoId + "'," + JSON.stringify(nombre).replace(/"/g, '&quot;') + ')') : '') +
+    '</div></div>';
+}
+
+function pintarImpresoras() {
+  var cont = document.getElementById('impresoras-panel');
+  if (!cont || ROL !== 'admin') return;
+  var e = impEstado;
+  if (!e) { cont.innerHTML = ''; return; }
+
+  var marco = 'border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:18px;background:#fff;';
+  var html = '<div style="' + marco + '">' +
+    '<div style="font-weight:800;font-size:1rem;margin-bottom:6px;">Impresoras</div>' +
+    '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">Configura qu&eacute; se imprime en cada impresora de tu negocio.</div>';
+
+  if (!e.hayEquipo) {
+    html += '<div style="color:#666;font-size:0.9rem;margin-bottom:6px;">No hay un equipo de impresi&oacute;n conectado.</div>' +
+      '<div style="color:#888;font-size:0.8rem;line-height:1.5;margin-bottom:10px;">Necesitas la aplicaci&oacute;n Xabor Edge instalada en la PC Windows donde est&aacute;n conectadas tus impresoras.</div>' +
+      impBoton('Conectar equipo', 'conectarEquipoImpresion()', true);
+  } else {
+    e.equipos.forEach(function (eq) {
+      html += '<div style="margin-bottom:16px;">' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="width:9px;height:9px;border-radius:50%;background:' + (eq.conectado ? '#22c55e' : '#c9c5bc') + ';display:inline-block;"></span>' +
+          '<span style="font-weight:700;">' + eq.nombre + '</span>' +
+          '<span style="color:#666;font-size:0.85rem;">' + (eq.conectado ? 'Conectado' : 'Desconectado') + '</span>' +
+        '</div>';
+
+      if (!eq.conectado) {
+        html += '<div style="color:#888;font-size:0.82rem;margin-top:6px;">Enciende la PC y abre Xabor Edge para ver sus impresoras.</div>';
+      } else if (!eq.consultaOk) {
+        html += '<div style="color:#f59e0b;font-size:0.82rem;margin-top:6px;">No pudimos leer las impresoras de este equipo.</div>';
+      }
+
+      eq.asignadas.forEach(function (a) {
+        var aviso = a.presente === false ? '&#9888; Impresora no encontrada actualmente en este equipo.' : '';
+        html += impFilaImpresora(eq.id, a.nombreWindows, a.destinos[0] || '', a.anchoMm, aviso);
+      });
+      eq.detectadas.filter(function (d) { return !d.yaConfigurada; }).forEach(function (d) {
+        html += impFilaImpresora(eq.id, d.nombre, '', 58, '');
+      });
+      html += '</div>';
+    });
+    html += impBoton('Conectar otro equipo', 'conectarEquipoImpresion()');
+  }
+
+  html += '<div id="imp-progreso" style="font-size:0.85rem;color:#666;margin-top:12px;"></div></div>';
+  cont.innerHTML = html;
+}
+
+async function cargarImpresoras() {
+  if (ROL !== 'admin') return;
+  try {
+    var r = await apiFetch('/api/impresion/self-service');
+    impEstado = r.ok ? await r.json() : null;
+  } catch (err) { impEstado = null; }
+  pintarImpresoras();
+}
+
+async function guardarImpresora(equipoId, idSeguro, nombre) {
+  if (impOcupado) return;
+  var destino = document.getElementById(idSeguro + '-destino').value;
+  var anchoMm = document.getElementById(idSeguro + '-ancho').value;
+  if (!destino) { impProgreso('Elige para qu&eacute; se va a usar esta impresora.', true); return; }
+  impOcupado = true; pintarImpresoras(); impProgreso('Guardando...');
+  try {
+    var r = await apiFetch('/api/impresion/self-service/asignar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre, destino: destino, anchoMm: Number(anchoMm) }),
+    });
+    var data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo guardar');
+    impOcupado = false;
+    await cargarImpresoras();
+    impProgreso('Listo. ' + nombre + ' ya est&aacute; configurada.');
+  } catch (err) {
+    impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
+  }
+}
+
+async function probarImpresora(equipoId, nombre) {
+  if (impOcupado) return;
+  impOcupado = true; pintarImpresoras(); impProgreso('Enviando prueba a ' + nombre + '...');
+  try {
+    // El id interno no se muestra nunca: se busca por el nombre que el
+    // usuario sí reconoce.
+    var eq = (impEstado.equipos || []).find(function (x) { return x.id === equipoId; });
+    var asignada = (eq && eq.asignadas || []).find(function (a) { return a.nombreWindows === nombre; });
+    if (!asignada) throw new Error('Guarda primero la configuraci\u00f3n de esta impresora');
+    var r = await apiFetch('/api/impresion/impresoras/' + asignada.id + '/prueba', { method: 'POST' });
+    var data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'No se pudo enviar la prueba');
+    impOcupado = false; pintarImpresoras();
+    impProgreso('Prueba enviada. Si no sale papel, revisa que la impresora est\u00e9 encendida y con rollo.');
+  } catch (err) {
+    impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
+  }
+}
+
+async function conectarEquipoImpresion() {
+  if (impOcupado) return;
+  var nombre = prompt('\u00bfC\u00f3mo se llama esa computadora? (por ejemplo: PC-CAJA)');
+  if (!nombre) return;
+  impOcupado = true; pintarImpresoras(); impProgreso('Preparando el c\u00f3digo...');
+  try {
+    var alta = await apiFetch('/api/impresion/edges', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: nombre }),
+    });
+    var edge = await alta.json();
+    if (!alta.ok) throw new Error(edge.error || 'No se pudo dar de alta el equipo');
+
+    var par = await apiFetch('/api/impresion/edges/' + edge.edge.id + '/emparejar', { method: 'POST' });
+    var datos = await par.json();
+    if (!par.ok) throw new Error(datos.error || 'No se pudo generar el c\u00f3digo');
+
+    impOcupado = false;
+    await cargarImpresoras();
+    // El código se muestra UNA vez: no se guarda ni se puede volver a ver.
+    alert('C\u00f3digo para Xabor Edge:\n\n' + datos.codigo +
+          '\n\nEscr\u00edbelo en la aplicaci\u00f3n Xabor Edge de esa computadora.\nCaduca en unos minutos y solo sirve una vez.');
+  } catch (err) {
+    impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
+  }
+}
+
 async function cargarWhatsappAutoservicio() {
   if (ROL !== 'admin') return;
   try {
@@ -4971,6 +5140,7 @@ async function cargarWhatsappAutoservicio() {
   } catch { waEstadoActual = null; }
   pintarWhatsappAutoservicio();
   await cargarMenuAutomatico();
+  await cargarImpresoras();
 }
 
 async function conectarWhatsapp() {

@@ -19,6 +19,7 @@ import { crearAlmacen } from './storage/index.js';
 import { crearTransportes } from './transports/index.js';
 import { crearWorker, recuperarInterrumpidos } from './worker.js';
 import { crearConexion } from './connection.js';
+import { listarImpresorasWindows } from './impresorasWindows.js';
 import { randomUUID } from 'node:crypto';
 
 export function crearEdge({ config, logger, transportes: transportesInyectados = null } = {}) {
@@ -55,6 +56,9 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     config: cfg, logger: log, instalacionId,
     alRecibirTrabajo: (trabajo) => recibirTrabajo(trabajo),
     alAutenticar: () => vaciarAcksPendientes(),
+    // Capacidad cerrada: la nube pide la lista, el Edge la consulta con sus
+    // propios medios. Nunca se recibe nada ejecutable desde la nube.
+    alListarImpresoras: () => listarImpresorasWindows({ logger: log }),
   });
 
   function recibirTrabajo(trabajo) {

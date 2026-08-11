@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createHmac, createHash, timingSafeEqual } from 'crypto';
+import { createHmac, createHash, timingSafeEqual, randomUUID } from 'crypto';
 
 import { procesarMensaje, simularMensaje } from './agent/brain.js';
 import { validarEstructuraReglas } from './agent/prompts.js';
@@ -34,6 +34,7 @@ import {
   registrarInstalacion,
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
+import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora } from './services/impresionSelfService.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
@@ -1061,6 +1062,64 @@ async function entregarTrabajosPendientes(ws) {
   }
 }
 
+// ─── Consulta de impresoras a un Edge ───────────────────────────────────────
+//
+// La nube NUNCA manda algo ejecutable: manda `solicitar_impresoras`, sin
+// parámetros. El Edge decide cómo consultarle a Windows y responde una lista
+// ya saneada. Si mañana cambiara la forma de preguntar (Get-Printer, WMI,
+// otra API), no cambia ni un byte de este lado.
+//
+// La respuesta se empareja por `solicitudId`. Se espera poco a propósito: el
+// panel prefiere decir "no pude preguntarle al equipo" antes que dejar al
+// administrador mirando un spinner.
+const solicitudesImpresoras = new Map();   // solicitudId -> { resolver, temporizador }
+const TIMEOUT_IMPRESORAS_MS = 6000;
+
+function socketDeTerminal(terminalId) {
+  let encontrado = null;
+  wss.clients.forEach((c) => {
+    if (encontrado) return;
+    if (c.readyState !== 1) return;
+    // Mismo predicado que enviarTrabajoATerminal: la identidad del Edge vive
+    // en el socket autenticado, no en nada que venga del mensaje.
+    if (c.tipo === 'print-agent' && c.autenticado && c.terminalId === terminalId) encontrado = c;
+  });
+  return encontrado;
+}
+
+// `terminalId` llega YA validado contra el negocio de la sesión por el
+// llamador. Esta función no vuelve a decidir de quién es la terminal: su
+// única responsabilidad es hablar con el socket.
+function pedirImpresorasATerminal(terminalId) {
+  return new Promise((resolve) => {
+    const ws = socketDeTerminal(terminalId);
+    if (!ws) {
+      return resolve({ ok: false, conectado: false, impresoras: [],
+                       error: 'El equipo de impresión no está conectado' });
+    }
+    const solicitudId = randomUUID();
+    const temporizador = setTimeout(() => {
+      solicitudesImpresoras.delete(solicitudId);
+      resolve({ ok: false, conectado: true, impresoras: [],
+                error: 'El equipo no respondió a tiempo' });
+    }, TIMEOUT_IMPRESORAS_MS);
+    temporizador.unref?.();
+
+    solicitudesImpresoras.set(solicitudId, {
+      terminalId,
+      resolver: (r) => { clearTimeout(temporizador); resolve({ conectado: true, ...r }); },
+    });
+
+    try {
+      ws.send(JSON.stringify({ tipo: 'solicitar_impresoras', solicitudId }));
+    } catch (e) {
+      clearTimeout(temporizador);
+      solicitudesImpresoras.delete(solicitudId);
+      resolve({ ok: false, conectado: false, impresoras: [], error: 'No se pudo hablar con el equipo' });
+    }
+  });
+}
+
 // Mensajes que un Edge ya autenticado puede mandar. Todo lo que necesita
 // identidad se toma de `ws` -- el mensaje solo aporta a QUÉ trabajo se
 // refiere, y el UPDATE filtra por terminal_id: un Edge no puede confirmar,
@@ -1071,6 +1130,27 @@ async function manejarMensajeDeEdge(ws, raw) {
 
   if (msg.tipo === 'latido') {
     marcarUltimaConexionTerminal(ws.terminalId);
+    return;
+  }
+
+  if (msg.tipo === 'impresoras_detectadas') {
+    const pendiente = solicitudesImpresoras.get(msg.solicitudId);
+    // La solicitud tiene que ser de ESTA terminal: un Edge no puede contestar
+    // por otro aunque conozca el id de la solicitud.
+    if (!pendiente || pendiente.terminalId !== ws.terminalId) return;
+    solicitudesImpresoras.delete(msg.solicitudId);
+    const lista = Array.isArray(msg.impresoras) ? msg.impresoras : [];
+    pendiente.resolver({
+      ok: msg.ok === true,
+      // Se vuelve a sanear en la nube: que el Edge ya lo haga no es motivo
+      // para confiar en lo que llega por el cable.
+      impresoras: lista.slice(0, 50).map((i) => ({
+        nombre: typeof i?.nombre === 'string' ? i.nombre.slice(0, 200) : '',
+        predeterminada: i?.predeterminada === true,
+        estado: typeof i?.estado === 'string' ? i.estado.slice(0, 30) : 'desconocido',
+      })).filter((i) => i.nombre),
+      error: typeof msg.error === 'string' ? msg.error.slice(0, 200) : null,
+    });
     return;
   }
 
@@ -2498,6 +2578,47 @@ function manejarErrorImpresion(res, e) {
 }
 
 // ── Dispositivos Edge y su credencial ──
+// ─── Config → Impresoras (self-service del negocio) ─────────────────────────
+//
+// Mismo guardia que el resto de /api/impresion: requireAdminSeguro resuelve el
+// negocio desde la SESIÓN. Ningún endpoint de aquí lee negocio_id del cuerpo,
+// de la query ni de la URL -- por eso un admin de Carnitas no puede nombrar
+// una terminal de Mapolato ni aunque conozca su uuid: la validación no compara
+// contra lo que mandó, compara contra lo que su sesión dice que es.
+
+app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
+  try {
+    res.json(await estadoImpresorasNegocio(req.negocioId, { pedirImpresoras: pedirImpresorasATerminal }));
+  } catch (e) {
+    console.error('[Impresion] self-service estado:', e.message);
+    res.status(500).json({ error: 'No pudimos leer la configuración de tus impresoras' });
+  }
+});
+
+app.post('/api/impresion/self-service/asignar', requireAdminSeguro, async (req, res) => {
+  const { terminalId, nombreWindows, destino, anchoMm } = req.body || {};
+  try {
+    const r = await asignarImpresora(req.negocioId, { terminalId, nombreWindows, destino, anchoMm });
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r);
+  } catch (e) {
+    console.error('[Impresion] self-service asignar:', e.message);
+    res.status(500).json({ error: 'No pudimos guardar la configuración de la impresora' });
+  }
+});
+
+// Apaga sin borrar: la impresora puede estar simplemente desconectada hoy y
+// el negocio no debería perder su asignación por eso.
+app.post('/api/impresion/self-service/impresoras/:id/desactivar', requireAdminSeguro, async (req, res) => {
+  try {
+    const r = await desactivarImpresora(req.negocioId, req.params.id);
+    if (!r.ok) return res.status(404).json({ error: r.error });
+    res.json(r);
+  } catch (e) {
+    manejarErrorImpresion(res, e);
+  }
+});
+
 app.get('/api/impresion/edges', requireAdminSeguro, async (req, res) => {
   try { res.json({ edges: await listarEdges(req.negocioId) }); }
   catch (e) { manejarErrorImpresion(res, e); }
