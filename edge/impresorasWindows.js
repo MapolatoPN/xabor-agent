@@ -28,24 +28,25 @@ import { spawn } from 'node:child_process';
 
 const TIMEOUT_MS = 8000;
 
-// Get-Printer (Windows 8/Server 2012 en adelante) y, si no existe, el viejo
-// WMI Win32_Printer. Los dos scripts son constantes de este archivo: no se
-// componen con nada externo.
-const SCRIPT_GET_PRINTER = [
-  '$ErrorActionPreference = "Stop"',
-  'try {',
-  '  $ps = Get-Printer | Select-Object Name, PrinterStatus, Default',
-  '} catch {',
-  '  $ps = Get-WmiObject -Class Win32_Printer | Select-Object Name, PrinterStatus, Default',
-  '}',
-  '$ps | ForEach-Object {',
-  '  [PSCustomObject]@{',
-  '    nombre = $_.Name',
-  '    estado = "$($_.PrinterStatus)"',
-  '    predeterminada = [bool]$_.Default',
-  '  }',
-  '} | ConvertTo-Json -Compress',
-].join('\r\n');
+// El script va en UNA sola línea, a propósito.
+//
+// La primera versión era un bloque multilínea con `$ErrorActionPreference =
+// "Stop"` y un try/catch. Alimentado por stdin (`powershell -Command -`),
+// PowerShell procesa la entrada como si se tecleara en la consola, y ese
+// bloque terminaba saliendo con código 0 y **stdout vacío**: ni datos ni
+// error. Desde fuera parecía "este equipo no tiene impresoras". Lo destapó
+// el primer discovery real contra una Surface con seis impresoras instaladas.
+//
+// `Get-Printer` existe desde Windows 8 / Server 2012 y es el camino bueno:
+// devuelve el estado como texto ('Normal', 'Offline'…). Lo único que no trae
+// es cuál es la predeterminada, así que ese dato se saca de WMI y se compara
+// por nombre. Si `Get-Printer` no existiera, el pipeline no emite nada y la
+// consulta se reporta como fallida -- que es la verdad, no una lista vacía.
+//
+// Constante de este archivo: no se compone con nada que venga de la nube.
+const SCRIPT_GET_PRINTER =
+  '$def = (Get-WmiObject -Class Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -First 1).Name; ' +
+  'Get-Printer | ForEach-Object { [PSCustomObject]@{ nombre = $_.Name; estado = "$($_.PrinterStatus)"; predeterminada = ($_.Name -eq $def) } } | ConvertTo-Json -Compress';
 
 // Los estados de Windows que sí significan algo accionable. El resto se
 // colapsa a 'desconocido' a propósito -- ver la nota de arriba.
@@ -131,9 +132,25 @@ export async function listarImpresorasWindows({ ejecutor = ejecutarPowerShell, t
     const r = await ejecutor(SCRIPT_GET_PRINTER, timeoutMs);
     if (!r.ok) return { ok: false, impresoras: [], error: r.error || 'no se pudo consultar Windows' };
 
+    const crudo = String(r.salida ?? '').trim();
+
+    // Sin salida NO es "cero impresoras": es una consulta que no se pudo
+    // hacer. Antes esto se convertía en `JSON.parse('' || '[]')` -> lista
+    // vacía con ok:true, y el panel decía tranquilamente que el equipo no
+    // tenía impresoras mientras Windows tenía seis. Un fallo disfrazado de
+    // éxito es peor que un fallo: nadie lo va a investigar.
+    //
+    // Una lista realmente vacía sí existe -- un equipo sin impresoras
+    // instaladas -- pero entonces PowerShell devuelve `[]` explícito, y ese
+    // caso sí pasa por aquí como ok:true.
+    if (!crudo) {
+      return { ok: false, impresoras: [],
+               error: 'Windows no devolvió la lista de impresoras (respuesta vacía)' };
+    }
+
     let datos;
     try {
-      datos = JSON.parse(String(r.salida).trim() || '[]');
+      datos = JSON.parse(crudo);
     } catch {
       return { ok: false, impresoras: [], error: 'Windows devolvió una respuesta que no se pudo leer' };
     }

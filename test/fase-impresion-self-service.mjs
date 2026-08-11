@@ -200,6 +200,70 @@ await t('ENUM', '16. un único resultado (objeto, no array) también se entiende
   assert.strictEqual(r.impresoras[0].nombre, 'SUZWIP');
 });
 
+// ─── El contrato de la enumeración ──────────────────────────────────────────
+//
+// Estos cuatro casos existen por un fallo real: el script de PowerShell salía
+// con código 0 y stdout VACÍO, y el enumerador lo convertía en `[]` con
+// ok:true. El panel decía tranquilamente "este equipo no tiene impresoras"
+// mientras Windows tenía seis instaladas. Un fallo disfrazado de éxito no lo
+// investiga nadie.
+
+await t('ENUM', '16b. salida válida con impresoras -> ok:true', async () => {
+  const r = await listarImpresorasWindows({
+    ejecutor: async () => ({ ok: true, salida:
+      '[{"nombre":"POS Printer 203DPI  Series 2","estado":"Normal","predeterminada":true},' +
+      '{"nombre":"Microsoft Print to PDF","estado":"Normal","predeterminada":false}]' }),
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.impresoras.length, 2);
+  assert.strictEqual(r.impresoras[0].nombre, 'POS Printer 203DPI  Series 2',
+    'el nombre se conserva TAL CUAL, con sus dos espacios: es la clave del envío');
+  assert.strictEqual(r.impresoras[0].predeterminada, true);
+});
+
+await t('ENUM', '16c. lista vacía REAL (JSON [] explícito) -> ok:true sin impresoras', async () => {
+  // Un equipo sin impresoras instaladas es un caso legítimo, y se distingue
+  // de "no pude preguntar" porque PowerShell sí devolvió algo.
+  const r = await listarImpresorasWindows({ ejecutor: async () => ({ ok: true, salida: '[]' }) });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.impresoras, []);
+  assert.strictEqual(r.error, null);
+});
+
+await t('ENUM', '16d. stdout VACÍO inesperado -> ok:false, nunca lista vacía', async () => {
+  for (const salida of ['', '   ', '\r\n', null, undefined]) {
+    const r = await listarImpresorasWindows({ ejecutor: async () => ({ ok: true, salida }) });
+    assert.strictEqual(r.ok, false, `con salida ${JSON.stringify(salida)} NO puede reportar éxito`);
+    assert.deepStrictEqual(r.impresoras, []);
+    assert.match(r.error, /vacía|no devolvió/i, 'y el error tiene que ser accionable');
+  }
+});
+
+await t('ENUM', '16e. error de PowerShell -> ok:false', async () => {
+  const r = await listarImpresorasWindows({
+    ejecutor: async () => ({ ok: false, error: 'powershell.exe no se encontró' }) });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /powershell/i);
+
+  // Salida que no es JSON (una traza de error, por ejemplo) tampoco es éxito.
+  const r2 = await listarImpresorasWindows({
+    ejecutor: async () => ({ ok: true, salida: 'Get-Printer : el termino no se reconoce' }) });
+  assert.strictEqual(r2.ok, false);
+});
+
+await t('ENUM', '16f. el script va en una sola línea (no vuelve el bloque que salía vacío)', () => {
+  const fuente = readFileSync(join(__dirname, '..', 'edge', 'impresorasWindows.js'), 'utf8');
+  const m = fuente.match(/const SCRIPT_GET_PRINTER =([\s\S]*?);\n/);
+  assert.ok(m, 'no se encontró el script');
+  const script = m[1];
+  assert.ok(!script.includes('$ErrorActionPreference'),
+    'ese ajuste, por stdin, hacía que el bloque saliera con 0 y sin salida');
+  assert.ok(!/\btry\s*\{/.test(script),
+    'el try/catch multilínea por stdin es justo lo que producía stdout vacío');
+  assert.ok(script.includes('Get-Printer'), 'sigue usando Get-Printer');
+  assert.ok(script.includes('ConvertTo-Json'), 'y devolviendo JSON');
+});
+
 // ═══════════ 3. Ancho: milímetros fuera, columnas dentro ═══════════
 
 await t('ANCHO', '17. 58 mm -> 32 columnas, 80 mm -> 42', () => {

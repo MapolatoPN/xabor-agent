@@ -132,10 +132,22 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
       if (msg.tipo === 'solicitar_impresoras') {
         // Se responde SIEMPRE, también cuando falla: un panel esperando en
         // silencio es peor que uno que dice "no pude preguntarle al equipo".
+        //
+        // Y se registra en las dos puntas. Sin estas dos líneas, un discovery
+        // que devuelve vacío no deja rastro ninguno en el Edge, y desde el
+        // mostrador es indistinguible de "el mensaje nunca llegó". Pasó en la
+        // primera prueba real: el agente respondió correctamente y el log no
+        // dijo nada, así que parecía que el WebSocket estaba mudo.
         const solicitudId = typeof msg.solicitudId === 'string' ? msg.solicitudId.slice(0, 64) : null;
+        logger?.info('impresoras.solicitud.recibida', { solicitudId });
         alListarImpresoras()
           .then((r) => {
-            if (!vigente() || socket.readyState !== WebSocket.OPEN) return;
+            const cuantas = (r.impresoras || []).length;
+            logger?.info('impresoras.respuesta', {
+              solicitudId, ok: r.ok === true, impresoras: cuantas, error: r.error || null });
+            if (!vigente() || socket.readyState !== WebSocket.OPEN) {
+              return logger?.warn('impresoras.respuesta.descartada', { motivo: 'la conexión ya no está viva' });
+            }
             try {
               socket.send(JSON.stringify({
                 tipo: 'impresoras_detectadas',
