@@ -25,3 +25,6 @@ test/.preview-ticket-*.html
 # Cola local de Xabor Edge: es estado del equipo del restaurante, nunca del repo.
 edge/datos/
 edge/.env
+
+# Salida de la sonda de diagnostico: es un resultado local, no codigo.
+probe-system-result.txt
