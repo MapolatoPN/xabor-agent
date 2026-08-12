@@ -160,10 +160,26 @@ begin
   PaginaVinculo.Values[1] := 'Caja principal';
 end;
 
+// Un equipo YA vinculado no tiene por que pedir nada.
+//
+// Reinstalar para reparar el servicio es un caso normal, y el codigo de
+// emparejamiento es de un solo uso: exigirlo obligaria a generar uno nuevo en
+// Xabor por un problema que no tiene nada que ver con el emparejamiento. Si
+// hay credenciales validas, la pagina no se muestra y el instalador repara.
+function YaVinculado: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{#DirDatos}\config\config.json'));
+end;
+
+function ShouldSkipPage(PaginaActual: Integer): Boolean;
+begin
+  Result := (PaginaActual = PaginaVinculo.ID) and YaVinculado;
+end;
+
 function NextButtonClick(PaginaActual: Integer): Boolean;
 begin
   Result := True;
-  if PaginaActual = PaginaVinculo.ID then
+  if (PaginaActual = PaginaVinculo.ID) and (not YaVinculado) then
   begin
     if Trim(PaginaVinculo.Values[0]) = '' then
     begin
@@ -192,6 +208,10 @@ var
   Comando: String;
 begin
   Result := '';
+
+  // Ya vinculado: no hay nada que canjear y no se toca la config existente.
+  if YaVinculado then Exit;
+
   ExtractTemporaryFile('node.exe');
   ExtractTemporaryFile('canjear.mjs');
 
