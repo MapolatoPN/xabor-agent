@@ -228,12 +228,72 @@ end;
 // cancela y no ha escrito nada todavia: no hay residuos que limpiar porque
 // nunca se creo ninguno. El runtime y el script se sacan a la carpeta
 // temporal del instalador, que Windows borra sola.
+// ─── El servicio de Windows, visto con sc.exe ───────────────────────────────
+//
+// sc.exe y no el wrapper de WinSW, a proposito: en un upgrade el .exe del
+// wrapper es justo uno de los archivos que se van a reemplazar, y preguntarle
+// su estado a un binario que puede estar corrupto o a medio copiar es
+// preguntarle al enfermo si esta enfermo. sc.exe es del sistema y sus exit
+// codes son estables: 0 = existe, 1060 = no existe.
+function ServicioExiste: Boolean;
+var
+  Codigo: Integer;
+begin
+  Result := Exec('sc.exe', 'query {#ServicioId}', '', SW_HIDE, ewWaitUntilTerminated, Codigo) and (Codigo = 0);
+end;
+
+// El estado se lee con findstr sobre la salida de sc query. Los NOMBRES de
+// estado ('RUNNING', 'STOPPED') son constantes de la API de Windows y no se
+// traducen -- a diferencia de los textos descriptivos de sc, que si.
+function ServicioEnEstado(Estado: String): Boolean;
+var
+  Codigo: Integer;
+begin
+  Result := Exec('cmd.exe', '/c sc.exe query {#ServicioId} | findstr /C:"' + Estado + '"',
+                 '', SW_HIDE, ewWaitUntilTerminated, Codigo) and (Codigo = 0);
+end;
+
+// Espera REAL a un estado, con tope. Mandar 'stop' y seguir de largo dejaria
+// la copia de archivos compitiendo con un proceso que todavia tiene los
+// binarios abiertos.
+function EsperarEstadoServicio(Estado: String; MaxMs: Integer): Boolean;
+var
+  Transcurrido: Integer;
+begin
+  Transcurrido := 0;
+  Result := ServicioEnEstado(Estado);
+  while (not Result) and (Transcurrido < MaxMs) do
+  begin
+    Sleep(500);
+    Transcurrido := Transcurrido + 500;
+    Result := ServicioEnEstado(Estado);
+  end;
+end;
+
 function PrepareToInstall(var NecesitaReinicio: Boolean): String;
 var
   Codigo: Integer;
   Comando: String;
 begin
   Result := '';
+
+  // ─── Upgrade: detener el servicio ANTES de tocar un solo archivo ──────────
+  //
+  // El instalador de Acuna intentaba copiar encima de un servicio corriendo:
+  // node.exe y el wrapper estaban abiertos por el proceso del servicio. Se
+  // detiene aqui -- todavia no se ha copiado nada -- y se espera a STOPPED de
+  // verdad. Si no se puede detener, se aborta SIN dejar una instalacion a
+  // medias: el servicio viejo sigue integro y funcionando.
+  if ServicioExiste and (not ServicioEnEstado('STOPPED')) then
+  begin
+    Exec('sc.exe', 'stop {#ServicioId}', '', SW_HIDE, ewWaitUntilTerminated, Codigo);
+    if not EsperarEstadoServicio('STOPPED', 30000) then
+    begin
+      Result := 'No se pudo detener el servicio de Xabor Edge para actualizarlo.' #13#13
+                'Cierra el instalador, reinicia el equipo y vuelve a intentarlo. La instalacion actual sigue intacta.';
+      Exit;
+    end;
+  end;
 
   // El canje corre SIEMPRE: canjear.mjs es el unico que decide si la config
   // existente se conserva (mismo Xabor: sale 0 sin gastar codigo) o si hace
@@ -278,29 +338,39 @@ var
 begin
   if PasoActual <> ssPostInstall then Exit;
 
+  // 'install' SOLO si el servicio no existe. En un upgrade ya esta registrado
+  // y WinSW install fallaria con "A service with ID 'XaborEdge' already
+  // exists" -- exactamente el error que abortaba las actualizaciones en
+  // Acuna. El registro existente se conserva tal cual (mismo id, mismo
+  // arranque automatico); lo que cambia son los binarios, ya copiados.
+  //
   // Si el servicio no se puede registrar, el equipo YA quedo vinculado y el
   // codigo de emparejamiento ya se consumio: es de un solo uso y no se puede
   // volver a escribir. Por eso este mensaje dice lo unico que le importa a
   // quien esta delante -- que NO necesita pedir otro codigo.
   //
-  // La config se conserva a proposito. canjear.mjs detecta que ya existe y
-  // sale con 0 sin volver a canjear, asi que ejecutar el instalador otra vez
-  // repara la instalacion sin tocar la vinculacion. Borrarla aqui obligaria a
-  // generar un codigo nuevo por un fallo que no tiene nada que ver con el
-  // emparejamiento.
-  if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'install',
-              ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
+  // La config se conserva a proposito. canjear.mjs detecta que ya existe una
+  // del MISMO Xabor y sale con 0 sin volver a canjear, asi que ejecutar el
+  // instalador otra vez repara la instalacion sin tocar la vinculacion.
+  if not ServicioExiste then
   begin
-    MsgBox('Este equipo quedo vinculado con Xabor, pero no se pudo instalar el servicio de Windows.' #13#13
-           'Vuelve a ejecutar el instalador como administrador: NO hace falta un codigo nuevo, la vinculacion se conserva.',
-           mbCriticalError, MB_OK);
-    Abort;
+    if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'install',
+                ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
+    begin
+      MsgBox('Este equipo quedo vinculado con Xabor, pero no se pudo instalar el servicio de Windows.' #13#13
+             'Vuelve a ejecutar el instalador como administrador: NO hace falta un codigo nuevo, la vinculacion se conserva.',
+             mbCriticalError, MB_OK);
+      Abort;
+    end;
   end;
 
-  // Si arrancar falla, el servicio ya quedo registrado y en automatico:
-  // arrancara solo en el proximo reinicio. No se aborta por esto.
-  if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'start',
-              ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
+  // Arrancar y CONFIRMAR que quedo corriendo -- 'start' puede volver con 0 y
+  // el proceso morirse al segundo. Si no llega a RUNNING, el servicio ya
+  // quedo registrado en automatico: arrancara solo en el proximo reinicio.
+  // No se aborta por esto.
+  Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'start',
+       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo);
+  if not EsperarEstadoServicio('RUNNING', 15000) then
     MsgBox('Xabor Edge se instalo pero no arranco todavia. Se iniciara solo al reiniciar el equipo.', mbInformation, MB_OK);
 end;
 
