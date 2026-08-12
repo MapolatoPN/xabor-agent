@@ -50,15 +50,36 @@ const nombreEquipo = (argumento('nombre') || hostname() || 'Caja').trim().slice(
 const urlBase = (argumento('url') || 'https://xabor.mx').replace(/\/+$/, '');
 const forzar = process.argv.includes('--forzar');
 
-if (!codigo) salir(5, 'Falta el codigo de conexion.');
 if (codigo.length > 64) salir(5, 'El codigo de conexion no es valido.');
+
+// El origen de una URL, sin importar si vino como http(s) o ws(s): ambas
+// formas nombran al MISMO Xabor. Sirve para comparar la config existente
+// (que guarda urlNube en ws://) contra la URL del instalador (que llega en
+// http://). Una URL ilegible devuelve null y null nunca es igual a nada:
+// una config que no se puede interpretar jamás se considera "del mismo
+// entorno" por accidente.
+function origenDe(url) {
+  if (typeof url !== 'string' || !url) return null;
+  try {
+    return new URL(url.replace(/^ws(s?):\/\//i, 'http$1://')).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
 
 // ─── Reinstalación sobre un equipo ya vinculado ─────────────────────────────
 //
-// Si ya hay credenciales, NO se pisan en silencio: perderlas significa que la
-// terminal registrada en Xabor queda huérfana y el restaurante ve un equipo
-// fantasma en su panel. Reinstalar para reparar el servicio es un caso normal
-// y debe conservar la vinculación.
+// Si ya hay credenciales DEL MISMO XABOR, NO se pisan en silencio: perderlas
+// significa que la terminal registrada queda huérfana y el restaurante ve un
+// equipo fantasma en su panel. Reinstalar para reparar el servicio es un caso
+// normal y debe conservar la vinculación.
+//
+// Pero "hay una config" no es lo mismo que "hay una config de ESTE Xabor".
+// El Setup de producción de Acuña reutilizó sin preguntar una config de
+// prueba que apuntaba a ws://localhost:4300 -- y terminó "correctamente" con
+// un servicio hablando con nadie. Una config de otro origen (localhost,
+// staging, otra instancia) exige re-emparejar: sus credenciales no valen en
+// este entorno aunque el archivo esté perfecto.
 if (existsSync(RUTA_CONFIG) && !forzar) {
   let previa = null;
   try {
@@ -78,9 +99,21 @@ if (existsSync(RUTA_CONFIG) && !forzar) {
     // rehacerla: peor es dejar el equipo sin poder vincularse.
   }
   if (previa && previa.terminalId && previa.terminalToken) {
-    salir(0, `Este equipo ya estaba conectado a Xabor (${previa.nombreEquipo || 'sin nombre'}). Se conservan sus credenciales.`);
+    const origenPrevio = origenDe(previa.urlNube);
+    const origenPedido = origenDe(urlBase);
+    if (origenPrevio && origenPedido && origenPrevio === origenPedido) {
+      salir(0, `Este equipo ya estaba conectado a Xabor (${previa.nombreEquipo || 'sin nombre'}). Se conservan sus credenciales.`);
+    }
+    // Origen distinto (o urlNube ilegible): la vinculación no sirve aquí.
+    // Se sigue al canje -- la config vieja solo se sobrescribe si el canje
+    // NUEVO tiene éxito; un fallo de red o un código malo la dejan intacta.
+    console.log(`La configuracion existente apunta a otro Xabor (${origenPrevio || 'origen ilegible'}); este instalador es de ${origenPedido}. Se requiere un codigo de conexion nuevo.`);
   }
 }
+
+// El código solo hace falta si de verdad se va a canjear -- una reparación
+// del mismo entorno ya salió por arriba sin necesitarlo.
+if (!codigo) salir(5, 'Falta el codigo de conexion.');
 
 // ─── El canje ───────────────────────────────────────────────────────────────
 

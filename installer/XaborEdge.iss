@@ -160,26 +160,52 @@ begin
   PaginaVinculo.Values[1] := 'Caja principal';
 end;
 
-// Un equipo YA vinculado no tiene por que pedir nada.
+// Un equipo YA vinculado A ESTE MISMO XABOR no tiene por que pedir nada.
 //
 // Reinstalar para reparar el servicio es un caso normal, y el codigo de
 // emparejamiento es de un solo uso: exigirlo obligaria a generar uno nuevo en
-// Xabor por un problema que no tiene nada que ver con el emparejamiento. Si
-// hay credenciales validas, la pagina no se muestra y el instalador repara.
-function YaVinculado: Boolean;
+// Xabor por un problema que no tiene nada que ver con el emparejamiento.
+//
+// Pero la existencia del archivo NO basta. En Acuna, el Setup de produccion
+// encontro la config de una instalacion de PRUEBA (ws://localhost:4300), se
+// salto el emparejamiento y termino "correctamente" con un servicio hablando
+// con nadie. Antes de saltar la pagina hay que comprobar que la config apunte
+// a la MISMA URL con la que se compilo este instalador. La decision final de
+// conservar o re-emparejar vive en canjear.mjs (que si sabe leer JSON); esta
+// comprobacion solo decide si se muestra la pagina del codigo.
+function UrlNubeEsperada: String;
+var
+  U: String;
 begin
-  Result := FileExists(ExpandConstant('{#DirDatos}\config\config.json'));
+  U := '{#UrlXabor}';
+  StringChangeEx(U, 'https://', 'wss://', True);
+  StringChangeEx(U, 'http://', 'ws://', True);
+  Result := U;
+end;
+
+function ConfigDelMismoEntorno: Boolean;
+var
+  Contenido: AnsiString;
+begin
+  Result := False;
+  if not FileExists(ExpandConstant('{#DirDatos}\config\config.json')) then Exit;
+  // Si no se puede leer, NO se asume mismo entorno: se muestra la pagina y
+  // canjear.mjs -- que distingue "protegida" de "ausente" -- tiene la ultima
+  // palabra. Un codigo tecleado de mas no se gasta: el canje conserva la
+  // config del mismo entorno ANTES de llamar a Xabor.
+  if not LoadStringFromFile(ExpandConstant('{#DirDatos}\config\config.json'), Contenido) then Exit;
+  Result := Pos(UrlNubeEsperada, String(Contenido)) > 0;
 end;
 
 function ShouldSkipPage(PaginaActual: Integer): Boolean;
 begin
-  Result := (PaginaActual = PaginaVinculo.ID) and YaVinculado;
+  Result := (PaginaActual = PaginaVinculo.ID) and ConfigDelMismoEntorno;
 end;
 
 function NextButtonClick(PaginaActual: Integer): Boolean;
 begin
   Result := True;
-  if (PaginaActual = PaginaVinculo.ID) and (not YaVinculado) then
+  if (PaginaActual = PaginaVinculo.ID) and (not ConfigDelMismoEntorno) then
   begin
     if Trim(PaginaVinculo.Values[0]) = '' then
     begin
@@ -209,9 +235,12 @@ var
 begin
   Result := '';
 
-  // Ya vinculado: no hay nada que canjear y no se toca la config existente.
-  if YaVinculado then Exit;
-
+  // El canje corre SIEMPRE: canjear.mjs es el unico que decide si la config
+  // existente se conserva (mismo Xabor: sale 0 sin gastar codigo) o si hace
+  // falta re-emparejar (otro entorno: canjea con el codigo tecleado). Antes
+  // habia aqui un atajo -- "si existe config.json, no canjear" -- que fue
+  // exactamente el agujero por el que un Setup de produccion reutilizo una
+  // config de prueba apuntando a localhost.
   ExtractTemporaryFile('node.exe');
   ExtractTemporaryFile('canjear.mjs');
 
@@ -228,10 +257,15 @@ begin
   end;
 
   case Codigo of
-    0: Result := '';   // vinculado (o ya lo estaba): se puede instalar
+    0: Result := '';   // vinculado (o ya lo estaba, al mismo Xabor): se puede instalar
     2: Result := 'El codigo de conexion no es valido o ya vencio.' #13#13 'Genera uno nuevo en Xabor (Config -> Impresoras -> Conectar equipo) y vuelve a ejecutar el instalador.';
     3: Result := 'Este equipo no pudo contactar con Xabor.' #13#13 'Revisa la conexion a internet y vuelve a intentarlo.';
     4: Result := 'No se pudo guardar la configuracion.' #13#13 'Ejecuta el instalador como administrador.';
+    // 5 llega si la config de este equipo apunta a OTRO Xabor y no se
+    // escribio ningun codigo (la pagina no debio saltarse, pero es la red de
+    // seguridad si ambas comprobaciones divergen).
+    5: Result := 'La configuracion de este equipo pertenece a otra instalacion de Xabor.' #13#13 'Genera un codigo de conexion en Xabor (Config -> Impresoras -> Conectar equipo) y vuelve a ejecutar el instalador.';
+    6: Result := 'La configuracion existente esta protegida y no se pudo leer.' #13#13 'Ejecuta el instalador como administrador.';
   else
     Result := 'No se pudo conectar este equipo con Xabor.';
   end;
