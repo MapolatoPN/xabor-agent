@@ -276,11 +276,27 @@ end;
 // permiten reinstalar sin pedir un codigo nuevo. Borrarlas en silencio seria
 // destruir informacion que el restaurante no sabe que existe. Se pregunta.
 procedure CurUninstallStepChanged(PasoActual: TUninstallStep);
+var
+  Botones: array of String;
 begin
   if PasoActual <> usPostUninstall then Exit;
-  if MsgBox('Se quito Xabor Edge de este equipo.' #13#13
-            'Quieres borrar tambien sus datos (cola de impresion pendiente, credenciales y registros)?' #13#13
-            'Si respondes que NO, al reinstalar este equipo seguira vinculado y no hara falta un codigo nuevo.',
-            mbConfirmation, MB_YESNO) = IDYES then
+  // Botones con texto propio y el seguro por defecto.
+  //
+  // Antes eran los Si/No de Windows, con el foco en 'Si'. Justo antes de este
+  // cuadro, Inno muestra el suyo -- 'Esta seguro de que desea quitar Xabor
+  // Edge?' -- tambien Si/No, y hay que decir Si para llegar hasta aqui. Dos
+  // cuadros identicos seguidos que significan cosas distintas: quien acaba de
+  // confirmar la desinstalacion vuelve a pulsar Si por inercia y se lleva por
+  // delante la vinculacion y las comandas sin imprimir. Paso de verdad.
+  //
+  // Ahora los botones dicen que hacen, y el predeterminado conserva.
+  // El array va en una variable y no en linea: Inno lee un '[' a principio de
+  // linea como el comienzo de una seccion y aborta la compilacion.
+  SetArrayLength(Botones, 2);
+  Botones[0] := 'Conservar datos (recomendado)';
+  Botones[1] := 'Borrar todo, incluida la vinculacion';
+  if TaskDialogMsgBox('Conservar la configuracion de este equipo?',
+        'Xabor Edge ya se quito. La vinculacion con el restaurante y las comandas pendientes siguen guardadas.',
+        mbConfirmation, MB_YESNO, Botones, IDYES) = IDNO then
     DelTree(ExpandConstant('{#DirDatos}'), True, True, True);
 end;
