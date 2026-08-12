@@ -82,12 +82,20 @@ Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 ; de otra instalacion).
 Source: "{#OrigenApp}\edge\*"; DestDir: "{app}\app\edge"; Flags: recursesubdirs ignoreversion; \
   Excludes: "datos\*,.env,*.log"
-Source: "{#OrigenApp}\node_modules\*"; DestDir: "{app}\app\node_modules"; Flags: recursesubdirs ignoreversion
+; SOLO ws. Es la unica dependencia externa del agente -- comprobado sobre los
+; imports de edge/ completo -- y no tiene dependencias propias. Copiar
+; node_modules entero meteria cientos de megas del servidor Cloud en la caja de
+; un restaurante, incluyendo cosas que ahi no pintan nada.
+Source: "{#OrigenApp}\node_modules\ws\*"; DestDir: "{app}\app\node_modules\ws"; Flags: recursesubdirs ignoreversion
 Source: "{#OrigenApp}\package.json"; DestDir: "{app}\app"; Flags: ignoreversion
 
 ; Runtime privado de Node. El equipo del restaurante no tiene Node y no debe
 ; necesitarlo; si algun dia lo instalan, esto no se entera.
-Source: "{#OrigenNode}\*"; DestDir: "{app}\node"; Flags: recursesubdirs ignoreversion
+; SOLO node.exe. El zip oficial de Node trae ademas npm entero, corepack y sus
+; dependencias: unos 100 MB que en el equipo de un restaurante no se van a usar
+; jamas -- el agente no instala paquetes, ya viene con lo suyo. node.exe es
+; autocontenido.
+Source: "{#OrigenNode}\node.exe"; DestDir: "{app}\node"; Flags: ignoreversion
 
 ; El wrapper del servicio y su configuracion. El .exe y el .xml tienen que
 ; llamarse igual: asi es como WinSW encuentra su configuracion.
