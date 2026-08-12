@@ -26,7 +26,23 @@
 // esperando un papel que nunca sale.
 import { spawn } from 'node:child_process';
 
-const TIMEOUT_MS = 8000;
+// Veinte segundos, y no ocho.
+//
+// El primer arranque de powershell.exe despues de un reboot paga el CLR y sus
+// ensamblados desde disco frio, en un equipo que ademas esta terminando de
+// arrancar. En la Surface de Acuna eso supero los 8 s y el listado murio con
+// 'timeout' mientras la impresion RAW -- que no lanza PowerShell en frio ni
+// toca WMI -- funcionaba sin problema segundos despues.
+//
+// Este numero tiene que ser MENOR que TIMEOUT_IMPRESORAS_MS de la nube: quien
+// espera la respuesta no puede rendirse antes que quien la produce.
+const TIMEOUT_MS = 20000;
+
+// La impresora predeterminada se consulta aparte y con prisa. Es un dato
+// decorativo -- Xabor nunca la usa como destino -- y venia arrastrando al
+// listado entero: WMI se inicializa perezosamente y su PRIMERA consulta tras
+// un boot es la mas lenta de la vida del equipo.
+const TIMEOUT_DEFAULT_MS = 4000;
 
 // El script va en UNA sola línea, a propósito.
 //
@@ -44,9 +60,16 @@ const TIMEOUT_MS = 8000;
 // consulta se reporta como fallida -- que es la verdad, no una lista vacía.
 //
 // Constante de este archivo: no se compone con nada que venga de la nube.
+// Lo critico: la lista. Sin WMI, sin nada que pueda tardar.
 const SCRIPT_GET_PRINTER =
-  '$def = (Get-WmiObject -Class Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -First 1).Name; ' +
-  'Get-Printer | ForEach-Object { [PSCustomObject]@{ nombre = $_.Name; estado = "$($_.PrinterStatus)"; predeterminada = ($_.Name -eq $def) } } | ConvertTo-Json -Compress';
+  'Get-Printer | ForEach-Object { [PSCustomObject]@{ nombre = $_.Name; estado = "$($_.PrinterStatus)"; predeterminada = $false } } | ConvertTo-Json -Compress';
+
+// Y lo opcional, en su propia consulta. Si tarda o falla, la lista sale igual
+// y ninguna impresora queda marcada como predeterminada. Que el panel no sepa
+// cual es la default es un detalle; que no muestre ninguna impresora deja al
+// restaurante sin poder configurar nada.
+const SCRIPT_DEFAULT =
+  '(Get-CimInstance -ClassName Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -First 1).Name';
 
 // Los estados de Windows que sí significan algo accionable. El resto se
 // colapsa a 'desconocido' a propósito -- ver la nota de arriba.
@@ -156,7 +179,23 @@ export async function listarImpresorasWindows({ ejecutor = ejecutarPowerShell, t
     }
     // ConvertTo-Json colapsa un único elemento a objeto, no a array.
     const lista = Array.isArray(datos) ? datos : [datos];
-    return { ok: true, impresoras: sanitizarImpresoras(lista), error: null };
+    const impresoras = sanitizarImpresoras(lista);
+
+    // La predeterminada, en una segunda consulta que NO puede tumbar nada.
+    // Cualquier fallo aquí se traga: la lista ya está y es lo que importa.
+    try {
+      const d = await ejecutor(SCRIPT_DEFAULT, TIMEOUT_DEFAULT_MS);
+      const nombre = d?.ok ? String(d.salida ?? '').trim() : '';
+      if (nombre) {
+        for (const i of impresoras) if (i.nombre === nombre) i.predeterminada = true;
+      } else if (d && !d.ok) {
+        logger?.warn?.('impresoras.default.no_resuelta', { motivo: d.error || 'sin salida' });
+      }
+    } catch (e) {
+      logger?.warn?.('impresoras.default.no_resuelta', { motivo: e.message });
+    }
+
+    return { ok: true, impresoras, error: null };
   } catch (e) {
     logger?.warn('impresoras.enumeracion.error', { error: e.message });
     return { ok: false, impresoras: [], error: e.message };

@@ -1082,7 +1082,14 @@ async function entregarTrabajosPendientes(ws) {
 // panel prefiere decir "no pude preguntarle al equipo" antes que dejar al
 // administrador mirando un spinner.
 const solicitudesImpresoras = new Map();   // solicitudId -> { resolver, temporizador }
-const TIMEOUT_IMPRESORAS_MS = 6000;
+// Veinticinco segundos, MAS que los 20 del Edge (edge/impresorasWindows.js).
+//
+// Estaban al reves -- nube 6 s, Edge 8 s -- asi que la nube se rendia antes de
+// que el equipo terminara de responder. Aunque PowerShell contestara bien en
+// el segundo 7, el panel ya habia dado el listado por perdido. Quien espera la
+// respuesta no puede rendirse antes que quien la produce; hay una prueba de
+// contrato que lo fija.
+const TIMEOUT_IMPRESORAS_MS = 25000;
 
 function socketDeTerminal(terminalId) {
   let encontrado = null;

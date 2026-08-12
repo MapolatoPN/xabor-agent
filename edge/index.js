@@ -172,6 +172,24 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       log.info('edge.listo', { almacen: almacen.tipo, pendientes: almacen.pendientes().length });
 
       if (conectar) conexion.iniciar();
+
+      // Precalentar el descubrimiento de impresoras, sin esperarlo.
+      //
+      // El primer PowerShell despues de un reboot paga el arranque en frio del
+      // CLR y la inicializacion perezosa de WMI. Si ese coste se paga cuando
+      // alguien abre Config -> Impresoras, el listado llega tarde o no llega.
+      // Pagandolo aqui, en segundo plano, el primer clic encuentra todo
+      // caliente.
+      //
+      // El resultado se DESCARTA a proposito: esto no alimenta ninguna cache
+      // ni decide nada. Y no se hace await: el arranque, la autenticacion y la
+      // cola no pueden esperar por esto. Si falla, no se entera nadie salvo el
+      // log -- volvera a intentarse cuando alguien lo pida de verdad.
+      if (conectar && process.platform === 'win32') {
+        listarImpresorasWindows({ logger: log })
+          .then((r) => log.debug('impresoras.precalentado', { ok: r.ok, n: r.impresoras.length }))
+          .catch(() => { /* el precalentamiento nunca puede romper el arranque */ });
+      }
     },
 
     async detener() {
