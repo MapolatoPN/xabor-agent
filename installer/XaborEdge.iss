@@ -204,10 +204,22 @@ var
 begin
   if PasoActual <> ssPostInstall then Exit;
 
+  // Si el servicio no se puede registrar, el equipo YA quedo vinculado y el
+  // codigo de emparejamiento ya se consumio: es de un solo uso y no se puede
+  // volver a escribir. Por eso este mensaje dice lo unico que le importa a
+  // quien esta delante -- que NO necesita pedir otro codigo.
+  //
+  // La config se conserva a proposito. canjear.mjs detecta que ya existe y
+  // sale con 0 sin volver a canjear, asi que ejecutar el instalador otra vez
+  // repara la instalacion sin tocar la vinculacion. Borrarla aqui obligaria a
+  // generar un codigo nuevo por un fallo que no tiene nada que ver con el
+  // emparejamiento.
   if not Exec(ExpandConstant('{app}\XaborEdgeService.exe'), 'install',
               ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Codigo) or (Codigo <> 0) then
   begin
-    MsgBox('El equipo quedo vinculado, pero no se pudo instalar el servicio de Windows.', mbCriticalError, MB_OK);
+    MsgBox('Este equipo quedo vinculado con Xabor, pero no se pudo instalar el servicio de Windows.' #13#13
+           'Vuelve a ejecutar el instalador como administrador: NO hace falta un codigo nuevo, la vinculacion se conserva.',
+           mbCriticalError, MB_OK);
     Abort;
   end;
 
