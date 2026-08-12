@@ -5049,6 +5049,8 @@ function pintarImpresoras() {
 
       if (!eq.conectado) {
         html += '<div style="color:#888;font-size:0.82rem;margin-top:6px;">Enciende la PC y abre Xabor Edge para ver sus impresoras.</div>';
+      } else if (eq.consultando) {
+        html += '<div style="color:#666;font-size:0.82rem;margin-top:6px;">Leyendo las impresoras de este equipo&hellip; puede tardar unos segundos.</div>';
       } else if (!eq.consultaOk) {
         html += '<div style="color:#f59e0b;font-size:0.82rem;margin-top:6px;">No pudimos leer las impresoras de este equipo.</div>';
       }
@@ -5069,13 +5071,22 @@ function pintarImpresoras() {
   cont.innerHTML = html;
 }
 
+var impRefrescoTimer = null;
+
 async function cargarImpresoras() {
   if (ROL !== 'admin') return;
+  if (impRefrescoTimer) { clearTimeout(impRefrescoTimer); impRefrescoTimer = null; }
   try {
     var r = await apiFetch('/api/impresion/self-service');
     impEstado = r.ok ? await r.json() : null;
   } catch (err) { impEstado = null; }
   pintarImpresoras();
+  // 'consultando' significa que el equipo sigue leyendo sus impresoras (un
+  // PowerShell en frio puede tardar ~20 s tras un reinicio). El resultado
+  // queda en cache en la nube: al refrescar en unos segundos ya esta listo.
+  // Un solo timer vivo: cada carga cancela el anterior.
+  var sigueConsultando = impEstado && (impEstado.equipos || []).some(function (eq) { return eq.consultando; });
+  if (sigueConsultando) impRefrescoTimer = setTimeout(cargarImpresoras, 7000);
 }
 
 async function guardarImpresora(equipoId, idSeguro, nombre) {

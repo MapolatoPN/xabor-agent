@@ -1078,9 +1078,7 @@ async function entregarTrabajosPendientes(ws) {
 // ya saneada. Si mañana cambiara la forma de preguntar (Get-Printer, WMI,
 // otra API), no cambia ni un byte de este lado.
 //
-// La respuesta se empareja por `solicitudId`. Se espera poco a propósito: el
-// panel prefiere decir "no pude preguntarle al equipo" antes que dejar al
-// administrador mirando un spinner.
+// La respuesta se empareja por `solicitudId`.
 const solicitudesImpresoras = new Map();   // solicitudId -> { resolver, temporizador }
 // Veinticinco segundos, MAS que los 20 del Edge (edge/impresorasWindows.js).
 //
@@ -1089,7 +1087,42 @@ const solicitudesImpresoras = new Map();   // solicitudId -> { resolver, tempori
 // el segundo 7, el panel ya habia dado el listado por perdido. Quien espera la
 // respuesta no puede rendirse antes que quien la produce; hay una prueba de
 // contrato que lo fija.
+//
+// PERO: 25 s es la vida de la SOLICITUD al Edge, no lo que un request del
+// panel espera. Subirlo destapó lo contrario del problema original: el panel
+// se quedaba colgado 25 s cuando el equipo no contestaba. La solución no es
+// elegir entre los dos males sino separar los dos tiempos -- ver
+// ESPERA_INTERACTIVA_MS y la caché de abajo.
 const TIMEOUT_IMPRESORAS_MS = 25000;
+
+// Lo que un request interactivo del panel espera por la respuesta del Edge.
+// Si en 6 s no llegó, el request responde { estado: 'consultando' } -- que NO
+// es un error: la solicitud sigue viva por debajo hasta los 25 s, y cuando el
+// resultado llegue (un PowerShell en frío puede tardar ~20 s tras un reboot)
+// se guarda en caché para que el siguiente refresh del panel lo encuentre listo.
+const ESPERA_INTERACTIVA_MS = 6000;
+
+// Caché del último listado por terminal. Un minuto: las impresoras de Windows
+// no cambian a mitad de una sesión de configuración, y así abrir dos veces
+// Config → Impresoras no lanza dos PowerShell en el equipo del negocio.
+const CACHE_IMPRESORAS_TTL_MS = 60000;
+// Un resultado fallido se recuerda mucho menos: lo justo para no martillar al
+// equipo con reintentos en cadena, pero dejando reintentar pronto.
+const CACHE_IMPRESORAS_TTL_ERROR_MS = 8000;
+const cacheImpresoras = new Map();       // terminalId -> { resultado, expira }
+// Una sola solicitud viva por terminal: si tres pestañas del panel refrescan a
+// la vez, el Edge recibe UNA solicitud (y Windows corre UN PowerShell), no tres.
+const solicitudImpresorasEnVuelo = new Map();  // terminalId -> Promise<resultado>
+
+// El listado cacheado deja de valer cuando el Edge se va o vuelve: una
+// reconexión suele ser un reinicio del equipo, y tras un reinicio la lista
+// puede haber cambiado. También se descarta la solicitud en vuelo -- estaba
+// hablando con un socket que ya no existe.
+function invalidarCacheImpresoras(terminalId) {
+  if (!terminalId) return;
+  cacheImpresoras.delete(terminalId);
+  solicitudImpresorasEnVuelo.delete(terminalId);
+}
 
 function socketDeTerminal(terminalId) {
   let encontrado = null;
@@ -1103,16 +1136,15 @@ function socketDeTerminal(terminalId) {
   return encontrado;
 }
 
-// `terminalId` llega YA validado contra el negocio de la sesión por el
-// llamador. Esta función no vuelve a decidir de quién es la terminal: su
-// única responsabilidad es hablar con el socket.
-function pedirImpresorasATerminal(terminalId) {
-  return new Promise((resolve) => {
-    const ws = socketDeTerminal(terminalId);
-    if (!ws) {
-      return resolve({ ok: false, conectado: false, impresoras: [],
-                       error: 'El equipo de impresión no está conectado' });
-    }
+// Lanza (o reutiliza) LA solicitud al Edge de esta terminal. Vive hasta
+// TIMEOUT_IMPRESORAS_MS aunque ningún request del panel la esté esperando ya:
+// su resultado -- tardío o no -- se cachea al llegar, y la entrada en vuelo se
+// limpia siempre al terminar.
+function solicitarImpresorasAlEdge(terminalId, ws) {
+  const enVuelo = solicitudImpresorasEnVuelo.get(terminalId);
+  if (enVuelo) return enVuelo;
+
+  const promesa = new Promise((resolve) => {
     const solicitudId = randomUUID();
     const temporizador = setTimeout(() => {
       solicitudesImpresoras.delete(solicitudId);
@@ -1133,7 +1165,53 @@ function pedirImpresorasATerminal(terminalId) {
       solicitudesImpresoras.delete(solicitudId);
       resolve({ ok: false, conectado: false, impresoras: [], error: 'No se pudo hablar con el equipo' });
     }
+  }).then((resultado) => {
+    // Solo cachear si esta sigue siendo LA solicitud de la terminal: si el
+    // Edge se reconectó a mitad, invalidarCacheImpresoras ya la descartó y su
+    // resultado describe a un socket que ya no existe.
+    if (solicitudImpresorasEnVuelo.get(terminalId) === promesa) {
+      solicitudImpresorasEnVuelo.delete(terminalId);
+      const ttl = resultado.ok ? CACHE_IMPRESORAS_TTL_MS : CACHE_IMPRESORAS_TTL_ERROR_MS;
+      cacheImpresoras.set(terminalId, { resultado, expira: Date.now() + ttl });
+    }
+    return resultado;
   });
+
+  solicitudImpresorasEnVuelo.set(terminalId, promesa);
+  return promesa;
+}
+
+// `terminalId` llega YA validado contra el negocio de la sesión por el
+// llamador. Esta función no vuelve a decidir de quién es la terminal: su
+// única responsabilidad es hablar con el socket.
+//
+// Contrato de respuesta -- exactamente TRES formas:
+//   { ok:true,  conectado:true,  impresoras:[...] }        listado real
+//   { estado:'consultando', conectado:true, ... }          aún sin respuesta; NO es error
+//   { ok:false, conectado, impresoras:[], error }          fallo con motivo
+async function pedirImpresorasATerminal(terminalId) {
+  const cacheada = cacheImpresoras.get(terminalId);
+  if (cacheada && cacheada.expira > Date.now()) return cacheada.resultado;
+  if (cacheada) cacheImpresoras.delete(terminalId);
+
+  const ws = socketDeTerminal(terminalId);
+  if (!ws) {
+    return { ok: false, conectado: false, impresoras: [],
+             error: 'El equipo de impresión no está conectado' };
+  }
+
+  const solicitud = solicitarImpresorasAlEdge(terminalId, ws);
+
+  // El request interactivo espera poco; la solicitud, lo que haga falta.
+  let venceEspera;
+  const espera = new Promise((resolve) => {
+    venceEspera = setTimeout(() => resolve({ estado: 'consultando', conectado: true, impresoras: [] }),
+                             ESPERA_INTERACTIVA_MS);
+    venceEspera.unref?.();
+  });
+  const resultado = await Promise.race([solicitud, espera]);
+  clearTimeout(venceEspera);
+  return resultado;
 }
 
 // Mensajes que un Edge ya autenticado puede mandar. Todo lo que necesita
@@ -1386,6 +1464,11 @@ wss.on('connection', (ws) => {
       ws.sucursalId  = fila.sucursal_id;
       ws.negocioId   = fila.negocio_id;
 
+      // Una conexión nueva suele ser un reinicio del equipo: el listado de
+      // impresoras cacheado y cualquier solicitud dirigida al socket anterior
+      // dejan de describir la realidad.
+      invalidarCacheImpresoras(fila.terminal_id);
+
       ws.send(JSON.stringify({
         tipo: 'terminal_autenticada',
         terminalId: fila.terminal_id,
@@ -1415,7 +1498,11 @@ wss.on('connection', (ws) => {
           console.error(`[PrintAgent] No se pudieron entregar los pendientes a terminal=${fila.terminal_id}: ${e.message}`));
     });
 
-    ws.on('close', () => { limpiarTimer(); console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`); });
+    ws.on('close', () => {
+      limpiarTimer();
+      if (ws.autenticado) invalidarCacheImpresoras(ws.terminalId);
+      console.log(`[PrintAgent] Conexión ${ws.autenticado ? 'autenticada' : 'pendiente'} desconectada`);
+    });
     ws.on('error', () => { limpiarTimer(); });
     return;
   }

@@ -121,7 +121,12 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
       conectado: consulta.conectado === true,
       ultimaConexion: t.ultima_conexion,
       consultaOk: consulta.ok === true,
-      errorConsulta: consulta.ok ? null : (consulta.error || null),
+      // 'consultando' NO es un error: el Edge sigue trabajando (un PowerShell
+      // en frío tras un reboot puede tardar ~20 s) y el resultado quedará en
+      // caché para el siguiente refresh. El panel muestra "leyendo…" y
+      // reintenta solo -- nunca un mensaje de fallo.
+      consultando: consulta.estado === 'consultando',
+      errorConsulta: (consulta.ok || consulta.estado === 'consultando') ? null : (consulta.error || null),
       // Las que Windows ve y todavía no tienen función asignada.
       detectadas: detectadas.map((d) => ({
         ...d,

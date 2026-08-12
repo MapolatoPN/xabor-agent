@@ -382,7 +382,9 @@ const RUTA = '/api/impresion/self-service';
 let agente = null;   // declarado fuera del try: el finally tiene que poder cerrarlo
 
 // Un Edge de mentira que habla el protocolo real por el WebSocket real.
-function agenteFalso(cred, { impresoras = [], responder = true } = {}) {
+// `demoraMs` simula un PowerShell lento (p. ej. el arranque en frío tras un
+// reboot): la respuesta llega, pero tarda.
+function agenteFalso(cred, { impresoras = [], responder = true, demoraMs = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://localhost:${PUERTO}/ws/print-agent`);
     const recibidos = [];
@@ -393,7 +395,12 @@ function agenteFalso(cred, { impresoras = [], responder = true } = {}) {
       recibidos.push(msg);
       if (msg.tipo === 'terminal_autenticada') resolve({ ws, recibidos, cerrar: () => ws.close() });
       if (msg.tipo === 'solicitar_impresoras' && responder) {
-        ws.send(JSON.stringify({ tipo: 'impresoras_detectadas', solicitudId: msg.solicitudId, ok: true, impresoras }));
+        const contestar = () => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ tipo: 'impresoras_detectadas', solicitudId: msg.solicitudId, ok: true, impresoras }));
+        };
+        if (demoraMs > 0) setTimeout(contestar, demoraMs);
+        else contestar();
       }
     });
     ws.on('error', reject);
@@ -811,11 +818,77 @@ await t('PROTOCOLO', '43. si el equipo no responde, el panel no se queda colgado
   const r = await api(BASE, RUTA, { cookie: ckAdminA });
   const tardo = Date.now() - t0;
   assert.strictEqual(r.status, 200);
-  assert.ok(tardo < 15000, `tardó ${tardo}ms: el panel tiene que rendirse pronto`);
+  // El request interactivo responde en ~6 s (ESPERA_INTERACTIVA_MS), aunque
+  // la solicitud al Edge siga viva por debajo hasta los 25 s. 'consultando'
+  // NO es un error: no hay mensaje de fallo que mostrar todavía.
+  assert.ok(tardo < 10000, `tardó ${tardo}ms: el panel tiene que responder rápido aunque el Edge tarde`);
   assert.strictEqual(r.body.equipos[0].consultaOk, false);
-  assert.match(r.body.equipos[0].errorConsulta, /no respondió/);
+  assert.strictEqual(r.body.equipos[0].consultando, true, 'sin respuesta aún, el estado es consultando');
+  assert.strictEqual(r.body.equipos[0].errorConsulta, null, 'consultando no es un error');
   mudo.cerrar();
   agente = null;
+});
+
+// ═══════════ 10. Caché y solicitud única (respuesta rápida del panel) ═══════
+
+await t('CACHE', '44. una respuesta tardía del Edge se cachea y el siguiente refresh la encuentra', async () => {
+  // Responde a los 7.5 s: MÁS que la espera interactiva de 6 s, MENOS que la
+  // vida de la solicitud (25 s) -- el patrón exacto de un PowerShell en frío.
+  await new Promise((r) => setTimeout(r, 300));
+  const lento = await agenteFalso(credA, {
+    impresoras: [{ nombre: 'LENTA-PERO-LLEGA', predeterminada: false, estado: 'desconocido' }],
+    demoraMs: 7500,
+  });
+  const r1 = await api(BASE, RUTA, { cookie: ckAdminA });
+  assert.strictEqual(r1.body.equipos[0].consultando, true, 'el primer request se va sin la lista');
+  // A los ~7.5 s de lanzada la solicitud, la respuesta llegó y quedó en caché.
+  await new Promise((r) => setTimeout(r, 2500));
+  const t0 = Date.now();
+  const r2 = await api(BASE, RUTA, { cookie: ckAdminA });
+  const tardo = Date.now() - t0;
+  assert.strictEqual(r2.body.equipos[0].consultaOk, true, 'el refresh encuentra el resultado tardío ya cacheado');
+  assert.deepStrictEqual(r2.body.equipos[0].detectadas.map((d) => d.nombre), ['LENTA-PERO-LLEGA']);
+  assert.ok(tardo < 2000, `tardó ${tardo}ms: desde caché tiene que ser inmediato, sin tocar al Edge`);
+  lento.cerrar();
+});
+
+await t('CACHE', '45. una sola solicitud viva por terminal aunque el panel refresque varias veces', async () => {
+  await new Promise((r) => setTimeout(r, 300));
+  const lento = await agenteFalso(credA, {
+    impresoras: [{ nombre: 'UNICA-SOLICITUD', predeterminada: false, estado: 'desconocido' }],
+    demoraMs: 7500,
+  });
+  // Tres refresh casi simultáneos mientras el Edge "piensa": los tres deben
+  // colgarse de la MISMA solicitud (un solo PowerShell en el equipo).
+  const [r1, r2, r3] = await Promise.all([
+    api(BASE, RUTA, { cookie: ckAdminA }),
+    api(BASE, RUTA, { cookie: ckAdminA }),
+    api(BASE, RUTA, { cookie: ckAdminA }),
+  ]);
+  for (const r of [r1, r2, r3]) assert.strictEqual(r.body.equipos[0].consultando, true);
+  const solicitudes = lento.recibidos.filter((m) => m.tipo === 'solicitar_impresoras').length;
+  assert.strictEqual(solicitudes, 1, `el Edge recibió ${solicitudes} solicitudes: debía recibir exactamente 1`);
+  lento.cerrar();
+});
+
+await t('CACHE', '46. la caché muere con la conexión: un Edge reconectado se consulta de nuevo', async () => {
+  await new Promise((r) => setTimeout(r, 300));
+  const antes = await agenteFalso(credA, {
+    impresoras: [{ nombre: 'DE-ANTES-DEL-REINICIO', predeterminada: false, estado: 'desconocido' }],
+  });
+  const r1 = await api(BASE, RUTA, { cookie: ckAdminA });
+  assert.deepStrictEqual(r1.body.equipos[0].detectadas.map((d) => d.nombre), ['DE-ANTES-DEL-REINICIO']);
+  // "Reinicio": se va y vuelve con otra lista. La caché del socket anterior
+  // no puede sobrevivir -- describiría un equipo que ya no existe.
+  antes.cerrar();
+  await new Promise((r) => setTimeout(r, 300));
+  const despues = await agenteFalso(credA, {
+    impresoras: [{ nombre: 'DE-DESPUES-DEL-REINICIO', predeterminada: false, estado: 'desconocido' }],
+  });
+  const r2 = await api(BASE, RUTA, { cookie: ckAdminA });
+  assert.deepStrictEqual(r2.body.equipos[0].detectadas.map((d) => d.nombre), ['DE-DESPUES-DEL-REINICIO'],
+    'tras reconectar, la lista tiene que ser la nueva, nunca la cacheada del socket anterior');
+  despues.cerrar();
 });
 
 } finally {
