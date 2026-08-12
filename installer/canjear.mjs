@@ -22,6 +22,9 @@
 //   3  no hay conexión con Xabor
 //   4  no se pudo escribir la configuración (permisos)
 //   5  uso incorrecto
+//   6  ya hay configuración, pero está protegida y no se puede leer sin
+//      elevación. NO se canjea nada: gastar un código de un solo uso por un
+//      problema de permisos sería el peor de los desenlaces.
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
@@ -57,14 +60,25 @@ if (codigo.length > 64) salir(5, 'El codigo de conexion no es valido.');
 // fantasma en su panel. Reinstalar para reparar el servicio es un caso normal
 // y debe conservar la vinculación.
 if (existsSync(RUTA_CONFIG) && !forzar) {
+  let previa = null;
   try {
-    const previa = JSON.parse(readFileSync(RUTA_CONFIG, 'utf8'));
-    if (previa.terminalId && previa.terminalToken) {
-      salir(0, `Este equipo ya estaba conectado a Xabor (${previa.nombreEquipo || 'sin nombre'}). Se conservan sus credenciales.`);
+    previa = JSON.parse(readFileSync(RUTA_CONFIG, 'utf8'));
+  } catch (e) {
+    // "No puedo leerlo" NO es lo mismo que "no existe", y confundirlos es
+    // peligroso: la ACL que protege el token deja el archivo ilegible para
+    // quien no esté elevado. Si aquí se siguiera adelante, se canjearía un
+    // código nuevo y se intentaría sobrescribir una vinculación que estaba
+    // perfectamente bien -- gastando un código de un solo uso por un problema
+    // de permisos.
+    if (e.code === 'EACCES' || e.code === 'EPERM') {
+      salir(6, 'Xabor Edge ya tiene configuracion protegida en este equipo.\n' +
+               'Ejecuta el instalador o esta herramienta como administrador.');
     }
-  } catch {
-    // Config ilegible o corrupta: se sigue y se sobrescribe. Peor es dejar el
-    // equipo sin poder vincularse.
+    // Cualquier otro motivo (JSON corrupto, archivo truncado) sí justifica
+    // rehacerla: peor es dejar el equipo sin poder vincularse.
+  }
+  if (previa && previa.terminalId && previa.terminalToken) {
+    salir(0, `Este equipo ya estaba conectado a Xabor (${previa.nombreEquipo || 'sin nombre'}). Se conservan sus credenciales.`);
   }
 }
 
