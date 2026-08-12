@@ -174,6 +174,51 @@ export async function registrarNumeroCloudApi(phoneNumberId, accessToken, pin) {
   return { ok: true, status: resp.status, resumen: { success: true } };
 }
 
+// ── Verificación del modo real del número (GET /{PHONE_NUMBER_ID}) ──
+// Tras un onboarding coexistence, la ÚNICA prueba de que Meta dejó el
+// número en modo dual son los campos oficiales is_on_biz_app y
+// platform_type -- que el Embedded Signup haya terminado no lo garantiza.
+// Nunca lanza por un rechazo de Meta; mismas reglas de logging.
+const IDS_SIMULADOS_VERIFICACION = new Map([
+  ['PNID_COEX_OK', { is_on_biz_app: true, platform_type: 'CLOUD_API' }],
+  ['PNID_COEX_NO_BIZ_APP', { is_on_biz_app: false, platform_type: 'CLOUD_API' }],
+]);
+
+export async function verificarModoNumero(phoneNumberId, accessToken) {
+  if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
+    throw new Error('verificarModoNumero: phoneNumberId requerido');
+  }
+  if (typeof accessToken !== 'string' || !accessToken.trim()) {
+    throw new Error('verificarModoNumero: accessToken requerido');
+  }
+
+  if (process.env.META_EMBEDDED_SIGNUP_MOCK === 'true') {
+    // Caso feliz por defecto; PNID_COEX_NO_BIZ_APP simula el número que NO
+    // quedó en modo dual (para probar que la activación NO se marca 'activo').
+    const simulado = IDS_SIMULADOS_VERIFICACION.get(phoneNumberId.trim())
+      || { is_on_biz_app: true, platform_type: 'CLOUD_API' };
+    logExitoMeta('Verificacion de modo del numero', 'verificacion_modo_simulada', 200);
+    return { ok: true, status: 200, isOnBizApp: simulado.is_on_biz_app === true, platformType: simulado.platform_type || null };
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(phoneNumberId.trim())}?fields=is_on_biz_app,platform_type`;
+  let resp, body;
+  try {
+    resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken.trim()}` } });
+    body = await resp.json();
+  } catch (e) {
+    console.error('[MetaEmbeddedSignup] Fallo de red al contactar a Meta -- etapa=verificacion_modo_red');
+    return { ok: false, status: null, resumen: { codigo: null, tipo: 'red', mensaje: 'no se pudo contactar a Meta' } };
+  }
+  if (!resp.ok) {
+    const resumen = resumirErrorMeta(body);
+    logRechazoMeta('Verificacion de modo del numero rechazada', 'verificacion_modo', { ...resumen, httpStatus: resp.status });
+    return { ok: false, status: resp.status, resumen };
+  }
+  logExitoMeta('Verificacion de modo del numero', 'verificacion_modo', resp.status);
+  return { ok: true, status: resp.status, isOnBizApp: body.is_on_biz_app === true, platformType: body.platform_type || null };
+}
+
 // ── Suscripción de la app a la WABA (POST /{WABA_ID}/subscribed_apps) ──
 // Sin este paso Meta nunca envía webhooks entrantes a la app, aunque el
 // número esté correctamente registrado -- son dos requisitos

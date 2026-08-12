@@ -5074,6 +5074,12 @@ app.get('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('wh
 
 app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
   const { state, code, phoneNumberId, wabaId, businessId, displayPhoneNumber } = req.body || {};
+  // Modo de conexión: lo manda el frontend según la opción elegida, pero el
+  // servidor lo valida contra la lista cerrada -- cualquier valor
+  // desconocido cae a 'cloud_api' (el comportamiento seguro de siempre).
+  // 'coexistence' NUNCA salta controles: al contrario, añade la
+  // verificación is_on_biz_app antes de marcar 'activo'.
+  const connectionMode = req.body?.connectionMode === 'coexistence' ? 'coexistence' : 'cloud_api';
   const consumido = validarYConsumirState(state);
   if (!consumido) {
     return res.status(400).json({ error: 'state inválido, vencido o ya utilizado' });
@@ -5161,12 +5167,12 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     // sin repetir el Embedded Signup (ver ruta "completar-activacion").
     let activacion = null;
     try {
-      activacion = await completarActivacionWhatsapp(negocioId, actor);
+      activacion = await completarActivacionWhatsapp(negocioId, actor, { connectionMode });
     } catch (eActivacion) {
       console.error('[POST /api/integraciones/whatsapp/meta/callback] Error al completar activación:', eActivacion.message);
     }
 
-    res.json({ ok: true, estado: activacion?.estado || resultado.estado, activacion });
+    res.json({ ok: true, estado: activacion?.estado || resultado.estado, connectionMode, activacion });
   } catch (e) {
     console.error('[POST /api/integraciones/whatsapp/meta/callback] Error:', e.message);
     await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', actor).catch(() => {});

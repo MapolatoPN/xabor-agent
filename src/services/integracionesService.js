@@ -397,9 +397,17 @@ async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
  * Nunca borra ni toca las credenciales existentes (access_token,
  * identificadores) -- solo actualiza estado/flags/auditoría.
  */
-export async function completarActivacionWhatsapp(negocioId, actor) {
+const MODOS_CONEXION_VALIDOS = ['cloud_api', 'coexistence'];
+
+export async function completarActivacionWhatsapp(negocioId, actor, { connectionMode = 'cloud_api' } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
+  }
+  // El modo lo decide el servidor validando contra la lista cerrada -- lo
+  // que mande el frontend jamás se pasa tal cual a la base ni cambia el
+  // comportamiento sin caer en una de las DOS ramas conocidas.
+  if (!MODOS_CONEXION_VALIDOS.includes(connectionMode)) {
+    return { ok: false, error: 'Modo de conexión no reconocido' };
   }
   const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
   const datos = await obtenerCredencialesParaActivacion(negocioId.trim(), 'whatsapp', 'meta');
@@ -407,21 +415,43 @@ export async function completarActivacionWhatsapp(negocioId, actor) {
     return { ok: false, error: 'No hay credenciales completas para activar (falta phone_number_id, waba_id o token)' };
   }
 
-  const { registrarNumeroCloudApi, suscribirAppWaba } = await import('./metaEmbeddedSignup.js');
+  const { registrarNumeroCloudApi, suscribirAppWaba, verificarModoNumero } = await import('./metaEmbeddedSignup.js');
+
+  const esCoexistence = connectionMode === 'coexistence';
 
   const pin = datos.pin || crypto.randomInt(100000, 1000000).toString();
   const pinEsNuevo = !datos.pin;
 
-  const resultadoRegistro = await registrarNumeroCloudApi(datos.phoneNumberId, datos.accessToken, pin);
+  // COEXISTENCE: el número YA está registrado en Cloud API por el flujo de
+  // la Business App (Meta lo hace durante el onboarding con featureType
+  // whatsapp_business_app_onboarding). Ejecutar POST /register aquí -- con
+  // un PIN que el flujo de la app no conoce -- es exactamente la llamada
+  // fuera de lugar que puede dejar el número en un estado roto. Se omite y
+  // se marca como omitida para que el llamador y la auditoría lo sepan.
+  const resultadoRegistro = esCoexistence
+    ? { ok: true, status: null, resumen: { omitido: true }, omitido: true }
+    : await registrarNumeroCloudApi(datos.phoneNumberId, datos.accessToken, pin);
   const resultadoSuscripcion = await suscribirAppWaba(datos.wabaId, datos.accessToken);
-  const ambosOk = resultadoRegistro.ok && resultadoSuscripcion.ok;
+
+  // COEXISTENCE: la única prueba de que Meta dejó el número en modo dual
+  // son los campos oficiales is_on_biz_app/platform_type -- que el
+  // Embedded Signup haya terminado NO basta para marcar 'activo'.
+  let resultadoVerificacion = null;
+  if (esCoexistence) {
+    resultadoVerificacion = await verificarModoNumero(datos.phoneNumberId, datos.accessToken);
+  }
+  const verificacionOk = !esCoexistence
+    || (resultadoVerificacion?.ok === true && resultadoVerificacion.isOnBizApp === true);
+
+  const ambosOk = resultadoRegistro.ok && resultadoSuscripcion.ok && verificacionOk;
   const nuevoEstado = ambosOk ? 'activo' : 'pendiente_activacion';
 
   // Identificador controlado del error (nunca el mensaje crudo de Meta),
   // mismo criterio que el resto de este archivo para ultimo_error_codigo.
   const codigoErrorControlado = ambosOk ? null
     : !resultadoRegistro.ok ? `registro:${resultadoRegistro.resumen?.codigo ?? 'red'}`
-    : `subscribed_apps:${resultadoSuscripcion.resumen?.codigo ?? 'red'}`;
+    : !resultadoSuscripcion.ok ? `subscribed_apps:${resultadoSuscripcion.resumen?.codigo ?? 'red'}`
+    : `verificacion:${resultadoVerificacion?.ok ? 'numero_no_en_biz_app' : (resultadoVerificacion?.resumen?.codigo ?? 'red')}`;
 
   const client = await pool.connect();
   try {
@@ -446,11 +476,13 @@ export async function completarActivacionWhatsapp(negocioId, actor) {
       `UPDATE integraciones_canal SET
          estado = $1,
          numero_registrado_cloud_api = $2, app_suscrita_waba = $3,
+         connection_mode = $4,
          ultimo_intento_activacion_at = NOW(),
-         ultimo_error_codigo = $4, ultimo_error_at = $5,
-         actualizado_por = $6, updated_at = NOW()
-       WHERE id = $7`,
+         ultimo_error_codigo = $5, ultimo_error_at = $6,
+         actualizado_por = $7, updated_at = NOW()
+       WHERE id = $8`,
       [nuevoEstado, resultadoRegistro.ok, resultadoSuscripcion.ok,
+       connectionMode,
        codigoErrorControlado, ambosOk ? null : new Date(),
        actualizadoPorId, datos.integracionId]
     );
@@ -459,12 +491,17 @@ export async function completarActivacionWhatsapp(negocioId, actor) {
       superadminId, actorUsuarioId,
       accion: 'integracion_activacion_completada',
       negocioId: negocioId.trim(),
-      estadoNuevo: { estado: nuevoEstado, numeroRegistrado: resultadoRegistro.ok, appSuscrita: resultadoSuscripcion.ok },
+      estadoNuevo: { estado: nuevoEstado, numeroRegistrado: resultadoRegistro.ok, appSuscrita: resultadoSuscripcion.ok, connectionMode },
       // Solo status HTTP + código/tipo de error resumidos -- nunca el
       // access_token, el PIN, ni el cuerpo crudo de la respuesta de Meta.
       contexto: {
-        registro: { ok: resultadoRegistro.ok, status: resultadoRegistro.status, codigo: resultadoRegistro.resumen?.codigo ?? null, tipo: resultadoRegistro.resumen?.tipo ?? null },
+        registro: resultadoRegistro.omitido
+          ? { omitido: true, motivo: 'coexistence: el numero ya esta registrado por el flujo de la Business App' }
+          : { ok: resultadoRegistro.ok, status: resultadoRegistro.status, codigo: resultadoRegistro.resumen?.codigo ?? null, tipo: resultadoRegistro.resumen?.tipo ?? null },
         suscripcion: { ok: resultadoSuscripcion.ok, status: resultadoSuscripcion.status, codigo: resultadoSuscripcion.resumen?.codigo ?? null, tipo: resultadoSuscripcion.resumen?.tipo ?? null },
+        verificacion: resultadoVerificacion
+          ? { ok: resultadoVerificacion.ok, isOnBizApp: resultadoVerificacion.isOnBizApp ?? null, platformType: resultadoVerificacion.platformType ?? null }
+          : null,
       },
     }, client);
 
@@ -479,8 +516,13 @@ export async function completarActivacionWhatsapp(negocioId, actor) {
   return {
     ok: ambosOk,
     estado: nuevoEstado,
+    connectionMode,
     numeroRegistrado: resultadoRegistro.ok,
+    registroOmitido: resultadoRegistro.omitido === true,
     appSuscrita: resultadoSuscripcion.ok,
+    verificacion: resultadoVerificacion
+      ? { ok: resultadoVerificacion.ok, isOnBizApp: resultadoVerificacion.isOnBizApp ?? null, platformType: resultadoVerificacion.platformType ?? null }
+      : null,
     errorRegistro: resultadoRegistro.ok ? null : resultadoRegistro.resumen,
     errorSuscripcion: resultadoSuscripcion.ok ? null : resultadoSuscripcion.resumen,
   };
