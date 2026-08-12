@@ -113,9 +113,17 @@ try {
 // nada en Windows -- lo que manda es la lista de control de acceso. Sin esto,
 // el token de la terminal seria legible por cualquier usuario del equipo, y en
 // la caja de un restaurante hay varias personas con sesion.
+// Se usan SIDs y no nombres: en un Windows en espanol el grupo NO se llama
+// 'Administrators' sino 'Administradores', y icacls falla con un nombre que no
+// existe. Se descubrio probando -- el aviso de abajo salia siempre, dejando el
+// token sin proteger justo en los equipos donde va a instalarse. Los SIDs son
+// los mismos en cualquier idioma de Windows:
+//
+//   *S-1-5-18      NT AUTHORITY\SYSTEM, la cuenta bajo la que corre el servicio
+//   *S-1-5-32-544  el grupo de administradores local
 try {
   execFileSync('icacls.exe', [RUTA_CONFIG, '/inheritance:r',
-    '/grant:r', 'SYSTEM:(F)', '/grant:r', 'Administrators:(F)'], { stdio: 'ignore' });
+    '/grant:r', '*S-1-5-18:(F)', '/grant:r', '*S-1-5-32-544:(F)'], { stdio: 'ignore' });
 } catch {
   // No es fatal: el equipo queda funcionando. Pero hay que decirlo, porque es
   // una credencial peor protegida de lo que deberia.
