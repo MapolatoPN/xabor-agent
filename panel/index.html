@@ -4806,12 +4806,27 @@ function pintarWhatsappAutoservicio() {
     ';margin-right:8px;margin-bottom:8px;">' + txt + '</button>';
 
   if (!e.conectado) {
+    // Selector de autoservicio: el negocio elige cómo usa WhatsApp hoy y
+    // Xabor lanza el flujo de Meta correcto. Sin WABA IDs, sin tokens, sin
+    // jerga -- solo la decisión que el dueño sí sabe responder.
+    const opcion = (titulo, descripcion, fn, primario) =>
+      '<div style="border:1px solid #e5e2da;border-radius:10px;padding:14px;margin-bottom:10px;">' +
+        '<div style="font-weight:700;font-size:0.92rem;margin-bottom:4px;">' + titulo + '</div>' +
+        '<div style="color:#666;font-size:0.84rem;line-height:1.5;margin-bottom:10px;">' + descripcion + '</div>' +
+        (fn ? btn('Conectar', fn, primario) : '<div style="color:#888;font-size:0.82rem;">Escríbenos y te ayudamos con la migración.</div>') +
+      '</div>';
     cont.innerHTML = '<div style="' + marco + '">' +
       '<div style="font-weight:800;font-size:1rem;margin-bottom:6px;">WhatsApp</div>' +
-      '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">Conecta el número de WhatsApp de tu negocio para recibir pedidos y mensajes en Xabor.</div>' +
+      '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">&iquest;C&oacute;mo utilizas WhatsApp actualmente?</div>' +
       '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin-bottom:10px;"></div>' +
-      btn('Conectar WhatsApp', 'conectarWhatsapp()', true) +
-      '<div style="color:#888;font-size:0.78rem;margin-top:12px;line-height:1.5;">Tu cuenta, tu página y tu número siguen siendo tuyos. Xabor solo recibe los permisos necesarios para operar la integración.</div>' +
+      opcion('Ya uso WhatsApp Business en mi tel&eacute;fono',
+        'Conserva WhatsApp Business en tu tel&eacute;fono &mdash; con tus notificaciones y la posibilidad de responder t&uacute; mismo &mdash; y conecta Xabor para automatizar mensajes y pedidos en el mismo n&uacute;mero. Necesitas la app actualizada y tu tel&eacute;fono a la mano.',
+        'conectarWhatsappCoexistencia()', true) +
+      opcion('Usar&eacute; un n&uacute;mero nuevo (o uno que ya no est&aacute; en WhatsApp)',
+        'Xabor opera el n&uacute;mero completo: el bot contesta y t&uacute; atiendes desde este panel.',
+        'conectarWhatsapp()', false) +
+      opcion('Ya utilizo otro proveedor o API de WhatsApp', '', null, false) +
+      '<div style="color:#888;font-size:0.78rem;margin-top:8px;line-height:1.5;">Tu cuenta, tu p&aacute;gina y tu n&uacute;mero siguen siendo tuyos. Xabor solo recibe los permisos necesarios para operar la integraci&oacute;n.</div>' +
       '</div>';
     return;
   }
@@ -5298,8 +5313,13 @@ async function cargarWhatsappAutoservicio() {
   await cargarImpresoras();
 }
 
-async function conectarWhatsapp() {
+// modo: 'cloud_api' (número nuevo, flujo estándar) o 'coexistence' (el
+// negocio conserva WhatsApp Business en su teléfono y conecta Xabor al
+// MISMO número -- mecanismo oficial de Meta). El servidor re-valida el
+// modo: aquí solo decide qué flujo de Meta se lanza.
+async function conectarWhatsapp(modo) {
   if (waConectando) return;                 // sin dobles clicks
+  const connectionMode = modo === 'coexistence' ? 'coexistence' : 'cloud_api';
   waConectando = true; pintarWhatsappAutoservicio();
   waProgreso('Preparando conexión...');
   try {
@@ -5316,7 +5336,7 @@ async function conectarWhatsapp() {
     // con un mensaje que el cliente puede entender, en vez de dejar el boton
     // sin hacer nada.
     await cargarSdkMeta(cfg.appId, cfg.graphApiVersion);
-    const datos = await abrirEmbeddedSignup(cfg, inicio.state);
+    const datos = await abrirEmbeddedSignup(cfg, inicio.state, connectionMode);
     if (!datos) {
       // El cliente cerró la ventana: no se deja un intento colgando.
       await apiFetch('/api/integraciones/whatsapp/conexion-pendiente', { method: 'DELETE' });
@@ -5327,14 +5347,14 @@ async function conectarWhatsapp() {
     waProgreso('Configurando WhatsApp...');
     const res = await apiFetch('/api/integraciones/whatsapp/meta/callback', {
       method: 'POST',
-      body: JSON.stringify(Object.assign({ state: inicio.state }, datos)),
+      body: JSON.stringify(Object.assign({ state: inicio.state, connectionMode: connectionMode }, datos)),
     });
     const cuerpo = await res.json().catch(function () { return {}; });
     if (!res.ok) throw new Error(cuerpo.error || 'No pudimos completar la conexión con Meta.');
 
     waProgreso('Verificando conexión...');
     await cargarWhatsappAutoservicio();
-    waProgreso('');
+    waProgreso(connectionMode === 'coexistence' ? 'WhatsApp Business + Xabor conectados ✓' : '');
   } catch (err) {
     waProgreso(err.message || 'No pudimos completar la conexión con Meta.');
   } finally {
@@ -5342,9 +5362,13 @@ async function conectarWhatsapp() {
   }
 }
 
+// Selector de autoservicio: cómo usa WhatsApp el negocio hoy. Cada opción
+// lanza el flujo correcto sin que el dueño vea WABA IDs, tokens ni jerga.
+function conectarWhatsappCoexistencia() { return conectarWhatsapp('coexistence'); }
+
 // Abre el Embedded Signup oficial de Meta. Resuelve con los datos que Meta
 // devuelve, o con null si el cliente cerró la ventana.
-function abrirEmbeddedSignup(cfg, state) {
+function abrirEmbeddedSignup(cfg, state, connectionMode) {
   return new Promise(function (resolver) {
     let resuelto = false;
     let datosSesion = null;
@@ -5363,7 +5387,11 @@ function abrirEmbeddedSignup(cfg, state) {
       let d;
       try { d = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data; } catch (_) { return; }
       if (!d || d.type !== 'WA_EMBEDDED_SIGNUP') return;
-      if (d.event === 'FINISH' && d.data) {
+      // Coexistence termina con su PROPIO nombre de evento
+      // (FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING); el estándar con FINISH.
+      // Ambos entregan los mismos asset IDs y se normalizan a la misma
+      // estructura interna -- un solo camino de onboarding río abajo.
+      if ((d.event === 'FINISH' || d.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') && d.data) {
         datosSesion = {
           phoneNumberId: d.data.phone_number_id,
           wabaId: d.data.waba_id,
@@ -5374,6 +5402,15 @@ function abrirEmbeddedSignup(cfg, state) {
       }
     }
     window.addEventListener('message', alMensaje);
+
+    // extras: el flujo estándar va SIN featureType (Meta lanza el onboarding
+    // normal de número nuevo); coexistence agrega el featureType oficial y
+    // Meta ofrece conectar el número que YA vive en la WhatsApp Business App
+    // del teléfono, sin sacarlo de ahí.
+    const extras = { setup: {}, sessionInfoVersion: 3 };
+    if (connectionMode === 'coexistence') {
+      Object.assign(extras, { featureType: 'whatsapp_business_app_onboarding' });
+    }
 
     window.FB.login(function (respuesta) {
       const code = respuesta && respuesta.authResponse && respuesta.authResponse.code;
@@ -5387,7 +5424,7 @@ function abrirEmbeddedSignup(cfg, state) {
       config_id: cfg.configId,
       response_type: 'code',
       override_default_response_type: true,
-      extras: { setup: {}, sessionInfoVersion: 3 },
+      extras: extras,
     });
   });
 }
