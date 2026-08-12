@@ -2,7 +2,7 @@
 // Twilio se conserva SOLO para llamadas de voz
 
 import { Router } from 'express';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
@@ -1262,8 +1262,48 @@ async function manejarHistoryBusinessApp(value, negocioId, phoneNumberId) {
   }
 }
 
+// ─── Firma X-Hub-Signature-256 (autenticidad del webhook) ───────────────────
+// Meta firma CADA payload con HMAC-SHA256 usando el App Secret de la app
+// (el mismo META_APP_SECRET del intercambio OAuth) sobre los bytes crudos
+// del body, y lo manda como `X-Hub-Signature-256: sha256=<hex>`. Sin esta
+// validación, cualquiera que conozca la URL pública del webhook puede
+// inyectar mensajes falsos, activar takeovers o "desconectar"
+// integraciones. FAIL CLOSED: con META_APP_SECRET configurado, un POST
+// sin firma o con firma inválida se rechaza ANTES de cualquier efecto
+// (guardar, brain, takeover, statuses, escrituras). La comparación es
+// timing-safe (nunca === de strings). JAMÁS se loguea el secreto, la
+// firma ni el body.
+let _avisoSinAppSecret = false;
+function firmaWebhookValida(req) {
+  const appSecret = process.env.META_APP_SECRET;
+  if (!appSecret) {
+    // Sin secreto no hay nada contra qué validar. Se acepta (comportamiento
+    // previo) pero se avisa UNA vez: en producción esta variable debe
+    // existir para que la validación esté activa.
+    if (!_avisoSinAppSecret) {
+      _avisoSinAppSecret = true;
+      console.warn('[Meta WA] META_APP_SECRET no configurado — la firma de webhooks NO se está validando (configúralo en producción)');
+    }
+    return true;
+  }
+  const encabezado = req.get('x-hub-signature-256');
+  if (typeof encabezado !== 'string' || !encabezado.startsWith('sha256=')) return false;
+  if (!Buffer.isBuffer(req.rawBody) || req.rawBody.length === 0) return false;
+  const esperadaHex = createHmac('sha256', appSecret).update(req.rawBody).digest('hex');
+  const recibidaHex = encabezado.slice('sha256='.length).trim().toLowerCase();
+  const esperada = Buffer.from(esperadaHex, 'utf8');
+  const recibida = Buffer.from(recibidaHex, 'utf8');
+  if (esperada.length !== recibida.length) return false;
+  return timingSafeEqual(esperada, recibida);
+}
+
 // ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
 router.post('/', async (req, res) => {
+  // La firma se valida ANTES de responder y antes de CUALQUIER efecto.
+  if (!firmaWebhookValida(req)) {
+    console.warn('[Meta WA] Webhook rechazado: X-Hub-Signature-256 ausente o inválida (403)');
+    return res.sendStatus(403);
+  }
   res.sendStatus(200); // Meta requiere 200 inmediato
 
   try {
