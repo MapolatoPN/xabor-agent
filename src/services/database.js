@@ -913,6 +913,64 @@ export async function getBotPausado(telefono, negocioId) {
   }
 }
 
+// ─── Takeover humano temporal (WhatsApp Coexistence, migración 049) ──────────
+// Cuando el dueño responde desde SU WhatsApp Business App (webhook
+// smb_message_echoes), el bot se calla para ESA conversación durante un
+// plazo. Mecanismo deliberadamente SEPARADO de bot_pausado: estas funciones
+// solo escriben human_takeover_until / last_business_app_message_at y JAMÁS
+// tocan bot_pausado — así el vencimiento automático nunca puede des-pausar
+// una conversación pausada a mano desde el panel. Mismos guards de dueño
+// que setBotPausado (Incidente P0): sin negocioId no se escribe, y el
+// ON CONFLICT es no-op si el teléfono pertenece a otro negocio.
+export async function activarTakeoverHumano(telefono, negocioId, minutos) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] activarTakeoverHumano: negocioId inválido u omitido — rechazado');
+    return false;
+  }
+  const mins = Number(minutos);
+  if (!Number.isFinite(mins) || mins <= 0) {
+    console.warn('[DB] activarTakeoverHumano: minutos inválidos — rechazado');
+    return false;
+  }
+  try {
+    const incluirNull = await _esNonnaMaye(negocioId);
+    const { rowCount } = await pool.query(`
+      INSERT INTO clientes (telefono, negocio_id, human_takeover_until, last_business_app_message_at)
+      VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, NOW())
+      ON CONFLICT (telefono) DO UPDATE SET
+        human_takeover_until = NOW() + ($3 || ' minutes')::interval,
+        last_business_app_message_at = NOW()
+        WHERE clientes.negocio_id = $2 OR ($4::boolean AND clientes.negocio_id IS NULL)
+    `, [telefono, negocioId.trim(), String(mins), incluirNull]);
+    return rowCount > 0;
+  } catch (e) {
+    console.error('[DB] Error activarTakeoverHumano:', e.message);
+    return false;
+  }
+}
+
+// false = sin takeover vigente (el bot puede actuar). Fail closed hacia el
+// comportamiento actual: ante negocioId inválido o error de consulta se
+// devuelve false, igual que getBotPausado.
+export async function getTakeoverHumanoActivo(telefono, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] getTakeoverHumanoActivo: negocioId inválido u omitido — rechazado (fail closed)');
+    return false;
+  }
+  try {
+    const incluirNull = await _esNonnaMaye(negocioId);
+    const result = await pool.query(
+      `SELECT (human_takeover_until IS NOT NULL AND human_takeover_until > NOW()) AS vigente
+       FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))`,
+      [telefono, negocioId.trim(), incluirNull]
+    );
+    return result.rows[0]?.vigente || false;
+  } catch (e) {
+    console.error('[DB] Error getTakeoverHumanoActivo:', e.message);
+    return false;
+  }
+}
+
 // ─── Link de pago pendiente (pedidos por voz/WhatsApp) ───────────────────────
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0, causa raíz confirmada
 // del enlace de pago de Nonna Maye enviado a un cliente de Alora). Mismo
@@ -1204,6 +1262,51 @@ export async function guardarMensaje(telefono, nombre, direccion, texto, negocio
     return null;
   } catch (e) {
     console.error('[DB] Error guardarMensaje:', e.message);
+    return null;
+  }
+}
+
+// ANTI-LOOP de Coexistence: un echo (smb_message_echoes) cuyo wamid ya está
+// en mensajes es un mensaje que XABOR mismo envió por Cloud API (o un
+// webhook reentregado) -- no es intervención humana y no debe activar el
+// takeover. El índice UNIQUE parcial de message_id_externo hace esta
+// consulta O(1). Ante error se devuelve true (fail closed: mejor no
+// activar un takeover de más que silenciar al bot tras cada respuesta).
+export async function existeMensajeConIdExterno(messageIdExterno) {
+  if (!messageIdExterno) return false;
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM mensajes WHERE message_id_externo = $1 LIMIT 1`, [messageIdExterno]);
+    return rows.length > 0;
+  } catch (e) {
+    console.error('[DB] Error existeMensajeConIdExterno:', e.message);
+    return true;
+  }
+}
+
+// Importación del historial de la Business App (webhook `history`,
+// Coexistence): igual que guardarMensaje pero con tipo 'texto_historico'
+// (migración 049) y el timestamp REAL del mensaje original -- así el chat
+// del panel muestra la conversación en su orden verdadero y nada del
+// pipeline en vivo (brain, debounce, notificaciones) lo confunde con
+// tráfico nuevo. Idempotente por message_id_externo, igual que el webhook
+// normal.
+export async function importarMensajeHistorico(telefono, nombre, direccion, texto, negocioId, origen, messageIdExterno, fecha) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] importarMensajeHistorico: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  if (!messageIdExterno) return null; // sin wamid no hay idempotencia posible
+  try {
+    const { rows } = await pool.query(`
+      INSERT INTO mensajes (telefono, nombre, direccion, texto, negocio_id, origen, message_id_externo, tipo, "timestamp")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'texto_historico', COALESCE($8::timestamptz, NOW()))
+      ON CONFLICT (message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING
+      RETURNING *
+    `, [telefono, nombre || null, direccion, texto, negocioId.trim(), origen || null, messageIdExterno, fecha || null]);
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error importarMensajeHistorico:', e.message);
     return null;
   }
 }
@@ -2541,6 +2644,29 @@ export async function obtenerIntegracionCanal(canal, identificador) {
     identificador: r.identificador,
     configuracion: r.configuracion,
   };
+}
+
+// PARTNER_REMOVED (webhook account_update, Coexistence): el dueño
+// desvinculó a Xabor desde su WhatsApp Business App. Solo se marca el
+// estado -- NUNCA se borra la integración, ni credenciales, ni historial:
+// el negocio puede reconectar desde el panel y todo sigue ahí. `activo`
+// tampoco se toca (sigue siendo el mapeo del webhook); lo que corta los
+// envíos automáticos equivocados es estado <> 'activo', que ya gobierna
+// completarActivacionWhatsapp/el panel. Se resuelve por waba_id porque el
+// payload de account_update NO trae metadata.phone_number_id.
+export async function marcarIntegracionDesconectadaPorWaba(wabaId) {
+  if (typeof wabaId !== 'string' || !wabaId.trim()) return 0;
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE integraciones_canal
+       SET estado = 'desconectado', updated_at = NOW()
+       WHERE canal = 'whatsapp' AND proveedor = 'meta' AND waba_id = $1`,
+      [wabaId.trim()]);
+    return rowCount;
+  } catch (e) {
+    console.error('[DB] Error marcarIntegracionDesconectadaPorWaba:', e.message);
+    return 0;
+  }
 }
 
 // ─── Multiempresa — membresía usuario↔negocio (Fase 2, autenticación) ───────

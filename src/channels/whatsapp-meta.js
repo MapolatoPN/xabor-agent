@@ -7,7 +7,7 @@ import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoProgramado, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -1144,6 +1144,124 @@ const RE_ENTRAR_MODO_REPARTIDOR = /^(modo\s+repartidor|disponible)[.,!]?$/i;
 const RE_MIS_ENTREGAS = /^mis\s+entregas[.,!]?$/i;
 const RE_INTENCION_CLIENTE = /quiero\s+(hacer\s+)?(un\s+)?pedido|quiero\s+ordenar|qu[eé]\s+venden|\bmen[uú]\b|quiero\s+(una\s+)?cotizaci[oó]n|quiero\s+comprar/i;
 
+// ─── Coexistence (WhatsApp Business App + Cloud API en el mismo número) ─────
+// Campos de webhook que solo existen cuando el número quedó en modo dual
+// (el dueño conserva su app y Xabor opera por Cloud API). NINGUNO de estos
+// eventos puede caer al flujo de mensaje-de-cliente → brain → bot: se
+// despachan aparte y terminan ahí.
+const CAMPOS_COEXISTENCE = new Set(['smb_message_echoes', 'history', 'smb_app_state_sync', 'account_update']);
+
+// Cuántos minutos calla el bot en UNA conversación después de que el dueño
+// respondió desde su Business App. Cada mensaje nuevo del dueño renueva el
+// plazo; al vencer, el bot vuelve solo (sin tocar jamás bot_pausado, que
+// es la pausa manual del panel). Ajustable por variable de entorno.
+const HUMAN_TAKEOVER_MINUTOS = (() => {
+  const v = Number(process.env.HUMAN_TAKEOVER_MINUTOS);
+  return Number.isFinite(v) && v > 0 ? v : 30;
+})();
+
+async function procesarCambioCoexistence(cambio) {
+  try {
+    const value = cambio?.value || {};
+
+    // account_update NO trae metadata.phone_number_id: se resuelve por
+    // waba_id. Solo se marca estado -- nunca se borra nada (el negocio
+    // reconecta desde el panel y su historial sigue intacto).
+    if (cambio.field === 'account_update') {
+      if (value.event === 'PARTNER_REMOVED') {
+        const wabaId = value.waba_info?.waba_id;
+        const filas = wabaId ? await marcarIntegracionDesconectadaPorWaba(wabaId) : 0;
+        console.warn(`[Meta WA] PARTNER_REMOVED: el negocio desvinculó a Xabor desde su Business App (waba=${wabaId || '(vacío)'}, integraciones marcadas=${filas}) — nada se borra, puede reconectar desde el panel`);
+      }
+      return;
+    }
+
+    // El resto de campos sí traen metadata.phone_number_id -- mismo
+    // criterio fail-closed que el webhook de mensajes: sin negocio
+    // mapeado, el evento se descarta.
+    const phoneNumberId = value.metadata?.phone_number_id;
+    const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp', phoneNumberId) : null;
+    if (!integracion) {
+      console.error(`[Meta WA] Evento coexistence '${cambio.field}' sin negocio mapeado para phone_number_id=${phoneNumberId || '(vacío)'} — descartado (fail closed)`);
+      return;
+    }
+    const negocioId = integracion.negocioId;
+
+    if (cambio.field === 'smb_message_echoes') return manejarEchoesBusinessApp(value, negocioId);
+    if (cambio.field === 'history') return manejarHistoryBusinessApp(value, negocioId, phoneNumberId);
+    if (cambio.field === 'smb_app_state_sync') {
+      // Sincronización de contactos/estado de la app. V1: se reconoce y se
+      // ignora a propósito -- jamás debe generar mensajes ni tocar al bot.
+      console.log(`[Meta WA] smb_app_state_sync recibido para negocio ${negocioId} (${(value.state_sync || []).length} elementos) — sin acción en V1`);
+      return;
+    }
+  } catch (e) {
+    console.error(`[Meta WA] Error procesando evento coexistence '${cambio?.field}':`, e.message);
+  }
+}
+
+// Echo de un mensaje enviado desde la Business App del dueño. Dos casos:
+//   - wamid YA conocido → es el eco de un envío del propio Xabor (o un
+//     webhook reentregado): se ignora por completo. ANTI-LOOP crítico —
+//     activar takeover aquí silenciaría al bot tras CADA respuesta suya.
+//   - wamid nuevo → el DUEÑO respondió a mano: se guarda como
+//     saliente/humano (aparece en el chat del panel) y se activa/renueva
+//     el takeover temporal de ESA conversación.
+async function manejarEchoesBusinessApp(value, negocioId) {
+  for (const echo of value.message_echoes || []) {
+    const wamid = echo?.id;
+    const telefono = echo?.to;
+    if (!wamid || !telefono) continue;
+    if (echo.type !== 'text' || !echo.text?.body) {
+      console.log(`[Meta WA] Echo no-texto (${echo.type || 'desconocido'}) ignorado en V1`);
+      continue;
+    }
+    if (await existeMensajeConIdExterno(wamid)) {
+      console.log(`[Meta WA] Echo con wamid ya conocido — envío del propio Xabor o webhook reentregado, se ignora (anti-loop)`);
+      continue;
+    }
+    const msg = await guardarMensaje(telefono, '', 'saliente', echo.text.body, negocioId, 'humano', wamid);
+    if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg });
+    await activarTakeoverHumano(telefono, negocioId, HUMAN_TAKEOVER_MINUTOS);
+    console.log(`[Meta WA] Mensaje manual del dueño (Business App) para ${telefono} — takeover humano ${HUMAN_TAKEOVER_MINUTOS} min`);
+  }
+}
+
+// Historial opcional de la app (hasta 6 meses). Se importa marcado como
+// 'texto_historico' con su fecha original -- NUNCA pasa por el brain ni
+// por el pipeline en vivo. Que el dueño decline compartirlo llega como
+// error 2593109 y es una decisión válida, no un fallo de la integración.
+async function manejarHistoryBusinessApp(value, negocioId, phoneNumberId) {
+  for (const bloque of value.history || []) {
+    if (Array.isArray(bloque.errors) && bloque.errors.length) {
+      for (const err of bloque.errors) {
+        if (Number(err.code) === 2593109) {
+          console.log(`[Meta WA] History: el dueño decidió no compartir su historial (2593109) — la integración sigue intacta`);
+        } else {
+          console.warn(`[Meta WA] History con error ${err.code}: ${err.message || ''} — no afecta la integración`);
+        }
+      }
+      continue;
+    }
+    for (const hilo of bloque.threads || []) {
+      for (const m of hilo.messages || []) {
+        if (!m?.id || m.type !== 'text' || !m.text?.body) continue;
+        // Un mensaje del negocio trae `to` (o `from` = el propio número);
+        // uno del cliente trae `from` = teléfono del cliente.
+        const esDelNegocio = m.to != null || m.from === phoneNumberId;
+        const telefono = esDelNegocio ? (m.to || hilo.id) : m.from;
+        if (!telefono) continue;
+        const fecha = m.timestamp ? new Date(Number(m.timestamp) * 1000) : null;
+        const filaMsg = await importarMensajeHistorico(
+          telefono, '', esDelNegocio ? 'saliente' : 'entrante', m.text.body,
+          negocioId, esDelNegocio ? 'humano' : 'cliente', m.id,
+          fecha && !isNaN(fecha.getTime()) ? fecha.toISOString() : null);
+        if (filaMsg) console.log(`[Meta WA] Mensaje histórico importado para ${telefono}`);
+      }
+    }
+  }
+}
+
 // ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
 router.post('/', async (req, res) => {
   res.sendStatus(200); // Meta requiere 200 inmediato
@@ -1152,7 +1270,20 @@ router.post('/', async (req, res) => {
     const body = req.body;
     if (body.object !== 'whatsapp_business_account') return;
 
-    const value   = body.entry?.[0]?.changes?.[0]?.value;
+    // Coexistence: los campos duales pueden venir en cualquier entry/change
+    // del payload; se despachan TODOS aparte, antes y sin pasar por el
+    // flujo de mensajes de cliente.
+    for (const entrada of body.entry || []) {
+      for (const cambio of entrada.changes || []) {
+        if (CAMPOS_COEXISTENCE.has(cambio?.field)) await procesarCambioCoexistence(cambio);
+      }
+    }
+
+    // Flujo normal (idéntico al de siempre): primer change que NO sea de
+    // coexistence. Cuando no hay campos de coexistence esto es exactamente
+    // el changes[0] histórico.
+    const cambioNormal = body.entry?.[0]?.changes?.find((c) => !CAMPOS_COEXISTENCE.has(c?.field));
+    const value   = cambioNormal?.value;
 
     // Estado de entrega (sent/delivered/read/failed) -- payload distinto
     // al de mensajes entrantes (ver diagnóstico repartidores: esto se
@@ -1240,6 +1371,15 @@ router.post('/', async (req, res) => {
     const pausado = await getBotPausado(telefono, negocioId);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
+      return;
+    }
+    // Takeover humano temporal (Coexistence): el dueño respondió hace poco
+    // desde su Business App -- el bot calla en ESTA conversación hasta que
+    // venza el plazo. Solo lectura: aquí jamás se escribe bot_pausado ni
+    // human_takeover_until.
+    const takeoverVigente = await getTakeoverHumanoActivo(telefono, negocioId);
+    if (takeoverVigente) {
+      console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
       return;
     }
 
