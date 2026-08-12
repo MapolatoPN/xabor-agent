@@ -35,7 +35,7 @@ import {
   registrarInstalacion,
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
-import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora } from './services/impresionSelfService.js';
+import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, confirmarPagoIdempotente, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
@@ -2737,6 +2737,49 @@ app.post('/api/impresion/self-service/impresoras/:id/desactivar', requireAdminSe
   } catch (e) {
     manejarErrorImpresion(res, e);
   }
+});
+
+// Prueba física ANTES de asignar destino. Con dos impresoras del mismo
+// modelo ("POS58 Printer" y "POS58 Printer (Copy 1)"), la única forma
+// honesta de saber cuál es cuál es imprimir y ver cuál soltó papel -- y eso
+// tiene que poder hacerse ANTES de decidir Cocina/Caja, no después. Registra
+// la impresora sin destino (upsert idempotente) y le manda la página de
+// prueba.
+app.post('/api/impresion/self-service/probar', requireAdminSeguro, async (req, res) => {
+  const { terminalId, nombreWindows, anchoMm } = req.body || {};
+  try {
+    const reg = await registrarImpresoraParaPrueba(req.negocioId, { terminalId, nombreWindows, anchoMm: anchoMm || 58 });
+    if (!reg.ok) return res.status(400).json({ error: reg.error });
+    const trabajo = await crearTrabajoDePrueba(req.negocioId, reg.impresoraId, { solicitadoPor: req.usuarioId });
+    await entregarTrabajos([trabajo]);
+    res.status(201).json({ ok: true, impresoraId: reg.impresoraId });
+  } catch (e) {
+    console.error('[Impresion] self-service probar:', e.message);
+    res.status(500).json({ error: 'No pudimos enviar la prueba a esa impresora' });
+  }
+});
+
+// "No usar": quita el destino y desactiva, identificando la impresora por el
+// nombre de Windows que el dueño ve -- nunca por un id interno.
+app.post('/api/impresion/self-service/quitar', requireAdminSeguro, async (req, res) => {
+  const { terminalId, nombreWindows } = req.body || {};
+  try {
+    const r = await quitarImpresora(req.negocioId, { terminalId, nombreWindows });
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r);
+  } catch (e) {
+    console.error('[Impresion] self-service quitar:', e.message);
+    res.status(500).json({ error: 'No pudimos quitar esa impresora' });
+  }
+});
+
+// De dónde se descarga el instalador de Xabor Edge. La URL vive en una
+// variable de entorno (no en el repo: el binario pesa ~30 MB y se publica
+// aparte). Si no está configurada, el panel lo dice con honestidad en vez de
+// mostrar un botón muerto.
+app.get('/api/impresion/self-service/descarga', requireAdminSeguro, (req, res) => {
+  const url = (process.env.XABOR_EDGE_SETUP_URL || '').trim();
+  res.json({ disponible: Boolean(url), url: url || null });
 });
 
 app.get('/api/impresion/edges', requireAdminSeguro, async (req, res) => {

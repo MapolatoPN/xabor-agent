@@ -147,12 +147,14 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
  * clics seguidos en el panel dejarían dos impresoras iguales y la comanda
  * saldría por duplicado.
  */
-export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, anchoMm, sucursalId = null }) {
+// Upsert de la impresora de Windows, SIN tocar rutas. Es la pieza común de
+// "asignar" y de "probar antes de asignar": para mandar una prueba física no
+// hace falta haber decidido todavía si es Cocina o Caja -- ese es justo el
+// orden que necesita un restaurante con dos impresoras del mismo modelo
+// (imprimir prueba → ver cuál soltó papel → entonces asignar).
+async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm }) {
   if (typeof nombreWindows !== 'string' || !nombreWindows.trim() || nombreWindows.length > NOMBRE_MAX) {
     return { ok: false, error: 'Falta el nombre de la impresora' };
-  }
-  if (!DESTINOS[destino]) {
-    return { ok: false, error: 'Elige para qué se va a usar esta impresora' };
   }
   const columnas = columnasParaMm(anchoMm);
   if (!columnas) return { ok: false, error: 'El ancho de papel tiene que ser 58 mm u 80 mm' };
@@ -166,9 +168,7 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
     [terminalId, negocioId]);
   if (!terminal) return { ok: false, error: 'Ese equipo de impresión no es de este negocio' };
 
-  const sucursal = await resolverSucursal(negocioId, sucursalId || terminal.sucursal_id);
   const nombre = nombreWindows.trim();
-
   const existentes = await listarImpresoras(negocioId);
   const yaExiste = existentes.find(
     (i) => i.terminal_id === terminalId && i.transporte === 'windows_spooler' && i.config?.spoolerNombre === nombre);
@@ -190,6 +190,30 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
       config: { spoolerNombre: nombre },
     });
   }
+  return { ok: true, impresora, sucursalTerminal: terminal.sucursal_id };
+}
+
+/**
+ * Registra (o refresca) una impresora de Windows sin asignarle destino.
+ * Existe para el botón "Imprimir prueba" de una impresora recién detectada:
+ * la prueba necesita una fila en `impresoras`, pero exigir destino ANTES de
+ * la prueba invierte el orden natural de identificación con dos impresoras
+ * del mismo modelo.
+ */
+export async function registrarImpresoraParaPrueba(negocioId, { terminalId, nombreWindows, anchoMm = 58 }) {
+  const r = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm });
+  if (!r.ok) return r;
+  return { ok: true, impresoraId: r.impresora.id };
+}
+
+export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, anchoMm, sucursalId = null }) {
+  if (!DESTINOS[destino]) {
+    return { ok: false, error: 'Elige para qué se va a usar esta impresora' };
+  }
+  const upsert = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm });
+  if (!upsert.ok) return upsert;
+  const impresora = upsert.impresora;
+  const sucursal = await resolverSucursal(negocioId, sucursalId || upsert.sucursalTerminal);
 
   // Ruta por documento. Se limpia primero lo que hubiera para no acumular
   // destinos: si el dueño cambia Cocina→Caja, la comanda no debe seguir
@@ -211,4 +235,38 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
 export async function desactivarImpresora(negocioId, impresoraId) {
   const r = await actualizarImpresora(negocioId, impresoraId, { activa: false });
   return r ? { ok: true } : { ok: false, error: 'Impresora no encontrada' };
+}
+
+/**
+ * "No usar": quita el destino de una impresora identificada por su nombre de
+ * Windows y la desactiva. No borra la fila ni el historial de trabajos --
+ * volver a asignarla después es el mismo upsert de siempre. Es lo que el
+ * panel llama cuando el dueño cambia el destino a "No usar", sin que tenga
+ * que saber qué es un id interno.
+ */
+export async function quitarImpresora(negocioId, { terminalId, nombreWindows }) {
+  if (typeof nombreWindows !== 'string' || !nombreWindows.trim()) {
+    return { ok: false, error: 'Falta el nombre de la impresora' };
+  }
+  const { rows: [terminal] } = await pool.query(
+    `SELECT t.id FROM terminales t
+       JOIN sucursales s ON s.id = t.sucursal_id
+      WHERE t.id = $1 AND s.negocio_id = $2`,
+    [terminalId, negocioId]);
+  if (!terminal) return { ok: false, error: 'Ese equipo de impresión no es de este negocio' };
+
+  const nombre = nombreWindows.trim();
+  const existentes = await listarImpresoras(negocioId);
+  const fila = existentes.find(
+    (i) => i.terminal_id === terminalId && i.transporte === 'windows_spooler' && i.config?.spoolerNombre === nombre);
+  if (!fila) return { ok: false, error: 'Esa impresora no está configurada' };
+
+  const rutas = await listarRutas(negocioId);
+  for (const r of rutas) {
+    if (r.impresora_id === fila.id && r.ambito === 'documento') {
+      await eliminarRuta(negocioId, r.id).catch(() => {});
+    }
+  }
+  await actualizarImpresora(negocioId, fila.id, { activa: false });
+  return { ok: true };
 }
