@@ -45,6 +45,13 @@
 #ifndef Salida
   #define Salida "."
 #endif
+; A que Xabor se conecta este instalador. Por defecto el de verdad; se puede
+; apuntar a otro para PROBAR el canje sin tocar produccion, que es la unica
+; forma de validar una instalacion completa de punta a punta.
+;   /DUrlXabor=http://192.168.1.50:4300
+#ifndef UrlXabor
+  #define UrlXabor "https://xabor.mx"
+#endif
 
 #define AppName "Xabor Edge"
 #define Publisher "Xabor"
@@ -143,7 +150,11 @@ begin
   PaginaVinculo := CreateInputQueryPage(wpWelcome,
     'Conectar con Xabor',
     'Vincula este equipo con tu restaurante',
+#if UrlXabor == "https://xabor.mx"
     'Entra a Xabor, ve a Config -> Impresoras -> Conectar equipo y escribe aqui el codigo que aparece en pantalla. El codigo vence a los pocos minutos.');
+#else
+    'ATENCION: compilacion de PRUEBA. Se conectara a {#UrlXabor}, no a Xabor. No usar en un restaurante.');
+#endif
   PaginaVinculo.Add('Codigo de conexion:', False);
   PaginaVinculo.Add('Nombre de este equipo (opcional):', False);
   PaginaVinculo.Values[1] := 'Caja principal';
@@ -186,7 +197,8 @@ begin
 
   Comando := '"' + ExpandConstant('{tmp}\canjear.mjs') + '"' +
              ' --codigo "' + Trim(PaginaVinculo.Values[0]) + '"' +
-             ' --nombre "' + Trim(PaginaVinculo.Values[1]) + '"';
+             ' --nombre "' + Trim(PaginaVinculo.Values[1]) + '"' +
+             ' --url "{#UrlXabor}"';
 
   if not Exec(ExpandConstant('{tmp}\node.exe'), Comando,
               ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Codigo) then
