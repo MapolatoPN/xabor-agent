@@ -34,6 +34,7 @@ const SCRIPTS = [
   '045-nombre-visible',
   '046-auditoria-actor',
   '048-menu-automatico',
+  '049-whatsapp-coexistence',
 ];
 
 for (const nombre of SCRIPTS) {
