@@ -141,6 +141,10 @@ for (const n of [NEG_A, NEG_B]) {
 await actualizarConfiguracion({ int_wa_phone_id: PNID_A, int_wa_token: 'token-menu-a' }, NEG_A);
 await actualizarConfiguracion({ int_wa_phone_id: PNID_B, int_wa_token: 'token-menu-b' }, NEG_B);
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = TRUE WHERE id IN ($1,$2)`, [NEG_A, NEG_B]);
+// V2 (050): las páginas viven en la tabla hija -- limpiarla SIEMPRE antes
+// que el padre, o el residuo de una corrida anterior hace ver "con imagen"
+// a un negocio que esta suite asume vacío.
+await pool.query(`DELETE FROM whatsapp_menu_imagenes WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM whatsapp_menu_automatico WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187893%'`);
 
@@ -244,13 +248,18 @@ await t('UPLOAD', 'un HTML con extensión .png se rechaza', async () => {
 });
 
 await t('UPLOAD', 'un nombre con ../ no puede escapar de la ruta', async () => {
+  // Fixture V2 (050): se REEMPLAZA la página existente (sin imagenId ahora
+  // se agregaría una segunda página) y las referencias viven en
+  // whatsapp_menu_imagenes. La propiedad bajo prueba es la misma: la
+  // storage_key jamás sale del nombre del usuario.
+  const estado = await api(BASE, RUTA, { cookie: ckAdminA });
   const r = await api(BASE, RUTA + '/imagen', {
     cookie: ckAdminA, method: 'POST',
-    body: { base64: IMAGEN_JPG.toString('base64'), filename: '../../../../etc/passwd.jpg' },
+    body: { base64: IMAGEN_JPG.toString('base64'), filename: '../../../../etc/passwd.jpg', imagenId: estado.body.imagenes[0].id },
   });
   assert.strictEqual(r.status, 200);
   const { rows } = await pool.query(
-    `SELECT storage_key, nombre_archivo FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [NEG_A]);
+    `SELECT storage_key, nombre_archivo FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden LIMIT 1`, [NEG_A]);
   assert.ok(!rows[0].storage_key.includes('..'), 'la storage_key es un UUID, nunca el nombre del usuario');
   assert.ok(!/[\\/]/.test(rows[0].nombre_archivo),
     'sin separadores en el nombre visible no hay travesía posible');
@@ -307,8 +316,9 @@ await t('AISLAMIENTO', 'lo que B guarde no toca lo de A', async () => {
 
   const a = await api(BASE, RUTA, { cookie: ckAdminA });
   assert.deepStrictEqual(a.body.frases, ['menu', 'carta', 'precios'], 'A conserva sus frases');
+  // Fixture V2 (050): las referencias de imagen viven en la tabla hija.
   const { rows } = await pool.query(
-    `SELECT negocio_id, storage_key FROM whatsapp_menu_automatico WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
+    `SELECT negocio_id, storage_key FROM whatsapp_menu_imagenes WHERE negocio_id IN ($1,$2) ORDER BY negocio_id`, [NEG_A, NEG_B]);
   assert.strictEqual(rows.length, 2);
   assert.notStrictEqual(rows[0].storage_key, rows[1].storage_key, 'cada negocio tiene su propio archivo');
 });
@@ -413,17 +423,23 @@ await t('ENVIO', 'el menú queda registrado en la conversación del panel', asyn
 // ─── Reemplazo sin deploy ──────────────────────────────────────────────────
 
 await t('REEMPLAZO', 'al subir un menú nuevo, el siguiente envío usa el nuevo', async () => {
+  // Fixture V2 (multiimagen, migración 050): reemplazar = POST con el
+  // imagenId de la página; sin imagenId ahora se AGREGA una página nueva.
+  // La propiedad bajo prueba (el siguiente envío usa la imagen nueva sin
+  // deploy ni reinicio) es la misma.
+  const estado = await api(BASE, RUTA, { cookie: ckAdminA });
+  const paginaId = estado.body.imagenes[0].id;
   const { rows: [antesFila] } = await pool.query(
-    `SELECT storage_key FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [NEG_A]);
+    `SELECT storage_key FROM whatsapp_menu_imagenes WHERE id = $1 AND negocio_id = $2`, [paginaId, NEG_A]);
 
   const r = await api(BASE, RUTA + '/imagen', {
     cookie: ckAdminA, method: 'POST',
-    body: { base64: IMAGEN_JPG_2.toString('base64'), filename: 'menu-septiembre.jpg' },
+    body: { base64: IMAGEN_JPG_2.toString('base64'), filename: 'menu-septiembre.jpg', imagenId: paginaId },
   });
   assert.strictEqual(r.status, 200);
 
   const { rows: [despuesFila] } = await pool.query(
-    `SELECT storage_key FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [NEG_A]);
+    `SELECT storage_key FROM whatsapp_menu_imagenes WHERE id = $1 AND negocio_id = $2`, [paginaId, NEG_A]);
   assert.notStrictEqual(despuesFila.storage_key, antesFila.storage_key, 'la referencia tiene que cambiar');
 
   // Y lo que se sirve en la vista previa ya es la imagen nueva (400x500).
@@ -435,12 +451,13 @@ await t('REEMPLAZO', 'al subir un menú nuevo, el siguiente envío usa el nuevo'
 // ─── Cuando algo falla ─────────────────────────────────────────────────────
 
 await t('FALLO', 'si la imagen no se puede leer, el cliente recibe un aviso claro', async () => {
-  // Se rompe la referencia a propósito: el objeto ya no existe en el storage.
+  // Fixture V2 (050): las páginas viven en whatsapp_menu_imagenes -- se
+  // rompe la referencia de la PÁGINA a propósito: el objeto ya no existe.
   const { rows: [orig] } = await pool.query(
-    `SELECT storage_key FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [NEG_A]);
+    `SELECT id, storage_key FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden LIMIT 1`, [NEG_A]);
   await pool.query(
-    `UPDATE whatsapp_menu_automatico SET storage_key = $2 WHERE negocio_id = $1`,
-    [NEG_A, 'test/negocios/no-existe/menu/00000000-0000-0000-0000-000000000000.jpg']);
+    `UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`,
+    [orig.id, 'test/negocios/no-existe/menu/00000000-0000-0000-0000-000000000000.jpg']);
 
   const antes = enviados().length;
   await mensajeEntrante(PNID_A, TEL_A, 'menu', 'wamid.MENU-FALLO');
@@ -448,9 +465,15 @@ await t('FALLO', 'si la imagen no se puede leer, el cliente recibe un aviso clar
   const textos = nuevos.filter((m) => m.text).map((m) => m.text.body);
 
   assert.strictEqual(nuevos.filter((m) => m.type === 'image').length, 0, 'no se puede fingir que se mandó');
-  assert.ok(textos.includes(TEXTO_FALLBACK), `esperaba el aviso de fallo, llegó: ${JSON.stringify(textos)}`);
+  // Comportamiento V2 deliberado: si el negocio tiene catálogo, el aviso
+  // honesto viene acompañado del menú TEXTUAL construido del catálogo real
+  // ("No pude enviarte la imagen... te comparto lo principal"); sin
+  // catálogo, sigue siendo TEXTO_FALLBACK. Ambos empiezan con "No pude
+  // enviar" y ninguno finge éxito.
+  assert.ok(textos.some((x) => x.startsWith('No pude enviar')) || textos.includes(TEXTO_FALLBACK),
+    `esperaba el aviso de fallo, llegó: ${JSON.stringify(textos)}`);
 
-  await pool.query(`UPDATE whatsapp_menu_automatico SET storage_key = $2 WHERE negocio_id = $1`, [NEG_A, orig.storage_key]);
+  await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`, [orig.id, orig.storage_key]);
 });
 
 await t('FALLO', 'el servidor sigue vivo después del fallo', async () => {
@@ -509,7 +532,9 @@ await t('PANEL-HTML', 'la sección Menú automático está en Config, junto a Wh
   const i = html.indexOf('<div id="wa-menu"></div>');
   assert.ok(i > 0, 'el contenedor tiene que existir como ELEMENTO, no dentro de un template');
   assert.ok(html.indexOf('<div id="int-form"></div>') > i, 'va antes del formulario de integraciones');
-  for (const f of ['pintarMenuAutomatico', 'subirImagenMenu', 'quitarImagenMenu', 'alternarMenuAutomatico']) {
+  // Fixture V2 (multiimagen): quitarImagenMenu se volvió quitarPaginaMenu
+  // (por página) y se agregaron elegirImagenMenu/moverPaginaMenu.
+  for (const f of ['pintarMenuAutomatico', 'subirImagenMenu', 'quitarPaginaMenu', 'elegirImagenMenu', 'moverPaginaMenu', 'alternarMenuAutomatico']) {
     assert.ok(html.includes(`function ${f}`) || html.includes(`async function ${f}`), `falta ${f}`);
   }
 });
