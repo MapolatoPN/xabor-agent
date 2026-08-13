@@ -1,30 +1,30 @@
 /**
  * menuAutomatico.js — El menú que cada negocio manda por WhatsApp.
  *
- * Antes de esto, el bot mandaba SIEMPRE `public/menu.png`: un archivo dentro
- * del repositorio, servido en una URL pública, idéntico para todos los
- * negocios. Aquí cada negocio tiene el suyo, lo sube desde su panel y lo
- * reemplaza cuando quiere, sin deploy y sin reinicio.
+ * V2 MULTIIMAGEN (migración 050): un menú son 1..N PÁGINAS ordenadas en
+ * whatsapp_menu_imagenes. La imagen única del V1 quedó convertida en la
+ * Página 1 por el backfill; las columnas viejas de
+ * whatsapp_menu_automatico ya no se escriben (quedan como respaldo de
+ * rollback) pero se siguen LEYENDO como último recurso, por si alguna base
+ * corrió el código nuevo sin el backfill.
  *
- * Tres decisiones que conviene tener a la vista:
+ * Principios que este módulo garantiza (misma familia que el P0
+ * transaccional):
  *
- * 1. La imagen viaja a Meta como media privada (buffer -> /media -> media_id),
- *    igual que los documentos PDF y las imágenes de chat. Nunca se le da a
- *    Meta una URL para que la descargue. Ver `leerArchivo` en
- *    almacenamiento.js para el razonamiento completo.
- *
- * 2. NO se cachea el media_id de Meta. Los media_id caducan y, sobre todo,
- *    cachearlos crea el bug clásico: el negocio sube un menú nuevo y sus
- *    clientes siguen recibiendo el viejo. Se sube en cada envío. El costo es
- *    una llamada extra a Meta por solicitud de menú; el beneficio es que
- *    "subí el menú nuevo" significa exactamente eso.
- *
- * 3. La detección es determinista y no gasta IA. Comparar contra una lista de
- *    frases que el negocio controla es predecible y auditable; pedirle al
- *    modelo que decida es caro y no reproducible. Las frases del negocio nunca
- *    se compilan como expresión regular -- se comparan como texto normalizado.
+ * 1. El envío es VERIFICADO: enviarMenuAutomatico devuelve exactamente qué
+ *    páginas se entregaron. Éxito parcial NUNCA se reporta como éxito
+ *    completo, y el texto que ve el cliente lo decide CÓDIGO según el
+ *    resultado real -- jamás una afirmación optimista.
+ * 2. Si las imágenes no salen, el fallback textual se construye desde el
+ *    CATÁLOGO REAL (menu_productos), nunca de la memoria del modelo.
+ * 3. La imagen viaja a Meta como media privada (buffer), sin cachear
+ *    media_id -- mismas razones que el V1 (ver historial del archivo).
+ * 4. La detección es determinista (frases del negocio, normalizadas,
+ *    jamás compiladas como regex crudo).
+ * 5. Estados imposibles no existen: activo exige ≥1 página; borrar la
+ *    última página desactiva el menú de forma explícita.
  */
-import { pool } from './database.js';
+import { pool, obtenerMenuCompleto } from './database.js';
 import { guardarArchivo, leerArchivo, eliminarArchivo } from './almacenamiento.js';
 import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './imagenes.js';
 
@@ -32,6 +32,8 @@ import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './ima
 export function tamanoMaximoBytes() {
   return (Number(process.env.MEDIA_MAX_IMAGE_MB) || 8) * 1024 * 1024;
 }
+
+export const MAX_PAGINAS_MENU = 10;
 
 export const FRASES_POR_DEFECTO = [
   'menu', 'menú', 'carta', 'precios', 'lista de precios',
@@ -95,38 +97,67 @@ export function mensajePideMenu(texto, frases = FRASES_POR_DEFECTO) {
   });
 }
 
-/** Configuración del menú de UN negocio. Nunca devuelve la storage_key. */
+/**
+ * Las páginas del menú de UN negocio, ordenadas. Multi-tenant por
+ * construcción (WHERE negocio_id). Cinturón de compatibilidad: si la tabla
+ * hija está vacía pero la columna V1 tiene imagen (base sin backfill), esa
+ * imagen se presenta como una página virtual 'v1'.
+ */
+async function obtenerPaginas(negocioId) {
+  const { rows } = await pool.query(
+    `SELECT id, storage_key, mime_type, nombre_archivo, tamano_bytes, orden
+       FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden, created_at`,
+    [negocioId]);
+  if (rows.length) return rows;
+  const { rows: [v1] } = await pool.query(
+    `SELECT storage_key, mime_type, nombre_archivo, tamano_bytes
+       FROM whatsapp_menu_automatico WHERE negocio_id = $1 AND storage_key IS NOT NULL`,
+    [negocioId]);
+  if (!v1) return [];
+  return [{ id: 'v1', storage_key: v1.storage_key, mime_type: v1.mime_type, nombre_archivo: v1.nombre_archivo, tamano_bytes: v1.tamano_bytes, orden: 1 }];
+}
+
+/** Configuración del menú de UN negocio. Nunca devuelve storage_keys. */
 export async function obtenerMenuNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
-    `SELECT activo, mime_type, nombre_archivo, tamano_bytes, frases_disparadoras,
-            storage_key IS NOT NULL AS tiene_imagen, updated_at
+    `SELECT activo, frases_disparadoras, updated_at
        FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [negocioId.trim()]);
   const fila = rows[0];
+  const paginas = await obtenerPaginas(negocioId.trim());
+  const imagenes = paginas.map((p, i) => ({
+    id: String(p.id), nombreArchivo: p.nombre_archivo, mimeType: p.mime_type,
+    tamanoBytes: p.tamano_bytes, orden: i + 1,
+  }));
   if (!fila) {
     return {
-      activo: false, tieneImagen: false, nombreArchivo: null, mimeType: null,
-      tamanoBytes: null, frases: FRASES_POR_DEFECTO, actualizadoEn: null,
+      activo: false, tieneImagen: imagenes.length > 0, imagenes,
+      nombreArchivo: imagenes[0]?.nombreArchivo || null, mimeType: imagenes[0]?.mimeType || null,
+      tamanoBytes: imagenes[0]?.tamanoBytes || null, frases: FRASES_POR_DEFECTO, actualizadoEn: null,
     };
   }
   return {
     activo: fila.activo,
-    tieneImagen: fila.tiene_imagen,
-    nombreArchivo: fila.nombre_archivo,
-    mimeType: fila.mime_type,
-    tamanoBytes: fila.tamano_bytes,
+    tieneImagen: imagenes.length > 0,
+    imagenes,
+    // Campos V1 (compatibilidad con consumidores existentes): la primera página.
+    nombreArchivo: imagenes[0]?.nombreArchivo || null,
+    mimeType: imagenes[0]?.mimeType || null,
+    tamanoBytes: imagenes[0]?.tamanoBytes || null,
     frases: fila.frases_disparadoras,
     actualizadoEn: fila.updated_at,
   };
 }
 
-/** Uso interno del bot: sí incluye la storage_key. Nunca sale por HTTP. */
+/** Uso interno del bot: SÍ incluye storage_keys. Nunca sale por HTTP. */
 export async function obtenerMenuParaEnvio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
     `SELECT activo, storage_key, mime_type, nombre_archivo, frases_disparadoras
        FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [negocioId.trim()]);
-  return rows[0] || null;
+  if (!rows[0]) return null;
+  const paginas = await obtenerPaginas(negocioId.trim());
+  return { ...rows[0], imagenes: paginas };
 }
 
 const MAX_FRASES = 40;
@@ -135,8 +166,7 @@ const MAX_LARGO_FRASE = 60;
 /**
  * Las frases son datos del negocio, así que se limpian igual que cualquier
  * entrada: se recortan, se limita cuántas y cuán largas, y se descartan las
- * vacías. Sin límite, una lista enorme convertiría cada mensaje entrante en
- * un barrido caro.
+ * vacías (y los duplicados equivalentes tras normalizar).
  */
 export function sanearFrases(frases) {
   if (!Array.isArray(frases)) return null;
@@ -151,18 +181,22 @@ export function sanearFrases(frases) {
   return limpias;
 }
 
-/** Activa/desactiva y/o reemplaza la lista de frases. No toca la imagen. */
+/** Activa/desactiva y/o reemplaza la lista de frases. No toca las imágenes. */
 export async function guardarConfigMenu(negocioId, { activo, frases }, actorUsuarioId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
   }
-  const actual = await obtenerMenuParaEnvio(negocioId);
+  const { rows: [actual] } = await pool.query(
+    `SELECT activo FROM whatsapp_menu_automatico WHERE negocio_id = $1`, [negocioId.trim()]);
   const nuevoActivo = typeof activo === 'boolean' ? activo : Boolean(actual?.activo);
 
-  // El CHECK de la base lo impediría igual; aquí se traduce a algo que el
-  // negocio pueda entender en vez de un error de Postgres.
-  if (nuevoActivo && !actual?.storage_key) {
-    return { ok: false, error: 'Sube primero la imagen de tu menú para poder activarlo' };
+  // Estado imposible bloqueado en la app (la 050 quitó el CHECK del V1):
+  // activo exige al menos una página real.
+  if (nuevoActivo) {
+    const paginas = await obtenerPaginas(negocioId.trim());
+    if (!paginas.length) {
+      return { ok: false, error: 'Sube al menos una imagen de tu menú para poder activarlo' };
+    }
   }
 
   const frasesLimpias = sanearFrases(frases);
@@ -170,10 +204,6 @@ export async function guardarConfigMenu(negocioId, { activo, frases }, actorUsua
     return { ok: false, error: 'Deja al menos una frase que active el envío del menú' };
   }
 
-  // INSERT o UPDATE explícito, no ON CONFLICT: Postgres evalúa el CHECK
-  // (activo exige imagen) sobre la fila propuesta ANTES de resolver el
-  // conflicto, así que un upsert con activo=TRUE y storage_key sin definir
-  // reventaba aunque la fila que iba a quedar sí tuviera imagen.
   if (actual) {
     await pool.query(
       `UPDATE whatsapp_menu_automatico
@@ -193,11 +223,11 @@ export async function guardarConfigMenu(negocioId, { activo, frases }, actorUsua
 }
 
 /**
- * Guarda la imagen del menú. Valida por magic bytes (nunca por extensión ni
- * por el Content-Type que mande el navegador), comprime, y borra metadatos
- * -- una foto del menú tomada con el celular puede traer GPS del local.
+ * Agrega una PÁGINA nueva al final, o REEMPLAZA una existente
+ * (opciones.imagenId). Valida por magic bytes, comprime y quita metadatos
+ * (EXIF/GPS), igual que el V1.
  */
-export async function guardarImagenMenu(negocioId, buffer, nombreOriginal, actorUsuarioId = null) {
+export async function guardarImagenMenu(negocioId, buffer, nombreOriginal, actorUsuarioId = null, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
   }
@@ -207,109 +237,233 @@ export async function guardarImagenMenu(negocioId, buffer, nombreOriginal, actor
   if (buffer.length > tamanoMaximoBytes()) {
     return { ok: false, error: `La imagen pesa más de ${Math.round(tamanoMaximoBytes() / 1024 / 1024)} MB` };
   }
-
-  // validarImagenReal mira los magic bytes Y decodifica con sharp: un .jpg
-  // que en realidad es un SVG, un HTML o un ZIP no pasa de aquí.
   const validacion = await validarImagenReal(buffer);
   if (!validacion.valido) {
     return { ok: false, error: 'Sube una imagen JPG, PNG o WEBP válida' };
   }
-
-  // comprimirImagen re-encoda siempre a un formato conocido y, al no llamar
-  // .withMetadata(), ya deja el EXIF fuera -- el menu puede ser una foto
-  // tomada en el local y ese EXIF llevaria su GPS. El mime/extension de
-  // salida puede no ser el de entrada (un PNG sin transparencia sale jpg):
-  // se persiste el de SALIDA, que es lo que realmente se va a enviar.
   const comprimida = await comprimirImagen(buffer, validacion.mime);
   const bytes = comprimida.buffer;
-
-  const storageKey = await guardarArchivo(bytes, {
-    negocioId: negocioId.trim(),
-    extension: comprimida.extension,
-    mimeType: comprimida.mime,
-    categoria: 'menu',
-  });
-
-  const anterior = await obtenerMenuParaEnvio(negocioId);
-
-  // El nombre original solo se muestra en el panel y viaja en un header
-  // Content-Disposition; jamas forma parte de la ruta (la ruta es un UUID).
-  // Se reutiliza el saneador que ya existe para las imagenes de chat.
   const nombreVisible = sanitizarNombreImagen(nombreOriginal || 'menu', comprimida.extension);
+  const negocio = negocioId.trim();
 
+  // La fila padre (frases/activo) debe existir para poder activar después.
   await pool.query(
-    `INSERT INTO whatsapp_menu_automatico
-       (negocio_id, storage_key, mime_type, nombre_archivo, tamano_bytes, actualizado_por)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (negocio_id) DO UPDATE SET
-       storage_key = $2, mime_type = $3, nombre_archivo = $4, tamano_bytes = $5,
-       actualizado_por = $6, updated_at = NOW()`,
-    [negocioId.trim(), storageKey, comprimida.mime, nombreVisible, bytes.length, actorUsuarioId]);
+    `INSERT INTO whatsapp_menu_automatico (negocio_id, activo, frases_disparadoras, actualizado_por)
+     VALUES ($1, FALSE, $2::text[], $3) ON CONFLICT (negocio_id) DO NOTHING`,
+    [negocio, FRASES_POR_DEFECTO, actorUsuarioId]);
 
-  // El objeto viejo se borra DESPUÉS de que el nuevo ya está referenciado en
-  // la base: si el borrado falla, sobra un archivo huérfano; si se hiciera al
-  // revés y fallara el INSERT, quedaría una referencia rota.
-  if (anterior?.storage_key && anterior.storage_key !== storageKey) {
-    await eliminarArchivo(anterior.storage_key).catch((e) =>
-      console.error(`[MenuAutomatico] no se pudo borrar la imagen anterior: ${e.message}`));
+  const imagenId = opciones.imagenId || null;
+  if (imagenId) {
+    // REEMPLAZO: la página debe ser de ESTE negocio (tenant-filtered).
+    const { rows: [pagina] } = await pool.query(
+      `SELECT id, storage_key FROM whatsapp_menu_imagenes WHERE id = $1 AND negocio_id = $2`,
+      [imagenId, negocio]);
+    if (!pagina) return { ok: false, error: 'Esa página del menú no existe' };
+    const storageKey = await guardarArchivo(bytes, { negocioId: negocio, extension: comprimida.extension, mimeType: comprimida.mime, categoria: 'menu' });
+    await pool.query(
+      `UPDATE whatsapp_menu_imagenes SET storage_key = $3, mime_type = $4, nombre_archivo = $5, tamano_bytes = $6, updated_at = NOW()
+        WHERE id = $1 AND negocio_id = $2`,
+      [imagenId, negocio, storageKey, comprimida.mime, nombreVisible, bytes.length]);
+    // El objeto viejo se borra DESPUÉS de que el nuevo ya está referenciado.
+    if (pagina.storage_key && pagina.storage_key !== storageKey) {
+      await eliminarArchivo(pagina.storage_key).catch((e) =>
+        console.error(`[MenuAutomatico] no se pudo borrar la imagen anterior: ${e.message}`));
+    }
+    return { ok: true, menu: await obtenerMenuNegocio(negocio) };
   }
 
-  return { ok: true, menu: await obtenerMenuNegocio(negocioId) };
+  // ALTA: nueva página al final, con tope sanitario.
+  const paginas = await obtenerPaginas(negocio);
+  const reales = paginas.filter((p) => p.id !== 'v1');
+  if (reales.length >= MAX_PAGINAS_MENU) {
+    return { ok: false, error: `Un menú puede tener máximo ${MAX_PAGINAS_MENU} páginas` };
+  }
+  const storageKey = await guardarArchivo(bytes, { negocioId: negocio, extension: comprimida.extension, mimeType: comprimida.mime, categoria: 'menu' });
+  const siguienteOrden = reales.length ? Math.max(...reales.map((p) => p.orden)) + 1 : 1;
+  await pool.query(
+    `INSERT INTO whatsapp_menu_imagenes (negocio_id, storage_key, mime_type, nombre_archivo, tamano_bytes, orden)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [negocio, storageKey, comprimida.mime, nombreVisible, bytes.length, siguienteOrden]);
+  await pool.query(
+    `UPDATE whatsapp_menu_automatico SET actualizado_por = $2, updated_at = NOW() WHERE negocio_id = $1`,
+    [negocio, actorUsuarioId]);
+  return { ok: true, menu: await obtenerMenuNegocio(negocio) };
 }
 
-/** Quita la imagen. Desactiva primero, para no violar el CHECK. */
+/**
+ * Quita UNA página. Si era la última, el menú se DESACTIVA de forma segura
+ * (nunca queda activo=true con cero imágenes). El orden restante se
+ * compacta a 1..n.
+ */
+export async function eliminarImagenMenuPagina(negocioId, imagenId, actorUsuarioId = null) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { ok: false, error: 'negocioId inválido' };
+  }
+  const negocio = negocioId.trim();
+  const { rows: [pagina] } = await pool.query(
+    `DELETE FROM whatsapp_menu_imagenes WHERE id = $1 AND negocio_id = $2 RETURNING storage_key`,
+    [imagenId, negocio]);
+  if (!pagina) return { ok: false, error: 'Esa página del menú no existe' };
+  await eliminarArchivo(pagina.storage_key).catch((e) =>
+    console.error(`[MenuAutomatico] no se pudo borrar la imagen: ${e.message}`));
+
+  // Compactar orden 1..n.
+  await pool.query(`
+    WITH renum AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY orden, created_at) AS nuevo
+      FROM whatsapp_menu_imagenes WHERE negocio_id = $1)
+    UPDATE whatsapp_menu_imagenes m SET orden = renum.nuevo
+      FROM renum WHERE m.id = renum.id`, [negocio]);
+
+  const restantes = await obtenerPaginas(negocio);
+  if (!restantes.length) {
+    await pool.query(
+      `UPDATE whatsapp_menu_automatico SET activo = FALSE, actualizado_por = $2, updated_at = NOW() WHERE negocio_id = $1`,
+      [negocio, actorUsuarioId]);
+  }
+  return { ok: true, menu: await obtenerMenuNegocio(negocio) };
+}
+
+/** Reordena las páginas: `ids` debe ser exactamente el conjunto actual. */
+export async function reordenarImagenesMenu(negocioId, ids, actorUsuarioId = null) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { ok: false, error: 'negocioId inválido' };
+  }
+  const negocio = negocioId.trim();
+  const { rows } = await pool.query(
+    `SELECT id FROM whatsapp_menu_imagenes WHERE negocio_id = $1`, [negocio]);
+  const actuales = new Set(rows.map((r) => String(r.id)));
+  const pedidos = Array.isArray(ids) ? ids.map(String) : [];
+  if (pedidos.length !== actuales.size || !pedidos.every((id) => actuales.has(id)) || new Set(pedidos).size !== pedidos.length) {
+    return { ok: false, error: 'El orden recibido no coincide con las páginas actuales' };
+  }
+  for (let i = 0; i < pedidos.length; i++) {
+    await pool.query(
+      `UPDATE whatsapp_menu_imagenes SET orden = $3, updated_at = NOW() WHERE id = $1 AND negocio_id = $2`,
+      [pedidos[i], negocio, i + 1]);
+  }
+  await pool.query(
+    `UPDATE whatsapp_menu_automatico SET actualizado_por = $2, updated_at = NOW() WHERE negocio_id = $1`,
+    [negocio, actorUsuarioId]);
+  return { ok: true, menu: await obtenerMenuNegocio(negocio) };
+}
+
+/** Compatibilidad V1: quita TODAS las páginas y desactiva. */
 export async function eliminarImagenMenu(negocioId, actorUsuarioId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
   }
-  const actual = await obtenerMenuParaEnvio(negocioId);
-  if (!actual?.storage_key) return { ok: true, menu: await obtenerMenuNegocio(negocioId) };
-
+  const negocio = negocioId.trim();
+  const paginas = await obtenerPaginas(negocio);
+  for (const p of paginas.filter((x) => x.id !== 'v1')) {
+    await pool.query(`DELETE FROM whatsapp_menu_imagenes WHERE id = $1 AND negocio_id = $2`, [p.id, negocio]);
+    await eliminarArchivo(p.storage_key).catch(() => {});
+  }
   await pool.query(
     `UPDATE whatsapp_menu_automatico
         SET activo = FALSE, storage_key = NULL, mime_type = NULL,
             nombre_archivo = NULL, tamano_bytes = NULL,
             actualizado_por = $2, updated_at = NOW()
-      WHERE negocio_id = $1`, [negocioId.trim(), actorUsuarioId]);
-
-  await eliminarArchivo(actual.storage_key).catch((e) =>
-    console.error(`[MenuAutomatico] no se pudo borrar la imagen: ${e.message}`));
-
-  return { ok: true, menu: await obtenerMenuNegocio(negocioId) };
-}
-
-/** Los bytes, para la vista previa del panel y para el envío por WhatsApp. */
-export async function leerImagenMenu(negocioId) {
-  const fila = await obtenerMenuParaEnvio(negocioId);
-  if (!fila?.storage_key) return null;
-  const buffer = await leerArchivo(fila.storage_key);
-  return { buffer, mimeType: fila.mime_type || 'image/jpeg', nombre: fila.nombre_archivo || 'menu' };
+      WHERE negocio_id = $1`, [negocio, actorUsuarioId]);
+  return { ok: true, menu: await obtenerMenuNegocio(negocio) };
 }
 
 /**
- * Manda el menú del negocio: primero el texto, después la imagen.
+ * Bytes de UNA página (default: la primera), para preview del panel y para
+ * el envío. imagenId 'v1' lee la columna del V1.
+ */
+export async function leerImagenMenu(negocioId, imagenId = null) {
+  const paginas = await obtenerPaginas(negocioId);
+  if (!paginas.length) return null;
+  const pagina = imagenId ? paginas.find((p) => String(p.id) === String(imagenId)) : paginas[0];
+  if (!pagina) return null;
+  const buffer = await leerArchivo(pagina.storage_key);
+  return { buffer, mimeType: pagina.mime_type || 'image/jpeg', nombre: pagina.nombre_archivo || 'menu' };
+}
+
+/**
+ * Fallback TEXTUAL construido desde el catálogo REAL del negocio -- se usa
+ * cuando las imágenes no pudieron enviarse. Jamás inventa categorías,
+ * productos ni precios: si el catálogo está vacío, devuelve null y el
+ * llamador usa el aviso genérico.
+ */
+export async function menuTextualDesdeCatalogo(negocioId) {
+  try {
+    const categorias = await obtenerMenuCompleto(negocioId);
+    if (!Array.isArray(categorias) || !categorias.length) return null;
+    let texto = '';
+    for (const cat of categorias) {
+      const disponibles = (cat.productos || []).filter((p) => p.disponible && !p.agotado);
+      if (!disponibles.length) continue;
+      texto += `\n*${cat.nombre}*\n`;
+      for (const p of disponibles) {
+        texto += `• ${p.nombre} — $${p.precio}\n`;
+        if (texto.length > 1500) return texto.trim() + '\n…';
+      }
+    }
+    return texto.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Manda el menú COMPLETO del negocio: el texto de acompañamiento y después
+ * TODAS las páginas en su orden configurado.
  *
- * Si la imagen falla NO se finge éxito -- se manda un aviso claro y se
- * devuelve `ok: false` para que el llamador lo registre. Un cliente que
- * pregunta por el menú y no recibe nada es peor que uno que recibe "ahora
- * no puedo, te ayudamos en un momento".
- *
- * Devuelve qué se envió realmente, para que el webhook pueda guardar los
- * mensajes salientes sin adivinar.
+ * Contrato de honestidad (P0): el resultado dice exactamente qué se envió.
+ *  - Todas las páginas OK  → { ok: true, enviadas: N }
+ *  - Falla alguna página   → reintento único por página; si persiste,
+ *    ok: false con `enviadas`/`fallidas`, y el CLIENTE recibe un aviso
+ *    redactado por código: parcial ("te llegaron X de Y") o, si no salió
+ *    ninguna, el menú TEXTUAL del catálogo real (si existe) o el aviso
+ *    genérico. Jamás se afirma "aquí está el menú" sin evidencia de envío.
  */
 export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, enviarTexto, enviarImagenBuffer }) {
   const fila = await obtenerMenuParaEnvio(negocioId);
-  if (!fila?.storage_key) return { ok: false, motivo: 'sin_imagen', textoEnviado: null };
+  const paginas = fila?.imagenes || [];
+  if (!paginas.length) return { ok: false, motivo: 'sin_imagen', textoEnviado: null, enviadas: 0, fallidas: [] };
 
   await enviarTexto(telefono, TEXTO_ACOMPANA, credenciales);
 
-  try {
-    const { buffer, mimeType, nombre } = await leerImagenMenu(negocioId);
-    await enviarImagenBuffer(telefono, buffer, nombre, mimeType, '', credenciales);
-    return { ok: true, motivo: null, textoEnviado: TEXTO_ACOMPANA };
-  } catch (e) {
-    console.error(`[MenuAutomatico] no se pudo enviar el menú del negocio ${negocioId}: ${e.message}`);
-    await enviarTexto(telefono, TEXTO_FALLBACK, credenciales).catch(() => {});
-    return { ok: false, motivo: 'error_envio', textoEnviado: TEXTO_ACOMPANA, textoFallback: TEXTO_FALLBACK };
+  let enviadas = 0;
+  const fallidas = [];
+  for (let i = 0; i < paginas.length; i++) {
+    const pagina = paginas[i];
+    let exito = false;
+    for (let intento = 1; intento <= 2 && !exito; intento++) { // 1 reintento seguro, nunca un loop
+      try {
+        const leida = await leerImagenMenu(negocioId, pagina.id);
+        if (!leida) throw new Error('página ilegible');
+        await enviarImagenBuffer(telefono, leida.buffer, leida.nombre, leida.mimeType, '', credenciales);
+        exito = true;
+      } catch (e) {
+        if (intento === 2) {
+          console.error(`[MenuAutomatico] página ${i + 1}/${paginas.length} del negocio ${negocioId} no se pudo enviar: ${e.message}`);
+        }
+      }
+    }
+    if (exito) enviadas++; else fallidas.push(i + 1);
   }
+
+  if (!fallidas.length) {
+    return { ok: true, motivo: null, textoEnviado: TEXTO_ACOMPANA, enviadas, fallidas: [] };
+  }
+
+  // Éxito parcial o total: el cliente recibe la VERDAD, redactada por código.
+  let textoFallback;
+  if (enviadas > 0) {
+    textoFallback = `Te llegaron ${enviadas} de ${paginas.length} páginas del menú; en un momento te compartimos el resto. Una disculpa.`;
+  } else {
+    const textual = await menuTextualDesdeCatalogo(negocioId);
+    textoFallback = textual
+      ? `No pude enviarte la imagen del menú en este momento, pero te comparto lo principal:\n${textual}`
+      : TEXTO_FALLBACK;
+  }
+  await enviarTexto(telefono, textoFallback, credenciales).catch(() => {});
+  console.error(`[MenuAutomatico] envío ${enviadas ? 'PARCIAL' : 'FALLIDO'} del menú del negocio ${negocioId}: ${enviadas}/${paginas.length} páginas (fallidas: ${fallidas.join(',')})`);
+  return {
+    ok: false, motivo: enviadas > 0 ? 'envio_parcial' : 'error_envio',
+    textoEnviado: TEXTO_ACOMPANA, textoFallback, enviadas, fallidas,
+  };
 }

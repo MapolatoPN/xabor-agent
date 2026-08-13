@@ -60,6 +60,7 @@ export const ORDEN_MIGRACIONES = [
   '046_auditoria_actor_negocio.sql',
   '048_whatsapp_menu_automatico.sql',
   '049_whatsapp_coexistence.sql',
+  '050_menu_multiimagen.sql',
 ];
 
 export async function aplicarMigraciones(hastaIndice = ORDEN_MIGRACIONES.length) {
