@@ -95,6 +95,14 @@ for (const [tipo, habilitado, orden] of [['efectivo', true, 0], ['enlace_pago', 
 await guardarCredencialesClip(SEED.negocioA, 'CLIP_KEY_ENLACE_TEST', 'CLIP_SECRET_ENLACE_TEST', SEED.superadminUsuarioId);
 await marcarProveedorPrincipal(SEED.negocioA, 'clip', SEED.superadminUsuarioId);
 
+// Higiene entre corridas: los folios de esta suite son FIJOS (XAB-92xx y
+// XAB-93xx) y la referencia_interna de pagos se deriva del folio+contenido,
+// así que una corrida anterior deja pagos/pedidos que chocan con el UNIQUE
+// (negocio_id, referencia_interna) y desvían el flujo de "pago pendiente".
+// Se parte siempre sin rastros del namespace de la suite.
+await pool.query(`DELETE FROM pagos WHERE negocio_id = $1 AND pedido_folio LIKE 'XAB-9%'`, [SEED.negocioA]);
+await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE 'XAB-9%'`, [SEED.negocioA]);
+
 const metaMock = await arrancarMetaMock();
 const anthropicMock = await arrancarAnthropicMock();
 // Cola generosa de respuestas del "Claude" simulado: en el estado ROTO el

@@ -38,6 +38,17 @@ async function crearNegocio(slug, nombre) {
 const CARNITAS = await crearNegocio('carnitas-mock', 'Carnitas Mock');
 const OTRO     = await crearNegocio('otro-mock', 'Otro Restaurante Mock');
 
+// Higiene entre corridas: los negocios de esta suite son PERSISTENTES (por
+// slug) y tanto esta suite como la e2e les crean integraciones
+// pn-carnitas-<timestamp> que quedaban vivas -- la siguiente corrida veía
+// "conectado" a un negocio que sus casos asumen sin conectar. Se parte
+// siempre de cero integraciones whatsapp para ambos.
+await pool.query(
+  `DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN
+     (SELECT id FROM integraciones_canal WHERE negocio_id = ANY($1) AND canal = 'whatsapp')`,
+  [[CARNITAS, OTRO]]);
+await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = ANY($1)`, [[CARNITAS, OTRO]]);
+
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 const BASE = `http://localhost:${PUERTO}`;
 
