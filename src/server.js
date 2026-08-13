@@ -19,7 +19,8 @@ import {
   obtenerTodosPedidosParaWebSocketLegacy,
   setWsBroadcast,
   setWsBroadcastSuperadmin,
-  cargarPedidosDesdeDB
+  cargarPedidosDesdeDB,
+  confirmarPedidoPendientePago
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -45,7 +46,7 @@ import { resolverProductoConModificadores, ModificadoresError } from './services
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
-import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
+import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
@@ -1695,6 +1696,10 @@ app.post('/webhook/clip', async (req, res) => {
       }
       await confirmarPagoIdempotente(pago.id, { referenciaExterna: pago.referencia_externa });
       await confirmarPagoPedido(folioWebhook, negocioIdWebhook);
+      // P0 (anticipo estructurado): si el pedido nació pendiente_pago, el
+      // pago re-verificado es LA autorización -- aquí (y solo aquí) se
+      // confirma y se emite la comanda que el gate venía bloqueando.
+      await confirmarPedidoPendientePago(folioWebhook, negocioIdWebhook);
       broadcastNegocio(negocioIdWebhook, { tipo: 'pago_confirmado', pedidoId: folioWebhook, proveedor: 'clip' });
       console.log(`[Clip] ✅ Pago confirmado (re-verificado) para pedido ${folioWebhook}, negocio ${negocioIdWebhook}`);
       return;
@@ -1714,6 +1719,7 @@ app.post('/webhook/clip', async (req, res) => {
     const pedido = obtenerPedidoPorId(ref);
     if (pedido?.negocioId) {
       await confirmarPagoPedido(ref, pedido.negocioId);
+      await confirmarPedidoPendientePago(ref, pedido.negocioId); // P0: mismo gate que el camino nuevo
       broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
       console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref} (camino legacy)`);
     } else {
@@ -5045,7 +5051,9 @@ app.post('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('w
       return res.status(413).json({ error: `La imagen pesa más de ${Math.round(menuTamanoMaximoBytes() / 1024 / 1024)} MB` });
     }
     try {
-      const r = await guardarImagenMenu(req.negocioId, buffer, filename, req.usuarioId);
+      // Multiimagen (050): sin imagenId agrega una PÁGINA nueva al final;
+      // con imagenId reemplaza esa página (verificada como del negocio).
+      const r = await guardarImagenMenu(req.negocioId, buffer, filename, req.usuarioId, { imagenId: req.body?.imagenId || null });
       if (!r.ok) return res.status(400).json({ error: r.error });
       res.json(r.menu);
     } catch (e) {
@@ -5053,6 +5061,49 @@ app.post('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('w
       res.status(500).json({ error: 'No pudimos guardar la imagen de tu menú' });
     }
   });
+
+// Multiimagen (050): quitar UNA página. Si era la última, el servicio
+// desactiva el menú de forma segura (jamás activo con cero imágenes).
+app.delete('/api/config/whatsapp/menu/imagen/:imagenId', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const r = await eliminarImagenMenuPagina(req.negocioId, req.params.imagenId, req.usuarioId);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r.menu);
+  } catch (e) {
+    console.error('[Menu WA] eliminar página:', e.message);
+    res.status(500).json({ error: 'No pudimos quitar esa página del menú' });
+  }
+});
+
+// Multiimagen (050): reordenar páginas. `ids` debe ser exactamente el
+// conjunto actual de páginas del negocio (el servicio lo valida).
+app.post('/api/config/whatsapp/menu/imagenes/orden', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const r = await reordenarImagenesMenu(req.negocioId, req.body?.ids, req.usuarioId);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r.menu);
+  } catch (e) {
+    console.error('[Menu WA] reordenar páginas:', e.message);
+    res.status(500).json({ error: 'No pudimos reordenar las páginas del menú' });
+  }
+});
+
+// Multiimagen (050): vista previa de UNA página específica (misma política
+// que la vista previa clásica: bytes por el backend, jamás una URL del
+// bucket; el id se resuelve SIEMPRE dentro del negocio de la sesión).
+app.get('/api/config/whatsapp/menu/imagen/:imagenId', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const imagen = await leerImagenMenu(req.negocioId, req.params.imagenId);
+    if (!imagen) return res.status(404).json({ error: 'Esa página del menú no existe' });
+    res.setHeader('Content-Type', imagen.mimeType);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Disposition', `inline; filename="${String(imagen.nombre).replace(/[\/"]/g, '_')}"`);
+    res.send(imagen.buffer);
+  } catch (e) {
+    console.error('[Menu WA] vista previa de página:', e.message);
+    res.status(500).json({ error: 'No pudimos mostrar esa página' });
+  }
+});
 
 app.delete('/api/config/whatsapp/menu/imagen', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
   try {
@@ -6985,11 +7036,16 @@ app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, r
     costo_envio: 60,
     descuento: 0,
     total: 544,
-    canal: 'test',
+    canal: 'prueba_admin',
     negocioId: req.negocioId
   };
   try {
-    const pedido = await registrarPedido(ordenPrueba, 'test');
+    // P0: canal 'prueba_admin', NO 'test'. 'test' es un canal cuyo JSON lo
+    // redacta un LLM y pasa por el validador transaccional; esta ruta es
+    // una herramienta interna YA autenticada como admin con items fijos
+    // sintéticos -- no es una propuesta del modelo y no debe (ni puede)
+    // resolverse contra el menú de cada negocio.
+    const pedido = await registrarPedido(ordenPrueba, 'prueba_admin');
     emitirPedido(pedido);
     res.json({ ok: true, pedido });
   } catch (e) {
@@ -7036,6 +7092,17 @@ async function activarPedidosProgramados() {
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
       await guardarPedidoActivo(pedido, pedido.negocioId);
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
+
+      // P0 Invariante 4 (mismo gate que emitirPedido): un pedido programado
+      // que nació pendiente de anticipo y llega a su hora SIN pago validado
+      // se activa en el panel pero NO emite comanda ni impresión -- la
+      // comanda saldrá cuando el webhook de pago lo confirme.
+      if (pedido.estado === 'pendiente_pago') {
+        console.warn(`[TXN] evento=comanda_bloqueada_pendiente_pago negocio=${pedido.negocioId} folio=${pedido.id} origen=scheduler`);
+        broadcastNegocio(pedido.negocioId, { tipo: 'pedido_pendiente_pago', pedido });
+        await marcarPedidoProgramadoActivado(row.folio);
+        continue;
+      }
 
       // Mismo orden y misma autoridad que emitirPedido(): Edge primero, y el
       // panel se entera de si ya se hizo cargo. Un pedido programado que se

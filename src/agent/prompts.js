@@ -153,7 +153,10 @@ export async function obtenerPagoAceptadoReal(negocioId) {
 // Fase A: negocioId obligatorio. Sin él, o si el JSON guardado está
 // corrupto/incompleto, se usa el default seguro -- nunca las reglas de
 // otro negocio, nunca un objeto parcial que rompa el prompt.
-async function cargarReglas(negocioId) {
+// Exportada para validadorOrden.js (P0): el backend valida promos/envío/
+// totales contra las MISMAS reglas que alimentan al prompt -- una sola
+// fuente, nunca dos interpretaciones.
+export async function cargarReglas(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return REGLAS_POR_DEFECTO;
   try {
     const cfg = await obtenerConfiguracion(negocioId);
@@ -205,7 +208,8 @@ function formatearMenu(categorias) {
   return texto;
 }
 
-function obtenerEstadoRestaurante(reglas) {
+// Exportada para validadorOrden.js (P0) -- misma razón que cargarReglas.
+export function obtenerEstadoRestaurante(reglas) {
   const ahora = new Date();
   // Hora de México (Matamoros: CDT=UTC-5 en verano, CST=UTC-6 en invierno)
   const horaMX = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Matamoros' }));
@@ -715,9 +719,18 @@ Cuando alguien pida el menú por WhatsApp, responde brevemente con algo natural 
 
 Si el canal es VOZ (la sesión empieza con "call-"), NO uses <ENVIAR_MENU>. En su lugar describe el menú brevemente en texto corrido, mencionando las categorías principales y 2 o 3 productos destacados con sus precios. Termina ofreciendo más detalles de lo que le interese.
 
+${(cfg.modo_pedidos || 'transaccional') === 'solicitud' ? `## MODO SOLICITUD — ESTE NEGOCIO NO CONFIRMA PEDIDOS POR CHAT
+Este negocio trabaja sobre pedido/cotización: TÚ NUNCA confirmas pedidos ni transacciones.
+- Recopila con naturalidad: qué necesita el cliente, cantidades, fecha, dirección, datos de contacto y observaciones.
+- NUNCA digas que un pedido "está confirmado", "registrado", "ya quedó", "se está preparando" ni equivalentes.
+- NUNCA prometas producción, entrega, horarios comprometidos ni precios finales.
+- Cierra siempre diciendo que la solicitud queda ANOTADA y que el equipo la confirmará directamente con el cliente.
+- NO emitas NUNCA el bloque <ORDEN_CONFIRMADA>.
+
 ## FORMATO DE RESPUESTA
+Responde siempre de forma conversacional y natural.` : `## FORMATO DE RESPUESTA
 Responde siempre de forma conversacional y natural.
-Cuando el cliente confirme el pedido final, emite un bloque JSON con este formato exacto al FINAL de tu respuesta:
+Cuando el cliente confirme el pedido final, emite un bloque JSON con este formato exacto al FINAL de tu respuesta. IMPORTANTE: ese bloque es una PROPUESTA — el sistema la valida contra el menú y los precios reales y es el SISTEMA quien decide y confirma el registro del pedido al cliente. NUNCA afirmes por tu cuenta que el pedido "ya está registrado/confirmado": di que lo estás registrando y deja que el sistema lo confirme.
 
 <ORDEN_CONFIRMADA>
 {
@@ -747,7 +760,7 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
 }
 </ORDEN_CONFIRMADA>
 
-No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.
+No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.`}
 ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.contenido).join('\n') : ''}`;
 }
 

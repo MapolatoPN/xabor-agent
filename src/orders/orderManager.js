@@ -7,8 +7,10 @@ import {
   archivarPedidoActivo,
   obtenerPedidosActivos,
   obtenerMaxFolioNum,
-  eliminarPedido as eliminarPedidoDB
+  eliminarPedido as eliminarPedidoDB,
+  obtenerConfiguracion
 } from '../services/database.js';
+import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
 import { emitirComandaDePedidoPorEdge } from '../printing/edgeComanda.js';
 import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
@@ -33,6 +35,11 @@ let contadorPedidos = 1;
 // realidad, y en ese caso es preferible fallar explícito
 // (FOLIO_NO_DISPONIBLE) que girar sin límite dentro de un webhook.
 const MAX_REINTENTOS_FOLIO = 20;
+
+// Canales cuya orden la redacta un LLM (P0): son los únicos que pasan por
+// el validador transaccional dentro de registrarPedido. 'test' cubre el
+// canal de simulación/chat de prueba, que usa el mismo marcador.
+const CANALES_ORDEN_LLM = new Set(['whatsapp', 'voz', 'test']);
 
 export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
@@ -147,12 +154,58 @@ export async function registrarPedido(orden, canal = 'test') {
   }
   const negocioId = orden.negocioId.trim();
 
+  // ── P0 Seguridad transaccional: EL LLM PROPONE, XABOR AUTORIZA ──
+  // Para los canales cuyo JSON de orden lo redacta el MODELO (WhatsApp,
+  // voz y el canal de prueba), la orden es una PROPUESTA: aquí, dentro de
+  // la única puerta de creación de pedidos, se valida contra el catálogo
+  // real del negocio y se reemplaza por su forma canónica (producto_id,
+  // precios y totales del backend). Este gate es independiente del caller
+  // y del prompt: aunque el modelo invente productos, precios o
+  // descuentos, no pasan de aquí. Rappi/POS/meseros NO entran por este
+  // gate: sus items no los redacta un LLM (Rappi manda su propio payload
+  // verificado; el POS construye items desde IDs reales del panel) y
+  // tienen sus propias validaciones.
+  let estadoInicial = 'nuevo';
+  if (CANALES_ORDEN_LLM.has(canal)) {
+    const cfg = await obtenerConfiguracion(negocioId).catch(() => ({}));
+
+    // Invariante 7: un negocio en modo solicitud jamás llega a pedido
+    // transaccional por el agente, emita lo que emita el modelo.
+    if ((cfg.modo_pedidos || 'transaccional') === 'solicitud') {
+      eventoTxn('pedido_bloqueado_modo_solicitud', negocioId, { canal });
+      const err = new Error('MODO_SOLICITUD: este negocio no confirma pedidos por el agente — la orden se trata como solicitud');
+      err.codigo = 'MODO_SOLICITUD';
+      throw err;
+    }
+
+    const v = await validarOrdenPropuesta(orden, negocioId);
+    if (!v.ok) {
+      const err = new Error(`ORDEN_INVALIDA: ${v.rechazos.map((r) => r.codigo + (r.nombre ? `(${r.nombre})` : '')).join(', ')}`);
+      err.codigo = 'ORDEN_INVALIDA';
+      err.rechazos = v.rechazos;
+      throw err;
+    }
+    // La orden canónica REEMPLAZA a la propuesta: de aquí en adelante los
+    // nombres/precios/totales son los del backend, no los del modelo.
+    orden = { ...v.orden, negocioId };
+    orden.ajustesValidacion = v.ajustes.length ? v.ajustes : undefined;
+
+    // Invariante 3: anticipo estructurado. Si el negocio lo exige, el
+    // pedido NACE pendiente_pago y no puede confirmarse ni generar
+    // comanda hasta que el pago se valide (ver emitirPedido y
+    // confirmarPedidoPendientePago).
+    if (String(cfg.pedido_requiere_anticipo || '').toLowerCase() === 'true') {
+      estadoInicial = 'pendiente_pago';
+      eventoTxn('pedido_nace_pendiente_pago', negocioId, { canal, total: orden.total });
+    }
+  }
+
   const base = {
     ...orden,
     negocioId,
     canal,
     timestamp: new Date().toISOString(),
-    estado: 'nuevo'
+    estado: estadoInicial
   };
 
   // Persistencia inicial ANTES de tocar el estado en memoria: si falla de
@@ -215,6 +268,19 @@ export async function registrarPedido(orden, canal = 'test') {
 export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 export async function emitirPedido(pedido) {
+  // ── P0 Invariante 4: la comanda está detrás del gate de pago ──
+  // Un pedido pendiente_pago NUNCA emite comanda, ni impresión, ni oferta
+  // a repartidores, aunque un bug del prompt o un caller equivocado llame
+  // aquí directo. El panel recibe un evento distinto para poder mostrarlo
+  // como pendiente sin tratarlo como comanda.
+  if (pedido.estado === 'pendiente_pago') {
+    eventoTxn('comanda_bloqueada_pendiente_pago', pedido.negocioId || '(sin negocio)', { folio: pedido.id });
+    if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim() && wsBroadcastNegocio) {
+      wsBroadcastNegocio(pedido.negocioId, { tipo: 'pedido_pendiente_pago', pedido });
+    }
+    return { seHizoCargo: false, bloqueadoPorPago: true };
+  }
+
   // PRIMERO Edge, DESPUÉS el panel. El orden no es estético: el evento que
   // recibe el panel tiene que decir la verdad sobre si el papel ya está en
   // camino, y eso solo se sabe cuando el trabajo existe. Avisar antes
@@ -413,6 +479,24 @@ export function obtenerPedidoPorId(id, negocioId) {
   if (typeof negocioId === 'string' && negocioId.trim() && pedido.negocioId !== negocioId.trim()) {
     return undefined;
   }
+  return pedido;
+}
+
+// ── P0: única transición autorizada pendiente_pago → confirmado ─────────────
+// La invoca EXCLUSIVAMENTE el flujo de pagos (webhook de la pasarela ya
+// re-verificado contra el proveedor, o conciliación) -- nunca el LLM, nunca
+// el cliente. Es idempotente: un pedido que ya no está pendiente_pago no se
+// re-emite. Al confirmar: estado 'nuevo' (entra al flujo normal de cocina)
+// y AHORA SÍ se emite la comanda que el gate de emitirPedido venía
+// bloqueando.
+export async function confirmarPedidoPendientePago(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const pedido = pedidos.find(p => p.id === folio);
+  if (!pedido || pedido.negocioId !== negocioId.trim()) return null;
+  if (pedido.estado !== 'pendiente_pago') return null; // idempotente
+  eventoTxn('transicion_pendiente_pago_confirmado', negocioId, { folio });
+  _persistirCambioEstado(pedido, 'nuevo');
+  await emitirPedido(pedido);
   return pedido;
 }
 

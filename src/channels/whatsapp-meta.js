@@ -27,6 +27,8 @@ import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidor
 import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
+import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
+import { agregarMensaje } from '../agent/session.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -889,7 +891,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     //
     // No gasta una llamada a la IA para decidir si alguien pidió el menú.
     const menuCfg = await obtenerMenuParaEnvio(negocioId);
-    if (menuCfg?.activo && menuCfg.storage_key && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
+    if (menuCfg?.activo && menuCfg.imagenes?.length && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
       const envio = await enviarMenuAutomatico({
         negocioId, telefono, credenciales,
         enviarTexto: enviarMensaje,
@@ -899,13 +901,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoEnviado, negocioId, 'bot');
       }
       if (envio.ok) {
-        await guardarMensaje(telefono, nombreMeta, 'saliente', '📷 Menú', negocioId, 'bot');
-        console.log(`[Menu WA] Menú enviado a ${telefono} (negocio ${negocioId})`);
+        await guardarMensaje(telefono, nombreMeta, 'saliente', `📷 Menú (${envio.enviadas} página${envio.enviadas === 1 ? '' : 's'})`, negocioId, 'bot');
+        console.log(`[Menu WA] Menú enviado a ${telefono} (negocio ${negocioId}) — ${envio.enviadas} páginas`);
       } else {
         if (envio.textoFallback) {
           await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoFallback, negocioId, 'bot');
         }
-        console.error(`[Menu WA] No se pudo enviar el menú a ${telefono} (negocio ${negocioId}): ${envio.motivo}`);
+        console.error(`[Menu WA] No se pudo enviar el menú completo a ${telefono} (negocio ${negocioId}): ${envio.motivo} (${envio.enviadas || 0} enviadas)`);
       }
       return;
     }
@@ -949,20 +951,33 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     const resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId, telefono);
     clearTimeout(waitTimer);
 
-    // Detección de confirmación verbal sin JSON — alerta al admin
-    // Si el bot dice "confirmado/registrado" pero no emitió <ORDEN_CONFIRMADA>, algo falló
+    // ── P0: red secundaria contra la confirmación verbal falsa ──
+    // Si el bot AFIRMA que hay pedido pero no emitió <ORDEN_CONFIRMADA>,
+    // NO puede quedar como éxito: (1) regex amplio que cubre las
+    // variantes reales del incidente ("tu pedido ESTÁ registrado"),
+    // (2) log estructurado + evento al panel y al Superadmin (la ausencia
+    // de wa_admin_numero ya no vuelve invisible la anomalía), (3) el
+    // CLIENTE recibe una aclaración honesta de que su pedido aún no está
+    // registrado -- nunca se queda creyendo en una confirmación falsa.
     if (!resultado.orden) {
       const textoBot = resultado.texto || '';
-      const pareceConfirmacion = /pedido\s+(confirmado|registrado|listo|anotado|quedó)|quedó\s+registrado|queda\s+registrado/i.test(textoBot);
+      const pareceConfirmacion =
+        /(?:tu\s+)?(?:pedido|orden)\s+(?:está|esta|quedó|quedo|queda|fue|ya\s+está|ya\s+esta)?\s*(?:confirmad|registrad|anotad|procesad|list[oa])/i.test(textoBot) ||
+        /ya\s+qued(?:ó|o)\s+(?:tu\s+)?(?:pedido|orden)/i.test(textoBot) ||
+        /(?:pedido|orden)\s+confirmad/i.test(textoBot) ||
+        /se\s+est(?:á|a)\s+preparando\s+tu\s+(?:pedido|orden)/i.test(textoBot);
       if (pareceConfirmacion) {
-        console.error(`[WA] ⚠️ ALERTA: bot confirmó verbalmente a ${telefono} pero no generó <ORDEN_CONFIRMADA>. Texto: ${textoBot.slice(0, 200)}`);
-        // Fase A: admin propio de este negocio, credenciales propias --
-        // nunca el admin/caché global.
+        console.error(`[TXN] evento=confirmacion_verbal_sin_orden negocio=${negocioId} telefono=***${telefono.slice(-4)}`);
+        if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'alerta_transaccional', subtipo: 'confirmacion_verbal_sin_orden', telefono: `***${telefono.slice(-4)}` });
+        if (wsBroadcastSuperadmin) wsBroadcastSuperadmin({ tipo: 'alerta_transaccional', subtipo: 'confirmacion_verbal_sin_orden', negocioId });
         obtenerConfiguracion(negocioId).then(cfg => {
           if (cfg.wa_admin_numero) {
             enviarMensaje(cfg.wa_admin_numero, `⚠️ *Pedido perdido posible*: el bot le dijo a un cliente que su pedido quedó registrado, pero no generó la orden. Teléfono: ${telefono}. Revisar chat ahora.`, credenciales).catch(() => {});
           }
         }).catch(() => {});
+        // Aclaración honesta redactada por CÓDIGO -- el cliente nunca se
+        // queda con una confirmación que el sistema no respalda.
+        resultado.texto = `${resultado.texto}\n\n_Nota: tu pedido aún no queda registrado en nuestro sistema; en un momento te lo confirmamos._`;
       }
     }
 
@@ -987,23 +1002,56 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       resultado.orden.telefono_conversacion = telefono;
       let pedido;
       try {
+        // P0: registrarPedido es el gate transaccional -- valida los items
+        // contra el catálogo real, recalcula precios/totales y aplica la
+        // política de anticipo. Lo que devuelve es la verdad; lo que decía
+        // el JSON del modelo deja de importar aquí.
         pedido = await registrarPedido(resultado.orden, 'whatsapp');
       } catch (e) {
-        console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
-        await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
-        return;
+        if (e.codigo === 'ORDEN_INVALIDA') {
+          // Producto inexistente/agotado, forma de pago inválida, etc.
+          // La respuesta al cliente la redacta CÓDIGO (honesta, sin
+          // confirmar nada) y reemplaza al texto del modelo, que muy
+          // probablemente afirmaba lo contrario. La sesión recibe la
+          // corrección para que el modelo no "recuerde" un pedido que no
+          // existe.
+          console.error(`[TXN] evento=orden_rechazada negocio=${negocioId} motivos=${(e.rechazos || []).map(r => r.codigo).join(',')}`);
+          if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'alerta_transaccional', subtipo: 'orden_rechazada', motivos: (e.rechazos || []).map(r => r.codigo) });
+          resultado.texto = mensajeRechazoParaCliente(e.rechazos || []);
+          agregarMensaje(sessionId, 'assistant', `[SISTEMA] El pedido NO fue registrado. Motivos: ${(e.rechazos || []).map(r => `${r.codigo}${r.nombre ? ` (${r.nombre})` : ''}`).join(', ')}. No afirmes que existe un pedido; ofrece alternativas reales del menú.`);
+          resultado.orden = null;
+        } else if (e.codigo === 'MODO_SOLICITUD') {
+          // Negocio en modo solicitud: el marcador del modelo (que no
+          // debió emitirse) se degrada a una SOLICITUD anotada -- nunca a
+          // un pedido. El equipo se entera por el panel y por WhatsApp
+          // administrativo si existe.
+          if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'solicitud_capturada', telefono: `***${telefono.slice(-4)}` });
+          obtenerConfiguracion(negocioId).then(cfg => {
+            if (cfg.wa_admin_numero) {
+              enviarMensaje(cfg.wa_admin_numero, `📝 *Nueva solicitud por WhatsApp*: un cliente dejó una solicitud de pedido/servicio. Teléfono: ${telefono}. Revisar chat para confirmar con el cliente.`, credenciales).catch(() => {});
+            }
+          }).catch(() => {});
+          resultado.texto = 'Tu solicitud quedó anotada con todos los detalles. ✍️ Nuestro equipo la revisará y se comunicará contigo para confirmar disponibilidad, precio y condiciones. ¡Gracias!';
+          agregarMensaje(sessionId, 'assistant', '[SISTEMA] Este negocio no confirma pedidos por chat. La solicitud quedó anotada para revisión del equipo; no afirmes que existe un pedido confirmado.');
+          resultado.orden = null;
+        } else {
+          console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
+          await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
+          return;
+        }
       }
+      if (pedido) {
 
       // Si es pedido programado, guardarlo aparte y NO enviarlo al panel todavía
-      if (resultado.orden.programado_para) {
-        await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
+      if (pedido.programado_para) {
+        await guardarPedidoProgramado(pedido.id, pedido, pedido.programado_para);
         // Quitar del panel activo — se activará automáticamente 1h antes
         const { eliminarPedido } = await import('../orders/orderManager.js');
         await eliminarPedido(pedido.id, pedido.negocioId);
-        console.log(`[WA] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+        console.log(`[WA] Pedido programado ${pedido.id} para ${pedido.programado_para}`);
         // Confirmación al cliente con folio y hora — operación crítica
         try {
-          const horaLocal = new Date(resultado.orden.programado_para).toLocaleTimeString('es-MX', {
+          const horaLocal = new Date(pedido.programado_para).toLocaleTimeString('es-MX', {
             hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Matamoros'
           });
           const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
@@ -1015,23 +1063,39 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       } else {
         emitirPedido(pedido);
       }
-      await guardarPedido(telefono, resultado.orden, pedido.negocioId);
+      // P0: al historial va el pedido CANÓNICO (producto_id/precios del
+      // backend), nunca la propuesta cruda del modelo.
+      await guardarPedido(telefono, pedido, pedido.negocioId);
       // Incidente Alina/Mario: el nombre dictado para la ENTREGA no
       // sustituye al nombre ya conocido del interlocutor -- solo llena el
       // perfil si estaba vacío.
-      if (resultado.orden.cliente?.nombre) await upsertClienteNombreEntrega(telefono, resultado.orden.cliente.nombre, negocioId);
+      if (pedido.cliente?.nombre) await upsertClienteNombreEntrega(telefono, pedido.cliente.nombre, negocioId);
       // Actualizar perfil del cliente en background
       recalcularPerfilCliente(telefono).catch(e => console.error('[WA] recalcularPerfil:', e.message));
-      if (resultado.orden.forma_pago === 'enlace de pago') {
+
+      // ── P0: el cierre transaccional lo dice CÓDIGO, no el modelo ──
+      // El total que ve el cliente es el recalculado por backend; si el
+      // pedido nació pendiente de anticipo, la ÚNICA versión que recibe es
+      // la honesta: pre-registrado, pendiente de pago, sin comanda.
+      if (pedido.estado === 'pendiente_pago') {
+        resultado.texto = `🕐 Tu pedido *${pedido.id}* quedó *pre-registrado* por *$${pedido.total} MXN*.\n\nPara confirmarlo, este negocio requiere el pago/anticipo por adelantado. ${pedido.forma_pago === 'enlace de pago' ? 'En un momento te comparto el enlace para pagarlo.' : 'Nuestro equipo se pondrá en contacto contigo para coordinar el pago y confirmar tu pedido.'}`;
+        agregarMensaje(sessionId, 'assistant', `[SISTEMA] El pedido ${pedido.id} quedó PENDIENTE DE PAGO por $${pedido.total}. NO está confirmado todavía; no afirmes lo contrario.`);
+      } else {
+        resultado.texto = `${resultado.texto}\n\n✅ Pedido *${pedido.id}* registrado — total *$${pedido.total} MXN*.`;
+      }
+
+      if (pedido.forma_pago === 'enlace de pago') {
         try {
-          if (resultado.orden.programado_para) {
+          if (pedido.programado_para) {
             // Pedido programado: ya se removió de pedidos_activos arriba
             // (eliminarPedido) y vive solo en pedidos_programados hasta que
             // se active -- pagosService.crearEnlacePago exige un pedido ya
             // en pedidos_activos, así que aquí se conserva el flujo legacy
             // Clip-específico (misma excepción documentada que en el bloque
             // de "Folio para pago" arriba).
-            const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: resultado.orden.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: resultado.orden.cliente });
+            // P0: el total del enlace es el CANÓNICO del pedido validado,
+            // jamás el que escribió el modelo.
+            const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: pedido.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: pedido.cliente });
             linkPago = clip.url;
             await guardarLinkPago(pedido.id, negocioId, clip.linkId);
           } else {
@@ -1058,6 +1122,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           }
         }
       }
+      } // fin if (pedido)
     }
 
     if (resultado.escalar) await notificarEscalacion(telefono, negocioId, credenciales);
@@ -1071,13 +1136,24 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // sale igual, pero nadie recibe el menú de otro.
     if (resultado.enviarMenu) {
       const cfg = await obtenerMenuParaEnvio(negocioId);
-      if (cfg?.activo && cfg.storage_key) {
-        try {
-          const { buffer, mimeType, nombre } = await leerImagenMenu(negocioId);
-          await enviarImagenBuffer(telefono, buffer, nombre, mimeType, '', credenciales);
-        } catch (e) {
-          console.error(`[Menu WA] Error enviando menú (marcador IA) del negocio ${negocioId}:`, e.message);
+      if (cfg?.activo && cfg.imagenes?.length) {
+        // P0/menú: el envío lo hace y lo VERIFICA enviarMenuAutomatico
+        // (todas las páginas en orden, reintento único, y aviso honesto
+        // redactado por código si algo falla). El texto del modelo ("aquí
+        // está nuestro menú") NO se manda: sería una afirmación duplicada
+        // o, peor, falsa si el envío falló -- el módulo ya dijo la verdad.
+        const envio = await enviarMenuAutomatico({
+          negocioId, telefono, credenciales,
+          enviarTexto: enviarMensaje, enviarImagenBuffer,
+        });
+        if (envio.textoEnviado) await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoEnviado, negocioId, 'bot');
+        if (envio.ok) {
+          await guardarMensaje(telefono, nombreMeta, 'saliente', `📷 Menú (${envio.enviadas} página${envio.enviadas === 1 ? '' : 's'})`, negocioId, 'bot');
+        } else if (envio.textoFallback) {
+          await guardarMensaje(telefono, nombreMeta, 'saliente', envio.textoFallback, negocioId, 'bot');
+          console.error(`[Menu WA] Envío por marcador IA incompleto (negocio ${negocioId}): ${envio.motivo}`);
         }
+        resultado.texto = '';
       } else {
         console.log(`[Menu WA] La IA pidió mandar el menú pero el negocio ${negocioId} no lo tiene configurado -- no se manda nada`);
       }
@@ -1115,10 +1191,14 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
     }
 
-    await enviarMensaje(telefono, resultado.texto, credenciales);
-    console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
-    const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId, 'bot');
-    if (msgSaliente && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgSaliente });
+    // resultado.texto puede quedar vacío a propósito (p. ej. el envío del
+    // menú por marcador ya respondió por su cuenta con la verdad del envío).
+    if (resultado.texto && resultado.texto.trim()) {
+      await enviarMensaje(telefono, resultado.texto, credenciales);
+      console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
+      const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId, 'bot');
+      if (msgSaliente && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgSaliente });
+    }
 
     if (linkPago) {
       const mensajePago = `Para pagar con tarjeta, usa este enlace:\n${linkPago}`;

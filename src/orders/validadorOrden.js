@@ -1,0 +1,305 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// VALIDADOR TRANSACCIONAL DE ÓRDENES PROPUESTAS POR EL LLM (P0)
+//
+// Principio: EL LLM CONVERSA Y PROPONE. XABOR VALIDA Y AUTORIZA.
+//
+// El JSON de <ORDEN_CONFIRMADA> es una PROPUESTA, nunca una autorización.
+// Esta es la única autoridad que decide si los items existen, cuánto
+// cuestan, cuánto suma el pedido y qué forma de pago es válida. Todo lo
+// que el modelo haya escrito (nombres, precios, subtotales, totales,
+// descuentos) se considera NO CONFIABLE y se reemplaza por la
+// representación canónica derivada del catálogo real del negocio
+// (menu_productos, por id) y de sus reglas configuradas.
+//
+// Fail closed en todo: producto inexistente/desactivado/agotado, forma de
+// pago no habilitada o menú vacío ⇒ la orden completa se rechaza con
+// motivos estructurados; jamás se crea un item libre ni se acepta un
+// precio "porque el modelo lo dijo". El aislamiento multi-tenant es
+// estructural: el catálogo se consulta SIEMPRE filtrado por negocio_id,
+// así que un producto de otro negocio es indistinguible de uno inexistente.
+// ═══════════════════════════════════════════════════════════════════════════
+import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
+import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
+
+const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
+const NOTAS_MAX = 300;
+
+// Códigos de rechazo estructurados -- el canal los traduce a lenguaje
+// honesto para el cliente ("ese producto no aparece en nuestro menú").
+export const RECHAZOS = {
+  PRODUCTO_NO_EXISTE: 'PRODUCTO_NO_EXISTE',
+  PRODUCTO_NO_DISPONIBLE: 'PRODUCTO_NO_DISPONIBLE',
+  PRODUCTO_AGOTADO: 'PRODUCTO_AGOTADO',
+  CANTIDAD_INVALIDA: 'CANTIDAD_INVALIDA',
+  FORMA_PAGO_INVALIDA: 'FORMA_PAGO_INVALIDA',
+  MENU_VACIO: 'MENU_VACIO',
+  ORDEN_SIN_ITEMS: 'ORDEN_SIN_ITEMS',
+};
+
+// Mismo mapeo tipo→texto que usa el prompt al OFRECER métodos
+// (prompts.js). La orden solo puede usar lo que el negocio tiene
+// habilitado de verdad -- el texto del modelo se normaliza antes de
+// comparar.
+const FORMA_PAGO_ALIAS = {
+  'efectivo': 'efectivo',
+  'terminal': 'terminal',
+  'terminal (tarjeta presente)': 'terminal',
+  'tarjeta': 'terminal',
+  'enlace de pago': 'enlace_pago',
+  'enlace_pago': 'enlace_pago',
+  'link de pago': 'enlace_pago',
+  'transferencia': 'transferencia',
+  'transferencia bancaria': 'transferencia',
+  'pago en sucursal': 'pago_en_sucursal',
+  'contra entrega': 'efectivo',
+};
+
+export function normalizarNombreProducto(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // sin acentos
+    .replace(/[^a-z0-9ñ ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Log estructurado de observabilidad transaccional. Nunca datos del
+// cliente, nunca secretos: solo negocio, evento y detalle técnico.
+export function eventoTxn(evento, negocioId, detalle = {}) {
+  console.warn(`[TXN] evento=${evento} negocio=${negocioId} ${Object.entries(detalle).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')}`);
+}
+
+async function cargarCatalogo(negocioId) {
+  // SIEMPRE filtrado por negocio_id (Invariante 6): el catálogo de otro
+  // tenant simplemente no existe desde aquí.
+  const { rows } = await pool.query(
+    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, c.activa AS categoria_activa
+     FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
+     WHERE p.negocio_id = $1`,
+    [negocioId]);
+  return rows;
+}
+
+function resolverProducto(nombreLLM, catalogo) {
+  const buscado = normalizarNombreProducto(nombreLLM);
+  if (!buscado) return { estado: 'no_existe' };
+  const porNombre = catalogo.map((p) => ({ p, norm: normalizarNombreProducto(p.nombre) }));
+  // 1) igualdad exacta normalizada; 2) contención NO ambigua (una sola
+  // coincidencia) en cualquier dirección -- compatibilidad con notas tipo
+  // "Focaccia Bar grande". Ambiguo = no resuelto (fail closed).
+  let candidatos = porNombre.filter((x) => x.norm === buscado);
+  if (candidatos.length === 0) {
+    candidatos = porNombre.filter((x) => x.norm.includes(buscado) || buscado.includes(x.norm));
+  }
+  if (candidatos.length !== 1) return { estado: 'no_existe' };
+  const prod = candidatos[0].p;
+  if (!prod.categoria_activa || prod.disponible === false) return { estado: 'no_disponible', producto: prod };
+  if (prod.agotado === true) return { estado: 'agotado', producto: prod };
+  return { estado: 'ok', producto: prod };
+}
+
+/**
+ * Valida y canoniza una orden propuesta por el LLM.
+ *
+ * Devuelve SIEMPRE (no lanza por contenido inválido):
+ *   ok: boolean
+ *   rechazos: [{ codigo, nombre? , detalle? }]   (vacío si ok)
+ *   orden: la orden CANÓNICA (solo si ok) -- items con producto_id,
+ *          nombre real del catálogo, precio real, y totales recalculados.
+ *   ajustes: [{ tipo, ... }] observabilidad de mismatches corregidos.
+ */
+export async function validarOrdenPropuesta(orden, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('validarOrdenPropuesta: negocioId obligatorio');
+  }
+  const rechazos = [];
+  const ajustes = [];
+
+  const itemsLLM = Array.isArray(orden?.items) ? orden.items : [];
+  if (!itemsLLM.length) {
+    rechazos.push({ codigo: RECHAZOS.ORDEN_SIN_ITEMS });
+    eventoTxn('orden_sin_items', negocioId, {});
+    return { ok: false, rechazos, ajustes };
+  }
+
+  const catalogo = await cargarCatalogo(negocioId);
+  if (!catalogo.length) {
+    // Negocio sin menú configurado: NINGÚN pedido transaccional es
+    // validable. Se rechaza todo (este era exactamente el terreno del
+    // incidente Alora: cero productos ⇒ todo lo "aceptado" era inventado).
+    rechazos.push({ codigo: RECHAZOS.MENU_VACIO });
+    for (const it of itemsLLM) rechazos.push({ codigo: RECHAZOS.PRODUCTO_NO_EXISTE, nombre: String(it?.nombre || '').slice(0, 80) });
+    eventoTxn('menu_vacio', negocioId, { items: itemsLLM.length });
+    return { ok: false, rechazos, ajustes };
+  }
+
+  // Promo 2x1: la ÚNICA circunstancia en la que un precio 0 del modelo es
+  // legítimo hoy (instrucción explícita del prompt de Nonna Maye). La
+  // decide el BACKEND consultando las reglas reales y su ventana horaria,
+  // nunca la palabra del modelo.
+  let promo2x1Activa = false;
+  try {
+    const reglas = await cargarReglas(negocioId);
+    const estado = obtenerEstadoRestaurante(reglas);
+    promo2x1Activa = estado.promocionesActivas?.some((p) => p.condicion === '2x1_focaccias') || false;
+  } catch { /* sin promo si las reglas no cargan */ }
+
+  const itemsCanonicos = [];
+  let itemsPagados = 0;
+  let itemsGratis = 0;
+
+  for (const it of itemsLLM) {
+    const cantidad = Number(it?.cantidad);
+    if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > CANTIDAD_MAXIMA_POR_ITEM) {
+      rechazos.push({ codigo: RECHAZOS.CANTIDAD_INVALIDA, nombre: String(it?.nombre || '').slice(0, 80) });
+      eventoTxn('cantidad_invalida', negocioId, { cantidad: it?.cantidad });
+      continue;
+    }
+    const r = resolverProducto(it?.nombre, catalogo);
+    if (r.estado === 'no_existe') {
+      rechazos.push({ codigo: RECHAZOS.PRODUCTO_NO_EXISTE, nombre: String(it?.nombre || '').slice(0, 80) });
+      eventoTxn('producto_no_encontrado', negocioId, { nombre: String(it?.nombre || '').slice(0, 60) });
+      continue;
+    }
+    if (r.estado === 'no_disponible') {
+      rechazos.push({ codigo: RECHAZOS.PRODUCTO_NO_DISPONIBLE, nombre: r.producto.nombre });
+      eventoTxn('producto_rechazado', negocioId, { motivo: 'no_disponible', producto_id: r.producto.id });
+      continue;
+    }
+    if (r.estado === 'agotado') {
+      rechazos.push({ codigo: RECHAZOS.PRODUCTO_AGOTADO, nombre: r.producto.nombre });
+      eventoTxn('producto_rechazado', negocioId, { motivo: 'agotado', producto_id: r.producto.id });
+      continue;
+    }
+
+    const precioReal = Number(r.producto.precio);
+    const precioLLM = Number(it?.precio_unitario);
+    let precioFinal = precioReal;
+    if (precioLLM === 0 && promo2x1Activa) {
+      // Candidato a "gratis por 2x1" -- se valida el balance al final.
+      precioFinal = 0;
+      itemsGratis += cantidad;
+      eventoTxn('precio_promocional_cero', negocioId, { producto_id: r.producto.id });
+    } else {
+      itemsPagados += cantidad;
+      if (Number.isFinite(precioLLM) && precioLLM !== precioReal) {
+        ajustes.push({ tipo: 'precio_mismatch', producto: r.producto.nombre, llm: precioLLM, real: precioReal });
+        eventoTxn('precio_mismatch', negocioId, { producto_id: r.producto.id, llm: precioLLM, real: precioReal });
+      }
+    }
+
+    // Representación CANÓNICA: el nombre del LLM deja de ser autoridad --
+    // queda el id y el nombre reales del catálogo; lo dictado se conserva
+    // solo como nota informativa acotada.
+    itemsCanonicos.push({
+      producto_id: r.producto.id,
+      nombre: r.producto.nombre,
+      cantidad,
+      precio_unitario: precioFinal,
+      notas: String(it?.notas || '').slice(0, NOTAS_MAX) || undefined,
+    });
+  }
+
+  // Un 2x1 jamás puede regalar más unidades de las que se cobran; si el
+  // balance no da, los "gratis" excedentes se recobran a precio real.
+  if (itemsGratis > itemsPagados) {
+    for (const item of itemsCanonicos) {
+      if (itemsGratis <= itemsPagados) break;
+      if (item.precio_unitario === 0) {
+        const real = catalogo.find((p) => p.id === item.producto_id);
+        item.precio_unitario = Number(real?.precio || 0);
+        itemsGratis -= item.cantidad;
+        itemsPagados += item.cantidad;
+        ajustes.push({ tipo: 'gratis_sin_respaldo_recobrado', producto: item.nombre });
+        eventoTxn('precio_mismatch', negocioId, { motivo: 'gratis_sin_respaldo', producto_id: item.producto_id });
+      }
+    }
+  }
+
+  // Forma de pago: solo métodos habilitados de verdad para este negocio.
+  const formaLLM = String(orden?.forma_pago || '').toLowerCase().trim();
+  const tipoNormalizado = FORMA_PAGO_ALIAS[formaLLM];
+  let habilitados = [];
+  try {
+    habilitados = (await obtenerMetodosPagoDisponibles(negocioId, { paraBot: true })).map((m) => m.tipo);
+  } catch { habilitados = ['efectivo']; }
+  if (!habilitados.length) habilitados = ['efectivo'];
+  if (!tipoNormalizado || !habilitados.includes(tipoNormalizado)) {
+    rechazos.push({ codigo: RECHAZOS.FORMA_PAGO_INVALIDA, nombre: formaLLM.slice(0, 40) });
+    eventoTxn('forma_pago_invalida', negocioId, { forma: formaLLM.slice(0, 40) });
+  }
+
+  if (rechazos.length) return { ok: false, rechazos, ajustes };
+
+  // ── Totales: SIEMPRE recalculados ──
+  const reglas = await cargarReglas(negocioId).catch(() => null);
+  const subtotal = itemsCanonicos.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+
+  const esDomicilio = String(orden?.modalidad || '').toLowerCase().includes('domicilio');
+  let costoEnvio = 0;
+  if (esDomicilio) {
+    const base = Number(reglas?.pedidos?.costo_envio) || 0;
+    const zonas = Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega.map((z) => Number(z.costo)) : [];
+    const umbralGratis = Number(reglas?.pedidos?.entrega_gratis_desde) || 0;
+    const permitidos = new Set([base, ...zonas]);
+    if (umbralGratis > 0 && subtotal >= umbralGratis) permitidos.add(0);
+    try {
+      const estado = obtenerEstadoRestaurante(reglas);
+      if (estado.promocionesActivas?.some((p) => p.condicion === 'min_3_focaccias')) permitidos.add(0);
+    } catch { /* sin promo */ }
+    const envioLLM = Number(orden?.costo_envio);
+    if (Number.isFinite(envioLLM) && permitidos.has(envioLLM)) {
+      costoEnvio = envioLLM;
+    } else {
+      costoEnvio = base;
+      if (Number.isFinite(envioLLM) && envioLLM !== base) {
+        ajustes.push({ tipo: 'envio_mismatch', llm: envioLLM, real: base });
+        eventoTxn('envio_mismatch', negocioId, { llm: envioLLM, real: base });
+      }
+    }
+  }
+
+  // Descuentos: hoy NO existe ningún motor de descuentos autorizado para
+  // el bot (el 2x1 se expresa como precio 0 por item; el envío gratis como
+  // costo_envio 0). Cualquier "descuento" del modelo se ignora.
+  const descuentoLLM = Number(orden?.descuento) || 0;
+  if (descuentoLLM !== 0) {
+    ajustes.push({ tipo: 'descuento_ignorado', llm: descuentoLLM });
+    eventoTxn('descuento_ignorado', negocioId, { llm: descuentoLLM });
+  }
+
+  const total = subtotal + costoEnvio;
+  const totalLLM = Number(orden?.total);
+  if (Number.isFinite(totalLLM) && totalLLM !== total) {
+    ajustes.push({ tipo: 'total_mismatch', llm: totalLLM, real: total });
+    eventoTxn('total_mismatch', negocioId, { llm: totalLLM, real: total });
+  }
+
+  const ordenCanonica = {
+    ...orden,
+    items: itemsCanonicos,
+    subtotal,
+    costo_envio: costoEnvio,
+    descuento: 0,
+    total,
+    forma_pago_tipo: tipoNormalizado, // canónico (tipo de metodos_pago)
+  };
+
+  return { ok: true, orden: ordenCanonica, rechazos: [], ajustes };
+}
+
+// Texto honesto para el cliente cuando la orden se rechaza -- lo redacta
+// CÓDIGO, nunca el modelo. Sin jerga ni códigos internos.
+export function mensajeRechazoParaCliente(rechazos) {
+  const noExisten = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_EXISTE && r.nombre).map((r) => r.nombre);
+  const agotados = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_AGOTADO).map((r) => r.nombre);
+  const noDisponibles = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_DISPONIBLE).map((r) => r.nombre);
+  const formaPago = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA);
+  const partes = [];
+  if (noExisten.length) partes.push(`no manejamos ${noExisten.join(', ')} en nuestro menú actual`);
+  if (agotados.length) partes.push(`${agotados.join(', ')} está agotado por hoy`);
+  if (noDisponibles.length) partes.push(`${noDisponibles.join(', ')} no está disponible en este momento`);
+  if (formaPago) partes.push('esa forma de pago no está disponible');
+  const motivo = partes.length ? partes.join('; ') : 'algunos datos del pedido no pudieron validarse';
+  return `Una disculpa: no pude registrar tu pedido porque ${motivo}. ¿Te gustaría elegir algo de nuestro menú? Con gusto te lo comparto.`;
+}
