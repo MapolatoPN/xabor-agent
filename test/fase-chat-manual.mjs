@@ -40,8 +40,12 @@ async function api(base, path, { cookie, method = 'GET', body } = {}) {
 // Negocio B no tiene usuario propio en el seed compartido (solo se usa
 // para pruebas de aislamiento a nivel HTTP). Se crea aquí un admin
 // dedicado sin tocar test/seed-datos-prueba.mjs (compartido con otras
-// suites).
-const adminNegocioB = await crearUsuarioConPassword({
+// suites). Se REUTILIZA si ya existe: una corrida anterior interrumpida a
+// media suite deja al usuario en la base, y volver a crearlo tumbaría el
+// setup con el UNIQUE de email (mismo patrón que fase-repartidores-
+// notificaciones).
+const { rows: [adminBExistente] } = await pool.query(`SELECT id FROM usuarios WHERE email = 'admin-b-chatmanual@test.local'`);
+const adminNegocioB = adminBExistente || await crearUsuarioConPassword({
   negocioId: SEED.negocioB, nombre: 'Admin Negocio B (chat manual)', email: 'admin-b-chatmanual@test.local',
   password: 'ClaveAdminBPrueba123!', rol: 'admin',
 });
@@ -54,6 +58,17 @@ const cookieAdminB = cookieHeader(adminNegocioB.id, SEED.negocioB, 'admin');
 // usar credenciales de otro negocio).
 await pool.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN (SELECT id FROM integraciones_canal WHERE negocio_id = ANY($1))`, [[SEED.negocioA, SEED.negocioB]]);
 await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]);
+// Las credenciales legacy de configuracion (int_wa_*) también cuentan como
+// "WhatsApp configurado" para obtenerCredencialesWhatsappNegocio: si otra
+// suite (p. ej. fase-repartidores-notificaciones) dejó valores falsos ahí,
+// el 409 esperado de esta suite se convertiría en un 500 con token falso.
+await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave IN ('int_wa_phone_id','int_wa_token')`, [[SEED.negocioA, SEED.negocioB]]);
+// Mensajes/clientes de corridas anteriores interrumpidas: los teléfonos de
+// esta suite son propios (52187810xx...), limpiarlos siempre hace la suite
+// re-ejecutable y determinista sin importar cómo terminó la corrida previa.
+await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '52187810%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM perfiles_clientes WHERE telefono LIKE '52187810%'`);
+await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52187810%'`);
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]);
 const PNID_A = 'PNID_CHATMANUAL_A';
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Prueba chat manual A', TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, PNID_A]);

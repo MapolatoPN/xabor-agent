@@ -512,6 +512,16 @@ await t('PILOTO-WHITELIST', 'retirar la lista (con el flag aún activo) no habil
 // re-ejecuta este archivo o se agregan pruebas después.
 await fijarWhitelist('5210000900001');
 
+// Higiene entre suites: las credenciales FALSAS int_wa_* que este archivo
+// siembra en configuracion (para no llamar a Meta de verdad) NO deben
+// sobrevivir a la suite -- obtenerCredencialesWhatsappNegocio las resuelve
+// vía configuracion, y cualquier suite posterior que espere "WhatsApp no
+// configurado" (p. ej. el 409 de fase-chat-manual) recibiría un 500 al
+// intentar un envío real con token falso.
+await pool.query(
+  `DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave IN ('int_wa_phone_id','int_wa_token')`,
+  [[SEED.negocioA, SEED.negocioB]]);
+
 // ═══════════ Resumen ═══════════
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
