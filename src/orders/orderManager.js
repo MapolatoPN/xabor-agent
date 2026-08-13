@@ -38,8 +38,11 @@ const MAX_REINTENTOS_FOLIO = 20;
 
 // Canales cuya orden la redacta un LLM (P0): son los únicos que pasan por
 // el validador transaccional dentro de registrarPedido. 'test' cubre el
-// canal de simulación/chat de prueba, que usa el mismo marcador.
-const CANALES_ORDEN_LLM = new Set(['whatsapp', 'voz', 'test']);
+// canal de simulación/chat de prueba y 'api' el endpoint /chat (hoy ese
+// endpoint ni siquiera fija negocioId, así que ya fallaba cerrado por
+// TENANT_CONTEXT_REQUIRED -- se incluye para que el gate no dependa de
+// ese detalle).
+const CANALES_ORDEN_LLM = new Set(['whatsapp', 'voz', 'test', 'api']);
 
 export function setWsBroadcast(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
