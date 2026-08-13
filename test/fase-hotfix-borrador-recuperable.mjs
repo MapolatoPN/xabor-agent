@@ -54,6 +54,19 @@ for (const [negocioId, pnid, nombreCat] of [[SEED.negocioA, PNID_A, 'Hotfix A'],
   await pool.query(`INSERT INTO menu_productos (categoria_id, nombre, precio, disponible, negocio_id) VALUES ($1, 'Arreglo Floral Premium', 1500, true, $2)`, [categoria.id, negocioId]);
 }
 
+// Limpieza propia (base compartida): esta suite usa wamids FIJOS
+// ('wamid.HOTFIX-…') y el servidor deduplica entrantes contra
+// mensajes.message_id_externo, que persiste entre corridas. Sin esta
+// limpieza, en una segunda corrida TODOS los webhooks se descartan como
+// redelivery y los asserts leen los mensajes de la corrida anterior --
+// la suite era dependiente del orden (solo pasaba si otra suite que barre
+// mensajes de estos negocios corría antes). También se limpian
+// cotizaciones y sesiones (los casos cuentan filas exactas); items e
+// historial caen por CASCADE y las referencias sueltas son SET NULL.
+await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '5218789950%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM cotizaciones WHERE negocio_id = ANY($1) AND telefono LIKE '5218789950%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM sesiones_comerciales WHERE negocio_id = ANY($1) AND telefono LIKE '5218789950%'`, [[SEED.negocioA, SEED.negocioB]]);
+
 const metaMock = await arrancarMetaMock();
 const anthropicMock = await arrancarAnthropicMock();
 const srv = await arrancarServidor({

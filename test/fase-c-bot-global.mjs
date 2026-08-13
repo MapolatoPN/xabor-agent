@@ -63,6 +63,11 @@ await t('VALORES', 'Mapolato Acuña -> false', async () => {
 await pool.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN (SELECT id FROM integraciones_canal WHERE negocio_id = ANY($1))`, [[SEED.negocioA, SEED.negocioB]]);
 await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]);
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]);
+// Limpieza propia (base compartida): los casos GATE cuentan filas exactas
+// en `mensajes` para los teléfonos 52187800090xx; el residuo de una corrida
+// anterior hacía la suite dependiente del orden (solo pasaba si otra suite
+// que barre mensajes de estos negocios corría antes).
+await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
 
 {
   const srv = await arrancarServidor({ PORT: PUERTO, META_EMBEDDED_SIGNUP_MOCK: 'true', META_APP_ID: 'TEST', META_CONFIG_ID: 'TEST', META_REDIRECT_URI: 'https://xabor.mx/superadmin' });
