@@ -2765,7 +2765,10 @@ app.post('/api/impresion/self-service/impresoras/:id/desactivar', requireAdminSe
 app.post('/api/impresion/self-service/probar', requireAdminSeguro, async (req, res) => {
   const { terminalId, nombreWindows, anchoMm } = req.body || {};
   try {
-    const reg = await registrarImpresoraParaPrueba(req.negocioId, { terminalId, nombreWindows, anchoMm: anchoMm || 58 });
+    // anchoMm pasa tal cual (puede venir vacío): la prueba NUNCA fuerza un
+    // ancho -- con `|| 58` cada "imprimir prueba" reseteaba a 58 mm una
+    // impresora ya configurada en 80 (el panel no manda ancho al probar).
+    const reg = await registrarImpresoraParaPrueba(req.negocioId, { terminalId, nombreWindows, anchoMm: anchoMm ?? null });
     if (!reg.ok) return res.status(400).json({ error: reg.error });
     const trabajo = await crearTrabajoDePrueba(req.negocioId, reg.impresoraId, { solicitadoPor: req.usuarioId });
     await entregarTrabajos([trabajo]);

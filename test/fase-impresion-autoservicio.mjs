@@ -390,6 +390,67 @@ await t('WIZARD', 'P8. las DOS entradas al wizard (equipo nuevo y re-vincular) a
   assert.strictEqual(armados, 2, 'conectarEquipoImpresion y revincularEquipoImpresion arman el estado completo');
 });
 
+// ═══════════ Persistencia del ancho de papel (bug 80mm→58mm) ═══════════
+// Causa raíz: /probar hacia upsert con `anchoMm || 58` y el panel no manda
+// ancho al probar -- cada "imprimir prueba" reseteaba a 58 una impresora ya
+// configurada en 80. La prueba identifica, nunca reconfigura.
+async function anchoDe(nombre, ck = ckAdminA) {
+  const r = await api(BASE, RUTA, { cookie: ck });
+  const eq = r.body.equipos.find((e) => e.id === edgeA.id);
+  const fila = (eq?.asignadas || []).find((a) => a.nombreWindows === nombre);
+  return fila ? fila.anchoMm : null;
+}
+
+await t('ANCHO', 'A1. asignar 80 -> guardar -> releer (reload) -> sesion nueva (login): sigue en 80', async () => {
+  const r = await api(BASE, '/api/impresion/self-service/asignar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: 'POS58 Printer', destino: 'cocina', anchoMm: 80 },
+  });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.strictEqual(await anchoDe('POS58 Printer'), 80, 'tras guardar');
+  assert.strictEqual(await anchoDe('POS58 Printer'), 80, 'tras reload');
+  const ckNueva = cookie(SEED.adminNegocioAUsuarioId, NEG_A, 'admin'); // token nuevo = login nuevo
+  assert.strictEqual(await anchoDe('POS58 Printer', ckNueva), 80, 'tras logout/login');
+});
+
+await t('ANCHO', 'A2. imprimir prueba (el panel NO manda ancho) no resetea el 80 configurado', async () => {
+  const p = await api(BASE, '/api/impresion/self-service/probar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: 'POS58 Printer' },
+  });
+  assert.strictEqual(p.status, 201, JSON.stringify(p.body));
+  assert.strictEqual(await anchoDe('POS58 Printer'), 80, 'probar jamas debe cambiar el ancho guardado');
+});
+
+await t('ANCHO', 'A3. volver a 58 -> guardar -> releer: sigue en 58 (el fix no ancla el valor)', async () => {
+  const r = await api(BASE, '/api/impresion/self-service/asignar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: 'POS58 Printer', destino: 'cocina', anchoMm: 58 },
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(await anchoDe('POS58 Printer'), 58, 'tras guardar 58');
+  assert.strictEqual(await anchoDe('POS58 Printer'), 58, 'tras reload');
+});
+
+await t('ANCHO', 'A4. una impresora en 58 no arrastra a otra configurada en 80 (mismo equipo)', async () => {
+  const r = await api(BASE, '/api/impresion/self-service/asignar', {
+    cookie: ckAdminA, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: 'POS58 Printer (Copy 1)', destino: 'caja', anchoMm: 80 },
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(await anchoDe('POS58 Printer'), 58, 'la de cocina sigue en 58');
+  assert.strictEqual(await anchoDe('POS58 Printer (Copy 1)'), 80, 'la de caja quedo en 80');
+});
+
+await t('SEGURIDAD', 'A5. tenant B no puede cambiar el ancho de una impresora de A', async () => {
+  const x = await api(BASE, '/api/impresion/self-service/asignar', {
+    cookie: ckAdminB, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: 'POS58 Printer (Copy 1)', destino: 'caja', anchoMm: 58 },
+  });
+  assert.ok(x.status >= 400, `asignar cross-tenant debe rechazarse, llego ${x.status}`);
+  assert.strictEqual(await anchoDe('POS58 Printer (Copy 1)'), 80, 'el ancho de A quedo intacto');
+});
+
 await t('SEGURIDAD', 'P9. tenant A no puede generar pairing para el equipo de B, y el codigo de B solo empareja B', async () => {
   const edgeB = await altaEdge(NEG_B, { nombre: 'PC-AUTOSERVICIO' });
   try {

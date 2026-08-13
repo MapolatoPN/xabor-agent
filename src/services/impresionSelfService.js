@@ -156,8 +156,12 @@ async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, a
   if (typeof nombreWindows !== 'string' || !nombreWindows.trim() || nombreWindows.length > NOMBRE_MAX) {
     return { ok: false, error: 'Falta el nombre de la impresora' };
   }
-  const columnas = columnasParaMm(anchoMm);
-  if (!columnas) return { ok: false, error: 'El ancho de papel tiene que ser 58 mm u 80 mm' };
+  // anchoMm es OPCIONAL: sin él, una impresora existente CONSERVA su ancho.
+  // Antes, "imprimir prueba" (que no trae ancho) pasaba por aquí con el
+  // default 58 y reseteaba a 58 una impresora ya configurada en 80.
+  const sinAncho = anchoMm === undefined || anchoMm === null;
+  const columnas = sinAncho ? null : columnasParaMm(anchoMm);
+  if (!sinAncho && !columnas) return { ok: false, error: 'El ancho de papel tiene que ser 58 mm u 80 mm' };
 
   // El terminal DEBE pertenecer a este negocio. Esta es la comprobación que
   // impide que un terminal_id llegado del navegador salte de empresa.
@@ -176,7 +180,9 @@ async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, a
   let impresora;
   if (yaExiste) {
     impresora = await actualizarImpresora(negocioId, yaExiste.id, {
-      anchoColumnas: columnas, activa: true,
+      // Sin anchoMm explícito NO se toca el ancho ya guardado.
+      ...(columnas ? { anchoColumnas: columnas } : {}),
+      activa: true,
       config: { ...(yaExiste.config || {}), spoolerNombre: nombre },
     });
   } else {
@@ -186,7 +192,9 @@ async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, a
       // OS518", no "Impresora 1".
       nombre: nombre.slice(0, 80),
       transporte: 'windows_spooler',
-      anchoColumnas: columnas,
+      // Impresora NUEVA sin ancho declarado (prueba antes de asignar): 58 es
+      // el default físico más común; el dueño lo ajusta al asignar.
+      anchoColumnas: columnas || columnasParaMm(58),
       config: { spoolerNombre: nombre },
     });
   }
@@ -200,7 +208,10 @@ async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, a
  * la prueba invierte el orden natural de identificación con dos impresoras
  * del mismo modelo.
  */
-export async function registrarImpresoraParaPrueba(negocioId, { terminalId, nombreWindows, anchoMm = 58 }) {
+export async function registrarImpresoraParaPrueba(negocioId, { terminalId, nombreWindows, anchoMm = null }) {
+  // anchoMm null = "no me pronuncio sobre el ancho": una impresora existente
+  // conserva el suyo; una nueva nace con el default (58). Probar identifica,
+  // nunca reconfigura.
   const r = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm });
   if (!r.ok) return r;
   return { ok: true, impresoraId: r.impresora.id };
