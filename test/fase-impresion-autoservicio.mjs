@@ -84,7 +84,25 @@ await pool.query(
   `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id IN ($1,$2))
      AND nombre IN ('PC-AUTOSERVICIO','PC-SIN-IMPRESORAS')`, [NEG_A, NEG_B]);
 
-const srv = await arrancarServidor({ PORT: PUERTO, XABOR_EDGE_SETUP_URL: 'https://descargas.ejemplo/XaborEdgeSetup.exe' }, { timeoutMs: 30000 });
+// Mock del instalador: un HTTP local que sirve XaborEdgeSetup.exe con los
+// mismos headers que el hosting real (GitHub Releases). Permite probar la
+// cadena completa endpoint→URL→descarga (P2-P4) sin salir a internet.
+import { createServer } from 'http';
+const BYTES_EXE = Buffer.from('MZ-fake-installer-para-pruebas');
+const mockInstalador = createServer((req, res) => {
+  if (req.url === '/XaborEdgeSetup.exe') {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': 'attachment; filename=XaborEdgeSetup.exe',
+      'Content-Length': BYTES_EXE.length,
+    });
+    res.end(BYTES_EXE);
+  } else { res.writeHead(404); res.end(); }
+});
+await new Promise((r) => mockInstalador.listen(0, r));
+const URL_SETUP = `http://localhost:${mockInstalador.address().port}/XaborEdgeSetup.exe`;
+
+const srv = await arrancarServidor({ PORT: PUERTO, XABOR_EDGE_SETUP_URL: URL_SETUP }, { timeoutMs: 30000 });
 const BASE = srv.base;
 
 let agente = null;
@@ -214,7 +232,7 @@ await t('ONBOARD', '9. la URL de descarga del Setup llega del backend (no por Wh
   const r = await api(BASE, '/api/impresion/self-service/descarga', { cookie: ckAdminA });
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.body.disponible, true);
-  assert.strictEqual(r.body.url, 'https://descargas.ejemplo/XaborEdgeSetup.exe');
+  assert.strictEqual(r.body.url, URL_SETUP);
 });
 
 await t('ONBOARD', '10. sin XABOR_EDGE_SETUP_URL configurada, disponible=false (boton honesto, nunca muerto)', async () => {
@@ -308,6 +326,81 @@ await t('WIZARD', '16. sin jerga tecnica visible en la seccion de impresoras del
   }
   assert.ok(seccion.includes('Volver a vincular'), 're-vinculacion visible para PC formateada');
   assert.ok(seccion.includes('No encontramos impresoras en Windows'), 'mensaje de cero impresoras sin jerga');
+});
+
+// ═══════════ Hotfix wizard: la descarga viaja JUNTO al código ═══════════
+// Causa raíz del incidente de Nonna Maye: la vista de vinculación (la única
+// que ve quien entra por "Conectar otro equipo" o "Volver a vincular")
+// mostraba solo el código + spinner, sin el instalador -- el panel se
+// quedaba "buscando" un equipo que jamás podía existir.
+const VISTA_VINCULANDO = HTML.slice(HTML.indexOf('if (impVinculando) {'), HTML.indexOf('} else if (!e.hayEquipo)'));
+
+await t('WIZARD', 'P1. generar codigo -> la vista de vinculacion incluye el boton de descarga', async () => {
+  assert.ok(VISTA_VINCULANDO.includes('Descargar XaborEdgeSetup.exe'), 'boton de descarga en la vista del codigo');
+  assert.ok(VISTA_VINCULANDO.includes('Descarga Xabor Edge'), 'paso 1 explicito');
+  assert.ok(VISTA_VINCULANDO.includes('lalo en esa computadora'), 'paso 2: instalar');
+  assert.ok(VISTA_VINCULANDO.includes('Esperando conexi&oacute;n'), 'estado de espera visible');
+});
+
+await t('WIZARD', 'P2. el boton apunta al instalador real (impDescarga.url del backend, nunca hardcodeado)', async () => {
+  const usos = (VISTA_VINCULANDO.match(/impDescarga\.url/g) || []).length;
+  assert.ok(usos >= 2, `la vista usa impDescarga.url para el boton y el aviso de timeout (usos=${usos})`);
+  assert.ok(!/https?:\/\/[^"' ]*XaborEdgeSetup\.exe/.test(VISTA_VINCULANDO), 'ninguna URL de instalador hardcodeada en el panel');
+});
+
+await t('WIZARD', 'P3. la descarga del instalador responde 200 con el binario', async () => {
+  const d = await api(BASE, '/api/impresion/self-service/descarga', { cookie: ckAdminA });
+  const r = await fetch(d.body.url);
+  assert.strictEqual(r.status, 200);
+  const buf = Buffer.from(await r.arrayBuffer());
+  assert.strictEqual(buf.length, BYTES_EXE.length);
+});
+
+await t('WIZARD', 'P4. Content-Disposition entrega un .exe adjunto', async () => {
+  const d = await api(BASE, '/api/impresion/self-service/descarga', { cookie: ckAdminA });
+  const r = await fetch(d.body.url);
+  assert.ok(/attachment/.test(r.headers.get('content-disposition') || ''));
+  assert.ok(/XaborEdgeSetup\.exe/.test(r.headers.get('content-disposition') || ''));
+  assert.strictEqual(r.headers.get('content-type'), 'application/octet-stream');
+});
+
+await t('WIZARD', 'P5. despues de generar el codigo, el polling continua (5 s) mientras se espera', async () => {
+  assert.ok(/impVinculando\) impRefrescoTimer = setTimeout\(cargarImpresoras, 5000\)/.test(HTML));
+});
+
+await t('WIZARD', 'P6. cuando el equipo conecta, el wizard avanza solo (sale de la vista del codigo)', async () => {
+  assert.ok(HTML.includes('recienConectado'), 'deteccion de conexion durante la espera');
+  const bloque = HTML.slice(HTML.indexOf('recienConectado'), HTML.indexOf('recienConectado') + 700);
+  assert.ok(bloque.includes('impVinculando = null'), 'la vista de espera se reemplaza');
+  assert.ok(bloque.includes('Equipo conectado'), 'confirmacion visible al avanzar');
+});
+
+await t('WIZARD', 'P7. espera larga -> pregunta "ya instalaste?" con el boton de descarga otra vez', async () => {
+  assert.ok(VISTA_VINCULANDO.includes('&iquest;Ya instalaste Xabor Edge en esta computadora?'), 'instruccion explicita tras el timeout');
+  assert.ok(VISTA_VINCULANDO.includes('Descargar instalador'), 'segundo boton de descarga en el aviso');
+  assert.ok(/impVinculando\.desde.*> ?90000/.test(VISTA_VINCULANDO), 'umbral definido, no polling infinito sin explicacion');
+});
+
+await t('WIZARD', 'P8. las DOS entradas al wizard (equipo nuevo y re-vincular) arman el estado con su reloj', async () => {
+  // impVinculando vive en memoria de la pestaña a proposito (el codigo es de
+  // un solo uso). Tras un refresh no se "recupera": el panel vuelve a la vista
+  // base, que SIGUE ofreciendo descarga y generar codigo -- nunca una pantalla
+  // atorada. Aqui se asegura que ambas entradas fijan `desde` para el aviso.
+  const armados = (HTML.match(/impVinculando = \{ codigo: datos\.codigo, nombre: [^}]*desde: Date\.now\(\) \}/g) || []).length;
+  assert.strictEqual(armados, 2, 'conectarEquipoImpresion y revincularEquipoImpresion arman el estado completo');
+});
+
+await t('SEGURIDAD', 'P9. tenant A no puede generar pairing para el equipo de B, y el codigo de B solo empareja B', async () => {
+  const edgeB = await altaEdge(NEG_B, { nombre: 'PC-AUTOSERVICIO' });
+  try {
+    const cruzado = await api(BASE, `/api/impresion/edges/${edgeB.id}/emparejar`, { cookie: ckAdminA, method: 'POST' });
+    assert.ok(cruzado.status >= 400, `emparejar cross-tenant debe rechazarse, llego ${cruzado.status}`);
+    const par = await generarEmparejamiento(NEG_B, edgeB.id, {});
+    const cred = await canjearEmparejamiento(par.codigo, { nombreEquipo: 'PC-AUTOSERVICIO' });
+    assert.strictEqual(cred.terminalId, edgeB.id, 'el codigo de B empareja la terminal de B, jamas otra');
+  } finally {
+    await pool.query(`DELETE FROM terminales WHERE id = $1`, [edgeB.id]).catch(() => {});
+  }
 });
 
 } finally {

@@ -5130,11 +5130,24 @@ function pintarImpresoras() {
     '<div style="color:#666;font-size:0.9rem;margin-bottom:14px;">Configura qu&eacute; se imprime en cada impresora de tu negocio.</div>';
 
   if (impVinculando) {
-    // ─── Esperando a que el equipo nuevo conecte ───
-    // El código queda EN PANTALLA (no en un alert que desaparece): el dueño
-    // lo necesita visible mientras instala en la otra ventana o en la otra
-    // computadora. En cuanto el Edge conecta, esta vista se reemplaza sola.
-    html += impPasoWizard(3, 'Escribe este c&oacute;digo en Xabor Edge',
+    // ─── Vinculación en curso: wizard AUTOCONTENIDO ───
+    // El código queda EN PANTALLA (no en un alert que desaparece), y la
+    // descarga del instalador viaja JUNTO al código: esta vista es la única
+    // que ve quien entra por "Conectar otro equipo" o "Volver a vincular",
+    // así que sin la descarga aquí el equipo nuevo jamás podría aparecer
+    // (el panel se quedaba "buscando" algo que no existía). En cuanto el
+    // Edge conecta, esta vista se reemplaza sola.
+    var impLinkDescarga = (impDescarga && impDescarga.disponible)
+      ? '<a href="' + impDescarga.url + '" style="display:inline-block;margin-top:8px;background:#1a1a1a;color:#fff;' +
+        'padding:9px 16px;border-radius:8px;text-decoration:none;font-size:0.88rem;font-weight:700;">Descargar XaborEdgeSetup.exe</a>'
+      : '<span style="color:#b45309;">No tenemos el enlace del instalador en este momento. Escr&iacute;benos y te lo hacemos llegar.</span>';
+    html += impPasoWizard(1, 'Descarga Xabor Edge',
+        'En la computadora donde est&aacute;n las impresoras (<b>' + impVinculando.nombre + '</b>). ' +
+        'Si ya lo tienes instalado, salta al paso 3.<br>' + impLinkDescarga) +
+      impPasoWizard(2, 'Inst&aacute;lalo en esa computadora',
+        'Abre el archivo descargado e instala como administrador. Windows puede mostrar un aviso de seguridad: ' +
+        'elige &quot;M&aacute;s informaci&oacute;n&quot; y luego &quot;Ejecutar de todas formas&quot;.') +
+      impPasoWizard(3, 'Escribe este c&oacute;digo en Xabor Edge',
         'Cuando el instalador te pida el <b>c&oacute;digo de conexi&oacute;n</b>, escribe:') +
       '<div style="text-align:center;margin:10px 0 16px;">' +
         '<div style="display:inline-block;background:#f7f5f0;border:2px dashed #c9c5bc;border-radius:12px;' +
@@ -5142,12 +5155,26 @@ function pintarImpresoras() {
           impVinculando.codigo + '</div>' +
         '<div style="color:#888;font-size:0.78rem;margin-top:6px;">Solo sirve una vez y caduca en unos minutos.</div>' +
       '</div>' +
-      impPasoWizard(4, 'Espera la confirmaci&oacute;n',
+      impPasoWizard(4, 'Esperando conexi&oacute;n&hellip;',
         '<span style="display:inline-flex;align-items:center;gap:8px;">' +
         '<span class="spinner" style="width:12px;height:12px;border:2px solid #e5e2da;border-top-color:#1a1a1a;' +
         'border-radius:50%;display:inline-block;animation:spin 1s linear infinite;"></span>' +
-        'Esperando a que <b>' + impVinculando.nombre + '</b> se conecte&hellip; esta pantalla se actualiza sola.</span>') +
-      '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>' +
+        'Esperando a que <b>' + impVinculando.nombre + '</b> se conecte&hellip; esta pantalla se actualiza sola.</span>');
+    // Si tras un rato no conecta, casi siempre es que el instalador nunca
+    // se descargó: se dice explícito, con el botón de nuevo, en vez de dejar
+    // un spinner infinito sin explicación. El aviso aparece solo (la vista
+    // se repinta con cada refresco del polling).
+    if (impVinculando.desde && (Date.now() - impVinculando.desde) > 90000) {
+      html += '<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:12px 16px;margin:4px 0 14px;font-size:0.87rem;color:#78350f;">' +
+        '<b>&iquest;Ya instalaste Xabor Edge en esta computadora?</b><br>' +
+        'El equipo todav&iacute;a no se conecta. Si a&uacute;n no descargas el instalador, hazlo aqu&iacute;:' +
+        ((impDescarga && impDescarga.disponible)
+          ? '<br><a href="' + impDescarga.url + '" style="display:inline-block;margin-top:8px;background:#1a1a1a;color:#fff;' +
+            'padding:8px 14px;border-radius:8px;text-decoration:none;font-size:0.85rem;font-weight:700;">Descargar instalador</a>'
+          : ' escr&iacute;benos y te hacemos llegar el instalador.') +
+      '</div>';
+    }
+    html += '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>' +
       impBoton('Cancelar', 'cancelarVinculacionImpresion()');
   } else if (!e.hayEquipo) {
     // ─── Asistente de primera vez, sin equipo todavía ───
@@ -5339,7 +5366,9 @@ async function conectarEquipoImpresion() {
     // El c\u00f3digo queda EN PANTALLA (no en un alert que desaparece al
     // primer clic): el due\u00f1o lo necesita visible mientras instala en la
     // otra computadora. La vista se actualiza sola cuando el equipo conecte.
-    impVinculando = { codigo: datos.codigo, nombre: nombre, equipoId: edge.edge.id };
+    // `desde` alimenta el aviso de "\u00bfya instalaste Xabor Edge?" cuando
+    // la espera se alarga.
+    impVinculando = { codigo: datos.codigo, nombre: nombre, equipoId: edge.edge.id, desde: Date.now() };
     cargarImpresoras();
   } catch (err) {
     impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
@@ -5357,7 +5386,7 @@ async function revincularEquipoImpresion(equipoId, nombre) {
     var datos = await par.json();
     if (!par.ok) throw new Error(datos.error || 'No se pudo generar el c\u00f3digo');
     impOcupado = false;
-    impVinculando = { codigo: datos.codigo, nombre: nombre, equipoId: equipoId };
+    impVinculando = { codigo: datos.codigo, nombre: nombre, equipoId: equipoId, desde: Date.now() };
     cargarImpresoras();
   } catch (err) {
     impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
