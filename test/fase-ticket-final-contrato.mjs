@@ -66,7 +66,10 @@ const trabajoBase = {
 // ── Enrutamiento en el panel ────────────────────────────────────────────────
 t('el WS intercepta cuenta_final ANTES de agregarPedido (no entra al tablero)', () => {
   assert.ok(html.includes(`msg.pedido?.tipo_comanda === 'cuenta_final'`), 'guard de tipo_comanda');
-  assert.ok(html.includes('recibirCuentaFinal(msg.pedido)'), 'va a recibirCuentaFinal');
+  // Fixture actualizado (fase Edge): la llamada real lleva además la
+  // bandera impresionEdge -- el contrato bajo prueba (cuenta_final se
+  // intercepta y va a recibirCuentaFinal, jamás al tablero) es el mismo.
+  assert.ok(html.includes('recibirCuentaFinal(msg.pedido, msg.impresionEdge === true)'), 'va a recibirCuentaFinal');
   const guard = html.indexOf(`tipo_comanda === 'cuenta_final'`);
   const normal = html.indexOf(`else if (msg.tipo === 'nuevo_pedido')`);
   assert.ok(guard !== -1 && normal !== -1 && guard < normal, 'las comandas normales siguen pasando por agregarPedido en el else');

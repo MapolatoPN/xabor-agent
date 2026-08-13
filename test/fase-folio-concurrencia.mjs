@@ -65,6 +65,18 @@ async function limpiar() {
 await limpiar();
 for (const n of [A, B]) { await fijarModulo(n, 'pos'); await fijarModulo(n, 'menu'); await fijarModulo(n, 'repartidores'); }
 
+// Fixture P0 (seguridad transaccional): el caso de re-guardado por canal
+// 'whatsapp' ahora pasa por el validador de órdenes, que exige productos
+// REALES del catálogo. Se siembra un producto propio de esta suite
+// (idempotente y limpiado al final).
+await pool.query(`DELETE FROM menu_productos WHERE negocio_id = $1 AND nombre = 'FOLIOTEST Producto'`, [A]);
+await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre = 'FOLIOTEST Cat'`, [A]);
+const { rows: [catFolioP0] } = await pool.query(
+  `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,'FOLIOTEST Cat',TRUE,998) RETURNING id`, [A]);
+await pool.query(
+  `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
+   VALUES ($1,$2,'FOLIOTEST Producto',100,TRUE,FALSE,0)`, [A, catFolioP0.id]);
+
 // ═════════ 1-4) Contrato de guardarPedidoActivo (sin contador) ═════════
 // Folios con prefijo FOLIOTEST-: invisibles para obtenerMaxFolioNum
 // (^XAB-[0-9]+$), así que no mueven el contador de ninguna instancia.
@@ -222,7 +234,14 @@ await t('CONCURRENCIA', 'multi-instancia: la otra réplica gana varios folios y 
 
 // ═════════ 14-17) Llamadores idempotentes y canales ═════════
 await t('LLAMADORES', 'WhatsApp: el re-guardado defensivo del MISMO pedido es un conflicto esperado, no duplica ni sobrescribe', async () => {
-  const p = await registrarPedido(ordenBase(A, { cliente: { nombre: 'Cliente WA', telefono: '8781110001' } }), 'whatsapp');
+  // Fixture P0: el canal 'whatsapp' pasa por el validador transaccional,
+  // así que la orden lleva el producto REAL sembrado arriba y forma de
+  // pago válida -- lo probado aquí (re-guardado idempotente) no cambia.
+  const p = await registrarPedido(ordenBase(A, {
+    cliente: { nombre: 'Cliente WA', telefono: '8781110001' },
+    items: [{ nombre: 'FOLIOTEST Producto', cantidad: 1, precio_unitario: 100 }],
+    forma_pago: 'efectivo',
+  }), 'whatsapp');
   const r = await guardarPedidoActivo(p, A); // exactamente lo que hace whatsapp-meta.js
   assert.strictEqual(r.ok, true, 'nunca es un error');
   assert.strictEqual(r.insertado, false);

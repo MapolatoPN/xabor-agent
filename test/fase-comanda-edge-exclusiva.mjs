@@ -221,6 +221,18 @@ const A = await montarNegocio('edge-excl-a', 'Acuña Demo');
 // B: negocio SIN Edge ni impresoras (el caso que no debe cambiar).
 const B = await montarNegocio('edge-excl-b', 'Sin Edge Demo');
 
+// Higiene entre corridas: los negocios son persistentes (por slug) y una
+// corrida anterior interrumpida dejaba el terminal 'PC CAJA' vivo -- el
+// alta de abajo tronaba con NOMBRE_DUPLICADO en pleno setup. Se parte
+// siempre de cero terminales/impresoras/rutas para ambos negocios mock.
+for (const neg of [A, B]) {
+  await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [neg.negocioId]).catch(() => {});
+  await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [neg.negocioId]).catch(() => {});
+  await pool.query(
+    `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
+    [neg.negocioId]).catch(() => {});
+}
+
 const edgeA = await altaEdge(A.negocioId, { nombre: 'PC CAJA' });
 const impCocina = await crearImpresora(A.negocioId, {
   terminalId: edgeA.id, nombre: 'POS Printer 203DPI  Series 2',

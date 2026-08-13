@@ -51,6 +51,7 @@ async function t(categoria, nombre, fn) {
 // en los negocios sembrados, para que el orden de ejecución nunca importe.
 const TEL_COMPARTIDO = '5218781119001';
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE 'XABP0%'`, [[SEED.negocioA, SEED.negocioB, SEED.nonnaMayeId]]);
+await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND datos->>'canal' = 'aislamiento-test'`, [[SEED.negocioA, SEED.negocioB, SEED.nonnaMayeId]]);
 // perfiles_clientes referencia clientes(telefono) con FK: si una corrida
 // anterior (o la memoria del bot en background) dejó un perfil para este
 // teléfono, el DELETE de clientes de abajo violaría la FK y tumbaría la
@@ -83,9 +84,16 @@ await t('PEDIDO', 'registrarPedido sin negocioId (canal voz) -> TENANT_CONTEXT_R
   const orden = { cliente: { nombre: 'Cliente Test', telefono: TEL_COMPARTIDO }, total: 100, items: [] };
   await assert.rejects(() => registrarPedido(orden, 'voz'), /TENANT_CONTEXT_REQUIRED/);
 });
+// Fixture P0 (seguridad transaccional): estos tres casos prueban la
+// MECÁNICA DE TENANT de registrarPedido/obtenerPedidoPorId, no el flujo
+// LLM. El canal 'whatsapp' ahora pasa por el validador transaccional (que
+// con razón rechaza items:[] como ORDEN_SIN_ITEMS), así que aquí se usa un
+// canal de prueba no-LLM -- la propiedad bajo prueba (el negocioId jamás
+// se rellena ni se cruza) es idéntica en todos los canales. El gate LLM
+// tiene su propia suite: fase-seguridad-transaccional.mjs.
 await t('PEDIDO', 'registrarPedido con negocioId real -> pedido.negocioId = ese negocio, nunca otro', async () => {
   const orden = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 250, items: [], negocioId: SEED.negocioA };
-  const pedido = await registrarPedido(orden, 'whatsapp');
+  const pedido = await registrarPedido(orden, 'aislamiento-test');
   assert.strictEqual(pedido.negocioId, SEED.negocioA);
   assert.notStrictEqual(pedido.negocioId, SEED.nonnaMayeId);
 });
@@ -93,13 +101,13 @@ await t('PEDIDO', 'registrarPedido con negocioId real -> pedido.negocioId = ese 
 // ═══════════ 2. obtenerPedidoPorId: verificación de dueño (defensa en profundidad) ═══════════
 await t('PEDIDO', 'obtenerPedidoPorId con negocioId equivocado -> undefined (idéntico a inexistente)', async () => {
   const ordenA = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 300, items: [], negocioId: SEED.negocioA };
-  const pedidoA = await registrarPedido(ordenA, 'whatsapp');
+  const pedidoA = await registrarPedido(ordenA, 'aislamiento-test');
   assert.strictEqual(obtenerPedidoPorId(pedidoA.id, SEED.nonnaMayeId), undefined);
   assert.strictEqual(obtenerPedidoPorId(pedidoA.id, SEED.negocioA)?.id, pedidoA.id);
 });
 await t('PEDIDO', 'obtenerPedidoPorId sin negocioId (descubrimiento legítimo, p. ej. webhook) sigue funcionando', async () => {
   const ordenA = { cliente: { nombre: 'Cliente Alora', telefono: TEL_COMPARTIDO }, total: 300, items: [], negocioId: SEED.negocioA };
-  const pedidoA = await registrarPedido(ordenA, 'whatsapp');
+  const pedidoA = await registrarPedido(ordenA, 'aislamiento-test');
   const encontrado = obtenerPedidoPorId(pedidoA.id);
   assert.strictEqual(encontrado.negocioId, SEED.negocioA);
 });
