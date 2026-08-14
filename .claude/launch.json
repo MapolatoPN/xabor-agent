@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "xabor-local",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "dev-local.cmd"],
+      "port": 4500
+    }
+  ]
+}
