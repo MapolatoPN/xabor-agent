@@ -329,6 +329,15 @@ main { display: block; padding: 28px 32px; }
 .comanda-telefono { font-size: 0.8rem; color: var(--color-text-secondary); display: block; }
 .comanda-pago     { font-size: 0.8rem; color: var(--color-text-secondary); display: block; }
 .badge-modalidad { display: inline-block; padding: 4px 11px; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 700; margin-top: 6px; text-transform: uppercase; letter-spacing: .5px; }
+/* Estado del pedido en palabras del operador (etiquetaEstadoPedido): el
+   color acompaña al estado backend sin cambiarlo. */
+.badge-estado-pedido { display: inline-block; padding: 4px 11px; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 700; margin-top: 6px; margin-left: 4px; letter-spacing: .3px; background: #f1f0ed; color: #555; }
+.badge-estado-pedido.estado-nuevo { background: #eff6ff; color: #1d4ed8; }
+.badge-estado-pedido.estado-en_preparacion { background: #fffbeb; color: #b45309; }
+.badge-estado-pedido.estado-listo { background: #f0fdf4; color: #15803d; }
+.badge-estado-pedido.estado-entregado { background: #f1f0ed; color: #666; }
+.badge-estado-pedido.estado-cancelado { background: #fef2f2; color: #b91c1c; }
+.badge-estado-pedido.estado-pendiente_pago { background: #fff7ed; color: #c2410c; }
 .badge-recoger { background: var(--color-success-light); color: #047857; }
 .badge-entrega { background: var(--color-brand-light); color: var(--color-brand); }
 .badge-presencial { background: var(--color-surface-2); color: var(--color-text-secondary); }
@@ -612,6 +621,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   .comanda-telefono { display: block; font-size: 10px !important; }
   .comanda-pago     { display: block; font-size: 10px !important; font-weight: 900 !important; }
   .badge-modalidad { display: block !important; font-size: 11px !important; font-weight: 900 !important; text-transform: uppercase; text-align: center; padding: 3px 0 !important; margin: 3px 0 !important; background: #000 !important; color: #fff !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; border-radius: 0 !important; }
+  /* El estado en pantalla no aporta en el papel: el ticket ya es el documento */
+  .badge-estado-pedido { display: none !important; }
   .ticket-direccion { font-size: 10px !important; border-left: 2px solid #000 !important; padding: 1px 4px !important; margin: 2px 0 !important; background: none !important; }
   .comanda-items { margin: 2px 0; }
   .ticket-items-header { display: flex; font-size: 10px !important; font-weight: 900 !important; border-top: 1px solid #000 !important; border-bottom: 1px solid #000 !important; padding: 2px 0; }
@@ -2331,6 +2342,25 @@ function totalEnLetras(n) {
   return r.trim();
 }
 
+// Traducción VISUAL del estado según la modalidad — el backend no cambia:
+// mismos estados de siempre (nuevo/en_preparacion/listo/entregado/cancelado
+// + pendiente_pago), solo la etiqueta que lee el operador es distinta:
+// "listo" significa "listo PARA RECOGER" si el cliente viene por él, y
+// "listo PARA ENVIAR" si va a domicilio.
+function etiquetaEstadoPedido(p) {
+  const esEntrega = p.modalidad === 'entrega a domicilio';
+  const esRecoger = (p.modalidad || '').toLowerCase().includes('recoger');
+  switch (p.estado) {
+    case 'nuevo':           return 'Nuevo';
+    case 'en_preparacion':  return 'En preparación';
+    case 'listo':           return esRecoger ? 'Listo para recoger' : (esEntrega ? 'Listo para enviar' : 'Listo');
+    case 'entregado':       return 'Entregado';
+    case 'cancelado':       return 'Cancelado';
+    case 'pendiente_pago':  return 'Esperando pago';
+    default:                return p.estado || '';
+  }
+}
+
 function renderComanda(p) {
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega    = p.modalidad === 'entrega a domicilio';
@@ -2409,6 +2439,7 @@ function renderComanda(p) {
         <div class="comanda-nombre">${nombre}</div>
         ${formaPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
+        <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
         ${pagoStatus}
       </div>
       <div class="comanda-items">
@@ -2456,6 +2487,12 @@ function actualizarContador() {
 function actualizarEstadoUI(id, estado) {
   const card = document.getElementById(`comanda-${id}`);
   if (card) { card.className = `comanda ${estado}`; if (pedidos[id]) pedidos[id].estado = estado; }
+  // La etiqueta en palabras sigue al estado sin re-render completo
+  const lbl = document.querySelector(`[data-pedido-estado="${id}"]`);
+  if (lbl && pedidos[id]) {
+    lbl.textContent = etiquetaEstadoPedido(pedidos[id]);
+    lbl.className = `badge-estado-pedido estado-${estado}`;
+  }
 }
 
 function marcarPagoConfirmado(pedidoId) {
