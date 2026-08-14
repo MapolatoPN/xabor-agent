@@ -527,11 +527,16 @@ await t('LEGADO', 'ningún negocio puede volver a recibir el menu.png global', (
 
 // ─── El panel declara la sección ───────────────────────────────────────────
 
-await t('PANEL-HTML', 'la sección Menú automático está en Config, junto a WhatsApp', () => {
+// Reingeniería UX 2026-08: el bloque se movió INTACTO de Config a Catálogo
+// (vista-menu) porque la imagen del menú es contenido del catálogo; el
+// contrato pasa a ser "vive dentro de Catálogo, después del editor".
+await t('PANEL-HTML', 'la sección Menú automático vive en Catálogo (vista-menu)', () => {
   const html = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
   const i = html.indexOf('<div id="wa-menu"></div>');
   assert.ok(i > 0, 'el contenedor tiene que existir como ELEMENTO, no dentro de un template');
-  assert.ok(html.indexOf('<div id="int-form"></div>') > i, 'va antes del formulario de integraciones');
+  const iEditor = html.indexOf('<div id="menu-editor"></div>');
+  assert.ok(iEditor > 0 && i > iEditor, 'va dentro de Catálogo, después del editor de menú');
+  assert.ok(html.indexOf('<div id="int-form"></div>') > i, 'Config (int-form) queda después en el documento');
   // Fixture V2 (multiimagen): quitarImagenMenu se volvió quitarPaginaMenu
   // (por página) y se agregaron elegirImagenMenu/moverPaginaMenu.
   for (const f of ['pintarMenuAutomatico', 'subirImagenMenu', 'quitarPaginaMenu', 'elegirImagenMenu', 'moverPaginaMenu', 'alternarMenuAutomatico']) {
