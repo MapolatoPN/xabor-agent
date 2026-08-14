@@ -81,3 +81,20 @@ AUTOMATIZACIÓN.
    nuevas áreas equivalentes.
 5. Multi-tenant: todo pasa por `apiFetch` (sesión) — no se agrega ninguna
    llamada con negocioId de frontend.
+
+## Estado de implementación (2026-08-14, rama feat/reingenieria-ux)
+
+| Fase | Commit | Contenido |
+|---|---|---|
+| UX-2 Navegación agrupada | `1036976` | Sidebar por áreas (Operación/Catálogo/Clientes/Automatización/Administración/Configuración), mismos ids y permisos |
+| UX-3 Pedido por modalidad + Inicio | `49adec9` | Botón primario "+ Nuevo pedido" (sidebar/Inicio/bottom-nav) → selector Restaurante/Para llevar/Recoger/Domicilio que rutea a la captura existente; vista Inicio con pedidos activos en vivo, ventas de hoy y cobertura de impresión |
+| UX-4 Config por tarjetas | `bb04066` | Portada de 8 tarjetas con chips de cobertura ✓/⚠/○; bloques movidos intactos a subsecciones; wa-menu y "Subir menú a Rappi" → Catálogo; interruptor de atención automática → Automatización; WhatsApp movido sin tocar su JS |
+| UX-4 contrato de tests | `b88fd0c` | fase-whatsapp-menu-automatico: el contrato del menú automático apunta a Catálogo |
+| UX-5 estados por modalidad | `0928771` | etiquetaEstadoPedido: "Listo para recoger"/"Listo para enviar" según modalidad, solo visual, en vivo, no se imprime |
+
+Verificación: 21 suites verdes (impresion-autoservicio 44, impresion-self-service 56,
+whatsapp-menu-automatico 55, menu-multiimagen 16, seguridad-transaccional 18,
+p0-aislamiento 29, whatsapp-coexistence 24, chat-imagenes 38, comanda-edge 23,
+más el lote de contrato del panel), responsive desktop/tablet/móvil, gating
+admin/staff y por módulos verificado con sesiones reales, 11 capturas de evidencia.
+Sin deploy: pendiente de autorización.
