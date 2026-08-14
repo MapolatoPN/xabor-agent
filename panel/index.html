@@ -5081,27 +5081,31 @@ function impSelect(id, opciones, valor) {
     }).join('') + '</select>';
 }
 
-function impFilaImpresora(equipoId, nombre, destinoActual, anchoActual, aviso) {
+function impFilaImpresora(equipoId, nombre, destinosActuales, anchoActual, aviso) {
   var idSeguro = 'imp-' + btoa(unescape(encodeURIComponent(nombre))).replace(/[^A-Za-z0-9]/g, '');
-  var destinos = Object.keys(impEstado.destinos).map(function (k) {
-    return { v: k, t: impEstado.destinos[k].etiqueta };
-  });
-  destinos.unshift({ v: '', t: 'No usar' });
+  // Multidestino: una impresora puede imprimir Caja Y Cocina a la vez (el
+  // negocio con una sola impresora para todo). Casillas, no elección única.
+  var marcados = destinosActuales || [];
+  var estabaAsignada = marcados.length > 0;
+  var checks = Object.keys(impEstado.destinos).map(function (k) {
+    return '<label style="font-size:0.85rem;color:#333;margin-right:12px;margin-top:8px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;">' +
+      '<input type="checkbox" id="' + idSeguro + '-dest-' + k + '"' + (marcados.indexOf(k) !== -1 ? ' checked' : '') + '>' +
+      impEstado.destinos[k].etiqueta + '</label>';
+  }).join('');
   var nombreJson = JSON.stringify(nombre).replace(/"/g, '&quot;');
   return '<div style="border-top:1px solid #f0ede6;padding:12px 0;">' +
     '<div style="font-weight:700;font-size:0.95rem;">' + nombre + '</div>' +
     (aviso ? '<div style="color:#f59e0b;font-size:0.82rem;margin-top:4px;">' + aviso + '</div>' : '') +
-    (!destinoActual ? '<div style="color:#888;font-size:0.8rem;margin-top:4px;">¿No sabes cuál es? Imprime una prueba y mira cuál suelta papel.</div>' : '') +
+    (!estabaAsignada ? '<div style="color:#888;font-size:0.8rem;margin-top:4px;">¿No sabes cuál es? Imprime una prueba y mira cuál suelta papel.</div>' : '') +
     '<div style="display:flex;flex-wrap:wrap;align-items:center;">' +
       // La prueba SIEMPRE disponible, también antes de asignar: con dos
       // impresoras del mismo modelo, identificar por papel es EL paso previo
       // a decidir cuál es Cocina y cuál es Caja.
       impBoton('Imprimir prueba', "probarImpresora('" + equipoId + "'," + nombreJson + ')') +
-      '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">¿Dónde está?</span>' +
-      impSelect(idSeguro + '-destino', destinos, destinoActual || '') +
+      '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">¿Qu&eacute; imprime aqu&iacute;?</span>' + checks +
       '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">Papel:</span>' +
       impSelect(idSeguro + '-ancho', impEstado.anchos.map(function (a) { return { v: a, t: a + ' mm' }; }), anchoActual || 58) +
-      impBoton('Guardar', "guardarImpresora('" + equipoId + "','" + idSeguro + "'," + nombreJson + ',' + (destinoActual ? 'true' : 'false') + ')', true) +
+      impBoton('Guardar', "guardarImpresora('" + equipoId + "','" + idSeguro + "'," + nombreJson + ',' + (estabaAsignada ? 'true' : 'false') + ')', true) +
     '</div></div>';
 }
 
@@ -5211,10 +5215,10 @@ function pintarImpresoras() {
 
       eq.asignadas.forEach(function (a) {
         var aviso = a.presente === false ? '&#9888; Impresora no encontrada actualmente en este equipo. Revisa cable USB y que est&eacute; encendida.' : '';
-        html += impFilaImpresora(eq.id, a.nombreWindows, a.destinos[0] || '', a.anchoMm, aviso);
+        html += impFilaImpresora(eq.id, a.nombreWindows, a.destinos, a.anchoMm, aviso);
       });
       eq.detectadas.filter(function (d) { return !d.yaConfigurada; }).forEach(function (d) {
-        html += impFilaImpresora(eq.id, d.nombre, '', 58, '');
+        html += impFilaImpresora(eq.id, d.nombre, [], 58, '');
       });
 
       // Resumen operativo: qué saldrá dónde, en el idioma del restaurante.
@@ -5222,12 +5226,23 @@ function pintarImpresoras() {
       if (resumen.length) {
         html += '<div style="background:#f7f5f0;border-radius:8px;padding:10px 14px;margin-top:10px;font-size:0.85rem;color:#444;">' +
           resumen.map(function (a) {
-            var etiqueta = (impEstado.destinos[a.destinos[0]] || {}).etiqueta || a.destinos[0];
-            return '<b>' + etiqueta + '</b> &rarr; ' + a.nombreWindows;
+            var etiquetas = a.destinos.map(function (d) {
+              return (impEstado.destinos[d] || {}).etiqueta || d;
+            }).join(' + ');
+            return '<b>' + etiquetas + '</b> &rarr; ' + a.nombreWindows;
           }).join('<br>') + '</div>';
       }
       html += '</div>';
     });
+    // Cobertura honesta ANTES del primer pedido: si ninguna impresora tiene
+    // marcada Cocina, las comandas de los pedidos caeran en sinRuta y no
+    // saldra papel -- se dice aqui, nunca se agrega Cocina a escondidas. Un
+    // negocio que solo quiere tickets puede quedarse asi, pero lo sabe.
+    if (e.cobertura && !e.cobertura.comanda) {
+      html += '<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:12px 16px;margin-top:12px;font-size:0.87rem;color:#78350f;">' +
+        '<b>No tienes una impresora configurada para Cocina.</b> Las comandas no se imprimir&aacute;n autom&aacute;ticamente. ' +
+        'Si quieres comandas en papel, marca la casilla <b>Cocina</b> en una de tus impresoras y guarda.</div>';
+    }
     html += impBoton('Conectar otro equipo', 'conectarEquipoImpresion()');
   }
 
@@ -5290,16 +5305,21 @@ function cancelarVinculacionImpresion() {
 
 async function guardarImpresora(equipoId, idSeguro, nombre, estabaAsignada) {
   if (impOcupado) return;
-  var destino = document.getElementById(idSeguro + '-destino').value;
+  // Multidestino: se guardan EXACTAMENTE las casillas marcadas. Marcar Caja
+  // y Cocina a la vez es valido (una sola impresora para todo).
+  var destinos = Object.keys(impEstado.destinos).filter(function (k) {
+    var el = document.getElementById(idSeguro + '-dest-' + k);
+    return el && el.checked;
+  });
   var anchoMm = document.getElementById(idSeguro + '-ancho').value;
 
-  // "No usar" sobre una impresora que YA tenía destino = quitarla. Sobre una
-  // sin asignar todavía, no hay nada que guardar.
-  if (!destino && !estabaAsignada) { impProgreso('Elige d&oacute;nde est&aacute; esta impresora (Cocina o Caja) antes de guardar.', true); return; }
+  // Cero casillas sobre una impresora que YA imprimia algo = dejarla fuera de
+  // uso (explicito, nunca silencioso). Sobre una sin asignar, nada que guardar.
+  if (!destinos.length && !estabaAsignada) { impProgreso('Marca qu&eacute; imprime esta impresora (Caja, Cocina o ambas) antes de guardar.', true); return; }
   impOcupado = true; pintarImpresoras(); impProgreso('Guardando...');
   try {
     var r, data;
-    if (!destino) {
+    if (!destinos.length) {
       r = await apiFetch('/api/impresion/self-service/quitar', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre }),
@@ -5313,7 +5333,7 @@ async function guardarImpresora(equipoId, idSeguro, nombre, estabaAsignada) {
     }
     r = await apiFetch('/api/impresion/self-service/asignar', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre, destino: destino, anchoMm: Number(anchoMm) }),
+      body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre, destinos: destinos, anchoMm: Number(anchoMm) }),
     });
     data = await r.json();
     if (!r.ok) throw new Error(data.error || 'No se pudo guardar');

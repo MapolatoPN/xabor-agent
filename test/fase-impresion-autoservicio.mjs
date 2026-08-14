@@ -27,7 +27,7 @@ const HTML = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool } = await import('../src/services/database.js');
 const { crearEdge: altaEdge, generarEmparejamiento, canjearEmparejamiento, listarEdges } = await import('../src/services/edgeService.js');
-const { listarImpresoras, listarRutas } = await import('../src/services/impresionService.js');
+const { listarImpresoras, listarRutas, crearRuta, crearTrabajosDePedido, crearTrabajosDeDocumento } = await import('../src/services/impresionService.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -462,6 +462,181 @@ await t('SEGURIDAD', 'P9. tenant A no puede generar pairing para el equipo de B,
   } finally {
     await pool.query(`DELETE FROM terminales WHERE id = $1`, [edgeB.id]).catch(() => {});
   }
+});
+
+// ═══════════ Multidestino: una impresora puede ser Caja Y Cocina ═══════════
+// Fix de producto tras el incidente de Nonna: su única impresora estaba
+// asignada a Caja (documento/cuenta), los pedidos emiten documento/comanda,
+// y el select exclusivo del panel hacía imposible tener ambas -- 0 trabajos
+// de comanda con todo lo demás funcionando.
+const P80 = 'POS58 Printer';           // en este punto: cocina, 58 mm
+const P58 = 'POS58 Printer (Copy 1)';  // en este punto: caja, 80 mm
+
+async function asignarR(nombre, destinos, anchoMm, ck = ckAdminA) {
+  return api(BASE, '/api/impresion/self-service/asignar', {
+    cookie: ck, method: 'POST',
+    body: { terminalId: edgeA.id, nombreWindows: nombre, destinos, ...(anchoMm ? { anchoMm } : {}) },
+  });
+}
+async function rutasDocDe(nombre) {
+  const imp = (await listarImpresoras(NEG_A)).find((i) => i.config?.spoolerNombre === nombre);
+  if (!imp) return { imp: null, rutas: [] };
+  const rutas = (await listarRutas(NEG_A)).filter((r) => r.impresora_id === imp.id && r.ambito === 'documento' && r.activa);
+  return { imp, rutas };
+}
+let seqPedido = 0;
+function pedidoR() {
+  return { id: `R-${Date.now()}-${seqPedido++}`, items: [{ nombre: 'Item Routing', cantidad: 1 }], canal: 'test' };
+}
+
+await t('RUTAS', 'R1/R15. solo Caja: el pedido cae en sinRuta (0 trabajos) y la cobertura lo delata', async () => {
+  const a = await asignarR(P80, ['caja']);
+  assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+  const q = await api(BASE, '/api/impresion/self-service/quitar', {
+    cookie: ckAdminA, method: 'POST', body: { terminalId: edgeA.id, nombreWindows: P58 },
+  });
+  assert.strictEqual(q.status, 200);
+  const r = await crearTrabajosDePedido({ negocioId: NEG_A, pedido: pedidoR() });
+  assert.strictEqual(r.creados.length, 0, 'sin ruta comanda no debe crearse ningun trabajo');
+  assert.strictEqual(r.sinRuta.length, 1, 'el item queda observable en sinRuta');
+  const e = await api(BASE, RUTA, { cookie: ckAdminA });
+  assert.strictEqual(e.body.cobertura.comanda, false, 'la cobertura declara que falta Cocina');
+  assert.strictEqual(e.body.cobertura.cuenta, true);
+  assert.ok(HTML.includes('No tienes una impresora configurada para Cocina'), 'advertencia visible en el panel');
+  assert.ok(HTML.includes('no se imprimir&aacute;n autom&aacute;ticamente'), 'consecuencia explicita');
+});
+
+await t('RUTAS', 'R2/R16. solo Cocina: el pedido crea EXACTAMENTE el trabajo esperado', async () => {
+  const a = await asignarR(P80, ['cocina']);
+  assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+  const { imp } = await rutasDocDe(P80);
+  const r = await crearTrabajosDePedido({ negocioId: NEG_A, pedido: pedidoR() });
+  assert.strictEqual(r.creados.length, 1, 'exactamente un trabajo');
+  assert.strictEqual(r.creados[0].impresora_id, imp.id);
+  assert.strictEqual(r.creados[0].terminal_id, edgeA.id);
+  assert.strictEqual(r.sinRuta.length, 0);
+  const e = await api(BASE, RUTA, { cookie: ckAdminA });
+  assert.strictEqual(e.body.cobertura.comanda, true);
+});
+
+await t('RUTAS', 'R3. Caja + Cocina en la MISMA impresora: comanda 1 trabajo, cuenta 1 trabajo, cero duplicados', async () => {
+  const a = await asignarR(P80, ['caja', 'cocina']);
+  assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+  const { imp, rutas } = await rutasDocDe(P80);
+  assert.deepStrictEqual(rutas.map((r) => r.clave).sort(), ['comanda', 'cuenta'], 'ambas rutas conviven');
+  const rc = await crearTrabajosDePedido({ negocioId: NEG_A, pedido: pedidoR() });
+  assert.strictEqual(rc.creados.length, 1, 'la comanda sale UNA vez aunque la impresora tenga dos destinos');
+  const cta = await crearTrabajosDeDocumento({
+    negocioId: NEG_A, documento: 'cuenta', origenTipo: 'prueba-r3', origenId: `r3-${Date.now()}`, payload: { total: 100 },
+  });
+  assert.strictEqual(cta.creados.length, 1, 'la cuenta sale UNA vez por la misma impresora');
+  assert.strictEqual(cta.creados[0].impresora_id, imp.id);
+});
+
+await t('RUTAS', 'R4. impresoras separadas: cada documento llega SOLO a la suya', async () => {
+  assert.strictEqual((await asignarR(P80, ['caja'])).status, 200);
+  assert.strictEqual((await asignarR(P58, ['cocina'])).status, 200);
+  const caja = (await rutasDocDe(P80)).imp;
+  const cocina = (await rutasDocDe(P58)).imp;
+  const rc = await crearTrabajosDePedido({ negocioId: NEG_A, pedido: pedidoR() });
+  assert.strictEqual(rc.creados.length, 1);
+  assert.strictEqual(rc.creados[0].impresora_id, cocina.id, 'la comanda va a la impresora de Cocina');
+  const cta = await crearTrabajosDeDocumento({
+    negocioId: NEG_A, documento: 'cuenta', origenTipo: 'prueba-r4', origenId: `r4-${Date.now()}`, payload: {},
+  });
+  assert.strictEqual(cta.creados.length, 1);
+  assert.strictEqual(cta.creados[0].impresora_id, caja.id, 'la cuenta va a la impresora de Caja');
+});
+
+await t('RUTAS', 'R5. Caja -> Caja+Cocina CONSERVA la ruta cuenta (misma fila) y agrega comanda', async () => {
+  const antes = (await rutasDocDe(P80)).rutas.find((r) => r.clave === 'cuenta');
+  assert.ok(antes, 'precondicion: P80 tiene cuenta');
+  assert.strictEqual((await asignarR(P80, ['caja', 'cocina'])).status, 200);
+  const { rutas } = await rutasDocDe(P80);
+  assert.deepStrictEqual(rutas.map((r) => r.clave).sort(), ['comanda', 'cuenta']);
+  assert.ok(rutas.some((r) => r.clave === 'cuenta' && r.id === antes.id), 'la ruta cuenta es la MISMA fila, no una recreada');
+});
+
+await t('RUTAS', 'R6. Caja+Cocina -> Cocina elimina SOLO cuenta y conserva comanda intacta', async () => {
+  const antes = (await rutasDocDe(P80)).rutas.find((r) => r.clave === 'comanda');
+  assert.strictEqual((await asignarR(P80, ['cocina'])).status, 200);
+  const { rutas } = await rutasDocDe(P80);
+  assert.deepStrictEqual(rutas.map((r) => r.clave), ['comanda']);
+  assert.strictEqual(rutas[0].id, antes.id, 'la ruta comanda no fue recreada');
+});
+
+await t('RUTAS', 'R7. guardar dos veces lo mismo es idempotente (mismas filas, cero duplicados)', async () => {
+  assert.strictEqual((await asignarR(P80, ['cocina'])).status, 200);
+  const antes = (await rutasDocDe(P80)).rutas;
+  assert.strictEqual((await asignarR(P80, ['cocina'])).status, 200);
+  const despues = (await rutasDocDe(P80)).rutas;
+  assert.deepStrictEqual(despues.map((r) => r.id).sort(), antes.map((r) => r.id).sort());
+});
+
+await t('RUTAS', 'R8/R9. imprimir prueba NO toca destinos NI ancho (regresion del bug 80mm)', async () => {
+  assert.strictEqual((await asignarR(P80, ['caja', 'cocina'], 80)).status, 200);
+  const antes = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  const p = await api(BASE, '/api/impresion/self-service/probar', {
+    cookie: ckAdminA, method: 'POST', body: { terminalId: edgeA.id, nombreWindows: P80 },
+  });
+  assert.strictEqual(p.status, 201);
+  const despues = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  assert.deepStrictEqual(despues, antes, 'la prueba no altera destinos');
+  assert.strictEqual(await anchoDe(P80), 80, 'la prueba no altera el ancho');
+});
+
+await t('RUTAS', 'R10. una impresora en 58 y otra en 80 conservan cada una su ancho', async () => {
+  assert.strictEqual((await asignarR(P58, ['cocina'], 58)).status, 200);
+  assert.strictEqual(await anchoDe(P80), 80);
+  assert.strictEqual(await anchoDe(P58), 58);
+});
+
+await t('SEGURIDAD', 'R11. tenant B no puede modificar rutas de A (multidestino incluido)', async () => {
+  const antes = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  const x = await asignarR(P80, ['caja'], null, ckAdminB);
+  assert.ok(x.status >= 400, `asignar cross-tenant debe rechazarse, llego ${x.status}`);
+  const despues = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  assert.deepStrictEqual(despues, antes, 'las rutas de A quedaron intactas');
+});
+
+await t('RUTAS', 'R12. editar destinos de documento NO destruye rutas de categoria/producto', async () => {
+  const { imp } = await rutasDocDe(P80);
+  const rutaCat = await crearRuta(NEG_A, { impresoraId: imp.id, ambito: 'categoria', clave: 'r12 bebidas', modo: 'agregar' });
+  try {
+    assert.strictEqual((await asignarR(P80, ['caja'])).status, 200);
+    assert.strictEqual((await asignarR(P80, ['caja', 'cocina'])).status, 200);
+    const cat = (await listarRutas(NEG_A)).find((r) => r.id === rutaCat.id);
+    assert.ok(cat && cat.activa !== false, 'la ruta de categoria sobrevive a cualquier edicion de destinos');
+  } finally {
+    await pool.query(`DELETE FROM impresion_rutas WHERE id = $1`, [rutaCat.id]).catch(() => {});
+  }
+});
+
+await t('RUTAS', 'R13. Caja+Cocina persiste tras releer (reload) y tras sesion nueva (login)', async () => {
+  assert.strictEqual((await asignarR(P80, ['caja', 'cocina'])).status, 200);
+  const lee = async (ck) => {
+    const r = await api(BASE, RUTA, { cookie: ck });
+    const eq = r.body.equipos.find((e2) => e2.id === edgeA.id);
+    return (eq.asignadas.find((a) => a.nombreWindows === P80) || {}).destinos?.sort();
+  };
+  assert.deepStrictEqual(await lee(ckAdminA), ['caja', 'cocina']);
+  assert.deepStrictEqual(await lee(ckAdminA), ['caja', 'cocina'], 'reload');
+  assert.deepStrictEqual(await lee(cookie(SEED.adminNegocioAUsuarioId, NEG_A, 'admin')), ['caja', 'cocina'], 'sesion nueva');
+});
+
+await t('RUTAS', 'R14. reconfigurar una impresora no cambia NADA de la otra', async () => {
+  const antes = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  assert.strictEqual((await asignarR(P58, ['caja'])).status, 200);
+  assert.strictEqual((await asignarR(P58, ['cocina'])).status, 200);
+  const despues = (await rutasDocDe(P80)).rutas.map((r) => r.id).sort();
+  assert.deepStrictEqual(despues, antes);
+});
+
+await t('WIZARD', 'R-UI. el panel ofrece casillas (no eleccion unica) y las manda como lista', async () => {
+  assert.ok(HTML.includes("type=\"checkbox\" id=\"' + idSeguro + '-dest-'"), 'casillas por destino');
+  assert.ok(/destinos: destinos/.test(HTML), 'guardar manda la lista de casillas marcadas');
+  assert.ok(HTML.includes('Marca qu&eacute; imprime esta impresora'), 'mensaje de cero casillas');
+  assert.ok(!HTML.includes("impSelect(idSeguro + '-destino'"), 'el select exclusivo de destino no puede volver');
 });
 
 } finally {

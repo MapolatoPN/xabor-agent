@@ -2733,9 +2733,10 @@ app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
 });
 
 app.post('/api/impresion/self-service/asignar', requireAdminSeguro, async (req, res) => {
-  const { terminalId, nombreWindows, destino, anchoMm } = req.body || {};
+  // `destinos` (array) = multidestino; `destino` (string) sigue aceptado.
+  const { terminalId, nombreWindows, destino, destinos, anchoMm } = req.body || {};
   try {
-    const r = await asignarImpresora(req.negocioId, { terminalId, nombreWindows, destino, anchoMm });
+    const r = await asignarImpresora(req.negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm });
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.json(r);
   } catch (e) {

@@ -136,7 +136,19 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
     });
   }
 
-  return { hayEquipo: equipos.length > 0, equipos, destinos: DESTINOS, anchos: Object.keys(ANCHOS_MM).map(Number) };
+  // Cobertura por documento: con qué cuenta el negocio HOY. El panel la usa
+  // para avisar ANTES del primer pedido que las comandas no saldrán en papel
+  // (el caso Nonna: impresora asignada solo a Caja, pedidos cayendo en
+  // sinRuta y nadie enterado). Solo rutas activas de impresoras activas.
+  const impresorasActivas = new Set(configuradas.filter((i) => i.activa).map((i) => i.id));
+  const clavesActivas = new Set(
+    rutas.filter((r) => r.ambito === 'documento' && r.activa && impresorasActivas.has(r.impresora_id)).map((r) => r.clave));
+  const cobertura = {
+    comanda: clavesActivas.has(DESTINOS.cocina.clave),
+    cuenta: clavesActivas.has(DESTINOS.caja.clave),
+  };
+
+  return { hayEquipo: equipos.length > 0, equipos, destinos: DESTINOS, anchos: Object.keys(ANCHOS_MM).map(Number), cobertura };
 }
 
 /**
@@ -217,8 +229,13 @@ export async function registrarImpresoraParaPrueba(negocioId, { terminalId, nomb
   return { ok: true, impresoraId: r.impresora.id };
 }
 
-export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, anchoMm, sucursalId = null }) {
-  if (!DESTINOS[destino]) {
+export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm, sucursalId = null }) {
+  // Multidestino: `destinos` (array) es la forma nueva -- una impresora puede
+  // ser Caja Y Cocina a la vez (el caso Nonna: una sola impresora para todo).
+  // `destino` (string) sigue funcionando como [destino] para compatibilidad.
+  const lista = Array.isArray(destinos) ? destinos : (destino ? [destino] : []);
+  const elegidos = [...new Set(lista)];
+  if (!elegidos.length || elegidos.some((d) => !DESTINOS[d])) {
     return { ok: false, error: 'Elige para qué se va a usar esta impresora' };
   }
   const upsert = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm });
@@ -226,20 +243,28 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
   const impresora = upsert.impresora;
   const sucursal = await resolverSucursal(negocioId, sucursalId || upsert.sucursalTerminal);
 
-  // Ruta por documento. Se limpia primero lo que hubiera para no acumular
-  // destinos: si el dueño cambia Cocina→Caja, la comanda no debe seguir
-  // saliendo por las dos.
+  // Las rutas ambito='documento' de ESTA impresora quedan EXACTAMENTE como el
+  // conjunto elegido. Diff, no borrado total: una ruta que ya existe conserva
+  // su fila (guardar dos veces es idempotente), se crean solo las que faltan
+  // (ANTES de borrar nada: nunca dejamos a la impresora sin las rutas
+  // pedidas si algo falla a la mitad) y se eliminan solo las desmarcadas.
+  // Las rutas de categoría/producto no se tocan jamás desde aquí.
+  const clavesElegidas = new Set(elegidos.map((d) => DESTINOS[d].clave));
   const rutasActuales = await listarRutas(negocioId);
-  for (const r of rutasActuales) {
-    if (r.impresora_id === impresora.id && r.ambito === 'documento') {
+  const deEstaImpresora = rutasActuales.filter((r) => r.impresora_id === impresora.id && r.ambito === 'documento');
+  const clavesExistentes = new Set(deEstaImpresora.filter((r) => r.activa).map((r) => r.clave));
+  for (const clave of clavesElegidas) {
+    if (!clavesExistentes.has(clave)) {
+      await crearRuta(negocioId, { impresoraId: impresora.id, ambito: 'documento', clave, modo: 'agregar' });
+    }
+  }
+  for (const r of deEstaImpresora) {
+    if (!clavesElegidas.has(r.clave)) {
       await eliminarRuta(negocioId, r.id).catch(() => {});
     }
   }
-  await crearRuta(negocioId, {
-    impresoraId: impresora.id, ambito: 'documento', clave: DESTINOS[destino].clave, modo: 'agregar',
-  });
 
-  return { ok: true, impresoraId: impresora.id, destino, anchoMm: Number(anchoMm), sucursalId: sucursal };
+  return { ok: true, impresoraId: impresora.id, destino: elegidos[0], destinos: elegidos, anchoMm: anchoMm === undefined || anchoMm === null ? null : Number(anchoMm), sucursalId: sucursal };
 }
 
 /** Apaga una impresora sin borrar su configuración. */
