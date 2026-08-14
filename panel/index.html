@@ -147,6 +147,56 @@ header {
   padding: 14px 14px 4px; user-select: none;
 }
 .nav-grupo:first-of-type { padding-top: 4px; }
+/* "+ Nuevo pedido": la acción primaria de todo el panel. Vive arriba de la
+   navegación porque crear un pedido es el trabajo, no una sección más. */
+.nav-nuevo-pedido {
+  display: block; width: 100%; margin: 2px 0 10px;
+  padding: 11px 14px; border: none; border-radius: var(--radius-md);
+  background: var(--color-brand); color: #fff;
+  font-family: inherit; font-size: 0.9rem; font-weight: 700;
+  cursor: pointer; text-align: center; transition: filter .15s;
+}
+.nav-nuevo-pedido:hover { filter: brightness(1.08); }
+/* Selector de modalidad: un pedido primero se define por CÓMO se atiende
+   (mesa, mostrador, recoger, domicilio); cada tarjeta rutea a la captura
+   que ya existe -- aquí no se crea ningún pedido todavía. */
+#modal-modalidad {
+  display: none; position: fixed; inset: 0; z-index: 300;
+  background: rgba(26,29,35,0.5); align-items: center; justify-content: center;
+  padding: 16px;
+}
+#modal-modalidad.visible { display: flex; }
+.modalidad-box {
+  background: #fff; border-radius: 16px; padding: 20px;
+  width: 100%; max-width: 520px; box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+}
+.modalidad-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.modalidad-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 14px; border: 1px solid #e5e2da; border-radius: 12px;
+  background: #fff; cursor: pointer; font-family: inherit; text-align: left;
+  transition: all .15s;
+}
+.modalidad-card:hover { border-color: var(--color-brand); background: var(--color-brand-light); }
+.modalidad-card i { font-size: 1.4rem; color: var(--color-brand); }
+.modalidad-card b { font-size: 0.95rem; color: #1a1a1a; }
+.modalidad-card span { font-size: 0.78rem; color: #888; line-height: 1.3; }
+@media (max-width: 520px) { .modalidad-grid { grid-template-columns: 1fr; } }
+/* Inicio: resumen operativo del día en tarjetas */
+.inicio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.inicio-card {
+  background: #fff; border: 1px solid #e5e2da; border-radius: 12px;
+  padding: 16px 18px;
+}
+.inicio-lbl { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #999; }
+.inicio-val { font-size: 1.7rem; font-weight: 800; color: #1a1a1a; margin: 6px 0 2px; }
+.inicio-sub { font-size: 0.78rem; color: #888; }
+.btn-inicio-accion {
+  padding: 9px 16px; border: 1px solid #e5e2da; border-radius: 10px;
+  background: #fff; cursor: pointer; font-family: inherit;
+  font-size: 0.85rem; font-weight: 600; color: #444; transition: all .15s;
+}
+.btn-inicio-accion:hover { border-color: var(--color-brand); color: var(--color-brand); }
 
 /* ─── Bottom nav (mobile) ───────────────────────────────────────────────── */
 #bottom-nav {
@@ -515,7 +565,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   html body { background: #fff !important; }
   body { width: 76mm; margin: 0 auto; padding: 0; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; background: #fff !important; color: #000 !important; overflow: hidden; }
   header, .comanda-footer, #sin-pedidos, .comanda-hora,
-  #tabs-nav, #bottom-nav, #mas-sheet, #modal-overlay, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
+  #tabs-nav, #bottom-nav, #mas-sheet, #modal-overlay, #modal-modalidad, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
   #vista-comandas { display: block !important; padding: 0 !important; margin: 0 !important; }
   #grid-pedidos   { display: block !important; }
   .comanda { width: 100%; margin: 0; padding: 0; border: none !important; border-top: none !important; page-break-inside: avoid; break-inside: avoid; overflow: hidden; box-shadow: none !important; }
@@ -838,6 +888,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      son los mismos de siempre: aquí solo cambia la ORGANIZACIÓN, no la
      mecánica de vistas ni los permisos (data-modulo / admin-only). -->
 <div id="tabs-nav">
+  <button class="nav-nuevo-pedido" id="btn-nuevo-pedido" data-modulo="pos" onclick="abrirNuevoPedido()">+ Nuevo pedido</button>
+  <button class="tab-btn" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
+
   <div class="nav-grupo">Operación</div>
   <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
   <button class="tab-btn"        id="tab-presencial" data-modulo="pos" onclick="mostrarTab('presencial')">Mostrador</button>
@@ -1032,6 +1085,42 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
 <!-- Vistas adicionales (fuera de main para evitar max-width) -->
 <div id="vistas-extra" style="display:none;">
+
+    <!-- Inicio: resumen operativo. Solo LEE datos que otras vistas ya
+         exponen (contador WS, /api/ventas/resumen, /api/impresion/self-service);
+         no introduce ningún endpoint ni estado nuevo. -->
+    <div id="vista-inicio">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+        <div style="font-size:1.15rem;font-weight:800;color:#1a1a1a;">Resumen de hoy</div>
+        <button class="nav-nuevo-pedido" data-modulo="pos" style="width:auto;margin:0;padding:10px 18px;" onclick="abrirNuevoPedido()">+ Nuevo pedido</button>
+      </div>
+      <div class="inicio-grid">
+        <div class="inicio-card" data-modulo="pos" onclick="mostrarTab('comandas')" style="cursor:pointer;">
+          <div class="inicio-lbl">Pedidos activos</div>
+          <div class="inicio-val" id="inicio-activos">—</div>
+          <div class="inicio-sub">Toca para ver el tablero de pedidos</div>
+        </div>
+        <div class="inicio-card admin-only" data-modulo="pos" onclick="mostrarTab('ventas')" style="cursor:pointer;">
+          <div class="inicio-lbl">Ventas de hoy</div>
+          <div class="inicio-val" id="inicio-ventas">—</div>
+          <div class="inicio-sub" id="inicio-ventas-sub">&nbsp;</div>
+        </div>
+        <div class="inicio-card admin-only" onclick="mostrarTab('config')" style="cursor:pointer;">
+          <div class="inicio-lbl">Impresión en papel</div>
+          <div class="inicio-val" id="inicio-impresion" style="font-size:1rem;line-height:1.9;">—</div>
+          <div class="inicio-sub">Comandas a cocina y cuentas en caja</div>
+        </div>
+      </div>
+      <div style="margin-top:20px;">
+        <div class="inicio-lbl" style="margin-bottom:10px;">Accesos rápidos</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn-inicio-accion" data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos activos</button>
+          <button class="btn-inicio-accion" data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats</button>
+          <button class="btn-inicio-accion admin-only" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
+          <button class="btn-inicio-accion admin-only" data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Corte de caja -->
     <div id="vista-corte">
@@ -2278,6 +2367,9 @@ function iconCanal(canal) {
 function actualizarContador() {
   const n = Object.values(pedidos).filter(p => p.estado !== 'entregado').length;
   if (contador) contador.textContent = `${n} activo${n !== 1 ? 's' : ''}`;
+  // La tarjeta de Inicio usa el mismo dato en vivo que el contador del header
+  const ini = document.getElementById('inicio-activos');
+  if (ini) ini.textContent = String(n);
 }
 
 function actualizarEstadoUI(id, estado) {
@@ -2553,7 +2645,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].forEach(v => {
+  ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -2561,7 +2653,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -2581,6 +2673,7 @@ function mostrarTab(tab) {
   if (tab === 'diagnostico') cargarDiagnostico();
   if (tab === 'cotizaciones') cargarCotizaciones();
   if (tab === 'envios') abrirEnvios();
+  if (tab === 'inicio') cargarInicio();
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -2620,6 +2713,56 @@ function mostrarTab(tab) {
 // Alias para compatibilidad con cualquier llamada existente
 function abrirAdmin(seccion) { mostrarTab(seccion); }
 function cerrarAdmin() { mostrarTab('comandas'); }
+
+// ─── Nuevo pedido por modalidad ──────────────────────────────────────────────
+// El selector no crea pedidos: solo lleva a la captura correcta que ya existe.
+function abrirNuevoPedido() {
+  document.getElementById('modal-modalidad').classList.add('visible');
+}
+function cerrarNuevoPedido() {
+  document.getElementById('modal-modalidad').classList.remove('visible');
+}
+function nuevoPedidoModalidad(m) {
+  cerrarNuevoPedido();
+  if (m === 'restaurante') { location.href = '/restaurante'; return; }
+  if (m === 'llevar') { bnavTab('presencial'); return; }
+  // recoger / domicilio: la captura de Envíos con el tipo ya preseleccionado
+  bnavTab('envios');
+  envTipo(m === 'domicilio' ? 'domicilio' : 'recoger');
+}
+
+// ─── Inicio: resumen operativo ───────────────────────────────────────────────
+// Solo lee datos que otras vistas ya exponen; cualquier tarjeta que falle se
+// queda en su placeholder sin romper el resto.
+async function cargarInicio() {
+  const nAct = Object.values(pedidos).filter(p => p.estado !== 'entregado').length;
+  const elAct = document.getElementById('inicio-activos');
+  if (elAct) elAct.textContent = String(nAct);
+  if (ROL !== 'admin') return;
+  try {
+    const r = await apiFetch(`/api/ventas/resumen?desde=${isoHoy()}&hasta=${isoFinDia()}`);
+    const res = r.ok ? await r.json() : {};
+    document.getElementById('inicio-ventas').textContent = '$' + (Number(res.total_ventas) || 0).toFixed(2);
+    const nPed = Number(res.num_pedidos) || 0;
+    document.getElementById('inicio-ventas-sub').textContent = `${nPed} pedido${nPed !== 1 ? 's' : ''} cobrado${nPed !== 1 ? 's' : ''}`;
+  } catch (err) { /* la tarjeta queda en su placeholder */ }
+  try {
+    const r = await apiFetch('/api/impresion/self-service');
+    if (r.ok) {
+      const est = await r.json();
+      const el = document.getElementById('inicio-impresion');
+      if (!est.hayEquipo) {
+        el.innerHTML = '<span style="color:#888;font-weight:600;">Sin equipo vinculado</span>';
+      } else {
+        const c = est.cobertura || {};
+        const chip = (ok, lbl) => ok
+          ? `<span style="background:#f0fdf4;color:#15803d;font-weight:700;padding:3px 10px;border-radius:8px;font-size:0.82rem;">✓ ${lbl}</span>`
+          : `<span style="background:#fff7ed;color:#c2410c;font-weight:700;padding:3px 10px;border-radius:8px;font-size:0.82rem;">⚠ ${lbl}</span>`;
+        el.innerHTML = chip(c.comanda, 'Cocina') + ' ' + chip(c.cuenta, 'Caja');
+      }
+    }
+  } catch (err) { /* idem */ }
+}
 
 // ─── Bottom nav (mobile) ─────────────────────────────────────────────────────
 function bnavTab(tab) {
@@ -7241,6 +7384,40 @@ async function cargarRepartidores() {
 </script>
 
 <!-- ═══════════════ BOTTOM NAV (móvil) ═══════════════ -->
+<!-- ═══════════ SELECTOR DE MODALIDAD (+ Nuevo pedido) ═══════════
+     Un pedido primero se define por CÓMO se atiende. Cada tarjeta rutea a la
+     captura que YA existe (mostrador, envíos, restaurante) -- aquí no se crea
+     ningún pedido ni se toca el backend. -->
+<div id="modal-modalidad" onclick="if(event.target===this)cerrarNuevoPedido()">
+  <div class="modalidad-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div>
+        <div style="font-size:1.05rem;font-weight:800;color:#1a1a1a;">Nuevo pedido</div>
+        <div style="font-size:0.8rem;color:#888;">¿Cómo se va a atender?</div>
+      </div>
+      <button onclick="cerrarNuevoPedido()" style="background:none;border:none;font-size:1.2rem;color:#888;cursor:pointer;padding:4px 8px;line-height:1;">✕</button>
+    </div>
+    <div class="modalidad-grid">
+      <button class="modalidad-card" data-modulo="restaurante" onclick="nuevoPedidoModalidad('restaurante')">
+        <i class="ti ti-tools-kitchen-2"></i><b>Restaurante</b>
+        <span>Mesa con cuenta abierta; se cobra al cerrar</span>
+      </button>
+      <button class="modalidad-card" data-modulo="pos" onclick="nuevoPedidoModalidad('llevar')">
+        <i class="ti ti-paper-bag"></i><b>Para llevar</b>
+        <span>Mostrador; se cobra al momento</span>
+      </button>
+      <button class="modalidad-card" data-modulo="pos" onclick="nuevoPedidoModalidad('recoger')">
+        <i class="ti ti-building-store"></i><b>Recoger</b>
+        <span>El cliente pasa por su pedido</span>
+      </button>
+      <button class="modalidad-card" data-modulo="pos" onclick="nuevoPedidoModalidad('domicilio')">
+        <i class="ti ti-motorbike"></i><b>Domicilio</b>
+        <span>Se envía a la dirección del cliente</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <nav id="bottom-nav">
   <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
     <div class="bnav-dot"></div>
@@ -7251,6 +7428,11 @@ async function cargarRepartidores() {
     <div class="bnav-dot"></div>
     <i class="ti ti-device-tablet"></i>
     <span>POS</span>
+  </button>
+  <button class="bnav-item" data-modulo="pos" onclick="abrirNuevoPedido()">
+    <div class="bnav-dot"></div>
+    <i class="ti ti-circle-plus" style="color:var(--color-brand);"></i>
+    <span>Nuevo</span>
   </button>
   <button class="bnav-item" id="bnav-chats" onclick="bnavTab('chats')">
     <div class="bnav-dot"></div>
