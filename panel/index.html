@@ -222,6 +222,26 @@ header {
   cursor: pointer; padding: 0; margin-bottom: 16px;
 }
 .cfg-sec { display: none; }
+/* Operación como UN solo espacio: las capturas (mostrador/envíos) llevan el
+   mismo encabezado con regreso al tablero y chips para cambiar de modalidad
+   en el lugar — el operador piensa "tengo un pedido", no "voy a un módulo". */
+.mod-header {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.mod-volver {
+  background: none; border: none; color: var(--color-brand);
+  font-family: inherit; font-size: 0.85rem; font-weight: 700;
+  cursor: pointer; padding: 6px 0;
+}
+.mod-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.mod-chip {
+  border: 1px solid #e5e2da; background: #fff; border-radius: var(--radius-pill);
+  padding: 6px 14px; font-family: inherit; font-size: 0.8rem; font-weight: 700;
+  color: #666; cursor: pointer; transition: all .15s;
+}
+.mod-chip:hover { border-color: var(--color-brand); color: var(--color-brand); }
+.mod-chip.activo { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
 
 /* ─── Bottom nav (mobile) ───────────────────────────────────────────────── */
 #bottom-nav {
@@ -928,9 +948,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
 
   <div class="nav-grupo">Operación</div>
+  <!-- Las capturas por modalidad (mostrador/envíos) NO son destinos de
+       navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
+       modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
   <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
-  <button class="tab-btn"        id="tab-presencial" data-modulo="pos" onclick="mostrarTab('presencial')">Mostrador</button>
-  <button class="tab-btn"        id="tab-envios"     data-modulo="pos" onclick="mostrarTab('envios')">Envíos</button>
   <!-- Restaurante: espacio de trabajo operativo (/restaurante). Es la MISMA
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
@@ -987,6 +1008,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <!-- Tab POS -->
   <div id="vista-presencial" style="display:none;">
+    <div class="mod-header">
+      <button class="mod-volver" onclick="mostrarTab('comandas')">← Pedidos</button>
+      <div class="mod-chips">
+        <button class="mod-chip activo" data-mod="llevar" onclick="nuevoPedidoModalidad('llevar')">🥡 Para llevar</button>
+        <button class="mod-chip" data-mod="recoger" onclick="nuevoPedidoModalidad('recoger')">🏪 Recoger</button>
+        <button class="mod-chip" data-mod="domicilio" onclick="nuevoPedidoModalidad('domicilio')">🛵 Domicilio</button>
+        <button class="mod-chip" data-mod="restaurante" data-modulo="restaurante" onclick="nuevoPedidoModalidad('restaurante')">🍽️ Mesas</button>
+      </div>
+    </div>
 
     <!-- Barra flotante mobile: muestra total y abre carrito -->
     <div id="mobile-cart-bar" onclick="abrirCarritoPOS()">
@@ -1008,7 +1038,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           🧾 Pedido en curso
         </div>
         <div id="pos-order-items">
-          <div class="pos-order-empty" id="pos-empty">Selecciona productos del menú</div>
+          <div class="pos-order-empty">Selecciona productos del menú</div>
         </div>
         <div id="pos-order-footer">
           <div id="pos-fields">
@@ -1381,7 +1411,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Sección: Operación -->
       <div class="cfg-sec" id="cfg-sec-operacion">
       <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🕒 Horarios, operación, pagos y entregas</div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🕒 Horarios, operación y entregas</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Esta información la usa el bot para responder a tus clientes. Guárdala aunque el bot esté apagado.</div>
       <div id="reglas-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
       <div id="reglas-form"></div>
@@ -1445,6 +1475,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Esto es lo que el bot puede realmente ofrecer al cliente. "Enlace de pago" solo aparece disponible cuando Soporte/Superadmin configura y marca principal un proveedor real (Clip, etc.) — no se activa aquí.</div>
       <div id="metodos-pago-form"></div>
       <div id="metodos-pago-fb" style="font-size:0.85rem;margin-top:8px;"></div>
+
+      <!-- Notas de referencia para el bot (parte de reglas_atencion). Viven
+           aquí para que Pagos sea el ÚNICO lugar del panel que habla de pagos:
+           arriba lo autoritativo (lo que el bot puede ofrecer), abajo las
+           notas. El fragmento lo renderiza cargarReglasForm en este slot. -->
+      <div style="border-top:2px solid #e5e2da;margin:24px 0 16px;"></div>
+      <div style="font-size:0.95rem;font-weight:800;margin-bottom:4px;">📝 Notas e instrucciones de pago</div>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:12px;">Referencia que el bot menciona al cliente. Los métodos disponibles de verdad son los de arriba.</div>
+      <div id="reglas-pagos-form"></div>
       </div>
 
       <!-- Sección: Facturación -->
@@ -1506,6 +1545,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Tab Envíos (POS pedidos a domicilio) -->
     <div id="vista-envios" style="display:none;">
+      <div class="mod-header">
+        <button class="mod-volver" onclick="mostrarTab('comandas')">← Pedidos</button>
+        <div class="mod-chips">
+          <button class="mod-chip" data-mod="llevar" onclick="nuevoPedidoModalidad('llevar')">🥡 Para llevar</button>
+          <button class="mod-chip" data-mod="recoger" onclick="nuevoPedidoModalidad('recoger')">🏪 Recoger</button>
+          <button class="mod-chip" data-mod="domicilio" onclick="nuevoPedidoModalidad('domicilio')">🛵 Domicilio</button>
+          <button class="mod-chip" data-mod="restaurante" data-modulo="restaurante" onclick="nuevoPedidoModalidad('restaurante')">🍽️ Mesas</button>
+        </div>
+      </div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
         <div style="font-size:1.1rem;font-weight:800;">Envíos</div>
         <div style="display:flex;background:#f1f0ed;border-radius:8px;padding:3px;gap:2px;margin-left:auto;">
@@ -2781,7 +2829,7 @@ function mostrarTab(tab) {
   if (tabEl) tabEl.classList.add('activo');
   // Acciones al abrir cada sección
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
-  if (tab === 'presencial') renderMenuPOS();
+  if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad('llevar'); }
   if (tab === 'corte')     cargarCorte();
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
@@ -2923,10 +2971,17 @@ function cerrarNuevoPedido() {
 function nuevoPedidoModalidad(m) {
   cerrarNuevoPedido();
   if (m === 'restaurante') { location.href = '/restaurante'; return; }
-  if (m === 'llevar') { bnavTab('presencial'); return; }
+  if (m === 'llevar') { bnavTab('presencial'); pintarChipsModalidad('llevar'); return; }
   // recoger / domicilio: la captura de Envíos con el tipo ya preseleccionado
   bnavTab('envios');
   envTipo(m === 'domicilio' ? 'domicilio' : 'recoger');
+}
+
+// Los chips de modalidad (encabezado compartido de mostrador/envíos) siempre
+// reflejan dónde está parado el operador; cambiar de chip cambia de captura
+// en el lugar sin pasar por el menú.
+function pintarChipsModalidad(m) {
+  document.querySelectorAll('.mod-chip').forEach(c => c.classList.toggle('activo', c.dataset.mod === m));
 }
 
 // ─── Inicio: resumen operativo ───────────────────────────────────────────────
@@ -3313,7 +3368,7 @@ function calcDescuento(subtotal) {
 function renderCarrito() {
   const cont = document.getElementById('pos-order-items');
   if (!posCarrito.length) {
-    cont.innerHTML = '<div class="pos-order-empty" id="pos-empty">Selecciona productos del menú →</div>';
+    cont.innerHTML = '<div class="pos-order-empty">Selecciona productos del menú →</div>';
     document.getElementById('pos-total-monto').textContent = '$0';
     document.getElementById('pos-subtotal-row').style.display = 'none';
     document.getElementById('pos-desc-row').style.display = 'none';
@@ -4561,13 +4616,6 @@ function renderReglasForm(reglas) {
     <label style="${campo()}">Notas operativas (opcional)</label>
     <textarea id="reg-notas" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.notas||'').replace(/</g,'&lt;')}</textarea>
 
-    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Pagos</div>
-    <div style="font-size:0.75rem;color:#888;margin-bottom:8px;">Esta lista ya no decide qué le ofrece el bot al cliente (eso ahora depende de "Config → Métodos de pago", que verifica que el proveedor esté realmente configurado). Se conserva solo para notas/instrucciones de referencia.</div>
-    <label style="${campo()}">Métodos de pago aceptados (referencia)</label>
-    <div>${pagosHtml}</div>
-    <label style="${campo()}">Instrucciones de pago para el cliente (opcional)</label>
-    <textarea id="reg-pago-instrucciones" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.pago_instrucciones||'').replace(/</g,'&lt;')}</textarea>
-
     <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Entregas</div>
     <label style="${campo()}">Costo de envío base (MXN)</label>
     ${numInput('reg-costo-envio', p.costo_envio ?? 0)}
@@ -4589,6 +4637,20 @@ function renderReglasForm(reglas) {
 
     <button onclick="guardarReglas()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:16px;">Guardar horarios y reglas</button>
   `;
+
+  // Fragmento de pagos: se renderiza en su slot dentro de Config → Pagos
+  // (la ÚNICA ubicación del panel que habla de pagos). Mismos ids de siempre:
+  // guardarReglas los lee por id sin importar en qué sección vivan.
+  const contPagos = document.getElementById('reglas-pagos-form');
+  if (contPagos) contPagos.innerHTML = `
+    <label style="${campo()}">Métodos de pago aceptados (referencia)</label>
+    <div>${pagosHtml}</div>
+    <label style="${campo()}">Instrucciones de pago para el cliente (opcional)</label>
+    <textarea id="reg-pago-instrucciones" rows="2" style="${inp()}resize:vertical;font-family:inherit;">${(p.pago_instrucciones||'').replace(/</g,'&lt;')}</textarea>
+    <div id="reglas-pagos-fb" style="font-size:0.85rem;margin:8px 0;"></div>
+    <button onclick="guardarReglas()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:0.88rem;font-weight:700;cursor:pointer;width:100%;margin-top:4px;">Guardar notas de pago</button>
+  `;
+
   renderZonasEntrega();
 }
 
@@ -4635,16 +4697,19 @@ async function guardarReglas() {
     cierres_especiales: reglasActuales.cierres_especiales || [],
     promociones: reglasActuales.promociones || [],
   };
-  const fb = document.getElementById('reglas-feedback');
-  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  // El mismo guardado puede dispararse desde Operación o desde el bloque de
+  // notas de pago (Config → Pagos): el feedback se refleja en ambos lugares.
+  const fbs = [document.getElementById('reglas-feedback'), document.getElementById('reglas-pagos-fb')].filter(Boolean);
+  const setFb = (color, txt) => fbs.forEach(el => { el.style.color = color; el.textContent = txt; });
+  setFb('#aaa', 'Guardando...');
   const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify({ reglas_atencion: nuevasReglas }) });
   const body = await r.json().catch(() => ({}));
   if (r.ok) {
     reglasActuales = nuevasReglas;
-    fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado correctamente';
-    setTimeout(() => { fb.textContent = ''; }, 3000);
+    setFb('#22c55e', '✓ Guardado correctamente');
+    setTimeout(() => setFb('', ''), 3000);
   } else {
-    fb.style.color = '#ef4444'; fb.textContent = body.error || 'Error al guardar';
+    setFb('#ef4444', body.error || 'Error al guardar');
   }
 }
 
@@ -7372,6 +7437,7 @@ function envTipo(t){
   document.getElementById('env-tipo-domicilio').classList.toggle('activo', t==='domicilio');
   document.getElementById('env-domicilio-card').style.display = (t==='domicilio')?'':'none';
   document.getElementById('env-fila-envio').style.display = (t==='domicilio')?'flex':'none';
+  pintarChipsModalidad(t); // el encabezado de modalidad sigue al tipo
   envRecalcular();
 }
 
@@ -7622,11 +7688,6 @@ async function cargarRepartidores() {
     <i class="ti ti-layout-cards"></i>
     <span>Comandas</span>
   </button>
-  <button class="bnav-item" id="bnav-presencial" onclick="bnavTab('presencial')">
-    <div class="bnav-dot"></div>
-    <i class="ti ti-device-tablet"></i>
-    <span>POS</span>
-  </button>
   <button class="bnav-item" data-modulo="pos" onclick="abrirNuevoPedido()">
     <div class="bnav-dot"></div>
     <i class="ti ti-circle-plus" style="color:var(--color-brand);"></i>
@@ -7638,7 +7699,7 @@ async function cargarRepartidores() {
     <span id="bnav-badge">0</span>
     <span>Chats</span>
   </button>
-  <button class="bnav-item" id="bnav-corte" onclick="bnavTab('corte')">
+  <button class="bnav-item" id="bnav-corte" data-modulo="caja" onclick="bnavTab('corte')">
     <div class="bnav-dot"></div>
     <i class="ti ti-cash-register"></i>
     <span>Corte</span>
