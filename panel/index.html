@@ -197,6 +197,31 @@ header {
   font-size: 0.85rem; font-weight: 600; color: #444; transition: all .15s;
 }
 .btn-inicio-accion:hover { border-color: var(--color-brand); color: var(--color-brand); }
+/* Configuración como portada de tarjetas: cada tarjeta es un área de
+   capacidades del negocio (nunca infraestructura ni IDs técnicos) y abre
+   su subsección; el chip resume cobertura (✓ listo, ⚠ incompleto, ○ sin
+   configurar) como un onboarding permanente. */
+.cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 560px) { .cfg-grid { grid-template-columns: 1fr; } }
+.cfg-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  background: #fff; border: 1px solid #e5e2da; border-radius: 12px;
+  padding: 16px; cursor: pointer; font-family: inherit; text-align: left;
+  transition: all .15s;
+}
+.cfg-card:hover { border-color: var(--color-brand); background: var(--color-brand-light); }
+.cfg-card b { font-size: 0.92rem; color: #1a1a1a; }
+.cfg-card span.cfg-desc { font-size: 0.76rem; color: #888; line-height: 1.35; }
+.cfg-chip { font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 8px; margin-top: 4px; }
+.cfg-chip.ok    { background: #f0fdf4; color: #15803d; }
+.cfg-chip.warn  { background: #fff7ed; color: #c2410c; }
+.cfg-chip.off   { background: #f1f0ed; color: #888; }
+.cfg-volver {
+  background: none; border: none; color: var(--color-brand);
+  font-family: inherit; font-size: 0.85rem; font-weight: 700;
+  cursor: pointer; padding: 0; margin-bottom: 16px;
+}
+.cfg-sec { display: none; }
 
 /* ─── Bottom nav (mobile) ───────────────────────────────────────────────── */
 #bottom-nav {
@@ -1105,7 +1130,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div class="inicio-val" id="inicio-ventas">—</div>
           <div class="inicio-sub" id="inicio-ventas-sub">&nbsp;</div>
         </div>
-        <div class="inicio-card admin-only" onclick="mostrarTab('config')" style="cursor:pointer;">
+        <div class="inicio-card admin-only" onclick="mostrarTab('config');cfgIr('equipos')" style="cursor:pointer;">
           <div class="inicio-lbl">Impresión en papel</div>
           <div class="inicio-val" id="inicio-impresion" style="font-size:1rem;line-height:1.9;">—</div>
           <div class="inicio-sub">Comandas a cocina y cuentas en caja</div>
@@ -1256,10 +1281,34 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button onclick="abrirModalCategoria()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;">+ Nueva categoría</button>
       </div>
       <div id="menu-editor"></div>
+
+      <!-- Contenido del menú que vive fuera del editor: la imagen del menú
+           que el bot manda por WhatsApp y la publicación en Rappi son acciones
+           de CATÁLOGO (antes enterradas en Config). Los bloques se mueven
+           intactos: mismos ids, mismos loaders. -->
+      <div style="max-width:560px;">
+        <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+        <div id="wa-menu"></div>
+
+        <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+        <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
+        <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
+        <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
+          📤 Subir menú a Rappi
+        </button>
+        <div id="rappi-menu-fb" style="margin-top:8px;font-size:0.85rem;text-align:center;"></div>
+      </div>
     </div>
 
     <!-- Vista Entrenamiento del bot (Fase 4) -->
     <div id="vista-entrenamiento" style="display:none;max-width:640px;margin:0 auto;">
+      <!-- El interruptor de atención automática es el control principal del
+           asistente: vive aquí (Automatización), no enterrado en Config.
+           Bloque movido intacto: mismo id, mismo loader. -->
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">Atención automática del negocio</div>
+      <div id="bot-whatsapp-form" style="margin-bottom:8px;"></div>
+
+      <div style="border-top:2px solid #e5e2da;margin:24px 0 20px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🎓 Entrenamiento del bot</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Esto define cómo habla el bot y qué sabe además de tu menú, horarios y reglas (que se configuran en la pestaña Config).</div>
       <div id="entrenamiento-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
@@ -1290,29 +1339,62 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     </div>
 
     <!-- Vista Config -->
-    <div id="vista-config" style="display:none;max-width:520px;margin:0 auto;">
+    <!-- Configuración = portada de tarjetas por área. Los bloques existentes
+         se MUEVEN intactos a subsecciones (mismos ids, mismos loaders); la
+         portada solo organiza y resume cobertura. Nada de IDs técnicos ni
+         credenciales visibles: cada tarjeta habla de capacidades del negocio. -->
+    <div id="vista-config" style="display:none;max-width:560px;margin:0 auto;">
+
+      <div id="config-portada">
+        <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">⚙️ Configuración</div>
+        <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Todo lo que tu negocio puede hacer, por áreas. Cada tarjeta te dice qué está listo y qué falta.</div>
+        <div class="cfg-grid">
+          <button class="cfg-card" onclick="cfgIr('negocio')"><b>🏪 Negocio</b><span class="cfg-desc">Nombre, dirección, contacto y horarios</span><span class="cfg-chip off" id="cfgst-negocio">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('operacion')"><b>🕒 Operación</b><span class="cfg-desc">Modalidades, tiempos de preparación, entregas y políticas</span><span class="cfg-chip off" id="cfgst-operacion">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('pagos')"><b>💳 Pagos</b><span class="cfg-desc">Formas de pago que tu negocio ofrece</span><span class="cfg-chip off" id="cfgst-pagos">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('integraciones')"><b>🔌 Integraciones</b><span class="cfg-desc">WhatsApp y Rappi conectados a tu operación</span><span class="cfg-chip off" id="cfgst-integraciones">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('equipos')"><b>🖨️ Equipos e impresión</b><span class="cfg-desc">Comandas a cocina y cuentas en caja, en papel</span><span class="cfg-chip off" id="cfgst-equipos">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('facturacion')"><b>🔐 Facturación</b><span class="cfg-desc">e.firma del SAT para CFDI</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
+          <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
+          <button class="cfg-card" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
+        </div>
+      </div>
+
+      <!-- Sección: Negocio -->
+      <div class="cfg-sec" id="cfg-sec-negocio">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:20px;">⚙️ Configuración del Negocio</div>
       <div id="config-form"></div>
+      </div>
 
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <!-- Sección: Operación -->
+      <div class="cfg-sec" id="cfg-sec-operacion">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🕒 Horarios, operación, pagos y entregas</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Esta información la usa el bot para responder a tus clientes. Guárdala aunque el bot esté apagado.</div>
       <div id="reglas-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
       <div id="reglas-form"></div>
+      </div>
 
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <!-- Sección: Integraciones (la tarjeta de WhatsApp se mueve INTACTA:
+           su JS no se toca -- flujo congelado) -->
+      <div class="cfg-sec" id="cfg-sec-integraciones">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🔌 Integraciones</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Las claves guardadas aquí tienen prioridad sobre las variables de entorno. Los valores se muestran enmascarados por seguridad.</div>
       <div id="wa-autoservicio"></div>
-      <div id="wa-menu"></div>
-      <div id="impresoras-panel"></div>
       <div id="int-form"></div>
+      </div>
 
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">Atención automática del negocio</div>
-      <div id="bot-whatsapp-form"></div>
+      <!-- Sección: Equipos e impresión -->
+      <div class="cfg-sec" id="cfg-sec-equipos">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
+      <div id="impresoras-panel"></div>
+      </div>
 
-      <div data-modulo="cotizaciones" style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <!-- Sección: Documentos comerciales (módulo cotizaciones) -->
+      <div class="cfg-sec" id="cfg-sec-cotizaciones">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div data-modulo="cotizaciones" id="cfg-cotizaciones-bloque">
         <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🧾 Cotizaciones</div>
         <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Estos datos se usan para generar el PDF de cada cotización -- ningún negocio comparte esta configuración con otro.</div>
@@ -1343,22 +1425,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="cfg-cot-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
         <button onclick="guardarConfigCotizaciones()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar configuración de cotizaciones</button>
       </div>
+      </div>
 
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <!-- Sección: Pagos -->
+      <div class="cfg-sec" id="cfg-sec-pagos">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">💳 Métodos de pago</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Esto es lo que el bot puede realmente ofrecer al cliente. "Enlace de pago" solo aparece disponible cuando Soporte/Superadmin configura y marca principal un proveedor real (Clip, etc.) — no se activa aquí.</div>
       <div id="metodos-pago-form"></div>
       <div id="metodos-pago-fb" style="font-size:0.85rem;margin-top:8px;"></div>
+      </div>
 
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
-      <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
-      <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
-        📤 Subir menú a Rappi
-      </button>
-      <div id="rappi-menu-fb" style="margin-top:8px;font-size:0.85rem;text-align:center;"></div>
-
-      <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+      <!-- Sección: Facturación -->
+      <div class="cfg-sec" id="cfg-sec-facturacion">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🔐 e.firma SAT</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Sube tu certificado (.cer) y llave privada (.key) para la Descarga Masiva de CFDI. Se guardan cifrados en la base de datos — la contraseña no se almacena.</div>
 
@@ -1392,6 +1472,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button id="btn-sat-eliminar" onclick="eliminarCredencialesSAT()" style="display:none;background:#fff;color:#ef4444;border:1.5px solid #ef4444;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:600;cursor:pointer;width:100%;">
           🗑️ Eliminar credenciales guardadas
         </button>
+      </div>
       </div>
     </div>
 
@@ -2668,8 +2749,8 @@ function mostrarTab(tab) {
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
-  if (tab === 'menu')      cargarMenuEditor();
-  if (tab === 'entrenamiento') cargarEntrenamientoForm();
+  if (tab === 'menu')      { cargarMenuEditor(); cargarMenuAutomatico(); }
+  if (tab === 'entrenamiento') { cargarEntrenamientoForm(); cargarBotWhatsappPanel(); }
   if (tab === 'diagnostico') cargarDiagnostico();
   if (tab === 'cotizaciones') cargarCotizaciones();
   if (tab === 'envios') abrirEnvios();
@@ -2682,6 +2763,8 @@ function mostrarTab(tab) {
   // aunque el usuario solo quería ver Configuración general -- se evita
   // llamando solo cuando el módulo está realmente habilitado.
   if (tab === 'config') {
+    cfgMostrarPortada();
+    cargarConfigPortada();
     renderConfigForm();
     cargarReglasForm();
     cargarIntegracionesPanel();
@@ -2713,6 +2796,84 @@ function mostrarTab(tab) {
 // Alias para compatibilidad con cualquier llamada existente
 function abrirAdmin(seccion) { mostrarTab(seccion); }
 function cerrarAdmin() { mostrarTab('comandas'); }
+
+// ─── Configuración: portada de tarjetas ──────────────────────────────────────
+// La portada organiza; las subsecciones son los bloques de siempre movidos
+// intactos. Entrar a Config siempre muestra la portada.
+function cfgMostrarPortada() {
+  document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
+  const p = document.getElementById('config-portada');
+  if (p) p.style.display = 'block';
+}
+function cfgIr(sec) {
+  const el = document.getElementById('cfg-sec-' + sec);
+  if (!el) return;
+  const p = document.getElementById('config-portada');
+  if (p) p.style.display = 'none';
+  document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
+  el.style.display = 'block';
+}
+function cfgVolver() {
+  cfgMostrarPortada();
+  cargarConfigPortada();
+}
+
+// Chips de cobertura de la portada: ✓ listo / ⚠ incompleto / ○ sin configurar.
+// Cada chip es best-effort: si su consulta falla, se queda como está y el
+// resto de la portada no se afecta. Solo consultas de LECTURA ya existentes.
+async function cargarConfigPortada() {
+  if (ROL !== 'admin') return;
+  const chip = (id, cls, txt) => {
+    const el = document.getElementById('cfgst-' + id);
+    if (el) { el.className = 'cfg-chip ' + cls; el.textContent = txt; }
+  };
+  // Negocio: con lo que ya trajo la sesión (objeto negocio en memoria)
+  if (negocio && negocio.nombre && negocio.direccion && negocio.telefono) chip('negocio', 'ok', '✓ Completo');
+  else chip('negocio', 'warn', '⚠ Faltan datos');
+  // Integraciones: estado de WhatsApp que el panel ya conoce (solo lectura)
+  chip('integraciones', WHATSAPP_CONFIGURADO ? 'ok' : 'warn', WHATSAPP_CONFIGURADO ? '✓ WhatsApp conectado' : '⚠ WhatsApp pendiente');
+  // Operación: reglas guardadas alguna vez
+  try {
+    const r = await apiFetch('/api/config');
+    if (r.ok) {
+      const cfg = await r.json();
+      const tiene = !!cfg.reglas_atencion;
+      chip('operacion', tiene ? 'ok' : 'off', tiene ? '✓ Guardada' : '○ Sin configurar');
+    }
+  } catch (err) {}
+  // Pagos: al menos un método habilitado
+  try {
+    const r = await apiFetch('/api/admin/metodos-pago');
+    if (r.ok) {
+      const { metodos } = await r.json();
+      const n = (metodos || []).filter(m => m.habilitado).length;
+      chip('pagos', n ? 'ok' : 'warn', n ? `✓ ${n} habilitado${n !== 1 ? 's' : ''}` : '⚠ Ninguno habilitado');
+    }
+  } catch (err) {}
+  // Equipos: misma cobertura que avisa la vista de impresoras
+  try {
+    const r = await apiFetch('/api/impresion/self-service');
+    if (r.ok) {
+      const est = await r.json();
+      const c = est.cobertura || {};
+      if (!est.hayEquipo) chip('equipos', 'off', '○ Sin equipo');
+      else if (c.comanda && c.cuenta) chip('equipos', 'ok', '✓ Cocina y caja');
+      else chip('equipos', 'warn', '⚠ Cobertura parcial');
+    }
+  } catch (err) {}
+  // Facturación: módulo + e.firma cargada
+  if (!MODULOS.includes('facturacion')) {
+    chip('facturacion', 'off', '○ No habilitada');
+  } else {
+    try {
+      const r = await apiFetch('/api/admin/sat/credenciales/info');
+      if (r.ok) {
+        const { info } = await r.json();
+        chip('facturacion', info ? 'ok' : 'warn', info ? '✓ e.firma cargada' : '⚠ Falta e.firma');
+      }
+    } catch (err) {}
+  }
+}
 
 // ─── Nuevo pedido por modalidad ──────────────────────────────────────────────
 // El selector no crea pedidos: solo lleva a la captura correcta que ya existe.
