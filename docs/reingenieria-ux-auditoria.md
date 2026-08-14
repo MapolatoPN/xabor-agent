@@ -98,3 +98,60 @@ p0-aislamiento 29, whatsapp-coexistence 24, chat-imagenes 38, comanda-edge 23,
 más el lote de contrato del panel), responsive desktop/tablet/móvil, gating
 admin/staff y por módulos verificado con sesiones reales, 11 capturas de evidencia.
 Sin deploy: pendiente de autorización.
+
+## Revisión 2 (2026-08-14): Operación unificada y Pagos único
+
+### Qué quedó UNIFICADO a nivel de producto
+
+- **Entrada única al pedido:** "+ Nuevo pedido" (sidebar, Inicio, bottom-nav)
+  → selector de modalidad. Mostrador y Envíos desaparecen del sidebar y del
+  bottom-nav como destinos: el operador ya no elige módulos, elige cómo se
+  atiende el pedido.
+- **Cambio de modalidad en el lugar:** ambas capturas llevan el mismo
+  encabezado con chips (Para llevar / Recoger / Domicilio / Mesas). Cambiar
+  de chip cambia de captura sin volver al menú; `envTipo` mantiene los chips
+  sincronizados con los botones internos de Envíos.
+- **Retorno único:** "← Pedidos" en ambas capturas regresa al tablero
+  (vista-comandas), que es el punto de seguimiento y cierre de todos los
+  canales. Crear → seguir → cerrar ocurre sin nombrar módulos.
+- **Pagos:** una sola ubicación (Configuración → Pagos): arriba los métodos
+  reales (autoritativo, `metodos-pago-form`), abajo las notas e instrucciones
+  de referencia de `reglas_atencion` (renderizadas ahí por `cargarReglasForm`
+  con su propio botón de guardado). La sección Operación ya no menciona ni
+  renderiza pagos.
+
+### Qué permanece SEPARADO técnicamente (a propósito, cero backend tocado)
+
+- `vista-presencial` y `vista-envios` siguen siendo vistas/motores de captura
+  distintos (`/api/pedido-presencial` cobra al crear; `/api/pos/envios` crea
+  con enlace de pago/repartidor). El encabezado compartido los presenta como
+  un solo espacio; unificarlos en un solo formulario sería reescribir la
+  captura y el riesgo no se justifica.
+- `/restaurante` sigue siendo página aparte (workspace de mesas/meseros,
+  misma UI que usan las tablets): el chip/tarjeta "Mesas" navega hacia allá.
+- Las subvistas de Envíos (Nuevo pedido / Envíos activos / Historial) viven
+  dentro de la captura de envíos; "Envíos activos" concentra acciones
+  específicas de entrega (enlace de pago, solicitar repartidor) y se llega
+  entrando a cualquier modalidad de envío.
+- `reglas_atencion.pedidos.pago_aceptado`/`pago_instrucciones` siguen
+  guardándose por `guardarReglas` en el mismo objeto de siempre — solo se
+  RENDERIZAN en la sección Pagos (mismos ids; el guardado refleja feedback
+  en ambos bloques).
+
+### Hallazgos pre-existentes: resolución
+
+- `pos-empty`: el id estaba duplicado entre el HTML estático y el re-render
+  de `renderCarrito`, pero nadie lo referenciaba → se eliminó el atributo id
+  (la clase `pos-order-empty` conserva los estilos).
+- `wa-progreso`: FALSO duplicado — son dos plantillas de ramas mutuamente
+  excluyentes dentro de `pintarWhatsappAutoservicio` (conectado vs no
+  conectado); en el DOM solo existe una a la vez. Está dentro del código
+  CONGELADO de WhatsApp y no se tocó; el contrato
+  `fase-reingenieria-ux.mjs` fija que siga exactamente así.
+- `bnav-corte`: ahora respeta `data-modulo="caja"` (negocios sin caja ya no
+  lo ven en móvil).
+- Secretos de desarrollo: `dev-local.cmd` ya no contiene valores; carga
+  `dev-local.env.cmd` (en `.gitignore`, con `dev-local.env.example.cmd` como
+  plantilla). Los valores que estuvieron commiteados eran del entorno local
+  de pruebas (DB Docker), nunca de producción; quedan en el historial de la
+  rama — reescribir historia pusheada requeriría force-push y no se hizo.
