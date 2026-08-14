@@ -1,12 +1,13 @@
 @echo off
-REM Servidor LOCAL para la reingenieria UX (DB de pruebas Docker, NUNCA produccion).
+REM Servidor LOCAL para desarrollo (DB de pruebas Docker, NUNCA produccion).
+REM Los secretos NO viven en este archivo: se cargan de dev-local.env.cmd,
+REM que esta en .gitignore. Copia dev-local.env.example.cmd para crearlo.
 cd /d C:\xabor-print
-set DATABASE_URL=postgresql://postgres:testpass@localhost:55453/edged1
-set PANEL_SECRET=test-panel-secret-fixed
-set SESSION_SECRET=test-session-secret-fixed
-set ADMIN_PASSWORD=test-admin-pass
-set PANEL_PASSWORD=test-panel-pass
-set INTEGRATIONS_ENCRYPTION_KEY=z+QXvnnTVTsL3HCrY/siK6VHJW4JmpH9BPcTl8oYs8U=
-set META_EMBEDDED_SIGNUP_MOCK=true
+if not exist dev-local.env.cmd (
+  echo [dev-local] Falta dev-local.env.cmd. Copia dev-local.env.example.cmd,
+  echo [dev-local] renombralo a dev-local.env.cmd y llena los valores locales.
+  exit /b 1
+)
+call dev-local.env.cmd
 set PORT=4500
 node src/server.js
