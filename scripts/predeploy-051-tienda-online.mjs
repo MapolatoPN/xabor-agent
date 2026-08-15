@@ -38,6 +38,17 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// Las cuatro FKs compuestas que impiden asociaciones entre negocios distintos.
+// Van en la comprobación: si no estuvieran, la migración TIENE que volver a
+// correr aunque las tablas ya existan -- justo el caso de una base que se
+// migró antes de que existieran.
+const FKS_COMPUESTAS = [
+  'tienda_productos_negocio_producto_fkey',
+  'tienda_promociones_negocio_campania_fkey',
+  'tienda_promocion_usos_negocio_promocion_fkey',
+  'tienda_promocion_usos_negocio_campania_fkey',
+];
+
 async function estado() {
   const { rows: [r] } = await pool.query(
     `SELECT
@@ -45,15 +56,16 @@ async function estado() {
          WHERE table_schema = 'public' AND table_name = ANY($1::text[]))::int AS tablas,
        (SELECT COUNT(*) FROM pg_constraint
          WHERE conname = 'negocio_modulos_modulo_check'
-           AND pg_get_constraintdef(oid) LIKE '%tienda_online%')::int AS modulo_en_check`,
-    [TABLAS]
+           AND pg_get_constraintdef(oid) LIKE '%tienda_online%')::int AS modulo_en_check,
+       (SELECT COUNT(*) FROM pg_constraint WHERE conname = ANY($2::text[]))::int AS fks`,
+    [TABLAS, FKS_COMPUESTAS]
   );
-  return { tablas: r.tablas, moduloEnCheck: r.modulo_en_check === 1 };
+  return { tablas: r.tablas, moduloEnCheck: r.modulo_en_check === 1, fks: r.fks };
 }
 
 async function yaAplicada() {
   const e = await estado();
-  return e.tablas === TABLAS.length && e.moduloEnCheck;
+  return e.tablas === TABLAS.length && e.moduloEnCheck && e.fks === FKS_COMPUESTAS.length;
 }
 
 try {
@@ -62,7 +74,8 @@ try {
   } else {
     const antes = await estado();
     console.log(`[predeploy-051] Aplicando migrations/051_tienda_online.sql ` +
-      `(tablas presentes: ${antes.tablas}/${TABLAS.length}, modulo en CHECK: ${antes.moduloEnCheck})...`);
+      `(tablas: ${antes.tablas}/${TABLAS.length}, modulo en CHECK: ${antes.moduloEnCheck}, ` +
+      `FKs por negocio: ${antes.fks}/${FKS_COMPUESTAS.length})...`);
     await pool.query(readFileSync(MIGRACION, 'utf8'));
 
     const despues = await estado();
@@ -72,7 +85,13 @@ try {
     if (!despues.moduloEnCheck) {
       throw new Error(`el CHECK de negocio_modulos no acepta 'tienda_online'`);
     }
-    console.log(`[predeploy-051] Verificacion OK: ${TABLAS.length} tablas y CHECK actualizado.`);
+    if (despues.fks !== FKS_COMPUESTAS.length) {
+      throw new Error(
+        `faltan FKs compuestas por negocio: ${despues.fks}/${FKS_COMPUESTAS.length} ` +
+        `-- el esquema no impediria una asociacion entre negocios distintos`);
+    }
+    console.log(`[predeploy-051] Verificacion OK: ${TABLAS.length} tablas, CHECK actualizado ` +
+      `y ${FKS_COMPUESTAS.length} FKs con aislamiento por negocio.`);
   }
 
   // El módulo nace APAGADO para todos: la 051 no lo activa a nadie. Cada

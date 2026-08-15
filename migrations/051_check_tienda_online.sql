@@ -15,3 +15,11 @@ SELECT
 SELECT 'tienda_online en CHECK' AS prueba,
        pg_get_constraintdef(oid) LIKE '%tienda_online%' AS ok
   FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check';
+-- Las relaciones entre tablas del módulo deben ser COMPUESTAS con negocio_id:
+-- así el esquema impide una asociación cruzada aunque el código se equivoque.
+SELECT 'FKs compuestas por negocio' AS prueba, COUNT(*) = 4 AS ok
+  FROM pg_constraint WHERE conname IN (
+    'tienda_productos_negocio_producto_fkey',
+    'tienda_promociones_negocio_campania_fkey',
+    'tienda_promocion_usos_negocio_promocion_fkey',
+    'tienda_promocion_usos_negocio_campania_fkey');

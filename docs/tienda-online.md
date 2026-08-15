@@ -90,18 +90,40 @@ trabajo; si el token ya existía, espera al pedido de la primera petición y
 devuelve el mismo folio. Funciona con varias instancias del proceso porque
 quien decide es la base, no la aplicación.
 
-**Un cupón de N usos no se entrega N+1 veces.** El límite no se puede hacer
-valer leyendo `usos` y decidiendo después: dos checkouts simultáneos leen el
-mismo valor y ambos pasan. El cupo se reserva con un `UPDATE` condicional
-(`WHERE usos < limite_usos`) y se reserva **antes** de crear el pedido —
-descubrir que el cupón se agotó cuando el cliente ya tiene folio es
-descubrirlo tarde. Si algo falla después, el cupo se devuelve.
+**Ningún límite de promoción se puede rebasar.** Hay tres, y cada uno necesita
+que decida la base:
+
+| Límite | Mecanismo |
+|---|---|
+| Global (`limite_usos`) | `UPDATE … WHERE usos < limite_usos`: gana quien logre incrementar |
+| Por cliente (`limite_por_cliente`) | Transacción serializada con `pg_advisory_xact_lock(promoción, teléfono)`: se cuenta y se reclama dentro del lock |
+| Primera compra (`solo_primera_compra`) | El mismo mecanismo con tope 1 — quien ya la reclamó no vuelve a ser primerizo |
+
+El reclamo escribe una **fila de reserva** en `tienda_promocion_usos` con folio
+provisional `reserva:<checkoutToken>`. Esa fila es lo que hace visible el
+reclamo al checkout de al lado: sin ella, el segundo contaría cero usos aunque
+el primero ya hubiera ganado. Al confirmar el pedido, la reserva se convierte
+en el uso real (se le pone el folio y los montos); si el pedido no llega a
+existir, se libera.
+
+Una reserva huérfana — proceso caído entre reservar y crear — caduca a los 15
+minutos y devuelve el cupo. Sin eso, un reinicio del servidor le quemaría el
+cupón a un cliente para siempre.
+
+Todo esto se reserva **antes** de crear el pedido: descubrir que el cupón se
+agotó cuando el cliente ya tiene folio es descubrirlo tarde.
 
 ## Seguridad
 
-- **Aislamiento**: cada consulta lleva `negocio_id`. Un negocio no ve, edita
-  ni borra promociones, productos, pedidos ni campañas de otro. Probado con
-  dos negocios reales y sesiones legítimas de cada uno.
+- **Aislamiento en las consultas**: cada una lleva `negocio_id`. Un negocio no
+  ve, edita ni borra promociones, productos, pedidos ni campañas de otro.
+  Probado con dos negocios reales y sesiones legítimas de cada uno.
+- **Aislamiento en el ESQUEMA**: las relaciones internas son claves foráneas
+  compuestas `(negocio_id, id)`. Ligar una promoción a la campaña de otro
+  negocio, o publicar en una tienda el producto de otro, es imposible a nivel
+  de base — aunque un servicio futuro se equivoque. Son cuatro FKs:
+  `tienda_productos → menu_productos`, `tienda_promociones → tienda_campanas`
+  y las dos de `tienda_promocion_usos`.
 - **Módulo apagado = tienda inexistente**: sin el módulo activo, la ruta
   pública responde 404, indistinguible de un slug que no existe.
 - **Seguimiento**: token opaco de 192 bits, no enumerable. Expone folio,
@@ -154,7 +176,72 @@ Es para vacaciones y para cuando el negocio se satura.
 
 | Suite | Casos | Qué responde |
 |---|---|---|
-| `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, carreras, promociones, seguimiento, backoffice, aislamiento y adversarial |
+| `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, promociones, seguimiento, backoffice, aislamiento y adversarial |
+| `test/fase-tienda-carreras-cliente.mjs` | 10 | Límite por cliente y primera compra bajo concurrencia real, liberación del cupo y cuadre de contadores |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
+| `test/fase-predeploy-tienda.mjs` | 18 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
 
 Ambas contra Postgres real, con los mismos arneses del resto del proyecto.
+
+
+## Cómo llega la 051 a un deploy real
+
+Producción no lee `migrations/`. Lo que corre es lo que declara `railway.toml`:
+
+```
+railway.toml
+  preDeployCommand = "node scripts/predeploy-run-032-033.mjs"
+       ↓
+  el runner ejecuta su lista de scripts, cada uno como proceso propio,
+  y aborta el deploy (exit 1) si cualquiera falla
+       ↓
+  scripts/predeploy-051-tienda-online.mjs
+       ↓
+  migrations/051_tienda_online.sql
+       ↓
+  verificación: 6 tablas + CHECK con 'tienda_online' + 4 FKs compuestas
+       ↓
+  la aplicación arranca
+```
+
+**Idempotente**: el script comprueba el estado antes y no hace nada si ya está
+aplicada; el SQL además es re-ejecutable (`IF NOT EXISTS`, `DROP … IF EXISTS`
+antes de cada `ADD`). Un deploy repetido no cambia nada.
+
+**Fail-closed**: si la verificación posterior no encuentra las seis tablas, el
+CHECK actualizado y las cuatro FKs, sale con código 1 y Railway aborta el
+deploy. La aplicación no arranca sobre un esquema a medias.
+
+**Válida sobre una base existente**: la comprobación de "ya aplicada" incluye
+las FKs compuestas, así que una base migrada antes de que existieran las
+recibe en el siguiente deploy en vez de quedarse sin ellas.
+
+**No enciende nada**: la migración no activa el módulo para ningún negocio. El
+predeploy reporta cuántos lo tienen contratado, para que quede en el log del
+deploy que nadie quedó con una tienda abierta por accidente.
+
+Verificado por `test/fase-predeploy-tienda.mjs` (18 casos), que recorre la
+cadena entera, corre el predeploy dos veces contra una base real, comprueba el
+aborto con base inalcanzable, y exige que todo `predeploy-NNN` del repositorio
+esté en el runner — el descuido que dejó huérfana a la 051 en primer lugar.
+
+## Rollback
+
+`migrations/051_tienda_online_down.sql` deshace las **dos** cosas que hace la
+051, en este orden y dentro de una transacción:
+
+1. `DELETE FROM negocio_modulos WHERE modulo = 'tienda_online'`
+2. Restaura el CHECK con los dieciocho módulos previos
+3. Suelta la FK compuesta y el índice que la 051 puso sobre `menu_productos`
+   (lo único que tocó fuera de sus propias tablas)
+4. Borra las seis tablas en orden inverso
+
+El orden de 1 y 2 no es negociable: Postgres valida un CHECK nuevo contra las
+filas existentes, así que restaurarlo antes de borrar las filas fallaría en
+cualquier base donde alguien tenga el módulo contratado.
+
+**Este rollback destruye datos**: configuración de tienda, promociones y su
+historial de uso. Los pedidos ya cobrados sobreviven — viven en
+`pedidos_activos` y `pedidos` — pero se pierde la atribución de qué promoción
+los generó. Respaldar las seis tablas antes de correrlo en una base con
+tiendas publicadas.

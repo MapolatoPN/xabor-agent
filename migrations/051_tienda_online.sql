@@ -205,3 +205,73 @@ ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check CHECK (m
   'generador_cotizaciones', 'pagos', 'repartidores', 'asistente_comercial_cotizaciones',
   'restaurante', 'tienda_online'
 ]));
+
+-- ── Aislamiento multiempresa impuesto por el ESQUEMA ──────────────────────
+-- Las FKs de arriba apuntan solo al id del padre: nada impide, a nivel de
+-- base, que una promoción del negocio A quede ligada a la campaña del negocio
+-- B. Hoy los servicios lo validan, pero un servicio futuro que se equivoque
+-- no tendría red. Se convierten en FKs COMPUESTAS (negocio_id, id): con eso,
+-- una asociación cruzada es imposible aunque el código falle.
+--
+-- Requisito previo: cada padre necesita un UNIQUE (negocio_id, id). En tablas
+-- donde `id` ya es PK, ese índice siempre se satisface — no puede fallar sobre
+-- datos existentes.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campana_negocio_id
+  ON tienda_campanas (negocio_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promocion_negocio_id
+  ON tienda_promociones (negocio_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_producto_negocio_id
+  ON menu_productos (negocio_id, id);
+
+DO $$
+BEGIN
+  -- tienda_productos.producto_id → menu_productos, del MISMO negocio.
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_productos_producto_id_fkey') THEN
+    ALTER TABLE tienda_productos DROP CONSTRAINT tienda_productos_producto_id_fkey;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'tienda_productos_negocio_producto_fkey') THEN
+    ALTER TABLE tienda_productos
+      ADD CONSTRAINT tienda_productos_negocio_producto_fkey
+      FOREIGN KEY (negocio_id, producto_id) REFERENCES menu_productos (negocio_id, id)
+      ON DELETE CASCADE;
+  END IF;
+
+  -- tienda_promociones.campania_id → tienda_campanas, del MISMO negocio.
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_promociones_campania_id_fkey') THEN
+    ALTER TABLE tienda_promociones DROP CONSTRAINT tienda_promociones_campania_id_fkey;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'tienda_promociones_negocio_campania_fkey') THEN
+    ALTER TABLE tienda_promociones
+      ADD CONSTRAINT tienda_promociones_negocio_campania_fkey
+      FOREIGN KEY (negocio_id, campania_id) REFERENCES tienda_campanas (negocio_id, id)
+      ON DELETE SET NULL;
+  END IF;
+
+  -- tienda_promocion_usos: promoción y campaña, ambas del MISMO negocio.
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_promocion_usos_promocion_id_fkey') THEN
+    ALTER TABLE tienda_promocion_usos DROP CONSTRAINT tienda_promocion_usos_promocion_id_fkey;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'tienda_promocion_usos_negocio_promocion_fkey') THEN
+    ALTER TABLE tienda_promocion_usos
+      ADD CONSTRAINT tienda_promocion_usos_negocio_promocion_fkey
+      FOREIGN KEY (negocio_id, promocion_id) REFERENCES tienda_promociones (negocio_id, id)
+      ON DELETE CASCADE;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_promocion_usos_campania_id_fkey') THEN
+    ALTER TABLE tienda_promocion_usos DROP CONSTRAINT tienda_promocion_usos_campania_id_fkey;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'tienda_promocion_usos_negocio_campania_fkey') THEN
+    ALTER TABLE tienda_promocion_usos
+      ADD CONSTRAINT tienda_promocion_usos_negocio_campania_fkey
+      FOREIGN KEY (negocio_id, campania_id) REFERENCES tienda_campanas (negocio_id, id)
+      ON DELETE SET NULL;
+  END IF;
+END $$;

@@ -61,15 +61,38 @@ try {
     assert.ok(i50 >= 0 && i51 > i50, `orden incorrecto: 050 en ${i50}, 051 en ${i51}`);
   });
 
+  // Scripts anteriores al runner actual. Se ejecutaron como preDeployCommand
+  // sueltos en los releases de su época y llevan mucho aplicados en
+  // producción; el runner nació con la 032. Están aquí por nombre, no por un
+  // "ignora todo lo viejo", para que la lista sea revisable: si alguien
+  // agrega uno nuevo fuera del runner, el guardia lo caza igual.
+  const ANTERIORES_AL_RUNNER = [
+    '029-chat-imagenes',
+    '030-cotizaciones-enviado-por',
+    '031-sesiones-comerciales-error-recuperable',
+  ];
+
   await t('cada predeploy-NNN del repositorio está en el runner', () => {
     // Este es el guardia. La 051 quedó fuera del runner justo porque nadie
     // comprobaba esto; a partir de aquí, olvidarlo rompe la suite.
     const scripts = readdirSync(join(RAIZ, 'scripts'))
       .filter(f => /^predeploy-\d{3}-.+\.mjs$/.test(f))
       .map(f => f.replace(/^predeploy-/, '').replace(/\.mjs$/, ''));
-    const huerfanos = scripts.filter(s => !LISTA.includes(s));
+    const huerfanos = scripts
+      .filter(s => !LISTA.includes(s))
+      .filter(s => !ANTERIORES_AL_RUNNER.includes(s));
     assert.deepStrictEqual(huerfanos, [],
       `hay scripts de predeploy que NINGÚN deploy ejecutaría: ${huerfanos.join(', ')}`);
+  });
+
+  await t('la migración MÁS ALTA del repositorio está cubierta por el runner', () => {
+    // Complemento del guardia anterior desde el otro lado: aunque alguien no
+    // escriba script, la migración más reciente tiene que tener quien la corra.
+    const nums = readdirSync(join(RAIZ, 'migrations'))
+      .map(f => (f.match(/^(\d{3})_/) || [])[1]).filter(Boolean).map(Number);
+    const ultima = String(Math.max(...nums)).padStart(3, '0');
+    assert.ok(LISTA.some(s => s.startsWith(ultima + '-')),
+      `la migración ${ultima} es la más alta del repo y NADIE la ejecuta en un deploy`);
   });
 
   await t('el script de la 051 aplica exactamente migrations/051_tienda_online.sql', () => {
@@ -148,7 +171,59 @@ try {
     assert.strictEqual(p.n, 0, 'hay tiendas publicadas sin fecha de publicación');
   });
 
-  // ─── 3. Rollback ───
+  // ─── 3. Aislamiento impuesto por el esquema ───
+  await t('las relaciones del módulo son COMPUESTAS con negocio_id', async () => {
+    const { rows } = await pool.query(
+      `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[])`,
+      [['tienda_productos_negocio_producto_fkey',
+        'tienda_promociones_negocio_campania_fkey',
+        'tienda_promocion_usos_negocio_promocion_fkey',
+        'tienda_promocion_usos_negocio_campania_fkey']]);
+    assert.strictEqual(rows.length, 4,
+      `solo ${rows.length}/4 FKs llevan negocio_id: un servicio equivocado podría cruzar negocios`);
+  });
+
+  await t('la BASE rechaza ligar una promoción a la campaña de OTRO negocio', async () => {
+    // No se prueba que el servicio valide (eso ya está en la suite E2E): se
+    // prueba que aunque el servicio fallara, Postgres lo impide.
+    const SEED = JSON.parse(readFileSync(join(RAIZ, 'test', '.datos-prueba.json'), 'utf8'));
+    const { rows: [campB] } = await pool.query(
+      `INSERT INTO tienda_campanas (negocio_id, nombre) VALUES ($1, $2) RETURNING id`,
+      [SEED.negocioB, 'Campaña cruzada ' + Date.now()]);
+    let rechazado = false;
+    try {
+      await pool.query(
+        `INSERT INTO tienda_promociones (negocio_id, nombre, tipo, automatica, valor, campania_id)
+         VALUES ($1,'Promo cruzada','porcentaje',TRUE,10,$2)`,
+        [SEED.negocioA, campB.id]);
+    } catch (e) { rechazado = e.code === '23503'; }
+    await pool.query(`DELETE FROM tienda_promociones WHERE nombre = 'Promo cruzada'`).catch(() => {});
+    await pool.query(`DELETE FROM tienda_campanas WHERE id = $1`, [campB.id]).catch(() => {});
+    assert.ok(rechazado,
+      'la base ACEPTÓ una promoción ligada a la campaña de otro negocio');
+  });
+
+  await t('la BASE rechaza publicar en una tienda el producto de OTRO negocio', async () => {
+    const SEED = JSON.parse(readFileSync(join(RAIZ, 'test', '.datos-prueba.json'), 'utf8'));
+    const { rows: [cat] } = await pool.query(
+      `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+       VALUES ($1,'Cruce (test)',TRUE,999) RETURNING id`, [SEED.negocioB]);
+    const { rows: [prod] } = await pool.query(
+      `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+       VALUES ($1,$2,'Producto de B',10,TRUE,1) RETURNING id`, [SEED.negocioB, cat.id]);
+    let rechazado = false;
+    try {
+      await pool.query(
+        `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`,
+        [SEED.negocioA, prod.id]);
+    } catch (e) { rechazado = e.code === '23503'; }
+    await pool.query(`DELETE FROM tienda_productos WHERE producto_id = $1`, [prod.id]).catch(() => {});
+    await pool.query(`DELETE FROM menu_productos WHERE id = $1`, [prod.id]).catch(() => {});
+    await pool.query(`DELETE FROM menu_categorias WHERE id = $1`, [cat.id]).catch(() => {});
+    assert.ok(rechazado, 'la base ACEPTÓ publicar el producto de otro negocio');
+  });
+
+  // ─── 4. Rollback ───
   await t('existe el down y restaura el CHECK anterior', () => {
     const down = leer('migrations', '051_tienda_online_down.sql');
     assert.ok(/DROP TABLE/i.test(down), 'el down no elimina las tablas');
