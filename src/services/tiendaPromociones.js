@@ -225,9 +225,46 @@ export async function pistaEnvioGratis({ negocioId, subtotal, modalidad, canal =
   return { logrado: false, faltan, mensaje: `Te faltan $${faltan} para obtener envío gratis` };
 }
 
+// ── Reserva atómica del cupo de una promoción ─────────────────────────────
+// El límite de usos NO se puede hacer valer leyendo `usos` y decidiendo
+// después: dos checkouts simultáneos leen el mismo valor y ambos pasan. La
+// única forma correcta es que la BASE decida, con un UPDATE condicional —
+// solo gana quien logra incrementar el contador dentro del límite.
+//
+// Se llama ANTES de crear el pedido: descubrir que el cupón se agotó cuando
+// el cliente ya tiene folio es descubrirlo demasiado tarde.
+export async function reservarUsosPromociones(negocioId, aplicadas = []) {
+  const reservadas = [], agotadas = [];
+  for (const a of aplicadas) {
+    const { rowCount } = await pool.query(
+      `UPDATE tienda_promociones
+          SET usos = usos + 1, updated_at = NOW()
+        WHERE id = $1 AND negocio_id = $2
+          AND (limite_usos IS NULL OR usos < limite_usos)`,
+      [a.id, negocioId]
+    );
+    if (rowCount > 0) reservadas.push(a); else agotadas.push(a);
+  }
+  return { reservadas, agotadas };
+}
+
+// Devuelve el cupo cuando el pedido no llegó a crearse: sin esto, un fallo
+// posterior "quemaría" un uso que nadie aprovechó.
+export async function liberarUsosPromociones(negocioId, aplicadas = []) {
+  for (const a of aplicadas) {
+    await pool.query(
+      `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0), updated_at = NOW()
+        WHERE id = $1 AND negocio_id = $2`,
+      [a.id, negocioId]
+    ).catch(() => {});
+  }
+}
+
 // ── Registro de uso (idempotente) ─────────────────────────────────────────
-// Se llama UNA vez al confirmar el pedido. El UNIQUE (negocio, promoción,
-// folio) hace que un reintento del checkout no infle usos ni ventas.
+// Se llama UNA vez al confirmar el pedido, DESPUÉS de reservar. Escribe el
+// renglón de detalle que alimenta las métricas; el contador `usos` ya lo
+// movió la reserva, así que aquí no se vuelve a tocar. El UNIQUE (negocio,
+// promoción, folio) hace que un reintento no infle las ventas.
 export async function registrarUsosPromociones({
   negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, clienteNuevo = false,
 }) {
@@ -246,15 +283,7 @@ export async function registrarUsosPromociones({
         [negocioId, a.id, a.campaniaId, folio, telefono,
          a.descuento || 0, montoVenta, !!clienteNuevo]
       );
-      if (rowCount > 0) {
-        registrados++;
-        // El contador solo sube cuando el uso se insertó de verdad.
-        await client.query(
-          `UPDATE tienda_promociones SET usos = usos + 1, updated_at = NOW()
-            WHERE id = $1 AND negocio_id = $2`,
-          [a.id, negocioId]
-        );
-      }
+      if (rowCount > 0) registrados++;
     }
     await client.query('COMMIT');
   } catch (e) {

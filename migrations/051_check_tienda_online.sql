@@ -11,3 +11,7 @@ SELECT
   (SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'idx_tienda_pedidos_tracking')            AS idx_tracking,
   (SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'idx_tienda_pedidos_checkout')            AS idx_idempotencia,
   (SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'idx_promo_uso_unico')                    AS idx_uso_idempotente;
+-- El módulo nuevo debe ser aceptado por el CHECK de negocio_modulos.
+SELECT 'tienda_online en CHECK' AS prueba,
+       pg_get_constraintdef(oid) LIKE '%tienda_online%' AS ok
+  FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check';

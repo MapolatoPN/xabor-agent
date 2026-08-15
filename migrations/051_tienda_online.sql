@@ -191,3 +191,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tienda_pedidos_tracking
   ON tienda_pedidos (tracking_token);
 CREATE INDEX IF NOT EXISTS idx_tienda_pedidos_folio
   ON tienda_pedidos (negocio_id, pedido_folio);
+
+-- ── El módulo tiene que existir para el sistema de módulos ────────────────
+-- negocio_modulos tiene un CHECK con la lista de módulos válidos. Sin este
+-- paso, activar 'tienda_online' para un negocio falla con violación de
+-- restricción -- es decir, la regla de "dar de alta una tienda es puro dato"
+-- se rompería en la primera alta real. El CHECK se reemplaza conservando
+-- todos los módulos anteriores.
+ALTER TABLE negocio_modulos DROP CONSTRAINT IF EXISTS negocio_modulos_modulo_check;
+ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check CHECK (modulo = ANY (ARRAY[
+  'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi',
+  'facturacion', 'rewards', 'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones',
+  'generador_cotizaciones', 'pagos', 'repartidores', 'asistente_comercial_cotizaciones',
+  'restaurante', 'tienda_online'
+]));

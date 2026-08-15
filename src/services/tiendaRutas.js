@@ -41,9 +41,20 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
   // ══════════════════ SUPERFICIE PÚBLICA ══════════════════
   // Rate limit por IP: la tienda es pública y hay que protegerla de scraping
   // de catálogo, fuerza bruta de cupones y avalanchas de checkout.
-  const limitePublico = rateLimitMiddleware(req => `tienda:${req.ip}`, 120, 60 * 1000);
-  const limiteCheckout = rateLimitMiddleware(req => `tienda-checkout:${req.ip}`, 10, 60 * 1000);
-  const limiteCupon = rateLimitMiddleware(req => `tienda-cupon:${req.ip}`, 30, 60 * 1000);
+  // Los topes son configurables porque una IP no siempre es una persona:
+  // varios clientes detrás del NAT del operador móvil, o de la wifi de una
+  // plaza, comparten IP. Los valores por omisión protegen sin estorbar; si un
+  // negocio real choca con ellos, se suben sin tocar código.
+  const tope = (env, omision) => {
+    const n = parseInt(process.env[env], 10);
+    return Number.isFinite(n) && n > 0 ? n : omision;
+  };
+  const limitePublico = rateLimitMiddleware(req => `tienda:${req.ip}`,
+    tope('XABOR_TIENDA_LIMITE_LECTURA', 120), 60 * 1000);
+  const limiteCheckout = rateLimitMiddleware(req => `tienda-checkout:${req.ip}`,
+    tope('XABOR_TIENDA_LIMITE_CHECKOUT', 20), 60 * 1000);
+  const limiteCupon = rateLimitMiddleware(req => `tienda-cupon:${req.ip}`,
+    tope('XABOR_TIENDA_LIMITE_COTIZAR', 60), 60 * 1000);
 
   // La página de la tienda: una sola plantilla para TODOS los negocios. El
   // slug no entra al HTML; el cliente lo lee de su propia URL y pide los

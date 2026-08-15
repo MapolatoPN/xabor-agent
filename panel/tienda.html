@@ -799,7 +799,8 @@ function pintarResumen(c) {
       ${(c.aplicadas || []).map(p => `<div class="promo-ok">🎉 <span>${esc(p.nombre)}${p.codigo ? ` (${esc(p.codigo)})` : ''}</span>
         <strong>−${dinero(p.descuento + (p.envioGratis ? c.envioBase : 0))}</strong>
         ${p.codigo ? `<span class="x" onclick="quitarCupon()" title="Quitar">✕</span>` : ''}</div>`).join('')}
-      ${c.pistaEnvioGratis ? `<div class="ayuda" style="margin-top:8px">🎁 ${esc(c.pistaEnvioGratis)}</div>` : ''}
+      ${c.pistaEnvioGratis && !c.envioGratis
+        ? `<div class="ayuda" style="margin-top:8px">🎁 ${esc(c.pistaEnvioGratis.mensaje)}</div>` : ''}
     </div>
 
     <div class="totales">

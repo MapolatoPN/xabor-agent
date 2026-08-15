@@ -411,8 +411,16 @@ export async function checklistPublicacion(negocioId) {
       detalle: cat ? `${cat} producto${cat !== 1 ? 's' : ''}` : 'Ningún producto publicado' },
     { clave: 'modalidades', etiqueta: 'Cómo recibe el cliente', listo: (cfg?.modalidades || []).length > 0,
       detalle: (cfg?.modalidades || []).join(' · ') },
-    { clave: 'entregas', etiqueta: 'Entregas a domicilio', listo: !domicilio || reglas.costoEnvioBase >= 0,
-      detalle: domicilio ? `Envío base $${reglas.costoEnvioBase}` : 'No aplica' },
+    // Si el negocio ofrece domicilio, tiene que haber decidido ALGO sobre el
+    // envío: un costo base o zonas. "costo >= 0" no sirve como validación --
+    // siempre es cierto, y dejaría publicar una tienda que cobra $0 de envío
+    // sin que nadie lo haya elegido.
+    { clave: 'entregas', etiqueta: 'Costo de entrega a domicilio',
+      listo: !domicilio || reglas.costoEnvioBase > 0 || reglas.zonas.length > 0,
+      detalle: !domicilio ? 'No aplica'
+        : reglas.zonas.length ? `${reglas.zonas.length} zona${reglas.zonas.length !== 1 ? 's' : ''} con precio`
+        : reglas.costoEnvioBase > 0 ? `Envío base $${reglas.costoEnvioBase}`
+        : 'Define un costo de envío o al menos una zona' },
     { clave: 'pagos', etiqueta: 'Métodos de pago', listo: metodos > 0,
       detalle: metodos ? `${metodos} habilitado${metodos !== 1 ? 's' : ''}` : 'Ninguno habilitado' },
   ];

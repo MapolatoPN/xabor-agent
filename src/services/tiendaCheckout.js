@@ -21,7 +21,10 @@ import {
   TiendaError, MODALIDAD_A_PEDIDO, reglasDelNegocio, estadoApertura,
   partesEnZona, metodosPagoTienda,
 } from './tiendaOnline.js';
-import { calcularPromociones, registrarUsosPromociones } from './tiendaPromociones.js';
+import {
+  calcularPromociones, registrarUsosPromociones,
+  reservarUsosPromociones, liberarUsosPromociones,
+} from './tiendaPromociones.js';
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const tokenOpaco = () => randomBytes(24).toString('hex'); // 192 bits: no enumerable
@@ -88,6 +91,73 @@ export function validarProgramacion({ tienda, reglas, programadoPara, ahora = ne
   return { programado: true, para: fecha.toISOString() };
 }
 
+// ── Traducción del carrito público al formato del validador ───────────────
+// La tienda habla camelCase hacia la calle; el motor de pedidos del POS usa
+// producto_id. Esta es la ÚNICA frontera donde se traduce, y se traduce solo
+// la forma: ni precios ni nombres pasan de aquí, porque recalcularItemsDesde-
+// Menu los vuelve a leer de la base.
+function itemsParaValidador(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map(i => ({
+    producto_id: i?.producto_id ?? i?.productoId ?? i?.id,
+    cantidad: i?.cantidad,
+    modificadores: i?.modificadores,
+    notas: i?.notas,
+  }));
+}
+
+// Los errores del validador (producto ajeno, opción inválida, grupo
+// obligatorio sin elegir) son culpa del carrito, no del servidor: se
+// convierten en 400 con el mensaje real en vez de un 500 opaco que dejaría
+// al cliente sin saber qué corregir.
+async function validarCarrito(negocioId, items) {
+  // Primero los límites de carga: la tienda es pública y no se le va a pedir
+  // a Postgres que resuelva un carrito de diez mil renglones.
+  if (!Array.isArray(items) || !items.length) throw new TiendaError('Tu carrito está vacío', 'CARRITO_VACIO');
+  if (items.length > MAX_ITEMS) throw new TiendaError('Demasiados productos en el carrito', 'CARRITO_EXCEDIDO');
+  for (const it of items) {
+    const c = parseInt(it?.cantidad, 10) || 1;
+    if (c > MAX_CANTIDAD) throw new TiendaError(`Máximo ${MAX_CANTIDAD} unidades por producto`, 'CANTIDAD_EXCEDIDA');
+    if (c < 1) throw new TiendaError('Cantidad inválida', 'CANTIDAD_INVALIDA');
+  }
+  try {
+    return await recalcularItemsDesdeMenu(negocioId, itemsParaValidador(items));
+  } catch (e) {
+    if (e instanceof POSValidacionError || e?.name === 'ModificadoresError') {
+      throw new TiendaError(e.message, e.codigo || 'CARRITO_INVALIDO', 400);
+    }
+    throw e;
+  }
+}
+
+// ── Dirección ─────────────────────────────────────────────────────────────
+// A un cliente con el teléfono en la mano no se le piden seis campos: la
+// tienda le pide UNA dirección escrita como la diría en voz alta. El POS, en
+// cambio, guarda una dirección estructurada. Aquí se acepta cualquiera de las
+// dos formas y se entrega siempre la estructurada.
+//
+// Cuando llega texto libre va completo a `calle`: partirlo con expresiones
+// regulares adivinaría mal y el repartidor prefiere leer lo que el cliente
+// escribió, tal cual, a leer una separación inventada.
+function direccionParaPedido(direccion, zonaNombre) {
+  const texto = typeof direccion === 'string' ? limpiarTexto(direccion, 240) : '';
+  if (texto) {
+    return {
+      calle: texto,
+      numero_exterior: null, numero_interior: null,
+      colonia: zonaNombre || null, entre_calles: null, referencia: null,
+    };
+  }
+  return {
+    calle: limpiarTexto(direccion?.calle, 120),
+    numero_exterior: limpiarTexto(direccion?.numeroExterior, 20) || null,
+    numero_interior: limpiarTexto(direccion?.numeroInterior, 20) || null,
+    colonia: limpiarTexto(direccion?.colonia, 120) || zonaNombre || null,
+    entre_calles: limpiarTexto(direccion?.entreCalles, 160) || null,
+    referencia: limpiarTexto(direccion?.referencia, 200) || null,
+  };
+}
+
 // ── Cotización del carrito (sin crear pedido) ─────────────────────────────
 // La usa la tienda para mostrar totales y promociones en vivo. Calcula
 // exactamente igual que el checkout, así que lo que ve el cliente es lo que
@@ -95,7 +165,7 @@ export function validarProgramacion({ tienda, reglas, programadoPara, ahora = ne
 export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono }) {
   const reglas = await reglasDelNegocio(tienda.negocioId);
   const modo = normalizarModalidad(tienda, modalidad);
-  const { items: itemsValidados, subtotal } = await recalcularItemsDesdeMenu(tienda.negocioId, items);
+  const { items: itemsValidados, subtotal } = await validarCarrito(tienda.negocioId, items);
 
   let envioBase = 0, zonaNombre = null;
   if (modo === 'domicilio') {
@@ -138,15 +208,6 @@ function normalizarModalidad(tienda, modalidad) {
   return modo;
 }
 
-function validarCarrito(items) {
-  if (!Array.isArray(items) || !items.length) throw new TiendaError('Tu carrito está vacío', 'CARRITO_VACIO');
-  if (items.length > MAX_ITEMS) throw new TiendaError('Demasiados productos en el carrito', 'CARRITO_EXCEDIDO');
-  for (const it of items) {
-    const c = parseInt(it?.cantidad, 10) || 1;
-    if (c > MAX_CANTIDAD) throw new TiendaError(`Máximo ${MAX_CANTIDAD} unidades por producto`, 'CANTIDAD_EXCEDIDA');
-  }
-}
-
 // ── Checkout ──────────────────────────────────────────────────────────────
 // Idempotencia real y persistente: el mismo checkout_token SIEMPRE devuelve
 // el mismo pedido. Un doble click, un refresh, un retry por timeout o el
@@ -184,8 +245,10 @@ export async function crearPedidoTienda({
     throw new TiendaError('Tu pedido se está procesando, espera un momento', 'CHECKOUT_EN_CURSO', 409);
   }
 
+  // Cupos de promoción tomados en esta petición: si algo falla después, hay
+  // que devolverlos o quedarían quemados sin pedido que los justifique.
+  let cuposTomados = [];
   try {
-    validarCarrito(items);
     const reglas = await reglasDelNegocio(tienda.negocioId);
     const modo = normalizarModalidad(tienda, modalidad);
 
@@ -200,7 +263,7 @@ export async function crearPedidoTienda({
     }
 
     // 3) Precios y modificadores: recalculados contra el catálogo del negocio.
-    const { items: itemsValidados, subtotal } = await recalcularItemsDesdeMenu(tienda.negocioId, items);
+    const { items: itemsValidados, subtotal } = await validarCarrito(tienda.negocioId, items);
 
     // 4) Envío por zona y pedido mínimo.
     let envioBase = 0, zonaNombre = null;
@@ -222,6 +285,23 @@ export async function crearPedidoTienda({
       throw new TiendaError(promo.rechazos[0].motivo, 'CUPON_NO_APLICABLE');
     }
 
+    // 5b) Reserva del cupo de cada promoción ANTES de crear nada. Es la única
+    //     forma de que un cupón de N usos no se entregue N+1 veces cuando
+    //     llegan dos compras al mismo tiempo: gana quien la base deja ganar.
+    if (promo.aplicadas.length) {
+      const { agotadas } = await reservarUsosPromociones(tienda.negocioId, promo.aplicadas);
+      if (agotadas.length) {
+        // Si se acabó justo ahora, se devuelve lo que sí se alcanzó a reservar
+        // y se le dice al cliente la verdad en vez de cobrarle otro total.
+        await liberarUsosPromociones(tienda.negocioId,
+          promo.aplicadas.filter(a => !agotadas.includes(a)));
+        throw new TiendaError(
+          `La promoción "${agotadas[0].nombre}" acaba de agotarse. Vuelve a intentar sin ella.`,
+          'PROMOCION_AGOTADA', 409);
+      }
+      cuposTomados = promo.aplicadas;
+    }
+
     // 6) Método de pago: solo los que el negocio tiene habilitados.
     const metodos = await metodosPagoTienda(tienda.negocioId, modo);
     if (!metodos.length) throw new TiendaError('Esta tienda aún no tiene métodos de pago configurados', 'SIN_METODOS_PAGO');
@@ -240,14 +320,7 @@ export async function crearPedidoTienda({
       costoEnvio: promo.envio,
       descuento: promo.descuento,
       cliente: { nombre: limpiarTexto(cliente?.nombre, 80), telefono },
-      direccion: modo === 'domicilio' ? {
-        calle: limpiarTexto(direccion?.calle, 120),
-        numero_exterior: limpiarTexto(direccion?.numeroExterior, 20),
-        numero_interior: limpiarTexto(direccion?.numeroInterior, 20),
-        colonia: limpiarTexto(direccion?.colonia, 120),
-        entre_calles: limpiarTexto(direccion?.entreCalles, 160),
-        referencia: limpiarTexto(direccion?.referencia, 200),
-      } : null,
+      direccion: modo === 'domicilio' ? direccionParaPedido(direccion, zonaNombre) : null,
       formaPago: elegido.pagaDespues ? `${elegido.id} (al ${modo === 'domicilio' ? 'recibir' : 'recoger'})` : elegido.id,
       notas: limpiarTexto(notas, 500),
     });
@@ -327,6 +400,8 @@ export async function crearPedidoTienda({
       `DELETE FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS NULL`,
       [tienda.negocioId, token]
     ).catch(() => {});
+    // Y el cupo de las promociones vuelve al bote: no hubo pedido.
+    if (cuposTomados.length) await liberarUsosPromociones(tienda.negocioId, cuposTomados);
     if (e instanceof POSValidacionError) throw new TiendaError(e.message, e.codigo || 'VALIDACION');
     throw e;
   }
