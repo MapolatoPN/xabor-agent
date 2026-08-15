@@ -155,3 +155,44 @@ Sin deploy: pendiente de autorización.
   plantilla). Los valores que estuvieron commiteados eran del entorno local
   de pruebas (DB Docker), nunca de producción; quedan en el historial de la
   rama — reescribir historia pusheada requeriría force-push y no se hizo.
+
+## Revisión 3 (2026-08-14): captura ≠ cobro en Para llevar
+
+### Modelo final por modalidad
+
+| | Se crea | Imprime | En Pedidos | Total | Forma de pago | Cerrado/cobrado |
+|---|---|---|---|---|---|---|
+| **Para llevar** | al capturar, **sin cobro** (`forma_pago='por_cobrar'`, `pago_confirmado=false`, total = subtotal) | comanda al crear, una sola vez | al crear | subtotal discreto en captura; **total final al cobrar (servidor)** | al **cobrar** (modal Cobrar) | `PATCH /pedidos/:folio/cobro` → `pago_confirmado=true` |
+| **Recoger / Domicilio** | al capturar, con método de pago **como intención** | comanda al crear (o tras anticipo) | al crear | total del servidor (subtotal+envío−desc) | intención al crear; cobro real contra entrega / enlace de pago | entrega + `pago_confirmado` |
+| **Restaurante** | cuenta abierta sin pago | comandas por tanda | vive en `/restaurante` | acumulado | pagos múltiples contra la cuenta | `cerrarCuenta` (saldo 0, idempotente) |
+
+**OPERACIÓN GENERADA vs INGRESO COBRADO**: un pedido abierto cuenta como
+operación (`num_pedidos`) pero NO suma a `total_ventas`, promedio, envíos ni
+al efectivo esperado del corte hasta que se cobra; se reporta aparte
+(`por_cobrar_num`/`por_cobrar_total` y la tarjeta "⏳ Por cobrar"). Al cobrar,
+la MISMA operación cambia de pendiente a cobrada: cero filas nuevas.
+
+### Garantías implementadas
+
+- **Sin carrera crear→cobrar**: `POST /api/pedido-presencial` hace `await` de
+  toda la persistencia (incluida la fila de archivo) antes de responder; la
+  fila operativa ya era síncrona. Probado cobrando inmediatamente después de
+  crear, sin esperas artificiales.
+- **El servidor manda**: el cobro recalcula subtotal desde los items
+  persistidos, ignora cualquier total del cliente, exige motivo de descuento
+  e impone el tope de 10% para staff (antes solo validado en frontend).
+- **Idempotente y transaccional**: `cobrarPedidoActivo` usa `FOR UPDATE` +
+  re-verificación; dos cobros concurrentes producen uno solo y el segundo
+  recibe `yaCobrado` sin recontabilizar, reimprimir ni recanjear Rewards.
+- **Rewards estrategia A**: el canje se reserva en la captura
+  (`rewards_pendiente`) y solo se consume al cobrar; cancelar antes del cobro
+  no quema puntos. El índice único `idx_rewards_movements_no_dup` impide el
+  doble canje.
+- **Impresión**: el cobro no encola trabajos nuevos — la comanda salió al
+  crear.
+
+### Fuera de alcance (documentado como fase futura)
+
+Editar los ITEMS de un pedido ya impreso. Hoy un error de captura se resuelve
+cancelando con motivo y recreando. Implementarlo exige decidir comandas delta
+o reimpresión controlada; no se aborda en esta ronda.
