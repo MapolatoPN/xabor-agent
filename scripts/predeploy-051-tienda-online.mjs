@@ -70,7 +70,11 @@ async function estado() {
        (SELECT COUNT(*) FROM pg_constraint
          WHERE conname IN ('tienda_promociones_negocio_campania_fkey',
                            'tienda_promocion_usos_negocio_campania_fkey')
-           AND pg_get_constraintdef(oid) LIKE '%SET NULL (campania_id)%')::int AS set_null_columna`,
+           AND pg_get_constraintdef(oid) LIKE '%SET NULL (campania_id)%')::int AS set_null_columna,
+       -- Ledger de derivaciones: sin el, un reintento tras un crash volveria
+       -- a imprimir por el camino legacy y a anunciar el pedido como nuevo.
+       (SELECT COUNT(*) FROM information_schema.columns
+         WHERE table_name = 'tienda_pedidos' AND column_name = 'derivaciones')::int AS ledger`,
     [TABLAS, FKS_COMPUESTAS]
   );
   return {
@@ -79,13 +83,14 @@ async function estado() {
     fks: r.fks,
     idxCheckout: r.idx_checkout === 1,
     setNullColumna: r.set_null_columna === 2,
+    ledger: r.ledger === 1,
   };
 }
 
 async function yaAplicada() {
   const e = await estado();
   return e.tablas === TABLAS.length && e.moduloEnCheck && e.fks === FKS_COMPUESTAS.length
-    && e.idxCheckout && e.setNullColumna;
+    && e.idxCheckout && e.setNullColumna && e.ledger;
 }
 
 try {
@@ -119,6 +124,11 @@ try {
     if (!despues.setNullColumna) {
       throw new Error(
         `las FKs de campana no nulean solo campania_id -- borrar una campana fallaria`);
+    }
+    if (!despues.ledger) {
+      throw new Error(
+        `falta tienda_pedidos.derivaciones -- un reintento tras crash repetiria ` +
+        `efectos que no son idempotentes (impresion legacy, aviso al panel)`);
     }
     console.log(`[predeploy-051] Verificacion OK: ${TABLAS.length} tablas, CHECK actualizado, ` +
       `${FKS_COMPUESTAS.length} FKs con aislamiento por negocio, indice de checkout unico ` +

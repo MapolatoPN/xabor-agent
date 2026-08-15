@@ -318,3 +318,18 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pedido_activo_checkout_token
   ON pedidos_activos (negocio_id, (datos->'tienda'->>'checkout_token'))
   WHERE datos->'tienda'->>'checkout_token' IS NOT NULL;
+
+
+-- ── Ledger de derivaciones del checkout ───────────────────────────────────
+-- Terminar un pedido no es un solo acto: hay que vincularlo, guardarlo en el
+-- historial, emitirlo (comanda + tablero + oferta a repartidores) y atribuir
+-- las promociones. Si el proceso muere a media lista, el reintento tiene que
+-- retomar SOLO lo que falta.
+--
+-- No basta con volver a llamar a emitirPedido: la comanda por Edge es
+-- idempotente y la oferta a repartidores está deduplicada por (folio,
+-- repartidor), pero la impresión legacy (negocios que aún no migran a Edge)
+-- imprimiría papel otra vez, y el panel volvería a anunciar el pedido como
+-- nuevo. Por eso cada derivación deja marca persistente aquí.
+ALTER TABLE tienda_pedidos
+  ADD COLUMN IF NOT EXISTS derivaciones jsonb NOT NULL DEFAULT '{}'::jsonb;

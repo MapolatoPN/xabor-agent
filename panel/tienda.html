@@ -707,7 +707,10 @@ function pasoDatos() {
       ${zonas.length ? `<div class="campo"><label for="ck-zona">Zona *</label>
         <select id="ck-zona"><option value="">Elige tu zona…</option>
           ${zonas.map(z => `<option value="${esc(z.nombre)}"${CK.zona === z.nombre ? ' selected' : ''}>${esc(z.nombre)} — ${dinero(z.costo)}</option>`).join('')}
-        </select><div class="ayuda">El costo exacto lo confirma el negocio en el resumen.</div></div>` : ''}
+        </select><div class="ayuda">El costo exacto lo confirma el negocio en el resumen.</div></div>`
+      : `<div class="campo"><label for="ck-colonia">Colonia *</label>
+        <input id="ck-colonia" maxlength="120" value="${esc(CK.colonia || '')}" placeholder="Tu colonia">
+        <div class="ayuda">El repartidor la necesita para ubicarte.</div></div>`}
     ` : ''}
     <div class="campo"><label for="ck-notas">Indicaciones para el negocio (opcional)</label>
       <textarea id="ck-notas" maxlength="240" placeholder="Timbre descompuesto, llamar al llegar…">${esc(CK.notas || '')}</textarea></div>
@@ -721,6 +724,7 @@ function validarDatos() {
   const tel = $('ck-tel').value.replace(/\D/g, '');
   const dir = $('ck-dir')?.value.trim() || '';
   const zona = $('ck-zona')?.value || null;
+  const colonia = $('ck-colonia')?.value.trim() || null;
   const errores = [];
   const marcar = (id, mal) => $(id)?.classList.toggle('error', mal);
   marcar('ck-nombre', nombre.length < 2); if (nombre.length < 2) errores.push('Escribe tu nombre');
@@ -728,14 +732,19 @@ function validarDatos() {
   if (CK.modalidad === 'domicilio') {
     marcar('ck-dir', dir.length < 8); if (dir.length < 8) errores.push('Necesitamos una dirección completa');
     if ($('ck-zona')) { marcar('ck-zona', !zona); if (!zona) errores.push('Elige tu zona de entrega'); }
+    // Sin zonas, la colonia se pide aparte: el POS la exige y el repartidor
+    // la necesita para llegar.
+    if ($('ck-colonia')) {
+      marcar('ck-colonia', !colonia); if (!colonia) errores.push('Escribe tu colonia');
+    }
   }
   if (errores.length) {
     $('ck-error-datos').classList.remove('oculto');
     $('ck-error-datos-txt').textContent = errores.join(' · ');
     return;
   }
-  Object.assign(CK, { nombre, telefono: tel, direccion: dir, zona, notas: $('ck-notas').value.trim() });
-  try { localStorage.setItem(LS_CLIENTE, JSON.stringify({ nombre, telefono: tel, direccion: dir, zona })); } catch (e) {}
+  Object.assign(CK, { nombre, telefono: tel, direccion: dir, zona, colonia, notas: $('ck-notas').value.trim() });
+  try { localStorage.setItem(LS_CLIENTE, JSON.stringify({ nombre, telefono: tel, direccion: dir, zona, colonia })); } catch (e) {}
   pasoAdelante();
 }
 
@@ -829,7 +838,8 @@ function pintarResumen(c) {
         <div><strong style="color:var(--texto)">${CK.modalidad === 'domicilio' ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda'}</strong></div>
         <div>${CK.cuando === 'programado' ? '📅 Programado: ' + esc(formatoFecha(CK.programadoPara)) : '⚡ Lo antes posible · ' + esc(c.tiempoEstimado)}</div>
         <div>👤 ${esc(CK.nombre)} · ${esc(CK.telefono)}</div>
-        ${CK.modalidad === 'domicilio' ? `<div>📍 ${esc(CK.direccion)}</div>` : ''}
+        ${CK.modalidad === 'domicilio'
+          ? `<div>📍 ${esc(CK.direccion)}${CK.colonia ? ', ' + esc(CK.colonia) : ''}</div>` : ''}
         <div>💳 ${esc(metodo?.etiqueta || CK.metodoPago)}</div>
         ${CK.notas ? `<div>📝 ${esc(CK.notas)}</div>` : ''}
       </div>
@@ -881,7 +891,7 @@ async function confirmarPedido() {
       modalidad: CK.modalidad,
       cliente: { nombre: CK.nombre, telefono: CK.telefono },
       direccion: CK.modalidad === 'domicilio' ? CK.direccion : null,
-      zona: CK.zona, codigo: CK.codigo, metodoPago: CK.metodoPago,
+      zona: CK.zona, colonia: CK.colonia, codigo: CK.codigo, metodoPago: CK.metodoPago,
       programadoPara: CK.cuando === 'programado' ? CK.programadoPara : null,
       notas: CK.notas,
     }});

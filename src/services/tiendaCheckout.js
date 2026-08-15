@@ -139,20 +139,26 @@ async function validarCarrito(negocioId, items) {
 // Cuando llega texto libre va completo a `calle`: partirlo con expresiones
 // regulares adivinaría mal y el repartidor prefiere leer lo que el cliente
 // escribió, tal cual, a leer una separación inventada.
-function direccionParaPedido(direccion, zonaNombre) {
+function direccionParaPedido(direccion, zonaNombre, colonia = null) {
+  // La colonia es obligatoria para el POS (la necesita el repartidor). Puede
+  // venir de dos lados: de la ZONA elegida, cuando el negocio definió zonas de
+  // reparto, o de un campo propio cuando cobra tarifa plana y no tiene zonas.
+  // Un negocio sin zonas es una configuración legítima -- no puede quedarse
+  // sin poder recibir pedidos a domicilio.
+  const coloniaFinal = limpiarTexto(colonia, 120) || zonaNombre || null;
   const texto = typeof direccion === 'string' ? limpiarTexto(direccion, 240) : '';
   if (texto) {
     return {
       calle: texto,
       numero_exterior: null, numero_interior: null,
-      colonia: zonaNombre || null, entre_calles: null, referencia: null,
+      colonia: coloniaFinal, entre_calles: null, referencia: null,
     };
   }
   return {
     calle: limpiarTexto(direccion?.calle, 120),
     numero_exterior: limpiarTexto(direccion?.numeroExterior, 20) || null,
     numero_interior: limpiarTexto(direccion?.numeroInterior, 20) || null,
-    colonia: limpiarTexto(direccion?.colonia, 120) || zonaNombre || null,
+    colonia: limpiarTexto(direccion?.colonia, 120) || coloniaFinal,
     entre_calles: limpiarTexto(direccion?.entreCalles, 160) || null,
     referencia: limpiarTexto(direccion?.referencia, 200) || null,
   };
@@ -237,20 +243,57 @@ async function buscarPedidoDeCheckout(negocioId, token) {
   return rows[0] || null;
 }
 
-// Deja el checkout completo, corra las veces que corra. Cada paso es
-// idempotente por su cuenta:
-//   · el vínculo en tienda_pedidos es un UPDATE por (negocio, token)
-//   · upsertCliente/guardarPedido ya lo son
-//   · emitirPedido crea trabajos de impresión con clave de idempotencia por
-//     (negocio, pedido, impresora): reemitir NO duplica comandas
-//   · registrarUsosPromociones tiene UNIQUE (negocio, promoción, folio)
+// Deja el checkout completo, corra las veces que corra.
 //
-// Se llama tanto en el camino feliz como cuando un reintento descubre que el
-// pedido ya existía: en los dos casos el resultado es el mismo.
-async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoAplicadas = null }) {
+// No basta con repetir los pasos: volver a llamar a emitirPedido imprimiría
+// papel otra vez en los negocios que aún usan el camino legacy (Edge sí es
+// idempotente por clave, y la oferta a repartidores está deduplicada por
+// (folio, repartidor), pero la impresión vieja no) y el panel volvería a
+// anunciar el pedido como nuevo.
+//
+// Por eso cada derivación deja marca PERSISTENTE en tienda_pedidos.derivaciones.
+// Un reintento retoma solo lo que falta; cinco reintentos seguidos no hacen
+// nada la segunda vez.
+//
+// La marca se escribe DESPUÉS de que la derivación tuvo éxito. Un crash entre
+// "emitirPedido terminó" y "se escribió la marca" haría que un reintento la
+// repitiera -- ventana estrecha, y justo en ella los dos efectos destructivos
+// (comanda Edge y oferta a repartidores) tienen su propia idempotencia. Al
+// revés -- marcar antes de hacer -- el riesgo sería peor: un pedido sin
+// comanda que nadie vuelve a intentar.
+async function derivacionPendiente(negocioId, token, nombre) {
+  const { rows: [r] } = await pool.query(
+    // jsonb_exists en vez del operador ?: con un parametro, Postgres no puede
+    // inferir el tipo de $3 para ? y falla con "could not determine data type".
+    `SELECT jsonb_exists(derivaciones, $3::text) AS hecha FROM tienda_pedidos
+      WHERE negocio_id = $1 AND checkout_token = $2`,
+    [negocioId, token, nombre]);
+  return !r?.hecha;
+}
+
+async function marcarDerivacion(negocioId, token, nombre) {
+  await pool.query(
+    `UPDATE tienda_pedidos
+        SET derivaciones = derivaciones || jsonb_build_object($3::text, NOW()::text),
+            updated_at = NOW()
+      WHERE negocio_id = $1 AND checkout_token = $2`,
+    [negocioId, token, nombre]);
+}
+
+// Corre `fn` solo si esa derivación no está marcada, y la marca al terminar.
+async function derivacion(negocioId, token, nombre, fn) {
+  if (!(await derivacionPendiente(negocioId, token, nombre))) return false;
+  await fn();
+  await marcarDerivacion(negocioId, token, nombre);
+  return true;
+}
+
+export async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoAplicadas = null }) {
   const datos = datosPedido || pedido?.datos || pedido || {};
   const telefono = datos?.cliente?.telefono || null;
 
+  // 1) Vínculo checkout → pedido. Naturalmente idempotente (UPDATE por token),
+  //    y tiene que ir SIEMPRE primero: es lo que permite recuperar el resto.
   await pool.query(
     `UPDATE tienda_pedidos SET pedido_folio = $3, estado = 'creado', updated_at = NOW()
       WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS DISTINCT FROM $3`,
@@ -258,32 +301,62 @@ async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoA
   );
   fallaInyectada('despues_de_vincular');
 
-  try {
-    const { upsertCliente, guardarPedido } = await import('./database.js');
-    if (telefono) {
-      await upsertCliente(telefono, datos?.cliente?.nombre || null, negocioId);
-      await guardarPedido(telefono, pedido, negocioId);
+  // 2) Cliente e historial.
+  await derivacion(negocioId, token, 'historial', async () => {
+    try {
+      const { upsertCliente, guardarPedido } = await import('./database.js');
+      if (telefono) {
+        await upsertCliente(telefono, datos?.cliente?.nombre || null, negocioId);
+        await guardarPedido(telefono, pedido, negocioId);
+      }
+    } catch (e) {
+      // El historial no puede tumbar un pedido que ya existe. Se registra y
+      // NO se marca como hecha, para que el siguiente intento lo reponga.
+      console.error('[Tienda] Error persistiendo pedido en historial:', e.message);
+      throw e;
     }
-  } catch (e) {
-    console.error('[Tienda] Error persistiendo pedido en historial:', e.message);
-  }
+  }).catch(() => {});
 
   fallaInyectada('antes_de_emitir');
-  const { emitirPedido } = await import('../orders/orderManager.js');
-  emitirPedido(pedido);
+
+  // 3) Emisión: comanda por Edge, tablero y oferta a repartidores. Se espera
+  //    de verdad -- "finalizado" no puede significar "disparé una promesa y
+  //    ojalá sobreviva al proceso".
+  await derivacion(negocioId, token, 'emision', async () => {
+    const { emitirPedido } = await import('../orders/orderManager.js');
+    await emitirPedido(pedido);
+  });
+
   fallaInyectada('despues_de_emitir');
 
+  // 4) Atribución de promociones. Idempotente por UNIQUE (negocio, promo,
+  //    folio), pero la marca evita hasta la consulta de más.
   const aplicadas = promoAplicadas || (datos?.tienda?.promociones || []).map(p => ({
     id: p.id, campaniaId: p.campania_id || null, nombre: p.nombre,
     codigo: p.codigo, tipo: p.tipo, descuento: p.descuento, envioGratis: p.envio_gratis,
   }));
   if (aplicadas.length) {
-    const esNuevo = !(await clienteTienePedidosPrevios(negocioId, telefono, pedido.id));
-    await registrarUsosPromociones({
-      negocioId, folio: pedido.id, aplicadas, telefono,
-      montoVenta: Number(datos?.total) || 0, clienteNuevo: esNuevo, checkoutToken: token,
+    await derivacion(negocioId, token, 'atribucion', async () => {
+      const esNuevo = !(await clienteTienePedidosPrevios(negocioId, telefono, pedido.id));
+      await registrarUsosPromociones({
+        negocioId, folio: pedido.id, aplicadas, telefono,
+        montoVenta: Number(datos?.total) || 0, clienteNuevo: esNuevo, checkoutToken: token,
+      });
     });
   }
+}
+
+// Recupera el pedido durable de un checkout y termina lo que le falte. Es el
+// punto de entrada de CUALQUIER reintento: da igual si el vínculo ya existía o
+// no, porque tener folio no significa que las derivaciones se completaran.
+async function recuperarYFinalizar(negocioId, token) {
+  const fila = await buscarPedidoDeCheckout(negocioId, token);
+  if (!fila) return null;
+  await finalizarCheckout({
+    negocioId, token,
+    pedido: { ...fila.datos, id: fila.folio }, datosPedido: fila.datos,
+  });
+  return fila;
 }
 
 // Reconstruye la respuesta de un checkout ya creado, para devolverle al
@@ -311,7 +384,7 @@ async function respuestaDeCheckoutExistente(negocioId, token, fila) {
 // varias instancias del proceso.
 export async function crearPedidoTienda({
   tienda, checkoutToken, items, modalidad, cliente = {}, direccion = null, zona = null,
-  codigo = null, metodoPago = null, programadoPara = null, notas = null,
+  colonia = null, codigo = null, metodoPago = null, programadoPara = null, notas = null,
 }) {
   const token = limpiarTexto(checkoutToken, 80);
   if (!token || token.length < 16) throw new TiendaError('Sesión de compra inválida', 'CHECKOUT_TOKEN_INVALIDO');
@@ -331,23 +404,19 @@ export async function crearPedidoTienda({
     // Otra petición con el mismo token ya pasó por aquí. Se espera a que
     // termine de vincular el folio.
     const existente = await esperarPedidoDeToken(tienda.negocioId, token);
+
+    // Que exista pedido_folio NO significa que el pedido esté terminado: el
+    // vínculo se escribe ANTES de emitir la comanda y de atribuir las
+    // promociones. Devolver 200 aquí sin más dejaría al cliente creyendo que
+    // todo quedó listo mientras la cocina nunca vio el papel. Por eso se
+    // finaliza -- idempotentemente -- antes de responder.
+    const fila = await recuperarYFinalizar(tienda.negocioId, token);
+    if (fila) return await respuestaDeCheckoutExistente(tienda.negocioId, token, fila);
+
+    // Hay folio pero el pedido ya no está en pedidos_activos (archivado):
+    // no hay nada que finalizar, solo que devolver lo que existe.
     if (existente?.pedido_folio) {
-      const fila = await buscarPedidoDeCheckout(tienda.negocioId, token);
-      return fila
-        ? await respuestaDeCheckoutExistente(tienda.negocioId, token, fila)
-        : { yaExistia: true, folio: existente.pedido_folio, trackingToken: existente.tracking_token };
-    }
-    // No vinculó. Puede ser que siga en vuelo... o que el proceso muriera
-    // entre crear el pedido y vincularlo. El pedido lleva el token dentro, así
-    // que se puede saber con certeza en vez de adivinar.
-    const huerfano = await buscarPedidoDeCheckout(tienda.negocioId, token);
-    if (huerfano) {
-      console.warn('[Tienda] Recuperando checkout huerfano -> folio ' + huerfano.folio);
-      await finalizarCheckout({
-        negocioId: tienda.negocioId, token,
-        pedido: { ...huerfano.datos, id: huerfano.folio }, datosPedido: huerfano.datos,
-      });
-      return await respuestaDeCheckoutExistente(tienda.negocioId, token, huerfano);
+      return { yaExistia: true, folio: existente.pedido_folio, trackingToken: existente.tracking_token };
     }
     throw new TiendaError('Tu pedido se está procesando, espera un momento', 'CHECKOUT_EN_CURSO', 409);
   }
@@ -356,13 +425,9 @@ export async function crearPedidoTienda({
   // intento anterior murió y su fila de tienda_pedidos se borró, el INSERT de
   // arriba no encuentra conflicto. Crear otro pedido aquí sería el duplicado
   // que se quiere evitar.
-  const previo = await buscarPedidoDeCheckout(tienda.negocioId, token);
+  const previo = await recuperarYFinalizar(tienda.negocioId, token);
   if (previo) {
     console.warn('[Tienda] El checkout ya tenia pedido ' + previo.folio + ': se recupera');
-    await finalizarCheckout({
-      negocioId: tienda.negocioId, token,
-      pedido: { ...previo.datos, id: previo.folio }, datosPedido: previo.datos,
-    });
     return await respuestaDeCheckoutExistente(tienda.negocioId, token, previo);
   }
 
@@ -445,7 +510,7 @@ export async function crearPedidoTienda({
       costoEnvio: promo.envio,
       descuento: promo.descuento,
       cliente: { nombre: limpiarTexto(cliente?.nombre, 80), telefono },
-      direccion: modo === 'domicilio' ? direccionParaPedido(direccion, zonaNombre) : null,
+      direccion: modo === 'domicilio' ? direccionParaPedido(direccion, zonaNombre, colonia) : null,
       formaPago: elegido.pagaDespues ? `${elegido.id} (al ${modo === 'domicilio' ? 'recibir' : 'recoger'})` : elegido.id,
       notas: limpiarTexto(notas, 500),
     });

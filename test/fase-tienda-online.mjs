@@ -469,6 +469,44 @@ try {
       `no se guardó la dirección: ${JSON.stringify(d.direccion)}`);
   });
 
+  await t('envio', 'un negocio SIN zonas (tarifa plana) sí puede recibir a domicilio', async () => {
+    // Configuración legítima que estaba rota: sin zonas la colonia nunca se
+    // llenaba y el POS rechazaba TODO pedido a domicilio. Ahora la tienda la
+    // pide como campo propio.
+    const { rows: [cfg] } = await pool.query(
+      `SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'`, [NEG_A]);
+    const original = cfg.valor;
+    const reglas = JSON.parse(original);
+    reglas.pedidos.zonas_entrega = [];
+    await pool.query(`UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='reglas_atencion'`,
+      [NEG_A, JSON.stringify(reglas)]);
+    try {
+      const sinColonia = await post(`/api/tienda/${SLUG_A}/checkout`, {
+        checkoutToken: token(), items: [itemPizza()], modalidad: 'domicilio',
+        direccion: 'Reforma 100', cliente: { nombre: 'Plano', telefono: '8996660001' },
+        metodoPago: 'efectivo' });
+      assert.ok(sinColonia.status >= 400, 'aceptó un domicilio sin colonia ni zona');
+
+      const conColonia = await post(`/api/tienda/${SLUG_A}/checkout`, {
+        checkoutToken: token(), items: [itemPizza()], modalidad: 'domicilio',
+        direccion: 'Reforma 100', colonia: 'Del Valle',
+        cliente: { nombre: 'Plano', telefono: '8996660002' }, metodoPago: 'efectivo' });
+      assert.strictEqual(conColonia.status, 200, JSON.stringify(conColonia.body));
+      const { rows } = await pool.query(
+        `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`,
+        [conColonia.body.folio, NEG_A]);
+      // construirOrdenPOS guarda la dirección en campos sueltos DENTRO de
+      // cliente (calle, colonia, referencia…), no en un objeto `direccion`.
+      assert.strictEqual(rows[0].datos.cliente.colonia, 'Del Valle',
+        'la colonia escrita por el cliente no llegó al pedido');
+      assert.strictEqual(rows[0].datos.cliente.calle, 'Reforma 100');
+      assert.strictEqual(rows[0].datos.total, 240, 'no aplicó el costo de envío base (200 + 40)');
+    } finally {
+      await pool.query(`UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='reglas_atencion'`,
+        [NEG_A, original]);
+    }
+  });
+
   await t('checkout', 'el pedido mínimo también se impone al crear, no solo al cotizar', async () => {
     const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [{ productoId: PROD.A['Refresco tienda'], cantidad: 1 }],
@@ -822,18 +860,19 @@ try {
     // tienda escapa TODO lo que pinta. Lo que sí se exige aquí es que no haya
     // caracteres de control que rompan la comanda impresa.
     const txt = JSON.stringify(rows[0].datos);
-    assert.ok(!/[ -]/.test(txt.replace(/\\[nrt]/g, '')), 'pasaron caracteres de control');
+    assert.ok(!new RegExp('[\\u0000-\\u001f]').test(txt.replace(/\\\\[nrt]/g, '')),
+      'pasaron caracteres de control');
   });
 
   await t('ataque', 'los saltos de línea no se cuelan a la comanda', async () => {
     const { body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
-      cliente: { nombre: 'Linea\r\nInyectada nula', telefono: '8994440002' },
+      cliente: { nombre: 'Linea\r\nInyectada\u0000nula', telefono: '8994440002' },
       metodoPago: 'efectivo' });
     const { rows } = await pool.query(
       `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [body.folio, NEG_A]);
     const nombre = rows[0].datos?.cliente?.nombre || '';
-    assert.ok(!/[\r\n ]/.test(nombre), `el nombre conserva control: ${JSON.stringify(nombre)}`);
+    assert.ok(!new RegExp('[\\r\\n\\u0000]').test(nombre), `el nombre conserva control: ${JSON.stringify(nombre)}`);
   });
 
   await t('ataque', 'un cuerpo con miles de items se rechaza', async () => {

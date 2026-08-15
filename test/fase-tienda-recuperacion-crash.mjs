@@ -48,8 +48,14 @@ async function conServidor(env, fn) {
     { timeoutMs: 90000 });
   try {
     return await fn(`http://localhost:${puerto}`, srv);
-  } finally { await srv.detener(); }
+  } finally {
+    // Se guarda el log del hijo: cuando algo devuelve 500, el detalle solo
+    // existe ahi y el proceso ya murio cuando se lee.
+    ultimoLog = srv.obtenerSalida();
+    await srv.detener();
+  }
 }
+let ultimoLog = '';
 
 const comprar = (base, cuerpo) => fetch(`${base}/api/tienda/${SLUG}/checkout`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -105,6 +111,14 @@ async function crearPromo(base, datos) {
 
 async function limpiar() {
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM notificaciones_repartidor WHERE pedido_folio IN
+    (SELECT folio FROM pedidos_activos WHERE negocio_id = $1)`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM repartidores WHERE negocio_id = $1 AND telefono LIKE '8998%'`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(
+    `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
+    [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_promocion_usos WHERE negocio_id = $1`, [NEG]);
   await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id = $1`, [NEG]);
   await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id = $1`, [NEG]);
@@ -117,6 +131,29 @@ async function limpiar() {
     `DELETE FROM menu_productos WHERE categoria_id IN
       (SELECT id FROM menu_categorias WHERE negocio_id = $1 AND nombre = 'Crash (test)')`, [NEG]);
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre = 'Crash (test)'`, [NEG]);
+}
+
+// Una impresora y una ruta de verdad. Sin esto no hay trabajo de comanda que
+// contar, y "<= 1" no distingue entre "no se duplicó" y "nunca se imprimió".
+async function montarImpresion() {
+  const { crearEdge } = await import('../src/services/edgeService.js');
+  const { crearImpresora, crearRuta } = await import('../src/services/impresionService.js');
+  const { DESTINOS } = await import('../src/services/impresionSelfService.js');
+  const { rows: [suc] } = await pool.query(
+    `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal')
+     ON CONFLICT (negocio_id, nombre) DO UPDATE SET activo = true RETURNING id`, [NEG]);
+  await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(
+    `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
+    [NEG]).catch(() => {});
+  const term = await crearEdge(NEG, { nombre: 'PC CRASH' });
+  const imp = await crearImpresora(NEG, {
+    terminalId: term.id, nombre: 'Impresora crash', transporte: 'windows_spooler',
+    anchoColumnas: 42, config: { spoolerNombre: 'Impresora crash' },
+  });
+  await crearRuta(NEG, { impresoraId: imp.id, ambito: 'documento', clave: DESTINOS.cocina.clave });
+  return { sucursalId: suc.id, impresoraId: imp.id };
 }
 
 async function preparar() {
@@ -155,6 +192,7 @@ async function preparar() {
 
 try {
   await preparar();
+  await montarImpresion();
 
   // ─── A) Crash DESPUÉS de registrarPedido, ANTES de vincular ───
   await t('A. crash tras crear el pedido y antes de vincularlo → el retry NO crea otro', async () => {
@@ -228,17 +266,22 @@ try {
     assert.ok(pedido, 'el pedido debería existir: el fallo fue después de crearlo');
     assert.strictEqual(await contadorUsos('RECONCILIA'), 1, 'el cupo se soltó pese a haber pedido');
 
-    // Se fuerza la expiración de la reserva y se corre la reconciliación.
-    await pool.query(
-      `UPDATE tienda_promocion_usos SET created_at = NOW() - INTERVAL '1 hour'
-        WHERE negocio_id = $1 AND pedido_folio LIKE 'reserva:%'`, [NEG]);
-    const { reconciliarReservasVencidas } = await import('../src/services/tiendaPromociones.js');
-    const resumen = await reconciliarReservasVencidas(NEG);
+    // El RETRY NORMAL debe dejar la promoción confirmada. Sin llamar a mano a
+    // ninguna reconciliación: un cliente que reintenta no ejecuta scripts de
+    // mantenimiento.
+    let r;
+    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk, { codigo: 'RECONCILIA' })); });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.folio, pedido.folio);
 
-    assert.strictEqual(resumen.liberadas, 0,
-      'liberó un cupo cuyo checkout SÍ produjo pedido: quedaría pedido con descuento y cupón intacto');
-    assert.strictEqual(await usosDeCodigo('RECONCILIA'), 1, 'el uso no quedó atribuido al pedido real');
+    assert.strictEqual(await usosDeCodigo('RECONCILIA'), 1,
+      'tras el retry la promoción sigue como reserva, no atribuida al pedido');
     assert.strictEqual(await contadorUsos('RECONCILIA'), 1, 'el contador se descuadró');
+    const { rows: [reservas] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos u
+         JOIN tienda_promociones p ON p.id = u.promocion_id
+        WHERE u.negocio_id = $1 AND p.codigo = 'RECONCILIA' AND u.pedido_folio LIKE 'reserva:%'`, [NEG]);
+    assert.strictEqual(reservas.n, 0, 'quedó la reserva sin confirmar tras el retry');
 
     // Y el cupón sigue agotado para el siguiente cliente, como debe ser.
     await conServidor({}, async (base) => {
@@ -263,8 +306,32 @@ try {
     assert.strictEqual(existe.length, 1, 'el uso apunta a un pedido que no existe');
   });
 
+  await t('B3. si NADIE reintenta, el barrido de reservas vencidas reconcilia igual', async () => {
+    // El retry es el camino normal, pero un cliente puede cerrar la pestaña y
+    // no volver. Entonces la reserva caduca -- y aun así no puede devolver el
+    // cupo, porque el pedido existe.
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'despues_de_vincular' }, async (base) => {
+      await crearPromo(base, { nombre: 'Sin retry', tipo: 'monto_fijo', valor: 20,
+        codigo: 'SINRETRY', limiteUsos: 1 });
+      await comprar(base, carrito(tk, { codigo: 'SINRETRY' }));
+    });
+    const [pedido] = await pedidosDelToken(tk);
+    assert.ok(pedido, 'el pedido debería existir');
+
+    await pool.query(
+      `UPDATE tienda_promocion_usos SET created_at = NOW() - INTERVAL '1 hour'
+        WHERE negocio_id = $1 AND pedido_folio LIKE 'reserva:%'`, [NEG]);
+    const { reconciliarReservasVencidas } = await import('../src/services/tiendaPromociones.js');
+    const resumen = await reconciliarReservasVencidas(NEG);
+    assert.strictEqual(resumen.liberadas, 0,
+      'liberó un cupo cuyo checkout SÍ produjo pedido');
+    assert.strictEqual(await usosDeCodigo('SINRETRY'), 1, 'no quedó atribuido al pedido real');
+    assert.strictEqual(await contadorUsos('SINRETRY'), 1);
+  });
+
   // ─── C) Crash antes de emitir la comanda ───
-  await t('C. crash antes de emitir → retry deja 1 pedido y 1 juego de comandas', async () => {
+  await t('C. crash antes de emitir → 0 comandas; el retry deja EXACTAMENTE 1', async () => {
     const tk = token();
     await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
       const r = await comprar(base, carrito(tk));
@@ -272,36 +339,55 @@ try {
     });
     const [pedido] = await pedidosDelToken(tk);
     assert.ok(pedido, 'el pedido debería existir');
-    const trabajosAntes = await trabajosDeFolio(pedido.folio);
+    assert.strictEqual(await trabajosDeFolio(pedido.folio), 0,
+      'el crash fue ANTES de emitir: no debería haber comandas todavía');
 
     let r;
     await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
     assert.strictEqual(r.status, 200, JSON.stringify(r.body));
     assert.strictEqual(r.body.folio, pedido.folio);
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
-
-    // Sin impresoras configuradas no hay trabajos, y eso está bien: lo que se
-    // exige es que reemitir NO multiplique lo que haya.
-    const trabajosDespues = await trabajosDeFolio(pedido.folio);
-    assert.ok(trabajosDespues <= Math.max(trabajosAntes, 1),
-      `los trabajos de impresión se multiplicaron: ${trabajosAntes} → ${trabajosDespues}`);
+    assert.strictEqual(await trabajosDeFolio(pedido.folio), 1,
+      'el retry no dejó exactamente una comanda por destino');
   });
 
-  await t('C2. reemitir el mismo pedido N veces no crea comandas nuevas', async () => {
+  await t('C2. cinco reintentos posteriores: sigue habiendo 1 pedido y 1 comanda', async () => {
     const tk = token();
     let folio;
     await conServidor({}, async (base) => {
       const r = await comprar(base, carrito(tk));
       folio = r.body.folio;
-      // Cinco reintentos idénticos.
+      assert.strictEqual(await trabajosDeFolio(folio), 1, 'el checkout normal no imprimió');
       for (let i = 0; i < 5; i++) {
         const rr = await comprar(base, carrito(tk));
         assert.strictEqual(rr.body.folio, folio, 'un reintento devolvió otro folio');
       }
     });
     assert.strictEqual((await pedidosDelToken(tk)).length, 1);
-    const trabajos = await trabajosDeFolio(folio);
-    assert.ok(trabajos <= 1, `seis intentos dejaron ${trabajos} trabajos de impresión`);
+    assert.strictEqual(await trabajosDeFolio(folio), 1,
+      'seis intentos dejaron más de una comanda por destino');
+  });
+
+  await t('C3. crash tras vincular (folio YA existe): el retry emite la comanda faltante', async () => {
+    // Este es el caso que un `return` temprano dejaba a medias: hay folio, así
+    // que el reintento respondía 200 sin emitir nada. La cocina nunca veía el
+    // papel y el cliente creía que todo estaba listo.
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'despues_de_vincular' }, async (base) => {
+      const r = await comprar(base, carrito(tk));
+      assert.ok(r.status >= 400, 'no falló pese a la inyección');
+    });
+    const [pedido] = await pedidosDelToken(tk);
+    const fila = await filaTiendaPedido(tk);
+    assert.strictEqual(fila.pedido_folio, pedido.folio, 'el vínculo debería existir ya');
+    assert.strictEqual(await trabajosDeFolio(pedido.folio), 0, 'no debería haber comanda aún');
+
+    let r;
+    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.folio, pedido.folio);
+    assert.strictEqual(await trabajosDeFolio(pedido.folio), 1,
+      'el retry devolvió 200 pero la comanda nunca se emitió');
   });
 
   // ─── D) Concurrencia + fallo inyectado ───
@@ -335,8 +421,88 @@ try {
     assert.strictEqual(atrib.n, 1, `la promoción se atribuyó ${atrib.n} veces`);
     assert.strictEqual(await contadorUsos('CONCURRE'), 1, 'el contador global se descuadró');
 
-    const trabajos = await trabajosDeFolio(finales[0].folio);
-    assert.ok(trabajos <= 1, `quedaron ${trabajos} juegos de comanda`);
+    assert.strictEqual(await trabajosDeFolio(finales[0].folio), 1,
+      'los 10 intentos concurrentes no dejaron exactamente una comanda por destino');
+  });
+
+  await t('D2. repartidores: reintentar finalizar NO manda ofertas duplicadas', async () => {
+    // Un pedido a domicilio elegible para la red de repartidores. Lo que se
+    // exige es que la oferta salga UNA vez, aunque el checkout se finalice
+    // varias: cada notificación es un WhatsApp real a una persona.
+    await pool.query(`UPDATE tienda_config SET modalidades = $2 WHERE negocio_id = $1`,
+      [NEG, JSON.stringify(['recoger', 'domicilio'])]);
+    const { rows: [rep] } = await pool.query(
+      `INSERT INTO repartidores (negocio_id, nombre, telefono, activo)
+       VALUES ($1,'Repartidor crash','8998777001',TRUE)
+       ON CONFLICT DO NOTHING RETURNING id`, [NEG]).catch(() => ({ rows: [] }));
+
+    const tk = token();
+    let folio;
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'despues_de_emitir' }, async (base) => {
+      const r = await comprar(base, {
+        checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
+        modalidad: 'domicilio', direccion: 'Calle Crash 10', colonia: 'Centro',
+        cliente: { nombre: 'Domicilio crash', telefono: '8998000200' }, metodoPago: 'efectivo' });
+      assert.ok(r.status >= 400, 'no falló pese a la inyección');
+      // Que falle no basta: tiene que fallar por la INYECCIÓN, después de
+      // crear el pedido. Si falla antes (config, dirección), la prueba no
+      // estaría probando lo que dice.
+      assert.ok(!/domicilio|dirección|direccion|zona|mínimo/i.test(JSON.stringify(r.body)),
+        `falló ANTES de crear el pedido: ${JSON.stringify(r.body)}`);
+    });
+    [{ folio } = {}] = await pedidosDelToken(tk);
+    assert.ok(folio, 'el pedido debería existir');
+    const trasCrash = await trabajosDeFolio(folio);
+    const { rows: [n1] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM notificaciones_repartidor WHERE pedido_folio = $1`, [folio])
+      .catch(() => ({ rows: [{ n: 0 }] }));
+
+    // Tres reintentos: la emisión ya está marcada, así que no vuelve a correr.
+    await conServidor({}, async (base) => {
+      for (let i = 0; i < 3; i++) await comprar(base, carrito(tk));
+    });
+    const { rows: [n2] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM notificaciones_repartidor WHERE pedido_folio = $1`, [folio])
+      .catch(() => ({ rows: [{ n: 0 }] }));
+
+    assert.strictEqual(n2.n, n1.n,
+      `se mandaron ofertas de más a repartidores: ${n1.n} → ${n2.n}`);
+    assert.strictEqual(await trabajosDeFolio(folio), trasCrash,
+      'los reintentos volvieron a emitir la comanda');
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1);
+    await pool.query(`UPDATE tienda_config SET modalidades = $2 WHERE negocio_id = $1`,
+      [NEG, JSON.stringify(['recoger'])]);
+    if (rep?.id) await pool.query(`DELETE FROM repartidores WHERE id = $1`, [rep.id]).catch(() => {});
+  });
+
+  await t('D3. el ledger registra qué derivaciones se completaron', async () => {
+    const tk = token();
+    await conServidor({}, async (base) => { await comprar(base, carrito(tk)); });
+    const { rows: [r] } = await pool.query(
+      `SELECT derivaciones FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2`,
+      [NEG, tk]);
+    const hechas = Object.keys(r.derivaciones || {});
+    assert.ok(hechas.includes('emision'), `el ledger no marcó la emisión: ${hechas.join(', ')}`);
+    assert.ok(hechas.includes('historial'), `el ledger no marcó el historial: ${hechas.join(', ')}`);
+  });
+
+  await t('D4. crash ENTRE derivaciones: cada reanudación retoma solo lo que falta', async () => {
+    // Se recorre la lista de puntos de fallo en orden. Tras cada crash, un
+    // reintento; al final, exactamente un pedido y una comanda.
+    const tk = token();
+    const puntos = ['despues_de_registrar', 'despues_de_vincular', 'antes_de_emitir', 'despues_de_emitir'];
+    for (const punto of puntos) {
+      await conServidor({ XABOR_TIENDA_FALLA_EN: punto }, async (base) => {
+        await comprar(base, carrito(tk));
+      });
+    }
+    let r;
+    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const finales = await pedidosDelToken(tk);
+    assert.strictEqual(finales.length, 1, `cuatro crashes dejaron ${finales.length} pedidos`);
+    assert.strictEqual(await trabajosDeFolio(finales[0].folio), 1,
+      'cuatro crashes y una reanudación no dejaron exactamente una comanda');
   });
 
   // ─── E) Fallo ANTES de crear el pedido: sí se suelta todo ───
@@ -429,6 +595,11 @@ try {
   console.error('ERROR FATAL:', e.stack || e);
   fallidas++;
 } finally {
+  if (fallidas) {
+    const lineas = ultimoLog.split(/\r?\n/).filter(l => l.includes('[Tienda]'));
+    if (lineas.length) console.log('-- log del servidor --');
+    lineas.slice(-6).forEach(l => console.log(l));
+  }
   await limpiar().catch(() => {});
   await pool.end().catch(() => {});
 }

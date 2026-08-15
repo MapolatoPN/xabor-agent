@@ -105,11 +105,34 @@ libera nada, marca el checkout como `incompleto` y deja que el reintento lo
 termine. Si no existe, sí suelta token y promociones para que el cliente
 corrija y reintente.
 
-**Las derivaciones son idempotentes.** `finalizarCheckout` deja el pedido
-completo corra las veces que corra: el vínculo es un `UPDATE` por token, el
-historial ya era idempotente, `emitirPedido` crea trabajos de impresión con
-clave de idempotencia por `(negocio, pedido, impresora)` — reemitir no duplica
-comandas — y la atribución tiene `UNIQUE (negocio, promoción, folio)`.
+**Tener folio no significa estar terminado.** El vínculo checkout→pedido se
+escribe *antes* de emitir la comanda y de atribuir promociones. Por eso un
+reintento que encuentra `pedido_folio` no responde 200 y se va: llama a
+`finalizarCheckout` y **después** responde. Si no, el cliente vería "pedido
+recibido" mientras la cocina nunca vio el papel.
+
+**Las derivaciones llevan ledger persistente.** No basta con repetir los pasos.
+Se auditó qué hace `emitirPedido` y no todo es idempotente:
+
+| Efecto | ¿Repetible? |
+|---|---|
+| Comanda por Edge | Sí — clave de idempotencia por `(negocio, pedido, impresora)` |
+| Oferta a repartidores | Sí — deduplicada por `(folio, repartidor)` en `notificaciones_repartidor` |
+| Impresión legacy (negocios aún sin Edge) | **No** — imprimiría papel otra vez |
+| Aviso `nuevo_pedido` al panel | **No** — volvería a anunciarlo como nuevo |
+
+Por eso cada derivación deja marca en `tienda_pedidos.derivaciones` (jsonb):
+`historial`, `emision`, `atribucion`. Un reintento retoma solo lo que falta;
+cinco reintentos seguidos no hacen nada la segunda vez.
+
+La marca se escribe **después** de que la derivación tuvo éxito. Un crash entre
+"terminó" y "se marcó" haría que un reintento la repitiera — ventana estrecha, y
+justo en ella los dos efectos destructivos (Edge y repartidores) tienen su
+propia idempotencia. Al revés — marcar antes de hacer — el riesgo sería peor:
+un pedido sin comanda que nadie vuelve a intentar.
+
+`emitirPedido` se **espera** (`await`): "finalizado" no puede significar
+"disparé una promesa y ojalá sobreviva al proceso".
 
 **Ningún límite de promoción se puede rebasar.** Hay tres, y cada uno necesita
 que decida la base:
@@ -198,6 +221,10 @@ Es para vacaciones y para cuando el negocio se satura.
   negocios en otro huso, esa clave deja de ser opcional.
 - **Imágenes**: logo, portada e imagen de producto se capturan como URL. No
   hay subida de archivos desde el panel de tienda todavía.
+- **Dirección**: el cliente escribe una sola línea y elige zona (o escribe su
+  colonia si el negocio cobra tarifa plana). No se parte en calle/número: el
+  repartidor prefiere leer lo que el cliente escribió a una separación
+  adivinada por expresiones regulares.
 - **Impresión física**: la integración con Xabor Edge es la de siempre (vía
   `emitirPedido`) y está probada a nivel de encolado, pero **la validación con
   impresora física está pendiente de hacerse en sitio**.
@@ -208,7 +235,7 @@ Es para vacaciones y para cuando el negocio se satura.
 |---|---|---|
 | `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, promociones, seguimiento, backoffice, aislamiento y adversarial |
 | `test/fase-tienda-carreras-cliente.mjs` | 10 | Límite por cliente y primera compra bajo concurrencia real, liberación del cupo y cuadre de contadores |
-| `test/fase-tienda-recuperacion-crash.mjs` | 14 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
+| `test/fase-tienda-recuperacion-crash.mjs` | 19 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
 | `test/fase-predeploy-tienda.mjs` | 18 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
 
@@ -294,10 +321,18 @@ Escenarios cubiertos:
 | Crash en | Qué se exige del reintento |
 |---|---|
 | Tras crear el pedido, antes de vincularlo | Un solo pedido, mismo folio, mismo tracking, vínculo reparado |
-| Tras vincular, antes de confirmar la promoción | La reserva vencida se reconcilia contra el pedido; el cupón NO vuelve al bote |
-| Antes de emitir la comanda | Un solo pedido y un solo juego de trabajos de impresión |
-| Concurrencia (10 intentos) tras un crash | Un pedido, una atribución, un juego de comandas |
+| Tras vincular, antes de confirmar la promoción | El retry normal deja la promoción confirmada contra el folio real — sin ejecutar ningún script de mantenimiento |
+| Tras vincular (el folio YA existe) | La comanda faltante se emite: exactamente 1 trabajo por destino |
+| Antes de emitir la comanda | 0 comandas tras el crash, exactamente 1 tras el reintento |
+| Cinco reintentos posteriores | Sigue habiendo 1 pedido y 1 comanda |
+| Concurrencia (10 intentos) tras un crash | Un pedido, una atribución, exactamente una comanda |
+| Domicilio con repartidores | Tres reintentos no mandan una sola oferta de más |
+| Crash entre CADA derivación, en cadena | Una reanudación deja 1 pedido y 1 comanda |
 | Antes de crear el pedido | Sí se libera token y promociones; el cliente puede reintentar |
+
+Las comandas se cuentan con una impresora y una ruta **reales** montadas en el
+fixture, y se exige `=== 1`, no `<= 1`: sin ruta configurada, "cero comandas" y
+"no se duplicó" serían indistinguibles.
 
 Verificado también por el lado contrario: con la recuperación desactivada, los
 casos A, A2, D, G y H fallan — el cliente queda atrapado en
