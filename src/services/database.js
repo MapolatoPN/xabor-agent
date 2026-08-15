@@ -4893,7 +4893,7 @@ export async function obtenerDestinatariosCampana(segmento, negocioId) {
 const MODULOS_VALIDOS = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
-  'asistente_comercial_cotizaciones', 'restaurante',
+  'asistente_comercial_cotizaciones', 'restaurante', 'tienda_online',
 ];
 
 // Fuente ÚNICA de módulos para la UI de Superadmin (fix readiness
@@ -4910,6 +4910,7 @@ const NOMBRES_MODULOS_UI = {
   pagos: 'Pagos', repartidores: 'Repartidores',
   asistente_comercial_cotizaciones: 'Asistente Comercial (IA)',
   restaurante: 'Restaurante (mesas y meseros)',
+  tienda_online: 'Tienda en línea',
 };
 export function listarModulosDisponibles() {
   return MODULOS_VALIDOS.map(clave => ({ clave, nombre: NOMBRES_MODULOS_UI[clave] || clave }));

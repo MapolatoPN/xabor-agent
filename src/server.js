@@ -73,6 +73,7 @@ import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbedd
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
+import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
   listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
@@ -4203,6 +4204,13 @@ function requireModulo(modulo) {
   };
 }
 
+// ─── Tienda Online ────────────────────────────────────────────────────────
+// Vive en su propio módulo porque tiene dos superficies muy distintas (una
+// pública sin sesión y otra de backoffice) y porque este archivo ya es
+// demasiado grande. Se monta aquí, después de requireModulo, porque las
+// rutas de backoffice lo necesitan.
+registrarRutasTienda(app, { requireAuthSeguro, requireModulo });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -4325,7 +4333,7 @@ async function requireSuperadmin(req, res, next) {
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
-  'asistente_comercial_cotizaciones', 'restaurante',
+  'asistente_comercial_cotizaciones', 'restaurante', 'tienda_online',
 ];
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
