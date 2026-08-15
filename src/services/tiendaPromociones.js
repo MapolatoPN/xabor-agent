@@ -249,26 +249,114 @@ const PREFIJO_RESERVA = 'reserva:';
 // Una reserva que nunca se convirtió en pedido (proceso caído entre reservar y
 // crear) no puede quemar el cupón para siempre. Pasado este tiempo se ignora y
 // se recicla.
-const RESERVA_VENCE_MIN = 15;
+const RESERVA_VENCE_MIN = (() => {
+  const n = parseInt(process.env.XABOR_TIENDA_RESERVA_VENCE_MIN, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 15;
+})();
 
 // Suelta reservas huérfanas de ESTA promoción antes de contar. Devuelve el
 // cupo global de cada una: si no, un reinicio del proceso dejaría el contador
 // inflado sin ningún pedido detrás.
 async function reciclarReservasVencidas(client, negocioId, promocionId) {
-  const { rowCount } = await client.query(
-    `DELETE FROM tienda_promocion_usos
+  const { rows: vencidas } = await client.query(
+    `SELECT id, pedido_folio FROM tienda_promocion_usos
       WHERE negocio_id = $1 AND promocion_id = $2
         AND pedido_folio LIKE $3
-        AND created_at < NOW() - ($4 || ' minutes')::interval`,
+        AND created_at < NOW() - ($4 || ' minutes')::interval
+      FOR UPDATE`,
     [negocioId, promocionId, PREFIJO_RESERVA + '%', String(RESERVA_VENCE_MIN)]
   );
-  if (rowCount > 0) {
+  if (!vencidas.length) return 0;
+
+  let liberadas = 0;
+  for (const v of vencidas) {
+    const token = v.pedido_folio.slice(PREFIJO_RESERVA.length);
+
+    // ANTES de devolver el cupo hay que saber si ese checkout llegó a producir
+    // un pedido. Si lo produjo, el cliente YA tiene su descuento: devolver el
+    // cupón dejaría un pedido con descuento y una promoción como si nadie la
+    // hubiera usado. En ese caso la reserva no se recicla — se confirma contra
+    // el pedido real, que es lo que debió pasar y no alcanzó a pasar.
+    const { rows: [pedido] } = await client.query(
+      `SELECT folio, datos FROM pedidos_activos
+        WHERE negocio_id = $1 AND datos->'tienda'->>'checkout_token' = $2
+        LIMIT 1`,
+      [negocioId, token]
+    );
+
+    if (pedido) {
+      const promo = (pedido.datos?.tienda?.promociones || [])
+        .find(x => String(x.id) === String(promocionId));
+      await client.query(
+        `UPDATE tienda_promocion_usos
+            SET pedido_folio = $3, monto_descuento = $4, monto_venta = $5
+          WHERE id = $2 AND negocio_id = $1`,
+        [negocioId, v.id, pedido.folio,
+         Number(promo?.descuento) || 0, Number(pedido.datos?.total) || 0]
+      ).catch(async (e) => {
+        // Si ya existía la fila confirmada de ese folio (el reintento llegó
+        // primero), la reserva sobra: se borra sin devolver cupo, porque el
+        // uso real ya está contado en la otra fila.
+        if (e.code === '23505') {
+          await client.query(`DELETE FROM tienda_promocion_usos WHERE id = $1`, [v.id]);
+        } else { throw e; }
+      });
+      console.warn(
+        `[Tienda] Reserva vencida reconciliada contra el pedido ${pedido.folio}: NO se devuelve el cupo`);
+      continue;
+    }
+
+    // Sin pedido: el checkout de verdad murió antes de crear nada. Ahora sí se
+    // recicla, para que el cupón no quede quemado por un intento fallido.
+    await client.query(`DELETE FROM tienda_promocion_usos WHERE id = $1`, [v.id]);
+    liberadas++;
+  }
+
+  if (liberadas > 0) {
     await client.query(
       `UPDATE tienda_promociones SET usos = GREATEST(usos - $3, 0)
         WHERE id = $2 AND negocio_id = $1`,
-      [negocioId, promocionId, rowCount]);
+      [negocioId, promocionId, liberadas]);
   }
-  return rowCount;
+  return liberadas;
+}
+
+// Reconciliación fuera del camino del checkout: recorre las reservas vencidas
+// de un negocio y las resuelve una por una con la misma regla de arriba. La
+// usa la suite de recuperación y sirve como herramienta de operación si
+// hiciera falta reparar a mano.
+export async function reconciliarReservasVencidas(negocioId, { minutos } = {}) {
+  const antes = RESERVA_VENCE_MIN;
+  const client = await pool.connect();
+  const resumen = { revisadas: 0, liberadas: 0, reconciliadas: 0 };
+  try {
+    const { rows: promos } = await client.query(
+      `SELECT DISTINCT promocion_id FROM tienda_promocion_usos
+        WHERE negocio_id = $1 AND pedido_folio LIKE $2`,
+      [negocioId, PREFIJO_RESERVA + '%']);
+    for (const { promocion_id } of promos) {
+      await client.query('BEGIN');
+      const { rows: [previas] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio LIKE $3`,
+        [negocioId, promocion_id, PREFIJO_RESERVA + '%']);
+      const liberadas = await reciclarReservasVencidas(client, negocioId, promocion_id);
+      const { rows: [quedan] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio LIKE $3`,
+        [negocioId, promocion_id, PREFIJO_RESERVA + '%']);
+      await client.query('COMMIT');
+      resumen.revisadas += previas.n;
+      resumen.liberadas += liberadas;
+      resumen.reconciliadas += (previas.n - quedan.n) - liberadas;
+    }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[Tienda] Error reconciliando reservas:', e.message);
+  } finally {
+    client.release();
+  }
+  return resumen;
 }
 
 export async function reservarUsosPromociones(negocioId, aplicadas = [], contexto = {}) {

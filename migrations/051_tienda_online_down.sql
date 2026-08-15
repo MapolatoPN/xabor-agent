@@ -32,6 +32,9 @@ ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check CHECK (m
 --    así que es lo único que hay que deshacer aparte de borrarlas.
 ALTER TABLE tienda_productos DROP CONSTRAINT IF EXISTS tienda_productos_negocio_producto_fkey;
 DROP INDEX IF EXISTS idx_menu_producto_negocio_id;
+-- Y el índice único de checkout sobre pedidos_activos. Los pedidos NO se
+-- tocan: solo deja de haber restricción sobre un campo que ya nadie escribe.
+DROP INDEX IF EXISTS idx_pedido_activo_checkout_token;
 
 -- 4) Las seis tablas, en orden inverso por las FKs. Ninguna tabla preexistente
 --    se toca: los pedidos que la tienda haya creado viven en pedidos_activos y

@@ -210,6 +210,99 @@ function normalizarModalidad(tienda, modalidad) {
   return modo;
 }
 
+// ── Inyección de fallos (solo pruebas) ────────────────────────────────────
+// La recuperación ante crash no se puede probar esperando a que el proceso se
+// caiga solo: hay que provocarlo en el punto exacto. Se activa con una
+// variable de entorno y NUNCA en producción — si NODE_ENV es 'production',
+// esta función no hace nada aunque la variable esté puesta.
+function fallaInyectada(punto) {
+  if (process.env.NODE_ENV === 'production') return;
+  if (process.env.XABOR_TIENDA_FALLA_EN !== punto) return;
+  const e = new Error(`Fallo inyectado en '${punto}' (prueba de recuperación)`);
+  e.inyectado = true;
+  throw e;
+}
+
+// ── Recuperación tras crash ───────────────────────────────────────────────
+// Busca el pedido que un checkout YA creó, aunque el vínculo en tienda_pedidos
+// no se haya alcanzado a escribir. La fuente de verdad es el propio pedido:
+// lleva el checkout_token estampado desde antes de existir.
+async function buscarPedidoDeCheckout(negocioId, token) {
+  const { rows } = await pool.query(
+    `SELECT folio, datos FROM pedidos_activos
+      WHERE negocio_id = $1 AND datos->'tienda'->>'checkout_token' = $2
+      LIMIT 1`,
+    [negocioId, token]
+  );
+  return rows[0] || null;
+}
+
+// Deja el checkout completo, corra las veces que corra. Cada paso es
+// idempotente por su cuenta:
+//   · el vínculo en tienda_pedidos es un UPDATE por (negocio, token)
+//   · upsertCliente/guardarPedido ya lo son
+//   · emitirPedido crea trabajos de impresión con clave de idempotencia por
+//     (negocio, pedido, impresora): reemitir NO duplica comandas
+//   · registrarUsosPromociones tiene UNIQUE (negocio, promoción, folio)
+//
+// Se llama tanto en el camino feliz como cuando un reintento descubre que el
+// pedido ya existía: en los dos casos el resultado es el mismo.
+async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoAplicadas = null }) {
+  const datos = datosPedido || pedido?.datos || pedido || {};
+  const telefono = datos?.cliente?.telefono || null;
+
+  await pool.query(
+    `UPDATE tienda_pedidos SET pedido_folio = $3, estado = 'creado', updated_at = NOW()
+      WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS DISTINCT FROM $3`,
+    [negocioId, token, pedido.id]
+  );
+  fallaInyectada('despues_de_vincular');
+
+  try {
+    const { upsertCliente, guardarPedido } = await import('./database.js');
+    if (telefono) {
+      await upsertCliente(telefono, datos?.cliente?.nombre || null, negocioId);
+      await guardarPedido(telefono, pedido, negocioId);
+    }
+  } catch (e) {
+    console.error('[Tienda] Error persistiendo pedido en historial:', e.message);
+  }
+
+  fallaInyectada('antes_de_emitir');
+  const { emitirPedido } = await import('../orders/orderManager.js');
+  emitirPedido(pedido);
+  fallaInyectada('despues_de_emitir');
+
+  const aplicadas = promoAplicadas || (datos?.tienda?.promociones || []).map(p => ({
+    id: p.id, campaniaId: p.campania_id || null, nombre: p.nombre,
+    codigo: p.codigo, tipo: p.tipo, descuento: p.descuento, envioGratis: p.envio_gratis,
+  }));
+  if (aplicadas.length) {
+    const esNuevo = !(await clienteTienePedidosPrevios(negocioId, telefono, pedido.id));
+    await registrarUsosPromociones({
+      negocioId, folio: pedido.id, aplicadas, telefono,
+      montoVenta: Number(datos?.total) || 0, clienteNuevo: esNuevo, checkoutToken: token,
+    });
+  }
+}
+
+// Reconstruye la respuesta de un checkout ya creado, para devolverle al
+// cliente EXACTAMENTE el mismo folio y tracking que la primera vez.
+async function respuestaDeCheckoutExistente(negocioId, token, fila) {
+  const { rows: [tp] } = await pool.query(
+    `SELECT tracking_token FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2`,
+    [negocioId, token]);
+  const datos = fila.datos || {};
+  return {
+    yaExistia: true,
+    folio: fila.folio,
+    trackingToken: tp?.tracking_token || datos?.tienda?.tracking_token || null,
+    total: Number(datos.total) || 0,
+    ahorro: Number(datos?.tienda?.ahorro) || 0,
+    programadoPara: datos.programado_para || null,
+  };
+}
+
 // ── Checkout ──────────────────────────────────────────────────────────────
 // Idempotencia real y persistente: el mismo checkout_token SIEMPRE devuelve
 // el mismo pedido. Un doble click, un refresh, un retry por timeout o el
@@ -235,21 +328,50 @@ export async function crearPedidoTienda({
   );
 
   if (!reserva.length) {
-    // Otra petición con el mismo token ya pasó por aquí.
+    // Otra petición con el mismo token ya pasó por aquí. Se espera a que
+    // termine de vincular el folio.
     const existente = await esperarPedidoDeToken(tienda.negocioId, token);
     if (existente?.pedido_folio) {
-      return {
-        yaExistia: true,
-        folio: existente.pedido_folio,
-        trackingToken: existente.tracking_token,
-      };
+      const fila = await buscarPedidoDeCheckout(tienda.negocioId, token);
+      return fila
+        ? await respuestaDeCheckoutExistente(tienda.negocioId, token, fila)
+        : { yaExistia: true, folio: existente.pedido_folio, trackingToken: existente.tracking_token };
+    }
+    // No vinculó. Puede ser que siga en vuelo... o que el proceso muriera
+    // entre crear el pedido y vincularlo. El pedido lleva el token dentro, así
+    // que se puede saber con certeza en vez de adivinar.
+    const huerfano = await buscarPedidoDeCheckout(tienda.negocioId, token);
+    if (huerfano) {
+      console.warn('[Tienda] Recuperando checkout huerfano -> folio ' + huerfano.folio);
+      await finalizarCheckout({
+        negocioId: tienda.negocioId, token,
+        pedido: { ...huerfano.datos, id: huerfano.folio }, datosPedido: huerfano.datos,
+      });
+      return await respuestaDeCheckoutExistente(tienda.negocioId, token, huerfano);
     }
     throw new TiendaError('Tu pedido se está procesando, espera un momento', 'CHECKOUT_EN_CURSO', 409);
+  }
+
+  // Reserva fresca. Aun así puede existir ya un pedido con este token: si un
+  // intento anterior murió y su fila de tienda_pedidos se borró, el INSERT de
+  // arriba no encuentra conflicto. Crear otro pedido aquí sería el duplicado
+  // que se quiere evitar.
+  const previo = await buscarPedidoDeCheckout(tienda.negocioId, token);
+  if (previo) {
+    console.warn('[Tienda] El checkout ya tenia pedido ' + previo.folio + ': se recupera');
+    await finalizarCheckout({
+      negocioId: tienda.negocioId, token,
+      pedido: { ...previo.datos, id: previo.folio }, datosPedido: previo.datos,
+    });
+    return await respuestaDeCheckoutExistente(tienda.negocioId, token, previo);
   }
 
   // Cupos de promoción tomados en esta petición: si algo falla después, hay
   // que devolverlos o quedarían quemados sin pedido que los justifique.
   let cuposTomados = [];
+  // Si el pedido llego a crearse, el catch NO puede tratar el fallo como si
+  // nada hubiera pasado: el cliente ya tiene un pedido en la cocina.
+  let pedidoCreado = null;
   try {
     const reglas = await reglasDelNegocio(tienda.negocioId);
     const modo = normalizarModalidad(tienda, modalidad);
@@ -337,6 +459,10 @@ export async function crearPedidoTienda({
       metodo_pago: elegido.id,
       paga_despues: elegido.pagaDespues,
       tracking_token: reserva[0].tracking_token,
+      // El token del checkout viaja DENTRO del pedido durable. Es lo que
+      // permite recuperarlo si el proceso muere antes de vincularlo, y lo que
+      // el índice único de pedidos_activos usa para impedir un segundo pedido.
+      checkout_token: token,
       promociones: promo.aplicadas.map(a => ({
         id: a.id, nombre: a.nombre, codigo: a.codigo, tipo: a.tipo,
         descuento: a.descuento, envio_gratis: a.envioGratis, campania_id: a.campaniaId,
@@ -353,39 +479,20 @@ export async function crearPedidoTienda({
     // mostrador: el cobro se cierra en el panel cuando el dinero llega.
     if (elegido.pagaDespues) orden.pago_confirmado = false;
 
-    // 8) Alta del pedido por el camino de siempre.
-    const { registrarPedido, emitirPedido } = await import('../orders/orderManager.js');
+    // 8) Alta del pedido por el camino de siempre. A partir de esta linea el
+    //    pedido es DURABLE: cualquier fallo posterior ya no se puede resolver
+    //    borrando la reserva, porque el pedido ya existe.
+    const { registrarPedido } = await import('../orders/orderManager.js');
     const pedido = await registrarPedido(orden, 'tienda_online');
+    pedidoCreado = pedido;
+    fallaInyectada('despues_de_registrar');
 
-    // 9) Persistencia del vínculo ANTES de emitir: si el cliente reintenta en
-    //    ese instante, ya encuentra su folio.
-    await pool.query(
-      `UPDATE tienda_pedidos SET pedido_folio = $3, estado = 'creado', updated_at = NOW()
-        WHERE negocio_id = $1 AND checkout_token = $2`,
-      [tienda.negocioId, token, pedido.id]
-    );
-
-    // Cliente e historial: mismo orden que el POS (FK pedidos.telefono).
-    try {
-      const { upsertCliente, guardarPedido } = await import('./database.js');
-      await upsertCliente(telefono, orden.cliente.nombre, tienda.negocioId);
-      await guardarPedido(telefono, pedido, tienda.negocioId);
-    } catch (e) {
-      console.error('[Tienda] Error persistiendo pedido en historial:', e.message);
-    }
-
-    // 10) Tablero en tiempo real + comanda por Edge (una sola vez: emitirPedido
-    //     ya es el único punto de impresión de todo Xabor).
-    emitirPedido(pedido);
-
-    // 11) Atribución de promociones/campañas (idempotente por folio).
-    if (promo.aplicadas.length) {
-      const esNuevo = !(await clienteTienePedidosPrevios(tienda.negocioId, telefono, pedido.id));
-      await registrarUsosPromociones({
-        negocioId: tienda.negocioId, folio: pedido.id, aplicadas: promo.aplicadas,
-        telefono, montoVenta: promo.total, clienteNuevo: esNuevo, checkoutToken: token,
-      });
-    }
+    // 9) Derivaciones: vinculo, historial, tablero, comanda y atribucion.
+    //    Todas idempotentes, todas repetibles por un reintento.
+    await finalizarCheckout({
+      negocioId: tienda.negocioId, token, pedido,
+      datosPedido: orden, promoAplicadas: promo.aplicadas,
+    });
 
     return {
       yaExistia: false,
@@ -397,15 +504,36 @@ export async function crearPedidoTienda({
       metodoPago: elegido,
     };
   } catch (e) {
-    // La reserva se libera para que el cliente pueda corregir y reintentar
-    // con el mismo token sin quedar bloqueado.
-    await pool.query(
-      `DELETE FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS NULL`,
-      [tienda.negocioId, token]
-    ).catch(() => {});
-    // Y el cupo de las promociones vuelve al bote: no hubo pedido.
-    if (cuposTomados.length) {
-      await liberarUsosPromociones(tienda.negocioId, cuposTomados, { checkoutToken: token });
+    // Alcanzo a crearse el pedido? No se le pregunta a la memoria del proceso
+    // (que en un crash real ya no existe): se le pregunta a la base, que es la
+    // unica que sabe. Si el pedido existe, borrar la reserva y devolver el
+    // cupon dejaria un pedido CON descuento y un cupon como si nadie lo
+    // hubiera usado -- exactamente lo que no puede pasar.
+    const yaHayPedido = pedidoCreado
+      || await buscarPedidoDeCheckout(tienda.negocioId, token).catch(() => null);
+
+    if (!yaHayPedido) {
+      // No hubo pedido: se suelta todo para que el cliente corrija y reintente
+      // con el mismo token sin quedar bloqueado.
+      await pool.query(
+        `DELETE FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS NULL`,
+        [tienda.negocioId, token]
+      ).catch(() => {});
+      if (cuposTomados.length) {
+        await liberarUsosPromociones(tienda.negocioId, cuposTomados, { checkoutToken: token });
+      }
+    } else {
+      // El pedido existe. Se deja constancia y NO se suelta nada: el siguiente
+      // intento con el mismo token lo encuentra y termina de finalizarlo.
+      console.error(
+        '[Tienda] El checkout fallo DESPUES de crear el pedido ' +
+        (pedidoCreado?.id || yaHayPedido.folio) + ': ' + e.message +
+        '. No se libera nada; un reintento con el mismo token lo recupera.');
+      await pool.query(
+        `UPDATE tienda_pedidos SET estado = 'incompleto', updated_at = NOW()
+          WHERE negocio_id = $1 AND checkout_token = $2 AND pedido_folio IS NULL`,
+        [tienda.negocioId, token]
+      ).catch(() => {});
     }
     if (e instanceof POSValidacionError) throw new TiendaError(e.message, e.codigo || 'VALIDACION');
     throw e;

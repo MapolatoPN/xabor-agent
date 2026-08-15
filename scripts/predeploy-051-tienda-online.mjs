@@ -49,6 +49,10 @@ const FKS_COMPUESTAS = [
   'tienda_promocion_usos_negocio_campania_fkey',
 ];
 
+// Regla de este gate: tiene que comprobar TODO lo que la migración garantiza.
+// Ya pasó dos veces que una comprobación incompleta dejaba fuera cambios sobre
+// una base que ya tenía las tablas -- el gate decía "ya aplicada" y la garantía
+// nueva no llegaba nunca. Si se agrega algo a la 051, se agrega aquí.
 async function estado() {
   const { rows: [r] } = await pool.query(
     `SELECT
@@ -57,15 +61,31 @@ async function estado() {
        (SELECT COUNT(*) FROM pg_constraint
          WHERE conname = 'negocio_modulos_modulo_check'
            AND pg_get_constraintdef(oid) LIKE '%tienda_online%')::int AS modulo_en_check,
-       (SELECT COUNT(*) FROM pg_constraint WHERE conname = ANY($2::text[]))::int AS fks`,
+       (SELECT COUNT(*) FROM pg_constraint WHERE conname = ANY($2::text[]))::int AS fks,
+       -- Índice único que impide dos pedidos para el mismo checkout.
+       (SELECT COUNT(*) FROM pg_indexes
+         WHERE schemaname = 'public' AND indexname = 'idx_pedido_activo_checkout_token')::int AS idx_checkout,
+       -- Las FKs de campaña deben nulear SOLO campania_id: negocio_id es
+       -- NOT NULL y un SET NULL sin lista de columnas rompería el DELETE.
+       (SELECT COUNT(*) FROM pg_constraint
+         WHERE conname IN ('tienda_promociones_negocio_campania_fkey',
+                           'tienda_promocion_usos_negocio_campania_fkey')
+           AND pg_get_constraintdef(oid) LIKE '%SET NULL (campania_id)%')::int AS set_null_columna`,
     [TABLAS, FKS_COMPUESTAS]
   );
-  return { tablas: r.tablas, moduloEnCheck: r.modulo_en_check === 1, fks: r.fks };
+  return {
+    tablas: r.tablas,
+    moduloEnCheck: r.modulo_en_check === 1,
+    fks: r.fks,
+    idxCheckout: r.idx_checkout === 1,
+    setNullColumna: r.set_null_columna === 2,
+  };
 }
 
 async function yaAplicada() {
   const e = await estado();
-  return e.tablas === TABLAS.length && e.moduloEnCheck && e.fks === FKS_COMPUESTAS.length;
+  return e.tablas === TABLAS.length && e.moduloEnCheck && e.fks === FKS_COMPUESTAS.length
+    && e.idxCheckout && e.setNullColumna;
 }
 
 try {
@@ -75,7 +95,8 @@ try {
     const antes = await estado();
     console.log(`[predeploy-051] Aplicando migrations/051_tienda_online.sql ` +
       `(tablas: ${antes.tablas}/${TABLAS.length}, modulo en CHECK: ${antes.moduloEnCheck}, ` +
-      `FKs por negocio: ${antes.fks}/${FKS_COMPUESTAS.length})...`);
+      `FKs por negocio: ${antes.fks}/${FKS_COMPUESTAS.length}, ` +
+      `indice de checkout: ${antes.idxCheckout}, SET NULL por columna: ${antes.setNullColumna})...`);
     await pool.query(readFileSync(MIGRACION, 'utf8'));
 
     const despues = await estado();
@@ -90,8 +111,18 @@ try {
         `faltan FKs compuestas por negocio: ${despues.fks}/${FKS_COMPUESTAS.length} ` +
         `-- el esquema no impediria una asociacion entre negocios distintos`);
     }
-    console.log(`[predeploy-051] Verificacion OK: ${TABLAS.length} tablas, CHECK actualizado ` +
-      `y ${FKS_COMPUESTAS.length} FKs con aislamiento por negocio.`);
+    if (!despues.idxCheckout) {
+      throw new Error(
+        `falta idx_pedido_activo_checkout_token -- sin el, un crash a media creacion ` +
+        `podria dejar dos pedidos para el mismo checkout`);
+    }
+    if (!despues.setNullColumna) {
+      throw new Error(
+        `las FKs de campana no nulean solo campania_id -- borrar una campana fallaria`);
+    }
+    console.log(`[predeploy-051] Verificacion OK: ${TABLAS.length} tablas, CHECK actualizado, ` +
+      `${FKS_COMPUESTAS.length} FKs con aislamiento por negocio, indice de checkout unico ` +
+      `y SET NULL acotado a campania_id.`);
   }
 
   // El módulo nace APAGADO para todos: la 051 no lo activa a nadie. Cada

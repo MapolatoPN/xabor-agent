@@ -83,12 +83,33 @@ Configuración: lo que se administra es qué del catálogo sale a la calle.
 
 ## Idempotencia y carreras
 
-**Un reintento no crea dos pedidos.** El navegador genera un `checkoutToken`
-de 192 bits una vez por intento de compra y lo guarda. El servidor reserva ese
-token con un `INSERT … ON CONFLICT DO NOTHING` *antes* de hacer cualquier
-trabajo; si el token ya existía, espera al pedido de la primera petición y
-devuelve el mismo folio. Funciona con varias instancias del proceso porque
-quien decide es la base, no la aplicación.
+**Un reintento no crea dos pedidos, ni siquiera tras un crash.** El navegador
+genera un `checkoutToken` de 192 bits una vez por intento de compra y lo
+guarda. Con ese token hay tres defensas, en capas:
+
+1. **Reserva**: `INSERT … ON CONFLICT DO NOTHING` en `tienda_pedidos` antes de
+   hacer cualquier trabajo. Cubre el doble click y las peticiones paralelas.
+2. **El token viaja DENTRO del pedido** (`datos->'tienda'->>'checkout_token'`),
+   estampado antes de crearlo. Si el proceso muere entre crear el pedido y
+   vincularlo, el reintento encuentra ese pedido y lo recupera en vez de crear
+   otro. La recuperación no consulta memoria de proceso — que en un crash real
+   ya no existe — sino la base.
+3. **Un índice único parcial** sobre `(negocio_id, checkout_token)` en
+   `pedidos_activos`. Es la última línea: aunque el código se equivocara, la
+   base rechaza el segundo pedido.
+
+La ventana peligrosa es la que va de `registrarPedido` (el pedido ya es
+durable) a las derivaciones. Ahí el `catch` **no** puede limpiar como si nada
+hubiera pasado: le pregunta a la base si el pedido existe. Si existe, no
+libera nada, marca el checkout como `incompleto` y deja que el reintento lo
+termine. Si no existe, sí suelta token y promociones para que el cliente
+corrija y reintente.
+
+**Las derivaciones son idempotentes.** `finalizarCheckout` deja el pedido
+completo corra las veces que corra: el vínculo es un `UPDATE` por token, el
+historial ya era idempotente, `emitirPedido` crea trabajos de impresión con
+clave de idempotencia por `(negocio, pedido, impresora)` — reemitir no duplica
+comandas — y la atribución tiene `UNIQUE (negocio, promoción, folio)`.
 
 **Ningún límite de promoción se puede rebasar.** Hay tres, y cada uno necesita
 que decida la base:
@@ -107,8 +128,17 @@ en el uso real (se le pone el folio y los montos); si el pedido no llega a
 existir, se libera.
 
 Una reserva huérfana — proceso caído entre reservar y crear — caduca a los 15
-minutos y devuelve el cupo. Sin eso, un reinicio del servidor le quemaría el
-cupón a un cliente para siempre.
+minutos. Pero antes de devolver el cupo se comprueba si ese checkout llegó a
+producir un pedido:
+
+- **Sí produjo pedido** → no se devuelve nada. La reserva se convierte en el
+  uso real contra ese folio. Nunca puede quedar un pedido con descuento y un
+  cupón como si nadie lo hubiera usado.
+- **No produjo pedido** → ahí sí se libera el cupo, para que un intento
+  fallido no le queme el cupón a un cliente para siempre.
+
+`reconciliarReservasVencidas(negocioId)` hace ese barrido y sirve además como
+herramienta de operación si hiciera falta reparar a mano.
 
 Todo esto se reserva **antes** de crear el pedido: descubrir que el cupón se
 agotó cuando el cliente ya tiene folio es descubrirlo tarde.
@@ -178,6 +208,7 @@ Es para vacaciones y para cuando el negocio se satura.
 |---|---|---|
 | `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, promociones, seguimiento, backoffice, aislamiento y adversarial |
 | `test/fase-tienda-carreras-cliente.mjs` | 10 | Límite por cliente y primera compra bajo concurrencia real, liberación del cupo y cuadre de contadores |
+| `test/fase-tienda-recuperacion-crash.mjs` | 14 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
 | `test/fase-predeploy-tienda.mjs` | 18 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
 
@@ -245,3 +276,34 @@ historial de uso. Los pedidos ya cobrados sobreviven — viven en
 `pedidos_activos` y `pedidos` — pero se pierde la atribución de qué promoción
 los generó. Respaldar las seis tablas antes de correrlo en una base con
 tiendas publicadas.
+
+
+## Recuperación ante crash
+
+Los fallos no se esperan a que ocurran: se inyectan. `XABOR_TIENDA_FALLA_EN`
+provoca un error en un punto exacto del checkout —
+`despues_de_registrar`, `despues_de_vincular`, `antes_de_emitir`,
+`despues_de_emitir` — y la suite comprueba qué queda después.
+
+La variable **no funciona en producción**: lo primero que evalúa
+`fallaInyectada` es `NODE_ENV === 'production'`, y con eso retorna sin hacer
+nada aunque la variable esté puesta. Hay una prueba que verifica ese orden.
+
+Escenarios cubiertos:
+
+| Crash en | Qué se exige del reintento |
+|---|---|
+| Tras crear el pedido, antes de vincularlo | Un solo pedido, mismo folio, mismo tracking, vínculo reparado |
+| Tras vincular, antes de confirmar la promoción | La reserva vencida se reconcilia contra el pedido; el cupón NO vuelve al bote |
+| Antes de emitir la comanda | Un solo pedido y un solo juego de trabajos de impresión |
+| Concurrencia (10 intentos) tras un crash | Un pedido, una atribución, un juego de comandas |
+| Antes de crear el pedido | Sí se libera token y promociones; el cliente puede reintentar |
+
+Verificado también por el lado contrario: con la recuperación desactivada, los
+casos A, A2, D, G y H fallan — el cliente queda atrapado en
+`CHECKOUT_EN_CURSO` con su pedido ya en la cocina.
+
+**Límite conocido**: la recuperación busca el pedido en `pedidos_activos`. Un
+pedido ya archivado y purgado de esa tabla no se encontraría; en la práctica
+la ventana de un checkout se mide en segundos y ningún pedido se archiva tan
+rápido, pero conviene saberlo si alguna vez se acorta la retención.

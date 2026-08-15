@@ -1,10 +1,21 @@
 -- ─── 051: Módulo Tienda Online (SaaS multiempresa) ─────────────────────────
--- Aditiva e idempotente. NO toca ninguna tabla existente: la tienda reutiliza
--- catálogo (menu_*), pedidos (pedidos_activos), impresión (impresion_*),
--- pagos (metodos_pago) y reglas operativas (configuracion.reglas_atencion).
--- Lo que se agrega aquí es SOLO lo que no existía: configuración de tienda por
+-- Idempotente y re-ejecutable. La tienda REUTILIZA lo que ya existe: catálogo
+-- (menu_*), pedidos (pedidos_activos), impresión (impresion_*), pagos
+-- (metodos_pago) y reglas operativas (configuracion.reglas_atencion). Lo que
+-- se agrega aquí es solo lo que no existía: configuración de tienda por
 -- negocio, publicación de productos por canal, motor de promociones con
 -- campañas/influencers, y el mapa checkout→pedido→tracking.
+--
+-- QUÉ TOCA DE LO YA EXISTENTE (tres cosas, todas al final del archivo):
+--   1. negocio_modulos: reemplaza su CHECK para admitir 'tienda_online'. Sin
+--      esto, contratar el módulo falla con violación de restricción.
+--   2. menu_productos: agrega el índice UNIQUE (negocio_id, id) que necesita
+--      la FK compuesta de tienda_productos. Como `id` ya es PK, ese índice
+--      siempre se satisface sobre datos existentes.
+--   3. pedidos_activos: agrega un índice único parcial sobre el checkout_token
+--      que la tienda estampa en `datos`. Es la autoridad que impide dos
+--      pedidos para el mismo checkout, incluso tras un crash a media creación.
+--   El rollback (051_tienda_online_down.sql) deshace las tres.
 --
 -- Regla de oro: todo lleva negocio_id y todo índice/constraint único es POR
 -- NEGOCIO — dos restaurantes pueden tener el mismo código de cupón.
@@ -243,12 +254,22 @@ BEGIN
               WHERE conname = 'tienda_promociones_campania_id_fkey') THEN
     ALTER TABLE tienda_promociones DROP CONSTRAINT tienda_promociones_campania_id_fkey;
   END IF;
+  -- Si ya existe pero con la semántica vieja (SET NULL sin lista de columnas),
+  -- se reemplaza: dejarla así haría fallar el DELETE de una campaña.
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_promociones_negocio_campania_fkey'
+                AND pg_get_constraintdef(oid) NOT LIKE '%SET NULL (campania_id)%') THEN
+    ALTER TABLE tienda_promociones DROP CONSTRAINT tienda_promociones_negocio_campania_fkey;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
                   WHERE conname = 'tienda_promociones_negocio_campania_fkey') THEN
     ALTER TABLE tienda_promociones
       ADD CONSTRAINT tienda_promociones_negocio_campania_fkey
       FOREIGN KEY (negocio_id, campania_id) REFERENCES tienda_campanas (negocio_id, id)
-      ON DELETE SET NULL;
+      -- SET NULL solo sobre campania_id: negocio_id es NOT NULL y un SET NULL
+      -- sin lista de columnas intentaría nulearlo también, y el DELETE del
+      -- padre reventaría. Requiere PostgreSQL 15+.
+      ON DELETE SET NULL (campania_id);
   END IF;
 
   -- tienda_promocion_usos: promoción y campaña, ambas del MISMO negocio.
@@ -267,11 +288,33 @@ BEGIN
               WHERE conname = 'tienda_promocion_usos_campania_id_fkey') THEN
     ALTER TABLE tienda_promocion_usos DROP CONSTRAINT tienda_promocion_usos_campania_id_fkey;
   END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'tienda_promocion_usos_negocio_campania_fkey'
+                AND pg_get_constraintdef(oid) NOT LIKE '%SET NULL (campania_id)%') THEN
+    ALTER TABLE tienda_promocion_usos DROP CONSTRAINT tienda_promocion_usos_negocio_campania_fkey;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
                   WHERE conname = 'tienda_promocion_usos_negocio_campania_fkey') THEN
     ALTER TABLE tienda_promocion_usos
       ADD CONSTRAINT tienda_promocion_usos_negocio_campania_fkey
       FOREIGN KEY (negocio_id, campania_id) REFERENCES tienda_campanas (negocio_id, id)
-      ON DELETE SET NULL;
+      -- SET NULL solo sobre campania_id: negocio_id es NOT NULL y un SET NULL
+      -- sin lista de columnas intentaría nulearlo también, y el DELETE del
+      -- padre reventaría. Requiere PostgreSQL 15+.
+      ON DELETE SET NULL (campania_id);
   END IF;
 END $$;
+
+
+-- ── Autoridad contra pedidos duplicados por crash ─────────────────────────
+-- El checkout estampa su token dentro del propio pedido (datos->'tienda'->>
+-- 'checkout_token') ANTES de crearlo. Este índice hace que la BASE, no la
+-- aplicación, garantice que un checkout produce como máximo un pedido: si el
+-- proceso muere entre crear el pedido y vincularlo, el reintento no puede
+-- crear otro — choca contra el índice y el flujo lo recupera.
+--
+-- Parcial: solo afecta a los pedidos que traen token (los de la tienda). Los
+-- pedidos de mostrador, WhatsApp y Rappi no llevan ninguno y quedan fuera.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pedido_activo_checkout_token
+  ON pedidos_activos (negocio_id, (datos->'tienda'->>'checkout_token'))
+  WHERE datos->'tienda'->>'checkout_token' IS NOT NULL;
