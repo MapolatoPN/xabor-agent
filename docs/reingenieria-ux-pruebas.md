@@ -60,6 +60,26 @@ for s in fase-reingenieria-ux fase-controles-atencion-frontend \
 | fase-c-embedded-signup | 31 | 0 | 0 |
 | **TOTAL (24 suites)** | **598** | **0** | **0** |
 
+
+## Revisión 3 (2026-08-15) — 25 suites, 626 tests, 0 fallos
+
+Suite nueva `fase-cobro-diferido.mjs` (28 casos del ciclo captura→cobro) más las
+24 anteriores. Ejecución en dos tramos por saturación del entorno local:
+
+| Tramo | Suites | Tests | Fallidas |
+|---|---|---|---|
+| Lote principal | 20 | 451 | 0 |
+| Re-corrida aislada de 5 suites | 5 | 175 | 0 |
+| **TOTAL** | **25** | **626** | **0** |
+
+Las 5 suites re-corridas (`impresion-self-service` 56, `p0-aislamiento-pedidos`
+29, `c-bot-global` 24, `checklist-activacion-bot` 18, `pagos-multiempresa` 48)
+habían fallado en el lote por **timeout de arranque del servidor de pruebas**
+(15 s de `/health`) cuando varias suites competían por la misma base Docker, no
+por regresión: ejecutadas de una en una pasan al 100 % con exit 0. Si vuelve a
+ocurrir, purgar `pedidos_activos` antiguos de la base de pruebas antes del lote
+— el arranque carga todos los pedidos activos antes de abrir el puerto.
+
 ## Contratos nuevos de la revisión (test/fase-reingenieria-ux.mjs, 19 casos)
 
 Selector de modalidad (4 rutas + gating por módulo), capturas sin nav propia,
