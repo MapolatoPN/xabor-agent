@@ -1157,6 +1157,7 @@ export async function obtenerVentas(desde, hasta, negocioId) {
         datos->>'modalidad'                                                AS modalidad,
         datos->>'canal'                                                    AS canal,
         COALESCE(datos->>'forma_pago','no especificado')                   AS forma_pago,
+        COALESCE((datos->>'pago_confirmado')::boolean, false)              AS pago_confirmado,
         COALESCE((datos->>'costo_envio')::decimal, 0)                     AS costo_envio,
         COALESCE((datos->'devolucion'->>'monto')::decimal, 0)             AS devolucion_monto,
         datos->'devolucion'->>'motivo'                                     AS devolucion_motivo,
@@ -1182,13 +1183,31 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
   }
   const negocioIdNorm = negocioId.trim();
   try {
+    // Reingeniería UX: OPERACIÓN GENERADA ≠ INGRESO COBRADO. Un pedido
+    // abierto (forma_pago='por_cobrar' sin pago_confirmado) cuenta como
+    // operación (num_pedidos) pero NO suma a total_ventas/promedio/envíos
+    // hasta que se cobre; se reporta aparte en por_cobrar_num/por_cobrar_total.
+    // 'cobrado' cubre también todos los canales previos (forma_pago real
+    // desde la creación), así que los números históricos no cambian.
     const result = await pool.query(`
       SELECT
         COUNT(*)::int                                                                              AS num_pedidos,
-        COALESCE(SUM((datos->>'total')::decimal), 0)::float                                       AS total_ventas,
+        COALESCE(SUM((datos->>'total')::decimal) FILTER (WHERE NOT (
+          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        )), 0)::float                                                                              AS total_ventas,
         COALESCE(SUM(COALESCE((datos->'devolucion'->>'monto')::decimal, 0)), 0)::float            AS total_devoluciones,
-        COALESCE(AVG((datos->>'total')::decimal), 0)::float                                       AS promedio,
-        COALESCE(SUM((datos->>'costo_envio')::decimal), 0)::float                                 AS total_envios,
+        COALESCE(AVG((datos->>'total')::decimal) FILTER (WHERE NOT (
+          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        )), 0)::float                                                                              AS promedio,
+        COALESCE(SUM((datos->>'costo_envio')::decimal) FILTER (WHERE NOT (
+          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        )), 0)::float                                                                              AS total_envios,
+        COUNT(*) FILTER (WHERE
+          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        )::int                                                                                     AS por_cobrar_num,
+        COALESCE(SUM((datos->>'total')::decimal) FILTER (WHERE
+          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+        ), 0)::float                                                                               AS por_cobrar_total,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                      AS domicilios,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%recoger%'
                             OR datos->>'modalidad' ILIKE '%tienda%')::int                         AS recoger,
@@ -1202,6 +1221,77 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
   } catch (e) {
     console.error('[DB] Error obtenerResumenVentas:', e.message);
     return {};
+  }
+}
+
+// ─── Cobro de pedido abierto (reingeniería UX: captura ≠ cobro) ─────────────
+// Lectura previa al cobro: datos + estado SIN filtrar entregados (un pedido
+// puede cobrarse después de marcado entregado). negocioId OBLIGATORIO.
+export async function obtenerPedidoActivoParaCobro(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] obtenerPedidoActivoParaCobro: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT datos, estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`,
+      [folio, negocioId.trim()]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidoActivoParaCobro:', e.message);
+    return null;
+  }
+}
+
+// Cobro transaccional e idempotente. FOR UPDATE + re-verificación DENTRO de
+// la transacción: dos cobros concurrentes (doble click) producen UN solo
+// cobro — el segundo ve pago_confirmado=true y recibe yaCobrado con los
+// datos existentes, sin re-contabilizar ni pisar nada. La fila operativa
+// (pedidos_activos, la que leen corte/ventas/historial) la persiste
+// registrarPedido de forma síncrona al crear, así que aquí nunca se cobra
+// una fila inexistente. negocioId OBLIGATORIO — falla cerrado.
+export async function cobrarPedidoActivo(folio, negocioId, campos) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] cobrarPedidoActivo: negocioId inválido u omitido — rechazado');
+    return { error: 'negocio_invalido' };
+  }
+  const nid = negocioId.trim();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT datos, estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      [folio, nid]
+    );
+    if (!rows.length) { await client.query('ROLLBACK'); return { error: 'no_encontrado' }; }
+    const { datos, estado } = rows[0];
+    if (estado === 'cancelado') { await client.query('ROLLBACK'); return { error: 'cancelado' }; }
+    if (datos && datos.pago_confirmado === true) {
+      await client.query('COMMIT');
+      return { yaCobrado: true, datos };
+    }
+    const { rows: [act] } = await client.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $2 RETURNING datos`,
+      [folio, nid, JSON.stringify(campos)]
+    );
+    await client.query('COMMIT');
+    // Espejo best-effort en el archivo `pedidos` (la creación presencial lo
+    // persiste awaited antes de responder; si un canal viejo no tuviera la
+    // fila, el cobro operativo NO se pierde: la fuente de verdad es
+    // pedidos_activos).
+    pool.query(
+      `UPDATE pedidos SET forma_pago = $2, total = $3 WHERE folio = $1 AND negocio_id = $4`,
+      [folio, campos.forma_pago, campos.total, nid]
+    ).catch((e) => console.error('[DB] cobro: espejo en pedidos falló:', e.message));
+    return { ok: true, datos: act.datos };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[DB] Error cobrarPedidoActivo:', e.message);
+    return { error: 'interno' };
+  } finally {
+    client.release();
   }
 }
 

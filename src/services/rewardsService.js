@@ -503,6 +503,26 @@ export async function registrarCanje(folio, telefono, puntosACanjear, usuario, t
   }
 }
 
+// ─── Consultar el canje ya registrado de un folio ────────────────────────────
+// Para cobros reintentados (reingeniería UX): registrarCanje es idempotente
+// por folio (idx_rewards_movements_no_dup) y devuelve null en el duplicado;
+// esta lectura recupera puntos y monto del canje original sin volver a mover
+// saldo. Devuelve null si el folio no tiene canje.
+export async function obtenerCanjeDeFolio(folio, tenantId = DEFAULT_TENANT) {
+  const { rows } = await pool.query(
+    `SELECT puntos, metadata FROM rewards_movements
+     WHERE folio_venta = $1 AND tenant_id = $2 AND tipo = 'canje'
+     LIMIT 1`,
+    [folio, tenantId]
+  );
+  if (!rows.length) return null;
+  const meta = rows[0].metadata || {};
+  return {
+    puntos: Math.abs(parseInt(rows[0].puntos, 10) || 0),
+    monto: parseFloat(meta.monto_descuento) || 0,
+  };
+}
+
 // ─── Revertir movimientos de un folio (al cancelar una venta) ────────────────
 // Crea un movimiento tipo 'reverso' por cada movimiento original del folio.
 // Fire-and-forget desde el endpoint de cancelación — la cancelación siempre procede.

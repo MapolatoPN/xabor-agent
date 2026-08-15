@@ -2982,26 +2982,45 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   const tieneTelefonoReal = !!rewards_telefono?.trim();
   const clienteTel = tieneTelefonoReal ? rewards_telefono.trim() : idClienteTecnicoPresencial(req.negocioId);
   const clienteNom = (tieneTelefonoReal ? (rewards_nombre || nombre) : (nombre || 'Cliente presencial')) || 'Cliente presencial';
+  // ── Captura vs cobro (reingeniería UX) ──
+  // Sin forma_pago (o 'por_cobrar' explícito) el pedido NACE ABIERTO: se
+  // captura, imprime comanda y aparece en el tablero, pero el cobro completo
+  // (forma de pago, descuento, billete/mixto, canje Rewards) ocurre después
+  // vía PATCH /pedidos/:folio/cobro. Con forma_pago explícita se conserva el
+  // flujo clásico intacto (crear = cobrar) por compatibilidad.
+  const esPorCobrar = !forma_pago || forma_pago === 'por_cobrar';
   const orden = {
     items,
     subtotal,
-    descuento: desc,
-    motivo_descuento: motivo_descuento || null,
-    billete: parseFloat(billete) || 0,
-    cambio: parseFloat(cambio) || 0,
-    mixto_efectivo: parseFloat(mixto_efectivo) || null,
-    mixto_terminal: parseFloat(mixto_terminal) || null,
+    descuento: esPorCobrar ? 0 : desc,
+    motivo_descuento: esPorCobrar ? null : (motivo_descuento || null),
+    billete: esPorCobrar ? 0 : (parseFloat(billete) || 0),
+    cambio: esPorCobrar ? 0 : (parseFloat(cambio) || 0),
+    mixto_efectivo: esPorCobrar ? null : (parseFloat(mixto_efectivo) || null),
+    mixto_terminal: esPorCobrar ? null : (parseFloat(mixto_terminal) || null),
     // Con un pedido 100% de menu el total lo fija el servidor (subtotal
     // recalculado - descuento): el frontend no puede mandar un total propio.
     // Con items libres se conserva el comportamiento manual de siempre.
-    total: todosDelMenu ? Math.round((subtotal - desc) * 100) / 100 : (total ?? (subtotal - desc)),
+    // Un por_cobrar nace con total = subtotal (sin descuento ni canje): el
+    // total FINAL lo fija el servidor al cobrar.
+    total: esPorCobrar
+      ? Math.round(subtotal * 100) / 100
+      : (todosDelMenu ? Math.round((subtotal - desc) * 100) / 100 : (total ?? (subtotal - desc))),
     modalidad: 'recoger en tienda',
     canal: 'presencial',
-    forma_pago: forma_pago || 'efectivo',
+    forma_pago: esPorCobrar ? 'por_cobrar' : forma_pago,
+    ...(esPorCobrar ? { pago_confirmado: false } : {}),
     cliente: { nombre: clienteNom, telefono: clienteTel },
     costo_envio: 0,
     negocioId: req.negocioId
   };
+  // Rewards en pedido abierto: el canje se RESERVA como intención pero solo
+  // se CONSUME al cobrar con éxito — cancelar antes del cobro nunca quema
+  // puntos. (En el flujo clásico el canje sigue consumiéndose al crear.)
+  const puntosIntencion = parseInt(rewards_canje_puntos) || 0;
+  if (esPorCobrar && puntosIntencion > 0 && rewards_telefono?.trim()) {
+    orden.rewards_pendiente = { telefono: rewards_telefono.trim(), nombre: rewards_nombre || null, puntos: puntosIntencion };
+  }
   let pedido;
   try {
     pedido = await registrarPedido(orden, 'presencial');
@@ -3010,30 +3029,32 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     return res.status(500).json({ error: 'No se pudo registrar el pedido' });
   }
   emitirPedido(pedido);
-  // Persistencia en el historial (tabla pedidos) -- en segundo plano, no
-  // bloquea la respuesta ni la emisión al panel (igual que antes). Se debe
-  // asegurar primero que exista la fila en clientes (upsertCliente) ANTES
-  // de insertar en pedidos, porque pedidos.telefono es FK hacia
-  // clientes.telefono -- si no, el INSERT viola la FK y falla en
-  // silencio (hallazgo de la fase anterior). Mismo patrón ya usado por
-  // Rappi (upsertCliente antes de guardarPedido). Se pasa "pedido" (no
-  // "orden") a guardarPedido -- guardarPedido lee pedido.id para la
-  // columna folio, y solo el objeto devuelto por registrarPedido lo tiene
-  // (orden nunca lo recibe de vuelta); pasar "orden" dejaba folio siempre
-  // NULL, un segundo hallazgo de persistencia distinto al de la FK.
-  (async () => {
-    try {
-      const { upsertCliente, guardarPedido } = await import('./services/database.js');
-      await upsertCliente(clienteTel, clienteNom, pedido.negocioId);
-      await guardarPedido(clienteTel, pedido, pedido.negocioId);
-    } catch (e) {
-      console.error('[Panel] Error persistiendo pedido presencial en historial:', e.message);
-    }
-  })();
+  // Persistencia en el historial (tabla pedidos) -- AWAITED antes de
+  // responder (antes corría en segundo plano). Contrato de la reingeniería:
+  // cuando el frontend recibe el OK de creación, TODA la persistencia del
+  // pedido ya está confirmada — el cobro inmediato (PATCH /pedidos/:folio/
+  // cobro) nunca puede correr contra una fila que aún no existe. La fila
+  // operativa (pedidos_activos, la que usa el cobro/corte/historial) ya la
+  // escribió registrarPedido de forma síncrona; esto cubre además la fila
+  // de archivo. Si el archivo falla, se loguea sin tumbar la creación (el
+  // pedido operativo es válido; el espejo del cobro sobre `pedidos` es
+  // best-effort).
+  // Orden: upsertCliente ANTES de guardarPedido (FK pedidos.telefono →
+  // clientes.telefono, hallazgo de fase anterior); se pasa "pedido" (no
+  // "orden") porque solo el objeto de registrarPedido trae el folio.
+  try {
+    const { upsertCliente, guardarPedido } = await import('./services/database.js');
+    await upsertCliente(clienteTel, clienteNom, pedido.negocioId);
+    await guardarPedido(clienteTel, pedido, pedido.negocioId);
+  } catch (e) {
+    console.error('[Panel] Error persistiendo pedido presencial en historial:', e.message);
+  }
 
-  // Rewards — registrar canje si aplica (sincrónico para que el folio exista)
+  // Rewards — canje inmediato SOLO en el flujo clásico (crear = cobrar).
+  // En un pedido por_cobrar el canje quedó como intención (rewards_pendiente)
+  // y lo consume el endpoint de cobro.
   let canjeInfo = null;
-  const puntosACanjear = parseInt(rewards_canje_puntos) || 0;
+  const puntosACanjear = esPorCobrar ? 0 : (parseInt(rewards_canje_puntos) || 0);
   if (puntosACanjear > 0 && rewards_telefono?.trim()) {
     try {
       canjeInfo = await registrarCanje(pedido.id, rewards_telefono.trim(), puntosACanjear, 'operador', req.negocioId);
@@ -3045,6 +3066,126 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   }
 
   res.json({ ok: true, pedido, canje: canjeInfo });
+});
+
+// ── Cobro de un pedido abierto (reingeniería UX: captura ≠ cobro) ───────────
+// Cierra el ciclo de un pedido creado como por_cobrar: el SERVIDOR recalcula
+// subtotal desde los items persistidos, autoriza el descuento (staff ≤ 10%,
+// misma regla que el POS aplicaba solo en frontend), consume el canje Rewards
+// reservado (idempotente por folio) y fija el total final. Transaccional e
+// idempotente (cobrarPedidoActivo: FOR UPDATE + regate): doble click = un
+// solo cobro; el reintento recibe yaCobrado. NO imprime nada: la comanda
+// salió al crear y el ticket sigue siendo manual.
+// Staff puede cobrar (requireAuthSeguro + módulo pos): es el mismo rol que
+// hoy cobra al crear en mostrador. negocioId EXCLUSIVAMENTE de la sesión.
+app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  const { folio } = req.params;
+  const { forma_pago, descuento, motivo_descuento, billete, mixto_efectivo, mixto_terminal } = req.body || {};
+  const FORMAS_COBRO = ['efectivo', 'terminal (tarjeta presente)', 'mixto'];
+  if (!FORMAS_COBRO.includes(forma_pago)) {
+    return res.status(400).json({ error: 'forma_pago inválida (efectivo, terminal (tarjeta presente) o mixto)' });
+  }
+
+  const { obtenerPedidoActivoParaCobro, cobrarPedidoActivo } = await import('./services/database.js');
+  const fila = await obtenerPedidoActivoParaCobro(folio, req.negocioId);
+  if (!fila) return res.status(404).json({ error: 'Pedido no encontrado' });
+  if (fila.estado === 'cancelado') return res.status(409).json({ error: 'El pedido está cancelado' });
+  const datos = fila.datos || {};
+  if (datos.pago_confirmado === true) {
+    return res.json({ ok: true, yaCobrado: true, folio, forma_pago: datos.forma_pago, total: datos.total });
+  }
+
+  // Subtotal REAL: recalculado de los items persistidos — el cliente nunca
+  // decide el total final.
+  const items = Array.isArray(datos.items) ? datos.items : [];
+  const subtotal = Math.round(items.reduce((s, i) =>
+    s + (parseFloat(i.precio_unitario) || 0) * (Math.max(1, parseInt(i.cantidad, 10) || 1)), 0) * 100) / 100;
+
+  // Descuento autorizado en servidor: mismas reglas que el POS (motivo
+  // obligatorio; staff máximo 10% del subtotal — antes solo se validaba en
+  // frontend, ahora el servidor la impone).
+  const desc = Math.round((parseFloat(descuento) || 0) * 100) / 100;
+  if (desc < 0 || desc > subtotal) return res.status(400).json({ error: 'Descuento inválido' });
+  if (desc > 0 && !String(motivo_descuento || '').trim()) {
+    return res.status(400).json({ error: 'El motivo del descuento es obligatorio' });
+  }
+  if (desc > 0 && req.rol !== 'admin' && desc > subtotal * 0.10 + 0.005) {
+    return res.status(403).json({ error: 'El descuento máximo para staff es 10% del subtotal' });
+  }
+
+  // Canje Rewards reservado en la captura: se consume AQUÍ (registrarCanje es
+  // idempotente por folio — un reintento no vuelve a mover puntos; el monto
+  // original se recupera de rewards_movements).
+  let canje = null;
+  if (datos.rewards_pendiente?.puntos > 0 && datos.rewards_pendiente?.telefono) {
+    try {
+      canje = await registrarCanje(folio, datos.rewards_pendiente.telefono,
+        parseInt(datos.rewards_pendiente.puntos, 10), 'operador', req.negocioId);
+      if (!canje) canje = await obtenerCanjeDeFolio(folio, req.negocioId);
+    } catch (e) {
+      return res.status(400).json({ error: `Rewards: ${e.message}` });
+    }
+  }
+  const montoCanje = canje ? (parseFloat(canje.monto) || 0) : 0;
+
+  const totalFinal = Math.max(0, Math.round((subtotal - desc - montoCanje) * 100) / 100);
+
+  // Pago: efectivo con billete/cambio o mixto que debe cubrir el total.
+  let bil = 0, cam = 0, mEfe = null, mTer = null;
+  if (forma_pago === 'mixto') {
+    mEfe = Math.round((parseFloat(mixto_efectivo) || 0) * 100) / 100;
+    mTer = Math.round((parseFloat(mixto_terminal) || 0) * 100) / 100;
+    if (mEfe <= 0 || mTer <= 0) return res.status(400).json({ error: 'Pago mixto requiere monto en efectivo y en terminal' });
+    if (mTer > totalFinal + 0.009) return res.status(400).json({ error: 'La parte en terminal no puede exceder el total' });
+    if (mEfe + mTer < totalFinal - 0.009) return res.status(400).json({ error: 'El pago mixto no cubre el total' });
+    bil = mEfe;
+    cam = Math.round((mEfe + mTer - totalFinal) * 100) / 100;
+  } else if (forma_pago === 'efectivo') {
+    bil = Math.round((parseFloat(billete) || 0) * 100) / 100;
+    if (bil > 0 && bil < totalFinal - 0.009) return res.status(400).json({ error: 'El billete no cubre el total' });
+    cam = bil > 0 ? Math.round((bil - totalFinal) * 100) / 100 : 0;
+  }
+
+  const campos = {
+    forma_pago,
+    subtotal,
+    descuento: desc,
+    motivo_descuento: desc > 0 ? String(motivo_descuento).trim() : null,
+    billete: bil,
+    cambio: cam,
+    mixto_efectivo: mEfe,
+    mixto_terminal: mTer,
+    total: totalFinal,
+    pago_confirmado: true,
+    cobrado_at: new Date().toISOString(),
+    ...(canje ? { rewards_canje: { puntos: canje.puntos, monto: montoCanje } } : {}),
+  };
+  const r = await cobrarPedidoActivo(folio, req.negocioId, campos);
+  if (r.error === 'no_encontrado') return res.status(404).json({ error: 'Pedido no encontrado' });
+  if (r.error === 'cancelado') return res.status(409).json({ error: 'El pedido está cancelado' });
+  if (r.error) return res.status(500).json({ error: 'No se pudo registrar el cobro' });
+  if (r.yaCobrado) {
+    return res.json({ ok: true, yaCobrado: true, folio, forma_pago: r.datos.forma_pago, total: r.datos.total });
+  }
+
+  // Memoria + tiempo real (mensajes WS existentes; SIN impresión nueva)
+  const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
+  const p = obtenerPedidoPorId(folio, req.negocioId);
+  if (p) Object.assign(p, {
+    forma_pago, total: totalFinal, subtotal, descuento: desc,
+    billete: bil, cambio: cam, mixto_efectivo: mEfe, mixto_terminal: mTer, pago_confirmado: true,
+  });
+  broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
+  broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
+  console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`);
+  res.json({
+    ok: true, folio, forma_pago, subtotal, descuento: desc,
+    canje: canje ? { puntos: canje.puntos, monto: montoCanje } : null,
+    total: totalFinal, cambio: cam,
+  });
 });
 
 // Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
@@ -3432,16 +3573,26 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
     obtenerFondoCaja(fechaHoyMX(), req.negocioId)
   ]);
   const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
-  // Agrupar por forma de pago
+  // Reingeniería UX: INGRESO COBRADO vs OPERACIÓN PENDIENTE. Un pedido
+  // abierto (por_cobrar sin pago_confirmado) NO entra al agrupado por forma
+  // de pago ni al efectivo esperado — aún no hay forma de pago real. Se
+  // reporta aparte en `pendiente` para que el corte lo muestre explícito.
+  const esPendiente = (v) => v.forma_pago === 'por_cobrar' && v.pago_confirmado !== true;
   const porPago = {};
+  let pendienteNum = 0, pendienteTotal = 0;
   (ventas || []).forEach(v => {
+    if (esPendiente(v)) {
+      pendienteNum++;
+      pendienteTotal += parseFloat(v.total || 0);
+      return;
+    }
     const pago = v.forma_pago || 'no especificado';
     if (!porPago[pago]) porPago[pago] = { count: 0, total: 0 };
     porPago[pago].count++;
     porPago[pago].total += parseFloat(v.total || 0);
   });
-  const totalVentas = resumen.total_ventas || 0;
-  // Efectivo en caja = fondo inicial + ventas en efectivo
+  const totalVentas = resumen.total_ventas || 0; // ya excluye por_cobrar (obtenerResumenVentas)
+  // Efectivo en caja = fondo inicial + ventas en efectivo COBRADAS
   const ventasEfectivo = (porPago['efectivo']?.total || 0) + (porPago['Efectivo']?.total || 0);
   res.json({
     fecha: new Date().toLocaleDateString('es-MX', { timeZone: 'America/Matamoros', dateStyle: 'full' }),
@@ -3449,6 +3600,7 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
     total_dia: totalVentas,
     efectivo_esperado: fondo + ventasEfectivo,
     num_pedidos: resumen.num_pedidos || 0,
+    pendiente: { num: pendienteNum, total: Math.round(pendienteTotal * 100) / 100 },
     por_pago: porPago,
     pedidos: (ventas || []).map(v => ({
       folio: v.folio || '#'+v.id,
@@ -6784,6 +6936,7 @@ import {
   calcularPuntos,
   calcularBloquesDisponibles,
   registrarCanje,
+  obtenerCanjeDeFolio,
   revertirMovimientosFolio,
   ajustarPuntosManual,
 } from './services/rewardsService.js';
