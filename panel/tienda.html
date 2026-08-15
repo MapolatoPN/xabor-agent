@@ -103,8 +103,11 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 /* ── Hojas modales ── */
 .velo{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;opacity:0;pointer-events:none;transition:.2s}
 .velo.on{opacity:1;pointer-events:auto}
+/* Las hojas siguen la misma columna que el contenido: en una pantalla ancha,
+   una hoja de 900px sobre un menú de 560 se ve como otra página. */
 .hoja{position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--superficie);
   border-radius:20px 20px 0 0;max-height:92vh;display:flex;flex-direction:column;
+  max-width:560px;margin:0 auto;
   transform:translateY(101%);transition:transform .26s cubic-bezier(.32,.72,0,1);box-shadow:var(--sombra-alta)}
 .hoja.on{transform:translateY(0)}
 @media(min-width:1024px){
@@ -157,10 +160,13 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .cant span{width:44px;text-align:center;font-weight:800;font-size:15px}
 
 /* ── Carrito flotante ── */
+/* La barra sigue el ancho del contenido: si el contenido está centrado en una
+   columna y la barra abarca toda la pantalla, el botón queda flotando solo. */
 .barra{position:fixed;left:0;right:0;bottom:0;z-index:40;padding:12px 16px calc(12px + var(--safe-b));
+  max-width:560px;margin:0 auto;
   background:linear-gradient(to top,var(--fondo) 65%,transparent);pointer-events:none}
 .barra>*{pointer-events:auto}
-@media(min-width:1024px){.barra{max-width:760px;margin:0 auto}}
+@media(min-width:1024px){.barra{max-width:760px}}
 
 .linea{display:flex;gap:11px;padding:13px 16px;border-bottom:1px solid var(--borde);align-items:flex-start}
 .linea-info{flex:1;min-width:0}
@@ -645,8 +651,8 @@ function pasoModalidad() {
   </div>`;
   $('ck-pie').innerHTML = `<button class="btn" ${CK.modalidad ? '' : 'disabled'} onclick="pasoAdelante()">Continuar</button>`;
 }
-function opcionGrande(icono, tit, sub, activo, accion) {
-  return `<button class="opcion-grande${activo ? ' on' : ''}" onclick="${accion}">
+function opcionGrande(icono, tit, sub, activo, accion, deshabilitado = false) {
+  return `<button class="opcion-grande${activo ? ' on' : ''}" ${deshabilitado ? 'disabled' : ''} onclick="${accion}">
     <span class="og-icono">${icono}</span>
     <span style="flex:1"><span class="og-tit" style="display:block">${tit}</span><span class="og-sub" style="display:block">${sub}</span></span>
     ${activo ? '<span class="og-marca">✓</span>' : ''}</button>`;
@@ -659,10 +665,17 @@ function pasoCuando() {
   const puedeAhora = abierto;
   const puedeProgramar = TIENDA.aceptaProgramados;
   if (!puedeProgramar && puedeAhora) { CK.cuando = 'ahora'; CK.programadoPara = null; return pasoAdelante(); }
+  // Si la tienda está cerrada, "lo antes posible" no existe: dejarlo marcado
+  // como elegido dejaría al cliente frente a una opción imposible y un botón
+  // muerto. Se pasa solo a programar, que es lo único que sí puede hacer.
+  if (!puedeAhora && puedeProgramar && CK.cuando !== 'programado') CK.cuando = 'programado';
 
   $('ck-cuerpo').innerHTML = `<div style="padding:16px">
-    ${!abierto ? `<div class="aviso" style="margin:0 0 12px">🕑 <div>Estamos cerrados en este momento${puedeProgramar ? ', pero puedes programar tu pedido.' : '.'}</div></div>` : ''}
-    ${opcionGrande('⚡', 'Lo antes posible', puedeAhora ? `Aprox. ${CK.modalidad === 'domicilio' ? esc(TIENDA.entrega.tiempo) : TIENDA.preparacionMinutos + ' min'}` : 'No disponible ahora — la tienda está cerrada', CK.cuando === 'ahora', `elegirCuando('ahora')`).replace('<button class="opcion-grande', puedeAhora ? '<button class="opcion-grande' : '<button disabled class="opcion-grande')}
+    ${!abierto ? `<div class="aviso" style="margin:0 0 12px">🕑 <div>Estamos cerrados en este momento${puedeProgramar ? ', pero puedes dejar tu pedido programado.' : '.'}</div></div>` : ''}
+    ${opcionGrande('⚡', 'Lo antes posible',
+      puedeAhora ? `Aprox. ${CK.modalidad === 'domicilio' ? esc(TIENDA.entrega.tiempo) : TIENDA.preparacionMinutos + ' min'}`
+                 : 'No disponible: la tienda está cerrada',
+      puedeAhora && CK.cuando === 'ahora', `elegirCuando('ahora')`, !puedeAhora)}
     ${puedeProgramar ? opcionGrande('📅', 'Programar', `Con al menos ${TIENDA.anticipacionMinutos} min de anticipación`, CK.cuando === 'programado', `elegirCuando('programado')`) : ''}
     ${CK.cuando === 'programado' ? `<div class="campo" style="padding:6px 0 0">
       <label for="ck-fecha">Fecha y hora de entrega</label>

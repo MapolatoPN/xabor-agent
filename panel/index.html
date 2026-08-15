@@ -3073,6 +3073,10 @@ let TND = { config: null, checklist: null, seccion: 'resumen', promos: [], campa
 
 const tndEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tndDinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// "1 usos" delata que nadie leyó la pantalla. Estos textos los lee el dueño
+// del negocio todos los días.
+const tndVeces = n => Number(n) === 1 ? '1 uso' : `${n} usos`;
+const tndPedidos = n => Number(n) === 1 ? '1 pedido' : `${n} pedidos`;
 
 async function tndAbrir() {
   tndIr(TND.seccion || 'resumen');
@@ -3304,7 +3308,7 @@ function tndTarjetaPromo(p) {
   if (p.codigo) reglas.push(`con código <strong>${tndEsc(p.codigo)}</strong>`);
   else reglas.push('automática');
   if (p.soloPrimeraCompra) reglas.push('solo primera compra');
-  if (p.limiteUsos) reglas.push(`${p.metricas.usos}/${p.limiteUsos} usos`);
+  if (p.limiteUsos) reglas.push(`${p.metricas.usos} de ${p.limiteUsos} usos`);
   if (p.limitePorCliente) reglas.push(`${p.limitePorCliente} por cliente`);
   if (p.campania) reglas.push(`campaña ${tndEsc(p.campania.nombre)}`);
 
@@ -3550,7 +3554,7 @@ async function tndMetricas() {
       <div class="sub">Ordenadas por venta generada. El costo es lo que descontaste.</div>
       ${m.promociones.map(p => `<div class="tnd-check ok" style="border-bottom:1px solid var(--color-border)">
         <span class="txt"><strong>${tndEsc(p.nombre)}</strong>
-          <div class="det">${p.metricas.usos} usos · ${tndDinero(p.metricas.ventas)} vendidos · ${tndDinero(p.metricas.descuento)} de costo</div></span>
+          <div class="det">${tndVeces(p.metricas.usos)} · ${tndDinero(p.metricas.ventas)} vendidos · ${tndDinero(p.metricas.descuento)} de costo</div></span>
       </div>`).join('')}
     </div>` : ''}
     ${m.campanas.length ? `<div class="tnd-card">
@@ -3558,8 +3562,9 @@ async function tndMetricas() {
       <div class="sub">Quién te trajo clientes nuevos, no solo pedidos.</div>
       ${m.campanas.map(c => `<div class="tnd-check ok" style="border-bottom:1px solid var(--color-border)">
         <span class="txt"><strong>${tndEsc(c.nombre)}</strong>
-          <div class="det">${c.metricas.usos} pedidos · ${tndDinero(c.metricas.ventas)} vendidos ·
-            ${c.metricas.clientesNuevos} clientes nuevos · ticket ${tndDinero(c.metricas.ticketPromedio)}</div></span>
+          <div class="det">${tndPedidos(c.metricas.usos)} · ${tndDinero(c.metricas.ventas)} vendidos ·
+            ${c.metricas.clientesNuevos} ${c.metricas.clientesNuevos === 1 ? 'cliente nuevo' : 'clientes nuevos'} ·
+            ticket ${tndDinero(c.metricas.ticketPromedio)}</div></span>
       </div>`).join('')}
     </div>` : ''}`;
 }
