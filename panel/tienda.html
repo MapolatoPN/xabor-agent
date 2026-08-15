@@ -804,7 +804,7 @@ function pintarResumen(c) {
     </div>
 
     <div class="totales">
-      <div class="tot-fila"><span>Subtotal</span><span>${dinero(c.subtotal + c.descuento)}</span></div>
+      <div class="tot-fila"><span>Subtotal</span><span>${dinero(c.subtotal)}</span></div>
       ${c.descuento > 0 ? `<div class="tot-fila desc"><span>Descuentos</span><span>−${dinero(c.descuento)}</span></div>` : ''}
       ${CK.modalidad === 'domicilio' ? `<div class="tot-fila"><span>Envío${c.zona ? ' · ' + esc(c.zona) : ''}</span>
         <span>${c.envioGratis ? `<s style="opacity:.5">${dinero(c.envioBase)}</s> <strong style="color:var(--exito)">GRATIS</strong>` : dinero(c.envio)}</span></div>` : ''}

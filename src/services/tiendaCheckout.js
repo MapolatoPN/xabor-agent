@@ -179,8 +179,10 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
     telefono: telefono || null, timezone: reglas.timezone,
   });
 
-  // Pedido mínimo: se evalúa sobre el subtotal REAL, después de descuentos de
-  // producto pero antes del envío (criterio del negocio, mismo que POS).
+  // Pedido mínimo: se evalúa sobre el valor de los productos ANTES de
+  // descuentos y sin contar el envío. Es lo correcto para el negocio: el
+  // cupón es su propia promoción, y no tendría sentido que aplicarlo dejara
+  // al cliente por debajo del mínimo que el negocio necesita para salir.
   const minimo = modo === 'domicilio' ? dinero(reglas.pedidoMinimo) : 0;
   const cumpleMinimo = minimo <= 0 || promo.subtotal >= minimo;
 
