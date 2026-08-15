@@ -106,6 +106,9 @@ async function prepararNegocio(negocioId, etiqueta, slug, productos) {
      ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`,
     [negocioId, JSON.stringify(reglas)]);
 
+  // Se fija el conjunto EXACTO: apagar los demás hace que la prueba no dependa
+  // de lo que alguien haya dejado configurado antes en esta base.
+  await pool.query(`UPDATE metodos_pago SET habilitado = FALSE WHERE negocio_id = $1`, [negocioId]);
   for (const tipo of ['efectivo', 'transferencia']) {
     await pool.query(
       `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,$2,TRUE)
