@@ -435,34 +435,16 @@ export function actualizarEstadoPedidoLegacySinNegocio(id, nuevoEstado) {
   return pedido;
 }
 
-// negocioId OBLIGATORIO y estricto. Sin él, siempre [] -- nunca el
-// arreglo completo por accidente. Los únicos dos llamadores que hoy no
-// pueden pasar un negocioId real (el handler legado de reconexión
-// WebSocket y, antes de esta revisión, la deduplicación de Rappi) ya NO
-// usan esta función: el WebSocket usa
-// obtenerTodosPedidosParaWebSocketLegacy() (ver más abajo, documentado
-// como deuda temporal) y Rappi ya resuelve su propio negocioId real vía
-// integraciones_canal antes de llamar aquí.
+// negocioId OBLIGATORIO y estricto. Sin él, siempre [] -- nunca el arreglo
+// completo por accidente. Ya no existe ninguna variante sin filtrar: la que
+// había (obtenerTodosPedidosParaWebSocketLegacy, que devolvía los pedidos de
+// TODOS los negocios para el volcado del WebSocket legado) está eliminada. El
+// agente legado ahora recibe solo los trabajos pendientes de SU negocio, desde
+// la cola de impresión, y no el tablero en memoria.
 export function obtenerPedidos(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   const negocioIdNorm = negocioId.trim();
   return pedidos.filter(p => p.negocioId === negocioIdNorm);
-}
-
-// ⚠ PENDIENTE DE ELIMINAR: WebSocket sin aislamiento multiempresa.
-// Devuelve TODOS los pedidos de TODOS los negocios -- es una fuga de
-// datos entre negocios documentada a propósito, no oculta. Existe
-// ÚNICAMENTE porque el handler de conexión WebSocket (server.js) todavía
-// no autentica ni segmenta la conexión por negocio, y print-agent.js
-// depende de ese mismo canal sin filtrar. Uso exclusivo: el handler
-// wss.on('connection') legado en server.js. NO debe usarse desde ninguna
-// ruta HTTP, NO debe usarse desde Rappi, NO debe convertirse en fallback
-// de obtenerPedidos, y NO acepta negocioId del cliente porque no filtra
-// nada -- deliberadamente no tiene parámetros. Se elimina en cuanto el
-// WebSocket tenga su propia fase de autenticación y segmentación por
-// negocio (no autorizada todavía).
-export function obtenerTodosPedidosParaWebSocketLegacy() {
-  return [...pedidos]; // copia, nunca la referencia original al arreglo global
 }
 
 // negocioId opcional pero VERIFICADO cuando se pasa (Incidente P0): folios

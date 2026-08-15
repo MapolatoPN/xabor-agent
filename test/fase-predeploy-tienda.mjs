@@ -113,6 +113,12 @@ try {
     assert.ok(/process\.exit\(1\)/.test(src), 'no aborta el deploy ante un fallo');
   });
 
+  await t('el runner incluye la 053 y va DESPUÉS de la 052', () => {
+    const i52 = LISTA.indexOf('052-impresion-legacy-idempotente');
+    const i53 = LISTA.indexOf('053-impresion-legacy-pendientes');
+    assert.ok(i53 > i52 && i52 >= 0, `orden incorrecto: 052 en ${i52}, 053 en ${i53}`);
+  });
+
   // ─── 2. Comportamiento real contra la base ───
   await t('el predeploy corre sin error sobre la base actual', () => {
     const salida = ejecutar('scripts/predeploy-051-tienda-online.mjs');
@@ -175,6 +181,29 @@ try {
     assert.ok(/DROP TABLE IF EXISTS impresion_legacy_emitida/.test(down), 'el down no borra la tabla');
     assert.ok(!/ALTER TABLE (?!.*impresion_legacy)/.test(down),
       'el down toca tablas que la 052 no creó');
+  });
+
+  await t('el predeploy de la 053 corre sin error y es idempotente', async () => {
+    const primera = ejecutar('scripts/predeploy-053-impresion-legacy-pendientes.mjs');
+    assert.ok(/predeploy-053/.test(primera), `salida inesperada: ${primera}`);
+    const segunda = ejecutar('scripts/predeploy-053-impresion-legacy-pendientes.mjs');
+    assert.ok(/Ya aplicada/.test(segunda), `no detectó que ya estaba aplicada: ${segunda}`);
+  });
+
+  await t('la 053 impide que un trabajo se dé por entregado sin estado válido', async () => {
+    // El CHECK es la garantía: un estado fuera de (pendiente, entregado) haría
+    // que la cola de reconexión dejara de ver ese trabajo para siempre.
+    const { rows: [n] } = await pool.query(`SELECT id FROM negocios LIMIT 1`);
+    const jobId = 'PRUEBA-PREDEPLOY-053:comanda';
+    await pool.query(`DELETE FROM impresion_legacy_emitida WHERE print_job_id = $1`, [jobId]);
+    let rechazado = false;
+    try {
+      await pool.query(
+        `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id, estado) VALUES ($1,$2,'inventado')`,
+        [n.id, jobId]);
+    } catch (e) { rechazado = e.code === '23514'; }
+    await pool.query(`DELETE FROM impresion_legacy_emitida WHERE print_job_id = $1`, [jobId]);
+    assert.ok(rechazado, 'la base ACEPTÓ un estado inválido de impresión legacy');
   });
 
   await t('deja el esquema completo: las SEIS tablas y el CHECK', async () => {

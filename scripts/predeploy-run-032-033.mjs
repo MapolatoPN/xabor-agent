@@ -38,6 +38,7 @@ const SCRIPTS = [
   '050-menu-multiimagen',
   '051-tienda-online',
   '052-impresion-legacy-idempotente',
+  '053-impresion-legacy-pendientes',
 ];
 
 for (const nombre of SCRIPTS) {

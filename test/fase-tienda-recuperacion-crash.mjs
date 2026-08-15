@@ -48,6 +48,13 @@ async function conServidor(env, fn) {
     { PORT: puerto, XABOR_TIENDA_LIMITE_CHECKOUT: '500', XABOR_TIENDA_LIMITE_COTIZAR: '500', ...env },
     { timeoutMs: 90000 });
   try {
+    // initDB() resiembra en CADA arranque el modo legado de Nonna Maye. Si se
+    // deja, habria DOS negocios candidatos y el servidor rechazaria toda
+    // conexion legada -- correcto para el producto, inservible para esta suite,
+    // que necesita que el negocio de prueba sea el unico legado.
+    await pool.query(
+      `DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'print_agent_legacy_activo'`,
+      [SEED.nonnaMayeId]).catch(() => {});
     return await fn(`http://localhost:${puerto}`, srv);
   } finally {
     // Se guarda el log del hijo: cuando algo devuelve 500, el detalle solo
@@ -982,6 +989,13 @@ try {
     lineas.slice(-6).forEach(l => console.log(l));
   }
   await limpiar().catch(() => {});
+  // Se devuelve a Nonna Maye su modo legado: es el estado real del producto,
+  // no un residuo de esta suite.
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor)
+     VALUES ($1,'print_agent_legacy_activo','true')
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = 'true'`,
+    [SEED.nonnaMayeId]).catch(() => {});
   await pool.end().catch(() => {});
 }
 

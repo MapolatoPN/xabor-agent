@@ -107,7 +107,7 @@ async function emitirLegacy(pedido, negocioId, folio) {
     // A lo sumo una vez por (negocio, printJobId), con memoria en Postgres:
     // sobrevive al reinicio del proceso y a varias instancias a la vez. Ver
     // emitirUnaSolaVezLegacy en database.js para el porqué de cada mecanismo.
-    resultado = await _emitirUnaSolaVez(negocioId, printJobId, () => _broadcastLegacy(mensaje));
+    resultado = await _emitirUnaSolaVez(negocioId, printJobId, () => _broadcastLegacy(negocioId, mensaje));
   } catch (e) {
     console.error(`[Impresion] error en broadcast legacy negocio=${negocioId} folio=${folio ?? '-'}: ${e.message}`);
     return { modo: 'legacy', destinatarios: 0, negocioId, sucursalId: null, razon: 'error_broadcast' };
@@ -116,6 +116,12 @@ async function emitirLegacy(pedido, negocioId, folio) {
   if (resultado.duplicado) {
     console.log(`[Impresion] legacy YA EMITIDO printJobId=${printJobId} negocio=${negocioId} — no se reimprime`);
     return { modo: 'legacy', destinatarios: 0, negocioId, sucursalId: null, razon: 'ya_emitido' };
+  }
+  if (resultado.pendiente) {
+    // Nadie escuchando. NO es un fallo silencioso ni un trabajo perdido: queda
+    // en cola y se le entrega al agente en cuanto se conecte.
+    console.warn(`[Impresion] legacy SIN AGENTE conectado printJobId=${printJobId} negocio=${negocioId} — queda PENDIENTE`);
+    return { modo: 'legacy', destinatarios: 0, negocioId, sucursalId: null, razon: 'pendiente_sin_agente' };
   }
   console.log(`[Impresion] legacy negocio=${negocioId} folio=${folio ?? '-'} destinatarios=${resultado.destinatarios}`);
   return { modo: 'legacy', destinatarios: resultado.destinatarios, negocioId, sucursalId: null, razon: null };

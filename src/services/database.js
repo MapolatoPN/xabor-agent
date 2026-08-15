@@ -3340,20 +3340,86 @@ export async function emitirUnaSolaVezLegacy(negocioId, printJobId, emitir) {
       return { duplicado: true, destinatarios: 0 };
     }
 
+    // destinatarios = 0 NO es "impreso": es "no había nadie escuchando". El
+    // trabajo queda PENDIENTE y se le entrega al agente en cuanto se conecte.
+    // Antes esa fila se escribía igual y el trabajo se perdía en silencio: el
+    // negocio se quedaba sin comanda y nadie se enteraba.
     const destinatarios = Number(await emitir()) || 0;
     await cliente.query(
-      `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id, destinatarios)
-       VALUES ($1, $2, $3)
+      `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id, destinatarios, estado, entregado_at)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (negocio_id, print_job_id) DO NOTHING`,
-      [negocioId, printJobId, destinatarios]);
+      [negocioId, printJobId, destinatarios,
+       destinatarios > 0 ? 'entregado' : 'pendiente',
+       destinatarios > 0 ? new Date() : null]);
     await cliente.query('COMMIT');
-    return { duplicado: false, destinatarios };
+    return { duplicado: false, destinatarios, pendiente: destinatarios === 0 };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
     cliente.release();
   }
+}
+
+// ─── El camino legacy, acotado a UN negocio ──────────────────────────────────
+//
+// El agente viejo instalado en sitio se conecta a la raíz "/" y no dice quién
+// es: no manda credencial, ni cabecera, ni query. No se puede pedirle identidad
+// sin cambiar el binario, y el binario está en una máquina ajena.
+//
+// Lo que sí se puede es que el SERVIDOR determine de quién es esa conexión, y
+// solo la acepte si la respuesta es inequívoca: el único negocio con
+// print_agent_legacy_activo = 'true'.
+//
+//   · ninguno  → la ruta "/" se cierra sola. El día que el último negocio pase
+//                a Edge, el camino legacy deja de existir sin tocar código.
+//   · varios   → se rechaza. La plataforma no adivina a quién le toca una
+//                comanda; ese es justo el fallo que se está corrigiendo.
+//   · uno      → esa conexión es de ese negocio, y de nadie más.
+export async function resolverNegocioLegacyUnico() {
+  const { rows } = await pool.query(
+    `SELECT negocio_id FROM configuracion
+      WHERE clave = 'print_agent_legacy_activo' AND valor = 'true'`);
+  if (rows.length === 0) return { negocioId: null, razon: 'sin_negocio_legacy' };
+  if (rows.length > 1) return { negocioId: null, razon: 'multiples_negocios_legacy' };
+  return { negocioId: rows[0].negocio_id, razon: null };
+}
+
+// Reclama los trabajos que este agente va a recibir al conectarse. El UPDATE
+// condicional es el claim: dos conexiones simultáneas no pueden llevarse el
+// mismo trabajo, porque solo una gana la fila 'pendiente'.
+//
+// Devuelve el pedido leído de pedidos_activos, no una copia guardada: así el
+// papel sale con lo que el pedido dice HOY. Un pedido ya entregado o archivado
+// no se reimprime.
+export async function reclamarTrabajosLegacyPendientes(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `WITH reclamados AS (
+       UPDATE impresion_legacy_emitida e
+          SET estado = 'entregado', entregado_at = NOW()
+        WHERE e.negocio_id = $1 AND e.estado = 'pendiente'
+        RETURNING e.print_job_id
+     )
+     SELECT r.print_job_id, p.datos
+       FROM reclamados r
+       JOIN pedidos_activos p
+         ON p.negocio_id = $1
+        AND p.folio = split_part(r.print_job_id, ':', 1)
+      WHERE p.estado <> 'entregado'`,
+    [negocioId]);
+  return rows.map(r => ({ printJobId: r.print_job_id, pedido: r.datos }));
+}
+
+// Si el envío falla en el último momento, el trabajo vuelve a la cola: nunca se
+// da por entregado algo que no salió del servidor.
+export async function devolverTrabajoLegacyAPendiente(negocioId, printJobId) {
+  await pool.query(
+    `UPDATE impresion_legacy_emitida
+        SET estado = 'pendiente', entregado_at = NULL
+      WHERE negocio_id = $1 AND print_job_id = $2`,
+    [negocioId, printJobId]).catch(() => {});
 }
 
 // ─── Repartidores ─────────────────────────────────────────────────────────────
