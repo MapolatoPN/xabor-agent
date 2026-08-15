@@ -34,6 +34,14 @@ async function montarNegocio(slug, nombre) {
   const { rows: [s] } = await pool.query(
     `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal')
      ON CONFLICT (negocio_id, nombre) DO UPDATE SET activo = true RETURNING id`, [n.id]);
+  // La suite da de alta sus terminales POR NOMBRE y el alta rechaza nombres
+  // repetidos en la misma sucursal. Sin esta limpieza previa solo corría contra
+  // una base virgen: en la segunda corrida fallaba con NOMBRE_DUPLICADO desde
+  // el primer caso y arrastraba a los 28 siguientes.
+  await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id = $1`, [n.id]);
+  await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [n.id]);
+  await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [n.id]);
+  await pool.query(`DELETE FROM terminales WHERE sucursal_id = $1`, [s.id]);
   return { negocioId: n.id, sucursalId: s.id };
 }
 

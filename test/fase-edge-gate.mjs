@@ -180,6 +180,15 @@ const { rows: [suc] } = await pool.query(
   `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal')
    ON CONFLICT (negocio_id, nombre) DO UPDATE SET activo = true RETURNING id`, [neg.id]);
 
+// La suite da de alta sus terminales por nombre, y el alta rechaza nombres
+// repetidos en la misma sucursal. Sin esta limpieza previa la suite solo corría
+// contra una base virgen: en la segunda corrida moría con NOMBRE_DUPLICADO
+// antes del primer caso -- y como es una excepción y no una línea "FALLO",
+// pasaba desapercibida al revisar la regresión.
+await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [neg.id]);
+await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [neg.id]);
+await pool.query(`DELETE FROM terminales WHERE sucursal_id = $1`, [suc.id]);
+
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 
 const edgeDb = await altaEdge(neg.id, { nombre: 'PC Gate' });
