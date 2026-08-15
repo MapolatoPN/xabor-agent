@@ -1,5 +1,9 @@
 # Reingeniería UX — Evidencia de pruebas (revisión 2, 2026-08-14)
 
+Los valores concretos de estas variables NO se documentan: viven en
+`dev-local.env.cmd` (ignorado por git; plantilla en
+`dev-local.env.example.cmd`).
+
 Reproducible en cualquier máquina con la DB de pruebas Docker levantada
 (`docker start pg-restv2`, Postgres en `localhost:55453/edged1`).
 
@@ -7,10 +11,10 @@ Reproducible en cualquier máquina con la DB de pruebas Docker levantada
 
 ```sh
 cd C:/xabor-print
-export DATABASE_URL='postgresql://postgres:testpass@localhost:55453/edged1'
-export PANEL_SECRET=test-panel-secret-fixed SESSION_SECRET=test-session-secret-fixed
-export ADMIN_PASSWORD=test-admin-pass PANEL_PASSWORD=test-panel-pass
-export INTEGRATIONS_ENCRYPTION_KEY='z+QXvnnTVTsL3HCrY/siK6VHJW4JmpH9BPcTl8oYs8U='   # llave del entorno LOCAL de pruebas
+export DATABASE_URL='postgresql://postgres:<LOCAL_TEST_SECRET>@localhost:55453/edged1'
+export PANEL_SECRET=<LOCAL_TEST_SECRET> SESSION_SECRET=<LOCAL_TEST_SECRET>
+export ADMIN_PASSWORD=<LOCAL_TEST_SECRET> PANEL_PASSWORD=<LOCAL_TEST_SECRET>
+export INTEGRATIONS_ENCRYPTION_KEY=<LOCAL_TEST_SECRET>
 export META_EMBEDDED_SIGNUP_MOCK=true
 for s in fase-reingenieria-ux fase-controles-atencion-frontend \
   fase-impresion-autoservicio fase-impresion-self-service \
