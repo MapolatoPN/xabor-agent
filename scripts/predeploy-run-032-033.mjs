@@ -36,6 +36,7 @@ const SCRIPTS = [
   '048-menu-automatico',
   '049-whatsapp-coexistence',
   '050-menu-multiimagen',
+  '051-tienda-online',
 ];
 
 for (const nombre of SCRIPTS) {

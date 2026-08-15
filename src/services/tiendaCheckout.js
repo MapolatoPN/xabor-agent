@@ -291,17 +291,18 @@ export async function crearPedidoTienda({
     //     forma de que un cupón de N usos no se entregue N+1 veces cuando
     //     llegan dos compras al mismo tiempo: gana quien la base deja ganar.
     if (promo.aplicadas.length) {
-      const { agotadas } = await reservarUsosPromociones(tienda.negocioId, promo.aplicadas);
+      const { reservadas, agotadas } = await reservarUsosPromociones(
+        tienda.negocioId, promo.aplicadas, { telefono, checkoutToken: token });
       if (agotadas.length) {
-        // Si se acabó justo ahora, se devuelve lo que sí se alcanzó a reservar
-        // y se le dice al cliente la verdad en vez de cobrarle otro total.
-        await liberarUsosPromociones(tienda.negocioId,
-          promo.aplicadas.filter(a => !agotadas.includes(a)));
+        // Se acabó justo ahora (o este cliente ya la usó): se devuelve lo que
+        // sí se alcanzó a reservar y se le dice la verdad al cliente en vez de
+        // cobrarle un total distinto al que vio.
+        await liberarUsosPromociones(tienda.negocioId, reservadas, { checkoutToken: token });
         throw new TiendaError(
-          `La promoción "${agotadas[0].nombre}" acaba de agotarse. Vuelve a intentar sin ella.`,
+          `La promoción "${agotadas[0].nombre}" ya no está disponible para ti. Vuelve a intentar sin ella.`,
           'PROMOCION_AGOTADA', 409);
       }
-      cuposTomados = promo.aplicadas;
+      cuposTomados = reservadas;
     }
 
     // 6) Método de pago: solo los que el negocio tiene habilitados.
@@ -382,7 +383,7 @@ export async function crearPedidoTienda({
       const esNuevo = !(await clienteTienePedidosPrevios(tienda.negocioId, telefono, pedido.id));
       await registrarUsosPromociones({
         negocioId: tienda.negocioId, folio: pedido.id, aplicadas: promo.aplicadas,
-        telefono, montoVenta: promo.total, clienteNuevo: esNuevo,
+        telefono, montoVenta: promo.total, clienteNuevo: esNuevo, checkoutToken: token,
       });
     }
 
@@ -403,7 +404,9 @@ export async function crearPedidoTienda({
       [tienda.negocioId, token]
     ).catch(() => {});
     // Y el cupo de las promociones vuelve al bote: no hubo pedido.
-    if (cuposTomados.length) await liberarUsosPromociones(tienda.negocioId, cuposTomados);
+    if (cuposTomados.length) {
+      await liberarUsosPromociones(tienda.negocioId, cuposTomados, { checkoutToken: token });
+    }
     if (e instanceof POSValidacionError) throw new TiendaError(e.message, e.codigo || 'VALIDACION');
     throw e;
   }

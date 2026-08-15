@@ -10,6 +10,7 @@
 // Reutilizable: el motor recibe un contexto neutro (subtotal, items, canal,
 // modalidad, cliente) y no sabe nada de HTTP ni de la tienda. Cuando otro
 // canal quiera promociones, se le pasa `canal: 'whatsapp'` y funciona.
+import { randomUUID } from 'crypto';
 import { pool } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
 
@@ -225,48 +226,158 @@ export async function pistaEnvioGratis({ negocioId, subtotal, modalidad, canal =
   return { logrado: false, faltan, mensaje: `Te faltan $${faltan} para obtener envío gratis` };
 }
 
-// ── Reserva atómica del cupo de una promoción ─────────────────────────────
-// El límite de usos NO se puede hacer valer leyendo `usos` y decidiendo
-// después: dos checkouts simultáneos leen el mismo valor y ambos pasan. La
-// única forma correcta es que la BASE decida, con un UPDATE condicional —
-// solo gana quien logra incrementar el contador dentro del límite.
+// ── Reclamo atómico del cupo de una promoción ─────────────────────────────
+//
+// Ningún límite se puede hacer valer leyendo y decidiendo después: dos
+// checkouts simultáneos leen el mismo valor y ambos pasan. Aquí hay TRES
+// límites y cada uno necesita que decida la base, no la aplicación:
+//
+//   límite global     → UPDATE condicional sobre el contador `usos`.
+//   límite por cliente→ contar las filas de ese cliente y decidir, todo
+//   primera compra      dentro de una transacción serializada por
+//                       (promoción, teléfono) con un advisory lock.
+//
+// La fila de reserva se escribe en tienda_promocion_usos con un folio
+// provisional (`reserva:<checkoutToken>`). Esa fila es lo que hace visible el
+// reclamo a las otras transacciones: sin ella, el segundo checkout contaría
+// cero usos aunque el primero ya haya ganado.
 //
 // Se llama ANTES de crear el pedido: descubrir que el cupón se agotó cuando
 // el cliente ya tiene folio es descubrirlo demasiado tarde.
-export async function reservarUsosPromociones(negocioId, aplicadas = []) {
+
+const PREFIJO_RESERVA = 'reserva:';
+// Una reserva que nunca se convirtió en pedido (proceso caído entre reservar y
+// crear) no puede quemar el cupón para siempre. Pasado este tiempo se ignora y
+// se recicla.
+const RESERVA_VENCE_MIN = 15;
+
+// Suelta reservas huérfanas de ESTA promoción antes de contar. Devuelve el
+// cupo global de cada una: si no, un reinicio del proceso dejaría el contador
+// inflado sin ningún pedido detrás.
+async function reciclarReservasVencidas(client, negocioId, promocionId) {
+  const { rowCount } = await client.query(
+    `DELETE FROM tienda_promocion_usos
+      WHERE negocio_id = $1 AND promocion_id = $2
+        AND pedido_folio LIKE $3
+        AND created_at < NOW() - ($4 || ' minutes')::interval`,
+    [negocioId, promocionId, PREFIJO_RESERVA + '%', String(RESERVA_VENCE_MIN)]
+  );
+  if (rowCount > 0) {
+    await client.query(
+      `UPDATE tienda_promociones SET usos = GREATEST(usos - $3, 0)
+        WHERE id = $2 AND negocio_id = $1`,
+      [negocioId, promocionId, rowCount]);
+  }
+  return rowCount;
+}
+
+export async function reservarUsosPromociones(negocioId, aplicadas = [], contexto = {}) {
+  const telefono = contexto.telefono || null;
+  const token = contexto.checkoutToken || null;
   const reservadas = [], agotadas = [];
+
   for (const a of aplicadas) {
-    const { rowCount } = await pool.query(
-      `UPDATE tienda_promociones
-          SET usos = usos + 1, updated_at = NOW()
-        WHERE id = $1 AND negocio_id = $2
-          AND (limite_usos IS NULL OR usos < limite_usos)`,
-      [a.id, negocioId]
-    );
-    if (rowCount > 0) reservadas.push(a); else agotadas.push(a);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Serializa a los checkouts del MISMO cliente para la MISMA promoción.
+      // Sin esto, contar-y-decidir sigue siendo una carrera aunque haya fila
+      // de reserva: ambos contarían antes de que el otro inserte.
+      if (telefono) {
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+          [String(a.id), telefono]);
+      }
+
+      await reciclarReservasVencidas(client, negocioId, a.id);
+
+      // 1) Cupo global: gana quien logre incrementar dentro del límite.
+      const { rowCount: global } = await client.query(
+        `UPDATE tienda_promociones
+            SET usos = usos + 1, updated_at = NOW()
+          WHERE id = $1 AND negocio_id = $2
+            AND (limite_usos IS NULL OR usos < limite_usos)`,
+        [a.id, negocioId]
+      );
+      if (!global) { await client.query('ROLLBACK'); agotadas.push(a); continue; }
+
+      // 2) Cupo por cliente. Los topes se releen de la base dentro de la
+      //    transacción: son la fuente de verdad, no lo que trajo el llamador.
+      if (telefono) {
+        const { rows: [reglas] } = await client.query(
+          `SELECT limite_por_cliente, solo_primera_compra FROM tienda_promociones
+            WHERE id = $1 AND negocio_id = $2`, [a.id, negocioId]);
+
+        // "Solo primera compra" es, en la práctica, un tope de uno por cliente
+        // para esta promoción: quien ya la reclamó no es primerizo otra vez.
+        const tope = reglas?.solo_primera_compra
+          ? 1
+          : (reglas?.limite_por_cliente == null ? null : Number(reglas.limite_por_cliente));
+
+        if (tope != null) {
+          const { rows: [c] } = await client.query(
+            `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos
+              WHERE negocio_id = $1 AND promocion_id = $2 AND cliente_telefono = $3`,
+            [negocioId, a.id, telefono]);
+          if (c.n >= tope) { await client.query('ROLLBACK'); agotadas.push(a); continue; }
+        }
+      }
+
+      // 3) La fila de reserva: esto es lo que ve el checkout de al lado.
+      await client.query(
+        `INSERT INTO tienda_promocion_usos
+           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [negocioId, a.id, a.campaniaId, PREFIJO_RESERVA + (token || randomUUID()), telefono]);
+
+      await client.query('COMMIT');
+      reservadas.push(a);
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Tienda] Error reservando promoción:', e.message);
+      agotadas.push(a);
+    } finally {
+      client.release();
+    }
   }
   return { reservadas, agotadas };
 }
 
 // Devuelve el cupo cuando el pedido no llegó a crearse: sin esto, un fallo
-// posterior "quemaría" un uso que nadie aprovechó.
-export async function liberarUsosPromociones(negocioId, aplicadas = []) {
+// posterior quemaría un uso que nadie aprovechó — y, con límite por cliente,
+// dejaría al cliente sin poder reintentar.
+export async function liberarUsosPromociones(negocioId, aplicadas = [], contexto = {}) {
+  const token = contexto.checkoutToken || null;
   for (const a of aplicadas) {
-    await pool.query(
-      `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0), updated_at = NOW()
-        WHERE id = $1 AND negocio_id = $2`,
-      [a.id, negocioId]
-    ).catch(() => {});
+    try {
+      const { rowCount } = await pool.query(
+        `DELETE FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3`,
+        [negocioId, a.id, PREFIJO_RESERVA + token]);
+      // El contador solo baja si de verdad había una reserva que soltar.
+      if (rowCount > 0 || !token) {
+        await pool.query(
+          `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0), updated_at = NOW()
+            WHERE id = $1 AND negocio_id = $2`, [a.id, negocioId]);
+      }
+    } catch (e) {
+      console.error('[Tienda] Error liberando promoción:', e.message);
+    }
   }
 }
 
-// ── Registro de uso (idempotente) ─────────────────────────────────────────
-// Se llama UNA vez al confirmar el pedido, DESPUÉS de reservar. Escribe el
-// renglón de detalle que alimenta las métricas; el contador `usos` ya lo
-// movió la reserva, así que aquí no se vuelve a tocar. El UNIQUE (negocio,
-// promoción, folio) hace que un reintento no infle las ventas.
+// ── Confirmación del uso ──────────────────────────────────────────────────
+// La fila YA existe: la escribió la reserva con un folio provisional. Aquí se
+// le pone el folio real y los montos. Insertar una segunda fila contaría dos
+// usos del mismo cliente y volvería a romper el límite por cliente.
+//
+// Sigue siendo idempotente: si el UPDATE no encuentra la reserva (porque un
+// reintento ya la confirmó), el INSERT de respaldo choca contra el UNIQUE
+// (negocio, promoción, folio) y no duplica nada.
 export async function registrarUsosPromociones({
   negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, clienteNuevo = false,
+  checkoutToken = null,
 }) {
   if (!aplicadas.length) return { registrados: 0 };
   const client = await pool.connect();
@@ -274,6 +385,18 @@ export async function registrarUsosPromociones({
   try {
     await client.query('BEGIN');
     for (const a of aplicadas) {
+      const { rowCount: confirmados } = await client.query(
+        `UPDATE tienda_promocion_usos
+            SET pedido_folio = $4, monto_descuento = $5, monto_venta = $6,
+                cliente_nuevo = $7, cliente_telefono = COALESCE(cliente_telefono, $8)
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3`,
+        [negocioId, a.id, PREFIJO_RESERVA + checkoutToken, folio,
+         a.descuento || 0, montoVenta, !!clienteNuevo, telefono]
+      );
+      if (confirmados > 0) { registrados++; continue; }
+
+      // Sin reserva que confirmar (llamada desde otro canal, o reintento ya
+      // confirmado): se inserta, y el UNIQUE evita el duplicado.
       const { rowCount } = await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
