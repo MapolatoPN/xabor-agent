@@ -680,6 +680,67 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   .orden-badge { display: none !important; }
   .comanda-footer { display: none !important; }
 }
+
+/* ═══ Tienda en línea (backoffice) ═══
+   Todo con prefijo tnd- para no colisionar con el resto del panel. */
+.tnd-cab { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+.tnd-subnav { display:flex; gap:4px; overflow-x:auto; border-bottom:1px solid var(--color-border); margin-bottom:20px; scrollbar-width:none; }
+.tnd-subnav::-webkit-scrollbar { display:none; }
+.tnd-sub { background:none; border:none; padding:9px 14px; font-size:0.84rem; font-weight:700; color:var(--color-text-secondary); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.tnd-sub.activo { color:var(--color-brand); border-bottom-color:var(--color-brand); }
+.tnd-sec { max-width:760px; }
+.tnd-card { background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:16px; margin-bottom:14px; }
+.tnd-card h3 { font-size:0.9rem; font-weight:800; margin:0 0 4px; }
+.tnd-card .sub { font-size:0.78rem; color:var(--color-text-secondary); margin-bottom:12px; }
+.tnd-chip { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border-radius:var(--radius-pill); font-size:0.72rem; font-weight:800; letter-spacing:.3px; }
+.tnd-chip.publicada { background:var(--color-success-light); color:#047857; }
+.tnd-chip.borrador  { background:var(--color-surface-2);     color:var(--color-text-secondary); }
+.tnd-chip.pausada   { background:var(--color-warning-light);  color:#b45309; }
+.tnd-liga { display:flex; align-items:center; gap:8px; background:var(--color-surface-2); border-radius:var(--radius-md); padding:11px 13px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:0.8rem; word-break:break-all; }
+.tnd-liga button { flex-shrink:0; }
+.tnd-check { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--color-border); }
+.tnd-check:last-child { border-bottom:none; }
+.tnd-check .ico { width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:900; flex-shrink:0; margin-top:1px; }
+.tnd-check.ok  .ico { background:var(--color-success); color:#fff; }
+.tnd-check.mal .ico { background:var(--color-surface-2); color:var(--color-text-muted); border:1px solid var(--color-border-strong); }
+.tnd-check .txt { flex:1; font-size:0.83rem; }
+.tnd-check .det { font-size:0.75rem; color:var(--color-text-secondary); margin-top:1px; }
+.tnd-btn { background:var(--color-text-primary); color:#fff; border:none; border-radius:var(--radius-md); padding:9px 16px; font-size:0.82rem; font-weight:700; cursor:pointer; }
+.tnd-btn:disabled { opacity:.4; cursor:not-allowed; }
+.tnd-btn.sec { background:var(--color-surface-2); color:var(--color-text-primary); border:1px solid var(--color-border-strong); }
+.tnd-btn.peligro { background:var(--color-danger); }
+.tnd-btn.chico { padding:6px 12px; font-size:0.76rem; }
+.tnd-campo { margin-bottom:13px; }
+.tnd-campo label { display:block; font-size:0.75rem; font-weight:700; color:var(--color-text-secondary); margin-bottom:5px; }
+.tnd-campo input, .tnd-campo select, .tnd-campo textarea { width:100%; padding:9px 11px; border:1px solid var(--color-border-strong); border-radius:var(--radius-md); font-size:0.85rem; font-family:inherit; background:var(--color-surface); }
+.tnd-campo input[type=color] { padding:3px; height:38px; }
+.tnd-campo .ayuda { font-size:0.72rem; color:var(--color-text-muted); margin-top:4px; }
+.tnd-fila { display:flex; gap:12px; flex-wrap:wrap; }
+.tnd-fila > * { flex:1; min-width:150px; }
+.tnd-prod { display:flex; align-items:center; gap:11px; padding:10px 0; border-bottom:1px solid var(--color-border); }
+.tnd-prod:last-child { border-bottom:none; }
+.tnd-prod input[type=checkbox] { width:18px; height:18px; accent-color:var(--color-brand); flex-shrink:0; }
+.tnd-prod .nom { flex:1; font-size:0.85rem; font-weight:600; }
+.tnd-prod .precio { font-size:0.82rem; color:var(--color-text-secondary); }
+.tnd-cat-tit { font-size:0.75rem; font-weight:800; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 2px; }
+.tnd-promo { border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:13px; margin-bottom:10px; background:var(--color-surface); }
+.tnd-promo .top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.tnd-promo .nom { font-size:0.88rem; font-weight:800; }
+.tnd-promo .reglas { font-size:0.76rem; color:var(--color-text-secondary); margin-top:3px; line-height:1.5; }
+.tnd-promo .mets { display:flex; gap:16px; margin-top:9px; padding-top:9px; border-top:1px solid var(--color-border); }
+.tnd-promo .met .n { font-size:0.95rem; font-weight:800; }
+.tnd-promo .met .l { font-size:0.68rem; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.04em; }
+.tnd-inactiva { opacity:.55; }
+.tnd-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:11px; margin-bottom:16px; }
+.tnd-kpi { background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:13px; }
+.tnd-kpi .n { font-size:1.4rem; font-weight:800; letter-spacing:-.02em; }
+.tnd-kpi .l { font-size:0.72rem; color:var(--color-text-secondary); margin-top:1px; }
+.tnd-vacio { text-align:center; padding:36px 20px; color:var(--color-text-secondary); font-size:0.83rem; }
+.tnd-aviso { padding:11px 13px; border-radius:var(--radius-md); font-size:0.8rem; margin-bottom:13px; display:flex; gap:8px; align-items:flex-start; }
+.tnd-aviso.info { background:var(--color-info-light); color:#1d4ed8; }
+.tnd-aviso.alerta { background:var(--color-warning-light); color:#b45309; }
+.tnd-aviso.ok { background:var(--color-success-light); color:#047857; }
+@media (max-width:640px) { .tnd-sec { max-width:100%; } .tnd-fila > * { min-width:100%; } }
 </style>
 <!-- Modal de modificadores compartido con /mesas.html. Va aqui, en la
      cabecera REAL de la pagina: mas abajo hay literales de plantilla de
@@ -976,6 +1037,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <div class="nav-grupo">Catálogo</div>
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
+  <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo.
+       Por eso vive en Catálogo y no en Configuración -- lo que se administra
+       aquí es qué del menú sale a la calle y con qué promociones. -->
+  <button class="tab-btn admin-only" id="tab-tienda"    data-modulo="tienda_online" onclick="mostrarTab('tienda')">Tienda en línea</button>
 
   <div class="nav-grupo">Clientes</div>
   <button class="tab-btn"        id="tab-chats"      data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
@@ -1347,6 +1412,37 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Nunca muestra tokens, contraseñas ni claves — solo estados.</div>
       <div id="diagnostico-contenido">Cargando...</div>
       <button onclick="copiarDiagnostico()" style="background:none;border:1px solid #e5e2da;border-radius:8px;padding:8px 14px;font-size:0.8rem;color:#666;cursor:pointer;margin-top:14px;">📋 Copiar diagnóstico (sin secretos)</button>
+    </div>
+
+    <!-- ══════════════ Vista Tienda en línea ══════════════ -->
+    <!-- Todo el módulo se administra desde aquí con subsecciones. No hay
+         nada codificado por negocio: cada pantalla lee y escribe datos del
+         negocio de la sesión. Dar de alta una tienda nueva es puro dato. -->
+    <div id="vista-tienda" style="display:none;">
+      <div class="tnd-cab">
+        <div>
+          <div style="font-size:1.1rem;font-weight:800;">🛍️ Tienda en línea</div>
+          <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;">
+            Tu catálogo, abierto al público, con su propia liga.</div>
+        </div>
+        <div id="tnd-estado-chip"></div>
+      </div>
+
+      <div class="tnd-subnav" id="tnd-subnav">
+        <button class="tnd-sub activo" data-sec="resumen"     onclick="tndIr('resumen')">Resumen</button>
+        <button class="tnd-sub"        data-sec="productos"   onclick="tndIr('productos')">Productos</button>
+        <button class="tnd-sub"        data-sec="promociones" onclick="tndIr('promociones')">Promociones</button>
+        <button class="tnd-sub"        data-sec="campanas"    onclick="tndIr('campanas')">Campañas</button>
+        <button class="tnd-sub"        data-sec="metricas"    onclick="tndIr('metricas')">Métricas</button>
+        <button class="tnd-sub"        data-sec="ajustes"     onclick="tndIr('ajustes')">Apariencia</button>
+      </div>
+
+      <div id="tnd-sec-resumen"     class="tnd-sec"></div>
+      <div id="tnd-sec-productos"   class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-promociones" class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-campanas"    class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-metricas"    class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-ajustes"     class="tnd-sec" style="display:none;"></div>
     </div>
 
     <!-- Vista Config -->
@@ -2793,7 +2889,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].forEach(v => {
+  ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -2801,7 +2897,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -2822,6 +2918,7 @@ function mostrarTab(tab) {
   if (tab === 'cotizaciones') cargarCotizaciones();
   if (tab === 'envios') abrirEnvios();
   if (tab === 'inicio') cargarInicio();
+  if (tab === 'tienda') tndAbrir();
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -2964,6 +3061,610 @@ function nuevoPedidoModalidad(m) {
 // en el lugar sin pasar por el menú.
 function pintarChipsModalidad(m) {
   document.querySelectorAll('.mod-chip').forEach(c => c.classList.toggle('activo', c.dataset.mod === m));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TIENDA EN LÍNEA — backoffice
+// Todo aquí opera sobre el negocio de la SESIÓN: no hay ningún identificador
+// de negocio en el frontend ni nada codificado por cliente. Activar el módulo
+// y llenar estos formularios es lo único que hace falta para tener tienda.
+// ═══════════════════════════════════════════════════════════════════════════
+let TND = { config: null, checklist: null, seccion: 'resumen', promos: [], campanas: [], productos: [] };
+
+const tndEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tndDinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function tndAbrir() {
+  tndIr(TND.seccion || 'resumen');
+}
+
+function tndIr(sec) {
+  TND.seccion = sec;
+  document.querySelectorAll('.tnd-sub').forEach(b => b.classList.toggle('activo', b.dataset.sec === sec));
+  document.querySelectorAll('.tnd-sec').forEach(d => { d.style.display = 'none'; });
+  const el = document.getElementById('tnd-sec-' + sec);
+  if (el) el.style.display = 'block';
+  ({ resumen: tndResumen, productos: tndProductos, promociones: tndPromociones,
+     campanas: tndCampanas, metricas: tndMetricas, ajustes: tndAjustes })[sec]?.();
+}
+
+function tndPintarChipEstado() {
+  const e = TND.config?.estado || 'borrador';
+  const txt = { publicada: '● Publicada', pausada: '● Pausada', borrador: '● Borrador' }[e] || e;
+  document.getElementById('tnd-estado-chip').innerHTML = `<span class="tnd-chip ${e}">${txt}</span>`;
+}
+
+async function tndCargarConfig() {
+  const r = await apiFetch('/api/admin/tienda');
+  const d = await r.json();
+  TND.config = d.config; TND.checklist = d.checklist;
+  tndPintarChipEstado();
+  return d;
+}
+
+// ── Resumen: onboarding, liga pública y publicar/pausar ──
+async function tndResumen() {
+  const cont = document.getElementById('tnd-sec-resumen');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  try { await tndCargarConfig(); } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>No se pudo cargar la tienda: ${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  const c = TND.config, ch = TND.checklist;
+  const liga = location.origin + '/t/' + (c.slug || '');
+  const publicada = c.estado === 'publicada';
+
+  cont.innerHTML = `
+    ${publicada ? `
+      <div class="tnd-card">
+        <h3>Tu tienda está en línea</h3>
+        <div class="sub">Comparte esta liga en tu WhatsApp, Instagram o donde quieras vender.</div>
+        <div class="tnd-liga">
+          <span style="flex:1">${tndEsc(liga)}</span>
+          <button class="tnd-btn chico sec" onclick="tndCopiarLiga('${tndEsc(liga)}')">Copiar</button>
+          <button class="tnd-btn chico sec" onclick="window.open('${tndEsc(liga)}','_blank')">Abrir</button>
+        </div>
+        <div style="margin-top:13px;display:flex;gap:9px;flex-wrap:wrap;">
+          <button class="tnd-btn sec" onclick="tndCambiarEstado('pausada')">Pausar tienda</button>
+        </div>
+        <div class="ayuda" style="font-size:0.74rem;color:var(--color-text-muted);margin-top:9px;">
+          Pausar deja la liga viva pero deja de aceptar pedidos. Útil en vacaciones o cuando te saturas.</div>
+      </div>` : ''}
+
+    ${c.estado === 'pausada' ? `
+      <div class="tnd-aviso alerta">⏸️ <div><strong>Tu tienda está pausada.</strong>
+        Quien entre a la liga verá que no estás recibiendo pedidos ahora.</div></div>
+      <div class="tnd-card">
+        <button class="tnd-btn" onclick="tndCambiarEstado('publicada')">Reanudar tienda</button>
+      </div>` : ''}
+
+    <div class="tnd-card">
+      <h3>${publicada ? 'Todo lo que necesita tu tienda' : 'Lo que falta para publicar'}</h3>
+      <div class="sub">${publicada
+        ? 'Revisa que siga completo — si algo se rompe, tus clientes lo van a notar.'
+        : 'Cuando estos puntos estén listos, tu tienda puede salir al público.'}</div>
+      ${ch.items.map(i => {
+        // A dónde mandar al usuario a arreglarlo. El backend solo dice QUÉ
+        // falta; a dónde se va es una decisión de navegación del panel.
+        const ir = { horarios: `mostrarTab('config')`, entregas: `mostrarTab('config')`,
+                     pagos: `mostrarTab('config')`, productos: `tndIr('productos')`,
+                     identidad: `tndIr('ajustes')`, modalidades: `tndIr('ajustes')`,
+                     negocio: `mostrarTab('config')` }[i.clave];
+        return `<div class="tnd-check ${i.listo ? 'ok' : 'mal'}">
+          <span class="ico">${i.listo ? '✓' : '○'}</span>
+          <span class="txt">${tndEsc(i.etiqueta)}
+            <div class="det">${tndEsc(i.detalle || '')}</div></span>
+          ${!i.listo && ir ? `<button class="tnd-btn chico sec" onclick="${ir}">Configurar</button>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+
+    ${!publicada && c.estado !== 'pausada' ? `
+      <div class="tnd-card">
+        <h3>Publicar tienda</h3>
+        <div class="sub">${ch.listaParaPublicar
+          ? 'Todo listo. Al publicar, tu liga queda abierta al público de inmediato.'
+          : 'Completa los puntos de arriba para poder publicar.'}</div>
+        <div class="tnd-liga" style="margin-bottom:12px;">${tndEsc(liga)}</div>
+        <button class="tnd-btn" ${ch.listaParaPublicar ? '' : 'disabled'}
+          onclick="tndCambiarEstado('publicada')">Publicar mi tienda</button>
+      </div>` : ''}`;
+}
+
+function tndCopiarLiga(liga) {
+  navigator.clipboard?.writeText(liga)
+    .then(() => mostrarToast?.('Liga copiada'))
+    .catch(() => {});
+}
+
+async function tndCambiarEstado(estado) {
+  if (estado === 'pausada' && !confirm('¿Pausar la tienda? Dejarás de recibir pedidos en línea hasta que la reanudes.')) return;
+  try {
+    const r = await apiFetch('/api/admin/tienda/estado', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estado }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo cambiar el estado');
+    TND.config = d.config;
+    tndPintarChipEstado();
+    tndResumen();
+  } catch (e) { alert(e.message); }
+}
+
+// ── Productos: qué del menú sale a la tienda ──
+async function tndProductos() {
+  const cont = document.getElementById('tnd-sec-productos');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando catálogo…</div>';
+  try {
+    const r = await apiFetch('/api/admin/tienda/productos');
+    const d = await r.json();
+    TND.productos = d.productos || [];
+  } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  if (!TND.productos.length) {
+    cont.innerHTML = `<div class="tnd-vacio">Todavía no tienes productos en tu menú.<br>
+      <button class="tnd-btn sec" style="margin-top:12px" onclick="mostrarTab('menu')">Ir al menú</button></div>`;
+    return;
+  }
+  // Se agrupa por la misma categoría del menú: la tienda no inventa un orden
+  // propio ni un catálogo paralelo, solo marca qué se publica.
+  const porCat = new Map();
+  for (const p of TND.productos) {
+    if (!porCat.has(p.categoria)) porCat.set(p.categoria, []);
+    porCat.get(p.categoria).push(p);
+  }
+  const publicados = TND.productos.filter(p => p.publicado).length;
+
+  cont.innerHTML = `
+    <div class="tnd-aviso info">ℹ️ <div>Estos son los productos de tu menú. Marca los que quieres
+      que vea el público. Precios y modificadores son los mismos del menú — no hay catálogo aparte.</div></div>
+    <div class="tnd-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+        <h3 style="margin:0">${publicados} de ${TND.productos.length} publicados</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="tnd-btn chico sec" onclick="tndTodos(true)">Publicar todos</button>
+          <button class="tnd-btn chico sec" onclick="tndTodos(false)">Quitar todos</button>
+        </div>
+      </div>
+      ${[...porCat.entries()].map(([cat, prods]) => `
+        <div class="tnd-cat-tit">${tndEsc(cat)}</div>
+        ${prods.map(p => `<label class="tnd-prod">
+          <input type="checkbox" ${p.publicado ? 'checked' : ''} onchange="tndPublicar(${p.id}, this.checked)">
+          <span class="nom">${tndEsc(p.nombre)}
+            ${p.disponible === false ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}</span>
+          <span class="precio">${tndDinero(p.precio)}</span>
+        </label>`).join('')}
+      `).join('')}
+    </div>`;
+}
+
+async function tndPublicar(id, publicado) {
+  try {
+    await apiFetch('/api/admin/tienda/productos/publicar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productoIds: [id], publicado }),
+    });
+    const p = TND.productos.find(x => x.id === id);
+    if (p) p.publicado = publicado;
+    tndProductos();
+  } catch (e) { alert(e.message); tndProductos(); }
+}
+
+async function tndTodos(publicado) {
+  const ids = TND.productos.map(p => p.id);
+  if (!ids.length) return;
+  try {
+    await apiFetch('/api/admin/tienda/productos/publicar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productoIds: ids, publicado }),
+    });
+    tndProductos();
+  } catch (e) { alert(e.message); }
+}
+
+// ── Promociones ──
+const TND_TIPOS = {
+  envio_gratis: 'Envío gratis',
+  porcentaje: 'Descuento %',
+  monto_fijo: 'Descuento fijo',
+};
+
+async function tndPromociones() {
+  const cont = document.getElementById('tnd-sec-promociones');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  try {
+    const r = await apiFetch('/api/admin/tienda/promociones');
+    const d = await r.json();
+    TND.promos = d.promociones || []; TND.campanas = d.campanas || [];
+  } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  cont.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap;">
+      <div style="font-size:0.8rem;color:var(--color-text-secondary);">
+        Las promociones se aplican solas al carrito. El servidor decide si aplican — nunca el navegador del cliente.</div>
+      <button class="tnd-btn" onclick="tndEditarPromo(null)">+ Nueva promoción</button>
+    </div>
+    ${!TND.promos.length
+      ? `<div class="tnd-vacio">Aún no tienes promociones.<br>Empieza con un envío gratis por compra mínima: es la que más mueve el ticket.</div>`
+      : TND.promos.map(p => tndTarjetaPromo(p)).join('')}
+    <div id="tnd-form-promo"></div>`;
+}
+
+function tndTarjetaPromo(p) {
+  const reglas = [];
+  if (p.tipo === 'porcentaje') reglas.push(`${p.valor}% de descuento${p.maxDescuento ? ` (tope ${tndDinero(p.maxDescuento)})` : ''}`);
+  if (p.tipo === 'monto_fijo') reglas.push(`${tndDinero(p.valor)} de descuento`);
+  if (p.tipo === 'envio_gratis') reglas.push('Envío sin costo');
+  if (p.minimoCompra > 0) reglas.push(`compra mínima ${tndDinero(p.minimoCompra)}`);
+  if (p.codigo) reglas.push(`con código <strong>${tndEsc(p.codigo)}</strong>`);
+  else reglas.push('automática');
+  if (p.soloPrimeraCompra) reglas.push('solo primera compra');
+  if (p.limiteUsos) reglas.push(`${p.metricas.usos}/${p.limiteUsos} usos`);
+  if (p.limitePorCliente) reglas.push(`${p.limitePorCliente} por cliente`);
+  if (p.campania) reglas.push(`campaña ${tndEsc(p.campania.nombre)}`);
+
+  return `<div class="tnd-promo ${p.activa ? '' : 'tnd-inactiva'}">
+    <div class="top">
+      <div style="flex:1">
+        <div class="nom">${tndEsc(p.nombre)}
+          <span class="tnd-chip borrador" style="margin-left:6px;font-size:0.65rem;">${TND_TIPOS[p.tipo] || p.tipo}</span>
+          ${p.activa ? '' : '<span class="tnd-chip pausada" style="margin-left:4px;font-size:0.65rem;">Inactiva</span>'}</div>
+        <div class="reglas">${reglas.join(' · ')}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="tnd-btn chico sec" onclick="tndEditarPromo('${p.id}')">Editar</button>
+        <button class="tnd-btn chico sec" onclick="tndBorrarPromo('${p.id}','${tndEsc(p.nombre)}')">Borrar</button>
+      </div>
+    </div>
+    ${p.metricas?.usos > 0 ? `<div class="mets">
+      <div class="met"><div class="n">${p.metricas.usos}</div><div class="l">usos</div></div>
+      <div class="met"><div class="n">${tndDinero(p.metricas.ventas)}</div><div class="l">ventas</div></div>
+      <div class="met"><div class="n">${tndDinero(p.metricas.descuento)}</div><div class="l">descontado</div></div>
+    </div>` : ''}
+  </div>`;
+}
+
+function tndEditarPromo(id) {
+  const p = id ? TND.promos.find(x => x.id === id) : null;
+  const cont = document.getElementById('tnd-form-promo');
+  cont.innerHTML = `
+    <div class="tnd-card" style="border-color:var(--color-brand);">
+      <h3>${p ? 'Editar promoción' : 'Nueva promoción'}</h3>
+      <div class="sub">Todo lo que dejes vacío significa "sin restricción".</div>
+      <div class="tnd-campo"><label>Nombre (lo ve el cliente)</label>
+        <input id="pr-nombre" maxlength="80" value="${tndEsc(p?.nombre || '')}" placeholder="Envío gratis en pedidos de $300"></div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Tipo</label>
+          <select id="pr-tipo" onchange="tndPromoTipo()">
+            ${Object.entries(TND_TIPOS).map(([k, v]) => `<option value="${k}"${p?.tipo === k ? ' selected' : ''}>${v}</option>`).join('')}
+          </select></div>
+        <div class="tnd-campo" id="pr-valor-caja"><label id="pr-valor-lbl">Valor</label>
+          <input id="pr-valor" type="number" step="0.01" min="0" value="${p?.valor ?? ''}"></div>
+      </div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Compra mínima</label>
+          <input id="pr-minimo" type="number" step="0.01" min="0" value="${p?.minimoCompra ?? ''}" placeholder="Sin mínimo"></div>
+        <div class="tnd-campo"><label>Tope de descuento</label>
+          <input id="pr-tope" type="number" step="0.01" min="0" value="${p?.maxDescuento ?? ''}" placeholder="Sin tope"></div>
+      </div>
+      <div class="tnd-campo"><label>Código de cupón (vacío = se aplica sola)</label>
+        <input id="pr-codigo" maxlength="32" style="text-transform:uppercase" value="${tndEsc(p?.codigo || '')}" placeholder="BIENVENIDA10"></div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Usos totales</label>
+          <input id="pr-limite" type="number" min="0" value="${p?.limiteUsos ?? ''}" placeholder="Ilimitado"></div>
+        <div class="tnd-campo"><label>Usos por cliente</label>
+          <input id="pr-limcli" type="number" min="0" value="${p?.limitePorCliente ?? ''}" placeholder="Ilimitado"></div>
+      </div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Válida desde</label>
+          <input id="pr-desde" type="date" value="${(p?.vigenciaDesde || '').slice(0, 10)}"></div>
+        <div class="tnd-campo"><label>Válida hasta</label>
+          <input id="pr-hasta" type="date" value="${(p?.vigenciaHasta || '').slice(0, 10)}"></div>
+      </div>
+      <div class="tnd-campo"><label>Campaña (para medir su rendimiento)</label>
+        <select id="pr-campania">
+          <option value="">Sin campaña</option>
+          ${TND.campanas.map(c => `<option value="${c.id}"${p?.campania?.id === c.id ? ' selected' : ''}>${tndEsc(c.nombre)}</option>`).join('')}
+        </select></div>
+      <div class="tnd-campo">
+        <label style="display:flex;gap:8px;align-items:center;font-size:0.82rem;color:var(--color-text-primary);">
+          <input type="checkbox" id="pr-primera" ${p?.soloPrimeraCompra ? 'checked' : ''} style="width:auto"> Solo para clientes que nunca han comprado</label>
+        <label style="display:flex;gap:8px;align-items:center;font-size:0.82rem;color:var(--color-text-primary);margin-top:7px;">
+          <input type="checkbox" id="pr-activa" ${p == null || p.activa ? 'checked' : ''} style="width:auto"> Activa</label>
+      </div>
+      <div style="display:flex;gap:9px;margin-top:6px;">
+        <button class="tnd-btn" onclick="tndGuardarPromo('${p?.id || ''}')">Guardar</button>
+        <button class="tnd-btn sec" onclick="document.getElementById('tnd-form-promo').innerHTML=''">Cancelar</button>
+      </div>
+      <div id="pr-error" style="color:var(--color-danger);font-size:0.8rem;margin-top:10px;"></div>
+    </div>`;
+  tndPromoTipo();
+  cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function tndPromoTipo() {
+  const t = document.getElementById('pr-tipo').value;
+  const caja = document.getElementById('pr-valor-caja');
+  const lbl = document.getElementById('pr-valor-lbl');
+  // "Envío gratis" no tiene monto: el valor lo pone el costo de envío real.
+  caja.style.display = t === 'envio_gratis' ? 'none' : '';
+  lbl.textContent = t === 'porcentaje' ? 'Porcentaje (%)' : 'Monto a descontar';
+}
+
+async function tndGuardarPromo(id) {
+  const num = v => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : null; };
+  const cuerpo = {
+    nombre: document.getElementById('pr-nombre').value.trim(),
+    tipo: document.getElementById('pr-tipo').value,
+    valor: num(document.getElementById('pr-valor').value) || 0,
+    minimoCompra: num(document.getElementById('pr-minimo').value),
+    maxDescuento: num(document.getElementById('pr-tope').value),
+    codigo: document.getElementById('pr-codigo').value.trim().toUpperCase() || null,
+    // Sin codigo = promocion automatica. El backend exige que sea explicito
+    // para que "sin codigo" nunca signifique "cupon que nadie puede canjear".
+    automatica: !document.getElementById('pr-codigo').value.trim(),
+    limiteUsos: num(document.getElementById('pr-limite').value),
+    limitePorCliente: num(document.getElementById('pr-limcli').value),
+    vigenciaDesde: document.getElementById('pr-desde').value || null,
+    vigenciaHasta: document.getElementById('pr-hasta').value || null,
+    campaniaId: document.getElementById('pr-campania').value || null,
+    soloPrimeraCompra: document.getElementById('pr-primera').checked,
+    activa: document.getElementById('pr-activa').checked,
+  };
+  try {
+    const r = await apiFetch('/api/admin/tienda/promociones' + (id ? '/' + id : ''), {
+      method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo guardar');
+    document.getElementById('tnd-form-promo').innerHTML = '';
+    tndPromociones();
+  } catch (e) { document.getElementById('pr-error').textContent = e.message; }
+}
+
+async function tndBorrarPromo(id, nombre) {
+  if (!confirm(`¿Borrar la promoción "${nombre}"? Los pedidos que ya la usaron no cambian.`)) return;
+  try {
+    await apiFetch('/api/admin/tienda/promociones/' + id, { method: 'DELETE' });
+    tndPromociones();
+  } catch (e) { alert(e.message); }
+}
+
+// ── Campañas: para influencers y esfuerzos de marketing medibles ──
+async function tndCampanas() {
+  const cont = document.getElementById('tnd-sec-campanas');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  try {
+    const r = await apiFetch('/api/admin/tienda/promociones');
+    const d = await r.json();
+    TND.campanas = d.campanas || []; TND.promos = d.promociones || [];
+  } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  cont.innerHTML = `
+    <div class="tnd-aviso info">📣 <div>Una campaña agrupa promociones para saber cuánto vendió cada esfuerzo:
+      un influencer, un volante, una temporada. Le das a cada uno su código y aquí ves quién sí trajo clientes.</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:13px;">
+      <button class="tnd-btn" onclick="tndEditarCampana(null)">+ Nueva campaña</button>
+    </div>
+    ${!TND.campanas.length
+      ? `<div class="tnd-vacio">Todavía no tienes campañas.</div>`
+      : TND.campanas.map(c => {
+        const promos = TND.promos.filter(p => p.campania?.id === c.id);
+        return `<div class="tnd-promo">
+          <div class="top">
+            <div style="flex:1">
+              <div class="nom">${tndEsc(c.nombre)}</div>
+              <div class="reglas">${c.influencer ? tndEsc(c.influencer) + ' · ' : ''}${promos.length
+                ? promos.map(p => tndEsc(p.codigo || p.nombre)).join(', ')
+                : 'sin promociones asignadas'}</div>
+            </div>
+            <button class="tnd-btn chico sec" onclick="tndEditarCampana('${c.id}')">Editar</button>
+          </div>
+          <div class="mets">
+            <div class="met"><div class="n">${c.metricas.usos}</div><div class="l">pedidos</div></div>
+            <div class="met"><div class="n">${tndDinero(c.metricas.ventas)}</div><div class="l">ventas</div></div>
+            <div class="met"><div class="n">${tndDinero(c.metricas.descuento)}</div><div class="l">costo</div></div>
+            <div class="met"><div class="n">${c.metricas.clientesNuevos}</div><div class="l">clientes nuevos</div></div>
+            <div class="met"><div class="n">${tndDinero(c.metricas.ticketPromedio)}</div><div class="l">ticket</div></div>
+          </div>
+        </div>`;
+      }).join('')}
+    <div id="tnd-form-campana"></div>`;
+}
+
+function tndEditarCampana(id) {
+  const c = id ? TND.campanas.find(x => x.id === id) : null;
+  document.getElementById('tnd-form-campana').innerHTML = `
+    <div class="tnd-card" style="border-color:var(--color-brand);">
+      <h3>${c ? 'Editar campaña' : 'Nueva campaña'}</h3>
+      <div class="tnd-campo"><label>Nombre</label>
+        <input id="cp-nombre" maxlength="80" value="${tndEsc(c?.nombre || '')}" placeholder="Colaboración con @sabordelnorte"></div>
+      <div class="tnd-campo"><label>Quién la trae (influencer, socio, medio)</label>
+        <input id="cp-influencer" maxlength="80" value="${tndEsc(c?.influencer || '')}" placeholder="@sabordelnorte"></div>
+      <div class="tnd-campo"><label>Cómo contactarlo</label>
+        <input id="cp-contacto" maxlength="120" value="${tndEsc(c?.contacto || '')}" placeholder="Teléfono, correo o red"></div>
+      <div class="tnd-campo"><label>Notas (para ti)</label>
+        <textarea id="cp-notas" maxlength="300" rows="2">${tndEsc(c?.notas || '')}</textarea></div>
+      <div style="display:flex;gap:9px;">
+        <button class="tnd-btn" onclick="tndGuardarCampana('${c?.id || ''}')">Guardar</button>
+        <button class="tnd-btn sec" onclick="document.getElementById('tnd-form-campana').innerHTML=''">Cancelar</button>
+      </div>
+      <div id="cp-error" style="color:var(--color-danger);font-size:0.8rem;margin-top:10px;"></div>
+    </div>`;
+}
+
+async function tndGuardarCampana(id) {
+  const cuerpo = {
+    nombre: document.getElementById('cp-nombre').value.trim(),
+    influencer: document.getElementById('cp-influencer').value.trim() || null,
+    contacto: document.getElementById('cp-contacto').value.trim() || null,
+    notas: document.getElementById('cp-notas').value.trim() || null,
+  };
+  try {
+    const r = await apiFetch('/api/admin/tienda/campanas' + (id ? '/' + id : ''), {
+      method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo guardar');
+    document.getElementById('tnd-form-campana').innerHTML = '';
+    tndCampanas();
+  } catch (e) { document.getElementById('cp-error').textContent = e.message; }
+}
+
+// ── Métricas ──
+async function tndMetricas() {
+  const cont = document.getElementById('tnd-sec-metricas');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  let m;
+  try {
+    const r = await apiFetch('/api/admin/tienda/metricas');
+    m = await r.json();
+  } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  if (!m.pedidos) {
+    cont.innerHTML = `<div class="tnd-vacio">Todavía no hay pedidos de tienda en línea.<br>
+      Cuando lleguen, aquí verás qué vende, por qué canal y qué promoción funciona.</div>`;
+    return;
+  }
+  cont.innerHTML = `
+    <div style="font-size:0.78rem;color:var(--color-text-muted);margin-bottom:11px;">Últimos 30 días · solo pedidos de tienda en línea</div>
+    <div class="tnd-kpis">
+      <div class="tnd-kpi"><div class="n">${m.pedidos}</div><div class="l">Pedidos</div></div>
+      <div class="tnd-kpi"><div class="n">${tndDinero(m.ventas)}</div><div class="l">Ventas</div></div>
+      <div class="tnd-kpi"><div class="n">${tndDinero(m.ticketPromedio)}</div><div class="l">Ticket promedio</div></div>
+      <div class="tnd-kpi"><div class="n">${m.porModalidad.domicilio}/${m.porModalidad.recoger}</div><div class="l">Domicilio / Recoger</div></div>
+    </div>
+    ${m.promociones.length ? `<div class="tnd-card">
+      <h3>Promociones que sí movieron la aguja</h3>
+      <div class="sub">Ordenadas por venta generada. El costo es lo que descontaste.</div>
+      ${m.promociones.map(p => `<div class="tnd-check ok" style="border-bottom:1px solid var(--color-border)">
+        <span class="txt"><strong>${tndEsc(p.nombre)}</strong>
+          <div class="det">${p.metricas.usos} usos · ${tndDinero(p.metricas.ventas)} vendidos · ${tndDinero(p.metricas.descuento)} de costo</div></span>
+      </div>`).join('')}
+    </div>` : ''}
+    ${m.campanas.length ? `<div class="tnd-card">
+      <h3>Campañas</h3>
+      <div class="sub">Quién te trajo clientes nuevos, no solo pedidos.</div>
+      ${m.campanas.map(c => `<div class="tnd-check ok" style="border-bottom:1px solid var(--color-border)">
+        <span class="txt"><strong>${tndEsc(c.nombre)}</strong>
+          <div class="det">${c.metricas.usos} pedidos · ${tndDinero(c.metricas.ventas)} vendidos ·
+            ${c.metricas.clientesNuevos} clientes nuevos · ticket ${tndDinero(c.metricas.ticketPromedio)}</div></span>
+      </div>`).join('')}
+    </div>` : ''}`;
+}
+
+// ── Apariencia y ajustes de la tienda ──
+async function tndAjustes() {
+  const cont = document.getElementById('tnd-sec-ajustes');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  try { await tndCargarConfig(); } catch (e) {
+    cont.innerHTML = `<div class="tnd-aviso alerta">⚠️ <div>${tndEsc(e.message)}</div></div>`;
+    return;
+  }
+  const c = TND.config;
+  cont.innerHTML = `
+    <div class="tnd-aviso info">💡 <div>Los horarios, costos de envío, zonas y pedido mínimo se toman de
+      <strong>Configuración → Pedidos y horarios</strong>. No se configuran dos veces: tu tienda usa
+      exactamente las mismas reglas que el resto de tu operación.</div></div>
+
+    <div class="tnd-card">
+      <h3>Identidad</h3>
+      <div class="tnd-campo"><label>Nombre en la tienda</label>
+        <input id="tc-titular" maxlength="80" value="${tndEsc(c.titular || '')}" placeholder="Como quieres que te vean">
+        <div class="ayuda">Si lo dejas vacío se usa el nombre de tu negocio.</div></div>
+      <div class="tnd-campo"><label>Descripción corta</label>
+        <input id="tc-desc" maxlength="160" value="${tndEsc(c.descripcion || '')}" placeholder="Cocina casera con sazón de casa"></div>
+      <div class="tnd-campo"><label>Mensaje de bienvenida</label>
+        <input id="tc-bienvenida" maxlength="200" value="${tndEsc(c.mensajeBienvenida || '')}" placeholder="Pide antes de las 6 y te llega calientito">
+        <div class="ayuda">Aparece arriba del menú. Úsalo para avisos del día.</div></div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Color de tu marca</label>
+          <input id="tc-color" type="color" value="${tndEsc(c.color || '#111827')}"></div>
+        <div class="tnd-campo"><label>Dirección de tu tienda</label>
+          <input id="tc-slug" maxlength="60" value="${tndEsc(c.slugPublico || c.slug || '')}">
+          <div class="ayuda">${tndEsc(location.origin)}/t/<strong id="tc-slug-eco">${tndEsc(c.slugPublico || c.slug || '')}</strong></div></div>
+      </div>
+      <div class="tnd-campo"><label>Logo (URL de imagen)</label>
+        <input id="tc-logo" maxlength="400" value="${tndEsc(c.logo || '')}" placeholder="https://…"></div>
+      <div class="tnd-campo"><label>Portada (URL de imagen)</label>
+        <input id="tc-portada" maxlength="400" value="${tndEsc(c.portada || '')}" placeholder="https://…"></div>
+    </div>
+
+    <div class="tnd-card">
+      <h3>Cómo pueden pedirte</h3>
+      <div class="sub">Al menos una modalidad tiene que estar activa.</div>
+      <label style="display:flex;gap:9px;align-items:center;padding:7px 0;font-size:0.85rem;">
+        <input type="checkbox" id="tc-recoger" ${c.modalidades?.includes('recoger') ? 'checked' : ''} style="width:auto"> Recoger en tienda</label>
+      <label style="display:flex;gap:9px;align-items:center;padding:7px 0;font-size:0.85rem;">
+        <input type="checkbox" id="tc-domicilio" ${c.modalidades?.includes('domicilio') ? 'checked' : ''} style="width:auto"> Entrega a domicilio</label>
+      <hr style="border:none;border-top:1px solid var(--color-border);margin:13px 0;">
+      <label style="display:flex;gap:9px;align-items:center;padding:7px 0;font-size:0.85rem;">
+        <input type="checkbox" id="tc-programados" ${c.aceptaProgramados ? 'checked' : ''} style="width:auto"> Aceptar pedidos programados</label>
+      <div class="tnd-campo" style="margin-top:9px;"><label>Anticipación mínima (minutos)</label>
+        <input id="tc-anticipacion" type="number" min="0" max="1440" value="${c.anticipacionMinutos ?? 60}">
+        <div class="ayuda">Cuánto tiempo antes te tienen que avisar para un pedido programado.</div></div>
+    </div>
+
+    <div style="display:flex;gap:9px;align-items:center;">
+      <button class="tnd-btn" onclick="tndGuardarAjustes()">Guardar cambios</button>
+      <span id="tc-estado" style="font-size:0.8rem;"></span>
+    </div>`;
+  document.getElementById('tc-slug').addEventListener('input', e => {
+    document.getElementById('tc-slug-eco').textContent = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  });
+}
+
+async function tndGuardarAjustes() {
+  const modalidades = [];
+  if (document.getElementById('tc-recoger').checked) modalidades.push('recoger');
+  if (document.getElementById('tc-domicilio').checked) modalidades.push('domicilio');
+  const est = document.getElementById('tc-estado');
+  if (!modalidades.length) {
+    est.style.color = 'var(--color-danger)';
+    est.textContent = 'Elige al menos una forma de recibir pedidos.';
+    return;
+  }
+  const cuerpo = {
+    titular: document.getElementById('tc-titular').value.trim() || null,
+    descripcion: document.getElementById('tc-desc').value.trim() || null,
+    mensajeBienvenida: document.getElementById('tc-bienvenida').value.trim() || null,
+    color: document.getElementById('tc-color').value,
+    slugPublico: document.getElementById('tc-slug').value.trim() || null,
+    logo: document.getElementById('tc-logo').value.trim() || null,
+    portada: document.getElementById('tc-portada').value.trim() || null,
+    modalidades,
+    aceptaProgramados: document.getElementById('tc-programados').checked,
+    anticipacionMinutos: parseInt(document.getElementById('tc-anticipacion').value, 10) || 0,
+  };
+  est.style.color = 'var(--color-text-secondary)';
+  est.textContent = 'Guardando…';
+  try {
+    const r = await apiFetch('/api/admin/tienda', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo guardar');
+    TND.config = d.config;
+    tndPintarChipEstado();
+    est.style.color = 'var(--color-success)';
+    est.textContent = '✓ Guardado';
+    setTimeout(() => { est.textContent = ''; }, 2500);
+  } catch (e) {
+    est.style.color = 'var(--color-danger)';
+    est.textContent = e.message;
+  }
 }
 
 // ─── Inicio: resumen operativo ───────────────────────────────────────────────
