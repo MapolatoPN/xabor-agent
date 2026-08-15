@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Seguimiento de tu pedido</title>
+<style>
+:root{
+  --marca:#111827; --fondo:#ffffff; --superficie:#ffffff; --superficie-2:#f9fafb;
+  --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af; --borde:#e5e7eb;
+  --exito:#059669; --exito-bg:#ecfdf5; --error:#dc2626; --error-bg:#fef2f2;
+  --r:14px; --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){
+  :root{--fondo:#0b0f19;--superficie:#151b28;--superficie-2:#1c2333;
+    --texto:#f3f4f6;--texto-2:#9ca3af;--texto-3:#6b7280;--borde:#252d3d;
+    --exito-bg:#052e23;--error-bg:#2d1214}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--fondo);color:var(--texto);line-height:1.45;font-size:16px;-webkit-font-smoothing:antialiased}
+.app{max-width:520px;margin:0 auto;padding:24px 16px calc(32px + var(--safe-b))}
+.cab{display:flex;gap:12px;align-items:center;margin-bottom:22px}
+.logo{width:48px;height:48px;border-radius:12px;object-fit:cover;background:var(--superficie-2);
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--marca)}
+h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em}
+.cab-sub{font-size:13px;color:var(--texto-2)}
+
+.folio-caja{background:var(--superficie-2);border-radius:var(--r);padding:18px;text-align:center;margin-bottom:22px}
+.folio-lbl{font-size:11.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.06em}
+.folio{font-size:32px;font-weight:800;letter-spacing:-.02em;margin:3px 0 0}
+.folio-modo{font-size:13.5px;color:var(--texto-2);margin-top:5px}
+
+/* Línea de tiempo vertical */
+.linea-tiempo{position:relative;padding-left:34px;margin-bottom:24px}
+.linea-tiempo::before{content:'';position:absolute;left:11px;top:11px;bottom:11px;width:2px;background:var(--borde)}
+.etapa{position:relative;padding:0 0 22px}
+.etapa:last-child{padding-bottom:0}
+.etapa::before{content:'';position:absolute;left:-29px;top:2px;width:24px;height:24px;border-radius:50%;
+  background:var(--fondo);border:2px solid var(--borde);z-index:1}
+.etapa.cumplida::before{content:'✓';background:var(--exito);border-color:var(--exito);color:#fff;
+  font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1}
+.etapa.actual::before{background:var(--marca);border-color:var(--marca);content:'';
+  box-shadow:0 0 0 5px color-mix(in srgb,var(--marca) 18%,transparent)}
+.etapa-nom{font-size:15px;font-weight:700;color:var(--texto-3)}
+.etapa.cumplida .etapa-nom,.etapa.actual .etapa-nom{color:var(--texto)}
+.etapa.actual .etapa-nom{color:var(--marca)}
+.etapa-sub{font-size:12.5px;color:var(--texto-2);margin-top:1px}
+
+.tarjeta{border:1px solid var(--borde);border-radius:var(--r);padding:15px;margin-bottom:14px;background:var(--superficie)}
+.tarjeta h2{font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;
+  letter-spacing:.05em;margin:0 0 10px}
+.item{display:flex;justify-content:space-between;font-size:14px;padding:4px 0;gap:12px}
+.item span:first-child{color:var(--texto-2)}
+.total{display:flex;justify-content:space-between;font-size:17px;font-weight:800;
+  padding-top:11px;margin-top:8px;border-top:1px solid var(--borde)}
+.aviso{padding:13px;border-radius:var(--r);font-size:14px;font-weight:600;margin-bottom:16px;
+  display:flex;gap:9px;align-items:flex-start}
+.aviso.error{background:var(--error-bg);color:var(--error)}
+.aviso.exito{background:var(--exito-bg);color:var(--exito)}
+.vacio{padding:70px 24px;text-align:center;color:var(--texto-2)}
+.vacio .ico{font-size:42px;margin-bottom:14px;opacity:.5}
+.vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
+.pie{text-align:center;font-size:11.5px;color:var(--texto-3);margin-top:28px}
+.actualizado{text-align:center;font-size:12px;color:var(--texto-3);margin-top:16px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app" id="app"><div class="vacio">Cargando tu pedido…</div></div>
+<script>
+'use strict';
+const TOKEN = (location.pathname.match(/\/seguimiento\/([^/?#]+)/) || [])[1] || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+let ultimaEtapa = null;
+
+async function cargar() {
+  try {
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Pedido no encontrado');
+    pintar(d);
+    // Sondeo suave: el pedido cambia de estado en minutos, no en segundos.
+    // Se detiene solo cuando ya no hay nada más que esperar.
+    if (!d.cancelado && d.etapaActual !== 'entregado') setTimeout(cargar, 25000);
+  } catch (e) {
+    $('app').innerHTML = `<div class="vacio"><div class="ico">🔍</div>
+      <h3>No encontramos ese pedido</h3>
+      <p>La liga puede estar incompleta o el pedido ya no está disponible.<br>
+      Contacta al negocio con tu número de folio.</p></div>`;
+  }
+}
+
+function pintar(d) {
+  if (d.color) document.documentElement.style.setProperty('--marca', d.color);
+  document.title = `Pedido #${d.folio} — ${d.negocio}`;
+  ultimaEtapa = d.etapaActual;
+
+  const sub = d.modalidad === 'domicilio' ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda';
+  $('app').innerHTML = `
+    <div class="cab">
+      ${d.logo ? `<img class="logo" src="${esc(d.logo)}" alt="">`
+               : `<div class="logo">${esc((d.negocio || '?').charAt(0).toUpperCase())}</div>`}
+      <div><h1>${esc(d.negocio)}</h1><div class="cab-sub">Seguimiento de tu pedido</div></div>
+    </div>
+
+    <div class="folio-caja">
+      <div class="folio-lbl">Folio</div>
+      <div class="folio">#${esc(d.folio)}</div>
+      <div class="folio-modo">${sub}</div>
+    </div>
+
+    ${d.cancelado
+      ? `<div class="aviso error">⚠️ <div>Este pedido fue cancelado. Si crees que es un error, comunícate con el negocio.</div></div>`
+      : d.etapaActual === 'entregado'
+        ? `<div class="aviso exito">✓ <div>¡Tu pedido fue entregado! Gracias por tu compra.</div></div>` : ''}
+
+    ${d.programadoPara ? `<div class="aviso" style="background:var(--superficie-2)">📅
+      <div>Programado para <strong>${esc(formatoFecha(d.programadoPara))}</strong></div></div>` : ''}
+
+    ${d.cancelado ? '' : `<div class="linea-tiempo">
+      ${d.etapas.map(e => `<div class="etapa${e.cumplida ? ' cumplida' : ''}${e.actual ? ' actual' : ''}">
+        <div class="etapa-nom">${esc(e.etiqueta)}</div>
+        ${e.actual ? `<div class="etapa-sub">${esc(textoEtapa(e.clave, d.modalidad))}</div>` : ''}
+      </div>`).join('')}
+    </div>`}
+
+    <div class="tarjeta">
+      <h2>Tu pedido</h2>
+      ${d.items.map(i => `<div class="item"><span>${i.cantidad}× ${esc(i.nombre)}</span></div>`).join('')}
+      <div class="total"><span>Total</span><span>${dinero(d.total)}</span></div>
+    </div>
+
+    <div class="actualizado">Se actualiza solo · última revisión ${new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</div>
+    <div class="pie">Pedidos en línea con <strong>Xabor</strong></div>`;
+}
+
+function textoEtapa(clave, modalidad) {
+  return ({
+    recibido: 'El negocio ya vio tu pedido',
+    preparando: 'Están preparando tu pedido',
+    listo: modalidad === 'domicilio' ? 'Listo, esperando repartidor' : 'Ya puedes pasar por él',
+    en_camino: 'Tu pedido va en camino',
+    entregado: 'Entregado',
+  })[clave] || '';
+}
+function formatoFecha(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
+cargar();
+</script>
+</body>
+</html>

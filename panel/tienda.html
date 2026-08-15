@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>Tienda en línea</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Una sola hoja de estilos para TODAS las tiendas. Lo único que cambia por
+   negocio es --marca, que se inyecta en tiempo de ejecución desde la API.
+   Nada aquí se edita al dar de alta un negocio nuevo.
+   ───────────────────────────────────────────────────────────────────────── */
+:root{
+  --marca:#111827; --marca-suave:#f3f4f6;
+  --fondo:#ffffff; --superficie:#ffffff; --superficie-2:#f9fafb;
+  --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af;
+  --borde:#e5e7eb; --borde-fuerte:#d1d5db;
+  --exito:#059669; --exito-bg:#ecfdf5; --alerta:#b45309; --alerta-bg:#fffbeb;
+  --error:#dc2626; --error-bg:#fef2f2;
+  --r:14px; --r-s:10px;
+  --sombra:0 1px 2px rgba(0,0,0,.05);
+  --sombra-alta:0 -8px 32px rgba(0,0,0,.12);
+  --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --fondo:#0b0f19; --superficie:#151b28; --superficie-2:#1c2333;
+    --texto:#f3f4f6; --texto-2:#9ca3af; --texto-3:#6b7280;
+    --borde:#252d3d; --borde-fuerte:#374151; --marca-suave:#1c2333;
+    --exito-bg:#052e23; --alerta-bg:#2b2008; --error-bg:#2d1214;
+    --sombra-alta:0 -8px 32px rgba(0,0,0,.5);
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
+  background:var(--fondo); color:var(--texto); line-height:1.45;
+  font-size:16px; -webkit-font-smoothing:antialiased;
+  overscroll-behavior-y:none;
+}
+button{font:inherit;color:inherit;cursor:pointer;border:none;background:none}
+input,select,textarea{font:inherit;color:inherit}
+img{max-width:100%;display:block}
+.oculto{display:none !important}
+
+/* ── Contenedor: móvil primero, se centra en pantallas grandes ── */
+.app{max-width:560px;margin:0 auto;min-height:100vh;background:var(--fondo);position:relative}
+@media(min-width:1024px){
+  body{background:var(--superficie-2)}
+  .app{max-width:760px;box-shadow:0 0 0 1px var(--borde)}
+}
+
+/* ── Portada ── */
+.portada{position:relative;height:150px;background:var(--marca);overflow:hidden}
+.portada img{width:100%;height:100%;object-fit:cover}
+.portada::after{content:'';position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.45),transparent 60%)}
+.cabecera{padding:14px 16px 10px;display:flex;gap:12px;align-items:flex-start}
+.logo{width:56px;height:56px;border-radius:14px;object-fit:cover;background:var(--marca-suave);
+  border:2px solid var(--superficie);box-shadow:var(--sombra);flex-shrink:0;margin-top:-32px;position:relative;z-index:1}
+.logo-txt{display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:var(--marca)}
+.cab-info{flex:1;min-width:0}
+h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
+.cab-sub{font-size:13px;color:var(--texto-2);margin-top:2px}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.badge{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--superficie-2);
+  color:var(--texto-2);border:1px solid var(--borde)}
+.badge.abierto{background:var(--exito-bg);color:var(--exito);border-color:transparent}
+.badge.cerrado{background:var(--alerta-bg);color:var(--alerta);border-color:transparent}
+
+.aviso{margin:0 16px 12px;padding:11px 13px;border-radius:var(--r-s);font-size:13.5px;
+  background:var(--alerta-bg);color:var(--alerta);font-weight:600;display:flex;gap:8px;align-items:flex-start}
+.aviso.info{background:var(--marca-suave);color:var(--texto)}
+.aviso.exito{background:var(--exito-bg);color:var(--exito)}
+
+/* ── Navegación de categorías (sticky) ── */
+.cats{position:sticky;top:0;z-index:20;background:var(--fondo);border-bottom:1px solid var(--borde);
+  padding:9px 0;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.cats::-webkit-scrollbar{display:none}
+.cats-in{display:flex;gap:7px;padding:0 16px;width:max-content}
+.cat-chip{font-size:13.5px;font-weight:600;padding:7px 14px;border-radius:999px;background:var(--superficie-2);
+  color:var(--texto-2);white-space:nowrap;border:1px solid transparent;transition:.15s}
+.cat-chip.on{background:var(--marca);color:#fff}
+
+/* ── Productos ── */
+.cat-sec{padding:18px 16px 4px;scroll-margin-top:56px}
+.cat-tit{font-size:16px;font-weight:800;margin:0 0 10px;letter-spacing:-.01em}
+.prod{display:flex;gap:12px;padding:12px;border:1px solid var(--borde);border-radius:var(--r);
+  background:var(--superficie);margin-bottom:9px;width:100%;text-align:left;transition:.12s;align-items:flex-start}
+.prod:active{transform:scale(.99);background:var(--superficie-2)}
+.prod.agotado{opacity:.5}
+.prod-info{flex:1;min-width:0}
+.prod-nom{font-size:15px;font-weight:700;margin:0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.prod-desc{font-size:13px;color:var(--texto-2);margin:3px 0 0;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.prod-precio{font-size:15px;font-weight:800;margin-top:6px;color:var(--texto)}
+.prod-img{width:82px;height:82px;border-radius:var(--r-s);object-fit:cover;background:var(--superficie-2);flex-shrink:0}
+.etiqueta{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px;background:var(--marca);
+  color:#fff;text-transform:uppercase;letter-spacing:.03em}
+.etiqueta.gris{background:var(--superficie-2);color:var(--texto-2)}
+
+/* ── Hojas modales ── */
+.velo{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;opacity:0;pointer-events:none;transition:.2s}
+.velo.on{opacity:1;pointer-events:auto}
+.hoja{position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--superficie);
+  border-radius:20px 20px 0 0;max-height:92vh;display:flex;flex-direction:column;
+  transform:translateY(101%);transition:transform .26s cubic-bezier(.32,.72,0,1);box-shadow:var(--sombra-alta)}
+.hoja.on{transform:translateY(0)}
+@media(min-width:1024px){
+  .hoja{max-width:560px;margin:0 auto;border-radius:20px;bottom:auto;top:50%;
+    transform:translateY(-50%) scale(.96);opacity:0;max-height:86vh}
+  .hoja.on{transform:translateY(-50%) scale(1);opacity:1}
+}
+.hoja-cab{padding:16px 16px 12px;border-bottom:1px solid var(--borde);display:flex;
+  align-items:center;gap:12px;flex-shrink:0}
+.hoja-tit{font-size:17px;font-weight:800;margin:0;flex:1;letter-spacing:-.01em}
+.cerrar{width:32px;height:32px;border-radius:50%;background:var(--superficie-2);
+  display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--texto-2);flex-shrink:0}
+.hoja-cuerpo{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
+.hoja-pie{padding:12px 16px calc(12px + var(--safe-b));border-top:1px solid var(--borde);
+  background:var(--superficie);flex-shrink:0}
+
+/* ── Modificadores ── */
+.grupo{border-bottom:1px solid var(--borde);padding:15px 16px}
+.grupo-cab{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}
+.grupo-nom{font-size:14.5px;font-weight:700}
+.grupo-regla{font-size:11.5px;font-weight:700;color:var(--texto-3);white-space:nowrap}
+.grupo-regla.req{color:var(--error)}
+.opt{display:flex;align-items:center;gap:11px;padding:9px 0;cursor:pointer}
+.opt input{width:20px;height:20px;accent-color:var(--marca);flex-shrink:0;margin:0}
+.opt-nom{flex:1;font-size:14.5px}
+.opt-precio{font-size:13.5px;color:var(--texto-2);font-weight:600}
+.opt.deshabilitada{opacity:.4;pointer-events:none}
+
+/* ── Controles ── */
+.campo{padding:0 16px 14px}
+.campo label{display:block;font-size:12.5px;font-weight:700;color:var(--texto-2);margin-bottom:6px}
+.campo input,.campo select,.campo textarea{width:100%;padding:12px 13px;border:1px solid var(--borde-fuerte);
+  border-radius:var(--r-s);background:var(--superficie);font-size:16px;outline:none;transition:.15s}
+.campo input:focus,.campo select:focus,.campo textarea:focus{border-color:var(--marca);box-shadow:0 0 0 3px var(--marca-suave)}
+.campo textarea{resize:vertical;min-height:64px}
+.campo .ayuda{font-size:12px;color:var(--texto-3);margin-top:5px}
+.campo .malo{color:var(--error);font-size:12.5px;margin-top:5px;font-weight:600}
+.campo input.error,.campo select.error{border-color:var(--error)}
+
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:15px;
+  border-radius:var(--r-s);font-size:15.5px;font-weight:700;background:var(--marca);color:#fff;transition:.15s}
+.btn:active{transform:scale(.985)}
+.btn:disabled{opacity:.45;pointer-events:none}
+.btn.sec{background:var(--superficie-2);color:var(--texto);border:1px solid var(--borde)}
+.btn-precio{margin-left:auto;font-variant-numeric:tabular-nums}
+
+.cant{display:flex;align-items:center;gap:0;border:1px solid var(--borde-fuerte);border-radius:var(--r-s);overflow:hidden}
+.cant button{width:42px;height:44px;font-size:19px;font-weight:600;background:var(--superficie-2);color:var(--texto)}
+.cant button:disabled{opacity:.3}
+.cant span{width:44px;text-align:center;font-weight:800;font-size:15px}
+
+/* ── Carrito flotante ── */
+.barra{position:fixed;left:0;right:0;bottom:0;z-index:40;padding:12px 16px calc(12px + var(--safe-b));
+  background:linear-gradient(to top,var(--fondo) 65%,transparent);pointer-events:none}
+.barra>*{pointer-events:auto}
+@media(min-width:1024px){.barra{max-width:760px;margin:0 auto}}
+
+.linea{display:flex;gap:11px;padding:13px 16px;border-bottom:1px solid var(--borde);align-items:flex-start}
+.linea-info{flex:1;min-width:0}
+.linea-nom{font-size:14.5px;font-weight:700}
+.linea-mods{font-size:12.5px;color:var(--texto-2);margin-top:2px}
+.linea-notas{font-size:12.5px;color:var(--texto-3);font-style:italic;margin-top:2px}
+.linea-precio{font-weight:700;font-size:14.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.linea-acc{display:flex;gap:14px;margin-top:8px;font-size:12.5px;font-weight:700}
+.linea-acc button{color:var(--texto-2)}
+.linea-acc .quitar{color:var(--error)}
+
+/* ── Totales ── */
+.totales{padding:14px 16px;background:var(--superficie-2);border-top:1px solid var(--borde)}
+.tot-fila{display:flex;justify-content:space-between;font-size:14px;padding:4px 0;color:var(--texto-2)}
+.tot-fila.desc{color:var(--exito);font-weight:600}
+.tot-fila.grande{font-size:18px;font-weight:800;color:var(--texto);padding-top:10px;margin-top:6px;
+  border-top:1px solid var(--borde)}
+.tot-fila span:last-child{font-variant-numeric:tabular-nums}
+
+/* ── Pasos del checkout ── */
+.pasos{display:flex;gap:5px;padding:12px 16px 0}
+.paso-pip{flex:1;height:3px;border-radius:2px;background:var(--borde)}
+.paso-pip.on{background:var(--marca)}
+.opcion-grande{display:flex;gap:12px;align-items:center;padding:14px;border:1.5px solid var(--borde);
+  border-radius:var(--r);margin-bottom:9px;width:100%;text-align:left;transition:.15s;background:var(--superficie)}
+.opcion-grande.on{border-color:var(--marca);background:var(--marca-suave)}
+.opcion-grande:disabled{opacity:.45;pointer-events:none}
+.og-icono{font-size:22px;width:32px;text-align:center;flex-shrink:0}
+.og-tit{font-size:15px;font-weight:700}
+.og-sub{font-size:12.5px;color:var(--texto-2);margin-top:1px}
+.og-marca{margin-left:auto;font-size:17px;color:var(--marca);flex-shrink:0}
+
+.cupon-fila{display:flex;gap:8px}
+.cupon-fila input{flex:1;text-transform:uppercase}
+.cupon-fila button{padding:0 18px;border-radius:var(--r-s);background:var(--superficie-2);
+  border:1px solid var(--borde-fuerte);font-weight:700;font-size:14px;white-space:nowrap}
+.promo-ok{display:flex;gap:8px;align-items:center;padding:10px 12px;border-radius:var(--r-s);
+  background:var(--exito-bg);color:var(--exito);font-size:13px;font-weight:600;margin-top:8px}
+.promo-ok .x{margin-left:auto;font-size:16px;cursor:pointer;opacity:.7}
+
+/* ── Estados ── */
+.vacio{padding:56px 24px;text-align:center;color:var(--texto-2)}
+.vacio .ico{font-size:40px;margin-bottom:12px;opacity:.5}
+.vacio h3{font-size:16px;font-weight:700;margin:0 0 5px;color:var(--texto)}
+.vacio p{font-size:13.5px;margin:0}
+.cargando{padding:60px 24px;text-align:center;color:var(--texto-3);font-size:14px}
+.esqueleto{height:104px;border-radius:var(--r);background:var(--superficie-2);margin-bottom:9px;
+  animation:pulso 1.4s ease-in-out infinite}
+@keyframes pulso{0%,100%{opacity:1}50%{opacity:.5}}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;
+  border-radius:50%;animation:giro .7s linear infinite;display:inline-block}
+@keyframes giro{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+
+/* ── Confirmación ── */
+.exito-caja{padding:40px 24px;text-align:center}
+.exito-ico{width:66px;height:66px;border-radius:50%;background:var(--exito-bg);color:var(--exito);
+  display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 18px}
+.exito-folio{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:10px 0 4px}
+.pie-legal{padding:24px 16px calc(90px + var(--safe-b));text-align:center;font-size:11.5px;color:var(--texto-3)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="cargando" id="cargando">Cargando tienda…</div>
+  <div id="contenido" class="oculto">
+    <div class="portada oculto" id="portada"><img id="portada-img" alt=""></div>
+    <div class="cabecera">
+      <div class="logo logo-txt" id="logo"></div>
+      <div class="cab-info">
+        <h1 id="nom-negocio"></h1>
+        <div class="cab-sub" id="desc-negocio"></div>
+        <div class="badges" id="badges"></div>
+      </div>
+    </div>
+    <div id="avisos"></div>
+    <div class="cats oculto" id="cats"><div class="cats-in" id="cats-in"></div></div>
+    <div id="catalogo"></div>
+    <div class="pie-legal">Tienda en línea con <strong>Xabor</strong></div>
+  </div>
+</div>
+
+<div class="barra oculto" id="barra">
+  <button class="btn" id="btn-carrito" onclick="abrirCarrito()">
+    <span id="carrito-n">0</span> · Ver pedido
+    <span class="btn-precio" id="carrito-total">$0</span>
+  </button>
+</div>
+
+<div class="velo" id="velo" onclick="cerrarTodo()"></div>
+
+<!-- Producto -->
+<div class="hoja" id="hoja-prod">
+  <div class="hoja-cab">
+    <h2 class="hoja-tit" id="prod-titulo"></h2>
+    <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="hoja-cuerpo" id="prod-cuerpo"></div>
+  <div class="hoja-pie">
+    <div style="display:flex;gap:11px;align-items:center">
+      <div class="cant">
+        <button onclick="cambiarCantidad(-1)" id="cant-menos">−</button>
+        <span id="cant-val">1</span>
+        <button onclick="cambiarCantidad(1)">+</button>
+      </div>
+      <button class="btn" id="btn-agregar" onclick="agregarAlCarrito()" style="flex:1">
+        Agregar <span class="btn-precio" id="prod-total">$0</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Carrito -->
+<div class="hoja" id="hoja-carrito">
+  <div class="hoja-cab">
+    <h2 class="hoja-tit">Tu pedido</h2>
+    <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="hoja-cuerpo" id="carrito-cuerpo"></div>
+  <div class="hoja-pie">
+    <button class="btn" id="btn-ir-checkout" onclick="irAlCheckout()">Continuar</button>
+  </div>
+</div>
+
+<!-- Checkout -->
+<div class="hoja" id="hoja-checkout">
+  <div class="hoja-cab">
+    <button class="cerrar" id="ck-atras" onclick="pasoAtras()" aria-label="Atrás">←</button>
+    <h2 class="hoja-tit" id="ck-titulo"></h2>
+    <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="pasos" id="ck-pips"></div>
+  <div class="hoja-cuerpo" id="ck-cuerpo"></div>
+  <div class="hoja-pie" id="ck-pie"></div>
+</div>
+
+<script>
+'use strict';
+// ═══════════════════════════════════════════════════════════════════════════
+// El slug SIEMPRE sale de la URL del navegador, nunca de datos incrustados:
+// una sola plantilla sirve a todos los negocios y el servidor vuelve a
+// resolver el negocio en cada petición. El frontend no es autoridad de nada:
+// precios, descuentos, envío y totales los calcula y los reimpone el servidor.
+// ═══════════════════════════════════════════════════════════════════════════
+const SLUG = decodeURIComponent((location.pathname.match(/\/t\/([^/?#]+)/) || [])[1] || '');
+const API = '/api/tienda/' + encodeURIComponent(SLUG);
+const LS_CARRITO = 'xabor_carrito_' + SLUG;
+const LS_CLIENTE = 'xabor_cliente_' + SLUG;
+const LS_TOKEN = 'xabor_ck_' + SLUG;
+
+let TIENDA = null, CATALOGO = [], CARRITO = [], COTIZACION = null;
+let prodActual = null, cantActual = 1, modsElegidos = {}, editandoIndice = -1;
+let cotizarSeq = 0;
+
+const $ = id => document.getElementById(id);
+const dinero = n => '$' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Escape obligatorio: TODO lo que se pinta viene de la base de datos (nombres
+// de producto, notas del cliente, mensajes del negocio) y se inserta con
+// innerHTML. Sin esto habría XSS almacenado.
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function api(ruta, opciones) {
+  const r = await fetch(ruta, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opciones,
+    body: opciones?.cuerpo ? JSON.stringify(opciones.cuerpo) : undefined,
+  });
+  const datos = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(datos.error || 'Algo salió mal'); e.codigo = datos.codigo; e.status = r.status; throw e; }
+  return datos;
+}
+
+// ─── Arranque ───────────────────────────────────────────────────────────────
+(async function iniciar() {
+  try {
+    const [tienda, cat] = await Promise.all([api(API), api(API + '/catalogo')]);
+    TIENDA = tienda; CATALOGO = cat.categorias || [];
+    aplicarMarca(); pintarCabecera(); pintarCatalogo(); restaurarCarrito();
+    $('cargando').classList.add('oculto');
+    $('contenido').classList.remove('oculto');
+  } catch (e) {
+    $('cargando').outerHTML = `<div class="vacio"><div class="ico">🔍</div>
+      <h3>${esc(e.status === 404 ? 'Tienda no disponible' : 'No pudimos cargar la tienda')}</h3>
+      <p>${esc(e.status === 404 ? 'Revisa la dirección o pregunta al negocio por su liga actualizada.' : e.message)}</p></div>`;
+  }
+})();
+
+function aplicarMarca() {
+  const c = TIENDA.color || '#111827';
+  document.documentElement.style.setProperty('--marca', c);
+  document.documentElement.style.setProperty('--marca-suave', c + '1a');
+  document.title = TIENDA.negocio + ' — Pedidos en línea';
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = c;
+}
+
+function pintarCabecera() {
+  if (TIENDA.portada) { $('portada').classList.remove('oculto'); $('portada-img').src = TIENDA.portada; }
+  const logo = $('logo');
+  if (TIENDA.logo) { logo.outerHTML = `<img class="logo" src="${esc(TIENDA.logo)}" alt="">`; }
+  else { logo.textContent = (TIENDA.negocio || '?').trim().charAt(0).toUpperCase(); }
+  $('nom-negocio').textContent = TIENDA.negocio;
+  $('desc-negocio').textContent = TIENDA.descripcion || '';
+
+  const b = [];
+  b.push(TIENDA.apertura.abierto
+    ? `<span class="badge abierto">● Abierto${TIENDA.apertura.cierraA ? ' · cierra ' + esc(TIENDA.apertura.cierraA) : ''}</span>`
+    : `<span class="badge cerrado">● Cerrado</span>`);
+  if (TIENDA.modalidades.includes('recoger')) b.push(`<span class="badge">🏪 Recoger · ${TIENDA.preparacionMinutos} min</span>`);
+  if (TIENDA.modalidades.includes('domicilio')) b.push(`<span class="badge">🛵 Domicilio · ${esc(TIENDA.entrega.tiempo)}</span>`);
+  if (TIENDA.entrega.entregaGratisDesde > 0) b.push(`<span class="badge">🎁 Envío gratis desde ${dinero(TIENDA.entrega.entregaGratisDesde)}</span>`);
+  $('badges').innerHTML = b.join('');
+
+  const avisos = [];
+  if (!TIENDA.apertura.abierto) {
+    const cuando = TIENDA.apertura.abreA
+      ? `Abrimos ${TIENDA.apertura.cuando === 'hoy' ? 'hoy' : esc(TIENDA.apertura.cuando || '')} a las ${esc(TIENDA.apertura.abreA)}.`
+      : 'Consulta nuestros horarios.';
+    avisos.push(`<div class="aviso">🕑 <div><strong>Ahora estamos cerrados.</strong> ${cuando}
+      ${TIENDA.aceptaProgramados ? ' Puedes dejar tu pedido programado.' : ' Vuelve en nuestro horario para pedir.'}</div></div>`);
+  }
+  if (TIENDA.bienvenida) avisos.push(`<div class="aviso info">👋 <div>${esc(TIENDA.bienvenida)}</div></div>`);
+  $('avisos').innerHTML = avisos.join('');
+}
+
+function pintarCatalogo() {
+  if (!CATALOGO.length) {
+    $('catalogo').innerHTML = `<div class="vacio"><div class="ico">🍽️</div>
+      <h3>Aún no hay productos publicados</h3><p>El negocio está preparando su catálogo.</p></div>`;
+    return;
+  }
+  $('cats').classList.remove('oculto');
+  $('cats-in').innerHTML = CATALOGO.map((c, i) =>
+    `<button class="cat-chip${i === 0 ? ' on' : ''}" data-cat="${c.id}" onclick="irACategoria(${c.id})">${esc(c.nombre)}</button>`).join('');
+
+  $('catalogo').innerHTML = CATALOGO.map(c => `
+    <section class="cat-sec" id="cat-${c.id}">
+      <h2 class="cat-tit">${esc(c.nombre)}</h2>
+      ${c.productos.map(p => tarjetaProducto(p)).join('')}
+    </section>`).join('');
+  observarCategorias();
+}
+
+function tarjetaProducto(p) {
+  const fuera = p.disponible === false || p.agotado === true;
+  return `<button class="prod${fuera ? ' agotado' : ''}" ${fuera ? 'disabled' : ''} onclick="abrirProducto(${p.id})">
+    <div class="prod-info">
+      <div class="prod-nom">${esc(p.nombre)}
+        ${p.badge ? `<span class="etiqueta">${esc(p.badge)}</span>` : ''}
+        ${fuera ? '<span class="etiqueta gris">Agotado</span>' : ''}</div>
+      ${p.descripcion ? `<p class="prod-desc">${esc(p.descripcion)}</p>` : ''}
+      <div class="prod-precio">${dinero(p.precio)}</div>
+    </div>
+    ${p.imagen ? `<img class="prod-img" src="${esc(p.imagen)}" alt="" loading="lazy">` : ''}
+  </button>`;
+}
+
+function irACategoria(id) {
+  document.getElementById('cat-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function observarCategorias() {
+  if (!('IntersectionObserver' in window)) return;
+  const obs = new IntersectionObserver(entradas => {
+    const visible = entradas.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    if (!visible) return;
+    const id = visible.target.id.replace('cat-', '');
+    document.querySelectorAll('.cat-chip').forEach(ch => ch.classList.toggle('on', ch.dataset.cat === id));
+    document.querySelector('.cat-chip.on')?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, { rootMargin: '-56px 0px -70% 0px' });
+  document.querySelectorAll('.cat-sec').forEach(s => obs.observe(s));
+}
+
+// ─── Producto y modificadores ───────────────────────────────────────────────
+function buscarProducto(id) {
+  for (const c of CATALOGO) { const p = c.productos.find(x => x.id === id); if (p) return p; }
+  return null;
+}
+
+function abrirProducto(id, indiceEdicion = -1) {
+  const p = buscarProducto(id);
+  if (!p) return;
+  prodActual = p; editandoIndice = indiceEdicion;
+  cantActual = 1; modsElegidos = {};
+  if (indiceEdicion >= 0) {
+    const linea = CARRITO[indiceEdicion];
+    cantActual = linea.cantidad;
+    for (const m of linea.modificadores || []) {
+      (modsElegidos[m.grupoId] ||= []).push(m.opcionId);
+    }
+  }
+  $('prod-titulo').textContent = p.nombre;
+  $('btn-agregar').firstChild.textContent = indiceEdicion >= 0 ? 'Actualizar ' : 'Agregar ';
+
+  const partes = [];
+  if (p.imagen) partes.push(`<img src="${esc(p.imagen)}" alt="" style="width:100%;height:190px;object-fit:cover">`);
+  if (p.descripcion) partes.push(`<p style="padding:14px 16px 0;margin:0;font-size:14px;color:var(--texto-2)">${esc(p.descripcion)}</p>`);
+  partes.push(`<div style="padding:12px 16px;font-size:17px;font-weight:800">${dinero(p.precio)}</div>`);
+
+  for (const g of (p.grupos || [])) {
+    const regla = g.requerido
+      ? (g.max === 1 || g.min === g.max ? 'Obligatorio' : `Elige ${g.min}${g.max ? '–' + g.max : ' o más'}`)
+      : (g.max === 1 ? 'Opcional' : `Hasta ${g.max || 'varios'}`);
+    const unico = g.max === 1;
+    partes.push(`<div class="grupo" data-grupo="${g.id}">
+      <div class="grupo-cab"><span class="grupo-nom">${esc(g.nombre)}</span>
+        <span class="grupo-regla${g.requerido ? ' req' : ''}">${esc(regla)}</span></div>
+      ${g.opciones.map(o => `<label class="opt">
+        <input type="${unico ? 'radio' : 'checkbox'}" name="g${g.id}" value="${o.id}"
+          data-grupo="${g.id}" data-max="${g.max || 0}" onchange="alCambiarModificador(this)">
+        <span class="opt-nom">${esc(o.nombre)}</span>
+        ${o.precioExtra > 0 ? `<span class="opt-precio">+${dinero(o.precioExtra)}</span>` : ''}
+      </label>`).join('')}
+    </div>`);
+  }
+  partes.push(`<div class="campo" style="padding-top:15px">
+    <label for="prod-notas">Notas para la cocina (opcional)</label>
+    <textarea id="prod-notas" maxlength="200" placeholder="Sin cebolla, salsa aparte…"></textarea>
+  </div>`);
+
+  $('prod-cuerpo').innerHTML = partes.join('');
+  if (indiceEdicion >= 0) {
+    const linea = CARRITO[indiceEdicion];
+    $('prod-notas').value = linea.notas || '';
+    document.querySelectorAll('#prod-cuerpo input').forEach(i => {
+      if ((modsElegidos[Number(i.dataset.grupo)] || []).includes(Number(i.value))) i.checked = true;
+    });
+  }
+  $('cant-val').textContent = cantActual;
+  refrescarProducto();
+  abrirHoja('hoja-prod');
+}
+
+function alCambiarModificador(input) {
+  const gid = Number(input.dataset.grupo);
+  const max = Number(input.dataset.max) || 0;
+  const inputs = [...document.querySelectorAll(`#prod-cuerpo input[data-grupo="${gid}"]`)];
+  if (input.type === 'radio') modsElegidos[gid] = [Number(input.value)];
+  else modsElegidos[gid] = inputs.filter(i => i.checked).map(i => Number(i.value));
+  // Tope de selección: se apagan visualmente las opciones restantes en vez de
+  // dejar que el cliente elija de más y el servidor lo rechace al final.
+  if (max > 1) {
+    const lleno = modsElegidos[gid].length >= max;
+    inputs.forEach(i => i.closest('.opt').classList.toggle('deshabilitada', lleno && !i.checked));
+  }
+  refrescarProducto();
+}
+
+function cambiarCantidad(d) {
+  cantActual = Math.max(1, Math.min(50, cantActual + d));
+  $('cant-val').textContent = cantActual;
+  $('cant-menos').disabled = cantActual <= 1;
+  refrescarProducto();
+}
+
+function precioLineaActual() {
+  let precio = Number(prodActual.precio) || 0;
+  for (const g of (prodActual.grupos || [])) {
+    for (const oid of (modsElegidos[g.id] || [])) {
+      precio += Number(g.opciones.find(o => o.id === oid)?.precioExtra || 0);
+    }
+  }
+  return precio * cantActual;
+}
+
+function faltantesObligatorios() {
+  return (prodActual.grupos || []).filter(g => g.requerido && (modsElegidos[g.id] || []).length < Math.max(1, g.min));
+}
+
+function refrescarProducto() {
+  const faltan = faltantesObligatorios();
+  const btn = $('btn-agregar');
+  btn.disabled = faltan.length > 0;
+  $('prod-total').textContent = dinero(precioLineaActual());
+  btn.title = faltan.length ? 'Falta elegir: ' + faltan.map(g => g.nombre).join(', ') : '';
+}
+
+function agregarAlCarrito() {
+  if (faltantesObligatorios().length) return;
+  const mods = [];
+  for (const g of (prodActual.grupos || [])) {
+    for (const oid of (modsElegidos[g.id] || [])) {
+      const o = g.opciones.find(x => x.id === oid);
+      if (o) mods.push({ grupoId: g.id, grupo: g.nombre, opcionId: o.id, nombre: o.nombre, precioExtra: o.precioExtra });
+    }
+  }
+  const linea = {
+    productoId: prodActual.id, nombre: prodActual.nombre, precio: prodActual.precio,
+    cantidad: cantActual, modificadores: mods, notas: ($('prod-notas').value || '').trim().slice(0, 200),
+  };
+  if (editandoIndice >= 0) CARRITO[editandoIndice] = linea; else CARRITO.push(linea);
+  guardarCarrito(); cerrarTodo();
+}
+
+// ─── Carrito ────────────────────────────────────────────────────────────────
+function guardarCarrito() {
+  try { localStorage.setItem(LS_CARRITO, JSON.stringify(CARRITO)); } catch (e) {}
+  refrescarBarra();
+}
+function restaurarCarrito() {
+  try {
+    const g = JSON.parse(localStorage.getItem(LS_CARRITO) || '[]');
+    // Se descarta lo que ya no exista en el catálogo: el negocio pudo despublicar
+    // un producto entre visitas y no queremos un carrito que reviente al cotizar.
+    CARRITO = Array.isArray(g) ? g.filter(l => buscarProducto(l.productoId)) : [];
+  } catch (e) { CARRITO = []; }
+  refrescarBarra();
+}
+function totalLocal() {
+  return CARRITO.reduce((s, l) => s + (Number(l.precio) + (l.modificadores || []).reduce((a, m) => a + Number(m.precioExtra || 0), 0)) * l.cantidad, 0);
+}
+function refrescarBarra() {
+  const n = CARRITO.reduce((s, l) => s + l.cantidad, 0);
+  $('barra').classList.toggle('oculto', n === 0);
+  $('carrito-n').textContent = n;
+  $('carrito-total').textContent = dinero(totalLocal());
+}
+
+function abrirCarrito() { pintarCarrito(); abrirHoja('hoja-carrito'); }
+
+function pintarCarrito() {
+  if (!CARRITO.length) {
+    $('carrito-cuerpo').innerHTML = `<div class="vacio"><div class="ico">🛒</div><h3>Tu pedido está vacío</h3><p>Agrega algo del menú.</p></div>`;
+    $('btn-ir-checkout').disabled = true;
+    return;
+  }
+  $('btn-ir-checkout').disabled = false;
+  $('carrito-cuerpo').innerHTML = CARRITO.map((l, i) => {
+    const unit = Number(l.precio) + (l.modificadores || []).reduce((a, m) => a + Number(m.precioExtra || 0), 0);
+    return `<div class="linea">
+      <div class="linea-info">
+        <div class="linea-nom">${l.cantidad}× ${esc(l.nombre)}</div>
+        ${l.modificadores?.length ? `<div class="linea-mods">${esc(l.modificadores.map(m => m.nombre).join(', '))}</div>` : ''}
+        ${l.notas ? `<div class="linea-notas">“${esc(l.notas)}”</div>` : ''}
+        <div class="linea-acc">
+          <button onclick="editarLinea(${i})">Editar</button>
+          <button class="quitar" onclick="quitarLinea(${i})">Quitar</button>
+        </div>
+      </div>
+      <div class="linea-precio">${dinero(unit * l.cantidad)}</div>
+    </div>`;
+  }).join('') + `<div class="totales">
+      <div class="tot-fila grande" style="border:none;padding-top:0;margin:0"><span>Subtotal</span><span>${dinero(totalLocal())}</span></div>
+      <div class="tot-fila" style="padding-top:6px"><span>Envío y descuentos se calculan en el siguiente paso</span></div>
+    </div>`;
+}
+function editarLinea(i) { const l = CARRITO[i]; cerrarTodo(); setTimeout(() => abrirProducto(l.productoId, i), 220); }
+function quitarLinea(i) { CARRITO.splice(i, 1); guardarCarrito(); pintarCarrito(); if (!CARRITO.length) cerrarTodo(); }
+
+// ─── Checkout progresivo ────────────────────────────────────────────────────
+const PASOS = ['modalidad', 'cuando', 'datos', 'pago', 'resumen'];
+let paso = 0;
+let CK = { modalidad: null, cuando: 'ahora', programadoPara: null, zona: null, codigo: null,
+           codigoAplicado: null, metodoPago: null, notas: '' };
+let METODOS = [];
+
+function irAlCheckout() {
+  if (!CARRITO.length) return;
+  try { Object.assign(CK, JSON.parse(localStorage.getItem(LS_CLIENTE) || '{}')); } catch (e) {}
+  CK.codigo = null; CK.codigoAplicado = null;
+  if (!CK.modalidad || !TIENDA.modalidades.includes(CK.modalidad)) {
+    CK.modalidad = TIENDA.modalidades.length === 1 ? TIENDA.modalidades[0] : null;
+  }
+  paso = 0; cerrarTodo();
+  setTimeout(() => { pintarPaso(); abrirHoja('hoja-checkout'); }, 220);
+}
+
+function pintarPaso() {
+  const nombre = PASOS[paso];
+  $('ck-pips').innerHTML = PASOS.map((_, i) => `<div class="paso-pip${i <= paso ? ' on' : ''}"></div>`).join('');
+  $('ck-atras').style.visibility = paso === 0 ? 'hidden' : 'visible';
+  ({ modalidad: pasoModalidad, cuando: pasoCuando, datos: pasoDatos, pago: pasoPago, resumen: pasoResumen })[nombre]();
+}
+function pasoAtras() { if (paso > 0) { paso--; pintarPaso(); } }
+function pasoAdelante() { if (paso < PASOS.length - 1) { paso++; pintarPaso(); } }
+
+function pasoModalidad() {
+  $('ck-titulo').textContent = '¿Cómo lo quieres?';
+  const r = TIENDA.modalidades.includes('recoger'), d = TIENDA.modalidades.includes('domicilio');
+  $('ck-cuerpo').innerHTML = `<div style="padding:16px">
+    ${r ? opcionGrande('🏪', 'Recoger en tienda', `Listo en ${TIENDA.preparacionMinutos} min · sin costo de envío`, CK.modalidad === 'recoger', `elegirModalidad('recoger')`) : ''}
+    ${d ? opcionGrande('🛵', 'Entrega a domicilio', `${esc(TIENDA.entrega.tiempo)} · desde ${dinero(TIENDA.entrega.costoBase)}${TIENDA.entrega.pedidoMinimo > 0 ? ' · mínimo ' + dinero(TIENDA.entrega.pedidoMinimo) : ''}`, CK.modalidad === 'domicilio', `elegirModalidad('domicilio')`) : ''}
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" ${CK.modalidad ? '' : 'disabled'} onclick="pasoAdelante()">Continuar</button>`;
+}
+function opcionGrande(icono, tit, sub, activo, accion) {
+  return `<button class="opcion-grande${activo ? ' on' : ''}" onclick="${accion}">
+    <span class="og-icono">${icono}</span>
+    <span style="flex:1"><span class="og-tit" style="display:block">${tit}</span><span class="og-sub" style="display:block">${sub}</span></span>
+    ${activo ? '<span class="og-marca">✓</span>' : ''}</button>`;
+}
+function elegirModalidad(m) { CK.modalidad = m; if (m === 'recoger') CK.zona = null; pintarPaso(); }
+
+function pasoCuando() {
+  $('ck-titulo').textContent = '¿Cuándo?';
+  const abierto = TIENDA.apertura.abierto;
+  const puedeAhora = abierto;
+  const puedeProgramar = TIENDA.aceptaProgramados;
+  if (!puedeProgramar && puedeAhora) { CK.cuando = 'ahora'; CK.programadoPara = null; return pasoAdelante(); }
+
+  $('ck-cuerpo').innerHTML = `<div style="padding:16px">
+    ${!abierto ? `<div class="aviso" style="margin:0 0 12px">🕑 <div>Estamos cerrados en este momento${puedeProgramar ? ', pero puedes programar tu pedido.' : '.'}</div></div>` : ''}
+    ${opcionGrande('⚡', 'Lo antes posible', puedeAhora ? `Aprox. ${CK.modalidad === 'domicilio' ? esc(TIENDA.entrega.tiempo) : TIENDA.preparacionMinutos + ' min'}` : 'No disponible ahora — la tienda está cerrada', CK.cuando === 'ahora', `elegirCuando('ahora')`).replace('<button class="opcion-grande', puedeAhora ? '<button class="opcion-grande' : '<button disabled class="opcion-grande')}
+    ${puedeProgramar ? opcionGrande('📅', 'Programar', `Con al menos ${TIENDA.anticipacionMinutos} min de anticipación`, CK.cuando === 'programado', `elegirCuando('programado')`) : ''}
+    ${CK.cuando === 'programado' ? `<div class="campo" style="padding:6px 0 0">
+      <label for="ck-fecha">Fecha y hora de entrega</label>
+      <input type="datetime-local" id="ck-fecha" value="${esc(CK.programadoPara || '')}" min="${minProgramable()}" onchange="CK.programadoPara=this.value">
+      <div class="ayuda">Confirmaremos que el horario esté dentro del servicio del negocio.</div>
+    </div>` : ''}
+  </div>`;
+  const listo = CK.cuando === 'ahora' ? puedeAhora : !!CK.programadoPara;
+  $('ck-pie').innerHTML = `<button class="btn" ${listo ? '' : 'disabled'} onclick="pasoAdelante()">Continuar</button>`;
+}
+function minProgramable() {
+  const d = new Date(Date.now() + (TIENDA.anticipacionMinutos + 5) * 60000 - new Date().getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+}
+function elegirCuando(v) { CK.cuando = v; if (v === 'ahora') CK.programadoPara = null; pintarPaso(); }
+
+function pasoDatos() {
+  $('ck-titulo').textContent = CK.modalidad === 'domicilio' ? 'Tus datos y dirección' : 'Tus datos';
+  const zonas = TIENDA.entrega.zonas || [];
+  $('ck-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <div class="campo"><label for="ck-nombre">Nombre *</label>
+      <input id="ck-nombre" value="${esc(CK.nombre || '')}" maxlength="80" autocomplete="name" placeholder="Tu nombre"></div>
+    <div class="campo"><label for="ck-tel">Teléfono (WhatsApp) *</label>
+      <input id="ck-tel" type="tel" inputmode="tel" value="${esc(CK.telefono || '')}" maxlength="20" autocomplete="tel" placeholder="10 dígitos">
+      <div class="ayuda">Lo usamos para avisarte del estado de tu pedido.</div></div>
+    ${CK.modalidad === 'domicilio' ? `
+      <div class="campo"><label for="ck-dir">Dirección de entrega *</label>
+        <textarea id="ck-dir" maxlength="240" autocomplete="street-address" placeholder="Calle, número, colonia y referencias">${esc(CK.direccion || '')}</textarea></div>
+      ${zonas.length ? `<div class="campo"><label for="ck-zona">Zona *</label>
+        <select id="ck-zona"><option value="">Elige tu zona…</option>
+          ${zonas.map(z => `<option value="${esc(z.nombre)}"${CK.zona === z.nombre ? ' selected' : ''}>${esc(z.nombre)} — ${dinero(z.costo)}</option>`).join('')}
+        </select><div class="ayuda">El costo exacto lo confirma el negocio en el resumen.</div></div>` : ''}
+    ` : ''}
+    <div class="campo"><label for="ck-notas">Indicaciones para el negocio (opcional)</label>
+      <textarea id="ck-notas" maxlength="240" placeholder="Timbre descompuesto, llamar al llegar…">${esc(CK.notas || '')}</textarea></div>
+    <div id="ck-error-datos" class="campo oculto"><div class="malo" id="ck-error-datos-txt"></div></div>
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" onclick="validarDatos()">Continuar</button>`;
+}
+
+function validarDatos() {
+  const nombre = $('ck-nombre').value.trim();
+  const tel = $('ck-tel').value.replace(/\D/g, '');
+  const dir = $('ck-dir')?.value.trim() || '';
+  const zona = $('ck-zona')?.value || null;
+  const errores = [];
+  const marcar = (id, mal) => $(id)?.classList.toggle('error', mal);
+  marcar('ck-nombre', nombre.length < 2); if (nombre.length < 2) errores.push('Escribe tu nombre');
+  marcar('ck-tel', tel.length < 10); if (tel.length < 10) errores.push('El teléfono debe tener 10 dígitos');
+  if (CK.modalidad === 'domicilio') {
+    marcar('ck-dir', dir.length < 8); if (dir.length < 8) errores.push('Necesitamos una dirección completa');
+    if ($('ck-zona')) { marcar('ck-zona', !zona); if (!zona) errores.push('Elige tu zona de entrega'); }
+  }
+  if (errores.length) {
+    $('ck-error-datos').classList.remove('oculto');
+    $('ck-error-datos-txt').textContent = errores.join(' · ');
+    return;
+  }
+  Object.assign(CK, { nombre, telefono: tel, direccion: dir, zona, notas: $('ck-notas').value.trim() });
+  try { localStorage.setItem(LS_CLIENTE, JSON.stringify({ nombre, telefono: tel, direccion: dir, zona })); } catch (e) {}
+  pasoAdelante();
+}
+
+async function pasoPago() {
+  $('ck-titulo').textContent = 'Forma de pago';
+  $('ck-cuerpo').innerHTML = `<div class="cargando">Cargando formas de pago…</div>`;
+  $('ck-pie').innerHTML = `<button class="btn" disabled>Continuar</button>`;
+  try {
+    const r = await api(`${API}/pagos?modalidad=${encodeURIComponent(CK.modalidad)}`);
+    METODOS = r.metodos || [];
+  } catch (e) { METODOS = []; }
+  if (!METODOS.length) {
+    $('ck-cuerpo').innerHTML = `<div class="vacio"><div class="ico">💳</div><h3>Sin formas de pago configuradas</h3>
+      <p>El negocio aún no habilitó cómo recibir pagos en línea. Contáctalo directamente para pedir.</p></div>`;
+    return;
+  }
+  if (!METODOS.some(m => m.id === CK.metodoPago)) CK.metodoPago = METODOS[0].id;
+  $('ck-cuerpo').innerHTML = `<div style="padding:16px">
+    ${METODOS.map(m => opcionGrande(m.icono || '💳', esc(m.etiqueta), esc(m.detalle || ''), CK.metodoPago === m.id, `elegirPago('${esc(m.id)}')`)).join('')}
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" onclick="pasoAdelante()">Continuar</button>`;
+}
+function elegirPago(c) { CK.metodoPago = c; pintarPaso(); }
+
+async function pasoResumen() {
+  $('ck-titulo').textContent = 'Confirma tu pedido';
+  $('ck-cuerpo').innerHTML = `<div class="cargando">Calculando total…</div>`;
+  $('ck-pie').innerHTML = `<button class="btn" disabled><span class="spin"></span></button>`;
+  await cotizar();
+}
+
+// El total SIEMPRE viene del servidor. El frontend nunca suma descuentos ni
+// envío por su cuenta: solo muestra lo que el servidor calculó.
+async function cotizar() {
+  const seq = ++cotizarSeq;
+  try {
+    const r = await api(API + '/cotizar', { method: 'POST', cuerpo: {
+      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas,
+        modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
+      modalidad: CK.modalidad, zona: CK.zona, codigo: CK.codigo, telefono: CK.telefono,
+    }});
+    if (seq !== cotizarSeq) return;
+    COTIZACION = r;
+    CK.codigoAplicado = r.aplicadas?.some(p => p.codigo && p.codigo === (CK.codigo || '').toUpperCase()) ? CK.codigo : null;
+    pintarResumen(r);
+  } catch (e) {
+    if (seq !== cotizarSeq) return;
+    $('ck-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⚠️</div><h3>No pudimos calcular tu pedido</h3><p>${esc(e.message)}</p></div>`;
+    $('ck-pie').innerHTML = `<button class="btn sec" onclick="pasoResumen()">Reintentar</button>`;
+  }
+}
+
+function pintarResumen(c) {
+  const metodo = METODOS.find(m => m.id === CK.metodoPago);
+  const rechazoCupon = (c.rechazos || []).find(r => r.codigo);
+  $('ck-cuerpo').innerHTML = `
+    <div style="padding:14px 16px 4px;font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em">Tu pedido</div>
+    ${CARRITO.map(l => {
+      const unit = Number(l.precio) + (l.modificadores || []).reduce((a, m) => a + Number(m.precioExtra || 0), 0);
+      return `<div class="linea"><div class="linea-info">
+        <div class="linea-nom">${l.cantidad}× ${esc(l.nombre)}</div>
+        ${l.modificadores?.length ? `<div class="linea-mods">${esc(l.modificadores.map(m => m.nombre).join(', '))}</div>` : ''}
+      </div><div class="linea-precio">${dinero(unit * l.cantidad)}</div></div>`;
+    }).join('')}
+
+    <div class="campo" style="padding-top:16px">
+      <label for="ck-cupon">¿Tienes un cupón?</label>
+      <div class="cupon-fila">
+        <input id="ck-cupon" maxlength="32" placeholder="CÓDIGO" value="${esc(CK.codigo || '')}"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();aplicarCupon()}">
+        <button onclick="aplicarCupon()">Aplicar</button>
+      </div>
+      ${rechazoCupon ? `<div class="malo">${esc(rechazoCupon.motivo)}</div>` : ''}
+      ${(c.aplicadas || []).map(p => `<div class="promo-ok">🎉 <span>${esc(p.nombre)}${p.codigo ? ` (${esc(p.codigo)})` : ''}</span>
+        <strong>−${dinero(p.descuento + (p.envioGratis ? c.envioBase : 0))}</strong>
+        ${p.codigo ? `<span class="x" onclick="quitarCupon()" title="Quitar">✕</span>` : ''}</div>`).join('')}
+      ${c.pistaEnvioGratis ? `<div class="ayuda" style="margin-top:8px">🎁 ${esc(c.pistaEnvioGratis)}</div>` : ''}
+    </div>
+
+    <div class="totales">
+      <div class="tot-fila"><span>Subtotal</span><span>${dinero(c.subtotal + c.descuento)}</span></div>
+      ${c.descuento > 0 ? `<div class="tot-fila desc"><span>Descuentos</span><span>−${dinero(c.descuento)}</span></div>` : ''}
+      ${CK.modalidad === 'domicilio' ? `<div class="tot-fila"><span>Envío${c.zona ? ' · ' + esc(c.zona) : ''}</span>
+        <span>${c.envioGratis ? `<s style="opacity:.5">${dinero(c.envioBase)}</s> <strong style="color:var(--exito)">GRATIS</strong>` : dinero(c.envio)}</span></div>` : ''}
+      <div class="tot-fila grande"><span>Total</span><span>${dinero(c.total)}</span></div>
+    </div>
+
+    <div style="padding:16px">
+      <div style="font-size:13.5px;color:var(--texto-2);line-height:1.7">
+        <div><strong style="color:var(--texto)">${CK.modalidad === 'domicilio' ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda'}</strong></div>
+        <div>${CK.cuando === 'programado' ? '📅 Programado: ' + esc(formatoFecha(CK.programadoPara)) : '⚡ Lo antes posible · ' + esc(c.tiempoEstimado)}</div>
+        <div>👤 ${esc(CK.nombre)} · ${esc(CK.telefono)}</div>
+        ${CK.modalidad === 'domicilio' ? `<div>📍 ${esc(CK.direccion)}</div>` : ''}
+        <div>💳 ${esc(metodo?.etiqueta || CK.metodoPago)}</div>
+        ${CK.notas ? `<div>📝 ${esc(CK.notas)}</div>` : ''}
+      </div>
+      ${metodo?.instrucciones ? `<div class="aviso info" style="margin:14px 0 0">ℹ️ <div>${esc(metodo.instrucciones)}</div></div>` : ''}
+    </div>
+    <div id="ck-error-final"></div>`;
+
+  const bloqueoMinimo = c.cumpleMinimo === false;
+  $('ck-pie').innerHTML = bloqueoMinimo
+    ? `<div class="aviso" style="margin:0 0 10px">🛒 <div>El pedido mínimo a domicilio es ${dinero(c.pedidoMinimo)}. Te faltan ${dinero(c.faltaParaMinimo)}.</div></div>
+       <button class="btn sec" onclick="cerrarTodo()">Agregar más productos</button>`
+    : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">Confirmar pedido <span class="btn-precio">${dinero(c.total)}</span></button>`;
+}
+
+function formatoFecha(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
+function aplicarCupon() { CK.codigo = ($('ck-cupon').value || '').trim().toUpperCase() || null; pasoResumen(); }
+function quitarCupon() { CK.codigo = null; pasoResumen(); }
+
+// Idempotencia: el token se genera UNA vez por intento de compra y se guarda.
+// Si el cliente pierde la red y reintenta, el servidor reconoce el token y
+// devuelve el mismo folio en vez de crear un pedido duplicado.
+function tokenCheckout() {
+  let t = null;
+  try { t = localStorage.getItem(LS_TOKEN); } catch (e) {}
+  if (!t) {
+    const b = new Uint8Array(24);
+    (window.crypto || window.msCrypto).getRandomValues(b);
+    t = [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem(LS_TOKEN, t); } catch (e) {}
+  }
+  return t;
+}
+
+let enviando = false;
+async function confirmarPedido() {
+  if (enviando) return;
+  enviando = true;
+  const btn = $('btn-confirmar');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Enviando tu pedido…'; }
+  try {
+    const r = await api(API + '/checkout', { method: 'POST', cuerpo: {
+      checkoutToken: tokenCheckout(),
+      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas,
+        modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
+      modalidad: CK.modalidad,
+      cliente: { nombre: CK.nombre, telefono: CK.telefono },
+      direccion: CK.modalidad === 'domicilio' ? CK.direccion : null,
+      zona: CK.zona, codigo: CK.codigo, metodoPago: CK.metodoPago,
+      programadoPara: CK.cuando === 'programado' ? CK.programadoPara : null,
+      notas: CK.notas,
+    }});
+    try { localStorage.removeItem(LS_CARRITO); localStorage.removeItem(LS_TOKEN); } catch (e) {}
+    CARRITO = []; refrescarBarra();
+    mostrarExito(r);
+  } catch (e) {
+    enviando = false;
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Reintentar'; }
+    $('ck-error-final').innerHTML = `<div class="aviso" style="background:var(--error-bg);color:var(--error);margin:0 16px 16px">
+      ⚠️ <div><strong>${esc(e.message)}</strong>${e.codigo === 'CHECKOUT_EN_CURSO' ? '<br>No se creó ningún pedido duplicado.' : ''}</div></div>`;
+    $('ck-cuerpo').scrollTop = $('ck-cuerpo').scrollHeight;
+  }
+}
+
+function mostrarExito(r) {
+  $('ck-pips').innerHTML = '';
+  $('ck-titulo').textContent = '¡Pedido recibido!';
+  $('ck-atras').style.visibility = 'hidden';
+  $('ck-cuerpo').innerHTML = `<div class="exito-caja">
+    <div class="exito-ico">✓</div>
+    <div style="font-size:13px;color:var(--texto-2);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Tu folio</div>
+    <div class="exito-folio">#${esc(r.folio)}</div>
+    <p style="color:var(--texto-2);font-size:14px;margin:12px 0 0">
+      ${TIENDA.negocio} ya recibió tu pedido${r.yaExistia ? ' (ya lo teníamos registrado)' : ''}.
+      Guarda esta liga para seguir su avance.</p>
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" onclick="location.href='/seguimiento/${encodeURIComponent(r.trackingToken)}'">Seguir mi pedido</button>
+    <button class="btn sec" style="margin-top:9px" onclick="location.reload()">Hacer otro pedido</button>`;
+}
+
+// ─── Hojas ──────────────────────────────────────────────────────────────────
+function abrirHoja(id) {
+  $('velo').classList.add('on');
+  $(id).classList.add('on');
+  document.body.style.overflow = 'hidden';
+}
+function cerrarTodo() {
+  if (enviando) return;
+  $('velo').classList.remove('on');
+  document.querySelectorAll('.hoja').forEach(h => h.classList.remove('on'));
+  document.body.style.overflow = '';
+  refrescarBarra();
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarTodo(); });
+</script>
+</body>
+</html>
