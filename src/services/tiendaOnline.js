@@ -130,6 +130,7 @@ export async function reglasDelNegocio(negocioId) {
     preparacionMinutos: Number(p.tiempo_preparacion_minutos) || 20,
     entregaMin: Number(p.tiempo_entrega_min_minutos) || 30,
     entregaMax: Number(p.tiempo_entrega_max_minutos) || 45,
+    pagoInstrucciones: typeof p.pago_instrucciones === 'string' ? p.pago_instrucciones.trim() : null,
   };
 }
 
@@ -268,26 +269,41 @@ export async function metodosPagoTienda(negocioId, modalidad) {
     [negocioId]
   );
   const habilitados = new Set(rows.map(r => r.tipo));
+  const alRecibir = modalidad === 'domicilio' ? 'al recibir' : 'al recoger';
   const metodos = [];
   if (habilitados.has('efectivo')) {
     metodos.push({
-      id: 'efectivo',
-      etiqueta: modalidad === 'domicilio' ? 'Efectivo al recibir' : 'Efectivo al recoger',
+      id: 'efectivo', icono: '💵',
+      etiqueta: `Efectivo ${alRecibir}`,
+      detalle: 'Pagas en persona cuando te entreguen tu pedido',
       pagaDespues: true,
     });
   }
   if (habilitados.has('terminal')) {
     metodos.push({
-      id: 'terminal',
-      etiqueta: modalidad === 'domicilio' ? 'Tarjeta al recibir' : 'Tarjeta al recoger',
+      id: 'terminal', icono: '💳',
+      etiqueta: `Tarjeta ${alRecibir}`,
+      detalle: 'Terminal bancaria al momento de la entrega',
       pagaDespues: true,
     });
   }
   if (habilitados.has('transferencia')) {
-    metodos.push({ id: 'transferencia', etiqueta: 'Transferencia', pagaDespues: true });
+    // Las instrucciones (CLABE, banco, titular) son datos del negocio y viven
+    // en su configuración: nunca se codifican aquí.
+    const reglas = await reglasDelNegocio(negocioId);
+    metodos.push({
+      id: 'transferencia', icono: '🏦', etiqueta: 'Transferencia bancaria',
+      detalle: 'El negocio te comparte los datos para transferir',
+      instrucciones: reglas.pagoInstrucciones || null,
+      pagaDespues: true,
+    });
   }
   if (habilitados.has('enlace_pago')) {
-    metodos.push({ id: 'enlace_pago', etiqueta: 'Pagar en línea', pagaDespues: false });
+    metodos.push({
+      id: 'enlace_pago', icono: '🔗', etiqueta: 'Pagar en línea',
+      detalle: 'Recibirás una liga de pago segura',
+      pagaDespues: false,
+    });
   }
   return metodos;
 }

@@ -224,8 +224,12 @@ export async function crearPedidoTienda({
 
     // 6) Método de pago: solo los que el negocio tiene habilitados.
     const metodos = await metodosPagoTienda(tienda.negocioId, modo);
-    const elegido = metodos.find(m => m.id === metodoPago) || metodos[0];
-    if (!elegido) throw new TiendaError('Esta tienda aún no tiene métodos de pago configurados', 'SIN_METODOS_PAGO');
+    if (!metodos.length) throw new TiendaError('Esta tienda aún no tiene métodos de pago configurados', 'SIN_METODOS_PAGO');
+    // Si el cliente mandó un método, tiene que ser uno realmente habilitado:
+    // caer de vuelta al primero convertiría "quise pagar en línea" en "pago
+    // al recibir" sin que nadie se entere.
+    const elegido = metodoPago ? metodos.find(m => m.id === metodoPago) : metodos[0];
+    if (!elegido) throw new TiendaError('Esa forma de pago no está disponible', 'METODO_PAGO_INVALIDO');
 
     // 7) Orden con la MISMA forma que usa el POS.
     const orden = construirOrdenPOS({
