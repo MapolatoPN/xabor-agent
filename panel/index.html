@@ -358,6 +358,19 @@ main { display: block; padding: 28px 32px; }
 .badge-estado-pedido.estado-entregado { background: #f1f0ed; color: #666; }
 .badge-estado-pedido.estado-cancelado { background: #fef2f2; color: #b91c1c; }
 .badge-estado-pedido.estado-pendiente_pago { background: #fff7ed; color: #c2410c; }
+/* Cobro: un pedido abierto lleva su propio distintivo hasta que se cobra */
+.badge-por-cobrar { display:inline-block; padding:4px 11px; border-radius:var(--radius-pill); font-size:0.68rem; font-weight:800; margin-top:6px; margin-left:4px; background:#fef3c7; color:#92400e; }
+#modal-cobro {
+  display: none; position: fixed; inset: 0; z-index: 320;
+  background: rgba(26,29,35,0.5); align-items: center; justify-content: center;
+  padding: 16px; overflow-y: auto;
+}
+#modal-cobro.visible { display: flex; }
+.cobro-box {
+  background: #fff; border-radius: 16px; padding: 20px;
+  width: 100%; max-width: 430px; box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+  max-height: 92vh; overflow-y: auto;
+}
 .badge-recoger { background: var(--color-success-light); color: #047857; }
 .badge-entrega { background: var(--color-brand-light); color: var(--color-brand); }
 .badge-presencial { background: var(--color-surface-2); color: var(--color-text-secondary); }
@@ -619,7 +632,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   html body { background: #fff !important; }
   body { width: 76mm; margin: 0 auto; padding: 0; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; background: #fff !important; color: #000 !important; overflow: hidden; }
   header, .comanda-footer, #sin-pedidos, .comanda-hora,
-  #tabs-nav, #bottom-nav, #mas-sheet, #modal-overlay, #modal-modalidad, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
+  #tabs-nav, #bottom-nav, #mas-sheet, #modal-overlay, #modal-modalidad, #modal-cobro, #vista-chats, #vista-ventas, #vista-historial, #vista-presencial, #vista-llamadas { display: none !important; }
   #vista-comandas { display: block !important; padding: 0 !important; margin: 0 !important; }
   #grid-pedidos   { display: block !important; }
   .comanda { width: 100%; margin: 0; padding: 0; border: none !important; border-top: none !important; page-break-inside: avoid; break-inside: avoid; overflow: hidden; box-shadow: none !important; }
@@ -1046,53 +1059,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
               <label>Nombre del cliente</label>
               <input id="pos-nombre-input" type="text" placeholder="Nombre (opcional)" autocomplete="off" />
             </div>
-            <div>
-              <label>Forma de pago</label>
-              <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
-                <button class="pos-pago-btn selected" data-pago="efectivo" onclick="selPago(this)">💵 Efectivo</button>
-                <button class="pos-pago-btn" data-pago="terminal (tarjeta presente)" onclick="selPago(this)">💳 Terminal</button>
-                <button class="pos-pago-btn" data-pago="mixto" onclick="selPago(this)">💵+💳 Mixto</button>
-              </div>
-              <div id="billete-wrap" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
-                <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
-                <input id="pos-billete" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                  style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-              </div>
-              <div id="cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
-                <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
-                <span id="cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-              </div>
-              <div id="mixto-wrap" style="display:none;margin-top:8px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
-                  <input id="mixto-efectivo" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                  <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
-                  <input id="mixto-terminal" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                    style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                </div>
-                <div id="mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
-                <div id="mixto-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:4px;">
-                  <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio efectivo</span>
-                  <span id="mixto-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <label>Descuento</label>
-              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                <input id="pos-descuento-val" type="number" min="0" placeholder="0" oninput="renderCarrito()"
-                  style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;color:#1a1a1a;" />
-                <div style="display:flex;gap:4px;">
-                  <button class="pos-pago-btn selected" id="desc-tipo-pesos" onclick="selDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
-                  <button class="pos-pago-btn" id="desc-tipo-pct" onclick="selDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
-                </div>
-                <input id="pos-descuento-motivo" type="text" placeholder="Motivo del descuento"
-                  style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;color:#1a1a1a;" />
-              </div>
-            </div>
           </div>
           <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
             <span style="font-size:0.8rem;color:#aaa;">Subtotal</span>
@@ -1102,10 +1068,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
             <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
           </div>
+          <!-- Subtotal discreto: ayuda al operador durante la captura, pero el
+               cobro (forma de pago, descuento, billete/mixto) vive en el modal
+               Cobrar y NO domina esta pantalla. -->
           <div id="pos-total-row">
-            <span id="pos-total-label">Total</span>
+            <span id="pos-total-label">Subtotal</span>
             <span id="pos-total-monto">$0</span>
           </div>
+          <div style="font-size:0.72rem;color:#999;margin-top:2px;">Se cobra al cerrar el pedido</div>
           <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
           <div id="rw-pos-widget" data-modulo="rewards">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
@@ -1141,7 +1111,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <div id="rw-pos-resultados" style="margin-top:6px;max-height:140px;overflow-y:auto;"></div>
           </div>
 
-          <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Confirmar pedido</button>
+          <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Crear pedido</button>
         </div>
       </div>
     </div>
@@ -2242,6 +2212,10 @@ function getTelefono(p) {
   return '—';
 }
 function getFormaPago(p) {
+  // 'por_cobrar' es un marcador interno de pedido abierto, no una forma de
+  // pago que el operador deba leer: la card ya lleva el distintivo "Por
+  // cobrar" y el botón de cobro.
+  if (p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true) return '';
   return p.forma_pago || p.cliente?.forma_pago || p.pago || '';
 }
 function getPrecioItem(item) {
@@ -2409,6 +2383,12 @@ function etiquetaEstadoPedido(p) {
   }
 }
 
+// Un pedido está ABIERTO (por cobrar) mientras su forma de pago siga siendo
+// el marcador 'por_cobrar' y no se haya confirmado el pago.
+function esPorCobrar(p) {
+  return p && p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true;
+}
+
 function renderComanda(p) {
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega    = p.modalidad === 'entrega a domicilio';
@@ -2488,6 +2468,7 @@ function renderComanda(p) {
         ${formaPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
         <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
+        ${esPorCobrar(p) ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : ''}
         ${pagoStatus}
       </div>
       <div class="comanda-items">
@@ -2506,6 +2487,7 @@ function renderComanda(p) {
     </div>
     <div class="comanda-footer">
       <div class="orden-badge">#${numOrden}</div>
+      ${esPorCobrar(p) ? `<button class="btn-cobrar" onclick="abrirCobro('${p.id}')" style="background:#22c55e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:0.82rem;font-weight:800;cursor:pointer;font-family:inherit;">💵 Cobrar</button>` : ''}
       <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🍽️ Comanda</button>
       <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#374151;">🧾 Ticket</button>
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
@@ -3272,16 +3254,9 @@ document.getElementById('modal-factura-overlay').addEventListener('click', e => 
 
 // ─── POS Presencial ──────────────────────────────────────────────────────────
 let posCarrito   = [];
-let posPagoSel   = 'efectivo';
-let posDescTipo  = 'pesos';
 let menuPOSData  = null; // cache del menú desde DB
-
-function selDescTipo(tipo, btn) {
-  posDescTipo = tipo;
-  document.querySelectorAll('#desc-tipo-pesos,#desc-tipo-pct').forEach(b => b.classList.remove('selected'));
-  btn.classList.add('selected');
-  renderCarrito();
-}
+// El descuento y la forma de pago ya NO viven en la captura: van en el modal
+// Cobrar (reingeniería UX — captura ≠ cobro).
 
 async function renderMenuPOS() {
   const cont = document.getElementById('pos-menu-cats');
@@ -3359,11 +3334,10 @@ function agregarAlCarrito(prod) {
   actualizarMobileCartBar();
 }
 
-function calcDescuento(subtotal) {
-  const val = parseFloat(document.getElementById('pos-descuento-val')?.value || 0) || 0;
-  if (posDescTipo === 'pct') return Math.round(subtotal * val / 100);
-  return Math.min(val, subtotal);
-}
+// La captura ya no aplica descuentos: se definen al cobrar (modal Cobrar) y
+// el servidor los recalcula y autoriza. Se conserva la función porque el
+// carrito y la barra móvil la consultan para mostrar el subtotal.
+function calcDescuento() { return 0; }
 
 function renderCarrito() {
   const cont = document.getElementById('pos-order-items');
@@ -3406,47 +3380,9 @@ function renderCarrito() {
     </div>`).join('');
   document.getElementById('pos-total-monto').textContent = `$${total}`;
   document.getElementById('btn-confirmar-presencial').disabled = false;
+  // El cálculo de cambio / pago mixto vive en el modal Cobrar: la captura
+  // ya no muestra formulario de pago (reingeniería UX).
 
-  // Cambio (efectivo simple)
-  if (posPagoSel === 'efectivo') {
-    const billete = parseFloat(document.getElementById('pos-billete')?.value || 0) || 0;
-    const cambio  = billete - total;
-    const cambioRow = document.getElementById('cambio-row');
-    if (billete > 0) {
-      cambioRow.style.display = 'flex';
-      document.getElementById('cambio-monto').textContent = cambio >= 0 ? `$${cambio.toFixed(0)}` : '⚠ Insuficiente';
-      document.getElementById('cambio-monto').style.color = cambio >= 0 ? '#22c55e' : '#ef4444';
-    } else {
-      cambioRow.style.display = 'none';
-    }
-  }
-
-  // Pago mixto
-  if (posPagoSel === 'mixto') {
-    const mEfectivo = parseFloat(document.getElementById('mixto-efectivo')?.value || 0) || 0;
-    const mTerminal = parseFloat(document.getElementById('mixto-terminal')?.value || 0) || 0;
-    const suma      = mEfectivo + mTerminal;
-    const diff      = suma - total;
-    const estado    = document.getElementById('mixto-estado');
-    const cambioRow = document.getElementById('mixto-cambio-row');
-    if (suma === 0) {
-      estado.textContent = `Faltan $${total} por asignar`;
-      estado.style.color = '#aaa';
-      cambioRow.style.display = 'none';
-    } else if (diff < 0) {
-      estado.textContent = `Faltan $${Math.abs(diff).toFixed(0)} por asignar`;
-      estado.style.color = '#ef4444';
-      cambioRow.style.display = 'none';
-    } else if (diff === 0) {
-      estado.textContent = '✓ Monto exacto';
-      estado.style.color = '#22c55e';
-      cambioRow.style.display = 'none';
-    } else {
-      estado.textContent = '';
-      cambioRow.style.display = 'flex';
-      document.getElementById('mixto-cambio-monto').textContent = `$${diff.toFixed(0)}`;
-    }
-  }
   // Rewards — actualizar estimación de puntos cuando cambia el carrito
   if (rwClienteAsignado && rwConfig) rwActualizarEstimacion();
 }
@@ -3472,59 +3408,21 @@ function ajustarCantidad(idx, delta) {
   actualizarMobileCartBar();
 }
 
-function selPago(btn) {
-  document.querySelectorAll('.pos-pago-btn').forEach(b => b.classList.remove('selected'));
-  btn.classList.add('selected');
-  posPagoSel = btn.dataset.pago;
-  const esEfectivo = posPagoSel === 'efectivo';
-  const esMixto    = posPagoSel === 'mixto';
-  document.getElementById('billete-wrap').style.display  = esEfectivo ? 'flex' : 'none';
-  document.getElementById('mixto-wrap').style.display    = esMixto    ? 'block' : 'none';
-  if (!esEfectivo) {
-    document.getElementById('pos-billete').value = '';
-    document.getElementById('cambio-row').style.display = 'none';
-  }
-  if (!esMixto) {
-    document.getElementById('mixto-efectivo').value = '';
-    document.getElementById('mixto-terminal').value = '';
-  }
-  renderCarrito();
-}
-
+// Crear el pedido SIN cobrarlo: nace abierto (el backend lo marca
+// forma_pago='por_cobrar'), sale la comanda y aparece en el tablero. El
+// cobro se hace después desde la card con el modal Cobrar. El canje Rewards
+// viaja como INTENCIÓN: el backend lo reserva y solo consume puntos al cobrar.
 async function confirmarPresencial() {
   if (!posCarrito.length) return;
-  const nombre         = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
-  const subtotal       = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
-  const descuento      = calcDescuento(subtotal);
-  const montoCanje     = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
-  const total          = Math.max(0, subtotal - descuento - montoCanje);
-  const motivoDesc     = document.getElementById('pos-descuento-motivo')?.value.trim() || '';
-  const isAdmin        = ROL === 'admin';
-
-  // Validar límite de descuento por rol: staff ≤ 10%
-  if (descuento > 0) {
-    if (!motivoDesc) { alert('El motivo del descuento es obligatorio.'); return; }
-    if (!isAdmin) {
-      const pctDesc = (descuento / subtotal) * 100;
-      if (pctDesc > 10) { alert(`El descuento máximo para staff es 10% ($${Math.floor(subtotal*0.1)}). Para descuentos mayores, contacta al administrador.`); return; }
-    }
-  }
-  const esMixto        = posPagoSel === 'mixto';
-  const mixtoEfectivo  = esMixto ? (parseFloat(document.getElementById('mixto-efectivo')?.value || 0) || 0) : 0;
-  const mixtoTerminal  = esMixto ? (parseFloat(document.getElementById('mixto-terminal')?.value || 0) || 0) : 0;
-  const billete        = esMixto ? mixtoEfectivo : (parseFloat(document.getElementById('pos-billete')?.value || 0) || 0);
-  const cambio         = billete > 0 ? Math.max(0, billete + mixtoTerminal - total) : 0;
-  const formaPagoFinal = esMixto ? `mixto (efectivo $${mixtoEfectivo} + terminal $${mixtoTerminal})` : posPagoSel;
-  const btn            = document.getElementById('btn-confirmar-presencial');
-  btn.disabled = true; btn.textContent = 'Procesando...';
+  const nombre = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
+  const btn    = document.getElementById('btn-confirmar-presencial');
+  btn.disabled = true; btn.textContent = 'Creando...';
   try {
     const body = {
-      items: posCarrito, nombre, forma_pago: formaPagoFinal, total, descuento,
-      motivo_descuento: motivoDesc, billete, cambio,
-      mixto_efectivo: mixtoEfectivo || null, mixto_terminal: mixtoTerminal || null,
-      // Rewards — opcional: cliente asignado + canje
-      rewards_telefono:    rwClienteAsignado?.telefono  || null,
-      rewards_nombre:      rwClienteAsignado?.nombre    || null,
+      items: posCarrito, nombre,
+      // Sin forma_pago: el pedido nace por cobrar (captura ≠ cobro).
+      rewards_telefono:     rwClienteAsignado?.telefono || null,
+      rewards_nombre:       rwClienteAsignado?.nombre   || null,
       rewards_canje_puntos: rwCanjeAplicado?.puntos     || 0,
     };
     const r = await apiFetch('/api/pedido-presencial', { method: 'POST', body: JSON.stringify(body) });
@@ -3533,19 +3431,182 @@ async function confirmarPresencial() {
     else {
       posCarrito = [];
       document.getElementById('pos-nombre-input').value = '';
-      document.getElementById('pos-descuento-val').value = '';
-      document.getElementById('pos-descuento-motivo').value = '';
-      document.getElementById('pos-billete').value = '';
-      document.getElementById('mixto-efectivo').value = '';
-      document.getElementById('mixto-terminal').value = '';
       rwPosLimpiar(); // Limpiar cliente Rewards asignado
       renderCarrito();
       actualizarMobileCartBar();
       volverMenuPOS();
       cargarProgramados();
+      // El operador queda en el tablero, donde el pedido ya está listo para
+      // seguirse y cobrarse cuando toque.
+      mostrarTab('comandas');
     }
   } catch(e) { alert('Error de conexión.'); }
-  btn.disabled = false; btn.textContent = 'Confirmar pedido';
+  btn.disabled = false; btn.textContent = 'Crear pedido';
+}
+
+// ─── Cobrar un pedido abierto ────────────────────────────────────────────────
+// UI única de cobro. El total mostrado es una ESTIMACIÓN para el operador; el
+// total que se registra siempre lo recalcula el servidor.
+let cobroPedido = null;      // pedido en curso (memoria del tablero)
+let cobroPagoSel = 'efectivo';
+let cobroDescTipoSel = 'pesos';
+let cobroEnVuelo = false;    // anti doble click
+
+function abrirCobro(folio) {
+  const p = pedidos[folio];
+  if (!p) { alert('Pedido no disponible'); return; }
+  cobroPedido = p;
+  cobroPagoSel = 'efectivo';
+  cobroDescTipoSel = 'pesos';
+  document.getElementById('cobro-folio').value = folio;
+  document.getElementById('cobro-folio-label').textContent = `${folio} · ${getNombre(p)}`;
+  document.getElementById('cobro-desc-val').value = '';
+  document.getElementById('cobro-desc-motivo').value = '';
+  document.getElementById('cobro-billete').value = '';
+  document.getElementById('cobro-mixto-efectivo').value = '';
+  document.getElementById('cobro-mixto-terminal').value = '';
+  document.getElementById('cobro-fb').textContent = '';
+  document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.toggle('selected', b.dataset.cobroPago === 'efectivo'));
+  document.getElementById('cobro-desc-pesos').classList.add('selected');
+  document.getElementById('cobro-desc-pct').classList.remove('selected');
+  document.getElementById('cobro-billete-wrap').style.display = 'flex';
+  document.getElementById('cobro-mixto-wrap').style.display = 'none';
+  document.getElementById('cobro-cambio-row').style.display = 'none';
+  const btn = document.getElementById('btn-confirmar-cobro');
+  btn.disabled = false; btn.textContent = 'Confirmar cobro';
+  cobroRender();
+  document.getElementById('modal-cobro').classList.add('visible');
+}
+function cerrarCobro() {
+  document.getElementById('modal-cobro').classList.remove('visible');
+  cobroPedido = null;
+}
+function cobroDescTipo(tipo, btn) {
+  cobroDescTipoSel = tipo;
+  document.querySelectorAll('#cobro-desc-pesos,#cobro-desc-pct').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  cobroRender();
+}
+function cobroSelPago(btn) {
+  document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  cobroPagoSel = btn.dataset.cobroPago;
+  document.getElementById('cobro-billete-wrap').style.display = cobroPagoSel === 'efectivo' ? 'flex' : 'none';
+  document.getElementById('cobro-mixto-wrap').style.display   = cobroPagoSel === 'mixto' ? 'block' : 'none';
+  if (cobroPagoSel !== 'efectivo') {
+    document.getElementById('cobro-billete').value = '';
+    document.getElementById('cobro-cambio-row').style.display = 'none';
+  }
+  cobroRender();
+}
+function cobroSubtotal() {
+  const items = Array.isArray(cobroPedido?.items) ? cobroPedido.items : [];
+  return Math.round(items.reduce((s, i) => s + (parseFloat(i.precio_unitario) || 0) * (parseInt(i.cantidad, 10) || 1), 0) * 100) / 100;
+}
+function cobroDescuento(subtotal) {
+  const val = parseFloat(document.getElementById('cobro-desc-val')?.value || 0) || 0;
+  const d = cobroDescTipoSel === 'pct' ? Math.round(subtotal * val / 100) : val;
+  return Math.max(0, Math.min(d, subtotal));
+}
+function cobroRender() {
+  if (!cobroPedido) return;
+  const subtotal = cobroSubtotal();
+  const desc     = cobroDescuento(subtotal);
+  // El monto del canje Rewards lo calcula el servidor al confirmar; aquí solo
+  // se anuncia que se aplicará.
+  const montoCanje = cobroPedido.rewards_canje?.monto || 0;
+  const total    = Math.max(0, subtotal - desc - montoCanje);
+  document.getElementById('cobro-subtotal').textContent = `$${subtotal.toFixed(0)}`;
+  document.getElementById('cobro-desc-row').style.display = desc > 0 ? 'flex' : 'none';
+  document.getElementById('cobro-desc-monto').textContent = `-$${desc.toFixed(0)}`;
+  const canjeRow = document.getElementById('cobro-canje-row');
+  if (cobroPedido.rewards_pendiente?.puntos > 0) {
+    canjeRow.style.display = 'flex';
+    document.getElementById('cobro-canje-label').textContent = `Rewards (${cobroPedido.rewards_pendiente.puntos} pts)`;
+    document.getElementById('cobro-canje-monto').textContent = 'al confirmar';
+  } else {
+    canjeRow.style.display = 'none';
+  }
+  document.getElementById('cobro-total').textContent = `$${total.toFixed(0)}`;
+  // Cambio (efectivo)
+  if (cobroPagoSel === 'efectivo') {
+    const bil = parseFloat(document.getElementById('cobro-billete')?.value || 0) || 0;
+    const row = document.getElementById('cobro-cambio-row');
+    if (bil > 0) {
+      row.style.display = 'flex';
+      const cam = bil - total;
+      const el = document.getElementById('cobro-cambio-monto');
+      el.textContent = cam >= 0 ? `$${cam.toFixed(0)}` : '⚠ Insuficiente';
+      el.style.color = cam >= 0 ? '#22c55e' : '#ef4444';
+    } else { row.style.display = 'none'; }
+  }
+  // Mixto
+  if (cobroPagoSel === 'mixto') {
+    const mE = parseFloat(document.getElementById('cobro-mixto-efectivo')?.value || 0) || 0;
+    const mT = parseFloat(document.getElementById('cobro-mixto-terminal')?.value || 0) || 0;
+    const diff = (mE + mT) - total;
+    const est = document.getElementById('cobro-mixto-estado');
+    if (mE + mT === 0)      { est.textContent = `Faltan $${total.toFixed(0)} por asignar`; est.style.color = '#aaa'; }
+    else if (diff < -0.009) { est.textContent = `Faltan $${Math.abs(diff).toFixed(0)} por asignar`; est.style.color = '#ef4444'; }
+    else if (Math.abs(diff) <= 0.009) { est.textContent = '✓ Monto exacto'; est.style.color = '#22c55e'; }
+    else                    { est.textContent = `Cambio en efectivo: $${diff.toFixed(0)}`; est.style.color = '#22c55e'; }
+  }
+}
+async function confirmarCobro() {
+  if (cobroEnVuelo) return;            // doble click: el segundo no dispara request
+  const folio = document.getElementById('cobro-folio').value;
+  if (!folio) return;
+  const subtotal = cobroSubtotal();
+  const desc     = cobroDescuento(subtotal);
+  const motivo   = document.getElementById('cobro-desc-motivo').value.trim();
+  if (desc > 0 && !motivo) {
+    document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">El motivo del descuento es obligatorio.</span>';
+    return;
+  }
+  const body = {
+    forma_pago: cobroPagoSel,
+    descuento: desc,
+    motivo_descuento: motivo,
+    billete: cobroPagoSel === 'efectivo' ? (parseFloat(document.getElementById('cobro-billete').value || 0) || 0) : 0,
+    mixto_efectivo: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-efectivo').value || 0) || 0) : null,
+    mixto_terminal: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-terminal').value || 0) || 0) : null,
+  };
+  const btn = document.getElementById('btn-confirmar-cobro');
+  cobroEnVuelo = true; btn.disabled = true; btn.textContent = 'Cobrando...';
+  document.getElementById('cobro-fb').textContent = '';
+  try {
+    const r = await apiFetch(`/pedidos/${folio}/cobro`, { method: 'PATCH', body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      document.getElementById('cobro-fb').innerHTML = `<span style="color:#ef4444;">${data.error || 'No se pudo cobrar'}</span>`;
+      btn.disabled = false; btn.textContent = 'Confirmar cobro';
+      return;
+    }
+    if (data.yaCobrado) {
+      document.getElementById('cobro-fb').innerHTML = '<span style="color:#f59e0b;">Este pedido ya estaba cobrado.</span>';
+    }
+    marcarCobrado(folio, data);
+    setTimeout(cerrarCobro, data.yaCobrado ? 1200 : 250);
+  } catch (e) {
+    document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
+    btn.disabled = false; btn.textContent = 'Confirmar cobro';
+  } finally {
+    cobroEnVuelo = false;
+  }
+}
+// Refleja el cobro en la card sin re-render completo ni impresión nueva.
+function marcarCobrado(folio, data) {
+  const p = pedidos[folio];
+  if (p) {
+    p.forma_pago = data.forma_pago || p.forma_pago;
+    p.pago_confirmado = true;
+    if (typeof data.total === 'number') p.total = data.total;
+  }
+  const card = document.getElementById(`comanda-${folio}`);
+  if (card) {
+    card.querySelector('.badge-por-cobrar')?.remove();
+    card.querySelector('.btn-cobrar')?.remove();
+  }
 }
 
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
@@ -4290,13 +4351,23 @@ async function cargarCorte() {
   document.getElementById('corte-efectivo').textContent = '$' + parseFloat(data.efectivo_esperado||0).toFixed(2);
 
   const pagoIcons = { 'efectivo': '💵', 'terminal (tarjeta presente)': '💳', 'enlace de pago': '🔗' };
+  // COBRADO por forma de pago. Los pedidos abiertos (por cobrar) NO entran
+  // aquí ni al efectivo esperado: van en su propia tarjeta.
   const pagosHTML = Object.entries(data.por_pago || {}).map(([pago, info]) => `
     <div class="pos-card" style="border-left:4px solid #e8a020;">
       <div class="pos-card-label">${pagoIcons[pago]||'💰'} ${pago.charAt(0).toUpperCase()+pago.slice(1)}</div>
       <div class="pos-card-value">$${info.total.toFixed(2)}</div>
       <div style="font-size:0.75rem;color:#aaa;margin-top:2px;">${info.count} pedido${info.count!==1?'s':''}</div>
     </div>`).join('');
-  document.getElementById('corte-pagos').innerHTML = pagosHTML || '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas hoy</div>';
+  const pend = data.pendiente || { num: 0, total: 0 };
+  const pendienteHTML = pend.num > 0 ? `
+    <div class="pos-card" style="border-left:4px solid #f59e0b;background:#fffbeb;">
+      <div class="pos-card-label">⏳ Por cobrar</div>
+      <div class="pos-card-value">$${parseFloat(pend.total||0).toFixed(2)}</div>
+      <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${pend.num} pedido${pend.num!==1?'s':''} sin cobrar — no suma al efectivo esperado</div>
+    </div>` : '';
+  document.getElementById('corte-pagos').innerHTML =
+    (pagosHTML + pendienteHTML) || '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas hoy</div>';
 
   const lista = data.pedidos || [];
   if (!lista.length) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos hoy</div>'; return; }
@@ -4308,8 +4379,8 @@ async function cargarCorte() {
         <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</span>
       </div>
       <div style="display:flex;gap:14px;align-items:center;flex-shrink:0;">
-        <span style="font-size:0.75rem;color:#aaa;">${p.forma_pago}</span>
-        <span style="font-weight:800;color:#22c55e;">$${p.total.toFixed(2)}</span>
+        <span style="font-size:0.75rem;color:${p.forma_pago === 'por_cobrar' ? '#b45309' : '#aaa'};">${p.forma_pago === 'por_cobrar' ? '⏳ por cobrar' : p.forma_pago}</span>
+        <span style="font-weight:800;color:${p.forma_pago === 'por_cobrar' ? '#b45309' : '#22c55e'};">$${p.total.toFixed(2)}</span>
       </div>
     </div>`).join('');
 }
@@ -7679,6 +7750,89 @@ async function cargarRepartidores() {
         <span>Se envía a la dirección del cliente</span>
       </button>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════ COBRAR (cierre de un pedido abierto) ═══════════
+     UI ÚNICA de cobro del panel: la usa cualquier pedido con forma_pago
+     'por_cobrar'. El total final SIEMPRE lo calcula el servidor
+     (PATCH /pedidos/:folio/cobro); aquí solo se capturan los datos del
+     cobro y se muestra el cálculo estimado al operador. -->
+<div id="modal-cobro" onclick="if(event.target===this)cerrarCobro()">
+  <div class="cobro-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div>
+        <div style="font-size:1.05rem;font-weight:800;color:#1a1a1a;">Cobrar pedido</div>
+        <div style="font-size:0.8rem;color:#888;" id="cobro-folio-label">—</div>
+      </div>
+      <button onclick="cerrarCobro()" style="background:none;border:none;font-size:1.2rem;color:#888;cursor:pointer;padding:4px 8px;line-height:1;">✕</button>
+    </div>
+    <input type="hidden" id="cobro-folio">
+
+    <div style="background:#f8f7f4;border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;font-size:0.88rem;color:#555;">
+        <span>Subtotal</span><span id="cobro-subtotal">$0</span>
+      </div>
+      <div id="cobro-desc-row" style="display:none;justify-content:space-between;font-size:0.88rem;color:#ef4444;margin-top:4px;">
+        <span>Descuento</span><span id="cobro-desc-monto">-$0</span>
+      </div>
+      <div id="cobro-canje-row" style="display:none;justify-content:space-between;font-size:0.88rem;color:#7c3aed;margin-top:4px;">
+        <span id="cobro-canje-label">Rewards</span><span id="cobro-canje-monto">-$0</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:8px;border-top:1px solid #e5e2da;">
+        <span style="font-weight:800;">Total</span>
+        <span id="cobro-total" style="font-size:1.35rem;font-weight:900;color:#1a1a1a;">$0</span>
+      </div>
+    </div>
+
+    <label style="font-size:0.78rem;font-weight:700;color:#6b7280;display:block;margin-bottom:6px;">DESCUENTO</label>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input id="cobro-desc-val" type="number" min="0" placeholder="0" oninput="cobroRender()"
+        style="width:80px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">
+      <div style="display:flex;gap:4px;">
+        <button class="pos-pago-btn selected" id="cobro-desc-pesos" onclick="cobroDescTipo('pesos',this)" style="padding:6px 10px;font-size:0.78rem;">$</button>
+        <button class="pos-pago-btn" id="cobro-desc-pct" onclick="cobroDescTipo('pct',this)" style="padding:6px 10px;font-size:0.78rem;">%</button>
+      </div>
+      <input id="cobro-desc-motivo" type="text" placeholder="Motivo del descuento"
+        style="flex:1;min-width:130px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.85rem;font-family:inherit;">
+    </div>
+
+    <label style="font-size:0.78rem;font-weight:700;color:#6b7280;display:block;margin-bottom:6px;">FORMA DE PAGO</label>
+    <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
+      <button class="pos-pago-btn selected" data-cobro-pago="efectivo" onclick="cobroSelPago(this)">💵 Efectivo</button>
+      <button class="pos-pago-btn" data-cobro-pago="terminal (tarjeta presente)" onclick="cobroSelPago(this)">💳 Terminal</button>
+      <button class="pos-pago-btn" data-cobro-pago="mixto" onclick="cobroSelPago(this)">💵+💳 Mixto</button>
+    </div>
+
+    <div id="cobro-billete-wrap" style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+      <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
+      <input id="cobro-billete" type="number" min="0" placeholder="0" oninput="cobroRender()"
+        style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">
+    </div>
+    <div id="cobro-cambio-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:6px;">
+      <span style="font-size:0.82rem;color:#22c55e;font-weight:700;">Cambio</span>
+      <span id="cobro-cambio-monto" style="font-size:1rem;font-weight:900;color:#22c55e;">$0</span>
+    </div>
+
+    <div id="cobro-mixto-wrap" style="display:none;margin-top:10px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:0.82rem;color:#555;min-width:70px;">💵 Efectivo</span>
+        <input id="cobro-mixto-efectivo" type="number" min="0" placeholder="0" oninput="cobroRender()"
+          style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;">
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:0.82rem;color:#555;min-width:70px;">💳 Terminal</span>
+        <input id="cobro-mixto-terminal" type="number" min="0" placeholder="0" oninput="cobroRender()"
+          style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 10px;font-size:0.9rem;font-family:inherit;">
+      </div>
+      <div id="cobro-mixto-estado" style="font-size:0.8rem;font-weight:700;color:#aaa;"></div>
+    </div>
+
+    <div id="cobro-fb" style="font-size:0.85rem;margin:10px 0;min-height:18px;"></div>
+    <button id="btn-confirmar-cobro" onclick="confirmarCobro()"
+      style="width:100%;background:#22c55e;color:#fff;border:none;border-radius:10px;padding:13px;font-size:1rem;font-weight:800;cursor:pointer;font-family:inherit;">
+      Confirmar cobro
+    </button>
   </div>
 </div>
 
