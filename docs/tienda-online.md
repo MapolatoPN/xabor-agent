@@ -133,6 +133,34 @@ misma transacción**, así que cuando el lock se suelta la marca ya es visible.
 Quien no obtiene el lock no espera: otro proceso ya está en eso, y esperar solo
 retendría una conexión del pool que el dueño necesita.
 
+**200 significa confirmado, no "confío en que al otro le salga".** Perder el
+lock no es haber terminado. Si otro proceso está ejecutando una derivación
+crítica, este espera —del lado del servidor, sondeando la marca persistente sin
+retener ninguna conexión— a que la marca APAREZCA. Si aparece, responde 200. Si
+no aparece dentro de la ventana, responde **409 `CHECKOUT_EN_CURSO`**, y el
+siguiente intento encontrará el lock libre (el ganador murió) y retomará el
+trabajo. Nunca se responde 200 apostando a que el ganador acabe bien: si se
+cayera, el cliente tendría "pedido recibido" y la cocina nada.
+
+Críticas son `emision` siempre, y `atribucion` cuando hay promociones —el
+descuento ya se dio, el cupo tiene que quedar amarrado al folio—. `historial`
+no lo es: si falla, el pedido sigue siendo válido y el siguiente intento la
+repone.
+
+**El claim vive en un pool de conexiones APARTE.** El lock se sostiene mientras
+corre el efecto, y el efecto necesita conexiones para trabajar. Con un solo
+pool, N checkouts simultáneos (N = tamaño del pool) retienen todas las
+conexiones y todos esperan una más que nunca llega: no es lentitud, es un
+cuelgue permanente, porque el pool principal no tiene timeout. Separar los pools
+lo elimina de raíz —quien sostiene una conexión de claim jamás pide otra de
+claim— y el `connectionTimeoutMillis` del pool de claims convierte una
+saturación en error explícito, nunca en espera infinita.
+
+Sostener el lock durante el efecto es deliberado: **es la señal de vida**. Si el
+proceso muere, la conexión muere, el lock se suelta, y el siguiente reintento
+sabe que puede retomar. Soltarlo antes obligaría a inventar un *lease* con
+relojes y a recuperar claims abandonados por tiempo.
+
 **Un lock resuelve la concurrencia y nada más.** El crash *después* del efecto
 y *antes* de la marca lo resuelve la idempotencia propia de cada efecto. Por
 eso el camino legacy dejó de ser un broadcast a ciegas:
@@ -259,7 +287,7 @@ Es para vacaciones y para cuando el negocio se satura.
 |---|---|---|
 | `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, promociones, seguimiento, backoffice, aislamiento y adversarial |
 | `test/fase-tienda-carreras-cliente.mjs` | 10 | Límite por cliente y primera compra bajo concurrencia real, liberación del cupo y cuadre de contadores |
-| `test/fase-tienda-recuperacion-crash.mjs` | 26 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
+| `test/fase-tienda-recuperacion-crash.mjs` | 29 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
 | `test/fase-predeploy-tienda.mjs` | 24 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
 
@@ -371,6 +399,9 @@ Escenarios cubiertos:
 | 10 reintentos SIMULTÁNEOS en modo legacy | Un solo broadcast al print-agent viejo |
 | Dos finalizadores a la vez | Solo uno entra a `emision`: un aviso al panel, no dos |
 | Crash tras imprimir por legacy, antes de marcar | El reintento (en otro proceso) NO reimprime |
+| El ganador del lock falla y otro pierde el lock | El perdedor responde 409, nunca 200 |
+| El ganador del lock termina bien | El perdedor espera la marca y responde 200; una sola emisión |
+| Más checkouts simultáneos que conexiones del pool | Todos terminan; ninguno se cuelga |
 | Antes de crear el pedido | Sí se libera token y promociones; el cliente puede reintentar |
 
 Las comandas se cuentan con una impresora y una ruta **reales** montadas en el

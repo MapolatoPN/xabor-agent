@@ -7,8 +7,50 @@ const { Pool } = pkg;
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  // Igual al default de pg (10). Configurable solo para poder REPRODUCIR en
+  // pruebas la saturación del pool con pocas peticiones.
+  max: Number(process.env.XABOR_PG_POOL_MAX) || 10,
 });
+
+// ─── Pool APARTE para los claims con lock ────────────────────────────────────
+//
+// Hay un patrón que sí puede provocar un interbloqueo por agotamiento del pool:
+// tomar una conexión, dejarla ocupada con un lock, y DENTRO de ese lock pedir
+// otra conexión del MISMO pool. Con N peticiones simultáneas iguales al tamaño
+// del pool, las N retienen todas las conexiones y las N esperan una más que
+// nunca se va a liberar. Y como el pool principal no tiene timeout, eso no es
+// lentitud: es un cuelgue permanente.
+//
+// Es exactamente la forma del claim de derivaciones de la tienda: el lock se
+// sostiene mientras corre el efecto (emitir comanda, avisar al panel), y ese
+// efecto necesita conexiones para trabajar.
+//
+// El lock TIENE que sostenerse durante el efecto: es la señal de vida. Si el
+// proceso muere, la conexión muere, el lock se suelta, y el siguiente reintento
+// sabe que puede retomar sin necesidad de inventar un "lease" con relojes.
+// Soltar el lock antes del efecto obligaría a esa complejidad.
+//
+// La salida es separar los pools: las conexiones de claim nunca compiten con
+// las de trabajo. Quien sostiene una conexión de claim jamás pide otra de claim,
+// así que esperar aquí siempre termina -- a lo sumo tras el claim más lento en
+// curso. Y con connectionTimeoutMillis, una saturación se convierte en un error
+// explícito, nunca en una espera infinita.
+//
+// Se crea perezosamente: un proceso que no toca la tienda no abre ni una
+// conexión de más.
+let _poolClaims = null;
+export function poolDeClaims() {
+  if (!_poolClaims) {
+    _poolClaims = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: Number(process.env.XABOR_PG_POOL_CLAIMS_MAX) || 8,
+      connectionTimeoutMillis: Number(process.env.XABOR_PG_POOL_CLAIMS_TIMEOUT_MS) || 20000,
+    });
+  }
+  return _poolClaims;
+}
 
 // ─── Inicializar tablas ───────────────────────────────────────────────────────
 export async function initDB() {
@@ -3270,6 +3312,11 @@ export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido 
 // una ventana de microsegundos -- crash entre el send y el COMMIT -- en la que
 // un reintento reemitiría: es inherente a un broadcast sin acuse de recibo, y
 // el lado en que cae es el de que el papel salga.
+//
+// Usa el pool PRINCIPAL a propósito, no el de claims: mientras sostiene su
+// conexión no pide ninguna otra -- todas sus consultas van por esa misma, y
+// `emitir` es un envío WebSocket en proceso, sin base de datos. No puede
+// participar del interbloqueo que describe poolDeClaims().
 export async function emitirUnaSolaVezLegacy(negocioId, printJobId, emitir) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('emitirUnaSolaVezLegacy: negocioId inválido u omitido');

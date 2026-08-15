@@ -15,7 +15,7 @@
 // El navegador NO es autoridad de: precio, descuento, envío, total,
 // disponibilidad, negocio ni producto. Todo eso se recalcula aquí.
 import { randomBytes, createHash } from 'crypto';
-import { pool } from './database.js';
+import { pool, poolDeClaims } from './database.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError } from './posEnvios.js';
 import {
   TiendaError, MODALIDAD_A_PEDIDO, reglasDelNegocio, estadoApertura,
@@ -229,6 +229,17 @@ function fallaInyectada(punto) {
   throw e;
 }
 
+// Hermano del anterior, con el mismo candado de producción: alarga un punto del
+// flujo para poder provocar de forma DETERMINISTA la carrera entre dos
+// finalizadores. Sin esto, "A todavía tiene el lock cuando llega B" dependería
+// de la suerte del planificador.
+async function retardoInyectado(punto) {
+  if (process.env.NODE_ENV === 'production') return;
+  if (process.env.XABOR_TIENDA_RETARDO_EN !== punto) return;
+  const ms = Number(process.env.XABOR_TIENDA_RETARDO_MS) || 0;
+  if (ms > 0) await new Promise(r => setTimeout(r, ms));
+}
+
 // ── Recuperación tras crash ───────────────────────────────────────────────
 // Busca el pedido que un checkout YA creó, aunque el vínculo en tienda_pedidos
 // no se haya alcanzado a escribir. La fuente de verdad es el propio pedido:
@@ -286,8 +297,25 @@ async function buscarPedidoDeCheckout(negocioId, token) {
 // clave de impresión, repartidores por (folio, repartidor), impresión legacy
 // por la tabla impresion_legacy_emitida. Los dos mecanismos hacen falta;
 // ninguno sustituye al otro.
+const DERIVACION = { HECHA: 'hecha', YA_ESTABA: 'ya_estaba', OCUPADA: 'ocupada' };
+
+// ¿Falta esta derivación? Consulta suelta: pide una conexión y la devuelve.
+// Nunca se llama con una conexión retenida.
+async function derivacionPendiente(negocioId, token, nombre) {
+  const { rows: [r] } = await pool.query(
+    // jsonb_exists en vez del operador ?: con un parametro, Postgres no puede
+    // inferir el tipo de $3 para ? y falla con "could not determine data type".
+    `SELECT jsonb_exists(derivaciones, $3::text) AS hecha FROM tienda_pedidos
+      WHERE negocio_id = $1 AND checkout_token = $2`,
+    [negocioId, token, nombre]);
+  return !r?.hecha;
+}
+
 async function derivacion(negocioId, token, nombre, fn) {
-  const cliente = await pool.connect();
+  // Pool APARTE (ver poolDeClaims en database.js): esta conexión queda ocupada
+  // mientras corre `fn`, y `fn` necesita conexiones para trabajar. Con un solo
+  // pool, N checkouts simultáneos se bloquearían entre sí para siempre.
+  const cliente = await poolDeClaims().connect();
   try {
     await cliente.query('BEGIN');
 
@@ -296,20 +324,19 @@ async function derivacion(negocioId, token, nombre, fn) {
       [`tienda_derivacion:${negocioId}:${token}`, nombre]);
     if (!lock?.obtenido) {
       await cliente.query('ROLLBACK');
-      return false;
+      return DERIVACION.OCUPADA;
     }
 
     const { rows: [r] } = await cliente.query(
-      // jsonb_exists en vez del operador ?: con un parametro, Postgres no puede
-      // inferir el tipo de $3 para ? y falla con "could not determine data type".
       `SELECT jsonb_exists(derivaciones, $3::text) AS hecha FROM tienda_pedidos
         WHERE negocio_id = $1 AND checkout_token = $2`,
       [negocioId, token, nombre]);
     if (r?.hecha) {
       await cliente.query('ROLLBACK');
-      return false;
+      return DERIVACION.YA_ESTABA;
     }
 
+    await retardoInyectado(`dentro_de_${nombre}`);
     await fn();
 
     await cliente.query(
@@ -319,13 +346,46 @@ async function derivacion(negocioId, token, nombre, fn) {
         WHERE negocio_id = $1 AND checkout_token = $2`,
       [negocioId, token, nombre]);
     await cliente.query('COMMIT');
-    return true;
+    return DERIVACION.HECHA;
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
     cliente.release();
   }
+}
+
+// Espera del lado del SERVIDOR a que la marca aparezca. No retiene ninguna
+// conexión mientras espera: cada sondeo pide una y la devuelve.
+const ESPERA_MARCA_MS = Number(process.env.XABOR_TIENDA_ESPERA_MARCA_MS) || 250;
+const SONDEOS_MARCA = Number(process.env.XABOR_TIENDA_SONDEOS_MARCA) || 12;
+
+async function esperarMarca(negocioId, token, nombre) {
+  for (let i = 0; i < SONDEOS_MARCA; i++) {
+    await new Promise(r => setTimeout(r, ESPERA_MARCA_MS));
+    if (!(await derivacionPendiente(negocioId, token, nombre))) return true;
+  }
+  return false;
+}
+
+// Derivación de la que DEPENDE poder decirle al cliente "tu pedido está hecho".
+//
+// Perder el lock no es lo mismo que haber terminado. Si otro proceso la está
+// ejecutando, este NO puede responder 200 apostando a que al otro le salga
+// bien: si el ganador se cae, el cliente se quedaría con un "pedido recibido"
+// y la cocina sin papel -- justo el fallo que se corrigió antes, por otra
+// puerta.
+//
+// Así que se espera a que la marca APAREZCA, que es la única prueba de que
+// terminó de verdad. Si no aparece dentro de la ventana, se responde 409 y el
+// cliente reintenta: el reintento encontrará el lock libre (el ganador murió) y
+// retomará el trabajo. Nunca se resuelve con reintentos a ciegas del navegador.
+async function derivacionCritica(negocioId, token, nombre, fn) {
+  const estado = await derivacion(negocioId, token, nombre, fn);
+  if (estado !== DERIVACION.OCUPADA) return estado;
+  if (await esperarMarca(negocioId, token, nombre)) return DERIVACION.YA_ESTABA;
+  throw new TiendaError(
+    'Tu pedido se está procesando, espera un momento', 'CHECKOUT_EN_CURSO', 409);
 }
 
 export async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoAplicadas = null }) {
@@ -341,7 +401,9 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
   );
   fallaInyectada('despues_de_vincular');
 
-  // 2) Cliente e historial.
+  // 2) Cliente e historial. NO es crítica: si otro proceso la tiene tomada, o
+  //    si falla, el pedido sigue siendo válido y el siguiente intento la
+  //    repone. Es la única de las tres que no condiciona el 200.
   await derivacion(negocioId, token, 'historial', async () => {
     try {
       const { upsertCliente, guardarPedido } = await import('./database.js');
@@ -362,7 +424,10 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
   // 3) Emisión: comanda por Edge, tablero y oferta a repartidores. Se espera
   //    de verdad -- "finalizado" no puede significar "disparé una promesa y
   //    ojalá sobreviva al proceso".
-  await derivacion(negocioId, token, 'emision', async () => {
+  //    CRÍTICA: sin esto no hay comanda. Responder 200 sin confirmarla sería
+  //    decirle al cliente que su pedido está hecho apostando a que a otro
+  //    proceso le salga bien.
+  await derivacionCritica(negocioId, token, 'emision', async () => {
     const { emitirPedido } = await import('../orders/orderManager.js');
     await emitirPedido(pedido);
     // El punto más incómodo del flujo: el efecto externo YA ocurrió (el papel
@@ -380,8 +445,11 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
     id: p.id, campaniaId: p.campania_id || null, nombre: p.nombre,
     codigo: p.codigo, tipo: p.tipo, descuento: p.descuento, envioGratis: p.envio_gratis,
   }));
+  //    También CRÍTICA cuando hay promociones: el descuento ya se le dio al
+  //    cliente, así que el cupo tiene que quedar amarrado al folio antes de
+  //    dar el checkout por bueno.
   if (aplicadas.length) {
-    await derivacion(negocioId, token, 'atribucion', async () => {
+    await derivacionCritica(negocioId, token, 'atribucion', async () => {
       const esNuevo = !(await clienteTienePedidosPrevios(negocioId, telefono, pedido.id));
       await registrarUsosPromociones({
         negocioId, folio: pedido.id, aplicadas, telefono,

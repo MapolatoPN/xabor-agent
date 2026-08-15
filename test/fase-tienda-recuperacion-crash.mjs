@@ -862,6 +862,116 @@ try {
     assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
   });
 
+  // ═══ L) Semántica del éxito: 200 significa "confirmado", no "confío" ═══
+  //
+  // Perder el lock de una derivación NO es haberla terminado. Si otro proceso
+  // la está ejecutando, este no puede responder 200 apostando a que al otro le
+  // salga bien: si el ganador se cae, el cliente se queda con "pedido recibido"
+  // y la cocina sin papel.
+  //
+  // El retardo se INYECTA para que la carrera sea determinista y no dependa de
+  // la suerte del planificador.
+
+  await t('L1. el que PIERDE el lock no responde 200 si el ganador falla', async () => {
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+    assert.ok(folio, 'no quedó el pedido pendiente de emitir');
+
+    let a, b;
+    await conServidor({
+      XABOR_TIENDA_RETARDO_EN: 'dentro_de_emision', XABOR_TIENDA_RETARDO_MS: '2500',
+      XABOR_TIENDA_FALLA_EN: 'emitido_sin_marcar', XABOR_TIENDA_SONDEOS_MARCA: '4',
+    }, async (base) => {
+      const pa = comprar(base, carrito(tk));                 // A: toma el lock
+      await asentar(500);
+      const pb = comprar(base, carrito(tk));                 // B: lo pierde
+      [a, b] = await Promise.all([pa, pb]);
+    });
+
+    assert.ok(a.status >= 400, 'el ganador no falló pese al fallo inyectado');
+    assert.notStrictEqual(b.status, 200,
+      '¡EL PERDEDOR DEL LOCK RESPONDIÓ 200! el cliente creería que su pedido está listo');
+    assert.strictEqual(b.status, 409, `esperaba 409, dio ${b.status}: ${JSON.stringify(b.body)}`);
+    assert.strictEqual(b.body?.codigo, 'CHECKOUT_EN_CURSO', JSON.stringify(b.body));
+    assert.ok(!('emision' in await derivacionesDe(tk)), 'la marca quedó escrita pese al fallo');
+
+    // Y el siguiente reintento sí recupera: el lock ya está libre.
+    let r;
+    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.ok('emision' in await derivacionesDe(tk), 'el reintento no completó la emisión');
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
+    assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
+  });
+
+  await t('L2. el que pierde el lock SÍ responde 200 cuando el ganador termina', async () => {
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+
+    let a, b, avisos;
+    await conServidor({
+      XABOR_TIENDA_RETARDO_EN: 'dentro_de_emision', XABOR_TIENDA_RETARDO_MS: '1200',
+    }, async (base) => {
+      const panel = await abrirWS(base, '/ws/panel', ADMIN);
+      await asentar(400); // volcado inicial del tablero
+      avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      const pa = comprar(base, carrito(tk));
+      await asentar(400);
+      const pb = comprar(base, carrito(tk));
+      [a, b] = await Promise.all([pa, pb]);
+      await asentar();
+      panel.close();
+    });
+
+    assert.strictEqual(a.status, 200, `ganador: ${JSON.stringify(a.body)}`);
+    assert.strictEqual(b.status, 200,
+      `el perdedor esperó la marca y debía responder 200: ${JSON.stringify(b.body)}`);
+    assert.strictEqual(a.body.folio, b.body.folio, 'devolvieron folios distintos');
+    assert.strictEqual(avisos.length, 1, `la emisión corrió ${avisos.length} veces`);
+    assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
+  });
+
+  await t('L3. muchos checkouts DISTINTOS a la vez, con el pool por debajo: nadie se cuelga', async () => {
+    // El interbloqueo que se corrige: el claim retenía una conexión del MISMO
+    // pool que necesita el efecto. Con N peticiones = tamaño del pool, las N
+    // retienen todo y las N esperan una más. Aquí se reproduce a propósito con
+    // un pool diminuto: 12 checkouts contra 4 conexiones de trabajo y 3 de
+    // claim. Antes del arreglo esto no falla: se CUELGA, por eso hay un tope
+    // de tiempo duro -- una prueba que se cuelga no reporta nada.
+    const N = 12;
+    const tokens = Array.from({ length: N }, () => token());
+    let resultados;
+    await conServidor({ XABOR_PG_POOL_MAX: '4', XABOR_PG_POOL_CLAIMS_MAX: '3' }, async (base) => {
+      const lote = Promise.all(tokens.map((tk, i) => comprar(base, carrito(tk, {
+        cliente: { nombre: `Concurrente ${i}`, telefono: `89987000${String(i).padStart(2, '0')}` },
+      }))));
+      const tope = new Promise((_, rechazar) => setTimeout(
+        () => rechazar(new Error('SE COLGÓ: 45 s sin que terminaran los 12 checkouts')), 45000));
+      resultados = await Promise.race([lote, tope]);
+    });
+
+    for (const [i, r] of resultados.entries()) {
+      assert.ok(Number.isInteger(r.status),
+        `el checkout ${i} no terminó con un estado definido`);
+    }
+    const ok = resultados.filter(r => r.status === 200);
+    assert.strictEqual(ok.length, N,
+      `solo ${ok.length}/${N} terminaron bien: ${JSON.stringify(resultados.filter(r => r.status !== 200).map(r => r.body))}`);
+
+    const folios = new Set(ok.map(r => r.body.folio));
+    assert.strictEqual(folios.size, N, 'hubo folios repetidos entre checkouts distintos');
+    for (const f of folios) {
+      assert.strictEqual(await trabajosDeFolio(f), 1, `el folio ${f} no tiene exactamente 1 comanda`);
+    }
+  });
+
 } catch (e) {
   console.error('ERROR FATAL:', e.stack || e);
   fallidas++;
