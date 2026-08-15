@@ -37,6 +37,7 @@ const SCRIPTS = [
   '049-whatsapp-coexistence',
   '050-menu-multiimagen',
   '051-tienda-online',
+  '052-impresion-legacy-idempotente',
 ];
 
 for (const nombre of SCRIPTS) {

@@ -118,18 +118,42 @@ Se auditó qué hace `emitirPedido` y no todo es idempotente:
 |---|---|
 | Comanda por Edge | Sí — clave de idempotencia por `(negocio, pedido, impresora)` |
 | Oferta a repartidores | Sí — deduplicada por `(folio, repartidor)` en `notificaciones_repartidor` |
-| Impresión legacy (negocios aún sin Edge) | **No** — imprimiría papel otra vez |
-| Aviso `nuevo_pedido` al panel | **No** — volvería a anunciarlo como nuevo |
+| Impresión legacy (negocios aún sin Edge) | Sí — desde la 052, por `impresion_legacy_emitida` |
+| Aviso `nuevo_pedido` al panel | Por el consumidor — el panel descarta un folio que ya está en el tablero |
 
 Por eso cada derivación deja marca en `tienda_pedidos.derivaciones` (jsonb):
 `historial`, `emision`, `atribucion`. Un reintento retoma solo lo que falta;
 cinco reintentos seguidos no hacen nada la segunda vez.
 
-La marca se escribe **después** de que la derivación tuvo éxito. Un crash entre
-"terminó" y "se marcó" haría que un reintento la repitiera — ventana estrecha, y
-justo en ella los dos efectos destructivos (Edge y repartidores) tienen su
-propia idempotencia. Al revés — marcar antes de hacer — el riesgo sería peor:
-un pedido sin comanda que nadie vuelve a intentar.
+**El claim de cada derivación es atómico.** Consultar "¿está pendiente?",
+ejecutar y marcar después no basta: dos finalizadores concurrentes leen
+"pendiente" a la vez y los dos ejecutan. `derivacion()` toma
+`pg_try_advisory_xact_lock(checkout, derivación)` y escribe la marca **en la
+misma transacción**, así que cuando el lock se suelta la marca ya es visible.
+Quien no obtiene el lock no espera: otro proceso ya está en eso, y esperar solo
+retendría una conexión del pool que el dueño necesita.
+
+**Un lock resuelve la concurrencia y nada más.** El crash *después* del efecto
+y *antes* de la marca lo resuelve la idempotencia propia de cada efecto. Por
+eso el camino legacy dejó de ser un broadcast a ciegas:
+
+- sale con `printJobId` determinista (`<folio>:comanda`), el mismo del camino
+  autenticado, para que un agente actualizado también pueda deduplicarlo;
+- y el servidor recuerda lo que ya emitió en `impresion_legacy_emitida`
+  (migración 052). Tiene que ser Postgres y no un `Map` ni un archivo: los
+  agentes legacy son binarios viejos en máquinas ajenas que no se pueden
+  actualizar desde aquí, y la memoria debe sobrevivir a reinicios, redeploys y
+  a que haya más de una instancia del servidor.
+
+La fila se escribe **después** de emitir, dentro del `pg_advisory_xact_lock`
+del trabajo. Registrarla antes cambiaría "papel repetido" por "pedido sin
+papel", que es peor. Queda una ventana de microsegundos — crash entre el envío
+y el COMMIT — en la que un reintento reemitiría: es inherente a un broadcast
+sin acuse de recibo, y el lado en que cae es el de que el papel salga.
+
+Mismo criterio para la marca del ledger: se escribe **después** del éxito. Al
+revés — marcar antes de hacer — el riesgo sería un pedido sin comanda que nadie
+vuelve a intentar.
 
 `emitirPedido` se **espera** (`await`): "finalizado" no puede significar
 "disparé una promesa y ojalá sobreviva al proceso".
@@ -235,14 +259,14 @@ Es para vacaciones y para cuando el negocio se satura.
 |---|---|---|
 | `test/fase-tienda-online.mjs` | 74 | Catálogo, precios impuestos por servidor, envío y zonas, checkout idempotente, promociones, seguimiento, backoffice, aislamiento y adversarial |
 | `test/fase-tienda-carreras-cliente.mjs` | 10 | Límite por cliente y primera compra bajo concurrencia real, liberación del cupo y cuadre de contadores |
-| `test/fase-tienda-recuperacion-crash.mjs` | 19 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
+| `test/fase-tienda-recuperacion-crash.mjs` | 26 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
-| `test/fase-predeploy-tienda.mjs` | 18 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
+| `test/fase-predeploy-tienda.mjs` | 24 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
 
 Ambas contra Postgres real, con los mismos arneses del resto del proyecto.
 
 
-## Cómo llega la 051 a un deploy real
+## Cómo llegan la 051 y la 052 a un deploy real
 
 Producción no lee `migrations/`. Lo que corre es lo que declara `railway.toml`:
 
@@ -259,8 +283,18 @@ railway.toml
        ↓
   verificación: 6 tablas + CHECK con 'tienda_online' + 4 FKs compuestas
        ↓
+  scripts/predeploy-052-impresion-legacy-idempotente.mjs
+       ↓
+  migrations/052_impresion_legacy_idempotente.sql
+       ↓
+  verificación: la tabla CON su PK compuesta (negocio, printJobId)
+       ↓
   la aplicación arranca
 ```
+
+La 052 no toca nada preexistente: crea la tabla que le da memoria al camino de
+impresión viejo. Su gate exige la PK compuesta, no solo la tabla — la PK *es*
+la garantía: sin ella, "reclamar el trabajo" volvería a ser una carrera.
 
 **Idempotente**: el script comprueba el estado antes y no hace nada si ya está
 aplicada; el SQL además es re-ejecutable (`IF NOT EXISTS`, `DROP … IF EXISTS`
@@ -278,7 +312,7 @@ recibe en el siguiente deploy en vez de quedarse sin ellas.
 predeploy reporta cuántos lo tienen contratado, para que quede en el log del
 deploy que nadie quedó con una tienda abierta por accidente.
 
-Verificado por `test/fase-predeploy-tienda.mjs` (18 casos), que recorre la
+Verificado por `test/fase-predeploy-tienda.mjs` (24 casos), que recorre la
 cadena entera, corre el predeploy dos veces contra una base real, comprueba el
 aborto con base inalcanzable, y exige que todo `predeploy-NNN` del repositorio
 esté en el runner — el descuido que dejó huérfana a la 051 en primer lugar.
@@ -297,6 +331,12 @@ esté en el runner — el descuido que dejó huérfana a la 051 en primer lugar.
 El orden de 1 y 2 no es negociable: Postgres valida un CHECK nuevo contra las
 filas existentes, así que restaurarlo antes de borrar las filas fallaría en
 cualquier base donde alguien tenga el módulo contratado.
+
+`migrations/052_impresion_legacy_idempotente_down.sql` borra la tabla de
+memoria de impresión legacy. **Solo tiene sentido junto con revertir el código
+que la consulta**: con la tabla fuera y el código dentro, ningún trabajo se
+reconocería como ya emitido; con la tabla fuera y el código fuera, se vuelve al
+comportamiento anterior — papel repetido en cada reintento.
 
 **Este rollback destruye datos**: configuración de tienda, promociones y su
 historial de uso. Los pedidos ya cobrados sobreviven — viven en
@@ -328,6 +368,9 @@ Escenarios cubiertos:
 | Concurrencia (10 intentos) tras un crash | Un pedido, una atribución, exactamente una comanda |
 | Domicilio con repartidores | Tres reintentos no mandan una sola oferta de más |
 | Crash entre CADA derivación, en cadena | Una reanudación deja 1 pedido y 1 comanda |
+| 10 reintentos SIMULTÁNEOS en modo legacy | Un solo broadcast al print-agent viejo |
+| Dos finalizadores a la vez | Solo uno entra a `emision`: un aviso al panel, no dos |
+| Crash tras imprimir por legacy, antes de marcar | El reintento (en otro proceso) NO reimprime |
 | Antes de crear el pedido | Sí se libera token y promociones; el cliente puede reintentar |
 
 Las comandas se cuentan con una impresora y una ruta **reales** montadas en el

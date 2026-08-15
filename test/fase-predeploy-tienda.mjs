@@ -101,6 +101,18 @@ try {
     assert.ok(/process\.exit\(1\)/.test(src), 'no aborta el deploy ante un fallo');
   });
 
+  await t('el runner incluye la 052 y va DESPUÉS de la 051', () => {
+    const i51 = LISTA.indexOf('051-tienda-online');
+    const i52 = LISTA.indexOf('052-impresion-legacy-idempotente');
+    assert.ok(i52 > i51 && i51 >= 0, `orden incorrecto: 051 en ${i51}, 052 en ${i52}`);
+  });
+
+  await t('el script de la 052 aplica exactamente migrations/052_impresion_legacy_idempotente.sql', () => {
+    const src = leer('scripts', 'predeploy-052-impresion-legacy-idempotente.mjs');
+    assert.ok(/052_impresion_legacy_idempotente\.sql/.test(src), 'no referencia el archivo de migración');
+    assert.ok(/process\.exit\(1\)/.test(src), 'no aborta el deploy ante un fallo');
+  });
+
   // ─── 2. Comportamiento real contra la base ───
   await t('el predeploy corre sin error sobre la base actual', () => {
     const salida = ejecutar('scripts/predeploy-051-tienda-online.mjs');
@@ -118,6 +130,51 @@ try {
   await t('sobre una base ya migrada reporta "ya aplicada" y no toca nada', () => {
     const salida = ejecutar('scripts/predeploy-051-tienda-online.mjs');
     assert.ok(/Ya aplicada/.test(salida), `no detectó que ya estaba aplicada: ${salida}`);
+  });
+
+  // ─── 1bis. La 052: memoria de impresión legacy ───
+  await t('el predeploy de la 052 corre sin error y es idempotente', async () => {
+    const primera = ejecutar('scripts/predeploy-052-impresion-legacy-idempotente.mjs');
+    assert.ok(/predeploy-052/.test(primera), `salida inesperada: ${primera}`);
+    const antes = await huellaLegacy();
+    ejecutar('scripts/predeploy-052-impresion-legacy-idempotente.mjs');
+    const segunda = ejecutar('scripts/predeploy-052-impresion-legacy-idempotente.mjs');
+    assert.ok(/Ya aplicada/.test(segunda), `no detectó que ya estaba aplicada: ${segunda}`);
+    assert.deepStrictEqual(await huellaLegacy(), antes, 'el esquema cambió al repetir el predeploy');
+  });
+
+  await t('la 052 deja la tabla con PK COMPUESTA (negocio, printJobId)', async () => {
+    // La PK no es decoración: es lo que hace atómico el "reclamar" cuando dos
+    // procesos intentan emitir el mismo trabajo. Sin ella la deduplicación
+    // sería una carrera con otro nombre.
+    const { rows: [r] } = await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+        WHERE conrelid = to_regclass('public.impresion_legacy_emitida') AND contype = 'p'`);
+    assert.ok(r?.d, 'impresion_legacy_emitida no tiene llave primaria');
+    assert.ok(/negocio_id/.test(r.d) && /print_job_id/.test(r.d),
+      `la PK no es (negocio_id, print_job_id): ${r.d}`);
+  });
+
+  await t('la BASE rechaza registrar dos veces el mismo trabajo legacy', async () => {
+    const { rows: [n] } = await pool.query(`SELECT id FROM negocios LIMIT 1`);
+    const jobId = 'PRUEBA-PREDEPLOY-052:comanda';
+    await pool.query(`DELETE FROM impresion_legacy_emitida WHERE print_job_id = $1`, [jobId]);
+    await pool.query(
+      `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id) VALUES ($1,$2)`, [n.id, jobId]);
+    let rechazado = false;
+    try {
+      await pool.query(
+        `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id) VALUES ($1,$2)`, [n.id, jobId]);
+    } catch (e) { rechazado = e.code === '23505'; }
+    await pool.query(`DELETE FROM impresion_legacy_emitida WHERE print_job_id = $1`, [jobId]);
+    assert.ok(rechazado, 'la base ACEPTÓ dos registros del mismo trabajo: no habría deduplicación');
+  });
+
+  await t('existe el down de la 052 y solo borra lo que la 052 creó', () => {
+    const down = leer('migrations', '052_impresion_legacy_idempotente_down.sql');
+    assert.ok(/DROP TABLE IF EXISTS impresion_legacy_emitida/.test(down), 'el down no borra la tabla');
+    assert.ok(!/ALTER TABLE (?!.*impresion_legacy)/.test(down),
+      'el down toca tablas que la 052 no creó');
   });
 
   await t('deja el esquema completo: las SEIS tablas y el CHECK', async () => {
@@ -247,6 +304,19 @@ try {
   fallidas++;
 } finally {
   await pool.end().catch(() => {});
+}
+
+// Huella del esquema que toca la 052.
+async function huellaLegacy() {
+  const { rows } = await pool.query(
+    `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'impresion_legacy_emitida'
+      ORDER BY ordinal_position`);
+  const { rows: idx } = await pool.query(
+    `SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'impresion_legacy_emitida'
+      ORDER BY indexname`);
+  return { columnas: rows, indices: idx.map(i => i.indexname) };
 }
 
 // Huella del esquema que toca la 051: si el predeploy es idempotente, esto no

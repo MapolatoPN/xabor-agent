@@ -3243,6 +3243,72 @@ export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido 
   return { sucursalId: null, resueltaPor: null, razon: 'multiples_sucursales_activas' };
 }
 
+// Ejecuta `emitir` A LO SUMO UNA VEZ por (negocio, printJobId), aunque se
+// llame desde varios procesos a la vez y aunque el servidor se reinicie entre
+// intentos.
+//
+// Por qué hace falta: de los efectos de emitirPedido, el broadcast al
+// print-agent legacy es el único que no deduplica nada por su cuenta. Edge
+// tiene clave de idempotencia, la oferta a repartidores tiene (folio,
+// repartidor); legacy era papel a ciegas. Y los agentes legacy instalados en
+// los negocios son binarios viejos que no se pueden actualizar desde aquí, así
+// que la memoria tiene que estar de este lado.
+//
+// Dos mecanismos, no uno:
+//   · pg_advisory_xact_lock resuelve la CONCURRENCIA -- dos emisores del mismo
+//     trabajo se serializan, y el segundo ya ve la fila del primero. Es
+//     bloqueante a propósito: aquí no sirve rendirse, el trabajo tiene que
+//     salir exactamente una vez y esperar cuesta lo que cuesta un send de WS.
+//   · la fila commiteada resuelve el REINICIO -- un proceso nuevo, o una
+//     segunda instancia del servidor, ve lo que emitió el anterior.
+//
+// Un lock por sí solo no bastaría (muere con el proceso) y una fila sin lock
+// tampoco (el hueco entre leer y escribir es justo la carrera).
+//
+// La fila se escribe DESPUÉS de emitir, en la misma transacción. Registrarla
+// antes cambiaría "papel repetido" por "pedido sin papel", que es peor. Queda
+// una ventana de microsegundos -- crash entre el send y el COMMIT -- en la que
+// un reintento reemitiría: es inherente a un broadcast sin acuse de recibo, y
+// el lado en que cae es el de que el papel salga.
+export async function emitirUnaSolaVezLegacy(negocioId, printJobId, emitir) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('emitirUnaSolaVezLegacy: negocioId inválido u omitido');
+  }
+  if (typeof printJobId !== 'string' || !printJobId.trim()) {
+    throw new Error('emitirUnaSolaVezLegacy: printJobId inválido u omitido');
+  }
+  const cliente = await pool.connect();
+  try {
+    await cliente.query('BEGIN');
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['impresion_legacy', `${negocioId}:${printJobId}`]);
+
+    const { rows } = await cliente.query(
+      `SELECT 1 FROM impresion_legacy_emitida
+        WHERE negocio_id = $1 AND print_job_id = $2`,
+      [negocioId, printJobId]);
+    if (rows.length > 0) {
+      await cliente.query('ROLLBACK');
+      return { duplicado: true, destinatarios: 0 };
+    }
+
+    const destinatarios = Number(await emitir()) || 0;
+    await cliente.query(
+      `INSERT INTO impresion_legacy_emitida (negocio_id, print_job_id, destinatarios)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (negocio_id, print_job_id) DO NOTHING`,
+      [negocioId, printJobId, destinatarios]);
+    await cliente.query('COMMIT');
+    return { duplicado: false, destinatarios };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
 // ─── Repartidores ─────────────────────────────────────────────────────────────
 // Normaliza teléfonos mexicanos a formato local 10 dígitos (sin prefijo 52/521)
 function normalizarTelefono(tel) {

@@ -15,6 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { randomBytes } from 'crypto';
+import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -106,11 +107,12 @@ async function crearPromo(base, datos) {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
     body: JSON.stringify(datos),
   });
-  assert.strictEqual(r.status, 200, 'no se creó la promoción');
+  assert.strictEqual(r.status, 200, 'no se creó la promoción: ' + (await r.text()));
 }
 
 async function limpiar() {
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM impresion_legacy_emitida WHERE negocio_id = $1`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM notificaciones_repartidor WHERE pedido_folio IN
     (SELECT folio FROM pedidos_activos WHERE negocio_id = $1)`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM repartidores WHERE negocio_id = $1 AND telefono LIKE '8998%'`, [NEG]).catch(() => {});
@@ -154,6 +156,74 @@ async function montarImpresion() {
   });
   await crearRuta(NEG, { impresoraId: imp.id, ambito: 'documento', clave: DESTINOS.cocina.clave });
   return { sucursalId: suc.id, impresoraId: imp.id };
+}
+
+// ── Observadores de los dos consumidores que NO deduplican solos ──
+// El print-agent legacy (raíz "/") y el panel (/ws/panel). Contarlos de verdad
+// es la única forma de distinguir "no se duplicó" de "nunca pasó nada".
+function abrirWS(base, ruta, cookie) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace('http://', 'ws://') + ruta,
+      cookie ? { headers: { Cookie: cookie } } : undefined);
+    const to = setTimeout(() => reject(new Error('timeout abriendo WS ' + ruta)), 8000);
+    ws.on('open', () => { clearTimeout(to); resolve(ws); });
+    ws.on('error', (e) => { clearTimeout(to); reject(e); });
+  });
+}
+
+// Devuelve un arreglo VIVO: se llena conforme llegan los mensajes.
+//
+// Se engancha DESPUES de dejar pasar el volcado inicial: al conectarse, tanto
+// el panel como el print-agent legacy reciben el tablero completo como una
+// ráfaga de 'nuevo_pedido'. Contarlo sería contar historia vieja, no la
+// emisión que se está probando.
+function espiar(ws, filtro) {
+  const vistos = [];
+  ws.on('message', (raw) => {
+    let d; try { d = JSON.parse(raw.toString()); } catch { return; }
+    if (filtro(d)) vistos.push(d);
+  });
+  return vistos;
+}
+
+// Probar que algo NO llega exige esperar un poco: no hay evento de "ya no va a
+// llegar nada". Es sincronización de la prueba, no del producto -- el código
+// bajo prueba no espera nada.
+const asentar = (ms = 600) => new Promise(r => setTimeout(r, ms));
+
+async function filasLegacyEmitidas(folio) {
+  const { rows } = await pool.query(
+    `SELECT print_job_id, destinatarios FROM impresion_legacy_emitida
+      WHERE negocio_id = $1 AND print_job_id = $2`, [NEG, `${folio}:comanda`]);
+  return rows;
+}
+async function historialDeFolio(folio) {
+  const { rows: [r] } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM pedidos WHERE negocio_id = $1 AND folio = $2`, [NEG, folio]);
+  return r.n;
+}
+async function derivacionesDe(tk) {
+  const { rows: [r] } = await pool.query(
+    `SELECT derivaciones FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2`,
+    [NEG, tk]);
+  return r?.derivaciones || {};
+}
+
+// Modo legacy: sin Edge montado (si Edge se hace cargo, el camino viejo ni se
+// intenta) y con la configuración que lo elige explícitamente.
+async function ponerModoLegacy(activo) {
+  if (activo) {
+    await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [NEG]);
+    await pool.query(`DELETE FROM impresoras WHERE negocio_id = $1`, [NEG]);
+    await pool.query(
+      `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
+      [NEG]);
+  }
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor)
+     VALUES ($1,'print_agent_legacy_activo',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`,
+    [NEG, activo ? 'true' : 'false']);
 }
 
 async function preparar() {
@@ -589,6 +659,207 @@ try {
     assert.strictEqual(q.campania_id, null, 'campania_id no se nuleó');
     assert.strictEqual(q.negocio_id, NEG, 'negocio_id se perdió al borrar la campaña');
     await pool.query(`DELETE FROM tienda_promociones WHERE id = $1`, [pr.id]);
+  });
+
+  // ═══ K) Concurrencia del ledger: el claim tiene que ser atómico ═══
+  //
+  // El bug que cierran estos casos: derivacion() consultaba "¿está pendiente?",
+  // ejecutaba y marcaba después. Dos finalizadores simultáneos leían
+  // "pendiente" a la vez y los dos ejecutaban la misma derivación. Para
+  // `emision` eso eran dos comandas legacy y dos avisos al panel.
+  //
+  // Se prueban los DOS consumidores que no deduplican por su cuenta: el
+  // print-agent legacy y el panel.
+
+  await t('K1. legacy: 10 reintentos SIMULTÁNEOS dejan UN SOLO broadcast', async () => {
+    await ponerModoLegacy(true);
+    const tk = token();
+    let folio = null;
+
+    // Checkout que muere antes de emitir: el pedido existe, la comanda no.
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      const r = await comprar(base, carrito(tk));
+      assert.ok(r.status >= 400, 'el checkout no falló pese al fallo inyectado');
+    });
+    folio = (await pedidosDelToken(tk))[0]?.folio;
+    assert.ok(folio, 'no quedó el pedido huérfano');
+    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0,
+      'no debería haber salido nada por legacy todavía');
+
+    await conServidor({}, async (base) => {
+      const espia = await abrirWS(base, '/');
+      await asentar(400); // volcado inicial del tablero
+      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk))));
+      await asentar();
+      espia.close();
+      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+      assert.strictEqual(legacy.length, 1,
+        `el print-agent legacy recibió ${legacy.length} comandas del folio ${folio} (debe ser exactamente 1)`);
+      assert.strictEqual(legacy[0].printJobId, `${folio}:comanda`,
+        'el mensaje legacy salió sin printJobId determinista: nada podría deduplicarlo');
+      assert.strictEqual(legacy[0].tipoDocumento, 'comanda');
+    });
+
+    const filas = await filasLegacyEmitidas(folio);
+    assert.strictEqual(filas.length, 1, 'el ledger de impresión legacy no registró exactamente una emisión');
+  });
+
+  await t('K2. dos finalizadores simultáneos: solo UNO entra a la derivación emision', async () => {
+    // El aviso al panel se emite DENTRO de la derivación y no lo deduplica
+    // ningún ledger: contarlo mide directamente cuántos procesos entraron.
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+
+    await conServidor({}, async (base) => {
+      const panel = await abrirWS(base, '/ws/panel', ADMIN);
+      // El panel recibe un volcado inicial del tablero al conectarse: se deja
+      // pasar y se cuenta solo lo que llega DESPUÉS.
+      await asentar(400);
+      const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      await Promise.all([comprar(base, carrito(tk)), comprar(base, carrito(tk))]);
+      await asentar();
+      panel.close();
+      assert.strictEqual(avisos.length, 1,
+        `la derivación emision corrió ${avisos.length} veces con dos finalizadores simultáneos`);
+    });
+  });
+
+  await t('K3. crash DESPUÉS de imprimir por legacy y ANTES de marcar → el retry NO reimprime', async () => {
+    // El caso que un lock no puede resolver: el efecto externo ya ocurrió y la
+    // marca no llegó a escribirse. Solo la idempotencia real del efecto salva
+    // el papel. El proceso además MUERE entre los dos intentos: la memoria
+    // tiene que estar en la base, no en el proceso.
+    const tk = token();
+    let folio = null;
+
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'emitido_sin_marcar' }, async (base) => {
+      const espia = await abrirWS(base, '/');
+      await asentar(400); // volcado inicial del tablero
+      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido');
+      const r = await comprar(base, carrito(tk));
+      await asentar();
+      espia.close();
+      assert.ok(r.status >= 400, 'el checkout no falló pese al fallo inyectado');
+      assert.strictEqual(legacy.length, 1, 'el papel no llegó a salir: el escenario no se reprodujo');
+      folio = legacy[0].pedido?.id;
+    });
+
+    assert.ok(!('emision' in await derivacionesDe(tk)),
+      'la marca se escribió pese al fallo: el escenario no se reprodujo');
+    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1,
+      'el ledger de impresión no recordó la emisión que sí ocurrió');
+
+    // Servidor NUEVO -- proceso nuevo, memoria en cero.
+    await conServidor({}, async (base) => {
+      const espia = await abrirWS(base, '/');
+      await asentar(400); // volcado inicial del tablero
+      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      const r = await comprar(base, carrito(tk));
+      await asentar();
+      espia.close();
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(legacy.length, 0,
+        '¡PAPEL DUPLICADO! el reintento volvió a mandar la comanda al print-agent legacy');
+    });
+
+    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1,
+      'el ledger de impresión legacy quedó con más de una emisión');
+    assert.ok('emision' in await derivacionesDe(tk), 'el reintento no completó la derivación');
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
+  });
+
+  await t('K4. cinco reintentos más tras la recuperación: ni una comanda legacy extra', async () => {
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+    await conServidor({}, async (base) => {
+      const espia = await abrirWS(base, '/');
+      await asentar(400); // volcado inicial del tablero
+      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      for (let i = 0; i < 6; i++) {
+        const r = await comprar(base, carrito(tk));
+        assert.strictEqual(r.status, 200, `reintento ${i}: ${JSON.stringify(r.body)}`);
+      }
+      await asentar();
+      espia.close();
+      assert.strictEqual(legacy.length, 1, `salieron ${legacy.length} comandas legacy en seis intentos`);
+    });
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
+  });
+
+  await t('K5. el panel además deduplica por folio del lado del consumidor', async () => {
+    // Segunda línea de defensa, la que sigue valiendo si un día el evento se
+    // emite dos veces por otra causa. Se comprueba en el código que corre en
+    // el navegador, no en una imitación.
+    const panel = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
+    const i = panel.indexOf('function agregarPedido(');
+    assert.ok(i > 0, 'no se encontró agregarPedido en el panel');
+    const cuerpo = panel.slice(i, i + 400);
+    assert.ok(/getElementById\(`comanda-\$\{pedido\.id\}`\)\)\s*return/.test(cuerpo),
+      'agregarPedido ya no descarta un folio que ya está en el tablero');
+  });
+
+  await t('K6. con Edge de vuelta: 10 concurrentes → 1 trabajo por destino y 1 aviso al panel', async () => {
+    await ponerModoLegacy(false);
+    await montarImpresion();
+    const tk = token();
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+    assert.strictEqual(await trabajosDeFolio(folio), 0, 'había comandas antes del reintento');
+
+    await conServidor({}, async (base) => {
+      const panel = await abrirWS(base, '/ws/panel', ADMIN);
+      await asentar(400);
+      const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk))));
+      await asentar();
+      panel.close();
+      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+      assert.strictEqual(avisos.length, 1, `el panel recibió ${avisos.length} avisos del mismo pedido`);
+    });
+
+    assert.strictEqual(await trabajosDeFolio(folio), 1,
+      'no quedó exactamente 1 trabajo de comanda por destino');
+    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0,
+      'con Edge a cargo, el camino legacy no debería haberse tocado siquiera');
+  });
+
+  await t('K7. bajo la misma concurrencia: 1 pedido, 1 atribución y 1 registro en historial', async () => {
+    const tk = token();
+    await conServidor({}, async (base) => {
+      await crearPromo(base, { nombre: 'Concurrente ledger', tipo: 'monto_fijo', valor: 15,
+        codigo: 'LEDGERCONC', limiteUsos: 5 });
+    });
+    await conServidor({ XABOR_TIENDA_FALLA_EN: 'antes_de_emitir' }, async (base) => {
+      await comprar(base, carrito(tk, { codigo: 'LEDGERCONC' }));
+    });
+    const folio = (await pedidosDelToken(tk))[0]?.folio;
+    // Se mide el DELTA, no el total: la tabla `pedidos` es historia acumulada
+    // y el contador de folios puede reciclar un numero cuyo pedido_activo ya
+    // se archivo. Lo que se afirma aqui es la propiedad real -- el reintento
+    // no vuelve a guardar -- no la unicidad global del folio.
+    const historialAntes = await historialDeFolio(folio);
+    assert.ok(historialAntes >= 1, 'el pedido no llego al historial en el primer intento');
+
+    await conServidor({}, async (base) => {
+      const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk, { codigo: 'LEDGERCONC' }))));
+      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+    });
+
+    assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
+    assert.strictEqual(await usosDeCodigo('LEDGERCONC'), 1, 'la promoción se atribuyó más de una vez');
+    assert.strictEqual(await contadorUsos('LEDGERCONC'), 1, 'el contador de usos se movió de más');
+    assert.strictEqual(await historialDeFolio(folio), historialAntes,
+      'el reintento volvió a escribir el pedido en el historial');
+    assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
   });
 
 } catch (e) {

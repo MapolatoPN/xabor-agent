@@ -17,11 +17,13 @@
 // otra parte. Esta vía nunca la invoca producción (server.js no la llama).
 import {
   resolverModoImpresion as resolverModoImpresionReal,
-  resolverSucursalParaImpresion as resolverSucursalParaImpresionReal
+  resolverSucursalParaImpresion as resolverSucursalParaImpresionReal,
+  emitirUnaSolaVezLegacy as emitirUnaSolaVezLegacyReal
 } from '../services/database.js';
 
 let _resolverModo = resolverModoImpresionReal;
 let _resolverSucursal = resolverSucursalParaImpresionReal;
+let _emitirUnaSolaVez = emitirUnaSolaVezLegacyReal;
 
 // Estado inicial: sin broadcasts configurados -- emitirTrabajoImpresion debe
 // fallar cerrado (nunca simular éxito) si el modo elegido necesita uno que
@@ -45,7 +47,7 @@ export function setBroadcastsImpresion({ legacy, autenticado } = {}) {
 // Exclusiva para pruebas -- sustituye resolverModoImpresion/
 // resolverSucursalParaImpresion por mocks. Nunca la invoca server.js ni
 // ningún canal real. Ver comentario de imports arriba.
-export function setDependenciasImpresionParaPruebas({ resolverModo, resolverSucursal } = {}) {
+export function setDependenciasImpresionParaPruebas({ resolverModo, resolverSucursal, emitirUnaVez } = {}) {
   if (resolverModo !== undefined) {
     if (typeof resolverModo !== 'function') {
       throw new Error('setDependenciasImpresionParaPruebas: resolverModo debe ser función');
@@ -57,6 +59,12 @@ export function setDependenciasImpresionParaPruebas({ resolverModo, resolverSucu
       throw new Error('setDependenciasImpresionParaPruebas: resolverSucursal debe ser función');
     }
     _resolverSucursal = resolverSucursal;
+  }
+  if (emitirUnaVez !== undefined) {
+    if (typeof emitirUnaVez !== 'function') {
+      throw new Error('setDependenciasImpresionParaPruebas: emitirUnaVez debe ser función');
+    }
+    _emitirUnaSolaVez = emitirUnaVez;
   }
 }
 
@@ -81,16 +89,36 @@ async function emitirLegacy(pedido, negocioId, folio) {
     console.error(`[Impresion] broadcast legacy no configurado — omitido (fail closed) negocio=${negocioId} folio=${folio ?? '-'}`);
     return resultadoOmitido(negocioId, null, 'broadcast_legacy_no_configurado');
   }
-  const mensaje = { tipo: 'nuevo_pedido', pedido };
-  let destinatarios;
+
+  // El camino legacy también lleva printJobId desde aquí. Antes salía sin él y
+  // por eso NADA podía deduplicarlo: ni el servidor, ni un agente actualizado,
+  // ni un humano leyendo logs. Es el mismo id determinista del camino
+  // autenticado -- '<folio>:comanda' -- para que un agente que hable los dos
+  // protocolos reconozca el mismo trabajo por cualquiera de las dos vías.
+  const printJobId = construirPrintJobId(pedido);
+  if (printJobId === null) {
+    console.error(`[Impresion] pedido sin folio válido — no se imprime en modo legacy (fail closed) negocio=${negocioId}`);
+    return resultadoOmitido(negocioId, null, 'folio_invalido');
+  }
+
+  const mensaje = { tipo: 'nuevo_pedido', printJobId, tipoDocumento: 'comanda', pedido };
+  let resultado;
   try {
-    destinatarios = await _broadcastLegacy(mensaje);
+    // A lo sumo una vez por (negocio, printJobId), con memoria en Postgres:
+    // sobrevive al reinicio del proceso y a varias instancias a la vez. Ver
+    // emitirUnaSolaVezLegacy en database.js para el porqué de cada mecanismo.
+    resultado = await _emitirUnaSolaVez(negocioId, printJobId, () => _broadcastLegacy(mensaje));
   } catch (e) {
     console.error(`[Impresion] error en broadcast legacy negocio=${negocioId} folio=${folio ?? '-'}: ${e.message}`);
     return { modo: 'legacy', destinatarios: 0, negocioId, sucursalId: null, razon: 'error_broadcast' };
   }
-  console.log(`[Impresion] legacy negocio=${negocioId} folio=${folio ?? '-'} destinatarios=${destinatarios}`);
-  return { modo: 'legacy', destinatarios, negocioId, sucursalId: null, razon: null };
+
+  if (resultado.duplicado) {
+    console.log(`[Impresion] legacy YA EMITIDO printJobId=${printJobId} negocio=${negocioId} — no se reimprime`);
+    return { modo: 'legacy', destinatarios: 0, negocioId, sucursalId: null, razon: 'ya_emitido' };
+  }
+  console.log(`[Impresion] legacy negocio=${negocioId} folio=${folio ?? '-'} destinatarios=${resultado.destinatarios}`);
+  return { modo: 'legacy', destinatarios: resultado.destinatarios, negocioId, sucursalId: null, razon: null };
 }
 
 async function emitirAutenticado(pedido, negocioId, folio) {

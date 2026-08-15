@@ -256,36 +256,76 @@ async function buscarPedidoDeCheckout(negocioId, token) {
 // nada la segunda vez.
 //
 // La marca se escribe DESPUÉS de que la derivación tuvo éxito. Un crash entre
-// "emitirPedido terminó" y "se escribió la marca" haría que un reintento la
-// repitiera -- ventana estrecha, y justo en ella los dos efectos destructivos
-// (comanda Edge y oferta a repartidores) tienen su propia idempotencia. Al
-// revés -- marcar antes de hacer -- el riesgo sería peor: un pedido sin
-// comanda que nadie vuelve a intentar.
-async function derivacionPendiente(negocioId, token, nombre) {
-  const { rows: [r] } = await pool.query(
-    // jsonb_exists en vez del operador ?: con un parametro, Postgres no puede
-    // inferir el tipo de $3 para ? y falla con "could not determine data type".
-    `SELECT jsonb_exists(derivaciones, $3::text) AS hecha FROM tienda_pedidos
-      WHERE negocio_id = $1 AND checkout_token = $2`,
-    [negocioId, token, nombre]);
-  return !r?.hecha;
-}
-
-async function marcarDerivacion(negocioId, token, nombre) {
-  await pool.query(
-    `UPDATE tienda_pedidos
-        SET derivaciones = derivaciones || jsonb_build_object($3::text, NOW()::text),
-            updated_at = NOW()
-      WHERE negocio_id = $1 AND checkout_token = $2`,
-    [negocioId, token, nombre]);
-}
-
+// "emitirPedido terminó" y "se escribió la marca" hace que un reintento la
+// repita, y por eso la marca NO es la única defensa: los tres efectos que
+// dejarían rastro visible tienen idempotencia propia y persistente -- comanda
+// Edge por clave (negocio, pedido, impresora), oferta a repartidores por
+// (folio, repartidor), impresión legacy por impresion_legacy_emitida. Al revés
+// -- marcar antes de hacer -- el riesgo sería peor: un pedido sin comanda que
+// nadie vuelve a intentar.
 // Corre `fn` solo si esa derivación no está marcada, y la marca al terminar.
+//
+// El claim es ATÓMICO, no un SELECT seguido de un UPDATE. Consultar "¿está
+// pendiente?" y marcar después deja un hueco: dos finalizadores concurrentes
+// leen "pendiente" a la vez y los dos ejecutan la misma derivación antes de
+// que ninguno alcance a marcar. Para `emision` eso significaba dos comandas
+// por el camino legacy y dos avisos al panel.
+//
+// El lock de Postgres es lo único que los dos procesos ven, y va en la MISMA
+// transacción que la marca: cuando el lock se suelta (COMMIT), la marca ya es
+// visible. No queda ningún instante en el que otro proceso pueda entrar y
+// encontrar "pendiente" una derivación que en realidad ya terminó.
+//
+// try_ y no la versión que espera: si otro proceso ya está corriendo ESTA
+// derivación, no hay nada que hacer más que dejarlo trabajar. Esperar solo
+// retendría una conexión del pool -- y con diez reintentos simultáneos eso
+// vacía el pool que el dueño necesita para terminar.
+//
+// Un lock resuelve la concurrencia y NADA MÁS. El crash después del efecto y
+// antes de la marca lo resuelve la idempotencia real de cada efecto: Edge por
+// clave de impresión, repartidores por (folio, repartidor), impresión legacy
+// por la tabla impresion_legacy_emitida. Los dos mecanismos hacen falta;
+// ninguno sustituye al otro.
 async function derivacion(negocioId, token, nombre, fn) {
-  if (!(await derivacionPendiente(negocioId, token, nombre))) return false;
-  await fn();
-  await marcarDerivacion(negocioId, token, nombre);
-  return true;
+  const cliente = await pool.connect();
+  try {
+    await cliente.query('BEGIN');
+
+    const { rows: [lock] } = await cliente.query(
+      `SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2)) AS obtenido`,
+      [`tienda_derivacion:${negocioId}:${token}`, nombre]);
+    if (!lock?.obtenido) {
+      await cliente.query('ROLLBACK');
+      return false;
+    }
+
+    const { rows: [r] } = await cliente.query(
+      // jsonb_exists en vez del operador ?: con un parametro, Postgres no puede
+      // inferir el tipo de $3 para ? y falla con "could not determine data type".
+      `SELECT jsonb_exists(derivaciones, $3::text) AS hecha FROM tienda_pedidos
+        WHERE negocio_id = $1 AND checkout_token = $2`,
+      [negocioId, token, nombre]);
+    if (r?.hecha) {
+      await cliente.query('ROLLBACK');
+      return false;
+    }
+
+    await fn();
+
+    await cliente.query(
+      `UPDATE tienda_pedidos
+          SET derivaciones = derivaciones || jsonb_build_object($3::text, NOW()::text),
+              updated_at = NOW()
+        WHERE negocio_id = $1 AND checkout_token = $2`,
+      [negocioId, token, nombre]);
+    await cliente.query('COMMIT');
+    return true;
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
 export async function finalizarCheckout({ negocioId, token, pedido, datosPedido, promoAplicadas = null }) {
@@ -325,6 +365,11 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
   await derivacion(negocioId, token, 'emision', async () => {
     const { emitirPedido } = await import('../orders/orderManager.js');
     await emitirPedido(pedido);
+    // El punto más incómodo del flujo: el efecto externo YA ocurrió (el papel
+    // salió, el panel se enteró) pero la marca todavía no está escrita. Un
+    // crash aquí es lo que obliga a que cada efecto tenga idempotencia propia
+    // y no solo el ledger. Se inyecta para poder probarlo de verdad.
+    fallaInyectada('emitido_sin_marcar');
   });
 
   fallaInyectada('despues_de_emitir');
