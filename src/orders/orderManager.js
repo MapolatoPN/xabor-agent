@@ -203,6 +203,21 @@ export async function registrarPedido(orden, canal = 'test') {
     }
   }
 
+  // ── Pago en línea: el pedido nace pendiente_pago ──
+  // Misma puerta que el anticipo estructurado, por otro camino: cuando el
+  // cliente eligió pagar EN LÍNEA, el pedido no puede entrar a cocina hasta
+  // que el webhook verificado confirme el dinero. El gate vive en
+  // emitirPedido; aquí solo se fija el estado inicial.
+  //
+  // La bandera la pone el checkout EN EL SERVIDOR, a partir del método de
+  // pago que él mismo resolvió contra metodos_pago del negocio. Nunca llega
+  // del navegador: el cuerpo de la petición no la lleva, y aunque la llevara,
+  // construirOrdenPOS no la copia.
+  if (orden.requierePagoAnticipado === true) {
+    estadoInicial = 'pendiente_pago';
+    eventoTxn('pedido_nace_pendiente_pago', negocioId, { canal, total: orden.total });
+  }
+
   const base = {
     ...orden,
     negocioId,

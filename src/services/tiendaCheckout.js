@@ -654,8 +654,18 @@ export async function crearPedidoTienda({
       orden.tienda.programado = true;
     }
     // Un pedido que se paga al entregar nace por cobrar, igual que el
-    // mostrador: el cobro se cierra en el panel cuando el dinero llega.
+    // mostrador: el cobro se cierra en el panel cuando el dinero llega, y la
+    // comanda sale de inmediato porque el dinero se cobra en persona.
     if (elegido.pagaDespues) orden.pago_confirmado = false;
+    else {
+      // PAGO EN LÍNEA. El pedido nace pendiente_pago: sin comanda, sin oferta
+      // a repartidores, sin entrar a cocina, hasta que el webhook verificado
+      // del proveedor confirme el dinero. Antes de esto la tienda ofrecía
+      // "Pagar en línea", jamás creaba el enlace, y aun así imprimía la
+      // comanda -- el negocio cocinaba sin haber cobrado.
+      orden.pago_confirmado = false;
+      orden.requierePagoAnticipado = true;
+    }
 
     // 8) Alta del pedido por el camino de siempre. A partir de esta linea el
     //    pedido es DURABLE: cualquier fallo posterior ya no se puede resolver
@@ -746,6 +756,79 @@ async function clienteTienePedidosPrevios(negocioId, telefono, folioActual) {
 // internos. Devuelve solo lo que el cliente necesita ver.
 const ETAPAS_RECOGER = ['recibido', 'preparando', 'listo', 'entregado'];
 const ETAPAS_DOMICILIO = ['recibido', 'preparando', 'listo', 'en_camino', 'entregado'];
+
+// ── Pago en línea de un pedido de la tienda ───────────────────────────────
+//
+// Se separa del checkout a propósito. Si crear el enlace viviera dentro del
+// checkout, una caída del proveedor tumbaría el pedido entero; y un reintento
+// del cliente ("volver a pagar") tendría que rehacer el pedido. Así el pedido
+// queda durable en `pendiente_pago` y el enlace se pide -- o se vuelve a pedir --
+// contra ESE pedido, cuantas veces haga falta.
+//
+// La idempotencia no se reinventa: pagosService.crearEnlacePago ya es idempotente
+// por (negocio, pedido, versión del pedido, tipo), recalcula el total desde la
+// base y invalida el enlace anterior si el monto cambió.
+//
+// El token de seguimiento es la única llave que el cliente conoce: opaco, de 192
+// bits, y resuelve por sí solo el negocio y el folio. Nunca se acepta un
+// negocioId del navegador.
+async function pedidoDeTracking(trackingToken) {
+  const token = String(trackingToken || '').trim();
+  if (!/^[a-f0-9]{48}$/.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
+  const { rows: [r] } = await pool.query(
+    `SELECT tp.negocio_id, tp.pedido_folio, pa.estado, pa.datos
+       FROM tienda_pedidos tp
+       LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
+      WHERE tp.tracking_token = $1`, [token]);
+  if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  return r;
+}
+
+export async function pagoDeCheckout(trackingToken) {
+  const r = await pedidoDeTracking(trackingToken);
+
+  // Un pedido que ya no espera pago no vuelve a generar enlace: ni el ya
+  // pagado (jamás re-cobrar) ni el que se paga en persona.
+  if (r.estado !== 'pendiente_pago') {
+    return { estado: r.estado === 'cancelado' ? 'cancelado' : 'no_requiere_pago', url: null, folio: r.pedido_folio };
+  }
+
+  const { crearEnlacePago } = await import('./pagosService.js');
+  const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
+  const principal = await obtenerProveedorPrincipal(r.negocio_id);
+  const enlace = await crearEnlacePago({
+    negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: 'tienda_online',
+    descripcion: `Pedido ${r.pedido_folio}`,
+  });
+  return {
+    estado: 'pendiente_pago',
+    folio: r.pedido_folio,
+    url: enlace.url || null,
+    reutilizado: enlace.reutilizado === true,
+    // Sólo el nombre visible del proveedor: el cliente ve "Procesado de forma
+    // segura por ...", nunca una credencial ni un id interno.
+    proveedor: principal?.proveedor || null,
+    instrucciones: enlace.instrucciones || null,
+  };
+}
+
+// Estado del pago para la pantalla "Estamos confirmando tu pago". Nunca
+// confía en el redirect de regreso del proveedor: lee lo que la base dice,
+// que es lo que el webhook verificado escribió.
+export async function estadoPagoDeCheckout(trackingToken) {
+  const r = await pedidoDeTracking(trackingToken);
+  const { rows: [pago] } = await pool.query(
+    `SELECT estado, proveedor, monto FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2
+      ORDER BY created_at DESC LIMIT 1`, [r.negocio_id, r.pedido_folio]);
+  return {
+    folio: r.pedido_folio,
+    pedidoEstado: r.estado,
+    esperandoPago: r.estado === 'pendiente_pago',
+    pagoEstado: pago?.estado || null,
+    proveedor: pago?.proveedor || null,
+  };
+}
 
 export async function seguimientoPublico(trackingToken) {
   const token = String(trackingToken || '').trim();

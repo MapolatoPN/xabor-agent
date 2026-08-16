@@ -7233,6 +7233,24 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
   }
 });
 
+// Herramienta interna YA autenticada como admin: dispara la MISMA transicion
+// autorizada que usa el webhook verificado (confirmarPedidoPendientePago), sin
+// llamar a ningun proveedor ni mover dinero. Existe para que las pruebas puedan
+// cerrar el ciclo pago->comanda sin inventar una segunda via de confirmacion:
+// si esta ruta pudiera confirmar por su cuenta, no probaria nada.
+app.post('/test/confirmar-pago-tienda', requireAdminSeguro, async (req, res) => {
+  const folio = String(req.body?.folio || '').trim();
+  if (!folio) return res.status(400).json({ error: 'folio requerido' });
+  try {
+    await confirmarPagoPedido(folio, req.negocioId);
+    await confirmarPedidoPendientePago(folio, req.negocioId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[test/confirmar-pago-tienda]', e.message);
+    res.status(500).json({ error: 'no se pudo confirmar' });
+  }
+});
+
 app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   // Overrides opcionales SOLO de esta ruta de prueba (ya protegida con
   // admin): las suites del primer mensaje a repartidores necesitan crear

@@ -37,7 +37,7 @@ const {
   suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal,
   probarIntegracionPago, guardarCredencialesClip, obtenerCredencialesPagoDescifradas, TenantContextRequiredError,
 } = await import('../src/services/integracionesService.js');
-const { esProveedorValido, validarPuedeActivarse, listarProveedores } = await import('../src/services/paymentProviders.js');
+const { esProveedorValido, validarPuedeActivarse, listarProveedores, obtenerAdaptador } = await import('../src/services/paymentProviders.js');
 const { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } = await import('../src/services/pagosService.js');
 const {
   listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles,
@@ -120,22 +120,34 @@ const cookieSuperadmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ u
 const servidor = await arrancarServidor({ PORT: PUERTO });
 
 // ═══════════ 1. Registro de proveedores: solo Clip y manual_transfer activables ═══════════
-await t('REGISTRO', 'listarProveedores incluye los 6 nombres, solo clip/manual_transfer con implementado=true', () => {
+await t('REGISTRO', 'el registro declara la verdad: implementado SOLO si hay adaptador real', () => {
+  // La lista crece con el producto; lo que NO puede cambiar es la regla:
+  // "implementado" y "tiene adaptador" son la misma cosa, siempre. Declararse
+  // implementado sin adaptador seria fingir una integracion; al reves, seria
+  // ofrecer menos de lo que ya funciona.
   const lista = listarProveedores();
   const nombres = lista.map(p => p.id).sort();
-  assert.deepStrictEqual(nombres, ['clip', 'conekta', 'manual_transfer', 'mercado_pago', 'openpay', 'stripe']);
+  assert.deepStrictEqual(nombres,
+    ['clip', 'conekta', 'manual_transfer', 'mercado_pago', 'openpay', 'paypal', 'stripe']);
   for (const p of lista) {
-    if (['clip', 'manual_transfer'].includes(p.id)) assert.strictEqual(p.implementado, true, `${p.id} debe estar implementado`);
-    else assert.strictEqual(p.implementado, false, `${p.id} NO debe fingir estar implementado`);
+    assert.strictEqual(p.implementado, obtenerAdaptador(p.id) !== null,
+      `${p.id}: 'implementado' no coincide con tener adaptador real`);
+    assert.strictEqual(validarPuedeActivarse(p.id), p.implementado,
+      `${p.id}: activable e implementado deben ir juntos`);
   }
 });
-await t('REGISTRO', 'mercado_pago es válido pero no activable; guardarIntegracionPago lo rechaza', async () => {
-  assert.strictEqual(esProveedorValido('mercado_pago'), true);
-  assert.strictEqual(validarPuedeActivarse('mercado_pago'), false);
-  await assert.rejects(() => guardarIntegracionPago(NEGOCIO_A, 'mercado_pago', { apiKey: 'x' }, { actualizadoPor: SEED.superadminUsuarioId }), /adaptador implementado/);
+await t('REGISTRO', 'un proveedor SIN adaptador es valido pero no activable, y guardar credenciales lo rechaza', async () => {
+  // PayPal ocupa hoy ese lugar: registrado con su forma correcta (la UI lo
+  // muestra como "Proximamente") pero sin poder activarse.
+  assert.strictEqual(esProveedorValido('paypal'), true);
+  assert.strictEqual(validarPuedeActivarse('paypal'), false);
+  await assert.rejects(
+    () => guardarIntegracionPago(NEGOCIO_A, 'paypal', { clientId: 'x' }, { actualizadoPor: SEED.superadminUsuarioId }),
+    /adaptador implementado/);
 });
-await t('REGISTRO', 'proveedor inexistente -> esProveedorValido false', () => {
-  assert.strictEqual(esProveedorValido('paypal'), false);
+await t('REGISTRO', 'un proveedor inexistente sigue siendo invalido', () => {
+  assert.strictEqual(esProveedorValido('un_proveedor_que_no_existe'), false);
+  assert.strictEqual(validarPuedeActivarse('un_proveedor_que_no_existe'), false);
 });
 
 // ═══════════ 2. Superadmin CRUD de integraciones de pago (manual_transfer, sin red) ═══════════

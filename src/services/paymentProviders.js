@@ -18,6 +18,7 @@
  */
 import * as clipAdapter from './providers/clipProvider.js';
 import * as manualTransferAdapter from './providers/manualTransferProvider.js';
+import * as mercadoPagoAdapter from './providers/mercadoPagoProvider.js';
 
 const PROVEEDORES = {
   clip: {
@@ -36,9 +37,21 @@ const PROVEEDORES = {
   },
   mercado_pago: {
     nombre: 'Mercado Pago',
+    implementado: true,
+    requiereCredenciales: true,
+    // webhookSecret es el que MP entrega al configurar notificaciones: sin el,
+    // verifyWebhook falla cerrado y ningun webhook se considera verificado.
+    camposConfiguracion: ['accessToken', 'publicKey', 'webhookSecret'],
+    adaptador: mercadoPagoAdapter,
+  },
+  paypal: {
+    nombre: 'PayPal',
+    // Registrado con la forma correcta, NO implementado: la UI lo muestra como
+    // "Proximamente" y validarPuedeActivarse impide guardar credenciales.
+    // Fingir que funciona seria peor que no ofrecerlo.
     implementado: false,
     requiereCredenciales: true,
-    camposConfiguracion: ['accessToken', 'publicKey'],
+    camposConfiguracion: ['clientId', 'clientSecret', 'webhookId'],
     adaptador: null,
   },
   stripe: {

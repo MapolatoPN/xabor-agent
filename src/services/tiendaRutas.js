@@ -18,6 +18,7 @@ import {
 } from './tiendaOnline.js';
 import {
   cotizarCarrito, crearPedidoTienda, seguimientoPublico,
+  pagoDeCheckout, estadoPagoDeCheckout,
 } from './tiendaCheckout.js';
 import {
   listarPromociones, guardarPromocion, eliminarPromocion, listarCampanas,
@@ -137,6 +138,24 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
     try {
       res.json(await seguimientoPublico(req.params.token));
     } catch (e) { responderError(res, e, 'GET seguimiento'); }
+  });
+
+  // Pago en linea del pedido. POST porque crea (o reutiliza) un enlace contra
+  // el proveedor del negocio. El token de seguimiento es la unica llave y
+  // resuelve por si solo negocio y folio -- nunca se acepta un negocioId del
+  // navegador.
+  app.post('/api/tienda/seguimiento/:token/pago', limiteCheckout, async (req, res) => {
+    try {
+      res.json(await pagoDeCheckout(req.params.token));
+    } catch (e) { responderError(res, e, 'POST pago tienda'); }
+  });
+
+  // Estado para la pantalla "Estamos confirmando tu pago": lee lo que escribio
+  // el webhook verificado. El redirect de regreso nunca es autoridad.
+  app.get('/api/tienda/seguimiento/:token/pago', limitePublico, async (req, res) => {
+    try {
+      res.json(await estadoPagoDeCheckout(req.params.token));
+    } catch (e) { responderError(res, e, 'GET estado pago tienda'); }
   });
 
   // ══════════════════ BACKOFFICE (sesión + módulo) ══════════════════
