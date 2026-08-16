@@ -8,7 +8,10 @@ import {
   obtenerPedidosActivos,
   obtenerMaxFolioNum,
   eliminarPedido as eliminarPedidoDB,
-  obtenerConfiguracion
+  obtenerConfiguracion,
+  reclamarEmisionPorPago,
+  saldarEmisionPorPago,
+  pedidosConEmisionPendiente
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
@@ -491,13 +494,63 @@ export function obtenerPedidoPorId(id, negocioId) {
 // bloqueando.
 export async function confirmarPedidoPendientePago(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
-  const pedido = pedidos.find(p => p.id === folio);
-  if (!pedido || pedido.negocioId !== negocioId.trim()) return null;
-  if (pedido.estado !== 'pendiente_pago') return null; // idempotente
-  eventoTxn('transicion_pendiente_pago_confirmado', negocioId, { folio });
-  _persistirCambioEstado(pedido, 'nuevo');
+  const nid = negocioId.trim();
+
+  // La autoridad es la BASE, no el arreglo en memoria. El reclamo mueve el
+  // estado y escribe la deuda de emisión en el MISMO UPDATE; si otro proceso
+  // ya la reclamó y la saldó, aquí no queda nada que hacer y se responde null
+  // -- idempotente. Si un crash dejó la deuda escrita, este reclamo la
+  // encuentra aunque el pedido ya esté en 'nuevo': eso es lo que hace que la
+  // comanda perdida se recupere en vez de darse por procesada.
+  const reclamo = await reclamarEmisionPorPago(folio, nid);
+  if (!reclamo.reclamado) return null;
+
+  eventoTxn('transicion_pendiente_pago_confirmado', nid, { folio });
+
+  // Punto de fallo inyectable: EXACTAMENTE entre persistir la transición (con
+  // su deuda de emisión) y emitir. Es la ventana que dejaba a la cocina sin
+  // papel con el dinero ya cobrado. Mismo candado de producción que el resto
+  // de la inyección de fallos del proyecto.
+  if (process.env.NODE_ENV !== 'production'
+      && process.env.XABOR_PAGOS_FALLA_EN === 'antes_de_emitir_por_pago') {
+    const e = new Error("Fallo inyectado en 'antes_de_emitir_por_pago'");
+    e.inyectado = true;
+    throw e;
+  }
+
+  // El pedido en memoria puede no existir (proceso nuevo tras el crash): se
+  // reconstruye desde lo que la base guardó, que es la fuente de verdad.
+  let pedido = pedidos.find(p => p.id === folio && p.negocioId === nid);
+  if (!pedido) {
+    pedido = { ...reclamo.datos, id: folio, negocioId: nid, estado: 'nuevo' };
+    agregarPedidoAMemoria(pedido);
+  } else {
+    pedido.estado = 'nuevo';
+  }
+
   await emitirPedido(pedido);
+  // Sólo ahora se salda: al revés, un crash entre marcar y emitir dejaría el
+  // pedido como "ya emitido" sin haberlo hecho, y nadie lo volvería a intentar.
+  await saldarEmisionPorPago(folio, nid);
   return pedido;
+}
+
+// Red de seguridad: recoge las emisiones que un crash dejó a medias cuando
+// nadie reintenta desde fuera. Reutiliza la MISMA transición -- no hay una
+// segunda vía de confirmación que pudiera divergir.
+export async function reconciliarEmisionesPendientes(limite = 50) {
+  const filas = await pedidosConEmisionPendiente(limite).catch(() => []);
+  let recuperados = 0;
+  for (const f of filas) {
+    try {
+      const r = await confirmarPedidoPendientePago(f.folio, f.negocio_id);
+      if (r) recuperados++;
+    } catch (e) {
+      console.error(`[Pagos] No se pudo recuperar la emisión de ${f.folio}: ${e.message}`);
+    }
+  }
+  if (recuperados) console.log(`[Pagos] Emisiones recuperadas tras crash: ${recuperados}`);
+  return recuperados;
 }
 
 // Agrega un pedido al array en memoria sin generar folio ni guardar en DB.

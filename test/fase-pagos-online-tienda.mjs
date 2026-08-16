@@ -73,7 +73,27 @@ async function metodos(activos) {
   }
 }
 
+// Clip con credenciales de FORMA valida: su testConnection solo valida forma,
+// no hace red ni cobra nada. Es lo que necesita el gate de "hay con que cobrar"
+// sin tocar ninguna API real.
+async function conectarProveedor() {
+  const { guardarIntegracionPago, marcarProveedorPrincipal } =
+    await import('../src/services/integracionesService.js');
+  await guardarIntegracionPago(NEG, 'clip',
+    { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+    { actualizadoPor: SEED.superadminUsuarioId });
+  await marcarProveedorPrincipal(NEG, 'clip', SEED.superadminUsuarioId);
+}
+async function desconectarProveedor() {
+  // Sin .catch: si la tabla o la columna cambian, la prueba debe reventar. Un
+  // borrado que falla en silencio dejaria el proveedor conectado y el caso 13
+  // pasaria por el motivo equivocado.
+  await pool.query(
+    `DELETE FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'pagos'`, [NEG]);
+}
+
 async function limpiar() {
+  await desconectarProveedor();
   await pool.query(`DELETE FROM pagos WHERE negocio_id = $1`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id = $1`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id = $1`, [NEG]).catch(() => {});
@@ -142,6 +162,7 @@ async function preparar() {
      ON CONFLICT (negocio_id) DO UPDATE SET estado='publicada', slug_publico=$2, modalidades=$3`,
     [NEG, SLUG, JSON.stringify(['recoger'])]);
   await montarImpresion();
+  await conectarProveedor();
 }
 
 let srv = null;
@@ -297,6 +318,83 @@ try {
     } finally {
       await metodos(['efectivo', 'enlace_pago']);
     }
+  });
+
+  // ═══ P0-1: el pago confirmado no puede perder la comanda por un crash ═══
+  await t('11. crash ENTRE la transición y la emisión → la comanda se recupera, y sólo una', async () => {
+    // El agujero: se movía el pedido a 'nuevo' y DESPUÉS se emitía. Un crash
+    // en medio dejaba el dinero cobrado, el pedido en 'nuevo', y a la cocina
+    // sin papel -- y ningún reintento lo arreglaba, porque el pedido ya no
+    // estaba pendiente_pago y se daba por procesado.
+    const tk = token();
+    const r = await comprar(carrito(tk, 'enlace_pago'));
+    const folio = r.body.folio;
+    assert.strictEqual(await trabajosDeFolio(folio), 0, 'imprimió antes de pagar');
+
+    // Servidor con el fallo inyectado EXACTAMENTE en esa ventana.
+    if (srv) { try { await srv.detener(); } catch {} }
+    srv = await arrancarServidor(
+      { PORT: PUERTO, XABOR_PAGOS_FALLA_EN: 'antes_de_emitir_por_pago' }, { timeoutMs: 90000 });
+    const rc = await fetch(`${base}/test/confirmar-pago-tienda`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
+      body: JSON.stringify({ folio }),
+    });
+    assert.ok(rc.status >= 400, 'la confirmación no falló pese al fallo inyectado');
+
+    // La deuda quedó escrita y el pedido ya no está pendiente_pago: el estado
+    // exacto en el que antes se perdía la comanda para siempre.
+    const p = await pedidoDe(folio);
+    assert.strictEqual(p.estado, 'nuevo', 'la transición no se persistió');
+    assert.strictEqual(p.datos.emision_pendiente, true,
+      'no quedó marca durable de que faltaba emitir: la comanda se habría perdido');
+    assert.strictEqual(await trabajosDeFolio(folio), 0, 'emitió pese al fallo');
+
+    // PROCESO NUEVO, sin inyección: la reconciliación de arranque recoge la
+    // deuda sin que nadie reintente desde fuera.
+    if (srv) { try { await srv.detener(); } catch {} }
+    srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
+    await new Promise(x => setTimeout(x, 2500));
+
+    assert.strictEqual(await trabajosDeFolio(folio), 1,
+      'tras el crash y el reinicio no quedó exactamente 1 comanda');
+    const despues = await pedidoDe(folio);
+    assert.strictEqual(despues.estado, 'nuevo');
+    assert.ok(!('emision_pendiente' in despues.datos), 'la deuda no se saldó tras emitir');
+  });
+
+  await t('12. cinco confirmaciones más tras la recuperación → sigue habiendo 1 comanda', async () => {
+    const { rows: [r] } = await pool.query(
+      `SELECT folio FROM pedidos_activos
+        WHERE negocio_id = $1 AND datos->>'canal' = 'tienda_online' AND estado = 'nuevo'
+        ORDER BY updated_at DESC LIMIT 1`, [NEG]);
+    assert.ok(r, 'no hay pedido recuperado que reintentar');
+    for (let i = 0; i < 5; i++) {
+      await fetch(`${base}/test/confirmar-pago-tienda`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
+        body: JSON.stringify({ folio: r.folio }),
+      });
+    }
+    await new Promise(x => setTimeout(x, 700));
+    assert.strictEqual(await trabajosDeFolio(r.folio), 1,
+      'cinco reintentos posteriores produjeron comandas de más');
+  });
+
+  // ═══ P0-3: no ofrecer pago en línea sin proveedor real ═══
+  await t('13. con enlace_pago habilitado pero SIN integración, la tienda NO lo ofrece', async () => {
+    // Misma fila habilitada, pero sin proveedor conectado: no basta.
+    await desconectarProveedor();
+    const cat = await fetch(`${base}/api/tienda/${SLUG}/pagos?modalidad=recoger`).then(x => x.json());
+    const ids = (cat.metodos || []).map(m => m.id);
+    assert.ok(!ids.includes('enlace_pago'),
+      'ofrece "Pagar en línea" sin proveedor: cada pedido quedaría condenado a pendiente_pago');
+    assert.ok(ids.includes('efectivo'), 'el efectivo dejó de funcionar');
+  });
+
+  await t('14. y el checkout tampoco lo acepta por la puerta de atrás', async () => {
+    const r = await comprar(carrito(token(), 'enlace_pago'));
+    assert.ok(r.status >= 400,
+      'aceptó un método de pago que la tienda no ofrece: pedido condenado a pendiente_pago');
+    await conectarProveedor();
   });
 
 } catch (e) {

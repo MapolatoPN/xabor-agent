@@ -79,17 +79,36 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   // coincide la versión, se reutiliza tal cual (mismo enlace) -- nunca se
   // genera uno nuevo por un doble clic o un reintento.
   const vigente = await obtenerPagoVigente(negocioId, pedidoId, tipo);
-  if (vigente && vigente.version_pedido_hash === versionHash && ['pendiente', 'requiere_revision'].includes(vigente.estado)) {
+
+  // P1: el intento vigente pertenece a UN proveedor. Si el negocio cambió su
+  // principal entre el primer intento y el reintento, devolver la URL vieja
+  // etiquetada con el proveedor nuevo sería mentir sobre a qué cuenta va el
+  // dinero. Decisión explícita: un pago pendiente NO queda fijado a su
+  // proveedor original -- se invalida y se crea un intento nuevo con el
+  // proveedor actual. Nunca se mezclan los dos.
+  //
+  // El dinero que sí entró por el enlace viejo se sigue honrando: su webhook
+  // resuelve por referencia_interna y confirma igual, aunque el registro esté
+  // invalidado. Invalidar no es repudiar un cobro, es dejar de ofrecerlo.
+  if (vigente && vigente.proveedor && vigente.proveedor !== principal.proveedor) {
+    await invalidarPagosVigentesDePedido(negocioId, pedidoId,
+      `el negocio cambió de proveedor (${vigente.proveedor} → ${principal.proveedor}) antes de completar el pago`);
+  } else if (vigente && vigente.version_pedido_hash === versionHash && ['pendiente', 'requiere_revision'].includes(vigente.estado)) {
     return { pagoId: vigente.id, url: vigente.url, reutilizado: true, referenciaExterna: vigente.referencia_externa, estado: vigente.estado };
   }
-  if (vigente && vigente.version_pedido_hash !== versionHash) {
+  if (vigente && vigente.proveedor === principal.proveedor && vigente.version_pedido_hash !== versionHash) {
     // El pedido cambió desde el último intento (ejemplo del encargo:
     // domicilio $560 -> recoger $500) -- el enlace anterior ya no es
     // válido, se invalida explícitamente y nunca se reenvía.
     await invalidarPagosVigentesDePedido(negocioId, pedidoId, 'pedido modificado antes de completar el pago anterior');
   }
 
-  const referenciaInterna = `${negocioId.trim()}:${pedidoId}:${versionHash}`;
+  // El proveedor forma parte de la identidad del intento: sin esto, un
+  // reintento con otro proveedor chocaba contra el UNIQUE de referencia_interna
+  // y terminaba REUTILIZANDO la fila del proveedor anterior -- exactamente la
+  // mezcla que hay que impedir. Las tres primeras partes no se mueven: el
+  // webhook de Clip sigue leyendo negocio y folio de las posiciones 0 y 1.
+  const referenciaInterna = `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}`;
   // Reintento tras un intento FALLIDO (segunda causa del incidente del
   // enlace): la fila fallida conserva la referencia_interna única, así que
   // un segundo intento con el pedido sin cambios chocaba contra el UNIQUE y

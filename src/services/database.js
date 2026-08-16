@@ -3285,6 +3285,63 @@ export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido 
   return { sucursalId: null, resueltaPor: null, razon: 'multiples_sucursales_activas' };
 }
 
+// ─── Transición pendiente_pago → nuevo, recuperable ante crash ───────────────
+//
+// El problema que resuelve: confirmar el pago movía el pedido a 'nuevo' y
+// DESPUÉS emitía. Un crash entre las dos cosas dejaba el dinero cobrado, el
+// pedido en 'nuevo', y a la cocina sin papel -- y ningún reintento lo
+// arreglaba, porque el pedido ya no estaba 'pendiente_pago' y el código lo
+// daba por procesado.
+//
+// La corrección es escribir la DEUDA antes de saldarla: en el MISMO UPDATE que
+// mueve el estado se marca `emision_pendiente`. Esa marca es la garantía
+// persistente de "este pedido todavía debe emitirse", y sólo se borra cuando la
+// emisión terminó. Si el proceso muere en medio, la marca sigue ahí y cualquier
+// reintento -- o el barrido de reconciliación -- la encuentra y termina el
+// trabajo. La memoria del proceso no participa.
+//
+// Devuelve `reclamado: true` sólo a quien logró hacer la transición o a quien
+// encuentra la deuda pendiente: es el permiso para emitir.
+export async function reclamarEmisionPorPago(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { reclamado: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const { rows } = await pool.query(
+    `UPDATE pedidos_activos
+        SET estado = 'nuevo',
+            datos = datos || '{"emision_pendiente":true}'::jsonb,
+            updated_at = NOW()
+      WHERE folio = $1 AND negocio_id = $2
+        AND (estado = 'pendiente_pago'
+             OR (estado = 'nuevo' AND datos->>'emision_pendiente' = 'true'))
+      RETURNING datos`,
+    [folio, nid]);
+  if (!rows.length) return { reclamado: false, razon: 'sin_deuda_de_emision' };
+  return { reclamado: true, datos: rows[0].datos };
+}
+
+// La deuda se salda DESPUÉS de que la emisión terminó, nunca antes: al revés,
+// un crash dejaría el pedido marcado como emitido sin haberlo hecho.
+export async function saldarEmisionPorPago(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pedidos_activos
+        SET datos = datos - 'emision_pendiente', updated_at = NOW()
+      WHERE folio = $1 AND negocio_id = $2`,
+    [folio, negocioId.trim()]);
+  return rowCount > 0;
+}
+
+// Barrido de reconciliación: pedidos con el pago confirmado cuya emisión quedó
+// a medias. Es la red que recoge lo que un crash dejó caer cuando nadie
+// reintenta desde fuera.
+export async function pedidosConEmisionPendiente(limite = 50) {
+  const { rows } = await pool.query(
+    `SELECT folio, negocio_id, datos FROM pedidos_activos
+      WHERE datos->>'emision_pendiente' = 'true'
+      ORDER BY updated_at ASC LIMIT $1`, [limite]);
+  return rows;
+}
+
 // Ejecuta `emitir` A LO SUMO UNA VEZ por (negocio, printJobId), aunque se
 // llame desde varios procesos a la vez y aunque el servidor se reinicie entre
 // intentos.

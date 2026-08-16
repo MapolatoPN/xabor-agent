@@ -263,6 +263,32 @@ export async function catalogoPublico(negocioId) {
 // ── Métodos de pago realmente disponibles para la tienda ──────────────────
 // Nunca se inventan proveedores: si el negocio no tiene un método habilitado,
 // la tienda no lo ofrece.
+// Un proveedor sirve para cobrar en línea sólo si las cuatro cosas se cumplen a
+// la vez. Se comprueba contra la integración real del negocio, nunca contra una
+// lista de nombres: un proveedor sin adaptador (PayPal hoy) no pasa aunque
+// alguien lograra marcarlo principal.
+export async function hayProveedorEnLineaUtilizable(negocioId) {
+  try {
+    const { obtenerProveedorPrincipal, obtenerCredencialesPagoDescifradas } =
+      await import('./integracionesService.js');
+    const { obtenerAdaptador } = await import('./paymentProviders.js');
+    const principal = await obtenerProveedorPrincipal(negocioId);
+    if (!principal) return false;
+    const adaptador = obtenerAdaptador(principal.proveedor);
+    if (!adaptador) return false;                       // sin implementar
+    if (!adaptador.getCapabilities?.().createLink) return false; // no crea enlaces
+    const cred = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
+    const prueba = await adaptador.testConnection(cred);
+    return prueba?.ok === true;
+  } catch (e) {
+    // Fail closed: si no se puede confirmar que hay con qué cobrar, no se
+    // ofrece. Es preferible perder una venta en línea a dejar un pedido
+    // colgado que nadie puede pagar.
+    console.warn(`[Tienda] No se pudo verificar proveedor en línea de ${negocioId}: ${e.message}`);
+    return false;
+  }
+}
+
 export async function metodosPagoTienda(negocioId, modalidad) {
   const { rows } = await pool.query(
     `SELECT tipo, habilitado FROM metodos_pago WHERE negocio_id = $1 AND habilitado = TRUE`,
@@ -298,7 +324,12 @@ export async function metodosPagoTienda(negocioId, modalidad) {
       pagaDespues: true,
     });
   }
-  if (habilitados.has('enlace_pago')) {
+  // "Pagar en línea" NO depende sólo de que la fila esté habilitada: exige un
+  // proveedor REAL detrás -- implementado, activo, con credenciales de ESTE
+  // negocio y marcado como principal. Sin eso, ofrecerlo crearía pedidos
+  // condenados a quedarse en pendiente_pago para siempre: el cliente creería
+  // que va a pagar y nunca aparecería dónde.
+  if (habilitados.has('enlace_pago') && await hayProveedorEnLineaUtilizable(negocioId)) {
     metodos.push({
       id: 'enlace_pago', icono: '🔗', etiqueta: 'Pagar en línea',
       detalle: 'Recibirás una liga de pago segura',

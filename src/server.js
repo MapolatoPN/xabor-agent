@@ -19,7 +19,8 @@ import {
   setWsBroadcast,
   setWsBroadcastSuperadmin,
   cargarPedidosDesdeDB,
-  confirmarPedidoPendientePago
+  confirmarPedidoPendientePago,
+  reconciliarEmisionesPendientes
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -1728,7 +1729,11 @@ app.post('/webhook/clip', async (req, res) => {
     // estado REAL en Clip con las credenciales de ESE negocio antes de
     // marcar pagado -- el webhook por sí solo nunca es suficiente.
     const partes = String(ref || '').split(':');
-    if (partes.length === 3) {
+    // >= 3: la referencia interna incorpora ahora el proveedor como cuarta
+    // parte (P1, cambio de proveedor principal). Las posiciones 0 y 1 -- negocio
+    // y folio -- no se movieron, así que las referencias antiguas de tres
+    // partes se siguen resolviendo igual.
+    if (partes.length >= 3) {
       const [negocioIdWebhook, folioWebhook] = partes;
       const pago = await obtenerPagoPorReferenciaInterna(negocioIdWebhook, ref);
       if (!pago) {
@@ -7664,6 +7669,17 @@ async function arrancar() {
   // Activar pedidos programados cada 5 minutos
   activarPedidosProgramados();
   setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+
+  // Red de seguridad de los pagos: recoge las emisiones que un crash dejo a
+  // medias entre "el dinero esta confirmado" y "la comanda salio". Sin esto un
+  // pedido pagado podia quedarse sin papel para siempre, porque su estado ya
+  // no era pendiente_pago y nadie lo reintentaba.
+  reconciliarEmisionesPendientes().catch(e =>
+    console.error('[Pagos] Reconciliacion inicial de emisiones fallo:', e.message));
+  setInterval(() => {
+    reconciliarEmisionesPendientes().catch(e =>
+      console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));
+  }, 60 * 1000);
   // Sincronizar horario de Rappi al arrancar y cada 5 minutos
   sincronizarRappi();
   setInterval(sincronizarRappi, 5 * 60 * 1000);
