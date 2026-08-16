@@ -63,12 +63,23 @@ const mock = createServer((req, res) => {
     });
     return;
   }
-  const m = /^\/v1\/payments\/([^/?]+)/.exec(req.url);
+  const m = req.url.startsWith('/v1/payments/search') ? null : /^\/v1\/payments\/([^/?]+)/.exec(req.url);
   if (m) {
     const pago = PAGOS_MOCK.get(decodeURIComponent(m[1]));
     if (!pago) { res.writeHead(404); res.end('{"message":"not found"}'); return; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(pago));
+    return;
+  }
+  // Busqueda por external_reference: la via soportada por MP para llegar al
+  // payment sin conocer su id. Es lo que usa la reconciliacion.
+  if (req.url.startsWith('/v1/payments/search')) {
+    const ref = decodeURIComponent((/external_reference=([^&]+)/.exec(req.url) || [])[1] || '');
+    const results = [...PAGOS_MOCK.entries()]
+      .filter(([, p]) => p.external_reference === ref)
+      .map(([id, p]) => ({ id, ...p }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ results }));
     return;
   }
   if (req.url.startsWith('/v1/payment_methods')) { res.writeHead(200); res.end('[]'); return; }
@@ -221,7 +232,10 @@ try {
     const folio = 'MPWH-0004';
     await crearPagoReal(A, folio, 120);
     const st = await enviarWebhook({ token: TOKEN_A, paymentId: 'pay-que-no-existe' });
-    assert.strictEqual(st, 200);
+    // Desde el webhook, un payment que el proveedor no devuelve es
+    // indistinguible de un fallo transitorio: se responde 5xx para que MP
+    // reintente. Lo que NO puede pasar es que confirme algo.
+    assert.ok(st >= 500, `respondio ${st}`);
     assert.notStrictEqual((await pagoDe(A, folio)).estado, 'pagado');
   });
 
@@ -304,6 +318,142 @@ try {
     const { rows: [p] } = await pool.query(
       `SELECT COUNT(*)::int AS n FROM pagos WHERE monto = 999999`);
     assert.strictEqual(p.n, 0, 'un monto del cuerpo llegó a la base');
+  });
+
+  // ═══ P0-1: dinero fail-closed ═══
+  await t('11. moneda distinta (USD vs MXN) → NO confirma', async () => {
+    const folio = 'MPWH-0011';
+    await crearPagoReal(A, folio, 400);
+    const pago = await pagoDe(A, folio);
+    const paymentId = 'pay-usd';
+    PAGOS_MOCK.set(paymentId, { status: 'approved', external_reference: pago.referencia_interna, transaction_amount: 400, currency_id: 'USD' });
+    await enviarWebhook({ token: TOKEN_A, paymentId });
+    assert.strictEqual((await pagoDe(A, folio)).estado, 'requiere_revision',
+      'confirmo un cobro en otra moneda');
+    assert.strictEqual(await estadoPedido(A, folio), 'pendiente_pago');
+  });
+
+  await t('12. moneda ausente → NO confirma', async () => {
+    const folio = 'MPWH-0012';
+    await crearPagoReal(A, folio, 410);
+    const pago = await pagoDe(A, folio);
+    const paymentId = 'pay-sin-moneda';
+    PAGOS_MOCK.set(paymentId, { status: 'approved', external_reference: pago.referencia_interna, transaction_amount: 410 });
+    await enviarWebhook({ token: TOKEN_A, paymentId });
+    assert.strictEqual((await pagoDe(A, folio)).estado, 'requiere_revision',
+      'confirmo sin saber en que moneda se cobro');
+    assert.strictEqual(await estadoPedido(A, folio), 'pendiente_pago');
+  });
+
+  await t('13. monto ausente, NaN o 0 → NO confirma', async () => {
+    for (const [etiqueta, monto] of [['ausente', undefined], ['nan', 'no-es-un-numero'], ['cero', 0]]) {
+      const folio = `MPWH-13-${etiqueta}`;
+      await crearPagoReal(A, folio, 420);
+      const pago = await pagoDe(A, folio);
+      const paymentId = `pay-monto-${etiqueta}`;
+      const cuerpo = { status: 'approved', external_reference: pago.referencia_interna, currency_id: 'MXN' };
+      if (monto !== undefined) cuerpo.transaction_amount = monto;
+      PAGOS_MOCK.set(paymentId, cuerpo);
+      await enviarWebhook({ token: TOKEN_A, paymentId });
+      assert.strictEqual((await pagoDe(A, folio)).estado, 'requiere_revision',
+        `monto ${etiqueta}: confirmo igual`);
+      assert.strictEqual(await estadoPedido(A, folio), 'pendiente_pago', `monto ${etiqueta}: libero cocina`);
+    }
+  });
+
+  // ═══ P0-2: payment_id ya ligado a otro pago ═══
+  await t('14. un payment_id que ya pertenece a otro cobro NO confirma el segundo', async () => {
+    const folioA = 'MPWH-14-A';
+    const folioB = 'MPWH-14-B';
+    await crearPagoReal(A, folioA, 700);
+    const pagoA = await pagoDe(A, folioA);
+    const paymentId = 'pay-compartido';
+    PAGOS_MOCK.set(paymentId, { status: 'approved', external_reference: pagoA.referencia_interna, transaction_amount: 700, currency_id: 'MXN' });
+    await enviarWebhook({ token: TOKEN_A, paymentId });
+    assert.strictEqual((await pagoDe(A, folioA)).estado, 'pagado', 'el primero deberia confirmarse');
+
+    // Segundo cobro del MISMO negocio cuyo proveedor devuelve el MISMO payment.
+    await crearPagoReal(A, folioB, 700);
+    const pagoB = await pagoDe(A, folioB);
+    PAGOS_MOCK.set(paymentId, { status: 'approved', external_reference: pagoB.referencia_interna, transaction_amount: 700, currency_id: 'MXN' });
+    await enviarWebhook({ token: TOKEN_A, paymentId, requestId: 'req-dup' });
+
+    assert.notStrictEqual((await pagoDe(A, folioB)).estado, 'pagado',
+      'un payment_id ya usado confirmo un SEGUNDO cobro: se cobraria dos veces lo mismo');
+    assert.strictEqual((await pagoDe(A, folioB)).estado, 'requiere_revision');
+    assert.strictEqual(await estadoPedido(A, folioB), 'pendiente_pago', 'libero cocina con un payment ajeno');
+    // Y el primero quedo intacto.
+    assert.strictEqual((await pagoDe(A, folioA)).estado, 'pagado');
+    assert.strictEqual((await pagoDe(A, folioA)).payment_id, paymentId);
+  });
+
+  // ═══ P0-3: reconciliación cuando el webhook nunca llega ═══
+  await t('15. el webhook NUNCA llega pero el pago existe en MP → la reconciliación lo confirma', async () => {
+    const folio = 'MPWH-0015';
+    await crearPagoReal(A, folio, 550);
+    const pago = await pagoDe(A, folio);
+    // El cobro existe en el proveedor; nadie avisó a Xabor.
+    PAGOS_MOCK.set('pay-perdido', {
+      status: 'approved', external_reference: pago.referencia_interna,
+      transaction_amount: 550, currency_id: 'MXN',
+    });
+    assert.strictEqual((await pagoDe(A, folio)).estado, 'pendiente');
+
+    const { reconciliarPagosMercadoPago } = await import('../src/services/webhookPagos.js');
+    const n = await reconciliarPagosMercadoPago();
+    assert.ok(n >= 1, 'la reconciliación no recuperó ningún pago');
+    assert.strictEqual((await pagoDe(A, folio)).estado, 'pagado', 'el pago sigue sin confirmarse');
+    assert.strictEqual((await pagoDe(A, folio)).payment_id, 'pay-perdido');
+    assert.strictEqual(await estadoPedido(A, folio), 'nuevo', 'el pedido no se liberó');
+  });
+
+  await t('16. la reconciliación NUNCA consulta /v1/payments/<preferenceId>', async () => {
+    const folio = 'MPWH-0016';
+    await crearPagoReal(A, folio, 560);
+    const pago = await pagoDe(A, folio);
+    PAGOS_MOCK.set('pay-recon-2', { status: 'approved', external_reference: pago.referencia_interna, transaction_amount: 560, currency_id: 'MXN' });
+    RUTAS_CONSULTADAS.length = 0;
+    const { reconciliarPagosMercadoPago } = await import('../src/services/webhookPagos.js');
+    await reconciliarPagosMercadoPago();
+    const directas = RUTAS_CONSULTADAS.filter(u => u.startsWith('/v1/payments/') && !u.startsWith('/v1/payments/search'));
+    assert.ok(!directas.some(u => u.includes('pref-')),
+      `la reconciliación consultó una preferencia como si fuera un pago: ${directas.join(', ')}`);
+    assert.ok(RUTAS_CONSULTADAS.some(u => u.startsWith('/v1/payments/search')),
+      'no usó la búsqueda por external_reference');
+  });
+
+  await t('17. dos reconciliaciones concurrentes → una sola confirmación', async () => {
+    const folio = 'MPWH-0017';
+    await crearPagoReal(A, folio, 570);
+    const pago = await pagoDe(A, folio);
+    PAGOS_MOCK.set('pay-recon-conc', { status: 'approved', external_reference: pago.referencia_interna, transaction_amount: 570, currency_id: 'MXN' });
+    const { reconciliarPagosMercadoPago } = await import('../src/services/webhookPagos.js');
+    await Promise.all([reconciliarPagosMercadoPago(), reconciliarPagosMercadoPago()]);
+    const { rows: [c] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND estado='pagado'`, [A, folio]);
+    assert.strictEqual(c.n, 1, `quedaron ${c.n} confirmaciones`);
+    assert.strictEqual(await estadoPedido(A, folio), 'nuevo');
+  });
+
+  await t('18. un pago todavía pendiente en MP no cocina', async () => {
+    const folio = 'MPWH-0018';
+    await crearPagoReal(A, folio, 580);
+    const pago = await pagoDe(A, folio);
+    PAGOS_MOCK.set('pay-recon-pend', { status: 'pending', external_reference: pago.referencia_interna, transaction_amount: 580, currency_id: 'MXN' });
+    const { reconciliarPagosMercadoPago } = await import('../src/services/webhookPagos.js');
+    await reconciliarPagosMercadoPago();
+    assert.notStrictEqual((await pagoDe(A, folio)).estado, 'pagado');
+    assert.strictEqual(await estadoPedido(A, folio), 'pendiente_pago');
+  });
+
+  await t('19. una reconsulta fallida responde 5xx para que MP reintente', async () => {
+    // Sin el pago en el mock, el adaptador recibe 404 y lanza: eso es un fallo
+    // transitorio desde el punto de vista del webhook. Responder 200 le diria a
+    // MP que el aviso quedo entregado.
+    const folio = 'MPWH-0019';
+    await crearPagoReal(A, folio, 590);
+    const st = await enviarWebhook({ token: TOKEN_A, paymentId: 'pay-que-explota' });
+    assert.ok(st >= 500, `respondió ${st} a un fallo transitorio: MP no reintentaría`);
   });
 
 } catch (e) {

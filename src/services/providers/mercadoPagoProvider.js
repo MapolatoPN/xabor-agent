@@ -122,12 +122,50 @@ export async function getPaymentStatus(referenciaExterna, credenciales) {
   const token = exigirToken(credenciales);
   const pago = await pedir(`/v1/payments/${encodeURIComponent(referenciaExterna)}`, { token });
   if (!pago) return null;
+  return normalizarPago(pago);
+}
+
+// Forma canónica de un pago de Mercado Pago para el resto de Xabor.
+//
+// `monto` NO usa `Number(x) || null`: ese patrón convierte un 0 legítimo en
+// null, y null es justo el valor que el verificador trata como "no hay dato
+// que comparar". Un cobro por 0, o una respuesta incompleta, se colarían sin
+// que nadie comparase nada. Aquí se distingue: si el campo no es un número
+// finito, se devuelve null a propósito y quien valida lo rechaza; si es un
+// número, se devuelve tal cual, incluido el 0.
+function normalizarPago(pago) {
+  const bruto = pago.transaction_amount;
+  const monto = (typeof bruto === 'number' && Number.isFinite(bruto)) ? bruto
+    : (typeof bruto === 'string' && bruto.trim() !== '' && Number.isFinite(Number(bruto)) ? Number(bruto) : null);
+  const moneda = typeof pago.currency_id === 'string' && pago.currency_id.trim()
+    ? pago.currency_id.trim().toUpperCase() : null;
   return {
     estadoProveedor: pago.status,
     estado: traducirEstado(pago.status),
     referenciaInterna: pago.external_reference || null,
-    monto: Number(pago.transaction_amount) || null,
+    paymentId: pago.id != null ? String(pago.id) : null,
+    monto,
+    moneda,
   };
+}
+
+/**
+ * Busca el pago REAL a partir de la referencia que Xabor puso al crear el
+ * cobro. Es la vía soportada por Mercado Pago para llegar al payment sin
+ * conocer su id -- y la única forma de reconciliar cuando el webhook se
+ * perdió. Jamás se consulta /v1/payments/:preferenceId: la preferencia no es
+ * un pago.
+ *
+ * Devuelve el pago aprobado si lo hay; si no, el más reciente, para poder
+ * registrar un rechazo o un pendiente sin inventar nada.
+ */
+export async function buscarPagoPorReferencia(referencia, credenciales) {
+  const token = exigirToken(credenciales);
+  const r = await pedir(`/v1/payments/search?external_reference=${encodeURIComponent(referencia)}`, { token });
+  const resultados = Array.isArray(r?.results) ? r.results : [];
+  if (!resultados.length) return null;
+  const aprobado = resultados.find(p => String(p.status).toLowerCase() === 'approved');
+  return normalizarPago(aprobado || resultados[0]);
 }
 
 export async function cancelPayment(referenciaExterna, credenciales) {

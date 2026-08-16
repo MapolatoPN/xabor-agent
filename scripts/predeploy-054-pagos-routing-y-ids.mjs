@@ -42,17 +42,30 @@ async function estado() {
          WHERE schemaname='public' AND indexname='idx_integraciones_routing_token')::int AS idx_token,
        -- El índice de payment_id tiene que ser ÚNICO: sin eso, dos filas
        -- podrían reclamar el mismo cobro y una estaría cobrando lo ajeno.
+       -- No basta con que el indice se llame asi y sea UNIQUE: tiene que ser
+       -- unico SOBRE LAS COLUMNAS correctas y con el predicado correcto. Un
+       -- indice con el nombre esperado pero otra definicion pasaria un gate
+       -- que solo mirara el nombre, y dejaria el sistema sin la garantia real.
        (SELECT COUNT(*) FROM pg_indexes
          WHERE schemaname='public' AND indexname='idx_pagos_payment_id'
-           AND indexdef LIKE 'CREATE UNIQUE%')::int AS pay_unico,
+           AND indexdef LIKE 'CREATE UNIQUE%'
+           AND indexdef LIKE '%negocio_id%' AND indexdef LIKE '%proveedor%'
+           AND indexdef LIKE '%payment_id%'
+           AND indexdef LIKE '%WHERE (payment_id IS NOT NULL)%')::int AS pay_unico,
        (SELECT COUNT(*) FROM pg_indexes
          WHERE schemaname='public' AND indexname='idx_integraciones_routing_token'
-           AND indexdef LIKE 'CREATE UNIQUE%')::int AS token_unico`);
+           AND indexdef LIKE 'CREATE UNIQUE%'
+           AND indexdef LIKE '%webhook_routing_token%'
+           AND indexdef LIKE '%WHERE (webhook_routing_token IS NOT NULL)%')::int AS token_unico,
+       (SELECT COUNT(*) FROM pg_indexes
+         WHERE schemaname='public' AND indexname='idx_pagos_preference_id'
+           AND indexdef LIKE '%negocio_id%' AND indexdef LIKE '%preference_id%')::int AS pref_def`);
   return {
     colPref: r.col_pref === 1, colPay: r.col_pay === 1,
     idxPay: r.idx_pay === 1, idxPref: r.idx_pref === 1,
     colToken: r.col_token === 1, idxToken: r.idx_token === 1,
     payUnico: r.pay_unico === 1, tokenUnico: r.token_unico === 1,
+    prefDef: r.pref_def === 1,
   };
 }
 
@@ -64,7 +77,8 @@ const FALTANTES = {
   colToken: 'integraciones_canal.webhook_routing_token',
   idxToken: 'idx_integraciones_routing_token',
   payUnico: 'idx_pagos_payment_id debe ser UNIQUE',
-  tokenUnico: 'idx_integraciones_routing_token debe ser UNIQUE',
+  tokenUnico: 'idx_integraciones_routing_token debe ser UNIQUE sobre webhook_routing_token',
+  prefDef: 'idx_pagos_preference_id debe cubrir (negocio_id, preference_id)',
 };
 
 async function yaAplicada() {

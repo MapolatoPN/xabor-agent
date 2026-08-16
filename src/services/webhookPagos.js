@@ -16,8 +16,8 @@
  */
 import {
   resolverIntegracionPorRoutingToken, obtenerPagoPorExternalReference,
-  registrarIdsDePago, confirmarPagoIdempotente, confirmarPagoPedido,
-  actualizarEstadoPagoPorId,
+  ligarPaymentIdExclusivo, confirmarPagoIdempotentePorNegocio, confirmarPagoPedido,
+  actualizarEstadoPagoPorId, pagosPendientesDeProveedor,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -84,11 +84,24 @@ export async function procesarWebhookPago({ proveedor, routingToken, req }) {
     real = await adaptador.getPaymentStatus(paymentId, credenciales);
   } catch (e) {
     console.error(`[WebhookPagos] Reconsulta fallida payment=${paymentId} negocio=${negocioId}: ${e.message}`);
-    return { http: 200, resultado: { razon: 'reconsulta_fallida' } };
+    // Fallo TRANSITORIO: responder 200 aqui le diria a Mercado Pago que el
+    // aviso quedo entregado y no volveria a mandarlo. Se responde 5xx para que
+    // reintente, y ademas la reconciliacion periodica lo recoge si nunca
+    // vuelve. Dos capas, porque perder un cobro no se arregla a mano.
+    return { http: 503, resultado: { razon: 'reconsulta_fallida' } };
   }
   if (!real) return { http: 200, resultado: { razon: 'payment_inexistente' } };
 
-  // 6) external_reference: la referencia que Xabor puso al crear el cobro.
+  return aplicarPagoVerificadoDesde({ negocioId, proveedor, real, paymentId });
+}
+
+/**
+ * Verificacion y aplicacion de un pago ya CONSULTADO al proveedor. La usan por
+ * igual el webhook y la reconciliacion: una sola ruta de validacion y una sola
+ * transicion, para que no puedan divergir.
+ */
+export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, paymentId }) {
+  // external_reference: la referencia que Xabor puso al crear el cobro.
   const referencia = real.referenciaInterna;
   if (!referencia) return { http: 200, resultado: { razon: 'sin_external_reference' } };
 
@@ -104,40 +117,59 @@ export async function procesarWebhookPago({ proveedor, routingToken, req }) {
     return { http: 200, resultado: { razon: 'proveedor_del_pago_no_coincide' } };
   }
 
-  // 7) Dinero: monto y moneda tienen que ser los que Xabor registró. Un pago
-  //    por menos no confirma un pedido.
-  if (real.monto != null && !mismoMonto(real.monto, pago.monto)) {
-    console.error(`[WebhookPagos] MONTO DISTINTO pago=${pago.id} esperado=${pago.monto} recibido=${real.monto}`);
-    await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
-    return { http: 200, resultado: { razon: 'monto_distinto', pagoId: pago.id } };
-  }
-  if (real.moneda && String(real.moneda).toUpperCase() !== String(pago.moneda).toUpperCase()) {
-    console.error(`[WebhookPagos] MONEDA DISTINTA pago=${pago.id} esperada=${pago.moneda} recibida=${real.moneda}`);
-    await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
-    return { http: 200, resultado: { razon: 'moneda_distinta', pagoId: pago.id } };
-  }
-
-  // 8) El payment_id queda ligado a ESTA fila. Si ya estaba ligado a otra, el
-  //    índice único lo impide: nunca se reasigna un cobro de una fila a otra.
-  await registrarIdsDePago(pago.id, negocioId, { paymentId, proveedor }).catch((e) => {
-    console.error(`[WebhookPagos] No se pudo ligar payment_id ${paymentId}: ${e.message}`);
-  });
-
   const estadoInterno = real.estado || 'requiere_revision';
 
-  // 9) Sólo 'pagado' libera cocina. Todo lo demás actualiza el registro y
-  //    termina: un rechazo, un pendiente o un estado que MP invente mañana no
-  //    pueden sacar una comanda.
+  // Dinero: monto y moneda son OBLIGATORIOS y tienen que ser los que Xabor
+  // registro. Antes se comparaban solo "si venian", asi que una respuesta
+  // incompleta se saltaba las dos comprobaciones y podia confirmar igual. Un
+  // dato de dinero ausente no es un dato neutro: es una razon para no cobrar.
+  if (estadoInterno === 'pagado') {
+    const montoValido = typeof real.monto === 'number' && Number.isFinite(real.monto) && real.monto > 0;
+    if (!montoValido) {
+      console.error(`[Pagos] MONTO AUSENTE O INVALIDO pago=${pago.id} recibido=${JSON.stringify(real.monto)}`);
+      await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
+      return { http: 200, resultado: { razon: 'monto_invalido', pagoId: pago.id } };
+    }
+    if (!mismoMonto(real.monto, pago.monto)) {
+      console.error(`[Pagos] MONTO DISTINTO pago=${pago.id} esperado=${pago.monto} recibido=${real.monto}`);
+      await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
+      return { http: 200, resultado: { razon: 'monto_distinto', pagoId: pago.id } };
+    }
+    if (!real.moneda) {
+      console.error(`[Pagos] MONEDA AUSENTE pago=${pago.id}`);
+      await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
+      return { http: 200, resultado: { razon: 'moneda_ausente', pagoId: pago.id } };
+    }
+    if (String(real.moneda).toUpperCase() !== String(pago.moneda).toUpperCase()) {
+      console.error(`[Pagos] MONEDA DISTINTA pago=${pago.id} esperada=${pago.moneda} recibida=${real.moneda}`);
+      await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
+      return { http: 200, resultado: { razon: 'moneda_distinta', pagoId: pago.id } };
+    }
+  }
+
+  // El payment_id queda ligado a ESTA fila y a ninguna otra. Si ya pertenece a
+  // otro cobro, aqui se ACABA: confirmar seria cobrar dos veces lo mismo. Antes
+  // esto era un log y se seguia adelante.
+  if (paymentId) {
+    const ligado = await ligarPaymentIdExclusivo(pago.id, negocioId, proveedor, paymentId);
+    if (!ligado.ok) {
+      console.error(`[Pagos] NO SE PUDO LIGAR payment_id=${paymentId} a pago=${pago.id}: ${ligado.razon}`);
+      await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
+      return { http: 200, resultado: { razon: `conflicto_payment_id:${ligado.razon}`, pagoId: pago.id } };
+    }
+  }
+
+  // Solo 'pagado' libera cocina. Un rechazo, un pendiente o un estado que MP
+  // invente maniana no pueden sacar una comanda.
   if (estadoInterno !== 'pagado') {
     await actualizarEstadoPagoPorId(pago.id, negocioId, estadoInterno);
     return { http: 200, resultado: { razon: 'estado_no_pagado', estado: estadoInterno, pagoId: pago.id } };
   }
 
-  // 10) Confirmación idempotente del pago, y liberación del pedido por el
-  //     ÚNICO mecanismo autorizado -- el mismo que ya es exclusivo y
-  //     recuperable ante crash. Cincuenta webhooks iguales pasan por aquí y
-  //     sólo uno emite.
-  await confirmarPagoIdempotente(pago.id, { referenciaExterna: paymentId });
+  // Confirmacion idempotente ACOTADA AL NEGOCIO, y liberacion del pedido por el
+  // unico mecanismo autorizado -- el mismo que ya es exclusivo y recuperable
+  // ante crash. Cincuenta avisos iguales pasan por aqui y solo uno emite.
+  await confirmarPagoIdempotentePorNegocio(pago.id, negocioId, { referenciaExterna: paymentId });
   await confirmarPagoPedido(pago.pedido_folio, negocioId);
   const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
   await confirmarPedidoPendientePago(pago.pedido_folio, negocioId);
@@ -146,4 +178,44 @@ export async function procesarWebhookPago({ proveedor, routingToken, req }) {
     http: 200,
     resultado: { razon: 'confirmado', pagoId: pago.id, folio: pago.pedido_folio, paymentId },
   };
+}
+
+/**
+ * Reconciliacion de Mercado Pago.
+ *
+ * El webhook puede perderse, o la reconsulta puede fallar justo cuando llega.
+ * Sin esta red, un cliente que pago se quedaria con el pedido en pendiente_pago
+ * para siempre. Recorre los pagos que siguen esperando y busca el cobro real
+ * POR LA REFERENCIA de Xabor -- nunca consultando /v1/payments/:preferenceId,
+ * que pediria un recurso inexistente.
+ *
+ * Reutiliza exactamente la misma verificacion y la misma transicion que el
+ * webhook: no hay una segunda ruta que pudiera divergir. Dos instancias
+ * corriendola a la vez terminan en una sola confirmacion, porque la transicion
+ * de emision ya es exclusiva y la confirmacion del pago es idempotente.
+ */
+export async function reconciliarPagosMercadoPago(limite = 25) {
+  const proveedor = 'mercado_pago';
+  const adaptador = obtenerAdaptador(proveedor);
+  if (!adaptador?.buscarPagoPorReferencia) return 0;
+
+  const pendientes = await pagosPendientesDeProveedor(proveedor, limite).catch(() => []);
+  let confirmados = 0;
+  for (const pago of pendientes) {
+    try {
+      const credenciales = await obtenerCredencialesPagoDescifradas(pago.negocio_id, proveedor);
+      const real = await adaptador.buscarPagoPorReferencia(pago.referencia_interna, credenciales);
+      if (!real) continue;                       // todavia no hay cobro: nada que hacer
+      const r = await aplicarPagoVerificadoDesde({
+        negocioId: pago.negocio_id, proveedor, real, paymentId: real.paymentId,
+      });
+      if (r?.resultado?.razon === 'confirmado') confirmados++;
+    } catch (e) {
+      // Un fallo aqui no pierde nada: el pago sigue pendiente y la proxima
+      // vuelta lo intenta otra vez.
+      console.error(`[Pagos] Reconciliacion MP fallida pago=${pago.id}: ${e.message}`);
+    }
+  }
+  if (confirmados) console.log(`[Pagos] Reconciliacion MP: ${confirmados} pago(s) confirmados sin webhook`);
+  return confirmados;
 }

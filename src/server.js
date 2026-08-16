@@ -24,7 +24,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
-import { procesarWebhookPago } from './services/webhookPagos.js';
+import { procesarWebhookPago, reconciliarPagosMercadoPago } from './services/webhookPagos.js';
 import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -7711,6 +7711,14 @@ async function arrancar() {
   // no era pendiente_pago y nadie lo reintentaba.
   reconciliarEmisionesPendientes().catch(e =>
     console.error('[Pagos] Reconciliacion inicial de emisiones fallo:', e.message));
+
+  // Reconciliacion de Mercado Pago: recupera cobros cuyo webhook se perdio o
+  // cuya reconsulta fallo. Sin esto, "se dependera de la reconciliacion" era
+  // una promesa sin respaldo -- el reconciliador existente es solo de Clip.
+  setInterval(() => {
+    reconciliarPagosMercadoPago().catch(e =>
+      console.error('[Pagos] Reconciliacion MP fallo:', e.message));
+  }, 3 * 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));

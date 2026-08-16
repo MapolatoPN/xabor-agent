@@ -2082,6 +2082,64 @@ export async function confirmarPagoIdempotente(pagoId, { referenciaExterna } = {
   return rows[0] || null;
 }
 
+// Variante acotada por negocio, para los caminos financieros nuevos. Mismo
+// criterio que el resto de las mutaciones endurecidas: el tenant va en el
+// WHERE, no en la confianza de que el llamador resolvió bien el id.
+export async function confirmarPagoIdempotentePorNegocio(pagoId, negocioId, { referenciaExterna } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
+                      referencia_externa = COALESCE($3, referencia_externa)
+     WHERE id = $1 AND negocio_id = $2 AND estado NOT IN ('pagado','cancelado','invalidado','reembolsado')
+     RETURNING *`,
+    [pagoId, negocioId.trim(), referenciaExterna || null]
+  );
+  return rows[0] || null;
+}
+
+// Liga el payment_id a ESTA fila y a ninguna otra. A diferencia de
+// registrarIdsDePago, aquí una colisión NO se registra y se sigue: se informa,
+// porque ese payment ya pertenece a otro cobro y confirmar sería cobrar dos
+// veces lo mismo. Devuelve { ok, razon }.
+export async function ligarPaymentIdExclusivo(pagoId, negocioId, proveedor, paymentId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  if (typeof paymentId !== 'string' || !paymentId.trim()) return { ok: false, razon: 'sin_payment_id' };
+  const nid = negocioId.trim();
+
+  // ¿Ya está ligado a otra fila? Se mira antes para poder distinguir "ya era
+  // mío" (idempotente, correcto) de "es de otro cobro" (conflicto real).
+  const { rows: [dueno] } = await pool.query(
+    `SELECT id FROM pagos WHERE negocio_id = $1 AND proveedor = $2 AND payment_id = $3`,
+    [nid, proveedor, paymentId.trim()]);
+  if (dueno && dueno.id !== pagoId) return { ok: false, razon: 'payment_id_de_otro_pago' };
+  if (dueno) return { ok: true, razon: 'ya_estaba_ligado' };
+
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE pagos SET payment_id = $4
+        WHERE id = $1 AND negocio_id = $2 AND proveedor = $3 AND payment_id IS NULL`,
+      [pagoId, nid, proveedor, paymentId.trim()]);
+    if (!rowCount) return { ok: false, razon: 'no_se_pudo_ligar' };
+    return { ok: true, razon: 'ligado' };
+  } catch (e) {
+    // El índice único es la barrera final ante una carrera: dos procesos que
+    // pasen la lectura de arriba a la vez, sólo uno escribe.
+    if (e.code === '23505') return { ok: false, razon: 'payment_id_de_otro_pago' };
+    throw e;
+  }
+}
+
+// Pagos de un proveedor que siguen esperando resolución. Es lo que recorre la
+// reconciliación cuando el webhook nunca llegó.
+export async function pagosPendientesDeProveedor(proveedor, limite = 50) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE proveedor = $1 AND estado IN ('pendiente','creando')
+        AND created_at > NOW() - INTERVAL '7 days'
+      ORDER BY created_at ASC LIMIT $2`, [proveedor, limite]);
+  return rows;
+}
+
 /**
  * Conciliación manual de transferencia (Fase 12/13): a diferencia de
  * confirmarPagoIdempotente (uso interno del webhook de Clip, sin
