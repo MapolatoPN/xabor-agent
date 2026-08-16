@@ -2100,6 +2100,68 @@ export async function actualizarPagoCreado(pagoId, { referenciaExterna, url, est
   return rows[0] || null;
 }
 
+/**
+ * Deja constancia DURABLE de que se va a mandar un POST de creacion, ANTES de
+ * mandarlo. Sin esto, "la fila no tiene ids" se lee como "el proveedor no creo
+ * nada", y son cosas distintas: una respuesta perdida deja exactamente el mismo
+ * rastro que una peticion que nunca salio.
+ *
+ * La clave es determinista y propia de la fila: el mismo reintento manda la
+ * misma clave, y para un proveedor que sepa deduplicar eso basta.
+ */
+export async function registrarIntentoDeCreacion(pagoId, negocioId, claveIdempotencia) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET idempotency_key = COALESCE(idempotency_key, $3),
+                      metadata_sanitizada = metadata_sanitizada || $4::jsonb
+      WHERE id = $1 AND negocio_id = $2`,
+    [pagoId, negocioId.trim(), claveIdempotencia,
+     JSON.stringify({ creacion_intentada_at: new Date().toISOString() })]);
+  return rowCount > 0;
+}
+
+/**
+ * La creacion se fue sin respuesta: puede haber checkout del otro lado o no.
+ * NO es 'fallido' -- eso invitaria a reintentar y crear un segundo cobro real
+ * sobre el mismo pedido. Queda en requiere_revision con la anomalia, y quien
+ * reintente tendra que resolver la ambiguedad antes de mandar otro POST.
+ */
+export async function marcarCreacionAmbigua(pagoId, negocioId, motivo) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = 'requiere_revision',
+                      metadata_sanitizada = metadata_sanitizada || $3::jsonb
+      WHERE id = $1 AND negocio_id = $2 AND estado IN ('creando','pendiente','requiere_revision')`,
+    [pagoId, negocioId.trim(), JSON.stringify({
+      anomalia: 'creacion_ambigua',
+      anomalia_detectada_at: new Date().toISOString(),
+      anomalia_detalle: `no se supo si el proveedor creo el checkout: ${motivo}`,
+    })]);
+  return rowCount > 0;
+}
+
+/**
+ * La ambiguedad quedo resuelta: o se recupero el checkout que existia, o se
+ * comprobo que no existia y se creo uno. Sin limpiar la marca, la fila queda
+ * marcada para siempre y cada reintento la trata como ambigua otra vez -- que
+ * en un proveedor con busqueda significa crear un checkout nuevo en cada
+ * llamada. Se conserva rastro de que hubo ambiguedad; lo que se retira es la
+ * bandera que dispara el tratamiento.
+ */
+export async function resolverAnomaliaCreacion(pagoId, negocioId, como) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos
+        SET metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
+                                  || $3::jsonb
+      WHERE id = $1 AND negocio_id = $2
+        AND metadata_sanitizada->>'anomalia' = 'creacion_ambigua'`,
+    [pagoId, negocioId.trim(), JSON.stringify({
+      creacion_ambigua_resuelta: como, creacion_ambigua_resuelta_at: new Date().toISOString(),
+    })]);
+  return rowCount > 0;
+}
+
 export async function marcarPagoFallido(pagoId, motivo) {
   await pool.query(`UPDATE pagos SET estado = 'fallido', metadata_sanitizada = metadata_sanitizada || $2::jsonb WHERE id = $1`,
     [pagoId, JSON.stringify({ motivo_fallo: motivo })]);
@@ -2241,13 +2303,15 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       `SELECT pedido_folio FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
     if (!previa) { await cliente.query('ROLLBACK'); return { ok: false, resultado: 'no_encontrado' }; }
 
-    // El lock es por PEDIDO, no por fila: la decision mira a los hermanos, asi
-    // que dos webhooks de proveedores distintos del mismo pedido tienen que
-    // serializarse entre si. Sin esto, los dos verian "no hay otro pagado" y
-    // los dos liberarian.
+    // MISMO lock que la creacion de checkouts: 'obligacion_pago' sobre
+    // negocio+pedido. Antes eran dos espacios distintos ('obligacion_pago' para
+    // crear, 'pago_real_verificado' para asentar) y no se bloqueaban entre si:
+    // se podia estar creando un cobro nuevo justo mientras entraba el dinero
+    // del anterior. Todo lo que decide si un pedido puede seguir generando o
+    // recibiendo dinero se serializa sobre la misma obligacion.
     await cliente.query(
       `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
-      ['pago_real_verificado', `${nid}:${previa.pedido_folio}`]);
+      ['obligacion_pago', `${nid}:${previa.pedido_folio}`]);
 
     // Releer YA bajo el lock: lo de antes pudo quedar viejo mientras esperabamos.
     const { rows: [fila] } = await cliente.query(
@@ -2439,6 +2503,135 @@ export async function saldarDerivacionPago(pagoId, negocioId) {
       WHERE id = $1 AND negocio_id = $2 AND derivacion_pendiente`,
     [pagoId, negocioId.trim()]);
   return rowCount > 0;
+}
+
+/**
+ * ÚNICA AUTORIZACIÓN PARA DERIVAR UN PEDIDO POR PAGO.
+ *
+ * Antes bastaba con que la transicion devolviera ok. Pero 'ya_confirmado' se
+ * resuelve ANTES de comparar version: un segundo aviso del mismo webhook sobre
+ * un pago de la v1 devolvia ok:true y el llamador derivaba la v2 -- justo lo
+ * que el check de version acababa de impedir en el primer aviso.
+ *
+ * Ahora la autorizacion es la DEUDA: solo se deriva si existe
+ * derivacion_pendiente para ese pago. La deuda la escribe la transicion
+ * financiera, y solo cuando la version cuadraba. Sin deuda no hay nada que
+ * hacer: no se toca el pedido, no sale comanda, y NUNCA se fabrica una deuda
+ * para poder derivar.
+ *
+ * Y se vuelve a comparar la version aqui: entre asentar y recuperar (un crash
+ * en medio puede durar horas) el pedido pudo cambiar. La comparacion y la
+ * transicion durable del pedido ocurren en la MISMA transaccion, con la fila
+ * del pedido bloqueada (FOR UPDATE): un SELECT y un UPDATE sueltos dejarian
+ * pasar una edicion concurrente entre medio.
+ *
+ * Si la version ya no cuadra, la deuda se CIERRA con anomalia
+ * version_desfasada_post_asiento. Dejarla abierta seria un reintento infinito
+ * cada minuto sobre algo que ningun reintento va a arreglar.
+ */
+export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, resultado: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [previa] } = await cliente.query(
+      `SELECT pedido_folio FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
+    if (!previa) { await cliente.query('ROLLBACK'); return { ok: false, resultado: 'no_encontrado' }; }
+    const folio = previa.pedido_folio;
+
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['obligacion_pago', `${nid}:${folio}`]);
+
+    const { rows: [pago] } = await cliente.query(
+      `SELECT * FROM pagos WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [pagoId, nid]);
+    if (!pago.derivacion_pendiente) {
+      // No-op idempotente: o ya se derivo, o nunca hubo autorizacion.
+      await cliente.query('COMMIT');
+      return { ok: false, resultado: 'sin_deuda', folio };
+    }
+
+    // FOR UPDATE sobre el pedido: cualquier edicion concurrente se serializa
+    // contra esta transaccion, asi que la version que se compara es la misma
+    // que queda escrita.
+    const { rows: [pedido] } = await cliente.query(
+      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      [folio, nid]);
+    if (!pedido) {
+      await cliente.query(
+        `UPDATE pagos SET derivacion_pendiente = false, derivacion_saldada_at = NOW(),
+                          metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE id = $1 AND negocio_id = $2`,
+        [pagoId, nid, JSON.stringify({
+          anomalia: 'pedido_inexistente_post_asiento',
+          anomalia_detectada_at: new Date().toISOString(),
+          anomalia_detalle: `el pedido ${folio} ya no existe: hay dinero asentado sin pedido que liberar`,
+        })]);
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] DEUDA SIN PEDIDO pago=${pagoId} folio=${folio}`);
+      return { ok: false, resultado: 'pedido_inexistente', folio };
+    }
+
+    const versionActual = calcularVersionPedidoHash(pedido.datos);
+    if (pago.version_pedido_hash && versionActual && pago.version_pedido_hash !== versionActual) {
+      await cliente.query(
+        `UPDATE pagos SET derivacion_pendiente = false, derivacion_saldada_at = NOW(),
+                          metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE id = $1 AND negocio_id = $2`,
+        [pagoId, nid, JSON.stringify({
+          anomalia: 'version_desfasada_post_asiento',
+          anomalia_detectada_at: new Date().toISOString(),
+          version_pagada: pago.version_pedido_hash,
+          version_actual: versionActual,
+          monto_pagado: Number(pago.monto),
+          monto_actual: Number(pedido.datos?.total ?? NaN),
+          anomalia_detalle: `el pedido ${folio} cambio entre el cobro y la recuperacion: requiere revision`,
+        })]);
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] VERSION DESFASADA POST-ASIENTO pago=${pagoId} pedido=${folio}`);
+      return { ok: false, resultado: 'version_desfasada_post_asiento', folio };
+    }
+
+    // La transicion durable del pedido va AQUI DENTRO, con la fila bloqueada:
+    // asi la version validada y la marca de pagado son el mismo acto.
+    await cliente.query(
+      `UPDATE pedidos_activos
+          SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+
+    await cliente.query('COMMIT');
+    // La deuda sigue ABIERTA a proposito: se salda despues de emitir. Si el
+    // proceso muere entre esto y la comanda, el job vuelve a pasar.
+    return { ok: true, resultado: 'autorizado', folio, pago };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+/**
+ * ¿Ya entro dinero real por este pedido para la version que corre AHORA?
+ *
+ * Se consulta antes de crear un checkout nuevo. `pedidos_activos.pago_confirmado`
+ * no sirve para esto: entre asentar el dinero y marcar el pedido hay una
+ * ventana -- la deuda de derivacion -- en la que el pedido todavia dice que no
+ * esta pagado. Crear otro cobro ahi seria cobrarle dos veces al cliente.
+ */
+export async function pagoRealDelPedido(negocioId, pedidoFolio, versionHash = null) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'pagado'
+      ORDER BY paid_at DESC NULLS LAST, created_at DESC`,
+    [negocioId.trim(), pedidoFolio]);
+  if (!rows.length) return null;
+  if (!versionHash) return rows[0];
+  // Solo cuenta como "ya pagado" el dinero de la version vigente: un cobro de
+  // una version anterior es real, pero no paga lo que el pedido vale hoy.
+  return rows.find(r => r.version_pedido_hash === versionHash) || null;
 }
 
 // Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila

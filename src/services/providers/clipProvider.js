@@ -58,6 +58,14 @@ export function getCapabilities() {
   return {
     createLink: true, getStatus: true, cancelLink: false, webhookSignature: false,
     monedas: ['MXN'], sandbox: false,
+    // La documentacion publica del Checkout redirigido de Clip no expone ningun
+    // header de idempotencia, ni una busqueda de checkouts por referencia: solo
+    // consultar un link por SU id, que es justo lo que no se tiene cuando la
+    // respuesta se perdio. Sin ninguno de los dos mecanismos, un resultado
+    // ambiguo no se puede resolver por API: queda en revision y nadie manda
+    // otro POST por su cuenta.
+    idempotenciaCreacion: false,
+    recuperaCreacionPorReferencia: false,
   };
 }
 

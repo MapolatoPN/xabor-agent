@@ -16,9 +16,10 @@
  */
 import {
   resolverIntegracionPorRoutingToken, obtenerPagoPorExternalReference,
-  ligarPaymentIdExclusivo, asentarPagoRealVerificado, confirmarPagoPedido,
+  ligarPaymentIdExclusivo, asentarPagoRealVerificado,
   actualizarEstadoPagoPorId, pagosReconciliablesDeProveedor,
   marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
+  consumirDeudaDeDerivacion,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -245,10 +246,26 @@ export async function derivarPedidoPorPagoAsentado({ pagoId, negocioId, folio })
     throw e;
   }
 
-  await confirmarPagoPedido(folio, negocioId);
+  // LA DEUDA ES LA ÚNICA AUTORIZACIÓN. No basta con que la transición haya
+  // devuelto ok: 'ya_confirmado' se resuelve antes de comparar versión, así que
+  // un segundo aviso del mismo webhook sobre un cobro de la v1 llegaba hasta
+  // aquí y liberaba la v2 -- justo lo que el primer aviso había impedido.
+  //
+  // consumirDeudaDeDerivacion vuelve a comparar la versión y marca el pedido
+  // como pagado en la misma transacción, con la fila del pedido bloqueada.
+  const deuda = await consumirDeudaDeDerivacion(pagoId, negocioId);
+  if (!deuda.ok) {
+    // No-op idempotente. Jamás se fabrica una deuda para poder derivar.
+    if (deuda.resultado !== 'sin_deuda') {
+      console.error(`[Pagos] Derivacion no autorizada para pago=${pagoId}: ${deuda.resultado}`);
+    }
+    return { derivado: false, razon: deuda.resultado };
+  }
+
   const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
   await confirmarPedidoPendientePago(folio, negocioId);
   await saldarDerivacionPago(pagoId, negocioId);
+  return { derivado: true };
 }
 
 /**
@@ -266,9 +283,10 @@ export async function reconciliarDerivacionesPendientes(limite = 25) {
   let saldadas = 0;
   for (const pago of deudas) {
     try {
-      await derivarPedidoPorPagoAsentado({
+      const r = await derivarPedidoPorPagoAsentado({
         pagoId: pago.id, negocioId: pago.negocio_id, folio: pago.pedido_folio,
       });
+      if (!r.derivado) continue;      // la deuda se cerró sola con su anomalía
       saldadas++;
       console.log(`[Pagos] Derivacion recuperada tras crash: pedido ${pago.pedido_folio} (pago ${pago.id})`);
     } catch (e) {

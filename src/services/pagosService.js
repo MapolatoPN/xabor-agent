@@ -16,7 +16,8 @@ import {
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
   obtenerIntentoDePago, marcarIntentosAmbiguos, conObligacionDePagoExclusiva,
-  invalidarCheckoutSuperado,
+  invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
+  marcarCreacionAmbigua, resolverAnomaliaCreacion,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -50,6 +51,18 @@ export class SinProveedorPrincipalError extends Error {
 }
 export class PedidoInvalidoError extends Error {
   constructor(msg) { super(msg); this.code = 'PEDIDO_INVALIDO'; }
+}
+/**
+ * Un intento anterior mando el POST de creacion y no supo si el proveedor llego
+ * a crear el checkout, y ESE proveedor no ofrece ni idempotencia ni busqueda
+ * por referencia. Reintentar a ciegas crearia un segundo cobro real. La unica
+ * salida honesta es parar y que alguien lo mire.
+ */
+export class CreacionAmbiguaError extends Error {
+  constructor(pedidoId, proveedor) {
+    super(`El intento de cobro del pedido ${pedidoId} en ${proveedor} quedó sin respuesta y ese proveedor no permite comprobar si el checkout existe: requiere revisión manual antes de volver a intentar`);
+    this.code = 'CREACION_AMBIGUA';
+  }
 }
 
 /**
@@ -157,6 +170,21 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       `El pedido ${pedidoId} tiene ${intento.candidatos.length} intentos de pago simultaneos para el mismo proveedor y version: requiere revision manual`);
   }
 
+  // ¿YA ENTRÓ DINERO por este pedido para la versión que corre ahora? Se
+  // pregunta al ledger, no a `pedidos_activos.pago_confirmado`: entre asentar
+  // el dinero y marcar el pedido hay una ventana -- la deuda de derivación --
+  // en la que el pedido todavía dice que no está pagado. Crear otro checkout
+  // ahí sería cobrarle dos veces al cliente. Vale aunque el negocio haya
+  // cambiado de proveedor en medio: el dinero ya entró por el anterior.
+  const yaPagado = await pagoRealDelPedido(negocioId, pedidoId, versionHash);
+  if (yaPagado) {
+    return {
+      pagoId: yaPagado.id, url: yaPagado.url, reutilizado: true,
+      referenciaExterna: yaPagado.referencia_externa, estado: 'pagado',
+      derivacionPendiente: yaPagado.derivacion_pendiente === true,
+    };
+  }
+
   // Idempotencia: si ya hay un pago vigente para este pedido (mismo tipo) y
   // coincide la versión, se reutiliza tal cual (mismo enlace) -- nunca se
   // genera uno nuevo por un doble clic o un reintento.
@@ -175,7 +203,16 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   if (vigente && vigente.proveedor && vigente.proveedor !== principal.proveedor) {
     await invalidarPagosVigentesDePedido(negocioId, pedidoId,
       `el negocio cambió de proveedor (${vigente.proveedor} → ${principal.proveedor}) antes de completar el pago`);
-  } else if (vigente && vigente.version_pedido_hash === versionHash && ['pendiente', 'requiere_revision'].includes(vigente.estado)) {
+  } else if (vigente && vigente.version_pedido_hash === versionHash
+             && ['pendiente', 'requiere_revision'].includes(vigente.estado)
+             // Un enlace sin URL no se puede "reutilizar": no hay nada que
+             // darle al cliente. Una transferencia manual sí: ahí el producto
+             // son las instrucciones, no un checkout. Y si además quedó marcado
+             // `creacion_ambigua`, devolverlo aquí saltaría la resolución de esa
+             // ambigüedad, que es lo único que sabe si el checkout existe del
+             // otro lado.
+             && (vigente.tipo !== 'enlace_pago' || vigente.url)
+             && vigente.metadata_sanitizada?.anomalia !== 'creacion_ambigua') {
     return { pagoId: vigente.id, url: vigente.url, reutilizado: true, referenciaExterna: vigente.referencia_externa, estado: vigente.estado };
   }
   if (vigente && vigente.proveedor === principal.proveedor && vigente.version_pedido_hash !== versionHash) {
@@ -235,6 +272,53 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   // recalculada: para una fila historica es la vieja, y asi el webhook que la
   // devuelva sigue resolviendo.
   const referenciaInterna = registro.referencia_interna;
+  const capacidades = adaptador.getCapabilities();
+
+  // ── RESULTADO AMBIGUO DE UN INTENTO ANTERIOR ─────────────────────────────
+  //
+  // Una fila marcada `creacion_ambigua` significa: el POST salió y no supimos
+  // si nació un checkout. "No hay ids guardados" NO demuestra que el proveedor
+  // no creó nada -- una respuesta perdida deja exactamente el mismo rastro que
+  // una petición que nunca salió.
+  //
+  // Qué se puede hacer depende del proveedor, y no son iguales:
+  //  · Mercado Pago no documenta idempotencia al crear la preferencia, pero SÍ
+  //    permite buscarla por external_reference: se pregunta y se adopta la que
+  //    exista. Si no existe ninguna, entonces sí es seguro crear.
+  //  · Clip no documenta ni idempotencia ni búsqueda por referencia. Ahí no hay
+  //    forma de saberlo por API, así que no se manda otro POST: queda en
+  //    revisión.
+  if (registro.metadata_sanitizada?.anomalia === 'creacion_ambigua' && !registro.referencia_externa) {
+    if (capacidades.recuperaCreacionPorReferencia && adaptador.buscarCheckoutPorReferencia) {
+      const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
+      const encontrado = await adaptador.buscarCheckoutPorReferencia(referenciaInterna, credenciales);
+      if (encontrado) {
+        // Existía: se adopta, no se crea nada. El checkout del cliente es ese.
+        await actualizarPagoCreado(registro.id, {
+          referenciaExterna: encontrado.referenciaExterna, url: encontrado.url || null,
+          estado: 'pendiente',
+        });
+        if (encontrado.preferenciaId) {
+          await registrarIdsDePago(registro.id, negocioId,
+            { preferenceId: encontrado.preferenciaId, proveedor: principal.proveedor });
+        }
+        await resolverAnomaliaCreacion(registro.id, negocioId, 'recuperado_por_referencia');
+        return {
+          pagoId: registro.id, url: encontrado.url, reutilizado: true,
+          referenciaExterna: encontrado.referenciaExterna, estado: 'pendiente',
+          recuperadoTrasAmbiguedad: true,
+        };
+      }
+      // La búsqueda respondió que no existe: crear ahora sí es seguro.
+    } else {
+      throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
+    }
+  }
+
+  // Identidad durable de creación ANTES del POST. Determinista y propia de la
+  // fila, para que el reintento mande exactamente la misma.
+  const claveIdempotencia = `xabor:pago:${registro.id}`;
+  await registrarIntentoDeCreacion(registro.id, negocioId, claveIdempotencia);
 
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
@@ -244,7 +328,7 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // para proveedores que firman sus webhooks; Clip no los ofrece y se
     // reconcilia por consulta activa.
     let notificationUrl = null;
-    if (adaptador.getCapabilities().webhookSignature) {
+    if (capacidades.webhookSignature) {
       const raiz = urlPublicaXabor();
       const routing = await asegurarRoutingTokenIntegracion(negocioId, principal.proveedor);
       if (raiz && routing) {
@@ -258,6 +342,10 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       negocioId, pedidoId, total, descripcion: descripcion || `Pedido Xabor #${pedidoId}`,
       cliente: pedido.cliente || {}, referencia: referenciaInterna, credenciales,
       notificationUrl,
+      // Solo se manda a quien la documente. Inventar un header de idempotencia
+      // que el proveedor ignora es peor que no mandarlo: haría creer que la
+      // creación está protegida cuando no lo está.
+      idempotencyKey: capacidades.idempotenciaCreacion ? claveIdempotencia : null,
     });
     await actualizarPagoCreado(registro.id, {
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
@@ -271,6 +359,9 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // El id de la PREFERENCIA en su propia columna. No es un payment_id y jamás
     // debe consultarse como /v1/payments/:preferenceId -- ese id lo trae después
     // el webhook, y se guarda aparte.
+    // Si esta fila venia de un intento ambiguo y la busqueda dijo que no existia
+    // nada, la creacion de ahora zanja la duda.
+    await resolverAnomaliaCreacion(registro.id, negocioId, 'creado_tras_comprobar_que_no_existia');
     if (resultado.preferenceId) {
       await registrarIdsDePago(registro.id, negocioId,
         { preferenceId: resultado.preferenceId, proveedor: principal.proveedor });
@@ -287,7 +378,19 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     }
     return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {
-    await marcarPagoFallido(registro.id, e.code || e.message);
+    // Un fallo DESPUÉS de mandar el POST es ambiguo, no fallido: el proveedor
+    // pudo haber creado el checkout y perderse la respuesta. Marcarlo 'fallido'
+    // invitaría a un reintento que crearía un segundo cobro real.
+    //
+    // Solo los errores que ocurren ANTES de salir a la red -- credenciales
+    // ausentes, configuración inválida -- son fallos limpios.
+    const antesDeSalir = e.code === 'TENANT_CONTEXT_REQUIRED'
+      || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL';
+    if (antesDeSalir) {
+      await marcarPagoFallido(registro.id, e.code || e.message);
+    } else {
+      await marcarCreacionAmbigua(registro.id, negocioId, e.code || e.message);
+    }
     throw e;
   }
 }

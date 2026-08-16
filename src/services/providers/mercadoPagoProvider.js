@@ -9,8 +9,19 @@
  * preferencia y verifica el resultado.
  *
  * Superficie usada de la API de Mercado Pago:
- *   POST /checkout/preferences        → crea la preferencia, devuelve init_point
- *   GET  /v1/payments/:id             → estado real de un pago
+ *   POST /checkout/preferences         → crea la preferencia, devuelve init_point
+ *   GET  /checkout/preferences/search  → recupera una preferencia por referencia
+ *   GET  /v1/payments/:id              → estado real de un pago
+ *
+ * IDEMPOTENCIA EN LA CREACIÓN: la referencia oficial de "Create preference"
+ * documenta un solo header de petición, Authorization. No hay X-Idempotency-Key
+ * documentado para /checkout/preferences (sí lo hay para la API de pagos, que
+ * es otra cosa). Así que aquí NO se finge idempotencia.
+ *
+ * Lo que sí ofrece Mercado Pago es RECUPERACIÓN: /checkout/preferences/search
+ * acepta external_reference (últimos 90 días). Eso permite resolver el caso
+ * ambiguo -- creación enviada, respuesta perdida -- preguntando si la
+ * preferencia existe, en vez de adivinar.
  *
  * La base se puede apuntar a otro host con XABOR_MP_API_BASE. Es lo que usan
  * las pruebas para hablar con un mock local: ninguna prueba toca la API real
@@ -243,6 +254,33 @@ export function getCapabilities() {
   return {
     createLink: true, getStatus: true, cancelLink: true, webhookSignature: true,
     monedas: ['MXN'], sandbox: true,
+    // Verificado contra la referencia oficial de Create preference: no hay
+    // header de idempotencia documentado para /checkout/preferences.
+    idempotenciaCreacion: false,
+    // Pero sí se puede preguntar despues si la preferencia llego a existir.
+    recuperaCreacionPorReferencia: true,
+  };
+}
+
+/**
+ * ¿Existe ya una preferencia para esta referencia?
+ *
+ * Es la salida del caso ambiguo: Xabor mando el POST y no supo si llego a
+ * crearse. En vez de reintentar a ciegas -- que crearia un segundo checkout
+ * cobrable -- se pregunta. La busqueda cubre los ultimos 90 dias, que es de
+ * sobra para un checkout cuya respuesta se perdio hace segundos.
+ */
+export async function buscarCheckoutPorReferencia(referenciaInterna, credenciales) {
+  const token = exigirToken(credenciales);
+  const r = await pedir(
+    `/checkout/preferences/search?external_reference=${encodeURIComponent(referenciaInterna)}`,
+    { token });
+  const elem = (r?.elements || r?.results || [])[0];
+  if (!elem) return null;
+  return {
+    preferenciaId: elem.id || null,
+    url: elem.init_point || elem.sandbox_init_point || null,
+    referenciaExterna: elem.id || null,
   };
 }
 

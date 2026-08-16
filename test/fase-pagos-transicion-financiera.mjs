@@ -343,6 +343,10 @@ try {
     const pedido = await pedidoDe(folio);
     assert.notStrictEqual(pedido.estado, 'pendiente_pago', 'el pedido no se liberó');
     assert.strictEqual(pedido.datos.pago_confirmado, true, 'el pedido no quedó marcado como pagado');
+    // La comanda sale después de marcar el pedido: se espera esa condición en
+    // vez de medirla al vuelo, y luego se comprueba que no salga ninguna más.
+    await esperar(async () => await comandasDe(folio) >= 1, 'la comanda del pago honrado');
+    await new Promise(r => setTimeout(r, 800));
     assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
   });
 
