@@ -16,7 +16,7 @@
  */
 import {
   resolverIntegracionPorRoutingToken, obtenerPagoPorExternalReference,
-  ligarPaymentIdExclusivo, confirmarPagoIdempotentePorNegocio, confirmarPagoPedido,
+  ligarPaymentIdExclusivo, asentarPagoRealVerificado, confirmarPagoPedido,
   actualizarEstadoPagoPorId, pagosPendientesDeProveedor,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
@@ -166,17 +166,36 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
     return { http: 200, resultado: { razon: 'estado_no_pagado', estado: estadoInterno, pagoId: pago.id } };
   }
 
-  // Confirmacion idempotente ACOTADA AL NEGOCIO, y liberacion del pedido por el
-  // unico mecanismo autorizado -- el mismo que ya es exclusivo y recuperable
-  // ante crash. Cincuenta avisos iguales pasan por aqui y solo uno emite.
-  await confirmarPagoIdempotentePorNegocio(pago.id, negocioId, { referenciaExterna: paymentId });
+  // TRANSICION FINANCIERA UNICA -- la misma que usa el webhook de Clip y la
+  // reconciliacion. Aqui vive todo lo que el dinero necesita: idempotencia,
+  // cierre de los intentos hermanos y deteccion de doble cobro real.
+  const transicion = await asentarPagoRealVerificado({
+    pagoId: pago.id, negocioId, referenciaExterna: paymentId, paymentId,
+  });
+
+  // La derivacion del pedido SOLO ocurre si la transicion confirmo esta fila o
+  // determino que ya estaba confirmada. Cualquier otro resultado -- incluida
+  // una excepcion, que se propaga -- significa no liberar cocina.
+  if (!transicion.ok) {
+    console.error(`[Pagos] Transicion financiera no confirmo ${pago.id}: ${transicion.resultado} — NO se libera el pedido`);
+    return {
+      http: 200,
+      resultado: { razon: `transicion_${transicion.resultado}`, pagoId: pago.id, folio: pago.pedido_folio,
+                   pagosImplicados: transicion.pagosImplicados || undefined },
+    };
+  }
+
   await confirmarPagoPedido(pago.pedido_folio, negocioId);
   const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
   await confirmarPedidoPendientePago(pago.pedido_folio, negocioId);
 
   return {
     http: 200,
-    resultado: { razon: 'confirmado', pagoId: pago.id, folio: pago.pedido_folio, paymentId },
+    resultado: {
+      razon: 'confirmado', pagoId: pago.id, folio: pago.pedido_folio, paymentId,
+      transicion: transicion.resultado,
+      hermanosCerrados: transicion.hermanosCerrados,
+    },
   };
 }
 

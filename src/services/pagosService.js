@@ -15,7 +15,7 @@ import {
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
-  obtenerIntentoDePago, marcarIntentosAmbiguos,
+  obtenerIntentoDePago, marcarIntentosAmbiguos, conIntentoDePagoExclusivo,
 } from './database.js';
 
 // URL pública canónica de Xabor. La notification_url es sensible -- decide a
@@ -88,6 +88,45 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   if (!adaptador) throw new SinProveedorPrincipalError(negocioId);
   const tipo = adaptador.getCapabilities().createLink ? 'enlace_pago' : 'transferencia';
 
+  // ── SERIALIZACION POR LA IDENTIDAD SEMANTICA ─────────────────────────────
+  //
+  // Dos capas, porque los duplicados llegan por dos caminos distintos:
+  //
+  //  · MISMO proceso (el caso real: veinte toques al boton, o el bot y el panel
+  //    a la vez) -> mapa in-flight. El primero corre; los demas esperan SU
+  //    promesa y reciben el mismo resultado. Cuestan cero conexiones y cero
+  //    llamadas al proveedor.
+  //  · OTRA instancia -> claim en la base. El perdedor espera al ganador y, al
+  //    entrar, ya encuentra la fila creada y la reutiliza.
+  //
+  // El UNIQUE de la tabla sigue ahi, pero como barrera de ultimo recurso: si el
+  // caller lo esta viendo (23505), es que hubo N intentos de crear N cobros.
+  const claveIntento = `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}:${tipo}`;
+  const enVuelo = _intentosEnVuelo.get(claveIntento);
+  if (enVuelo) return enVuelo;
+
+  const promesa = conIntentoDePagoExclusivo(
+    negocioId, pedidoId, versionHash, principal.proveedor, tipo,
+    () => resolverIntentoDePago({
+      negocioId, pedidoId, pedido, total, versionHash, principal, adaptador, tipo,
+      descripcion, idempotencyKey, actor,
+    }))
+    .finally(() => _intentosEnVuelo.delete(claveIntento));
+  _intentosEnVuelo.set(claveIntento, promesa);
+  return promesa;
+}
+
+// Peticiones del MISMO intento que ya estan corriendo en este proceso. La clave
+// es la identidad semantica completa, asi que nunca comparten resultado dos
+// pedidos, dos negocios ni dos proveedores distintos. Se limpia sola al
+// terminar (exito o error): no es cache, es coalescencia.
+const _intentosEnVuelo = new Map();
+
+// El cuerpo real, ya con el intento en exclusiva.
+async function resolverIntentoDePago({
+  negocioId, pedidoId, pedido, total, versionHash, principal, adaptador, tipo,
+  descripcion, idempotencyKey, actor,
+}) {
   // IDENTIDAD DEL INTENTO: negocio + pedido + version + proveedor + tipo, leida
   // de columnas reales. `referencia_interna` dejo de servir para esto: su
   // formato cambio (ahora lleva el proveedor) y las filas historicas conservan
@@ -208,7 +247,16 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
       await registrarIdsDePago(registro.id, negocioId,
         { preferenceId: resultado.preferenceId, proveedor: principal.proveedor });
     }
-    if (resultado.referenciaExterna) await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
+    // `datos.clip_link_id` es un campo LEGACY de Clip: la reconciliacion vieja
+    // (obtenerPagosPendientesConLink) lee de ahi y llama a consultarEstadoPago,
+    // que consulta la API de Clip. Escribir ahi el preference_id de Mercado
+    // Pago hacia que ese job preguntara por un id de MP a Clip -- basura
+    // garantizada, y ademas contaminaba un campo cuyo nombre promete Clip. Solo
+    // Clip escribe ese campo; los demas proveedores ya tienen sus propias
+    // columnas (preference_id, payment_id) y su propia reconciliacion.
+    if (resultado.referenciaExterna && principal.proveedor === 'clip') {
+      await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
+    }
     return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {
     await marcarPagoFallido(registro.id, e.code || e.message);

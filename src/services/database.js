@@ -2140,29 +2140,245 @@ export async function obtenerPagoPorReferenciaInterna(negocioId, referenciaInter
   return rows[0] || null;
 }
 
-/** Confirma un pago de forma idempotente (segunda notificación del mismo evento no duplica ni retrocede el estado). */
-export async function confirmarPagoIdempotente(pagoId, { referenciaExterna } = {}) {
-  const { rows } = await pool.query(
-    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()), referencia_externa = COALESCE($2, referencia_externa)
-     WHERE id = $1 AND estado NOT IN ('pagado','cancelado','invalidado','reembolsado')
-     RETURNING *`,
-    [pagoId, referenciaExterna || null]
-  );
-  return rows[0] || null;
+// confirmarPagoIdempotente / confirmarPagoIdempotentePorNegocio se eliminaron a
+// propósito. Marcaban 'pagado' con un WHERE que excluía 'invalidado', así que
+// ante el enlace del proveedor anterior devolvían null -- y el webhook de Clip
+// tiraba ese null y liberaba la cocina igual. Dejarlas disponibles sería dejar
+// una segunda forma de asentar dinero que no cierra los intentos hermanos ni
+// detecta doble cobro. Hay UNA transición financiera: asentarPagoRealVerificado.
+
+/**
+ * ════ TRANSICION FINANCIERA UNICA: "PAGO REAL VERIFICADO" ════
+ *
+ * La llaman TODOS los caminos que demuestran que el dinero entro de verdad:
+ * el webhook de Clip, el de Mercado Pago y la reconciliacion. Antes cada uno
+ * asentaba el pago a su manera y el de Clip ademas ignoraba el resultado --
+ * `confirmarPagoIdempotente` devolvia null sobre una fila 'invalidado' y el
+ * webhook liberaba la cocina igual. Dinero real cobrado, ledger diciendo
+ * invalidado, y el intento del proveedor nuevo todavia abierto: doble cobro.
+ *
+ * PRECONDICION del llamador: ya reconsulto al proveedor y el cobro esta
+ * verificado. Esta funcion asienta; no verifica dinero (eso vive en el
+ * adaptador de cada proveedor, que es quien sabe leer su respuesta).
+ *
+ * Reglas que sostiene:
+ *  · Acotada al negocio -- el tenant va en el WHERE, siempre.
+ *  · Idempotente -- si ESTA fila ya estaba pagada, exito, sin efectos nuevos.
+ *  · Un cobro real JAMAS se repudia por haber cambiado de proveedor. Una fila
+ *    'invalidado' que resulta cobrada se asienta como pagada; invalidar era
+ *    dejar de ofrecer el enlace, nunca negar el dinero que entro por el.
+ *  · Al asentarse, los intentos hermanos del MISMO pedido que siguen abiertos
+ *    se cierran: no puede quedar un segundo enlace cobrable.
+ *  · Si YA hay otro pago real del mismo pedido, eso es un DOBLE COBRO REAL: no
+ *    se pisa ninguno, se registran los dos y se marca anomalia explicita.
+ *
+ * Devuelve { ok, resultado, ... }. El pedido/comanda solo puede derivarse
+ * cuando ok === true (resultado 'confirmado' o 'ya_confirmado'). Cualquier
+ * otra cosa -- incluida una excepcion -- significa NO liberar.
+ *
+ * Sin migracion: la anomalia se representa en `metadata_sanitizada`, la
+ * columna JSONB que la tabla ya tiene para esto. Un estado nuevo tampoco hace
+ * falta: 'pagado' + anomalia dice la verdad completa (el dinero entro Y hay
+ * algo que revisar), mientras que inventar un estado 'doble_cobro' esconderia
+ * justamente que ese cobro es real.
+ *
+ * Corre sobre el pool de CLAIMS y no pide ni una conexion mas mientras
+ * sostiene el lock: todas sus consultas van por la misma. No puede reproducir
+ * el interbloqueo que documenta poolDeClaims().
+ */
+export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaExterna = null, paymentId = null } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, resultado: 'sin_negocio' };
+  if (typeof pagoId !== 'string' || !pagoId.trim()) return { ok: false, resultado: 'sin_pago' };
+  const nid = negocioId.trim();
+
+  // Punto de fallo inyectable, mismo candado de produccion que el resto del
+  // proyecto: sirve para probar que ningun llamador libera cocina tras un
+  // fallo de la transicion.
+  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_PAGOS_FALLA_EN === 'transicion_financiera') {
+    const e = new Error("Fallo inyectado en 'transicion_financiera'");
+    e.inyectado = true;
+    throw e;
+  }
+  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_PAGOS_FALLA_EN === 'transicion_financiera_null') {
+    return { ok: false, resultado: 'fallo_inyectado' };
+  }
+
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [previa] } = await cliente.query(
+      `SELECT pedido_folio FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
+    if (!previa) { await cliente.query('ROLLBACK'); return { ok: false, resultado: 'no_encontrado' }; }
+
+    // El lock es por PEDIDO, no por fila: la decision mira a los hermanos, asi
+    // que dos webhooks de proveedores distintos del mismo pedido tienen que
+    // serializarse entre si. Sin esto, los dos verian "no hay otro pagado" y
+    // los dos liberarian.
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['pago_real_verificado', `${nid}:${previa.pedido_folio}`]);
+
+    // Releer YA bajo el lock: lo de antes pudo quedar viejo mientras esperabamos.
+    const { rows: [fila] } = await cliente.query(
+      `SELECT * FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
+    const folio = fila.pedido_folio;
+
+    const { rows: hermanosPagados } = await cliente.query(
+      `SELECT id, proveedor, monto, paid_at FROM pagos
+        WHERE negocio_id = $1 AND pedido_folio = $2 AND id <> $3 AND estado = 'pagado'`,
+      [nid, folio, pagoId]);
+
+    // ── DOBLE COBRO REAL ──────────────────────────────────────────────────
+    // Otro intento del mismo pedido ya tiene dinero asentado. Los dos cobros
+    // son reales: no se pisa ni se esconde ninguno. Se asienta este tambien
+    // (el dinero entro) y se marca la anomalia en TODAS las filas implicadas,
+    // para que el negocio la vea y reembolse. Y no se deriva: la comanda ya
+    // salio con el primero.
+    if (hermanosPagados.length > 0) {
+      const implicados = [pagoId, ...hermanosPagados.map(h => h.id)];
+      if (fila.estado !== 'pagado') {
+        await cliente.query(
+          `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
+                            referencia_externa = COALESCE($3, referencia_externa),
+                            payment_id = COALESCE(payment_id, $4)
+            WHERE id = $1 AND negocio_id = $2`,
+          [pagoId, nid, referenciaExterna, paymentId]);
+      }
+      await cliente.query(
+        `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE negocio_id = $1 AND id = ANY($2::uuid[])`,
+        [nid, implicados, JSON.stringify({
+          anomalia: 'doble_cobro_real',
+          anomalia_detectada_at: new Date().toISOString(),
+          anomalia_pagos: implicados,
+          anomalia_detalle: `el pedido ${folio} tiene ${implicados.length} cobros reales asentados`,
+        })]);
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] DOBLE COBRO REAL pedido=${folio} negocio=${nid} pagos=${implicados.join(',')}`);
+      return { ok: false, resultado: 'doble_cobro', folio, pago: fila, pagosImplicados: implicados };
+    }
+
+    // ── Idempotencia: esta misma fila ya estaba confirmada ────────────────
+    if (fila.estado === 'pagado') {
+      await cliente.query('COMMIT');
+      return { ok: true, resultado: 'ya_confirmado', folio, pago: fila, hermanosCerrados: [] };
+    }
+
+    // ── Estados que NO se pueden pisar con un "pagado" ────────────────────
+    // Un reembolso ya devolvio ese dinero y un pago cancelado se dio de baja a
+    // proposito: marcarlos pagados borraria esa historia. Se deja constancia y
+    // se manda a revision, sin derivar.
+    if (['reembolsado', 'cancelado'].includes(fila.estado)) {
+      await cliente.query(
+        `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE id = $1 AND negocio_id = $2`,
+        [pagoId, nid, JSON.stringify({
+          anomalia: 'cobro_sobre_estado_terminal',
+          anomalia_detectada_at: new Date().toISOString(),
+          anomalia_detalle: `se verifico dinero real sobre un pago en estado '${fila.estado}'`,
+        })]);
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] COBRO SOBRE ESTADO TERMINAL pago=${pagoId} estado=${fila.estado} pedido=${folio}`);
+      return { ok: false, resultado: 'estado_terminal', folio, pago: fila };
+    }
+
+    // ── Asentar el dinero real ────────────────────────────────────────────
+    // 'invalidado' entra aqui a proposito: es el caso del enlace del proveedor
+    // anterior que el cliente termino pagando. invalidated_at y
+    // motivo_invalidacion se conservan como historia -- lo que cambia es que el
+    // ledger ya reconoce el dinero.
+    const marca = { verificado_por_proveedor: true, asentado_at: new Date().toISOString() };
+    if (fila.estado === 'invalidado') {
+      marca.honrado_tras_invalidacion = true;
+      marca.motivo_invalidacion_previo = fila.motivo_invalidacion || null;
+    }
+    const { rows: [asentado] } = await cliente.query(
+      `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
+                        referencia_externa = COALESCE($3, referencia_externa),
+                        payment_id = COALESCE(payment_id, $4),
+                        metadata_sanitizada = metadata_sanitizada || $5::jsonb
+        WHERE id = $1 AND negocio_id = $2
+        RETURNING *`,
+      [pagoId, nid, referenciaExterna, paymentId, JSON.stringify(marca)]);
+
+    // Cerrar los intentos hermanos que siguen abiertos: con el dinero ya
+    // dentro, ningun otro enlace del mismo pedido puede seguir cobrando.
+    const { rows: cerrados } = await cliente.query(
+      `UPDATE pagos SET estado = 'invalidado', invalidated_at = COALESCE(invalidated_at, NOW()),
+                        motivo_invalidacion = COALESCE(motivo_invalidacion,
+                          'otro intento del mismo pedido recibio el pago real')
+        WHERE negocio_id = $1 AND pedido_folio = $2 AND id <> $3
+          AND estado IN ('creando','pendiente','requiere_revision','fallido')
+        RETURNING id`,
+      [nid, folio, pagoId]);
+
+    await cliente.query('COMMIT');
+    return {
+      ok: true, resultado: 'confirmado', folio, pago: asentado,
+      hermanosCerrados: cerrados.map(c => c.id),
+      honradoTrasInvalidacion: fila.estado === 'invalidado',
+    };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
-// Variante acotada por negocio, para los caminos financieros nuevos. Mismo
-// criterio que el resto de las mutaciones endurecidas: el tenant va en el
-// WHERE, no en la confianza de que el llamador resolvió bien el id.
-export async function confirmarPagoIdempotentePorNegocio(pagoId, negocioId, { referenciaExterna } = {}) {
+/**
+ * Claim exclusivo por la IDENTIDAD SEMANTICA del intento de pago, sostenido
+ * mientras corre el efecto (crear el checkout en el proveedor).
+ *
+ * Sin esto, veinte peticiones simultaneas del mismo intento entraban las veinte
+ * a `crearRegistroPago`, que es un INSERT directo: una ganaba y las otras
+ * chocaban contra el indice unico: un 23505 crudo en la cara del llamador. El
+ * UNIQUE es una barrera de ultimo recurso, no un mecanismo de control de
+ * concurrencia -- llegar a el ya significa que hubo N intentos de crear N
+ * checkouts.
+ *
+ * Bloqueante a proposito: el perdedor NO se rinde ni crea su propio cobro,
+ * espera y converge al resultado del ganador (al entrar, vuelve a resolver el
+ * intento y encuentra la fila ya creada).
+ *
+ * Pool de CLAIMS, no el principal: el efecto de aqui dentro SI pide otras
+ * conexiones (leer credenciales, actualizar el pago), que es exactamente la
+ * forma del interbloqueo hold-and-wait que ya resolvimos en Tienda. Con los
+ * pools separados, esas consultas nunca compiten contra las conexiones de claim.
+ */
+export async function conIntentoDePagoExclusivo(negocioId, pedidoFolio, versionHash, proveedor, tipo, fn) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('conIntentoDePagoExclusivo: negocioId invalido u omitido');
+  }
+  const clave = `${negocioId.trim()}:${pedidoFolio}:${versionHash}:${proveedor}:${tipo}`;
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, ['intento_pago', clave]);
+    const r = await fn();
+    await cliente.query('COMMIT');
+    return r;
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+// El pago de Clip que la reconciliacion legacy debe asentar para un folio.
+// Excluye 'pagado'/'reembolsado' -- ya resueltos -- pero SI incluye
+// 'invalidado': es exactamente el enlace del proveedor anterior que el cliente
+// pudo haber pagado, y ese dinero no se repudia.
+export async function obtenerPagoVigentePorFolioClip(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
-    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
-                      referencia_externa = COALESCE($3, referencia_externa)
-     WHERE id = $1 AND negocio_id = $2 AND estado NOT IN ('pagado','cancelado','invalidado','reembolsado')
-     RETURNING *`,
-    [pagoId, negocioId.trim(), referenciaExterna || null]
-  );
+    `SELECT * FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND proveedor = 'clip'
+        AND estado NOT IN ('pagado','reembolsado')
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [negocioId.trim(), folio]);
   return rows[0] || null;
 }
 
@@ -2211,9 +2427,9 @@ export async function pagosPendientesDeProveedor(proveedor, limite = 50) {
 
 /**
  * Conciliación manual de transferencia (Fase 12/13): a diferencia de
- * confirmarPagoIdempotente (uso interno del webhook de Clip, sin
- * negocio_id en el WHERE porque el negocio ya se resolvió antes de
- * llamarla), esta función SÍ exige negocio_id -- se expone directo a un
+ * asentarPagoRealVerificado (que asienta dinero ya verificado contra el
+ * proveedor), esta confirma a mano una transferencia que nadie puede
+ * reconsultar. Exige negocio_id -- se expone directo a un
  * endpoint HTTP de admin, así que sin ese filtro un admin de un negocio
  * podría confirmar (o cancelar) el pago de otro con solo adivinar un
  * pagoId. Restringida a tipo='transferencia' y estado='requiere_revision'
