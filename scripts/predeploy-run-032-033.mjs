@@ -40,6 +40,7 @@ const SCRIPTS = [
   '052-impresion-legacy-idempotente',
   '053-impresion-legacy-pendientes',
   '054-pagos-routing-y-ids',
+  '055-pagos-ciclo-vida',
 ];
 
 for (const nombre of SCRIPTS) {

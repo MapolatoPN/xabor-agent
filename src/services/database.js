@@ -2105,6 +2105,26 @@ export async function marcarPagoFallido(pagoId, motivo) {
     [pagoId, JSON.stringify({ motivo_fallo: motivo })]);
 }
 
+/**
+ * Retira de circulacion UN checkout concreto porque se genero otro en su lugar.
+ *
+ * No es lo mismo que cancelarlo: Clip no ofrece cancelacion en su API publica,
+ * asi que el enlace sigue vivo del lado del proveedor y el cliente todavia
+ * puede pagarlo. Decir 'cancelado' seria fingir una capacidad que no tenemos.
+ * 'invalidado' dice lo que de verdad pasa -- Xabor dejo de ofrecerlo -- y lo
+ * deja dentro del universo reconciliable, para enterarnos si entra dinero.
+ */
+export async function invalidarCheckoutSuperado(pagoId, negocioId, motivo) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = 'invalidado', invalidated_at = COALESCE(invalidated_at, NOW()),
+                      motivo_invalidacion = COALESCE(motivo_invalidacion, $3)
+      WHERE id = $1 AND negocio_id = $2
+        AND estado IN ('creando','pendiente','requiere_revision','fallido','vencido')`,
+    [pagoId, negocioId.trim(), motivo || 'superado por otro intento de cobro']);
+  return rowCount > 0;
+}
+
 /** Invalida todo pago vigente de un pedido (Fase 11): el pedido cambió, el enlace ya no es válido. Nunca se reutiliza. */
 export async function invalidarPagosVigentesDePedido(negocioId, pedidoFolio, motivo) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return 0;
@@ -2121,10 +2141,21 @@ export async function invalidarPagosVigentesDePedido(negocioId, pedidoFolio, mot
 // referencia_interna única, así que reutilizarla es la única forma de
 // reintentar sin chocar con el UNIQUE. El guard de estados garantiza que
 // jamás se "reactiva" un pago pagado o todavía vigente.
+/**
+ * Reactiva una fila para volver a intentar el cobro.
+ *
+ * SOLO filas que nunca llegaron a tener un checkout externo. Una fila con
+ * referencia_externa, preference_id, payment_id o url YA REPRESENTA un checkout
+ * potencialmente cobrable: reutilizarla obligaria a sobrescribir esos campos, y
+ * con ellos se perderia la identidad del checkout anterior -- el que un webhook
+ * tardio todavia puede nombrar. Para esos casos se crea otra fila.
+ */
 export async function reactivarRegistroPago(pagoId) {
   const { rowCount } = await pool.query(
     `UPDATE pagos SET estado = 'creando'
-     WHERE id = $1 AND estado IN ('fallido','invalidado','vencido','cancelado')`,
+     WHERE id = $1 AND estado IN ('fallido','vencido')
+       AND referencia_externa IS NULL AND preference_id IS NULL
+       AND payment_id IS NULL AND url IS NULL`,
     [pagoId]
   );
   return rowCount > 0;
@@ -2282,6 +2313,24 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       return { ok: false, resultado: 'estado_terminal', folio, pago: fila };
     }
 
+    // ── LA VERSION QUE SE PAGO vs LA VERSION ACTUAL ───────────────────────
+    //
+    // El cliente pudo pagar el enlace de la v1 ($500) despues de que el pedido
+    // ya cambio a v2 ($700). Ese dinero es real y se asienta igual -- jamas se
+    // repudia --, pero NO significa que la v2 este pagada. Liberar cocina ahi
+    // seria regalar la diferencia en silencio; en el sentido contrario
+    // (sobrepago) seria cobrar de mas sin que nadie se entere.
+    //
+    // Se compara contra el pedido leido AHORA, dentro del lock.
+    const { rows: [pedidoActual] } = await cliente.query(
+      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+    const versionActual = pedidoActual ? calcularVersionPedidoHash(pedidoActual.datos) : null;
+    const versionPagada = fila.version_pedido_hash;
+    // Un hash ausente es de una fila anterior a que existiera la columna: no se
+    // puede comparar, y bloquear por eso seria inventar una discrepancia.
+    const comparable = Boolean(versionPagada && versionActual);
+    const desfasado = comparable && versionPagada !== versionActual;
+
     // ── Asentar el dinero real ────────────────────────────────────────────
     // 'invalidado' entra aqui a proposito: es el caso del enlace del proveedor
     // anterior que el cliente termino pagando. invalidated_at y
@@ -2292,14 +2341,41 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       marca.honrado_tras_invalidacion = true;
       marca.motivo_invalidacion_previo = fila.motivo_invalidacion || null;
     }
+    if (desfasado) {
+      marca.anomalia = 'version_desfasada';
+      marca.anomalia_detectada_at = new Date().toISOString();
+      marca.version_pagada = versionPagada;
+      marca.version_actual = versionActual;
+      marca.monto_pagado = Number(fila.monto);
+      marca.monto_actual = Number(pedidoActual.datos?.total ?? NaN);
+      marca.anomalia_detalle =
+        `se cobro la version ${versionPagada} ($${fila.monto}) pero el pedido ${folio} va en la version ${versionActual} ($${marca.monto_actual}): requiere revision`;
+    }
+    if (!pedidoActual) {
+      marca.anomalia = marca.anomalia || 'pedido_inexistente';
+      marca.anomalia_detalle = marca.anomalia_detalle ||
+        `se asento dinero de un pedido (${folio}) que ya no existe en pedidos_activos`;
+    }
+
+    // La DEUDA DE DERIVACION se escribe en la MISMA transaccion que el dinero.
+    // Es lo que cierra la ventana de crash entre asentar y liberar: despues del
+    // COMMIT el pago ya esta 'pagado', asi que la reconciliacion de proveedor
+    // deja de mirarlo, y la marca del pedido todavia no existe. Sin esta
+    // columna, morir aqui deja un pedido cobrado que nadie libera nunca.
+    //
+    // Se persiste la OBLIGACION, no se ejecuta el efecto: la comanda no sale
+    // dentro de una transaccion de dinero.
+    const debeDerivar = !desfasado && Boolean(pedidoActual);
+
     const { rows: [asentado] } = await cliente.query(
       `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
                         referencia_externa = COALESCE($3, referencia_externa),
                         payment_id = COALESCE(payment_id, $4),
-                        metadata_sanitizada = metadata_sanitizada || $5::jsonb
+                        metadata_sanitizada = metadata_sanitizada || $5::jsonb,
+                        derivacion_pendiente = $6
         WHERE id = $1 AND negocio_id = $2
         RETURNING *`,
-      [pagoId, nid, referenciaExterna, paymentId, JSON.stringify(marca)]);
+      [pagoId, nid, referenciaExterna, paymentId, JSON.stringify(marca), debeDerivar]);
 
     // Cerrar los intentos hermanos que siguen abiertos: con el dinero ya
     // dentro, ningun otro enlace del mismo pedido puede seguir cobrando.
@@ -2313,6 +2389,20 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       [nid, folio, pagoId]);
 
     await cliente.query('COMMIT');
+
+    if (desfasado) {
+      console.error(`[Pagos] VERSION DESFASADA pago=${pagoId} pedido=${folio} pagada=${versionPagada} actual=${versionActual}`);
+      return {
+        ok: false, resultado: 'version_desfasada', folio, pago: asentado,
+        hermanosCerrados: cerrados.map(c => c.id),
+        versionPagada, versionActual,
+        montoPagado: Number(fila.monto), montoActual: marca.monto_actual,
+      };
+    }
+    if (!pedidoActual) {
+      console.error(`[Pagos] DINERO SIN PEDIDO pago=${pagoId} folio=${folio}`);
+      return { ok: false, resultado: 'pedido_inexistente', folio, pago: asentado };
+    }
     return {
       ok: true, resultado: 'confirmado', folio, pago: asentado,
       hermanosCerrados: cerrados.map(c => c.id),
@@ -2327,35 +2417,70 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
 }
 
 /**
- * Claim exclusivo por la IDENTIDAD SEMANTICA del intento de pago, sostenido
- * mientras corre el efecto (crear el checkout en el proveedor).
- *
- * Sin esto, veinte peticiones simultaneas del mismo intento entraban las veinte
- * a `crearRegistroPago`, que es un INSERT directo: una ganaba y las otras
- * chocaban contra el indice unico: un 23505 crudo en la cara del llamador. El
- * UNIQUE es una barrera de ultimo recurso, no un mecanismo de control de
- * concurrencia -- llegar a el ya significa que hubo N intentos de crear N
- * checkouts.
- *
- * Bloqueante a proposito: el perdedor NO se rinde ni crea su propio cobro,
- * espera y converge al resultado del ganador (al entrar, vuelve a resolver el
- * intento y encuentra la fila ya creada).
- *
- * Pool de CLAIMS, no el principal: el efecto de aqui dentro SI pide otras
- * conexiones (leer credenciales, actualizar el pago), que es exactamente la
- * forma del interbloqueo hold-and-wait que ya resolvimos en Tienda. Con los
- * pools separados, esas consultas nunca compiten contra las conexiones de claim.
+ * Deudas de derivacion abiertas: pagos con el dinero ya asentado cuyo pedido
+ * todavia no se libero. En operacion normal esto es cero -- el llamador salda
+ * la deuda inmediatamente despues de derivar --, asi que lo que aparezca aqui
+ * es un crash en la ventana que la 055 vino a cerrar.
  */
-export async function conIntentoDePagoExclusivo(negocioId, pedidoFolio, versionHash, proveedor, tipo, fn) {
+export async function pagosConDerivacionPendiente(limite = 25) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos WHERE derivacion_pendiente
+      ORDER BY paid_at ASC NULLS LAST LIMIT $1`, [limite]);
+  return rows;
+}
+
+// Se salda DESPUES de derivar, nunca antes: al reves cambiaria "comanda
+// repetida" -- que la exclusividad de emision ya absorbe -- por "pedido cobrado
+// sin comanda", que no se arregla solo.
+export async function saldarDerivacionPago(pagoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET derivacion_pendiente = false, derivacion_saldada_at = NOW()
+      WHERE id = $1 AND negocio_id = $2 AND derivacion_pendiente`,
+    [pagoId, negocioId.trim()]);
+  return rowCount > 0;
+}
+
+// Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila
+// ya esta en un estado terminal: dejar constancia no puede costar resucitarla.
+export async function marcarAnomaliaPago(pagoId, negocioId, anomalia, detalle) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+      WHERE id = $1 AND negocio_id = $2`,
+    [pagoId, negocioId.trim(), JSON.stringify({
+      anomalia, anomalia_detectada_at: new Date().toISOString(), anomalia_detalle: detalle || null,
+    })]);
+  return rowCount > 0;
+}
+
+/**
+ * Claim exclusivo por la OBLIGACION DE PAGO DEL PEDIDO.
+ *
+ * Antes la clave incluia version y proveedor, y las dos cosas se leian ANTES de
+ * tomar el lock. Eso dejaba dos agujeros: dos versiones del mismo pedido
+ * tomaban locks distintos y podian crear dos checkouts a la vez, y quien
+ * esperaba despertaba con un snapshot viejo -- podia crear el checkout de una
+ * version que ya no existe, o invalidar el intento de la version nueva.
+ *
+ * La unidad cuya exclusividad de verdad queremos es el pedido: un pedido tiene
+ * una sola obligacion de cobro viva. El estado autoritativo (pedido, version,
+ * proveedor principal) se relee DENTRO del claim.
+ *
+ * Pool de CLAIMS, no el principal: el efecto de aqui dentro pide otras
+ * conexiones y llama al proveedor -- la forma exacta del hold-and-wait que ya
+ * resolvimos en Tienda.
+ */
+export async function conObligacionDePagoExclusiva(negocioId, pedidoFolio, fn) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    throw new Error('conIntentoDePagoExclusivo: negocioId invalido u omitido');
+    throw new Error('conObligacionDePagoExclusiva: negocioId invalido u omitido');
   }
-  const clave = `${negocioId.trim()}:${pedidoFolio}:${versionHash}:${proveedor}:${tipo}`;
   const cliente = await poolDeClaims().connect();
   try {
     await cliente.query('BEGIN');
     await cliente.query(
-      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, ['intento_pago', clave]);
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['obligacion_pago', `${negocioId.trim()}:${pedidoFolio}`]);
     const r = await fn();
     await cliente.query('COMMIT');
     return r;
@@ -2414,14 +2539,37 @@ export async function ligarPaymentIdExclusivo(pagoId, negocioId, proveedor, paym
   }
 }
 
-// Pagos de un proveedor que siguen esperando resolución. Es lo que recorre la
-// reconciliación cuando el webhook nunca llegó.
-export async function pagosPendientesDeProveedor(proveedor, limite = 50) {
+/**
+ * Checkouts de un proveedor que TODAVIA PUEDEN RECIBIR DINERO.
+ *
+ * Antes esto era `estado IN ('pendiente','creando')` y una ventana de 7 dias.
+ * Las dos cosas estaban mal:
+ *
+ *  · un checkout 'invalidado' -- superseded por cambio de proveedor o de
+ *    version -- sigue siendo pagable mientras el proveedor no lo cancele de
+ *    verdad, y Clip no ofrece cancelacion en su API publica. Dejarlo fuera de
+ *    la reconciliacion era decidir no enterarse de un cobro real.
+ *  · "7 dias" no es una expiracion: es una suposicion. La expiracion real vive
+ *    en expires_at, y solo se llena cuando el proveedor da una fecha en la que
+ *    se pueda confiar. NULL significa "no expira, o no lo sabemos" -- y en
+ *    ambos casos hay que seguir mirandolo.
+ *
+ * Quedan fuera solo los estados donde ya no puede entrar nada: cobrado,
+ * devuelto, o cancelado con confirmacion del proveedor.
+ *
+ * La ventana operativa (XABOR_PAGOS_VENTANA_RECONCILIACION_DIAS, 90 por
+ * defecto) existe solo para acotar el barrido, no para representar expiracion;
+ * lo que cae fuera se registra en el log en vez de desaparecer en silencio.
+ */
+export async function pagosReconciliablesDeProveedor(proveedor, limite = 50) {
+  const dias = Number(process.env.XABOR_PAGOS_VENTANA_RECONCILIACION_DIAS) || 90;
   const { rows } = await pool.query(
     `SELECT * FROM pagos
-      WHERE proveedor = $1 AND estado IN ('pendiente','creando')
-        AND created_at > NOW() - INTERVAL '7 days'
-      ORDER BY created_at ASC LIMIT $2`, [proveedor, limite]);
+      WHERE proveedor = $1
+        AND estado NOT IN ('pagado','reembolsado','cancelado')
+        AND (expires_at IS NULL OR expires_at > NOW())
+        AND created_at > NOW() - ($2 || ' days')::interval
+      ORDER BY created_at ASC LIMIT $3`, [proveedor, String(dias), limite]);
   return rows;
 }
 
@@ -2437,19 +2585,30 @@ export async function pagosPendientesDeProveedor(proveedor, limite = 50) {
  */
 export async function confirmarPagoManual(negocioId, pagoId, actualizadoPor) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
-  const { rows } = await pool.query(
-    `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW())
-     WHERE id = $1 AND negocio_id = $2 AND tipo = 'transferencia' AND estado = 'requiere_revision'
-     RETURNING *`,
-    [pagoId, negocioId.trim()]
-  );
-  if (rows[0]) {
-    await registrarAuditoriaPlataforma({
-      superadminId: actualizadoPor, negocioId: negocioId.trim(),
-      accion: 'pago_transferencia_confirmado_manual', estadoNuevo: { pagoId, estado: 'pagado' }, contexto: {},
-    });
-  }
-  return rows[0] || null;
+  const nid = negocioId.trim();
+
+  // La AUTORIZACION sigue siendo la de antes: solo transferencias que esperan
+  // revision, solo del propio negocio. Lo que cambia es que, una vez
+  // autorizada, el asiento pasa por la MISMA transicion que el dinero
+  // verificado por un proveedor. Un humano es otra fuente de confirmacion, no
+  // otro juego de invariantes: tambien tiene que cerrar los intentos hermanos,
+  // detectar que ya habia otro cobro real, respetar la version del pedido y
+  // dejar la deuda durable de derivacion.
+  const { rows: [fila] } = await pool.query(
+    `SELECT id FROM pagos
+      WHERE id = $1 AND negocio_id = $2 AND tipo = 'transferencia' AND estado = 'requiere_revision'`,
+    [pagoId, nid]);
+  if (!fila) return null;
+
+  const transicion = await asentarPagoRealVerificado({ pagoId, negocioId: nid });
+
+  await registrarAuditoriaPlataforma({
+    superadminId: actualizadoPor, negocioId: nid,
+    accion: 'pago_transferencia_confirmado_manual',
+    estadoNuevo: { pagoId, resultado: transicion.resultado, ok: transicion.ok },
+    contexto: {},
+  });
+  return transicion;
 }
 
 export async function rechazarPagoManual(negocioId, pagoId, motivo, actualizadoPor) {
@@ -3689,13 +3848,46 @@ export async function registrarIdsDePago(pagoId, negocioId, { preferenceId = nul
 
 // Cambio de estado acotado al negocio. Mismo criterio que registrarIdsDePago:
 // una mutación financiera no confía en que el id venga del tenant correcto.
+/**
+ * Transiciones permitidas. Antes el unico freno era `estado != 'pagado'`, asi
+ * que un aviso atrasado del proveedor -- "rechazado", "pendiente" -- resucitaba
+ * una fila invalidada, cancelada, vencida o reembolsada y la devolvia a la
+ * circulacion. Un evento viejo no puede reabrir un cobro que ya se cerro.
+ *
+ * Los estados TERMINALES no aparecen como origen: de ellos no sale nada por
+ * esta puerta. 'pagado' se alcanza SOLO por asentarPagoRealVerificado, que es
+ * la unica que sabe verificar dinero, mirar hermanos y comparar version -- por
+ * eso tampoco figura como destino aqui.
+ */
+const TRANSICIONES_PAGO = {
+  creando:           ['pendiente', 'fallido', 'requiere_revision', 'vencido', 'cancelado', 'invalidado'],
+  pendiente:         ['fallido', 'requiere_revision', 'vencido', 'cancelado', 'invalidado'],
+  requiere_revision: ['fallido', 'vencido', 'cancelado', 'invalidado'],
+  fallido:           ['requiere_revision', 'vencido', 'cancelado', 'invalidado'],
+  // pagado · reembolsado · cancelado · invalidado · vencido: terminales.
+};
+
 export async function actualizarEstadoPagoPorId(pagoId, negocioId, estado) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
   const VALIDOS = new Set(['creando','pendiente','pagado','fallido','vencido','cancelado','invalidado','reembolsado','requiere_revision']);
   if (!VALIDOS.has(estado)) return false;   // nunca se escribe vocabulario ajeno
+  const nid = negocioId.trim();
+
+  const { rows: [fila] } = await pool.query(
+    `SELECT estado FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
+  if (!fila) return false;
+  const permitidos = TRANSICIONES_PAGO[fila.estado] || [];
+  if (!permitidos.includes(estado)) {
+    console.warn(`[Pagos] Transicion rechazada ${fila.estado} -> ${estado} en pago=${pagoId} (evento fuera de orden)`);
+    return false;
+  }
+
+  // El WHERE repite el estado de origen: entre la lectura y el UPDATE otra
+  // conexion pudo mover la fila, y la comprobacion no serviria de nada si el
+  // UPDATE no la volviera a exigir.
   const { rowCount } = await pool.query(
-    `UPDATE pagos SET estado = $3 WHERE id = $1 AND negocio_id = $2 AND estado != 'pagado'`,
-    [pagoId, negocioId.trim(), estado]);
+    `UPDATE pagos SET estado = $3 WHERE id = $1 AND negocio_id = $2 AND estado = $4`,
+    [pagoId, nid, estado, fila.estado]);
   return rowCount > 0;
 }
 

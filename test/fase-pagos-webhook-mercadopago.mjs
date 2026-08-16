@@ -496,16 +496,49 @@ try {
   }
   const { crearEnlacePago } = await import('../src/services/pagosService.js');
 
-  await t('20. fila LEGACY fallida del MISMO proveedor → se reutiliza la MISMA id', async () => {
+  await t('20. fila LEGACY fallida que YA tuvo checkout → OTRA fila, sin tocar la identidad de la vieja', async () => {
+    // Una fila con url/referencia externa representa un checkout que el cliente
+    // todavía puede pagar. Reutilizarla obligaría a sobrescribir esos campos, y
+    // con ellos se perdería la identidad del checkout anterior -- justo la que
+    // un webhook tardío nombra. Se crea otra fila.
     const folio = 'MPWH-0020';
     await pedidoPendiente(A, folio, 640);
     const vieja = await filaLegacy(A, folio, 640, 'mercado_pago', 'fallido');
     const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
-    assert.strictEqual(r.pagoId, vieja.id, 'creó una fila nueva en vez de reutilizar la histórica');
+
+    assert.notStrictEqual(r.pagoId, vieja.id, 'reutilizó una fila que ya representaba un checkout externo');
     const filas = await filasDe(A, folio);
-    assert.strictEqual(filas.length, 1, `quedaron ${filas.length} filas para el mismo intento`);
-    assert.strictEqual(filas[0].referencia_interna, vieja.referencia_interna,
+    assert.strictEqual(filas.length, 2, `esperaba A y B; hay ${filas.length} filas`);
+
+    const a = filas.find(f => f.id === vieja.id);
+    const b = filas.find(f => f.id === r.pagoId);
+    assert.strictEqual(a.referencia_interna, vieja.referencia_interna,
       'reescribió la referencia histórica: un webhook tardío ya no la resolvería');
+    assert.strictEqual(a.url, vieja.url, 'sobrescribió la URL histórica del checkout anterior');
+    assert.notStrictEqual(b.referencia_interna, a.referencia_interna,
+      'A y B comparten referencia interna: dejan de ser distinguibles');
+  });
+
+  await t('20b. fila fallida que NUNCA llegó a tener checkout → esa sí se reutiliza', async () => {
+    // Sin referencia externa, sin url: no hay ninguna identidad externa que
+    // preservar, así que crear otra fila sería basura, no seguridad.
+    const folio = 'MPWH-0029';
+    await pedidoPendiente(A, folio, 645);
+    const { rows: [sinCheckout] } = await pool.query(
+      `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, tipo,
+                          moneda, monto, estado, version_pedido_hash)
+       SELECT $1,$2,'mercado_pago',$3,'enlace_pago','MXN',645,'fallido',
+              (SELECT version_pedido_hash FROM pagos WHERE id IS NULL)
+       RETURNING *`, [A, folio, `${A}:${folio}:sin-checkout`]);
+    const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+    const { rows: [pa] } = await pool.query(
+      `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, A]);
+    await pool.query(`UPDATE pagos SET version_pedido_hash=$2 WHERE id=$1`,
+      [sinCheckout.id, calcularVersionPedidoHash(pa.datos)]);
+
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.strictEqual(r.pagoId, sinCheckout.id, 'no reutilizó una fila sin checkout externo');
+    assert.strictEqual((await filasDe(A, folio)).length, 1);
   });
 
   await t('21. fila LEGACY pendiente → mismo enlace, una sola fila', async () => {

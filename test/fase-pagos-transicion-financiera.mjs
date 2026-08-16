@@ -323,6 +323,11 @@ try {
 
     await esperar(async () => (await filaDe(folio, 'clip'))?.estado === 'pagado',
       'que el ledger asiente el cobro de Clip');
+    // El asiento y la derivación son dos pasos: el pago queda 'pagado' primero y
+    // el pedido se libera enseguida. Medir en medio convertiría la latencia en
+    // un fallo intermitente, así que se espera la condición de verdad.
+    await esperar(async () => (await pedidoDe(folio)).estado !== 'pendiente_pago',
+      'que la derivación libere el pedido');
 
     const clip = await filaDe(folio, 'clip');
     assert.ok(clip.paid_at, 'no se registró cuándo entró el dinero');

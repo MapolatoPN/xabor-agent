@@ -206,6 +206,44 @@ try {
     assert.ok(rechazado, 'la base ACEPTÓ un estado inválido de impresión legacy');
   });
 
+  await t('el predeploy de la 055 corre sin error y es idempotente', async () => {
+    const primera = ejecutar('scripts/predeploy-055-pagos-ciclo-vida.mjs');
+    assert.ok(/predeploy-055/.test(primera), `salida inesperada: ${primera}`);
+    const segunda = ejecutar('scripts/predeploy-055-pagos-ciclo-vida.mjs');
+    assert.ok(/Ya aplicada/.test(segunda), `no detectó que ya estaba aplicada: ${segunda}`);
+  });
+
+  await t('la 055 está conectada al runner real del predeploy', async () => {
+    // Una migración que no está en la lista del Pre-Deploy Command es una
+    // migración que en producción no existe.
+    const runner = leer('scripts', 'predeploy-run-032-033.mjs');
+    assert.ok(/'055-pagos-ciclo-vida'/.test(runner),
+      'la 055 no está en SCRIPTS: en producción no se aplicaría');
+  });
+
+  await t('la 055 deja la deuda de derivación buscable y con default seguro', async () => {
+    // El default tiene que ser FALSE: si fuera true, la migración inventaría
+    // deudas sobre todos los pagos históricos y el job intentaría re-derivar
+    // pedidos viejos.
+    const { rows: [r] } = await pool.query(
+      `SELECT column_default, is_nullable, data_type FROM information_schema.columns
+        WHERE table_name='pagos' AND column_name='derivacion_pendiente'`);
+    assert.ok(/false/i.test(r.column_default || ''), `default inseguro: ${r.column_default}`);
+    assert.strictEqual(r.is_nullable, 'NO', 'la deuda admite NULL: un tercer estado sin significado');
+    const { rows: [i] } = await pool.query(
+      `SELECT indexdef FROM pg_indexes WHERE indexname='idx_pagos_derivacion_pendiente'`);
+    assert.ok(/WHERE derivacion_pendiente/.test(i.indexdef),
+      'el índice no es parcial: el job barrería toda la tabla para no encontrar nada');
+  });
+
+  await t('el down de la 055 avisa de lo que destruye', async () => {
+    const down = leer('migrations', '055_pagos_ciclo_vida_down.sql');
+    assert.ok(/derivacion_pendiente/.test(down), 'el down no revierte la columna de deuda');
+    assert.ok(/SELECT COUNT\(\*\) FROM pagos WHERE derivacion_pendiente/.test(down),
+      'el down no dice cómo comprobar que no se está tirando una deuda abierta');
+    assert.ok(!/DROP TABLE/.test(down), 'el down borra tablas que la 055 no creó');
+  });
+
   await t('deja el esquema completo: las SEIS tablas y el CHECK', async () => {
     const { rows: [r] } = await pool.query(
       `SELECT

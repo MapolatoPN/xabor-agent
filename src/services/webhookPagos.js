@@ -17,7 +17,8 @@
 import {
   resolverIntegracionPorRoutingToken, obtenerPagoPorExternalReference,
   ligarPaymentIdExclusivo, asentarPagoRealVerificado, confirmarPagoPedido,
-  actualizarEstadoPagoPorId, pagosPendientesDeProveedor,
+  actualizarEstadoPagoPorId, pagosReconciliablesDeProveedor,
+  marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -127,21 +128,45 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
     const montoValido = typeof real.monto === 'number' && Number.isFinite(real.monto) && real.monto > 0;
     if (!montoValido) {
       console.error(`[Pagos] MONTO AUSENTE O INVALIDO pago=${pago.id} recibido=${JSON.stringify(real.monto)}`);
+      // La anomalia se registra SIEMPRE; el cambio de estado solo prospera si la
+      // fila todavia esta viva. Sobre una terminal el estado no se mueve -- una
+      // fila superseded no vuelve a circulacion por un aviso tardio -- pero la
+      // constancia queda igual.
+      await marcarAnomaliaPago(pago.id, negocioId, 'monto_invalido',
+        `webhook de ${proveedor} con dinero que no cuadra`);
       await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
       return { http: 200, resultado: { razon: 'monto_invalido', pagoId: pago.id } };
     }
     if (!mismoMonto(real.monto, pago.monto)) {
       console.error(`[Pagos] MONTO DISTINTO pago=${pago.id} esperado=${pago.monto} recibido=${real.monto}`);
+      // La anomalia se registra SIEMPRE; el cambio de estado solo prospera si la
+      // fila todavia esta viva. Sobre una terminal el estado no se mueve -- una
+      // fila superseded no vuelve a circulacion por un aviso tardio -- pero la
+      // constancia queda igual.
+      await marcarAnomaliaPago(pago.id, negocioId, 'monto_distinto',
+        `webhook de ${proveedor} con dinero que no cuadra`);
       await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
       return { http: 200, resultado: { razon: 'monto_distinto', pagoId: pago.id } };
     }
     if (!real.moneda) {
       console.error(`[Pagos] MONEDA AUSENTE pago=${pago.id}`);
+      // La anomalia se registra SIEMPRE; el cambio de estado solo prospera si la
+      // fila todavia esta viva. Sobre una terminal el estado no se mueve -- una
+      // fila superseded no vuelve a circulacion por un aviso tardio -- pero la
+      // constancia queda igual.
+      await marcarAnomaliaPago(pago.id, negocioId, 'moneda_ausente',
+        `webhook de ${proveedor} con dinero que no cuadra`);
       await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
       return { http: 200, resultado: { razon: 'moneda_ausente', pagoId: pago.id } };
     }
     if (String(real.moneda).toUpperCase() !== String(pago.moneda).toUpperCase()) {
       console.error(`[Pagos] MONEDA DISTINTA pago=${pago.id} esperada=${pago.moneda} recibida=${real.moneda}`);
+      // La anomalia se registra SIEMPRE; el cambio de estado solo prospera si la
+      // fila todavia esta viva. Sobre una terminal el estado no se mueve -- una
+      // fila superseded no vuelve a circulacion por un aviso tardio -- pero la
+      // constancia queda igual.
+      await marcarAnomaliaPago(pago.id, negocioId, 'moneda_distinta',
+        `webhook de ${proveedor} con dinero que no cuadra`);
       await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
       return { http: 200, resultado: { razon: 'moneda_distinta', pagoId: pago.id } };
     }
@@ -154,6 +179,8 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
     const ligado = await ligarPaymentIdExclusivo(pago.id, negocioId, proveedor, paymentId);
     if (!ligado.ok) {
       console.error(`[Pagos] NO SE PUDO LIGAR payment_id=${paymentId} a pago=${pago.id}: ${ligado.razon}`);
+      await marcarAnomaliaPago(pago.id, negocioId, `conflicto_payment_id:${ligado.razon}`,
+        `el payment_id ${paymentId} no pudo ligarse a este cobro`);
       await actualizarEstadoPagoPorId(pago.id, negocioId, 'requiere_revision');
       return { http: 200, resultado: { razon: `conflicto_payment_id:${ligado.razon}`, pagoId: pago.id } };
     }
@@ -185,9 +212,7 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
     };
   }
 
-  await confirmarPagoPedido(pago.pedido_folio, negocioId);
-  const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
-  await confirmarPedidoPendientePago(pago.pedido_folio, negocioId);
+  await derivarPedidoPorPagoAsentado({ pagoId: pago.id, negocioId, folio: pago.pedido_folio });
 
   return {
     http: 200,
@@ -197,6 +222,61 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
       hermanosCerrados: transicion.hermanosCerrados,
     },
   };
+}
+
+/**
+ * Descarga la DEUDA DE DERIVACION que dejo la transicion financiera: liberar el
+ * pedido y sacar la comanda. Una sola implementacion para todos los origenes --
+ * webhook de Mercado Pago, webhook de Clip, reconciliacion y confirmacion
+ * manual --, porque cuatro copias serian cuatro sitios donde volver a olvidar
+ * el saldo.
+ *
+ * El orden importa: primero derivar, DESPUES saldar. Al reves cambiaria
+ * "comanda repetida" -- que la exclusividad de emision ya absorbe -- por
+ * "pedido cobrado sin comanda", que no se arregla solo.
+ */
+export async function derivarPedidoPorPagoAsentado({ pagoId, negocioId, folio }) {
+  // Punto de muerte inyectable: EXACTAMENTE despues del commit financiero y
+  // antes de tocar el pedido. Es la ventana que la 055 vino a cerrar.
+  if (process.env.NODE_ENV !== 'production'
+      && process.env.XABOR_PAGOS_FALLA_EN === 'despues_de_asentar') {
+    const e = new Error("Fallo inyectado en 'despues_de_asentar'");
+    e.inyectado = true;
+    throw e;
+  }
+
+  await confirmarPagoPedido(folio, negocioId);
+  const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
+  await confirmarPedidoPendientePago(folio, negocioId);
+  await saldarDerivacionPago(pagoId, negocioId);
+}
+
+/**
+ * Recupera las derivaciones que quedaron a deber: pagos con el dinero asentado
+ * cuyo pedido nunca se libero porque el proceso murio en esa ventana. En
+ * operacion normal no encuentra nada.
+ *
+ * No necesita que el proveedor reenvie el webhook -- de hecho no puede
+ * esperarlo: para el proveedor el aviso ya se entrego, y para la reconciliacion
+ * de dinero ese pago ya esta 'pagado'. La deuda es la unica pista, y por eso se
+ * escribe en la misma transaccion que el dinero.
+ */
+export async function reconciliarDerivacionesPendientes(limite = 25) {
+  const deudas = await pagosConDerivacionPendiente(limite).catch(() => []);
+  let saldadas = 0;
+  for (const pago of deudas) {
+    try {
+      await derivarPedidoPorPagoAsentado({
+        pagoId: pago.id, negocioId: pago.negocio_id, folio: pago.pedido_folio,
+      });
+      saldadas++;
+      console.log(`[Pagos] Derivacion recuperada tras crash: pedido ${pago.pedido_folio} (pago ${pago.id})`);
+    } catch (e) {
+      // La deuda sigue escrita: la proxima vuelta lo intenta otra vez.
+      console.error(`[Pagos] No se pudo saldar la derivacion del pago ${pago.id}: ${e.message}`);
+    }
+  }
+  return saldadas;
 }
 
 /**
@@ -218,7 +298,7 @@ export async function reconciliarPagosMercadoPago(limite = 25) {
   const adaptador = obtenerAdaptador(proveedor);
   if (!adaptador?.buscarPagoPorReferencia) return 0;
 
-  const pendientes = await pagosPendientesDeProveedor(proveedor, limite).catch(() => []);
+  const pendientes = await pagosReconciliablesDeProveedor(proveedor, limite).catch(() => []);
   let confirmados = 0;
   for (const pago of pendientes) {
     try {

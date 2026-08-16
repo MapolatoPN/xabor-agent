@@ -15,8 +15,10 @@ import {
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
-  obtenerIntentoDePago, marcarIntentosAmbiguos, conIntentoDePagoExclusivo,
+  obtenerIntentoDePago, marcarIntentosAmbiguos, conObligacionDePagoExclusiva,
+  invalidarCheckoutSuperado,
 } from './database.js';
+import { randomBytes } from 'crypto';
 
 // URL pública canónica de Xabor. La notification_url es sensible -- decide a
 // dónde llega el aviso de que un pago se completó -- así que NO se fabrica con
@@ -62,10 +64,59 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   if (typeof negocioId !== 'string' || !negocioId.trim()) throw new TenantContextRequiredError('pagosService.crearEnlacePago');
   if (typeof pedidoId !== 'string' || !pedidoId.trim()) throw new Error('crearEnlacePago: pedidoId requerido');
 
-  // Incidente XAB-0114: el lookup anterior (obtenerPedidoActivoPorFolio)
-  // excluía pedidos 'entregado' pero ACEPTABA 'cancelado' -- exactamente al
-  // revés de lo que el dinero necesita: un pedido entregado SIN pagar es el
-  // caso típico que pide el enlace, y uno cancelado jamás debe cobrarse.
+  // ── SERIALIZACION POR LA OBLIGACION DE PAGO DEL PEDIDO ───────────────────
+  //
+  // La unidad cuya exclusividad de verdad queremos es el PEDIDO: un pedido
+  // tiene una sola obligacion de cobro viva. Antes la clave llevaba version y
+  // proveedor, y ambos se leian ANTES del lock -- dos agujeros: dos versiones
+  // del mismo pedido tomaban locks distintos y podian crear dos checkouts a la
+  // vez, y quien esperaba despertaba con un snapshot viejo, capaz de crear el
+  // checkout de una version que ya no existe.
+  //
+  // Todo el estado autoritativo -- pedido, total, version, proveedor principal
+  // -- se lee DENTRO del claim, en resolverIntentoDePago.
+  //
+  // Dos capas, porque los duplicados llegan por dos caminos distintos:
+  //  · MISMO proceso (veinte toques al boton, o el bot y el panel a la vez) ->
+  //    mapa in-flight: el primero corre, los demas esperan SU promesa. Cero
+  //    conexiones y cero llamadas al proveedor de mas.
+  //  · OTRA instancia -> claim en la base. El perdedor espera al ganador y, al
+  //    entrar, relee y encuentra lo que el ganador dejo.
+  //
+  // El UNIQUE de la tabla sigue ahi, pero como barrera de ultimo recurso: si el
+  // caller lo esta viendo (23505), es que hubo N intentos de crear N cobros.
+  const claveObligacion = `${negocioId.trim()}:${pedidoId}`;
+  const enVuelo = _intentosEnVuelo.get(claveObligacion);
+  if (enVuelo) return enVuelo;
+
+  const promesa = conObligacionDePagoExclusiva(negocioId, pedidoId,
+    () => resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor }))
+    .finally(() => _intentosEnVuelo.delete(claveObligacion));
+  _intentosEnVuelo.set(claveObligacion, promesa);
+  return promesa;
+}
+
+// Peticiones del MISMO intento que ya estan corriendo en este proceso. La clave
+// es la identidad semantica completa, asi que nunca comparten resultado dos
+// pedidos, dos negocios ni dos proveedores distintos. Se limpia sola al
+// terminar (exito o error): no es cache, es coalescencia.
+const _intentosEnVuelo = new Map();
+
+// El cuerpo real, ya con la obligacion del pedido en exclusiva.
+async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor }) {
+  // Retardo inyectable: sirve para probar que quien despierta del claim NO
+  // trabaja con el pedido que existia cuando pidio el turno. Mismo candado de
+  // produccion que el resto de la inyeccion de fallos del proyecto.
+  const retardo = Number(process.env.XABOR_PAGOS_RETARDO_INTENTO_MS) || 0;
+  if (retardo > 0 && process.env.NODE_ENV !== 'production') {
+    await new Promise(r => setTimeout(r, retardo));
+  }
+
+  // ESTADO AUTORITATIVO, leido aqui dentro. Incidente XAB-0114: el lookup
+  // anterior (obtenerPedidoActivoPorFolio) excluia pedidos 'entregado' pero
+  // ACEPTABA 'cancelado' -- exactamente al reves de lo que el dinero necesita:
+  // un pedido entregado SIN pagar es el caso tipico que pide el enlace, y uno
+  // cancelado jamas debe cobrarse.
   const pedido = await obtenerPedidoParaPagoPorFolio(pedidoId, negocioId);
   if (!pedido) throw new PedidoInvalidoError(`Pedido ${pedidoId} no encontrado para este negocio`);
   if (pedido.pago_confirmado === true || pedido.pago_confirmado === 'true') {
@@ -76,57 +127,17 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
 
   const versionHash = calcularVersionPedidoHash(pedido);
 
-  // El proveedor PRINCIPAL se resuelve ANTES de revisar idempotencia porque
-  // el tipo de pago depende de él: Clip crea un enlace real ('enlace_pago'),
-  // manual_transfer no crea nada, solo instrucciones a conciliar a mano
-  // ('transferencia') -- sin esto, un negocio con manual_transfer como
-  // principal quedaría registrado con el tipo equivocado y chocaría contra
-  // el índice único de "un pago vigente por pedido+tipo".
+  // El proveedor PRINCIPAL determina el tipo de pago: Clip crea un enlace real
+  // ('enlace_pago'), manual_transfer no crea nada, solo instrucciones a
+  // conciliar a mano ('transferencia') -- sin esto, un negocio con
+  // manual_transfer como principal quedaria registrado con el tipo equivocado y
+  // chocaria contra el indice unico de "un pago vigente por pedido+tipo".
   const principal = await obtenerProveedorPrincipal(negocioId);
   if (!principal) throw new SinProveedorPrincipalError(negocioId);
   const adaptador = obtenerAdaptador(principal.proveedor);
   if (!adaptador) throw new SinProveedorPrincipalError(negocioId);
   const tipo = adaptador.getCapabilities().createLink ? 'enlace_pago' : 'transferencia';
 
-  // ── SERIALIZACION POR LA IDENTIDAD SEMANTICA ─────────────────────────────
-  //
-  // Dos capas, porque los duplicados llegan por dos caminos distintos:
-  //
-  //  · MISMO proceso (el caso real: veinte toques al boton, o el bot y el panel
-  //    a la vez) -> mapa in-flight. El primero corre; los demas esperan SU
-  //    promesa y reciben el mismo resultado. Cuestan cero conexiones y cero
-  //    llamadas al proveedor.
-  //  · OTRA instancia -> claim en la base. El perdedor espera al ganador y, al
-  //    entrar, ya encuentra la fila creada y la reutiliza.
-  //
-  // El UNIQUE de la tabla sigue ahi, pero como barrera de ultimo recurso: si el
-  // caller lo esta viendo (23505), es que hubo N intentos de crear N cobros.
-  const claveIntento = `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}:${tipo}`;
-  const enVuelo = _intentosEnVuelo.get(claveIntento);
-  if (enVuelo) return enVuelo;
-
-  const promesa = conIntentoDePagoExclusivo(
-    negocioId, pedidoId, versionHash, principal.proveedor, tipo,
-    () => resolverIntentoDePago({
-      negocioId, pedidoId, pedido, total, versionHash, principal, adaptador, tipo,
-      descripcion, idempotencyKey, actor,
-    }))
-    .finally(() => _intentosEnVuelo.delete(claveIntento));
-  _intentosEnVuelo.set(claveIntento, promesa);
-  return promesa;
-}
-
-// Peticiones del MISMO intento que ya estan corriendo en este proceso. La clave
-// es la identidad semantica completa, asi que nunca comparten resultado dos
-// pedidos, dos negocios ni dos proveedores distintos. Se limpia sola al
-// terminar (exito o error): no es cache, es coalescencia.
-const _intentosEnVuelo = new Map();
-
-// El cuerpo real, ya con el intento en exclusiva.
-async function resolverIntentoDePago({
-  negocioId, pedidoId, pedido, total, versionHash, principal, adaptador, tipo,
-  descripcion, idempotencyKey, actor,
-}) {
   // IDENTIDAD DEL INTENTO: negocio + pedido + version + proveedor + tipo, leida
   // de columnas reales. `referencia_interna` dejo de servir para esto: su
   // formato cambio (ahora lleva el proveedor) y las filas historicas conservan
@@ -181,23 +192,40 @@ async function resolverIntentoDePago({
     // Jamas se crea un cobro nuevo si el dinero ya entro por este intento.
     return { pagoId: previo.id, url: previo.url, reutilizado: true, referenciaExterna: previo.referencia_externa, estado: 'pagado' };
   }
-  if (previo && ['fallido', 'invalidado', 'vencido', 'cancelado'].includes(previo.estado)) {
-    // Se REACTIVA la misma fila, conservando su referencia_interna original --
-    // esa cadena pudo haber viajado ya al proveedor, y un webhook tardio o una
-    // reconciliacion todavia puede devolverla. Reescribirla dejaria huerfano un
-    // cobro real.
-    await reactivarRegistroPago(previo.id);
+  // UNA FILA = UN CHECKOUT EXTERNO. Reactivar solo es legitimo cuando la fila
+  // nunca llego a tener checkout: reactivarRegistroPago exige que
+  // referencia_externa, preference_id, payment_id y url esten vacios, porque
+  // reutilizar una fila que SI los tiene obligaria a sobrescribirlos, y con eso
+  // se destruiria la identidad del checkout anterior -- justo la que un webhook
+  // tardio todavia puede nombrar.
+  let reactivada = false;
+  if (previo && ['fallido', 'vencido'].includes(previo.estado)) {
+    // Conserva su referencia_interna original: esa cadena pudo haber viajado ya
+    // al proveedor, y reescribirla dejaria huerfano un cobro real.
+    reactivada = await reactivarRegistroPago(previo.id);
+    if (reactivada) registro = previo;
+  } else if (previo && !['pagado', 'invalidado', 'cancelado', 'reembolsado'].includes(previo.estado)) {
+    // 'creando' / 'pendiente' / 'requiere_revision': se reutiliza tal cual, con
+    // su mismo checkout. No se crea ninguno nuevo.
     registro = previo;
-  } else if (previo) {
-    // 'creando' / 'pendiente' / 'requiere_revision': se reutiliza tal cual.
-    registro = previo;
-  } else {
-    // Fila NUEVA: aqui si se estrena el formato con proveedor. Solo las filas
-    // nuevas lo llevan; las viejas conservan el suyo para siempre.
+  }
+
+  if (!registro) {
+    // OTRO intento, con referencia interna propia. El sufijo aleatorio es lo que
+    // permite que convivan el checkout A -- ya invalidado pero todavia pagable
+    // -- y el B: sin el, la identidad (negocio, pedido, version, proveedor)
+    // chocaria contra el UNIQUE de referencia_interna y habria que sobrescribir
+    // la de A. Las referencias historicas, en cualquiera de sus formatos
+    // anteriores, siguen intactas y se resuelven igual: la busqueda del intento
+    // es por columnas, no por esta cadena.
+    if (previo) {
+      await invalidarCheckoutSuperado(previo.id, negocioId,
+        `se genero otro intento de cobro para el pedido ${pedidoId}`);
+    }
     registro = await crearRegistroPago({
       negocioId, pedidoFolio: pedidoId, clienteTelefono: pedido.cliente?.telefono || null,
       proveedor: principal.proveedor, integracionId: principal.id,
-      referenciaInterna: `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}`,
+      referenciaInterna: `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}:${randomBytes(4).toString('hex')}`,
       tipo, moneda: 'MXN', monto: total, versionPedidoHash: versionHash,
       idempotencyKey, createdBy: actor,
     });
