@@ -15,6 +15,7 @@ import {
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
+  obtenerIntentoDePago, marcarIntentosAmbiguos,
 } from './database.js';
 
 // URL pública canónica de Xabor. La notification_url es sensible -- decide a
@@ -87,6 +88,25 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   if (!adaptador) throw new SinProveedorPrincipalError(negocioId);
   const tipo = adaptador.getCapabilities().createLink ? 'enlace_pago' : 'transferencia';
 
+  // IDENTIDAD DEL INTENTO: negocio + pedido + version + proveedor + tipo, leida
+  // de columnas reales. `referencia_interna` dejo de servir para esto: su
+  // formato cambio (ahora lleva el proveedor) y las filas historicas conservan
+  // el viejo, asi que buscar por la cadena exacta no las encontraba y se
+  // insertaba una SEGUNDA fila para el mismo intento. Ese fue el defecto que
+  // destapo fase-bot-enlace-pago.
+  //
+  // Va PRIMERO, antes de cualquier reutilizacion: si hay dos cobros abiertos a
+  // la vez, ninguna rama de aqui en adelante tiene derecho a elegir uno.
+  const intento = await obtenerIntentoDePago(negocioId, pedidoId, versionHash, principal.proveedor, tipo);
+  if (intento.ambiguo) {
+    // Varias filas vivas donde deberia haber una: una regresion previa las dejo
+    // asi. No se elige una al azar ni se crea una tercera -- se marcan todas
+    // para revision y se falla cerrado.
+    await marcarIntentosAmbiguos(negocioId, intento.candidatos);
+    throw new PedidoInvalidoError(
+      `El pedido ${pedidoId} tiene ${intento.candidatos.length} intentos de pago simultaneos para el mismo proveedor y version: requiere revision manual`);
+  }
+
   // Idempotencia: si ya hay un pago vigente para este pedido (mismo tipo) y
   // coincide la versión, se reutiliza tal cual (mismo enlace) -- nunca se
   // genera uno nuevo por un doble clic o un reintento.
@@ -115,39 +135,39 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
     await invalidarPagosVigentesDePedido(negocioId, pedidoId, 'pedido modificado antes de completar el pago anterior');
   }
 
-  // El proveedor forma parte de la identidad del intento: sin esto, un
-  // reintento con otro proveedor chocaba contra el UNIQUE de referencia_interna
-  // y terminaba REUTILIZANDO la fila del proveedor anterior -- exactamente la
-  // mezcla que hay que impedir. Las tres primeras partes no se mueven: el
-  // webhook de Clip sigue leyendo negocio y folio de las posiciones 0 y 1.
-  const referenciaInterna = `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}`;
-  // Reintento tras un intento FALLIDO (segunda causa del incidente del
-  // enlace): la fila fallida conserva la referencia_interna única, así que
-  // un segundo intento con el pedido sin cambios chocaba contra el UNIQUE y
-  // fallaba para siempre. Si la referencia ya existe en un estado terminal
-  // no cobrable, se REUTILIZA esa fila (vuelve a 'creando') en vez de
-  // insertar; si ya está pagada, se devuelve tal cual (jamás re-cobrar).
-  const previo = await obtenerPagoPorReferenciaInterna(negocioId, referenciaInterna);
+  // El intento ya se resolvio arriba (identidad por columnas).
+  const previo = intento.fila;
   let registro;
   if (previo && previo.estado === 'pagado') {
+    // Jamas se crea un cobro nuevo si el dinero ya entro por este intento.
     return { pagoId: previo.id, url: previo.url, reutilizado: true, referenciaExterna: previo.referencia_externa, estado: 'pagado' };
   }
   if (previo && ['fallido', 'invalidado', 'vencido', 'cancelado'].includes(previo.estado)) {
+    // Se REACTIVA la misma fila, conservando su referencia_interna original --
+    // esa cadena pudo haber viajado ya al proveedor, y un webhook tardio o una
+    // reconciliacion todavia puede devolverla. Reescribirla dejaria huerfano un
+    // cobro real.
     await reactivarRegistroPago(previo.id);
     registro = previo;
   } else if (previo) {
-    // 'creando'/'pendiente'/'requiere_revision' con la misma referencia ya
-    // se habría reutilizado arriba como vigente; llegar aquí es una carrera
-    // mínima entre dos requests -- se reutiliza igual, sin insertar.
+    // 'creando' / 'pendiente' / 'requiere_revision': se reutiliza tal cual.
     registro = previo;
   } else {
+    // Fila NUEVA: aqui si se estrena el formato con proveedor. Solo las filas
+    // nuevas lo llevan; las viejas conservan el suyo para siempre.
     registro = await crearRegistroPago({
       negocioId, pedidoFolio: pedidoId, clienteTelefono: pedido.cliente?.telefono || null,
-      proveedor: principal.proveedor, integracionId: principal.id, referenciaInterna,
+      proveedor: principal.proveedor, integracionId: principal.id,
+      referenciaInterna: `${negocioId.trim()}:${pedidoId}:${versionHash}:${principal.proveedor}`,
       tipo, moneda: 'MXN', monto: total, versionPedidoHash: versionHash,
       idempotencyKey, createdBy: actor,
     });
   }
+
+  // La referencia que viaja al proveedor es SIEMPRE la de la fila, nunca una
+  // recalculada: para una fila historica es la vieja, y asi el webhook que la
+  // devuelva sigue resolviendo.
+  const referenciaInterna = registro.referencia_interna;
 
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);

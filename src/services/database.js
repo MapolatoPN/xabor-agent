@@ -2004,13 +2004,82 @@ export function calcularVersionPedidoHash(pedido) {
 // conciliar todavía) -- sin esto, una transferencia pedida dos veces
 // generaría una fila nueva cada vez en vez de reutilizar/informar la
 // misma instrucción pendiente de revisión.
+// Orden DETERMINISTA. Antes devolvia rows[0] sin ORDER BY: con dos candidatos,
+// cual llegaba primero dependia del plan de PostgreSQL, asi que el sistema podia
+// comportarse distinto en dos ejecuciones identicas. Ahora manda el mas
+// reciente, y el llamador puede preguntar si habia mas de uno.
 export async function obtenerPagoVigente(negocioId, pedidoFolio, tipo = 'enlace_pago') {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
-    `SELECT * FROM pagos WHERE negocio_id = $1 AND pedido_folio = $2 AND tipo = $3 AND estado IN ('creando','pendiente','requiere_revision')`,
+    `SELECT * FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND tipo = $3
+        AND estado IN ('creando','pendiente','requiere_revision')
+      ORDER BY created_at DESC, id DESC`,
     [negocioId.trim(), pedidoFolio, tipo]
   );
   return rows[0] || null;
+}
+
+/**
+ * El INTENTO de pago, identificado por lo que de verdad lo define:
+ * negocio + pedido + version del pedido + proveedor + tipo.
+ *
+ * Por que existe: `referencia_interna` dejo de servir como identidad. Su
+ * formato cambio (ahora incluye el proveedor) y las filas historicas conservan
+ * el formato viejo -- buscar por la cadena exacta no las encuentra y se
+ * insertaba una SEGUNDA fila para el mismo intento. Las columnas no cambian de
+ * formato.
+ *
+ * `referencia_interna` sigue siendo INMUTABLE: nunca se reescribe la de una
+ * fila existente, porque esa cadena pudo haber viajado ya al proveedor y un
+ * webhook tardio o una reconciliacion todavia puede devolverla.
+ *
+ * Devuelve { fila, ambiguo }. Ambiguo cuando hay varios candidatos NO
+ * terminales: ahi no se adivina, se falla cerrado.
+ */
+export async function obtenerIntentoDePago(negocioId, pedidoFolio, versionHash, proveedor, tipo = 'enlace_pago') {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { fila: null, ambiguo: false };
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND version_pedido_hash = $3
+        AND proveedor = $4 AND tipo = $5
+      ORDER BY created_at DESC, id DESC`,
+    [negocioId.trim(), pedidoFolio, versionHash, proveedor, tipo]);
+  if (!rows.length) return { fila: null, ambiguo: false };
+
+  // Un pago ya cobrado manda sobre cualquier otra fila: jamas se crea un cobro
+  // nuevo si el dinero ya entro por este intento.
+  const pagado = rows.find(r => r.estado === 'pagado');
+  if (pagado) return { fila: pagado, ambiguo: false };
+
+  // Filas VIVAS: las que todavia pueden recibir dinero. Dos de estas compitiendo
+  // por el mismo intento SI es ambiguo -- son dos cobros abiertos a la vez.
+  const vivas = rows.filter(r => ['creando', 'pendiente', 'requiere_revision'].includes(r.estado));
+  if (vivas.length > 1) {
+    // Una regresion anterior pudo dejarlas asi. No se elige al azar ni se crea
+    // una tercera: se informa y el llamador falla cerrado.
+    return { fila: vivas[0], ambiguo: true, candidatos: vivas.map(r => r.id) };
+  }
+  if (vivas.length === 1) return { fila: vivas[0], ambiguo: false };
+
+  // Sin filas vivas: se reutiliza la terminal mas reciente (fallido, vencido,
+  // cancelado) reactivandola. Varias terminales no son ambiguas -- ninguna esta
+  // cobrando, y el orden ya es determinista. 'invalidado' queda fuera a
+  // proposito: esa fila se retiro de circulacion y no se resucita.
+  const reutilizables = rows.filter(r => r.estado !== 'invalidado');
+  if (reutilizables.length === 0) return { fila: null, ambiguo: false };
+  return { fila: reutilizables[0], ambiguo: false };
+}
+
+// Marca requiere_revision sobre TODOS los candidatos ambiguos: el problema no
+// es de una fila, es que hay varias donde deberia haber una.
+export async function marcarIntentosAmbiguos(negocioId, ids) {
+  if (!Array.isArray(ids) || !ids.length) return 0;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = 'requiere_revision'
+      WHERE negocio_id = $1 AND id = ANY($2::uuid[]) AND estado NOT IN ('pagado','reembolsado')`,
+    [negocioId, ids]);
+  return rowCount;
 }
 
 export async function crearRegistroPago({ negocioId, pedidoFolio, clienteTelefono, proveedor, integracionId, referenciaInterna, tipo = 'enlace_pago', moneda = 'MXN', monto, versionPedidoHash, idempotencyKey, createdBy }) {

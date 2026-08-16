@@ -456,6 +456,177 @@ try {
     assert.ok(st >= 500, `respondió ${st} a un fallo transitorio: MP no reintentaría`);
   });
 
+  // ═══ Compatibilidad con referencias históricas ═══
+  //
+  // El formato de `referencia_interna` cambió al incluir el proveedor. Las filas
+  // creadas antes conservan el formato viejo. Buscar por la cadena exacta no las
+  // encontraba y se insertaba una SEGUNDA fila para el mismo intento -- el
+  // defecto que destapó fase-bot-enlace-pago. La identidad del intento vive
+  // ahora en columnas: negocio + pedido + versión + proveedor + tipo.
+
+  // Fabrica una fila con el formato ANTIGUO, como las que hay en la base real.
+  async function filaLegacy(negocioId, folio, monto, proveedor, estado, sufijo = '') {
+    const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+    const { rows: [pa] } = await pool.query(
+      `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, negocioId]);
+    const version = calcularVersionPedidoHash(pa.datos);
+    const referenciaVieja = `${negocioId}:${folio}:${version}${sufijo}`;   // sin proveedor salvo que se pida
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, tipo,
+                          moneda, monto, estado, version_pedido_hash, url)
+       VALUES ($1,$2,$3,$4,'enlace_pago','MXN',$5,$6,$7,$8) RETURNING *`,
+      [negocioId, folio, proveedor, referenciaVieja, monto, estado, version,
+       `https://${proveedor}.test/enlace-viejo`]);
+    return r;
+  }
+  async function filasDe(negocioId, folio) {
+    const { rows } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 ORDER BY created_at`, [negocioId, folio]);
+    return rows;
+  }
+  async function pedidoPendiente(negocioId, folio, monto) {
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos)
+       VALUES ($1,$2,'pendiente_pago',$3)
+       ON CONFLICT (folio) DO UPDATE SET estado='pendiente_pago', datos=$3`,
+      [folio, negocioId, JSON.stringify({
+        id: folio, negocioId, canal: 'tienda_online', total: monto, estado: 'pendiente_pago',
+        cliente: { nombre: 'Cliente compat', telefono: '8997300001' }, items: [], pago_confirmado: false,
+      })]);
+  }
+  const { crearEnlacePago } = await import('../src/services/pagosService.js');
+
+  await t('20. fila LEGACY fallida del MISMO proveedor → se reutiliza la MISMA id', async () => {
+    const folio = 'MPWH-0020';
+    await pedidoPendiente(A, folio, 640);
+    const vieja = await filaLegacy(A, folio, 640, 'mercado_pago', 'fallido');
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.strictEqual(r.pagoId, vieja.id, 'creó una fila nueva en vez de reutilizar la histórica');
+    const filas = await filasDe(A, folio);
+    assert.strictEqual(filas.length, 1, `quedaron ${filas.length} filas para el mismo intento`);
+    assert.strictEqual(filas[0].referencia_interna, vieja.referencia_interna,
+      'reescribió la referencia histórica: un webhook tardío ya no la resolvería');
+  });
+
+  await t('21. fila LEGACY pendiente → mismo enlace, una sola fila', async () => {
+    const folio = 'MPWH-0021';
+    await pedidoPendiente(A, folio, 650);
+    const vieja = await filaLegacy(A, folio, 650, 'mercado_pago', 'pendiente');
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.strictEqual(r.pagoId, vieja.id);
+    assert.strictEqual(r.url, vieja.url, 'no devolvió el mismo enlace');
+    assert.strictEqual((await filasDe(A, folio)).length, 1);
+  });
+
+  await t('22. fila LEGACY PAGADA → jamás genera un cobro nuevo', async () => {
+    const folio = 'MPWH-0022';
+    await pedidoPendiente(A, folio, 660);
+    const vieja = await filaLegacy(A, folio, 660, 'mercado_pago', 'pagado');
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.strictEqual(r.estado, 'pagado');
+    assert.strictEqual(r.pagoId, vieja.id);
+    assert.strictEqual((await filasDe(A, folio)).length, 1, 'generó un segundo cobro sobre un pedido ya pagado');
+  });
+
+  await t('23. legacy de Clip + principal Mercado Pago → NO reutiliza la URL de Clip', async () => {
+    const folio = 'MPWH-0023';
+    await pedidoPendiente(A, folio, 670);
+    const clipVieja = await filaLegacy(A, folio, 670, 'clip', 'pendiente');
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.notStrictEqual(r.pagoId, clipVieja.id, 'reutilizó el intento de Clip con el proveedor nuevo');
+    assert.notStrictEqual(r.url, clipVieja.url, '¡devolvió la URL de Clip como si fuera Mercado Pago!');
+    const filas = await filasDe(A, folio);
+    const mp = filas.find(f => f.proveedor === 'mercado_pago');
+    const clip = filas.find(f => f.proveedor === 'clip');
+    assert.ok(mp, 'no creó intento para el proveedor actual');
+    assert.strictEqual(clip.estado, 'invalidado', `el intento de Clip quedó '${clip.estado}'`);
+  });
+
+  await t('24. y si el pago viejo de Clip SÍ se completa, su referencia histórica todavía resuelve', async () => {
+    // Invalidar no es repudiar un cobro: si el dinero entró por el enlace
+    // anterior, el sistema tiene que poder reconocerlo.
+    const folio = 'MPWH-0023';
+    const { obtenerPagoPorExternalReference } = await import('../src/services/database.js');
+    const clip = (await filasDe(A, folio)).find(f => f.proveedor === 'clip');
+    const encontrado = await obtenerPagoPorExternalReference(A, clip.referencia_interna);
+    assert.ok(encontrado, 'la referencia histórica de Clip ya no resuelve: un cobro real quedaría huérfano');
+    assert.strictEqual(encontrado.id, clip.id);
+  });
+
+  await t('25. la base misma impide un segundo cobro abierto sobre el mismo pedido', async () => {
+    const folio = 'MPWH-0025';
+    await pedidoPendiente(A, folio, 680);
+    await filaLegacy(A, folio, 680, 'mercado_pago', 'pendiente');
+    await assert.rejects(
+      () => filaLegacy(A, folio, 680, 'mercado_pago', 'pendiente', ':mercado_pago'),
+      /idx_pagos_vigente_unico/,
+      'la base aceptó dos cobros abiertos a la vez para el mismo pedido');
+    const vivas = (await filasDe(A, folio)).filter(f =>
+      ['creando', 'pendiente', 'requiere_revision'].includes(f.estado));
+    assert.strictEqual(vivas.length, 1);
+  });
+
+  await t('25 bis. sin ese índice (base vieja) el código falla cerrado: ni elige ni cobra de nuevo', async () => {
+    // Defensa en profundidad. El índice parcial hace inalcanzable la ambigüedad
+    // HOY, pero fue justo la ausencia de una barrera lo que dejó filas de más
+    // antes. Se retira el índice para comprobar que la aplicación tampoco
+    // adivina por su cuenta, y se restaura al terminar.
+    const folio = 'MPWH-0028';
+    await pedidoPendiente(A, folio, 695);
+    await pool.query('DROP INDEX idx_pagos_vigente_unico');
+    try {
+      const a1 = await filaLegacy(A, folio, 695, 'mercado_pago', 'pendiente');
+      const a2 = await filaLegacy(A, folio, 695, 'mercado_pago', 'pendiente', ':mercado_pago');
+      await assert.rejects(
+        () => crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId }),
+        /requiere revision manual/i,
+        'eligió una de dos filas ambiguas en vez de fallar cerrado');
+      const filas = await filasDe(A, folio);
+      assert.strictEqual(filas.length, 2, `creó un tercer cobro: hay ${filas.length} filas`);
+      assert.ok(filas.every(f => f.estado === 'requiere_revision'),
+        'no marcó TODOS los candidatos ambiguos para revisión');
+      assert.deepStrictEqual(
+        filas.map(f => f.referencia_interna).sort(),
+        [a1.referencia_interna, a2.referencia_interna].sort(),
+        'reescribió alguna referencia histórica mientras marcaba la ambigüedad');
+    } finally {
+      await pool.query(`DELETE FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2`, [A, folio]);
+      await pool.query(`CREATE UNIQUE INDEX idx_pagos_vigente_unico ON pagos (negocio_id, pedido_folio, tipo)
+                          WHERE estado IN ('creando','pendiente','requiere_revision')`);
+    }
+    const { rows } = await pool.query(
+      `SELECT 1 FROM pg_indexes WHERE indexname='idx_pagos_vigente_unico'`);
+    assert.strictEqual(rows.length, 1, 'la prueba dejó la base sin el índice que protege producción');
+  });
+
+  await t('25b. una fila viva + una terminal NO es ambiguo: manda la viva', async () => {
+    // Ambiguo es tener dos cobros ABIERTOS a la vez. Una fila fallida junto a
+    // una pendiente no compite por dinero: la pendiente es la unica que cobra.
+    const folio = 'MPWH-0027';
+    await pedidoPendiente(A, folio, 685);
+    await filaLegacy(A, folio, 685, 'mercado_pago', 'fallido');
+    const viva = await filaLegacy(A, folio, 685, 'mercado_pago', 'pendiente', ':mercado_pago');
+    const r = await crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId });
+    assert.strictEqual(r.pagoId, viva.id, 'no reutilizó la fila viva');
+    assert.strictEqual((await filasDe(A, folio)).length, 2, 'creó un cobro adicional');
+  });
+
+  await t('26. 20 reintentos CONCURRENTES del mismo intento → una sola fila activa', async () => {
+    const folio = 'MPWH-0026';
+    await pedidoPendiente(A, folio, 690);
+    const rs = await Promise.allSettled(Array.from({ length: 20 }, () =>
+      crearEnlacePago({ negocioId: A, pedidoId: folio, actor: SEED.superadminUsuarioId })));
+    const ok = rs.filter(r => r.status === 'fulfilled');
+    assert.ok(ok.length >= 1, `ningún reintento tuvo éxito: ${rs[0]?.reason?.message}`);
+    const filas = await filasDe(A, folio);
+    const activas = filas.filter(f => !['invalidado'].includes(f.estado));
+    assert.strictEqual(activas.length, 1,
+      `quedaron ${activas.length} filas activas para el mismo negocio+pedido+versión+proveedor`);
+    const ids = new Set(ok.map(r => r.value.pagoId));
+    assert.strictEqual(ids.size, 1, `los reintentos devolvieron ${ids.size} pagos distintos`);
+    assert.ok(filas.every(f => f.proveedor === 'mercado_pago'), 'se mezclaron proveedores');
+  });
+
 } catch (e) {
   console.error('ERROR FATAL:', e.stack || e);
   fallidas++;
