@@ -64,7 +64,7 @@ function exigirToken(credenciales) {
   return token.trim();
 }
 
-export async function createPaymentLink({ total, descripcion, cliente, referencia, credenciales }) {
+export async function createPaymentLink({ total, descripcion, cliente, referencia, credenciales, notificationUrl = null }) {
   const token = exigirToken(credenciales);
   // external_reference lleva NUESTRA referencia interna
   // (negocio:folio:versionHash). Es lo que permite resolver el negocio al
@@ -79,6 +79,10 @@ export async function createPaymentLink({ total, descripcion, cliente, referenci
         currency_id: 'MXN',
       }],
       external_reference: referencia,
+      // La notification_url la fija Xabor y lleva el token de ruteo: es lo que
+      // permite resolver la integración al recibir el webhook sin creerle nada
+      // al cuerpo del mensaje.
+      notification_url: notificationUrl || undefined,
       // Nunca se manda más dato del cliente del necesario: nombre y nada más.
       payer: cliente?.nombre ? { name: String(cliente.nombre).slice(0, 100) } : undefined,
     },
@@ -88,7 +92,12 @@ export async function createPaymentLink({ total, descripcion, cliente, referenci
   }
   // Estado 'pendiente' por definición del vocabulario interno: el estado real
   // lo dicta después el webhook verificado o la re-consulta, nunca este punto.
-  return { referenciaExterna: String(pref.id), url: pref.init_point, estado: 'pendiente' };
+  // preferenceId explícito: NO es un payment_id y no debe usarse como tal.
+  // referenciaExterna se conserva por compatibilidad con el registro existente.
+  return {
+    referenciaExterna: String(pref.id), preferenceId: String(pref.id),
+    url: pref.init_point, estado: 'pendiente',
+  };
 }
 
 // Traducción del vocabulario de Mercado Pago al interno. Deliberadamente
@@ -161,7 +170,14 @@ export function verifyWebhook(req, credenciales) {
   const requestId = req?.headers?.['x-request-id'] || '';
   if (!dataId) return { verificado: false, motivo: 'sin data.id que firmar' };
 
-  const manifiesto = `id:${dataId};request-id:${requestId};ts:${ts};`;
+  // Especificación de Mercado Pago: el data.id del manifiesto viene del query
+  // param y, si es alfanumérico, se normaliza a MINÚSCULAS. Con ids puramente
+  // numéricos no cambia nada; con los alfanuméricos, no normalizar hace que
+  // toda firma legítima se rechace.
+  const idNormalizado = /[a-zA-Z]/.test(String(dataId))
+    ? String(dataId).toLowerCase()
+    : String(dataId);
+  const manifiesto = `id:${idNormalizado};request-id:${requestId};ts:${ts};`;
   const esperado = createHmac('sha256', secreto.trim()).update(manifiesto).digest('hex');
 
   // Comparación en tiempo constante, y sobre buffers del MISMO tamaño: si las

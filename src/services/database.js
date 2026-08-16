@@ -3285,6 +3285,61 @@ export async function resolverSucursalParaImpresion(negocioId, sucursalIdPedido 
   return { sucursalId: null, resueltaPor: null, razon: 'multiples_sucursales_activas' };
 }
 
+// ─── Routing seguro de webhooks de pago ──────────────────────────────────────
+//
+// El webhook llega de internet y no puede decir de qué negocio es: creerle al
+// cuerpo sería dejar que quien lo manda elija a quién cobrarle. El token es
+// OPACO (192 bits, no enumerable), lo genera Xabor, y vive atado a la
+// integración -- y por ella al negocio. Viaja en la notification_url que Xabor
+// mismo configuró al crear el pago.
+//
+// No autentica por sí solo: dice QUÉ credenciales usar para verificar la firma.
+// Quien tenga el token sin la firma correcta no consigue nada.
+export async function asegurarRoutingTokenIntegracion(negocioId, proveedor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('asegurarRoutingTokenIntegracion: negocioId requerido');
+  const nid = negocioId.trim();
+  const { rows: [ya] } = await pool.query(
+    `SELECT webhook_routing_token FROM integraciones_canal
+      WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2 AND estado != 'eliminado'`,
+    [nid, proveedor]);
+  if (ya?.webhook_routing_token) return ya.webhook_routing_token;
+  const token = randomBytes(24).toString('hex');
+  const { rows: [act] } = await pool.query(
+    `UPDATE integraciones_canal SET webhook_routing_token = COALESCE(webhook_routing_token, $3), updated_at = NOW()
+      WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor = $2 AND estado != 'eliminado'
+      RETURNING webhook_routing_token`,
+    [nid, proveedor, token]);
+  return act?.webhook_routing_token || null;
+}
+
+export async function resolverIntegracionPorRoutingToken(token) {
+  if (typeof token !== 'string' || !/^[a-f0-9]{48}$/.test(token)) return null;
+  const { rows: [r] } = await pool.query(
+    `SELECT id, negocio_id, proveedor, estado FROM integraciones_canal
+      WHERE webhook_routing_token = $1 AND canal = 'pagos'`, [token]);
+  if (!r || r.estado !== 'activo') return null;   // fail closed
+  return r;
+}
+
+// preference_id y payment_id son espacios de identificadores DISTINTOS: el
+// primero identifica el checkout que se le ofreció al cliente, el segundo el
+// cobro que de verdad ocurrió. Cada uno en su columna.
+export async function registrarIdsDePago(pagoId, { preferenceId = null, paymentId = null } = {}) {
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET preference_id = COALESCE($2, preference_id),
+                      payment_id    = COALESCE($3, payment_id)
+      WHERE id = $1`, [pagoId, preferenceId, paymentId]);
+  return rowCount > 0;
+}
+
+export async function obtenerPagoPorExternalReference(negocioId, referencia) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows: [r] } = await pool.query(
+    `SELECT * FROM pagos WHERE negocio_id = $1 AND referencia_interna = $2`,
+    [negocioId.trim(), referencia]);
+  return r || null;
+}
+
 // ─── Transición pendiente_pago → nuevo, recuperable ante crash ───────────────
 //
 // El problema que resuelve: confirmar el pago movía el pedido a 'nuevo' y
