@@ -14,7 +14,19 @@ import {
   obtenerPedidoParaPagoPorFolio, calcularVersionPedidoHash, obtenerPagoVigente,
   crearRegistroPago, actualizarPagoCreado, marcarPagoFallido, invalidarPagosVigentesDePedido,
   guardarLinkPago, obtenerPagoPorReferenciaInterna, reactivarRegistroPago,
+  asegurarRoutingTokenIntegracion, registrarIdsDePago,
 } from './database.js';
+
+// URL pública canónica de Xabor. La notification_url es sensible -- decide a
+// dónde llega el aviso de que un pago se completó -- así que NO se fabrica con
+// el Host ni el X-Forwarded-Host de la petición: los pone el cliente. Se toma
+// de la configuración del servidor y, si no está, no se manda ninguna: mejor
+// sin webhook (y reconciliar por consulta) que un webhook apuntando a donde
+// diga un tercero.
+function urlPublicaXabor() {
+  const base = process.env.XABOR_URL_PUBLICA || process.env.BASE_URL || '';
+  return /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : null;
+}
 
 // Estados internos válidos de pagos.estado (CHECK de la migración 025). Un
 // adaptador jamás debe poder colar el vocabulario crudo de su proveedor
@@ -139,9 +151,26 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
 
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
+
+    // notification_url con el token de ruteo: es lo que permitirá al webhook
+    // resolver ESTA integración sin creerle nada al cuerpo del mensaje. Sólo
+    // para proveedores que firman sus webhooks; Clip no los ofrece y se
+    // reconcilia por consulta activa.
+    let notificationUrl = null;
+    if (adaptador.getCapabilities().webhookSignature) {
+      const raiz = urlPublicaXabor();
+      const routing = await asegurarRoutingTokenIntegracion(negocioId, principal.proveedor);
+      if (raiz && routing) {
+        notificationUrl = `${raiz}/webhook/pagos/${principal.proveedor}/${routing}`;
+      } else {
+        console.warn(`[Pagos] Sin notification_url para ${principal.proveedor} (raiz=${!!raiz} routing=${!!routing}) — se dependerá de la reconciliación`);
+      }
+    }
+
     const resultado = await adaptador.createPaymentLink({
       negocioId, pedidoId, total, descripcion: descripcion || `Pedido Xabor #${pedidoId}`,
       cliente: pedido.cliente || {}, referencia: referenciaInterna, credenciales,
+      notificationUrl,
     });
     await actualizarPagoCreado(registro.id, {
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
@@ -152,6 +181,13 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
     // migrado ese job todavía. Solo aplica cuando hay una referencia real
     // de proveedor (Clip) -- transferencia manual no tiene nada que
     // reconciliar por esa vía.
+    // El id de la PREFERENCIA en su propia columna. No es un payment_id y jamás
+    // debe consultarse como /v1/payments/:preferenceId -- ese id lo trae después
+    // el webhook, y se guarda aparte.
+    if (resultado.preferenceId) {
+      await registrarIdsDePago(registro.id, negocioId,
+        { preferenceId: resultado.preferenceId, proveedor: principal.proveedor });
+    }
     if (resultado.referenciaExterna) await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
     return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {

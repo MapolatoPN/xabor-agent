@@ -24,6 +24,7 @@ import {
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
+import { procesarWebhookPago } from './services/webhookPagos.js';
 import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -1707,6 +1708,30 @@ app.use('/webhook/rappi', rappiRouter);
 // pedido por folio (obtenerPedidoPorId) -- si no se puede resolver, se
 // omite el broadcast en vez de mandarlo global (fail closed, nunca se
 // inventa negocio).
+// ─── Webhook multiproveedor de pagos ────────────────────────────────────────
+// El token de la URL es lo único que identifica de quién es este aviso; el
+// cuerpo no decide negocio, folio, monto ni estado. Toda la disciplina vive en
+// webhookPagos.js -- aquí sólo se transporta.
+app.post('/webhook/pagos/:proveedor/:routingToken', async (req, res) => {
+  try {
+    const { http, resultado } = await procesarWebhookPago({
+      proveedor: String(req.params.proveedor || ''),
+      routingToken: String(req.params.routingToken || ''),
+      req,
+    });
+    // Nunca se devuelve detalle interno al emisor del webhook: sólo el código.
+    res.sendStatus(http);
+    if (resultado?.razon && resultado.razon !== 'confirmado') {
+      console.warn(`[WebhookPagos] ${req.params.proveedor}: ${resultado.razon}`);
+    } else if (resultado?.razon === 'confirmado') {
+      console.log(`[WebhookPagos] ✅ pago confirmado folio=${resultado.folio} payment=${resultado.paymentId}`);
+    }
+  } catch (e) {
+    console.error('[WebhookPagos] Error inesperado:', e.message);
+    res.sendStatus(500);
+  }
+});
+
 app.post('/webhook/clip', async (req, res) => {
   // Responder 200 inmediatamente (Clip espera respuesta rápida)
   res.sendStatus(200);

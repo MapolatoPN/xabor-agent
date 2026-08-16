@@ -3324,11 +3324,35 @@ export async function resolverIntegracionPorRoutingToken(token) {
 // preference_id y payment_id son espacios de identificadores DISTINTOS: el
 // primero identifica el checkout que se le ofreció al cliente, el segundo el
 // cobro que de verdad ocurrió. Cada uno en su columna.
-export async function registrarIdsDePago(pagoId, { preferenceId = null, paymentId = null } = {}) {
+// negocioId OBLIGATORIO, y proveedor cuando se conoce: una mutación financiera
+// no puede depender de que el llamador haya resuelto bien el id. Si un bug pasa
+// el pagoId de otro tenant, el WHERE no encuentra fila y la escritura no ocurre
+// -- fail closed, igual que el resto de Xabor. Devuelve false, nunca "éxito"
+// silencioso.
+export async function registrarIdsDePago(pagoId, negocioId, { preferenceId = null, paymentId = null, proveedor = null } = {}) {
+  if (typeof pagoId !== 'string' || !pagoId.trim()) return false;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.error('[DB] registrarIdsDePago sin negocioId — rechazado (fail closed)');
+    return false;
+  }
   const { rowCount } = await pool.query(
-    `UPDATE pagos SET preference_id = COALESCE($2, preference_id),
-                      payment_id    = COALESCE($3, payment_id)
-      WHERE id = $1`, [pagoId, preferenceId, paymentId]);
+    `UPDATE pagos SET preference_id = COALESCE($3, preference_id),
+                      payment_id    = COALESCE($4, payment_id)
+      WHERE id = $1 AND negocio_id = $2
+        AND ($5::text IS NULL OR proveedor = $5)`,
+    [pagoId, negocioId.trim(), preferenceId, paymentId, proveedor]);
+  return rowCount > 0;
+}
+
+// Cambio de estado acotado al negocio. Mismo criterio que registrarIdsDePago:
+// una mutación financiera no confía en que el id venga del tenant correcto.
+export async function actualizarEstadoPagoPorId(pagoId, negocioId, estado) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const VALIDOS = new Set(['creando','pendiente','pagado','fallido','vencido','cancelado','invalidado','reembolsado','requiere_revision']);
+  if (!VALIDOS.has(estado)) return false;   // nunca se escribe vocabulario ajeno
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET estado = $3 WHERE id = $1 AND negocio_id = $2 AND estado != 'pagado'`,
+    [pagoId, negocioId.trim(), estado]);
   return rowCount > 0;
 }
 
