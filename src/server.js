@@ -7238,11 +7238,20 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
   }
 });
 
-// Herramienta interna YA autenticada como admin: dispara la MISMA transicion
-// autorizada que usa el webhook verificado (confirmarPedidoPendientePago), sin
-// llamar a ningun proveedor ni mover dinero. Existe para que las pruebas puedan
-// cerrar el ciclo pago->comanda sin inventar una segunda via de confirmacion:
-// si esta ruta pudiera confirmar por su cuenta, no probaria nada.
+// ⚠ CONFIRMA UN PAGO SIN PROVEEDOR, SIN WEBHOOK Y SIN DINERO REAL.
+//
+// Por eso NO SE REGISTRA salvo en un entorno de pruebas declarado a proposito:
+// en produccion la ruta no existe y el servidor responde 404 porque no hay nada
+// que responder. Ser admin no basta -- una credencial filtrada podria marcar
+// pedidos como pagados. Esconderla en la UI tampoco basta.
+//
+// Requiere las DOS condiciones: bandera explicita Y no estar en produccion.
+const RUTAS_PRUEBA = process.env.XABOR_RUTAS_PRUEBA === '1' && process.env.NODE_ENV !== 'production';
+if (RUTAS_PRUEBA) {
+  console.warn('[server] ⚠ RUTAS DE PRUEBA ACTIVAS (XABOR_RUTAS_PRUEBA=1) — jamas en produccion');
+// Dispara la MISMA transicion autorizada que usa el webhook verificado
+// (confirmarPedidoPendientePago): si esta ruta confirmara por su cuenta, las
+// pruebas no probarian el camino real.
 app.post('/test/confirmar-pago-tienda', requireAdminSeguro, async (req, res) => {
   const folio = String(req.body?.folio || '').trim();
   if (!folio) return res.status(400).json({ error: 'folio requerido' });
@@ -7255,6 +7264,7 @@ app.post('/test/confirmar-pago-tienda', requireAdminSeguro, async (req, res) => 
     res.status(500).json({ error: 'no se pudo confirmar' });
   }
 });
+}
 
 app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   // Overrides opcionales SOLO de esta ruta de prueba (ya protegida con

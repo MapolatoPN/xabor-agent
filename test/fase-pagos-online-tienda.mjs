@@ -15,6 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { randomBytes } from 'crypto';
+import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,27 @@ const comprar = (cuerpo) => fetch(`${base}/api/tienda/${SLUG}/checkout`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(cuerpo),
 }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+// Espía del panel: el aviso `nuevo_pedido` se emite DENTRO de emitirPedido y no
+// lo deduplica ningún ledger, así que contarlo mide directamente cuántas veces
+// se entró a emitir.
+function abrirPanel() {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace('http://', 'ws://') + '/ws/panel', { headers: { Cookie: ADMIN } });
+    const to = setTimeout(() => reject(new Error('timeout abriendo WS panel')), 8000);
+    ws.on('open', () => { clearTimeout(to); resolve(ws); });
+    ws.on('error', (e) => { clearTimeout(to); reject(e); });
+  });
+}
+function espiar(ws, filtro) {
+  const vistos = [];
+  ws.on('message', (raw) => {
+    let d; try { d = JSON.parse(raw.toString()); } catch { return; }
+    if (filtro(d)) vistos.push(d);
+  });
+  return vistos;
+}
+const asentar = (ms = 600) => new Promise(r => setTimeout(r, ms));
 
 const carrito = (tk, metodoPago, extra = {}) => ({
   checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
@@ -168,7 +190,7 @@ async function preparar() {
 let srv = null;
 try {
   await preparar();
-  srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
+  srv = await arrancarServidor({ PORT: PUERTO, XABOR_RUTAS_PRUEBA: '1' }, { timeoutMs: 90000 });
 
   // ═══ El P0: pago en línea no cocina antes de cobrar ═══
   await t('1. pago EN LÍNEA: el pedido nace pendiente_pago y NO genera comanda', async () => {
@@ -334,7 +356,7 @@ try {
     // Servidor con el fallo inyectado EXACTAMENTE en esa ventana.
     if (srv) { try { await srv.detener(); } catch {} }
     srv = await arrancarServidor(
-      { PORT: PUERTO, XABOR_PAGOS_FALLA_EN: 'antes_de_emitir_por_pago' }, { timeoutMs: 90000 });
+      { PORT: PUERTO, XABOR_RUTAS_PRUEBA: '1', XABOR_PAGOS_FALLA_EN: 'antes_de_emitir_por_pago' }, { timeoutMs: 90000 });
     const rc = await fetch(`${base}/test/confirmar-pago-tienda`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
       body: JSON.stringify({ folio }),
@@ -352,7 +374,7 @@ try {
     // PROCESO NUEVO, sin inyección: la reconciliación de arranque recoge la
     // deuda sin que nadie reintente desde fuera.
     if (srv) { try { await srv.detener(); } catch {} }
-    srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
+    srv = await arrancarServidor({ PORT: PUERTO, XABOR_RUTAS_PRUEBA: '1' }, { timeoutMs: 90000 });
     await new Promise(x => setTimeout(x, 2500));
 
     assert.strictEqual(await trabajosDeFolio(folio), 1,
@@ -395,6 +417,84 @@ try {
     assert.ok(r.status >= 400,
       'aceptó un método de pago que la tienda no ofrece: pedido condenado a pendiente_pago');
     await conectarProveedor();
+  });
+
+  // ═══ P0-A: el claim de emisión tiene que ser EXCLUSIVO ═══
+  await t('15. 20 confirmaciones simultáneas → UNA sola entrada a emitir', async () => {
+    // Escribir la deuda es durable pero no exclusivo: el UPDATE se serializa y
+    // la fila SIGUE cumpliendo la condición, así que los 20 procesos la
+    // reclamaban y los 20 entraban a emitir. Sólo la idempotencia de cada
+    // efecto tapaba el destrozo -- y el aviso al panel no la tiene.
+    const tk = token();
+    const r = await comprar(carrito(tk, 'enlace_pago'));
+    const folio = r.body.folio;
+
+    const panel = await abrirPanel();
+    await asentar(400);              // volcado inicial del tablero
+    const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+
+    const confirmar = () => fetch(`${base}/test/confirmar-pago-tienda`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
+      body: JSON.stringify({ folio }),
+    }).then(x => x.status).catch(() => 0);
+    await Promise.all(Array.from({ length: 20 }, confirmar));
+    await asentar(900);
+    panel.close();
+
+    assert.strictEqual(avisos.length, 1,
+      `la emisión corrió ${avisos.length} veces con 20 confirmaciones simultáneas`);
+    assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
+    assert.strictEqual((await pedidoDe(folio)).estado, 'nuevo');
+    assert.ok(!('emision_pendiente' in (await pedidoDe(folio)).datos), 'la deuda quedó sin saldar');
+  });
+
+  await t('16. dos reconciliadores simultáneos (dos instancias) → una sola emisión', async () => {
+    const tk = token();
+    const r = await comprar(carrito(tk, 'enlace_pago'));
+    const folio = r.body.folio;
+    // Se deja la deuda escrita sin emitir, como la dejaría un crash.
+    await pool.query(
+      `UPDATE pedidos_activos
+          SET estado = 'nuevo', datos = datos || '{"emision_pendiente":true}'::jsonb
+        WHERE folio = $1 AND negocio_id = $2`, [folio, NEG]);
+
+    const panel = await abrirPanel();
+    await asentar(400);
+    const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+    const { reconciliarEmisionesPendientes } = await import('../src/orders/orderManager.js');
+    // Dos reconciliadores a la vez: uno en este proceso y otro en el servidor,
+    // que además corre su propio barrido cada minuto.
+    await Promise.all([reconciliarEmisionesPendientes(), reconciliarEmisionesPendientes()]);
+    await asentar(900);
+    panel.close();
+
+    assert.ok(avisos.length <= 1, `el panel recibió ${avisos.length} avisos del mismo pedido`);
+    assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
+  });
+
+  // ═══ P0-B: la puerta de pago falso no existe en producción ═══
+  await t('17. en producción la ruta de confirmación de prueba NO EXISTE (404)', async () => {
+    // No basta con exigir admin: una credencial filtrada podría marcar pedidos
+    // como pagados sin que entrara un peso.
+    if (srv) { try { await srv.detener(); } catch {} }
+    srv = await arrancarServidor(
+      { PORT: PUERTO, NODE_ENV: 'production', XABOR_RUTAS_PRUEBA: '1' }, { timeoutMs: 90000 });
+    const r = await fetch(`${base}/test/confirmar-pago-tienda`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
+      body: JSON.stringify({ folio: 'XAB-0001' }),
+    });
+    assert.strictEqual(r.status, 404,
+      `la puerta de pago falso responde ${r.status} en producción: debe no existir`);
+  });
+
+  await t('18. sin la bandera explícita tampoco existe, aunque no sea producción', async () => {
+    if (srv) { try { await srv.detener(); } catch {} }
+    srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
+    const r = await fetch(`${base}/test/confirmar-pago-tienda`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
+      body: JSON.stringify({ folio: 'XAB-0001' }),
+    });
+    assert.strictEqual(r.status, 404, `responde ${r.status} sin XABOR_RUTAS_PRUEBA`);
   });
 
 } catch (e) {

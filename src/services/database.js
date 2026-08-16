@@ -3319,6 +3319,63 @@ export async function reclamarEmisionPorPago(folio, negocioId) {
   return { reclamado: true, datos: rows[0].datos };
 }
 
+// EXCLUSIVIDAD de la emisión. Escribir la deuda es durable pero NO es un claim:
+// dos procesos concurrentes pasan los dos por ese UPDATE, porque después del
+// primero la fila SIGUE cumpliendo la condición (nuevo + emision_pendiente).
+// Postgres serializa el UPDATE, no la decisión de emitir.
+//
+// El claim de verdad es un advisory lock por (negocio, folio), sostenido
+// mientras corre el efecto. Quien no lo obtiene NO emite: otro proceso vivo ya
+// está en eso. Si ese proceso muere, la conexión muere, el lock se suelta y la
+// deuda sigue escrita -- el siguiente reintento o el reconciliador la retoman.
+// Sin lease, sin relojes, sin depender de memoria.
+//
+// Va por el pool de claims (ver poolDeClaims): esta conexión queda ocupada
+// mientras `fn` trabaja, y `fn` necesita conexiones. Con un solo pool, N
+// confirmaciones simultáneas se bloquearían entre sí para siempre -- el mismo
+// interbloqueo que ya se corrigió en el checkout de la tienda.
+export async function conEmisionExclusiva(folio, negocioId, fn) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { emitio: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [lock] } = await cliente.query(
+      `SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2)) AS obtenido`,
+      ['emision_por_pago', `${nid}:${folio}`]);
+    if (!lock?.obtenido) {
+      await cliente.query('ROLLBACK');
+      return { emitio: false, razon: 'otro_proceso_emitiendo' };
+    }
+
+    // Dentro del lock se vuelve a mirar la deuda: entre el reclamo y el lock,
+    // el ganador anterior pudo haberla saldado ya.
+    const { rows: [fila] } = await cliente.query(
+      `SELECT datos FROM pedidos_activos
+        WHERE folio = $1 AND negocio_id = $2 AND datos->>'emision_pendiente' = 'true'`,
+      [folio, nid]);
+    if (!fila) {
+      await cliente.query('ROLLBACK');
+      return { emitio: false, razon: 'sin_deuda' };
+    }
+
+    await fn(fila.datos);
+
+    // Se salda en la misma transacción que suelta el lock: no queda instante en
+    // el que otro proceso vea el lock libre y la deuda todavía escrita.
+    await cliente.query(
+      `UPDATE pedidos_activos SET datos = datos - 'emision_pendiente', updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+    await cliente.query('COMMIT');
+    return { emitio: true };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
 // La deuda se salda DESPUÉS de que la emisión terminó, nunca antes: al revés,
 // un crash dejaría el pedido marcado como emitido sin haberlo hecho.
 export async function saldarEmisionPorPago(folio, negocioId) {

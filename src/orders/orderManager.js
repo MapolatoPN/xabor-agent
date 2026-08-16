@@ -10,6 +10,7 @@ import {
   eliminarPedido as eliminarPedidoDB,
   obtenerConfiguracion,
   reclamarEmisionPorPago,
+  conEmisionExclusiva,
   saldarEmisionPorPago,
   pedidosConEmisionPendiente
 } from '../services/database.js';
@@ -518,21 +519,27 @@ export async function confirmarPedidoPendientePago(folio, negocioId) {
     throw e;
   }
 
-  // El pedido en memoria puede no existir (proceso nuevo tras el crash): se
-  // reconstruye desde lo que la base guardó, que es la fuente de verdad.
-  let pedido = pedidos.find(p => p.id === folio && p.negocioId === nid);
-  if (!pedido) {
-    pedido = { ...reclamo.datos, id: folio, negocioId: nid, estado: 'nuevo' };
-    agregarPedidoAMemoria(pedido);
-  } else {
-    pedido.estado = 'nuevo';
-  }
+  // Escribir la deuda es durable, pero NO da exclusividad: dos procesos pasan
+  // los dos por ese UPDATE. El claim real es el lock, y quien no lo obtiene no
+  // emite. Sin esto, veinte confirmaciones simultáneas entraban veinte veces a
+  // emitirPedido y sólo la idempotencia de cada efecto tapaba el desastre.
+  let pedido = null;
+  const r = await conEmisionExclusiva(folio, nid, async (datos) => {
+    // El pedido en memoria puede no existir (proceso nuevo tras el crash): se
+    // reconstruye desde lo que la base guardó, que es la fuente de verdad.
+    pedido = pedidos.find(p => p.id === folio && p.negocioId === nid);
+    if (!pedido) {
+      pedido = { ...datos, id: folio, negocioId: nid, estado: 'nuevo' };
+      agregarPedidoAMemoria(pedido);
+    } else {
+      pedido.estado = 'nuevo';
+    }
+    await emitirPedido(pedido);
+  });
 
-  await emitirPedido(pedido);
-  // Sólo ahora se salda: al revés, un crash entre marcar y emitir dejaría el
-  // pedido como "ya emitido" sin haberlo hecho, y nadie lo volvería a intentar.
-  await saldarEmisionPorPago(folio, nid);
-  return pedido;
+  // Quien perdió el lock no emitió: devuelve null, igual que quien no tenía
+  // deuda. Para el llamador, "no hice nada" es la misma respuesta.
+  return r.emitio ? pedido : null;
 }
 
 // Red de seguridad: recoge las emisiones que un crash dejó a medias cuando
