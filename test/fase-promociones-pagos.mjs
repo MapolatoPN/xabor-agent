@@ -1,0 +1,971 @@
+// ─── Promociones y dinero: reservar no es consumir ──────────────────────────
+//
+// El defecto que abre esta suite: en la Tienda, llegar al checkout con una
+// promoción limitada la daba por GASTADA. La reserva se convertía en uso
+// definitivo dentro de `finalizarCheckout`, junto con la comanda y el tablero,
+// aunque el pedido naciera `pendiente_pago` y no hubiera entrado un solo peso.
+// Si el cliente no pagaba nunca, el cupo quedaba quemado para siempre: la fila
+// ya tenía folio real, así que el reciclador de reservas -- que solo mira las
+// filas con prefijo `reserva:` -- jamás la volvía a tocar.
+//
+// El ciclo correcto es el mismo que ya tiene el dinero:
+//
+//   crear checkout          → RESERVA   (cuenta contra el límite)
+//   dinero asentado + deuda → CONSUME   (dentro de consumirDeudaDeDerivacion)
+//   vence la espera Xabor   → LIBERA    (dentro de vencerEsperaDePago)
+//
+// Ninguna prueba toca Clip ni Mercado Pago reales. Cero dinero real en juego.
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { createServer } from 'http';
+import { createHmac, randomBytes } from 'crypto';
+import assert from 'assert';
+import { arrancarServidor } from './lib-servidor.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
+const { pool } = await import('../src/services/database.js');
+
+let pasadas = 0, fallidas = 0;
+const fallos = [];
+async function t(nombre, fn) {
+  try { await fn(); console.log(`  OK  ${nombre}`); pasadas++; }
+  catch (e) { console.log(`FALLO ${nombre}: ${e.message}`); fallidas++; fallos.push(`${nombre}: ${e.message}`); }
+}
+
+const NEG = SEED.negocioA;
+const NEG_B = SEED.negocioB;
+const SECRETO_MP = 'secreto-promos';
+const SLUG = 'promos-pagos-test';
+const PUERTO = Number(process.env.TEST_PORT_PROMO || 4341);
+const PUERTO_CLIP = Number(process.env.TEST_PORT_PROMO_CLIP || 4342);
+const PUERTO_MP = Number(process.env.TEST_PORT_PROMO_MP || 4343);
+const base = `http://localhost:${PUERTO}`;
+
+process.env.CLIP_API_BASE_URL = `http://localhost:${PUERTO_CLIP}`;
+process.env.XABOR_MP_API_BASE = `http://localhost:${PUERTO_MP}`;
+process.env.XABOR_URL_PUBLICA = base;
+
+const tokenNuevo = () => randomBytes(24).toString('hex');
+
+// ── Mocks con la forma DOCUMENTADA de cada API ──────────────────────────────
+let checkoutsClip = 0;
+const CHECKOUTS = new Map();
+const clipMock = createServer((req, res) => {
+  let cuerpo = '';
+  req.on('data', c => { cuerpo += c; });
+  req.on('end', () => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'POST' && req.url === '/v2/checkout') {
+      const body = JSON.parse(cuerpo || '{}');
+      const id = `clip-promo-${++checkoutsClip}`;
+      CHECKOUTS.set(id, {
+        referencia: body.metadata?.external_reference || null,
+        estado: 'PENDING', monto: Number(body.amount),
+      });
+      res.end(JSON.stringify({
+        payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
+      }));
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
+      const id = decodeURIComponent(req.url.split('/').pop());
+      const c = CHECKOUTS.get(id);
+      if (!c) { res.statusCode = 404; res.end('{}'); return; }
+      res.end(JSON.stringify({
+        object_type: 'payment_link', payment_request_id: id,
+        status: c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING',
+        amount: c.monto ?? null, currency: 'MXN',
+        metadata: { external_reference: c.referencia, customer_info: {} },
+        payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
+        created_at: '2026-08-17T00:00:00.000Z', expired_at: null,
+        last_status_message: 'Payment request is active',
+      }));
+      return;
+    }
+    res.statusCode = 404; res.end('{}');
+  });
+});
+
+const PAGOS_MP = new Map();
+let checkoutsMP = 0;
+const mpMock = createServer((req, res) => {
+  if (req.url.startsWith('/checkout/preferences')) {
+    let cuerpo = '';
+    req.on('data', c => { cuerpo += c; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const id = `pref-promo-${++checkoutsMP}`;
+      res.end(JSON.stringify({ id, init_point: `https://mp.test/checkout/${id}` }));
+    });
+    return;
+  }
+  if (req.url.startsWith('/v1/payments/search')) {
+    const ref = new URL(req.url, 'http://x').searchParams.get('external_reference');
+    const results = [...PAGOS_MP.values()].filter(p => p.external_reference === ref);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ results }));
+    return;
+  }
+  const m = /^\/v1\/payments\/([^/?]+)/.exec(req.url);
+  if (m) {
+    const pago = PAGOS_MP.get(decodeURIComponent(m[1]));
+    if (!pago) { res.writeHead(404); res.end('{"message":"not found"}'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(pago));
+    return;
+  }
+  res.writeHead(404); res.end('{}');
+});
+
+await new Promise(r => clipMock.listen(PUERTO_CLIP, r));
+await new Promise(r => mpMock.listen(PUERTO_MP, r));
+
+// ── Fixture de tienda ───────────────────────────────────────────────────────
+let PRODUCTO = null;
+
+const comprar = (cuerpo) => fetch(`${base}/api/tienda/${SLUG}/checkout`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(cuerpo),
+}).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+/** Compra que EXIGE 200: si el checkout falla, el mensaje trae el motivo real. */
+async function comprarOk(cuerpo) {
+  const r = await comprar(cuerpo);
+  assert.strictEqual(r.status, 200, `checkout rechazado: ${JSON.stringify(r.body)}`);
+  return r;
+}
+
+const carrito = (tk, extra = {}) => ({
+  checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
+  modalidad: 'recoger', cliente: { nombre: 'Cliente promo', telefono: '8997600001' },
+  metodoPago: 'enlace_pago', ...extra,
+});
+
+async function conectarClip(negocioId = NEG) {
+  const { guardarIntegracionPago, marcarProveedorPrincipal } =
+    await import('../src/services/integracionesService.js');
+  await guardarIntegracionPago(negocioId, 'clip',
+    { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+    { actualizadoPor: SEED.superadminUsuarioId });
+  await marcarProveedorPrincipal(negocioId, 'clip', SEED.superadminUsuarioId);
+}
+async function conectarMP(negocioId = NEG) {
+  const { guardarIntegracionPago, marcarProveedorPrincipal } =
+    await import('../src/services/integracionesService.js');
+  await guardarIntegracionPago(negocioId, 'mercado_pago',
+    { accessToken: 'token-promo', publicKey: 'pk-test', webhookSecret: SECRETO_MP },
+    { actualizadoPor: SEED.superadminUsuarioId });
+  await marcarProveedorPrincipal(negocioId, 'mercado_pago', SEED.superadminUsuarioId);
+  const { asegurarRoutingTokenIntegracion } = await import('../src/services/database.js');
+  return asegurarRoutingTokenIntegracion(negocioId, 'mercado_pago');
+}
+
+/** Crea una promoción de código y devuelve su id. */
+async function promo({ codigo, limiteUsos = null, limitePorCliente = null, valor = 50,
+                       negocioId = NEG, tipo = 'monto_fijo' } = {}) {
+  const { rows: [p] } = await pool.query(
+    `INSERT INTO tienda_promociones
+       (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos, limite_por_cliente,
+        canales, activa)
+     VALUES ($1,$2,$3,$4,FALSE,$5,$6,$7,'["tienda_online"]'::jsonb,TRUE)
+     RETURNING id`,
+    [negocioId, `Promo ${codigo}`, tipo, codigo, valor, limiteUsos, limitePorCliente]);
+  return p.id;
+}
+
+const promoDe = async (id) => (await pool.query(
+  `SELECT * FROM tienda_promociones WHERE id=$1`, [id])).rows[0];
+const usosDe = async (id) => (await pool.query(
+  `SELECT * FROM tienda_promocion_usos WHERE promocion_id=$1 ORDER BY created_at`, [id])).rows;
+
+async function pedidoDe(folio, negocioId = NEG) {
+  const { rows: [r] } = await pool.query(
+    `SELECT estado, datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, negocioId]);
+  return r || null;
+}
+async function comandasDe(folio) {
+  const { rows: [r] } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM impresion_trabajos
+      WHERE negocio_id=$1 AND origen_tipo='pedido' AND origen_id=$2`, [NEG, folio]);
+  return r.n;
+}
+async function pagosDe(folio, negocioId = NEG) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 ORDER BY created_at`, [negocioId, folio]);
+  return rows;
+}
+const filaId = async (id) => (await pool.query(`SELECT * FROM pagos WHERE id=$1`, [id])).rows[0];
+
+async function esperar(condicion, queEsperaba, ms = 10000) {
+  const limite = Date.now() + ms;
+  for (;;) {
+    if (await condicion()) return;
+    if (Date.now() > limite) throw new Error(`tiempo agotado esperando: ${queEsperaba}`);
+    await new Promise(r => setTimeout(r, 120));
+  }
+}
+
+/** Genera el enlace de pago del pedido por la vía real del servicio. */
+const crearEnlace = async (folio, negocioId = NEG) => {
+  const { crearEnlacePago } = await import('../src/services/pagosService.js');
+  return crearEnlacePago({ negocioId, pedidoId: folio, actor: SEED.superadminUsuarioId });
+};
+
+const vencerYa = (pagoId) => pool.query(
+  `UPDATE pagos SET xabor_espera_hasta = NOW() - interval '2 minutes' WHERE id=$1`, [pagoId]);
+
+async function webhookClip(referencia) {
+  const r = await fetch(`${base}/webhook/clip`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resource: 'CHECKOUT', resource_status: 'COMPLETED', me_reference_id: referencia }),
+  });
+  return r.status;
+}
+function firmarMP(dataId, requestId, ts, secreto) {
+  const id = /[a-zA-Z]/.test(String(dataId)) ? String(dataId).toLowerCase() : String(dataId);
+  return createHmac('sha256', secreto).update(`id:${id};request-id:${requestId};ts:${ts};`).digest('hex');
+}
+async function webhookMP(tokenRuteo, paymentId) {
+  const ts = '1700000000', requestId = 'req-promo';
+  const r = await fetch(
+    `${base}/webhook/pagos/mercado_pago/${tokenRuteo}?data.id=${paymentId}&type=payment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-signature': `ts=${ts},v1=${firmarMP(paymentId, requestId, ts, SECRETO_MP)}`,
+        'x-request-id': requestId,
+      },
+      body: JSON.stringify({ type: 'payment', data: { id: paymentId } }),
+    });
+  return r.status;
+}
+
+async function montarImpresion() {
+  const { crearEdge } = await import('../src/services/edgeService.js');
+  const { crearImpresora, crearRuta } = await import('../src/services/impresionService.js');
+  const { DESTINOS } = await import('../src/services/impresionSelfService.js');
+  await pool.query(
+    `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal')
+     ON CONFLICT (negocio_id, nombre) DO UPDATE SET activo = true`, [NEG]);
+  const term = await crearEdge(NEG, { nombre: 'PC PROMO' });
+  const imp = await crearImpresora(NEG, {
+    terminalId: term.id, nombre: 'Impresora promo', transporte: 'windows_spooler',
+    anchoColumnas: 42, config: { spoolerNombre: 'Impresora promo' },
+  });
+  await crearRuta(NEG, { impresoraId: imp.id, ambito: 'documento', clave: DESTINOS.cocina.clave });
+}
+
+async function limpiar() {
+  for (const n of [NEG, NEG_B]) {
+    await pool.query(`DELETE FROM pagos WHERE negocio_id=$1`, [n]);
+    await pool.query(`DELETE FROM tienda_promocion_usos WHERE negocio_id=$1`, [n]);
+    await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id=$1`, [n]);
+    await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id=$1`, [n]);
+    await pool.query(`DELETE FROM integraciones_canal WHERE negocio_id=$1 AND canal='pagos'`, [n]);
+    await pool.query(
+      `DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->>'canal'='tienda_online'`, [n]);
+  }
+  await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1`, [NEG]);
+  await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id=$1`, [NEG]);
+  await pool.query(`DELETE FROM impresoras WHERE negocio_id=$1`, [NEG]);
+  await pool.query(
+    `DELETE FROM edge_emparejamientos WHERE terminal_id IN
+      (SELECT t.id FROM terminales t JOIN sucursales s ON s.id = t.sucursal_id
+        WHERE s.negocio_id=$1 AND t.nombre='PC PROMO')`, [NEG]);
+  await pool.query(
+    `DELETE FROM terminales WHERE nombre='PC PROMO' AND sucursal_id IN
+      (SELECT id FROM sucursales WHERE negocio_id=$1)`, [NEG]);
+  await pool.query(`DELETE FROM tienda_productos WHERE negocio_id=$1`, [NEG]);
+  await pool.query(`DELETE FROM tienda_config WHERE negocio_id=$1`, [NEG]);
+  await pool.query(
+    `DELETE FROM menu_productos WHERE categoria_id IN
+      (SELECT id FROM menu_categorias WHERE negocio_id=$1 AND nombre='Promos (test)')`, [NEG]);
+  await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre='Promos (test)'`, [NEG]);
+}
+
+async function preparar() {
+  await limpiar();
+  for (const m of ['tienda_online', 'pos', 'menu']) {
+    await pool.query(
+      `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,'activo')
+       ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [NEG, m]);
+  }
+  const { rows: [cat] } = await pool.query(
+    `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+     VALUES ($1,'Promos (test)',TRUE,960) RETURNING id`, [NEG]);
+  const { rows: [p] } = await pool.query(
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+     VALUES ($1,$2,'Producto promo',300,TRUE,1) RETURNING id`, [NEG, cat.id]);
+  PRODUCTO = p.id;
+  await pool.query(
+    `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`, [NEG, PRODUCTO]);
+
+  const reglas = {
+    horarios: Object.fromEntries(['lunes','martes','miercoles','jueves','viernes','sabado','domingo']
+      .map(d => [d, { abierto: true, apertura: '00:00', cierre: '23:59' }])),
+    pedidos: { costo_envio: 0, pedido_minimo_entrega: 0, tiempo_preparacion_minutos: 10 },
+  };
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'reglas_atencion',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor=$2`, [NEG, JSON.stringify(reglas)]);
+  await pool.query(`UPDATE metodos_pago SET habilitado=FALSE WHERE negocio_id=$1`, [NEG]);
+  for (const tipo of ['efectivo', 'enlace_pago']) {
+    await pool.query(
+      `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,$2,TRUE)
+       ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado=TRUE`, [NEG, tipo]);
+  }
+  await pool.query(
+    `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
+     VALUES ($1,'publicada',$2,'Promos',$3)
+     ON CONFLICT (negocio_id) DO UPDATE SET estado='publicada', slug_publico=$2, modalidades=$3`,
+    [NEG, SLUG, JSON.stringify(['recoger'])]);
+  await montarImpresion();
+  await conectarClip();
+}
+
+let srv = null;
+try {
+  await preparar();
+  srv = await arrancarServidor({
+    PORT: String(PUERTO), XABOR_RUTAS_PRUEBA: '1',
+    // El limite de checkouts por IP es operativo y configurable por env. Esta
+    // suite manda cientos desde localhost; el rate limit no es lo que se esta
+    // probando aqui y lo cubre su propia suite.
+    XABOR_TIENDA_LIMITE_CHECKOUT: '2000', XABOR_TIENDA_LIMITE_LECTURA: '5000',
+    CLIP_API_BASE_URL: `http://localhost:${PUERTO_CLIP}`,
+    XABOR_MP_API_BASE: `http://localhost:${PUERTO_MP}`,
+    XABOR_URL_PUBLICA: base,
+  }, { timeoutMs: 90000 });
+
+  // ═══ EL DEFECTO, REPRODUCIDO ══════════════════════════════════════════════
+  await t('R. llegar al checkout NO puede gastar la promoción: sin pago, el cupo vuelve', async () => {
+    const id = await promo({ codigo: 'REPRO1', limiteUsos: 1, valor: 50 });
+
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'REPRO1' }));
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const folio = r.body.folio;
+    const ped = await pedidoDe(folio);
+    assert.strictEqual(ped.estado, 'pendiente_pago', 'fixture: el pedido debía nacer sin pagar');
+    assert.strictEqual(await comandasDe(folio), 0, 'fixture: no debía salir comanda');
+
+    // Mientras el cobro sigue vivo, la promoción está RESERVADA: cuenta contra
+    // el límite (nadie más puede tomarla) pero no está consumida.
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'la reserva debe contar contra el cupo mientras el cobro sigue vivo');
+    const enReserva = await usosDe(id);
+    assert.strictEqual(enReserva.length, 1);
+    // Marcada como reservada Y sin folio definitivo: si ya trae el folio real
+    // como uso consumido, el reciclador nunca la volvera a mirar.
+    assert.strictEqual(enReserva[0].estado, 'reservada',
+      `el cupo quedó '${enReserva[0].estado}' con cero pesos cobrados`);
+    assert.strictEqual(enReserva[0].pedido_folio, folio,
+      'la reserva debe estar amarrada al pedido, no a un token provisional');
+
+    // El cliente nunca paga y la espera de Xabor vence.
+    const enlace = await crearEnlace(folio);
+    assert.ok(enlace.url, 'fixture: debía crearse el checkout');
+    const pago = (await pagosDe(folio))[0];
+    await vencerYa(pago.id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    assert.strictEqual(await expirarPagosVencidos(), 1);
+
+    // Y el cupo vuelve a estar disponible: nadie se quedó con él.
+    assert.strictEqual((await pedidoDe(folio)).estado, 'cancelado');
+    assert.strictEqual(Number((await promoDe(id)).usos), 0,
+      'EL CUPO QUEDÓ QUEMADO PARA SIEMPRE: llegar al checkout gastó la promoción');
+    assert.strictEqual((await usosDe(id)).length, 0,
+      'quedó una fila de uso de una promoción que nadie pagó');
+
+    // Otro cliente sí puede usarla.
+    const r2 = await comprar(carrito(tokenNuevo(), {
+      codigo: 'REPRO1', cliente: { nombre: 'Cliente B', telefono: '8997600002' } }));
+    assert.strictEqual(r2.status, 200,
+      `el segundo cliente no pudo usar el cupón liberado: ${JSON.stringify(r2.body)}`);
+  });
+
+  // ═══ CICLO COMPLETO: RESERVA → CONSUMO ═══════════════════════════════════
+  await t('1. reserva → pago: la promoción se consume UNA vez, con el dinero', async () => {
+    const id = await promo({ codigo: 'PAGA1', limiteUsos: 3, valor: 40 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'PAGA1' }));
+    const folio = r.body.folio;
+    const enlace = await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+
+    assert.strictEqual((await usosDe(id))[0].estado, 'reservada');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1, 'la reserva no contó contra el cupo');
+
+    CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(pago.referencia_interna), 200);
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda del pago');
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, 'apareció una segunda fila de uso');
+    assert.strictEqual(usos[0].estado, 'consumida', 'el cupo no quedó consumido con el dinero dentro');
+    assert.ok(usos[0].consumida_at, 'no quedó registrado cuándo se consumió');
+    assert.strictEqual(usos[0].pedido_folio, folio);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'consumir movió el contador: la reserva ya lo contaba');
+    assert.strictEqual((await pedidoDe(folio)).datos.pago_confirmado, true);
+  });
+
+  await t('2. promo ILIMITADA: sin límite no hay nada que agotar, y sigue el ciclo', async () => {
+    const id = await promo({ codigo: 'INFINITA', limiteUsos: null, valor: 25 });
+    const folios = [];
+    for (let i = 0; i < 4; i++) {
+      const r = await comprar(carrito(tokenNuevo(), {
+        codigo: 'INFINITA', cliente: { nombre: `C${i}`, telefono: `899760100${i}` } }));
+      assert.strictEqual(r.status, 200, `la compra ${i} falló: ${JSON.stringify(r.body)}`);
+      folios.push(r.body.folio);
+    }
+    assert.strictEqual(Number((await promoDe(id)).usos), 4);
+    assert.strictEqual((await usosDe(id)).filter(u => u.estado === 'reservada').length, 4,
+      'una promo ilimitada tampoco consume al llegar al checkout');
+
+    // Uno paga, otro vence: cada uno sigue su camino.
+    const e0 = await crearEnlace(folios[0]);
+    const p0 = (await pagosDe(folios[0]))[0];
+    CHECKOUTS.get(e0.referenciaExterna).estado = 'COMPLETED';
+    await webhookClip(p0.referencia_interna);
+    await esperar(async () => await comandasDe(folios[0]) === 1, 'la comanda de la ilimitada');
+
+    await crearEnlace(folios[1]);
+    await vencerYa((await pagosDe(folios[1]))[0].id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.find(u => u.pedido_folio === folios[0]).estado, 'consumida');
+    assert.ok(!usos.find(u => u.pedido_folio === folios[1]), 'la vencida no se liberó');
+    assert.strictEqual(Number((await promoDe(id)).usos), 3);
+  });
+
+  await t('3. promo de 2 usos: reservas + consumidas nunca pasan de 2', async () => {
+    const id = await promo({ codigo: 'DOS', limiteUsos: 2, valor: 30 });
+    const a1 = await comprar(carrito(tokenNuevo(), {
+      codigo: 'DOS', cliente: { nombre: 'A', telefono: '8997602001' } }));
+    const a2 = await comprar(carrito(tokenNuevo(), {
+      codigo: 'DOS', cliente: { nombre: 'B', telefono: '8997602002' } }));
+    assert.strictEqual(a1.status, 200);
+    assert.strictEqual(a2.status, 200);
+
+    const a3 = await comprar(carrito(tokenNuevo(), {
+      codigo: 'DOS', cliente: { nombre: 'C', telefono: '8997602003' } }));
+    assert.notStrictEqual(a3.status, 200,
+      `entró un tercero sobre una promo de 2 usos: ${JSON.stringify(a3.body)}`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 2);
+
+    // Uno paga (consume), el otro vence (libera) -> queda 1 cupo y C sí entra.
+    const e1 = await crearEnlace(a1.body.folio);
+    CHECKOUTS.get(e1.referenciaExterna).estado = 'COMPLETED';
+    await webhookClip((await pagosDe(a1.body.folio))[0].referencia_interna);
+    await esperar(async () => await comandasDe(a1.body.folio) === 1, 'la comanda de A');
+
+    await crearEnlace(a2.body.folio);
+    await vencerYa((await pagosDe(a2.body.folio))[0].id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+
+    const a3b = await comprar(carrito(tokenNuevo(), {
+      codigo: 'DOS', cliente: { nombre: 'C', telefono: '8997602003' } }));
+    assert.strictEqual(a3b.status, 200,
+      `C no pudo tomar el cupo liberado: ${JSON.stringify(a3b.body)}`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 2);
+  });
+
+  // ═══ CONCURRENCIA DEL ÚLTIMO CUPO ════════════════════════════════════════
+  await t('4. 20 checkouts simultáneos por el ÚLTIMO cupo: gana exactamente uno', async () => {
+    const id = await promo({ codigo: 'ULTIMO', limiteUsos: 1, valor: 60 });
+    const intentos = Array.from({ length: 20 }, (_, i) => comprar(carrito(tokenNuevo(), {
+      codigo: 'ULTIMO', cliente: { nombre: `Sim${i}`, telefono: `89976030${String(i).padStart(2, '0')}` },
+    })));
+    const res = await Promise.all(intentos);
+    const ok = res.filter(r => r.status === 200);
+    const rechazados = res.filter(r => r.status === 409);
+
+    assert.strictEqual(ok.length, 1,
+      `${ok.length} clientes se llevaron un cupón de 1 uso (409s: ${rechazados.length})`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `quedaron ${usos.length} filas de uso para un cupo de 1`);
+    assert.strictEqual(usos[0].estado, 'reservada');
+    // Y el que ganó sí lleva el descuento aplicado de verdad.
+    assert.strictEqual(Number((await pedidoDe(ok[0].body.folio)).datos.descuento), 60);
+  });
+
+  // ═══ EL CASO MÁS IMPORTANTE DE LA FASE ═══════════════════════════════════
+  await t('5. A reserva último cupo → vence → B lo toma y paga → entra dinero VIEJO de A', async () => {
+    const id = await promo({ codigo: 'REASIGNA', limiteUsos: 1, valor: 70 });
+
+    // A toma el último cupo y genera su checkout.
+    const rA = await comprarOk(carrito(tokenNuevo(), {
+      codigo: 'REASIGNA', cliente: { nombre: 'A', telefono: '8997604001' } }));
+    const folioA = rA.body.folio;
+    const enlaceA = await crearEnlace(folioA);
+    const pagoA = (await pagosDe(folioA))[0];
+
+    // A no paga: vence.
+    await vencerYa(pagoA.id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual(Number((await promoDe(id)).usos), 0, 'el cupo de A no se liberó');
+
+    // B toma el cupo liberado y SÍ paga.
+    const rB = await comprarOk(carrito(tokenNuevo(), {
+      codigo: 'REASIGNA', cliente: { nombre: 'B', telefono: '8997604002' } }));
+    const folioB = rB.body.folio;
+    const enlaceB = await crearEnlace(folioB);
+    CHECKOUTS.get(enlaceB.referenciaExterna).estado = 'COMPLETED';
+    await webhookClip((await pagosDe(folioB))[0].referencia_interna);
+    await esperar(async () => await comandasDe(folioB) === 1, 'la comanda de B');
+
+    // Y AHORA el cliente A paga su enlace viejo, que Clip nunca canceló.
+    CHECKOUTS.get(enlaceA.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(pagoA.referencia_interna), 200);
+    await esperar(async () => (await filaId(pagoA.id)).estado === 'pagado',
+      'que el dinero real de A quede asentado');
+
+    // 1) El dinero de A es real y está reconocido.
+    const finalA = await filaId(pagoA.id);
+    assert.strictEqual(finalA.estado, 'pagado', 'se repudió dinero real de A');
+    assert.strictEqual(finalA.metadata_sanitizada.anomalia, 'pago_tardio',
+      'el cobro de A no quedó marcado para revisión');
+    assert.strictEqual(finalA.derivacion_pendiente, false);
+    // 2) La promo de A NO revive.
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `hay ${usos.length} usos de un cupón de 1 uso`);
+    assert.strictEqual(usos[0].pedido_folio, folioB, 'el cupón se le atribuyó al cliente equivocado');
+    assert.strictEqual(usos[0].estado, 'consumida');
+    // 3) Total consumido = 1, y B conserva la suya.
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'segunda apropiación del cupo: el contador se pasó del límite');
+    assert.strictEqual((await pedidoDe(folioB)).datos.pago_confirmado, true);
+    // 4) A no cocina.
+    assert.strictEqual((await pedidoDe(folioA)).estado, 'cancelado');
+    assert.strictEqual(await comandasDe(folioA), 0, '¡salió comanda del pedido vencido de A!');
+  });
+
+  // ═══ CARRERA EXPIRACIÓN vs SETTLEMENT ════════════════════════════════════
+  await t('6. expiración y cobro disparados a la vez: la promo queda en un solo mundo', async () => {
+    const { verificarYAsentarClip, derivarPedidoPorPagoAsentado } =
+      await import('../src/services/webhookPagos.js');
+    const { vencerEsperaDePago } = await import('../src/services/database.js');
+
+    for (let i = 0; i < 5; i++) {
+      const id = await promo({ codigo: `CARRERA${i}`, limiteUsos: 1, valor: 35 });
+      const r = await comprarOk(carrito(tokenNuevo(), {
+        codigo: `CARRERA${i}`, cliente: { nombre: `R${i}`, telefono: `899760500${i}` } }));
+      const folio = r.body.folio;
+      const enlace = await crearEnlace(folio);
+      const pago = (await pagosDe(folio))[0];
+      CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+      await vencerYa(pago.id);
+
+      const [asiento] = await Promise.all([
+        verificarYAsentarClip({ pago: await filaId(pago.id), checkoutId: enlace.referenciaExterna }),
+        vencerEsperaDePago(pago.id, NEG),
+      ]);
+      if (asiento.ok) await derivarPedidoPorPagoAsentado({ pagoId: pago.id, negocioId: NEG, folio });
+
+      const ped = await pedidoDe(folio);
+      const usos = await usosDe(id);
+      const cancelado = ped.estado === 'cancelado';
+      const comandas = await comandasDe(folio);
+
+      if (cancelado) {
+        assert.strictEqual(usos.length, 0, `[${i}] pedido cancelado pero la promo siguió apartada`);
+        assert.strictEqual(Number((await promoDe(id)).usos), 0, `[${i}] cupo no devuelto`);
+        assert.strictEqual(comandas, 0, `[${i}] comanda de un pedido cancelado`);
+      } else {
+        assert.strictEqual(usos.length, 1, `[${i}] pedido cobrado sin uso de promo`);
+        assert.strictEqual(usos[0].estado, 'consumida',
+          `[${i}] pedido cobrado con la promo todavía '${usos[0].estado}'`);
+        assert.strictEqual(comandas, 1, `[${i}] pedido cobrado sin comanda`);
+      }
+      assert.strictEqual((await filaId(pago.id)).estado, 'pagado', `[${i}] el dinero real se perdió`);
+    }
+  });
+
+  // ═══ WEBHOOK REPETIDO ════════════════════════════════════════════════════
+  await t('7. el mismo webhook 50 veces: un consumo, una comanda', async () => {
+    const id = await promo({ codigo: 'REPETIDO', limiteUsos: 1, valor: 45 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'REPETIDO' }));
+    const folio = r.body.folio;
+    const enlace = await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+    CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+
+    for (let i = 0; i < 50; i++) {
+      assert.strictEqual(await webhookClip(pago.referencia_interna), 200, `el aviso ${i + 1} no fue acusado`);
+    }
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda');
+    await new Promise(x => setTimeout(x, 600));
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `50 avisos dejaron ${usos.length} usos`);
+    assert.strictEqual(usos[0].estado, 'consumida');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      '50 avisos movieron el contador más de una vez');
+    assert.strictEqual(await comandasDe(folio), 1, '50 avisos sacaron más de una comanda');
+  });
+
+  // ═══ CAMBIO DE PROVEEDOR ═════════════════════════════════════════════════
+  await t('8. cambia el proveedor: UNA reserva, y la paga el checkout que sea', async () => {
+    const id = await promo({ codigo: 'PROVEEDOR', limiteUsos: 1, valor: 55 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'PROVEEDOR' }));
+    const folio = r.body.folio;
+    const clip = await crearEnlace(folio);
+    assert.strictEqual((await usosDe(id)).length, 1);
+
+    // El negocio cambia de proveedor. Se invalida el intento de Clip y se abre
+    // uno de Mercado Pago -- pero la promoción es del PEDIDO, no del checkout.
+    await conectarMP();
+    const clipFila = (await pagosDe(folio)).find(x => x.proveedor === 'clip');
+    await pool.query(
+      `UPDATE pagos SET estado='invalidado', invalidated_at=NOW(),
+                        motivo_invalidacion='cambio de proveedor en la prueba'
+        WHERE id=$1`, [clipFila.id]);
+    await crearEnlace(folio);
+    const mp = (await pagosDe(folio)).find(x => x.proveedor === 'mercado_pago');
+    assert.ok(mp, 'no se abrió el intento con el proveedor nuevo');
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `cambiar de proveedor creó ${usos.length} reservas`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'cambiar de proveedor consumió un segundo cupo');
+
+    // Y paga el enlace VIEJO de Clip, antes de vencer: esa única reserva se
+    // consume una sola vez.
+    CHECKOUTS.get(clip.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(clipFila.referencia_interna), 200);
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda del pago por Clip');
+
+    const finales = await usosDe(id);
+    assert.strictEqual(finales.length, 1);
+    assert.strictEqual(finales[0].estado, 'consumida');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    assert.strictEqual(await comandasDe(folio), 1, 'una operación, una comanda');
+    await conectarClip();
+  });
+
+  // ═══ CAMBIO DE VERSIÓN ═══════════════════════════════════════════════════
+  await t('9. el pedido cambia de versión: la reserva vieja no justifica el precio nuevo', async () => {
+    const id = await promo({ codigo: 'VERSION', limiteUsos: 2, valor: 20 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'VERSION' }));
+    const folio = r.body.folio;
+    const enlace = await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+
+    // El pedido se edita: otro total, otra versión.
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = jsonb_set(datos,'{total}','999'::jsonb)
+        WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+
+    CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(pago.referencia_interna), 200);
+    await esperar(async () => (await filaId(pago.id)).estado === 'pagado',
+      'que el dinero de la v1 quede asentado');
+
+    const finalPago = await filaId(pago.id);
+    assert.strictEqual(finalPago.estado, 'pagado', 'se repudió dinero real de la v1');
+    assert.strictEqual(finalPago.metadata_sanitizada.anomalia, 'version_desfasada');
+    assert.strictEqual(finalPago.derivacion_pendiente, false);
+
+    // La promo NO se consume: la reserva justificaba la v1, no la v2.
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.filter(u => u.pedido_folio === folio).length, 0,
+      'se consumió una promoción que ya no justifica el precio cobrado');
+    assert.strictEqual(await comandasDe(folio), 0, 'cocinó una versión que nadie pagó');
+
+    // Y la reserva NO queda atrapada para siempre. Aquí el expirador ya no
+    // sirve -- el pago está 'pagado' y dejó de ser vencible --, así que la
+    // política es soltarla en la misma transacción del asiento: la obligación
+    // terminó sin liberar el pedido, y ese cupo no representa nada.
+    assert.strictEqual(Number((await promoDe(id)).usos), 0,
+      'la reserva de una versión muerta se quedó bloqueando el cupo para siempre');
+    const otro = await comprarOk(carrito(tokenNuevo(), {
+      codigo: 'VERSION', cliente: { nombre: 'Otro', telefono: '8997608001' } }));
+    assert.ok(otro.body.folio, 'nadie pudo volver a usar el cupo devuelto');
+  });
+
+  // ═══ DOBLE COBRO ═════════════════════════════════════════════════════════
+  await t('10. dos cobros reales sobre el mismo pedido: un solo consumo, una comanda', async () => {
+    const id = await promo({ codigo: 'DOBLE', limiteUsos: 1, valor: 65 });
+    await conectarClip();
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'DOBLE' }));
+    const folio = r.body.folio;
+
+    const clip = await crearEnlace(folio);
+    const clipFila = (await pagosDe(folio)).find(x => x.proveedor === 'clip');
+
+    // Y uno de Mercado Pago sobre el mismo pedido.
+    const tokenMP = await conectarMP();
+    await pool.query(
+      `UPDATE pagos SET estado='invalidado', invalidated_at=NOW(),
+                        motivo_invalidacion='se abre el intento de MP en la prueba'
+        WHERE id=$1`, [clipFila.id]);
+    await crearEnlace(folio);
+    const mpFila = (await pagosDe(folio)).find(x => x.proveedor === 'mercado_pago');
+
+    // Primero entra el dinero por Mercado Pago.
+    PAGOS_MP.set('pay-promo-10', {
+      id: 'pay-promo-10', status: 'approved', external_reference: mpFila.referencia_interna,
+      transaction_amount: Number(mpFila.monto), currency_id: 'MXN',
+    });
+    assert.strictEqual(await webhookMP(tokenMP, 'pay-promo-10'), 200);
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda del cobro de MP');
+    assert.strictEqual((await usosDe(id))[0].estado, 'consumida');
+
+    // Y DESPUÉS resulta que el enlace de Clip también se pagó.
+    CHECKOUTS.get(clip.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(clipFila.referencia_interna), 200);
+    await esperar(async () => (await filaId(clipFila.id)).estado === 'pagado',
+      'que el segundo cobro real quede registrado');
+
+    assert.strictEqual((await filaId(clipFila.id)).metadata_sanitizada.anomalia, 'doble_cobro_real');
+    assert.strictEqual((await filaId(mpFila.id)).metadata_sanitizada.anomalia, 'doble_cobro_real');
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `el doble cobro dejó ${usos.length} usos de la promo`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'el segundo cobro se apropió de un segundo cupo');
+    assert.strictEqual(await comandasDe(folio), 1, 'el segundo cobro sacó una segunda comanda');
+    await conectarClip();
+  });
+
+  // ═══ CRASH ANTES Y DESPUÉS DEL SETTLEMENT ════════════════════════════════
+  await t('11. crash entre asentar el dinero y derivar: al recuperar, un solo consumo', async () => {
+    const id = await promo({ codigo: 'CRASH', limiteUsos: 1, valor: 50 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'CRASH' }));
+    const folio = r.body.folio;
+    const enlace = await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+    CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+
+    const { verificarYAsentarClip, derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes } =
+      await import('../src/services/webhookPagos.js');
+
+    // Se asienta el dinero y el proceso muere ANTES de derivar: la deuda queda
+    // viva y la promoción todavía reservada.
+    const asiento = await verificarYAsentarClip({
+      pago: await filaId(pago.id), checkoutId: enlace.referenciaExterna });
+    assert.strictEqual(asiento.ok, true, JSON.stringify(asiento));
+    assert.strictEqual((await filaId(pago.id)).derivacion_pendiente, true, 'no quedó deuda viva');
+    assert.strictEqual((await usosDe(id))[0].estado, 'reservada',
+      'la promo se consumió fuera de la transición durable');
+    assert.strictEqual(await comandasDe(folio), 0);
+
+    // El job de recuperación termina el trabajo.
+    await reconciliarDerivacionesPendientes(50);
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda recuperada');
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1);
+    assert.strictEqual(usos[0].estado, 'consumida');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+
+    // Y recuperar dos veces más no vuelve a consumir nada.
+    await derivarPedidoPorPagoAsentado({ pagoId: pago.id, negocioId: NEG, folio });
+    await reconciliarDerivacionesPendientes(50);
+    assert.strictEqual((await usosDe(id)).length, 1, 'la recuperación consumió dos veces');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    assert.strictEqual(await comandasDe(folio), 1);
+  });
+
+  await t('12. vencer dos veces: el cupo se devuelve una sola vez', async () => {
+    const id = await promo({ codigo: 'CRASHEXP', limiteUsos: 1, valor: 50 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'CRASHEXP' }));
+    const folio = r.body.folio;
+    await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+    await vencerYa(pago.id);
+
+    const { vencerEsperaDePago } = await import('../src/services/database.js');
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+
+    // La liberación es parte de la MISMA transacción que cancela el pedido, así
+    // que no hay estado intermedio que recuperar -- y repetirla no devuelve el
+    // cupo dos veces.
+    const primera = await vencerEsperaDePago(pago.id, NEG);
+    assert.strictEqual(primera.ok, true);
+    assert.strictEqual(primera.promocionesLiberadas, 1, 'la liberación no ocurrió con el vencimiento');
+    assert.strictEqual(Number((await promoDe(id)).usos), 0);
+    assert.strictEqual((await usosDe(id)).length, 0);
+
+    await vencerEsperaDePago(pago.id, NEG);
+    await expirarPagosVencidos();
+    assert.strictEqual(Number((await promoDe(id)).usos), 0,
+      'repetir el vencimiento dejó el contador inconsistente');
+    assert.strictEqual((await pedidoDe(folio)).estado, 'cancelado');
+    assert.strictEqual(await comandasDe(folio), 0);
+  });
+
+  // ═══ TRANSFERENCIA MANUAL ════════════════════════════════════════════════
+  await t('13. transferencia confirmada a mano: mismo ciclo, un solo consumo', async () => {
+    const id = await promo({ codigo: 'TRANSFER', limiteUsos: 1, valor: 40 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'TRANSFER' }));
+    const folio = r.body.folio;
+    assert.strictEqual((await usosDe(id))[0].estado, 'reservada');
+
+    const { calcularVersionPedidoHash, confirmarPagoManual } =
+      await import('../src/services/database.js');
+    const datos = (await pedidoDe(folio)).datos;
+    const { rows: [transf] } = await pool.query(
+      `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, tipo,
+                          moneda, monto, estado, version_pedido_hash)
+       VALUES ($1,$2,'transferencia',$3,'transferencia','MXN',$4,'requiere_revision',$5)
+       RETURNING id`,
+      [NEG, folio, `transf-${folio}`, Number(datos.total), calcularVersionPedidoHash(datos)]);
+
+    await confirmarPagoManual(NEG, transf.id, SEED.superadminUsuarioId);
+    const { derivarPedidoPorPagoAsentado } = await import('../src/services/webhookPagos.js');
+    await derivarPedidoPorPagoAsentado({ pagoId: transf.id, negocioId: NEG, folio });
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda de la transferencia');
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1);
+    assert.strictEqual(usos[0].estado, 'consumida',
+      'la transferencia manual no cerró el ciclo de la promoción');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+
+    // Confirmar dos veces no consume dos veces.
+    await confirmarPagoManual(NEG, transf.id, SEED.superadminUsuarioId).catch(() => {});
+    await derivarPedidoPorPagoAsentado({ pagoId: transf.id, negocioId: NEG, folio });
+    assert.strictEqual((await usosDe(id)).length, 1);
+    assert.strictEqual(await comandasDe(folio), 1);
+  });
+
+  // ═══ MULTIEMPRESA ════════════════════════════════════════════════════════
+  await t('14. dos negocios, el MISMO código: cero escrituras cruzadas', async () => {
+    const idA = await promo({ codigo: 'MISMOCODE', limiteUsos: 1, valor: 30, negocioId: NEG });
+    const idB = await promo({ codigo: 'MISMOCODE', limiteUsos: 1, valor: 30, negocioId: NEG_B });
+
+    // Reservas a mano en cada negocio, con el MISMO folio a propósito: si
+    // alguna operación se olvidara del tenant, se vería aquí.
+    const FOLIO = 'PROMO-CRUCE-1';
+    for (const [neg, id] of [[NEG, idA], [NEG_B, idB]]) {
+      await pool.query(
+        `INSERT INTO tienda_promocion_usos (negocio_id, promocion_id, pedido_folio, estado, pedido_version)
+         VALUES ($1,$2,$3,'reservada','v1')`, [neg, id, FOLIO]);
+      await pool.query(`UPDATE tienda_promociones SET usos = 1 WHERE id=$1`, [id]);
+    }
+
+    const { consumirReservasDePedido, liberarReservasDePedido } =
+      await import('../src/services/promoReservas.js');
+
+    const cli = await pool.connect();
+    try {
+      await cli.query('BEGIN');
+      const c = await consumirReservasDePedido(cli, { negocioId: NEG, folio: FOLIO, version: 'v1' });
+      assert.strictEqual(c.consumidas, 1);
+      await cli.query('COMMIT');
+    } finally { cli.release(); }
+
+    assert.strictEqual((await usosDe(idA))[0].estado, 'consumida');
+    assert.strictEqual((await usosDe(idB))[0].estado, 'reservada',
+      '¡el settlement del negocio A consumió la promoción del negocio B!');
+
+    const cli2 = await pool.connect();
+    try {
+      await cli2.query('BEGIN');
+      const l = await liberarReservasDePedido(cli2, { negocioId: NEG_B, folio: FOLIO });
+      assert.strictEqual(l.liberadas, 1);
+      await cli2.query('COMMIT');
+    } finally { cli2.release(); }
+
+    assert.strictEqual((await usosDe(idA)).length, 1,
+      '¡el expirador del negocio B borró el uso del negocio A!');
+    assert.strictEqual((await usosDe(idA))[0].estado, 'consumida');
+    assert.strictEqual((await usosDe(idB)).length, 0);
+    assert.strictEqual(Number((await promoDe(idA)).usos), 1, 'el contador de A se movió desde B');
+    assert.strictEqual(Number((await promoDe(idB)).usos), 0);
+
+    // Sin tenant no se opera: jamás se deduce.
+    const cli3 = await pool.connect();
+    try {
+      await cli3.query('BEGIN');
+      await assert.rejects(() => consumirReservasDePedido(cli3, { negocioId: '', folio: FOLIO }),
+        'aceptó consumir sin negocio');
+      await assert.rejects(() => liberarReservasDePedido(cli3, { negocioId: null, folio: FOLIO }),
+        'aceptó liberar sin negocio');
+      await cli3.query('ROLLBACK');
+    } finally { cli3.release(); }
+  });
+
+  // ═══ RESERVA Y CHECKOUT AMBIGUO ══════════════════════════════════════════
+  await t('15. creación ambigua del checkout: la reserva se CONSERVA hasta que venza', async () => {
+    // El POST salió, el proveedor pudo haber creado el checkout y la respuesta
+    // se perdió. Soltar la promo ahí sería regalar el cupo mientras existe un
+    // enlace externo cobrable al precio con descuento.
+    const id = await promo({ codigo: 'AMBIGUA', limiteUsos: 1, valor: 50 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'AMBIGUA' }));
+    const folio = r.body.folio;
+    assert.strictEqual((await usosDe(id))[0].estado, 'reservada');
+
+    process.env.XABOR_PAGOS_FALLA_EN = 'finalizacion_antes_de_commit';
+    await assert.rejects(() => crearEnlace(folio), 'la creación debía fallar');
+    delete process.env.XABOR_PAGOS_FALLA_EN;
+
+    const pago = (await pagosDe(folio))[0];
+    assert.strictEqual(pago.metadata_sanitizada.creacion_ambigua_abierta, true,
+      'fixture: la creación debía quedar ambigua');
+    // La reserva sigue en pie, y el cupo sigue apartado.
+    assert.strictEqual((await usosDe(id)).length, 1, 'se soltó la promo por una respuesta perdida');
+    assert.strictEqual((await usosDe(id))[0].estado, 'reservada');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    const otro = await comprar(carrito(tokenNuevo(), {
+      codigo: 'AMBIGUA', cliente: { nombre: 'Otro', telefono: '8997607001' } }));
+    assert.notStrictEqual(otro.status, 200,
+      `otro cliente se llevó un cupo que sigue apartado por un checkout que puede existir: ${JSON.stringify(otro.body)}`);
+
+    // Cuando la espera de Xabor termina, ahí sí se suelta.
+    await vencerYa(pago.id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual((await usosDe(id)).length, 0, 'al vencer no se devolvió el cupo');
+    assert.strictEqual(Number((await promoDe(id)).usos), 0);
+  });
+
+  await t('16. el proceso muere justo tras vencer: pedido y cupo se mueven juntos', async () => {
+    // La liberación vive DENTRO de la transacción del vencimiento. Por eso un
+    // fallo inmediatamente posterior al COMMIT no puede dejar medio mundo:
+    // o el pedido está cancelado y el cupo devuelto, o nada de lo dos.
+    const id = await promo({ codigo: 'ATOMICO', limiteUsos: 1, valor: 50 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'ATOMICO' }));
+    const folio = r.body.folio;
+    await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+    await vencerYa(pago.id);
+
+    const { vencerEsperaDePago } = await import('../src/services/database.js');
+    process.env.XABOR_PAGOS_FALLA_EN = 'expiracion_tras_commit';
+    await assert.rejects(() => vencerEsperaDePago(pago.id, NEG), 'el fallo inyectado no se propagó');
+    delete process.env.XABOR_PAGOS_FALLA_EN;
+
+    assert.strictEqual((await pedidoDe(folio)).estado, 'cancelado',
+      'fixture: el vencimiento sí había hecho COMMIT');
+    assert.strictEqual((await usosDe(id)).length, 0,
+      'el pedido quedó cancelado y el cupón apartado por nadie');
+    assert.strictEqual(Number((await promoDe(id)).usos), 0,
+      'el contador no se movió junto con la cancelación');
+
+    // Y otro cliente sí puede tomarlo, que es la prueba de que volvió al pozo.
+    const otro = await comprarOk(carrito(tokenNuevo(), {
+      codigo: 'ATOMICO', cliente: { nombre: 'Otro', telefono: '8997609001' } }));
+    assert.ok(otro.body.folio);
+  });
+
+} catch (e) {
+  console.error('ERROR FATAL:', e.stack || e);
+  fallidas++; fallos.push(`ERROR FATAL: ${e.message}`);
+} finally {
+  try { if (srv) await srv.detener(); } catch { /* ya estaba abajo */ }
+  clipMock.close(); mpMock.close();
+  await limpiar().catch(() => {});
+  await pool.end().catch(() => {});
+}
+
+console.log(`\n═══ fase-promociones-pagos: ${pasadas} OK · ${fallidas} fallos ═══`);
+if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(`  · ${f}`)); }
+process.exit(fallidas ? 1 : 0);
