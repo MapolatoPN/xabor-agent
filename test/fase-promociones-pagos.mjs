@@ -267,6 +267,8 @@ async function limpiar() {
     await pool.query(
       `DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->>'canal'='tienda_online'`, [n]);
   }
+  await pool.query(`DELETE FROM pedidos WHERE negocio_id=$1 AND folio LIKE 'ARCH-%'`, [NEG]);
+  await pool.query(`DELETE FROM tienda_campanas WHERE negocio_id=$1 AND nombre LIKE 'Campania metricas%'`, [NEG]);
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1`, [NEG]);
   await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id=$1`, [NEG]);
   await pool.query(`DELETE FROM impresoras WHERE negocio_id=$1`, [NEG]);
@@ -954,6 +956,327 @@ try {
     const otro = await comprarOk(carrito(tokenNuevo(), {
       codigo: 'ATOMICO', cliente: { nombre: 'Otro', telefono: '8997609001' } }));
     assert.ok(otro.body.folio);
+  });
+
+  // ═══ P0-1: NINGUNA RESERVA SIN RECLAMAR EL CUPO ══════════════════════════
+  await t('17. reserva sin fila provisional: se reclama el cupo o no hay reserva', async () => {
+    const { registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
+    const id = await promo({ codigo: 'RECLAMO', limiteUsos: 1, valor: 50 });
+    const aplicadas = [{ id, campaniaId: null, nombre: 'Promo RECLAMO', descuento: 50 }];
+
+    // La reserva provisional NO existe: el token no corresponde a ninguna. Es
+    // el camino de respaldo, y por ahí es por donde se colaba una reserva que
+    // no contaba contra el límite.
+    const r1 = await registrarUsosPromociones({
+      negocioId: NEG, folio: 'PROMO-P01-A', aplicadas, telefono: '8997610001',
+      estadoFinal: 'reservada', pedidoVersion: 'v1', checkoutToken: 'no-existe-1',
+    });
+    assert.strictEqual(r1.registrados, 1);
+    const usos1 = await usosDe(id);
+    assert.strictEqual(usos1.length, 1);
+    assert.strictEqual(usos1[0].estado, 'reservada');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1,
+      'la reserva de respaldo entró SIN contar contra el límite');
+
+    // Y con el cupo ya tomado, el respaldo falla cerrado: ni fila, ni contador
+    // por encima del límite.
+    await assert.rejects(
+      () => registrarUsosPromociones({
+        negocioId: NEG, folio: 'PROMO-P01-B', aplicadas, telefono: '8997610002',
+        estadoFinal: 'reservada', pedidoVersion: 'v1', checkoutToken: 'no-existe-2',
+      }),
+      e => e.codigo === 'CUPO_AGOTADO',
+      'el respaldo aceptó una segunda reserva sobre un cupón de 1 uso');
+
+    assert.strictEqual((await usosDe(id)).length, 1,
+      `quedaron ${(await usosDe(id)).length} filas para un cupón de 1 uso`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+  });
+
+  await t('18. 20 recuperaciones simultáneas por el hueco: una sola reserva contada', async () => {
+    const { registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
+    const id = await promo({ codigo: 'HUECO', limiteUsos: 1, valor: 50 });
+    const aplicadas = [{ id, campaniaId: null, nombre: 'Promo HUECO', descuento: 50 }];
+
+    const res = await Promise.allSettled(Array.from({ length: 20 }, (_, i) =>
+      registrarUsosPromociones({
+        negocioId: NEG, folio: `PROMO-P01-C${i}`, aplicadas, telefono: `899761100${i % 10}`,
+        estadoFinal: 'reservada', pedidoVersion: 'v1', checkoutToken: `no-existe-c${i}`,
+      })));
+    const ok = res.filter(x => x.status === 'fulfilled' && x.value.registrados === 1);
+
+    assert.strictEqual(ok.length, 1,
+      `${ok.length} recuperaciones se llevaron un cupón de 1 uso por el camino de respaldo`);
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `quedaron ${usos.length} filas para un cupo de 1`);
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+  });
+
+  await t('19. INVARIANTE: reservas + consumidas nunca supera el contador de ninguna promo',
+    async () => {
+      // Barrido sobre TODO lo que dejaron los casos anteriores. Si alguna puerta
+      // hubiera creado una fila sin contarla, aquí se vería.
+      const { rows } = await pool.query(
+        `SELECT p.id, p.limite_usos, p.usos,
+                (SELECT COUNT(*)::int FROM tienda_promocion_usos u
+                  WHERE u.negocio_id = p.negocio_id AND u.promocion_id = p.id) AS filas
+           FROM tienda_promociones p WHERE p.negocio_id = $1`, [NEG]);
+      for (const r of rows) {
+        assert.ok(Number(r.filas) <= Number(r.usos),
+          `promo ${r.id}: ${r.filas} filas de uso contra un contador de ${r.usos}`);
+        if (r.limite_usos != null) {
+          assert.ok(Number(r.filas) <= Number(r.limite_usos),
+            `promo ${r.id}: ${r.filas} usos sobre un límite de ${r.limite_usos}`);
+        }
+      }
+    });
+
+  // ═══ P0-2: PRIMERA COMPRA ES PRIMERA COMPRA REAL ═════════════════════════
+  await t('20. no pagar no te convierte en cliente viejo', async () => {
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, solo_primera_compra,
+          canales, activa)
+       VALUES ($1,'Bienvenida','monto_fijo','PRIMERA',FALSE,50,TRUE,
+               '["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+    // Telefono unico por corrida: el seed y las suites hermanas dejan clientes
+    // con numeros fijos, y "cliente nuevo" tiene que significar nuevo de verdad.
+    const TEL = `8996${String(Date.now()).slice(-6)}`;
+    const cli = (nombre) => ({ nombre, telefono: TEL });
+    const { clienteYaComproDeVerdad } = await import('../src/services/tiendaPromociones.js');
+    assert.strictEqual(await clienteYaComproDeVerdad(NEG, TEL), false,
+      'fixture: este teléfono no debía tener compras previas');
+
+    // Primer intento: es cliente nuevo, la promo aplica.
+    const r1 = await comprarOk(carrito(tokenNuevo(), { codigo: 'PRIMERA', cliente: cli('Nuevo') }));
+    const folio1 = r1.body.folio;
+    assert.strictEqual((await usosDe(p.id))[0].estado, 'reservada');
+
+    // No paga: vence, y la reserva se libera.
+    await crearEnlace(folio1);
+    await vencerYa((await pagosDe(folio1))[0].id);
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual((await usosDe(p.id)).length, 0, 'la reserva no se liberó');
+
+    // Y vuelve a intentar: devolvimos el cupo, así que también la elegibilidad.
+    const r2 = await comprarOk(carrito(tokenNuevo(), { codigo: 'PRIMERA', cliente: cli('Nuevo') }));
+    const folio2 = r2.body.folio;
+    assert.strictEqual(Number((await pedidoDe(folio2)).datos.descuento), 50,
+      'un cliente que nunca compró perdió su promoción de primera compra');
+
+    // Ahora sí paga: ya es cliente.
+    const e2 = await crearEnlace(folio2);
+    CHECKOUTS.get(e2.referenciaExterna).estado = 'COMPLETED';
+    await webhookClip((await pagosDe(folio2))[0].referencia_interna);
+    await esperar(async () => await comandasDe(folio2) === 1, 'la comanda de la primera compra real');
+    assert.strictEqual((await usosDe(p.id))[0].estado, 'consumida');
+
+    // Y a partir de aquí ya NO es primerizo.
+    const r3 = await comprar(carrito(tokenNuevo(), { codigo: 'PRIMERA', cliente: cli('Nuevo') }));
+    assert.notStrictEqual(r3.status, 200,
+      `un cliente que ya compró volvió a usar la promo de primera compra: ${JSON.stringify(r3.body)}`);
+  });
+
+  await t('21. el histórico archivado también cuenta como compra previa', async () => {
+    // `pedidos_activos` se limpia; `pedidos` es el archivo. Un cliente de hace
+    // meses no puede volverse primerizo porque su pedido dejó de estar activo.
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, solo_primera_compra,
+          canales, activa)
+       VALUES ($1,'Bienvenida 2','monto_fijo','PRIMERA2',FALSE,50,TRUE,
+               '["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+    const TEL = `8995${String(Date.now()).slice(-6)}`;
+    const { clienteYaComproDeVerdad } = await import('../src/services/tiendaPromociones.js');
+    assert.strictEqual(await clienteYaComproDeVerdad(NEG, TEL), false);
+
+    // `pedidos.telefono` referencia `clientes`: el archivo histórico no existe
+    // sin el cliente detrás.
+    await pool.query(
+      `INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Viejo',$2)
+       ON CONFLICT DO NOTHING`, [TEL, NEG]);
+    await pool.query(
+      `INSERT INTO pedidos (folio, telefono, nombre_cliente, items, total, modalidad,
+                            canal, forma_pago, negocio_id)
+       VALUES ($1,$2,'Viejo','[]'::jsonb,300,'recoger','tienda_online','efectivo',$3)`,
+      [`ARCH-${TEL}`, TEL, NEG]);
+
+    assert.strictEqual(await clienteYaComproDeVerdad(NEG, TEL), true,
+      'el histórico archivado dejó de contar como compra previa');
+    const r = await comprar(carrito(tokenNuevo(), {
+      codigo: 'PRIMERA2', cliente: { nombre: 'Viejo', telefono: TEL } }));
+    assert.notStrictEqual(r.status, 200,
+      'un cliente con compras archivadas pasó por primerizo');
+
+    // Y jamás cruza de negocio.
+    assert.strictEqual(await clienteYaComproDeVerdad(NEG_B, TEL), false,
+      'la compra de un negocio hizo viejo al cliente en otro');
+    await pool.query(`DELETE FROM pedidos WHERE folio = $1`, [`ARCH-${TEL}`]);
+    await pool.query(`DELETE FROM clientes WHERE telefono=$1 AND negocio_id=$2`, [TEL, NEG]);
+    void p;
+  });
+
+  // ═══ P0-3: CAMBIO DE VERSIÓN + PROMO, DE VERDAD ══════════════════════════
+  await t('22. v1 → v2: la reserva se supersede, v2 reserva de nuevo, paga y consume UNA vez',
+    async () => {
+      const id = await promo({ codigo: 'V2OK', limiteUsos: 1, valor: 30 });
+      const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'V2OK' }));
+      const folio = r.body.folio;
+      const reservaV1 = (await usosDe(id))[0];
+      assert.strictEqual(reservaV1.estado, 'reservada');
+      const versionV1 = reservaV1.pedido_version;
+
+      // El pedido cambia: otro total (la promo de monto fijo sigue aplicando).
+      await pool.query(
+        `UPDATE pedidos_activos SET datos = jsonb_set(datos,'{total}','450'::jsonb)
+          WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+
+      // Crear el checkout de v2 resincroniza la reserva ANTES de cobrar nada.
+      const enlace = await crearEnlace(folio);
+      assert.ok(enlace.url, 'no se creó el checkout de la versión nueva');
+
+      const usos = await usosDe(id);
+      assert.strictEqual(usos.length, 1, `quedaron ${usos.length} reservas para el mismo pedido`);
+      assert.strictEqual(usos[0].estado, 'reservada');
+      assert.notStrictEqual(usos[0].pedido_version, versionV1,
+        'la reserva se quedó anclada a la versión vieja');
+      assert.strictEqual(Number((await promoDe(id)).usos), 1,
+        'resincronizar consumió un segundo cupo de un cupón de 1 uso');
+
+      // Y v2 se paga: consumo exacto y una sola comanda.
+      const pago = (await pagosDe(folio)).find(x => x.estado !== 'invalidado');
+      CHECKOUTS.get(enlace.referenciaExterna).estado = 'COMPLETED';
+      assert.strictEqual(await webhookClip(pago.referencia_interna), 200);
+      await esperar(async () => await comandasDe(folio) === 1, 'la comanda de la v2');
+
+      const finales = await usosDe(id);
+      assert.strictEqual(finales.length, 1);
+      assert.strictEqual(finales[0].estado, 'consumida');
+      assert.strictEqual(Number((await promoDe(id)).usos), 1);
+      assert.strictEqual(await comandasDe(folio), 1, 'salió más de una comanda');
+    });
+
+  await t('23. si la promo ya no aplica a v2: no hay checkout, y el cupo vuelve al pozo',
+    async () => {
+      // Promo con mínimo de compra: al bajar el pedido por debajo, deja de
+      // aplicar. Cobrar el total con el descuento viejo sería regalar dinero.
+      const { rows: [p] } = await pool.query(
+        `INSERT INTO tienda_promociones
+           (negocio_id, nombre, tipo, codigo, automatica, valor, minimo_compra,
+            limite_usos, canales, activa)
+         VALUES ($1,'Minimo','monto_fijo','MINIMO',FALSE,30,200,1,
+                 '["tienda_online"]'::jsonb,TRUE)
+         RETURNING id`, [NEG]);
+
+      const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'MINIMO' }));
+      const folio = r.body.folio;
+      assert.strictEqual((await usosDe(p.id)).length, 1);
+      assert.strictEqual(Number((await promoDe(p.id)).usos), 1);
+
+      // El pedido se recorta por debajo del mínimo.
+      await pool.query(
+        `UPDATE pedidos_activos
+            SET datos = jsonb_set(jsonb_set(datos,'{total}','20'::jsonb),'{subtotal}','50'::jsonb)
+          WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+
+      await assert.rejects(() => crearEnlace(folio),
+        e => /promocion ya no aplica|promoci..n ya no aplica/i.test(e.message),
+        'se creó un checkout con un total que llevaba un descuento ya inválido');
+
+      assert.strictEqual((await usosDe(p.id)).length, 0,
+        'la reserva de una versión muerta se quedó bloqueando el cupo');
+      assert.strictEqual(Number((await promoDe(p.id)).usos), 0, 'el cupo no volvió al pozo');
+      assert.strictEqual(await comandasDe(folio), 0, 'cocinó un pedido sin cobrar');
+
+      // Y otro cliente sí puede usar ese cupón liberado.
+      const otro = await comprarOk(carrito(tokenNuevo(), {
+        codigo: 'MINIMO', cliente: { nombre: 'Otro', telefono: '8997614001' } }));
+      assert.ok(otro.body.folio);
+    });
+
+  await t('24. pago TARDÍO de v1 con v2 ya reservada: no toca la reserva de v2', async () => {
+    const id = await promo({ codigo: 'TARDIOV1', limiteUsos: 1, valor: 30 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'TARDIOV1' }));
+    const folio = r.body.folio;
+
+    // Checkout de la v1.
+    const enlaceV1 = await crearEnlace(folio);
+    const pagoV1 = (await pagosDe(folio))[0];
+
+    // El pedido cambia y se abre el checkout de la v2: la reserva pasa a v2.
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = jsonb_set(datos,'{total}','480'::jsonb)
+        WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+    await crearEnlace(folio);
+    const reservaV2 = (await usosDe(id))[0];
+    assert.strictEqual(reservaV2.estado, 'reservada');
+
+    // Y AHORA paga el enlace viejo de la v1.
+    CHECKOUTS.get(enlaceV1.referenciaExterna).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(pagoV1.referencia_interna), 200);
+    await esperar(async () => (await filaId(pagoV1.id)).estado === 'pagado',
+      'que el dinero de la v1 quede asentado');
+
+    const finalV1 = await filaId(pagoV1.id);
+    assert.strictEqual(finalV1.estado, 'pagado', 'se repudió dinero real de la v1');
+    assert.strictEqual(finalV1.metadata_sanitizada.anomalia, 'version_desfasada');
+    assert.strictEqual(finalV1.derivacion_pendiente, false);
+
+    // La reserva de la v2 sigue exactamente donde estaba: ni consumida por un
+    // cobro que no le corresponde, ni liberada por accidente.
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1, `la reserva de v2 quedó en ${usos.length} filas`);
+    assert.strictEqual(usos[0].id, reservaV2.id, 'se cambió la reserva de la v2');
+    assert.strictEqual(usos[0].estado, 'reservada',
+      'el pago tardío de la v1 consumió la reserva de la v2');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    assert.strictEqual(await comandasDe(folio), 0, 'cocinó una versión que nadie pagó');
+  });
+
+  // ═══ P1: MÉTRICAS ════════════════════════════════════════════════════════
+  await t('25. el backoffice no cuenta una reserva como venta', async () => {
+    const { listarPromociones, listarCampanas } = await import('../src/services/tiendaPromociones.js');
+    const { rows: [camp] } = await pool.query(
+      `INSERT INTO tienda_campanas (negocio_id, nombre, influencer, activa)
+       VALUES ($1,'Campania metricas','@alguien',TRUE) RETURNING id`, [NEG]);
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, campania_id, nombre, tipo, codigo, automatica, valor, canales, activa)
+       VALUES ($1,$2,'Metricas','monto_fijo','METRICA',FALSE,40,'["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG, camp.id]);
+
+    // Una reserva viva (checkout sin pagar) y un uso consumido de verdad.
+    await pool.query(
+      `INSERT INTO tienda_promocion_usos
+         (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
+          monto_descuento, monto_venta, cliente_nuevo, estado)
+       VALUES ($1,$2,$3,'MET-RESERVADA','8997615001',40,500,TRUE,'reservada'),
+              ($1,$2,$3,'MET-CONSUMIDA','8997615002',40,700,TRUE,'consumida')`,
+      [NEG, p.id, camp.id]);
+    await pool.query(`UPDATE tienda_promociones SET usos = 2 WHERE id=$1`, [p.id]);
+
+    const fila = (await listarPromociones(NEG)).find(x => x.id === p.id);
+    assert.strictEqual(fila.metricas.usos, 1,
+      'una reserva sin pagar se contó como uso real de la promoción');
+    assert.strictEqual(fila.metricas.ventas, 700,
+      'una reserva sin pagar se contó como venta generada');
+    assert.strictEqual(fila.metricas.descuento, 40,
+      'se reportó descuento otorgado por un cupón que nadie pagó');
+    assert.strictEqual(fila.metricas.clientesNuevos, 1);
+    assert.strictEqual(fila.metricas.reservasActivas, 1,
+      'las reservas vivas no se reportan por separado');
+    assert.strictEqual(fila.metricas.ticketPromedio, 700);
+
+    const campania = (await listarCampanas(NEG)).find(x => x.id === camp.id);
+    assert.strictEqual(campania.metricas.usos, 1, 'la campaña contó la reserva como uso');
+    assert.strictEqual(campania.metricas.ventas, 700, 'la campaña contó la reserva como venta');
+
+    await pool.query(`DELETE FROM tienda_promocion_usos WHERE promocion_id=$1`, [p.id]);
+    await pool.query(`DELETE FROM tienda_promociones WHERE id=$1`, [p.id]);
+    await pool.query(`DELETE FROM tienda_campanas WHERE id=$1`, [camp.id]);
   });
 
 } catch (e) {
