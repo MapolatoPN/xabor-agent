@@ -2332,12 +2332,69 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
         WHERE negocio_id = $1 AND pedido_folio = $2 AND id <> $3 AND estado = 'pagado'`,
       [nid, folio, pagoId]);
 
+    // ── ESTADOS TERMINALES: PRIMERO QUE NADA ──────────────────────────────
+    //
+    // Este guard va ANTES de la logica de doble cobro, y el orden es la
+    // proteccion entera. Al reves, la rama de doble cobro hacia
+    // `UPDATE pagos SET estado='pagado'` sobre cualquier fila que no estuviera
+    // ya pagada -- incluidas las 'reembolsado' y 'cancelado' --, asi que la
+    // simple existencia de un hermano cobrado resucitaba una fila terminal y
+    // borraba la historia del reembolso o de la baja.
+    //
+    // Un reembolso ya devolvio ese dinero y una cancelacion se dio de baja a
+    // proposito. Ninguna verificacion posterior puede contradecir eso: se
+    // conserva el estado, se deja evidencia y no se deriva.
+    if (['reembolsado', 'cancelado'].includes(fila.estado)) {
+      const hermanos = hermanosPagados.map(h => h.id);
+      await cliente.query(
+        `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE id = $1 AND negocio_id = $2`,
+        [pagoId, nid, JSON.stringify({
+          anomalia: 'cobro_sobre_estado_terminal',
+          anomalia_detectada_at: new Date().toISOString(),
+          anomalia_detalle: hermanos.length
+            ? `se verifico dinero real sobre un pago en estado '${fila.estado}' y el pedido ${folio} ya tiene ${hermanos.length} cobro(s) asentado(s) en otra fila`
+            : `se verifico dinero real sobre un pago en estado '${fila.estado}'`,
+          estado_terminal_conservado: fila.estado,
+          hermanos_pagados: hermanos,
+        })]);
+
+      // Si ademas hay un hermano cobrado, el conflicto se ve tambien desde su
+      // lado -- pero SIN tocar el estado de nadie. `anomalia` solo se pone si
+      // esa fila no traia ya la suya: el `||` invertido deja ganar lo existente.
+      if (hermanos.length) {
+        await cliente.query(
+          `UPDATE pagos
+              SET metadata_sanitizada = ($4::jsonb || metadata_sanitizada) || $3::jsonb
+            WHERE negocio_id = $1 AND id = ANY($2::uuid[])`,
+          [nid, hermanos, JSON.stringify({
+            conflicto_con_pago_terminal: pagoId,
+            conflicto_estado_terminal: fila.estado,
+            conflicto_detectado_at: new Date().toISOString(),
+          }), JSON.stringify({
+            anomalia: 'doble_cobro_real',
+            anomalia_detalle: `el pedido ${folio} recibio dinero verificado sobre un pago '${fila.estado}' teniendo ya otro cobro asentado`,
+          })]);
+      }
+
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] COBRO SOBRE ESTADO TERMINAL pago=${pagoId} estado=${fila.estado} pedido=${folio}${hermanos.length ? ` hermanos_pagados=${hermanos.join(',')}` : ''}`);
+      return {
+        ok: false, resultado: 'estado_terminal', folio, pago: fila,
+        estadoConservado: fila.estado, hermanosPagados: hermanos,
+      };
+    }
+
     // ── DOBLE COBRO REAL ──────────────────────────────────────────────────
     // Otro intento del mismo pedido ya tiene dinero asentado. Los dos cobros
     // son reales: no se pisa ni se esconde ninguno. Se asienta este tambien
     // (el dinero entro) y se marca la anomalia en TODAS las filas implicadas,
     // para que el negocio la vea y reembolse. Y no se deriva: la comanda ya
     // salio con el primero.
+    //
+    // Aqui ya se sabe que la fila NO es terminal: 'vencido' si entra, y debe
+    // entrar. Vencido significa "Xabor dejo de esperar", no "este dinero no
+    // existe"; el cobro es real y se asienta como tal.
     if (hermanosPagados.length > 0) {
       const implicados = [pagoId, ...hermanosPagados.map(h => h.id)];
       if (fila.estado !== 'pagado') {
@@ -2366,24 +2423,6 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     if (fila.estado === 'pagado') {
       await cliente.query('COMMIT');
       return { ok: true, resultado: 'ya_confirmado', folio, pago: fila, hermanosCerrados: [] };
-    }
-
-    // ── Estados que NO se pueden pisar con un "pagado" ────────────────────
-    // Un reembolso ya devolvio ese dinero y un pago cancelado se dio de baja a
-    // proposito: marcarlos pagados borraria esa historia. Se deja constancia y
-    // se manda a revision, sin derivar.
-    if (['reembolsado', 'cancelado'].includes(fila.estado)) {
-      await cliente.query(
-        `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
-          WHERE id = $1 AND negocio_id = $2`,
-        [pagoId, nid, JSON.stringify({
-          anomalia: 'cobro_sobre_estado_terminal',
-          anomalia_detectada_at: new Date().toISOString(),
-          anomalia_detalle: `se verifico dinero real sobre un pago en estado '${fila.estado}'`,
-        })]);
-      await cliente.query('COMMIT');
-      console.error(`[Pagos] COBRO SOBRE ESTADO TERMINAL pago=${pagoId} estado=${fila.estado} pedido=${folio}`);
-      return { ok: false, resultado: 'estado_terminal', folio, pago: fila };
     }
 
     // ── LA VERSION QUE SE PAGO vs LA VERSION ACTUAL ───────────────────────

@@ -566,6 +566,118 @@ try {
       'el pedido de Mercado Pago se coló en la cola de reconciliación de Clip');
   });
 
+  // ═══ 8-10. ESTADO TERMINAL vs DOBLE COBRO: QUIEN GANA EL ORDEN ═══
+  //
+  // La rama de doble cobro hacia `UPDATE pagos SET estado='pagado'` sobre
+  // cualquier fila que no estuviera ya pagada. Si corria ANTES del guard de
+  // estados terminales, la sola existencia de un hermano cobrado resucitaba una
+  // fila 'reembolsado' o 'cancelado' y borraba esa historia. El guard terminal
+  // tiene prioridad; 'vencido' no es terminal y sigue su propia politica.
+
+  /** Deja el pedido con A en un estado terminal y B con dinero real asentado. */
+  async function terminalConHermanoPagado(folio, monto, estadoTerminal, pagoMP) {
+    await pedidoPendiente(folio, monto);
+    await conectarClip();
+    const enlaceClip = await crearEnlace(folio);
+    const A = await filaDe(folio, 'clip');
+
+    // A pasa al estado terminal: un reembolso ya devolvio ese dinero, o el
+    // intento se dio de baja a proposito.
+    await pool.query(
+      `UPDATE pagos SET estado=$2,
+                        metadata_sanitizada = metadata_sanitizada || $3::jsonb
+        WHERE id=$1`,
+      [A.id, estadoTerminal, JSON.stringify({ historia_previa: `paso a ${estadoTerminal}` })]);
+
+    // B se crea con el otro proveedor y recibe dinero real.
+    TOKEN_MP = await conectarMP();
+    await crearEnlace(folio);
+    const B = await filaDe(folio, 'mercado_pago');
+    PAGOS_MP.set(pagoMP, {
+      id: pagoMP, status: 'approved', external_reference: B.referencia_interna,
+      transaction_amount: monto, currency_id: 'MXN',
+    });
+    assert.strictEqual(await webhookMP(TOKEN_MP, pagoMP), 200);
+    await esperar(async () => (await filaDe(folio, 'mercado_pago'))?.estado === 'pagado',
+      'que el hermano quede cobrado');
+    await esperar(async () => await comandasDe(folio) === 1, 'la comanda del cobro de B');
+
+    return { A, B, checkoutClip: enlaceClip.referenciaExterna };
+  }
+
+  for (const estadoTerminal of ['reembolsado', 'cancelado']) {
+    await t(`8[${estadoTerminal}]. hermano pagado NO resucita una fila terminal`, async () => {
+      const folio = `TF-T-${estadoTerminal.slice(0, 4)}`;
+      const monto = estadoTerminal === 'reembolsado' ? 660 : 670;
+      const { A, B, checkoutClip } = await terminalConHermanoPagado(
+        folio, monto, estadoTerminal, `pay-tf-${estadoTerminal}`);
+      const comandasAntes = await comandasDe(folio);
+
+      // Y AHORA vuelve una confirmacion sobre A.
+      CHECKOUTS.get(checkoutClip).estado = 'COMPLETED';
+      assert.strictEqual(await webhookClip(A.referencia_interna), 200);
+      await esperar(
+        async () => Boolean((await filaDe(folio, 'clip')).metadata_sanitizada.anomalia),
+        'que quede evidencia del cobro sobre estado terminal');
+
+      const finalA = await filaDe(folio, 'clip');
+      const finalB = await filaDe(folio, 'mercado_pago');
+
+      assert.strictEqual(finalA.estado, estadoTerminal,
+        `RESUCITO una fila '${estadoTerminal}' a '${finalA.estado}' por tener un hermano pagado`);
+      assert.strictEqual(finalB.estado, 'pagado', 'se movio el cobro que si era real');
+      assert.strictEqual(finalA.paid_at, null, 'se le puso fecha de cobro a una fila terminal');
+      // La historia previa sigue ahi: no se borro nada.
+      assert.strictEqual(finalA.metadata_sanitizada.historia_previa, `paso a ${estadoTerminal}`,
+        'se borro la historia del reembolso/cancelacion');
+
+      // Evidencia visible, en las dos filas.
+      assert.strictEqual(finalA.metadata_sanitizada.anomalia, 'cobro_sobre_estado_terminal');
+      assert.strictEqual(finalA.metadata_sanitizada.estado_terminal_conservado, estadoTerminal);
+      assert.deepStrictEqual(finalA.metadata_sanitizada.hermanos_pagados, [finalB.id],
+        'la anomalia no señala el hermano cobrado');
+      assert.strictEqual(finalB.metadata_sanitizada.conflicto_con_pago_terminal, finalA.id,
+        'el conflicto no se ve desde la fila que si tiene el dinero');
+      assert.strictEqual(finalB.metadata_sanitizada.anomalia, 'doble_cobro_real',
+        'el conflicto no quedo marcado como anomalia en la fila cobrada');
+
+      // Nada se derivo por esto.
+      assert.strictEqual(await comandasDe(folio), comandasAntes,
+        'salio una comanda nueva por un cobro sobre estado terminal');
+      assert.strictEqual(finalA.derivacion_pendiente, false,
+        'quedo deuda de derivacion sobre una fila terminal');
+    });
+  }
+
+  await t('9. VENCIDO no es terminal: el dinero real sobre A se registra, sin segunda comanda', async () => {
+    // El contraste que demuestra que no se confunden. 'vencido' significa
+    // "Xabor dejo de esperar", no "este dinero no existe": el cobro entra y se
+    // registra como doble cobro real, que es la politica vigente.
+    const folio = 'TF-T-venc';
+    const { A, B, checkoutClip } = await terminalConHermanoPagado(
+      folio, 680, 'vencido', 'pay-tf-vencido');
+    const comandasAntes = await comandasDe(folio);
+
+    CHECKOUTS.get(checkoutClip).estado = 'COMPLETED';
+    assert.strictEqual(await webhookClip(A.referencia_interna), 200);
+    await esperar(async () => (await filaDe(folio, 'clip')).estado === 'pagado',
+      'que el dinero real sobre el intento vencido quede asentado');
+
+    const finalA = await filaDe(folio, 'clip');
+    const finalB = await filaDe(folio, 'mercado_pago');
+    assert.strictEqual(finalA.estado, 'pagado', 'se repudio dinero real de un intento vencido');
+    assert.ok(finalA.paid_at, 'no quedo fecha del cobro real');
+    assert.strictEqual(finalB.estado, 'pagado', 'se piso el primer cobro');
+    assert.strictEqual(finalA.metadata_sanitizada.anomalia, 'doble_cobro_real');
+    assert.strictEqual(finalB.metadata_sanitizada.anomalia, 'doble_cobro_real');
+    assert.strictEqual(finalA.metadata_sanitizada.anomalia_pagos.length, 2);
+    // Y jamas una segunda comanda.
+    assert.strictEqual(await comandasDe(folio), comandasAntes,
+      'el segundo cobro real genero una segunda comanda');
+    assert.strictEqual(finalA.derivacion_pendiente, false,
+      'quedo deuda de derivacion: el job sacaria la comanda repetida');
+  });
+
 } catch (e) {
   console.error('ERROR FATAL:', e.stack || e);
   fallidas++; fallos.push(`ERROR FATAL: ${e.message}`);
