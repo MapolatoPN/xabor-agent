@@ -18,6 +18,7 @@ import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
 import { emitirComandaDePedidoPorEdge } from '../printing/edgeComanda.js';
 import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
+import { conIdentidadDePedido } from '../services/eventosPanel.js';
 
 // wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, inyectado
 // desde server.js, aislado por negocio. Usado por nuevo_pedido,
@@ -312,7 +313,13 @@ export async function emitirPedido(pedido) {
 
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
     if (wsBroadcastNegocio) {
-      wsBroadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo });
+      // Con identidad deterministica: el backend no puede prometer que este
+      // evento salga una sola vez -- morir entre el envio y la marca durable
+      // obliga al retry a reemitir --, pero si puede prometer que el mismo
+      // pedido llegue siempre con la MISMA clave, para que el panel haga un
+      // solo efecto logico.
+      wsBroadcastNegocio(pedido.negocioId, conIdentidadDePedido(
+        { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo }, pedido));
     }
   } else {
     // Fail closed: nunca se emite al panel sin negocioId ni se usa Nonna

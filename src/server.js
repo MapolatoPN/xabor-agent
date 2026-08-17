@@ -78,6 +78,7 @@ import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbedd
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
+import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -1377,9 +1378,15 @@ wss.on('connection', (ws) => {
 
   if (ws.tipo === 'panel') {
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
+    // Volcado inicial: el panel recibe TODO lo activo como `nuevo_pedido`. Sin
+    // identidad, cada reconexion era un lote de eventos "nuevos" -- y lo unico
+    // que evitaba el sonido y la impresion era una bandera temporal del
+    // navegador. Con la clave determinista, lo que ese panel ya proceso no
+    // vuelve a producir efecto por reconectarse.
     const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => p.estado !== 'entregado');
     pedidosNegocio.forEach(pedido => {
-      ws.send(JSON.stringify({ tipo: 'nuevo_pedido', pedido }));
+      ws.send(JSON.stringify(conIdentidadDePedido(
+        { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
     });
     ws.on('close', () => console.log('[WS] Panel autenticado desconectado'));
     return;
@@ -7492,7 +7499,8 @@ async function activarPedidosProgramados() {
 
       // Aislado por negocio (mismo patrón que emitirPedido en
       // orderManager.js). Ya no se usa broadcast() global para este evento.
-      broadcastNegocio(pedido.negocioId, { tipo: 'nuevo_pedido', pedido, impresionEdge: edgePedidoProgramado.seHizoCargo });
+      broadcastNegocio(pedido.negocioId, conIdentidadDePedido(
+        { tipo: 'nuevo_pedido', pedido, impresionEdge: edgePedidoProgramado.seHizoCargo }, pedido));
 
       // Impresión física por el camino anterior: decidida por completo en
       // printRouter.js (legacy vs. autenticado), y solo si Edge no la tomó.
