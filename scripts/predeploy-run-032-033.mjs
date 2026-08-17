@@ -42,6 +42,7 @@ const SCRIPTS = [
   '054-pagos-routing-y-ids',
   '055-pagos-ciclo-vida',
   '056-pagos-expiracion',
+  '057-promo-reservas',
 ];
 
 for (const nombre of SCRIPTS) {
