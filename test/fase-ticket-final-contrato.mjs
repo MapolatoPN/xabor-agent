@@ -70,9 +70,21 @@ t('el WS intercepta cuenta_final ANTES de agregarPedido (no entra al tablero)', 
   // bandera impresionEdge -- el contrato bajo prueba (cuenta_final se
   // intercepta y va a recibirCuentaFinal, jamás al tablero) es el mismo.
   assert.ok(html.includes('recibirCuentaFinal(msg.pedido, msg.impresionEdge === true)'), 'va a recibirCuentaFinal');
+  // El contrato es el ORDEN, no la forma del if/else. Antes se buscaba el
+  // literal `else if (msg.tipo === 'nuevo_pedido')`, y el dedupe de eventos
+  // (`nuevo_pedido:<negocio>:<folio>`) reestructuro esa rama para envolver las
+  // dos ramas en un solo `if (msg.tipo === 'nuevo_pedido')`. Lo que hay que
+  // seguir garantizando es lo mismo de siempre: el guard de `cuenta_final`
+  // aparece ANTES de la llamada a `agregarPedido`, asi que un ticket de cuenta
+  // jamas cae en el tablero.
   const guard = html.indexOf(`tipo_comanda === 'cuenta_final'`);
-  const normal = html.indexOf(`else if (msg.tipo === 'nuevo_pedido')`);
-  assert.ok(guard !== -1 && normal !== -1 && guard < normal, 'las comandas normales siguen pasando por agregarPedido en el else');
+  const normal = html.indexOf(`agregarPedido(msg.pedido, msg.impresionEdge === true)`);
+  assert.ok(guard !== -1, 'no existe el guard de cuenta_final');
+  assert.ok(normal !== -1, 'las comandas normales ya no van a agregarPedido');
+  assert.ok(guard < normal, 'el guard de cuenta_final dejo de ir ANTES de agregarPedido');
+  // Y las dos ramas siguen colgando del mismo tipo de mensaje.
+  const raiz = html.indexOf(`if (msg.tipo === 'nuevo_pedido')`);
+  assert.ok(raiz !== -1 && raiz < guard, 'la rama de nuevo_pedido dejo de envolver el guard');
 });
 
 t('la impresión automática respeta el guard de replay (panelListo)', () => {
