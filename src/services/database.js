@@ -2634,6 +2634,29 @@ export async function pagoRealDelPedido(negocioId, pedidoFolio, versionHash = nu
   return rows.find(r => r.version_pedido_hash === versionHash) || null;
 }
 
+/**
+ * Ata durablemente un checkout de Clip a su fila cuando la creacion quedo
+ * ambigua y el id aparecio por el webhook.
+ *
+ * Solo escribe si la fila NO tenia identidad externa: una identidad historica
+ * jamas se sobrescribe. Desde este UPDATE, esa fila ya no puede volver a mandar
+ * un POST de creacion -- ese es justamente el efecto que se busca.
+ */
+export async function adoptarCheckoutClip(pagoId, negocioId, checkoutId, url) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos
+        SET referencia_externa = $3,
+            url = COALESCE(url, $4),
+            metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle') || $5::jsonb
+      WHERE id = $1 AND negocio_id = $2 AND referencia_externa IS NULL`,
+    [pagoId, negocioId.trim(), checkoutId, url || null, JSON.stringify({
+      creacion_ambigua_resuelta: 'adoptado_por_aviso_de_webhook',
+      creacion_ambigua_resuelta_at: new Date().toISOString(),
+    })]);
+  return rowCount > 0;
+}
+
 // Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila
 // ya esta en un estado terminal: dejar constancia no puede costar resucitarla.
 export async function marcarAnomaliaPago(pagoId, negocioId, anomalia, detalle) {

@@ -56,8 +56,9 @@ const clipMock = createServer((req, res) => {
       const id = `clip-ob-${++checkoutsClip}`;
       // El checkout SE CREA de verdad. Lo que se pierde es la respuesta.
       CHECKOUTS.set(id, {
-        referencia: body.metadata?.external_reference || body.me_reference_id || null,
+        referencia: body.metadata?.external_reference || null,
         estado: 'PENDING',
+        monto: Number(body.amount),
       });
       if (clipCortaRespuesta) { req.destroy(); res.destroy(); return; }
       res.setHeader('Content-Type', 'application/json');
@@ -71,7 +72,20 @@ const clipMock = createServer((req, res) => {
       const c = CHECKOUTS.get(id);
       if (!c) { res.statusCode = 404; res.end('{}'); return; }
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ resource: 'CHECKOUT', resource_status: c.estado, me_reference_id: c.referencia }));
+      // Forma DOCUMENTADA de GET /v2/checkout/{payment_request_id}. No lleva
+      // resource_status ni me_reference_id -- esos son campos del webhook.
+      res.end(JSON.stringify({
+        object_type: 'payment_link',
+        payment_request_id: id,
+        status: c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING',
+        amount: c.monto ?? null,
+        currency: 'MXN',
+        metadata: { external_reference: c.referencia, customer_info: {} },
+        payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
+        created_at: '2026-08-17T00:00:00.000Z',
+        expired_at: c.expiraAt || null,
+        last_status_message: 'Payment request is active',
+      }));
       return;
     }
     res.statusCode = 404; res.end('{}');
@@ -189,10 +203,21 @@ async function esperar(condicion, queEsperaba, ms = 10000) {
     await new Promise(r => setTimeout(r, 120));
   }
 }
-async function webhookClip(referencia, { puerto = PUERTO } = {}) {
+// Webhook con la forma DOCUMENTADA del Checkout Webhook de Clip: incluye
+// payment_request_id, que es justo el id que Xabor no conoce cuando la
+// creación quedó ambigua. Clip NO firma este webhook, así que nada de lo que
+// venga aquí se cree sin reconsultar.
+async function webhookClip(referencia, { puerto = PUERTO, paymentRequestId = null } = {}) {
+  const cuerpo = {
+    id: 'ntf-' + Math.random().toString(16).slice(2),
+    resource: 'CHECKOUT', resource_status: 'COMPLETED',
+    me_reference_id: referencia,
+    api_version: '2', attempts: 1,
+  };
+  if (paymentRequestId) cuerpo.payment_request_id = paymentRequestId;
   const r = await fetch(`http://localhost:${puerto}/webhook/clip`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ resource: 'CHECKOUT', resource_status: 'COMPLETED', me_reference_id: referencia }),
+    body: JSON.stringify(cuerpo),
   });
   return r.status;
 }
@@ -387,20 +412,127 @@ try {
     assert.ok(CreacionAmbiguaError, 'el error tipado debe existir para que el llamador lo distinga');
   });
 
-  await t('2c. y si el cliente paga ESE checkout perdido, se sigue cobrando bien', async () => {
-    // La ambigüedad no puede convertirse en dinero huérfano: el checkout existe
-    // del lado de Clip y su referencia es la de la fila.
+  await t('2c. el cliente paga el checkout perdido: se recupera por el WEBHOOK, no a mano', async () => {
+    // Este caso antes llamaba a asentarPagoRealVerificado directamente, así que
+    // no probaba nada del camino real. Ahora recorre producción entera:
+    // POST /webhook/clip → resolver fila por referencia → tomar el
+    // payment_request_id del webhook como CANDIDATO → reconsultar Clip con las
+    // credenciales del negocio → verificar external_reference y monto →
+    // adoptar identidad → settlement común → derivación.
     const folio = 'OB-0010';
     const f = (await filas(folio))[0];
+    assert.strictEqual(f.referencia_externa, null, 'fixture: la creación debía haber quedado sin id');
+
     const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
     assert.ok(linkId, 'el checkout creado no lleva la referencia de la fila');
     CHECKOUTS.get(linkId).estado = 'COMPLETED';
 
-    const { asentarPagoRealVerificado } = await import('../src/services/database.js');
-    const r = await asentarPagoRealVerificado({
-      pagoId: f.id, negocioId: NEG, referenciaExterna: linkId });
-    assert.strictEqual(r.ok, true, `el cobro real no se pudo asentar: ${r.resultado}`);
-    assert.strictEqual((await filaId(f.id)).estado, 'pagado');
+    assert.strictEqual(await webhookClip(f.referencia_interna, { paymentRequestId: linkId }), 200);
+    await esperar(async () => (await filaId(f.id)).estado === 'pagado', 'el asiento por el webhook');
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.referencia_externa, linkId,
+      'no se adoptó durablemente el checkout que el webhook nombró');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, undefined,
+      'la ambigüedad quedó marcada aunque ya se resolvió');
+    assert.strictEqual(tras.metadata_sanitizada.creacion_ambigua_resuelta,
+      'adoptado_por_aviso_de_webhook');
+  });
+
+  await t('2c-bis. y con identidad ya persistida, esa fila JAMÁS vuelve a hacer POST', async () => {
+    const folio = 'OB-0010';
+    // La invariante es CERO POST. Puede llegar por dos caminos igualmente
+    // válidos: devolver el pago real que ya existe, o rechazar el pedido porque
+    // ya está pagado -- que es la guarda que dispara primero una vez derivado.
+    // Lo que jamás puede pasar es un segundo checkout externo.
+    const antes = checkoutsClip;
+    let estado = null, rechazo = null;
+    try { estado = (await crearEnlace(folio)).estado; }
+    catch (e) { rechazo = `${e.code}:${e.message}`; }
+    assert.strictEqual(checkoutsClip - antes, 0, 'volvió a crear un checkout con identidad ya persistida');
+    assert.ok(estado === 'pagado' || /ya est.* pagado/.test(rechazo || ''),
+      `ni devolvió el pago real ni lo rechazó por pagado: estado=${estado} rechazo=${rechazo}`);
+    assert.strictEqual((await filas(folio)).length, 1, 'creó una fila de más');
+  });
+
+  await t('2c-ter. un webhook que nombra OTRO checkout no puede asentar sobre esta fila', async () => {
+    // El webhook de Clip no viene firmado: su payment_request_id es un
+    // candidato, no una verdad. Si al reconsultarlo lleva otra referencia, o si
+    // nombra un checkout distinto al de la fila, se para.
+    const folio = 'OB-0012';
+    await pedido(folio, 333);
+    await conectarClip();
+    const enlace = await crearEnlace(folio);
+    const propio = enlace.referenciaExterna;
+    const f = (await filas(folio))[0];
+
+    // Un checkout de OTRO pedido, con su propia referencia, marcado pagado.
+    const folioAjeno = 'OB-0013';
+    await pedido(folioAjeno, 999);
+    const ajeno = await crearEnlace(folioAjeno);
+    CHECKOUTS.get(ajeno.referenciaExterna).estado = 'COMPLETED';
+
+    assert.strictEqual(await webhookClip(f.referencia_interna,
+      { paymentRequestId: ajeno.referenciaExterna }), 200);
+    await new Promise(r => setTimeout(r, 1200));
+
+    const tras = await filaId(f.id);
+    assert.notStrictEqual(tras.estado, 'pagado',
+      '¡asentó dinero de un checkout ajeno sobre esta fila!');
+    assert.strictEqual(tras.referencia_externa, propio, 'sobrescribió la identidad de la fila');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, 'checkout_ajeno');
+  });
+
+  await t('2c-pentis. fila AMBIGUA + webhook que nombra un checkout ajeno: solo la referencia salva', async () => {
+    // Aquí la fila NO tiene identidad externa, así que la guarda de
+    // "el webhook nombra otro checkout" no aplica: lo único que impide asentar
+    // dinero ajeno es comprobar que el checkout reconsultado lleva NUESTRA
+    // referencia. Es el caso que de verdad ejercita esa verificación.
+    const folio = 'OB-0015';
+    await pedido(folio, 275);
+    await conectarClip();
+    clipCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    clipCortaRespuesta = false;
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.referencia_externa, null, 'fixture: la fila debía quedar sin identidad');
+
+    // Un checkout de otro pedido, pagado y con SU propia referencia.
+    const folioAjeno = 'OB-0016';
+    await pedido(folioAjeno, 640);
+    const ajeno = await crearEnlace(folioAjeno);
+    CHECKOUTS.get(ajeno.referenciaExterna).estado = 'COMPLETED';
+
+    assert.strictEqual(await webhookClip(f.referencia_interna,
+      { paymentRequestId: ajeno.referenciaExterna }), 200);
+    await new Promise(r => setTimeout(r, 1200));
+
+    const tras = await filaId(f.id);
+    assert.notStrictEqual(tras.estado, 'pagado',
+      '¡adoptó y asentó el checkout de OTRO pedido sobre una fila ambigua!');
+    assert.strictEqual(tras.referencia_externa, null, 'adoptó una identidad que no es suya');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, 'referencia_no_coincide');
+    assert.strictEqual(await comandasDe(folio), 0);
+  });
+
+  await t('2c-quater. el MONTO lo dice la API de Clip, no el webhook', async () => {
+    const folio = 'OB-0014';
+    await pedido(folio, 480);
+    await conectarClip();
+    const enlace = await crearEnlace(folio);
+    const f = (await filas(folio))[0];
+    const c = CHECKOUTS.get(enlace.referenciaExterna);
+    c.estado = 'COMPLETED';
+    c.monto = 10;                     // Clip reporta OTRO monto
+
+    assert.strictEqual(await webhookClip(f.referencia_interna,
+      { paymentRequestId: enlace.referenciaExterna }), 200);
+    await new Promise(r => setTimeout(r, 1200));
+
+    const tras = await filaId(f.id);
+    assert.notStrictEqual(tras.estado, 'pagado', 'asentó un cobro por un monto que no cuadra');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, 'monto_distinto');
+    assert.strictEqual(await comandasDe(folio), 0);
   });
 
   await t('2d. MERCADO PAGO tampoco tiene idempotencia, pero sí búsqueda: recupera, no duplica', async () => {

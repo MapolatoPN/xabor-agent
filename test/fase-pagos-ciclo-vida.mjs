@@ -56,8 +56,9 @@ const clipMock = createServer((req, res) => {
       const body = JSON.parse(cuerpo || '{}');
       const id = `clip-cv-${++checkoutsClip}`;
       CHECKOUTS.set(id, {
-        referencia: body.metadata?.external_reference || body.me_reference_id || null,
+        referencia: body.metadata?.external_reference || null,
         estado: 'PENDING',
+        monto: Number(body.amount),
       });
       res.end(JSON.stringify({
         payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
@@ -69,7 +70,20 @@ const clipMock = createServer((req, res) => {
       const c = CHECKOUTS.get(id);
       if (!c) { res.statusCode = 404; res.end('{}'); return; }
       CONSULTAS_CLIP.push(id);
-      res.end(JSON.stringify({ resource: 'CHECKOUT', resource_status: c.estado, me_reference_id: c.referencia }));
+      // Forma DOCUMENTADA de GET /v2/checkout/{payment_request_id}. No lleva
+      // resource_status ni me_reference_id -- esos son campos del webhook.
+      res.end(JSON.stringify({
+        object_type: 'payment_link',
+        payment_request_id: id,
+        status: c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING',
+        amount: c.monto ?? null,
+        currency: 'MXN',
+        metadata: { external_reference: c.referencia, customer_info: {} },
+        payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
+        created_at: '2026-08-17T00:00:00.000Z',
+        expired_at: c.expiraAt || null,
+        last_status_message: 'Payment request is active',
+      }));
       return;
     }
     res.statusCode = 404; res.end('{}');

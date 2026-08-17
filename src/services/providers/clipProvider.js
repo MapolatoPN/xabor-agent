@@ -17,10 +17,63 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
   return { referenciaExterna: r.linkId, url: r.url, estado: 'pendiente' };
 }
 
-export async function getPaymentStatus(referenciaExterna, negocioId) {
-  const r = await consultarEstadoPago(referenciaExterna, negocioId);
+/**
+ * Normaliza la respuesta de GET /v2/checkout/{payment_request_id}.
+ *
+ * VERIFICADO CONTRA LA DOCUMENTACION OFICIAL (Check payment link status v2).
+ * Esa respuesta trae:
+ *   payment_request_id · status · amount · currency · metadata.external_reference
+ *   · payment_request_url · expired_at · receipt_no · object_type
+ *
+ * Y NO trae `resource_status` ni `me_reference_id`: esos dos son campos del
+ * WEBHOOK, que es otro contrato. El codigo anterior leia los del webhook sobre
+ * la respuesta de la reconsulta, asi que la comparacion
+ * `resource_status === 'COMPLETED'` era SIEMPRE falsa: ningun cobro de Clip
+ * llegaba a asentarse. Fail-closed, pero perdiendo dinero real.
+ *
+ * Los valores documentados de `status` son CHECKOUT_CREATED, CHECKOUT_PENDING,
+ * CHECKOUT_CANCELLED, CHECKOUT_EXPIRED y CHECKOUT_COMPLETED.
+ */
+export function normalizarConsultaCheckout(r) {
   if (!r) return null;
-  return { estadoProveedor: r.resource_status, referenciaInterna: r.me_reference_id };
+  const bruto = String(r.status || '').toUpperCase();
+  const estado =
+    bruto === 'CHECKOUT_COMPLETED' ? 'pagado'
+    : bruto === 'CHECKOUT_CANCELLED' ? 'cancelado'
+    : bruto === 'CHECKOUT_EXPIRED' ? 'vencido'
+    : (bruto === 'CHECKOUT_CREATED' || bruto === 'CHECKOUT_PENDING') ? 'pendiente'
+    : 'desconocido';
+  const monto = typeof r.amount === 'number' && Number.isFinite(r.amount) ? r.amount : null;
+  return {
+    estadoProveedor: bruto || null,
+    estado,
+    pagado: estado === 'pagado',
+    // La referencia que Xabor mando al crear el checkout. Es lo unico que ata
+    // este checkout a una fila nuestra, y por eso se verifica siempre.
+    referenciaInterna: r.metadata?.external_reference || null,
+    checkoutId: r.payment_request_id || null,
+    url: r.payment_request_url || null,
+    monto, moneda: r.currency || null,
+    expiraAt: r.expired_at || null,
+    reciboNo: r.receipt_no || null,
+  };
+}
+
+export async function getPaymentStatus(referenciaExterna, negocioId) {
+  return normalizarConsultaCheckout(await consultarEstadoPago(referenciaExterna, negocioId));
+}
+
+/**
+ * Recupera un checkout por SU id, con las credenciales del negocio dueño.
+ *
+ * Es la salida del caso ambiguo: Xabor mando el POST, se perdio la respuesta y
+ * nunca supo el payment_request_id... hasta que el cliente paga y el WEBHOOK de
+ * Clip lo trae. Ese id del webhook es solo un CANDIDATO -- el webhook no viene
+ * firmado --, asi que aqui se va a la API con las credenciales del negocio y el
+ * llamador verifica que el external_reference devuelto sea el de SU fila.
+ */
+export async function recuperarCheckoutPorId(checkoutId, negocioId) {
+  return normalizarConsultaCheckout(await consultarEstadoPago(checkoutId, negocioId));
 }
 
 export async function cancelPayment() {
@@ -66,6 +119,19 @@ export function getCapabilities() {
     // otro POST por su cuenta.
     idempotenciaCreacion: false,
     recuperaCreacionPorReferencia: false,
+    // Pero el WEBHOOK de Checkout de Clip si trae `payment_request_id`
+    // (documentado). Eso permite recuperar una creacion ambigua cuando el
+    // cliente termina pagando: el id llega por el webhook, se reconsulta con
+    // las credenciales del negocio y se verifica el external_reference. Es
+    // recuperacion por AVISO, no por busqueda: si nadie paga, la ambiguedad
+    // sigue sin resolverse por API y queda para revision manual.
+    recuperaCreacionPorAvisoDeWebhook: true,
+    // La API publica no expone cancelacion de un checkout ya creado: "vencido
+    // en Xabor" nunca significa "imposible de pagar en Clip".
+    cancelacionReal: false,
+    // La reconsulta si devuelve expired_at, asi que la expiracion del checkout
+    // es conocida DESPUES de consultarlo.
+    expiracionConocida: true,
   };
 }
 

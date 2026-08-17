@@ -50,15 +50,29 @@ const clipMock = createServer((req, res) => {
   req.on('data', c => cuerpo += c);
   req.on('end', () => {
     if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
-      const linkId = req.url.split('/').pop();
+      const linkId = decodeURIComponent(req.url.split('/').pop());
+      // Forma DOCUMENTADA de GET /v2/checkout/{payment_request_id}: `status`,
+      // `amount`, `currency` y `metadata.external_reference`. Esta respuesta NO
+      // lleva resource_status ni me_reference_id -- esos son del webhook.
+      const creado = clipLlamadas.find(c => c.__id === linkId);
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ resource_status: 'COMPLETED', me_reference_id: (clipLlamadas.find(c => true) || {}).metadata?.external_reference || linkId }));
+      if (!creado) { res.statusCode = 404; res.end('{}'); return; }
+      res.end(JSON.stringify({
+        object_type: 'payment_link',
+        payment_request_id: linkId,
+        status: 'CHECKOUT_COMPLETED',
+        amount: Number(creado.amount),
+        currency: 'MXN',
+        metadata: { external_reference: creado.metadata?.external_reference || null },
+        payment_request_url: `https://pago.mock.clip/${linkId}`,
+      }));
       return;
     }
     if (req.method === 'POST' && req.url === '/v2/checkout') {
       const body = JSON.parse(cuerpo || '{}');
+      const id = 'clip-mock-' + (clipLlamadas.length + 1);
+      body.__id = id;                       // para poder resolver el GET por SU id
       clipLlamadas.push(body);
-      const id = 'clip-mock-' + clipLlamadas.length;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({
         payment_request_id: id,
