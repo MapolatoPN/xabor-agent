@@ -17,6 +17,16 @@ import { partesEnZona } from './tiendaOnline.js';
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
 // inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
 // atribucion NO deja el checkout dandose por terminado.
+// Retardo inyectable: abre a proposito la ventana entre calcular y reclamar,
+// que es donde otro cliente puede llevarse el ultimo cupo. Sin esto la carrera
+// dura microsegundos y no se puede probar de verdad.
+async function retardoInyectado(punto) {
+  if (process.env.NODE_ENV === 'production') return;
+  if (process.env.XABOR_TIENDA_RETARDO_EN !== punto) return;
+  const ms = Number(process.env.XABOR_TIENDA_RETARDO_MS) || 0;
+  if (ms > 0) await new Promise(r => setTimeout(r, ms));
+}
+
 function fallaInyectada(punto) {
   if (process.env.NODE_ENV === 'production') return;
   if (process.env.XABOR_TIENDA_FALLA_EN !== punto) return;
@@ -909,7 +919,23 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
           WHERE id = $1 AND negocio_id = $2`, [x.promocion_id, nid]);
     }
 
-    const version = calcularVersionPedidoHash({ total: promo.total, modalidad: datos?.modalidad });
+    // ── RECLAMAR PRIMERO, DECIDIR EL PRECIO DESPUES ─────────────────────
+    //
+    // `calcularPromociones` dice cuales SERIAN aplicables; el cupo lo decide la
+    // base, promocion por promocion, y cualquiera puede perderse aqui mismo si
+    // otro cliente se lleva el ultimo justo antes. Por eso NADA del precio
+    // puede salir del calculo previo: el total, el envio, el ahorro y la
+    // version se derivan del conjunto REALMENTE reservado.
+    //
+    // El caso que lo hace obvio: una promocion automatica de envio gratis con
+    // un solo cupo. A la ve disponible, B se la lleva, A falla al reclamarla --
+    // y con `promo.envioGratis` A se iba sin cobrar el envio de todos modos.
+    //
+    // La version tampoco puede calcularse antes: se escribe en las reservas
+    // DESPUES de saber el total final, en esta misma transaccion. Una reserva
+    // con la version de un total que nunca se escribio no justifica nada.
+    await retardoInyectado('recalculo_antes_de_reclamar');
+
     const reservadas = [];
     for (const ap of promo.aplicadas) {
       const { rowCount: reclamado } = await client.query(
@@ -922,17 +948,34 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
       await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-            monto_descuento, estado, pedido_version)
-         VALUES ($1,$2,$3,$4,$5,$6,'reservada',$7)
+            monto_descuento, estado)
+         VALUES ($1,$2,$3,$4,$5,$6,'reservada')
          ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
         [nid, ap.id, ap.campaniaId || null, folio, datos?.cliente?.telefono || null,
-         ap.descuento || 0, version]);
+         ap.descuento || 0]);
       reservadas.push(ap);
     }
 
-    // El pedido se queda con lo que el SERVIDOR acaba de calcular.
-    const totalNuevo = Math.max(0, Math.round(
-      (base - reservadas.reduce((n, x) => n + (x.descuento || 0), 0) + (promo.envioGratis ? 0 : envio)) * 100) / 100);
+    // ── EL RESULTADO EFECTIVO, solo con lo que quedo reservado ──────────
+    const descuentoFinal = Math.round(
+      reservadas.reduce((n, x) => n + (Number(x.descuento) || 0), 0) * 100) / 100;
+    // Envio gratis solo si la promocion que lo daba sobrevivio al reclamo.
+    const envioGratisFinal = reservadas.some(x => x.envioGratis === true);
+    const envioFinal = envioGratisFinal ? 0 : envio;
+    const ahorroFinal = Math.round((descuentoFinal + (envioGratisFinal ? envio : 0)) * 100) / 100;
+    const totalNuevo = Math.max(0, Math.round((base - descuentoFinal + envioFinal) * 100) / 100);
+
+    // Y AHORA la version, sobre el total que de verdad se va a escribir. Se
+    // estampa en todas las reservas que sobrevivieron, dentro de la misma
+    // transaccion: o todas llevan la version del precio final, o ninguna.
+    const versionFinal = calcularVersionPedidoHash({ total: totalNuevo, modalidad: datos?.modalidad });
+    if (reservadas.length) {
+      await client.query(
+        `UPDATE tienda_promocion_usos SET pedido_version = $3
+          WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'reservada'`,
+        [nid, folio, versionFinal]);
+    }
+
     await client.query(
       `UPDATE pedidos_activos
           SET datos = (datos || $3::jsonb)
@@ -948,7 +991,8 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
       [folio, nid,
        JSON.stringify({
          subtotal: base,
-         descuento: reservadas.reduce((n, x) => n + (x.descuento || 0), 0),
+         descuento: descuentoFinal,
+         costo_envio: envioFinal,
          total: totalNuevo,
        }),
        JSON.stringify({
@@ -956,13 +1000,19 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
            id: x.id, nombre: x.nombre, codigo: x.codigo, tipo: x.tipo,
            descuento: x.descuento, envio_gratis: x.envioGratis, campania_id: x.campaniaId,
          })),
-         ahorro: promo.ahorro,
-         envio_gratis: promo.envioGratis,
+         ahorro: ahorroFinal,
+         envio_gratis: envioGratisFinal,
+         envio_base: envio,
        })]);
 
     await client.query('COMMIT');
     console.log(`[Promos] Pedido ${folio} recalculado: total ${totalNuevo} con ${reservadas.length} promocion(es)`);
-    return { ok: true, total: totalNuevo, promociones: reservadas.map(x => x.id) };
+    return {
+      ok: true, total: totalNuevo, descuento: descuentoFinal, envio: envioFinal,
+      envioGratis: envioGratisFinal, ahorro: ahorroFinal, version: versionFinal,
+      promociones: reservadas.map(x => x.id),
+      perdidas: promo.aplicadas.filter(x => !reservadas.includes(x)).map(x => x.id),
+    };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[Promos] Error recalculando el pedido:', e.message);
