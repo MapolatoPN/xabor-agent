@@ -20,6 +20,50 @@ export class PromocionError extends Error {
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+// ── ¿Este cliente YA COMPRO de verdad? ────────────────────────────────────
+//
+// "Primera compra" es primera COMPRA, no primer intento. Antes esto preguntaba
+// si existia cualquier fila en `pedidos_activos` con ese telefono, y eso hacia
+// viejo a un cliente que solo habia llegado al checkout: pedia el cupon, no
+// pagaba, el pedido vencia, la reserva se liberaba correctamente... y al
+// volver Xabor le decia "esta promocion es solo para la primera compra".
+// Devolviamos el cupo pero no la elegibilidad.
+//
+// LA FUENTE. `pedidos` es el registro durable de cada pedido: lo escribe
+// `registrarPedido` en el mismo acto que `pedidos_activos`, y sobrevive a la
+// limpieza del tablero. Por eso un cliente de hace meses sigue contando.
+//
+// Pero `pedidos` guarda TODO lo que se registro, incluido lo que nunca se
+// cobro. Asi que se excluye lo que no llego a ser una compra:
+//
+//   · el pedido sigue en `pendiente_pago`  -> esperando dinero, no es compra;
+//   · el pedido se cancelo por no pagarse  -> `expirado_por_pago`, tampoco.
+//
+// Lo demas si: efectivo, terminal, pagado en linea, entregado, o archivado
+// hace tanto que ya salio del tablero.
+//
+// Limitacion conocida y aceptada: si un pedido cancelado por falta de pago se
+// purgara de `pedidos_activos` conservando su fila en `pedidos`, volveria a
+// contar. Mientras viva en el tablero -- que es donde vive hasta su limpieza --
+// la exclusion es exacta.
+export async function clienteYaComproDeVerdad(negocioId, telefono) {
+  if (!negocioId || !telefono) return false;
+  const { rows: [r] } = await pool.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM pedidos p
+        WHERE p.negocio_id = $1 AND p.telefono = $2
+          AND NOT EXISTS (
+            SELECT 1 FROM pedidos_activos a
+             WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
+               AND (a.estado = 'pendiente_pago'
+                    OR (a.estado = 'cancelado'
+                        AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
+          )
+     ) AS ya`,
+    [negocioId, telefono]);
+  return r?.ya === true;
+}
+
 // ── Elegibilidad de UNA promoción ─────────────────────────────────────────
 // Devuelve null si aplica, o un motivo legible si no. El motivo solo se le
 // muestra al cliente cuando escribió un código explícitamente; las
@@ -63,14 +107,21 @@ function motivoNoAplica(promo, ctx) {
   }
   if (baseAplicable <= 0) return 'Tu pedido no tiene productos que apliquen a esta promoción';
 
-  if (promo.limite_usos != null && Number(promo.usos) >= Number(promo.limite_usos)) {
+  // Un cupo que ESTE MISMO pedido ya tiene apartado no lo hace inelegible: al
+  // recalcular para su propia version nueva, su reserva viva ya esta contada en
+  // `usos` y en `usosDelCliente`, y sin descontarla la promocion se rechazaria
+  // a si misma. El cupo real se sigue reclamando atomicamente despues.
+  const yaApartado = ctx.cuposYaApartados instanceof Set && ctx.cuposYaApartados.has(String(promo.id));
+  const propios = yaApartado ? 1 : 0;
+
+  if (!yaApartado && promo.limite_usos != null && Number(promo.usos) >= Number(promo.limite_usos)) {
     return 'Esta promoción alcanzó su límite de usos';
   }
   if (promo.solo_primera_compra && ctx.clienteTienePedidos) {
     return 'Esta promoción es solo para la primera compra';
   }
   if (promo.limite_por_cliente != null && ctx.usosDelCliente != null &&
-      ctx.usosDelCliente[promo.id] >= Number(promo.limite_por_cliente)) {
+      (Number(ctx.usosDelCliente[promo.id] || 0) - propios) >= Number(promo.limite_por_cliente)) {
     return 'Ya usaste esta promoción el máximo de veces';
   }
   return null;
@@ -111,7 +162,7 @@ function calcularDescuento(promo, ctx) {
 export async function calcularPromociones({
   negocioId, subtotal, items = [], costoEnvio = 0, modalidad = 'recoger',
   codigo = null, telefono = null, canal = 'tienda_online', timezone = 'America/Matamoros',
-  ahora = new Date(),
+  ahora = new Date(), cuposYaApartados = [],
 }) {
   const sub = dinero(subtotal);
   const { rows } = await pool.query(
@@ -127,23 +178,22 @@ export async function calcularPromociones({
   let clienteTienePedidos = false;
   let usosDelCliente = {};
   if (telefono) {
-    const [{ rows: previos }, { rows: usos }] = await Promise.all([
-      pool.query(
-        `SELECT 1 FROM pedidos_activos
-          WHERE negocio_id = $1 AND datos->'cliente'->>'telefono' = $2 LIMIT 1`,
-        [negocioId, telefono]
-      ),
+    const [yaCompro, { rows: usos }] = await Promise.all([
+      clienteYaComproDeVerdad(negocioId, telefono),
       pool.query(
         `SELECT promocion_id, COUNT(*)::int AS n FROM tienda_promocion_usos
           WHERE negocio_id = $1 AND cliente_telefono = $2 GROUP BY promocion_id`,
         [negocioId, telefono]
       ),
     ]);
-    clienteTienePedidos = previos.length > 0;
+    clienteTienePedidos = yaCompro;
     usosDelCliente = Object.fromEntries(usos.map(u => [u.promocion_id, u.n]));
   }
 
-  const ctx = { subtotal: sub, items, modalidad, canal, timezone, ahora, clienteTienePedidos, usosDelCliente };
+  const ctx = {
+    subtotal: sub, items, modalidad, canal, timezone, ahora, clienteTienePedidos, usosDelCliente,
+    cuposYaApartados: new Set((cuposYaApartados || []).map(String)),
+  };
 
   const aplicadas = [];
   const rechazos = [];
@@ -399,6 +449,9 @@ export async function reservarUsosPromociones(negocioId, aplicadas = [], context
 
         // "Solo primera compra" es, en la práctica, un tope de uno por cliente
         // para esta promoción: quien ya la reclamó no es primerizo otra vez.
+        // Pero el tope se cuenta sobre las filas VIVAS de este cliente, y una
+        // reserva liberada ya no existe -- por eso el que vencio sin pagar
+        // vuelve a ser elegible, que es justo lo que P0-2 vino a arreglar.
         const tope = reglas?.solo_primera_compra
           ? 1
           : (reglas?.limite_por_cliente == null ? null : Number(reglas.limite_por_cliente));
@@ -507,8 +560,22 @@ export async function registrarUsosPromociones({
       );
       if (confirmados > 0) { registrados++; continue; }
 
-      // Sin reserva que confirmar (llamada desde otro canal, o reintento ya
-      // confirmado): se inserta, y el UNIQUE evita el duplicado.
+      // ── SIN RESERVA PROVISIONAL QUE CONFIRMAR ───────────────────────────
+      //
+      // Pasa cuando la llamada viene de otro canal, o cuando la fila de reserva
+      // se perdio entre reservar y llegar aqui. El respaldo INSERTA la fila --
+      // pero antes tiene que RECLAMAR el cupo.
+      //
+      // El fallback anterior insertaba directamente, y con `estado='reservada'`
+      // eso creaba una reserva que NO habia pasado por el UPDATE condicional
+      // `usos < limite_usos`. Es decir: una reserva que no contaba contra el
+      // limite, y con ella dejaba de ser cierto que
+      // `reservas + consumidas = usos`. Un cupon de 1 uso podia entregarse dos
+      // veces por ese hueco.
+      //
+      // Orden: primero el INSERT (el UNIQUE decide si de verdad hay fila nueva)
+      // y SOLO si hubo fila nueva se reclama el cupo. Al reves, un reintento ya
+      // confirmado inflaria el contador sin insertar nada.
       const { rowCount } = await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
@@ -519,16 +586,168 @@ export async function registrarUsosPromociones({
         [negocioId, a.id, a.campaniaId, folio, telefono,
          a.descuento || 0, montoVenta, !!clienteNuevo, estado, pedidoVersion]
       );
-      if (rowCount > 0) registrados++;
+      if (rowCount > 0) {
+        const { rowCount: reclamado } = await client.query(
+          `UPDATE tienda_promociones
+              SET usos = usos + 1, updated_at = NOW()
+            WHERE id = $1 AND negocio_id = $2
+              AND (limite_usos IS NULL OR usos < limite_usos)`,
+          [a.id, negocioId]);
+        if (!reclamado) {
+          // FAIL CLOSED. No queda otra: insertar sin contar seria regalar un
+          // cupo, y contar por encima del limite seria regalarselo a otro. La
+          // transaccion entera se deshace y el llamador se entera.
+          throw new PromocionError(
+            `La promocion "${a.nombre || a.id}" ya no tiene cupo disponible`, 'CUPO_AGOTADO');
+        }
+        registrados++;
+      }
     }
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[Tienda] Error registrando usos de promoción:', e.message);
+    // Un cupo que no se pudo reclamar NO se traga: quien llama tiene que saber
+    // que la promocion no quedo registrada, o daria por bueno un descuento que
+    // nadie contabilizo.
+    if (e instanceof PromocionError) throw e;
   } finally {
     client.release();
   }
   return { registrados };
+}
+
+// ── CAMBIO DE VERSION DEL PEDIDO ──────────────────────────────────────────
+//
+// Una reserva justifica UN precio. Si el pedido cambia -- otro total, otra
+// modalidad --, la reserva de la version vieja ya no representa el descuento
+// que ese pedido lleva ahora, y el checkout nuevo no puede salir apoyado en
+// ella. Se resincroniza antes de crear el cobro:
+//
+//   · la version no cambio          -> no se toca nada;
+//   · cambio y la promo sigue
+//     aplicando y hay cupo          -> se supersede la reserva vieja y se
+//                                      reserva para la version nueva, todo en
+//                                      una transaccion (si el reclamo falla, la
+//                                      vieja NO se pierde);
+//   · cambio y la promo ya no
+//     aplica (o no hay cupo)        -> se suelta la reserva vieja y se falla
+//                                      cerrado. El pedido lleva un total con un
+//                                      descuento que ya no le corresponde:
+//                                      cobrarlo seria regalar la diferencia.
+//
+// Devuelve { ok, accion } o { ok:false, razon, promociones } para que el
+// llamador decida -- aqui no se cocina ni se cobra nada.
+export async function resincronizarReservasPorVersion({
+  negocioId, folio, datosPedido, versionActual, timezone = 'America/Matamoros',
+}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { ok: false, razon: 'sin_negocio' };
+  }
+  const nid = negocioId.trim();
+
+  const { rows: reservas } = await pool.query(
+    `SELECT id, promocion_id, campania_id, pedido_version, cliente_telefono
+       FROM tienda_promocion_usos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'reservada'`,
+    [nid, folio]);
+  if (!reservas.length) return { ok: true, accion: 'sin_reservas' };
+
+  const desfasadas = reservas.filter(
+    r => r.pedido_version && versionActual && r.pedido_version !== versionActual);
+  if (!desfasadas.length) return { ok: true, accion: 'vigente' };
+
+  // ¿Que promociones aplicarian HOY, con el carrito que el pedido tiene ahora?
+  // Se recalcula server-side: el descuento nunca se hereda de la version vieja.
+  const telefono = datosPedido?.cliente?.telefono || desfasadas[0].cliente_telefono || null;
+  const items = Array.isArray(datosPedido?.items) ? datosPedido.items : [];
+  const envio = Number(datosPedido?.costo_envio ?? datosPedido?.envio ?? 0) || 0;
+  const descuentoViejo = Number(datosPedido?.descuento || 0) || 0;
+  const subtotal = Number(datosPedido?.subtotal);
+  const base = Number.isFinite(subtotal) && subtotal > 0
+    ? subtotal
+    : Math.max(0, Number(datosPedido?.total || 0) + descuentoViejo - envio);
+  const modalidad = datosPedido?.modalidad || datosPedido?.tipo || 'recoger';
+
+  // El codigo se recupera de lo que el pedido trae guardado: sin esto una
+  // promocion de codigo nunca volveria a aplicar, porque el motor solo mira las
+  // automaticas cuando no se le pasa ninguno.
+  const guardadas = Array.isArray(datosPedido?.tienda?.promociones)
+    ? datosPedido.tienda.promociones : [];
+  const codigo = guardadas.map(p => p.codigo).find(Boolean) || null;
+
+  const recalculo = await calcularPromociones({
+    negocioId: nid, subtotal: base, items, costoEnvio: envio,
+    modalidad, codigo, telefono, canal: datosPedido?.canal || 'tienda_online', timezone,
+    // Las reservas que este pedido va a superseder no cuentan contra si mismo.
+    cuposYaApartados: desfasadas.map(r => r.promocion_id),
+  });
+  const aplicanAhora = new Map(recalculo.aplicadas.map(x => [String(x.id), x]));
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Se suelta lo viejo SIEMPRE: esa reserva ya no justifica nada.
+    const { rows: sueltas } = await client.query(
+      `DELETE FROM tienda_promocion_usos
+        WHERE negocio_id = $1 AND id = ANY($2::uuid[]) AND estado = 'reservada'
+        RETURNING promocion_id`,
+      [nid, desfasadas.map(r => r.id)]);
+    for (const s2 of sueltas) {
+      await client.query(
+        `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0), updated_at = NOW()
+          WHERE id = $1 AND negocio_id = $2`, [s2.promocion_id, nid]);
+    }
+
+    // ¿Siguen aplicando TODAS las que el pedido traia? Si alguna se cayo, el
+    // total del pedido esta mal y no hay checkout que valga.
+    const perdidas = desfasadas.filter(r => !aplicanAhora.has(String(r.promocion_id)));
+    if (perdidas.length) {
+      await client.query('COMMIT');   // el cupo si vuelve al pozo
+      return {
+        ok: false, razon: 'promocion_no_aplica_a_la_version_nueva',
+        promociones: perdidas.map(r => r.promocion_id),
+      };
+    }
+
+    // Reservar para la version nueva, con la misma barrera de siempre.
+    const rereservadas = [];
+    for (const r of desfasadas) {
+      const promo = aplicanAhora.get(String(r.promocion_id));
+      const { rowCount: reclamado } = await client.query(
+        `UPDATE tienda_promociones
+            SET usos = usos + 1, updated_at = NOW()
+          WHERE id = $1 AND negocio_id = $2
+            AND (limite_usos IS NULL OR usos < limite_usos)`,
+        [r.promocion_id, nid]);
+      if (!reclamado) {
+        // Otro cliente se llevo el cupo entre medias. Se deshace TODO: la
+        // reserva vieja se conserva y el llamador falla cerrado, en vez de
+        // quedarse sin ninguna de las dos.
+        await client.query('ROLLBACK');
+        return { ok: false, razon: 'sin_cupo_para_la_version_nueva', promociones: [r.promocion_id] };
+      }
+      await client.query(
+        `INSERT INTO tienda_promocion_usos
+           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
+            monto_descuento, estado, pedido_version)
+         VALUES ($1,$2,$3,$4,$5,$6,'reservada',$7)`,
+        [nid, r.promocion_id, r.campania_id, folio, r.cliente_telefono,
+         promo?.descuento || 0, versionActual]);
+      rereservadas.push(r.promocion_id);
+    }
+
+    await client.query('COMMIT');
+    console.log(`[Promos] ${rereservadas.length} reserva(s) del pedido ${folio} pasaron a la version ${versionActual}`);
+    return { ok: true, accion: 'resincronizada', promociones: rereservadas, descuento: recalculo.descuento };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[Promos] Error resincronizando reservas:', e.message);
+    return { ok: false, razon: 'error_resincronizando' };
+  } finally {
+    client.release();
+  }
 }
 
 // ── CRUD de promociones (backoffice) ──────────────────────────────────────
@@ -540,16 +759,29 @@ export async function listarPromociones(negocioId) {
             COALESCE(u.ventas, 0) AS ventas_generadas,
             COALESCE(u.descuento, 0) AS descuento_otorgado,
             COALESCE(u.n, 0) AS usos_reales,
-            COALESCE(u.nuevos, 0) AS clientes_nuevos
+            COALESCE(u.nuevos, 0) AS clientes_nuevos,
+            COALESCE(rsv.n, 0) AS reservas_activas
        FROM tienda_promociones p
        LEFT JOIN tienda_campanas c ON c.id = p.campania_id
+       -- Solo cuentan los usos CONSUMIDOS. Una reserva es un cupo apartado por
+       -- un checkout que todavia puede no pagarse nunca: contarla como venta
+       -- inflaba los ingresos del negocio con dinero que no entro. Las
+       -- reservas vivas se reportan aparte, como lo que son.
        LEFT JOIN (
          SELECT promocion_id, COUNT(*)::int AS n,
                 SUM(monto_venta)::numeric AS ventas,
                 SUM(monto_descuento)::numeric AS descuento,
                 COUNT(*) FILTER (WHERE cliente_nuevo)::int AS nuevos
-           FROM tienda_promocion_usos WHERE negocio_id = $1 GROUP BY promocion_id
+           FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND estado = 'consumida'
+          GROUP BY promocion_id
        ) u ON u.promocion_id = p.id
+       LEFT JOIN (
+         SELECT promocion_id, COUNT(*)::int AS n
+           FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND estado = 'reservada'
+          GROUP BY promocion_id
+       ) rsv ON rsv.promocion_id = p.id
       WHERE p.negocio_id = $1
       ORDER BY p.activa DESC, p.created_at DESC`,
     [negocioId]
@@ -565,6 +797,9 @@ export async function listarPromociones(negocioId) {
     campania: r.campania_id ? { id: r.campania_id, nombre: r.campania_nombre, influencer: r.influencer } : null,
     metricas: {
       usos: Number(r.usos_reales),
+      // Cupos apartados por un checkout todavia sin pagar. Cuentan contra el
+      // limite disponible, pero NO son ventas.
+      reservasActivas: Number(r.reservas_activas),
       ventas: Number(r.ventas_generadas),
       descuento: Number(r.descuento_otorgado),
       clientesNuevos: Number(r.clientes_nuevos),
@@ -669,7 +904,8 @@ export async function listarCampanas(negocioId) {
          SELECT campania_id, COUNT(*)::int AS n, SUM(monto_venta)::numeric AS ventas,
                 SUM(monto_descuento)::numeric AS descuento,
                 COUNT(*) FILTER (WHERE cliente_nuevo)::int AS nuevos
-           FROM tienda_promocion_usos WHERE negocio_id = $1 AND campania_id IS NOT NULL
+           FROM tienda_promocion_usos
+          WHERE negocio_id = $1 AND campania_id IS NOT NULL AND estado = 'consumida'
           GROUP BY campania_id
        ) u ON u.campania_id = c.id
       WHERE c.negocio_id = $1
