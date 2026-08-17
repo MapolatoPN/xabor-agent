@@ -2526,6 +2526,11 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       await liberarReservasDePedido(cliente, {
         negocioId: nid, folio,
         motivo: 'el cobro no libera el pedido (version desfasada, pago tardio o pedido inexistente)',
+        // SOLO la reserva de la version que se acaba de cobrar. Si el pedido ya
+        // paso a otra version y esa tiene su propia reserva, esa reserva
+        // pertenece a un cobro vivo: soltarla aqui seria quitarle el cupon a un
+        // pedido que todavia puede pagarse.
+        soloVersion: fila.version_pedido_hash || null,
       });
     }
 

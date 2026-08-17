@@ -82,17 +82,24 @@ export async function consumirReservasDePedido(client, { negocioId, folio, versi
  * Solo toca filas 'reservada': una promoción ya consumida jamás se libera,
  * porque detrás hay dinero real.
  */
-export async function liberarReservasDePedido(client, { negocioId, folio, motivo = 'la espera de pago vencio' }) {
+export async function liberarReservasDePedido(client, {
+  negocioId, folio, motivo = 'la espera de pago vencio', soloVersion = null,
+}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('liberarReservasDePedido requiere negocioId');
   }
   const nid = negocioId.trim();
 
+  // `soloVersion` acota la liberacion a las reservas de UNA version del pedido.
+  // Sin esto, un cobro tardio de la v1 soltaba tambien la reserva de la v2 --
+  // que pertenece a un cobro todavia vivo y que nadie pidio tocar. El
+  // vencimiento de la obligacion entera no la pasa: ahi si se suelta todo.
   const { rows: sueltas } = await client.query(
     `DELETE FROM tienda_promocion_usos
       WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'reservada'
+        AND ($3::text IS NULL OR pedido_version IS NULL OR pedido_version = $3)
       RETURNING promocion_id`,
-    [nid, folio]);
+    [nid, folio, soloVersion]);
   if (!sueltas.length) return { liberadas: 0, promociones: [] };
 
   // Una fila por promoción devuelve un cupo. Se agrupa porque el contador es
