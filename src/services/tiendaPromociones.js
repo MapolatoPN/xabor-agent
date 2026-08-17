@@ -723,13 +723,15 @@ export async function resincronizarReservasPorVersion({
   // Se recalcula server-side: el descuento nunca se hereda de la version vieja.
   const telefono = datosPedido?.cliente?.telefono || desfasadas[0].cliente_telefono || null;
   const items = Array.isArray(datosPedido?.items) ? datosPedido.items : [];
-  const envio = Number(datosPedido?.costo_envio ?? datosPedido?.envio ?? 0) || 0;
+  // Mismo criterio que el recalculo: el envio BASE, no el ya descontado.
+  const envio = resolverEnvioBase(datosPedido) ?? 0;
   const descuentoViejo = Number(datosPedido?.descuento || 0) || 0;
+  const envioEfectivoViejo = Number(datosPedido?.costo_envio ?? datosPedido?.envio ?? 0) || 0;
   const subtotal = Number(datosPedido?.subtotal);
   const base = Number.isFinite(subtotal) && subtotal > 0
     ? subtotal
-    : Math.max(0, Number(datosPedido?.total || 0) + descuentoViejo - envio);
-  const modalidad = datosPedido?.modalidad || datosPedido?.tipo || 'recoger';
+    : Math.max(0, Number(datosPedido?.total || 0) + descuentoViejo - envioEfectivoViejo);
+  const modalidad = modalidadCanonica(datosPedido);
 
   // El codigo se recupera de lo que el pedido trae guardado: sin esto una
   // promocion de codigo nunca volveria a aplicar, porque el motor solo mira las
@@ -863,6 +865,58 @@ export function pedidoEsperaRecalculoDePromocion(datosPedido) {
 }
 
 /**
+ * La modalidad CANONICA del pedido, tal y como la entiende el motor.
+ *
+ * `pedidos_activos.datos.modalidad` guarda la etiqueta del POS -- "entrega a
+ * domicilio", "recoger en tienda" --, mientras que las promociones se acotan
+ * con las claves cortas: "domicilio", "recoger". Compararlas crudas hacia que
+ * un pedido REAL a domicilio no calificara para ninguna promocion acotada a
+ * domicilio, ni para el envio gratis. El fixture sintetico no lo veia porque
+ * escribia ya la clave corta.
+ *
+ * La version del pedido NO usa esto: `calcularVersionPedidoHash` recibe la
+ * modalidad CRUDA, que es la que tiene la fila y con la que la comparan el
+ * asiento y la deuda de derivacion.
+ */
+function modalidadCanonica(datos) {
+  const cruda = String(datos?.modalidad || datos?.tipo || '').toLowerCase();
+  if (!cruda) return 'recoger';
+  if (cruda.includes('domicilio')) return 'domicilio';
+  if (cruda.includes('recoger')) return 'recoger';
+  return cruda;
+}
+
+/**
+ * El costo de envio ANTES de cualquier promocion.
+ *
+ *   · Si no es a domicilio, no hay envio y punto.
+ *   · `datos.tienda.envio_base` es la fuente durable: lo escribe el checkout
+ *     con lo que resolvio contra la zona del negocio, antes de descontar nada.
+ *   · Historicos sin `envio_base`: si el pedido NUNCA tuvo envio gratis, su
+ *     `costo_envio` no fue tocado por ninguna promocion y sirve de base.
+ *   · Historico CON envio gratis y SIN `envio_base`: no hay forma de saber
+ *     cuanto costaba el envio. Devuelve null y el recalculo falla cerrado --
+ *     inventar un 0 seria regalar el envio; inventar otra cifra, cobrarla sin
+ *     fundamento.
+ *
+ * Devuelve un numero, o null si no se puede afirmar.
+ */
+function resolverEnvioBase(datos) {
+  if (modalidadCanonica(datos) !== 'domicilio') return 0;
+
+  const guardado = Number(datos?.tienda?.envio_base);
+  if (Number.isFinite(guardado) && guardado >= 0) return guardado;
+
+  const tuvoEnvioGratis = datos?.tienda?.envio_gratis === true
+    || (Array.isArray(datos?.tienda?.promociones)
+        && datos.tienda.promociones.some(p => p?.envio_gratis === true || p?.tipo === 'envio_gratis'));
+  if (tuvoEnvioGratis) return null;
+
+  const efectivo = Number(datos?.costo_envio ?? datos?.envio);
+  return Number.isFinite(efectivo) && efectivo >= 0 ? efectivo : 0;
+}
+
+/**
  * RECALCULO SERVER-SIDE REAL. Es lo UNICO que limpia la barrera.
  *
  * Vuelve a calcular las promociones con el carrito que el pedido tiene ahora,
@@ -885,11 +939,30 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
     if (!pedido) { await client.query('ROLLBACK'); return { ok: false, razon: 'pedido_no_encontrado' }; }
 
     const datos = pedido.datos || {};
-    const envio = Number(datos?.costo_envio ?? datos?.envio ?? 0) || 0;
+
+    // ── ENVIO BASE vs ENVIO EFECTIVO ────────────────────────────────────
+    //
+    // `datos.costo_envio` es el envio EFECTIVO: el checkout lo escribe con
+    // `promo.envio`, asi que un pedido con envio gratis lo tiene en 0. Usarlo
+    // como base al recalcular regalaba el envio incluso despues de perder la
+    // promocion que lo daba: 0 - nada = 0.
+    //
+    // La base durable es `datos.tienda.envio_base`, que el checkout guarda con
+    // el costo ANTES de promociones, calculado server-side contra la zona.
+    const envioBase = resolverEnvioBase(datos);
+    if (envioBase === null) {
+      await client.query('ROLLBACK');
+      return { ok: false, razon: 'sin_envio_base' };
+    }
+    const envio = envioBase;
     const descuentoViejo = Number(datos?.descuento || 0) || 0;
     const sub = Number(datos?.subtotal);
+    // El subtotal es la base real de los productos. Solo si falta se
+    // reconstruye, y entonces con el envio EFECTIVO que el total llevaba --
+    // no con la base -- porque es lo que de verdad se sumo a ese total.
+    const envioEfectivoViejo = Number(datos?.costo_envio ?? datos?.envio ?? 0) || 0;
     const base = Number.isFinite(sub) && sub > 0
-      ? sub : Math.max(0, Number(datos?.total || 0) + descuentoViejo - envio);
+      ? sub : Math.max(0, Number(datos?.total || 0) + descuentoViejo - envioEfectivoViejo);
     const guardadas = Array.isArray(datos?.tienda?.promociones) ? datos.tienda.promociones : [];
     const codigo = guardadas.map(p => p.codigo).find(Boolean) || null;
 
@@ -901,7 +974,7 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
 
     const promo = await calcularPromociones({
       negocioId: nid, subtotal: base, items: Array.isArray(datos?.items) ? datos.items : [],
-      costoEnvio: envio, modalidad: datos?.modalidad || datos?.tipo || 'recoger',
+      costoEnvio: envio, modalidad: modalidadCanonica(datos),
       codigo, telefono: datos?.cliente?.telefono || null,
       canal: datos?.canal || 'tienda_online', timezone,
       cuposYaApartados: vivas.map(v => v.promocion_id),
