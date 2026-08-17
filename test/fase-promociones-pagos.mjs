@@ -269,6 +269,8 @@ async function limpiar() {
       `DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->>'canal'='tienda_online'`, [n]);
   }
   delete process.env.XABOR_TIENDA_FALLA_EN;
+  delete process.env.XABOR_TIENDA_RETARDO_EN;
+  delete process.env.XABOR_TIENDA_RETARDO_MS;
   await pool.query(`DELETE FROM pedidos WHERE negocio_id=$1 AND folio LIKE 'ARCH-%'`, [NEG]);
   await pool.query(`DELETE FROM tienda_campanas WHERE negocio_id=$1 AND nombre LIKE 'Campania metricas%'`, [NEG]);
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1`, [NEG]);
@@ -1550,6 +1552,209 @@ try {
     assert.strictEqual(usos[0].estado, 'consumida',
       '¡una promoción con dinero detrás volvió a estado reservada: el expirador la devolvería!');
     assert.strictEqual(Number((await promoDe(id)).usos), 1);
+  });
+
+  // ═══ P0-6: EL PRECIO SALE DEL CONJUNTO REALMENTE RESERVADO ═══════════════
+  //
+  // `calcularPromociones` dice cuáles SERÍAN aplicables; el cupo lo decide la
+  // base, una por una. Si otro cliente se lleva el último justo antes del
+  // reclamo, nada del precio puede seguir saliendo del cálculo previo.
+
+  /** Pedido a domicilio con envío real, listo para recalcular. */
+  async function pedidoDomicilio(folio, { subtotal, envio, descuento, promos = [], envioGratis = false }) {
+    const total = Math.max(0, subtotal - descuento + (envioGratis ? 0 : envio));
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos)
+       VALUES ($1,$2,'pendiente_pago',$3)
+       ON CONFLICT (folio) DO UPDATE SET estado='pendiente_pago', datos=$3`,
+      [folio, NEG, JSON.stringify({
+        id: folio, negocioId: NEG, canal: 'tienda_online', estado: 'pendiente_pago',
+        modalidad: 'domicilio', forma_pago: 'enlace de pago', pago_confirmado: false,
+        subtotal, descuento, costo_envio: envio, total,
+        cliente: { nombre: 'Cliente carrera', telefono: '8997630001' },
+        items: [{ nombre: 'Producto', cantidad: 1, precio_unitario: subtotal }],
+        tienda: { promociones: promos, envio_gratis: envioGratis, envio_base: envio },
+        timestamp: new Date().toISOString(),
+      })]);
+    return total;
+  }
+
+  /** Lanza el recálculo y, en plena ventana, deja que B se lleve el cupo. */
+  async function recalculoConCarrera(folio, robar) {
+    const { recalcularPromocionesDelPedido } = await import('../src/services/tiendaPromociones.js');
+    process.env.XABOR_TIENDA_RETARDO_EN = 'recalculo_antes_de_reclamar';
+    process.env.XABOR_TIENDA_RETARDO_MS = '600';
+    try {
+      const corriendo = recalcularPromocionesDelPedido(NEG, folio);
+      await new Promise(r => setTimeout(r, 250));
+      await robar();                       // B se lleva el último cupo
+      return await corriendo;
+    } finally {
+      delete process.env.XABOR_TIENDA_RETARDO_EN;
+      delete process.env.XABOR_TIENDA_RETARDO_MS;
+    }
+  }
+
+  /** Toma el último cupo como lo haría cualquier otro checkout. */
+  const robarCupo = (id, folioB) => async () => {
+    const { rowCount } = await pool.query(
+      `UPDATE tienda_promociones SET usos = usos + 1, updated_at = NOW()
+        WHERE id = $1 AND negocio_id = $2 AND (limite_usos IS NULL OR usos < limite_usos)`,
+      [id, NEG]);
+    assert.strictEqual(rowCount, 1, 'fixture: B no pudo llevarse el cupo');
+    await pool.query(
+      `INSERT INTO tienda_promocion_usos (negocio_id, promocion_id, pedido_folio, estado)
+       VALUES ($1,$2,$3,'reservada')`, [NEG, id, folioB]);
+  };
+
+  await t('32. ENVÍO GRATIS: B se lleva el último cupo en plena ventana; A paga su envío',
+    async () => {
+      const { rows: [p] } = await pool.query(
+        `INSERT INTO tienda_promociones
+           (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos,
+            canales, modalidades, activa)
+         VALUES ($1,'Envio gratis carrera','envio_gratis',NULL,TRUE,0,1,
+                 '["tienda_online"]'::jsonb,'["domicilio"]'::jsonb,TRUE)
+         RETURNING id`, [NEG]);
+
+      const folio = 'PROMO-CARR-ENV';
+      // A llega con el envío ya regalado por la versión anterior.
+      await pedidoDomicilio(folio, {
+        subtotal: 400, envio: 60, descuento: 0, envioGratis: true,
+        promos: [{ id: p.id, nombre: 'Envio gratis carrera', tipo: 'envio_gratis', descuento: 0, envio_gratis: true }],
+      });
+
+      const r = await recalculoConCarrera(folio, robarCupo(p.id, 'PROMO-CARR-ENV-B'));
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+
+      // A NO obtiene envío gratis.
+      assert.strictEqual(r.envioGratis, false, 'A se quedó con un envío gratis que perdió');
+      assert.strictEqual(r.envio, 60, 'no se le cobró el envío a A');
+      assert.strictEqual(r.total, 460, `total ${r.total}: debía ser 400 + 60 de envío`);
+      assert.strictEqual(r.ahorro, 0, 'el ahorro siguió contando un envío gratis que no se dio');
+      assert.deepStrictEqual(r.promociones, [], 'quedó una promoción que no se pudo reclamar');
+      assert.deepStrictEqual(r.perdidas, [p.id]);
+
+      // Ni una reserva falsa: el cupo es de B.
+      const usos = await usosDe(p.id);
+      assert.strictEqual(usos.length, 1, `quedaron ${usos.length} reservas para un cupo de 1`);
+      assert.strictEqual(usos[0].pedido_folio, 'PROMO-CARR-ENV-B', 'la reserva se le atribuyó a A');
+      assert.strictEqual(Number((await promoDe(p.id)).usos), 1);
+
+      // Y el pedido queda con el precio real.
+      const ped = await pedidoDe(folio);
+      assert.strictEqual(Number(ped.datos.total), 460);
+      assert.strictEqual(Number(ped.datos.costo_envio), 60);
+      assert.strictEqual(ped.datos.tienda.envio_gratis, false,
+        'el pedido siguió diciendo que tenía envío gratis');
+      assert.strictEqual(Number(ped.datos.tienda.ahorro), 0);
+      assert.strictEqual(ped.datos.tienda.promociones.length, 0);
+
+      // La versión escrita es la del total FINAL.
+      const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+      assert.strictEqual(r.version, calcularVersionPedidoHash({ total: 460, modalidad: 'domicilio' }),
+        'la versión se calculó sobre un total que nunca se escribió');
+
+      // Y el cobro sale por ese total, sin volver a mover la versión.
+      await conectarClip();
+      const enlace = await crearEnlace(folio);
+      assert.ok(enlace.url);
+      const pago = (await pagosDe(folio))[0];
+      assert.strictEqual(Number(pago.monto), 460, 'se cobró un total distinto al recalculado');
+      assert.strictEqual(pago.version_pedido_hash, r.version,
+        'crearEnlace volvió a mover la versión tras el recálculo');
+    });
+
+  await t('33. promoción MONETARIA: B se lleva el cupo; A paga sin descuento', async () => {
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos, canales, activa)
+       VALUES ($1,'Monto carrera','monto_fijo','MONTOCARR',FALSE,80,1,
+               '["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+
+    const folio = 'PROMO-CARR-MON';
+    await pedidoDomicilio(folio, {
+      subtotal: 500, envio: 40, descuento: 80,
+      promos: [{ id: p.id, nombre: 'Monto carrera', codigo: 'MONTOCARR', tipo: 'monto_fijo', descuento: 80 }],
+    });
+
+    const r = await recalculoConCarrera(folio, robarCupo(p.id, 'PROMO-CARR-MON-B'));
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(r.descuento, 0, 'se conservó un descuento que no se pudo reclamar');
+    assert.strictEqual(r.total, 540, `total ${r.total}: debía ser 500 + 40 de envío`);
+    assert.strictEqual(r.ahorro, 0);
+    assert.deepStrictEqual(r.promociones, []);
+
+    const ped = await pedidoDe(folio);
+    assert.strictEqual(Number(ped.datos.descuento), 0);
+    assert.strictEqual(Number(ped.datos.total), 540);
+    assert.strictEqual((await usosDe(p.id)).length, 1);
+    assert.strictEqual((await usosDe(p.id))[0].pedido_folio, 'PROMO-CARR-MON-B');
+  });
+
+  await t('34. dos promociones y sólo una pierde el cupo: la otra sí queda', async () => {
+    const { rows: [monto] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos,
+          acumulable, prioridad, canales, activa)
+       VALUES ($1,'Combo monto','monto_fijo','COMBOMON',TRUE,50,NULL,
+               TRUE,10,'["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+    const { rows: [env] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos,
+          acumulable, prioridad, canales, modalidades, activa)
+       VALUES ($1,'Combo envio','envio_gratis',NULL,TRUE,0,1,
+               TRUE,20,'["tienda_online"]'::jsonb,'["domicilio"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+
+    const folio = 'PROMO-CARR-DOS';
+    await pedidoDomicilio(folio, {
+      subtotal: 600, envio: 70, descuento: 50, envioGratis: true,
+      promos: [
+        { id: monto.id, nombre: 'Combo monto', tipo: 'monto_fijo', descuento: 50 },
+        { id: env.id, nombre: 'Combo envio', tipo: 'envio_gratis', descuento: 0, envio_gratis: true },
+      ],
+    });
+
+    // B sólo se lleva el cupo del ENVÍO GRATIS. El de monto es ilimitado.
+    const r = await recalculoConCarrera(folio, robarCupo(env.id, 'PROMO-CARR-DOS-B'));
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+
+    assert.strictEqual(r.descuento, 50, 'se perdió el descuento que SÍ se pudo reclamar');
+    assert.strictEqual(r.envioGratis, false, 'se conservó el envío gratis que perdió');
+    assert.strictEqual(r.envio, 70);
+    assert.strictEqual(r.total, 620, `total ${r.total}: debía ser 600 - 50 + 70`);
+    assert.strictEqual(r.ahorro, 50, 'el ahorro contó un envío gratis que no se dio');
+    assert.deepStrictEqual(r.promociones, [monto.id]);
+    assert.deepStrictEqual(r.perdidas, [env.id]);
+
+    const ped = await pedidoDe(folio);
+    assert.strictEqual(Number(ped.datos.total), 620);
+    assert.strictEqual(ped.datos.tienda.envio_gratis, false);
+    assert.strictEqual(ped.datos.tienda.promociones.length, 1);
+    assert.strictEqual(ped.datos.tienda.promociones[0].id, monto.id);
+
+    // La reserva que SÍ quedó lleva la versión del total final, no la del
+    // total que se había calculado con las dos promociones.
+    const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+    const usos = await usosDe(monto.id);
+    assert.strictEqual(usos.length, 1);
+    assert.strictEqual(usos[0].pedido_version,
+      calcularVersionPedidoHash({ total: 620, modalidad: 'domicilio' }),
+      'la reserva quedó sellada con la versión de un precio que nunca existió');
+    assert.strictEqual(usos[0].pedido_version, r.version);
+
+    // Y el cobro respeta ese total sin volver a mover nada.
+    await conectarClip();
+    const enlace = await crearEnlace(folio);
+    assert.ok(enlace.url);
+    const pago = (await pagosDe(folio))[0];
+    assert.strictEqual(Number(pago.monto), 620);
+    assert.strictEqual(pago.version_pedido_hash, r.version,
+      'crearEnlace movió la versión tras el recálculo');
+    assert.strictEqual((await usosDe(monto.id))[0].estado, 'reservada');
   });
 
 } catch (e) {
