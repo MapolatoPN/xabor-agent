@@ -199,6 +199,43 @@ async function pagosDe(folio, negocioId = NEG) {
 }
 const filaId = async (id) => (await pool.query(`SELECT * FROM pagos WHERE id=$1`, [id])).rows[0];
 
+/** `configuracion.valor` vuelve como objeto o como texto segun la columna. */
+function aObjeto(v) {
+  let x = v;
+  for (let i = 0; i < 3 && typeof x === 'string'; i++) {
+    try { x = JSON.parse(x); } catch { break; }
+  }
+  return x;
+}
+
+/** Cambia el costo de envio del negocio y devuelve como restaurarlo. */
+async function conEnvioBase(costo) {
+  const { rows: [r] } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'`, [NEG]);
+  const previo = r?.valor;
+  const reglas = aObjeto(previo) || {};
+  reglas.pedidos = { ...(reglas.pedidos || {}), costo_envio: costo };
+  await pool.query(
+    `UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='reglas_atencion'`,
+    [NEG, JSON.stringify(reglas)]);
+
+  const { rows: [m] } = await pool.query(
+    `SELECT modalidades FROM tienda_config WHERE negocio_id=$1`, [NEG]);
+  const modalidadesPrevias = m?.modalidades;
+  await pool.query(`UPDATE tienda_config SET modalidades=$2 WHERE negocio_id=$1`,
+    [NEG, JSON.stringify(['recoger', 'domicilio'])]);
+
+  return async () => {
+    await pool.query(
+      `UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='reglas_atencion'`,
+      [NEG, JSON.stringify(aObjeto(previo))]);
+    if (modalidadesPrevias) {
+      await pool.query(`UPDATE tienda_config SET modalidades=$2 WHERE negocio_id=$1`,
+        [NEG, JSON.stringify(aObjeto(modalidadesPrevias))]);
+    }
+  };
+}
+
 async function esperar(condicion, queEsperaba, ms = 10000) {
   const limite = Date.now() + ms;
   for (;;) {
@@ -1570,7 +1607,11 @@ try {
       [folio, NEG, JSON.stringify({
         id: folio, negocioId: NEG, canal: 'tienda_online', estado: 'pendiente_pago',
         modalidad: 'domicilio', forma_pago: 'enlace de pago', pago_confirmado: false,
-        subtotal, descuento, costo_envio: envio, total,
+        // Igual que el checkout real: `costo_envio` es el EFECTIVO (0 si hubo
+        // envio gratis) y el costo verdadero vive en `tienda.envio_base`. El
+        // fixture anterior ponia aqui el costo completo aun con envio gratis, y
+        // eso escondia justo el defecto que P0-7 vino a cerrar.
+        subtotal, descuento, costo_envio: envioGratis ? 0 : envio, total,
         cliente: { nombre: 'Cliente carrera', telefono: '8997630001' },
         items: [{ nombre: 'Producto', cantidad: 1, precio_unitario: subtotal }],
         tienda: { promociones: promos, envio_gratis: envioGratis, envio_base: envio },
@@ -1756,6 +1797,226 @@ try {
       'crearEnlace movió la versión tras el recálculo');
     assert.strictEqual((await usosDe(monto.id))[0].estado, 'reservada');
   });
+
+  // ═══ P0-7: ENVÍO BASE ≠ ENVÍO EFECTIVO, POR EL CHECKOUT REAL ═════════════
+  await t('35. pedido REAL a domicilio con envío gratis: perder la promo no regala el envío',
+    async () => {
+      // Nada de fixture sintético aquí: el pedido lo crea el checkout de la
+      // Tienda, que es quien escribe `costo_envio` YA descontado y guarda el
+      // costo verdadero en `tienda.envio_base`. Un helper que pusiera
+      // `costo_envio = 60` con envío gratis ocultaría justo este defecto.
+      const restaurar = await conEnvioBase(60);
+      try {
+        // Los casos anteriores dejaron promociones AUTOMATICAS vivas que se
+        // aplicarian tambien a este pedido y ensuciarian el total. Aqui interesa
+        // una sola variable: el envio.
+        await pool.query(`UPDATE tienda_promociones SET activa=FALSE WHERE negocio_id=$1`, [NEG]);
+        const { rows: [p] } = await pool.query(
+          `INSERT INTO tienda_promociones
+             (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos,
+              canales, modalidades, activa)
+           VALUES ($1,'Envio gratis real','envio_gratis',NULL,TRUE,0,1,
+                   '["tienda_online"]'::jsonb,'["domicilio"]'::jsonb,TRUE)
+           RETURNING id`, [NEG]);
+
+        const r = await comprarOk({
+          checkoutToken: tokenNuevo(), items: [{ productoId: PRODUCTO, cantidad: 1 }],
+          modalidad: 'domicilio', metodoPago: 'enlace_pago',
+          cliente: { nombre: 'Cliente envio', telefono: '8997640001' },
+          direccion: 'Calle Falsa 123', colonia: 'Centro',
+        });
+        const folio = r.body.folio;
+
+        // Así queda un pedido de Tienda con envío gratis: el efectivo en 0 y el
+        // costo verdadero guardado aparte.
+        const inicial = await pedidoDe(folio);
+        assert.strictEqual(Number(inicial.datos.costo_envio), 0,
+          'fixture: el checkout debía haber aplicado el envío gratis');
+        assert.strictEqual(Number(inicial.datos.tienda.envio_base), 60,
+          'fixture: el checkout debía guardar el envío base');
+        assert.strictEqual(inicial.datos.tienda.envio_gratis, true);
+        assert.strictEqual(Number(inicial.datos.total), 300,
+          `fixture: total ${inicial.datos.total}, esperaba 300 sin envío`);
+        assert.strictEqual((await usosDe(p.id)).length, 1);
+
+        // El pedido pierde su reserva -- exactamente como la deja la barrera de
+        // P0-4 cuando la promoción dejó de aplicar a la versión nueva -- y B se
+        // lleva el último cupo antes de que A recalcule.
+        //
+        // Por qué no se usa aquí la ventana del retardo: mientras A tiene su
+        // propia reserva, al recalcular la suelta con un UPDATE sobre la fila de
+        // la promoción, y esa fila queda BLOQUEADA hasta su COMMIT. B no puede
+        // colarse en medio ni ver el cupo liberado. Es una garantía, no una
+        // laguna: la carrera solo existe cuando A no tiene reserva propia que
+        // soltar, que es justo este estado.
+        await pool.query(
+          `DELETE FROM tienda_promocion_usos WHERE negocio_id=$1 AND pedido_folio=$2`, [NEG, folio]);
+        await pool.query(
+          `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0) WHERE id=$1`, [p.id]);
+        await robarCupo(p.id, 'PROMO-ENV-REAL-B')();
+
+        const { recalcularPromocionesDelPedido: recalcular } =
+          await import('../src/services/tiendaPromociones.js');
+        const res = await recalcular(NEG, folio);
+        assert.strictEqual(res.ok, true, JSON.stringify(res));
+
+        assert.strictEqual(res.envioGratis, false, 'A conservó un envío gratis que perdió');
+        assert.strictEqual(res.envio, 60,
+          `envío ${res.envio}: se recalculó sobre el costo YA descontado y se regaló el envío`);
+        assert.strictEqual(res.total, 360, `total ${res.total}: debía ser 300 + 60`);
+        assert.strictEqual(res.ahorro, 0);
+
+        const ped = await pedidoDe(folio);
+        assert.strictEqual(Number(ped.datos.costo_envio), 60, 'el pedido siguió sin cobrar el envío');
+        assert.strictEqual(Number(ped.datos.tienda.envio_base), 60,
+          'se perdió el costo base del envío');
+        assert.strictEqual(ped.datos.tienda.envio_gratis, false);
+        assert.strictEqual(Number(ped.datos.total), 360);
+        assert.strictEqual(Number(ped.datos.tienda.ahorro), 0);
+
+        // La version usa la modalidad CRUDA del pedido ("entrega a domicilio"),
+        // que es la que compara el asiento contra `pedidos_activos`. La clave
+        // corta ("domicilio") solo la entiende el motor de promociones.
+        const { calcularVersionPedidoHash } = await import('../src/services/database.js');
+        assert.strictEqual(ped.datos.modalidad, 'entrega a domicilio',
+          'fixture: el POS guarda la modalidad con su etiqueta larga');
+        assert.strictEqual(res.version,
+          calcularVersionPedidoHash({ total: 360, modalidad: ped.datos.modalidad }),
+          'la versión no corresponde al total con envío');
+
+        // Recalcular otra vez es inofensivo: ni convierte 60 en 0 ni lo suma
+        // dos veces.
+        const { recalcularPromocionesDelPedido } = await import('../src/services/tiendaPromociones.js');
+        for (let i = 0; i < 3; i++) {
+          const otra = await recalcularPromocionesDelPedido(NEG, folio);
+          assert.strictEqual(otra.ok, true, JSON.stringify(otra));
+          assert.strictEqual(otra.envio, 60, `el recálculo ${i + 1} movió el envío a ${otra.envio}`);
+          assert.strictEqual(otra.total, 360, `el recálculo ${i + 1} dejó el total en ${otra.total}`);
+        }
+        const estable = await pedidoDe(folio);
+        assert.strictEqual(Number(estable.datos.total), 360);
+        assert.strictEqual(Number(estable.datos.costo_envio), 60);
+
+        // Y el cobro sale por ese total.
+        await conectarClip();
+        const enlace = await crearEnlace(folio);
+        assert.ok(enlace.url);
+        const pago = (await pagosDe(folio))[0];
+        assert.strictEqual(Number(pago.monto), 360, 'se cobró un total distinto al recalculado');
+        assert.strictEqual(pago.version_pedido_hash, res.version);
+      } finally {
+        await restaurar();
+      }
+    });
+
+  await t('36. histórico con envío gratis y SIN envio_base: falla cerrado, no regala', async () => {
+    // No se puede saber cuánto costaba ese envío. Inventar un 0 sería regalarlo;
+    // inventar otra cifra, cobrarla sin fundamento.
+    const { recalcularPromocionesDelPedido } = await import('../src/services/tiendaPromociones.js');
+    // Sin promociones automaticas activas: aqui se mide el envio, nada mas.
+    await pool.query(`UPDATE tienda_promociones SET activa=FALSE WHERE negocio_id=$1`, [NEG]);
+    const folio = 'PROMO-ENV-LEGACY';
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos)
+       VALUES ($1,$2,'pendiente_pago',$3)
+       ON CONFLICT (folio) DO UPDATE SET datos=$3`,
+      [folio, NEG, JSON.stringify({
+        id: folio, negocioId: NEG, canal: 'tienda_online', estado: 'pendiente_pago',
+        modalidad: 'domicilio', forma_pago: 'enlace de pago', pago_confirmado: false,
+        subtotal: 300, descuento: 0, costo_envio: 0, total: 300,
+        cliente: { nombre: 'Legacy', telefono: '8997641001' },
+        items: [{ nombre: 'Producto', cantidad: 1, precio_unitario: 300 }],
+        tienda: { promociones: [], envio_gratis: true },   // sin envio_base
+        timestamp: new Date().toISOString(),
+      })]);
+
+    const r = await recalcularPromocionesDelPedido(NEG, folio);
+    assert.strictEqual(r.ok, false,
+      `recalculó un pedido cuyo envío base no se puede afirmar: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.razon, 'sin_envio_base', JSON.stringify(r));
+    assert.strictEqual(Number((await pedidoDe(folio)).datos.total), 300,
+      'se tocó el total de un pedido que no se podía recalcular');
+
+    // Un histórico que NUNCA tuvo envío gratis sí se puede recalcular: su
+    // `costo_envio` no lo tocó ninguna promoción.
+    const folio2 = 'PROMO-ENV-LEGACY-OK';
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos)
+       VALUES ($1,$2,'pendiente_pago',$3)
+       ON CONFLICT (folio) DO UPDATE SET datos=$3`,
+      [folio2, NEG, JSON.stringify({
+        id: folio2, negocioId: NEG, canal: 'tienda_online', estado: 'pendiente_pago',
+        modalidad: 'domicilio', forma_pago: 'enlace de pago', pago_confirmado: false,
+        subtotal: 300, descuento: 0, costo_envio: 45, total: 345,
+        cliente: { nombre: 'Legacy 2', telefono: '8997641002' },
+        items: [{ nombre: 'Producto', cantidad: 1, precio_unitario: 300 }],
+        tienda: { promociones: [] },
+        timestamp: new Date().toISOString(),
+      })]);
+    const r2 = await recalcularPromocionesDelPedido(NEG, folio2);
+    assert.strictEqual(r2.ok, true, JSON.stringify(r2));
+    assert.strictEqual(r2.envio, 45, 'un histórico sin promociones perdió su costo de envío');
+    assert.strictEqual(r2.total, 345);
+  });
+
+  await t('37. pedido REAL a domicilio: una promo acotada a domicilio SÍ se re-reserva',
+    async () => {
+      // El contraste del caso 35. `pedidos_activos.datos.modalidad` guarda la
+      // etiqueta del POS ("entrega a domicilio") y las promociones se acotan
+      // con la clave corta ("domicilio"). Sin normalizar, el recálculo de un
+      // pedido REAL descartaba TODA promoción de domicilio -- y el envío gratis
+      // no se daba nunca. El fixture sintético no lo veía porque escribía ya la
+      // clave corta.
+      const restaurar = await conEnvioBase(60);
+      try {
+        await pool.query(`UPDATE tienda_promociones SET activa=FALSE WHERE negocio_id=$1`, [NEG]);
+
+        const { rows: [p] } = await pool.query(
+          `INSERT INTO tienda_promociones
+             (negocio_id, nombre, tipo, codigo, automatica, valor, limite_usos,
+              canales, modalidades, activa)
+           VALUES ($1,'Solo domicilio','monto_fijo',NULL,TRUE,45,2,
+                   '["tienda_online"]'::jsonb,'["domicilio"]'::jsonb,TRUE)
+           RETURNING id`, [NEG]);
+
+        const r = await comprarOk({
+          checkoutToken: tokenNuevo(), items: [{ productoId: PRODUCTO, cantidad: 1 }],
+          modalidad: 'domicilio', metodoPago: 'enlace_pago',
+          cliente: { nombre: 'Cliente dom', telefono: '8997642001' },
+          direccion: 'Calle Real 9', colonia: 'Centro',
+        });
+        const folio = r.body.folio;
+        const inicial = await pedidoDe(folio);
+        assert.strictEqual(inicial.datos.modalidad, 'entrega a domicilio');
+        assert.strictEqual(Number(inicial.datos.descuento), 45,
+          'fixture: el checkout debía aplicar la promoción de domicilio');
+        assert.strictEqual(Number(inicial.datos.total), 315, '300 - 45 + 60');
+
+        // Recalcular NO puede desechar una promoción que sigue aplicando.
+        const { recalcularPromocionesDelPedido } = await import('../src/services/tiendaPromociones.js');
+        const res = await recalcularPromocionesDelPedido(NEG, folio);
+        assert.strictEqual(res.ok, true, JSON.stringify(res));
+        assert.deepStrictEqual(res.promociones, [p.id],
+          'el recálculo descartó una promoción de domicilio que sí aplicaba');
+        assert.strictEqual(res.descuento, 45);
+        assert.strictEqual(res.envio, 60);
+        assert.strictEqual(res.total, 315, `total ${res.total}: debía seguir en 315`);
+
+        const usos = await usosDe(p.id);
+        assert.strictEqual(usos.length, 1, `quedaron ${usos.length} reservas`);
+        assert.strictEqual(usos[0].estado, 'reservada');
+        assert.strictEqual(Number((await promoDe(p.id)).usos), 1,
+          're-reservar consumió un cupo de más');
+
+        // Idempotente: recalcular otra vez no mueve nada.
+        const otra = await recalcularPromocionesDelPedido(NEG, folio);
+        assert.strictEqual(otra.total, 315);
+        assert.strictEqual((await usosDe(p.id)).length, 1);
+        assert.strictEqual(Number((await promoDe(p.id)).usos), 1);
+      } finally {
+        await restaurar();
+      }
+    });
 
 } catch (e) {
   console.error('ERROR FATAL:', e.stack || e);
