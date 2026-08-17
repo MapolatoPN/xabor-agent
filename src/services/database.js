@@ -2744,6 +2744,16 @@ export async function adoptarCheckoutClip(pagoId, negocioId, checkoutId, url) {
  * La compatibilidad legacy de Clip (`datos.clip_link_id`) va en la MISMA
  * transaccion: es la unica forma de que su fallo no deje la creacion a medias.
  */
+// Inyeccion de fallo con el mismo candado de produccion que el resto del
+// proyecto: inerte salvo en pruebas.
+function fallaInyectada(marca) {
+  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_PAGOS_FALLA_EN === marca) {
+    const e = new Error(`Fallo inyectado en '${marca}'`);
+    e.inyectado = true;
+    throw e;
+  }
+}
+
 export async function finalizarCreacionPago({
   pagoId, negocioId, referenciaExterna, url, preferenceId = null,
   estado = 'pendiente', comoSeResolvio = 'creado', folioClipLegacy = null,
@@ -2754,13 +2764,27 @@ export async function finalizarCreacionPago({
   try {
     await cliente.query('BEGIN');
     const { rows: [fila] } = await cliente.query(
-      `SELECT id, referencia_externa FROM pagos WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+      `SELECT id, referencia_externa, preference_id, payment_id
+         FROM pagos WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
       [pagoId, nid]);
     if (!fila) { await cliente.query('ROLLBACK'); return { ok: false, razon: 'no_encontrado' }; }
+
+    // NINGUNA identidad financiera historica se sobrescribe. No solo la
+    // referencia externa: un preference_id o un payment_id distinto tambien
+    // significan que esto no es esta creacion.
     if (fila.referencia_externa && referenciaExterna && fila.referencia_externa !== referenciaExterna) {
-      // Identidad historica: jamas se sobrescribe.
       await cliente.query('ROLLBACK');
       return { ok: false, razon: 'identidad_externa_distinta', referenciaExistente: fila.referencia_externa };
+    }
+    if (fila.preference_id && preferenceId && fila.preference_id !== preferenceId) {
+      await cliente.query('ROLLBACK');
+      return { ok: false, razon: 'preference_id_distinto', referenciaExistente: fila.preference_id };
+    }
+    if (fila.payment_id && preferenceId && fila.payment_id === preferenceId) {
+      // Un preference_id que coincide con un payment_id ya ligado es una mezcla
+      // de espacios de identificadores: fail closed antes que confundirlos.
+      await cliente.query('ROLLBACK');
+      return { ok: false, razon: 'identificadores_mezclados', referenciaExistente: fila.payment_id };
     }
 
     await cliente.query(
@@ -2779,15 +2803,26 @@ export async function finalizarCreacionPago({
          creacion_ambigua_resuelta_at: new Date().toISOString(),
        })]);
 
+    // Fronteras inyectables DENTRO de la transaccion. Cada una debe terminar en
+    // ROLLBACK completo: media identidad local es lo que P0-D vino a impedir.
+    fallaInyectada('finalizacion_tras_update_pagos');
+
     // Compatibilidad legacy de Clip, en la misma transaccion.
     if (folioClipLegacy && referenciaExterna) {
+      fallaInyectada('finalizacion_antes_de_legacy');
       await cliente.query(
         `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
           WHERE folio = $1 AND negocio_id = $2`,
         [folioClipLegacy, nid, JSON.stringify({ clip_link_id: referenciaExterna })]);
     }
 
+    fallaInyectada('finalizacion_antes_de_commit');
     await cliente.query('COMMIT');
+    // COMMIT AMBIGUO: la base SI guardo, pero el llamador recibe una excepcion
+    // como si hubiera fallado. Es un caso real -- una conexion que se corta
+    // justo despues del COMMIT -- y distinto de un rollback: la identidad
+    // existe, aunque la memoria del proceso no lo sepa.
+    fallaInyectada('finalizacion_commit_ambiguo');
     return { ok: true };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
@@ -2795,6 +2830,24 @@ export async function finalizarCreacionPago({
   } finally {
     cliente.release();
   }
+}
+
+/** Lee un pago por id, acotado al negocio. */
+export async function obtenerPagoPorId(pagoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows: [r] } = await pool.query(
+    `SELECT * FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, negocioId.trim()]);
+  return r || null;
+}
+
+/**
+ * ¿Esta fila ya tiene una identidad externa durable? Cualquiera de estas
+ * pruebas basta: si existe una, el proveedor creo algo y jamas puede volver a
+ * recibir un POST de creacion por esta fila.
+ */
+export function tieneIdentidadExternaDurable(fila) {
+  if (!fila) return false;
+  return Boolean(fila.referencia_externa || fila.preference_id || fila.payment_id || fila.url);
 }
 
 // Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila

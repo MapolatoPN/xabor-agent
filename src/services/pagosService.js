@@ -18,7 +18,7 @@ import {
   obtenerIntentoDePago, marcarIntentosAmbiguos, conObligacionDePagoExclusiva,
   invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
   marcarCreacionAmbigua, anotarMotivoAmbiguedad,
-  finalizarCreacionPago,
+  finalizarCreacionPago, obtenerPagoPorId, tieneIdentidadExternaDurable,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -362,13 +362,26 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
 
   // Identidad durable de creación ANTES del POST. Determinista y propia de la
   // fila, para que el reintento mande exactamente la misma.
+  // ── BARRERA EXPLICITA ANTES DEL POST ─────────────────────────────────────
+  //
+  // Si esta fila ya tiene CUALQUIER identidad externa -- referencia, preference,
+  // payment o incluso solo la URL --, el proveedor ya creo algo por ella y no
+  // puede recibir otro POST. Nunca. Ni siquiera si ademas arrastra metadata de
+  // anomalia por un COMMIT ambiguo: esa combinacion (identidad + anomalia) es
+  // justamente la que un early-return por `vigente` no atrapa, porque la fila
+  // puede estar en 'creando' y sin pasar por esa rama.
+  if (tieneIdentidadExternaDurable(registro)) {
+    return {
+      pagoId: registro.id, url: registro.url, reutilizado: true,
+      referenciaExterna: registro.referencia_externa,
+      estado: registro.estado === 'creando' ? 'pendiente' : registro.estado,
+      identidadPreexistente: true,
+    };
+  }
+
   const claveIdempotencia = `xabor:pago:${registro.id}`;
   await registrarIntentoDeCreacion(registro.id, negocioId, claveIdempotencia);
 
-  // Una vez que la identidad externa quedo persistida localmente, un fallo
-  // posterior NO puede devolver la fila a "ambigua": ambigua significa "no
-  // sabemos si existe un checkout", y aqui ya sabemos que si.
-  let identidadPersistida = false;
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
 
@@ -399,7 +412,6 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // FINALIZACION ATOMICA. Antes eran cuatro escrituras sueltas y un fallo
     // intermedio dejaba media identidad local -- con el catch marcando la
     // creación como ambigua aunque la identidad ya existiera.
-    identidadPersistida = true;
     const fin = await finalizarCreacionPago({
       pagoId: registro.id, negocioId,
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
@@ -427,16 +439,29 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // ausentes, configuración inválida -- son fallos limpios.
     const antesDeSalir = e.code === 'TENANT_CONTEXT_REQUIRED'
       || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL';
-    if (identidadPersistida || e.code === 'CREACION_AMBIGUA') {
-      // La identidad ya existe (o el motivo ya quedo anotado): no se vuelve a
-      // marcar ambigua ni se toca nada mas.
-      throw e;
-    }
+    if (e.code === 'CREACION_AMBIGUA') throw e;      // el motivo ya quedo anotado
     if (antesDeSalir) {
       await marcarPagoFallido(registro.id, e.code || e.message);
-    } else {
-      await marcarCreacionAmbigua(registro.id, negocioId, e.code || e.message);
+      throw e;
     }
+
+    // NO se usa ninguna bandera de memoria para decidir si la identidad quedo
+    // durable. La bandera anterior se encendia ANTES del COMMIT: si la
+    // transaccion hacia rollback, el proceso creia haber persistido algo que no
+    // existia, no marcaba la creacion como ambigua, y el siguiente reintento
+    // mandaba un segundo POST. La unica fuente de verdad sobre durabilidad es
+    // la base: se relee.
+    const fresca = await obtenerPagoPorId(registro.id, negocioId).catch(() => null);
+    if (tieneIdentidadExternaDurable(fresca)) {
+      // El COMMIT si ocurrio (o el proveedor dejo rastro): la creacion esta
+      // capturada. No se marca ambigua -- eso reabriria el POST -- y el
+      // reintento reutilizara por la barrera de arriba.
+      console.warn(`[Pagos] Fallo tras persistir la identidad de ${registro.id}: se conserva y se reutiliza`);
+      throw e;
+    }
+    // Sin identidad durable: el POST al proveedor ya ocurrio y no sabemos si
+    // creo. Ambigua, y que la resuelva la capacidad de cada proveedor.
+    await marcarCreacionAmbigua(registro.id, negocioId, e.code || e.message);
     throw e;
   }
 }

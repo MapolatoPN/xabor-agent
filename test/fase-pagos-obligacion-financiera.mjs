@@ -921,6 +921,114 @@ try {
     assert.ok(!String(tras.url || '').includes('otro'), 'sobrescribió la URL histórica');
   });
 
+  // ═══ P0-D: la durabilidad la dice la BASE, no una bandera en memoria ═══
+  for (const frontera of [
+    'finalizacion_tras_update_pagos',
+    'finalizacion_antes_de_legacy',
+    'finalizacion_antes_de_commit',
+  ]) {
+    await t(`2t[${frontera}]: rollback completo, sin media identidad, 5 retries sin POST`, async () => {
+      const folio = `OB-${frontera.slice(-6)}`;
+      await pedido(folio, 512);
+      await conectarClip();
+      const antes = checkoutsClip;
+
+      process.env.XABOR_PAGOS_FALLA_EN = frontera;
+      await assert.rejects(() => crearEnlace(folio), 'la finalización debía propagar el fallo');
+      delete process.env.XABOR_PAGOS_FALLA_EN;
+
+      assert.strictEqual(checkoutsClip - antes, 1,
+        'el proveedor debía haber creado exactamente un checkout');
+      const f = (await filas(folio))[0];
+      // Rollback completo: ni un campo suelto.
+      assert.strictEqual(f.referencia_externa, null, 'quedó media identidad: referencia');
+      assert.strictEqual(f.url, null, 'quedó media identidad: url');
+      assert.strictEqual(f.preference_id, null, 'quedó media identidad: preference_id');
+      // Y la creación queda durablemente ambigua, que es la verdad: el POST
+      // salió y no sabemos qué pasó del otro lado.
+      assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true,
+        'la creación no quedó marcada como ambigua: el retry volvería a hacer POST');
+
+      // Clip no puede buscar por referencia: los reintentos fallan cerrado.
+      for (let i = 0; i < 5; i++) {
+        await assert.rejects(() => crearEnlace(folio), e => e.code === 'CREACION_AMBIGUA',
+          `el reintento ${i + 1} volvió a crear`);
+      }
+      assert.strictEqual(checkoutsClip - antes, 1,
+        `POST adicionales = ${checkoutsClip - antes - 1}; debía ser 0`);
+    });
+  }
+
+  await t('2u. COMMIT AMBIGUO: la base sí guardó y el llamador ve excepción', async () => {
+    // Distinto de un rollback: la identidad EXISTE. Si el código creyera a su
+    // bandera de memoria -- encendida antes del COMMIT -- no marcaría nada y el
+    // retry podría hacer otro POST; si en cambio marcara ambigua sin releer,
+    // reabriría el POST igual. La única salida es releer la base.
+    const folio = 'OB-0080';
+    await pedido(folio, 640);
+    await conectarClip();
+    const antes = checkoutsClip;
+
+    process.env.XABOR_PAGOS_FALLA_EN = 'finalizacion_commit_ambiguo';
+    await assert.rejects(() => crearEnlace(folio));
+    delete process.env.XABOR_PAGOS_FALLA_EN;
+
+    assert.strictEqual(checkoutsClip - antes, 1);
+    const f = (await filas(folio))[0];
+    assert.ok(f.referencia_externa && f.url, 'el COMMIT sí ocurrió: la identidad debía estar');
+    assert.notStrictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true,
+      '¡marcó ambigua una fila con identidad ya persistida! Eso reabre el POST');
+
+    // Y el retry reutiliza por la barrera previa al POST.
+    for (let i = 0; i < 5; i++) {
+      const r = await crearEnlace(folio);
+      assert.strictEqual(r.referenciaExterna, f.referencia_externa, 'devolvió otro checkout');
+    }
+    assert.strictEqual(checkoutsClip - antes, 1,
+      `POST adicionales = ${checkoutsClip - antes - 1}; debía ser 0`);
+  });
+
+  await t('2v. identidad + anomalía a la vez: tampoco puede volver a hacer POST', async () => {
+    // La combinación que el early-return de `vigente` no atrapa: la fila tiene
+    // identidad y URL, pero arrastra metadata de anomalía y sigue en 'creando'.
+    const folio = 'OB-0081';
+    await pedido(folio, 455);
+    await conectarClip();
+    const antes = checkoutsClip;
+    const primero = await crearEnlace(folio);
+    const f = (await filas(folio))[0];
+
+    await pool.query(
+      `UPDATE pagos SET estado='creando',
+                       metadata_sanitizada = metadata_sanitizada
+                         || '{"anomalia":"creacion_ambigua","creacion_ambigua_abierta":true}'::jsonb
+        WHERE id = $1`, [f.id]);
+
+    for (let i = 0; i < 5; i++) {
+      const r = await crearEnlace(folio);
+      assert.strictEqual(r.referenciaExterna, primero.referenciaExterna,
+        `el reintento ${i + 1} no reutilizó la identidad existente`);
+      assert.strictEqual(r.identidadPreexistente, true, 'no pasó por la barrera previa al POST');
+    }
+    assert.strictEqual(checkoutsClip - antes, 1,
+      `POST adicionales = ${checkoutsClip - antes - 1}; debía ser 0`);
+  });
+
+  await t('2w. un preference_id histórico distinto tampoco se sobrescribe', async () => {
+    const folio = 'OB-0071';
+    const f = (await filas(folio))[0];
+    assert.ok(f.preference_id, 'fixture: la fila debía tener preference_id');
+    const { finalizarCreacionPago } = await import('../src/services/database.js');
+    const r = await finalizarCreacionPago({
+      pagoId: f.id, negocioId: NEG,
+      referenciaExterna: f.referencia_externa,      // la misma
+      url: f.url, preferenceId: 'pref-de-otra-creacion', estado: 'pendiente',
+    });
+    assert.strictEqual(r.ok, false, 'aceptó sobrescribir un preference_id histórico');
+    assert.strictEqual(r.razon, 'preference_id_distinto');
+    assert.strictEqual((await filaId(f.id)).preference_id, f.preference_id);
+  });
+
   await t('2s. barrera LEGACY (solo anomalia, sin bandera): se limpia al adoptar', async () => {
     // Filas escritas antes de que existiera la bandera. El lector las reconoce
     // como ambiguas; si la resolución no supiera limpiarlas, quedarían
