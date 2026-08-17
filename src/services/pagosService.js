@@ -149,7 +149,19 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   // ANTES de crear nada: o queda reservada para la version que corre ahora, o
   // no hay checkout. Cobrar un total con un descuento que ya no aplica seria
   // regalar la diferencia sin que nadie se entere.
-  const { resincronizarReservasPorVersion } = await import('./tiendaPromociones.js');
+  const { resincronizarReservasPorVersion, pedidoEsperaRecalculoDePromocion } =
+    await import('./tiendaPromociones.js');
+
+  // BARRERA DURABLE. Si una version anterior perdio su promocion, el total del
+  // pedido sigue llevando un descuento que ya nadie justifica. La AUSENCIA de
+  // reserva no dice que el precio sea valido -- por eso no basta con mirar si
+  // hay reservas: un segundo intento las encontraria vacias y seguiria
+  // adelante. Solo un recalculo server-side real limpia esto.
+  if (pedidoEsperaRecalculoDePromocion(pedido)) {
+    throw new PedidoInvalidoError(
+      `El pedido ${pedidoId} tiene un descuento que ya no aplica a su version actual: hay que recalcularlo antes de cobrarlo`);
+  }
+
   const promoSync = await resincronizarReservasPorVersion({
     negocioId, folio: pedidoId, datosPedido: pedido, versionActual: versionHash,
   });

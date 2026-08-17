@@ -14,6 +14,17 @@ import { randomUUID } from 'crypto';
 import { pool, calcularVersionPedidoHash } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
 
+// Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
+// inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
+// atribucion NO deja el checkout dandose por terminado.
+function fallaInyectada(punto) {
+  if (process.env.NODE_ENV === 'production') return;
+  if (process.env.XABOR_TIENDA_FALLA_EN !== punto) return;
+  const e = new Error(`Fallo inyectado en '${punto}' (prueba de atribucion)`);
+  e.inyectado = true;
+  throw e;
+}
+
 export class PromocionError extends Error {
   constructor(mensaje, codigo) { super(mensaje); this.codigo = codigo; }
 }
@@ -543,6 +554,7 @@ export async function registrarUsosPromociones({
   let registrados = 0;
   try {
     await client.query('BEGIN');
+    fallaInyectada('atribucion_tras_begin');
     for (const a of aplicadas) {
       // El UPDATE NO puede pisar el estado de una fila que ya se consumio: un
       // reintento tardio del checkout volveria a dejarla 'reservada' y el
@@ -558,7 +570,10 @@ export async function registrarUsosPromociones({
         [negocioId, a.id, PREFIJO_RESERVA + checkoutToken, folio,
          a.descuento || 0, montoVenta, !!clienteNuevo, telefono, estado, pedidoVersion]
       );
-      if (confirmados > 0) { registrados++; continue; }
+      if (confirmados > 0) {
+        fallaInyectada('atribucion_tras_convertir');
+        registrados++; continue;
+      }
 
       // ── SIN RESERVA PROVISIONAL QUE CONFIRMAR ───────────────────────────
       //
@@ -587,6 +602,7 @@ export async function registrarUsosPromociones({
          a.descuento || 0, montoVenta, !!clienteNuevo, estado, pedidoVersion]
       );
       if (rowCount > 0) {
+        fallaInyectada('atribucion_tras_insert');
         const { rowCount: reclamado } = await client.query(
           `UPDATE tienda_promociones
               SET usos = usos + 1, updated_at = NOW()
@@ -600,17 +616,53 @@ export async function registrarUsosPromociones({
           throw new PromocionError(
             `La promocion "${a.nombre || a.id}" ya no tiene cupo disponible`, 'CUPO_AGOTADO');
         }
+        fallaInyectada('atribucion_tras_reclamar');
         registrados++;
+        continue;
       }
+
+      // ── LA FILA YA EXISTE PARA ESTE FOLIO ───────────────────────────────
+      //
+      // El ON CONFLICT no inserto nada: alguien mas ya ato esta promocion a
+      // este pedido. Tipicamente el reciclador de reservas, que al encontrar el
+      // pedido convierte `reserva:<token>` en el folio real -- pero sin decidir
+      // si el pedido ya vale por si mismo o sigue esperando dinero.
+      //
+      // Ignorarla (que es lo que hacia un DO NOTHING a secas) dejaba una
+      // promocion de un pedido de EFECTIVO eternamente 'reservada': nadie la
+      // consumiria nunca, porque el consumo vive en la transicion financiera y
+      // ese pedido no tiene ninguna.
+      //
+      // Se reconcilia. El cupo NO se vuelve a reclamar -- esa fila ya estaba
+      // contada -- y 'consumida' jamas retrocede a 'reservada': detras de una
+      // consumida hay dinero.
+      const { rowCount: reconciliados } = await client.query(
+        `UPDATE tienda_promocion_usos
+            SET monto_descuento = $4, monto_venta = $5,
+                cliente_nuevo = $6, cliente_telefono = COALESCE(cliente_telefono, $7),
+                pedido_version = COALESCE($9, pedido_version),
+                estado = CASE WHEN estado = 'consumida' THEN 'consumida' ELSE $8 END,
+                consumida_at = CASE
+                  WHEN estado = 'consumida' THEN consumida_at
+                  WHEN $8 = 'consumida' THEN NOW()
+                  ELSE consumida_at END
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3`,
+        [negocioId, a.id, folio, a.descuento || 0, montoVenta, !!clienteNuevo,
+         telefono, estado, pedidoVersion]);
+      if (reconciliados > 0) registrados++;
     }
+    fallaInyectada('atribucion_antes_de_commit');
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[Tienda] Error registrando usos de promoción:', e.message);
-    // Un cupo que no se pudo reclamar NO se traga: quien llama tiene que saber
-    // que la promocion no quedo registrada, o daria por bueno un descuento que
-    // nadie contabilizo.
-    if (e instanceof PromocionError) throw e;
+    // NADA se traga. Antes solo se relanzaba PromocionError, asi que un timeout
+    // o una conexion rota hacian ROLLBACK y esta funcion volvia como si hubiera
+    // funcionado -- y `derivacionCritica` marcaba la atribucion COMO HECHA. La
+    // promocion quedaba sin vincular y ningun reintento volvia a mirarla.
+    //
+    // Si la transaccion no hizo COMMIT, el llamador tiene que enterarse.
+    throw e;
   } finally {
     client.release();
   }
@@ -704,6 +756,31 @@ export async function resincronizarReservasPorVersion({
     // total del pedido esta mal y no hay checkout que valga.
     const perdidas = desfasadas.filter(r => !aplicanAhora.has(String(r.promocion_id)));
     if (perdidas.length) {
+      // BARRERA DURABLE, en la MISMA transaccion que suelta el cupo.
+      //
+      // Soltar la reserva y solo devolver un error dejaba un agujero: al
+      // segundo intento ya no habia reserva, `resincronizar` respondia
+      // 'sin_reservas' y el cobro salia adelante -- con el total viejo, que
+      // todavia lleva el descuento. Liberar el cupo borraba la unica evidencia
+      // de que ese precio ya no valia.
+      //
+      // La AUSENCIA de reserva no significa que el precio sea valido. Solo un
+      // recalculo server-side real puede volver a afirmarlo, y es lo unico que
+      // limpia esta marca.
+      await client.query(
+        `UPDATE pedidos_activos
+            SET datos = jsonb_set(
+                  COALESCE(datos, '{}'::jsonb), '{tienda}',
+                  COALESCE(datos->'tienda', '{}'::jsonb) || $3::jsonb, true),
+                updated_at = NOW()
+          WHERE folio = $1 AND negocio_id = $2`,
+        [folio, nid, JSON.stringify({
+          promocion_recalculo_pendiente: true,
+          promocion_recalculo_motivo: 'la promocion dejo de aplicar al cambiar el pedido',
+          promocion_recalculo_version: versionActual,
+          promocion_recalculo_promociones: perdidas.map(r => r.promocion_id),
+          promocion_recalculo_at: new Date().toISOString(),
+        })]);
       await client.query('COMMIT');   // el cupo si vuelve al pozo
       return {
         ok: false, razon: 'promocion_no_aplica_a_la_version_nueva',
@@ -738,6 +815,20 @@ export async function resincronizarReservasPorVersion({
       rereservadas.push(r.promocion_id);
     }
 
+    // El precio volvio a afirmarse server-side para esta version: si habia
+    // barrera, aqui deja de tener sentido.
+    await client.query(
+      `UPDATE pedidos_activos
+          SET datos = jsonb_set(datos, '{tienda}',
+                (datos->'tienda') - 'promocion_recalculo_pendiente'
+                                  - 'promocion_recalculo_motivo'
+                                  - 'promocion_recalculo_version'
+                                  - 'promocion_recalculo_promociones'
+                                  - 'promocion_recalculo_at', true),
+              updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2 AND datos->'tienda' IS NOT NULL`,
+      [folio, nid]);
+
     await client.query('COMMIT');
     console.log(`[Promos] ${rereservadas.length} reserva(s) del pedido ${folio} pasaron a la version ${versionActual}`);
     return { ok: true, accion: 'resincronizada', promociones: rereservadas, descuento: recalculo.descuento };
@@ -745,6 +836,137 @@ export async function resincronizarReservasPorVersion({
     await client.query('ROLLBACK').catch(() => {});
     console.error('[Promos] Error resincronizando reservas:', e.message);
     return { ok: false, razon: 'error_resincronizando' };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * ¿Este pedido esta esperando un recalculo de promociones?
+ *
+ * Mientras lo este, su total lleva un descuento que ya nadie justifica y no
+ * puede salir ningun cobro. Se lee de `pedidos_activos.datos.tienda`, que es
+ * durable: sobrevive al reinicio, al retry y al proceso que la escribio.
+ */
+export function pedidoEsperaRecalculoDePromocion(datosPedido) {
+  return datosPedido?.tienda?.promocion_recalculo_pendiente === true;
+}
+
+/**
+ * RECALCULO SERVER-SIDE REAL. Es lo UNICO que limpia la barrera.
+ *
+ * Vuelve a calcular las promociones con el carrito que el pedido tiene ahora,
+ * reserva las que sigan aplicando (con la barrera de cupo de siempre), reescribe
+ * el descuento y el total del pedido con lo que el servidor acaba de decidir --
+ * nunca con lo que traia -- y solo entonces borra la marca.
+ *
+ * Volver a llamar a `crearEnlacePago` NO la limpia: ese camino solo lee.
+ */
+export async function recalcularPromocionesDelPedido(negocioId, folio, { timezone = 'America/Matamoros' } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [pedido] } = await client.query(
+      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      [folio, nid]);
+    if (!pedido) { await client.query('ROLLBACK'); return { ok: false, razon: 'pedido_no_encontrado' }; }
+
+    const datos = pedido.datos || {};
+    const envio = Number(datos?.costo_envio ?? datos?.envio ?? 0) || 0;
+    const descuentoViejo = Number(datos?.descuento || 0) || 0;
+    const sub = Number(datos?.subtotal);
+    const base = Number.isFinite(sub) && sub > 0
+      ? sub : Math.max(0, Number(datos?.total || 0) + descuentoViejo - envio);
+    const guardadas = Array.isArray(datos?.tienda?.promociones) ? datos.tienda.promociones : [];
+    const codigo = guardadas.map(p => p.codigo).find(Boolean) || null;
+
+    // Las reservas vivas de este pedido no lo descalifican a si mismo.
+    const { rows: vivas } = await client.query(
+      `SELECT promocion_id FROM tienda_promocion_usos
+        WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'reservada'`,
+      [nid, folio]);
+
+    const promo = await calcularPromociones({
+      negocioId: nid, subtotal: base, items: Array.isArray(datos?.items) ? datos.items : [],
+      costoEnvio: envio, modalidad: datos?.modalidad || datos?.tipo || 'recoger',
+      codigo, telefono: datos?.cliente?.telefono || null,
+      canal: datos?.canal || 'tienda_online', timezone,
+      cuposYaApartados: vivas.map(v => v.promocion_id),
+    });
+
+    // Se sueltan TODAS las reservas vivas del pedido y se vuelven a tomar solo
+    // las que siguen aplicando. Asi el resultado no depende de lo que hubiera.
+    const { rows: sueltas } = await client.query(
+      `DELETE FROM tienda_promocion_usos
+        WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'reservada'
+        RETURNING promocion_id`, [nid, folio]);
+    for (const x of sueltas) {
+      await client.query(
+        `UPDATE tienda_promociones SET usos = GREATEST(usos - 1, 0), updated_at = NOW()
+          WHERE id = $1 AND negocio_id = $2`, [x.promocion_id, nid]);
+    }
+
+    const version = calcularVersionPedidoHash({ total: promo.total, modalidad: datos?.modalidad });
+    const reservadas = [];
+    for (const ap of promo.aplicadas) {
+      const { rowCount: reclamado } = await client.query(
+        `UPDATE tienda_promociones
+            SET usos = usos + 1, updated_at = NOW()
+          WHERE id = $1 AND negocio_id = $2
+            AND (limite_usos IS NULL OR usos < limite_usos)`,
+        [ap.id, nid]);
+      if (!reclamado) continue;   // se agoto entre medias: el pedido va sin ella
+      await client.query(
+        `INSERT INTO tienda_promocion_usos
+           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
+            monto_descuento, estado, pedido_version)
+         VALUES ($1,$2,$3,$4,$5,$6,'reservada',$7)
+         ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
+        [nid, ap.id, ap.campaniaId || null, folio, datos?.cliente?.telefono || null,
+         ap.descuento || 0, version]);
+      reservadas.push(ap);
+    }
+
+    // El pedido se queda con lo que el SERVIDOR acaba de calcular.
+    const totalNuevo = Math.max(0, Math.round(
+      (base - reservadas.reduce((n, x) => n + (x.descuento || 0), 0) + (promo.envioGratis ? 0 : envio)) * 100) / 100);
+    await client.query(
+      `UPDATE pedidos_activos
+          SET datos = (datos || $3::jsonb)
+                      || jsonb_build_object('tienda',
+                           ((datos->'tienda') - 'promocion_recalculo_pendiente'
+                                              - 'promocion_recalculo_motivo'
+                                              - 'promocion_recalculo_version'
+                                              - 'promocion_recalculo_promociones'
+                                              - 'promocion_recalculo_at')
+                           || $4::jsonb),
+              updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2`,
+      [folio, nid,
+       JSON.stringify({
+         subtotal: base,
+         descuento: reservadas.reduce((n, x) => n + (x.descuento || 0), 0),
+         total: totalNuevo,
+       }),
+       JSON.stringify({
+         promociones: reservadas.map(x => ({
+           id: x.id, nombre: x.nombre, codigo: x.codigo, tipo: x.tipo,
+           descuento: x.descuento, envio_gratis: x.envioGratis, campania_id: x.campaniaId,
+         })),
+         ahorro: promo.ahorro,
+         envio_gratis: promo.envioGratis,
+       })]);
+
+    await client.query('COMMIT');
+    console.log(`[Promos] Pedido ${folio} recalculado: total ${totalNuevo} con ${reservadas.length} promocion(es)`);
+    return { ok: true, total: totalNuevo, promociones: reservadas.map(x => x.id) };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[Promos] Error recalculando el pedido:', e.message);
+    return { ok: false, razon: 'error_recalculando' };
   } finally {
     client.release();
   }
