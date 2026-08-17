@@ -27,7 +27,8 @@ import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/print
 import { getPaymentStatus as getPaymentStatusClip } from './services/providers/clipProvider.js';
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
          derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes,
-         verificarYAsentarClip, reconciliarCandidatosClip } from './services/webhookPagos.js';
+         verificarYAsentarClip, reconciliarCandidatosClip,
+         expirarPagosVencidos } from './services/webhookPagos.js';
 import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -7885,6 +7886,15 @@ async function arrancar() {
   setInterval(() => {
     reconciliarCandidatosClip().catch(e =>
       console.error('[Pagos] Recuperacion de candidatos Clip fallo:', e.message));
+  }, 60 * 1000);
+
+  // Expiracion de esperas de pago. El intervalo solo dispara; la exclusividad
+  // esta en la base, asi que varias instancias pueden correrlo a la vez.
+  expirarPagosVencidos().catch(e =>
+    console.error('[Pagos] Expiracion inicial fallo:', e.message));
+  setInterval(() => {
+    expirarPagosVencidos().catch(e =>
+      console.error('[Pagos] Expiracion fallo:', e.message));
   }, 60 * 1000);
   setInterval(() => {
     reconciliarDerivacionesPendientes().catch(e =>

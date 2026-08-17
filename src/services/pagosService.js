@@ -19,6 +19,7 @@ import {
   invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
   marcarCreacionAmbigua, anotarMotivoAmbiguedad,
   finalizarCreacionPago, obtenerPagoPorId, tieneIdentidadExternaDurable,
+  minutosDeEsperaDePago,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -343,6 +344,7 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
           referenciaExterna: encontrado.referenciaExterna, url: encontrado.url,
           preferenceId: encontrado.preferenciaId || null, estado: 'pendiente',
           comoSeResolvio: 'recuperado_por_referencia',
+          esperaMinutos: await minutosDeEsperaDePago(negocioId),
         });
         if (!fin.ok) {
           await anotarMotivoAmbiguedad(registro.id, negocioId, `finalizacion_${fin.razon}`,
@@ -418,6 +420,8 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       preferenceId: resultado.preferenceId || null,
       estado: normalizarEstadoPago(resultado.estado || 'pendiente'),
       comoSeResolvio: 'creado',
+      // El plazo de espera es politica del negocio, no una constante global.
+      esperaMinutos: await minutosDeEsperaDePago(negocioId),
       // `datos.clip_link_id` es un campo LEGACY de Clip: la reconciliación
       // vieja lee de ahí. Va en la MISMA transacción para que su fallo no deje
       // la creación a medias; y solo para Clip, porque un preference_id de MP

@@ -2396,7 +2396,23 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     //
     // Se compara contra el pedido leido AHORA, dentro del lock.
     const { rows: [pedidoActual] } = await cliente.query(
-      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+      `SELECT datos, estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+    // PAGO TARDIO: el pedido ya se vencio (o se cancelo) y el dinero llega
+    // despues. El dinero es real y se asienta igual; lo que no ocurre es la
+    // cocina. Se distingue del desfase de version: aqui la version puede
+    // cuadrar perfectamente y aun asi no hay pedido que liberar.
+    // El estado operativo vive en la COLUMNA `estado` del pedido, no dentro de
+    // `datos`. La marca `expirado_por_pago` distingue "vencio la espera" de una
+    // cancelacion manual, pero cualquiera de las dos hace tardio al dinero: en
+    // ambos casos ya no hay pedido que liberar.
+    //
+    // La decision de dejar de esperar vive en el PAGO (`vencido`), y su efecto
+    // operativo en el PEDIDO. Cualquiera de los dos basta: si el intento ya
+    // vencio, ese dinero llego tarde aunque el pedido siguiera vivo por otra
+    // razon. Fail closed -- no se cocina, se manda a revision.
+    const pedidoExpirado = fila.estado === 'vencido' || (Boolean(pedidoActual)
+      && (pedidoActual.datos?.expirado_por_pago === true
+          || pedidoActual.estado === 'cancelado'));
     const versionActual = pedidoActual ? calcularVersionPedidoHash(pedidoActual.datos) : null;
     const versionPagada = fila.version_pedido_hash;
     // Un hash ausente es de una fila anterior a que existiera la columna: no se
@@ -2424,6 +2440,13 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       marca.anomalia_detalle =
         `se cobro la version ${versionPagada} ($${fila.monto}) pero el pedido ${folio} va en la version ${versionActual} ($${marca.monto_actual}): requiere revision`;
     }
+    if (pedidoExpirado) {
+      marca.anomalia = 'pago_tardio';
+      marca.anomalia_detectada_at = new Date().toISOString();
+      marca.anomalia_detalle =
+        `el pedido ${folio} ya habia vencido/cancelado cuando entro este cobro: dinero real que requiere revision`;
+      marca.pago_tardio = true;
+    }
     if (!pedidoActual) {
       marca.anomalia = marca.anomalia || 'pedido_inexistente';
       marca.anomalia_detalle = marca.anomalia_detalle ||
@@ -2438,7 +2461,7 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     //
     // Se persiste la OBLIGACION, no se ejecuta el efecto: la comanda no sale
     // dentro de una transaccion de dinero.
-    const debeDerivar = !desfasado && Boolean(pedidoActual);
+    const debeDerivar = !desfasado && !pedidoExpirado && Boolean(pedidoActual);
 
     const { rows: [asentado] } = await cliente.query(
       `UPDATE pagos SET estado = 'pagado', paid_at = COALESCE(paid_at, NOW()),
@@ -2471,6 +2494,10 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
         versionPagada, versionActual,
         montoPagado: Number(fila.monto), montoActual: marca.monto_actual,
       };
+    }
+    if (pedidoExpirado) {
+      console.error(`[Pagos] PAGO TARDIO pago=${pagoId} pedido=${folio}: dinero real sobre un pedido ya vencido`);
+      return { ok: false, resultado: 'pago_tardio', folio, pago: asentado };
     }
     if (!pedidoActual) {
       console.error(`[Pagos] DINERO SIN PEDIDO pago=${pagoId} folio=${folio}`);
@@ -2757,6 +2784,7 @@ function fallaInyectada(marca) {
 export async function finalizarCreacionPago({
   pagoId, negocioId, referenciaExterna, url, preferenceId = null,
   estado = 'pendiente', comoSeResolvio = 'creado', folioClipLegacy = null,
+  esperaMinutos = null,
 }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
   const nid = negocioId.trim();
@@ -2793,6 +2821,10 @@ export async function finalizarCreacionPago({
               url = COALESCE($4, url),
               preference_id = COALESCE($5, preference_id),
               estado = $6,
+              -- El plazo corre desde que el checkout QUEDA UTILIZABLE, no desde
+              -- que se creo la fila: antes de esto no habia nada que pagar.
+              xabor_espera_hasta = COALESCE(xabor_espera_hasta,
+                CASE WHEN $8::int IS NULL THEN NULL ELSE NOW() + ($8 || ' minutes')::interval END),
               metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
                                     || $7::jsonb
         WHERE id = $1 AND negocio_id = $2`,
@@ -2801,7 +2833,7 @@ export async function finalizarCreacionPago({
          creacion_ambigua_abierta: false,
          creacion_ambigua_resuelta: comoSeResolvio,
          creacion_ambigua_resuelta_at: new Date().toISOString(),
-       })]);
+       }), esperaMinutos]);
 
     // Fronteras inyectables DENTRO de la transaccion. Cada una debe terminar en
     // ROLLBACK completo: media identidad local es lo que P0-D vino a impedir.
@@ -2848,6 +2880,136 @@ export async function obtenerPagoPorId(pagoId, negocioId) {
 export function tieneIdentidadExternaDurable(fila) {
   if (!fila) return false;
   return Boolean(fila.referencia_externa || fila.preference_id || fila.payment_id || fila.url);
+}
+
+// ─── EXPIRACION: el deadline es de Xabor, no del proveedor ─────────────────
+//
+// Tres cosas distintas que nunca se mezclan:
+//   1. hasta cuando Xabor espera el pago  -> pagos.xabor_espera_hasta
+//   2. si el proveedor garantiza que ya no puede cobrarse -> pagos.expires_at
+//   3. el estado operativo del pedido -> pedidos_activos
+//
+// Vencer en Xabor NO saca el checkout de la reconciliacion: el enlace del
+// proveedor puede seguir cobrando, y ahi es justo donde mas falta hace mirarlo.
+
+export const ESPERA_PAGO_MINUTOS_DEFAULT = 30;
+export const ESPERA_PAGO_MINUTOS_MIN = 5;
+export const ESPERA_PAGO_MINUTOS_MAX = 1440;
+
+/**
+ * Minutos que ESTE negocio espera un pago online antes de soltar el pedido.
+ * Configurable por tenant; fuera de rango se recorta a los limites en vez de
+ * aceptar un valor absurdo -- un "0" haria vencer todo al instante y un valor
+ * enorme dejaria pedidos colgados para siempre.
+ */
+export async function minutosDeEsperaDePago(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return ESPERA_PAGO_MINUTOS_DEFAULT;
+  const { rows: [r] } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'pago_online_espera_minutos'`,
+    [negocioId.trim()]);
+  const crudo = Number(typeof r?.valor === 'object' ? r.valor?.minutos : r?.valor);
+  if (!Number.isFinite(crudo)) return ESPERA_PAGO_MINUTOS_DEFAULT;
+  return Math.min(ESPERA_PAGO_MINUTOS_MAX, Math.max(ESPERA_PAGO_MINUTOS_MIN, Math.trunc(crudo)));
+}
+
+/** Intentos cuya ventana de espera ya paso y siguen vivos. */
+export async function pagosConEsperaVencida(limite = 25) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE xabor_espera_hasta IS NOT NULL AND xabor_espera_hasta < NOW()
+        AND estado IN ('creando','pendiente','requiere_revision')
+      ORDER BY xabor_espera_hasta ASC LIMIT $1`, [limite]);
+  return rows;
+}
+
+/**
+ * Vence UN intento y su pedido, bajo la MISMA obligacion financiera que usan la
+ * creacion y el settlement (`obligacion_pago` sobre negocio+pedido). Eso es lo
+ * que hace la carrera decidible: si el dinero llego primero, el expirador ve la
+ * fila ya pagada al entrar y no la toca; si vence primero, el settlement
+ * posterior encontrara un pedido vencido y tratara el dinero como pago tardio.
+ *
+ * La exclusividad vive en la BASE, no en un setInterval: dos instancias
+ * corriendo el job terminan en UNA sola transicion.
+ */
+export async function vencerEsperaDePago(pagoId, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [previa] } = await cliente.query(
+      `SELECT pedido_folio FROM pagos WHERE id = $1 AND negocio_id = $2`, [pagoId, nid]);
+    if (!previa) { await cliente.query('ROLLBACK'); return { ok: false, razon: 'no_encontrado' }; }
+    const folio = previa.pedido_folio;
+
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['obligacion_pago', `${nid}:${folio}`]);
+
+    // Releer YA bajo el lock: entre la seleccion del job y este punto pudo
+    // entrar el dinero.
+    const { rows: [pago] } = await cliente.query(
+      `SELECT * FROM pagos WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [pagoId, nid]);
+    if (!['creando', 'pendiente', 'requiere_revision'].includes(pago.estado)) {
+      await cliente.query('COMMIT');
+      return { ok: false, razon: `ya_no_vencible:${pago.estado}` };
+    }
+    // Y si CUALQUIER intento del pedido ya cobro, este pedido no vence.
+    const { rows: [pagado] } = await cliente.query(
+      `SELECT id FROM pagos WHERE negocio_id = $1 AND pedido_folio = $2 AND estado = 'pagado' LIMIT 1`,
+      [nid, folio]);
+    if (pagado) { await cliente.query('COMMIT'); return { ok: false, razon: 'ya_hay_pago_real' }; }
+
+    // El intento pasa a 'vencido'. Su historia -- referencia, url, ids, monto --
+    // queda intacta: sigue siendo reconciliable porque el proveedor puede
+    // cobrarlo, y vencer en Xabor no es cancelar en el proveedor.
+    await cliente.query(
+      `UPDATE pagos SET estado = 'vencido',
+                        metadata_sanitizada = metadata_sanitizada || $3::jsonb
+        WHERE id = $1 AND negocio_id = $2`,
+      [pagoId, nid, JSON.stringify({
+        vencido_por_xabor_at: new Date().toISOString(),
+        vencido_motivo: 'la ventana de espera de pago termino',
+      })]);
+
+    // ¿Queda OTRO intento vivo con plazo por delante? El indice parcial
+    // `idx_pagos_vigente_unico` lo hace casi imposible, pero si una base vieja
+    // no lo tuviera, vencer el intento viejo no puede arrastrar un pedido que
+    // todavia esta esperando otro cobro. El intento muere; el pedido no.
+    const { rows: [vivo] } = await cliente.query(
+      `SELECT id FROM pagos
+        WHERE negocio_id = $1 AND pedido_folio = $2 AND id <> $3
+          AND estado IN ('creando','pendiente','requiere_revision')
+          AND (xabor_espera_hasta IS NULL OR xabor_espera_hasta > NOW())
+        LIMIT 1`, [nid, folio, pagoId]);
+    if (vivo) {
+      await cliente.query('COMMIT');
+      return { ok: true, folio, pedidoVencido: false, otroIntentoVivo: vivo.id };
+    }
+
+    // El pedido queda en un estado terminal coherente. NO se cocina, no sale
+    // comanda, y queda marcado para que se distinga de una cancelacion manual.
+    const { rowCount } = await cliente.query(
+      `UPDATE pedidos_activos
+          SET estado = 'cancelado',
+              datos = datos || $3::jsonb,
+              updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2 AND estado = 'pendiente_pago'`,
+      [folio, nid, JSON.stringify({
+        expirado_por_pago: true,
+        motivo_cancelacion: 'no se recibio el pago dentro de la ventana',
+        expirado_at: new Date().toISOString(),
+      })]);
+
+    await cliente.query('COMMIT');
+    return { ok: true, folio, pedidoVencido: rowCount > 0 };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
 // Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila
@@ -2973,6 +3135,10 @@ export async function ligarPaymentIdExclusivo(pagoId, negocioId, proveedor, paym
 export async function pagosReconciliablesDeProveedor(proveedor, limite = 50) {
   const dias = Number(process.env.XABOR_PAGOS_VENTANA_RECONCILIACION_DIAS) || 90;
   const { rows } = await pool.query(
+    // 'vencido' NO se excluye a proposito. Vencer es una decision de Xabor;
+    // el enlace del proveedor puede seguir cobrando, y dejar de mirarlo seria
+    // exactamente como se pierde dinero real sin enterarse. Solo `expires_at`
+    // -- expiracion declarada por el proveedor -- puede sacar una fila de aqui.
     `SELECT * FROM pagos
       WHERE proveedor = $1
         AND estado NOT IN ('pagado','reembolsado','cancelado')

@@ -20,6 +20,7 @@ import {
   actualizarEstadoPagoPorId, pagosReconciliablesDeProveedor,
   marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
   consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
+  pagosConEsperaVencida, vencerEsperaDePago,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -306,6 +307,31 @@ export async function reconciliarCandidatosClip(limite = 25) {
     }
   }
   return resueltos;
+}
+
+/**
+ * Vence las esperas de pago que ya pasaron su ventana.
+ *
+ * El setInterval solo DISPARA trabajo: la exclusividad vive en la base, dentro
+ * de vencerEsperaDePago, bajo la misma obligacion financiera que usan la
+ * creacion y el settlement. Por eso dos instancias corriendo este job a la vez
+ * producen UNA sola transicion por pedido, y reejecutarlo es inofensivo.
+ */
+export async function expirarPagosVencidos(limite = 25) {
+  const filas = await pagosConEsperaVencida(limite).catch(() => []);
+  let vencidos = 0;
+  for (const pago of filas) {
+    try {
+      const r = await vencerEsperaDePago(pago.id, pago.negocio_id);
+      if (r.ok) {
+        vencidos++;
+        console.log(`[Pagos] Espera vencida: pedido ${r.folio} deja de esperar el pago`);
+      }
+    } catch (e) {
+      console.error(`[Pagos] No se pudo vencer ${pago.id}: ${e.message}`);
+    }
+  }
+  return vencidos;
 }
 
 /**
