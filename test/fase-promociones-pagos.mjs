@@ -41,6 +41,7 @@ const SLUG = 'promos-pagos-test';
 const PUERTO = Number(process.env.TEST_PORT_PROMO || 4341);
 const PUERTO_CLIP = Number(process.env.TEST_PORT_PROMO_CLIP || 4342);
 const PUERTO_MP = Number(process.env.TEST_PORT_PROMO_MP || 4343);
+const PUERTO_ROTO = Number(process.env.TEST_PORT_PROMO_ROTO || 4344);
 const base = `http://localhost:${PUERTO}`;
 
 process.env.CLIP_API_BASE_URL = `http://localhost:${PUERTO_CLIP}`;
@@ -267,6 +268,7 @@ async function limpiar() {
     await pool.query(
       `DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->>'canal'='tienda_online'`, [n]);
   }
+  delete process.env.XABOR_TIENDA_FALLA_EN;
   await pool.query(`DELETE FROM pedidos WHERE negocio_id=$1 AND folio LIKE 'ARCH-%'`, [NEG]);
   await pool.query(`DELETE FROM tienda_campanas WHERE negocio_id=$1 AND nombre LIKE 'Campania metricas%'`, [NEG]);
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1`, [NEG]);
@@ -1277,6 +1279,277 @@ try {
     await pool.query(`DELETE FROM tienda_promocion_usos WHERE promocion_id=$1`, [p.id]);
     await pool.query(`DELETE FROM tienda_promociones WHERE id=$1`, [p.id]);
     await pool.query(`DELETE FROM tienda_campanas WHERE id=$1`, [camp.id]);
+  });
+
+  // ═══ P0-4: LA BARRERA DE RECÁLCULO ES DURABLE ════════════════════════════
+  await t('26. promo inválida en v2: los 5 reintentos siguientes tampoco cobran', async () => {
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, minimo_compra,
+          limite_usos, canales, activa)
+       VALUES ($1,'Minimo retry','monto_fijo','MINRETRY',FALSE,30,200,1,
+               '["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'MINRETRY' }));
+    const folio = r.body.folio;
+    assert.strictEqual((await usosDe(p.id)).length, 1);
+    const antes = checkoutsClip;
+
+    // El pedido cae por debajo del mínimo: la promo deja de aplicar.
+    await pool.query(
+      `UPDATE pedidos_activos
+          SET datos = jsonb_set(jsonb_set(datos,'{total}','20'::jsonb),'{subtotal}','50'::jsonb)
+        WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+
+    await assert.rejects(() => crearEnlace(folio), /ya no aplica|recalcular/i,
+      'el primer intento debía fallar');
+    assert.strictEqual((await usosDe(p.id)).length, 0, 'el cupo no volvió al pozo');
+    assert.strictEqual(Number((await promoDe(p.id)).usos), 0);
+
+    // Y la barrera queda ESCRITA en el pedido, no solo en la respuesta.
+    const marcado = await pedidoDe(folio);
+    assert.strictEqual(marcado.datos.tienda.promocion_recalculo_pendiente, true,
+      'no quedó constancia durable de que el precio del pedido dejó de ser válido');
+    assert.ok(marcado.datos.tienda.promocion_recalculo_motivo);
+
+    // Los reintentos NO pueden colarse por el hueco: ya no hay reserva que
+    // resincronizar, pero el total sigue llevando el descuento viejo.
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() => crearEnlace(folio), /ya no aplica|recalcular/i,
+        `el reintento ${i + 1} creó un cobro con el descuento viejo`);
+    }
+    assert.strictEqual(checkoutsClip - antes, 0,
+      `POST al proveedor tras perder la promoción = ${checkoutsClip - antes}; debía ser 0`);
+    assert.strictEqual((await pagosDe(folio)).filter(x => x.url).length, 0,
+      'quedó un checkout creado sobre un precio inválido');
+  });
+
+  await t('27. sólo un RECÁLCULO server-side real levanta la barrera', async () => {
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id, nombre, tipo, codigo, automatica, valor, minimo_compra,
+          limite_usos, canales, activa)
+       VALUES ($1,'Minimo recalculo','monto_fijo','MINRECALC',FALSE,30,200,1,
+               '["tienda_online"]'::jsonb,TRUE)
+       RETURNING id`, [NEG]);
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'MINRECALC' }));
+    const folio = r.body.folio;
+
+    await pool.query(
+      `UPDATE pedidos_activos
+          SET datos = jsonb_set(jsonb_set(datos,'{total}','20'::jsonb),'{subtotal}','50'::jsonb)
+        WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+    await assert.rejects(() => crearEnlace(folio));
+
+    const { recalcularPromocionesDelPedido } = await import('../src/services/tiendaPromociones.js');
+    const rec = await recalcularPromocionesDelPedido(NEG, folio);
+    assert.strictEqual(rec.ok, true, JSON.stringify(rec));
+
+    // El servidor recalculó: sin promoción (no llega al mínimo) y con el total
+    // que de verdad corresponde -- no el que traía con el descuento viejo.
+    const ped = await pedidoDe(folio);
+    assert.notStrictEqual(ped.datos.tienda.promocion_recalculo_pendiente, true,
+      'la barrera siguió puesta tras un recálculo real');
+    assert.strictEqual(Number(ped.datos.descuento), 0, 'se conservó el descuento inválido');
+    assert.strictEqual(Number(ped.datos.total), 50, 'el total no se recalculó server-side');
+    assert.strictEqual(ped.datos.tienda.promociones.length, 0);
+
+    // Y ahora sí se puede cobrar.
+    const enlace = await crearEnlace(folio);
+    assert.ok(enlace.url, 'tras recalcular seguía sin poder cobrarse');
+    assert.strictEqual(Number((await pagosDe(folio))[0].monto), 50,
+      'se cobró un monto distinto al recalculado');
+    assert.strictEqual(Number((await promoDe(p.id)).usos), 0, 'el cupo no quedó libre');
+  });
+
+  // ═══ P0-5: LA ATRIBUCIÓN CRÍTICA NO SE TRAGA NADA ════════════════════════
+  for (const frontera of [
+    'atribucion_tras_begin',
+    'atribucion_tras_convertir',
+    'atribucion_tras_insert',
+    'atribucion_tras_reclamar',
+    'atribucion_antes_de_commit',
+  ]) {
+    await t(`28[${frontera}]: rollback coherente y el error SÍ se propaga`, async () => {
+      const { registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
+      const id = await promo({ codigo: `FR-${frontera.slice(11, 17)}`, limiteUsos: 1, valor: 40 });
+      const aplicadas = [{ id, campaniaId: null, nombre: 'Frontera', descuento: 40 }];
+      const folio = `PROMO-FR-${frontera.slice(11, 17)}`;
+      const TOKEN = `tok-fr-${frontera.slice(11, 17)}`;
+
+      // La frontera "tras convertir" solo se alcanza si existe la reserva
+      // provisional: sin ella el flujo se va por el respaldo y la inyección
+      // nunca dispararía -- un verde que no probaría nada.
+      const conReserva = frontera === 'atribucion_tras_convertir';
+      if (conReserva) {
+        await pool.query(
+          `INSERT INTO tienda_promocion_usos
+             (negocio_id, promocion_id, pedido_folio, cliente_telefono, estado)
+           VALUES ($1,$2,$3,'8997620001','reservada')`, [NEG, id, `reserva:${TOKEN}`]);
+        await pool.query(`UPDATE tienda_promociones SET usos = 1 WHERE id=$1`, [id]);
+      }
+      const usosEsperadosTrasFallo = conReserva ? 1 : 0;
+
+      process.env.XABOR_TIENDA_FALLA_EN = frontera;
+      try {
+        await assert.rejects(
+          () => registrarUsosPromociones({
+            negocioId: NEG, folio, aplicadas, telefono: '8997620001',
+            estadoFinal: 'reservada', pedidoVersion: 'v1', checkoutToken: TOKEN,
+          }),
+          'la atribución se tragó el fallo y volvió como si hubiera funcionado');
+      } finally {
+        // En `finally`: si el assert falla, la inyección no puede quedarse
+        // encendida contaminando los casos siguientes.
+        delete process.env.XABOR_TIENDA_FALLA_EN;
+      }
+
+      // Rollback completo: la transacción no dejó NADA nuevo. Lo que existía
+      // antes (la reserva provisional, ya contada) sigue exactamente igual.
+      const tras = await usosDe(id);
+      assert.strictEqual(tras.length, usosEsperadosTrasFallo,
+        `quedaron ${tras.length} filas de uso tras fallar en '${frontera}'`);
+      if (conReserva) {
+        assert.ok(tras[0].pedido_folio.startsWith('reserva:'),
+          'el rollback no devolvió la reserva a su folio provisional');
+      }
+      assert.strictEqual(Number((await promoDe(id)).usos), usosEsperadosTrasFallo,
+        `el contador se movió pese al rollback en '${frontera}'`);
+
+      // Y el reintento, ya sin fallo, sí registra -- una sola vez.
+      const ok = await registrarUsosPromociones({
+        negocioId: NEG, folio, aplicadas, telefono: '8997620001',
+        estadoFinal: 'reservada', pedidoVersion: 'v1', checkoutToken: TOKEN,
+      });
+      assert.strictEqual(ok.registrados, 1);
+      assert.strictEqual((await usosDe(id)).length, 1);
+      assert.strictEqual((await usosDe(id))[0].estado, 'reservada');
+      assert.strictEqual(Number((await promoDe(id)).usos), 1);
+    });
+  }
+
+  await t('29. checkout ONLINE con la atribución rota: ni éxito, ni derivación marcada', async () => {
+    const id = await promo({ codigo: 'ATRIBONLINE', limiteUsos: 1, valor: 40 });
+    const srvRoto = await arrancarServidor({
+      PORT: String(PUERTO_ROTO), XABOR_RUTAS_PRUEBA: '1',
+      XABOR_TIENDA_LIMITE_CHECKOUT: '2000', XABOR_TIENDA_LIMITE_LECTURA: '5000',
+      XABOR_TIENDA_FALLA_EN: 'atribucion_antes_de_commit',
+      CLIP_API_BASE_URL: `http://localhost:${PUERTO_CLIP}`,
+      XABOR_MP_API_BASE: `http://localhost:${PUERTO_MP}`,
+      XABOR_URL_PUBLICA: `http://localhost:${PUERTO_ROTO}`,
+    }, { timeoutMs: 90000 });
+    try {
+      const tk = tokenNuevo();
+      const r = await fetch(`http://localhost:${PUERTO_ROTO}/api/tienda/${SLUG}/checkout`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(carrito(tk, { codigo: 'ATRIBONLINE' })),
+      }).then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
+
+      assert.notStrictEqual(r.status, 200,
+        'el checkout respondió ÉXITO con la atribución de la promoción rota');
+
+      // El pedido SÍ existe (es durable desde antes) pero la derivación de
+      // atribución NO puede quedar marcada como hecha.
+      const { rows: [tp] } = await pool.query(
+        `SELECT pedido_folio, estado FROM tienda_pedidos
+          WHERE negocio_id=$1 AND checkout_token=$2`, [NEG, tk]);
+      assert.ok(tp?.pedido_folio, 'fixture: el pedido debía haberse creado');
+      const { rows: [d] } = await pool.query(
+        `SELECT jsonb_exists(derivaciones, 'atribucion') AS hecha FROM tienda_pedidos
+          WHERE negocio_id=$1 AND checkout_token=$2`, [NEG, tk]);
+      assert.notStrictEqual(d?.hecha, true,
+        '¡la atribución quedó marcada como HECHA tras un ROLLBACK: nadie volvería a intentarla!');
+      // La reserva provisional del checkout SI existe y esta contada: la tomo
+      // el paso anterior, con su barrera de cupo, y es correcta. Lo que no
+      // puede haber es una fila atada al folio como si la atribucion hubiera
+      // ocurrido.
+      const filas = await usosDe(id);
+      assert.strictEqual(filas.length, 1, `quedaron ${filas.length} filas de uso`);
+      assert.ok(filas[0].pedido_folio.startsWith('reserva:'),
+        'la atribución dejó la fila atada al folio pese al ROLLBACK');
+      assert.strictEqual(filas[0].estado, 'reservada');
+      assert.strictEqual(Number((await promoDe(id)).usos), 1,
+        'el contador no cuadra con la reserva provisional');
+    } finally {
+      try { await srvRoto.detener(); } catch { /* ya estaba abajo */ }
+    }
+  });
+
+  // ═══ EL RECICLADOR GANA ANTES DEL RETRY ══════════════════════════════════
+  for (const modo of [
+    { nombre: 'PAGO ONLINE', estadoFinal: 'reservada', esperado: 'reservada' },
+    { nombre: 'EFECTIVO', estadoFinal: 'consumida', esperado: 'consumida' },
+  ]) {
+    await t(`30[${modo.nombre}]: el reciclador ató la fila al folio antes del retry`, async () => {
+      // El reciclador convierte `reserva:<token>` en el folio real sin decidir
+      // si el pedido ya vale por sí mismo. Si el retry se limitara a un
+      // ON CONFLICT DO NOTHING, la promoción de un pedido de efectivo quedaría
+      // eternamente 'reservada' -- y nadie la consumiría nunca, porque el
+      // consumo vive en la transición financiera que ese pedido no tiene.
+      const { registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
+      const id = await promo({ codigo: `RECICLA${modo.estadoFinal.slice(0, 3)}`, limiteUsos: 1, valor: 40 });
+      const folio = `PROMO-RECICLA-${modo.estadoFinal.slice(0, 3)}`;
+      const TOKEN = `tok-recicla-${modo.estadoFinal}`;
+
+      // 1) Reserva provisional, contada.
+      await pool.query(
+        `INSERT INTO tienda_promocion_usos
+           (negocio_id, promocion_id, pedido_folio, cliente_telefono, estado)
+         VALUES ($1,$2,$3,'8997621001','reservada')`, [NEG, id, `reserva:${TOKEN}`]);
+      await pool.query(`UPDATE tienda_promociones SET usos = 1 WHERE id=$1`, [id]);
+
+      // 2) El reciclador la ata al folio real (así de exacto lo hace hoy).
+      await pool.query(
+        `UPDATE tienda_promocion_usos SET pedido_folio = $3
+          WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$4`,
+        [NEG, id, folio, `reserva:${TOKEN}`]);
+
+      // 3) Y AHORA llega el retry del checkout.
+      const r = await registrarUsosPromociones({
+        negocioId: NEG, folio, aplicadas: [{ id, campaniaId: null, nombre: 'R', descuento: 40 }],
+        telefono: '8997621001', montoVenta: 300, estadoFinal: modo.estadoFinal,
+        pedidoVersion: 'v1', checkoutToken: TOKEN,
+      });
+      assert.strictEqual(r.registrados, 1, 'el retry ignoró una fila que tenía que reconciliar');
+
+      const usos = await usosDe(id);
+      assert.strictEqual(usos.length, 1, `quedaron ${usos.length} filas para un cupo de 1`);
+      assert.strictEqual(usos[0].estado, modo.esperado,
+        `la fila quedó '${usos[0].estado}' en vez de '${modo.esperado}'`);
+      assert.strictEqual(Number(usos[0].monto_venta), 300, 'no se reconciliaron los montos');
+      assert.strictEqual(usos[0].pedido_version, 'v1');
+      if (modo.esperado === 'consumida') {
+        assert.ok(usos[0].consumida_at, 'una consumida sin fecha de consumo');
+      }
+      // El cupo NO se vuelve a contar: esa fila ya estaba contada.
+      assert.strictEqual(Number((await promoDe(id)).usos), 1,
+        'reconciliar volvió a reclamar un cupo que ya estaba tomado');
+    });
+  }
+
+  await t('31. una promoción ya CONSUMIDA no retrocede a reservada', async () => {
+    const { registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
+    const id = await promo({ codigo: 'NORETRO', limiteUsos: 1, valor: 40 });
+    const folio = 'PROMO-NORETRO';
+    await pool.query(
+      `INSERT INTO tienda_promocion_usos
+         (negocio_id, promocion_id, pedido_folio, cliente_telefono, estado, consumida_at)
+       VALUES ($1,$2,$3,'8997622001','consumida',NOW())`, [NEG, id, folio]);
+    await pool.query(`UPDATE tienda_promociones SET usos = 1 WHERE id=$1`, [id]);
+
+    // Un retry tardío del checkout, que cree que el pedido sigue esperando pago.
+    await registrarUsosPromociones({
+      negocioId: NEG, folio, aplicadas: [{ id, campaniaId: null, nombre: 'N', descuento: 40 }],
+      telefono: '8997622001', estadoFinal: 'reservada', pedidoVersion: 'v1',
+      checkoutToken: 'tok-tardio',
+    });
+
+    const usos = await usosDe(id);
+    assert.strictEqual(usos.length, 1);
+    assert.strictEqual(usos[0].estado, 'consumida',
+      '¡una promoción con dinero detrás volvió a estado reservada: el expirador la devolvería!');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
   });
 
 } catch (e) {
