@@ -17,7 +17,7 @@ import {
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
   obtenerIntentoDePago, marcarIntentosAmbiguos, conObligacionDePagoExclusiva,
   invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
-  marcarCreacionAmbigua, resolverAnomaliaCreacion,
+  marcarCreacionAmbigua, resolverAnomaliaCreacion, anotarMotivoAmbiguedad,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -288,10 +288,47 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   //  · Clip no documenta ni idempotencia ni búsqueda por referencia. Ahí no hay
   //    forma de saberlo por API, así que no se manda otro POST: queda en
   //    revisión.
-  if (registro.metadata_sanitizada?.anomalia === 'creacion_ambigua' && !registro.referencia_externa) {
+  // La entrada al resolver la decide la BARRERA, no el motivo. Con la condicion
+  // anterior (`anomalia === 'creacion_ambigua'`), escribir un motivo nuevo --
+  // duplicadas, ajena, sin resolver -- hacia que la fila dejara de "parecer"
+  // ambigua y el siguiente reintento volviera al camino normal de POST.
+  // Se acepta tambien la marca vieja para filas escritas antes de esta version.
+  const ambiguaAbierta = registro.metadata_sanitizada?.creacion_ambigua_abierta === true
+    || registro.metadata_sanitizada?.anomalia === 'creacion_ambigua';
+  if (ambiguaAbierta && !registro.referencia_externa) {
     if (capacidades.recuperaCreacionPorReferencia && adaptador.buscarCheckoutPorReferencia) {
       const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
-      const encontrado = await adaptador.buscarCheckoutPorReferencia(referenciaInterna, credenciales);
+      // La documentacion de Mercado Pago no garantiza read-after-write en el
+      // search. Una busqueda vacia INMEDIATAMENTE despues de una respuesta
+      // perdida no demuestra que la preferencia no exista: puede no estar
+      // indexada todavia. Se reintenta con espera acotada y, si sigue sin
+      // aparecer, NO se crea otra: en dinero, incertidumbre es fail closed.
+      const intentos = Number(process.env.XABOR_PAGOS_BUSQUEDA_INTENTOS) || 3;
+      const esperaMs = Number(process.env.XABOR_PAGOS_BUSQUEDA_ESPERA_MS) || 1500;
+      let encontrado = null;
+      for (let i = 0; i < intentos && !encontrado; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, esperaMs));
+        encontrado = await adaptador.buscarCheckoutPorReferencia(referenciaInterna, credenciales);
+      }
+
+      // Los tres desenlaces que NO resuelven la identidad dejan la barrera
+      // ABIERTA a proposito: anotarMotivoAmbiguedad escribe el motivo y
+      // reafirma `creacion_ambigua_abierta`. Cero POST en los tres.
+      if (encontrado?.ambiguo) {
+        await anotarMotivoAmbiguedad(registro.id, negocioId, 'preferencias_duplicadas',
+          `el proveedor tiene ${encontrado.ids.length} checkouts con la misma referencia`);
+        throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
+      }
+      if (encontrado?.ajena) {
+        await anotarMotivoAmbiguedad(registro.id, negocioId, 'preferencia_ajena',
+          `la preferencia ${encontrado.preferenciaId} lleva la referencia ${encontrado.referenciaRecibida}`);
+        throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
+      }
+      if (!encontrado) {
+        await anotarMotivoAmbiguedad(registro.id, negocioId, 'creacion_ambigua_sin_resolver',
+          `${intentos} busquedas por referencia no encontraron el checkout: puede existir sin estar indexado`);
+        throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
+      }
       if (encontrado) {
         // Existía: se adopta, no se crea nada. El checkout del cliente es ese.
         await actualizarPagoCreado(registro.id, {
@@ -309,7 +346,6 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
           recuperadoTrasAmbiguedad: true,
         };
       }
-      // La búsqueda respondió que no existe: crear ahora sí es seguro.
     } else {
       throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
     }

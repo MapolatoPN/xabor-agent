@@ -328,7 +328,10 @@ try {
     const p = await pedidoDe(folio);
     assert.notStrictEqual(p.estado, 'pendiente_pago', 'no liberó un pago de la MISMA versión');
     assert.strictEqual(p.datos.pago_confirmado, true);
-    assert.strictEqual((await filaId(filaClip.id)).derivacion_pendiente, false, 'no saldó la deuda');
+    // La deuda se salda DESPUÉS de emitir, así que medirla justo tras contar la
+    // comanda es una carrera: hay que esperar la condición, no suponerla.
+    await esperar(async () => (await filaId(filaClip.id)).derivacion_pendiente === false,
+      'que la deuda de derivación quede saldada');
   });
 
   // ═══ P0 B — UNA FILA NO PUEDE SER DOS CHECKOUTS ═══

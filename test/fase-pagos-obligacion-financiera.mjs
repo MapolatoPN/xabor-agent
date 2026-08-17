@@ -100,15 +100,46 @@ let mpCortaRespuesta = false;
 const PREFERENCIAS = new Map();      // prefId -> { external_reference }
 const PAGOS_MP = new Map();
 let busquedasPreferencia = 0;
+let getsPreferencia = 0;
+let ULTIMO_SEARCH = null;
+
+// Aislamiento entre casos: una prueba financiera no puede depender de residuos
+// de la anterior. Cada caso de ambigüedad arranca con los mapas del mock
+// limpios y los contadores en cero.
+function reiniciarMockMP() {
+  PREFERENCIAS.clear(); PAGOS_MP.clear();
+  checkoutsMP = 0; busquedasPreferencia = 0; getsPreferencia = 0; ULTIMO_SEARCH = null;
+  mpCortaRespuesta = false;
+}
 const mpMock = createServer((req, res) => {
   if (req.url.startsWith('/checkout/preferences/search')) {
     busquedasPreferencia++;
     const ref = new URL(req.url, 'http://x').searchParams.get('external_reference');
+    // Forma DOCUMENTADA del search: los elementos NO traen init_point ni
+    // external_reference. Solo sirven para obtener el id. Si el mock los
+    // inventara, la prueba pasaría por un campo que la API real no da.
     const elements = [...PREFERENCIAS.entries()]
-      .filter(([, v]) => v.external_reference === ref)
-      .map(([id]) => ({ id, init_point: `https://mp.test/checkout/${id}` }));
+      .filter(([, v]) => v.external_reference === ref && !v.oculta)
+      .map(([id]) => ({ id, client_id: '1', collector_id: 1, site_id: 'MLM',
+                        date_created: '2026-08-17T00:00:00.000Z', items: [] }));
+    ULTIMO_SEARCH = { ref, ids: elements.map(e => e.id) };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ elements }));
+    return;
+  }
+  const detallePref = /^\/checkout\/preferences\/([^/?]+)$/.exec(req.url);
+  if (detallePref && req.method === 'GET') {
+    getsPreferencia++;
+    const id = decodeURIComponent(detallePref[1]);
+    const pref = PREFERENCIAS.get(id);
+    if (!pref) { res.writeHead(404); res.end('{}'); return; }
+    // El GET individual SI trae external_reference e init_point.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      id,
+      external_reference: pref.referenciaDetalle || pref.external_reference,
+      init_point: `https://mp.test/checkout/${id}`,
+    }));
     return;
   }
   if (req.url.startsWith('/checkout/preferences')) {
@@ -537,29 +568,110 @@ try {
     assert.strictEqual(await comandasDe(folio), 0);
   });
 
-  await t('2d. MERCADO PAGO tampoco tiene idempotencia, pero sí búsqueda: recupera, no duplica', async () => {
-    const folio = 'OB-0011';
+  await t('2f. UNA coincidencia: el Search da el id, el GET individual da la URL', async () => {
+    reiniciarMockMP();
+    const folio = 'OB-0040';
     await pedido(folio, 505);
     TOKEN_MP = await conectarMP();
-    const antes = checkoutsMP;
     mpCortaRespuesta = true;
     await assert.rejects(() => crearEnlace(folio), 'el corte debía propagarse');
     mpCortaRespuesta = false;
-    assert.strictEqual(checkoutsMP - antes, 1, 'fixture: MP SÍ creó la preferencia');
+    assert.strictEqual(checkoutsMP, 1, 'fixture: MP debía haber creado UNA preferencia');
 
-    const busquedasAntes = busquedasPreferencia;
-    let ultimo = null;
-    for (let i = 0; i < 5; i++) ultimo = await crearEnlace(folio);
-
-    assert.strictEqual(checkoutsMP - antes, 1,
-      `los reintentos crearon ${checkoutsMP - antes} preferencias; el checkout lógico debe ser 1`);
-    assert.ok(busquedasPreferencia > busquedasAntes, 'no se preguntó al proveedor si la preferencia existía');
-    assert.strictEqual(ultimo.recuperadoTrasAmbiguedad || ultimo.reutilizado, true,
-      'no adoptó el checkout que ya existía');
+    const r = await crearEnlace(folio);
+    assert.strictEqual(checkoutsMP, 1, `los reintentos crearon ${checkoutsMP} preferencias`);
+    assert.ok(busquedasPreferencia > 0, 'no se buscó por referencia');
+    assert.ok(getsPreferencia > 0, 'nunca se consultó la preferencia individual');
+    assert.ok(String(r.url || '').includes('mp.test/checkout/'),
+      'la URL no salió del GET individual');
     const f = (await filas(folio))[0];
-    assert.strictEqual(f.estado, 'pendiente', `la fila quedó '${f.estado}' tras recuperarse`);
-    assert.ok(f.preference_id, 'no se adoptó el id de la preferencia encontrada');
-    assert.strictEqual((await filas(folio)).length, 1, 'se crearon filas de más');
+    assert.strictEqual(f.estado, 'pendiente');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, false,
+      'la barrera quedó abierta pese a resolverse la identidad');
+  });
+
+  await t('2g. search VACÍO: ambigüedad abierta, cero POST, y 5 reintentos siguen sin crear', async () => {
+    reiniciarMockMP();
+    const folio = 'OB-0041';
+    await pedido(folio, 388);
+    TOKEN_MP = await conectarMP();
+    mpCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    mpCortaRespuesta = false;
+    assert.strictEqual(checkoutsMP, 1, 'fixture: debía existir una preferencia creada');
+    // La preferencia existe pero el proveedor todavía no la indexa: sin
+    // garantía de read-after-write, "no aparece" no demuestra "no existe".
+    for (const [, v] of PREFERENCIAS) v.oculta = true;
+
+    process.env.XABOR_PAGOS_BUSQUEDA_INTENTOS = '2';
+    process.env.XABOR_PAGOS_BUSQUEDA_ESPERA_MS = '30';
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() => crearEnlace(folio), e => e.code === 'CREACION_AMBIGUA',
+        `el reintento ${i + 1} no falló cerrado`);
+    }
+    delete process.env.XABOR_PAGOS_BUSQUEDA_INTENTOS;
+    delete process.env.XABOR_PAGOS_BUSQUEDA_ESPERA_MS;
+
+    assert.strictEqual(checkoutsMP, 1,
+      `POST adicionales = ${checkoutsMP - 1}; debía ser 0. Último search: ${JSON.stringify(ULTIMO_SEARCH)}`);
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.metadata_sanitizada.anomalia, 'creacion_ambigua_sin_resolver');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true,
+      'la barrera se apagó al escribir el motivo nuevo: ese es el defecto de P0-B');
+    assert.strictEqual((await filas(folio)).length, 1);
+  });
+
+  await t('2h. DOS coincidencias: jamás elements[0], y 5 reintentos sin crear', async () => {
+    reiniciarMockMP();
+    const folio = 'OB-0042';
+    await pedido(folio, 415);
+    TOKEN_MP = await conectarMP();
+    mpCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    mpCortaRespuesta = false;
+    const f0 = (await filas(folio))[0];
+    // Una SEGUNDA preferencia con la misma referencia: hubo dos creaciones.
+    PREFERENCIAS.set('pref-ob-duplicada', { external_reference: f0.referencia_interna });
+    assert.strictEqual(checkoutsMP, 1);
+
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() => crearEnlace(folio), e => e.code === 'CREACION_AMBIGUA',
+        `el reintento ${i + 1} eligió una de las dos`);
+    }
+    assert.strictEqual(checkoutsMP, 1, `POST adicionales = ${checkoutsMP - 1}; debía ser 0`);
+    assert.strictEqual(ULTIMO_SEARCH.ids.length, 2, 'fixture: el search debía ver dos');
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.metadata_sanitizada.anomalia, 'preferencias_duplicadas');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true);
+    assert.strictEqual(f.referencia_externa, null, 'adoptó una de las dos');
+  });
+
+  await t('2i. el GET individual trae OTRA referencia: no se adopta, y 5 reintentos sin crear', async () => {
+    reiniciarMockMP();
+    const folio = 'OB-0043';
+    await pedido(folio, 452);
+    TOKEN_MP = await conectarMP();
+    mpCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    mpCortaRespuesta = false;
+    const f0 = (await filas(folio))[0];
+    // El search la encuentra por nuestra referencia, pero el GET individual
+    // devuelve otra: esa preferencia no es de esta fila.
+    for (const [, v] of PREFERENCIAS) {
+      if (v.external_reference === f0.referencia_interna) v.referenciaDetalle = 'otra-referencia';
+    }
+    assert.strictEqual(checkoutsMP, 1);
+
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() => crearEnlace(folio), e => e.code === 'CREACION_AMBIGUA',
+        `el reintento ${i + 1} adoptó una preferencia ajena`);
+    }
+    assert.strictEqual(checkoutsMP, 1, `POST adicionales = ${checkoutsMP - 1}; debía ser 0`);
+    assert.ok(getsPreferencia > 0, 'no se consultó la preferencia individual');
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.metadata_sanitizada.anomalia, 'preferencia_ajena');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true);
+    assert.strictEqual(f.referencia_externa, null);
   });
 
   await t('2e. las capacidades declaradas coinciden con lo que la documentación dice', async () => {

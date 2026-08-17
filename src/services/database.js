@@ -2133,9 +2133,34 @@ export async function marcarCreacionAmbigua(pagoId, negocioId, motivo) {
                       metadata_sanitizada = metadata_sanitizada || $3::jsonb
       WHERE id = $1 AND negocio_id = $2 AND estado IN ('creando','pendiente','requiere_revision')`,
     [pagoId, negocioId.trim(), JSON.stringify({
+      // ESTADO DE CONTROL, separado del motivo. Es la barrera que impide otro
+      // POST, y solo se apaga cuando la identidad del checkout queda resuelta
+      // sin ambiguedad. Antes esta barrera vivia en `anomalia`, que es un campo
+      // de MOTIVO: al escribir un motivo nuevo -- "duplicadas", "ajena" -- la
+      // barrera se apagaba sola y el siguiente reintento volvia al camino
+      // normal de creacion. Una anomalia nueva nunca puede abrir la puerta.
+      creacion_ambigua_abierta: true,
       anomalia: 'creacion_ambigua',
       anomalia_detectada_at: new Date().toISOString(),
       anomalia_detalle: `no se supo si el proveedor creo el checkout: ${motivo}`,
+    })]);
+  return rowCount > 0;
+}
+
+/**
+ * Registra un MOTIVO nuevo sobre una creacion ambigua sin tocar la barrera.
+ * Es la distincion que pedia P0-B: por que sigue sin resolverse es informacion;
+ * que siga sin resolverse es control.
+ */
+export async function anotarMotivoAmbiguedad(pagoId, negocioId, anomalia, detalle) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada
+                        || $3::jsonb
+                        || '{"creacion_ambigua_abierta": true}'::jsonb
+      WHERE id = $1 AND negocio_id = $2`,
+    [pagoId, negocioId.trim(), JSON.stringify({
+      anomalia, anomalia_detectada_at: new Date().toISOString(), anomalia_detalle: detalle || null,
     })]);
   return rowCount > 0;
 }
@@ -2155,8 +2180,9 @@ export async function resolverAnomaliaCreacion(pagoId, negocioId, como) {
         SET metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
                                   || $3::jsonb
       WHERE id = $1 AND negocio_id = $2
-        AND metadata_sanitizada->>'anomalia' = 'creacion_ambigua'`,
+        AND COALESCE((metadata_sanitizada->>'creacion_ambigua_abierta')::boolean, false) = true`,
     [pagoId, negocioId.trim(), JSON.stringify({
+      creacion_ambigua_abierta: false,
       creacion_ambigua_resuelta: como, creacion_ambigua_resuelta_at: new Date().toISOString(),
     })]);
   return rowCount > 0;
@@ -2704,6 +2730,7 @@ export async function adoptarCheckoutClip(pagoId, negocioId, checkoutId, url) {
             metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle') || $5::jsonb
       WHERE id = $1 AND negocio_id = $2 AND referencia_externa IS NULL`,
     [pagoId, negocioId.trim(), checkoutId, url || null, JSON.stringify({
+      creacion_ambigua_abierta: false,
       creacion_ambigua_resuelta: 'adoptado_por_aviso_de_webhook',
       creacion_ambigua_resuelta_at: new Date().toISOString(),
       // El candidato deja de estar pendiente: ya se reconsulto y valido.

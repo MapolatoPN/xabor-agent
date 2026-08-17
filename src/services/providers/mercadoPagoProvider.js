@@ -10,7 +10,8 @@
  *
  * Superficie usada de la API de Mercado Pago:
  *   POST /checkout/preferences         → crea la preferencia, devuelve init_point
- *   GET  /checkout/preferences/search  → recupera una preferencia por referencia
+ *   GET  /checkout/preferences/search   → SOLO da ids por external_reference
+ *   GET  /checkout/preferences/{id}     → external_reference real + init_point
  *   GET  /v1/payments/:id              → estado real de un pago
  *
  * IDEMPOTENCIA EN LA CREACIÓN: la referencia oficial de "Create preference"
@@ -270,17 +271,46 @@ export function getCapabilities() {
  * cobrable -- se pregunta. La busqueda cubre los ultimos 90 dias, que es de
  * sobra para un checkout cuya respuesta se perdio hace segundos.
  */
+/**
+ * Recupera el checkout de Mercado Pago por la referencia de Xabor.
+ *
+ * SON DOS PASOS, y la razon esta en la documentacion oficial: la respuesta de
+ * GET /checkout/preferences/search devuelve por elemento id, client_id,
+ * collector_id, date_created, expiration_date_from/to, items, marketplace,
+ * site_id y sponsor_id. NO devuelve init_point NI external_reference. Asi que
+ * el search solo sirve para obtener el id; la URL y la prueba de que esa
+ * preferencia es de ESTA fila salen del GET individual.
+ *
+ * Devuelve una de estas formas, nunca una preferencia "a medias":
+ *   null                                  -> el search no encontro nada
+ *   { ambiguo: true, ids }                -> varias: jamas elements[0]
+ *   { ajena: true, preferenciaId, ... }   -> el GET trae otra referencia
+ *   { preferenciaId, url, referenciaInterna }
+ */
 export async function buscarCheckoutPorReferencia(referenciaInterna, credenciales) {
   const token = exigirToken(credenciales);
   const r = await pedir(
     `/checkout/preferences/search?external_reference=${encodeURIComponent(referenciaInterna)}`,
     { token });
-  const elem = (r?.elements || r?.results || [])[0];
-  if (!elem) return null;
+  const elementos = r?.elements || r?.results || [];
+  if (!elementos.length) return null;
+  if (elementos.length > 1) {
+    // Dos preferencias con la misma referencia significa que hubo dos
+    // creaciones. Elegir una seria esconder la otra.
+    return { ambiguo: true, ids: elementos.map(e => e.id).filter(Boolean) };
+  }
+
+  const id = elementos[0]?.id;
+  if (!id) return null;
+  const detalle = await pedir(`/checkout/preferences/${encodeURIComponent(id)}`, { token });
+  if (!detalle || detalle.external_reference !== referenciaInterna) {
+    return { ajena: true, preferenciaId: id, referenciaRecibida: detalle?.external_reference || null };
+  }
   return {
-    preferenciaId: elem.id || null,
-    url: elem.init_point || elem.sandbox_init_point || null,
-    referenciaExterna: elem.id || null,
+    preferenciaId: id,
+    url: detalle.init_point || detalle.sandbox_init_point || null,
+    referenciaExterna: id,
+    referenciaInterna: detalle.external_reference,
   };
 }
 
