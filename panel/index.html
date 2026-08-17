@@ -750,6 +750,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      de cierre aunque este dentro de un string -- y el resto del codigo se
      pintaria como texto. (Esta nota no usa etiquetas literales a proposito.) -->
 <script src="/modificadores.js"></script>
+<script src="/dedupeEventos.js"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1967,6 +1968,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 // negocio_id/slug propio.
 let ROL = 'staff';
 let NEGOCIO_ID = null;
+let DEDUPE = null;   // registro durable de eventos ya procesados por este panel
 
 // Config del negocio — se carga desde /api/config al iniciar
 let negocio = {
@@ -2059,6 +2061,10 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   const data = await r.json();
   ROL = data.rol || 'staff';
   NEGOCIO_ID = data.negocioId;
+  // Registro durable de lo que este panel YA proceso. Se crea en cuanto se
+  // conoce el negocio: la clave de cada evento lo lleva dentro, y el
+  // almacenamiento se separa por negocio.
+  DEDUPE = window.XaborDedupeEventos ? window.XaborDedupeEventos.crear(NEGOCIO_ID) : null;
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
   // Barra de sesión de soporte (Central de Operaciones): visible SIEMPRE
@@ -2205,10 +2211,30 @@ function conectarWS() {
       // solo cuando ya existe un trabajo de impresión para esta comanda. El
       // navegador se limita a obedecer. Si el servidor no manda el campo
       // (versión anterior), es false y todo sigue como siempre.
-      if (msg.tipo === 'nuevo_pedido' && msg.pedido?.tipo_comanda === 'cuenta_final') {
-        recibirCuentaFinal(msg.pedido, msg.impresionEdge === true);
-      } else if (msg.tipo === 'nuevo_pedido') {
-        agregarPedido(msg.pedido, msg.impresionEdge === true);
+      if (msg.tipo === 'nuevo_pedido') {
+        // UN SOLO EFECTO LOGICO POR PEDIDO.
+        //
+        // El backend puede reemitir este evento: si muere entre el envio y la
+        // marca durable de derivacion, el retry lo manda otra vez -- y el
+        // volcado de la reconexion reenvia todo lo activo. `eventId` es
+        // determinista (`nuevo_pedido:<negocio>:<folio>`), asi que reclamarlo
+        // aqui basta para que la tarjeta, el sonido, el contador y la
+        // impresion ocurran una vez y solo una.
+        //
+        // Antes esto se apoyaba en que la tarjeta siguiera en el DOM: un
+        // pedido ya despachado y retirado de la vista resucitaba con sonido e
+        // impresion al llegar un reenvio. Y el ticket de cuenta final no
+        // deduplicaba nada en absoluto.
+        //
+        // Sin `eventId` (servidor viejo) no se dedupea: mejor un efecto
+        // repetido que silenciar un pedido real.
+        if (!DEDUPE || DEDUPE.reclamar(msg.eventId)) {
+          if (msg.pedido?.tipo_comanda === 'cuenta_final') {
+            recibirCuentaFinal(msg.pedido, msg.impresionEdge === true);
+          } else {
+            agregarPedido(msg.pedido, msg.impresionEdge === true);
+          }
+        }
       }
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'eliminar_pedido') {
