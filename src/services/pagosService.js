@@ -142,6 +142,22 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
 
   const versionHash = calcularVersionPedidoHash(pedido);
 
+  // ── LA PROMOCION VIAJA CON LA VERSION ───────────────────────────────────
+  //
+  // Si el pedido cambio despues de que se aparto el cupon, la reserva vieja ya
+  // no justifica el precio que este checkout va a cobrar. Se resincroniza
+  // ANTES de crear nada: o queda reservada para la version que corre ahora, o
+  // no hay checkout. Cobrar un total con un descuento que ya no aplica seria
+  // regalar la diferencia sin que nadie se entere.
+  const { resincronizarReservasPorVersion } = await import('./tiendaPromociones.js');
+  const promoSync = await resincronizarReservasPorVersion({
+    negocioId, folio: pedidoId, datosPedido: pedido, versionActual: versionHash,
+  });
+  if (!promoSync.ok) {
+    throw new PedidoInvalidoError(
+      `El pedido ${pedidoId} cambio y su promocion ya no aplica a la version actual (${promoSync.razon}): hay que recalcular el pedido antes de cobrarlo`);
+  }
+
   // El proveedor PRINCIPAL determina el tipo de pago: Clip crea un enlace real
   // ('enlace_pago'), manual_transfer no crea nada, solo instrucciones a
   // conciliar a mano ('transferencia') -- sin esto, un negocio con
