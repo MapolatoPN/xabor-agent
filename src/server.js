@@ -1736,8 +1736,21 @@ app.post('/webhook/pagos/:proveedor/:routingToken', async (req, res) => {
 });
 
 app.post('/webhook/clip', async (req, res) => {
-  // Responder 200 inmediatamente (Clip espera respuesta rápida)
-  res.sendStatus(200);
+  // EL ACK NO ES LO PRIMERO.
+  //
+  // Antes se respondía 200 al entrar y todo lo demás ocurría después. Eso deja
+  // una ventana real: Clip recibe éxito, el proceso muere, y el
+  // `payment_request_id` -- que para una creación ambigua es lo ÚNICO que ata
+  // el dinero con la fila -- nunca llegó a la base.
+  //
+  // Y no se puede confiar en un reintento: la documentación pública de Clip no
+  // describe ninguna política de reintentos ante non-2xx, ni número de
+  // intentos, ni backoff. No se inventa la que no está escrita. Por eso el
+  // orden es: durabilizar primero, acusar recibo después. Si la persistencia
+  // falla, se responde non-2xx -- que Clip reintente o no, lo que no se hace es
+  // mentir diciendo que el evento quedó capturado.
+  let acusado = false;
+  const acusar = (codigo = 200) => { if (!acusado) { acusado = true; res.sendStatus(codigo); } };
 
   try {
     const evento = req.body;
@@ -1746,7 +1759,7 @@ app.post('/webhook/clip', async (req, res) => {
     const ref    = evento?.me_reference_id;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
 
-    if (status !== 'COMPLETED' || evento?.resource !== 'CHECKOUT') return;
+    if (status !== 'COMPLETED' || evento?.resource !== 'CHECKOUT') { acusar(); return; }
 
     // Fase 12 (arquitectura de pagos multiempresa): Clip no firma sus
     // webhooks en su API pública -- nunca se confía en el payload por sí
@@ -1766,6 +1779,7 @@ app.post('/webhook/clip', async (req, res) => {
       const pago = await obtenerPagoPorReferenciaInterna(negocioIdWebhook, ref);
       if (!pago) {
         console.warn(`[Clip] Webhook: no existe pago registrado para referencia ${ref} — se ignora (fail closed)`);
+        acusar();
         return;
       }
       // Nota: NO se corta aquí por `pago.estado === 'pagado'`. La transición
@@ -1781,6 +1795,7 @@ app.post('/webhook/clip', async (req, res) => {
       const idAConsultar = pago.referencia_externa || candidato;
       if (!idAConsultar) {
         console.warn(`[Clip] Webhook sin checkout consultable para ${pago.id} — no se marca pagado`);
+        acusar();
         return;
       }
       // Si la fila YA tiene identidad externa y el webhook nombra otra, eso no
@@ -1789,6 +1804,7 @@ app.post('/webhook/clip', async (req, res) => {
         console.error(`[Clip] El webhook nombra el checkout ${candidato} pero el pago ${pago.id} es del ${pago.referencia_externa} — se ignora`);
         await marcarAnomaliaPago(pago.id, negocioIdWebhook, 'checkout_ajeno',
           'un webhook de Clip nombró un checkout distinto al de esta fila');
+        acusar();
         return;
       }
 
@@ -1804,8 +1820,31 @@ app.post('/webhook/clip', async (req, res) => {
       // eso solo lo decide la reconsulta. Un candidato falso o ajeno se queda
       // ahí sin ascender nunca.
       if (candidato && !pago.referencia_externa) {
-        await registrarCandidatoCheckoutClip(pago.id, negocioIdWebhook, candidato);
+        // Punto de muerte inyectable EXACTAMENTE aquí: antes de durabilizar.
+        // Sirve para demostrar que en esa ventana NO se acusó recibo.
+        if (process.env.NODE_ENV !== 'production'
+            && process.env.XABOR_PAGOS_FALLA_EN === 'antes_de_candidato_clip') {
+          const e = new Error("Fallo inyectado en 'antes_de_candidato_clip'");
+          e.inyectado = true;
+          throw e;
+        }
+        const guardado = await registrarCandidatoCheckoutClip(pago.id, negocioIdWebhook, candidato);
+        if (!guardado) {
+          // rowCount 0 con la fila sin identidad significa que ya había OTRO
+          // candidato distinto: dos avisos nombrando checkouts distintos para
+          // la misma fila. Es anomalía, no un fallo de escritura.
+          console.error(`[Clip] Candidato en conflicto para ${pago.id}: llegó ${candidato}`);
+          await marcarAnomaliaPago(pago.id, negocioIdWebhook, 'candidato_en_conflicto',
+            `un segundo webhook nombró el checkout ${candidato}`);
+          acusar();
+          return;
+        }
       }
+
+      // A partir de aquí el evento YA está durablemente capturado: el candidato
+      // vive en la base y el reconciliador puede terminar el trabajo aunque
+      // este proceso muera ahora mismo. Recién ahora se acusa recibo.
+      acusar();
 
       // Verificación y asiento por el camino COMPARTIDO con el reconciliador de
       // candidatos: reconsulta con las credenciales del negocio, valida
@@ -1813,6 +1852,7 @@ app.post('/webhook/clip', async (req, res) => {
       const r = await verificarYAsentarClip({ pago, checkoutId: idAConsultar });
       if (!r.ok) {
         console.warn(`[Clip] No se asentó ${pago.id}: ${r.razon}`);
+        // El evento ya quedó capturado; lo que falta lo recoge la reconciliación.
         if (r.razon === 'transicion_doble_cobro') {
           broadcastNegocio(negocioIdWebhook, {
             tipo: 'pago_anomalia', anomalia: 'doble_cobro_real',
@@ -1844,6 +1884,7 @@ app.post('/webhook/clip', async (req, res) => {
     // docs/pagos-multiempresa.md): si el proceso se reinició, este pago no
     // se reconcilia por esta vía y depende del job de reconciliación en
     // background (obtenerPagosPendientesConLink).
+    acusar();
     const pedido = obtenerPedidoPorId(ref);
     if (pedido?.negocioId) {
       await confirmarPagoPedido(ref, pedido.negocioId);
@@ -1855,6 +1896,10 @@ app.post('/webhook/clip', async (req, res) => {
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);
+    // Si el fallo ocurrió ANTES de acusar recibo, el evento no quedó capturado:
+    // se responde non-2xx en vez de fingir que sí. Si ya se acusó, el candidato
+    // está durable y la reconciliación termina el trabajo.
+    acusar(503);
   }
 });
 

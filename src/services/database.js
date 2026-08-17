@@ -2165,28 +2165,11 @@ export async function anotarMotivoAmbiguedad(pagoId, negocioId, anomalia, detall
   return rowCount > 0;
 }
 
-/**
- * La ambiguedad quedo resuelta: o se recupero el checkout que existia, o se
- * comprobo que no existia y se creo uno. Sin limpiar la marca, la fila queda
- * marcada para siempre y cada reintento la trata como ambigua otra vez -- que
- * en un proveedor con busqueda significa crear un checkout nuevo en cada
- * llamada. Se conserva rastro de que hubo ambiguedad; lo que se retira es la
- * bandera que dispara el tratamiento.
- */
-export async function resolverAnomaliaCreacion(pagoId, negocioId, como) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
-  const { rowCount } = await pool.query(
-    `UPDATE pagos
-        SET metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
-                                  || $3::jsonb
-      WHERE id = $1 AND negocio_id = $2
-        AND COALESCE((metadata_sanitizada->>'creacion_ambigua_abierta')::boolean, false) = true`,
-    [pagoId, negocioId.trim(), JSON.stringify({
-      creacion_ambigua_abierta: false,
-      creacion_ambigua_resuelta: como, creacion_ambigua_resuelta_at: new Date().toISOString(),
-    })]);
-  return rowCount > 0;
-}
+// resolverAnomaliaCreacion se elimino: quedo sin llamadores al centralizar el
+// cierre de la creacion en finalizarCreacionPago, que apaga la barrera y retira
+// el motivo dentro de la MISMA transaccion que persiste la identidad. Dejarla
+// disponible seria una segunda puerta capaz de cerrar la barrera sin haber
+// persistido identidad alguna -- justo lo que P0-D vino a impedir.
 
 export async function marcarPagoFallido(pagoId, motivo) {
   await pool.query(`UPDATE pagos SET estado = 'fallido', metadata_sanitizada = metadata_sanitizada || $2::jsonb WHERE id = $1`,
@@ -2737,6 +2720,81 @@ export async function adoptarCheckoutClip(pagoId, negocioId, checkoutId, url) {
       clip_checkout_candidato_verificado: true,
     })]);
   return rowCount > 0;
+}
+
+/**
+ * FINALIZACION LOCAL DE LA CREACION, en UNA transaccion.
+ *
+ * Antes esto eran cuatro escrituras sueltas -- actualizarPagoCreado,
+ * resolverAnomaliaCreacion, registrarIdsDePago y la compatibilidad legacy de
+ * Clip -- y cualquier fallo intermedio dejaba media identidad local: por
+ * ejemplo referencia_externa guardada pero preference_id no, con el catch
+ * marcando la creacion como ambigua aunque la identidad YA existiera. Una fila
+ * asi podia terminar mandando otro POST.
+ *
+ * Reglas dentro de la transaccion:
+ *  · el tenant va en el WHERE, siempre;
+ *  · si la fila ya tiene OTRA identidad externa, no se toca nada: eso no es
+ *    esta creacion (devuelve conflicto);
+ *  · la barrera `creacion_ambigua_abierta` se apaga AL FINAL y solo si de
+ *    verdad quedo identidad utilizable;
+ *  · la historia de anomalias/resolucion se conserva; lo unico que se retira
+ *    es la bandera de control y el motivo ya superado.
+ *
+ * La compatibilidad legacy de Clip (`datos.clip_link_id`) va en la MISMA
+ * transaccion: es la unica forma de que su fallo no deje la creacion a medias.
+ */
+export async function finalizarCreacionPago({
+  pagoId, negocioId, referenciaExterna, url, preferenceId = null,
+  estado = 'pendiente', comoSeResolvio = 'creado', folioClipLegacy = null,
+}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const cliente = await pool.connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [fila] } = await cliente.query(
+      `SELECT id, referencia_externa FROM pagos WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+      [pagoId, nid]);
+    if (!fila) { await cliente.query('ROLLBACK'); return { ok: false, razon: 'no_encontrado' }; }
+    if (fila.referencia_externa && referenciaExterna && fila.referencia_externa !== referenciaExterna) {
+      // Identidad historica: jamas se sobrescribe.
+      await cliente.query('ROLLBACK');
+      return { ok: false, razon: 'identidad_externa_distinta', referenciaExistente: fila.referencia_externa };
+    }
+
+    await cliente.query(
+      `UPDATE pagos
+          SET referencia_externa = COALESCE($3, referencia_externa),
+              url = COALESCE($4, url),
+              preference_id = COALESCE($5, preference_id),
+              estado = $6,
+              metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
+                                    || $7::jsonb
+        WHERE id = $1 AND negocio_id = $2`,
+      [pagoId, nid, referenciaExterna || null, url || null, preferenceId, estado,
+       JSON.stringify({
+         creacion_ambigua_abierta: false,
+         creacion_ambigua_resuelta: comoSeResolvio,
+         creacion_ambigua_resuelta_at: new Date().toISOString(),
+       })]);
+
+    // Compatibilidad legacy de Clip, en la misma transaccion.
+    if (folioClipLegacy && referenciaExterna) {
+      await cliente.query(
+        `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
+          WHERE folio = $1 AND negocio_id = $2`,
+        [folioClipLegacy, nid, JSON.stringify({ clip_link_id: referenciaExterna })]);
+    }
+
+    await cliente.query('COMMIT');
+    return { ok: true };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
 // Anomalia registrada sin tocar el estado. Es el canal correcto cuando la fila

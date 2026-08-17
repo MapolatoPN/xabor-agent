@@ -306,9 +306,16 @@ export async function buscarCheckoutPorReferencia(referenciaInterna, credenciale
   if (!detalle || detalle.external_reference !== referenciaInterna) {
     return { ajena: true, preferenciaId: id, referenciaRecibida: detalle?.external_reference || null };
   }
+  const url = detalle.init_point || detalle.sandbox_init_point || null;
+  if (!url) {
+    // La referencia cuadra, pero sin URL no hay checkout que darle al cliente.
+    // Un id suelto NO es una recuperacion completa: devolverlo como exito
+    // dejaria la fila con identidad y sin enlace, y el siguiente reintento --
+    // que exige URL para reutilizar -- podria terminar creando otro cobro.
+    return { sinUrl: true, preferenciaId: id, referenciaInterna: detalle.external_reference };
+  }
   return {
-    preferenciaId: id,
-    url: detalle.init_point || detalle.sandbox_init_point || null,
+    preferenciaId: id, url,
     referenciaExterna: id,
     referenciaInterna: detalle.external_reference,
   };

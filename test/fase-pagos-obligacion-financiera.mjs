@@ -138,7 +138,7 @@ const mpMock = createServer((req, res) => {
     res.end(JSON.stringify({
       id,
       external_reference: pref.referenciaDetalle || pref.external_reference,
-      init_point: `https://mp.test/checkout/${id}`,
+      ...(pref.sinUrl ? {} : { init_point: `https://mp.test/checkout/${id}` }),
     }));
     return;
   }
@@ -674,6 +674,33 @@ try {
     assert.strictEqual(f.referencia_externa, null);
   });
 
+  await t('2n. preferencia con ID correcto pero SIN URL: no es recuperación', async () => {
+    // Un id suelto no es un checkout: sin init_point no hay nada que darle al
+    // cliente. Darlo por resuelto dejaría la fila con identidad y sin enlace, y
+    // el siguiente reintento -- que exige URL para reutilizar -- terminaría
+    // creando otro cobro.
+    reiniciarMockMP();
+    const folio = 'OB-0050';
+    await pedido(folio, 377);
+    TOKEN_MP = await conectarMP();
+    mpCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    mpCortaRespuesta = false;
+    assert.strictEqual(checkoutsMP, 1, 'fixture: debía existir una preferencia');
+    for (const [, v] of PREFERENCIAS) v.sinUrl = true;
+
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() => crearEnlace(folio), e => e.code === 'CREACION_AMBIGUA',
+        `el reintento ${i + 1} dio por buena una preferencia sin URL`);
+    }
+    assert.strictEqual(checkoutsMP, 1, `POST adicionales = ${checkoutsMP - 1}; debía ser 0`);
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.metadata_sanitizada.anomalia, 'preferencia_sin_url');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, true,
+      'la barrera se cerró con una recuperación incompleta');
+    assert.strictEqual(f.referencia_externa, null, 'adoptó identidad sin URL utilizable');
+  });
+
   await t('2e. las capacidades declaradas coinciden con lo que la documentación dice', async () => {
     // Si algún día un proveedor gana idempotencia real, esto cambia con la
     // implementación -- no antes. Declararla sin tenerla haría creer que la
@@ -773,6 +800,164 @@ try {
     assert.strictEqual(final.referencia_externa, null, 'la reconciliación adoptó el checkout ajeno');
     assert.notStrictEqual(final.estado, 'pagado');
     assert.strictEqual(await comandasDe(folio), 0);
+  });
+
+  // ═══ P0-A' — EL ACK NO PUEDE ADELANTARSE A LA DURABILIDAD ═══
+  await t('2o. muerte ANTES de durabilizar el candidato: Clip NO recibe un ACK exitoso', async () => {
+    const folio = 'OB-0060';
+    await pedido(folio, 611);
+    await conectarClip();
+    clipCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    clipCortaRespuesta = false;
+    const f = (await filas(folio))[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    CHECKOUTS.get(linkId).estado = 'COMPLETED';
+
+    // Servidor gemelo que muere justo antes de escribir el candidato.
+    const srvAck = await arrancarServidor({
+      PORT: String(PUERTO_CRASH), ...envServidor,
+      XABOR_URL_PUBLICA: `http://localhost:${PUERTO_CRASH}`,
+      XABOR_PAGOS_FALLA_EN: 'antes_de_candidato_clip',
+    }, { timeoutMs: 90000 });
+    try {
+      const codigo = await webhookClip(f.referencia_interna,
+        { puerto: PUERTO_CRASH, paymentRequestId: linkId });
+      assert.ok(codigo >= 400,
+        `Clip recibió ${codigo}: se acusó recibo de un evento que nunca se capturó`);
+    } finally { await srvAck.detener(); }
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.metadata_sanitizada.clip_checkout_candidato, undefined,
+      'fixture: el candidato no debía haberse escrito');
+  });
+
+  await t('2p. ACK, y muerte inmediata ANTES de reconsultar: se recupera sin reenviar', async () => {
+    // Segunda frontera: el candidato SÍ quedó durable y se acusó recibo; lo que
+    // muere es el trabajo posterior. Nadie reenvía el webhook.
+    const folio = 'OB-0061';
+    await pedido(folio, 733);
+    await conectarClip();
+    clipCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    clipCortaRespuesta = false;
+    const f = (await filas(folio))[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    CHECKOUTS.get(linkId).estado = 'COMPLETED';
+
+    clipReconsultaCaida = true;
+    const codigo = await webhookClip(f.referencia_interna, { paymentRequestId: linkId });
+    assert.strictEqual(codigo, 200, 'el evento sí quedó capturado: el ACK es correcto');
+    await esperar(async () =>
+      (await filaId(f.id)).metadata_sanitizada?.clip_checkout_candidato === linkId,
+      'el candidato durable');
+    clipReconsultaCaida = false;
+
+    assert.notStrictEqual((await filaId(f.id)).estado, 'pagado', 'asentó sin reconsultar');
+
+    const { reconciliarCandidatosClip } = await import('../src/services/webhookPagos.js');
+    await reconciliarCandidatosClip();
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.estado, 'pagado', 'el dinero real no se recuperó');
+    assert.ok(tras.referencia_externa, 'no adoptó la identidad');
+    assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
+  });
+
+  // ═══ P0-D — FRONTERAS DE LA CREACIÓN ═══
+  await t('2q. frontera E: identidad ya persistida → el retry REUTILIZA, cero POST', async () => {
+    const folio = 'OB-0070';
+    await pedido(folio, 429);
+    await conectarClip();
+    const antes = checkoutsClip;
+    const primero = await crearEnlace(folio);
+    assert.strictEqual(checkoutsClip - antes, 1);
+
+    for (let i = 0; i < 5; i++) {
+      const r = await crearEnlace(folio);
+      assert.strictEqual(r.referenciaExterna, primero.referenciaExterna, 'devolvió otro checkout');
+    }
+    assert.strictEqual(checkoutsClip - antes, 1,
+      `POST adicionales = ${checkoutsClip - antes - 1}; debía ser 0`);
+    assert.strictEqual((await filas(folio)).length, 1);
+  });
+
+  await t('2r. frontera D: si la finalización local falla, no queda media identidad', async () => {
+    // finalizarCreacionPago es una sola transacción: o queda todo -- referencia,
+    // url, preference_id, estado y barrera cerrada -- o no queda nada.
+    const folio = 'OB-0071';
+    await pedido(folio, 358);
+    TOKEN_MP = await conectarMP();
+    const r = await crearEnlace(folio);
+    const f = (await filas(folio))[0];
+    assert.ok(f.referencia_externa && f.url && f.preference_id,
+      'la finalización dejó campos sueltos: ' + JSON.stringify({
+        ref: f.referencia_externa, url: f.url, pref: f.preference_id }));
+    assert.strictEqual(f.estado, 'pendiente');
+    assert.strictEqual(f.metadata_sanitizada.creacion_ambigua_abierta, false);
+    assert.strictEqual(r.reutilizado, false);
+  });
+
+  await t('2r-bis. la finalización JAMÁS sobrescribe una identidad externa distinta', async () => {
+    // Regla absoluta: una vez que Xabor tiene identidad externa durable, esa
+    // fila no puede recibir otra. Si llegara una finalización con un checkout
+    // distinto, eso no es esta creación.
+    const folio = 'OB-0071';
+    const f = (await filas(folio))[0];
+    const original = f.referencia_externa;
+    assert.ok(original, 'fixture: la fila debía tener identidad');
+
+    const { finalizarCreacionPago } = await import('../src/services/database.js');
+    const r = await finalizarCreacionPago({
+      pagoId: f.id, negocioId: NEG,
+      referenciaExterna: 'pref-de-otro-checkout', url: 'https://mp.test/checkout/otro',
+      preferenceId: 'pref-de-otro-checkout', estado: 'pendiente',
+    });
+    assert.strictEqual(r.ok, false, 'aceptó sobrescribir la identidad externa');
+    assert.strictEqual(r.razon, 'identidad_externa_distinta');
+    assert.strictEqual(r.referenciaExistente, original);
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.referencia_externa, original, 'la identidad histórica fue sobrescrita');
+    assert.ok(!String(tras.url || '').includes('otro'), 'sobrescribió la URL histórica');
+  });
+
+  await t('2s. barrera LEGACY (solo anomalia, sin bandera): se limpia al adoptar', async () => {
+    // Filas escritas antes de que existiera la bandera. El lector las reconoce
+    // como ambiguas; si la resolución no supiera limpiarlas, quedarían
+    // adoptadas y bloqueadas para siempre.
+    reiniciarMockMP();
+    const folio = 'OB-0072';
+    await pedido(folio, 466);
+    TOKEN_MP = await conectarMP();
+    mpCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    mpCortaRespuesta = false;
+    const f0 = (await filas(folio))[0];
+    // Se degrada la fila al formato viejo: motivo sin bandera.
+    await pool.query(
+      `UPDATE pagos SET metadata_sanitizada = (metadata_sanitizada - 'creacion_ambigua_abierta')
+        WHERE id = $1`, [f0.id]);
+    const degradada = await filaId(f0.id);
+    assert.strictEqual(degradada.metadata_sanitizada.creacion_ambigua_abierta, undefined,
+      'fixture: la bandera debía quedar fuera');
+    assert.strictEqual(degradada.metadata_sanitizada.anomalia, 'creacion_ambigua');
+
+    const antes = checkoutsMP;
+    const r = await crearEnlace(folio);          // debe recuperar, no crear
+    assert.strictEqual(checkoutsMP, antes, 'creó otra preferencia sobre una fila legacy');
+    assert.ok(r.reutilizado || r.recuperadoTrasAmbiguedad);
+
+    const tras = await filaId(f0.id);
+    assert.strictEqual(tras.metadata_sanitizada.creacion_ambigua_abierta, false,
+      'la fila legacy quedó adoptada pero con la barrera sin cerrar');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, undefined,
+      'quedó el motivo viejo pegado: el retry la volvería a tratar como ambigua');
+    assert.ok(tras.referencia_externa && tras.url);
+
+    // Y el retry siguiente reutiliza sin crear.
+    const r2 = await crearEnlace(folio);
+    assert.strictEqual(checkoutsMP, antes, 'el retry posterior creó otra preferencia');
+    assert.strictEqual(r2.reutilizado, true);
   });
 
   // ═══ P0-3 — UN SOLO LOCK PARA LA OBLIGACIÓN ═══

@@ -17,7 +17,8 @@ import {
   asegurarRoutingTokenIntegracion, registrarIdsDePago,
   obtenerIntentoDePago, marcarIntentosAmbiguos, conObligacionDePagoExclusiva,
   invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
-  marcarCreacionAmbigua, resolverAnomaliaCreacion, anotarMotivoAmbiguedad,
+  marcarCreacionAmbigua, anotarMotivoAmbiguedad,
+  finalizarCreacionPago,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -319,6 +320,11 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
           `el proveedor tiene ${encontrado.ids.length} checkouts con la misma referencia`);
         throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
       }
+      if (encontrado?.sinUrl) {
+        await anotarMotivoAmbiguedad(registro.id, negocioId, 'preferencia_sin_url',
+          `la preferencia ${encontrado.preferenciaId} existe y la referencia cuadra, pero no trae init_point utilizable`);
+        throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
+      }
       if (encontrado?.ajena) {
         await anotarMotivoAmbiguedad(registro.id, negocioId, 'preferencia_ajena',
           `la preferencia ${encontrado.preferenciaId} lleva la referencia ${encontrado.referenciaRecibida}`);
@@ -330,16 +336,19 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
         throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
       }
       if (encontrado) {
-        // Existía: se adopta, no se crea nada. El checkout del cliente es ese.
-        await actualizarPagoCreado(registro.id, {
-          referenciaExterna: encontrado.referenciaExterna, url: encontrado.url || null,
-          estado: 'pendiente',
+        // Existía: se adopta, no se crea nada. Una sola transacción: identidad,
+        // URL, preference_id y cierre de la barrera, o nada.
+        const fin = await finalizarCreacionPago({
+          pagoId: registro.id, negocioId,
+          referenciaExterna: encontrado.referenciaExterna, url: encontrado.url,
+          preferenceId: encontrado.preferenciaId || null, estado: 'pendiente',
+          comoSeResolvio: 'recuperado_por_referencia',
         });
-        if (encontrado.preferenciaId) {
-          await registrarIdsDePago(registro.id, negocioId,
-            { preferenceId: encontrado.preferenciaId, proveedor: principal.proveedor });
+        if (!fin.ok) {
+          await anotarMotivoAmbiguedad(registro.id, negocioId, `finalizacion_${fin.razon}`,
+            'no se pudo cerrar la creación con la preferencia recuperada');
+          throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
         }
-        await resolverAnomaliaCreacion(registro.id, negocioId, 'recuperado_por_referencia');
         return {
           pagoId: registro.id, url: encontrado.url, reutilizado: true,
           referenciaExterna: encontrado.referenciaExterna, estado: 'pendiente',
@@ -356,6 +365,10 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   const claveIdempotencia = `xabor:pago:${registro.id}`;
   await registrarIntentoDeCreacion(registro.id, negocioId, claveIdempotencia);
 
+  // Una vez que la identidad externa quedo persistida localmente, un fallo
+  // posterior NO puede devolver la fila a "ambigua": ambigua significa "no
+  // sabemos si existe un checkout", y aqui ya sabemos que si.
+  let identidadPersistida = false;
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
 
@@ -383,34 +396,26 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // creación está protegida cuando no lo está.
       idempotencyKey: capacidades.idempotenciaCreacion ? claveIdempotencia : null,
     });
-    await actualizarPagoCreado(registro.id, {
+    // FINALIZACION ATOMICA. Antes eran cuatro escrituras sueltas y un fallo
+    // intermedio dejaba media identidad local -- con el catch marcando la
+    // creación como ambigua aunque la identidad ya existiera.
+    identidadPersistida = true;
+    const fin = await finalizarCreacionPago({
+      pagoId: registro.id, negocioId,
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
+      preferenceId: resultado.preferenceId || null,
       estado: normalizarEstadoPago(resultado.estado || 'pendiente'),
+      comoSeResolvio: 'creado',
+      // `datos.clip_link_id` es un campo LEGACY de Clip: la reconciliación
+      // vieja lee de ahí. Va en la MISMA transacción para que su fallo no deje
+      // la creación a medias; y solo para Clip, porque un preference_id de MP
+      // ahí sería basura consultada contra la API equivocada.
+      folioClipLegacy: principal.proveedor === 'clip' ? pedidoId : null,
     });
-    // Compatibilidad: mismo campo legacy que ya usa la reconciliación en
-    // background (obtenerPagosPendientesConLink) para negocios que no han
-    // migrado ese job todavía. Solo aplica cuando hay una referencia real
-    // de proveedor (Clip) -- transferencia manual no tiene nada que
-    // reconciliar por esa vía.
-    // El id de la PREFERENCIA en su propia columna. No es un payment_id y jamás
-    // debe consultarse como /v1/payments/:preferenceId -- ese id lo trae después
-    // el webhook, y se guarda aparte.
-    // Si esta fila venia de un intento ambiguo y la busqueda dijo que no existia
-    // nada, la creacion de ahora zanja la duda.
-    await resolverAnomaliaCreacion(registro.id, negocioId, 'creado_tras_comprobar_que_no_existia');
-    if (resultado.preferenceId) {
-      await registrarIdsDePago(registro.id, negocioId,
-        { preferenceId: resultado.preferenceId, proveedor: principal.proveedor });
-    }
-    // `datos.clip_link_id` es un campo LEGACY de Clip: la reconciliacion vieja
-    // (obtenerPagosPendientesConLink) lee de ahi y llama a consultarEstadoPago,
-    // que consulta la API de Clip. Escribir ahi el preference_id de Mercado
-    // Pago hacia que ese job preguntara por un id de MP a Clip -- basura
-    // garantizada, y ademas contaminaba un campo cuyo nombre promete Clip. Solo
-    // Clip escribe ese campo; los demas proveedores ya tienen sus propias
-    // columnas (preference_id, payment_id) y su propia reconciliacion.
-    if (resultado.referenciaExterna && principal.proveedor === 'clip') {
-      await guardarLinkPago(pedidoId, negocioId, resultado.referenciaExterna);
+    if (!fin.ok) {
+      await anotarMotivoAmbiguedad(registro.id, negocioId, `finalizacion_${fin.razon}`,
+        'el proveedor creó el checkout pero no se pudo cerrar la creación localmente');
+      throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
     }
     return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {
@@ -422,6 +427,11 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // ausentes, configuración inválida -- son fallos limpios.
     const antesDeSalir = e.code === 'TENANT_CONTEXT_REQUIRED'
       || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL';
+    if (identidadPersistida || e.code === 'CREACION_AMBIGUA') {
+      // La identidad ya existe (o el motivo ya quedo anotado): no se vuelve a
+      // marcar ambigua ni se toca nada mas.
+      throw e;
+    }
     if (antesDeSalir) {
       await marcarPagoFallido(registro.id, e.code || e.message);
     } else {
