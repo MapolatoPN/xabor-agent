@@ -26,7 +26,8 @@ import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { getPaymentStatus as getPaymentStatusClip } from './services/providers/clipProvider.js';
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
-         derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes } from './services/webhookPagos.js';
+         derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes,
+         verificarYAsentarClip, reconciliarCandidatosClip } from './services/webhookPagos.js';
 import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -40,7 +41,7 @@ import {
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, adoptarCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, guardarPedidoProgramado, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -1791,62 +1792,36 @@ app.post('/webhook/clip', async (req, res) => {
         return;
       }
 
-      const real = await getPaymentStatusClip(idAConsultar, negocioIdWebhook);
-      if (!real || !real.pagado) {
-        console.warn(`[Clip] Webhook dice COMPLETED pero la re-consulta a Clip no lo confirma para ${pago.id} (estado=${real?.estadoProveedor || 'sin respuesta'}) — no se marca pagado`);
-        return;
-      }
-      // El checkout consultado tiene que ser el de ESTA fila. Es lo que impide
-      // que un id ajeno -- inventado en el webhook, que no viene firmado --
-      // asiente dinero sobre un pago que no le corresponde.
-      if (real.referenciaInterna !== pago.referencia_interna) {
-        console.error(`[Clip] El checkout ${idAConsultar} no pertenece al pago ${pago.id} — referencia recibida distinta`);
-        await marcarAnomaliaPago(pago.id, negocioIdWebhook, 'referencia_no_coincide',
-          'el checkout reconsultado en Clip lleva otra referencia interna');
-        return;
-      }
-      // Dinero: el monto lo dice la API de Clip, no el webhook. Server-authoritative.
-      const montoOk = typeof real.monto === 'number' && Number.isFinite(real.monto)
-        && Math.abs(real.monto - Number(pago.monto)) < 0.005;
-      if (!montoOk) {
-        console.error(`[Clip] MONTO DISTINTO pago=${pago.id} esperado=${pago.monto} recibido=${real.monto}`);
-        await marcarAnomaliaPago(pago.id, negocioIdWebhook, 'monto_distinto',
-          `Clip reporta ${real.monto} y la fila dice ${pago.monto}`);
-        return;
-      }
-      if (real.moneda && String(real.moneda).toUpperCase() !== String(pago.moneda).toUpperCase()) {
-        console.error(`[Clip] MONEDA DISTINTA pago=${pago.id} esperada=${pago.moneda} recibida=${real.moneda}`);
-        await marcarAnomaliaPago(pago.id, negocioIdWebhook, 'moneda_distinta',
-          `Clip reporta ${real.moneda} y la fila dice ${pago.moneda}`);
-        return;
-      }
-      // Identidad externa DURABLE antes de asentar: a partir de aquí esta fila
-      // ya no puede volver a mandar un POST de creación.
-      if (!pago.referencia_externa) {
-        await adoptarCheckoutClip(pago.id, negocioIdWebhook, idAConsultar, real.url);
+      // ── PERSISTIR EL CANDIDATO ANTES DE PODER PERDERLO ──────────────────
+      //
+      // Este endpoint ya respondió 200. Si la reconsulta falla de forma
+      // transitoria, o el proceso muere aquí mismo, este `payment_request_id`
+      // sería lo único que ataba el dinero de Clip con esta fila -- y se
+      // perdería: la reconciliación de Clip recorre filas CON referencia
+      // externa, y esta no la tiene. Dinero real y Xabor ambiguo para siempre.
+      //
+      // Se guarda como CANDIDATO NO VERIFICADO, en metadata. No es identidad:
+      // eso solo lo decide la reconsulta. Un candidato falso o ajeno se queda
+      // ahí sin ascender nunca.
+      if (candidato && !pago.referencia_externa) {
+        await registrarCandidatoCheckoutClip(pago.id, negocioIdWebhook, candidato);
       }
 
-      // TRANSICIÓN FINANCIERA ÚNICA. Antes esto llamaba a
-      // confirmarPagoIdempotente y TIRABA su resultado: sobre una fila
-      // 'invalidado' (el enlace del proveedor anterior que el cliente sí pagó)
-      // devolvía null y el webhook liberaba la cocina igual, dejando el ledger
-      // diciendo invalidado y el intento nuevo todavía cobrable.
-      const transicion = await asentarPagoRealVerificado({
-        pagoId: pago.id, negocioId: negocioIdWebhook,
-        referenciaExterna: pago.referencia_externa,
-      });
-      if (!transicion.ok) {
-        // Nada se libera sin que el ledger lo haya asentado. 'doble_cobro' ya
-        // quedó registrado como anomalía en las filas implicadas.
-        console.error(`[Clip] Transición financiera no confirmó ${pago.id}: ${transicion.resultado} — NO se libera el pedido`);
-        if (transicion.resultado === 'doble_cobro') {
+      // Verificación y asiento por el camino COMPARTIDO con el reconciliador de
+      // candidatos: reconsulta con las credenciales del negocio, valida
+      // referencia/monto/moneda, adopta identidad y asienta.
+      const r = await verificarYAsentarClip({ pago, checkoutId: idAConsultar });
+      if (!r.ok) {
+        console.warn(`[Clip] No se asentó ${pago.id}: ${r.razon}`);
+        if (r.razon === 'transicion_doble_cobro') {
           broadcastNegocio(negocioIdWebhook, {
             tipo: 'pago_anomalia', anomalia: 'doble_cobro_real',
-            pedidoId: folioWebhook, pagos: transicion.pagosImplicados,
+            pedidoId: folioWebhook, pagos: r.transicion?.pagosImplicados,
           });
         }
         return;
       }
+      const transicion = r.transicion;
 
       // P0 (anticipo estructurado): si el pedido nació pendiente_pago, el
       // pago re-verificado es LA autorización. Va por el MISMO descargo de
@@ -7656,32 +7631,19 @@ async function reconciliarPagosPendientes() {
     for (const pago of reconciliables) {
       if (!pago.referencia_externa) continue;      // nunca llegó a haber checkout
       try {
-        const data = await getPaymentStatusClip(pago.referencia_externa, pago.negocio_id);
-        if (!data?.pagado) continue;
-        if (data.referenciaInterna !== pago.referencia_interna) {
-          console.error(`[Clip Reconciliación] El checkout ${pago.referencia_externa} lleva otra referencia — se omite ${pago.id}`);
-          continue;
-        }
-        const montoOk = typeof data.monto === 'number' && Number.isFinite(data.monto)
-          && Math.abs(data.monto - Number(pago.monto)) < 0.005;
-        if (!montoOk) {
-          console.error(`[Clip Reconciliación] MONTO DISTINTO pago=${pago.id} esperado=${pago.monto} recibido=${data.monto}`);
-          await marcarAnomaliaPago(pago.id, pago.negocio_id, 'monto_distinto',
-            `Clip reporta ${data.monto} y la fila dice ${pago.monto}`);
-          continue;
-        }
-
-        const transicion = await asentarPagoRealVerificado({
-          pagoId: pago.id, negocioId: pago.negocio_id, referenciaExterna: pago.referencia_externa,
-        });
-        if (!transicion.ok) {
-          console.error(`[Clip Reconciliación] La transición no confirmó ${pago.id}: ${transicion.resultado} — ${pago.pedido_folio} NO se libera`);
+        // MISMO camino que el webhook: una sola implementación de la
+        // verificación, o serían dos sitios donde relajar una validación.
+        const r = await verificarYAsentarClip({ pago, checkoutId: pago.referencia_externa });
+        if (!r.ok) {
+          if (r.razon !== 'estado_no_pagado:CHECKOUT_PENDING') {
+            console.warn(`[Clip Reconciliación] ${pago.id}: ${r.razon}`);
+          }
           continue;
         }
         await derivarPedidoPorPagoAsentado({
           pagoId: pago.id, negocioId: pago.negocio_id, folio: pago.pedido_folio });
         broadcastNegocio(pago.negocio_id, { tipo: 'pago_confirmado', pedidoId: pago.pedido_folio, proveedor: 'clip' });
-        console.log(`[Clip Reconciliación] ✅ Pago ${transicion.resultado} para ${pago.pedido_folio}`);
+        console.log(`[Clip Reconciliación] ✅ Pago ${r.razon} para ${pago.pedido_folio}`);
       } catch (e) {
         console.error(`[Clip Reconciliación] Error en pago ${pago.id}: ${e.message}`);
       }
@@ -7869,6 +7831,16 @@ async function arrancar() {
   // minuto, que es barato: el indice parcial no ve nada cuando no hay deuda.
   reconciliarDerivacionesPendientes().catch(e =>
     console.error('[Pagos] Recuperacion inicial de derivaciones fallo:', e.message));
+
+  // Candidatos de Clip pendientes de verificar: el aviso llegó, el id quedó
+  // guardado y la verificación no llegó a completarse. Al arrancar y cada
+  // minuto, porque ahí puede haber dinero real esperando.
+  reconciliarCandidatosClip().catch(e =>
+    console.error('[Pagos] Recuperacion inicial de candidatos Clip fallo:', e.message));
+  setInterval(() => {
+    reconciliarCandidatosClip().catch(e =>
+      console.error('[Pagos] Recuperacion de candidatos Clip fallo:', e.message));
+  }, 60 * 1000);
   setInterval(() => {
     reconciliarDerivacionesPendientes().catch(e =>
       console.error('[Pagos] Recuperacion de derivaciones fallo:', e.message));

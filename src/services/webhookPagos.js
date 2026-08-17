@@ -19,7 +19,7 @@ import {
   ligarPaymentIdExclusivo, asentarPagoRealVerificado,
   actualizarEstadoPagoPorId, pagosReconciliablesDeProveedor,
   marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
-  consumirDeudaDeDerivacion,
+  consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -223,6 +223,89 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
       hermanosCerrados: transicion.hermanosCerrados,
     },
   };
+}
+
+/**
+ * VERIFICACION Y ASIENTO DE UN CHECKOUT DE CLIP.
+ *
+ * Un solo camino para las dos entradas -- el webhook y la reconciliacion de
+ * candidatos --, porque dos copias serian dos sitios donde relajar una
+ * validacion. El `checkoutId` que entra aqui es siempre un CANDIDATO: Clip no
+ * firma sus webhooks, asi que nada se cree hasta reconsultarlo con las
+ * credenciales del negocio dueño.
+ *
+ * Devuelve { ok, razon } y NO deriva: eso lo hace el llamador, que es quien
+ * sabe si tiene con que avisar al panel.
+ */
+export async function verificarYAsentarClip({ pago, checkoutId }) {
+  const negocioId = pago.negocio_id;
+  const { getPaymentStatus } = await import('./providers/clipProvider.js');
+  const real = await getPaymentStatus(checkoutId, negocioId);
+  if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
+  if (!real.pagado) return { ok: false, razon: `estado_no_pagado:${real.estadoProveedor || 'desconocido'}` };
+
+  // El checkout consultado tiene que ser el de ESTA fila.
+  if (real.referenciaInterna !== pago.referencia_interna) {
+    await marcarAnomaliaPago(pago.id, negocioId, 'referencia_no_coincide',
+      'el checkout reconsultado en Clip lleva otra referencia interna');
+    return { ok: false, razon: 'referencia_no_coincide' };
+  }
+  // Dinero: lo dice la API, no el aviso.
+  const montoOk = typeof real.monto === 'number' && Number.isFinite(real.monto)
+    && Math.abs(real.monto - Number(pago.monto)) < 0.005;
+  if (!montoOk) {
+    await marcarAnomaliaPago(pago.id, negocioId, 'monto_distinto',
+      `Clip reporta ${real.monto} y la fila dice ${pago.monto}`);
+    return { ok: false, razon: 'monto_distinto' };
+  }
+  if (real.moneda && String(real.moneda).toUpperCase() !== String(pago.moneda).toUpperCase()) {
+    await marcarAnomaliaPago(pago.id, negocioId, 'moneda_distinta',
+      `Clip reporta ${real.moneda} y la fila dice ${pago.moneda}`);
+    return { ok: false, razon: 'moneda_distinta' };
+  }
+
+  // Identidad DURABLE antes de asentar: desde aqui la fila ya no puede volver
+  // a mandar un POST de creacion.
+  if (!pago.referencia_externa) {
+    await adoptarCheckoutClip(pago.id, negocioId, checkoutId, real.url);
+  }
+  const transicion = await asentarPagoRealVerificado({
+    pagoId: pago.id, negocioId, referenciaExterna: checkoutId });
+  if (!transicion.ok) return { ok: false, razon: `transicion_${transicion.resultado}`, transicion };
+  return { ok: true, razon: transicion.resultado, transicion };
+}
+
+/**
+ * Reconciliacion de CANDIDATOS de Clip: filas cuya creacion quedo ambigua, a
+ * las que un webhook les trajo un payment_request_id, y cuya verificacion no
+ * llego a completarse -- reconsulta caida, o el proceso murio entre el 200 y el
+ * trabajo real.
+ *
+ * Sin esto, ese id se perdia y ninguna otra reconciliacion podia encontrarlo:
+ * la de Clip recorre filas CON referencia externa, y estas no la tienen. No
+ * hace falta que Clip reenvie el webhook -- de hecho no se le pide.
+ */
+export async function reconciliarCandidatosClip(limite = 25) {
+  const filas = await pagosConCandidatoClipSinVerificar(limite).catch(() => []);
+  let resueltos = 0;
+  for (const pago of filas) {
+    const candidato = pago.metadata_sanitizada?.clip_checkout_candidato;
+    if (!candidato) continue;
+    try {
+      const r = await verificarYAsentarClip({ pago, checkoutId: candidato });
+      if (!r.ok) {
+        console.warn(`[Clip Candidatos] ${pago.id}: ${r.razon}`);
+        continue;
+      }
+      await derivarPedidoPorPagoAsentado({
+        pagoId: pago.id, negocioId: pago.negocio_id, folio: pago.pedido_folio });
+      resueltos++;
+      console.log(`[Clip Candidatos] Cobro recuperado sin reenvio de webhook: pedido ${pago.pedido_folio}`);
+    } catch (e) {
+      console.error(`[Clip Candidatos] Error con ${pago.id}: ${e.message}`);
+    }
+  }
+  return resueltos;
 }
 
 /**

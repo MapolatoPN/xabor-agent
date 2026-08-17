@@ -47,6 +47,7 @@ process.env.XABOR_URL_PUBLICA = base;
 let checkoutsClip = 0;
 const CHECKOUTS = new Map();
 let clipCortaRespuesta = false;      // crea el checkout y mata el socket
+let clipReconsultaCaida = false;     // la reconsulta se cae, la creación no
 const clipMock = createServer((req, res) => {
   let cuerpo = '';
   req.on('data', c => { cuerpo += c; });
@@ -68,6 +69,7 @@ const clipMock = createServer((req, res) => {
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
+      if (clipReconsultaCaida) { req.destroy(); res.destroy(); return; }
       const id = decodeURIComponent(req.url.split('/').pop());
       const c = CHECKOUTS.get(id);
       if (!c) { res.statusCode = 404; res.end('{}'); return; }
@@ -573,6 +575,94 @@ try {
     assert.strictEqual(typeof mp.buscarCheckoutPorReferencia, 'function');
   });
 
+  // ═══ P0-A — EL CANDIDATO SOBREVIVE A LA RECONSULTA CAÍDA ═══
+  await t('2j. reconsulta caída tras el webhook: el candidato queda guardado, no se pierde', async () => {
+    // La ventana: el endpoint respondió 200, la creación había quedado ambigua,
+    // y la reconsulta se cae. Sin persistir el payment_request_id, ese id era
+    // lo único que ataba el dinero de Clip con esta fila.
+    const folio = 'OB-0030';
+    await pedido(folio, 512);
+    await conectarClip();
+    clipCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    clipCortaRespuesta = false;
+    const f = (await filas(folio))[0];
+    assert.strictEqual(f.referencia_externa, null, 'fixture: la creación debía quedar ambigua');
+
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    CHECKOUTS.get(linkId).estado = 'COMPLETED';
+
+    clipReconsultaCaida = true;
+    assert.strictEqual(await webhookClip(f.referencia_interna, { paymentRequestId: linkId }), 200);
+    await esperar(async () =>
+      (await filaId(f.id)).metadata_sanitizada?.clip_checkout_candidato === linkId,
+      'que el candidato quede persistido pese a la reconsulta caída');
+    clipReconsultaCaida = false;
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.metadata_sanitizada.clip_checkout_candidato_verificado, false,
+      'un candidato sin reconsultar no puede darse por verificado');
+    assert.strictEqual(tras.referencia_externa, null,
+      '¡ascendió un candidato no verificado a identidad del checkout!');
+    assert.notStrictEqual(tras.estado, 'pagado', 'asentó sin haber reconsultado');
+  });
+
+  await t('2k. la reconciliación de candidatos cobra SIN reenviar el webhook', async () => {
+    const folio = 'OB-0030';
+    const f = (await filas(folio))[0];
+    const { reconciliarCandidatosClip } = await import('../src/services/webhookPagos.js');
+    const resueltos = await reconciliarCandidatosClip();
+    assert.ok(resueltos >= 1, 'la reconciliación no recuperó el candidato');
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.estado, 'pagado', 'el dinero real siguió sin asentarse');
+    assert.strictEqual(tras.metadata_sanitizada.clip_checkout_candidato_verificado, true);
+    assert.ok(tras.referencia_externa, 'no adoptó la identidad tras verificar');
+    assert.strictEqual((await pedidoDe(folio)).datos.pago_confirmado, true);
+    assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
+  });
+
+  await t('2l. correrla otra vez no duplica nada', async () => {
+    const { reconciliarCandidatosClip } = await import('../src/services/webhookPagos.js');
+    for (let i = 0; i < 3; i++) await reconciliarCandidatosClip();
+    assert.strictEqual(await comandasDe('OB-0030'), 1);
+  });
+
+  await t('2m. un candidato AJENO se guarda sin verificar y jamás asciende ni asienta', async () => {
+    const folio = 'OB-0031';
+    await pedido(folio, 244);
+    await conectarClip();
+    clipCortaRespuesta = true;
+    await assert.rejects(() => crearEnlace(folio));
+    clipCortaRespuesta = false;
+    const f = (await filas(folio))[0];
+
+    // Checkout de otro pedido, pagado y con SU propia referencia.
+    const folioAjeno = 'OB-0032';
+    await pedido(folioAjeno, 888);
+    const ajeno = await crearEnlace(folioAjeno);
+    CHECKOUTS.get(ajeno.referenciaExterna).estado = 'COMPLETED';
+
+    assert.strictEqual(await webhookClip(f.referencia_interna,
+      { paymentRequestId: ajeno.referenciaExterna }), 200);
+    await new Promise(r => setTimeout(r, 1200));
+
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.metadata_sanitizada.clip_checkout_candidato, ajeno.referenciaExterna,
+      'el candidato debía guardarse aunque resulte falso: es evidencia');
+    assert.strictEqual(tras.referencia_externa, null, '¡adoptó un checkout ajeno!');
+    assert.notStrictEqual(tras.estado, 'pagado');
+    assert.strictEqual(tras.metadata_sanitizada.anomalia, 'referencia_no_coincide');
+
+    // Y la reconciliación tampoco lo asciende por insistir.
+    const { reconciliarCandidatosClip } = await import('../src/services/webhookPagos.js');
+    for (let i = 0; i < 3; i++) await reconciliarCandidatosClip();
+    const final = await filaId(f.id);
+    assert.strictEqual(final.referencia_externa, null, 'la reconciliación adoptó el checkout ajeno');
+    assert.notStrictEqual(final.estado, 'pagado');
+    assert.strictEqual(await comandasDe(folio), 0);
+  });
+
   // ═══ P0-3 — UN SOLO LOCK PARA LA OBLIGACIÓN ═══
   await t('3a. con dinero asentado y deuda pendiente, NO se crea otro checkout', async () => {
     const folio = 'OB-0020';
@@ -686,7 +776,7 @@ try {
   fallidas++; fallos.push(`ERROR FATAL: ${e.message}`);
 } finally {
   delete process.env.XABOR_PAGOS_RETARDO_INTENTO_MS;
-  clipCortaRespuesta = false; mpCortaRespuesta = false;
+  clipCortaRespuesta = false; mpCortaRespuesta = false; clipReconsultaCaida = false;
   if (srv) await srv.detener();
   if (srvCrash) await srvCrash.detener();
   clipMock.close(); mpMock.close();

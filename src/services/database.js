@@ -2635,6 +2635,59 @@ export async function pagoRealDelPedido(negocioId, pedidoFolio, versionHash = nu
 }
 
 /**
+ * Guarda el payment_request_id que trajo un webhook de Clip como CANDIDATO NO
+ * VERIFICADO, antes de intentar reconsultarlo.
+ *
+ * Por que existe: el endpoint del webhook responde 200 de inmediato y procesa
+ * despues. Si la reconsulta falla de forma transitoria -- o el proceso muere --
+ * ese id se perdia para siempre: Clip tenia el dinero, la fila seguia sin
+ * referencia_externa y ninguna reconciliacion sabia por donde buscar, porque la
+ * reconciliacion de Clip recorre filas CON referencia externa. Dinero real y
+ * Xabor eternamente ambiguo.
+ *
+ * Se guarda en metadata, no en referencia_externa: un candidato sin verificar
+ * NO es la identidad del checkout. Copiarlo ahi seria creerle a un webhook que
+ * Clip no firma. La promocion a identidad ocurre solo en adoptarCheckoutClip,
+ * despues de reconsultar y validar referencia, monto y moneda.
+ *
+ * Solo se escribe si la fila no tiene identidad externa todavia, y no se pisa
+ * un candidato anterior distinto: dos candidatos distintos para la misma fila
+ * es una anomalia, no una actualizacion.
+ */
+export async function registrarCandidatoCheckoutClip(pagoId, negocioId, candidato) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  if (typeof candidato !== 'string' || !candidato.trim()) return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+      WHERE id = $1 AND negocio_id = $2
+        AND referencia_externa IS NULL
+        AND COALESCE(metadata_sanitizada->>'clip_checkout_candidato', $4) = $4`,
+    [pagoId, negocioId.trim(), JSON.stringify({
+      clip_checkout_candidato: candidato.trim(),
+      clip_checkout_candidato_at: new Date().toISOString(),
+      clip_checkout_candidato_verificado: false,
+    }), candidato.trim()]);
+  return rowCount > 0;
+}
+
+/**
+ * Filas con un candidato de Clip pendiente de verificar. Es lo que recorre la
+ * reconciliacion para cerrar el hueco: el aviso llego, el id se guardo, y la
+ * verificacion quedo a medias.
+ */
+export async function pagosConCandidatoClipSinVerificar(limite = 25) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE proveedor = 'clip'
+        AND referencia_externa IS NULL
+        AND metadata_sanitizada->>'clip_checkout_candidato' IS NOT NULL
+        AND COALESCE((metadata_sanitizada->>'clip_checkout_candidato_verificado')::boolean, false) = false
+        AND estado NOT IN ('pagado','reembolsado','cancelado')
+      ORDER BY created_at ASC LIMIT $1`, [limite]);
+  return rows;
+}
+
+/**
  * Ata durablemente un checkout de Clip a su fila cuando la creacion quedo
  * ambigua y el id aparecio por el webhook.
  *
@@ -2653,6 +2706,8 @@ export async function adoptarCheckoutClip(pagoId, negocioId, checkoutId, url) {
     [pagoId, negocioId.trim(), checkoutId, url || null, JSON.stringify({
       creacion_ambigua_resuelta: 'adoptado_por_aviso_de_webhook',
       creacion_ambigua_resuelta_at: new Date().toISOString(),
+      // El candidato deja de estar pendiente: ya se reconsulto y valido.
+      clip_checkout_candidato_verificado: true,
     })]);
   return rowCount > 0;
 }
