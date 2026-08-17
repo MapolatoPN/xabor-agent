@@ -2512,6 +2512,23 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
         RETURNING *`,
       [pagoId, nid, referenciaExterna, paymentId, JSON.stringify(marca), debeDerivar]);
 
+    // Si este cobro NO va a liberar el pedido -- version desfasada, pago
+    // tardio, pedido inexistente --, la obligacion termina aqui y la reserva de
+    // promocion deja de representar nada: no hubo comanda ni la habra por esta
+    // via. Se suelta el cupo en la MISMA transaccion, o quedaria apartado para
+    // siempre: el pago ya esta 'pagado' y el expirador no vuelve a mirarlo.
+    //
+    // El dinero sigue siendo real y queda marcado para revision. Si alguien
+    // resuelve el pedido a mano y quiere el descuento otra vez, tendra que
+    // volver a pedirlo -- y ahi se comprobara si todavia hay cupo.
+    if (!debeDerivar) {
+      const { liberarReservasDePedido } = await import('./promoReservas.js');
+      await liberarReservasDePedido(cliente, {
+        negocioId: nid, folio,
+        motivo: 'el cobro no libera el pedido (version desfasada, pago tardio o pedido inexistente)',
+      });
+    }
+
     // Cerrar los intentos hermanos que siguen abiertos: con el dinero ya
     // dentro, ningun otro enlace del mismo pedido puede seguir cobrando.
     const { rows: cerrados } = await cliente.query(
@@ -2668,8 +2685,38 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
       return { ok: false, resultado: 'version_desfasada_post_asiento', folio };
     }
 
+    // ── LA PROMOCION SE CONSUME AQUI, NO ANTES ────────────────────────────
+    //
+    // Llegar al checkout solo RESERVA. El consumo va en este mismo acto: la
+    // version ya esta revalidada, la fila del pedido bloqueada y el lock de la
+    // obligacion tomado, asi que consumir el cupo y marcar el pedido pagado son
+    // la misma transaccion. Cualquier otro momento -- redirect, webhook crudo,
+    // creacion del enlace, UI -- consumiria sin dinero detras.
+    const { consumirReservasDePedido } = await import('./promoReservas.js');
+    const promo = await consumirReservasDePedido(cliente, {
+      negocioId: nid, folio, version: versionActual });
+    if (promo.invalidas.length) {
+      // La reserva que justificaba el precio ya no vale. El DINERO se queda
+      // 'pagado' -- entro de verdad --, pero el pedido no se libera solo: se
+      // cierra la deuda con anomalia para que alguien lo mire.
+      await cliente.query(
+        `UPDATE pagos SET derivacion_pendiente = false, derivacion_saldada_at = NOW(),
+                          metadata_sanitizada = metadata_sanitizada || $3::jsonb
+          WHERE id = $1 AND negocio_id = $2`,
+        [pagoId, nid, JSON.stringify({
+          anomalia: 'reserva_promocion_invalida',
+          anomalia_detectada_at: new Date().toISOString(),
+          anomalia_detalle: `el pedido ${folio} tiene ${promo.invalidas.length} reserva(s) de promocion de otra version: el descuento cobrado no se puede justificar`,
+          reservas_invalidas: promo.invalidas,
+        })]);
+      await cliente.query('COMMIT');
+      console.error(`[Pagos] RESERVA DE PROMOCION INVALIDA pago=${pagoId} pedido=${folio}`);
+      return { ok: false, resultado: 'reserva_promocion_invalida', folio };
+    }
+
     // La transicion durable del pedido va AQUI DENTRO, con la fila bloqueada:
-    // asi la version validada y la marca de pagado son el mismo acto.
+    // asi la version validada, el consumo del cupo y la marca de pagado son el
+    // mismo acto. Todo o nada.
     await cliente.query(
       `UPDATE pedidos_activos
           SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
@@ -3041,8 +3088,21 @@ export async function vencerEsperaDePago(pagoId, negocioId) {
         expirado_at: new Date().toISOString(),
       })]);
 
+    // La promocion se suelta AQUI DENTRO, no despues del COMMIT. Cancelar el
+    // pedido y devolver el cupo tienen que ser el mismo acto: entre un COMMIT y
+    // el siguiente habria una ventana con el pedido ya cancelado y el cupon
+    // apartado por nadie -- y si el proceso muere ahi, para siempre.
+    const { liberarReservasDePedido } = await import('./promoReservas.js');
+    const promo = await liberarReservasDePedido(cliente, { negocioId: nid, folio });
+
     await cliente.query('COMMIT');
-    return { ok: true, folio, pedidoVencido: rowCount > 0 };
+    // Punto de muerte inyectable JUSTO DESPUES del COMMIT. Con la liberacion
+    // dentro de la transaccion, morir aqui es inofensivo: el pedido ya esta
+    // cancelado y el cupo ya volvio, los dos o ninguno. Si la liberacion
+    // viviera despues del COMMIT, este mismo fallo dejaria el pedido cancelado
+    // y el cupon apartado por nadie -- para siempre.
+    fallaInyectada('expiracion_tras_commit');
+    return { ok: true, folio, pedidoVencido: rowCount > 0, promocionesLiberadas: promo.liberadas };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;

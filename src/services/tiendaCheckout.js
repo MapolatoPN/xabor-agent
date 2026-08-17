@@ -15,7 +15,7 @@
 // El navegador NO es autoridad de: precio, descuento, envío, total,
 // disponibilidad, negocio ni producto. Todo eso se recalcula aquí.
 import { randomBytes, createHash } from 'crypto';
-import { pool, poolDeClaims } from './database.js';
+import { pool, poolDeClaims, calcularVersionPedidoHash } from './database.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError } from './posEnvios.js';
 import {
   TiendaError, MODALIDAD_A_PEDIDO, reglasDelNegocio, estadoApertura,
@@ -449,11 +449,28 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
   //    cliente, así que el cupo tiene que quedar amarrado al folio antes de
   //    dar el checkout por bueno.
   if (aplicadas.length) {
+    // ¿Este pedido ya vale por sí mismo, o todavía espera dinero?
+    //
+    // Efectivo y terminal se cobran en persona: el pedido entra a cocina de
+    // inmediato y la promoción queda CONSUMIDA aquí, como siempre.
+    //
+    // Pago en línea nace `pendiente_pago`. Ahí la promoción se queda RESERVADA:
+    // el cupo sigue apartado (cuenta contra el límite, nadie más lo toma) pero
+    // no está gastado. Lo consume la transición financiera cuando entre el
+    // dinero, y lo libera el expirador si la espera se acaba. Consumirlo aquí
+    // era el defecto: llegar al checkout quemaba el cupón para siempre.
+    const esperaPago = datos?.requierePagoAnticipado === true
+      || datos?.estado === 'pendiente_pago';
     await derivacionCritica(negocioId, token, 'atribucion', async () => {
       const esNuevo = !(await clienteTienePedidosPrevios(negocioId, telefono, pedido.id));
       await registrarUsosPromociones({
         negocioId, folio: pedido.id, aplicadas, telefono,
         montoVenta: Number(datos?.total) || 0, clienteNuevo: esNuevo, checkoutToken: token,
+        estadoFinal: esperaPago ? 'reservada' : 'consumida',
+        // La versión que justificó el descuento. El settlement la revalida
+        // antes de consumir: una reserva de otra versión ya no representa el
+        // precio que se cobró.
+        pedidoVersion: calcularVersionPedidoHash(datos),
       });
     });
   }

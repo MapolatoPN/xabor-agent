@@ -11,7 +11,7 @@
 // modalidad, cliente) y no sabe nada de HTTP ni de la tienda. Cuando otro
 // canal quiera promociones, se le pasa `canal: 'whatsapp'` y funciona.
 import { randomUUID } from 'crypto';
-import { pool } from './database.js';
+import { pool, calcularVersionPedidoHash } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
 
 export class PromocionError extends Error {
@@ -412,11 +412,14 @@ export async function reservarUsosPromociones(negocioId, aplicadas = [], context
         }
       }
 
-      // 3) La fila de reserva: esto es lo que ve el checkout de al lado.
+      // 3) La fila de reserva: esto es lo que ve el checkout de al lado. Nace
+      //    'reservada' explicitamente -- el DEFAULT de la columna es
+      //    'consumida' porque todo lo historico si era un uso real, pero esto
+      //    todavia no lo es.
       await client.query(
         `INSERT INTO tienda_promocion_usos
-           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono)
-         VALUES ($1,$2,$3,$4,$5)`,
+           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono, estado)
+         VALUES ($1,$2,$3,$4,$5,'reservada')`,
         [negocioId, a.id, a.campaniaId, PREFIJO_RESERVA + (token || randomUUID()), telefono]);
 
       await client.query('COMMIT');
@@ -460,26 +463,47 @@ export async function liberarUsosPromociones(negocioId, aplicadas = [], contexto
 // le pone el folio real y los montos. Insertar una segunda fila contaría dos
 // usos del mismo cliente y volvería a romper el límite por cliente.
 //
+// `estadoFinal` decide si esto CONSUME o solo RE-ANCLA la reserva:
+//
+//   'consumida'  el pedido ya vale por sí mismo (efectivo, terminal, POS): el
+//                dinero se cobra en persona y la comanda sale de inmediato.
+//   'reservada'  el pedido nace `pendiente_pago`: el cupo sigue apartado -- y
+//                sigue contando contra el límite -- pero NO está gastado. Lo
+//                consume `consumirDeudaDeDerivacion` cuando entre el dinero, y
+//                lo libera `vencerEsperaDePago` si la espera se acaba.
+//
+// Antes esto consumía siempre, y por eso llegar al checkout gastaba la
+// promoción aunque no entrara un peso.
+//
 // Sigue siendo idempotente: si el UPDATE no encuentra la reserva (porque un
 // reintento ya la confirmó), el INSERT de respaldo choca contra el UNIQUE
 // (negocio, promoción, folio) y no duplica nada.
 export async function registrarUsosPromociones({
   negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, clienteNuevo = false,
-  checkoutToken = null,
+  checkoutToken = null, estadoFinal = 'consumida', pedidoVersion = null,
 }) {
   if (!aplicadas.length) return { registrados: 0 };
+  // Solo dos estados posibles: cualquier otra cosa seria vocabulario inventado
+  // y el CHECK de la base la rechazaria a mitad de la transaccion.
+  const estado = estadoFinal === 'reservada' ? 'reservada' : 'consumida';
   const client = await pool.connect();
   let registrados = 0;
   try {
     await client.query('BEGIN');
     for (const a of aplicadas) {
+      // El UPDATE NO puede pisar el estado de una fila que ya se consumio: un
+      // reintento tardio del checkout volveria a dejarla 'reservada' y el
+      // expirador podria devolver un cupo que ya tiene dinero detras.
       const { rowCount: confirmados } = await client.query(
         `UPDATE tienda_promocion_usos
             SET pedido_folio = $4, monto_descuento = $5, monto_venta = $6,
-                cliente_nuevo = $7, cliente_telefono = COALESCE(cliente_telefono, $8)
-          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3`,
+                cliente_nuevo = $7, cliente_telefono = COALESCE(cliente_telefono, $8),
+                estado = $9, pedido_version = COALESCE($10, pedido_version),
+                consumida_at = CASE WHEN $9 = 'consumida' THEN COALESCE(consumida_at, NOW()) END
+          WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3
+            AND estado <> 'consumida'`,
         [negocioId, a.id, PREFIJO_RESERVA + checkoutToken, folio,
-         a.descuento || 0, montoVenta, !!clienteNuevo, telefono]
+         a.descuento || 0, montoVenta, !!clienteNuevo, telefono, estado, pedidoVersion]
       );
       if (confirmados > 0) { registrados++; continue; }
 
@@ -488,11 +512,12 @@ export async function registrarUsosPromociones({
       const { rowCount } = await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-            monto_descuento, monto_venta, cliente_nuevo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            monto_descuento, monto_venta, cliente_nuevo, estado, pedido_version, consumida_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                 CASE WHEN $9 = 'consumida' THEN NOW() END)
          ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
         [negocioId, a.id, a.campaniaId, folio, telefono,
-         a.descuento || 0, montoVenta, !!clienteNuevo]
+         a.descuento || 0, montoVenta, !!clienteNuevo, estado, pedidoVersion]
       );
       if (rowCount > 0) registrados++;
     }
