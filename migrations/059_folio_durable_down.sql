@@ -1,4 +1,41 @@
--- Reversa de la 059. Elimina la secuencia durable; el sistema volveria al
--- contador en memoria sembrado desde `pedidos_activos`, es decir, a reciclar
--- folios. Solo para rehacer la migracion, nunca como estado final.
-DROP SEQUENCE IF EXISTS folio_pedido_seq;
+-- ─── Reversa de la 059 — LEER ANTES DE USAR ─────────────────────────────────
+--
+-- ESTA REVERSA NO ES UN ROLLBACK POR SI SOLA.
+--
+-- El codigo de esta rama ya no tiene contador de folios en memoria: el folio
+-- sale exclusivamente de `reservarFolioPedido()`, que hace
+-- `nextval('folio_pedido_seq')`. Si se ejecuta este DROP con el codigo NUEVO
+-- desplegado, el generador se queda SIN FUENTE y `registrarPedido` falla en el
+-- primer pedido. Es decir: aplicar solo esto no "vuelve al comportamiento
+-- anterior", tumba la creacion de pedidos.
+--
+-- Por eso el archivo no hace nada por defecto. Hay que elegir explicitamente.
+--
+-- ─── ROLLBACK CORRECTO (expand/contract) ────────────────────────────────────
+--
+-- La secuencia es ADITIVA: no cambia ninguna tabla, ni ninguna columna, ni
+-- ningun dato. El codigo VIEJO la ignora por completo. Entonces:
+--
+--   PARA REVERTIR EL DEPLOY:  se revierte SOLO EL CODIGO y se CONSERVA la
+--   secuencia. El binario viejo vuelve a su contador en memoria --con su
+--   defecto de reciclaje-- y la secuencia queda ahi, inerte, esperando el
+--   siguiente intento. Cero pasos de base de datos, cero ventana de fallo.
+--
+-- Ese es el rollback soportado y el unico que hace falta.
+--
+-- ─── SI DE VERDAD HAY QUE BORRAR LA SECUENCIA ───────────────────────────────
+--
+-- Solo tiene sentido para rehacer la migracion en un entorno de pruebas, y solo
+-- con el codigo viejo desplegado o con el servicio detenido. El orden importa:
+--
+--   1. desplegar el codigo VIEJO (o parar el servicio);
+--   2. comprobar que ningun proceso vivo llama a `reservarFolioPedido()`;
+--   3. ejecutar el DROP de abajo, descomentado a mano;
+--   4. al volver a la 059, el `setval` recalcula el maximo historico, asi que
+--      no se reemiten folios: la migracion es re-ejecutable a proposito.
+--
+-- Se deja COMENTADO para que nadie lo aplique por inercia desde un runner.
+--
+-- DROP SEQUENCE IF EXISTS folio_pedido_seq;
+
+SELECT 'la 059 se revierte revirtiendo el CODIGO y conservando la secuencia; ver el comentario' AS aviso;

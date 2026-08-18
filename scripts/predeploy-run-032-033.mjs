@@ -44,6 +44,11 @@ const SCRIPTS = [
   '056-pagos-expiracion',
   '057-promo-reservas',
   '058-compras-reales',
+  // 059 va DETRAS de 058 y no es opcional: el codigo nuevo llama a
+  // `nextval('folio_pedido_seq')` en cada pedido. Sin esta linea, un deploy
+  // normal dejaria binario que exige una secuencia que nadie creo, y
+  // `registrarPedido` fallaria en el primer pedido.
+  '059-folio-durable',
 ];
 
 for (const nombre of SCRIPTS) {
