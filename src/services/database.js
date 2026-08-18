@@ -1921,6 +1921,31 @@ export async function obtenerPedidosActivos() {
   }
 }
 
+/**
+ * Reserva el SIGUIENTE folio de pedido. Fuente unica y durable.
+ *
+ * Sustituye al contador en memoria que se sembraba con `obtenerMaxFolioNum()`:
+ * ese contador miraba `pedidos_activos` y nada mas, asi que al purgar el tablero
+ * y reiniciar RETROCEDIA y volvia a entregar folios ya usados. Medido en la base
+ * local: MAX(pedidos_activos)=9578 frente a MAX(pedidos)=10321 -- 743 folios
+ * vivos que se habrian reemitido en el siguiente arranque.
+ *
+ * `nextval()` es atomico, durable y monotono; lo comparten todas las instancias
+ * y no depende de que ninguna fila siga existiendo. Que no sea transaccional es
+ * DESEABLE: un rollback quema el numero en vez de devolverlo, y saltarse un
+ * folio es inocuo mientras que repetirlo no lo es.
+ *
+ * Falla cerrado: sin secuencia no se inventa un folio: la 059 es requisito.
+ */
+export async function reservarFolioPedido() {
+  const { rows: [r] } = await pool.query(`SELECT nextval('folio_pedido_seq') AS n`);
+  const n = Number(r.n);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new Error(`FOLIO_SECUENCIA_INVALIDA: nextval devolvio ${r.n}`);
+  }
+  return `XAB-${String(n).padStart(4, '0')}`;
+}
+
 // Devuelve el número más alto de folio guardado (ej. 3 si el último es XAB-0003)
 // Sirve para que el contador nunca repita un folio tras un reinicio.
 // Solo cuenta folios XAB- numéricos: la tabla también guarda ventas

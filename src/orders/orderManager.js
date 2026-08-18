@@ -9,6 +9,7 @@ import {
   obtenerMaxFolioNum,
   eliminarPedido as eliminarPedidoDB,
   obtenerConfiguracion,
+  reservarFolioPedido,
   reclamarEmisionPorPago,
   conEmisionExclusiva,
   saldarEmisionPorPago,
@@ -31,7 +32,6 @@ import { conIdentidadDePedido } from '../services/eventosPanel.js';
 // emitirPedido más abajo.
 let wsBroadcastNegocio = null;
 const pedidos = [];
-let contadorPedidos = 1;
 
 // Hotfix P0 folio: tope duro de reintentos al reservar folio en
 // registrarPedido(). Un conflicto real es rarísimo (solo si otra instancia
@@ -113,17 +113,18 @@ export async function cargarPedidosDesdeDB() {
       console.log(`[OrderManager] ${creadosDuranteLaCarga.length} pedido(s) creados durante la carga inicial conservados en memoria`);
     }
 
-    // El contador siempre arranca por encima del folio más alto en DB
-    // Esto previene duplicados aunque haya pedidos entregados/archivados
-    const maxDeLista = (lista) => lista.reduce((max, p) => {
-      const num = parseInt(p.id?.replace('XAB-', '')) || 0;
-      return num > max ? num : max;
-    }, 0);
-    // Los creados durante la carga también cuentan: el contador nunca debe
-    // retroceder por debajo de un folio ya entregado a un cliente.
-    contadorPedidos = Math.max(maxFolio, maxDeLista(activos), maxDeLista(creadosDuranteLaCarga), contadorPedidos - 1) + 1;
-
-    console.log(`[OrderManager] ${pedidos.length} pedidos activos cargados desde DB — próximo folio: XAB-${String(contadorPedidos).padStart(4, '0')}`);
+    // YA NO SE SIEMBRA NINGÚN CONTADOR AQUÍ.
+    //
+    // Antes el arranque calculaba el próximo folio a partir del máximo de
+    // `pedidos_activos`, y eso es exactamente lo que hacía que el número
+    // retrocediera al purgar el tablero. El folio ahora lo entrega
+    // `folio_pedido_seq` (migración 059), que es durable y monótona: no hay
+    // nada que reconstruir al arrancar y no puede existir una segunda fuente de
+    // verdad que compita con ella.
+    //
+    // `maxFolio` se sigue leyendo solo para dejar constancia en el log de la
+    // distancia entre el tablero y la secuencia -- nunca para decidir folios.
+    console.log(`[OrderManager] ${pedidos.length} pedidos activos cargados desde DB (max folio en tablero: ${maxFolio}; el folio lo entrega folio_pedido_seq)`);
     return pedidos.length;
   } catch (e) {
     console.error('[OrderManager] Error cargando pedidos desde DB:', e.message);
@@ -238,20 +239,28 @@ export async function registrarPedido(orden, canal = 'test') {
   // guardarPedidoActivo() nunca lanza (ver su propio comentario en
   // database.js); su valor de retorno estructurado es la única señal.
   //
-  // Hotfix P0 folio: el folio se RESERVA de forma síncrona (se toma el
-  // contador y se incrementa en la misma vuelta del event loop, antes del
-  // primer await), así dos creaciones concurrentes en este proceso ya no
-  // pueden leer el mismo número. Contra la otra instancia del deploy (o
-  // filas residuales) queda el conflicto real de base de datos: si el
-  // INSERT no escribió fila, ese folio es de OTRO pedido y se reintenta con
-  // el siguiente candidato. NUNCA se adopta el pedido existente que comparte
-  // folio (podría ser de otro negocio) ni se devuelve éxito sin fila propia.
+  // EL FOLIO SALE DE UNA SECUENCIA DURABLE (migración 059), no de un contador
+  // en memoria.
+  //
+  // El contador anterior se sembraba con `obtenerMaxFolioNum()`, que mira
+  // `pedidos_activos` Y NADA MÁS: en cuanto el tablero se purgaba y el proceso
+  // reiniciaba, RETROCEDÍA y volvía a entregar folios ya usados. Medido en la
+  // base local: MAX(pedidos_activos)=9578 contra MAX(pedidos)=10321 — 743
+  // folios vivos que se habrían reemitido en el siguiente arranque. Y el folio
+  // es la identidad de la que cuelgan el dedupe del panel, la idempotencia de
+  // Edge, los pagos, las promociones y las compras reales.
+  //
+  // `nextval()` es atómico entre requests Y entre instancias, sobrevive al
+  // reinicio y no depende de que ninguna fila siga existiendo. El bucle de
+  // reintento se conserva para las filas residuales de la época del contador en
+  // memoria: si el INSERT no escribió fila, ese folio es de OTRO pedido y se
+  // pide el siguiente a la secuencia. NUNCA se adopta el pedido existente que
+  // comparte folio ni se devuelve éxito sin fila propia.
   let pedido = null;
   let intento = 0;
   while (intento < MAX_REINTENTOS_FOLIO) {
     intento++;
-    const folio = `XAB-${String(contadorPedidos).padStart(4, '0')}`;
-    contadorPedidos++;
+    const folio = await reservarFolioPedido();
     const candidato = { ...base, id: folio };
 
     const r = await guardarPedidoActivo(candidato, negocioId);

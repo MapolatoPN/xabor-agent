@@ -87,51 +87,30 @@ try {
   if (dup.n > 0) throw new Error(`${dup.n} pedido(s) con mas de una compra real registrada`);
 
   // ─── AUDITORIA DE DATOS REALES DEL BACKFILL ──────────────────────────────
-  // El folio se recicla, asi que estos numeros no son decorativos: dicen cuanta
-  // de la historia es atribuible y cuanta se acepto como ambigua a proposito.
   const { rows: [aud] } = await pool.query(
-    `WITH h AS (
-       SELECT p.negocio_id, p.folio, p.created_at, p.telefono,
-              (SELECT COUNT(*) FROM pedidos p2
-                WHERE p2.negocio_id = p.negocio_id AND p2.folio = p.folio) AS hermanas,
-              EXISTS (
-                SELECT 1 FROM pedidos_activos a
-                 WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
-                   AND (a.estado = 'pendiente_pago'
-                        OR (a.estado = 'cancelado'
-                            AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
-                   AND p.telefono IS NOT NULL
-                   AND a.datos->'cliente'->>'telefono' = p.telefono) AS desmentida_mismo_cliente,
-              EXISTS (
-                SELECT 1 FROM pedidos_activos a
-                 WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
-                   AND (a.estado = 'pendiente_pago'
-                        OR (a.estado = 'cancelado'
-                            AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))) AS hay_activo_no_compra
-         FROM pedidos p
-        WHERE p.folio IS NOT NULL AND p.created_at IS NOT NULL)
-     SELECT COUNT(*)::int AS historico_total,
+    `SELECT COUNT(*)::int AS historico_total,
             COUNT(DISTINCT (negocio_id::text || '|' || folio))::int AS folios_unicos,
-            COUNT(*) FILTER (WHERE hermanas > 1)::int AS filas_de_folio_reciclado,
-            COUNT(*) FILTER (WHERE hermanas = 1 AND desmentida_mismo_cliente)::int AS excluidas_demostradas,
-            COUNT(*) FILTER (WHERE hay_activo_no_compra AND NOT (hermanas = 1 AND desmentida_mismo_cliente))::int AS ambiguas_que_entran
-       FROM h`);
+            COUNT(*) FILTER (WHERE (
+              SELECT COUNT(*) FROM pedidos p2
+               WHERE p2.negocio_id = p.negocio_id AND p2.folio = p.folio) > 1)::int
+              AS filas_de_folio_reciclado
+       FROM pedidos p
+      WHERE p.folio IS NOT NULL AND p.created_at IS NOT NULL`);
   const { rows: [c] } = await pool.query(
     `SELECT COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE origen = 'legacy_desconocido')::int AS legacy
        FROM compras_reales`);
 
   console.log('[predeploy-058] Auditoria del backfill:');
-  console.log(`  historico total en pedidos ......... ${aud.historico_total}`);
+  console.log(`  historico elegible en pedidos ...... ${aud.historico_total}`);
   console.log(`  folios unicos ...................... ${aud.folios_unicos}`);
   console.log(`  filas de folio reciclado ........... ${aud.filas_de_folio_reciclado}`);
-  console.log(`  excluidas como no-compra probada ... ${aud.excluidas_demostradas}`);
-  console.log(`  ambiguas que SI entran (politica) .. ${aud.ambiguas_que_entran}`);
   console.log(`  filas legacy en el ledger .......... ${c.legacy} (de ${c.total} compras)`);
+  console.log('  excluidas como no-compra ........... 0 (politica: no se excluye nada)');
 
-  // La garantia que protege la politica: NINGUNA fila historica puede quedarse
-  // fuera solo porque OTRO pedido que reciclo su folio esta pendiente. Si esto
-  // salta, la exclusion volvio a mirar el folio en vez de la instancia.
+  // LA GARANTIA, ahora que la exclusion se retiro entera: NINGUNA fila
+  // historica puede quedarse fuera del ledger. Si alguna falta, es que alguien
+  // volvio a meter una heuristica de correspondencia que los datos no soportan.
   const { rows: [fuga] } = await pool.query(
     `SELECT COUNT(*)::int AS n
        FROM pedidos p
@@ -139,21 +118,14 @@ try {
         AND NOT EXISTS (
           SELECT 1 FROM compras_reales cr
            WHERE cr.negocio_id = p.negocio_id AND cr.folio = p.folio
-             AND cr.pedido_creado_at = p.created_at)
-        AND NOT EXISTS (
-          SELECT 1 FROM pedidos_activos a
-           WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
-             AND (a.estado = 'pendiente_pago'
-                  OR (a.estado = 'cancelado'
-                      AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
-             AND p.telefono IS NOT NULL
-             AND a.datos->'cliente'->>'telefono' = p.telefono)`);
+             AND cr.pedido_creado_at = p.created_at)`);
   if (fuga.n > 0) {
     throw new Error(
-      `${fuga.n} fila(s) historica(s) quedaron fuera del ledger sin que un activo del MISMO cliente ` +
-      `las desmienta: la exclusion volvio a razonar por folio y no por instancia de pedido`);
+      `${fuga.n} fila(s) historica(s) quedaron fuera del ledger: la politica dice que ` +
+      `TODO el historico entra como legacy_desconocido, asi que alguien reintrodujo ` +
+      `una exclusion basada en una correspondencia que no se puede demostrar`);
   }
-  console.log('[predeploy-058] Politica verificada: ninguna compra historica se excluyo por un folio ajeno.');
+  console.log('[predeploy-058] Politica verificada: el historico completo esta en el ledger.');
 
   await pool.end();
   process.exit(0);

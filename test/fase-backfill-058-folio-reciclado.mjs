@@ -141,11 +141,18 @@ try {
     assert.strictEqual((await compras(NUEVO)).length, 0);
   });
 
-  // ═══ LO INEQUÍVOCO SÍ SE EXCLUYE ═════════════════════════════════════════
-  await t('3. sin reciclaje, un pendiente sin pagar SIGUE sin contar como compra', async () => {
-    // La corrección no puede degenerar en "todo cuenta". Cuando el folio tiene
-    // UNA sola historia y UN solo activo, la correspondencia es inequívoca y la
-    // exclusión se mantiene.
+  // ═══ LA POLÍTICA FINAL: AMBIGUO LEGACY -> CUENTA ═════════════════════════
+  await t('3. un pendiente sin pagar TAMBIÉN entra: no se puede demostrar que sea ése', async () => {
+    // Antes esto se excluía. Se retiró: cuando el folio se recicla, el pedido
+    // nuevo aún no está en `pedidos`, así que "una historia + un activo" es
+    // exactamente lo mismo que se ve en el caso legítimo. Indistinguibles.
+    //
+    // Marcar de más le niega un descuento a un cliente antiguo ambiguo --
+    // reversible a mano. Marcar de menos regala una primera compra por haber
+    // borrado una compra real -- irreversible. Manda el riesgo asimétrico.
+    //
+    // Esto NO relaja nada para los pedidos nuevos: su marca se escribe cuando la
+    // compra ocurre, y desde la 059 el folio ya no se recicla.
     const F = `XAB-UNIC-${marca}`;
     FOLIOS.push(F);
     const T = tel('74');
@@ -155,8 +162,26 @@ try {
 
     await pool.query(sqlDelBackfill());
 
-    assert.strictEqual((await compras(T)).length, 0,
-      'un intento nunca pagado, sin ambigüedad de folio, entró como compra');
+    assert.strictEqual((await compras(T)).length, 1,
+      'una fila histórica ambigua se excluyó: la política conservadora se rompió');
+  });
+
+  await t('3b. P0-12: el MISMO cliente con folio reciclado conserva su compra antigua', async () => {
+    // El caso exacto que la regla del teléfono resolvía mal. Cliente A compró de
+    // verdad con XAB-0042 hace meses; el contador retrocedió y hoy tiene otro
+    // XAB-0042 sin pagar. Negocio + folio + teléfono coinciden y NO demuestran
+    // nada: son dos pedidos distintos.
+    const F = `XAB-P012-${marca}`;
+    FOLIOS.push(F);
+    const A = tel('79');
+    await crearCliente(A, 'Cliente A');
+    await historico(F, A, '180 days');          // la compra real de hace meses
+    await activo(F, A, 'pendiente_pago');       // el pedido reciclado, sin pagar
+
+    await pool.query(sqlDelBackfill());
+
+    assert.strictEqual((await compras(A)).length, 1,
+      'la compra antigua del cliente se borró por un pedido reciclado suyo sin pagar');
   });
 
   await t('4. sin reciclaje y sin activo que lo desmienta: cuenta', async () => {
@@ -219,6 +244,9 @@ try {
 
     assert.strictEqual((await compras(T)).length, 2,
       'un pendiente sin pagar borro las compras previas del mismo cliente con folio reciclado');
+    // Y con la exclusion ya retirada por completo, esto se sostiene sin depender
+    // de ninguna heuristica de unicidad.
+    assert.ok((await compras(T)).every(c => c.origen === 'legacy_desconocido'));
   });
 
 } catch (e) {
