@@ -12,6 +12,10 @@ import assert from 'assert';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
+// El enrutamiento de `nuevo_pedido` vive en su propio modulo desde P0-8 (separar
+// la PROYECCION DE ESTADO de los EFECTOS transitorios). El contrato del ticket
+// final no cambio, pero parte de el se cumple ahi: se lee y se verifica igual.
+const tableroJs = readFileSync(join(__dirname, '..', 'panel', 'tableroEventos.js'), 'utf8');
 const PREVIEW = process.argv.includes('--preview');
 
 let pasadas = 0, fallidas = 0;
@@ -64,34 +68,50 @@ const trabajoBase = {
 };
 
 // ── Enrutamiento en el panel ────────────────────────────────────────────────
-t('el WS intercepta cuenta_final ANTES de agregarPedido (no entra al tablero)', () => {
-  assert.ok(html.includes(`msg.pedido?.tipo_comanda === 'cuenta_final'`), 'guard de tipo_comanda');
-  // Fixture actualizado (fase Edge): la llamada real lleva además la
-  // bandera impresionEdge -- el contrato bajo prueba (cuenta_final se
-  // intercepta y va a recibirCuentaFinal, jamás al tablero) es el mismo.
-  assert.ok(html.includes('recibirCuentaFinal(msg.pedido, msg.impresionEdge === true)'), 'va a recibirCuentaFinal');
-  // El contrato es el ORDEN, no la forma del if/else. Antes se buscaba el
-  // literal `else if (msg.tipo === 'nuevo_pedido')`, y el dedupe de eventos
-  // (`nuevo_pedido:<negocio>:<folio>`) reestructuro esa rama para envolver las
-  // dos ramas en un solo `if (msg.tipo === 'nuevo_pedido')`. Lo que hay que
-  // seguir garantizando es lo mismo de siempre: el guard de `cuenta_final`
-  // aparece ANTES de la llamada a `agregarPedido`, asi que un ticket de cuenta
-  // jamas cae en el tablero.
-  const guard = html.indexOf(`tipo_comanda === 'cuenta_final'`);
-  const normal = html.indexOf(`agregarPedido(msg.pedido, msg.impresionEdge === true)`);
+t('el enrutador intercepta cuenta_final ANTES del tablero (no entra como comanda)', () => {
+  // El panel carga el modulo y le delega el enrutamiento.
+  assert.ok(html.includes('/tableroEventos.js'), 'el panel no carga el enrutador');
+  assert.ok(html.includes('XaborTableroEventos.manejarEventoPedido'),
+    'el panel no enruta `nuevo_pedido` por el modulo');
+
+  // El guard existe y decide ANTES de tocar el tablero.
+  const guard = tableroJs.indexOf(`tipo_comanda === 'cuenta_final'`);
+  const alTablero = tableroJs.indexOf('deps.upsertPedido(');
   assert.ok(guard !== -1, 'no existe el guard de cuenta_final');
-  assert.ok(normal !== -1, 'las comandas normales ya no van a agregarPedido');
-  assert.ok(guard < normal, 'el guard de cuenta_final dejo de ir ANTES de agregarPedido');
-  // Y las dos ramas siguen colgando del mismo tipo de mensaje.
-  const raiz = html.indexOf(`if (msg.tipo === 'nuevo_pedido')`);
-  assert.ok(raiz !== -1 && raiz < guard, 'la rama de nuevo_pedido dejo de envolver el guard');
+  assert.ok(alTablero !== -1, 'las comandas normales ya no se proyectan al tablero');
+  assert.ok(guard < alTablero, 'el guard de cuenta_final dejo de ir ANTES de la proyeccion');
+
+  // Y la cuenta va por SU camino, nunca por el del tablero. Esto es lo que
+  // impide que un ticket de cuenta acabe como tarjeta en cocina.
+  assert.ok(tableroJs.includes('deps.guardarCuentaFinal('), 'la cuenta no tiene camino propio');
+  assert.ok(tableroJs.includes('deps.notificarCuentaFinal('), 'la cuenta no tiene aviso propio');
+  const ramaCuenta = tableroJs.slice(guard, alTablero);
+  assert.ok(!ramaCuenta.includes('deps.upsertPedido('),
+    'la rama de cuenta_final acaba proyectando al tablero');
+
+  // El panel sigue conectando esas piezas con sus funciones reales.
+  assert.ok(html.includes('guardarCuentaFinal:'), 'el panel no inyecta guardarCuentaFinal');
+  assert.ok(html.includes('notificarCuentaFinal:'), 'el panel no inyecta notificarCuentaFinal');
 });
 
-t('la impresión automática respeta el guard de replay (panelListo)', () => {
-  const fn = extraerFuncion('recibirCuentaFinal');
-  assert.ok(fn.includes('if (panelListo)'), 'sin panelListo no se imprime (replay del servidor)');
-  assert.ok(fn.includes('cuentaFinalHTML'), 'usa SU plantilla, no la comanda de cocina');
-  assert.ok(!fn.includes('agregarPedido'), 'jamás agrega tarjeta al tablero');
+t('la cuenta final: estado siempre, impresion automatica solo cuando toca', () => {
+  // P0-8 partio `recibirCuentaFinal` en dos: el ESTADO (la ultima cuenta queda
+  // recuperable con el boton, tambien tras un F5) y el EFECTO (sonido +
+  // impresion). El contrato de la plantilla vive ahora en el efecto.
+  const guardar = extraerFuncion('guardarCuentaFinal');
+  assert.ok(guardar.includes('ultimaCuentaFinal'), 'el estado no conserva la ultima cuenta');
+  assert.ok(guardar.includes('btn-reimprimir-cuenta'), 'el boton no queda disponible');
+  assert.ok(!guardar.includes('abrirPopupImpresion'), 'el estado imprime: eso es un efecto');
+
+  const notificar = extraerFuncion('notificarCuentaFinal');
+  assert.ok(notificar.includes('cuentaFinalHTML'), 'usa SU plantilla, no la comanda de cocina');
+  assert.ok(notificar.includes('impresionEdge'), 'no respeta que Edge ya lo haya impreso');
+  assert.ok(!notificar.includes('agregarPedido') && !notificar.includes('upsertPedidoEnTablero'),
+    'jamas agrega tarjeta al tablero');
+
+  // Un REPLAY no puede reimprimir, pero tampoco borrar la cuenta del boton.
+  assert.ok(tableroJs.includes('var notificar = !esReplay && !yaVisto;'),
+    'el replay dejo de estar excluido de los efectos');
 });
 
 t('reimpresión controlada: solo manual, solo el último ticket, con botón dedicado', () => {
