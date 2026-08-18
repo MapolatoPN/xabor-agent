@@ -504,7 +504,7 @@ try {
     assert.strictEqual(otra.nueva, false, 'el mismo pedido se contó dos veces');
   });
 
-  await t('12. idempotente con la identidad completa; sin ella degrada duplicando, nunca perdiendo', async () => {
+  await t('12. idempotente con la identidad completa; SIN ella, fail closed', async () => {
     const { registrarCompraReal } = await import('../src/services/database.js');
     const T = tel('91');
     const folio = `IDEM-${T}`;
@@ -515,15 +515,28 @@ try {
     }
     assert.strictEqual((await comprasDe(T)).length, 1);
 
-    // Sin `pedidoCreadoAt` cae a NOW(). Eso PUEDE duplicar la marca -- inocuo,
-    // la elegibilidad es un EXISTS -- pero jamás pierde la señal, que es el
-    // error caro. Fallar hacia "duplicar" y no hacia "regalar" es deliberado.
+    // Sin `pedidoCreadoAt` NO se escribe nada. Antes caía a NOW(), y eso era
+    // peor que fallar: NOW() no es la identidad del pedido sino el instante en
+    // que se escribió la fila, así que dos marcas del mismo pedido se volvían
+    // dos compras y el ON CONFLICT dejaba de proteger. Una identidad inventada
+    // no es una identidad.
+    //
+    // Quien llama decide qué hacer con el rechazo; en la ruta operacional eso
+    // significa NO emitir la comanda (ver `fase-compra-operacional-critica`).
     const S = tel('94');
     const folioS = `IDEM-SIN-${S}`;
-    await registrarCompraReal(null, { negocioId: NEG, folio: folioS, telefono: S, origen: 'operacion' });
-    await registrarCompraReal(null, { negocioId: NEG, folio: folioS, telefono: S, origen: 'operacion' });
-    assert.ok((await comprasDe(S)).length >= 1, 'se perdió la señal sin pedidoCreadoAt');
-    assert.strictEqual(await yaCompro(NEG, S), true);
+    const sinId = await registrarCompraReal(null,
+      { negocioId: NEG, folio: folioS, telefono: S, origen: 'operacion' });
+    assert.strictEqual(sinId.ok, false, 'se escribió una compra con identidad inventada');
+    assert.strictEqual(sinId.razon, 'sin_identidad');
+    assert.strictEqual((await comprasDe(S)).length, 0);
+    assert.strictEqual(await yaCompro(NEG, S), false);
+
+    // Y un origen fuera del vocabulario tampoco pasa.
+    const raro = await registrarCompraReal(null,
+      { negocioId: NEG, folio: folioS, telefono: S, origen: 'inventado', pedidoCreadoAt: creado });
+    assert.strictEqual(raro.ok, false);
+    assert.strictEqual(raro.razon, 'origen_invalido');
     // Sin negocio o sin folio no se escribe nada: jamas se deduce el tenant.
     const sinNeg = await registrarCompraReal(null, { negocioId: '', folio, telefono: T, origen: 'operacion' });
     assert.strictEqual(sinNeg.ok, false);

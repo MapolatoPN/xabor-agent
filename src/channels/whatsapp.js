@@ -42,7 +42,7 @@ router.post('/', async (req, res) => {
       resultado.orden.canal = 'whatsapp';
       resultado.orden.cliente.telefono = resultado.orden.cliente.telefono || waId;
       const pedido = await registrarPedido(resultado.orden, 'whatsapp');
-      emitirPedido(pedido);
+      emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
     }
 
     // Si hay escalación, notificar a soporte

@@ -205,7 +205,7 @@ async function procesarOrdenRappi(data) {
 
     // Registrar y emitir al panel de comandas
     const pedido = await registrarPedido(orden, 'rappi');
-    emitirPedido(pedido);
+    emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
 
     // Guardar en BD (teléfono ficticio para órdenes Rappi).
     // clientes.telefono es FK de pedidos.telefono — hay que asegurar que el

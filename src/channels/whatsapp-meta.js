@@ -1061,7 +1061,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
         }
       } else {
-        emitirPedido(pedido);
+        emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
       }
       // P0: al historial va el pedido CANÓNICO (producto_id/precios del
       // backend), nunca la propuesta cruda del modelo.

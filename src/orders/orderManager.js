@@ -314,25 +314,48 @@ export async function emitirPedido(pedido) {
   // y no hay ningun webhook que esperar -- esperarlo seria esperar algo que
   // nunca llega. Los pedidos que aun aguardan pago no pasan de aqui: la rama
   // `pendiente_pago` de arriba ya devolvio.
+  // La marca es CRITICA y va ANTES del primer efecto externo.
   //
-  // Idempotente por el UNIQUE (negocio, folio, creado_at): reemitir no crea otra
-  // compra. El `created_at` se lee de la fila durable porque EL FOLIO SE
-  // RECICLA -- `obtenerMaxFolioNum()` solo mira `pedidos_activos`, asi que tras
-  // una purga el contador retrocede y el mismo folio vuelve a salir para otro
-  // cliente. Sin ese tercer campo, la compra del cliente nuevo chocaba con la
-  // del anterior y se perdia.
+  // Antes era `.catch(log)` y el flujo continuaba: un fallo de base dejaba el
+  // pedido cocinado, impreso y en el tablero, pero sin compra durable -- y el
+  // cliente volvia a parecer nuevo, con derecho a la promocion de primera
+  // compra que ya habia gastado. Un efecto externo irreversible respaldado por
+  // un registro que no existe.
+  //
+  // Si no se puede AFIRMAR durablemente la compra, no sale nada: ni Edge, ni
+  // `nuevo_pedido` al panel, ni impresion, ni oferta a repartidores. El pedido
+  // ya esta persistido en `pedidos_activos`, asi que el retry lo recupera
+  // entero: registra la compra, emite UNA comanda, manda UN evento.
+  //
+  // Idempotente por el UNIQUE (negocio, folio, creado_at): reemitir tras un
+  // crash no crea una segunda compra.
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
     const { registrarCompraReal, obtenerCreadoAtPedidoActivo } = await import('../services/database.js');
-    await (async () => {
-      const creadoAt = await obtenerCreadoAtPedidoActivo(pedido.negocioId, pedido.id);
-      return registrarCompraReal(null, {
-        negocioId: pedido.negocioId,
-        folio: pedido.id,
-        telefono: pedido.cliente?.telefono || null,
-        origen: 'operacion',
-        pedidoCreadoAt: creadoAt,
-      });
-    })().catch(e => console.error(`[OrderManager] No se pudo registrar la compra real de ${pedido.id}: ${e.message}`));
+    // El `created_at` se lee de la fila durable porque EL FOLIO SE RECICLA:
+    // `obtenerMaxFolioNum()` solo mira `pedidos_activos`, asi que tras una purga
+    // el contador retrocede y el mismo folio vuelve a salir para otro cliente.
+    const creadoAt = await obtenerCreadoAtPedidoActivo(pedido.negocioId, pedido.id);
+    if (!creadoAt) {
+      throw new Error(`COMPRA_NO_DURABLE: no se pudo determinar la identidad del pedido ${pedido.id} (su fila ya no esta en pedidos_activos) — no se emite comanda ni ningun efecto externo`);
+    }
+    const marca = await registrarCompraReal(null, {
+      negocioId: pedido.negocioId,
+      folio: pedido.id,
+      telefono: pedido.cliente?.telefono || null,
+      origen: 'operacion',
+      pedidoCreadoAt: creadoAt,
+    });
+    if (!marca.ok) {
+      throw new Error(`COMPRA_NO_DURABLE: la compra real de ${pedido.id} no quedo registrada (${marca.razon}) — no se emite comanda ni ningun efecto externo`);
+    }
+    // Punto de crash DESPUES del COMMIT: el retry debe reemitir la comanda sin
+    // duplicar la compra.
+    if (process.env.NODE_ENV !== 'production'
+        && process.env.XABOR_PEDIDOS_FALLA_EN === 'despues_compra_real') {
+      const e = new Error("Fallo inyectado en 'despues_compra_real'");
+      e.inyectado = true;
+      throw e;
+    }
   }
 
   const edge = await emitirComandaDePedidoPorEdge(pedido);

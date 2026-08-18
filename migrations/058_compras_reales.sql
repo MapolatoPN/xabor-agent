@@ -92,9 +92,55 @@ CREATE INDEX IF NOT EXISTS idx_compra_real_cliente
 --   · el pedido sigue en el tablero esperando pago (`pendiente_pago`);
 --   · el pedido se canceló por no pagarse (`expirado_por_pago`).
 --
--- Esos dos casos son correlacionables HOY, mientras la fila viva en
--- `pedidos_activos`. A partir de esta migración ya no hace falta correlacionar
--- nada: la marca se escribe en el momento en que la compra ocurre.
+-- PERO SOLO CUANDO LA CORRESPONDENCIA ES INEQUÍVOCA.
+--
+-- (negocio_id, folio) NO identifica una instancia de pedido: el folio se
+-- recicla. Medido en la base local: `pedidos` tiene 337 folios repetidos
+-- (1259 filas), y `pedidos.created_at` frente a `pedidos_activos.created_at`
+-- del mismo folio no coincide NUNCA -- 0 de 6 pares, con un delta medio de
+-- ~234 305 s (unas 65 horas), porque son INSERT separados, cada uno con su
+-- propio DEFAULT NOW(). No hay ninguna otra columna común. Es decir: NO EXISTE
+-- forma de demostrar qué fila histórica corresponde al activo de hoy cuando el
+-- folio se reemitió, y no se va a inventar una.
+--
+-- Sin esta salvedad, el escenario real era: el cliente VIEJO compró con
+-- XAB-0042 hace meses; se purgó el tablero, el contador retrocedió, y el
+-- cliente NUEVO recibió también XAB-0042 y no pagó. El `NOT EXISTS` veía ese
+-- pendiente ajeno y borraba retrospectivamente la compra del VIEJO, que volvía
+-- a parecer primerizo. Error del lado caro.
+--
+-- REGLA, entonces. El único dato comparable entre las dos tablas es el
+-- teléfono, y se usa SOLO PARA DESCARTAR correspondencia, nunca para
+-- afirmarla: si el activo no-compra es de otro cliente, es seguro que NO es
+-- este pedido histórico, y por tanto no puede desmentirlo. Se excluye una fila
+-- histórica únicamente cuando se cumplen las tres:
+--
+--   (a) el folio tiene UNA sola fila histórica -- si tiene varias, el número ya
+--       se reemitió y nada es atribuible;
+--   (b) existe un activo con ese folio demostrablemente no-compra;
+--   (c) ese activo es del MISMO teléfono. Si difiere, son clientes distintos:
+--       el pendiente de uno no borra la compra del otro.
+--
+-- Todo lo demás es AMBIGUO LEGACY -> cuenta como `legacy_desconocido`.
+--
+-- QUÉ APORTA CADA CONDICIÓN, para que ninguna quede de adorno:
+--
+--   (a) protege al cliente que compró VARIAS veces con el mismo número y hoy
+--       tiene un pendiente: con varias historias nada es atribuible, así que no
+--       se le borra ninguna compra;
+--   (c) protege al cliente que compró una vez y cuyo folio se reemitió para
+--       OTRA persona que no pagó.
+--
+-- LÍMITE CONOCIDO Y ACEPTADO: queda fuera el caso en que el mismo cliente tiene
+-- UNA sola compra histórica con ese folio y hoy un pendiente suyo con el mismo
+-- número. Ahí (a) y (c) se cumplen y la compra se excluye. Cae del lado caro,
+-- pero cerrarlo exigiría una correspondencia que los datos no soportan --
+-- `pedidos` y `pedidos_activos` no comparten más clave que el folio, y sus
+-- `created_at` difieren en horas para la misma instancia. Se declara en vez de
+-- fabricarla.
+--
+-- A partir de esta migración ya no hace falta correlacionar nada: la marca se
+-- escribe en el momento en que la compra ocurre.
 --
 -- El DISTINCT ON incluye `created_at`: si un folio se reemitió, cada emisión
 -- fue un pedido distinto y cada una entra por separado.
@@ -104,12 +150,25 @@ SELECT DISTINCT ON (p.negocio_id, p.folio, p.created_at)
   FROM pedidos p
  WHERE p.folio IS NOT NULL
    AND p.created_at IS NOT NULL
-   AND NOT EXISTS (
-     SELECT 1 FROM pedidos_activos a
-      WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
-        AND (a.estado = 'pendiente_pago'
-             OR (a.estado = 'cancelado'
-                 AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
+   -- Se excluye solo lo demostrable. La condicion de unicidad es lo que
+   -- impide que un pedido reciclado y sin pagar borre la compra de otro
+   -- cliente que si compro con ese mismo numero.
+   AND NOT (
+     -- (a) el folio no se reemitio dentro del propio historico
+     (SELECT COUNT(*) FROM pedidos p2
+       WHERE p2.negocio_id = p.negocio_id AND p2.folio = p.folio) = 1
+     -- (b) hay un activo con ese folio demostrablemente no-compra
+     -- (c) y es del MISMO cliente: si el telefono difiere, ese pendiente es de
+     --     otra persona y no puede desmentir esta compra.
+     AND EXISTS (
+       SELECT 1 FROM pedidos_activos a
+        WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
+          AND (a.estado = 'pendiente_pago'
+               OR (a.estado = 'cancelado'
+                   AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
+          AND p.telefono IS NOT NULL
+          AND a.datos->'cliente'->>'telefono' = p.telefono
+     )
    )
  ORDER BY p.negocio_id, p.folio, p.created_at ASC
 ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING;

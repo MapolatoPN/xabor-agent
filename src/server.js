@@ -2473,7 +2473,7 @@ app.post('/chat', async (req, res) => {
 
     if (resultado.orden) {
       const pedido = await registrarPedido(resultado.orden, 'api');
-      emitirPedido(pedido);
+      emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
       return res.json({ ...resultado, pedido });
     }
 
@@ -3209,7 +3209,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     console.error('[Panel] Error registrando pedido presencial:', e.message);
     return res.status(500).json({ error: 'No se pudo registrar el pedido' });
   }
-  emitirPedido(pedido);
+  emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
   // Persistencia en el historial (tabla pedidos) -- AWAITED antes de
   // responder (antes corría en segundo plano). Contrato de la reingeniería:
   // cuando el frontend recibe el OK de creación, TODA la persistencia del
@@ -5892,7 +5892,7 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     });
 
     const pedido = await registrarPedido(orden, 'pos');
-    emitirPedido(pedido); // comanda + impresión + tablero (no bloquea si no hay impresora)
+    emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`)); // comanda + impresión + tablero (no bloquea si no hay impresora)
     if (reserva.reservado) reserva.confirmar(pedido.id);
     else recordarIdempotencia(negocioId, idemKey, pedido.id);
 
@@ -7433,7 +7433,7 @@ app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, r
     // sintéticos -- no es una propuesta del modelo y no debe (ni puede)
     // resolverse contra el menú de cada negocio.
     const pedido = await registrarPedido(ordenPrueba, 'prueba_admin');
-    emitirPedido(pedido);
+    emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
     res.json({ ok: true, pedido });
   } catch (e) {
     console.error('[server] Error en /test/pedido:', e.message);

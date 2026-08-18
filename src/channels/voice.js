@@ -208,7 +208,7 @@ export function setupVoiceWebSocket(wssVoice) {
               await eliminarPedido(pedido.id, pedido.negocioId);
               console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
             } else {
-              emitirPedido(pedido);
+              emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
               // No se vuelve a llamar guardarPedidoActivo aquí: registrarPedido()
               // ya persiste el pedido (con negocioId correcto) internamente.
               // Esta llamada duplicada, sin negocioId, causaba una condición de

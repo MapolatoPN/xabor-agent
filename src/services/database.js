@@ -3018,20 +3018,50 @@ export function tieneIdentidadExternaDurable(fila) {
  * campo, la compra nueva chocaba con la fila del cliente anterior, no se
  * registraba, y ese cliente conservaba su promocion de primera compra.
  *
- * Si el llamador no lo sabe, se usa NOW(): puede duplicar una marca en el peor
- * caso -- inocuo, la elegibilidad es un EXISTS -- pero jamas pierde la señal,
- * que es el error caro.
+ * `pedidoCreadoAt` ES OBLIGATORIO para los origenes vivos (`pago_online`,
+ * `transferencia`, `operacion`). Antes caia a NOW() si el llamador no lo sabia,
+ * y eso es peor que fallar: NOW() no es la identidad del pedido, es el instante
+ * en que se escribio la fila. Dos marcas del MISMO pedido con dos NOW()
+ * distintos son dos compras; y una marca con NOW() no colisiona con la marca
+ * real del mismo pedido, asi que el ON CONFLICT deja de proteger. Una identidad
+ * inventada no es una identidad. FAIL CLOSED.
+ *
+ * `legacy_desconocido` si puede traer su propio timestamp historico -- de hecho
+ * DEBE traerlo: el backfill lo toma de `pedidos.created_at`.
  *
  * Acepta un `client` para poder escribirse DENTRO de la transaccion del dinero.
  */
+// Inyeccion de fallo de la RUTA OPERACIONAL (efectivo / terminal / pago al
+// recibir). Canal propio, separado del de pagos, con el mismo candado de
+// produccion: inerte salvo en pruebas. Puntos:
+//   'antes_creado_at'      no se llega a leer la identidad del pedido
+//   'antes_compra_real'    la identidad se leyo, el INSERT no llega a correr
+//   'despues_compra_real'  la compra COMMITEA y el proceso muere antes de Edge
+function fallaPedidos(marca) {
+  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_PEDIDOS_FALLA_EN === marca) {
+    const e = new Error(`Fallo inyectado en '${marca}'`);
+    e.inyectado = true;
+    throw e;
+  }
+}
+
+export const ORIGENES_COMPRA_REAL = Object.freeze(
+  ['pago_online', 'transferencia', 'operacion', 'legacy_desconocido']);
+
 export async function registrarCompraReal(
   ejecutor, { negocioId, folio, telefono = null, origen, pedidoCreadoAt = null }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
   if (!folio) return { ok: false, razon: 'sin_folio' };
+  if (!ORIGENES_COMPRA_REAL.includes(origen)) return { ok: false, razon: 'origen_invalido' };
+  // La identidad no se inventa. Sin el instante del pedido no se escribe nada:
+  // quien llame decidira que hacer, y en la ruta operacional eso significa NO
+  // emitir la comanda.
+  if (!pedidoCreadoAt) return { ok: false, razon: 'sin_identidad' };
+  fallaPedidos('antes_compra_real');
   const q = ejecutor || pool;
   const { rowCount } = await q.query(
     `INSERT INTO compras_reales (negocio_id, folio, pedido_creado_at, cliente_telefono, origen)
-     VALUES ($1,$2,COALESCE($5::timestamptz, NOW()),$3,$4)
+     VALUES ($1,$2,$5::timestamptz,$3,$4)
      ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING`,
     [negocioId.trim(), String(folio), telefono, origen, pedidoCreadoAt]);
   return { ok: true, nueva: rowCount > 0 };
@@ -3039,35 +3069,55 @@ export async function registrarCompraReal(
 
 /**
  * Instante de creacion de la fila durable del pedido. Es la tercera pata de la
- * identidad de una compra real, porque el folio se recicla. Devuelve null si el
- * pedido ya no esta en el tablero: quien llame decidira con que marcar.
+ * identidad de una compra real, porque el folio se recicla.
+ *
+ * NO traga el error de base: antes lo capturaba y devolvia null, con lo que un
+ * Postgres caido y un pedido inexistente se volvian indistinguibles. En la ruta
+ * operacional ambos casos deben detener la emision, pero por razones distintas y
+ * con mensajes distintos. Devuelve null SOLO si el pedido no esta en el tablero.
  */
 export async function obtenerCreadoAtPedidoActivo(negocioId, folio) {
   if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return null;
-  try {
-    const { rows: [r] } = await pool.query(
-      `SELECT created_at FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`,
-      [negocioId.trim(), String(folio)]);
-    return r?.created_at || null;
-  } catch (e) {
-    console.error('[DB] Error obtenerCreadoAtPedidoActivo:', e.message);
-    return null;
-  }
+  fallaPedidos('antes_creado_at');
+  const { rows: [r] } = await pool.query(
+    `SELECT created_at FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`,
+    [negocioId.trim(), String(folio)]);
+  return r?.created_at || null;
 }
 
 /**
- * Esta pedido registrado como compra real? Solo lectura.
- * Sin `pedidoCreadoAt` responde por folio, que con folios reciclados puede
- * referirse a mas de un pedido: pasarlo cuando se conozca.
+ * Este pedido CONCRETO esta registrado como compra real? Solo lectura.
+ *
+ * `pedidoCreadoAt` es obligatorio, y no por purismo: el folio se recicla, asi
+ * que preguntar solo por folio puede responder que si por la compra de OTRO
+ * cliente de hace meses. Una funcion que se llama `pedidoFueCompraReal` no
+ * puede confundir dos pedidos distintos que compartieron numero.
+ *
+ * Para la pregunta ambigua a proposito -- "alguna compra historica llevo este
+ * folio?" -- existe `algunaCompraConFolio`, con nombre que no engaña.
  */
-export async function pedidoFueCompraReal(negocioId, folio, pedidoCreadoAt = null) {
+export async function pedidoFueCompraReal(negocioId, folio, pedidoCreadoAt) {
   if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return false;
+  if (!pedidoCreadoAt) return false;   // sin identidad no hay respuesta honesta
   const { rows: [r] } = await pool.query(
     `SELECT 1 FROM compras_reales
-      WHERE negocio_id = $1 AND folio = $2
-        AND ($3::timestamptz IS NULL OR pedido_creado_at = $3::timestamptz)`,
+      WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3::timestamptz`,
     [negocioId.trim(), String(folio), pedidoCreadoAt]);
   return !!r;
+}
+
+/**
+ * Hubo ALGUNA compra real con este folio, sin importar de que pedido?
+ * Ambigua por definicion con folios reciclados -- el nombre lo dice. Util para
+ * auditoria e informes, nunca para decidir la elegibilidad de un cliente.
+ */
+export async function algunaCompraConFolio(negocioId, folio) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return 0;
+  const { rows: [r] } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM compras_reales
+      WHERE negocio_id = $1 AND folio = $2`,
+    [negocioId.trim(), String(folio)]);
+  return r?.n || 0;
 }
 
 // ─── EXPIRACION: el deadline es de Xabor, no del proveedor ─────────────────
