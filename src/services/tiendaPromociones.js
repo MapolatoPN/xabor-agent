@@ -50,36 +50,29 @@ const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // volver Xabor le decia "esta promocion es solo para la primera compra".
 // Devolviamos el cupo pero no la elegibilidad.
 //
-// LA FUENTE. `pedidos` es el registro durable de cada pedido: lo escribe
-// `registrarPedido` en el mismo acto que `pedidos_activos`, y sobrevive a la
-// limpieza del tablero. Por eso un cliente de hace meses sigue contando.
+// LA FUENTE: `compras_reales`, el ledger de la 058.
 //
-// Pero `pedidos` guarda TODO lo que se registro, incluido lo que nunca se
-// cobro. Asi que se excluye lo que no llego a ser una compra:
+// Deducirlo de `pedidos` menos lo que `pedidos_activos` desmiente tenia un
+// agujero real: en cuanto un pedido cancelado por falta de pago se PURGA del
+// tablero, su fila historica vuelve a parecer una compra y el cliente pierde
+// su promocion sin haber comprado nunca. La correlacion solo funcionaba
+// mientras la fila viviera en el tablero -- justo la parte efimera.
 //
-//   · el pedido sigue en `pendiente_pago`  -> esperando dinero, no es compra;
-//   · el pedido se cancelo por no pagarse  -> `expirado_por_pago`, tampoco.
+// El ledger no correlaciona nada: la marca se escribe en el momento en que la
+// compra ocurre, dentro de la misma transaccion que el dinero (pago en linea /
+// transferencia) o al entrar la comanda a operacion (efectivo / terminal /
+// pago al recibir). Sobrevive al archivado, a la purga y al reinicio.
 //
-// Lo demas si: efectivo, terminal, pagado en linea, entregado, o archivado
-// hace tanto que ya salio del tablero.
+// PAGO REAL != COMPRA REAL: un cobro tardio sobre un pedido vencido, o de una
+// version vieja, se asienta como dinero pero nunca llega a marcarse aqui.
 //
-// Limitacion conocida y aceptada: si un pedido cancelado por falta de pago se
-// purgara de `pedidos_activos` conservando su fila en `pedidos`, volveria a
-// contar. Mientras viva en el tablero -- que es donde vive hasta su limpieza --
-// la exclusion es exacta.
+// Tenant-scoped siempre: el mismo telefono en otro negocio es otro cliente.
 export async function clienteYaComproDeVerdad(negocioId, telefono) {
   if (!negocioId || !telefono) return false;
   const { rows: [r] } = await pool.query(
     `SELECT EXISTS (
-       SELECT 1 FROM pedidos p
-        WHERE p.negocio_id = $1 AND p.telefono = $2
-          AND NOT EXISTS (
-            SELECT 1 FROM pedidos_activos a
-             WHERE a.negocio_id = p.negocio_id AND a.folio = p.folio
-               AND (a.estado = 'pendiente_pago'
-                    OR (a.estado = 'cancelado'
-                        AND (a.datos->>'expirado_por_pago')::boolean IS TRUE))
-          )
+       SELECT 1 FROM compras_reales
+        WHERE negocio_id = $1 AND cliente_telefono = $2
      ) AS ya`,
     [negocioId, telefono]);
   return r?.ya === true;

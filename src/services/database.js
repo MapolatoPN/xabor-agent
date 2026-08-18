@@ -2652,8 +2652,12 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // FOR UPDATE sobre el pedido: cualquier edicion concurrente se serializa
     // contra esta transaccion, asi que la version que se compara es la misma
     // que queda escrita.
+    // `created_at` viaja porque el folio NO identifica un pedido para siempre:
+    // se recicla al purgar el tablero. Es la tercera pata de la identidad de la
+    // compra real.
     const { rows: [pedido] } = await cliente.query(
-      `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      `SELECT datos, created_at FROM pedidos_activos
+        WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
       [folio, nid]);
     if (!pedido) {
       await cliente.query(
@@ -2726,6 +2730,22 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
       `UPDATE pedidos_activos
           SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
         WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+
+    // Y AQUI, no antes, es una COMPRA REAL. Este es el unico punto donde
+    // constan las cuatro cosas a la vez: dinero verificado, pedido correcto,
+    // version vigente y derivacion autorizada. Un pago tardio o de version vieja
+    // nunca llega hasta aqui -- salen por sus propias ramas mucho antes --, asi
+    // que su dinero se registra sin convertir al cliente en "ya compro".
+    //
+    // Va en la misma transaccion: si esto no commitea, tampoco el pedido queda
+    // pagado. La señal no puede perderse por un crash posterior.
+    await cliente.query(
+      `INSERT INTO compras_reales (negocio_id, folio, pedido_creado_at, cliente_telefono, origen)
+       VALUES ($1,$2,COALESCE($5::timestamptz, NOW()),$3,$4)
+       ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING`,
+      [nid, folio, pedido.datos?.cliente?.telefono || null,
+       pago.tipo === 'transferencia' ? 'transferencia' : 'pago_online',
+       pedido.created_at || null]);
 
     await cliente.query('COMMIT');
     // La deuda sigue ABIERTA a proposito: se salda despues de emitir. Si el
@@ -2971,6 +2991,83 @@ export async function obtenerPagoPorId(pagoId, negocioId) {
 export function tieneIdentidadExternaDurable(fila) {
   if (!fila) return false;
   return Boolean(fila.referencia_externa || fila.preference_id || fila.payment_id || fila.url);
+}
+
+/**
+ * Marca que un pedido fue una COMPRA REAL.
+ *
+ * TRES COSAS DISTINTAS: pedido creado (`pedidos`), dinero recibido (`pagos`) y
+ * COMPRA REAL reconocida (aqui). Solo se llama en dos puntos:
+ *
+ *   · `pago_online` / `transferencia` desde `consumirDeudaDeDerivacion`, unica
+ *     autorizacion para derivar, en la misma transaccion que el dinero;
+ *   · `operacion` desde `emitirPedido` (efectivo, terminal, pago al recibir):
+ *     ahi el negocio ya se comprometio, aunque el dinero fisico se cobre
+ *     despues y no haya ningun webhook que esperar.
+ *
+ * NO se llama desde la creacion del checkout, ni desde un webhook crudo, ni por
+ * el mero hecho de que exista un pago 'pagado'. Un cobro tardio sobre un pedido
+ * vencido es dinero real que Xabor NO cocina: no es una compra.
+ *
+ * Idempotente por el UNIQUE (negocio_id, folio, pedido_creado_at): un doble
+ * cobro, dos caminos de settlement o un reintento no crean una segunda compra.
+ *
+ * `pedidoCreadoAt` NO es decorativo: EL FOLIO SE RECICLA. `obtenerMaxFolioNum()`
+ * mira solo `pedidos_activos`, asi que al purgar el tablero y reiniciar, el
+ * contador retrocede y `XAB-0042` vuelve a emitirse para otro cliente. Sin este
+ * campo, la compra nueva chocaba con la fila del cliente anterior, no se
+ * registraba, y ese cliente conservaba su promocion de primera compra.
+ *
+ * Si el llamador no lo sabe, se usa NOW(): puede duplicar una marca en el peor
+ * caso -- inocuo, la elegibilidad es un EXISTS -- pero jamas pierde la señal,
+ * que es el error caro.
+ *
+ * Acepta un `client` para poder escribirse DENTRO de la transaccion del dinero.
+ */
+export async function registrarCompraReal(
+  ejecutor, { negocioId, folio, telefono = null, origen, pedidoCreadoAt = null }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  if (!folio) return { ok: false, razon: 'sin_folio' };
+  const q = ejecutor || pool;
+  const { rowCount } = await q.query(
+    `INSERT INTO compras_reales (negocio_id, folio, pedido_creado_at, cliente_telefono, origen)
+     VALUES ($1,$2,COALESCE($5::timestamptz, NOW()),$3,$4)
+     ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING`,
+    [negocioId.trim(), String(folio), telefono, origen, pedidoCreadoAt]);
+  return { ok: true, nueva: rowCount > 0 };
+}
+
+/**
+ * Instante de creacion de la fila durable del pedido. Es la tercera pata de la
+ * identidad de una compra real, porque el folio se recicla. Devuelve null si el
+ * pedido ya no esta en el tablero: quien llame decidira con que marcar.
+ */
+export async function obtenerCreadoAtPedidoActivo(negocioId, folio) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return null;
+  try {
+    const { rows: [r] } = await pool.query(
+      `SELECT created_at FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`,
+      [negocioId.trim(), String(folio)]);
+    return r?.created_at || null;
+  } catch (e) {
+    console.error('[DB] Error obtenerCreadoAtPedidoActivo:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Esta pedido registrado como compra real? Solo lectura.
+ * Sin `pedidoCreadoAt` responde por folio, que con folios reciclados puede
+ * referirse a mas de un pedido: pasarlo cuando se conozca.
+ */
+export async function pedidoFueCompraReal(negocioId, folio, pedidoCreadoAt = null) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return false;
+  const { rows: [r] } = await pool.query(
+    `SELECT 1 FROM compras_reales
+      WHERE negocio_id = $1 AND folio = $2
+        AND ($3::timestamptz IS NULL OR pedido_creado_at = $3::timestamptz)`,
+    [negocioId.trim(), String(folio), pedidoCreadoAt]);
+  return !!r;
 }
 
 // ─── EXPIRACION: el deadline es de Xabor, no del proveedor ─────────────────

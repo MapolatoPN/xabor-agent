@@ -43,6 +43,7 @@ const SCRIPTS = [
   '055-pagos-ciclo-vida',
   '056-pagos-expiracion',
   '057-promo-reservas',
+  '058-compras-reales',
 ];
 
 for (const nombre of SCRIPTS) {

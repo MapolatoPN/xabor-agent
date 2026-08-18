@@ -1144,6 +1144,17 @@ try {
                             canal, forma_pago, negocio_id)
        VALUES ($1,$2,'Viejo','[]'::jsonb,300,'recoger','tienda_online','efectivo',$3)`,
       [`ARCH-${TEL}`, TEL, NEG]);
+    // La FUENTE ya no es `pedidos` sino `compras_reales` (058). Una fila en el
+    // archivo dejó de ser la señal a propósito: no distinguía un pedido cobrado
+    // de uno que nunca se pagó, y bastaba purgar el tablero para que un intento
+    // fallido pasara por compra. El histórico anterior a la migración entró al
+    // ledger por el backfill, etiquetado `legacy_desconocido` -- que es
+    // exactamente lo que se simula aquí. El invariante que prueba este caso no
+    // cambia: un cliente con historia real no vuelve a ser primerizo.
+    await pool.query(
+      `INSERT INTO compras_reales (negocio_id, folio, pedido_creado_at, cliente_telefono, origen)
+       VALUES ($1,$2,NOW() - interval '120 days',$3,'legacy_desconocido')
+       ON CONFLICT DO NOTHING`, [NEG, `ARCH-${TEL}`, TEL]);
 
     assert.strictEqual(await clienteYaComproDeVerdad(NEG, TEL), true,
       'el histórico archivado dejó de contar como compra previa');

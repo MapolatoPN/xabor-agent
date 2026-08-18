@@ -309,6 +309,32 @@ export async function emitirPedido(pedido) {
   // camino, y eso solo se sabe cuando el trabajo existe. Avisar antes
   // obligaría al navegador a adivinar, que es exactamente lo que provocaba
   // el diálogo de Chrome sobre una comanda que Edge iba a imprimir sola.
+  // COMPRA REAL para efectivo, terminal y pago al recibir. Aqui el negocio ya
+  // se comprometio: la comanda sale a cocina. El dinero fisico se cobra despues
+  // y no hay ningun webhook que esperar -- esperarlo seria esperar algo que
+  // nunca llega. Los pedidos que aun aguardan pago no pasan de aqui: la rama
+  // `pendiente_pago` de arriba ya devolvio.
+  //
+  // Idempotente por el UNIQUE (negocio, folio, creado_at): reemitir no crea otra
+  // compra. El `created_at` se lee de la fila durable porque EL FOLIO SE
+  // RECICLA -- `obtenerMaxFolioNum()` solo mira `pedidos_activos`, asi que tras
+  // una purga el contador retrocede y el mismo folio vuelve a salir para otro
+  // cliente. Sin ese tercer campo, la compra del cliente nuevo chocaba con la
+  // del anterior y se perdia.
+  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
+    const { registrarCompraReal, obtenerCreadoAtPedidoActivo } = await import('../services/database.js');
+    await (async () => {
+      const creadoAt = await obtenerCreadoAtPedidoActivo(pedido.negocioId, pedido.id);
+      return registrarCompraReal(null, {
+        negocioId: pedido.negocioId,
+        folio: pedido.id,
+        telefono: pedido.cliente?.telefono || null,
+        origen: 'operacion',
+        pedidoCreadoAt: creadoAt,
+      });
+    })().catch(e => console.error(`[OrderManager] No se pudo registrar la compra real de ${pedido.id}: ${e.message}`));
+  }
+
   const edge = await emitirComandaDePedidoPorEdge(pedido);
 
   if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
