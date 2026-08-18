@@ -7471,13 +7471,48 @@ async function activarPedidosProgramados() {
       // NULL para siempre (única escritura de esta fila -- ON CONFLICT
       // DO UPDATE nunca corrige negocio_id después). pedido.negocioId ya
       // fue validado como string no vacío arriba, nunca inventado aquí.
-      // El retorno se ignora a propósito: el folio de un pedido programado
-      // ya fue asignado cuando se creó (no viene del contador), así que un
-      // conflicto aquí solo puede ser la misma fila re-insertada — nunca un
-      // folio ajeno que haya que reintentar.
-      const { guardarPedidoActivo } = await import('./services/database.js');
+      // EL RETORNO YA NO SE IGNORA.
+      //
+      // Antes decía que "un conflicto aquí solo puede ser la misma fila
+      // re-insertada". Esa premisa cayó con los folios reciclados: mientras el
+      // binario viejo estuvo vivo, otro pedido cualquiera podía haber ocupado
+      // este número. Si eso pasa y se sigue adelante, la base guarda el pedido
+      // AJENO mientras la memoria, el panel y el papel muestran el programado
+      // -- el mismo folio nombrando dos cosas distintas.
+      const { guardarPedidoActivo, pool: _poolProg } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
-      await guardarPedidoActivo(pedido, pedido.negocioId);
+      const guardado = await guardarPedidoActivo(pedido, pedido.negocioId);
+
+      if (!guardado.ok) {
+        // Error real de base: se deja PENDIENTE para el siguiente ciclo. No se
+        // marca activado, así que el retry lo recupera.
+        console.error(`[Programados] No se pudo persistir ${row.folio}: se reintentara en el proximo ciclo`);
+        continue;
+      }
+
+      if (!guardado.insertado) {
+        // Conflicto. Hay que averiguar QUIÉN ocupa el folio antes de decidir.
+        const { rows: [ocupante] } = await _poolProg.query(
+          `SELECT negocio_id, datos FROM pedidos_activos WHERE folio = $1`, [row.folio]);
+        const mismoProgramado = ocupante
+          && ocupante.negocio_id === pedido.negocioId
+          && pedido.programado_id
+          && ocupante.datos?.programado_id === pedido.programado_id;
+
+        if (!mismoProgramado) {
+          // El folio es de OTRO pedido. Nada de memoria, Edge, panel ni papel, y
+          // NO se marca activado: la reserva sigue viva para que alguien la mire.
+          console.error(
+            `[Programados] ANOMALIA: el folio ${row.folio} ya pertenece a otro pedido ` +
+            `(negocio=${ocupante?.negocio_id || 'desconocido'}). El programado NO se activa: ` +
+            `requiere reemision manual de folio.`);
+          console.warn(`[TXN] evento=programado_folio_ocupado negocio=${pedido.negocioId} folio=${row.folio}`);
+          continue;
+        }
+        // Es la misma reserva re-insertada: retry idempotente, se continua.
+        console.log(`[Programados] ${row.folio} ya estaba activo con la misma identidad: retry idempotente`);
+      }
+
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
 
       // P0 Invariante 4 (mismo gate que emitirPedido): un pedido programado

@@ -54,6 +54,10 @@ const SCRIPTS = [
   // secuencia ya existe. Sin ella, OLD puede reinsertar un folio historico que
   // el UNIQUE de `pedidos_activos` no bloquea porque ya no esta activo.
   '060-barrera-folio',
+  // 061 sustituye la barrera de la 060 por un ledger de claims: cubre las 12
+  // fuentes de folio que la 059 ya reconocia, no solo `pedidos`, y exige que la
+  // activacion de un programado demuestre SU identidad, no solo su numero.
+  '061-folios-claim',
 ];
 
 for (const nombre of SCRIPTS) {

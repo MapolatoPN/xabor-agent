@@ -3745,15 +3745,51 @@ export async function eliminarPedido(folio) {
 }
 
 // ─── Pedidos programados ──────────────────────────────────────────────────────
+/**
+ * Reserva un pedido programado.
+ *
+ * El `programado_id` es la IDENTIDAD de la reserva y viaja en dos sitios: la
+ * columna y el propio `datos` del pedido. Sin el, la activacion de manana solo
+ * podria decir "traigo este folio" -- y eso no demuestra que sea ESTA reserva.
+ * La barrera de la 061 lo exige para dejar entrar el pedido al tablero.
+ *
+ * Devuelve el `programadoId` para que el llamador pueda conservarlo.
+ */
 export async function guardarPedidoProgramado(folio, datos, programadoPara) {
   try {
-    await pool.query(`
-      INSERT INTO pedidos_programados (folio, datos, programado_para)
-      VALUES ($1, $2, $3)
+    const { rows: [r] } = await pool.query(`
+      INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (folio) DO NOTHING
-    `, [folio, JSON.stringify(datos), programadoPara]);
+      RETURNING programado_id
+    `, [folio, JSON.stringify(datos), programadoPara, datos?.negocioId || null]);
+
+    if (!r) {
+      // Ya existia una reserva con ese folio: no se pisa.
+      const { rows: [ya] } = await pool.query(
+        `SELECT programado_id FROM pedidos_programados WHERE folio = $1`, [folio]);
+      return { ok: true, nueva: false, programadoId: ya?.programado_id || null };
+    }
+
+    // La identidad se guarda TAMBIEN dentro de `datos`: es lo que el pedido
+    // presentara al activarse, y `datos` es lo unico que viaja hasta el INSERT.
+    await pool.query(
+      `UPDATE pedidos_programados
+          SET datos = datos || jsonb_build_object('programado_id', programado_id::text)
+        WHERE folio = $1`, [folio]);
+
+    // Y se reclama el folio como RESERVA, para que nadie mas pueda tomarlo
+    // mientras espera su hora.
+    await pool.query(
+      `INSERT INTO folios_pedido_usados (folio, negocio_id, estado, programado_id, origen)
+       VALUES ($1,$2,'reserva_programado',$3,'programado')
+       ON CONFLICT (folio) DO NOTHING`,
+      [folio, datos?.negocioId || null, r.programado_id]);
+
+    return { ok: true, nueva: true, programadoId: r.programado_id };
   } catch (e) {
     console.error('[DB] Error guardarPedidoProgramado:', e.message);
+    return { ok: false, nueva: false, programadoId: null };
   }
 }
 
@@ -3761,10 +3797,11 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
 export async function obtenerPedidosPorActivar() {
   try {
     const result = await pool.query(`
-      SELECT folio, datos, negocio_id, programado_para FROM pedidos_programados
-      WHERE activado = FALSE
-        AND programado_para <= NOW() + INTERVAL '1 hour'
-      ORDER BY programado_para ASC
+      SELECT folio, datos, negocio_id, programado_para, programado_id
+        FROM pedidos_programados
+       WHERE activado = FALSE
+         AND programado_para <= NOW() + INTERVAL '1 hour'
+       ORDER BY programado_para ASC
     `);
     // Mismo fallback y mismo motivo que obtenerPedidosActivos(): un
     // pedido programado creado antes de la migración 007 no tiene
@@ -3778,7 +3815,13 @@ export async function obtenerPedidosPorActivar() {
       return {
         folio: r.folio,
         programado_para: r.programado_para,
-        datos: { ...datos, negocioId: datos.negocioId || r.negocio_id || null }
+        // `programado_id` viaja SIEMPRE, aunque `datos` sea de antes de la 061:
+        // es lo que la barrera exige para dejar entrar la activacion.
+        datos: {
+          ...datos,
+          negocioId: datos.negocioId || r.negocio_id || null,
+          programado_id: datos.programado_id || r.programado_id || null,
+        }
       };
     });
   } catch (e) {

@@ -19,6 +19,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import assert from 'assert';
 import pkg from 'pg';
 
@@ -77,13 +78,13 @@ async function arrancarOLD() {
 }
 
 /** El INSERT literal de `guardarPedidoActivo` (database.js:1859). */
-async function guardarComoOLD(folio) {
+async function guardarComoOLD(folio, extra = {}) {
   const r = await desechable.query(
     `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
      VALUES ($1,'nuevo',$2::jsonb,$3)
      ON CONFLICT (folio) DO NOTHING
      RETURNING folio`,
-    [folio, JSON.stringify({ id: folio, quien: 'OLD' }), NEG]);
+    [folio, JSON.stringify({ id: folio, quien: 'OLD', ...extra }), NEG]);
   return { ok: true, insertado: r.rowCount === 1, conflicto: r.rowCount !== 1 };
 }
 
@@ -269,17 +270,37 @@ try {
     // El riesgo de la barrera: un programado reserva su folio al crearse y lo
     // activa dias despues. Si la barrera mirara solo "ya existio este folio",
     // lo destruiria. La excepcion es explicita y esta es su prueba.
-    const F = 'XAB-0095';                     // dentro del rango historico
+    // OJO: 'XAB-0095' esta dentro del rango historico sembrado por esta suite,
+    // asi que YA pertenece a otro pedido. Ese folio NO es reutilizable ni
+    // siquiera por un programado -- es el caso B de la clasificacion, y la 061
+    // lo deja fail closed a proposito. Para probar la activacion LEGITIMA hace
+    // falta un folio limpio y, sobre todo, la IDENTIDAD de la reserva.
+    const F = `XAB-P${String(Date.now()).slice(-9)}`;
+    const progId = randomUUID();
     await desechable.query(
-      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id, activado)
-       VALUES ($1,$2::jsonb, NOW() - interval '1 hour', $3, FALSE)
+      `INSERT INTO pedidos_programados
+         (folio, datos, programado_para, negocio_id, activado, programado_id)
+       VALUES ($1,$2::jsonb, NOW() - interval '1 hour', $3, FALSE, $4)
        ON CONFLICT (folio) DO NOTHING`,
-      [F, JSON.stringify({ id: F, negocioId: NEG }), NEG]);
+      [F, JSON.stringify({ id: F, negocioId: NEG, programado_id: progId }), NEG, progId]);
+    await desechable.query(
+      `INSERT INTO folios_pedido_usados (folio, negocio_id, estado, programado_id, origen)
+       VALUES ($1,$2,'reserva_programado',$3,'test') ON CONFLICT (folio) DO NOTHING`,
+      [F, NEG, progId]);
 
-    // Su activacion pasa por el MISMO guardarPedidoActivo (server.js:7480).
-    const r = await guardarComoOLD(F);
+    // Su activacion pasa por el MISMO guardarPedidoActivo (server.js:7480), y
+    // ahora tiene que PRESENTAR la identidad de su reserva.
+    const r = await guardarComoOLD(F, { programado_id: progId });
     assert.strictEqual(r.insertado, true,
       'la barrera bloqueo la activacion de un pedido programado legitimo');
+
+    // Y un pedido cualquiera con ese mismo folio NO entra.
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [F]);
+    await desechable.query(
+      `UPDATE folios_pedido_usados SET estado='reserva_programado' WHERE folio = $1`, [F]);
+    const ajeno = await guardarComoOLD(F);
+    assert.strictEqual(ajeno.insertado, false,
+      'un pedido sin la identidad de la reserva entro por la puerta del programado');
 
     await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [F]);
     await desechable.query(`DELETE FROM pedidos_programados WHERE folio = $1`, [F]);
@@ -288,13 +309,19 @@ try {
   await t('7c. ...y una vez activado, ese folio deja de ser reutilizable', async () => {
     // La exencion es de un solo uso: en cuanto el programado se marca activado,
     // vuelve a regir la barrera.
-    const F = 'XAB-0096';
+    const F = `XAB-Q${String(Date.now()).slice(-9)}`;
+    const progId = randomUUID();
     await desechable.query(
-      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id, activado)
-       VALUES ($1,'{}'::jsonb, NOW(), $2, TRUE)
-       ON CONFLICT (folio) DO UPDATE SET activado = TRUE`, [F, NEG]);
+      `INSERT INTO pedidos_programados
+         (folio, datos, programado_para, negocio_id, activado, programado_id)
+       VALUES ($1,'{}'::jsonb, NOW(), $2, TRUE, $3)
+       ON CONFLICT (folio) DO UPDATE SET activado = TRUE`, [F, NEG, progId]);
+    // El folio ya fue consumido: el ledger lo marca 'usado', no reserva.
+    await desechable.query(
+      `INSERT INTO folios_pedido_usados (folio, negocio_id, estado, origen)
+       VALUES ($1,$2,'usado','test') ON CONFLICT (folio) DO NOTHING`, [F, NEG]);
 
-    const r = await guardarComoOLD(F);
+    const r = await guardarComoOLD(F, { programado_id: progId });
     assert.strictEqual(r.insertado, false,
       'un programado YA activado siguio exento de la barrera');
 
