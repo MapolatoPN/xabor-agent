@@ -49,6 +49,11 @@ const SCRIPTS = [
   // normal dejaria binario que exige una secuencia que nadie creo, y
   // `registrarPedido` fallaria en el primer pedido.
   '059-folio-durable',
+  // 060 va PEGADA a la 059: es la barrera que hace segura la ventana en la que
+  // el binario viejo --con su contador en memoria-- sigue vivo mientras la
+  // secuencia ya existe. Sin ella, OLD puede reinsertar un folio historico que
+  // el UNIQUE de `pedidos_activos` no bloquea porque ya no esta activo.
+  '060-barrera-folio',
 ];
 
 for (const nombre of SCRIPTS) {

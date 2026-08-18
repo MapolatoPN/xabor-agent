@@ -53,6 +53,57 @@ function correrRunnerReal(env = {}) {
 }
 
 let admin = null, desechable = null;
+let NEG = null;
+
+/**
+ * Reproduce el arranque del binario OLD tal cual esta en origin/main
+ * (0f9e82b): `cargarPedidosDesdeDB()` llama a `obtenerMaxFolioNum()`, que hace
+ * MAX sobre `pedidos_activos` Y NADA MAS, y fija `contadorPedidos = max + 1`.
+ * A partir de ahi el contador vive en MEMORIA.
+ */
+async function arrancarOLD() {
+  const { rows: [r] } = await desechable.query(
+    `SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS INTEGER)),0) AS m
+       FROM pedidos_activos WHERE folio ~ '^XAB-[0-9]+$'`);
+  let contador = Number(r.m) + 1;
+  return {
+    get contador() { return contador; },
+    siguienteFolio() {
+      const f = `XAB-${String(contador).padStart(4, '0')}`;
+      contador++;                     // en memoria, sin volver a consultar
+      return f;
+    },
+  };
+}
+
+/** El INSERT literal de `guardarPedidoActivo` (database.js:1859). */
+async function guardarComoOLD(folio) {
+  const r = await desechable.query(
+    `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+     VALUES ($1,'nuevo',$2::jsonb,$3)
+     ON CONFLICT (folio) DO NOTHING
+     RETURNING folio`,
+    [folio, JSON.stringify({ id: folio, quien: 'OLD' }), NEG]);
+  return { ok: true, insertado: r.rowCount === 1, conflicto: r.rowCount !== 1 };
+}
+
+/** Historico purgado del tablero: la condicion que hace posible el reciclaje. */
+async function sembrarHistoricoPurgado() {
+  await desechable.query(`DELETE FROM pedidos_activos`);
+  await desechable.query(`DELETE FROM pedidos WHERE folio ~ '^XAB-00(9[0-9]|100)$'`);
+  for (let n = 91; n <= 100; n++) {
+    await desechable.query(
+      `INSERT INTO pedidos (folio, telefono, nombre_cliente, items, total, modalidad,
+                            canal, forma_pago, negocio_id, created_at)
+       VALUES ($1,NULL,'X','[]'::jsonb,10,'recoger','test','efectivo',$2,NOW() - interval '30 days')`,
+      [`XAB-${String(n).padStart(4, '0')}`, NEG]);
+  }
+  // El tablero solo llega a 90: es lo unico que OLD mira al arrancar.
+  await desechable.query(
+    `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+     VALUES ('XAB-0090','nuevo','{}'::jsonb,$1)
+     ON CONFLICT (folio) DO NOTHING`, [NEG]);
+}
 try {
   // ── Base desechable: copia del esquema real, sin 058 ni 059 ──────────────
   admin = new Client({ connectionString: urlAdmin });
@@ -67,6 +118,11 @@ try {
   desechable = new Pool({ connectionString: urlDesechable });
   await desechable.query(`DROP TABLE IF EXISTS compras_reales CASCADE`);
   await desechable.query(`DROP SEQUENCE IF EXISTS folio_pedido_seq`);
+  // La barrera de la 060 tambien se retira: la base desechable se copia de la
+  // local, que YA la tiene aplicada. Sin este DROP, la suite pasaria aunque el
+  // runner dejara de aplicarla -- verde por la razon equivocada.
+  await desechable.query(`DROP TRIGGER IF EXISTS trg_barrera_folio_historico ON pedidos_activos`);
+  await desechable.query(`DROP FUNCTION IF EXISTS xabor_barrera_folio_historico()`);
 
   const hayTabla = async () => (await desechable.query(
     `SELECT COUNT(*)::int AS n FROM information_schema.tables
@@ -74,9 +130,16 @@ try {
   const haySecuencia = async () => (await desechable.query(
     `SELECT COUNT(*)::int AS n FROM pg_class
       WHERE relkind='S' AND relname='folio_pedido_seq'`)).rows[0].n === 1;
+  const hayBarrera = async () => (await desechable.query(
+    `SELECT COUNT(*)::int AS n FROM pg_trigger
+      WHERE tgname='trg_barrera_folio_historico' AND NOT tgisinternal`)).rows[0].n === 1;
 
   assert.strictEqual(await hayTabla(), false);
   assert.strictEqual(await haySecuencia(), false);
+  assert.strictEqual(await hayBarrera(), false);
+
+  NEG = (await desechable.query(`SELECT id FROM negocios LIMIT 1`)).rows[0].id;
+  await sembrarHistoricoPurgado();
 
   // ═══ P0-14 — EL RUNNER REAL ══════════════════════════════════════════════
   await t('1. el runner REAL aplica 058 Y 059 y termina en exit 0', async () => {
@@ -86,6 +149,8 @@ try {
     assert.ok(await hayTabla(), 'el runner no dejo compras_reales');
     assert.ok(await haySecuencia(),
       'el runner NO creo folio_pedido_seq: el codigo exigiria una secuencia inexistente');
+    assert.ok(await hayBarrera(),
+      'el runner NO instalo la barrera de la 060: la ventana de cutover queda abierta');
   });
 
   await t('2. tras el runner, reservar folio funciona contra esa base', async () => {
@@ -115,102 +180,125 @@ try {
     const lista = src.slice(src.indexOf('const SCRIPTS'), src.indexOf('];', src.indexOf('const SCRIPTS')));
     const i58 = lista.indexOf("'058-compras-reales'");
     const i59 = lista.indexOf("'059-folio-durable'");
+    const i60 = lista.indexOf("'060-barrera-folio'");
     assert.ok(i58 > 0, 'el runner dejo de aplicar la 058');
     assert.ok(i59 > 0,
       'el runner NO incluye 059-folio-durable: el deploy dejaria codigo sin su secuencia');
+    assert.ok(i60 > 0,
+      'el runner NO incluye 060-barrera-folio: OLD podria reciclar durante el cutover');
     assert.ok(i59 > i58, '059 debe ir DESPUES de 058');
+    assert.ok(i60 > i59, '060 debe ir DESPUES de 059');
   });
 
   // ═══ P0-15 — CUTOVER MIXTO ═══════════════════════════════════════════════
-  await t('5. OLD y NEW a la vez: el allocator viejo SÍ produce colisiones', async () => {
-    // Se demuestra el riesgo real, sin suponerlo. OLD calcula su folio con
-    // MAX(pedidos_activos)+1, que es exactamente lo que hacia el binario
-    // anterior; NEW usa la secuencia. Si ambos escriben en la ventana del
-    // deploy, OLD puede entregar un numero que NEW ya entrego, o repetir el
-    // suyo mientras el tablero no cambie.
-    const asignarOLD = async () => {
-      const { rows: [r] } = await desechable.query(
-        `SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS bigint)),0)+1 AS n
-           FROM pedidos_activos WHERE folio ~ '^XAB-[0-9]+$'`);
-      return `XAB-${String(r.n).padStart(4, '0')}`;
-    };
-    const viejos = [await asignarOLD(), await asignarOLD(), await asignarOLD()];
-    assert.strictEqual(new Set(viejos).size, 1,
-      'el allocator viejo dejo de colisionar consigo mismo: revisar la premisa');
+  await t('5. el allocator OLD REAL: contador capturado UNA vez al arrancar', async () => {
+    // El binario de origin/main NO consulta MAX por request. Al arrancar hace
+    // `obtenerMaxFolioNum()` --maximo de `pedidos_activos`-- y guarda
+    // `contadorPedidos = max + 1`; despues cada pedido toma el contador y lo
+    // incrementa EN MEMORIA. Modelarlo como MAX()+1 por request, como hacia la
+    // version anterior de esta prueba, describe un OLD que nunca existio.
+    const old = await arrancarOLD();
+    assert.strictEqual(old.contador, 91,
+      `OLD debia sembrarse en 91 (max activo 90) y quedo en ${old.contador}`);
+    assert.strictEqual(old.siguienteFolio(), 'XAB-0091');
+    assert.strictEqual(old.siguienteFolio(), 'XAB-0092',
+      'el contador de OLD no avanza en memoria: no reproduce main');
   });
 
-  await t('6. LA BARRERA del cutover: `pedidos_activos.folio` es UNIQUE y ya existia', async () => {
-    // Aqui esta la respuesta a P0-15, y no es aritmetica ni probabilistica: la
-    // garantia vive en el esquema. `guardarPedidoActivo` (database.js:1859)
-    // inserta con ON CONFLICT (folio) DO NOTHING ... RETURNING folio y
-    // distingue insertado de conflicto; `registrarPedido` --el binario VIEJO y
-    // el nuevo, porque ese codigo no cambio-- reintenta con otro candidato o
-    // falla cerrado con FOLIO_NO_DISPONIBLE. Nunca adopta el pedido ajeno ni
-    // devuelve exito sin fila propia.
+  await t('6. ROJO ESPERADO: OLD recicla un folio historico durante el overlap', async () => {
+    // El escenario exacto del cutover:
+    //   · historico: XAB-0091..0100 en `pedidos`, YA purgados del tablero;
+    //   · tablero: maximo XAB-0090;
+    //   · OLD arranco ANTES de la 059 -> su contador quedo en 91;
+    //   · se aplica 059 -> NEW arranca por encima de todo el historico;
+    //   · OLD, sin reiniciar, propone XAB-0091.
     //
-    // Por eso el solape OLD/NEW no puede producir dos pedidos con el mismo
-    // folio: el segundo INSERT simplemente no crea fila.
-    const { rows: [neg] } = await desechable.query(`SELECT id FROM negocios LIMIT 1`);
-    const F = `XAB-C${String(Date.now()).slice(-9)}`;   // varchar(20)
-    const insertar = () => desechable.query(
-      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
-       VALUES ($1,'nuevo','{}'::jsonb,$2)
-       ON CONFLICT (folio) DO NOTHING RETURNING folio`, [F, neg.id]);
+    // UNIQUE(pedidos_activos.folio) NO lo bloquea: XAB-0091 no esta activo.
+    // El INSERT entra y ese numero pasa a pertenecer a DOS pedidos distintos.
+    const old = await arrancarOLD();
 
-    assert.strictEqual((await insertar()).rowCount, 1, 'el fixture no creo el pedido');
-    assert.strictEqual((await insertar()).rowCount, 0,
-      'pedidos_activos acepto DOS filas con el mismo folio: NO hay barrera y el cutover mixto es inseguro');
+    // La 059 ya esta aplicada por los casos anteriores; se confirma el piso.
+    const { rows: [s2] } = await desechable.query(
+      `SELECT last_value, is_called FROM folio_pedido_seq`);
+    const pisoNEW = s2.is_called ? Number(s2.last_value) + 1 : Number(s2.last_value);
+    assert.ok(pisoNEW > 100, `el piso de la secuencia (${pisoNEW}) no supera el historico sembrado`);
 
-    // Y el UNIQUE existe de verdad, no es solo el ON CONFLICT del INSERT.
-    const { rows: [u] } = await desechable.query(
-      `SELECT COUNT(*)::int AS n FROM pg_indexes
-        WHERE tablename='pedidos_activos' AND indexdef LIKE '%UNIQUE%'
-          AND indexdef LIKE '%(folio)%'`);
-    assert.ok(u.n >= 1, 'no existe indice UNIQUE sobre pedidos_activos.folio');
+    const folioOLD = old.siguienteFolio();          // XAB-0091
+    assert.strictEqual(folioOLD, 'XAB-0091');
 
-    await desechable.query(`DELETE FROM pedidos_activos WHERE folio=$1`, [F]);
+    // Ese folio YA existe en el historico.
+    const { rows: [h] } = await desechable.query(
+      `SELECT COUNT(*)::int AS n FROM pedidos WHERE folio = $1`, [folioOLD]);
+    assert.strictEqual(h.n, 1, 'el fixture no dejo el folio en el historico');
+
+    // ...y no esta en el tablero, asi que el UNIQUE no dice nada.
+    const r = await guardarComoOLD(folioOLD);
+
+    assert.strictEqual(r.insertado, false,
+      `OLD registro ${folioOLD}, que ya pertenece a un pedido historico: reciclaje durante el overlap`);
+    assert.strictEqual(r.conflicto, true,
+      'la barrera debe presentarse como CONFLICTO para que registrarPedido reintente');
   });
 
-  await t('7. OLD durante el cutover falla CERRADO: nunca registra folio reciclado', async () => {
-    // El escenario completo del solape. NEW toma folios de la secuencia; OLD
-    // sigue con MAX(pedidos_activos)+1 y acaba proponiendo uno que NEW ya
-    // escribio. El INSERT de OLD no crea fila -> conflicto -> su bucle pide
-    // otro candidato. Lo que NO puede pasar, y es lo que se comprueba, es que
-    // queden dos pedidos distintos compartiendo folio.
-    const { rows: [neg] } = await desechable.query(`SELECT id FROM negocios LIMIT 1`);
-    const marca = `CUT${Date.now()}`;
-
-    const escribir = (folio, quien) => desechable.query(
-      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
-       VALUES ($1,'nuevo',$2::jsonb,$3)
-       ON CONFLICT (folio) DO NOTHING RETURNING folio`,
-      [folio, JSON.stringify({ id: folio, quien, marca }), neg.id]);
-
-    // NEW escribe con la secuencia.
-    const { rows: [s1] } = await desechable.query(`SELECT nextval('folio_pedido_seq') AS n`);
-    const folioNEW = `XAB-${String(s1.n).padStart(4, '0')}`;
-    assert.strictEqual((await escribir(folioNEW, 'NEW')).rowCount, 1);
-
-    // OLD, con su allocator viejo, propone exactamente ese mismo numero.
-    const { rows: [m] } = await desechable.query(
-      `SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS bigint)),0) AS n
-         FROM pedidos_activos WHERE folio ~ '^XAB-[0-9]+$'`);
-    const folioOLD = `XAB-${String(m.n).padStart(4, '0')}`;   // el maximo, ya tomado por NEW
-    const intento = await escribir(folioOLD, 'OLD');
-
-    if (folioOLD === folioNEW) {
-      assert.strictEqual(intento.rowCount, 0,
-        'OLD logro registrar un pedido sobre el folio que NEW acababa de usar');
+  await t('7. OLD converge solo: reintenta hasta salir del rango historico', async () => {
+    // La barrera no deja a OLD atascado: su bucle pide el siguiente candidato
+    // igual que ante un conflicto normal. 91..100 estan tomados por el
+    // historico; 101 en adelante, no. Con MAX_REINTENTOS_FOLIO = 20 le sobra.
+    const old = await arrancarOLD();
+    let insertado = null;
+    for (let i = 0; i < 20 && !insertado; i++) {
+      const f = old.siguienteFolio();
+      const r = await guardarComoOLD(f);
+      if (r.insertado) insertado = f;
     }
+    assert.ok(insertado, 'OLD no logro ningun folio en 20 intentos: quedaria fail closed');
+    assert.ok(Number(insertado.replace('XAB-', '')) > 100,
+      `OLD escribio ${insertado}, dentro del rango historico`);
 
-    // Sea cual sea el camino: cero folios compartidos por dos pedidos.
-    const { rows: [dup] } = await desechable.query(
-      `SELECT COUNT(*)::int AS n FROM (
-         SELECT folio FROM pedidos_activos WHERE datos->>'marca' = $1
-          GROUP BY folio HAVING COUNT(*) > 1) d`, [marca]);
-    assert.strictEqual(dup.n, 0, 'quedaron dos pedidos con el mismo folio tras el solape');
+    // Y ningun folio historico quedo duplicado.
+    const { rows: [d] } = await desechable.query(
+      `SELECT COUNT(*)::int AS n FROM pedidos_activos a
+        WHERE a.folio ~ '^XAB-[0-9]+$'
+          AND EXISTS (SELECT 1 FROM pedidos h WHERE h.folio = a.folio)`);
+    assert.strictEqual(d.n, 0, 'quedo un pedido activo sobre un folio historico');
 
-    await desechable.query(`DELETE FROM pedidos_activos WHERE datos->>'marca' = $1`, [marca]);
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [insertado]);
+  });
+
+  await t('7b. un PROGRAMADO pre-059 legitimo SI puede activarse', async () => {
+    // El riesgo de la barrera: un programado reserva su folio al crearse y lo
+    // activa dias despues. Si la barrera mirara solo "ya existio este folio",
+    // lo destruiria. La excepcion es explicita y esta es su prueba.
+    const F = 'XAB-0095';                     // dentro del rango historico
+    await desechable.query(
+      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id, activado)
+       VALUES ($1,$2::jsonb, NOW() - interval '1 hour', $3, FALSE)
+       ON CONFLICT (folio) DO NOTHING`,
+      [F, JSON.stringify({ id: F, negocioId: NEG }), NEG]);
+
+    // Su activacion pasa por el MISMO guardarPedidoActivo (server.js:7480).
+    const r = await guardarComoOLD(F);
+    assert.strictEqual(r.insertado, true,
+      'la barrera bloqueo la activacion de un pedido programado legitimo');
+
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [F]);
+    await desechable.query(`DELETE FROM pedidos_programados WHERE folio = $1`, [F]);
+  });
+
+  await t('7c. ...y una vez activado, ese folio deja de ser reutilizable', async () => {
+    // La exencion es de un solo uso: en cuanto el programado se marca activado,
+    // vuelve a regir la barrera.
+    const F = 'XAB-0096';
+    await desechable.query(
+      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id, activado)
+       VALUES ($1,'{}'::jsonb, NOW(), $2, TRUE)
+       ON CONFLICT (folio) DO UPDATE SET activado = TRUE`, [F, NEG]);
+
+    const r = await guardarComoOLD(F);
+    assert.strictEqual(r.insertado, false,
+      'un programado YA activado siguio exento de la barrera');
+
+    await desechable.query(`DELETE FROM pedidos_programados WHERE folio = $1`, [F]);
   });
 
   // ═══ ROLLBACK ════════════════════════════════════════════════════════════
@@ -232,7 +320,25 @@ try {
       'ejecutar el down dejo al generador sin fuente');
   });
 
-  await t('9. rollback real: el codigo VIEJO convive con la secuencia sin tocarla', async () => {
+  await t('9. ROLLBACK: el codigo VIEJO no puede reciclar mientras la barrera siga puesta', async () => {
+    // El runbook anterior decia "revertir codigo y conservar la secuencia", y
+    // eso NO protegia nada: OLD ignora la secuencia por completo. Lo que
+    // protege el rollback es la BARRERA de la 060, que es independiente del
+    // binario. Se reproduce el rollback entero: purgar el tablero alto,
+    // rearrancar OLD --que vuelve a sembrarse bajo-- e intentar escribir.
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio ~ '^XAB-0[1-9][0-9]{2}$'`);
+    const old = await arrancarOLD();
+    const f = old.siguienteFolio();
+    const enHistorico = (await desechable.query(
+      `SELECT COUNT(*)::int AS n FROM pedidos WHERE folio = $1`, [f])).rows[0].n;
+    if (enHistorico > 0) {
+      const r = await guardarComoOLD(f);
+      assert.strictEqual(r.insertado, false,
+        `tras el rollback, OLD reciclo ${f}: la barrera no protege el camino de vuelta`);
+    }
+  });
+
+  await t('9b. la secuencia sobrevive al rollback sin que OLD la toque', async () => {
     // La 059 es ADITIVA: no cambia tablas, columnas ni datos. Por eso el
     // rollback soportado es revertir SOLO EL CODIGO y conservar la secuencia --
     // cero pasos de base, cero ventana de fallo. Se comprueba que el allocator
