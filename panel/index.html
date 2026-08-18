@@ -751,6 +751,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      pintaria como texto. (Esta nota no usa etiquetas literales a proposito.) -->
 <script src="/modificadores.js"></script>
 <script src="/dedupeEventos.js"></script>
+<script src="/tableroEventos.js"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -2212,29 +2213,22 @@ function conectarWS() {
       // navegador se limita a obedecer. Si el servidor no manda el campo
       // (versión anterior), es false y todo sigue como siempre.
       if (msg.tipo === 'nuevo_pedido') {
-        // UN SOLO EFECTO LOGICO POR PEDIDO.
+        // Estado y efectos son cosas distintas, y el enrutamiento vive en
+        // /tableroEventos.js -- el mismo archivo que ejecutan las pruebas.
         //
-        // El backend puede reemitir este evento: si muere entre el envio y la
-        // marca durable de derivacion, el retry lo manda otra vez -- y el
-        // volcado de la reconexion reenvia todo lo activo. `eventId` es
-        // determinista (`nuevo_pedido:<negocio>:<folio>`), asi que reclamarlo
-        // aqui basta para que la tarjeta, el sonido, el contador y la
-        // impresion ocurran una vez y solo una.
-        //
-        // Antes esto se apoyaba en que la tarjeta siguiera en el DOM: un
-        // pedido ya despachado y retirado de la vista resucitaba con sonido e
-        // impresion al llegar un reenvio. Y el ticket de cuenta final no
-        // deduplicaba nada en absoluto.
-        //
-        // Sin `eventId` (servidor viejo) no se dedupea: mejor un efecto
-        // repetido que silenciar un pedido real.
-        if (!DEDUPE || DEDUPE.reclamar(msg.eventId)) {
-          if (msg.pedido?.tipo_comanda === 'cuenta_final') {
-            recibirCuentaFinal(msg.pedido, msg.impresionEdge === true);
-          } else {
-            agregarPedido(msg.pedido, msg.impresionEdge === true);
-          }
-        }
+        // Lo que este bloque garantiza: un pedido activo SIEMPRE se proyecta,
+        // venga por donde venga. El dedupe solo decide si ademas suena e
+        // imprime. Meter la proyeccion detras del dedupe dejaba el tablero
+        // vacio tras un F5, con pedidos activos en cocina.
+        window.XaborTableroEventos.manejarEventoPedido(msg, {
+          upsertPedido: (p) => upsertPedidoEnTablero(p),
+          notificar: (p, edge) => notificarPedidoNuevo(p, edge),
+          guardarCuentaFinal: (t) => guardarCuentaFinal(t),
+          notificarCuentaFinal: (t, edge) => notificarCuentaFinal(t, edge),
+          estaEnTablero: (folio) => !!document.getElementById(`comanda-${folio}`),
+          dedupe: DEDUPE,
+          alFallar: (err) => console.error('[Panel] Fallo procesando nuevo_pedido:', err),
+        });
       }
       if (msg.tipo === 'actualizar_estado') actualizarEstadoUI(msg.id, msg.estado);
       if (msg.tipo === 'eliminar_pedido') {
@@ -2348,27 +2342,46 @@ function getPrecioItem(item) {
 // Pedidos recibidos en los primeros 3s de conexión son "replay" del servidor — no imprimir
 let panelListo = false;
 
-function agregarPedido(pedido, impresionEdge = false) {
-  if (document.getElementById(`comanda-${pedido.id}`)) return; // ya existe en DOM
+// ── A) PROYECCIÓN DE ESTADO ─────────────────────────────────────────────────
+// Idempotente y SIN efectos. Es lo que reconstruye el tablero tras un F5, en
+// una segunda pestaña o en cada reconexión. Nunca puede quedar detrás de un
+// dedupe: un pedido activo que no se proyecta es un pedido perdido.
+function upsertPedidoEnTablero(pedido) {
   pedidos[pedido.id] = pedido;
-  actualizarContador();
   sinPedidos.style.display = 'none';
-  const card = document.createElement('div');
-  card.className = 'comanda nuevo';
-  card.id = `comanda-${pedido.id}`;
-  card.innerHTML = renderComanda(pedido);
-  grid.prepend(card);
-  if (panelListo) {
-    sonarAlerta();
-    // El aviso sonoro se queda SIEMPRE: quien está en la barra necesita
-    // enterarse de que entró un pedido, imprima quien imprima.
-    //
-    // La impresión no. Si Edge se hizo cargo, el papel ya está saliendo por
-    // la térmica y abrir el diálogo del navegador sería pedirle permiso al
-    // cajero para imprimir por segunda vez lo mismo. El botón 🍽️ Comanda
-    // sigue ahí para reimprimir a mano si hace falta.
-    if (!impresionEdge) setTimeout(() => imprimirComanda(pedido.id), 800);
+  let card = document.getElementById(`comanda-${pedido.id}`);
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'comanda nuevo';
+    card.id = `comanda-${pedido.id}`;
+    card.innerHTML = renderComanda(pedido);
+    grid.prepend(card);
+  } else {
+    // Ya estaba: se refresca el contenido en vez de duplicar la tarjeta.
+    card.innerHTML = renderComanda(pedido);
   }
+  actualizarContador();
+  return card;
+}
+
+// ── B) EFECTOS TRANSITORIOS ─────────────────────────────────────────────────
+// El aviso sonoro se queda SIEMPRE: quien está en la barra necesita enterarse
+// de que entró un pedido, imprima quien imprima.
+//
+// La impresión no. Si Edge se hizo cargo, el papel ya está saliendo por la
+// térmica y abrir el diálogo del navegador sería pedirle permiso al cajero para
+// imprimir por segunda vez lo mismo. El botón 🍽️ Comanda sigue ahí para
+// reimprimir a mano si hace falta.
+function notificarPedidoNuevo(pedido, impresionEdge = false) {
+  sonarAlerta();
+  if (!impresionEdge) setTimeout(() => imprimirComanda(pedido.id), 800);
+}
+
+// Compatibilidad con los llamadores que ya existían: proyecta y avisa.
+function agregarPedido(pedido, impresionEdge = false) {
+  const existia = !!document.getElementById(`comanda-${pedido.id}`);
+  upsertPedidoEnTablero(pedido);
+  if (!existia && panelListo) notificarPedidoNuevo(pedido, impresionEdge);
 }
 
 // ─── Ticket final de cuenta (restaurante/mesa) ───────────────────────────────
@@ -2376,18 +2389,24 @@ function agregarPedido(pedido, impresionEdge = false) {
 // se reimprime con acción manual explícita -- jamás automática.
 let ultimaCuentaFinal = null;
 
-function recibirCuentaFinal(trabajo, impresionEdge = false) {
+// Estado: la última cuenta queda recuperable con el botón, siempre. Un replay
+// no puede hacerla desaparecer porque el localStorage diga "vista".
+function guardarCuentaFinal(trabajo) {
   ultimaCuentaFinal = trabajo;
   const btn = document.getElementById('btn-reimprimir-cuenta');
   if (btn) btn.style.display = '';
-  // Mismo guard de replay que las comandas: los trabajos reenviados por el
-  // servidor en los primeros segundos de conexión no se imprimen solos.
-  if (panelListo) {
-    sonarAlerta();
-    // Y el mismo criterio: si la impresora de Caja ya lo está sacando por
-    // Edge, el navegador no imprime. El botón de reimpresión no se toca.
-    if (!impresionEdge) setTimeout(() => abrirPopupImpresion(cuentaFinalHTML(trabajo)), 400);
-  }
+}
+
+// Efecto: sonido y auto-impresión. Si la impresora de Caja ya lo está sacando
+// por Edge, el navegador no imprime. El botón de reimpresión no se toca.
+function notificarCuentaFinal(trabajo, impresionEdge = false) {
+  sonarAlerta();
+  if (!impresionEdge) setTimeout(() => abrirPopupImpresion(cuentaFinalHTML(trabajo)), 400);
+}
+
+function recibirCuentaFinal(trabajo, impresionEdge = false) {
+  guardarCuentaFinal(trabajo);
+  if (panelListo) notificarCuentaFinal(trabajo, impresionEdge);
 }
 
 function reimprimirUltimaCuentaFinal() {
