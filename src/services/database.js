@@ -3765,10 +3765,17 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
     `, [folio, JSON.stringify(datos), programadoPara, datos?.negocioId || null]);
 
     if (!r) {
-      // Ya existia una reserva con ese folio: no se pisa.
+      // Ya existia una reserva con ese folio: no se pisa, pero SI se comprueba
+      // que su claim este bien puesto -- un retry tras un crash a mitad de
+      // camino tiene que converger, no devolver un exito vacio.
       const { rows: [ya] } = await pool.query(
         `SELECT programado_id FROM pedidos_programados WHERE folio = $1`, [folio]);
-      return { ok: true, nueva: false, programadoId: ya?.programado_id || null };
+      const { rows: [conv] } = await pool.query(
+        `SELECT xabor_convertir_a_reserva_programada($1, $2) AS resultado`,
+        [folio, datos?.negocioId || null]);
+      return { ok: conv.resultado === 'reservado', nueva: false,
+               reservado: conv.resultado === 'reservado', razon: conv.resultado,
+               programadoId: ya?.programado_id || null };
     }
 
     // La identidad se guarda TAMBIEN dentro de `datos`: es lo que el pedido
@@ -3778,15 +3785,28 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
           SET datos = datos || jsonb_build_object('programado_id', programado_id::text)
         WHERE folio = $1`, [folio]);
 
-    // Y se reclama el folio como RESERVA, para que nadie mas pueda tomarlo
-    // mientras espera su hora.
-    await pool.query(
-      `INSERT INTO folios_pedido_usados (folio, negocio_id, estado, programado_id, origen)
-       VALUES ($1,$2,'reserva_programado',$3,'programado')
-       ON CONFLICT (folio) DO NOTHING`,
-      [folio, datos?.negocioId || null, r.programado_id]);
+    // ── LA CONVERSION DEL CLAIM ────────────────────────────────────────────
+    //
+    // Un pedido programado NO nace como reserva: nace como pedido activo, asi
+    // que su folio YA esta reclamado como 'usado'. El INSERT optimista que
+    // habia aqui hacia ON CONFLICT DO NOTHING y devolvia exito -- dejando el
+    // claim en 'usado' y el programado inactivable para siempre.
+    //
+    // La conversion es atomica y vive en la base (migracion 062), asi que vale
+    // igual para el binario viejo, que no conoce esta funcion.
+    const { rows: [conv] } = await pool.query(
+      `SELECT xabor_convertir_a_reserva_programada($1, $2) AS resultado`,
+      [folio, datos?.negocioId || null]);
 
-    return { ok: true, nueva: true, programadoId: r.programado_id };
+    if (conv.resultado !== 'reservado') {
+      // No se miente: si el claim no quedo como reserva, esto NO es un exito.
+      console.error(
+        `[DB] guardarPedidoProgramado: el folio ${folio} no quedo reservado (${conv.resultado})`);
+      return { ok: false, nueva: true, reservado: false,
+               razon: conv.resultado, programadoId: r.programado_id };
+    }
+
+    return { ok: true, nueva: true, reservado: true, programadoId: r.programado_id };
   } catch (e) {
     console.error('[DB] Error guardarPedidoProgramado:', e.message);
     return { ok: false, nueva: false, programadoId: null };

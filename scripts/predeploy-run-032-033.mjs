@@ -58,6 +58,10 @@ const SCRIPTS = [
   // fuentes de folio que la 059 ya reconocia, no solo `pedidos`, y exige que la
   // activacion de un programado demuestre SU identidad, no solo su numero.
   '061-folios-claim',
+  // 062 cierra P0-15C: un pedido programado nace como pedido ACTIVO, asi que su
+  // folio ya esta reclamado como 'usado'. Sin la conversion atomica, el
+  // programado queda pendiente para siempre y nunca se activa.
+  '062-conversion-programada',
 ];
 
 for (const nombre of SCRIPTS) {
