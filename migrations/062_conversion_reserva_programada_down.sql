@@ -1,0 +1,75 @@
+-- ─── Reversa de la 062 — LEER ANTES DE USAR ─────────────────────────────────
+--
+-- ESTA REVERSA NO ES UN ROLLBACK POR SI SOLA. Igual que la 059, el archivo no
+-- hace nada destructivo por defecto.
+--
+-- QUE PROTEGE LA 062 (y por que dropear sus objetos no es "volver atras")
+--
+-- Antes de la 062, un pedido programado nacia como pedido activo normal, el
+-- trigger de la 061 le reclamaba el folio con origen 'pedido_activo', y el
+-- canal lo pasaba a `pedidos_programados` sin mover ese claim. Al llegar su
+-- hora, la barrera veia 'usado' -- no 'reserva_programado' -- y lo rechazaba
+-- para siempre (P0-15C). La 062 arregla esto con `xabor_activo_a_programado`
+-- (codigo NUEVO) y el trigger `trg_reserva_al_retirar_activo` (compatibilidad
+-- con el binario VIEJO, que solo sabe hacer INSERT + DELETE por separado).
+--
+-- Ambos son ADITIVOS: no cambian ninguna tabla, columna, ni el contrato de
+-- `pedidos_activos`/`pedidos_programados`. El binario VIEJO no invoca
+-- `xabor_activo_a_programado` directamente -- ni sabe que existe -- pero SI
+-- dispara el trigger AFTER DELETE en su `eliminarPedido()` de siempre, y ese
+-- trigger es justamente lo que le arregla el defecto sin que OLD tenga que
+-- cambiar una linea.
+--
+-- DROPEAR `trg_reserva_al_retirar_activo` (y su funcion) REABRE P0-15C: todo
+-- programado que se cree DESPUES del drop -- con binario viejo o nuevo --
+-- vuelve a quedar bloqueado para siempre en su activacion, porque nada mueve
+-- su claim de 'usado' a 'reserva_programado'. Eso es "programados rotos" tal
+-- cual el nombre lo dice, y por eso este archivo NO lo hace por defecto.
+--
+-- Los programados que la 062 YA reparo (su UPDATE de reconciliacion, que
+-- corrio una sola vez al aplicar la migracion) quedan a salvo pase lo que
+-- pase con este archivo: su claim ya vive en 'reserva_programado' dentro de
+-- `folios_pedido_usados`, y ESA fila la activa la barrera de la 061 sola --
+-- no necesita ninguna funcion de la 062 para eso. El drop de abajo no toca
+-- esa tabla ni esos datos en ningun caso.
+--
+-- ─── ROLLBACK CORRECTO (expand/contract) ────────────────────────────────────
+--
+-- PARA REVERTIR EL DEPLOY: se revierte SOLO EL CODIGO (database.js vuelve a
+-- su `guardarPedidoProgramado` anterior; whatsapp-meta.js/voice.js vuelven a
+-- llamar a `eliminarPedido` por separado) y se CONSERVAN las funciones y el
+-- trigger de la 062 en la base. Son inertes para el codigo viejo -- solo
+-- reaccionan al DELETE que OLD ya hacia -- y activamente lo protegen del
+-- mismo bug que corrigen para el codigo nuevo. Cero pasos de base, cero
+-- ventana donde un programado quede sin forma de activarse.
+--
+-- Ese es el rollback soportado y el unico que hace falta.
+--
+-- ─── SI DE VERDAD HAY QUE BORRAR LOS OBJETOS DE LA 062 ──────────────────────
+--
+-- Solo tiene sentido para rehacer la migracion en un entorno de pruebas, y
+-- solo si NINGUN programado pendiente depende ya de `trg_reserva_al_retirar_
+-- activo` para activarse en el futuro (es decir: no hay pedidos activos con
+-- `programado_para` esperando su conversion). El orden importa -- el trigger
+-- y su funcion primero, porque referencian a `xabor_convertir_claim_a_reserva`
+-- en tiempo de ejecucion:
+--
+--   1. comprobar que no hay pedidos activos con programado_para pendientes de
+--      convertir (o que el codigo NUEVO ya no corre, si el rollback es total);
+--   2. ejecutar el bloque de abajo, descomentado a mano;
+--   3. al volver a aplicar la 062, `CREATE OR REPLACE` reinstala todo y la
+--      reparacion de datos es idempotente (no toca lo que ya quedo movido).
+--
+-- Se deja COMENTADO para que nadie lo aplique por inercia desde un runner.
+--
+-- DROP TRIGGER IF EXISTS trg_reserva_al_retirar_activo ON pedidos_activos;
+-- DROP FUNCTION IF EXISTS xabor_reserva_al_retirar_activo();
+-- DROP FUNCTION IF EXISTS xabor_activo_a_programado(text, uuid, jsonb, timestamptz, text);
+-- DROP FUNCTION IF EXISTS xabor_convertir_claim_a_reserva(text, uuid, uuid);
+--
+-- NUNCA como parte de este down: ni la reparacion de datos de la 062 (mover
+-- de vuelta un claim ya reservado a 'usado' rompe una reserva que hoy es
+-- valida y activable) ni nada de la 061 (el ledger y la barrera no son de
+-- esta migracion).
+
+SELECT 'la 062 se revierte revirtiendo el CODIGO y conservando sus funciones/trigger; ver el comentario' AS aviso;

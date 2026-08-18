@@ -275,7 +275,7 @@ try {
     // siquiera por un programado -- es el caso B de la clasificacion, y la 061
     // lo deja fail closed a proposito. Para probar la activacion LEGITIMA hace
     // falta un folio limpio y, sobre todo, la IDENTIDAD de la reserva.
-    const F = `XAB-P${String(Date.now()).slice(-9)}`;
+    const F = `XAB-7${String(Date.now()).slice(-8)}`;
     const progId = randomUUID();
     await desechable.query(
       `INSERT INTO pedidos_programados
@@ -309,7 +309,7 @@ try {
   await t('7c. ...y una vez activado, ese folio deja de ser reutilizable', async () => {
     // La exencion es de un solo uso: en cuanto el programado se marca activado,
     // vuelve a regir la barrera.
-    const F = `XAB-Q${String(Date.now()).slice(-9)}`;
+    const F = `XAB-8${String(Date.now()).slice(-8)}`;
     const progId = randomUUID();
     await desechable.query(
       `INSERT INTO pedidos_programados
@@ -382,6 +382,75 @@ try {
       `SELECT last_value FROM folio_pedido_seq`);
     assert.strictEqual(String(antes.last_value), String(despues.last_value),
       'el allocator viejo movio la secuencia: no son independientes');
+  });
+
+  await t('10. el down de 062 NO dropea sus funciones/trigger por si solo', async () => {
+    // Mismo defecto que ya se cazo en la 059: un down que hace DROP a secas
+    // promete "volver atras" pero en realidad rompe algo que el codigo sigue
+    // necesitando. Aqui lo que se necesita es la conversion activo->programado
+    // (P0-15C/E): sin ella, todo programado NUEVO -- de OLD o de NEW -- queda
+    // bloqueado para siempre en su activacion.
+    const down = readFileSync(
+      join(RAIZ, 'migrations', '062_conversion_reserva_programada_down.sql'), 'utf8');
+    const activas = down.split(String.fromCharCode(10))
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('--'));
+    assert.ok(!activas.some(l => /DROP\s+(TRIGGER|FUNCTION)/i.test(l)),
+      'el down vuelve a dropear la conversion sin coordinar el codigo');
+
+    const hayFuncion = async (nombre) => (await desechable.query(
+      `SELECT COUNT(*)::int AS n FROM pg_proc WHERE proname = $1`, [nombre])).rows[0].n >= 1;
+    const hayTrigger062 = async () => (await desechable.query(
+      `SELECT COUNT(*)::int AS n FROM pg_trigger
+        WHERE tgname='trg_reserva_al_retirar_activo' AND NOT tgisinternal`)).rows[0].n === 1;
+
+    assert.ok(await hayFuncion('xabor_activo_a_programado'), 'fixture: la 062 no aplico');
+    await desechable.query(down);
+    assert.ok(await hayFuncion('xabor_activo_a_programado'),
+      'ejecutar el down se llevo xabor_activo_a_programado');
+    assert.ok(await hayFuncion('xabor_convertir_claim_a_reserva'),
+      'ejecutar el down se llevo xabor_convertir_claim_a_reserva');
+    assert.ok(await hayTrigger062(),
+      'ejecutar el down se llevo trg_reserva_al_retirar_activo: OLD ya no puede reparar sus programados');
+  });
+
+  await t('11. ROLLBACK 062: un programado creado DESPUES del down sigue pudiendo activarse', async () => {
+    // La prueba de fuego: correr el down (inocuo por el caso 10), y comprobar
+    // que el flujo productivo completo -- activo -> programado -> activacion,
+    // por el camino de OLD (INSERT + DELETE separados, sin conocer la 062) --
+    // sigue convergiendo. Si esto fallara, el down "seguro" no lo seria.
+    const F = `XAB-9${String(Date.now()).slice(-8)}`;
+    await desechable.query(
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+       VALUES ($1,'nuevo',$2::jsonb,$3)`,
+      [F, JSON.stringify({ id: F, negocioId: NEG }), NEG]);
+
+    // OLD: INSERT plano en pedidos_programados (programado_id sale del DEFAULT
+    // de la columna, migracion 061) seguido de un DELETE crudo del activo --
+    // exactamente `guardarPedidoProgramado` + `eliminarPedido` de origin/main.
+    const { rows: [prog] } = await desechable.query(
+      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id)
+       VALUES ($1,$2::jsonb, NOW() - interval '1 hour', $3)
+       RETURNING programado_id`,
+      [F, JSON.stringify({ id: F, negocioId: NEG }), NEG]);
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [F]);
+
+    // El trigger AFTER DELETE (que el caso 10 confirmo que sigue vivo) debio
+    // mover el claim a 'reserva_programado' con la identidad del programado.
+    const { rows: [claim] } = await desechable.query(
+      `SELECT estado, programado_id FROM folios_pedido_usados WHERE folio = $1`, [F]);
+    assert.strictEqual(claim?.estado, 'reserva_programado',
+      'tras el rollback del down, OLD ya no logra reservar su programado: P0-15C reabierto');
+    assert.strictEqual(claim.programado_id, prog.programado_id,
+      'el claim reservado no lleva la identidad del programado correcto');
+
+    // Y la activacion, dias despues, por el MISMO guardarPedidoActivo de OLD.
+    const r = await guardarComoOLD(F, { programado_id: prog.programado_id });
+    assert.strictEqual(r.insertado, true,
+      'el programado creado despues del down no pudo activarse: la garantia no sobrevivio al rollback');
+
+    await desechable.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [F]);
+    await desechable.query(`DELETE FROM pedidos_programados WHERE folio = $1`, [F]);
   });
 
 } catch (e) {

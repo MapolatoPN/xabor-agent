@@ -1042,12 +1042,21 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
       if (pedido) {
 
-      // Si es pedido programado, guardarlo aparte y NO enviarlo al panel todavía
+      // Si es pedido programado, convertirlo en RESERVA y NO enviarlo al panel
       if (pedido.programado_para) {
-        await guardarPedidoProgramado(pedido.id, pedido, pedido.programado_para);
-        // Quitar del panel activo — se activará automáticamente 1h antes
-        const { eliminarPedido } = await import('../orders/orderManager.js');
-        await eliminarPedido(pedido.id, pedido.negocioId);
+        // `guardarPedidoProgramado` hace TODA la transicion en una sola llamada
+        // atomica (migracion 062): asegura la reserva, mueve el claim y retira
+        // el activo. Ya NO se llama a `eliminarPedido` por separado -- eso era
+        // el segundo paso de una transicion que un crash podia dejar a medias.
+        const conv = await guardarPedidoProgramado(pedido.id, pedido, pedido.programado_para);
+        if (!conv.ok) {
+          // La reserva NO quedo asegurada: el pedido SIGUE activo. No se le
+          // confirma al cliente una programacion que no existe.
+          console.error(`[WA] Pedido ${pedido.id} no se pudo convertir a programado (${conv.razon}): sigue activo`);
+          await enviarMensaje(telefono,
+            'Tuvimos un problema programando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
+          return;
+        }
         console.log(`[WA] Pedido programado ${pedido.id} para ${pedido.programado_para}`);
         // Confirmación al cliente con folio y hora — operación crítica
         try {

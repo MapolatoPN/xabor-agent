@@ -3746,70 +3746,54 @@ export async function eliminarPedido(folio) {
 
 // ─── Pedidos programados ──────────────────────────────────────────────────────
 /**
- * Reserva un pedido programado.
+ * Convierte un pedido ACTIVO en una RESERVA programada. Es la ÚNICA autoridad
+ * para esa transición, y hace TODO -- asegurar `pedidos_programados`, mover el
+ * claim del ledger, retirar el activo -- en UNA sola llamada a la base
+ * (migracion 062, funcion `xabor_activo_a_programado`).
  *
- * El `programado_id` es la IDENTIDAD de la reserva y viaja en dos sitios: la
- * columna y el propio `datos` del pedido. Sin el, la activacion de manana solo
- * podria decir "traigo este folio" -- y eso no demuestra que sea ESTA reserva.
- * La barrera de la 061 lo exige para dejar entrar el pedido al tablero.
+ * POR QUÉ TIENE QUE SER UNA SOLA LLAMADA
  *
- * Devuelve el `programadoId` para que el llamador pueda conservarlo.
+ * Un pedido programado NO nace como reserva: nace como pedido activo, y su
+ * folio ya esta reclamado como 'usado' antes de que este codigo se ejecute.
+ * La version anterior hacia la conversion en varias sentencias separadas y
+ * dejaba el DELETE del activo A CARGO DEL CALLER: un crash entre esos pasos
+ * podia dejar un pedido activo Y un programado pendiente a la vez -- un
+ * estado durable hibrido que no es ni una cosa ni la otra.
+ *
+ * Con todo dentro de una funcion de Postgres, un crash de Node en cualquier
+ * punto -- antes de llamar, durante la espera de la respuesta, despues de
+ * recibirla -- deja la base en UNO de dos estados validos: la transaccion
+ * jamas confirmo (sigue siendo un pedido activo normal), o confirmo entera
+ * (reserva completa, activo retirado). Nunca algo intermedio.
+ *
+ * NO SE MIENTE: si `resultado` no es 'reservado', el pedido SIGUE activo (la
+ * funcion no lo retiro) y el caller NO puede sacarlo del tablero ni
+ * confirmarlo como programado al cliente.
  */
 export async function guardarPedidoProgramado(folio, datos, programadoPara) {
   try {
-    const { rows: [r] } = await pool.query(`
-      INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (folio) DO NOTHING
-      RETURNING programado_id
-    `, [folio, JSON.stringify(datos), programadoPara, datos?.negocioId || null]);
+    const negocioId = datos?.negocioId || null;
+    // Inyeccion de fallo, mismo candado que el resto del proyecto: inerte fuera
+    // de pruebas. Deja que el arnes demuestre que un crash a mitad de la
+    // transaccion no puede dejar un estado hibrido (P0-15E).
+    const fallaEn = process.env.NODE_ENV !== 'production'
+      ? (process.env.XABOR_PROGRAMADOS_FALLA_EN || null) : null;
+    const { rows: [r] } = await pool.query(
+      `SELECT resultado, programado_id FROM xabor_activo_a_programado($1,$2,$3,$4,$5)`,
+      [folio, negocioId, JSON.stringify(datos), programadoPara, fallaEn]);
 
-    if (!r) {
-      // Ya existia una reserva con ese folio: no se pisa, pero SI se comprueba
-      // que su claim este bien puesto -- un retry tras un crash a mitad de
-      // camino tiene que converger, no devolver un exito vacio.
-      const { rows: [ya] } = await pool.query(
-        `SELECT programado_id FROM pedidos_programados WHERE folio = $1`, [folio]);
-      const { rows: [conv] } = await pool.query(
-        `SELECT xabor_convertir_a_reserva_programada($1, $2) AS resultado`,
-        [folio, datos?.negocioId || null]);
-      return { ok: conv.resultado === 'reservado', nueva: false,
-               reservado: conv.resultado === 'reservado', razon: conv.resultado,
-               programadoId: ya?.programado_id || null };
-    }
-
-    // La identidad se guarda TAMBIEN dentro de `datos`: es lo que el pedido
-    // presentara al activarse, y `datos` es lo unico que viaja hasta el INSERT.
-    await pool.query(
-      `UPDATE pedidos_programados
-          SET datos = datos || jsonb_build_object('programado_id', programado_id::text)
-        WHERE folio = $1`, [folio]);
-
-    // ── LA CONVERSION DEL CLAIM ────────────────────────────────────────────
-    //
-    // Un pedido programado NO nace como reserva: nace como pedido activo, asi
-    // que su folio YA esta reclamado como 'usado'. El INSERT optimista que
-    // habia aqui hacia ON CONFLICT DO NOTHING y devolvia exito -- dejando el
-    // claim en 'usado' y el programado inactivable para siempre.
-    //
-    // La conversion es atomica y vive en la base (migracion 062), asi que vale
-    // igual para el binario viejo, que no conoce esta funcion.
-    const { rows: [conv] } = await pool.query(
-      `SELECT xabor_convertir_a_reserva_programada($1, $2) AS resultado`,
-      [folio, datos?.negocioId || null]);
-
-    if (conv.resultado !== 'reservado') {
-      // No se miente: si el claim no quedo como reserva, esto NO es un exito.
+    if (r.resultado !== 'reservado') {
       console.error(
-        `[DB] guardarPedidoProgramado: el folio ${folio} no quedo reservado (${conv.resultado})`);
-      return { ok: false, nueva: true, reservado: false,
-               razon: conv.resultado, programadoId: r.programado_id };
+        `[DB] guardarPedidoProgramado: el folio ${folio} no quedo reservado (${r.resultado}) -- ` +
+        `el pedido sigue activo, no se confirma como programado`);
+      return { ok: false, nueva: false, reservado: false,
+               razon: r.resultado, programadoId: r.programado_id || null };
     }
 
     return { ok: true, nueva: true, reservado: true, programadoId: r.programado_id };
   } catch (e) {
     console.error('[DB] Error guardarPedidoProgramado:', e.message);
-    return { ok: false, nueva: false, programadoId: null };
+    return { ok: false, nueva: false, reservado: false, razon: 'error', programadoId: null };
   }
 }
 

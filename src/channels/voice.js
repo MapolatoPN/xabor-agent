@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
-import { registrarPedido, emitirPedido, eliminarPedido } from '../orders/orderManager.js';
+import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { setPagoPendiente, guardarPedidoProgramado, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
 
 const router = Router();
@@ -203,10 +203,17 @@ export function setupVoiceWebSocket(wssVoice) {
             const pedido = await registrarPedido(resultado.orden, 'voz');
 
             if (resultado.orden.programado_para) {
-              // Pedido programado: guardar aparte, no emitir al panel todavía
-              await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
-              await eliminarPedido(pedido.id, pedido.negocioId);
-              console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+              // `guardarPedidoProgramado` hace TODA la transicion en una sola
+              // llamada atomica (migracion 062): asegura la reserva, mueve el
+              // claim y retira el activo. Ya NO se llama a `eliminarPedido`
+              // aparte -- eso dejaba una ventana donde un crash podia dejar el
+              // pedido activo Y programado a la vez.
+              const conv = await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
+              if (!conv.ok) {
+                console.error(`[Voz WS] Pedido ${pedido.id} no se pudo convertir a programado (${conv.razon}): sigue activo`);
+              } else {
+                console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
+              }
             } else {
               emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
               // No se vuelve a llamar guardarPedidoActivo aquí: registrarPedido()

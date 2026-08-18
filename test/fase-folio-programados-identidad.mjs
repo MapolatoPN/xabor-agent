@@ -29,7 +29,7 @@ import assert from 'assert';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
-const { pool } = await import('../src/services/database.js');
+const { pool, guardarPedidoProgramado } = await import('../src/services/database.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -262,6 +262,157 @@ try {
       'el scheduler ya no distingue el caso de folio ocupado por otro pedido');
     assert.ok(!/El retorno se ignora a propósito/.test(bloque),
       'volvio el comentario que justificaba ignorar el retorno');
+  });
+
+  // ═══ MUTACION 10 (P0-15D): la reparacion NO puede volverse ambigua ═════
+  await t('13. la reparacion de la 062 NO convierte un claim historico junto a un programado', async () => {
+    // Ejecuta el UPDATE de reparacion REAL, extraido del archivo de migracion
+    // (mismo patron que fase-backfill-058-folio-reciclado.mjs): si alguien
+    // recorta el filtro por origen, esta prueba lo nota.
+    const sql = readFileSync(join(__dirname, '..', 'migrations', '062_conversion_reserva_programada.sql'), 'utf8');
+    const i = sql.indexOf('-- ─── REPARACIÓN, con el filtro correcto');
+    const iUpdate = sql.indexOf('UPDATE folios_pedido_usados f', i);
+    const fin = sql.indexOf(';', iUpdate);
+    const reparacion = sql.slice(iUpdate, fin + 1);
+    assert.ok(reparacion.includes("f.origen = 'pedido_activo'"),
+      'la reparacion dejo de exigir origen=pedido_activo: se reintrodujo P0-15D');
+
+    const F = folioNuevo('89');
+    await pool.query(
+      `INSERT INTO folios_pedido_usados (folio, negocio_id, estado, origen)
+       VALUES ($1,$2,'usado','backfill_061')`, [F, NEG]);
+    const id = randomUUID();
+    await pool.query(
+      `INSERT INTO pedidos_programados (folio, datos, programado_para, negocio_id, activado, programado_id)
+       VALUES ($1,$2::jsonb, NOW() + interval '1 hour', $3, FALSE, $4)`,
+      [F, JSON.stringify({ id: F, programado_id: id }), NEG, id]);
+
+    await pool.query(reparacion);
+
+    const c = await reclamado(F);
+    assert.strictEqual(c.estado, 'usado',
+      'la reparacion convirtio un claim historico junto a un programado pendiente');
+  });
+
+  // ═══ MUTACION 11: el caller no puede ignorar ok:false ═══════════════════
+  await t('14. los callers de canal NO ignoran el resultado de guardarPedidoProgramado', async () => {
+    // Diente estructural: antes se llamaba a `eliminarPedido` por separado sin
+    // mirar el resultado. Ahora la transicion es una sola llamada atomica y el
+    // caller tiene que comprobar `conv.ok` / `r.ok` antes de confirmar al
+    // cliente. Si vuelve a ignorarse, un crash a mitad de camino podria dejar
+    // el pedido activo mientras se le confirma al cliente que quedo programado.
+    for (const archivo of ['whatsapp-meta.js', 'voice.js']) {
+      const ruta = join(__dirname, '..', 'src', 'channels', archivo);
+      const src = readFileSync(ruta, 'utf8');
+      const i = src.indexOf('guardarPedidoProgramado(pedido.id');
+      assert.ok(i > 0, `${archivo} ya no llama a guardarPedidoProgramado`);
+      const bloque = src.slice(i, i + 700);
+      assert.ok(!/eliminarPedido\(pedido\.id/.test(bloque),
+        `${archivo} vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica`);
+      assert.ok(/\.ok/.test(bloque),
+        `${archivo} no comprueba el resultado (.ok) antes de continuar`);
+    }
+  });
+
+  // ═══ MUTACION 12 (P0-15E): un crash a mitad de la transicion no deja hibrido ═══
+  await t('15. RECOVERY: fallo justo tras crear el programado -- el activo SIGUE activo', async () => {
+    const F = folioNuevo('88');
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id) VALUES ($1,'nuevo','{}'::jsonb,$2)`,
+      [F, NEG]);
+
+    const { rows: [r] } = await pool.query(
+      `SELECT resultado, programado_id FROM xabor_activo_a_programado($1,$2,$3,NOW()+interval '1h',$4)`,
+      [F, NEG, JSON.stringify({ id: F, negocioId: NEG }), 'tras_insert_programado'])
+      .catch(e => ({ rows: [{ resultado: 'excepcion', mensaje: e.message }] }));
+    assert.ok(r.resultado === 'excepcion' || /fallo inyectado/.test(r.mensaje || ''),
+      'el fallo inyectado no interrumpio la funcion: revisar el punto de inyeccion');
+
+    // LA GARANTIA: Postgres revirtio la transaccion ENTERA. Nada a medio camino.
+    const activo = await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [F]);
+    assert.strictEqual(activo.rowCount, 1,
+      'el activo desaparecio pese a que la transaccion nunca confirmo');
+    const prog = await pool.query(`SELECT 1 FROM pedidos_programados WHERE folio=$1`, [F]);
+    assert.strictEqual(prog.rowCount, 0,
+      'quedo un programado durable pese a que la transaccion se revirtio entera');
+    const led = await pool.query(`SELECT estado FROM folios_pedido_usados WHERE folio=$1`, [F]);
+    assert.strictEqual(led.rows[0]?.estado, 'usado',
+      'el claim se movio pese a que la transaccion se revirtio');
+
+    // Y un RETRY normal, sin el fallo, converge sin dejar rastro del intento.
+    const retry = await guardarPedidoProgramado(F, { id: F, negocioId: NEG }, new Date(Date.now() + 3600e3));
+    assert.strictEqual(retry.ok, true, 'el retry tras el crash no logro converger');
+  });
+
+  await t('16. RECOVERY: fallo justo despues de mover el claim -- sigue sin hibrido', async () => {
+    const F = folioNuevo('87');
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id) VALUES ($1,'nuevo','{}'::jsonb,$2)`,
+      [F, NEG]);
+
+    await pool.query(
+      `SELECT resultado FROM xabor_activo_a_programado($1,$2,$3,NOW()+interval '1h',$4)`,
+      [F, NEG, JSON.stringify({ id: F, negocioId: NEG }), 'tras_conversion_claim'])
+      .catch(() => {});
+
+    const activo = await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [F]);
+    assert.strictEqual(activo.rowCount, 1,
+      'el activo se retiro pese a que la transaccion se revirtio');
+    const led = await pool.query(`SELECT estado FROM folios_pedido_usados WHERE folio=$1`, [F]);
+    assert.strictEqual(led.rows[0]?.estado, 'usado',
+      'el claim quedo movido pese a que la transaccion se revirtio');
+
+    const retry = await guardarPedidoProgramado(F, { id: F, negocioId: NEG }, new Date(Date.now() + 3600e3));
+    assert.strictEqual(retry.ok, true, 'el retry tras el crash no logro converger');
+  });
+
+  // ═══ E2E: EL FLUJO PRODUCTIVO REAL, DE PUNTA A PUNTA ════════════════════
+  await t('17. E2E productivo: activo -> guardarPedidoProgramado -> activacion dias despues', async () => {
+    // A diferencia de los casos 1-12 (que fabrican la reserva directamente en
+    // folios_pedido_usados/pedidos_programados para aislar la barrera), este
+    // caso corre el camino ENTERO que usan whatsapp-meta.js y voice.js: un
+    // pedido activo real, reclamado por el mismo trigger que usa produccion
+    // (origen='pedido_activo'), convertido por la MISMA funcion JS que llaman
+    // los canales -- ni un INSERT directo a folios_pedido_usados.
+    const F = folioNuevo('86');
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+       VALUES ($1,'nuevo',$2::jsonb,$3)`,
+      [F, JSON.stringify({ id: F, negocioId: NEG }), NEG]);
+
+    // El trigger de la 061 debio reclamarlo en vivo, con la firma que la 062
+    // exige para poder convertirlo despues.
+    const antes = await reclamado(F);
+    assert.strictEqual(antes?.estado, 'usado', 'el INSERT no reclamo el folio');
+    assert.strictEqual(antes?.origen, 'pedido_activo',
+      'el claim no nacio con origen=pedido_activo: la conversion posterior fallaria');
+
+    const conv = await guardarPedidoProgramado(F, { id: F, negocioId: NEG }, new Date(Date.now() + 3600e3));
+    assert.strictEqual(conv.ok, true, `la conversion productiva fallo: ${conv.razon}`);
+    assert.ok(conv.programadoId, 'la conversion no devolvio identidad de la reserva');
+
+    // El activo se retiro, el programado quedo pendiente con esa identidad, y
+    // el claim paso a reserva_programado -- las tres cosas en la MISMA
+    // transaccion que ya prueban los casos 15/16 via inyeccion de fallos.
+    const activo = await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [F]);
+    assert.strictEqual(activo.rowCount, 0, 'el activo sigue en el tablero tras la conversion');
+    const { rows: [prog] } = await pool.query(
+      `SELECT programado_id, datos->>'programado_id' AS datos_id FROM pedidos_programados WHERE folio=$1`, [F]);
+    assert.strictEqual(prog.programado_id, conv.programadoId);
+    assert.strictEqual(prog.datos_id, conv.programadoId,
+      'la identidad no viajo dentro de datos: la activacion no podria presentarla');
+
+    const despues = await reclamado(F);
+    assert.strictEqual(despues.estado, 'reserva_programado', 'el claim no se movio a reserva');
+    assert.strictEqual(despues.programado_id, conv.programadoId);
+
+    // Dias despues: la activacion real, el MISMO guardarPedidoActivo de
+    // siempre, presentando la identidad que guardarPedidoProgramado genero.
+    const act = await guardarPedidoActivoComoProduccion(F, NEG, { programado_id: conv.programadoId });
+    assert.strictEqual(act.insertado, true,
+      'la activacion del flujo productivo real quedo bloqueada');
+    const final = await reclamado(F);
+    assert.strictEqual(final.estado, 'usado', 'la reserva no se consumio al activarse');
   });
 
 } catch (e) {
