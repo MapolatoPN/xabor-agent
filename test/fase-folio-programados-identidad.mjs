@@ -295,22 +295,59 @@ try {
   });
 
   // ═══ MUTACION 11: el caller no puede ignorar ok:false ═══════════════════
-  await t('14. los callers de canal NO ignoran el resultado de guardarPedidoProgramado', async () => {
-    // Diente estructural: antes se llamaba a `eliminarPedido` por separado sin
-    // mirar el resultado. Ahora la transicion es una sola llamada atomica y el
-    // caller tiene que comprobar `conv.ok` / `r.ok` antes de confirmar al
-    // cliente. Si vuelve a ignorarse, un crash a mitad de camino podria dejar
-    // el pedido activo mientras se le confirma al cliente que quedo programado.
-    for (const archivo of ['whatsapp-meta.js', 'voice.js']) {
-      const ruta = join(__dirname, '..', 'src', 'channels', archivo);
+  await t('14. los callers de canal NO ignoran el resultado de convertirPedidoAProgramado', async () => {
+    // Diente estructural REFORZADO (auditoria independiente: "hay .ok cerca"
+    // no es un contrato, un log de error tambien matchea esa regex sin haber
+    // detenido nada). Cada canal exige su propia forma de "salida efectiva":
+    //
+    //   WHATSAPP: un `return;` DENTRO del bloque `if (!conv.ok)`, antes de
+    //   llegar al log de exito -- se verifica que el return aparece ANTES de
+    //   la siguiente confirmacion de "Pedido programado", nunca despues.
+    //
+    //   VOZ: el fallo no puede salir por un `return` (hay codigo compartido
+    //   despues, como enviar el token final), asi que en su lugar tiene que
+    //   levantar una bandera (`programadoFallido`) que bloquee el bloque de
+    //   "enlace de pago" -- se verifica que ese bloque quedo gated por la
+    //   bandera con un `if/else if`, no un `if` independiente que se evalua
+    //   sin importar el resultado de la conversion.
+    {
+      const ruta = join(__dirname, '..', 'src', 'channels', 'whatsapp-meta.js');
       const src = readFileSync(ruta, 'utf8');
-      const i = src.indexOf('guardarPedidoProgramado(pedido.id');
-      assert.ok(i > 0, `${archivo} ya no llama a guardarPedidoProgramado`);
-      const bloque = src.slice(i, i + 700);
+      const i = src.indexOf('convertirPedidoAProgramado(pedido,');
+      assert.ok(i > 0, 'whatsapp-meta.js ya no llama a convertirPedidoAProgramado');
+      const iExito = src.indexOf('Pedido programado', i);
+      assert.ok(iExito > i, 'no se encontro el log de exito despues de la conversion');
+      const bloqueFallo = src.slice(i, iExito);
+      assert.ok(!/eliminarPedido\(pedido\.id/.test(bloqueFallo),
+        'whatsapp-meta.js vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica');
+      const iIfNoOk = bloqueFallo.indexOf('if (!conv.ok)');
+      assert.ok(iIfNoOk > -1, 'whatsapp-meta.js ya no comprueba !conv.ok');
+      assert.ok(/return;/.test(bloqueFallo.slice(iIfNoOk)),
+        'whatsapp-meta.js comprueba !conv.ok pero no hace return: seguiria hacia el camino de exito');
+    }
+    {
+      const ruta = join(__dirname, '..', 'src', 'channels', 'voice.js');
+      const src = readFileSync(ruta, 'utf8');
+      const i = src.indexOf('convertirPedidoAProgramado(pedido,');
+      assert.ok(i > 0, 'voice.js ya no llama a convertirPedidoAProgramado');
+      const iEnlace = src.indexOf("forma_pago === 'enlace de pago'", i);
+      assert.ok(iEnlace > i, 'no se encontro el bloque de enlace de pago despues de la conversion');
+      const bloque = src.slice(i, iEnlace + 40);
       assert.ok(!/eliminarPedido\(pedido\.id/.test(bloque),
-        `${archivo} vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica`);
-      assert.ok(/\.ok/.test(bloque),
-        `${archivo} no comprueba el resultado (.ok) antes de continuar`);
+        'voice.js vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica');
+      const iIfNoOk = bloque.indexOf('if (!conv.ok)');
+      assert.ok(iIfNoOk > -1, 'voice.js ya no comprueba !conv.ok');
+      assert.ok(/programadoFallido\s*=\s*true/.test(bloque.slice(iIfNoOk)),
+        'voice.js comprueba !conv.ok pero no marca ninguna bandera de fallo');
+      // La bandera tiene que GATEAR el bloque de enlace de pago -- un
+      // `if (programadoFallido) {...} else if (forma_pago === 'enlace...')`,
+      // no dos `if` independientes que se evaluarian los dos.
+      const iGate = bloque.indexOf('if (programadoFallido)');
+      assert.ok(iGate > -1, 'voice.js levanta la bandera pero nada la usa para bloquear el flujo de exito');
+      const entreGateYEnlace = bloque.slice(iGate, bloque.indexOf("forma_pago === 'enlace de pago'"));
+      assert.ok(/}\s*else\s+if\s*\(/.test(entreGateYEnlace),
+        'voice.js NO encadena el bloque de enlace de pago como else-if de programadoFallido: ' +
+        'ambos se evaluarian aunque la conversion haya fallado');
     }
   });
 

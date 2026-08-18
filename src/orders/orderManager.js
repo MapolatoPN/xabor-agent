@@ -13,7 +13,8 @@ import {
   reclamarEmisionPorPago,
   conEmisionExclusiva,
   saldarEmisionPorPago,
-  pedidosConEmisionPendiente
+  pedidosConEmisionPendiente,
+  guardarPedidoProgramado
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
@@ -658,4 +659,36 @@ export async function eliminarPedido(id, negocioId) {
   await eliminarPedidoDB(id);
   if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id });
   return true;
+}
+
+// ── P0-16: la conversión activo→programado es DURABLE (DB) Y en MEMORIA ────
+// `guardarPedidoProgramado` (062) ya hace la transición atómica en la base:
+// asegura la reserva, mueve el claim y retira `pedidos_activos` en una sola
+// transacción. Pero `pedido` había entrado al arreglo `pedidos` por
+// `registrarPedido()`, y desde que los canales dejaron de llamar
+// `eliminarPedido()` por separado (para no duplicar el DELETE ni reabrir la
+// ventana no atómica de P0-15E), nada volvía a sacarlo de ahí: el pedido
+// quedaba fuera de la base pero seguía viéndose en el panel/snapshot de
+// WebSocket, que se arma desde `obtenerPedidos()` (memoria), no desde la DB.
+//
+// Por eso la proyección en memoria se retira aquí, DESPUÉS de confirmar que
+// la DB reservó de verdad — nunca antes, y nunca si `conv.ok` es falso: si la
+// conversión no se aseguró, el pedido sigue siendo un pedido activo normal, y
+// debe seguir viéndose como tal en el panel.
+//
+// Único punto de entrada para ambos canales (WhatsApp y Voz): evita que cada
+// uno reimplemente su propia versión de "cuándo retirar de memoria".
+export async function convertirPedidoAProgramado(pedido, programadoPara) {
+  const conv = await guardarPedidoProgramado(pedido.id, pedido, programadoPara);
+  if (conv.ok) {
+    const idx = pedidos.findIndex(p => p.id === pedido.id && p.negocioId === pedido.negocioId);
+    if (idx !== -1) {
+      pedidos.splice(idx, 1);
+      // Corrige una carrera de reconexión/F5: si un cliente del panel llegó a
+      // ver el pedido en un snapshot antes de que esto corriera, este evento
+      // lo retira igual que un eliminarPedido() normal.
+      if (wsBroadcastNegocio) wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id: pedido.id });
+    }
+  }
+  return conv;
 }

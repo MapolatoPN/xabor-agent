@@ -4,8 +4,8 @@
 
 import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
-import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
-import { setPagoPendiente, guardarPedidoProgramado, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
+import { registrarPedido, emitirPedido, convertirPedidoAProgramado } from '../orders/orderManager.js';
+import { setPagoPendiente, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
 
 const router = Router();
 
@@ -201,16 +201,27 @@ export function setupVoiceWebSocket(wssVoice) {
             // terminar silenciosamente en el negocio equivocado.
             resultado.orden.negocioId = negocioId;
             const pedido = await registrarPedido(resultado.orden, 'voz');
+            let programadoFallido = false;
 
             if (resultado.orden.programado_para) {
-              // `guardarPedidoProgramado` hace TODA la transicion en una sola
-              // llamada atomica (migracion 062): asegura la reserva, mueve el
-              // claim y retira el activo. Ya NO se llama a `eliminarPedido`
-              // aparte -- eso dejaba una ventana donde un crash podia dejar el
-              // pedido activo Y programado a la vez.
-              const conv = await guardarPedidoProgramado(pedido.id, pedido, resultado.orden.programado_para);
+              // `convertirPedidoAProgramado` hace TODA la transicion DURABLE en
+              // una sola llamada atomica (migracion 062: asegura la reserva,
+              // mueve el claim y retira el activo) Y retira la proyeccion en
+              // memoria SOLO si la DB confirmo la reserva (P0-16).
+              const conv = await convertirPedidoAProgramado(pedido, resultado.orden.programado_para);
               if (!conv.ok) {
+                // P0-17: la conversion NO quedo asegurada. El pedido SIGUE
+                // activo (nada lo retiro de pedidos_activos ni de memoria) --
+                // no se puede tratar como si la reserva hubiera funcionado.
+                // Fail closed: nada de folio para pago, nada de "pago
+                // pendiente" sobre una reserva que no existe. La voz ya
+                // pudo haber dicho una frase de exito generada ANTES de este
+                // punto (streaming en paralelo) -- eso es una limitacion
+                // conocida del canal, ajena a esta transicion; lo que si esta
+                // en control de este bloque es no agravarlo tratando el
+                // pedido como programado para efectos de pago/folio.
                 console.error(`[Voz WS] Pedido ${pedido.id} no se pudo convertir a programado (${conv.razon}): sigue activo`);
+                programadoFallido = true;
               } else {
                 console.log(`[Voz WS] Pedido programado ${pedido.id} para ${resultado.orden.programado_para}`);
               }
@@ -225,7 +236,9 @@ export function setupVoiceWebSocket(wssVoice) {
               // nunca corrige negocio_id, solo datos/updated_at).
             }
 
-            if (resultado.orden.forma_pago === 'enlace de pago') {
+            if (programadoFallido) {
+              textoExtra = 'Tuvimos un problema programando tu pedido. Por favor intenta de nuevo en un momento.';
+            } else if (resultado.orden.forma_pago === 'enlace de pago') {
               const folioVoz = deletrearFolio(pedido.id);
               textoExtra = `Tu número de folio es ${folioVoz}. Repito: ${folioVoz}. Mándanos ese folio por WhatsApp al mismo número y te enviamos el enlace de pago. ¿Lo anotaste?`;
               folioInfo = { texto: `Tu folio es ${folioVoz}. ¿Lo tienes anotado?` };
