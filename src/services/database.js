@@ -3793,6 +3793,16 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
     return { ok: true, nueva: true, reservado: true, programadoId: r.programado_id };
   } catch (e) {
     console.error('[DB] Error guardarPedidoProgramado:', e.message);
+    // Prueba de muerte REAL del proceso (P0-15E), no solo del throw: con este
+    // candado extra (inerte fuera de pruebas, y solo si el fallo es el que se
+    // inyecto a proposito) el proceso termina de verdad en el mismo punto que
+    // ya prueba la funcion SQL -- el arnes verifica que Postgres revirtio la
+    // transaccion pese a que el cliente murio sin devolver ninguna respuesta.
+    if (process.env.NODE_ENV !== 'production'
+        && process.env.XABOR_PROGRAMADOS_MATAR_PROCESO === '1'
+        && /fallo inyectado/.test(e.message || '')) {
+      process.exit(137);
+    }
     return { ok: false, nueva: false, reservado: false, razon: 'error', programadoId: null };
   }
 }

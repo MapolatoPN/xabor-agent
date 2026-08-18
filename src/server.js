@@ -7404,6 +7404,25 @@ app.post('/test/confirmar-pago-tienda', requireAdminSeguro, async (req, res) => 
     res.status(500).json({ error: 'no se pudo confirmar' });
   }
 });
+// Dispara la MISMA funcion que usan los canales reales (whatsapp-meta.js,
+// voice.js) para convertir un pedido activo en reserva programada (P0-15E):
+// una llamada REAL a guardarPedidoProgramado, para que el arnes de muerte de
+// proceso mate al binario en el punto exacto que ya prueba xabor_activo_a_
+// programado, sin tener que simular la conversacion completa con el modelo.
+app.post('/test/pedido-programar', requireAdminSeguro, async (req, res) => {
+  const folio = String(req.body?.folio || '').trim();
+  const programadoPara = req.body?.programadoPara ? new Date(req.body.programadoPara) : null;
+  if (!folio || !programadoPara || Number.isNaN(programadoPara.getTime())) {
+    return res.status(400).json({ error: 'folio y programadoPara (ISO) requeridos' });
+  }
+  try {
+    const r = await guardarPedidoProgramado(folio, { id: folio, negocioId: req.negocioId }, programadoPara);
+    res.json(r);
+  } catch (e) {
+    console.error('[test/pedido-programar]', e.message);
+    res.status(500).json({ error: 'no se pudo programar' });
+  }
+});
 }
 
 app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
