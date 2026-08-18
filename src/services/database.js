@@ -4921,6 +4921,105 @@ export async function pedidosConEmisionPendiente(limite = 50) {
   return rows;
 }
 
+// ── P0-11: deuda durable de emisión OPERACIONAL ─────────────────────────────
+// Distinta de `emision_pendiente` (arriba): esa representa PAGO RECIBIDO
+// autorizando una transición concreta. Esta nace con CUALQUIER pedido que
+// debe llegar a cocina -- pagado en línea o no -- vía el trigger de la 063
+// sobre `pedidos_activos`. Esta capa solo reclama, ejecuta bajo lock y salda;
+// nunca crea la deuda (eso es del trigger, para proteger a OLD y NEW por
+// igual durante el cutover).
+//
+// Mismo patrón que `conEmisionExclusiva`, con dos diferencias deliberadas:
+//   · identidad completa (negocio, folio, pedido_creado_at) -- el folio se
+//     recicla, igual razón que `compras_reales` (058);
+//   · namespace de lock propio ('emision_operacional'), para no compartir
+//     semántica con 'emision_por_pago' ni con 'obligacion_pago';
+//   · RELEE el pedido activo bajo el lock antes de ejecutar: nunca confía en
+//     un JSON viejo de memoria. Si el pedido ya no está activo (cancelado,
+//     entregado, purgado) la deuda se cierra como 'cancelada' sin ejecutar
+//     nada -- no se resucita un pedido cancelado, y si ya hay evidencia
+//     durable de que sí se emitió (impresion_trabajos/compras_reales), esa
+//     evidencia no se toca ni se fingirá que nunca existió.
+export async function conEmisionOperacionalExclusiva(negocioId, folio, pedidoCreadoAt, fn) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { emitio: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const creadoAtIso = new Date(pedidoCreadoAt).toISOString();
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [lock] } = await cliente.query(
+      `SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2)) AS obtenido`,
+      ['emision_operacional', `${nid}:${folio}:${creadoAtIso}`]);
+    if (!lock?.obtenido) {
+      await cliente.query('ROLLBACK');
+      return { emitio: false, razon: 'otro_proceso_emitiendo' };
+    }
+
+    // Dentro del lock se vuelve a mirar la deuda: entre el reclamo y el lock,
+    // el ganador anterior pudo haberla saldado ya.
+    const { rows: [deuda] } = await cliente.query(
+      `SELECT 1 FROM pedido_emisiones
+        WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3 AND estado = 'pendiente'
+        FOR UPDATE`,
+      [nid, folio, pedidoCreadoAt]);
+    if (!deuda) {
+      await cliente.query('ROLLBACK');
+      return { emitio: false, razon: 'sin_deuda' };
+    }
+
+    // RELEER desde la base, nunca confiar en el JSON de memoria del caller.
+    const { rows: [activo] } = await cliente.query(
+      `SELECT * FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`, [nid, folio]);
+    if (!activo) {
+      await cliente.query(
+        `UPDATE pedido_emisiones SET estado = 'cancelada', updated_at = NOW()
+          WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3`,
+        [nid, folio, pedidoCreadoAt]);
+      await cliente.query('COMMIT');
+      return { emitio: false, razon: 'pedido_ya_no_activo' };
+    }
+    if (activo.estado === 'pendiente_pago') {
+      await cliente.query('ROLLBACK');
+      return { emitio: false, razon: 'pendiente_pago' };
+    }
+
+    await fn(activo);
+
+    // Se salda en la misma transacción que suelta el lock: no queda instante
+    // en el que otro proceso vea el lock libre y la deuda todavía escrita.
+    await cliente.query(
+      `UPDATE pedido_emisiones SET estado = 'saldada', saldada_at = NOW(), updated_at = NOW()
+        WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3`,
+      [nid, folio, pedidoCreadoAt]);
+    await cliente.query('COMMIT');
+    return { emitio: true };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    // Intento y error se registran DESPUES del rollback, en su propia
+    // sentencia: dentro de la transacción que se revierte se perderían junto
+    // con todo lo demás.
+    await pool.query(
+      `UPDATE pedido_emisiones SET intentos = intentos + 1, ultimo_error = $4, updated_at = NOW()
+        WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3`,
+      [nid, folio, pedidoCreadoAt, String(e.message || e).slice(0, 500)]).catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+// Barrido de reconciliación de EMISIÓN OPERACIONAL -- distinto del de pago
+// (arriba). Nombre deliberadamente distinto de `reconciliarEmisionesPendientes`
+// (orderManager.js, financiero) para no confundir los dos conceptos.
+export async function pedidosConEmisionOperacionalPendiente(limite = 50) {
+  const { rows } = await pool.query(
+    `SELECT negocio_id, folio, pedido_creado_at, intentos, ultimo_error
+       FROM pedido_emisiones
+      WHERE estado = 'pendiente'
+      ORDER BY updated_at ASC LIMIT $1`, [limite]);
+  return rows;
+}
+
 // Ejecuta `emitir` A LO SUMO UNA VEZ por (negocio, printJobId), aunque se
 // llame desde varios procesos a la vez y aunque el servidor se reinicie entre
 // intentos.

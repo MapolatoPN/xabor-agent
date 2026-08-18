@@ -289,8 +289,16 @@ try {
     // evento de panel y la oferta a repartidores no se pueden observar sin
     // sesion autenticada, asi que se afirma lo que los hace imposibles: que
     // ocurren DESPUES de la marca, y que la marca lanza en vez de seguir.
+    // P0-11: el orden real ahora vive en `_ejecutarEfectosOperacionales`
+    // (el nucleo idempotente que `emitirPedido` ejecuta bajo el claim de la
+    // deuda de emision) -- ya no dentro de `emitirPedido` mismo, que hoy solo
+    // reclama la deuda y delega. El invariante (la marca precede a TODOS los
+    // efectos, y el fallo se propaga) sigue siendo el mismo, solo cambio de
+    // funcion.
     const src = readFileSync(join(__dirname, '..', 'src', 'orders', 'orderManager.js'), 'utf8');
-    const cuerpo = src.slice(src.indexOf('export async function emitirPedido'));
+    const iNucleo = src.indexOf('async function _ejecutarEfectosOperacionales');
+    assert.ok(iNucleo > 0, 'orderManager.js ya no tiene _ejecutarEfectosOperacionales: revisar donde vive el nucleo de emitirPedido ahora');
+    const cuerpo = src.slice(iNucleo, src.indexOf('export async function emitirPedido'));
 
     const iMarca = cuerpo.indexOf('registrarCompraReal');
     const iEdge = cuerpo.indexOf('emitirComandaDePedidoPorEdge(pedido)');

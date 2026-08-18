@@ -21,7 +21,8 @@ import {
   cargarPedidosDesdeDB,
   confirmarPedidoPendientePago,
   reconciliarEmisionesPendientes,
-  convertirPedidoAProgramado
+  convertirPedidoAProgramado,
+  reconciliarEmisionesOperacionalesPendientes
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -30,7 +31,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes,
          verificarYAsentarClip, reconciliarCandidatosClip,
          expirarPagosVencidos } from './services/webhookPagos.js';
-import { setEntregaEdge, emitirComandaDePedidoPorEdge } from './printing/edgeComanda.js';
+import { setEntregaEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -7541,36 +7542,20 @@ async function activarPedidosProgramados() {
 
       agregarPedidoAMemoria(pedido); // ← sin esto, el panel pierde el pedido al recargar
 
-      // P0 Invariante 4 (mismo gate que emitirPedido): un pedido programado
-      // que nació pendiente de anticipo y llega a su hora SIN pago validado
-      // se activa en el panel pero NO emite comanda ni impresión -- la
-      // comanda saldrá cuando el webhook de pago lo confirme.
-      if (pedido.estado === 'pendiente_pago') {
-        console.warn(`[TXN] evento=comanda_bloqueada_pendiente_pago negocio=${pedido.negocioId} folio=${pedido.id} origen=scheduler`);
-        broadcastNegocio(pedido.negocioId, { tipo: 'pedido_pendiente_pago', pedido });
-        await marcarPedidoProgramadoActivado(row.folio);
-        continue;
-      }
-
-      // Mismo orden y misma autoridad que emitirPedido(): Edge primero, y el
-      // panel se entera de si ya se hizo cargo. Un pedido programado que se
-      // activa solo a las 8 de la mañana tiene que imprimirse igual que uno
-      // que entra en vivo -- y por el mismo sitio.
-      const edgePedidoProgramado = await emitirComandaDePedidoPorEdge(pedido);
-
-      // Aislado por negocio (mismo patrón que emitirPedido en
-      // orderManager.js). Ya no se usa broadcast() global para este evento.
-      broadcastNegocio(pedido.negocioId, conIdentidadDePedido(
-        { tipo: 'nuevo_pedido', pedido, impresionEdge: edgePedidoProgramado.seHizoCargo }, pedido));
-
-      // Impresión física por el camino anterior: decidida por completo en
-      // printRouter.js (legacy vs. autenticado), y solo si Edge no la tomó.
-      // Nunca lanza -- si la impresión queda omitida (sin configuración, sin
-      // sucursal resuelta, sin terminal conectada), el pedido igual se marca
-      // activado abajo: la activación representa que el pedido ya entró a
-      // operación, no que la impresora confirmó éxito. No se reintenta por
-      // esto en la siguiente corrida del job.
-      if (!edgePedidoProgramado.seHizoCargo) await emitirTrabajoImpresion(pedido);
+      // P0-11: mismo nucleo que cualquier otro pedido operacional -- NUNCA
+      // una segunda implementacion de Edge/panel/impresion aqui. La deuda ya
+      // la aseguro el trigger de la 063 en el guardarPedidoActivo() de
+      // arriba (el INSERT trae `programado_id`, asi que no es el insert
+      // temporal previo a la reserva); emitirPedido() reclama esa deuda,
+      // relee el pedido bajo el lock y ejecuta -- incluye el mismo gate de
+      // pendiente_pago que antes vivia duplicado aqui. Fire-and-forget con
+      // `.catch()`, igual que el resto de los llamadores de este archivo: un
+      // fallo en ESTE pedido no debe abortar el resto del lote.
+      emitirPedido(pedido).catch(e => console.error(`[Scheduler] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
+      // La activacion de la RESERVA es independiente del resultado de la
+      // emision operacional: el pedido ya es un activo normal cualquiera, y
+      // si la emision falla, la deuda durable (no `activado`) es lo que
+      // garantiza el reintento -- ver reconciliarEmisionesOperacionalesPendientes.
       await marcarPedidoProgramadoActivado(row.folio);
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
@@ -7973,6 +7958,20 @@ async function arrancar() {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));
   }, 60 * 1000);
+
+  // P0-11: deuda durable de emision OPERACIONAL (nunca depende de memoria).
+  // Recoge lo que un crash dejo a medias entre "el pedido existe" y "la
+  // comanda salio", para CUALQUIER pedido operacional -- pagado en linea o
+  // no. Al arrancar (arrancar ES el momento en que puede haber quedado una)
+  // y cada 45s despues: la exclusividad la da el advisory lock en DB, asi
+  // que varias instancias pueden correrlo a la vez sin duplicar efectos.
+  reconciliarEmisionesOperacionalesPendientes().catch(e =>
+    console.error('[Emision] Reconciliacion inicial de emision operacional fallo:', e.message));
+  setInterval(() => {
+    reconciliarEmisionesOperacionalesPendientes().catch(e =>
+      console.error('[Emision] Reconciliacion de emision operacional fallo:', e.message));
+  }, 45 * 1000);
+
   // Sincronizar horario de Rappi al arrancar y cada 5 minutos
   sincronizarRappi();
   setInterval(sincronizarRappi, 5 * 60 * 1000);

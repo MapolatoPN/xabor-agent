@@ -62,6 +62,11 @@ const SCRIPTS = [
   // folio ya esta reclamado como 'usado'. Sin la conversion atomica, el
   // programado queda pendiente para siempre y nunca se activa.
   '062-conversion-programada',
+  // 063 cierra P0-11: deuda durable de emision operacional. Sin ella, un
+  // pedido puede quedar aceptado en pedidos_activos sin ninguna obligacion
+  // durable que garantice que llegue a cocina si el proceso muere antes de
+  // terminar emitirPedido.
+  '063-emision-operacional',
 ];
 
 for (const nombre of SCRIPTS) {

@@ -14,7 +14,11 @@ import {
   conEmisionExclusiva,
   saldarEmisionPorPago,
   pedidosConEmisionPendiente,
-  guardarPedidoProgramado
+  guardarPedidoProgramado,
+  obtenerCreadoAtPedidoActivo,
+  registrarCompraReal,
+  conEmisionOperacionalExclusiva,
+  pedidosConEmisionOperacionalPendiente
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
@@ -300,30 +304,20 @@ export async function registrarPedido(orden, canal = 'test') {
 // esPedidoElegibleParaRedRepartidores desde orderManager.js.
 export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
-export async function emitirPedido(pedido) {
-  // ── P0 Invariante 4: la comanda está detrás del gate de pago ──
-  // Un pedido pendiente_pago NUNCA emite comanda, ni impresión, ni oferta
-  // a repartidores, aunque un bug del prompt o un caller equivocado llame
-  // aquí directo. El panel recibe un evento distinto para poder mostrarlo
-  // como pendiente sin tratarlo como comanda.
-  if (pedido.estado === 'pendiente_pago') {
-    eventoTxn('comanda_bloqueada_pendiente_pago', pedido.negocioId || '(sin negocio)', { folio: pedido.id });
-    if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim() && wsBroadcastNegocio) {
-      wsBroadcastNegocio(pedido.negocioId, { tipo: 'pedido_pendiente_pago', pedido });
-    }
-    return { seHizoCargo: false, bloqueadoPorPago: true };
-  }
-
-  // PRIMERO Edge, DESPUÉS el panel. El orden no es estético: el evento que
-  // recibe el panel tiene que decir la verdad sobre si el papel ya está en
-  // camino, y eso solo se sabe cuando el trabajo existe. Avisar antes
-  // obligaría al navegador a adivinar, que es exactamente lo que provocaba
-  // el diálogo de Chrome sobre una comanda que Edge iba a imprimir sola.
+// ── P0-11: núcleo idempotente de la emisión OPERACIONAL ─────────────────────
+// Compra real + Edge + panel + impresión legacy + notificación a
+// repartidores. NO decide si debe correr (eso es de la deuda + el claim,
+// ver `conEmisionOperacionalExclusiva`) ni marca nada como saldado -- solo
+// ejecuta, y cada efecto trae su propia idempotencia (UNIQUE de
+// compras_reales, eventId determinístico del panel, ledger de
+// impresion_trabajos). ÚNICO lugar donde vive esta lógica: ni el scheduler
+// de programados (server.js) ni el reconciliador la reimplementan, la
+// llaman.
+async function _ejecutarEfectosOperacionales(pedido, creadoAt) {
   // COMPRA REAL para efectivo, terminal y pago al recibir. Aqui el negocio ya
   // se comprometio: la comanda sale a cocina. El dinero fisico se cobra despues
   // y no hay ningun webhook que esperar -- esperarlo seria esperar algo que
-  // nunca llega. Los pedidos que aun aguardan pago no pasan de aqui: la rama
-  // `pendiente_pago` de arriba ya devolvio.
+  // nunca llega.
   // La marca es CRITICA y va ANTES del primer efecto externo.
   //
   // Antes era `.catch(log)` y el flujo continuaba: un fallo de base dejaba el
@@ -332,60 +326,42 @@ export async function emitirPedido(pedido) {
   // compra que ya habia gastado. Un efecto externo irreversible respaldado por
   // un registro que no existe.
   //
-  // Si no se puede AFIRMAR durablemente la compra, no sale nada: ni Edge, ni
-  // `nuevo_pedido` al panel, ni impresion, ni oferta a repartidores. El pedido
-  // ya esta persistido en `pedidos_activos`, asi que el retry lo recupera
-  // entero: registra la compra, emite UNA comanda, manda UN evento.
-  //
   // Idempotente por el UNIQUE (negocio, folio, creado_at): reemitir tras un
   // crash no crea una segunda compra.
-  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
-    const { registrarCompraReal, obtenerCreadoAtPedidoActivo } = await import('../services/database.js');
-    // El `created_at` se lee de la fila durable porque EL FOLIO SE RECICLA:
-    // `obtenerMaxFolioNum()` solo mira `pedidos_activos`, asi que tras una purga
-    // el contador retrocede y el mismo folio vuelve a salir para otro cliente.
-    const creadoAt = await obtenerCreadoAtPedidoActivo(pedido.negocioId, pedido.id);
-    if (!creadoAt) {
-      throw new Error(`COMPRA_NO_DURABLE: no se pudo determinar la identidad del pedido ${pedido.id} (su fila ya no esta en pedidos_activos) — no se emite comanda ni ningun efecto externo`);
-    }
-    const marca = await registrarCompraReal(null, {
-      negocioId: pedido.negocioId,
-      folio: pedido.id,
-      telefono: pedido.cliente?.telefono || null,
-      origen: 'operacion',
-      pedidoCreadoAt: creadoAt,
-    });
-    if (!marca.ok) {
-      throw new Error(`COMPRA_NO_DURABLE: la compra real de ${pedido.id} no quedo registrada (${marca.razon}) — no se emite comanda ni ningun efecto externo`);
-    }
-    // Punto de crash DESPUES del COMMIT: el retry debe reemitir la comanda sin
-    // duplicar la compra.
-    if (process.env.NODE_ENV !== 'production'
-        && process.env.XABOR_PEDIDOS_FALLA_EN === 'despues_compra_real') {
-      const e = new Error("Fallo inyectado en 'despues_compra_real'");
-      e.inyectado = true;
-      throw e;
-    }
+  const marca = await registrarCompraReal(null, {
+    negocioId: pedido.negocioId,
+    folio: pedido.id,
+    telefono: pedido.cliente?.telefono || null,
+    origen: 'operacion',
+    pedidoCreadoAt: creadoAt,
+  });
+  if (!marca.ok) {
+    throw new Error(`COMPRA_NO_DURABLE: la compra real de ${pedido.id} no quedo registrada (${marca.razon}) — no se emite comanda ni ningun efecto externo`);
+  }
+  // Punto de crash DESPUES del COMMIT: el retry debe reemitir la comanda sin
+  // duplicar la compra.
+  if (process.env.NODE_ENV !== 'production'
+      && process.env.XABOR_PEDIDOS_FALLA_EN === 'despues_compra_real') {
+    const e = new Error("Fallo inyectado en 'despues_compra_real'");
+    e.inyectado = true;
+    throw e;
   }
 
+  // PRIMERO Edge, DESPUÉS el panel. El orden no es estético: el evento que
+  // recibe el panel tiene que decir la verdad sobre si el papel ya está en
+  // camino, y eso solo se sabe cuando el trabajo existe. Avisar antes
+  // obligaría al navegador a adivinar, que es exactamente lo que provocaba
+  // el diálogo de Chrome sobre una comanda que Edge iba a imprimir sola.
   const edge = await emitirComandaDePedidoPorEdge(pedido);
 
-  if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim()) {
-    if (wsBroadcastNegocio) {
-      // Con identidad deterministica: el backend no puede prometer que este
-      // evento salga una sola vez -- morir entre el envio y la marca durable
-      // obliga al retry a reemitir --, pero si puede prometer que el mismo
-      // pedido llegue siempre con la MISMA clave, para que el panel haga un
-      // solo efecto logico.
-      wsBroadcastNegocio(pedido.negocioId, conIdentidadDePedido(
-        { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo }, pedido));
-    }
-  } else {
-    // Fail closed: nunca se emite al panel sin negocioId ni se usa Nonna
-    // Maye como relleno aquí — esto no debería pasar hoy (Rappi siempre lo
-    // trae, WhatsApp/Voz/presencial usan el respaldo temporal), así que si
-    // ocurre es una señal real de que algo quedó sin resolver.
-    console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite al panel (fail closed)`);
+  if (wsBroadcastNegocio) {
+    // Con identidad deterministica: el backend no puede prometer que este
+    // evento salga una sola vez -- morir entre el envio y la marca durable
+    // obliga al retry a reemitir --, pero si puede prometer que el mismo
+    // pedido llegue siempre con la MISMA clave, para que el panel haga un
+    // solo efecto logico.
+    wsBroadcastNegocio(pedido.negocioId, conIdentidadDePedido(
+      { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo }, pedido));
   }
 
   // Impresión física por el camino anterior (print-agent legacy o
@@ -403,6 +379,11 @@ export async function emitirPedido(pedido) {
   }
 
   // Notificar a repartidores -- única fuente de verdad: esPedidoElegibleParaRedRepartidores.
+  // Best-effort, deliberadamente FUERA del retry infinito de la deuda: la
+  // idempotencia externa (WhatsApp a repartidores) es un problema aparte, no
+  // cubierto por esta deuda -- reintentarla desde el reconciliador podria
+  // reenviar la misma oferta varias veces. Se dispara una sola vez, aqui,
+  // en la corrida foreground; si falla, no bloquea ni reintenta la emision.
   if (esPedidoElegibleParaRedRepartidores(pedido)) {
     // Fase C: el servicio ya existe como "buscando" desde este momento
     // (independiente de si la notificación por WhatsApp más abajo tiene
@@ -418,6 +399,74 @@ export async function emitirPedido(pedido) {
       notificarRepartidoresPorWA(pedido).catch(() => {});
     }).catch(() => {});
   }
+}
+
+export async function emitirPedido(pedido) {
+  // ── P0 Invariante 4: la comanda está detrás del gate de pago ──
+  // Un pedido pendiente_pago NUNCA emite comanda, ni impresión, ni oferta
+  // a repartidores, aunque un bug del prompt o un caller equivocado llame
+  // aquí directo. El panel recibe un evento distinto para poder mostrarlo
+  // como pendiente sin tratarlo como comanda.
+  if (pedido.estado === 'pendiente_pago') {
+    eventoTxn('comanda_bloqueada_pendiente_pago', pedido.negocioId || '(sin negocio)', { folio: pedido.id });
+    if (typeof pedido.negocioId === 'string' && pedido.negocioId.trim() && wsBroadcastNegocio) {
+      wsBroadcastNegocio(pedido.negocioId, { tipo: 'pedido_pendiente_pago', pedido });
+    }
+    return { seHizoCargo: false, bloqueadoPorPago: true };
+  }
+
+  if (typeof pedido.negocioId !== 'string' || !pedido.negocioId.trim()) {
+    // Fail closed: sin negocioId no hay identidad que reclamar (ni panel al
+    // que avisar). No debería pasar hoy (Rappi siempre lo trae,
+    // WhatsApp/Voz/presencial lo fijan antes de llamar aquí), pero si
+    // ocurre es señal real de que algo quedó sin resolver.
+    console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite ningun efecto (fail closed)`);
+    return { seHizoCargo: false, razon: 'sin_negocio' };
+  }
+
+  // El `created_at` se lee de la fila durable porque EL FOLIO SE RECICLA:
+  // `obtenerMaxFolioNum()` solo mira `pedidos_activos`, asi que tras una purga
+  // el contador retrocede y el mismo folio vuelve a salir para otro cliente.
+  // Es tambien la identidad exacta de la DEUDA de emision (P0-11, 063).
+  const creadoAt = await obtenerCreadoAtPedidoActivo(pedido.negocioId, pedido.id);
+  if (!creadoAt) {
+    throw new Error(`COMPRA_NO_DURABLE: no se pudo determinar la identidad del pedido ${pedido.id} (su fila ya no esta en pedidos_activos) — no se emite comanda ni ningun efecto externo`);
+  }
+
+  // P0-11: reclamar la deuda (creada por el trigger de la 063 al INSERT/
+  // UPDATE de pedidos_activos -- nunca aqui) bajo advisory lock, releer el
+  // pedido desde la base dentro del lock (nunca el `pedido` que llego como
+  // parametro, que puede ser JSON viejo de memoria) y ejecutar el nucleo
+  // UNA sola vez. Si otro proceso ya esta emitiendo, o ya lo hizo, o el
+  // pedido ya no esta activo, no se ejecuta nada.
+  const r = await conEmisionOperacionalExclusiva(pedido.negocioId, pedido.id, creadoAt, async (activo) => {
+    const fresco = { ...activo.datos, id: activo.folio, negocioId: activo.negocio_id, estado: activo.estado };
+    await _ejecutarEfectosOperacionales(fresco, creadoAt);
+  });
+
+  return { seHizoCargo: r.emitio === true, razon: r.razon };
+}
+
+// Barrido de reconciliación de EMISIÓN OPERACIONAL (P0-11): recoge lo que un
+// crash dejó a medias cuando nadie reintenta desde fuera. Nombre distinto de
+// `reconciliarEmisionesPendientes` (arriba, financiero) para no confundir
+// los dos conceptos -- esta no depende de pago, esa no depende de cocina.
+export async function reconciliarEmisionesOperacionalesPendientes(limite = 50) {
+  const filas = await pedidosConEmisionOperacionalPendiente(limite).catch(() => []);
+  let recuperados = 0;
+  for (const f of filas) {
+    try {
+      const r = await conEmisionOperacionalExclusiva(f.negocio_id, f.folio, f.pedido_creado_at, async (activo) => {
+        const fresco = { ...activo.datos, id: activo.folio, negocioId: activo.negocio_id, estado: activo.estado };
+        await _ejecutarEfectosOperacionales(fresco, f.pedido_creado_at);
+      });
+      if (r.emitio) recuperados++;
+    } catch (e) {
+      console.error(`[Emision] No se pudo recuperar la emision operacional de ${f.folio}: ${e.message}`);
+    }
+  }
+  if (recuperados) console.log(`[Emision] Emisiones operacionales recuperadas tras crash: ${recuperados}`);
+  return recuperados;
 }
 
 // Lógica de persistencia compartida entre actualizarEstadoPedido (seguro,

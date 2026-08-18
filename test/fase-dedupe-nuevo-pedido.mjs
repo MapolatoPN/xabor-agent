@@ -459,15 +459,38 @@ try {
     const folio = r.body?.pedido?.id;
     assert.ok(folio);
 
+    // P0-11: la emision (compra real + Edge + broadcast en vivo) ahora vive
+    // detras de un claim con advisory lock -- mas ida y vuelta a la base que
+    // el INSERT suelto de antes, asi que tarda mas en completarse. Sin
+    // esperar a que la deuda quede 'saldada', el broadcast EN VIVO (sin
+    // replay) puede caer dentro de alguna de las 5 ventanas de reconexion de
+    // abajo -- y ESE evento si debe sonar (es genuinamente nuevo para un
+    // panel que estuviera conectado), lo que este caso no esta probando.
+    // Esperar a que la emision termine reproduce la premisa real del caso:
+    // el panel se conecta DESPUES de que el pedido ya salio.
+    for (let i = 0; i < 30; i++) {
+      const { rows: [d] } = await pool.query(
+        `SELECT estado FROM pedido_emisiones WHERE folio=$1 AND negocio_id=$2`, [folio, NEG]);
+      if (d?.estado === 'saldada') break;
+      await esperar(200);
+    }
+
     try {
       const cargado = cargarDedupeDelPanel();
       const panel = panelSimulado(NEG, cargado);
       let vistos = 0;
       // Cinco reconexiones: el servidor vuelca todo lo activo en cada una.
+      // Espera activa (no un sleep fijo) al mensaje esperado: un tiempo de
+      // ventana constante es inherentemente fragil bajo contencion --
+      // suficiente casi siempre, insuficiente a veces, sin relacion con
+      // ningun cambio real de comportamiento.
       for (let i = 0; i < 5; i++) {
         const ws = await abrirPanelWS(COOKIE_A);
         const rec = escuchar(ws);
-        await esperar(600);
+        for (let j = 0; j < 40; j++) {
+          if (rec.some(m => m.tipo === 'nuevo_pedido' && m.pedido?.id === folio)) break;
+          await esperar(150);
+        }
         ws.close();
         const suyos = rec.filter(m => m.tipo === 'nuevo_pedido' && m.pedido?.id === folio);
         vistos += suyos.length;

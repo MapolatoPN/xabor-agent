@@ -1,0 +1,43 @@
+-- ─── Reversa de la 063 — LEER ANTES DE USAR ─────────────────────────────────
+--
+-- ESTA REVERSA NO ES UN ROLLBACK POR SI SOLA. Mismo patron que 059 y 062: no
+-- hace nada destructivo por defecto.
+--
+-- QUE PROTEGE LA 063
+--
+-- El trigger `trg_asegurar_emision_operacional` es lo unico que garantiza que
+-- CUALQUIER pedido operacional -- de OLD o de NEW -- nazca con una deuda
+-- durable de emision. Dropearlo reabre exactamente el defecto que esta
+-- migracion corrige: un pedido puede quedar aceptado en `pedidos_activos` sin
+-- ninguna obligacion durable que lo lleve a cocina si el proceso muere antes
+-- de terminar `emitirPedido`.
+--
+-- El trigger es ADITIVO: no cambia ninguna columna ni contrato de
+-- `pedidos_activos`. El binario VIEJO no sabe que existe y no necesita
+-- saberlo -- solo se beneficia de el.
+--
+-- ─── ROLLBACK CORRECTO (expand/contract) ────────────────────────────────────
+--
+-- PARA REVERTIR EL DEPLOY: se revierte SOLO EL CODIGO (el refactor de
+-- `emitirPedido`, el reconciliador nuevo, el job periodico) y se CONSERVA el
+-- trigger y la tabla. El codigo viejo (antes de este refactor) segia
+-- llamando a `emitirPedido` igual que siempre -- fire and forget -- y el
+-- trigger sigue asegurando la deuda por su cuenta aunque nadie la reclame
+-- todavia. Cero pasos de base, cero ventana de fallo.
+--
+-- Ese es el rollback soportado y el unico que hace falta.
+--
+-- ─── SI DE VERDAD HAY QUE BORRAR LOS OBJETOS DE LA 063 ──────────────────────
+--
+-- Solo tiene sentido para rehacer la migracion en un entorno de pruebas, y
+-- solo si NINGUN pedido operacional nuevo depende ya del trigger para
+-- asegurar su deuda (es decir: el codigo nuevo con el reconciliador ya no
+-- corre, o el servicio esta detenido).
+--
+-- DROP TRIGGER IF EXISTS trg_asegurar_emision_operacional ON pedidos_activos;
+-- DROP FUNCTION IF EXISTS xabor_asegurar_emision_operacional();
+-- DROP TABLE IF EXISTS pedido_emisiones;
+--
+-- Se deja COMENTADO para que nadie lo aplique por inercia desde un runner.
+
+SELECT 'la 063 se revierte revirtiendo el CODIGO y conservando tabla/trigger; ver el comentario' AS aviso;
