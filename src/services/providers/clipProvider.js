@@ -3,10 +3,10 @@
  * de pago. Envuelve el clip-api.js ya existente (Incidente P0: resuelto
  * por negocio, nunca una cuenta global) sin duplicar su lógica.
  */
-import { crearLinkDePago, consultarEstadoPago, ClipNoConfiguradoError } from '../clip-api.js';
+import { crearLinkDePago, consultarEstadoPago, ClipNoConfiguradoError, ExpiracionInvalidaError } from '../clip-api.js';
 
-export async function createPaymentLink({ negocioId, pedidoId, total, descripcion, cliente, referencia }) {
-  const r = await crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente, referenciaExterna: referencia });
+export async function createPaymentLink({ negocioId, pedidoId, total, descripcion, cliente, referencia, expiresAt = null }) {
+  const r = await crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente, referenciaExterna: referencia, expiresAt });
   // Causa raíz del incidente "el bot no envió el enlace": aquí se devolvía
   // r.status CRUDO de Clip ('CHECKOUT'), que pagosService escribía tal
   // cual en pagos.estado y violaba su CHECK -- el enlace se creaba en
@@ -14,7 +14,37 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
   // Un link recién creado es, por definición del vocabulario interno,
   // 'pendiente'; el estado del proveedor se reconcilia después por
   // getPaymentStatus/webhook, nunca guardándolo crudo aquí.
-  return { referenciaExterna: r.linkId, url: r.url, estado: 'pendiente' };
+
+  // Expiración (CLIP expires_at): comparar lo solicitado contra lo que el
+  // proveedor DEVOLVIÓ como efectivo (`expired_at`, documentado en la
+  // respuesta de creación). Si divergen de forma significativa (>60s -- Clip
+  // trunca a segundos, jamás a minutos), NO se ignora en silencio: queda en
+  // metadata sanitizada para que Xabor conozca la frontera EFECTIVA del
+  // enlace. La política de autorización no cambia aquí: xabor_espera_hasta ya
+  // quedó durable ANTES del POST y NUNCA se amplía por lo que el proveedor
+  // conteste -- Xabor sigue siendo la autorización de cocina.
+  const solicitadaMs = r.expiracionSolicitada ? Date.parse(r.expiracionSolicitada) : null;
+  const proveedorMs = r.expiracionProveedor ? Date.parse(r.expiracionProveedor) : null;
+  const divergencia = (solicitadaMs != null && proveedorMs != null)
+    ? Math.abs(proveedorMs - solicitadaMs) : null;
+  const expiracionMeta = {};
+  if (r.expiracionSolicitada) expiracionMeta.requested_expires_at = r.expiracionSolicitada;
+  if (r.expiracionProveedor) expiracionMeta.provider_expires_at = r.expiracionProveedor;
+  if (r.expiracionAjustadaPorLimite) expiracionMeta.expiracion_ajustada_por_limite_cdmx = true;
+  if (r.expiracionOmitida) expiracionMeta.expiracion_omitida = r.expiracionOmitida;
+  if (divergencia != null && divergencia > 60 * 1000) {
+    expiracionMeta.expiracion_divergente = true;
+    expiracionMeta.expiracion_divergencia_segundos = Math.round(divergencia / 1000);
+    console.warn(`[Clip] El proveedor devolvió una expiración distinta a la solicitada para ${pedidoId}: pedida ${r.expiracionSolicitada}, efectiva ${r.expiracionProveedor} -- la frontera local de Xabor NO se mueve`);
+  }
+
+  return {
+    referenciaExterna: r.linkId, url: r.url, estado: 'pendiente',
+    // La expiración EFECTIVA declarada por el proveedor (para pagos.expires_at)
+    // y el rastro sanitizado (sin secretos) para metadata_sanitizada.
+    expiresAtProveedor: r.expiracionProveedor || null,
+    expiracionMeta: Object.keys(expiracionMeta).length ? expiracionMeta : null,
+  };
 }
 
 /**
@@ -132,7 +162,12 @@ export function getCapabilities() {
     // La reconsulta si devuelve expired_at, asi que la expiracion del checkout
     // es conocida DESPUES de consultarlo.
     expiracionConocida: true,
+    // CLIP expires_at: la creacion acepta una expiracion explicita
+    // (documentada: "YYYY-MM-DDTHH-MM-SSZ", > creacion + 1 min, <= fin del
+    // dia CDMX). pagosService la deriva de xabor_espera_hasta -- calculada
+    // UNA vez y persistida ANTES del POST, nunca un segundo reloj.
+    expiracionEnCreacion: true,
   };
 }
 
-export { ClipNoConfiguradoError };
+export { ClipNoConfiguradoError, ExpiracionInvalidaError };

@@ -20,7 +20,7 @@ import {
   actualizarEstadoPagoPorId, pagosReconciliablesDeProveedor,
   marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
   consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
-  pagosConEsperaVencida, vencerEsperaDePago,
+  pagosConEsperaVencida, vencerEsperaDePago, anotarMetadataPago,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -307,6 +307,59 @@ export async function reconciliarCandidatosClip(limite = 25) {
     }
   }
   return resueltos;
+}
+
+/**
+ * CLIP expires_at: expiracion declarada POR EL PROVEEDOR (webhook EXPIRED o
+ * reconsulta que devuelve CHECKOUT_EXPIRED), verificada y aplicada por la
+ * MISMA transicion comun que el vencimiento local -- vencerEsperaDePago --
+ * nunca una segunda maquina de estados.
+ *
+ * Reglas:
+ *   · El webhook de Clip NO viene firmado: el aviso jamas decide nada. Aqui
+ *     se RECONSULTA el checkout con las credenciales del negocio y solo si el
+ *     estado REAL es CHECKOUT_EXPIRED (y la referencia interna cuadra) se
+ *     procede. Un EXPIRED falso sobre un checkout vivo no toca nada.
+ *   · Si la reconsulta dice PAGADO, no se vence nada: se devuelve la señal
+ *     para que el camino de settlement lo recoja -- EXPIRED jamas se mapea a
+ *     pagado ni al reves.
+ *   · vencerEsperaDePago ya es idempotente y money-aware (si el dinero llego
+ *     primero, ve la fila pagada y no la toca; un segundo aviso devuelve
+ *     `ya_no_vencible`). El proveedor venciendo ANTES que la frontera local
+ *     es legitimo ("igual o mas estricta"); lo contrario -- ampliar la
+ *     ventana local porque el proveedor durara mas -- no existe aqui ni en
+ *     ningun otro lado.
+ */
+export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
+  if (!pago || !checkoutId) return { ok: false, razon: 'sin_pago_o_checkout' };
+  const negocioId = pago.negocio_id;
+  const { getPaymentStatus } = await import('./providers/clipProvider.js');
+  const real = await getPaymentStatus(checkoutId, negocioId);
+  if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
+  if (real.referenciaInterna !== pago.referencia_interna) {
+    await marcarAnomaliaPago(pago.id, negocioId, 'referencia_no_coincide',
+      'un aviso de expiracion nombro un checkout con otra referencia interna');
+    return { ok: false, razon: 'referencia_no_coincide' };
+  }
+  if (real.pagado) {
+    // El dinero manda: esto NO es una expiracion, es un cobro que el camino
+    // COMPLETED/reconciliacion debe asentar. Nunca se vence un pago real.
+    return { ok: false, razon: 'en_realidad_pagado' };
+  }
+  if (real.estado !== 'vencido') {
+    return { ok: false, razon: `no_vencido_en_proveedor:${real.estadoProveedor || 'desconocido'}` };
+  }
+  const r = await vencerEsperaDePago(pago.id, negocioId);
+  if (r.ok) {
+    // Rastro sanitizado de POR QUE vencio: lo declaro el proveedor, con su
+    // expired_at real. No toca dinero, estado ni identidad.
+    await anotarMetadataPago(pago.id, negocioId, {
+      expirado_por_proveedor: true,
+      expirado_por_proveedor_at: new Date().toISOString(),
+      provider_expired_at: real.expiraAt || null,
+    }).catch(() => {});
+  }
+  return { ok: r.ok, razon: r.ok ? 'vencido_por_proveedor' : r.razon, transicion: r };
 }
 
 /**

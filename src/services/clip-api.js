@@ -33,6 +33,110 @@ export class ClipNoConfiguradoError extends Error {
   }
 }
 
+// Una expiración que no cumple el contrato de Clip se rechaza ANTES de mandar
+// el POST: mandar un valor que el propio adaptador ya sabe inválido solo puede
+// terminar en un 400 del proveedor o -- peor -- en un checkout con una
+// expiración que no es la que Xabor cree.
+export class ExpiracionInvalidaError extends Error {
+  constructor(motivo) {
+    super(`ExpiracionInvalidaError: ${motivo}`);
+    this.code = 'EXPIRACION_INVALIDA';
+  }
+}
+
+// ─── Expiración del checkout (contrato oficial de Clip) ─────────────────────
+//
+// Fuente: https://developer.clip.mx/reference/createnewpaymentlink
+//   · `expires_at`: string "YYYY-MM-DDTHH-MM-SSZ" (UTC, maxLength 20 --
+//     SEGUNDOS, sin milisegundos).
+//   · "debe ser mayor a 00:01:00 minuto de la hora de creación de la
+//     solicitud y menor a las 23:59:59 (hora de CDMX) del mismo día de
+//     creación". Si se omite: default de 3 días.
+//   · La respuesta de creación (y la reconsulta) devuelven `expired_at`.
+//
+// TODO el cálculo de aquí es independiente del timezone del proceso: se
+// trabaja en épocas UTC y la única conversión de zona (el fin del día en
+// CDMX) usa Intl con 'America/Mexico_City' explícito -- nunca la zona de
+// Windows/Node/Postgres. Este proyecto ya pagó dos bugs reales de timezone
+// (migración 063); no habrá un tercero por esta vía.
+
+const TZ_CDMX = 'America/Mexico_City';
+const CLIP_EXPIRACION_MARGEN_MIN_MS = 61 * 1000; // "> 00:01:00" + 1s de margen
+
+/** Formatea un instante al formato EXACTO de Clip: UTC, segundos, 20 chars. */
+export function formatearExpiracionClip(fecha) {
+  const d = new Date(fecha);
+  if (Number.isNaN(d.getTime())) throw new ExpiracionInvalidaError(`fecha no válida: ${fecha}`);
+  // Piso a segundos: Clip no acepta milisegundos (maxLength 20).
+  return new Date(Math.floor(d.getTime() / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function partesEnTZ(epochMs, tz) {
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(new Date(epochMs));
+  const v = (t) => Number(p.find(x => x.type === t)?.value);
+  // Intl puede dar hour '24' para medianoche en algunos entornos: normalizar.
+  return { y: v('year'), mo: v('month'), d: v('day'), h: v('hour') % 24, mi: v('minute'), s: v('second') };
+}
+
+/** Época UTC del instante local (y,mo,d,h,mi,s) en la zona dada. */
+function instanteUTCDeLocal(tz, y, mo, d, h, mi, s) {
+  let guess = Date.UTC(y, mo - 1, d, h, mi, s);
+  // Punto fijo: converge en 1-2 pasos (CDMX no tiene DST desde 2022, pero no
+  // se hardcodea el offset -- si el país lo vuelve a cambiar, esto sigue bien).
+  for (let i = 0; i < 3; i++) {
+    const p = partesEnTZ(guess, tz);
+    const delta = Date.UTC(y, mo - 1, d, h, mi, s) - Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s);
+    if (delta === 0) break;
+    guess += delta;
+  }
+  return guess;
+}
+
+/** Época UTC de las 23:59:00 (hora CDMX) del día CDMX en que cae `ahora`. */
+export function finDelDiaCDMXComoUTC(ahora = new Date()) {
+  const hoy = partesEnTZ(new Date(ahora).getTime(), TZ_CDMX);
+  // 23:59:00, no :59:59 -- margen de 59s por debajo del límite documentado
+  // para que un redondeo del proveedor jamás lo rebase.
+  return instanteUTCDeLocal(TZ_CDMX, hoy.y, hoy.mo, hoy.d, 23, 59, 0);
+}
+
+/**
+ * Valida y acota una expiración contra los límites oficiales de Clip.
+ * Devuelve:
+ *   { omitir: true, motivo }                        -- no existe ningún
+ *     expires_at válido (creación en el último minuto del día CDMX): se
+ *     omite el campo (Clip aplica su default de 3 días) y Xabor sigue
+ *     gobernado por su propia frontera durable.
+ *   { texto, epochMs, ajustadaPorLimite }           -- listo para el POST.
+ * Lanza ExpiracionInvalidaError si la entrada es inválida o ya no es futura:
+ * eso es un bug del llamador, nunca un estado de negocio.
+ */
+export function prepararExpiracionClip(expiresAt, ahora = new Date()) {
+  const d = new Date(expiresAt);
+  if (expiresAt == null || Number.isNaN(d.getTime())) {
+    throw new ExpiracionInvalidaError(`expiresAt no es una fecha válida: ${expiresAt}`);
+  }
+  const ahoraMs = new Date(ahora).getTime();
+  if (d.getTime() <= ahoraMs + CLIP_EXPIRACION_MARGEN_MIN_MS) {
+    throw new ExpiracionInvalidaError(
+      `expiresAt (${d.toISOString()}) no queda al menos 61s en el futuro: Clip exige > 1 minuto desde la creación`);
+  }
+  const tope = finDelDiaCDMXComoUTC(ahora);
+  if (tope <= ahoraMs + CLIP_EXPIRACION_MARGEN_MIN_MS) {
+    // Último minuto del día CDMX: ni siquiera el tope es válido. No se manda
+    // expires_at (default 3 días del proveedor) -- la frontera de Xabor sigue
+    // intacta y el reconciliador local vence igual.
+    return { omitir: true, motivo: 'creacion_en_el_ultimo_minuto_del_dia_cdmx' };
+  }
+  if (d.getTime() > tope) {
+    return { texto: formatearExpiracionClip(tope), epochMs: Math.floor(tope / 1000) * 1000, ajustadaPorLimite: true };
+  }
+  return { texto: formatearExpiracionClip(d), epochMs: Math.floor(d.getTime() / 1000) * 1000, ajustadaPorLimite: false };
+}
+
 async function obtenerAuthHeader(negocioId) {
   // Chequeo explícito aquí ADEMÁS del que ya hace
   // obtenerCredencialesClipDescifradas (defensa en profundidad, falla
@@ -80,7 +184,17 @@ export async function consultarEstadoPago(linkId, negocioId) {
  * @returns {Promise<{ linkId: string, url: string, status: string }>}
  * @throws {ClipNoConfiguradoError} si el negocio no tiene Clip configurado/activo
  */
-export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {}, referenciaExterna }) {
+export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {}, referenciaExterna, expiresAt = null }) {
+  // La expiración se valida ANTES de resolver credenciales o salir a la red:
+  // un expiresAt inválido es un bug del llamador y jamás debe producir un
+  // POST. Si el llamador no manda expiresAt (caminos legacy: programados aún
+  // no activados), el campo se omite y Clip aplica su default -- comportamiento
+  // idéntico al histórico, sin fingir una frontera que nadie calculó.
+  let expiracion = null;
+  if (expiresAt != null) {
+    expiracion = prepararExpiracionClip(expiresAt); // lanza ExpiracionInvalidaError
+  }
+
   const auth = await obtenerAuthHeader(negocioId);
 
   const baseUrl    = process.env.PUBLIC_URL || 'https://xabor.up.railway.app';
@@ -111,6 +225,7 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
 
   if (cliente.nombre)   body.metadata.customer_info.name  = cliente.nombre;
   if (cliente.telefono) body.metadata.customer_info.phone = Number(String(cliente.telefono).replace(/\D/g, ''));
+  if (expiracion && !expiracion.omitir) body.expires_at = expiracion.texto;
 
   const resp = await fetch(CLIP_CHECKOUT_URL, {
     method:  'POST',
@@ -132,6 +247,14 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
   return {
     linkId: data.payment_request_id,
     url:    data.payment_request_url,
-    status: data.status
+    status: data.status,
+    // Rastro de expiración para el llamador (clipProvider): lo SOLICITADO
+    // (ya acotado a los límites de Clip), lo que el proveedor DEVOLVIÓ como
+    // efectivo (`expired_at`, documentado en la respuesta de creación), y si
+    // hubo que acotar por el tope del día CDMX u omitir el campo.
+    expiracionSolicitada: expiracion && !expiracion.omitir ? expiracion.texto : null,
+    expiracionOmitida: expiracion?.omitir ? expiracion.motivo : null,
+    expiracionAjustadaPorLimite: expiracion?.ajustadaPorLimite === true,
+    expiracionProveedor: data.expired_at || null,
   };
 }

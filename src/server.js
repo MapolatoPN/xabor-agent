@@ -30,7 +30,7 @@ import { getPaymentStatus as getPaymentStatusClip } from './services/providers/c
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
          derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes,
          verificarYAsentarClip, reconciliarCandidatosClip,
-         expirarPagosVencidos } from './services/webhookPagos.js';
+         expirarPagosVencidos, procesarExpiracionProveedorClip } from './services/webhookPagos.js';
 import { setEntregaEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -1768,6 +1768,34 @@ app.post('/webhook/clip', async (req, res) => {
     const status = evento?.resource_status;
     const ref    = evento?.me_reference_id;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
+
+    // CLIP expires_at: el webhook oficial de expiracion (resource=CHECKOUT,
+    // resource_status=EXPIRED -- documentado en
+    // https://developer.clip.mx/reference/checkout-webhook). El aviso NO
+    // decide nada por si solo (Clip no firma webhooks): se resuelve la fila
+    // por la referencia interna y procesarExpiracionProveedorClip RECONSULTA
+    // el checkout con las credenciales del negocio -- solo un
+    // CHECKOUT_EXPIRED real, con la referencia correcta, produce la
+    // transicion comun de vencimiento (vencerEsperaDePago: idempotente y
+    // money-aware). Un EXPIRED repetido devuelve `ya_no_vencible` y no toca
+    // nada; un EXPIRED falso sobre un checkout vivo tampoco.
+    if (status === 'EXPIRED' && evento?.resource === 'CHECKOUT') {
+      const partesExp = String(ref || '').split(':');
+      if (partesExp.length >= 3) {
+        const [negocioIdExp] = partesExp;
+        const pagoExp = await obtenerPagoPorReferenciaInterna(negocioIdExp, ref);
+        const checkoutExp = pagoExp?.referencia_externa
+          || String(evento?.payment_request_id || '').trim() || null;
+        if (pagoExp && checkoutExp) {
+          acusar();
+          const rExp = await procesarExpiracionProveedorClip({ pago: pagoExp, checkoutId: checkoutExp });
+          console.log(`[Clip] Webhook EXPIRED para ${pagoExp.pedido_folio}: ${rExp.razon}`);
+          return;
+        }
+      }
+      acusar();
+      return;
+    }
 
     if (status !== 'COMPLETED' || evento?.resource !== 'CHECKOUT') { acusar(); return; }
 
@@ -7735,6 +7763,18 @@ async function reconciliarPagosPendientes() {
         // verificación, o serían dos sitios donde relajar una validación.
         const r = await verificarYAsentarClip({ pago, checkoutId: pago.referencia_externa });
         if (!r.ok) {
+          // CLIP expires_at: un requery que devuelve CHECKOUT_EXPIRED se mapea
+          // a la transicion COMUN de vencimiento -- nunca a fallido generico,
+          // cancelado arbitrario ni (jamas) pagado. procesarExpiracionProveedorClip
+          // re-verifica el estado real y solo entonces vence, idempotente. Si
+          // la fila ya estaba vencida por el reloj local, devuelve
+          // `ya_no_vencible` y no toca nada.
+          if (r.razon === 'estado_no_pagado:CHECKOUT_EXPIRED'
+              && ['creando', 'pendiente', 'requiere_revision'].includes(pago.estado)) {
+            const rExp = await procesarExpiracionProveedorClip({ pago, checkoutId: pago.referencia_externa });
+            console.log(`[Clip Reconciliación] ${pago.pedido_folio} vencido en el proveedor: ${rExp.razon}`);
+            continue;
+          }
           if (r.razon !== 'estado_no_pagado:CHECKOUT_PENDING') {
             console.warn(`[Clip Reconciliación] ${pago.id}: ${r.razon}`);
           }

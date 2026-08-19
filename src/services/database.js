@@ -2921,6 +2921,13 @@ export async function finalizarCreacionPago({
   pagoId, negocioId, referenciaExterna, url, preferenceId = null,
   estado = 'pendiente', comoSeResolvio = 'creado', folioClipLegacy = null,
   esperaMinutos = null,
+  // CLIP expires_at: expiracion EFECTIVA declarada por el proveedor (columna
+  // pagos.expires_at, COALESCE -- nunca sobrescribe una ya conocida) y rastro
+  // sanitizado (requested_expires_at / provider_expires_at / ajustes) que se
+  // funde en metadata_sanitizada. Ninguno toca xabor_espera_hasta: la
+  // frontera local quedo durable ANTES del POST (fijarEsperaDePago) y jamas
+  // se amplia por lo que el proveedor haya contestado.
+  expiresAtProveedor = null, expiracionMeta = null,
 }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
   const nid = negocioId.trim();
@@ -2961,6 +2968,7 @@ export async function finalizarCreacionPago({
               -- que se creo la fila: antes de esto no habia nada que pagar.
               xabor_espera_hasta = COALESCE(xabor_espera_hasta,
                 CASE WHEN $8::int IS NULL THEN NULL ELSE NOW() + ($8 || ' minutes')::interval END),
+              expires_at = COALESCE($9, expires_at),
               metadata_sanitizada = (metadata_sanitizada - 'anomalia' - 'anomalia_detalle')
                                     || $7::jsonb
         WHERE id = $1 AND negocio_id = $2`,
@@ -2969,7 +2977,8 @@ export async function finalizarCreacionPago({
          creacion_ambigua_abierta: false,
          creacion_ambigua_resuelta: comoSeResolvio,
          creacion_ambigua_resuelta_at: new Date().toISOString(),
-       }), esperaMinutos]);
+         ...(expiracionMeta && typeof expiracionMeta === 'object' ? expiracionMeta : {}),
+       }), esperaMinutos, expiresAtProveedor || null]);
 
     // Fronteras inyectables DENTRO de la transaccion. Cada una debe terminar en
     // ROLLBACK completo: media identidad local es lo que P0-D vino a impedir.
@@ -3173,6 +3182,50 @@ export async function minutosDeEsperaDePago(negocioId) {
   const crudo = Number(typeof r?.valor === 'object' ? r.valor?.minutos : r?.valor);
   if (!Number.isFinite(crudo)) return ESPERA_PAGO_MINUTOS_DEFAULT;
   return Math.min(ESPERA_PAGO_MINUTOS_MAX, Math.max(ESPERA_PAGO_MINUTOS_MIN, Math.trunc(crudo)));
+}
+
+/**
+ * CLIP expires_at: fija la frontera durable T de un intento ANTES del POST de
+ * creacion, para que la expiracion que viaja al proveedor sea EL MISMO
+ * instante que Xabor va a hacer valer -- un solo reloj, calculado una vez.
+ *
+ * COALESCE: si un intento anterior de esta MISMA fila ya fijo su T (retry
+ * tras un fallo de red, creacion ambigua, etc.), se conserva ESA -- la
+ * expiracion viaja con el intento durable, no se reinventa en cada reintento.
+ * Devuelve la T efectiva (la recien fijada o la preexistente).
+ *
+ * Nota deliberada sobre el arranque del reloj: para los proveedores que
+ * aceptan expiracion en la creacion, T se fija ANTES del POST (aqui). El
+ * comentario historico de finalizarCreacionPago ("el plazo corre desde que el
+ * checkout queda utilizable") sigue valiendo para los demas proveedores; la
+ * diferencia son los ~segundos de latencia del POST, y el costo de tener DOS
+ * relojes divergentes es incomparablemente peor que ese margen.
+ */
+/**
+ * Funde claves en metadata_sanitizada SIN tocar estado, dinero ni identidad.
+ * Para rastro auditable (p. ej. "este vencimiento lo declaro el proveedor").
+ */
+export async function anotarMetadataPago(pagoId, negocioId, meta) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  if (!meta || typeof meta !== 'object') return false;
+  const { rowCount } = await pool.query(
+    `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada || $3::jsonb
+      WHERE id = $1 AND negocio_id = $2`,
+    [pagoId, negocioId.trim(), JSON.stringify(meta)]);
+  return rowCount === 1;
+}
+
+export async function fijarEsperaDePago(pagoId, negocioId, esperaMinutos) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const min = Number(esperaMinutos);
+  if (!Number.isFinite(min) || min <= 0) return null;
+  const { rows: [r] } = await pool.query(
+    `UPDATE pagos
+        SET xabor_espera_hasta = COALESCE(xabor_espera_hasta, NOW() + ($3 || ' minutes')::interval)
+      WHERE id = $1 AND negocio_id = $2
+      RETURNING xabor_espera_hasta`,
+    [pagoId, negocioId.trim(), Math.trunc(min)]);
+  return r?.xabor_espera_hasta || null;
 }
 
 /** Intentos cuya ventana de espera ya paso y siguen vivos. */

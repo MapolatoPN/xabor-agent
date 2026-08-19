@@ -19,7 +19,7 @@ import {
   invalidarCheckoutSuperado, pagoRealDelPedido, registrarIntentoDeCreacion,
   marcarCreacionAmbigua, anotarMotivoAmbiguedad,
   finalizarCreacionPago, obtenerPagoPorId, tieneIdentidadExternaDurable,
-  minutosDeEsperaDePago,
+  minutosDeEsperaDePago, fijarEsperaDePago,
 } from './database.js';
 import { randomBytes } from 'crypto';
 
@@ -412,6 +412,29 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   const claveIdempotencia = `xabor:pago:${registro.id}`;
   await registrarIntentoDeCreacion(registro.id, negocioId, claveIdempotencia);
 
+  // ── CLIP expires_at: UNA frontera temporal, calculada UNA vez ────────────
+  //
+  // Para los proveedores que aceptan expiracion en la creacion, T
+  // (xabor_espera_hasta) se fija DURABLE **antes** del POST y ese MISMO
+  // instante viaja al proveedor como expires_at. Nunca dos relojes: nada de
+  // "NOW()+15min aqui y NOW()+15min alla". Si la fila ya traia una T de un
+  // intento anterior (retry, ambiguedad), fijarEsperaDePago la conserva y es
+  // ESA la que viaja -- la expiracion acompaña al intento durable.
+  //
+  // Para los demas proveedores (Mercado Pago, transferencia manual) nada
+  // cambia: T nace en finalizarCreacionPago como siempre.
+  let expiraXabor = null;
+  if (capacidades.expiracionEnCreacion) {
+    expiraXabor = await fijarEsperaDePago(registro.id, negocioId,
+      await minutosDeEsperaDePago(negocioId));
+    if (!expiraXabor) {
+      // Sin frontera durable no se manda ninguna expiracion inventada -- pero
+      // esto no deberia pasar (la fila existe y los minutos estan acotados):
+      // se registra para que no sea silencioso.
+      console.warn(`[Pagos] No se pudo fijar xabor_espera_hasta para ${registro.id} antes del POST -- el checkout saldra sin expires_at`);
+    }
+  }
+
   try {
     const credenciales = await obtenerCredencialesPagoDescifradas(negocioId, principal.proveedor);
 
@@ -438,6 +461,10 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // que el proveedor ignora es peor que no mandarlo: haría creer que la
       // creación está protegida cuando no lo está.
       idempotencyKey: capacidades.idempotenciaCreacion ? claveIdempotencia : null,
+      // La frontera durable T, SOLO para proveedores que la aceptan en la
+      // creacion (ver arriba). El adaptador valida y acota contra los limites
+      // oficiales del proveedor ANTES de mandar el POST.
+      expiresAt: capacidades.expiracionEnCreacion ? expiraXabor : null,
     });
     // FINALIZACION ATOMICA. Antes eran cuatro escrituras sueltas y un fallo
     // intermedio dejaba media identidad local -- con el catch marcando la
@@ -449,7 +476,12 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       estado: normalizarEstadoPago(resultado.estado || 'pendiente'),
       comoSeResolvio: 'creado',
       // El plazo de espera es politica del negocio, no una constante global.
+      // Para proveedores con expiracionEnCreacion la T ya quedo durable ANTES
+      // del POST (fijarEsperaDePago) y este COALESCE la conserva intacta.
       esperaMinutos: await minutosDeEsperaDePago(negocioId),
+      // Expiracion efectiva del proveedor + rastro sanitizado (CLIP expires_at).
+      expiresAtProveedor: resultado.expiresAtProveedor || null,
+      expiracionMeta: resultado.expiracionMeta || null,
       // `datos.clip_link_id` es un campo LEGACY de Clip: la reconciliación
       // vieja lee de ahí. Va en la MISMA transacción para que su fallo no deje
       // la creación a medias; y solo para Clip, porque un preference_id de MP
@@ -470,7 +502,10 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     // Solo los errores que ocurren ANTES de salir a la red -- credenciales
     // ausentes, configuración inválida -- son fallos limpios.
     const antesDeSalir = e.code === 'TENANT_CONTEXT_REQUIRED'
-      || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL';
+      || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL'
+      // La validacion de expiracion del adaptador lanza ANTES de tocar la red
+      // (por contrato): no hay checkout que pudiera haber nacido.
+      || e.code === 'EXPIRACION_INVALIDA';
     if (e.code === 'CREACION_AMBIGUA') throw e;      // el motivo ya quedo anotado
     if (antesDeSalir) {
       await marcarPagoFallido(registro.id, e.code || e.message);
