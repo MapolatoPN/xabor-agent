@@ -326,7 +326,28 @@ export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../ut
 // en `true`. El reconciliador nunca la pasa (default `false`, fail closed).
 // Perder una oferta de reparto si el proceso muere justo despues de
 // mandarla es una limitacion aceptada a proposito -- duplicarla no lo es.
+// P0-11 Fase 2: puntos de crash REAL inyectables, uno por frontera del
+// nucleo, para la suite fase-emision-operacional-crash-real.mjs. Mismo
+// candado de produccion que el resto del proyecto (inerte fuera de
+// pruebas): con XABOR_PEDIDOS_MATAR_PROCESO='1' muere de verdad
+// (process.exit(137), mismo codigo que P0-15E); sin ella, lanza (para
+// pruebas mas ligeras que solo necesitan el throw, como
+// fase-compra-operacional-critica.mjs).
+function _puntoDeCrashOperacional(marca) {
+  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_PEDIDOS_FALLA_EN === marca) {
+    if (process.env.XABOR_PEDIDOS_MATAR_PROCESO === '1') process.exit(137);
+    const e = new Error(`Fallo inyectado en '${marca}'`);
+    e.inyectado = true;
+    throw e;
+  }
+}
+
 async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto = false } = {}) {
+  // Punto de crash A: la deuda ya esta COMMIT (la creo el trigger de la 063
+  // en el INSERT/UPDATE de pedidos_activos, antes de esta llamada) y el
+  // proceso muere ANTES de que el nucleo intente nada.
+  _puntoDeCrashOperacional('antes_emision');
+
   // COMPRA REAL para efectivo, terminal y pago al recibir. Aqui el negocio ya
   // se comprometio: la comanda sale a cocina. El dinero fisico se cobra despues
   // y no hay ningun webhook que esperar -- esperarlo seria esperar algo que
@@ -351,14 +372,9 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
   if (!marca.ok) {
     throw new Error(`COMPRA_NO_DURABLE: la compra real de ${pedido.id} no quedo registrada (${marca.razon}) — no se emite comanda ni ningun efecto externo`);
   }
-  // Punto de crash DESPUES del COMMIT: el retry debe reemitir la comanda sin
-  // duplicar la compra.
-  if (process.env.NODE_ENV !== 'production'
-      && process.env.XABOR_PEDIDOS_FALLA_EN === 'despues_compra_real') {
-    const e = new Error("Fallo inyectado en 'despues_compra_real'");
-    e.inyectado = true;
-    throw e;
-  }
+  // Punto de crash B, DESPUES del COMMIT de la compra: el retry debe
+  // reemitir la comanda sin duplicar la compra.
+  _puntoDeCrashOperacional('despues_compra_real');
 
   // PRIMERO Edge, DESPUÉS el panel. El orden no es estético: el evento que
   // recibe el panel tiene que decir la verdad sobre si el papel ya está en
@@ -366,6 +382,11 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
   // obligaría al navegador a adivinar, que es exactamente lo que provocaba
   // el diálogo de Chrome sobre una comanda que Edge iba a imprimir sola.
   const edge = await emitirComandaDePedidoPorEdge(pedido);
+
+  // Punto de crash C: el job de Edge ya quedo creado (durable, con su
+  // propio ledger de idempotencia) y el proceso muere ANTES de avisarle al
+  // panel.
+  _puntoDeCrashOperacional('despues_edge');
 
   if (wsBroadcastNegocio) {
     // Con identidad deterministica: el backend no puede prometer que este
@@ -376,6 +397,11 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
     wsBroadcastNegocio(pedido.negocioId, conIdentidadDePedido(
       { tipo: 'nuevo_pedido', pedido, impresionEdge: edge.seHizoCargo }, pedido));
   }
+
+  // Punto de crash D: el evento del panel ya salio (best-effort, sin ACK --
+  // ver frontera documentada mas abajo) y el proceso muere ANTES de
+  // terminar el resto del nucleo.
+  _puntoDeCrashOperacional('despues_panel');
 
   // Impresión física por el camino anterior (print-agent legacy o
   // autenticado): decidida por completo dentro de printRouter.js. Nunca
@@ -390,6 +416,11 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
   if (!edge.seHizoCargo) {
     await emitirTrabajoImpresion(pedido);
   }
+
+  // Punto de crash E: el trabajo de impresion legacy (si corrio) ya quedo
+  // durable en su propio ledger (impresion_trabajos) y el proceso muere
+  // ANTES de saldar la deuda.
+  _puntoDeCrashOperacional('despues_print');
 
   // Notificar a repartidores -- única fuente de verdad: esPedidoElegibleParaRedRepartidores.
   // Best-effort, y ahora GENUINAMENTE fuera del retry: `intentarReparto`
@@ -424,6 +455,13 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
       if (process.env.XABOR_PEDIDOS_MATAR_PROCESO === '1') process.exit(137);
     }
   }
+
+  // Punto de crash F: TODOS los efectos externos ya corrieron (compra,
+  // Edge, panel, print, reparto si aplicaba) y el proceso muere
+  // INMEDIATAMENTE ANTES de que el caller (conEmisionOperacionalExclusiva)
+  // haga el UPDATE que salda la deuda. Distinto de 'despues_notificar_reparto'
+  // (que exige intentarReparto=true): este corre siempre.
+  _puntoDeCrashOperacional('antes_saldar');
 }
 
 export async function emitirPedido(pedido) {
