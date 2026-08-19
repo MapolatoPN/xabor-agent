@@ -4968,19 +4968,24 @@ export async function conEmisionOperacionalExclusiva(negocioId, folio, pedidoCre
     }
 
     // RELEER desde la base, nunca confiar en el JSON de memoria del caller.
+    // P0-11A: allow-list explicita de estados que autorizan la primera
+    // emision -- MISMA lista que el trigger de la 063 (auditada ahi). Antes
+    // solo se comprobaba "!activo", asi que un pedido cancelado (la fila
+    // SIGUE existiendo en pedidos_activos con estado='cancelado' --
+    // cancelarPedidoActivo hace UPDATE, no DELETE) pasaba de largo y
+    // ejecutaba el nucleo completo sobre un pedido cancelado. Reproducido en
+    // rojo antes de este fix.
+    const ESTADOS_EMITIBLES = new Set(['nuevo', 'en_preparacion', 'listo']);
     const { rows: [activo] } = await cliente.query(
       `SELECT * FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`, [nid, folio]);
-    if (!activo) {
+    if (!activo || !ESTADOS_EMITIBLES.has(activo.estado)) {
+      const motivo = !activo ? 'pedido_ya_no_activo' : `estado_no_emitible:${activo.estado}`;
       await cliente.query(
-        `UPDATE pedido_emisiones SET estado = 'cancelada', updated_at = NOW()
+        `UPDATE pedido_emisiones SET estado = 'cancelada', ultimo_error = $4, updated_at = NOW()
           WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3`,
-        [nid, folio, pedidoCreadoAt]);
+        [nid, folio, pedidoCreadoAt, motivo]);
       await cliente.query('COMMIT');
-      return { emitio: false, razon: 'pedido_ya_no_activo' };
-    }
-    if (activo.estado === 'pendiente_pago') {
-      await cliente.query('ROLLBACK');
-      return { emitio: false, razon: 'pendiente_pago' };
+      return { emitio: false, razon: motivo };
     }
 
     await fn(activo);

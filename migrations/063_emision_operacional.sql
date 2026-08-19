@@ -106,24 +106,44 @@ CREATE INDEX IF NOT EXISTS idx_pedido_emision_pendiente
 --      y la condición de arriba lo deja pasar porque `programado_id` ya no
 --      está ausente.
 --
---   3. UPDATE que no viene de `pendiente_pago` -- la deuda ya se aseguró en
---      el INSERT original (o en la transición anterior); no hay que
---      reintentarlo en cada cambio de estado de cocina (nuevo ->
---      en_preparacion -> listo...). `ON CONFLICT DO NOTHING` lo haría
---      inofensivo de todas formas, pero evita trabajo innecesario en el
---      camino más caliente de la aplicación.
+--   3. `NEW.estado` fuera de la allow-list -- ver abajo. `ON CONFLICT DO
+--      NOTHING` hace inofensivo reintentar el INSERT en cada transicion
+--      dentro de la allow-list (nuevo -> en_preparacion -> listo), asi que
+--      no hace falta ninguna otra guarda de "ya se aseguro antes".
+--
+-- P0-11A (auditoria independiente, corregido tras el checkpoint): la
+-- version anterior de este trigger creaba deuda en CUALQUIER UPDATE cuyo
+-- OLD.estado fuera 'pendiente_pago', sin mirar a donde iba NEW.estado. Eso
+-- incluia `pendiente_pago -> cancelado` (expiracion de pago) -- reproducido
+-- en rojo con `cancelarPedidoActivo` real: la fila quedaba 'cancelado' en
+-- `pedidos_activos` pero con una deuda 'pendiente' en `pedido_emisiones`,
+-- lista para que el reconciliador la cocinara sola.
+--
+-- LA CORRECCION: allow-list EXPLICITA de los unicos estados que autorizan
+-- la primera emision -- `nuevo`, `en_preparacion`, `listo` -- nunca una
+-- blacklist de los que la prohiben. Auditado contra los tres origenes
+-- reales de esta deuda:
+--   · `registrarPedido()` fija `estadoInicial = 'nuevo'` salvo anticipo/pago
+--     en linea (que arrancan en 'pendiente_pago', ya excluido aparte).
+--   · El scheduler de programados (`activarPedidosProgramados`, server.js)
+--     hace `pedido.estado = pedido.estado || 'nuevo'`.
+--   · La transicion autorizada por pago (`confirmarPedidoPendientePago`)
+--     mueve `pendiente_pago -> 'nuevo'` explicitamente.
+-- Los tres SIEMPRE aterrizan en 'nuevo'. `en_preparacion`/`listo` se
+-- incluyen a proposito para no bloquear una primera emision legitima que
+-- llegue tarde (recovery) cuando el personal ya avanzo el pedido en el
+-- panel mientras la comanda seguia sin salir -- `actualizarEstadoPedido`
+-- no depende de que la emision ya haya terminado. `entregado` y `cancelado`
+-- quedan fuera a proposito: emitir una comanda para un pedido ya
+-- entregado o cancelado no tiene sentido en ningun caso.
 CREATE OR REPLACE FUNCTION xabor_asegurar_emision_operacional()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.estado = 'pendiente_pago' THEN
+  IF NEW.estado NOT IN ('nuevo', 'en_preparacion', 'listo') THEN
     RETURN NEW;
   END IF;
 
   IF NEW.datos->>'programado_para' IS NOT NULL AND NEW.datos->>'programado_id' IS NULL THEN
-    RETURN NEW;
-  END IF;
-
-  IF TG_OP = 'UPDATE' AND (OLD.estado IS DISTINCT FROM 'pendiente_pago') THEN
     RETURN NEW;
   END IF;
 

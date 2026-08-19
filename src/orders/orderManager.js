@@ -305,15 +305,28 @@ export async function registrarPedido(orden, canal = 'test') {
 export { esPedidoDeRedExterna, esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
 
 // ── P0-11: núcleo idempotente de la emisión OPERACIONAL ─────────────────────
-// Compra real + Edge + panel + impresión legacy + notificación a
-// repartidores. NO decide si debe correr (eso es de la deuda + el claim,
-// ver `conEmisionOperacionalExclusiva`) ni marca nada como saldado -- solo
-// ejecuta, y cada efecto trae su propia idempotencia (UNIQUE de
-// compras_reales, eventId determinístico del panel, ledger de
+// Compra real + Edge + panel + impresión legacy + (solo si `intentarReparto`)
+// notificación a repartidores. NO decide si debe correr (eso es de la deuda
+// + el claim, ver `conEmisionOperacionalExclusiva`) ni marca nada como
+// saldado -- solo ejecuta, y cada efecto trae su propia idempotencia (UNIQUE
+// de compras_reales, eventId determinístico del panel, ledger de
 // impresion_trabajos). ÚNICO lugar donde vive esta lógica: ni el scheduler
 // de programados (server.js) ni el reconciliador la reimplementan, la
 // llaman.
-async function _ejecutarEfectosOperacionales(pedido, creadoAt) {
+//
+// P0-11B (auditoria independiente, corregido tras el checkpoint): esta
+// misma funcion la invocan TANTO `emitirPedido` (foreground) COMO
+// `reconciliarEmisionesOperacionalesPendientes` (recovery) -- el comentario
+// original decia que reparto quedaba "fuera del retry", pero el codigo real
+// lo dejaba DENTRO de la parte que las dos rutas comparten. Si el proceso
+// moria despues de notificar a repartidores pero antes de saldar la deuda,
+// el recovery volvia a correr TODO el nucleo, incluida la notificacion --
+// sin ninguna idempotencia propia, una segunda oferta de WhatsApp. La
+// bandera `intentarReparto` la fija el CALLER: solo `emitirPedido` la pasa
+// en `true`. El reconciliador nunca la pasa (default `false`, fail closed).
+// Perder una oferta de reparto si el proceso muere justo despues de
+// mandarla es una limitacion aceptada a proposito -- duplicarla no lo es.
+async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto = false } = {}) {
   // COMPRA REAL para efectivo, terminal y pago al recibir. Aqui el negocio ya
   // se comprometio: la comanda sale a cocina. El dinero fisico se cobra despues
   // y no hay ningun webhook que esperar -- esperarlo seria esperar algo que
@@ -379,12 +392,11 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt) {
   }
 
   // Notificar a repartidores -- única fuente de verdad: esPedidoElegibleParaRedRepartidores.
-  // Best-effort, deliberadamente FUERA del retry infinito de la deuda: la
-  // idempotencia externa (WhatsApp a repartidores) es un problema aparte, no
-  // cubierto por esta deuda -- reintentarla desde el reconciliador podria
-  // reenviar la misma oferta varias veces. Se dispara una sola vez, aqui,
-  // en la corrida foreground; si falla, no bloquea ni reintenta la emision.
-  if (esPedidoElegibleParaRedRepartidores(pedido)) {
+  // Best-effort, y ahora GENUINAMENTE fuera del retry: `intentarReparto`
+  // solo llega en `true` desde la llamada foreground de `emitirPedido`. El
+  // reconciliador (recovery) nunca la activa, así que un crash justo
+  // después de mandar la oferta no la duplica en el siguiente ciclo.
+  if (intentarReparto && esPedidoElegibleParaRedRepartidores(pedido)) {
     // Fase C: el servicio ya existe como "buscando" desde este momento
     // (independiente de si la notificación por WhatsApp más abajo tiene
     // éxito o no -- ver derivarEstadoServicioReparto en database.js).
@@ -395,9 +407,22 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt) {
     } catch (e) {
       console.error('[WS] Error emitiendo red_repartidores_nuevo_servicio:', e.message);
     }
-    import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
-      notificarRepartidoresPorWA(pedido).catch(() => {});
+    const promesaReparto = import('../channels/whatsapp-meta.js').then(({ notificarRepartidoresPorWA }) => {
+      return notificarRepartidoresPorWA(pedido).catch(() => {});
     }).catch(() => {});
+
+    // Punto de muerte REAL inyectable, SOLO para pruebas (P0-11B): fuera de
+    // pruebas esta rama nunca se toca y `promesaReparto` sigue sin esperarse
+    // (fire-and-forget real, igual que antes). Bajo el fallo inyectado, se
+    // espera a que el intento de notificacion salga de verdad ANTES de matar
+    // el proceso -- para que la prueba de crash+recovery pueda contar con
+    // precision cuantas veces se disparo la oferta, en vez de dejarlo a una
+    // carrera entre el I/O y `process.exit`.
+    if (process.env.NODE_ENV !== 'production'
+        && process.env.XABOR_PEDIDOS_FALLA_EN === 'despues_notificar_reparto') {
+      await promesaReparto;
+      if (process.env.XABOR_PEDIDOS_MATAR_PROCESO === '1') process.exit(137);
+    }
   }
 }
 
@@ -441,7 +466,7 @@ export async function emitirPedido(pedido) {
   // pedido ya no esta activo, no se ejecuta nada.
   const r = await conEmisionOperacionalExclusiva(pedido.negocioId, pedido.id, creadoAt, async (activo) => {
     const fresco = { ...activo.datos, id: activo.folio, negocioId: activo.negocio_id, estado: activo.estado };
-    await _ejecutarEfectosOperacionales(fresco, creadoAt);
+    await _ejecutarEfectosOperacionales(fresco, creadoAt, { intentarReparto: true });
   });
 
   return { seHizoCargo: r.emitio === true, razon: r.razon };
@@ -458,7 +483,9 @@ export async function reconciliarEmisionesOperacionalesPendientes(limite = 50) {
     try {
       const r = await conEmisionOperacionalExclusiva(f.negocio_id, f.folio, f.pedido_creado_at, async (activo) => {
         const fresco = { ...activo.datos, id: activo.folio, negocioId: activo.negocio_id, estado: activo.estado };
-        await _ejecutarEfectosOperacionales(fresco, f.pedido_creado_at);
+        // intentarReparto explicitamente false: el recovery NUNCA notifica
+        // repartidores (P0-11B) -- ver el comentario de _ejecutarEfectosOperacionales.
+        await _ejecutarEfectosOperacionales(fresco, f.pedido_creado_at, { intentarReparto: false });
       });
       if (r.emitio) recuperados++;
     } catch (e) {
