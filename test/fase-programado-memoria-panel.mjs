@@ -143,8 +143,24 @@ try {
     assert.strictEqual(veces, 1,
       `el scheduler dejo el pedido ${veces} veces en memoria (esperado: exactamente 1, nunca un fantasma duplicado ni cero)`);
 
-    const progDB = await pool.query(`SELECT activado FROM pedidos_programados WHERE folio=$1`, [folio]);
-    assert.strictEqual(progDB.rows[0]?.activado, true, 'el programado no quedo marcado activado=true en la base');
+    // El scheduler escribe `activado=true` DESPUES de agregar a memoria
+    // (orden deliberado y crash-safe: si muere antes de marcar, el retry
+    // idempotente del siguiente ciclo converge -- ver activarPedidosProgramados
+    // y fase-programado-crash-real). Leerlo con una sola consulta inmediata
+    // tras ver el folio en memoria es una carrera de LECTURA del test sobre
+    // ese estado intermedio documentado: cazada de verdad en el gate final
+    // de P0-11 (el snapshot ya mostraba el pedido, activado leyo false, y
+    // milisegundos despues la fila ya estaba en true). Se espera acotado a
+    // que la escritura durable aterrice -- el assert sigue siendo estricto:
+    // si en 5s no llega, es rojo real.
+    let activadoDB = null;
+    for (let i = 0; i < 25; i++) {
+      const progDB = await pool.query(`SELECT activado FROM pedidos_programados WHERE folio=$1`, [folio]);
+      activadoDB = progDB.rows[0]?.activado ?? null;
+      if (activadoDB === true) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    assert.strictEqual(activadoDB, true, 'el programado no quedo marcado activado=true en la base (tras esperar hasta 5s la escritura que sigue a la memoria)');
     const activoDB = await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [folio]);
     assert.strictEqual(activoDB.rowCount, 1, 'el scheduler no reinserto el pedido en pedidos_activos');
   });
