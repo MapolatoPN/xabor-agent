@@ -31,6 +31,16 @@ const fallos = [];
 async function t(nombre, fn) {
   try { await fn(); console.log(`  OK  ${nombre}`); pasadas++; }
   catch (e) { console.log(`FALLO ${nombre}: ${e.message}`); fallidas++; fallos.push(`${nombre}: ${e.message}`); }
+  finally {
+    // Un caso que falla a mitad de camino NO debe dejar su servidor vivo:
+    // un proceso filtrado sigue corriendo su reconciliador periodico (45s)
+    // contra la MISMA base y puede saldar la deuda de un caso posterior --
+    // convirtiendo un rojo legitimo del caso siguiente en un verde falso
+    // (observado de verdad durante las mutaciones finales de P0-11: los
+    // casos A-F en rojo dejaron servidores vivos y el caso G paso en falso).
+    if (srv) { try { await srv.detener(); } catch { /* ya abajo */ } srv = null; }
+    await esperar(400);
+  }
 }
 
 const NEG = SEED.negocioA;

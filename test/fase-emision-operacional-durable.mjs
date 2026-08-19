@@ -20,7 +20,7 @@ import { arrancarMetaMock } from './lib-meta-mock.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
-const { pool, actualizarConfiguracion, crearUsuarioConPassword, cancelarPedidoActivo, conEmisionOperacionalExclusiva } = await import('../src/services/database.js');
+const { pool, actualizarConfiguracion, crearUsuarioConPassword, cancelarPedidoActivo, conEmisionOperacionalExclusiva, emitirUnaSolaVezLegacy } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { reconciliarEmisionesOperacionalesPendientes, registrarPedido, convertirPedidoAProgramado } = await import('../src/orders/orderManager.js');
 
@@ -532,6 +532,39 @@ try {
 
     const notif = (await pool.query(`SELECT COUNT(*)::int AS n FROM notificaciones_repartidor WHERE pedido_folio=$1`, [folio])).rows[0].n;
     assert.strictEqual(notif, 0, 'el recovery registro una notificacion a repartidores');
+  });
+
+  await t('13. legacy: emitirUnaSolaVezLegacy -- un retry y 10 concurrentes dejan UN solo broadcast', async () => {
+    // La garantia que SI controla Xabor en el camino legacy: la fila de
+    // impresion_legacy_emitida (claim durable en Postgres, bajo
+    // pg_advisory_xact_lock). El broadcast WS en si no tiene acuse -- la
+    // ventana send->COMMIT esta documentada como inherente -- pero el CLAIM
+    // es lo que impide que un retry o el recovery vuelvan a emitir el mismo
+    // printJobId. Este diente prueba esa funcion real contra la base real;
+    // sin el, quitar el chequeo de duplicado no ponia en rojo NINGUNA
+    // suite del gate (hueco encontrado durante las mutaciones finales).
+    const printJobId = `XAB-EOD13-${Date.now()}:comanda`;
+    let broadcasts = 0;
+    const emitir = () => { broadcasts++; return 1; };
+
+    const r1 = await emitirUnaSolaVezLegacy(NEG, printJobId, emitir);
+    assert.strictEqual(r1.duplicado, false, 'la primera emision no debio marcarse duplicada');
+    assert.strictEqual(broadcasts, 1);
+
+    const r2 = await emitirUnaSolaVezLegacy(NEG, printJobId, emitir);
+    assert.strictEqual(r2.duplicado, true, 'el retry NO fue detectado como duplicado');
+    assert.strictEqual(broadcasts, 1, `el retry volvio a emitir el mismo printJobId (broadcasts=${broadcasts}) -- papel duplicado`);
+
+    const printJobId2 = `XAB-EOD13C-${Date.now()}:comanda`;
+    let broadcasts2 = 0;
+    const resultados = await Promise.all(Array.from({ length: 10 }, () =>
+      emitirUnaSolaVezLegacy(NEG, printJobId2, () => { broadcasts2++; return 1; })));
+    assert.strictEqual(broadcasts2, 1, `10 emisiones concurrentes del mismo printJobId emitieron ${broadcasts2} veces (esperado: exactamente 1)`);
+    assert.strictEqual(resultados.filter(r => r.duplicado === true).length, 9,
+      'se esperaba que 9 de 10 concurrentes vieran duplicado:true');
+
+    await pool.query(`DELETE FROM impresion_legacy_emitida WHERE negocio_id=$1 AND print_job_id IN ($2,$3)`,
+      [NEG, printJobId, printJobId2]);
   });
 
 } catch (e) {

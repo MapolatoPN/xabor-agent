@@ -99,6 +99,22 @@ async function crearBaseDesechable() {
   // pedido P que cada caso crea explicitamente determine si predeploy pasa
   // o aborta.
   await pool.query(`DELETE FROM pedidos_activos WHERE estado IN ('nuevo', 'en_preparacion', 'listo')`);
+  // ...pero ese DELETE le rompe el contador a OLD si la plantilla creció:
+  // OLD (0f9e82b) siembra su folio de MAX(pedidos_activos) al arrancar,
+  // mientras que los claims de la 061 en la plantilla avanzan con cada
+  // corrida de las demas suites (via folio_pedido_seq). Si el MAX restante
+  // (solo filas terminales, potencialmente viejas) queda cientos de folios
+  // por detras de los claims, la barrera 060 bloquea los 20 candidatos de
+  // OLD -> FOLIO_NO_DISPONIBLE y ningun caso puede ni crear un pedido
+  // (observado de verdad durante las mutaciones finales). En produccion no
+  // pasa: el tablero vivo mantiene su MAX pegado a los claims. Se siembra
+  // aqui una fila TERMINAL con un folio fresco de la secuencia (nunca
+  // reclamado, la barrera lo deja pasar y el INSERT lo reclama), para que
+  // el contador de OLD arranque por delante de todos los claims.
+  const { rows: [sem] } = await pool.query(`SELECT nextval('folio_pedido_seq')::int AS n`);
+  await pool.query(
+    `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos) VALUES ($1,$2,'entregado',$3::jsonb)`,
+    [`XAB-${sem.n}`, NEG, JSON.stringify({ id: `XAB-${sem.n}`, cliente: { telefono: '8990000000' }, total: 0, semilla_contador_old: true })]);
   // Y por la misma razon: el seed trae pedidos_programados sin activar cuyo
   // horario ya paso -- el job de arranque de CUALQUIER servidor (OLD o NEW,
   // activarPedidosProgramados) los reinsertaria como 'nuevo' frescos en
