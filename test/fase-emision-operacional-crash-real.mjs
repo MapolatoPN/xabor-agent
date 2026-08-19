@@ -274,6 +274,113 @@ try {
     assert.strictEqual(otroProceso, 19, `se esperaba que los otros 19 vieran 'otro_proceso_emitiendo' (obtenido ${otroProceso})`);
   });
 
+  // ═══ J: recovery PERIODICO -- deuda nacida DESPUES del startup ═══════════
+  // Sin este diente, quitar el setInterval de server.js no rompia ninguna
+  // prueba: los casos A-G solo ejercitan el barrido de ARRANQUE. Aqui la
+  // deuda nace cuando el startup recovery del servidor ya corrio y termino
+  // (margen de 3s tras /health), y NADIE llama al reconciliador a mano:
+  // la UNICA via que puede saldarla es el setInterval de 45s del proceso
+  // servidor. El timeout de espera (75s) cubre un ciclo completo con margen.
+  await t('J. recovery periodico: una deuda creada DESPUES del startup la salda el setInterval, sin ningun request ni llamada manual', async () => {
+    srv = await arrancarServidor({ ...ENV_BASE }, { timeoutMs: 90000 });
+    await esperar(3000); // el barrido de arranque ya corrio y termino
+
+    const pedido = await crearPedidoActivoSinEmitir();
+    const folio = pedido.id;
+    const activo = await pedidoDe(folio);
+    assert.strictEqual((await deudaExacta(folio, activo.created_at))?.estado, 'pendiente',
+      'la deuda no nacio pendiente: el fixture no representa "nacida despues del startup"');
+
+    const saldada = await esperarHasta(async () => {
+      const d = await deudaExacta(folio, activo.created_at);
+      return d?.estado === 'saldada' ? d : null;
+    }, { timeoutMs: 75000, intervaloMs: 1000 });
+    assert.ok(saldada, 'el recovery PERIODICO (45s) nunca salio una deuda nacida despues del startup -- sin el setInterval, esta deuda quedaria pendiente para siempre en un proceso longevo');
+    assert.strictEqual((await comprasDe(pedido.cliente.telefono)).length, 1);
+
+    await srv.detener();
+    srv = null;
+  });
+
+  // ═══ K: reparto -- crash real tras la oferta foreground; repartidor NUEVO
+  // activado antes del recovery recibe CERO ofertas (P0-11B) ═══════════════
+  // El dedupe por (folio, repartidor) de notificaciones_repartidor NO
+  // protege a un repartidor que no existia cuando salio la oferta original:
+  // la UNICA barrera es intentarReparto=false en el recovery. Este es el
+  // escenario exacto descubierto en P0-11B, ahora como diente permanente.
+  await t('K. reparto: crash real tras la oferta; el repartidor NUEVO agregado antes del recovery recibe CERO ofertas', async () => {
+    const { arrancarMetaMock } = await import('./lib-meta-mock.mjs');
+    const { actualizarConfiguracion } = await import('../src/services/database.js');
+    const metaMock = await arrancarMetaMock();
+    const TEL_A = '5219955001', TEL_B = '5219955002';
+    try {
+      await actualizarConfiguracion({
+        int_wa_phone_id: 'PNID_EODK', int_wa_token: 'fake-token-eodk',
+        repartidor_notif_modo: 'piloto',
+        repartidor_notif_piloto_telefonos: `${TEL_A},${TEL_B}`,
+      }, NEG);
+      await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
+        VALUES ($1,'whatsapp','PNID_EODK','EODK',TRUE)
+        ON CONFLICT (canal, identificador) DO UPDATE SET negocio_id=$1, activo=TRUE`, [NEG]);
+      await pool.query(`INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id)
+        VALUES ('Rep A EODK',$2,'tok-eodk-a',TRUE,$1)`, [NEG, TEL_A]);
+
+      const paraA = () => metaMock.obtenerMensajesEnviados().filter(m => m.to === TEL_A).length;
+      const paraB = () => metaMock.obtenerMensajesEnviados().filter(m => m.to === TEL_B).length;
+
+      srv = await arrancarServidor({
+        ...ENV_BASE, META_GRAPH_BASE_URL: metaMock.baseUrl,
+        XABOR_PEDIDOS_FALLA_EN: 'despues_notificar_reparto', XABOR_PEDIDOS_MATAR_PROCESO: '1',
+      }, { timeoutMs: 90000 });
+      const pid1 = srv.proc.pid;
+
+      const pedido = await crearPedidoOperativo(srv.base, '93');
+      const folio = pedido.id;
+      const codigoSalida = await esperarSalida(srv.proc, 20000);
+      assert.strictEqual(codigoSalida, 137, `el proceso no murio de verdad tras notificar (exit=${codigoSalida})`);
+
+      assert.strictEqual(paraA(), 1, `la oferta foreground a A debio salir EXACTAMENTE una vez antes del crash (obtenido ${paraA()}) -- sin esto el fixture no prueba nada`);
+      assert.strictEqual(paraB(), 0, 'B ni siquiera existia todavia');
+
+      const activo = await pedidoDe(folio);
+      assert.strictEqual((await deudaExacta(folio, activo.created_at))?.estado, 'pendiente',
+        'la deuda debio quedar pendiente: el proceso murio antes de saldar');
+
+      // B se activa ENTRE el crash y el recovery -- sin fila previa en
+      // notificaciones_repartidor que lo proteja.
+      await pool.query(`INSERT INTO repartidores (nombre, telefono, token, activo, negocio_id)
+        VALUES ('Rep B EODK',$2,'tok-eodk-b',TRUE,$1)`, [NEG, TEL_B]);
+
+      srv = await arrancarServidor({ ...ENV_BASE, META_GRAPH_BASE_URL: metaMock.baseUrl }, { timeoutMs: 90000 });
+      assert.notStrictEqual(srv.proc.pid, pid1, 'el "proceso nuevo" comparte PID con el que murio');
+      const saldada = await esperarHasta(async () => {
+        const d = await deudaExacta(folio, activo.created_at);
+        return d?.estado === 'saldada' ? d : null;
+      }, { timeoutMs: 20000 });
+      assert.ok(saldada, 'el recovery no salio la deuda del pedido con oferta en vuelo');
+      await esperar(1500); // margen: si el recovery fuera a notificar, aqui tendria tiempo
+
+      assert.strictEqual(paraB(), 0,
+        'P0-11B VIOLADO: el recovery mando una oferta al repartidor NUEVO -- el reparto volvio a estar dentro del core de recovery');
+      assert.strictEqual(paraA(), 1, 'A recibio una segunda oferta duplicada');
+      const notifB = (await pool.query(
+        `SELECT COUNT(*)::int AS n FROM notificaciones_repartidor nr JOIN repartidores r ON r.id = nr.repartidor_id
+          WHERE nr.pedido_folio = $1 AND r.telefono = $2`, [folio, TEL_B])).rows[0].n;
+      assert.strictEqual(notifB, 0, 'el recovery registro una notificacion durable para el repartidor nuevo');
+
+      await srv.detener();
+      srv = null;
+    } finally {
+      metaMock.detener();
+      await pool.query(`DELETE FROM notificaciones_repartidor WHERE repartidor_id IN
+        (SELECT id FROM repartidores WHERE negocio_id=$1 AND token IN ('tok-eodk-a','tok-eodk-b'))`, [NEG]);
+      await pool.query(`DELETE FROM repartidores WHERE negocio_id=$1 AND token IN ('tok-eodk-a','tok-eodk-b')`, [NEG]);
+      await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave IN
+        ('int_wa_phone_id','int_wa_token','repartidor_notif_modo','repartidor_notif_piloto_telefonos')`, [NEG]);
+      await pool.query(`DELETE FROM integraciones_canal WHERE canal='whatsapp' AND identificador='PNID_EODK'`, []);
+    }
+  });
+
   // ═══ PANEL: eventId determinista + UNA sola tarjeta logica tras crash+recovery ══
   // Frontera aceptada y documentada: el broadcast live no lleva ACK, asi que
   // no se exige capturarlo -- el proceso puede morir a mitad del envio (ese
