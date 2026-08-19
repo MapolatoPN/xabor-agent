@@ -1,0 +1,68 @@
+diff --git a/src/server.js b/src/server.js
+index 50154cb..96dff59 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -7211,6 +7211,63 @@ app.post('/test/pedido', requireAdminSeguro, requireModulo('pos'), async (req, r
+   }
+ });
+ 
++// SOLO PARA LA PRUEBA DE CUTOVER P0-11 FASE 3 -- local al worktree OLD,
++// NUNCA comiteado. Replica EXACTAMENTE la secuencia real de
++// src/channels/whatsapp-meta.js (registrarPedido -> guardarPedidoProgramado
++// -> eliminarPedido) para poder disparar un pedido programado sin simular
++// un chat de WhatsApp completo. No reimplementa logica de negocio: llama a
++// las mismas funciones reales, sin modificarlas.
++app.post('/test/pedido-programado-p011', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
++  const programadoPara = req.body?.programadoPara;
++  if (!programadoPara) return res.status(400).json({ error: 'programadoPara requerido' });
++  const ordenPrueba = {
++    cliente: { nombre: 'Cliente Prueba P011', telefono: '8781234999' },
++    modalidad: 'entrega a domicilio',
++    items: [{ nombre: 'Producto P011', cantidad: 1, precio_unitario: 200, notas: '' }],
++    subtotal: 200, costo_envio: 0, descuento: 0, total: 200,
++    canal: 'prueba_admin', negocioId: req.negocioId,
++    programado_para: programadoPara,
++  };
++  try {
++    const pedido = await registrarPedido(ordenPrueba, 'prueba_admin');
++    await guardarPedidoProgramado(pedido.id, pedido, programadoPara);
++    await eliminarPedido(pedido.id, pedido.negocioId);
++    res.json({ ok: true, pedido });
++  } catch (e) {
++    console.error('[server] Error en /test/pedido-programado-p011:', e.message);
++    res.status(500).json({ error: e.message });
++  }
++});
++
++// SOLO PARA LA PRUEBA DE CUTOVER P0-11 FASE 3 -- local al worktree OLD,
++// NUNCA comiteado. Llama a la MISMA guardarPedidoActivo real que usa
++// registrarPedido, con el pedido ya en la forma que registrarPedido
++// produce cuando el gate de anticipo estructurado (CANALES_ORDEN_LLM +
++// pedido_requiere_anticipo, ya presente en este commit) resuelve
++// estadoInicial='pendiente_pago' -- sin reimplementar esa logica, solo sin
++// pasar por el validador de catalogo (irrelevante para lo que la 063
++// prueba: el trigger solo mira la columna estado).
++app.post('/test/pedido-pendiente-pago-p011', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
++  try {
++    const { guardarPedidoActivo } = await import('./services/database.js');
++    const folio = `XAB-PP${Date.now()}`;
++    const pedido = {
++      id: folio, negocioId: req.negocioId, canal: 'whatsapp', estado: 'pendiente_pago',
++      timestamp: new Date().toISOString(),
++      cliente: { nombre: 'Cliente Prueba P011 PP', telefono: '8781234998' },
++      modalidad: 'entrega a domicilio',
++      items: [{ nombre: 'Producto P011 PP', cantidad: 1, precio_unitario: 200, notas: '' }],
++      subtotal: 200, costo_envio: 0, descuento: 0, total: 200,
++    };
++    const g = await guardarPedidoActivo(pedido, req.negocioId);
++    if (!g.ok || !g.insertado) return res.status(500).json({ error: 'no se pudo persistir', g });
++    res.json({ ok: true, pedido });
++  } catch (e) {
++    console.error('[server] Error en /test/pedido-pendiente-pago-p011:', e.message);
++    res.status(500).json({ error: e.message });
++  }
++});
++
+ // ─── Job: activar pedidos programados ────────────────────────────────────────
+ // Corre cada 5 minutos — mueve al panel activo los pedidos cuyo horario ya llegó (≤ ahora + 1h)
+ async function activarPedidosProgramados() {

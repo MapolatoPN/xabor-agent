@@ -38,33 +38,56 @@ try {
       (SELECT COUNT(*) FROM pedidos_activos
         WHERE datos->>'programado_para' IS NOT NULL AND datos->>'programado_id' IS NULL)::int AS programados_sin_activar_en_activos,
       (SELECT COUNT(*) FROM pedido_emisiones WHERE origen = 'legacy_asumida_emitida')::int AS deudas_legacy_asumidas,
-      (SELECT COUNT(*) FROM pedido_emisiones WHERE estado = 'pendiente')::int AS deudas_nuevas_pendientes,
+      (SELECT COUNT(*) FROM pedido_emisiones WHERE origen = 'legacy_nuevo_no_verificado')::int AS deudas_legacy_nuevo_pendientes,
+      (SELECT COUNT(*) FROM pedido_emisiones WHERE origen = 'trigger' AND estado = 'pendiente')::int AS deudas_trigger_pendientes,
+      (SELECT COUNT(*) FROM pedido_emisiones WHERE estado = 'pendiente')::int AS deudas_pendientes_totales,
       (SELECT COUNT(*) FROM pedido_emisiones WHERE estado = 'saldada')::int AS deudas_saldadas,
-      (SELECT COUNT(*) FROM pedido_emisiones)::int AS deudas_totales`);
+      (SELECT COUNT(*) FROM pedido_emisiones)::int AS deudas_totales,
+      (SELECT COUNT(*) FROM pedido_emisiones
+        WHERE origen NOT IN ('trigger', 'legacy_asumida_emitida', 'legacy_nuevo_no_verificado'))::int AS deudas_origen_desconocido`);
 
   console.log('[predeploy-063] Reporte del cutover:');
-  console.log(`    pedidos_activos existentes:            ${reporte.activos_existentes}`);
-  console.log(`    de esos, pendiente_pago:                ${reporte.pendientes_pago}`);
-  console.log(`    de esos, programado sin activar aun:    ${reporte.programados_sin_activar_en_activos}`);
-  console.log(`    deudas legacy asumidas (backfill):      ${reporte.deudas_legacy_asumidas}`);
-  console.log(`    deudas nuevas pendientes:               ${reporte.deudas_nuevas_pendientes}`);
-  console.log(`    deudas ya saldadas:                     ${reporte.deudas_saldadas}`);
-  console.log(`    deudas totales en el ledger:             ${reporte.deudas_totales}`);
+  console.log(`    pedidos_activos existentes:                  ${reporte.activos_existentes}`);
+  console.log(`    de esos, pendiente_pago (sin deuda, normal):  ${reporte.pendientes_pago}`);
+  console.log(`    de esos, programado sin activar (sin deuda):  ${reporte.programados_sin_activar_en_activos}`);
+  console.log(`    deudas legacy asumidas emitidas (backfill A): ${reporte.deudas_legacy_asumidas}`);
+  console.log(`    deudas legacy 'nuevo' no verificado (backfill B, P0-11C): ${reporte.deudas_legacy_nuevo_pendientes}`);
+  console.log(`    de esas, pendientes creadas por el TRIGGER (trafico concurrente durante el cutover): ${reporte.deudas_trigger_pendientes}`);
+  console.log(`    pendientes totales (ambos origenes, EJECUTABLES por el reconciliador de NEW): ${reporte.deudas_pendientes_totales}`);
+  console.log(`    deudas ya saldadas:                           ${reporte.deudas_saldadas}`);
+  console.log(`    deudas totales en el ledger:                  ${reporte.deudas_totales}`);
 
-  // Fail closed real: el backfill NUNCA debe dejar deudas 'pendiente' para
-  // pedidos que ya existian antes de la migracion (eso reimprimiria comandas
-  // viejas). Si aparece alguna, algo en la logica de exclusion del backfill
-  // esta mal y hay que abortar el deploy antes de que el reconciliador la
-  // tome como si fuera nueva.
-  if (reporte.deudas_nuevas_pendientes > 0) {
+  // Semantica real (P0-11C, auditoria independiente corrigio el contrato
+  // anterior -- el comentario decia "fail closed" pero el codigo solo
+  // hacia console.warn y seguia a exit 0, una discrepancia real entre lo
+  // documentado y lo que de verdad pasaba):
+  //
+  //   · deudas_trigger_pendientes > 0 -- ESPERADO y SANO durante un cutover
+  //     con trafico concurrente (P0-15): el trigger protegio pedidos que
+  //     OLD sigue aceptando mientras el binario nuevo arranca. El
+  //     reconciliador de NEW las salda solo, sin intervencion. NO es una
+  //     anomalia -- nunca se aborta por esto.
+  //
+  //   · deudas_legacy_nuevo_pendientes > 0 -- ESPERADO (P0-11C): pedidos
+  //     preexistentes que se quedaron en 'nuevo' sin avanzar, backfill los
+  //     marca pendientes A PROPOSITO para que el reconciliador de NEW los
+  //     revise -- ver el comentario de la migracion 063. Tampoco es una
+  //     anomalia.
+  //
+  //   · deudas_origen_desconocido > 0 -- ESTO SI es una anomalia real: la
+  //     migracion produjo una fila con un origen que ningun camino conocido
+  //     del codigo genera. Aborta el deploy: algo en la logica de la 063
+  //     cambio sin que este script se haya actualizado para reconocerlo.
+  if (reporte.deudas_origen_desconocido > 0) {
     const { rows: sospechosas } = await pool.query(`
-      SELECT pe.negocio_id, pe.folio, pe.pedido_creado_at
+      SELECT pe.negocio_id, pe.folio, pe.pedido_creado_at, pe.origen, pe.estado
         FROM pedido_emisiones pe
-       WHERE pe.estado = 'pendiente'
+       WHERE pe.origen NOT IN ('trigger', 'legacy_asumida_emitida', 'legacy_nuevo_no_verificado')
        ORDER BY pe.created_at
        LIMIT 20`);
-    console.warn('[predeploy-063] ATENCION: hay deudas "pendiente" recien creadas por el backfill -- deberian ser 0 en un cutover limpio sin trafico concurrente:');
-    for (const s of sospechosas) console.warn(`    ${s.folio} (negocio=${s.negocio_id}, creado=${s.pedido_creado_at})`);
+    console.error('[predeploy-063] FALLO REAL -- deudas con origen desconocido (ni trigger, ni ninguno de los dos backfills):');
+    for (const s of sospechosas) console.error(`    ${s.folio} (negocio=${s.negocio_id}, creado=${s.pedido_creado_at}, origen=${s.origen}, estado=${s.estado})`);
+    throw new Error(`${reporte.deudas_origen_desconocido} deuda(s) con origen desconocido -- se aborta el deploy`);
   }
 
   console.log('[predeploy-063] Verificacion OK.');

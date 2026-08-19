@@ -181,14 +181,54 @@ CREATE TRIGGER trg_asegurar_emision_operacional
 -- Los pedidos activos que ya existían ANTES de esta migración son legacy
 -- ambiguo: pudieron haberse impreso o no, nadie puede saberlo desde aquí.
 -- Marcarlos 'pendiente' dispararía al reconciliador a reemitir/reimprimir
--- comandas viejas -- exactamente lo que NO se quiere. Se asumen EMITIDAS
--- (`legacy_asumida_emitida`), nunca 'pendiente'. Si alguna de verdad no salió,
--- es un caso operativo a resolver a mano, no algo que este backfill deba
--- adivinar y reintentar solo.
+-- comandas viejas -- exactamente lo que NO se quiere.
+--
+-- P0-11C (auditoría independiente): la versión anterior marcaba TODO
+-- pedido preexistente como 'saldada'/`legacy_asumida_emitida`, sin
+-- distinción. Reproducido en rojo con un binario OLD (0f9e82b) real: OLD
+-- acepta el pedido P (INSERT durable, `estado='nuevo'`), y milisegundos
+-- después -- SIN que el `emitirPedido` fire-and-forget de OLD haya tenido
+-- tiempo de terminar -- esta migración corre EN CALIENTE (Railway aplica
+-- predeploy mientras el binario viejo sigue vivo, ver P0-15/059). El
+-- backfill anterior marcaba a P 'saldada' igual que un pedido de hace tres
+-- años: si el `emitirPedido` de OLD no llegó a imprimir (o si OLD muere
+-- justo ahí, como en el escenario probado), NEW arranca, ve la deuda ya
+-- 'saldada', y NUNCA la revisa -- EMISIÓN SILENCIOSAMENTE PERDIDA. Ni
+-- "aplicar rápido" ni "esperar un poco" son garantías demostrables: el
+-- backfill no tiene forma de saber, por tiempo, si `emitirPedido` de OLD
+-- ya terminó.
+--
+-- LA CORRECCIÓN: la frontera no es tiempo, es progreso de estado --
+-- observable en la base, sin adivinar. Un pedido cuyo estado YA avanzó más
+-- allá de 'nuevo' (`en_preparacion`, `listo`, o terminal `entregado`/
+-- `cancelado`) sólo pudo llegar ahí porque alguien (staff en el panel, o
+-- un proceso posterior) ya vio/actuó sobre él -- lo que implica que su
+-- comanda original necesariamente ya salió. Para esos, `saldada` sigue
+-- siendo seguro y correcto (rama A, sin cambios de fondo).
+--
+-- Un pedido que sigue en 'nuevo' -- el estado que trae DESDE el INSERT,
+-- nunca tocado -- es exactamente el ambiguo: puede ser un pedido
+-- genuinamente viejo que el staff olvidó avanzar (raro, pero posible), o
+-- puede ser P, aceptado por OLD instantes antes de este backfill. No hay
+-- forma de distinguir los dos casos desde aquí -- así que NO se asume
+-- nada: se marca 'pendiente' (deuda EJECUTABLE, origen distinto y
+-- auditable), para que el reconciliador de NEW la revise/complete después
+-- del deploy (rama B). El riesgo residual -- un 'nuevo' genuinamente
+-- olvidado por staff se re-verifica (compra real idempotente, comanda que
+-- se reimprime UNA vez) -- es acotado y preferible, sin comparación, a una
+-- emisión perdida para siempre sin que nadie se entere.
 INSERT INTO pedido_emisiones (negocio_id, folio, pedido_creado_at, estado, origen, saldada_at)
 SELECT negocio_id, folio, date_trunc('milliseconds', created_at), 'saldada', 'legacy_asumida_emitida', NOW()
   FROM pedidos_activos
  WHERE negocio_id IS NOT NULL
-   AND estado IS DISTINCT FROM 'pendiente_pago'
+   AND estado IN ('en_preparacion', 'listo', 'entregado', 'cancelado')
+   AND NOT (datos->>'programado_para' IS NOT NULL AND datos->>'programado_id' IS NULL)
+ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING;
+
+INSERT INTO pedido_emisiones (negocio_id, folio, pedido_creado_at, estado, origen)
+SELECT negocio_id, folio, date_trunc('milliseconds', created_at), 'pendiente', 'legacy_nuevo_no_verificado'
+  FROM pedidos_activos
+ WHERE negocio_id IS NOT NULL
+   AND estado = 'nuevo'
    AND NOT (datos->>'programado_para' IS NOT NULL AND datos->>'programado_id' IS NULL)
 ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING;
