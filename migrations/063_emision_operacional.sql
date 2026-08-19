@@ -64,12 +64,33 @@ CREATE TABLE IF NOT EXISTS pedido_emisiones (
   created_at        timestamptz NOT NULL DEFAULT NOW(),
   updated_at        timestamptz NOT NULL DEFAULT NOW(),
   saldada_at        timestamptz,
-  -- P0-11D: nota humana dejada por resolverEmisionLegacyAmbigua al sacar una
-  -- fila de 'requiere_revision' -- por qué un operador decidió que ya se
-  -- emitió, o que necesita reimprimirse. NULL para cualquier otro origen.
-  resuelto_nota     text
+  -- P0-11D/E: rastro durable de la resolución manual de un legacy ambiguo
+  -- (resolverEmisionLegacyAmbigua, la ÚNICA salida de 'requiere_revision').
+  -- Los tres son NULL para cualquier fila que nunca fue ambigua.
+  --
+  --   resuelto_nota     -- por qué el operador decidió lo que decidió.
+  --                        OBLIGATORIA (la exige la función, nunca NULL en
+  --                        una fila resuelta).
+  --   resuelto_decision -- P0-11E: QUÉ decidió. Sin esta columna, después
+  --                        de que una 'requiere_reimpresion' se recupere y
+  --                        termine 'saldada', la DB ya no podría distinguir
+  --                        durablemente "el humano confirmó que ya había
+  --                        salido" de "el humano ordenó reimprimir y el
+  --                        recovery terminó después" -- ambas acaban con
+  --                        estado='saldada' y origen='legacy_revisado_manual'.
+  --   resuelto_at       -- cuándo se tomó la decisión (updated_at se sigue
+  --                        moviendo con el recovery; este no).
+  resuelto_nota     text,
+  resuelto_decision text,
+  resuelto_at       timestamptz
 );
 ALTER TABLE pedido_emisiones ADD COLUMN IF NOT EXISTS resuelto_nota text;
+ALTER TABLE pedido_emisiones ADD COLUMN IF NOT EXISTS resuelto_decision text;
+ALTER TABLE pedido_emisiones ADD COLUMN IF NOT EXISTS resuelto_at timestamptz;
+ALTER TABLE pedido_emisiones DROP CONSTRAINT IF EXISTS chk_pedido_emision_resuelto_decision;
+ALTER TABLE pedido_emisiones ADD CONSTRAINT chk_pedido_emision_resuelto_decision
+  CHECK (resuelto_decision IS NULL
+         OR resuelto_decision IN ('confirmado_emitido', 'requiere_reimpresion'));
 
 -- P0-11D (auditoría independiente): agrega 'requiere_revision' -- ver el
 -- backfill más abajo. NO es lo mismo que 'pendiente': 'pendiente' es

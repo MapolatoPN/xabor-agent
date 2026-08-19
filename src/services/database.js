@@ -5043,21 +5043,38 @@ export async function pedidosConEmisionOperacionalPendiente(limite = 50) {
 // humana. Falla cerrado si la fila no existe o ya no está en
 // 'requiere_revision' (no hay "resolver dos veces" ni "resolver algo que
 // nunca fue ambiguo").
-export async function resolverEmisionLegacyAmbigua(negocioId, folio, pedidoCreadoAt, resolucion, nota = null) {
+//
+// P0-11E (auditoría independiente): la decisión debe quedar DURABLE y
+// distinguible para siempre. Sin `resuelto_decision`, después de que una
+// 'requiere_reimpresion' se recupere y termine 'saldada', la DB ya no
+// permitiría distinguir "el humano confirmó que ya había salido" de "el
+// humano ordenó reimprimir y el recovery terminó después" -- ambas acaban
+// estado='saldada', origen='legacy_revisado_manual'. Por lo mismo la nota
+// es OBLIGATORIA (no vacía, no whitespace): el contrato documentado siempre
+// fue "decisión humana explícita y auditada con nota", y un default NULL lo
+// contradecía. `resuelto_at` fija el instante de la DECISIÓN (updated_at se
+// sigue moviendo con el recovery; este no). El UPDATE de saldado del
+// reconciliador (`conEmisionOperacionalExclusiva`) no toca ninguna de las
+// tres columnas resuelto_* -- sobreviven al recovery intactas.
+export async function resolverEmisionLegacyAmbigua(negocioId, folio, pedidoCreadoAt, resolucion, nota) {
   if (resolucion !== 'confirmado_emitido' && resolucion !== 'requiere_reimpresion') {
     throw new Error(`resolucion invalida: ${resolucion} (se esperaba 'confirmado_emitido' o 'requiere_reimpresion')`);
+  }
+  if (typeof nota !== 'string' || !nota.trim()) {
+    throw new Error(`la nota es OBLIGATORIA para resolver un legacy ambiguo (P0-11E): una decision manual sin razon escrita no es auditable -- no se toca la base`);
   }
   const nuevoEstado = resolucion === 'confirmado_emitido' ? 'saldada' : 'pendiente';
   const { rowCount } = await pool.query(
     `UPDATE pedido_emisiones
-        SET estado = $4, origen = 'legacy_revisado_manual', resuelto_nota = $5, updated_at = NOW(),
+        SET estado = $4, origen = 'legacy_revisado_manual',
+            resuelto_decision = $6, resuelto_nota = $5, resuelto_at = NOW(), updated_at = NOW(),
             saldada_at = CASE WHEN $4 = 'saldada' THEN NOW() ELSE NULL END
       WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3 AND estado = 'requiere_revision'`,
-    [negocioId, folio, pedidoCreadoAt, nuevoEstado, nota]);
+    [negocioId, folio, pedidoCreadoAt, nuevoEstado, nota.trim(), resolucion]);
   if (rowCount === 0) {
     throw new Error(`no hay ninguna deuda 'requiere_revision' para (negocio=${negocioId}, folio=${folio}, creado=${pedidoCreadoAt}) -- nada que resolver`);
   }
-  return { ok: true, estado: nuevoEstado };
+  return { ok: true, estado: nuevoEstado, decision: resolucion };
 }
 
 // Ejecuta `emitir` A LO SUMO UNA VEZ por (negocio, printJobId), aunque se

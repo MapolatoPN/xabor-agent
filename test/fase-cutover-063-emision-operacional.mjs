@@ -447,6 +447,11 @@ try {
     }, { timeoutMs: 60000 });
     assert.ok(saldada, `tras la resolucion explicita, NEW debio completar la emision (obtenido: ${JSON.stringify(await deudaExacta(folio, activo.created_at))})`);
     assert.strictEqual(saldada.origen, 'legacy_revisado_manual', 'el origen no reflejo la resolucion manual');
+    // P0-11E: decision, nota e instante de la decision sobreviven al recovery.
+    assert.strictEqual(saldada.resuelto_decision, 'requiere_reimpresion',
+      `resuelto_decision debe sobrevivir al recovery -- obtenido ${saldada.resuelto_decision}`);
+    assert.strictEqual(saldada.resuelto_nota, 'prueba P0-11D caso 5', 'la nota no sobrevivio intacta al recovery');
+    assert.ok(saldada.resuelto_at, 'resuelto_at quedo NULL');
 
     const compras = await comprasDe(activo.datos?.cliente?.telefono);
     assert.strictEqual(compras.length, 1, `P debe terminar con EXACTAMENTE una compra real (obtenido ${compras.length})`);
@@ -750,6 +755,14 @@ try {
     }, { timeoutMs: 60000 });
     assert.ok(saldada, `${nombreCaso}: tras la resolucion explicita, NEW debio completar la emision (obtenido: ${JSON.stringify(await deudaExacta(folio, antesDeAvanzar.created_at))})`);
     assert.strictEqual(saldada.origen, 'legacy_revisado_manual', 'el origen no reflejo la resolucion manual');
+    // P0-11E: la DECISION sobrevive al recovery. Sin resuelto_decision, esta
+    // fila 'saldada' seria indistinguible de un 'confirmado_emitido' -- la
+    // auditoria perderia para siempre QUE decidio el humano.
+    assert.strictEqual(saldada.resuelto_decision, 'requiere_reimpresion',
+      `${nombreCaso}: resuelto_decision debe seguir siendo 'requiere_reimpresion' despues del recovery -- obtenido ${saldada.resuelto_decision}`);
+    assert.strictEqual(saldada.resuelto_nota, `prueba P0-11D ${nombreCaso}`,
+      `${nombreCaso}: la nota no sobrevivio intacta al recovery`);
+    assert.ok(saldada.resuelto_at, `${nombreCaso}: resuelto_at quedo NULL`);
 
     const compras = await comprasDe(telefono);
     assert.strictEqual(compras.length, 1, `${nombreCaso}: debe terminar con EXACTAMENTE una compra real (obtenido ${compras.length})`);
@@ -819,6 +832,125 @@ try {
 
     await pool.query(`DELETE FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
     await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
+  });
+
+  // ═══ CASO 11 (P0-11E): la resolucion manual es DURABLE y fail-closed ═══
+  //
+  // La auditoria encontro que la nota era opcional (default NULL) y que la
+  // decision no quedaba persistida: tras el recovery de una
+  // 'requiere_reimpresion', la fila terminaba estado='saldada'/
+  // origen='legacy_revisado_manual' -- IDENTICA a un 'confirmado_emitido' --
+  // y la DB perdia para siempre QUE decidio el humano. Este caso cubre la
+  // bateria fail-closed completa; la supervivencia de la decision al
+  // recovery REAL ya se verifica en los casos 5/7/8 (asserts sobre
+  // resuelto_decision/resuelto_nota/resuelto_at tras 'saldada').
+  await t('11. P0-11E: nota obligatoria, decision durable, sin doble resolucion, identidad exacta', async () => {
+    const { resolverEmisionLegacyAmbigua } = await import('../src/services/database.js');
+
+    // Fixtures PRE-063 por el backfill REAL: sin trigger instalado, dos
+    // pedidos 'nuevo', migracion real -> ambos requiere_revision.
+    await desinstalar063();
+    const marca = String(Date.now()).slice(-6);
+    const folioA = `XAB-11${marca.slice(0, 5)}1`;
+    const folioB = `XAB-11${marca.slice(0, 5)}2`;
+    for (const f of [folioA, folioB]) {
+      await pool.query(
+        `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos) VALUES ($1,$2,'nuevo',$3::jsonb)`,
+        [f, NEG, JSON.stringify({ id: f, cliente: { telefono: '8990000011' }, total: 100 })]);
+    }
+    await pool.query(readFileSync(join(RAIZ_NEW, 'migrations', '063_emision_operacional.sql'), 'utf8'));
+
+    const deudaDe = async (f) => (await pool.query(
+      `SELECT * FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2`, [NEG, f])).rows[0];
+    let dA = await deudaDe(folioA);
+    assert.strictEqual(dA?.estado, 'requiere_revision', 'el fixture A no quedo ambiguo');
+    const creadoA = dA.pedido_creado_at;
+    const creadoB = (await deudaDe(folioB)).pedido_creado_at;
+
+    // 1. Sin nota -> falla ANTES de tocar la fila.
+    await assert.rejects(
+      () => resolverEmisionLegacyAmbigua(NEG, folioA, creadoA, 'confirmado_emitido'),
+      /OBLIGATORIA/, 'resolver sin nota debio fallar');
+    // 2. Nota solo whitespace -> falla igual.
+    await assert.rejects(
+      () => resolverEmisionLegacyAmbigua(NEG, folioA, creadoA, 'confirmado_emitido', '   \t '),
+      /OBLIGATORIA/, 'una nota de puro whitespace debio fallar');
+    // 3. Decision fuera de las dos conocidas -> falla.
+    await assert.rejects(
+      () => resolverEmisionLegacyAmbigua(NEG, folioA, creadoA, 'resolver_como_sea', 'nota valida'),
+      /invalida/, 'una decision desconocida debio fallar');
+    // 4. Identidad equivocada (pedido_creado_at de OTRA instancia del folio)
+    //    -> no toca nada.
+    const creadoDesplazado = new Date(new Date(creadoA).getTime() + 1);
+    await assert.rejects(
+      () => resolverEmisionLegacyAmbigua(NEG, folioA, creadoDesplazado, 'confirmado_emitido', 'nota valida'),
+      /nada que resolver/, 'una identidad desplazada 1ms debio fallar sin tocar nada');
+    dA = await deudaDe(folioA);
+    assert.strictEqual(dA.estado, 'requiere_revision', 'algun intento invalido SI toco la fila');
+    assert.strictEqual(dA.resuelto_decision, null, 'algun intento invalido dejo resuelto_decision');
+    assert.strictEqual(dA.resuelto_nota, null, 'algun intento invalido dejo resuelto_nota');
+    assert.strictEqual(dA.resuelto_at, null, 'algun intento invalido dejo resuelto_at');
+
+    // 5. El CLI tambien falla cerrado sin --nota (y sin abrir conexion).
+    const cli = (args) => new Promise((resolve) => {
+      const p = spawn(process.execPath, [join(RAIZ_NEW, 'scripts', 'resolver-legacy-ambiguo-063.mjs'), ...args],
+        { cwd: RAIZ_NEW, env: { ...process.env, DATABASE_URL: urlDesechable }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let salida = '';
+      p.stdout.on('data', d => salida += d);
+      p.stderr.on('data', d => salida += d);
+      p.on('exit', (code) => resolve({ code, salida }));
+    });
+    // El texto EXACTO de la columna (timestamp SIN tz): es lo que un
+    // operador copia de un SELECT. Un toISOString() con 'Z' NO sirve --
+    // Postgres tomaria la parte literal en UTC y jamas coincidiria con el
+    // valor naive guardado (la misma trampa de timezone documentada en la
+    // migracion 063).
+    const { rows: [{ t: creadoTextoA }] } = await pool.query(
+      `SELECT pedido_creado_at::text AS t FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2`, [NEG, folioA]);
+    const identidadA = [`--negocio=${NEG}`, `--folio=${folioA}`, `--creadoAt=${creadoTextoA}`];
+    let rc = await cli([...identidadA, '--resolucion=confirmado_emitido']);
+    assert.strictEqual(rc.code, 1, 'el CLI sin --nota debio salir 1');
+    assert.match(rc.salida, /OBLIGATORIA/, 'el CLI no explico que la nota es obligatoria');
+    rc = await cli([...identidadA, '--resolucion=confirmado_emitido', '--nota=   ']);
+    assert.strictEqual(rc.code, 1, 'el CLI con nota whitespace debio salir 1');
+    dA = await deudaDe(folioA);
+    assert.strictEqual(dA.estado, 'requiere_revision', 'el CLI invalido toco la fila');
+
+    // 6. confirmado_emitido valido (por el CLI real) -> saldada + rastro completo.
+    rc = await cli([...identidadA, '--resolucion=confirmado_emitido', '--nota=comanda fisica verificada en el local']);
+    assert.strictEqual(rc.code, 0, `el CLI valido fallo: ${rc.salida.slice(-400)}`);
+    dA = await deudaDe(folioA);
+    assert.strictEqual(dA.estado, 'saldada');
+    assert.strictEqual(dA.resuelto_decision, 'confirmado_emitido');
+    assert.strictEqual(dA.resuelto_nota, 'comanda fisica verificada en el local');
+    assert.ok(dA.resuelto_at, 'resuelto_at quedo NULL tras confirmar');
+    assert.ok(dA.saldada_at, 'saldada_at quedo NULL tras confirmar');
+
+    // 7. Resolver DE NUEVO -> falla cerrado, la decision original no cambia.
+    await assert.rejects(
+      () => resolverEmisionLegacyAmbigua(NEG, folioA, creadoA, 'requiere_reimpresion', 'intento de sobreescritura'),
+      /nada que resolver/, 'resolver dos veces debio fallar');
+    dA = await deudaDe(folioA);
+    assert.strictEqual(dA.resuelto_decision, 'confirmado_emitido', 'la doble resolucion sobreescribio la decision');
+    assert.strictEqual(dA.resuelto_nota, 'comanda fisica verificada en el local', 'la doble resolucion sobreescribio la nota');
+
+    // 8. requiere_reimpresion (fixture B): decision durable YA desde el paso
+    //    a 'pendiente', antes de cualquier recovery.
+    const r = await resolverEmisionLegacyAmbigua(NEG, folioB, creadoB, 'requiere_reimpresion', 'sin evidencia de papel, reimprimir');
+    assert.strictEqual(r.estado, 'pendiente');
+    const dB = await deudaDe(folioB);
+    assert.strictEqual(dB.estado, 'pendiente');
+    assert.strictEqual(dB.resuelto_decision, 'requiere_reimpresion');
+    assert.strictEqual(dB.resuelto_nota, 'sin evidencia de papel, reimprimir');
+    assert.ok(dB.resuelto_at, 'resuelto_at quedo NULL tras ordenar reimpresion');
+
+    // Limpieza (la fila B quedo 'pendiente' sin servidor que la procese --
+    // borrar el fixture evita que un caso futuro herede una deuda ejecutable
+    // ajena; la supervivencia al recovery REAL ya esta cubierta en 5/7/8).
+    for (const f of [folioA, folioB]) {
+      await pool.query(`DELETE FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2`, [NEG, f]);
+      await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2`, [NEG, f]);
+    }
   });
 
 } catch (e) {
