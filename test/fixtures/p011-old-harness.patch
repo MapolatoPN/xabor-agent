@@ -1,3 +1,27 @@
+diff --git a/src/orders/orderManager.js b/src/orders/orderManager.js
+index 3e5671e..14d9c2b 100644
+--- a/src/orders/orderManager.js
++++ b/src/orders/orderManager.js
+@@ -303,6 +303,19 @@ export async function emitirPedido(pedido) {
+     console.error(`[OrderManager] emitirPedido: pedido ${pedido.id} sin negocioId — no se emite al panel (fail closed)`);
+   }
+ 
++  // SOLO PARA LA PRUEBA DE CUTOVER P0-11 FASE 3 (P0-11D) -- nunca en
++  // producción: doble candado (NODE_ENV !== 'production' Y una variable de
++  // entorno explícita que nunca se define fuera de esta prueba). Congela el
++  // flujo real de OLD justo AQUÍ -- el panel YA recibió `nuevo_pedido`
++  // arriba, pero la impresión legacy de abajo todavía no arrancó -- para
++  // reproducir de forma determinista la ventana real donde el personal ya
++  // pudo ver y avanzar el pedido en el panel sin que la emisión core haya
++  // terminado. El proceso de prueba mata a OLD mientras sigue congelado
++  // aquí; nunca hay que liberarlo.
++  if (process.env.NODE_ENV !== 'production' && process.env.XABOR_TEST_PAUSAR_ANTES_DE_PRINT_LEGACY === '1') {
++    await new Promise(() => {});
++  }
++
+   // Impresión física por el camino anterior (print-agent legacy o
+   // autenticado): decidida por completo dentro de printRouter.js. Nunca
+   // lanza -- cualquier error de configuración/sucursal/broadcast ya se
 diff --git a/src/server.js b/src/server.js
 index 50154cb..96dff59 100644
 --- a/src/server.js

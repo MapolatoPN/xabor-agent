@@ -98,7 +98,25 @@ try {
     // Se demuestra que el escenario de arriba SÍ hundía a la lógica anterior:
     // con el tablero vacío, `obtenerMaxFolioNum()` devuelve el máximo de
     // `pedidos_activos`, que ya no incluye lo purgado.
+    //
+    // La brecha (histórico > tablero) se construye AQUÍ MISMO, nunca se
+    // asume del estado ambiente de la base compartida: antes, este caso
+    // dependía de que el máximo histórico global superara al tablero
+    // global, y cualquier otra suite que dejara pedidos vivos de OTRO
+    // negocio con folios frescos de la secuencia rompía esa precondición
+    // (fallaba en la regresión completa y pasaba en aislamiento). El
+    // fixture ahora reproduce el camino real: un folio recién emitido por
+    // la secuencia se ARCHIVA al histórico (compra que ya pasó) sin dejar
+    // rastro en el tablero — exactamente el estado que hundía al contador
+    // viejo. La secuencia es monótona, así que ese folio supera por
+    // construcción a todo lo vivo en pedidos_activos, de cualquier negocio.
     const { obtenerMaxFolioNum } = await import('../src/services/database.js');
+    const [fArchivado] = await reservar(1);
+    await pool.query(
+      `INSERT INTO pedidos (folio, telefono, nombre_cliente, items, total, modalidad,
+                            canal, forma_pago, negocio_id, created_at)
+       VALUES ($1,NULL,'X','[]'::jsonb,10,'recoger','folio_test','efectivo',$2,NOW() - interval '30 days')`,
+      [fArchivado, NEG]);
     await purgarTableroEntero();
     const maxTablero = await obtenerMaxFolioNum();
 
@@ -114,6 +132,8 @@ try {
     const [f] = await reservar(1);
     assert.ok(num(f) > maxHistorico,
       `la secuencia entrego ${f}, que ya existe en el historico (max ${maxHistorico})`);
+
+    await pool.query(`DELETE FROM pedidos WHERE folio = $1 AND negocio_id = $2`, [fArchivado, NEG]);
   });
 
   // ═══ MONOTONÍA Y UNICIDAD ════════════════════════════════════════════════

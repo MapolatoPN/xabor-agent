@@ -63,13 +63,24 @@ CREATE TABLE IF NOT EXISTS pedido_emisiones (
   origen            text NOT NULL,
   created_at        timestamptz NOT NULL DEFAULT NOW(),
   updated_at        timestamptz NOT NULL DEFAULT NOW(),
-  saldada_at        timestamptz
+  saldada_at        timestamptz,
+  -- P0-11D: nota humana dejada por resolverEmisionLegacyAmbigua al sacar una
+  -- fila de 'requiere_revision' -- por qué un operador decidió que ya se
+  -- emitió, o que necesita reimprimirse. NULL para cualquier otro origen.
+  resuelto_nota     text
 );
+ALTER TABLE pedido_emisiones ADD COLUMN IF NOT EXISTS resuelto_nota text;
 
-DO $$ BEGIN
-  ALTER TABLE pedido_emisiones ADD CONSTRAINT chk_pedido_emision_estado
-    CHECK (estado IN ('pendiente', 'saldada', 'cancelada'));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- P0-11D (auditoría independiente): agrega 'requiere_revision' -- ver el
+-- backfill más abajo. NO es lo mismo que 'pendiente': 'pendiente' es
+-- EJECUTABLE (el reconciliador la procesa sola); 'requiere_revision' está
+-- deliberadamente FUERA del alcance del reconciliador (que solo lee
+-- `estado = 'pendiente'`, ver `pedidosConEmisionOperacionalPendiente` en
+-- database.js) hasta que un humano la resuelva explícitamente con
+-- `resolverEmisionLegacyAmbigua`.
+ALTER TABLE pedido_emisiones DROP CONSTRAINT IF EXISTS chk_pedido_emision_estado;
+ALTER TABLE pedido_emisiones ADD CONSTRAINT chk_pedido_emision_estado
+  CHECK (estado IN ('pendiente', 'saldada', 'cancelada', 'requiere_revision'));
 
 -- UNA deuda por pedido concreto. El tercer campo es lo que impide que un
 -- folio reciclado confunda dos pedidos distintos.
@@ -183,52 +194,73 @@ CREATE TRIGGER trg_asegurar_emision_operacional
 -- Marcarlos 'pendiente' dispararía al reconciliador a reemitir/reimprimir
 -- comandas viejas -- exactamente lo que NO se quiere.
 --
--- P0-11C (auditoría independiente): la versión anterior marcaba TODO
--- pedido preexistente como 'saldada'/`legacy_asumida_emitida`, sin
--- distinción. Reproducido en rojo con un binario OLD (0f9e82b) real: OLD
--- acepta el pedido P (INSERT durable, `estado='nuevo'`), y milisegundos
--- después -- SIN que el `emitirPedido` fire-and-forget de OLD haya tenido
--- tiempo de terminar -- esta migración corre EN CALIENTE (Railway aplica
--- predeploy mientras el binario viejo sigue vivo, ver P0-15/059). El
--- backfill anterior marcaba a P 'saldada' igual que un pedido de hace tres
--- años: si el `emitirPedido` de OLD no llegó a imprimir (o si OLD muere
--- justo ahí, como en el escenario probado), NEW arranca, ve la deuda ya
--- 'saldada', y NUNCA la revisa -- EMISIÓN SILENCIOSAMENTE PERDIDA. Ni
--- "aplicar rápido" ni "esperar un poco" son garantías demostrables: el
--- backfill no tiene forma de saber, por tiempo, si `emitirPedido` de OLD
--- ya terminó.
+-- P0-11C (primera corrección, auditoría independiente): la versión
+-- original marcaba TODO pedido preexistente 'saldada'/`legacy_asumida_
+-- emitida`, sin distinción. Reproducido en rojo con un binario OLD
+-- (0f9e82b) real: OLD acepta el pedido P (INSERT durable,
+-- `estado='nuevo'`), y milisegundos después -- SIN que el `emitirPedido`
+-- fire-and-forget de OLD haya tenido tiempo de terminar -- esta migración
+-- corre EN CALIENTE (Railway aplica predeploy mientras el binario viejo
+-- sigue vivo, ver P0-15/059). El backfill original marcaba a P 'saldada'
+-- igual que un pedido de hace tres años -- EMISIÓN SILENCIOSAMENTE
+-- PERDIDA si OLD moría ahí. El primer intento de corrección usó el
+-- PROGRESO DE ESTADO como prueba: `en_preparacion`/`listo`/terminal
+-- ⇒ "alguien ya actuó, la comanda ya salió, `saldada` es seguro".
 --
--- LA CORRECCIÓN: la frontera no es tiempo, es progreso de estado --
--- observable en la base, sin adivinar. Un pedido cuyo estado YA avanzó más
--- allá de 'nuevo' (`en_preparacion`, `listo`, o terminal `entregado`/
--- `cancelado`) sólo pudo llegar ahí porque alguien (staff en el panel, o
--- un proceso posterior) ya vio/actuó sobre él -- lo que implica que su
--- comanda original necesariamente ya salió. Para esos, `saldada` sigue
--- siendo seguro y correcto (rama A, sin cambios de fondo).
+-- P0-11D (segunda auditoría independiente, corrige la premisa de la
+-- primera corrección): esa premisa es FALSA. El propio P0-11A (arriba)
+-- explica por qué la allow-list operacional incluye `en_preparacion` y
+-- `listo`, no solo `nuevo`: el personal puede avanzar el estado de un
+-- pedido en el panel MIENTRAS su emisión todavía necesita recovery --
+-- `actualizarEstadoPedido` no depende de que `emitirPedido` haya
+-- terminado. Y el orden real de `emitirPedido` (orderManager.js) es
+-- Edge -> BROADCAST AL PANEL (`nuevo_pedido`) -> impresión legacy (solo si
+-- Edge no se hizo cargo) -- el panel se entera ANTES de que el papel
+-- exista. Reproducido en rojo con el binario OLD real, instrumentado
+-- SOLO en la prueba (`XABOR_TEST_PAUSAR_ANTES_DE_PRINT_LEGACY`, doble
+-- candado NODE_ENV+env explícita, ver test/fixtures/p011-old-harness.patch):
+-- se observa el `nuevo_pedido` REAL por WebSocket, se congela el flujo de
+-- OLD ahí mismo (antes de que la impresión legacy arranque), se avanza P
+-- a `en_preparacion` por la ruta productiva real
+-- (`PATCH /pedidos/:id/estado`), se aplica esta migración, y CON LA
+-- PRIMERA CORRECCIÓN el backfill marcaba a P 'saldada' -- exactamente la
+-- misma emisión perdida que P0-11C, solo que ahora escondida detrás de un
+-- avance de estado que NO prueba nada sobre la impresión.
 --
--- Un pedido que sigue en 'nuevo' -- el estado que trae DESDE el INSERT,
--- nunca tocado -- es exactamente el ambiguo: puede ser un pedido
--- genuinamente viejo que el staff olvidó avanzar (raro, pero posible), o
--- puede ser P, aceptado por OLD instantes antes de este backfill. No hay
--- forma de distinguir los dos casos desde aquí -- así que NO se asume
--- nada: se marca 'pendiente' (deuda EJECUTABLE, origen distinto y
--- auditable), para que el reconciliador de NEW la revise/complete después
--- del deploy (rama B). El riesgo residual -- un 'nuevo' genuinamente
--- olvidado por staff se re-verifica (compra real idempotente, comanda que
--- se reimprime UNA vez) -- es acotado y preferible, sin comparación, a una
--- emisión perdida para siempre sin que nadie se entere.
+-- LA CORRECCIÓN (P0-11D): ningún estado NO TERMINAL demuestra por sí
+-- mismo que la emisión core terminó -- ni `nuevo`, ni `en_preparacion`,
+-- ni `listo`. Solo los estados TERMINALES (`entregado`, `cancelado`)
+-- excluyen al pedido del recovery, y no porque prueben que ya se imprimió,
+-- sino porque YA NO DEBEN COCINARSE AHORA sin importar si hubo papel
+-- antes -- reemitir la comanda de un pedido cancelado o ya entregado no
+-- tiene sentido en ningún caso (rama A, sin cambios de fondo respecto a
+-- la primera corrección para estos dos estados).
+--
+-- Para los tres estados NO terminales (`nuevo`, `en_preparacion`,
+-- `listo`) tampoco se repite el error de la primera corrección de P0-11C
+-- (asumir 'pendiente' EJECUTABLE para todos): eso reimprimiría en
+-- automático historiales genuinamente viejos que sí se cocinaron hace
+-- meses, con el mismo riesgo de sobre-impresión que este backfill existe
+-- para evitar. La única frontera fail-closed demostrable es: legacy no
+-- terminal SIN evidencia inequívoca de emisión ⇒ NUNCA se asume nada,
+-- NUNCA se auto-ejecuta -- queda 'requiere_revision' (rama B), un estado
+-- que el reconciliador de NEW ignora por diseño (solo procesa
+-- `estado = 'pendiente'`) hasta que un humano lo resuelva explícitamente
+-- con `resolverEmisionLegacyAmbigua` (database.js) -- ver
+-- scripts/predeploy-063-emision-operacional.mjs, que aborta el deploy
+-- mientras existan filas 'requiere_revision' sin resolver.
 INSERT INTO pedido_emisiones (negocio_id, folio, pedido_creado_at, estado, origen, saldada_at)
 SELECT negocio_id, folio, date_trunc('milliseconds', created_at), 'saldada', 'legacy_asumida_emitida', NOW()
   FROM pedidos_activos
  WHERE negocio_id IS NOT NULL
-   AND estado IN ('en_preparacion', 'listo', 'entregado', 'cancelado')
+   AND estado IN ('entregado', 'cancelado')
    AND NOT (datos->>'programado_para' IS NOT NULL AND datos->>'programado_id' IS NULL)
 ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING;
 
 INSERT INTO pedido_emisiones (negocio_id, folio, pedido_creado_at, estado, origen)
-SELECT negocio_id, folio, date_trunc('milliseconds', created_at), 'pendiente', 'legacy_nuevo_no_verificado'
+SELECT negocio_id, folio, date_trunc('milliseconds', created_at), 'requiere_revision', 'legacy_ambiguo_no_verificado'
   FROM pedidos_activos
  WHERE negocio_id IS NOT NULL
-   AND estado = 'nuevo'
+   AND estado IN ('nuevo', 'en_preparacion', 'listo')
    AND NOT (datos->>'programado_para' IS NOT NULL AND datos->>'programado_id' IS NULL)
 ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING;

@@ -100,9 +100,17 @@ async function sembrarHistoricoPurgado() {
       [`XAB-${String(n).padStart(4, '0')}`, NEG]);
   }
   // El tablero solo llega a 90: es lo unico que OLD mira al arrancar.
+  // Estado 'entregado' a proposito (P0-11D): obtenerMaxFolioNum de OLD no
+  // filtra por estado (hace MAX sobre TODO pedidos_activos), asi que el
+  // fixture cumple identico su unico proposito -- fijar el maximo del
+  // tablero. Con 'nuevo', el predeploy-063 del runner lo marcaria (correcta
+  // y deliberadamente) 'requiere_revision' y abortaria el deploy entero:
+  // ese fail-closed es de la 063 y tiene su propia suite
+  // (fase-cutover-063-emision-operacional); aqui solo seria ruido que
+  // rompe los casos 1/3 por razones ajenas al folio durable.
   await desechable.query(
     `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
-     VALUES ('XAB-0090','nuevo','{}'::jsonb,$1)
+     VALUES ('XAB-0090','entregado','{}'::jsonb,$1)
      ON CONFLICT (folio) DO NOTHING`, [NEG]);
 }
 try {
@@ -124,6 +132,16 @@ try {
   // runner dejara de aplicarla -- verde por la razon equivocada.
   await desechable.query(`DROP TRIGGER IF EXISTS trg_barrera_folio_historico ON pedidos_activos`);
   await desechable.query(`DROP FUNCTION IF EXISTS xabor_barrera_folio_historico()`);
+  // La 063 tambien se retira, por la misma razon que la 060: la base local ya
+  // la tiene aplicada (con su ledger pedido_emisiones incluido, que puede
+  // traer deudas 'requiere_revision' heredadas de otras suites). Esta base
+  // desechable representa "ANTES del deploy" -- el runner debe poder
+  // instalarla desde cero, y una deuda heredada de la copia bloquearia el
+  // predeploy-063 (P0-11D, fail-closed correcto) por razones ajenas a lo que
+  // esta suite prueba.
+  await desechable.query(`DROP TRIGGER IF EXISTS trg_asegurar_emision_operacional ON pedidos_activos`);
+  await desechable.query(`DROP FUNCTION IF EXISTS xabor_asegurar_emision_operacional()`);
+  await desechable.query(`DROP TABLE IF EXISTS pedido_emisiones`);
 
   const hayTabla = async () => (await desechable.query(
     `SELECT COUNT(*)::int AS n FROM information_schema.tables

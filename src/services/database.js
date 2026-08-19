@@ -5025,6 +5025,41 @@ export async function pedidosConEmisionOperacionalPendiente(limite = 50) {
   return rows;
 }
 
+// P0-11D: única puerta de salida de 'requiere_revision' -- el estado en el
+// que el backfill de la 063 deja a un pedido legacy no terminal
+// (nuevo/en_preparacion/listo) sin evidencia inequívoca de emisión. El
+// reconciliador (arriba) NUNCA toca estas filas por su cuenta -- solo lee
+// `estado = 'pendiente'`. Requiere una decisión humana explícita y
+// auditada, nunca un heurístico de tiempo ni de "probablemente ya salió":
+//   · 'confirmado_emitido'    -- un operador verificó por otra vía (comanda
+//     física en mano, bitácora, etc.) que sí se imprimió -- se cierra como
+//     'saldada', igual que cualquier otra deuda saldada.
+//   · 'requiere_reimpresion'  -- no hay evidencia de que se haya impreso --
+//     se convierte en 'pendiente' EJECUTABLE, y el reconciliador normal la
+//     recoge y la procesa por el camino real (mismo `conEmisionOperacionalExclusiva`
+//     que cualquier otra deuda).
+// El origen se reescribe a 'legacy_revisado_manual' en ambos casos -- deja
+// rastro de que esta fila ya no es un backfill sin tocar, es una decisión
+// humana. Falla cerrado si la fila no existe o ya no está en
+// 'requiere_revision' (no hay "resolver dos veces" ni "resolver algo que
+// nunca fue ambiguo").
+export async function resolverEmisionLegacyAmbigua(negocioId, folio, pedidoCreadoAt, resolucion, nota = null) {
+  if (resolucion !== 'confirmado_emitido' && resolucion !== 'requiere_reimpresion') {
+    throw new Error(`resolucion invalida: ${resolucion} (se esperaba 'confirmado_emitido' o 'requiere_reimpresion')`);
+  }
+  const nuevoEstado = resolucion === 'confirmado_emitido' ? 'saldada' : 'pendiente';
+  const { rowCount } = await pool.query(
+    `UPDATE pedido_emisiones
+        SET estado = $4, origen = 'legacy_revisado_manual', resuelto_nota = $5, updated_at = NOW(),
+            saldada_at = CASE WHEN $4 = 'saldada' THEN NOW() ELSE NULL END
+      WHERE negocio_id = $1 AND folio = $2 AND pedido_creado_at = $3 AND estado = 'requiere_revision'`,
+    [negocioId, folio, pedidoCreadoAt, nuevoEstado, nota]);
+  if (rowCount === 0) {
+    throw new Error(`no hay ninguna deuda 'requiere_revision' para (negocio=${negocioId}, folio=${folio}, creado=${pedidoCreadoAt}) -- nada que resolver`);
+  }
+  return { ok: true, estado: nuevoEstado };
+}
+
 // Ejecuta `emitir` A LO SUMO UNA VEZ por (negocio, printJobId), aunque se
 // llame desde varios procesos a la vez y aunque el servidor se reinicie entre
 // intentos.
