@@ -66,6 +66,25 @@ export class CreacionAmbiguaError extends Error {
     this.code = 'CREACION_AMBIGUA';
   }
 }
+/**
+ * CLIP-B (auditoria independiente): el proveedor acepta expiracion en la
+ * creacion pero la frontera durable T no pudo fijarse. Crear un checkout SIN
+ * ninguna expiracion atada a T reproduce el bug original (dos relojes, o
+ * ninguno). Fail closed ANTES del POST -- un warn no es una barrera.
+ */
+export class FronteraDurableAusenteError extends Error {
+  constructor(pedidoId) {
+    super(`No se pudo fijar la frontera durable de espera (xabor_espera_hasta) del pedido ${pedidoId} antes de crear el checkout: no se manda ningún POST al proveedor`);
+    this.code = 'SIN_FRONTERA_DURABLE';
+  }
+}
+
+// CLIP-C: ¿esta fila tiene un checkout cuya expiracion efectiva es mas laxa
+// que la solicitada (o no verificable)? Su URL existe como IDENTIDAD (impide
+// un segundo checkout) pero JAMAS se ofrece como enlace utilizable.
+const expiracionPeligrosaDe = (fila) =>
+  fila?.metadata_sanitizada?.expiracion_proveedor_mas_larga === true
+  || fila?.metadata_sanitizada?.expiracion_proveedor_no_verificable === true;
 
 /**
  * Crea (o reutiliza, si ya hay uno vigente y sin cambios) un enlace de
@@ -242,7 +261,12 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
              // ambigüedad, que es lo único que sabe si el checkout existe del
              // otro lado.
              && (vigente.tipo !== 'enlace_pago' || vigente.url)
-             && vigente.metadata_sanitizada?.anomalia !== 'creacion_ambigua') {
+             && vigente.metadata_sanitizada?.anomalia !== 'creacion_ambigua'
+             // CLIP-C: un checkout con expiracion del proveedor mas laxa (o
+             // no verificable) NUNCA se reutiliza como enlace entregable --
+             // la barrera de identidad durable de mas abajo respondera sin
+             // URL y sin segundo POST.
+             && !expiracionPeligrosaDe(vigente)) {
     return { pagoId: vigente.id, url: vigente.url, reutilizado: true, referenciaExterna: vigente.referencia_externa, estado: vigente.estado };
   }
   if (vigente && vigente.proveedor === principal.proveedor && vigente.version_pedido_hash !== versionHash) {
@@ -401,6 +425,20 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   // justamente la que un early-return por `vigente` no atrapa, porque la fila
   // puede estar en 'creando' y sin pasar por esa rama.
   if (tieneIdentidadExternaDurable(registro)) {
+    // CLIP-C: si el checkout preexistente quedo marcado con una expiracion
+    // del proveedor mas laxa (o no verificable), el retry conserva la
+    // identidad (CERO segundo POST) pero TAMPOCO entrega en silencio la URL
+    // que la primera llamada se nego a dar.
+    if (expiracionPeligrosaDe(registro)) {
+      return {
+        pagoId: registro.id, url: null, reutilizado: true,
+        referenciaExterna: registro.referencia_externa,
+        estado: 'requiere_revision', requiereRevision: true,
+        razonRevision: registro.metadata_sanitizada?.expiracion_proveedor_mas_larga === true
+          ? 'expiracion_proveedor_mas_larga' : 'expiracion_proveedor_no_verificable',
+        identidadPreexistente: true,
+      };
+    }
     return {
       pagoId: registro.id, url: registro.url, reutilizado: true,
       referenciaExterna: registro.referencia_externa,
@@ -427,11 +465,18 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   if (capacidades.expiracionEnCreacion) {
     expiraXabor = await fijarEsperaDePago(registro.id, negocioId,
       await minutosDeEsperaDePago(negocioId));
+    // Punto de fallo inyectable SOLO en pruebas (mismo candado que el resto
+    // del proyecto): simula que la frontera durable no pudo fijarse, la
+    // condicion que el diente de CLIP-B necesita provocar de verdad.
+    if (process.env.NODE_ENV !== 'production'
+        && process.env.XABOR_PAGOS_FALLA_EN === 'fijar_espera_sin_t') {
+      expiraXabor = null;
+    }
     if (!expiraXabor) {
-      // Sin frontera durable no se manda ninguna expiracion inventada -- pero
-      // esto no deberia pasar (la fila existe y los minutos estan acotados):
-      // se registra para que no sea silencioso.
-      console.warn(`[Pagos] No se pudo fijar xabor_espera_hasta para ${registro.id} antes del POST -- el checkout saldra sin expires_at`);
+      // CLIP-B: FAIL CLOSED, antes del POST. La version anterior solo hacia
+      // console.warn y creaba el checkout SIN ninguna expiracion atada a T --
+      // un warn no es una barrera. Cero requests al proveedor.
+      throw new FronteraDurableAusenteError(pedidoId);
     }
   }
 
@@ -466,6 +511,15 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // oficiales del proveedor ANTES de mandar el POST.
       expiresAt: capacidades.expiracionEnCreacion ? expiraXabor : null,
     });
+    // CLIP-C: el POST YA ocurrio -- no se puede fingir que fallo antes de
+    // crear. Si la expiracion efectiva del proveedor es significativamente
+    // MAS LARGA que la solicitada, o no pudo verificarse, ese enlace acepta
+    // dinero fuera de la ventana de Xabor: la identidad se conserva DURABLE
+    // (impide un segundo checkout; un webhook tardio aun resuelve), la fila
+    // queda en 'requiere_revision', y la URL JAMAS se entrega al cliente.
+    const expiracionPeligrosa = resultado.expiracionMeta?.expiracion_proveedor_mas_larga === true
+      || resultado.expiracionMeta?.expiracion_proveedor_no_verificable === true;
+
     // FINALIZACION ATOMICA. Antes eran cuatro escrituras sueltas y un fallo
     // intermedio dejaba media identidad local -- con el catch marcando la
     // creación como ambigua aunque la identidad ya existiera.
@@ -473,7 +527,7 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       pagoId: registro.id, negocioId,
       referenciaExterna: resultado.referenciaExterna, url: resultado.url || null,
       preferenceId: resultado.preferenceId || null,
-      estado: normalizarEstadoPago(resultado.estado || 'pendiente'),
+      estado: expiracionPeligrosa ? 'requiere_revision' : normalizarEstadoPago(resultado.estado || 'pendiente'),
       comoSeResolvio: 'creado',
       // El plazo de espera es politica del negocio, no una constante global.
       // Para proveedores con expiracionEnCreacion la T ya quedo durable ANTES
@@ -493,6 +547,16 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
         'el proveedor creó el checkout pero no se pudo cerrar la creación localmente');
       throw new CreacionAmbiguaError(pedidoId, principal.proveedor);
     }
+    if (expiracionPeligrosa) {
+      console.error(`[Pagos] Checkout ${resultado.referenciaExterna} de ${pedidoId} con expiracion del proveedor mas laxa/no verificable: identidad conservada, URL NO entregada, requiere revision`);
+      return {
+        pagoId: registro.id, url: null, reutilizado: false,
+        referenciaExterna: resultado.referenciaExterna, estado: 'requiere_revision',
+        requiereRevision: true,
+        razonRevision: resultado.expiracionMeta?.expiracion_proveedor_mas_larga === true
+          ? 'expiracion_proveedor_mas_larga' : 'expiracion_proveedor_no_verificable',
+      };
+    }
     return { pagoId: registro.id, url: resultado.url, reutilizado: false, referenciaExterna: resultado.referenciaExterna, estado: normalizarEstadoPago(resultado.estado || 'pendiente'), instrucciones: resultado.instrucciones || null };
   } catch (e) {
     // Un fallo DESPUÉS de mandar el POST es ambiguo, no fallido: el proveedor
@@ -504,8 +568,9 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     const antesDeSalir = e.code === 'TENANT_CONTEXT_REQUIRED'
       || e.code === 'CLIP_NO_CONFIGURADO' || e.code === 'SIN_PROVEEDOR_PRINCIPAL'
       // La validacion de expiracion del adaptador lanza ANTES de tocar la red
-      // (por contrato): no hay checkout que pudiera haber nacido.
-      || e.code === 'EXPIRACION_INVALIDA';
+      // (por contrato): no hay checkout que pudiera haber nacido. Lo mismo la
+      // frontera durable ausente (CLIP-B): se lanza antes del POST.
+      || e.code === 'EXPIRACION_INVALIDA' || e.code === 'SIN_FRONTERA_DURABLE';
     if (e.code === 'CREACION_AMBIGUA') throw e;      // el motivo ya quedo anotado
     if (antesDeSalir) {
       await marcarPagoFallido(registro.id, e.code || e.message);

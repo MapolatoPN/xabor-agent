@@ -24,25 +24,59 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
   // quedó durable ANTES del POST y NUNCA se amplía por lo que el proveedor
   // conteste -- Xabor sigue siendo la autorización de cocina.
   const solicitadaMs = r.expiracionSolicitada ? Date.parse(r.expiracionSolicitada) : null;
-  const proveedorMs = r.expiracionProveedor ? Date.parse(r.expiracionProveedor) : null;
+  let proveedorTexto = r.expiracionProveedor || null;
+  let proveedorMs = proveedorTexto ? Date.parse(proveedorTexto) : null;
+  if (proveedorMs != null && Number.isNaN(proveedorMs)) { proveedorTexto = null; proveedorMs = null; }
+  const expiracionMeta = {};
+
+  // La documentación oficial LISTA `expired_at` en la respuesta de creación
+  // pero no lo garantiza no-nulo; el GET de estado sí lo documenta. Política
+  // (auditoría CLIP): si pedimos una expiración y la creación no devolvió la
+  // efectiva (ausente o no parseable), se RECONSULTA por payment_request_id
+  // ANTES de exponer el enlace. Sin expiración efectiva verificada, el
+  // enlace no se ofrece (ver expiracion_proveedor_no_verificable abajo).
+  if (solicitadaMs != null && proveedorMs == null && r.linkId) {
+    const verif = normalizarConsultaCheckout(await consultarEstadoPago(r.linkId, negocioId));
+    const verifMs = verif?.expiraAt ? Date.parse(verif.expiraAt) : NaN;
+    if (Number.isFinite(verifMs)) {
+      proveedorTexto = verif.expiraAt;
+      proveedorMs = verifMs;
+      expiracionMeta.expiracion_verificada_por_reconsulta = true;
+    }
+  }
+
+  if (r.expiracionSolicitada) expiracionMeta.requested_expires_at = r.expiracionSolicitada;
+  if (proveedorTexto) expiracionMeta.provider_expires_at = proveedorTexto;
+  if (r.expiracionAjustadaPorLimite) expiracionMeta.expiracion_ajustada_por_limite_cdmx = true;
+
+  if (solicitadaMs != null && proveedorMs == null) {
+    // Ni la creación ni la reconsulta pudieron decir cuándo vence el
+    // checkout que ACABA de nacer. No se inventa: fail closed en el llamador.
+    expiracionMeta.expiracion_proveedor_no_verificable = true;
+    console.warn(`[Clip] No se pudo verificar la expiración efectiva del checkout de ${pedidoId}: no se ofrecerá el enlace hasta revisarlo`);
+  }
+
   const divergencia = (solicitadaMs != null && proveedorMs != null)
     ? Math.abs(proveedorMs - solicitadaMs) : null;
-  const expiracionMeta = {};
-  if (r.expiracionSolicitada) expiracionMeta.requested_expires_at = r.expiracionSolicitada;
-  if (r.expiracionProveedor) expiracionMeta.provider_expires_at = r.expiracionProveedor;
-  if (r.expiracionAjustadaPorLimite) expiracionMeta.expiracion_ajustada_por_limite_cdmx = true;
-  if (r.expiracionOmitida) expiracionMeta.expiracion_omitida = r.expiracionOmitida;
   if (divergencia != null && divergencia > 60 * 1000) {
     expiracionMeta.expiracion_divergente = true;
     expiracionMeta.expiracion_divergencia_segundos = Math.round(divergencia / 1000);
-    console.warn(`[Clip] El proveedor devolvió una expiración distinta a la solicitada para ${pedidoId}: pedida ${r.expiracionSolicitada}, efectiva ${r.expiracionProveedor} -- la frontera local de Xabor NO se mueve`);
+    console.warn(`[Clip] El proveedor devolvió una expiración distinta a la solicitada para ${pedidoId}: pedida ${r.expiracionSolicitada}, efectiva ${proveedorTexto} -- la frontera local de Xabor NO se mueve`);
+  }
+  // LA DIRECCIÓN IMPORTA (CLIP-C): una expiración efectiva MÁS CORTA es
+  // legítima ("igual o más estricta"); una significativamente MÁS LARGA
+  // significa que el proveedor dejó un enlace que acepta dinero después de
+  // la frontera de Xabor -- ese checkout existe (identidad durable) pero
+  // JAMÁS se le entrega al cliente: el llamador lo deja en revisión.
+  if (solicitadaMs != null && proveedorMs != null && proveedorMs > solicitadaMs + 60 * 1000) {
+    expiracionMeta.expiracion_proveedor_mas_larga = true;
   }
 
   return {
     referenciaExterna: r.linkId, url: r.url, estado: 'pendiente',
     // La expiración EFECTIVA declarada por el proveedor (para pagos.expires_at)
     // y el rastro sanitizado (sin secretos) para metadata_sanitizada.
-    expiresAtProveedor: r.expiracionProveedor || null,
+    expiresAtProveedor: proveedorTexto,
     expiracionMeta: Object.keys(expiracionMeta).length ? expiracionMeta : null,
   };
 }
@@ -163,7 +197,7 @@ export function getCapabilities() {
     // es conocida DESPUES de consultarlo.
     expiracionConocida: true,
     // CLIP expires_at: la creacion acepta una expiracion explicita
-    // (documentada: "YYYY-MM-DDTHH-MM-SSZ", > creacion + 1 min, <= fin del
+    // (documentada: "YYYY-MM-DDTHH:MM:SSZ", > creacion + 1 min, <= fin del
     // dia CDMX). pagosService la deriva de xabor_espera_hasta -- calculada
     // UNA vez y persistida ANTES del POST, nunca un segundo reloj.
     expiracionEnCreacion: true,

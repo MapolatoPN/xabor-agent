@@ -10,7 +10,7 @@
 // CONTRATO OFICIAL DE CLIP (auditado ANTES de escribir esta suite, fuentes:
 // https://developer.clip.mx/reference/createnewpaymentlink y
 // https://developer.clip.mx/reference/checkout-webhook):
-//   · Campo request: `expires_at`, string, formato "YYYY-MM-DDTHH-MM-SSZ"
+//   · Campo request: `expires_at`, string, formato "YYYY-MM-DDTHH:MM:SSZ"
 //     (UTC, maxLength 20 -- SEGUNDOS, sin milisegundos).
 //   · Limites: "mayor a 00:01:00 minuto de la hora de creacion y menor a las
 //     23:59:59 (hora de CDMX) del mismo dia de creacion". Default si se
@@ -88,14 +88,20 @@ const clipMock = createServer((req, res) => {
       else expiredAt = new Date(Date.now() + 3 * 24 * 3600e3).toISOString(); // default documentado: 3 dias
       CHECKOUTS.set(id, {
         referencia: body.metadata?.external_reference || null,
-        estado: 'PENDING', monto: Number(body.amount), expiredAt,
+        estado: 'PENDING', monto: Number(body.amount),
+        // 'sin_expired_at_nunca': ni la creacion ni el GET traen expired_at.
+        expiredAt: modoClip === 'sin_expired_at_nunca' ? null : expiredAt,
       });
-      res.end(JSON.stringify({
+      const respuesta = {
         payment_request_id: id, object_type: 'payment_link', status: 'CHECKOUT_CREATED',
         payment_request_url: `https://pago.mock.clip/${id}`,
         created_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
         expired_at: expiredAt,
-      }));
+      };
+      // 'sin_expired_at': la RESPUESTA DE CREACION omite expired_at (la
+      // documentacion no garantiza el campo ahi), pero el GET si lo trae.
+      if (modoClip === 'sin_expired_at' || modoClip === 'sin_expired_at_nunca') delete respuesta.expired_at;
+      res.end(JSON.stringify(respuesta));
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
@@ -268,7 +274,7 @@ try {
     assert.ok(req.expires_at,
       `el POST de creacion a Clip NO lleva expires_at: el checkout queda con el default de 3 dias del proveedor, cobrable mucho despues de que Xabor ya vencio. Cuerpo capturado: ${JSON.stringify(Object.keys(req))}`);
     assert.match(String(req.expires_at), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
-      `expires_at no va en el formato oficial de Clip (YYYY-MM-DDTHH-MM-SSZ, UTC, sin milisegundos): ${req.expires_at}`);
+      `expires_at no va en el formato oficial de Clip (YYYY-MM-DDTHH:MM:SSZ, UTC, sin milisegundos): ${req.expires_at}`);
   });
 
   // ═══ 2. expires_at ES el mismo instante que xabor_espera_hasta ═══════════
@@ -283,11 +289,16 @@ try {
     assert.ok(fila?.xabor_espera_hasta, 'la fila no tiene xabor_espera_hasta');
     const enviado = Date.parse(req.expires_at);
     const durable = new Date(fila.xabor_espera_hasta).getTime();
-    // Clip trunca a SEGUNDOS (formato de 20 chars); la tolerancia es 1s por
-    // ese truncado -- jamas minutos.
-    const diff = Math.abs(enviado - durable);
+    // Determinismo de fin de dia: si esta suite corre cerca de la medianoche
+    // CDMX, T puede cruzar el dia y el codigo la ACOTA (legitimamente) al
+    // tope 23:59:00 CDMX. Lo que se exige entonces es que lo enviado sea
+    // exactamente min(T, tope) -- nunca un tercer valor. La tolerancia es 1s
+    // por el truncado a SEGUNDOS de Clip -- jamas minutos.
+    const { finDelDiaCDMXComoUTC } = await import('../src/services/clip-api.js');
+    const esperado = Math.min(durable, finDelDiaCDMXComoUTC(new Date()));
+    const diff = Math.abs(enviado - esperado);
     assert.ok(diff < 1000,
-      `expires_at enviado a Clip (${req.expires_at}) y xabor_espera_hasta durable (${new Date(durable).toISOString()}) difieren ${Math.round(diff / 1000)}s: dos relojes que pueden divergir en vez de UNA frontera`);
+      `expires_at enviado a Clip (${req.expires_at}) y la frontera esperada min(T, tope CDMX) (${new Date(esperado).toISOString()}) difieren ${Math.round(diff / 1000)}s: dos relojes que pueden divergir en vez de UNA frontera`);
     // Y la T durable existia ANTES de que el proveedor respondiera: quedo
     // fijada pre-POST (fijarEsperaDePago), no inventada despues.
     assert.ok(new Date(fila.xabor_espera_hasta).getTime() > Date.now(),
@@ -378,15 +389,34 @@ try {
   });
 
   // ═══ 6. El proveedor devuelve una expiracion MAS TARDIA ══════════════════
-  await t('6. Clip devuelve una expiracion 6h mas tardia -> Xabor NO amplia su autorizacion local', async () => {
+  await t('6. CLIP-C: expiracion del proveedor 6h mas tardia -> identidad durable SI, URL al cliente NO, revision, retry sin segundo POST', async () => {
     const folio = folioNuevo();
     await pedido(folio, 290);
     modoClip = 'ajusta';
     const antes = REQUESTS.length;
-    await crearEnlace(folio);
+    const r = await crearEnlace(folio);
     modoClip = 'normal';
     const req = REQUESTS[antes];
     const [fila] = await filas(folio);
+
+    // El POST YA ocurrio: la identidad externa se conserva DURABLE (impide
+    // un segundo checkout) junto con ambas fronteras.
+    assert.ok(fila.referencia_externa, 'se perdio la identidad externa del checkout ya creado');
+    assert.ok(fila.url, 'la URL debe conservarse en la fila (identidad), aunque jamas se ofrezca');
+    assert.ok(fila.metadata_sanitizada?.requested_expires_at && fila.metadata_sanitizada?.provider_expires_at,
+      'no quedaron durables las dos fronteras (solicitada y del proveedor)');
+    assert.strictEqual(fila.metadata_sanitizada?.expiracion_proveedor_mas_larga, true,
+      'la anomalia expiracion_proveedor_mas_larga no quedo marcada');
+
+    // Pero un enlace que acepta dinero 6h despues de la frontera local NO se
+    // entrega al cliente: fail closed, requiere revision.
+    assert.ok(!r.url,
+      `crearEnlacePago devolvio una URL utilizable (${r.url}) con una expiracion del proveedor 6h MAS LARGA que la solicitada: ese enlace acepta dinero fuera de la ventana de Xabor`);
+    assert.strictEqual(r.requiereRevision, true, 'el resultado no quedo marcado como requiere revision');
+    assert.strictEqual(fila.estado, 'requiere_revision',
+      `la fila debe quedar fail-closed en requiere_revision -- obtenido ${fila.estado}`);
+
+    // La frontera local NO se amplio.
     const solicitado = Date.parse(req.expires_at);
     const local = new Date(fila.xabor_espera_hasta).getTime();
     assert.ok(Math.abs(local - solicitado) < 1000,
@@ -394,15 +424,15 @@ try {
     const proveedor = new Date(fila.expires_at).getTime();
     assert.ok(Math.abs(proveedor - (solicitado + 6 * 3600e3)) < 1000,
       'pagos.expires_at no registro la frontera EFECTIVA (mas tardia) del proveedor');
-    assert.strictEqual(fila.metadata_sanitizada?.expiracion_divergente, true,
-      'la divergencia significativa no quedo marcada');
-    // Y la frontera local sigue mandando: vencido a la hora de XABOR aunque
-    // el link del proveedor siga vivo 6h mas.
-    await vencerYa(fila.id);
-    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
-    assert.ok((await expirarPagosVencidos()) >= 1, 'el vencimiento local no corrio');
-    assert.strictEqual((await filaId(fila.id)).estado, 'vencido',
-      'el pago no vencio a la hora local: la ventana del proveedor amplio la autorizacion de Xabor');
+
+    // Retry: CERO segundo POST, y tampoco entrega la URL peligrosa en silencio.
+    const antesRetry = REQUESTS.length;
+    const r2 = await crearEnlace(folio);
+    assert.strictEqual(REQUESTS.length, antesRetry,
+      'el reintento mando un SEGUNDO POST con el checkout A todavia cobrable');
+    assert.ok(!r2.url,
+      'el reintento devolvio en silencio la URL peligrosa que la primera llamada se nego a entregar');
+    assert.strictEqual(r2.requiereRevision, true, 'el reintento no aviso que la fila requiere revision');
   });
 
   // ═══ 7. El proveedor devuelve una expiracion MAS TEMPRANA ════════════════
@@ -411,10 +441,12 @@ try {
     await pedido(folio, 300);
     modoClip = 'adelanta';
     const antes = REQUESTS.length;
-    await crearEnlace(folio);
+    const r = await crearEnlace(folio);
     modoClip = 'normal';
     const req = REQUESTS[antes];
     const [fila] = await filas(folio);
+    // "Igual o mas estricta" ES aceptable: el enlace SI se entrega.
+    assert.ok(r.url, 'una expiracion del proveedor MAS CORTA es legitima y el enlace debio entregarse');
     const solicitado = Date.parse(req.expires_at);
     assert.ok(Math.abs(new Date(fila.xabor_espera_hasta).getTime() - solicitado) < 1000,
       'la frontera local cambio por la respuesta del proveedor');
@@ -713,6 +745,125 @@ try {
       'la fila de MP gano metadata de expiracion de Clip');
     // Restaurar Clip como principal para cualquier caso posterior.
     await conectarClip(NEG);
+  });
+
+  // ═══ 19. CLIP-A: sin ventana valida -> CERO POST (reloj determinista) ════
+  //
+  // Contrato oficial: expires_at debe ser simultaneamente > creacion + 1 min
+  // y < 23:59:59 CDMX del mismo dia. En el ultimo minuto del dia CDMX no
+  // existe NINGUN valor que cumpla ambas. La salida correcta es fallar
+  // tipado ANTES del POST -- jamas omitir el campo y dejar que Clip cree un
+  // checkout con su default de 3 DIAS (eso reproduce el bug original), ni
+  // esperar a que Clip devuelva 400. Reloj inyectado (XABOR_TEST_CLIP_AHORA):
+  // nunca depende de la hora real a la que corra la suite.
+  await t('19. CLIP-A: creacion en el ultimo minuto del dia CDMX -> ExpiracionInvalidaError y CERO POST (nunca un checkout de 3 dias)', async () => {
+    const { prepararExpiracionClip } = await import('../src/services/clip-api.js');
+    // 2026-08-19T05:58:30Z == 2026-08-18 23:58:30 CDMX (UTC-6): el tope
+    // (23:59:00 CDMX) queda a 30s, menos del minimo de 61s de Clip.
+    const sinVentana = '2026-08-19T05:58:30.000Z';
+    // Unit, con fechas fijas: debe LANZAR, nunca devolver "omitir".
+    assert.throws(
+      () => prepararExpiracionClip(new Date(Date.now() + 30 * 60e3), new Date(sinVentana)),
+      /ExpiracionInvalidaError/,
+      'sin ventana valida de Clip, prepararExpiracionClip debio lanzar tipado -- devolvio otra cosa (¿omitir?)');
+
+    // Flujo productivo completo, mismo reloj inyectado.
+    const folio = folioNuevo();
+    await pedido(folio, 410);
+    process.env.XABOR_TEST_CLIP_AHORA = sinVentana;
+    const antes = REQUESTS.length;
+    let fallo = null;
+    try { await crearEnlace(folio); } catch (e) { fallo = e; }
+    delete process.env.XABOR_TEST_CLIP_AHORA;
+    assert.strictEqual(fallo?.code, 'EXPIRACION_INVALIDA',
+      `crearEnlacePago debio fallar tipado sin ventana valida (obtenido: ${fallo?.code || fallo?.message || 'exito'})`);
+    assert.strictEqual(REQUESTS.length, antes,
+      `SALIO UN POST sin ventana valida: expires_at=${JSON.stringify(REQUESTS[REQUESTS.length - 1]?.expires_at)} -- un checkout con default de 3 dias del proveedor`);
+    const [fila] = await filas(folio);
+    assert.ok(!fila?.referencia_externa && !fila?.url, 'quedo un checkout creado pese a no existir ventana valida');
+  });
+
+  // ═══ 20. Relojes deterministas: mediodia, cerca del limite, cruce de dia ═
+  await t('20. relojes fijos: mediodia -> T intacta; 23:50+5min -> valido sin ajuste; T cruza medianoche -> clamp al tope CDMX', async () => {
+    const { prepararExpiracionClip, formatearExpiracionClip, finDelDiaCDMXComoUTC } =
+      await import('../src/services/clip-api.js');
+    // A) mediodia CDMX (18:00Z = 12:00 CDMX): T = +30min cabe entera.
+    const mediodia = new Date('2026-08-19T18:00:00.000Z');
+    const tA = new Date(mediodia.getTime() + 30 * 60e3);
+    const a = prepararExpiracionClip(tA, mediodia);
+    assert.strictEqual(a.texto, formatearExpiracionClip(tA), 'a mediodia el instante enviado debe ser T exacta');
+    assert.strictEqual(a.ajustadaPorLimite, false);
+    // B) 23:50 CDMX (05:50Z del dia siguiente UTC), T = +5min (23:55 CDMX):
+    // todavia valida, sin ajuste.
+    const tarde = new Date('2026-08-19T05:50:00.000Z'); // 2026-08-18 23:50 CDMX
+    const tB = new Date(tarde.getTime() + 5 * 60e3);
+    const b = prepararExpiracionClip(tB, tarde);
+    assert.strictEqual(b.texto, formatearExpiracionClip(tB), 'cerca del limite pero valida: debe viajar T exacta');
+    assert.strictEqual(b.ajustadaPorLimite, false);
+    // D) 23:00 CDMX, T = +90min (cruza medianoche): politica explicita --
+    // se ACOTA al tope 23:59:00 CDMX del dia de creacion (la ventana del
+    // proveedor queda MAS estricta que T, nunca mas laxa) y queda marcada.
+    const noche = new Date('2026-08-19T05:00:00.000Z'); // 2026-08-18 23:00 CDMX
+    const tD = new Date(noche.getTime() + 90 * 60e3);
+    const d = prepararExpiracionClip(tD, noche);
+    assert.strictEqual(d.ajustadaPorLimite, true, 'un T que cruza medianoche CDMX debe quedar acotado y marcado');
+    assert.strictEqual(d.epochMs, finDelDiaCDMXComoUTC(noche), 'el clamp no cayo exactamente en el tope del dia CDMX');
+    assert.ok(d.epochMs < tD.getTime(), 'el clamp debe ser MAS estricto que T, jamas mas laxo');
+  });
+
+  // ═══ 21. CLIP-B: sin T durable -> CERO POST ══════════════════════════════
+  await t('21. CLIP-B: si la frontera durable no pudo fijarse, NO hay POST al proveedor (fail closed, no un warn)', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 420);
+    process.env.XABOR_PAGOS_FALLA_EN = 'fijar_espera_sin_t';
+    const antes = REQUESTS.length;
+    let fallo = null;
+    try { await crearEnlace(folio); } catch (e) { fallo = e; }
+    delete process.env.XABOR_PAGOS_FALLA_EN;
+    assert.ok(fallo, 'crearEnlacePago debio fallar sin frontera durable');
+    assert.strictEqual(fallo?.code, 'SIN_FRONTERA_DURABLE',
+      `el fallo debe ser tipado SIN_FRONTERA_DURABLE (obtenido: ${fallo?.code || fallo?.message})`);
+    assert.strictEqual(REQUESTS.length, antes,
+      'SALIO UN POST sin frontera durable: un checkout sin ninguna expiracion atada a T');
+    const [fila] = await filas(folio);
+    assert.ok(!fila?.referencia_externa && !fila?.url, 'quedo un checkout creado sin frontera durable');
+  });
+
+  // ═══ 22. expired_at ausente en la creacion -> verificar antes de exponer ═
+  await t('22. la creacion no trae expired_at -> se reconsulta antes de exponer; si tampoco el GET lo trae, cero URL y revision', async () => {
+    // La documentacion oficial LISTA expired_at en la respuesta de creacion
+    // pero no lo garantiza como no-nulo; el GET de estado si lo documenta.
+    // Politica: sin expiracion efectiva VERIFICADA no se expone el enlace.
+    // 22a: la creacion lo omite, el GET lo trae -> se verifica y se entrega.
+    const folioA = folioNuevo();
+    await pedido(folioA, 430);
+    modoClip = 'sin_expired_at';
+    const rA = await crearEnlace(folioA);
+    modoClip = 'normal';
+    assert.ok(rA.url, 'con la expiracion verificada por reconsulta, el enlace debio entregarse');
+    const [fA] = await filas(folioA);
+    assert.ok(fA.expires_at, 'pagos.expires_at debio poblarse con el valor verificado por el GET');
+    assert.strictEqual(fA.metadata_sanitizada?.expiracion_verificada_por_reconsulta, true,
+      'no quedo rastro de que la expiracion se verifico por reconsulta');
+
+    // 22b: ni la creacion ni el GET la traen -> identidad durable, cero URL.
+    const folioB = folioNuevo();
+    await pedido(folioB, 431);
+    modoClip = 'sin_expired_at_nunca';
+    const rB = await crearEnlace(folioB);
+    modoClip = 'normal';
+    assert.ok(!rB.url,
+      'se entrego una URL cuya expiracion efectiva NADIE pudo verificar');
+    assert.strictEqual(rB.requiereRevision, true);
+    const [fB] = await filas(folioB);
+    assert.ok(fB.referencia_externa, 'la identidad del checkout creado debe conservarse');
+    assert.strictEqual(fB.estado, 'requiere_revision');
+    assert.strictEqual(fB.metadata_sanitizada?.expiracion_proveedor_no_verificable, true);
+    // Retry: cero POST nuevo y sin URL.
+    const antesRetry = REQUESTS.length;
+    const rB2 = await crearEnlace(folioB);
+    assert.strictEqual(REQUESTS.length, antesRetry, 'el reintento creo un segundo checkout');
+    assert.ok(!rB2.url, 'el reintento entrego la URL no verificable');
   });
 
 } catch (e) {

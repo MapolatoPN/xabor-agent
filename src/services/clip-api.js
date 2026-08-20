@@ -47,7 +47,7 @@ export class ExpiracionInvalidaError extends Error {
 // ─── Expiración del checkout (contrato oficial de Clip) ─────────────────────
 //
 // Fuente: https://developer.clip.mx/reference/createnewpaymentlink
-//   · `expires_at`: string "YYYY-MM-DDTHH-MM-SSZ" (UTC, maxLength 20 --
+//   · `expires_at`: string "YYYY-MM-DDTHH:MM:SSZ" (UTC, maxLength 20 --
 //     SEGUNDOS, sin milisegundos).
 //   · "debe ser mayor a 00:01:00 minuto de la hora de creación de la
 //     solicitud y menor a las 23:59:59 (hora de CDMX) del mismo día de
@@ -105,14 +105,18 @@ export function finDelDiaCDMXComoUTC(ahora = new Date()) {
 
 /**
  * Valida y acota una expiración contra los límites oficiales de Clip.
- * Devuelve:
- *   { omitir: true, motivo }                        -- no existe ningún
- *     expires_at válido (creación en el último minuto del día CDMX): se
- *     omite el campo (Clip aplica su default de 3 días) y Xabor sigue
- *     gobernado por su propia frontera durable.
- *   { texto, epochMs, ajustadaPorLimite }           -- listo para el POST.
- * Lanza ExpiracionInvalidaError si la entrada es inválida o ya no es futura:
- * eso es un bug del llamador, nunca un estado de negocio.
+ * Devuelve { texto, epochMs, ajustadaPorLimite } listo para el POST.
+ *
+ * Lanza ExpiracionInvalidaError SIEMPRE que no exista un expires_at válido:
+ *   · entrada inválida o ya no futura (bug del llamador);
+ *   · creación en el último minuto del día CDMX, donde NINGÚN valor cumple
+ *     simultáneamente "> creación + 1 min" y "< 23:59:59 CDMX del mismo
+ *     día" (CLIP-A, auditoría independiente). La versión anterior aquí
+ *     OMITÍA el campo y dejaba que Clip creara el checkout con su default
+ *     de 3 DÍAS -- exactamente el bug original que este bloque vino a
+ *     cerrar, reproducido en rojo con el flujo productivo real (POST
+ *     capturado sin expires_at). Sin ventana válida: CERO POST, CERO
+ *     checkout, ninguna URL al cliente -- y sin esperar el 400 de Clip.
  */
 export function prepararExpiracionClip(expiresAt, ahora = new Date()) {
   const d = new Date(expiresAt);
@@ -126,10 +130,8 @@ export function prepararExpiracionClip(expiresAt, ahora = new Date()) {
   }
   const tope = finDelDiaCDMXComoUTC(ahora);
   if (tope <= ahoraMs + CLIP_EXPIRACION_MARGEN_MIN_MS) {
-    // Último minuto del día CDMX: ni siquiera el tope es válido. No se manda
-    // expires_at (default 3 días del proveedor) -- la frontera de Xabor sigue
-    // intacta y el reconciliador local vence igual.
-    return { omitir: true, motivo: 'creacion_en_el_ultimo_minuto_del_dia_cdmx' };
+    throw new ExpiracionInvalidaError(
+      `sin_ventana_valida_clip: en este instante (${new Date(ahoraMs).toISOString()}) no existe ningún expires_at que cumpla a la vez "> creación + 1 min" y "< fin del día CDMX" -- no se crea el checkout (jamás se deja el default de 3 días del proveedor)`);
   }
   if (d.getTime() > tope) {
     return { texto: formatearExpiracionClip(tope), epochMs: Math.floor(tope / 1000) * 1000, ajustadaPorLimite: true };
@@ -190,9 +192,16 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
   // POST. Si el llamador no manda expiresAt (caminos legacy: programados aún
   // no activados), el campo se omite y Clip aplica su default -- comportamiento
   // idéntico al histórico, sin fingir una frontera que nadie calculó.
+  // Reloj inyectable SOLO en pruebas (mismo doble candado que el resto de la
+  // inyeccion de fallos del proyecto): las suites de fin-de-dia CDMX serian
+  // no deterministas si dependieran de la hora real a la que corre el test.
+  // Produccion nunca define la variable y usa el reloj real.
+  const ahoraClip = (process.env.NODE_ENV !== 'production' && process.env.XABOR_TEST_CLIP_AHORA)
+    ? new Date(process.env.XABOR_TEST_CLIP_AHORA) : new Date();
+
   let expiracion = null;
   if (expiresAt != null) {
-    expiracion = prepararExpiracionClip(expiresAt); // lanza ExpiracionInvalidaError
+    expiracion = prepararExpiracionClip(expiresAt, ahoraClip); // lanza ExpiracionInvalidaError
   }
 
   const auth = await obtenerAuthHeader(negocioId);
@@ -225,7 +234,7 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
 
   if (cliente.nombre)   body.metadata.customer_info.name  = cliente.nombre;
   if (cliente.telefono) body.metadata.customer_info.phone = Number(String(cliente.telefono).replace(/\D/g, ''));
-  if (expiracion && !expiracion.omitir) body.expires_at = expiracion.texto;
+  if (expiracion) body.expires_at = expiracion.texto;
 
   const resp = await fetch(CLIP_CHECKOUT_URL, {
     method:  'POST',
@@ -251,9 +260,8 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
     // Rastro de expiración para el llamador (clipProvider): lo SOLICITADO
     // (ya acotado a los límites de Clip), lo que el proveedor DEVOLVIÓ como
     // efectivo (`expired_at`, documentado en la respuesta de creación), y si
-    // hubo que acotar por el tope del día CDMX u omitir el campo.
-    expiracionSolicitada: expiracion && !expiracion.omitir ? expiracion.texto : null,
-    expiracionOmitida: expiracion?.omitir ? expiracion.motivo : null,
+    // hubo que acotar por el tope del día CDMX.
+    expiracionSolicitada: expiracion ? expiracion.texto : null,
     expiracionAjustadaPorLimite: expiracion?.ajustadaPorLimite === true,
     expiracionProveedor: data.expired_at || null,
   };
