@@ -349,6 +349,19 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
   if (real.estado !== 'vencido') {
     return { ok: false, razon: `no_vencido_en_proveedor:${real.estadoProveedor || 'desconocido'}` };
   }
+  // CLIP-E: EVIDENCIA TERMINAL AUTENTICADA, durable. Este es el UNICO hecho
+  // que autoriza a sacar la fila del barrido de reconciliacion
+  // (pagosReconciliablesDeProveedor): la reconsulta con credenciales del
+  // negocio confirmo CHECKOUT_EXPIRED -- el checkout termino sin pago.
+  // `expires_at` a secas jamas cierra el barrido (un COMPLETED previo al
+  // limite con webhook perdido seria dinero invisible). Idempotente: si el
+  // terminal ya quedo marcado por una pasada anterior, no se reescribe.
+  if (!pago.metadata_sanitizada?.provider_terminal_status) {
+    await anotarMetadataPago(pago.id, negocioId, {
+      provider_terminal_status: 'CHECKOUT_EXPIRED',
+      provider_terminal_verified_at: new Date().toISOString(),
+    }).catch(() => {});
+  }
   const r = await vencerEsperaDePago(pago.id, negocioId);
   if (r.ok) {
     // Rastro sanitizado de POR QUE vencio. CLIP-D: dos campos, dos

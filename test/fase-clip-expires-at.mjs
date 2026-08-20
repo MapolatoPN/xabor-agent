@@ -68,6 +68,8 @@ process.env.XABOR_URL_PUBLICA = base;
 let checkoutsClip = 0;
 const CHECKOUTS = new Map();      // id -> { referencia, estado, monto, expiredAt }
 const REQUESTS = [];              // cuerpos crudos de cada POST /v2/checkout
+const GETS = [];                  // ids consultados por GET /v2/checkout/:id
+const GET_CAIDO = new Set();      // ids cuyo GET se cae (socket destruido)
 let modoClip = 'normal';
 const clipMock = createServer((req, res) => {
   let cuerpo = '';
@@ -91,6 +93,8 @@ const clipMock = createServer((req, res) => {
       let expiresAt;
       const solicitado = body.expires_at ? Date.parse(body.expires_at) : null;
       if (modoClip === 'ajusta' && solicitado) expiresAt = new Date(solicitado + 6 * 3600e3).toISOString();
+      else if (modoClip === 'ajusta2s' && solicitado) expiresAt = new Date(solicitado + 2000).toISOString();
+      else if (modoClip === 'adelanta1s' && solicitado) expiresAt = new Date(solicitado - 1000).toISOString();
       else if (modoClip === 'adelanta' && solicitado) expiresAt = new Date(solicitado - 10 * 60e3).toISOString();
       else if (solicitado) expiresAt = new Date(solicitado).toISOString();
       else expiresAt = new Date(Date.now() + 3 * 24 * 3600e3).toISOString(); // default documentado: 3 dias
@@ -119,6 +123,8 @@ const clipMock = createServer((req, res) => {
     }
     if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
       const id = decodeURIComponent(req.url.split('/').pop());
+      GETS.push(id);
+      if (GET_CAIDO.has(id)) { req.socket.destroy(); return; }
       const c = CHECKOUTS.get(id);
       if (!c) { res.statusCode = 404; res.end('{}'); return; }
       const status = c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED'
@@ -916,6 +922,236 @@ try {
       'expired_at:null se leyo como expiracion no verificable');
     assert.ok(!fila.metadata_sanitizada?.provider_expired_at,
       'se guardo una fecha PROGRAMADA bajo el nombre provider_expired_at (semantica en pasado falsa)');
+  });
+
+  // ═══ CLIP-E: expires_at NO es prueba de "no hubo pago" ═══════════════════
+  // El servidor compartido de los casos 8-15 se detiene aqui: cada caso E
+  // arranca su PROPIO servidor fresco para que el reconciliador PRODUCTIVO
+  // real (reconciliarPagosPendientes corre al arrancar, server.js) sea quien
+  // haga el trabajo -- jamas una llamada directa de settlement del test.
+  if (srv) { await srv.detener(); srv = null; await esperar(500); }
+
+  const moverFronterasAlPasado = (pagoId) => pool.query(
+    `UPDATE pagos SET expires_at = NOW() - interval '2 minutes',
+                      xabor_espera_hasta = NOW() - interval '2 minutes'
+      WHERE id=$1`, [pagoId]);
+  const getsDe = (id) => GETS.filter(g => g === id).length;
+
+  await t('24. CLIP-E: COMPLETED justo antes de expires_at + webhook perdido + reconciliador despues del limite -> el dinero se recupera', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 450);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    // El cliente PAGO dentro de la ventana; el webhook se pierde (nunca se manda).
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+    // Reloj determinista: ambas fronteras quedan en el pasado EN LA BASE --
+    // nunca depender de la hora real a la que corra la suite.
+    await moverFronterasAlPasado(fila.id);
+
+    const getsAntes = getsDe(r.referenciaExterna);
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      const pagada = await esperarHasta(async () => {
+        const f = await filaId(fila.id);
+        return f.estado === 'pagado' ? f : null;
+      }, { timeoutMs: 15000 });
+      const getsNuevos = getsDe(r.referenciaExterna) - getsAntes;
+      assert.ok(getsNuevos > 0,
+        `CLIP-E: la fila con expires_at ya pasado salio del barrido y NUNCA se reconsulto al proveedor (GETs nuevos=${getsNuevos}) -- un webhook perdido se volvio dinero perdido del ledger`);
+      assert.ok(pagada, 'el COMPLETED previo al limite no se asento: dinero real invisible para Xabor');
+    } finally { await srvE.detener(); await esperar(400); }
+  });
+
+  await t('25. CLIP-E: mismo rescate pero el pedido YA vencio localmente -> pagado + pago_tardio + cero cocina', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 455);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+    await moverFronterasAlPasado(fila.id);
+    // El expirador LOCAL corre primero (job real): pedido cancelado, fila vencida.
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual((await filaId(fila.id)).estado, 'vencido');
+    assert.strictEqual((await pedidoDe(folio)).estado, 'cancelado');
+
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      const pagada = await esperarHasta(async () => {
+        const f = await filaId(fila.id);
+        return f.estado === 'pagado' ? f : null;
+      }, { timeoutMs: 15000 });
+      assert.ok(pagada, 'el dinero del COMPLETED previo al limite no se recupero tras vencer localmente');
+      assert.strictEqual(pagada.metadata_sanitizada?.anomalia, 'pago_tardio', 'el rescate tardio no quedo marcado');
+      assert.strictEqual((await pedidoDe(folio)).estado, 'cancelado', 'el rescate tardio RESUCITO el pedido');
+      assert.strictEqual(await comandasDe(folio), 0, 'salio comanda de un pedido vencido');
+    } finally { await srvE.detener(); await esperar(400); }
+  });
+
+  let filaE3 = null, checkoutE3 = null;
+  await t('26. CLIP-E: tras expires_at el GET devuelve CHECKOUT_EXPIRED -> terminal verificado DURABLE', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 460);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    filaE3 = fila; checkoutE3 = r.referenciaExterna;
+    CHECKOUTS.get(r.referenciaExterna).estado = 'EXPIRED';
+    await moverFronterasAlPasado(fila.id);
+
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      const terminal = await esperarHasta(async () => {
+        const f = await filaId(fila.id);
+        return f.metadata_sanitizada?.provider_terminal_status === 'CHECKOUT_EXPIRED' ? f : null;
+      }, { timeoutMs: 15000 });
+      assert.ok(terminal, 'la evidencia terminal autenticada no quedo durable');
+      assert.ok(terminal.metadata_sanitizada?.provider_terminal_verified_at, 'sin instante de verificacion terminal');
+      assert.strictEqual(terminal.estado, 'vencido', 'la transicion comun no vencio la fila');
+    } finally { await srvE.detener(); await esperar(400); }
+  });
+
+  await t('27. CLIP-E: con el terminal EXPIRED verificado, la siguiente ronda NO vuelve a golpear al proveedor', async () => {
+    assert.ok(filaE3 && checkoutE3, 'el caso 26 debio dejar su fixture');
+    const { pagosReconciliablesDeProveedor } = await import('../src/services/database.js');
+    const cola = (await pagosReconciliablesDeProveedor('clip', 200)).map(p => p.id);
+    assert.ok(!cola.includes(filaE3.id),
+      'una fila con terminal EXPIRED verificado sigue ocupando el barrido para siempre');
+    const getsAntes = getsDe(checkoutE3);
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      await esperar(3500); // margen para la pasada de arranque completa
+      assert.strictEqual(getsDe(checkoutE3), getsAntes,
+        'la ronda posterior al terminal verificado volvio a consultar el checkout');
+    } finally { await srvE.detener(); await esperar(400); }
+  });
+
+  await t('28. CLIP-E: el GET falla despues de expires_at -> la fila SIGUE reconciliable, jamas "seguro no hubo dinero"', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 465);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED'; // hay dinero... pero el GET se cae
+    await moverFronterasAlPasado(fila.id);
+    GET_CAIDO.add(r.referenciaExterna);
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      await esperarHasta(async () => getsDe(r.referenciaExterna) > 0 ? true : null, { timeoutMs: 10000 });
+      await esperar(800);
+      const f = await filaId(fila.id);
+      assert.notStrictEqual(f.estado, 'pagado', 'se asento dinero sin respuesta del proveedor');
+      assert.ok(!f.metadata_sanitizada?.provider_terminal_status,
+        'un GET caido se convirtio en evidencia terminal: "no pude preguntar" NUNCA es "seguro no hubo dinero"');
+    } finally {
+      GET_CAIDO.delete(r.referenciaExterna);
+      await srvE.detener(); await esperar(400);
+    }
+    const { pagosReconciliablesDeProveedor } = await import('../src/services/database.js');
+    const cola = (await pagosReconciliablesDeProveedor('clip', 200)).map(p => p.id);
+    assert.ok(cola.includes(fila.id), 'la fila con GET caido salio del barrido');
+    // Y cuando el proveedor vuelve, el dinero se recupera (sin webhook). El
+    // expirador local del arranque ya pudo haber vencido el pedido mientras
+    // el GET estaba caido: entonces el rescate es un pago TARDIO -- dinero
+    // SI, cocina NO -- que es exactamente el invariante.
+    const { verificarYAsentarClip } = await import('../src/services/webhookPagos.js');
+    const rec = await verificarYAsentarClip({ pago: await filaId(fila.id), checkoutId: r.referenciaExterna });
+    assert.ok(rec.ok === true || rec.razon === 'transicion_pago_tardio',
+      `al volver el proveedor no se recupero: ${rec.razon}`);
+    assert.strictEqual((await filaId(fila.id)).estado, 'pagado', 'el dinero siguio sin asentarse al volver el GET');
+    assert.strictEqual(await comandasDe(folio), 0, 'un rescate tras vencer localmente libero cocina');
+  });
+
+  await t('29. CLIP-E: dos instancias reconsultan a la vez tras el limite -> UNA sola transicion financiera', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 470);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+    await moverFronterasAlPasado(fila.id);
+    // El MISMO camino compartido que usan el webhook y el reconciliador, en
+    // dos "instancias" concurrentes.
+    const { verificarYAsentarClip } = await import('../src/services/webhookPagos.js');
+    const pagoFresco = await filaId(fila.id);
+    const [ra, rb] = await Promise.all([
+      verificarYAsentarClip({ pago: pagoFresco, checkoutId: r.referenciaExterna }),
+      verificarYAsentarClip({ pago: pagoFresco, checkoutId: r.referenciaExterna }),
+    ]);
+    assert.strictEqual((await filaId(fila.id)).estado, 'pagado', 'el dinero no quedo asentado');
+    const resultados = [ra, rb].map(x => `${x.ok}:${x.razon}`).sort();
+    // Ambas terminan bien, pero el ledger tiene UNA sola compra real.
+    const { rows: compras } = await pool.query(
+      `SELECT * FROM compras_reales WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
+    assert.ok(compras.length <= 1,
+      `dos reconsultas concurrentes dejaron ${compras.length} compras reales (resultados: ${resultados.join(' | ')})`);
+    const { rows: [pagados] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND estado='pagado'`, [NEG, folio]);
+    assert.strictEqual(pagados.n, 1, 'mas de una fila quedo pagada para el mismo cobro');
+  });
+
+  await t('30. CLIP-E: version desfasada completada antes del limite y recuperada despues -> dinero SI, cocina NO', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 475);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    // El pedido cambia DESPUES del checkout: la version pagada queda obsoleta.
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ total: 520, items: [{ nombre: 'Producto XL', cantidad: 1, precio_unitario: 520 }] })]);
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+    // SOLO la frontera del proveedor pasa al pasado: asi el expirador LOCAL
+    // no interfiere y el caso aisla exactamente "stale version recuperada
+    // despues de expires_at" (si tambien venciera lo local, el asiento seria
+    // ademas pago_tardio -- ese mundo ya lo cubren los casos 25 y 28).
+    await pool.query(`UPDATE pagos SET expires_at = NOW() - interval '2 minutes' WHERE id=$1`, [fila.id]);
+
+    const srvE = await arrancarServidor({ PORT: String(PUERTO) }, { timeoutMs: 90000 });
+    try {
+      const pagada = await esperarHasta(async () => {
+        const f = await filaId(fila.id);
+        return f.estado === 'pagado' ? f : null;
+      }, { timeoutMs: 15000 });
+      assert.ok(pagada, 'el dinero de la version vieja no se recupero tras el limite');
+      assert.strictEqual(pagada.metadata_sanitizada?.anomalia, 'version_desfasada');
+      // Margen DELIBERADO tras el asiento: la parte 2 (camino legacy por
+      // clip_link_id) corre DESPUES de la parte 1 en la misma pasada. El
+      // fail-open real cazado aqui era exactamente esa parte 2 liberando el
+      // pedido sin gate de version milisegundos despues del asiento --
+      // asertar sin este margen convertia el bug en intermitente.
+      await esperar(2500);
+      const pFinal = await pedidoDe(folio);
+      assert.strictEqual(pFinal.estado, 'pendiente_pago',
+        `una version desfasada LIBERO el pedido (estado=${pFinal.estado}, pago_confirmado=${pFinal.datos?.pago_confirmado} -- el camino legacy por clip_link_id se salto los gates del ledger)`);
+      assert.strictEqual(await comandasDe(folio), 0, 'salio comanda con una version desfasada');
+    } finally { await srvE.detener(); await esperar(400); }
+  });
+
+  // ═══ CLIP-F: la tolerancia es la precision del contrato (1s), no 60s ═════
+  await t('31. CLIP-F: proveedor devuelve solicitada+2s -> NO URL y revision; -1s y == -> validos', async () => {
+    // +2s: por encima de la precision de segundos del contrato -> peligrosa.
+    const folioA = folioNuevo();
+    await pedido(folioA, 480);
+    modoClip = 'ajusta2s';
+    const rA = await crearEnlace(folioA);
+    modoClip = 'normal';
+    assert.ok(!rA.url, 'una expiracion del proveedor 2s MAS LARGA entrego la URL: acepta dinero cuando Xabor ya decidio cancelar');
+    assert.strictEqual(rA.requiereRevision, true, 'no quedo en revision');
+    const [fA] = await filas(folioA);
+    assert.strictEqual(fA.metadata_sanitizada?.expiracion_proveedor_mas_larga, true);
+
+    // -1s: mas estricta -> legitima.
+    const folioB = folioNuevo();
+    await pedido(folioB, 485);
+    modoClip = 'adelanta1s';
+    const rB = await crearEnlace(folioB);
+    modoClip = 'normal';
+    assert.ok(rB.url, 'una expiracion 1s MAS CORTA es legitima y el enlace debio entregarse');
+
+    // == exacto -> legitimo (ya cubierto por caso 5; se reafirma aqui).
+    const folioC = folioNuevo();
+    await pedido(folioC, 490);
+    const rC = await crearEnlace(folioC);
+    assert.ok(rC.url, 'el eco exacto debio entregarse');
+    const [fC] = await filas(folioC);
+    assert.ok(!fC.metadata_sanitizada?.expiracion_proveedor_mas_larga);
   });
 
 } catch (e) {

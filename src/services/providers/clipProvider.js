@@ -56,19 +56,28 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
     console.warn(`[Clip] No se pudo verificar la expiración efectiva del checkout de ${pedidoId}: no se ofrecerá el enlace hasta revisarlo`);
   }
 
+  // CLIP-F: la tolerancia es LA PRECISION REAL DEL CONTRATO, no un margen
+  // arbitrario. El formato de Clip trunca a SEGUNDOS (maxLength 20): el
+  // unico desfase que puede producir el propio redondeo es < 1s. Un enlace
+  // que vence 2s (o 30s, o 59s) DESPUES de la frontera de Xabor ya acepta
+  // dinero cuando Xabor decidio cancelar -- eso no es ruido de precision,
+  // es una ventana real. La tolerancia anterior (60s) lo dejaba pasar.
+  // Comparacion SIEMPRE entre epocas UTC parseadas, jamas por hora local.
+  const TOLERANCIA_PRECISION_MS = 1000;
   const divergencia = (solicitadaMs != null && proveedorMs != null)
     ? Math.abs(proveedorMs - solicitadaMs) : null;
-  if (divergencia != null && divergencia > 60 * 1000) {
+  if (divergencia != null && divergencia > TOLERANCIA_PRECISION_MS) {
     expiracionMeta.expiracion_divergente = true;
     expiracionMeta.expiracion_divergencia_segundos = Math.round(divergencia / 1000);
     console.warn(`[Clip] El proveedor devolvió una expiración distinta a la solicitada para ${pedidoId}: pedida ${r.expiracionSolicitada}, efectiva ${proveedorTexto} -- la frontera local de Xabor NO se mueve`);
   }
   // LA DIRECCIÓN IMPORTA (CLIP-C): una expiración efectiva MÁS CORTA es
-  // legítima ("igual o más estricta"); una significativamente MÁS LARGA
-  // significa que el proveedor dejó un enlace que acepta dinero después de
-  // la frontera de Xabor -- ese checkout existe (identidad durable) pero
-  // JAMÁS se le entrega al cliente: el llamador lo deja en revisión.
-  if (solicitadaMs != null && proveedorMs != null && proveedorMs > solicitadaMs + 60 * 1000) {
+  // legítima ("igual o más estricta"); una MÁS LARGA por encima de la
+  // precisión del contrato significa que el proveedor dejó un enlace que
+  // acepta dinero después de la frontera de Xabor -- ese checkout existe
+  // (identidad durable) pero JAMÁS se le entrega al cliente: el llamador lo
+  // deja en revisión.
+  if (solicitadaMs != null && proveedorMs != null && proveedorMs > solicitadaMs + TOLERANCIA_PRECISION_MS) {
     expiracionMeta.expiracion_proveedor_mas_larga = true;
   }
 

@@ -3396,6 +3396,30 @@ export async function conObligacionDePagoExclusiva(negocioId, pedidoFolio, fn) {
 // Excluye 'pagado'/'reembolsado' -- ya resueltos -- pero SI incluye
 // 'invalidado': es exactamente el enlace del proveedor anterior que el cliente
 // pudo haber pagado, y ese dinero no se repudia.
+/**
+ * ¿El LEDGER ya es dueño de este folio para Clip? Cuenta CUALQUIER fila,
+ * en CUALQUIER estado -- incluida 'pagado'.
+ *
+ * CLIP-E (fail-open real cazado por el caso 30 de fase-clip-expires-at): el
+ * camino legacy de la reconciliacion usaba obtenerPagoVigentePorFolioClip
+ * ("ya lo cubrio el ledger"), que excluye filas 'pagado'. Tras un asiento
+ * con version_desfasada (fila 'pagado', pedido SIN liberar -- correcto), el
+ * chequeo daba NULL, el camino legacy reconsultaba por clip_link_id y
+ * llamaba confirmarPedidoPendientePago SIN gate de version ni de pago
+ * tardio: cocina liberada al precio viejo. El camino legacy existe SOLO
+ * para folios que no tienen NINGUNA fila de ledger (pedidos programados
+ * creados antes de existir en pedidos_activos) -- en cuanto hay una fila,
+ * TODA la verdad del dinero vive en la parte 1 (ledger) y sus gates.
+ */
+export async function existePagoDeLedgerClip(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND proveedor = 'clip' LIMIT 1`,
+    [negocioId.trim(), folio]);
+  return rowCount > 0;
+}
+
 export async function obtenerPagoVigentePorFolioClip(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
@@ -3466,12 +3490,29 @@ export async function pagosReconciliablesDeProveedor(proveedor, limite = 50) {
   const { rows } = await pool.query(
     // 'vencido' NO se excluye a proposito. Vencer es una decision de Xabor;
     // el enlace del proveedor puede seguir cobrando, y dejar de mirarlo seria
-    // exactamente como se pierde dinero real sin enterarse. Solo `expires_at`
-    // -- expiracion declarada por el proveedor -- puede sacar una fila de aqui.
+    // exactamente como se pierde dinero real sin enterarse.
+    //
+    // CLIP-E (auditoria independiente): `expires_at` TAMPOCO saca una fila de
+    // aqui. La version anterior cortaba con `expires_at > NOW()`, y eso
+    // hacia invisible el peor caso real: el cliente completa el pago un
+    // instante ANTES del limite, el webhook se pierde (o Xabor esta caido),
+    // y para cuando el reconciliador corre, `expires_at` ya paso -- la fila
+    // no entraba al barrido, cero GET al proveedor, dinero real invisible
+    // para el ledger PARA SIEMPRE. `expires_at` demuestra "despues de este
+    // instante no deberian originarse pagos nuevos"; NO demuestra "antes de
+    // este instante no se completo uno que Xabor todavia no vio".
+    //
+    // Lo UNICO que cierra el barrido de una fila no resuelta es EVIDENCIA
+    // AUTENTICADA de estado terminal del proveedor: la reconsulta (con las
+    // credenciales del negocio) devolvio CHECKOUT_EXPIRED y eso quedo
+    // durable como `provider_terminal_status` (ver
+    // procesarExpiracionProveedorClip). Asi las filas terminales verificadas
+    // no ocupan lugares del ORDER BY para siempre, y las no verificadas
+    // siguen consultandose dentro de la ventana operativa.
     `SELECT * FROM pagos
       WHERE proveedor = $1
         AND estado NOT IN ('pagado','reembolsado','cancelado')
-        AND (expires_at IS NULL OR expires_at > NOW())
+        AND (metadata_sanitizada->>'provider_terminal_status') IS NULL
         AND created_at > NOW() - ($2 || ' days')::interval
       ORDER BY created_at ASC LIMIT $3`, [proveedor, String(dias), limite]);
   return rows;
