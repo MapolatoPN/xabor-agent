@@ -22,7 +22,7 @@ import {
   consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
   pagosConEsperaVencida, vencerEsperaDePago, anotarMetadataPago,
   conObligacionDePagoExclusiva, ledgerConoceCheckoutClip, obtenerPagosPendientesConLink,
-  confirmarPagoPedido,
+  confirmarPagoPedido, crearPagoPuenteLegacyClip, invalidarPagosVigentesDePedido,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -273,10 +273,14 @@ export async function verificarYAsentarClip({ pago, checkoutId }) {
   // segun contrato (este mismo camino) y ADEMAS queda anomalia durable y
   // ruido: la evidencia previa del proveedor quedo contradicha.
   if (pago.metadata_sanitizada?.provider_terminal_status) {
+    // Sin swallow (endurecimiento G7): si esta escritura falla, la pasada
+    // completa falla y se reintenta -- la contradiccion queda DURABLE antes
+    // de que el dinero se asiente, o no se asienta todavia. El dinero no se
+    // pierde: webhook/reconciliacion reintentan.
     await anotarMetadataPago(pago.id, negocioId, {
       terminal_contradicho_por_pago: true,
       terminal_contradicho_at: new Date().toISOString(),
-    }).catch(() => {});
+    });
     console.error(`[Pagos] TERMINAL CONTRADICHO pago=${pago.id}: el proveedor habia declarado ${pago.metadata_sanitizada.provider_terminal_status} y ahora reporta COMPLETED -- el dinero se asienta y la contradiccion queda para revision`);
   }
 
@@ -454,16 +458,33 @@ export async function reconciliarLegacyClip({ broadcast = null } = {}) {
         if (!data?.pagado) return;
 
         if (ahora.filas > 0) {
-          // G4: el folio YA pertenece al ledger pero este checkout legacy NO
-          // es suyo, y trae dinero REAL. Nunca en silencio y nunca a cocina
-          // por esta via sin gates: dinero visible + anomalia durable +
-          // revision.
+          // G4/CLIP-H: el folio YA pertenece al ledger pero este checkout
+          // legacy NO es suyo, y trae dinero REAL. El dinero se vuelve un
+          // HECHO FINANCIERO DURABLE (fila puente 'pagado' en `pagos`, con
+          // la identidad de L1 y el monto/moneda del GET autenticado):
+          // sin esa fila, `pagoRealDelPedido` y la proteccion de doble
+          // cobro -- que consultan EXCLUSIVAMENTE el ledger -- quedaban
+          // ciegas, y un pago posterior de L2 se asentaba como "primer
+          // dinero". Con el puente, un COMPLETED posterior de L2 cae solo
+          // en el mecanismo existente de `doble_cobro_real`.
+          //
+          // ORDEN deliberado y convergente ante un crash a mitad: primero
+          // el hecho financiero (idempotente), luego la visibilidad
+          // operativa, luego invalidar los intentos vivos (L2 conserva su
+          // identidad -- solo estado/motivo -- y el reconciliador SIGUE
+          // vigilando filas 'invalidado'), al final el ruido.
+          const puente = await crearPagoPuenteLegacyClip({
+            negocioId: negocio_id, folio, checkoutId: clip_link_id,
+            monto: data.monto, moneda: data.moneda,
+          });
           await confirmarPagoPedido(folio, negocio_id);
+          await invalidarPagosVigentesDePedido(negocio_id, folio,
+            `el checkout legacy ${clip_link_id} recibio el dinero real (asentado como puente): este intento queda invalidado sin perder su identidad`);
           if (ahora.filaRecienteId) {
             await marcarAnomaliaPago(ahora.filaRecienteId, negocio_id, 'dinero_en_checkout_legacy_fuera_del_ledger',
-              `el checkout legacy ${clip_link_id} del folio ${folio} reporta COMPLETED pero no pertenece a ninguna fila del ledger: dinero real que requiere revision manual (no se libera cocina por el camino sin gates)`);
+              `el checkout legacy ${clip_link_id} del folio ${folio} reporta COMPLETED y quedo asentado como puente (${puente.pagoId || 'ya existia'}): requiere revision manual (no se libera cocina por el camino sin gates)`);
           }
-          console.error(`[Clip Reconciliación] DINERO EN CHECKOUT LEGACY FUERA DEL LEDGER folio=${folio} checkout=${clip_link_id}: registrado sin liberar cocina, requiere revision`);
+          console.error(`[Clip Reconciliación] DINERO EN CHECKOUT LEGACY FUERA DEL LEDGER folio=${folio} checkout=${clip_link_id}: asentado como puente ${puente.pagoId || ''} sin liberar cocina, requiere revision`);
           return;
         }
 

@@ -3430,6 +3430,52 @@ export async function existePagoDeLedgerClip(folio, negocioId) {
  * para poder anotar durablemente la anomalia cuando aparece dinero en un
  * checkout fuera del ledger.
  */
+/**
+ * CLIP-H (P1 de la octava auditoria): TODO dinero real verificado tiene que
+ * EXISTIR EN EL LEDGER. Cuando un checkout legacy L1 (clip_link_id, sin fila
+ * propia) de un folio que YA tiene ledger reporta COMPLETED, marcar solo
+ * `pedidos_activos.datos.pago_confirmado` NO basta: `pagoRealDelPedido` y la
+ * proteccion de doble cobro (`asentarPagoRealVerificado` -> hermanos con
+ * estado='pagado') consultan EXCLUSIVAMENTE `pagos` -- un L1 invisible para
+ * el ledger dejaba ciega esa proteccion, y si el cliente pagaba tambien L2,
+ * el segundo cobro se asentaba como "primer dinero" y hasta podia derivar.
+ *
+ * Esta funcion convierte a L1 en un HECHO FINANCIERO DURABLE: una fila
+ * puente asentada 'pagado' con la identidad del checkout L1, monto/moneda
+ * del GET autenticado, marca `legacy_checkout_fuera_del_ledger`, anomalia
+ * explicita y `derivacion_pendiente=false` (jamas libera cocina: no hay
+ * garantias de version). No se "convierte" la fila L2 -- perderia su
+ * identidad y volveriamos a quedar ciegos si L2 tambien cobra: con el
+ * puente 'pagado', un COMPLETED posterior de L2 cae solo en el mecanismo
+ * existente de `doble_cobro_real`.
+ *
+ * Idempotente por la referencia interna deterministica del puente.
+ */
+export async function crearPagoPuenteLegacyClip({ negocioId, folio, checkoutId, monto, moneda }) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  const nid = negocioId.trim();
+  const referenciaInterna = `legacy-puente:${nid}:${folio}:${checkoutId}`;
+  const { rows } = await pool.query(
+    `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, referencia_externa,
+                        tipo, moneda, monto, estado, paid_at, derivacion_pendiente, metadata_sanitizada)
+     VALUES ($1, $2, 'clip', $3, $4, 'enlace_pago', $5, $6, 'pagado', NOW(), false, $7::jsonb)
+     ON CONFLICT (negocio_id, referencia_interna) DO NOTHING
+     RETURNING id`,
+    [nid, folio, referenciaInterna, String(checkoutId),
+     String(moneda || 'MXN').toUpperCase(), Number(monto) || 0,
+     JSON.stringify({
+       legacy_checkout_fuera_del_ledger: true,
+       verificado_por_proveedor: true,
+       asentado_at: new Date().toISOString(),
+       anomalia: 'dinero_en_checkout_legacy_fuera_del_ledger',
+       anomalia_detalle: `dinero real verificado en el checkout legacy ${checkoutId} de un folio que ya pertenece al ledger: asentado como puente, sin liberar cocina, requiere revision`,
+     })]);
+  if (rows.length) return { ok: true, creado: true, pagoId: rows[0].id };
+  const { rows: [existente] } = await pool.query(
+    `SELECT id FROM pagos WHERE negocio_id = $1 AND referencia_interna = $2`, [nid, referenciaInterna]);
+  return { ok: true, creado: false, pagoId: existente?.id || null };
+}
+
 export async function ledgerConoceCheckoutClip(folio, negocioId, checkoutId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { filas: 0, duenoDelCheckout: false, filaRecienteId: null };

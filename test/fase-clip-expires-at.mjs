@@ -1291,6 +1291,67 @@ try {
     const filaBTras = await filaId(filaB.id);
     assert.strictEqual(filaBTras.metadata_sanitizada?.anomalia, 'dinero_en_checkout_legacy_fuera_del_ledger',
       'no quedo anomalia durable: el dinero fuera del ledger paso sin ruido');
+    // CLIP-H: el dinero de L1 EXISTE EN EL LEDGER como hecho financiero
+    // durable (fila puente 'pagado' con la identidad de L1), y L2 queda
+    // invalidado operacionalmente SIN perder su identidad.
+    const { rows: [puente] } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND referencia_externa=$3`,
+      [NEG, folio, idL1]);
+    assert.ok(puente, 'CLIP-H: el dinero de L1 NO existe en el ledger -- pagoRealDelPedido y la proteccion de doble cobro siguen ciegas');
+    assert.strictEqual(puente.estado, 'pagado', `el puente no quedo asentado (${puente?.estado})`);
+    assert.strictEqual(puente.metadata_sanitizada?.legacy_checkout_fuera_del_ledger, true);
+    assert.strictEqual(puente.derivacion_pendiente, false, 'el puente dejo deuda de derivacion: liberaria cocina sin garantias de version');
+    assert.strictEqual(filaBTras.estado, 'invalidado', 'L2 debio quedar invalidado operacionalmente');
+    assert.strictEqual(filaBTras.referencia_externa, rB.referenciaExterna, 'L2 perdio su identidad al invalidarse');
+  });
+
+  await t('39. CLIP-H: L1 legacy paga -> puente en el ledger; DESPUES L2 tambien paga -> doble_cobro_real, cero cocina, ninguna referencia se pierde', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 530);
+    // Intento MODERNO primero (fila L2, checkout pendiente).
+    const rB = await crearEnlace(folio);
+    const [filaB] = await filas(folio);
+    // Enlace LEGACY L1 distinto, con dinero real.
+    const idL1 = 'clip-cea-legacy-g4b';
+    CHECKOUTS.set(idL1, { referencia: folio, estado: 'COMPLETED', monto: 530, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ clip_link_id: idL1 })]);
+
+    const { reconciliarLegacyClip, verificarYAsentarClip } = await import('../src/services/webhookPagos.js');
+    await reconciliarLegacyClip();
+
+    // FASE 1: L1 es un hecho financiero durable; L2 conserva identidad.
+    const { rows: [puente] } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND referencia_externa=$3`,
+      [NEG, folio, idL1]);
+    assert.ok(puente, 'el puente de L1 no existe en el ledger');
+    assert.strictEqual(puente.estado, 'pagado');
+    assert.strictEqual(puente.referencia_externa, idL1, 'L1 no conservo su checkout');
+    assert.strictEqual(await comandasDe(folio), 0, 'la fase 1 libero cocina');
+    let l2 = await filaId(filaB.id);
+    assert.strictEqual(l2.estado, 'invalidado');
+    assert.strictEqual(l2.referencia_externa, rB.referenciaExterna, 'L2 perdio su identidad');
+
+    // FASE 2: el cliente TAMBIEN paga L2 (el checkout del proveedor sigue
+    // vivo: invalidar en Xabor no cancela en Clip). La reconciliacion
+    // moderna sigue vigilando filas invalidadas.
+    CHECKOUTS.get(rB.referenciaExterna).estado = 'COMPLETED';
+    const rec = await verificarYAsentarClip({ pago: await filaId(filaB.id), checkoutId: rB.referenciaExterna });
+    assert.strictEqual(rec.razon, 'transicion_doble_cobro',
+      `el segundo cobro NO cayo en doble_cobro_real: se interpreto como primer dinero (${rec.razon})`);
+
+    const l1Final = (await pool.query(`SELECT * FROM pagos WHERE id=$1`, [puente.id])).rows[0];
+    l2 = await filaId(filaB.id);
+    assert.strictEqual(l1Final.estado, 'pagado', 'la evidencia financiera de L1 se perdio');
+    assert.strictEqual(l2.estado, 'pagado', 'el dinero real de L2 no quedo asentado');
+    assert.strictEqual(l2.metadata_sanitizada?.anomalia, 'doble_cobro_real', 'el doble cobro no quedo durable en L2');
+    assert.strictEqual(l1Final.metadata_sanitizada?.anomalia, 'doble_cobro_real', 'el doble cobro no quedo durable en L1');
+    assert.strictEqual(l2.derivacion_pendiente, false, 'el segundo cobro dejo deuda de derivacion: liberaria cocina');
+    assert.strictEqual(l1Final.referencia_externa, idL1, 'se perdio la referencia de L1');
+    assert.strictEqual(l2.referencia_externa, rB.referenciaExterna, 'se perdio la referencia de L2');
+    assert.strictEqual((await pedidoDe(folio)).estado, 'pendiente_pago', 'el doble cobro libero el pedido');
+    assert.strictEqual(await comandasDe(folio), 0, 'salio comanda por el segundo cobro');
   });
 
   await t('36. CLIP-G5: llegar a la ventana de 90 dias sin terminal autenticada deja RUIDO DURABLE, nunca silencio', async () => {
