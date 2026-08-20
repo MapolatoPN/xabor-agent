@@ -555,17 +555,30 @@ try {
     assert.strictEqual(await comandasDe(folio), 0);
   });
 
-  await t('6b. `expires_at` del PROVEEDOR sí puede sacarlo: son cosas distintas', async () => {
+  await t('6b. solo el terminal EXPIRED VERIFICADO puede sacarlo: expires_at a secas jamas (CLIP-E)', async () => {
     const folio = 'EX-0008';
     await pedido(folio, 210);
-    await crearEnlace(folio);
+    const r = await crearEnlace(folio);
     const f = (await filas(folio))[0];
-    // Esto lo escribe el proveedor, no Xabor: es la única expiración que
-    // significa "ya no puede recibir dinero".
+    // CLIP-E: que la fecha programada haya pasado NO demuestra que no hubo
+    // un pago un instante antes con webhook perdido -- la fila SIGUE en el
+    // barrido hasta tener evidencia terminal AUTENTICADA.
     await pool.query(`UPDATE pagos SET expires_at = NOW() - interval '1 hour' WHERE id=$1`, [f.id]);
-    const cola = (await pagosReconciliablesDeProveedor('clip', 100)).map(p => p.id);
+    let cola = (await pagosReconciliablesDeProveedor('clip', 100)).map(p => p.id);
+    assert.ok(cola.includes(f.id),
+      'CLIP-E: expires_at pasado saco la fila del barrido SIN evidencia terminal -- un webhook perdido seria dinero perdido');
+
+    // Con la reconsulta autenticada confirmando CHECKOUT_EXPIRED, el
+    // terminal queda durable y AHORA SI sale del barrido.
+    CHECKOUTS.get(r.referenciaExterna).estado = 'EXPIRED';
+    const { procesarExpiracionProveedorClip } = await import('../src/services/webhookPagos.js');
+    const rExp = await procesarExpiracionProveedorClip({ pago: await filaId(f.id), checkoutId: r.referenciaExterna });
+    assert.ok(rExp.ok, `la expiracion verificada no proceso: ${rExp.razon}`);
+    const tras = await filaId(f.id);
+    assert.strictEqual(tras.metadata_sanitizada?.provider_terminal_status, 'CHECKOUT_EXPIRED');
+    cola = (await pagosReconciliablesDeProveedor('clip', 100)).map(p => p.id);
     assert.ok(!cola.includes(f.id),
-      'un checkout que el proveedor declaró expirado se sigue consultando para siempre');
+      'un checkout con terminal EXPIRED verificado sigue ocupando el barrido para siempre');
   });
 
   // ═══ 7. MERCADO PAGO VENCIDO EN XABOR SIGUE RECONCILIABLE ═════════════════

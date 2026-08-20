@@ -78,7 +78,8 @@ const clipMock = createServer((req, res) => {
       res.end(JSON.stringify({
         object_type: 'payment_link',
         payment_request_id: id,
-        status: c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING',
+        status: c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED'
+          : c.estado === 'EXPIRED' ? 'CHECKOUT_EXPIRED' : 'CHECKOUT_PENDING',
         amount: c.monto ?? null,
         currency: 'MXN',
         metadata: { external_reference: c.referencia, customer_info: {} },
@@ -661,15 +662,24 @@ try {
     const { pagosReconciliablesDeProveedor } = await import('../src/services/database.js');
     const pagados = await pagosReconciliablesDeProveedor('mercado_pago', 100);
     assert.ok(!pagados.some(r => r.estado === 'pagado'), 'se sigue consultando un cobro ya asentado');
-    // Y uno con expiración vencida tampoco: ahí sí hay una fecha real del proveedor.
+    // CLIP-E: la fecha programada vencida NO basta (un COMPLETED previo con
+    // webhook perdido seria invisible) -- solo el terminal EXPIRED
+    // VERIFICADO por reconsulta autenticada saca la fila del barrido.
     const folio = 'CV-0053';
     await pedido(folio, 210);
     await conectarClip();
-    await crearEnlace(folio);
+    const rC = await crearEnlace(folio);
     const fila = (await filas(folio))[0];
     await pool.query(`UPDATE pagos SET expires_at = NOW() - INTERVAL '1 hour' WHERE id=$1`, [fila.id]);
-    const clip = await pagosReconciliablesDeProveedor('clip', 100);
-    assert.ok(!clip.some(r => r.id === fila.id), 'se sigue consultando un checkout ya expirado');
+    let clip = await pagosReconciliablesDeProveedor('clip', 100);
+    assert.ok(clip.some(r => r.id === fila.id),
+      'CLIP-E: expires_at pasado saco la fila sin evidencia terminal verificada');
+    CHECKOUTS.get(rC.referenciaExterna).estado = 'EXPIRED';
+    const { procesarExpiracionProveedorClip } = await import('../src/services/webhookPagos.js');
+    const rExp = await procesarExpiracionProveedorClip({ pago: fila, checkoutId: rC.referenciaExterna });
+    assert.ok(rExp.ok, `la expiracion verificada no proceso: ${rExp.razon}`);
+    clip = await pagosReconciliablesDeProveedor('clip', 100);
+    assert.ok(!clip.some(r => r.id === fila.id), 'se sigue consultando un checkout con terminal EXPIRED verificado');
   });
 
   // ═══ CONCURRENCIA DE CAMBIO ═══
