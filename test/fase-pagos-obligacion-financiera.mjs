@@ -758,7 +758,8 @@ try {
     assert.strictEqual(tras.metadata_sanitizada.clip_checkout_candidato_verificado, true);
     assert.ok(tras.referencia_externa, 'no adoptó la identidad tras verificar');
     assert.strictEqual((await pedidoDe(folio)).datos.pago_confirmado, true);
-    assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
+    await esperar(async () => (await comandasDe(folio)) === 1,
+      'exactamente una comanda (la emision operacional es asincrona respecto al reconciliador)');
   });
 
   await t('2l. correrla otra vez no duplica nada', async () => {
@@ -860,7 +861,8 @@ try {
     const tras = await filaId(f.id);
     assert.strictEqual(tras.estado, 'pagado', 'el dinero real no se recuperó');
     assert.ok(tras.referencia_externa, 'no adoptó la identidad');
-    assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
+    await esperar(async () => (await comandasDe(folio)) === 1,
+      'exactamente una comanda (la emision operacional es asincrona respecto al reconciliador)');
   });
 
   // ═══ P0-D — FRONTERAS DE LA CREACIÓN ═══
@@ -1105,7 +1107,8 @@ try {
     await reconciliarDerivacionesPendientes();
     const p = await pedidoDe(folio);
     assert.strictEqual(p.datos.pago_confirmado, true, 'la recuperación no liberó el pedido');
-    assert.strictEqual(await comandasDe(folio), 1, 'no salió exactamente una comanda');
+    await esperar(async () => (await comandasDe(folio)) === 1,
+      'exactamente una comanda (la emision operacional es asincrona respecto al reconciliador)');
     await reconciliarDerivacionesPendientes();
     assert.strictEqual(await comandasDe(folio), 1, 'una segunda vuelta duplicó la comanda');
   });
