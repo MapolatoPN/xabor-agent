@@ -1354,6 +1354,114 @@ try {
     assert.strictEqual(await comandasDe(folio), 0, 'salio comanda por el segundo cobro');
   });
 
+  // ═══ CLIP-H2: el dinero autenticado debe PERTENECER al folio ═════════════
+  //
+  // clip_link_id es un dato ALMACENADO -- potencialmente corrupto (dato
+  // historico, carrera vieja, bug). La prueba autoritativa de pertenencia es
+  // el GET autenticado y su metadata.external_reference (que para los
+  // enlaces legacy es el folio). Un checkout COMPLETED cuyo
+  // external_reference pertenece a OTRO pedido es dinero AUTENTICO... de
+  // otro: atribuirselo al pedido actual seria robarle el cobro a B y liberar
+  // la cocina de A gratis.
+  await t('40. CLIP-H2: un checkout ajeno (external_reference de OTRO folio) jamas se atribuye al pedido actual', async () => {
+    // ── 40A: folio CON ledger ────────────────────────────────────────────
+    const folioA = folioNuevo();
+    const folioB = folioNuevo(); // el dueño REAL del dinero
+    await pedido(folioA, 540);
+    const rL2 = await crearEnlace(folioA);
+    const [filaL2] = await filas(folioA);
+    const refL2 = filaL2.referencia_externa;
+    // Checkout legacy L1 COMPLETADO... pero su external_reference autenticado
+    // es el folio B, no A. clip_link_id de A esta corrupto a proposito.
+    const idAjeno = 'clip-cea-ajeno-h2a';
+    CHECKOUTS.set(idAjeno, { referencia: folioB, estado: 'COMPLETED', monto: 540, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folioA, NEG, JSON.stringify({ clip_link_id: idAjeno })]);
+
+    const { reconciliarLegacyClip } = await import('../src/services/webhookPagos.js');
+    const broadcasts = [];
+    await reconciliarLegacyClip({ broadcast: (neg, msg) => broadcasts.push({ neg, msg }) });
+
+    const { rows: puentesA } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND referencia_externa=$3`,
+      [NEG, folioA, idAjeno]);
+    assert.strictEqual(puentesA.length, 0,
+      'se creo un puente financiero con dinero cuyo external_reference pertenece a otro pedido');
+    const pA = await pedidoDe(folioA);
+    assert.notStrictEqual(pA.datos?.pago_confirmado, true,
+      'checkout autenticado de otro folio fue atribuido al pedido A (pago_confirmado)');
+    assert.strictEqual(pA.estado, 'pendiente_pago', 'el dinero ajeno libero el pedido A');
+    assert.strictEqual(await comandasDe(folioA), 0, 'salio comanda con dinero ajeno');
+    const l2Tras = await filaId(filaL2.id);
+    assert.notStrictEqual(l2Tras.estado, 'invalidado', 'el dinero ajeno invalido a L2');
+    assert.strictEqual(l2Tras.referencia_externa, refL2, 'L2 perdio su identidad por dinero ajeno');
+    assert.strictEqual(l2Tras.metadata_sanitizada?.anomalia, 'referencia_no_coincide',
+      'no quedo ruido durable de la referencia ajena (anomalia referencia_no_coincide)');
+    assert.strictEqual(broadcasts.filter(b => b.msg?.pedidoId === folioA).length, 0,
+      'se emitio pago_confirmado con dinero ajeno');
+
+    // ── 40B: legacy PURO (sin ninguna fila de ledger) -- el mas peligroso ─
+    const folioC = folioNuevo();
+    await pedido(folioC, 545);
+    const idAjenoB = 'clip-cea-ajeno-h2b';
+    CHECKOUTS.set(idAjenoB, { referencia: folioB, estado: 'COMPLETED', monto: 545, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folioC, NEG, JSON.stringify({ clip_link_id: idAjenoB })]);
+
+    const broadcastsB = [];
+    await reconciliarLegacyClip({ broadcast: (neg, msg) => broadcastsB.push({ neg, msg }) });
+
+    const pC = await pedidoDe(folioC);
+    assert.notStrictEqual(pC.datos?.pago_confirmado, true,
+      'legacy puro: checkout autenticado de otro folio fue atribuido al pedido (pago_confirmado)');
+    assert.strictEqual(pC.estado, 'pendiente_pago',
+      'legacy puro: el dinero ajeno LIBERO el pedido directo a cocina');
+    assert.strictEqual(await comandasDe(folioC), 0, 'legacy puro: salio comanda con dinero ajeno');
+    assert.strictEqual(broadcastsB.filter(b => b.msg?.pedidoId === folioC).length, 0,
+      'legacy puro: se emitio pago_confirmado con dinero ajeno');
+    const { rows: filasC } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2`, [NEG, folioC]);
+    assert.strictEqual(filasC.length, 0,
+      'legacy puro: quedo una fila financiera del dinero de B registrada bajo C');
+    // Ruido durable SIN inventar una fila financiera: anotado en el pedido.
+    const pC2 = await pedidoDe(folioC);
+    assert.ok(pC2.datos?.clip_legacy_referencia_no_coincide,
+      'legacy puro: no quedo ruido durable de la referencia ajena');
+  });
+
+  await t('41. CLIP-H2 (P2): un COMPLETED sin monto financiero valido JAMAS se vuelve un hecho pagado de $0', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 550);
+    const rL2 = await crearEnlace(folio);
+    const [filaL2] = await filas(folio);
+    // Checkout legacy del PROPIO folio (pertenencia correcta)... pero el GET
+    // autenticado no trae un monto numerico.
+    const idL1 = 'clip-cea-sinmonto-h2c';
+    CHECKOUTS.set(idL1, { referencia: folio, estado: 'COMPLETED', monto: null, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ clip_link_id: idL1 })]);
+
+    const { reconciliarLegacyClip } = await import('../src/services/webhookPagos.js');
+    await reconciliarLegacyClip();
+
+    const { rows: puentes } = await pool.query(
+      `SELECT * FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 AND referencia_externa=$3`,
+      [NEG, folio, idL1]);
+    assert.strictEqual(puentes.length, 0,
+      `se invento un hecho financiero sin monto valido (monto=${puentes[0]?.monto})`);
+    const p = await pedidoDe(folio);
+    assert.notStrictEqual(p.datos?.pago_confirmado, true, 'se marco pagado sin monto financiero valido');
+    assert.strictEqual(await comandasDe(folio), 0);
+    const l2 = await filaId(filaL2.id);
+    assert.notStrictEqual(l2.estado, 'invalidado', 'se invalido L2 sin un hecho financiero valido');
+    assert.strictEqual(l2.metadata_sanitizada?.anomalia, 'dinero_en_checkout_legacy_fuera_del_ledger',
+      'no quedo ruido durable del COMPLETED sin monto');
+    void rL2;
+  });
+
   await t('36. CLIP-G5: llegar a la ventana de 90 dias sin terminal autenticada deja RUIDO DURABLE, nunca silencio', async () => {
     const idCk = 'clip-cea-viejo-g5';
     CHECKOUTS.set(idCk, { referencia: 'ref-g5', estado: 'PENDING', monto: 100, expiresAt: null, expiredAt: null });

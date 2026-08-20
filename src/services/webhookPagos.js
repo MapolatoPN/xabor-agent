@@ -457,6 +457,47 @@ export async function reconciliarLegacyClip({ broadcast = null } = {}) {
         const data = await getPaymentStatus(clip_link_id, negocio_id);
         if (!data?.pagado) return;
 
+        // ── CLIP-H2: GATE DE PERTENENCIA, ANTES de cualquier efecto ──────
+        //
+        // `clip_link_id` es un dato ALMACENADO -- potencialmente corrupto
+        // (dato historico, carrera vieja, bug). La UNICA prueba de que este
+        // checkout pertenece a ESTE folio es el GET autenticado y su
+        // metadata.external_reference, que para los enlaces legacy es el
+        // folio (contrato de clip-api.js: external_reference = pedidoId).
+        // Un COMPLETED cuyo external_reference es de OTRO pedido es dinero
+        // AUTENTICO... de otro: atribuirselo aqui le robaria el cobro a su
+        // dueño y liberaria esta cocina gratis. Ausente/null tampoco
+        // coincide: dinero real no atribuible automaticamente = revision,
+        // nunca cocina. FAIL CLOSED: cero puente, cero pago_confirmado,
+        // cero invalidacion de L2, cero confirmacion, cero broadcast --
+        // solo RUIDO DURABLE con el vocabulario existente.
+        if (String(data.referenciaInterna ?? '') !== String(folio)) {
+          const detalle = `el checkout ${clip_link_id} reporta COMPLETED pero su external_reference autenticado es ${JSON.stringify(data.referenciaInterna ?? null)} y este pedido es ${folio}: dinero real que pertenece a otro pedido (o no atribuible) -- nada se atribuye, requiere revision`;
+          if (ahora.filaRecienteId) {
+            await marcarAnomaliaPago(ahora.filaRecienteId, negocio_id, 'referencia_no_coincide', detalle);
+          } else {
+            // Legacy puro: no hay fila de ledger donde anotar y JAMAS se
+            // inventa una fila financiera para un dinero ajeno -- el ruido
+            // durable vive en el pedido (sanitizado: folio, referencia
+            // devuelta, checkout; sin secretos), una sola vez.
+            const { pool } = await import('./database.js');
+            await pool.query(
+              `UPDATE pedidos_activos SET datos = datos || $3::jsonb
+                WHERE folio = $1 AND negocio_id = $2
+                  AND datos->>'clip_legacy_referencia_no_coincide' IS NULL`,
+              [folio, negocio_id, JSON.stringify({
+                clip_legacy_referencia_no_coincide: {
+                  checkout: String(clip_link_id),
+                  referencia_recibida: data.referenciaInterna ?? null,
+                  folio_esperado: String(folio),
+                  detectado_at: new Date().toISOString(),
+                },
+              })]);
+          }
+          console.error(`[Clip Reconciliación] REFERENCIA NO COINCIDE folio=${folio} checkout=${clip_link_id} external_reference=${data.referenciaInterna ?? 'null'}: dinero autenticado de otro pedido -- no se atribuye`);
+          return;
+        }
+
         if (ahora.filas > 0) {
           // G4/CLIP-H: el folio YA pertenece al ledger pero este checkout
           // legacy NO es suyo, y trae dinero REAL. El dinero se vuelve un
@@ -477,6 +518,17 @@ export async function reconciliarLegacyClip({ broadcast = null } = {}) {
             negocioId: negocio_id, folio, checkoutId: clip_link_id,
             monto: data.monto, moneda: data.moneda,
           });
+          if (!puente.ok) {
+            // CLIP-H2 (P2): un COMPLETED sin monto/moneda financieros
+            // validos NO se convierte en un hecho de $0 ni en ningun otro
+            // efecto -- ruido durable y reintento/reconciliacion futura.
+            if (ahora.filaRecienteId) {
+              await marcarAnomaliaPago(ahora.filaRecienteId, negocio_id, 'dinero_en_checkout_legacy_fuera_del_ledger',
+                `el checkout legacy ${clip_link_id} reporta COMPLETED pero sin monto/moneda financieros validos (${puente.razon}): no se crea ningun hecho financiero inventado, requiere revision`);
+            }
+            console.error(`[Clip Reconciliación] PUENTE NO CREADO folio=${folio} checkout=${clip_link_id}: ${puente.razon} -- cero efectos, requiere revision`);
+            return;
+          }
           await confirmarPagoPedido(folio, negocio_id);
           await invalidarPagosVigentesDePedido(negocio_id, folio,
             `el checkout legacy ${clip_link_id} recibio el dinero real (asentado como puente): este intento queda invalidado sin perder su identidad`);

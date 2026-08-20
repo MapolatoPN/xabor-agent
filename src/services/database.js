@@ -3453,6 +3453,20 @@ export async function existePagoDeLedgerClip(folio, negocioId) {
  */
 export async function crearPagoPuenteLegacyClip({ negocioId, folio, checkoutId, monto, moneda }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
+  // CLIP-H2 (P2): un hecho financiero JAMAS se inventa. Antes, `Number(monto)
+  // || 0` podia convertir un COMPLETED sin monto numerico en una fila
+  // 'pagado' de $0. Monto: number finito y > 0. Moneda: la del contrato de
+  // Clip (MXN), del GET autenticado -- ni ausente ni otra. Si el proveedor
+  // dice COMPLETED sin datos financieros validos, no hay puente: el llamador
+  // deja ruido durable y la reconciliacion futura reintenta.
+  const montoNum = Number(monto);
+  if (!Number.isFinite(montoNum) || montoNum <= 0) {
+    return { ok: false, razon: `monto_invalido:${JSON.stringify(monto ?? null)}` };
+  }
+  const monedaNorm = String(moneda || '').toUpperCase();
+  if (monedaNorm !== 'MXN') {
+    return { ok: false, razon: `moneda_invalida:${JSON.stringify(moneda ?? null)}` };
+  }
   const nid = negocioId.trim();
   const referenciaInterna = `legacy-puente:${nid}:${folio}:${checkoutId}`;
   const { rows } = await pool.query(
@@ -3462,7 +3476,7 @@ export async function crearPagoPuenteLegacyClip({ negocioId, folio, checkoutId, 
      ON CONFLICT (negocio_id, referencia_interna) DO NOTHING
      RETURNING id`,
     [nid, folio, referenciaInterna, String(checkoutId),
-     String(moneda || 'MXN').toUpperCase(), Number(monto) || 0,
+     monedaNorm, montoNum,
      JSON.stringify({
        legacy_checkout_fuera_del_ledger: true,
        verificado_por_proveedor: true,
