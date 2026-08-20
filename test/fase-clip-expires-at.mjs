@@ -506,13 +506,17 @@ try {
       resource: 'CHECKOUT', resource_status: 'EXPIRED',
       me_reference_id: fila.referencia_interna, payment_request_id: r.referenciaExterna,
     }), 200);
+    // El rastro (expirado_por_proveedor) se anota en un UPDATE separado
+    // DESPUES del COMMIT de la transicion comun -- perder ese anexo en un
+    // crash solo pierde la anotacion informativa, nunca el vencimiento.
+    // Leerlo con una sola consulta en cuanto aparece estado='vencido' es una
+    // carrera de LECTURA del test (cazada de verdad en el gate): se espera
+    // acotado a que AMBAS escrituras aterricen.
     const vencida = await esperarHasta(async () => {
       const f = await filaId(fila.id);
-      return f.estado === 'vencido' ? f : null;
+      return (f.estado === 'vencido' && f.metadata_sanitizada?.expirado_por_proveedor === true) ? f : null;
     });
-    assert.ok(vencida, 'el webhook EXPIRED verificado no vencio el pago');
-    assert.strictEqual(vencida.metadata_sanitizada?.expirado_por_proveedor, true,
-      'no quedo rastro de que el vencimiento lo declaro el proveedor');
+    assert.ok(vencida, `el webhook EXPIRED verificado no vencio el pago con su rastro (obtenido: ${JSON.stringify((await filaId(fila.id)).estado)})`);
     // CLIP-D: los dos campos no se confunden -- provider_expires_at es la
     // frontera PROGRAMADA (expires_at del GET) y provider_expired_at, si
     // existe, es el instante REAL en que expiro (expired_at del checkout ya
