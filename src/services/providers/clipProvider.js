@@ -87,7 +87,7 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
  * VERIFICADO CONTRA LA DOCUMENTACION OFICIAL (Check payment link status v2).
  * Esa respuesta trae:
  *   payment_request_id · status · amount · currency · metadata.external_reference
- *   · payment_request_url · expired_at · receipt_no · object_type
+ *   · payment_request_url · expiracion (ver CLIP-D abajo) · receipt_no · object_type
  *
  * Y NO trae `resource_status` ni `me_reference_id`: esos dos son campos del
  * WEBHOOK, que es otro contrato. El codigo anterior leia los del webhook sobre
@@ -118,7 +118,15 @@ export function normalizarConsultaCheckout(r) {
     checkoutId: r.payment_request_id || null,
     url: r.payment_request_url || null,
     monto, moneda: r.currency || null,
-    expiraAt: r.expired_at || null,
+    // CLIP-D: dos campos, dos significados -- NUNCA un alias silencioso.
+    //   expiraAt  = `expires_at`: frontera PROGRAMADA del enlace (objeto v2).
+    //   expiradoAt = `expired_at`: instante en que YA expiró, si el contrato
+    //     lo trae (documentado en el webhook; los schemas de referencia de
+    //     creación/GET aún listan el nombre viejo -- inconsistencia de la
+    //     documentación anotada en clip-api.js; aquí se expone por separado
+    //     y jamás se lee como frontera programada).
+    expiraAt: r.expires_at || null,
+    expiradoAt: r.expired_at || null,
     reciboNo: r.receipt_no || null,
   };
 }

@@ -15,7 +15,11 @@
 //   · Limites: "mayor a 00:01:00 minuto de la hora de creacion y menor a las
 //     23:59:59 (hora de CDMX) del mismo dia de creacion". Default si se
 //     omite: 3 dias.
-//   · La creacion y la reconsulta devuelven `expired_at` (el efectivo).
+//   · CLIP-D: el objeto checkout v2 (creacion y GET) lleva `expires_at`
+//     (frontera PROGRAMADA, ejemplo oficial "2024-10-26T13:17:00Z");
+//     `expired_at` es OTRO campo (webhook / checkout YA vencido: instante en
+//     que efectivamente expiro). Los schemas de referencia viejos aun listan
+//     `expired_at` en creacion/GET -- inconsistencia documentada, sin alias.
 //   · Estados de consulta: CHECKOUT_CREATED/PENDING/CANCELLED/EXPIRED/COMPLETED.
 //   · Webhook oficial: resource=CHECKOUT, resource_status EXPIRED existe
 //     ("se recibe cuando expira un link de pago"); tambien CREATED/CANCELED/
@@ -80,27 +84,36 @@ const clipMock = createServer((req, res) => {
         return;
       }
       const id = `clip-cea-${++checkoutsClip}`;
-      let expiredAt;
+      // CLIP-D: el objeto checkout v2 documenta `expires_at` (frontera
+      // PROGRAMADA, ejemplo oficial "2024-10-26T13:17:00Z" en la intro de
+      // Clip Checkout). `expired_at` es OTRO campo (webhook: instante en que
+      // YA expiro). Un checkout VIVO jamas trae expired_at aqui.
+      let expiresAt;
       const solicitado = body.expires_at ? Date.parse(body.expires_at) : null;
-      if (modoClip === 'ajusta' && solicitado) expiredAt = new Date(solicitado + 6 * 3600e3).toISOString();
-      else if (modoClip === 'adelanta' && solicitado) expiredAt = new Date(solicitado - 10 * 60e3).toISOString();
-      else if (solicitado) expiredAt = new Date(solicitado).toISOString();
-      else expiredAt = new Date(Date.now() + 3 * 24 * 3600e3).toISOString(); // default documentado: 3 dias
+      if (modoClip === 'ajusta' && solicitado) expiresAt = new Date(solicitado + 6 * 3600e3).toISOString();
+      else if (modoClip === 'adelanta' && solicitado) expiresAt = new Date(solicitado - 10 * 60e3).toISOString();
+      else if (solicitado) expiresAt = new Date(solicitado).toISOString();
+      else expiresAt = new Date(Date.now() + 3 * 24 * 3600e3).toISOString(); // default documentado: 3 dias
       CHECKOUTS.set(id, {
         referencia: body.metadata?.external_reference || null,
         estado: 'PENDING', monto: Number(body.amount),
-        // 'sin_expired_at_nunca': ni la creacion ni el GET traen expired_at.
-        expiredAt: modoClip === 'sin_expired_at_nunca' ? null : expiredAt,
+        // 'sin_expiracion_nunca': ni la creacion ni el GET traen expires_at.
+        expiresAt: modoClip === 'sin_expiracion_nunca' ? null : expiresAt,
+        expiredAt: null, // instante REAL de expiracion: solo cuando ocurra
       });
       const respuesta = {
         payment_request_id: id, object_type: 'payment_link', status: 'CHECKOUT_CREATED',
         payment_request_url: `https://pago.mock.clip/${id}`,
         created_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-        expired_at: expiredAt,
+        expires_at: expiresAt,
       };
-      // 'sin_expired_at': la RESPUESTA DE CREACION omite expired_at (la
-      // documentacion no garantiza el campo ahi), pero el GET si lo trae.
-      if (modoClip === 'sin_expired_at' || modoClip === 'sin_expired_at_nunca') delete respuesta.expired_at;
+      // 'con_expired_null': algunas respuestas reales pueden traer AMBOS
+      // campos con expired_at:null mientras el checkout vive -- null NUNCA
+      // debe leerse como "no verificable".
+      if (modoClip === 'con_expired_null') respuesta.expired_at = null;
+      // 'sin_expiracion': la RESPUESTA DE CREACION omite expires_at, pero el
+      // GET si lo trae (se verifica por reconsulta antes de exponer).
+      if (modoClip === 'sin_expiracion' || modoClip === 'sin_expiracion_nunca') delete respuesta.expires_at;
       res.end(JSON.stringify(respuesta));
       return;
     }
@@ -111,14 +124,19 @@ const clipMock = createServer((req, res) => {
       const status = c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED'
         : c.estado === 'EXPIRED' ? 'CHECKOUT_EXPIRED'
         : c.estado === 'CANCELLED' ? 'CHECKOUT_CANCELLED' : 'CHECKOUT_PENDING';
-      res.end(JSON.stringify({
+      const cuerpoGet = {
         object_type: 'payment_link', payment_request_id: id, status,
         amount: c.monto ?? null, currency: 'MXN',
         metadata: { external_reference: c.referencia, customer_info: {} },
         payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
-        created_at: '2026-08-19T00:00:00Z', expired_at: c.expiredAt || null,
+        created_at: '2026-08-19T00:00:00Z',
+        // v2: la frontera PROGRAMADA viaja como expires_at tambien en el GET.
+        expires_at: c.expiresAt || null,
         last_status_message: status,
-      }));
+      };
+      // Solo un checkout que YA expiro lleva el instante real del evento.
+      if (c.estado === 'EXPIRED') cuerpoGet.expired_at = c.expiredAt || c.expiresAt || null;
+      res.end(JSON.stringify(cuerpoGet));
       return;
     }
     res.statusCode = 404; res.end('{}');
@@ -495,6 +513,12 @@ try {
     assert.ok(vencida, 'el webhook EXPIRED verificado no vencio el pago');
     assert.strictEqual(vencida.metadata_sanitizada?.expirado_por_proveedor, true,
       'no quedo rastro de que el vencimiento lo declaro el proveedor');
+    // CLIP-D: los dos campos no se confunden -- provider_expires_at es la
+    // frontera PROGRAMADA (expires_at del GET) y provider_expired_at, si
+    // existe, es el instante REAL en que expiro (expired_at del checkout ya
+    // vencido). La decision vino del GET autenticado, nunca del webhook.
+    assert.ok(vencida.metadata_sanitizada?.provider_expires_at,
+      'no quedo la frontera programada declarada por el proveedor (provider_expires_at)');
     const p = await pedidoDe(folio);
     assert.strictEqual(p.estado, 'cancelado', 'el pedido siguio esperando indefinidamente tras el EXPIRED');
     assert.strictEqual(p.datos?.expirado_por_pago, true, 'el pedido no quedo marcado como expirado por pago');
@@ -830,14 +854,14 @@ try {
   });
 
   // ═══ 22. expired_at ausente en la creacion -> verificar antes de exponer ═
-  await t('22. la creacion no trae expired_at -> se reconsulta antes de exponer; si tampoco el GET lo trae, cero URL y revision', async () => {
+  await t('22. la creacion no trae expires_at -> se reconsulta antes de exponer; si tampoco el GET lo trae, cero URL y revision', async () => {
     // La documentacion oficial LISTA expired_at en la respuesta de creacion
     // pero no lo garantiza como no-nulo; el GET de estado si lo documenta.
     // Politica: sin expiracion efectiva VERIFICADA no se expone el enlace.
     // 22a: la creacion lo omite, el GET lo trae -> se verifica y se entrega.
     const folioA = folioNuevo();
     await pedido(folioA, 430);
-    modoClip = 'sin_expired_at';
+    modoClip = 'sin_expiracion';
     const rA = await crearEnlace(folioA);
     modoClip = 'normal';
     assert.ok(rA.url, 'con la expiracion verificada por reconsulta, el enlace debio entregarse');
@@ -849,7 +873,7 @@ try {
     // 22b: ni la creacion ni el GET la traen -> identidad durable, cero URL.
     const folioB = folioNuevo();
     await pedido(folioB, 431);
-    modoClip = 'sin_expired_at_nunca';
+    modoClip = 'sin_expiracion_nunca';
     const rB = await crearEnlace(folioB);
     modoClip = 'normal';
     assert.ok(!rB.url,
@@ -864,6 +888,30 @@ try {
     const rB2 = await crearEnlace(folioB);
     assert.strictEqual(REQUESTS.length, antesRetry, 'el reintento creo un segundo checkout');
     assert.ok(!rB2.url, 'el reintento entrego la URL no verificable');
+  });
+
+  // ═══ 23. CLIP-D: checkout vivo con expires_at=T y expired_at=null ════════
+  await t('23. CLIP-D: la respuesta viva trae expires_at=T y expired_at=null -> se usa T; expired_at null JAMAS significa "no verificable"', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 440);
+    modoClip = 'con_expired_null';
+    const antes = REQUESTS.length;
+    const r = await crearEnlace(folio);
+    modoClip = 'normal';
+    const req = REQUESTS[antes];
+    assert.ok(r.url, 'un checkout vivo con expires_at valido y expired_at:null se trato como no verificable y se oculto la URL');
+    assert.ok(!r.requiereRevision, 'quedo marcado para revision sin motivo');
+    const [fila] = await filas(folio);
+    assert.strictEqual(fila.estado, 'pendiente');
+    assert.ok(Math.abs(new Date(fila.expires_at).getTime() - Date.parse(req.expires_at)) < 1000,
+      'pagos.expires_at no uso la frontera PROGRAMADA (expires_at) que el proveedor declaro');
+    assert.ok(fila.metadata_sanitizada?.provider_expires_at
+      && Math.abs(Date.parse(fila.metadata_sanitizada.provider_expires_at) - Date.parse(req.expires_at)) < 1000,
+      'provider_expires_at no registro la frontera programada');
+    assert.ok(!fila.metadata_sanitizada?.expiracion_proveedor_no_verificable,
+      'expired_at:null se leyo como expiracion no verificable');
+    assert.ok(!fila.metadata_sanitizada?.provider_expired_at,
+      'se guardo una fecha PROGRAMADA bajo el nombre provider_expired_at (semantica en pasado falsa)');
   });
 
 } catch (e) {

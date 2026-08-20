@@ -64,7 +64,7 @@ const clipMock = createServer((req, res) => {
       });
       res.end(JSON.stringify({
         payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
-        expired_at: eco,
+        expires_at: eco,
       }));
       return;
     }
@@ -84,7 +84,7 @@ const clipMock = createServer((req, res) => {
         metadata: { external_reference: c.referencia, customer_info: {} },
         payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
         created_at: '2026-08-17T00:00:00.000Z',
-        expired_at: c.expiraAt || null,
+        expires_at: c.expiraAt || null,
         last_status_message: 'Payment request is active',
       }));
       return;
@@ -295,7 +295,7 @@ try {
     const minutos = (new Date(f.xabor_espera_hasta) - Date.now()) / 60000;
     assert.ok(minutos > 25 && minutos <= 30, `deadline fuera de rango: ${minutos.toFixed(1)} min`);
     // `expires_at` lo dice el PROVEEDOR, no nosotros. Desde CLIP expires_at,
-    // Clip DECLARA la expiración efectiva del checkout (expired_at, eco de la
+    // Clip DECLARA la expiración efectiva del checkout (expires_at, eco de la
     // solicitada) y esa -- y solo esa -- es la que puede vivir aquí: debe
     // coincidir con lo que el proveedor devolvió (≈ T solicitada), jamás una
     // decisión interna distinta.

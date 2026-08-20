@@ -351,12 +351,17 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
   }
   const r = await vencerEsperaDePago(pago.id, negocioId);
   if (r.ok) {
-    // Rastro sanitizado de POR QUE vencio: lo declaro el proveedor, con su
-    // expired_at real. No toca dinero, estado ni identidad.
+    // Rastro sanitizado de POR QUE vencio. CLIP-D: dos campos, dos
+    // significados -- provider_expires_at es la frontera PROGRAMADA que el
+    // GET autenticado declara (`expires_at`); provider_expired_at es el
+    // instante en que YA expiro y SOLO se escribe si el contrato lo trajo
+    // (`expired_at` del checkout ya vencido). Jamas se guarda una fecha
+    // programada bajo un nombre en pasado. No toca dinero/estado/identidad.
     await anotarMetadataPago(pago.id, negocioId, {
       expirado_por_proveedor: true,
       expirado_por_proveedor_at: new Date().toISOString(),
-      provider_expired_at: real.expiraAt || null,
+      provider_expires_at: real.expiraAt || null,
+      ...(real.expiradoAt ? { provider_expired_at: real.expiradoAt } : {}),
     }).catch(() => {});
   }
   return { ok: r.ok, razon: r.ok ? 'vencido_por_proveedor' : r.razon, transicion: r };

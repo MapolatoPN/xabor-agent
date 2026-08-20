@@ -64,7 +64,7 @@ const clipMock = createServer((req, res) => {
       });
       res.end(JSON.stringify({
         payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
-        expired_at: eco,
+        expires_at: eco,
       }));
       return;
     }
@@ -84,7 +84,7 @@ const clipMock = createServer((req, res) => {
         metadata: { external_reference: c.referencia, customer_info: {} },
         payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
         created_at: '2026-08-17T00:00:00.000Z',
-        expired_at: c.expiraAt || null,
+        expires_at: c.expiraAt || null,
         last_status_message: 'Payment request is active',
       }));
       return;

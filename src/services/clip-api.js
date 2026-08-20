@@ -259,10 +259,25 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
     status: data.status,
     // Rastro de expiración para el llamador (clipProvider): lo SOLICITADO
     // (ya acotado a los límites de Clip), lo que el proveedor DEVOLVIÓ como
-    // efectivo (`expired_at`, documentado en la respuesta de creación), y si
-    // hubo que acotar por el tope del día CDMX.
+    // frontera PROGRAMADA, y si hubo que acotar por el tope del día CDMX.
+    //
+    // CLIP-D (auditoría independiente): el objeto checkout v2 documenta
+    // `expires_at` (frontera programada -- ejemplo oficial
+    // "2024-10-26T13:17:00Z" en la introducción de Clip Checkout);
+    // `expired_at` es OTRO campo, del contrato del WEBHOOK, que significa
+    // "instante en que YA expiró". La versión anterior leía `data.expired_at`
+    // aquí y trataba una respuesta v2 real (solo expires_at) como
+    // "expiración no verificable", ocultando una URL perfectamente válida.
+    // NOTA de compatibilidad documentada: los schemas de REFERENCIA de
+    // creación/GET (createnewpaymentlink / checkpaymentlinkstatus) todavía
+    // listan `expired_at` con ejemplo antiguo ("2020-04-30...") y
+    // descripción de frontera programada -- una inconsistencia interna de la
+    // documentación. Se obedece el contrato v2 (`expires_at`) y NO se usa
+    // `expired_at` como alias silencioso: si una respuesta trajera solo el
+    // nombre viejo, el flujo cae al camino verificado (reconsulta y, en
+    // última instancia, fail-closed con revisión) -- nunca fail-open.
     expiracionSolicitada: expiracion ? expiracion.texto : null,
     expiracionAjustadaPorLimite: expiracion?.ajustadaPorLimite === true,
-    expiracionProveedor: data.expired_at || null,
+    expiracionProveedor: data.expires_at || null,
   };
 }
