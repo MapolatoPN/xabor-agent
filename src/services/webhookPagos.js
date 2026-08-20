@@ -21,6 +21,8 @@ import {
   marcarAnomaliaPago, saldarDerivacionPago, pagosConDerivacionPendiente,
   consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
   pagosConEsperaVencida, vencerEsperaDePago, anotarMetadataPago,
+  conObligacionDePagoExclusiva, ledgerConoceCheckoutClip, obtenerPagosPendientesConLink,
+  confirmarPagoPedido,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -265,6 +267,19 @@ export async function verificarYAsentarClip({ pago, checkoutId }) {
     return { ok: false, razon: 'moneda_distinta' };
   }
 
+  // CLIP-G: un COMPLETED autenticado DESPUES de un terminal EXPIRED
+  // verificado es supuestamente imposible -- pero si ocurre, el dinero
+  // real JAMAS desaparece en silencio por la marca terminal: se asienta
+  // segun contrato (este mismo camino) y ADEMAS queda anomalia durable y
+  // ruido: la evidencia previa del proveedor quedo contradicha.
+  if (pago.metadata_sanitizada?.provider_terminal_status) {
+    await anotarMetadataPago(pago.id, negocioId, {
+      terminal_contradicho_por_pago: true,
+      terminal_contradicho_at: new Date().toISOString(),
+    }).catch(() => {});
+    console.error(`[Pagos] TERMINAL CONTRADICHO pago=${pago.id}: el proveedor habia declarado ${pago.metadata_sanitizada.provider_terminal_status} y ahora reporta COMPLETED -- el dinero se asienta y la contradiccion queda para revision`);
+  }
+
   // Identidad DURABLE antes de asentar: desde aqui la fila ya no puede volver
   // a mandar un POST de creacion.
   if (!pago.referencia_externa) {
@@ -378,6 +393,126 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
     }).catch(() => {});
   }
   return { ok: r.ok, razon: r.ok ? 'vencido_por_proveedor' : r.razon, transicion: r };
+}
+
+/**
+ * CLIP-G (camino legacy, con proteccion TOCTOU): reconciliacion de enlaces
+ * creados por clip-api.js SIN fila de ledger (hoy: pedidos PROGRAMADOS que
+ * aun no existian en pedidos_activos al generarse el enlace).
+ *
+ * La carrera que esta funcion cierra: el chequeo "ya lo cubrio el ledger" y
+ * la confirmacion NO pueden ser dos actos separados. Antes, el camino legacy
+ * podia observar "sin ledger", y ANTES de confirmar, el camino moderno
+ * creaba/asentaba una fila (p. ej. con version desfasada, que NO libera) --
+ * y el legacy seguia adelante y liberaba cocina sin ningun gate. Ahora:
+ *
+ *   1. pre-chequeo SIN lock (barato, solo para saltarse folios obvios);
+ *   2. TODO el veredicto -- re-chequeo + GET + confirmaciones -- corre bajo
+ *      `conObligacionDePagoExclusiva(negocio, folio)`: el MISMO lock que
+ *      serializa la creacion, el settlement y el vencimiento. Quien pierda
+ *      el turno relee el mundo del ganador.
+ *   3. dentro del lock se pregunta con GRANULARIDAD DE CHECKOUT
+ *      (ledgerConoceCheckoutClip): si el ledger es dueño de ESTE
+ *      clip_link_id -> se aparta (la parte 1 gobierna). Si el folio tiene
+ *      ledger pero este checkout NO es suyo (enlace legacy previo con
+ *      dinero real), el dinero JAMAS se silencia: se registra en el pedido
+ *      (confirmarPagoPedido), se anota anomalia durable en la fila mas
+ *      reciente del ledger y NO se libera cocina -- revision, con ruido.
+ *
+ * `pausaInyectada`: SOLO pruebas (candado NODE_ENV) -- abre la ventana
+ * exacta entre el pre-chequeo y el lock para demostrar la carrera.
+ */
+export async function reconciliarLegacyClip({ broadcast = null } = {}) {
+  const { getPaymentStatus } = await import('./providers/clipProvider.js');
+  const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
+  const pendientes = await obtenerPagosPendientesConLink();
+  let confirmados = 0;
+  for (const { folio, negocio_id, clip_link_id } of pendientes) {
+    if (!negocio_id) {
+      console.warn(`[Clip Reconciliación] ${folio} sin negocio_id resuelto — omitido (fail closed)`);
+      continue;
+    }
+    try {
+      // Pre-chequeo barato SIN lock: si el ledger ya es dueño de este
+      // checkout, ni siquiera se toma el turno. El VEREDICTO no es este.
+      const pre = await ledgerConoceCheckoutClip(folio, negocio_id, clip_link_id);
+      if (pre.filas > 0 && pre.duenoDelCheckout) continue;
+
+      // Punto de pausa inyectable (SOLO pruebas): la ventana TOCTOU exacta.
+      const pausaMs = Number(process.env.XABOR_PAGOS_LEGACY_PAUSA_MS) || 0;
+      if (pausaMs > 0 && process.env.NODE_ENV !== 'production') {
+        await new Promise(r => setTimeout(r, pausaMs));
+      }
+
+      await conObligacionDePagoExclusiva(negocio_id, folio, async () => {
+        // RE-CHEQUEO AUTORITATIVO bajo el lock: el mundo pudo cambiar
+        // durante la espera (o la pausa inyectada).
+        const ahora = await ledgerConoceCheckoutClip(folio, negocio_id, clip_link_id);
+        if (ahora.filas > 0 && ahora.duenoDelCheckout) return;
+
+        const data = await getPaymentStatus(clip_link_id, negocio_id);
+        if (!data?.pagado) return;
+
+        if (ahora.filas > 0) {
+          // G4: el folio YA pertenece al ledger pero este checkout legacy NO
+          // es suyo, y trae dinero REAL. Nunca en silencio y nunca a cocina
+          // por esta via sin gates: dinero visible + anomalia durable +
+          // revision.
+          await confirmarPagoPedido(folio, negocio_id);
+          if (ahora.filaRecienteId) {
+            await marcarAnomaliaPago(ahora.filaRecienteId, negocio_id, 'dinero_en_checkout_legacy_fuera_del_ledger',
+              `el checkout legacy ${clip_link_id} del folio ${folio} reporta COMPLETED pero no pertenece a ninguna fila del ledger: dinero real que requiere revision manual (no se libera cocina por el camino sin gates)`);
+          }
+          console.error(`[Clip Reconciliación] DINERO EN CHECKOUT LEGACY FUERA DEL LEDGER folio=${folio} checkout=${clip_link_id}: registrado sin liberar cocina, requiere revision`);
+          return;
+        }
+
+        // Camino legacy legitimo: el folio no tiene NINGUNA fila de ledger.
+        await confirmarPagoPedido(folio, negocio_id);
+        await confirmarPedidoPendientePago(folio, negocio_id);
+        confirmados++;
+        if (typeof broadcast === 'function') {
+          broadcast(negocio_id, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
+        }
+        console.log(`[Clip Reconciliación] ✅ Pago confirmado automáticamente (legacy sin ledger): ${folio}`);
+      });
+    } catch (e) {
+      console.error(`[Clip Reconciliación] Error en el camino legacy de ${folio}: ${e.message}`);
+    }
+  }
+  return confirmados;
+}
+
+/**
+ * CLIP-G (envejecimiento): una fila de Clip que llega al limite de la
+ * ventana operativa SIN evidencia terminal autenticada NO puede desaparecer
+ * del barrido en silencio. Antes de que la ventana la retire del automatico,
+ * queda RUIDO DURABLE: anomalia `envejecido_sin_terminal_proveedor` (y las
+ * filas que seguian en 'creando'/'pendiente' pasan a 'requiere_revision',
+ * el vocabulario de revision humana; 'vencido' conserva su estado -- la
+ * anomalia es la alerta). Idempotente: no re-marca. Una frontera temporal
+ * jamas convierte un problema financiero desconocido en silencio operativo.
+ */
+export async function marcarEnvejecidosSinTerminalClip() {
+  const dias = Number(process.env.XABOR_PAGOS_VENTANA_RECONCILIACION_DIAS) || 90;
+  const { pool } = await import('./database.js');
+  const { rows } = await pool.query(
+    `UPDATE pagos
+        SET estado = CASE WHEN estado IN ('creando','pendiente') THEN 'requiere_revision' ELSE estado END,
+            metadata_sanitizada = metadata_sanitizada || jsonb_build_object(
+              'anomalia', 'envejecido_sin_terminal_proveedor',
+              'anomalia_detalle', 'la fila alcanzo la ventana operativa de ' || $1 || ' dias sin evidencia terminal autenticada del proveedor: requiere revision manual',
+              'envejecido_sin_terminal_at', to_jsonb(NOW()))
+      WHERE proveedor = 'clip'
+        AND estado NOT IN ('pagado','reembolsado','cancelado')
+        AND created_at <= NOW() - ($1 || ' days')::interval
+        AND (metadata_sanitizada->>'provider_terminal_status') IS NULL
+        AND (metadata_sanitizada->>'envejecido_sin_terminal_at') IS NULL
+      RETURNING id, pedido_folio`, [String(dias)]);
+  for (const r of rows) {
+    console.error(`[Clip Reconciliación] ENVEJECIDO SIN TERMINAL pago=${r.id} pedido=${r.pedido_folio}: sale de la ventana automatica SIN evidencia del proveedor -- requiere revision`);
+  }
+  return rows.length;
 }
 
 /**

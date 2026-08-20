@@ -3420,6 +3420,35 @@ export async function existePagoDeLedgerClip(folio, negocioId) {
   return rowCount > 0;
 }
 
+/**
+ * CLIP-G (granularidad multi-intento): ¿que sabe el ledger de ESTE folio y
+ * de ESTE checkout concreto? "El folio tiene alguna fila" NO responde si el
+ * checkout legacy (clip_link_id) pertenece al ledger: un pedido pudo nacer
+ * con un enlace legacy L1 (programado pre-ledger) y ganar despues un intento
+ * de ledger con checkout L2 -- la existencia de L2 jamas debe silenciar
+ * dinero recibido en L1. Devuelve tambien la fila mas reciente del folio,
+ * para poder anotar durablemente la anomalia cuando aparece dinero en un
+ * checkout fuera del ledger.
+ */
+export async function ledgerConoceCheckoutClip(folio, negocioId, checkoutId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { filas: 0, duenoDelCheckout: false, filaRecienteId: null };
+  }
+  const { rows: [r] } = await pool.query(
+    `SELECT COUNT(*)::int AS filas,
+            COUNT(*) FILTER (WHERE referencia_externa = $3
+                                OR metadata_sanitizada->>'clip_checkout_candidato' = $3)::int AS del_checkout,
+            (ARRAY_AGG(id ORDER BY created_at DESC))[1] AS fila_reciente
+       FROM pagos
+      WHERE negocio_id = $1 AND pedido_folio = $2 AND proveedor = 'clip'`,
+    [negocioId.trim(), folio, String(checkoutId || '')]);
+  return {
+    filas: r?.filas || 0,
+    duenoDelCheckout: (r?.del_checkout || 0) > 0,
+    filaRecienteId: r?.fila_reciente || null,
+  };
+}
+
 export async function obtenerPagoVigentePorFolioClip(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const { rows } = await pool.query(
@@ -3509,12 +3538,27 @@ export async function pagosReconciliablesDeProveedor(proveedor, limite = 50) {
     // procesarExpiracionProveedorClip). Asi las filas terminales verificadas
     // no ocupan lugares del ORDER BY para siempre, y las no verificadas
     // siguen consultandose dentro de la ventana operativa.
-    `SELECT * FROM pagos
-      WHERE proveedor = $1
-        AND estado NOT IN ('pagado','reembolsado','cancelado')
-        AND (metadata_sanitizada->>'provider_terminal_status') IS NULL
-        AND created_at > NOW() - ($2 || ' days')::interval
-      ORDER BY created_at ASC LIMIT $3`, [proveedor, String(dias), limite]);
+    // CLIP-G (starvation): rotacion real. Sin ella, 50 filas viejas
+    // permanentemente PENDING ocupaban los primeros lugares del ORDER BY y
+    // un COMPLETED mas reciente jamas se consultaba. El barrido entrega
+    // primero lo MENOS recientemente consultado (`ultima_reconsulta_at`,
+    // NULL = nunca = maxima prioridad) y ESTAMPA lo que entrega en el mismo
+    // acto -- tambien cuando el GET posterior falle: avanzar la rotacion es
+    // lo que garantiza que una fila problematica no monopolice la cola;
+    // la fila sigue ELEGIBLE (fail-open), solo pasa al final del turno.
+    `UPDATE pagos SET metadata_sanitizada = metadata_sanitizada
+        || jsonb_build_object('ultima_reconsulta_at', to_jsonb(NOW()))
+      WHERE id IN (
+        SELECT id FROM pagos
+         WHERE proveedor = $1
+           AND estado NOT IN ('pagado','reembolsado','cancelado')
+           AND (metadata_sanitizada->>'provider_terminal_status') IS NULL
+           AND created_at > NOW() - ($2 || ' days')::interval
+         ORDER BY COALESCE((metadata_sanitizada->>'ultima_reconsulta_at')::timestamptz, '-infinity') ASC,
+                  created_at ASC
+         LIMIT $3
+         FOR UPDATE SKIP LOCKED)
+      RETURNING *`, [proveedor, String(dias), limite]);
   return rows;
 }
 

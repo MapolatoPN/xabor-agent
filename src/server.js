@@ -30,7 +30,8 @@ import { getPaymentStatus as getPaymentStatusClip } from './services/providers/c
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
          derivarPedidoPorPagoAsentado, reconciliarDerivacionesPendientes,
          verificarYAsentarClip, reconciliarCandidatosClip,
-         expirarPagosVencidos, procesarExpiracionProveedorClip } from './services/webhookPagos.js';
+         expirarPagosVencidos, procesarExpiracionProveedorClip,
+         reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
 import { setEntregaEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -7743,6 +7744,12 @@ async function sincronizarRappi() {
 // se usa ESE para consultar Clip con las credenciales de ESE negocio
 // (nunca una cuenta global) y para verificar dueño al confirmar el pago.
 async function reconciliarPagosPendientes() {
+  // CLIP-G: antes de barrer, marcar con RUIDO DURABLE las filas que llegaron
+  // al limite de la ventana operativa sin evidencia terminal del proveedor
+  // -- una frontera temporal jamas convierte dinero desconocido en silencio.
+  try { await marcarEnvejecidosSinTerminalClip(); } catch (e) {
+    console.error('[Clip Reconciliación] Error marcando envejecidos:', e.message);
+  }
   // ── 1. Por FILA del ledger ────────────────────────────────────────────────
   //
   // Antes esto recorría `pedidos_activos.datos->>'clip_link_id'`, que guarda UN
@@ -7797,32 +7804,14 @@ async function reconciliarPagosPendientes() {
   }
 
   // ── 2. Camino verdaderamente legacy ───────────────────────────────────────
-  // Enlaces creados por clip-api.js sin pasar por pagosService (hoy solo
-  // pedidos PROGRAMADOS que aún no existían en pedidos_activos al generarse el
-  // enlace). No hay fila que asentar, así que se conserva el camino directo --
-  // pero SOLO para pedidos que de verdad no tienen ninguna.
+  // Extraido a webhookPagos.reconciliarLegacyClip (CLIP-G): corre bajo la
+  // MISMA obligacion financiera por pedido que la creacion/settlement, con
+  // re-chequeo del ledger DENTRO del lock (cierra la carrera TOCTOU con el
+  // camino moderno) y granularidad por checkout (un enlace legacy con
+  // dinero en un folio que ya tiene ledger se registra con anomalia y sin
+  // liberar cocina -- nunca en silencio).
   try {
-    const pendientes = await obtenerPagosPendientesConLink();
-    for (const { folio, negocio_id, clip_link_id } of pendientes) {
-      if (!negocio_id) {
-        console.warn(`[Clip Reconciliación] ${folio} sin negocio_id resuelto — omitido (fail closed)`);
-        continue;
-      }
-      // CLIP-E: en cuanto EXISTE una fila de ledger para el folio -- en
-      // cualquier estado, incluida 'pagado' -- el camino legacy se aparta:
-      // la parte 1 y sus gates (version, pago tardio, doble cobro) son la
-      // unica verdad. El chequeo anterior (obtenerPagoVigentePorFolioClip)
-      // excluia 'pagado' y dejaba a este camino liberar a cocina un pedido
-      // con version desfasada ya asentado -- fail-open real, cazado por el
-      // caso 30 de fase-clip-expires-at.
-      if (await existePagoDeLedgerClip(folio, negocio_id)) continue;
-      const data = await getPaymentStatusClip(clip_link_id, negocio_id);
-      if (!data?.pagado) continue;
-      await confirmarPagoPedido(folio, negocio_id);
-      await confirmarPedidoPendientePago(folio, negocio_id);
-      broadcastNegocio(negocio_id, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
-      console.log(`[Clip Reconciliación] ✅ Pago confirmado automáticamente (legacy sin ledger): ${folio}`);
-    }
+    await reconciliarLegacyClip({ broadcast: broadcastNegocio });
   } catch (e) {
     console.error('[Clip Reconciliación] Error en el camino legacy:', e.message);
   }
@@ -8028,7 +8017,15 @@ async function arrancar() {
   setInterval(sincronizarRappi, 5 * 60 * 1000);
   // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
   reconciliarPagosPendientes();
-  setInterval(reconciliarPagosPendientes, 5 * 60 * 1000);
+  // Intervalo del reconciliador de pagos: 5 min en produccion, SIEMPRE.
+  // El override por variable es EXCLUSIVO de pruebas (candado NODE_ENV):
+  // permite demostrar que un webhook perdido HORAS despues del arranque se
+  // recupera en un ciclo normal, sin reiniciar nada (CLIP-G).
+  const intervaloPagosMs = (process.env.NODE_ENV !== 'production'
+      && Number(process.env.XABOR_PAGOS_RECONCILIACION_INTERVALO_MS) > 0)
+    ? Number(process.env.XABOR_PAGOS_RECONCILIACION_INTERVALO_MS)
+    : 5 * 60 * 1000;
+  setInterval(reconciliarPagosPendientes, intervaloPagosMs);
   // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
   setInterval(async () => {
     await detectarConversacionesAbandonadas(30);

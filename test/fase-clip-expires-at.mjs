@@ -93,6 +93,9 @@ const clipMock = createServer((req, res) => {
       let expiresAt;
       const solicitado = body.expires_at ? Date.parse(body.expires_at) : null;
       if (modoClip === 'ajusta' && solicitado) expiresAt = new Date(solicitado + 6 * 3600e3).toISOString();
+      else if (modoClip === 'ajusta999ms' && solicitado) expiresAt = new Date(solicitado + 999).toISOString();
+      else if (modoClip === 'ajusta1000ms' && solicitado) expiresAt = new Date(solicitado + 1000).toISOString();
+      else if (modoClip === 'ajusta1001ms' && solicitado) expiresAt = new Date(solicitado + 1001).toISOString();
       else if (modoClip === 'ajusta2s' && solicitado) expiresAt = new Date(solicitado + 2000).toISOString();
       else if (modoClip === 'adelanta1s' && solicitado) expiresAt = new Date(solicitado - 1000).toISOString();
       else if (modoClip === 'adelanta' && solicitado) expiresAt = new Date(solicitado - 10 * 60e3).toISOString();
@@ -1152,6 +1155,221 @@ try {
     assert.ok(rC.url, 'el eco exacto debio entregarse');
     const [fC] = await filas(folioC);
     assert.ok(!fC.metadata_sanitizada?.expiracion_proveedor_mas_larga);
+  });
+
+  // ═══ CLIP-G: dientes de la auditoria adversarial ═════════════════════════
+
+  await t('32. CLIP-G1: webhook perdido HORAS despues del arranque -> un ciclo NORMAL del reconciliador lo recupera, sin reiniciar nada', async () => {
+    // Servidor YA VIVO con el intervalo de pruebas acelerado (candado
+    // NODE_ENV; en produccion es SIEMPRE 5 min). El checkout nace y se paga
+    // DESPUES de que el barrido de arranque ya corrio: solo el ciclo
+    // periodico puede recuperarlo.
+    const srvG = await arrancarServidor({ PORT: String(PUERTO), XABOR_PAGOS_RECONCILIACION_INTERVALO_MS: '2500' }, { timeoutMs: 90000 });
+    try {
+      await esperar(3000); // el barrido de ARRANQUE ya corrio y termino
+      const folio = folioNuevo();
+      await pedido(folio, 495);
+      const r = await crearEnlace(folio);
+      const [fila] = await filas(folio);
+      CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED'; // paga; webhook perdido
+      const pagada = await esperarHasta(async () => {
+        const f = await filaId(fila.id);
+        return f.estado === 'pagado' ? f : null;
+      }, { timeoutMs: 15000 });
+      assert.ok(pagada,
+        'el ciclo periodico del reconciliador NO recupero un webhook perdido despues del arranque: solo un restart lo habria salvado');
+    } finally { await srvG.detener(); await esperar(400); }
+  });
+
+  await t('33. CLIP-G2: 55 filas viejas eternamente PENDING no pueden matar de hambre a un COMPLETED reciente (rotacion real)', async () => {
+    // 55 filas de ledger viejas, todas apuntando a checkouts PENDING del
+    // mock: mas que el LIMIT de 50 del barrido. Sin rotacion, ocupaban los
+    // primeros 50 lugares por created_at para siempre.
+    const viejasIds = [];
+    for (let i = 0; i < 55; i++) {
+      const idCk = `clip-cea-viejo-${i}`;
+      CHECKOUTS.set(idCk, { referencia: `ref-vieja-${i}`, estado: 'PENDING', monto: 100, expiresAt: null, expiredAt: null });
+      const { rows: [v] } = await pool.query(
+        `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, referencia_externa,
+                            tipo, moneda, monto, estado, version_pedido_hash, created_at)
+         VALUES ($1, $2, 'clip', $3, $4, 'enlace_pago', 'MXN', 100, 'pendiente', 'v-vieja', NOW() - interval '30 days')
+         RETURNING id`,
+        [NEG, `CEA-V${String(i).padStart(3, '0')}`, `ref-vieja-${i}`, idCk]);
+      viejasIds.push(v.id);
+    }
+    try {
+      const folio = folioNuevo();
+      await pedido(folio, 500);
+      const r = await crearEnlace(folio);
+      const [fila] = await filas(folio);
+      CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+
+      const srvG = await arrancarServidor({ PORT: String(PUERTO), XABOR_PAGOS_RECONCILIACION_INTERVALO_MS: '2000' }, { timeoutMs: 90000 });
+      try {
+        const pagada = await esperarHasta(async () => {
+          const f = await filaId(fila.id);
+          return f.estado === 'pagado' ? f : null;
+        }, { timeoutMs: 20000 });
+        assert.ok(pagada,
+          'STARVATION: 55 filas viejas PENDING monopolizaron el ORDER BY/LIMIT y el COMPLETED reciente jamas se consulto');
+        // Y la rotacion de verdad avanza: las 55 viejas quedaron estampadas.
+        const { rows: [{ n }] } = await pool.query(
+          `SELECT COUNT(*)::int AS n FROM pagos WHERE id = ANY($1)
+            AND metadata_sanitizada->>'ultima_reconsulta_at' IS NOT NULL`, [viejasIds]);
+        assert.ok(n >= 50, `la rotacion no estampo a las viejas consultadas (estampadas=${n})`);
+      } finally { await srvG.detener(); await esperar(400); }
+    } finally {
+      await pool.query(`DELETE FROM pagos WHERE id = ANY($1)`, [viejasIds]);
+      await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio LIKE 'CEA-V%'`, [NEG]);
+    }
+  });
+
+  await t('34. CLIP-G3: carrera TOCTOU legacy-vs-moderno -> el re-chequeo bajo el lock gana; cero liberacion indebida', async () => {
+    // Pedido con enlace LEGACY (clip_link_id, sin fila de ledger) y dinero
+    // real en ese checkout.
+    const folio = folioNuevo();
+    await pedido(folio, 505);
+    const idL1 = 'clip-cea-legacy-g3';
+    CHECKOUTS.set(idL1, { referencia: folio, estado: 'COMPLETED', monto: 505, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ clip_link_id: idL1 })]);
+
+    // El sweep legacy arranca y se PAUSA en la ventana TOCTOU exacta (entre
+    // el pre-chequeo sin lock y el lock).
+    const { reconciliarLegacyClip } = await import('../src/services/webhookPagos.js');
+    process.env.XABOR_PAGOS_LEGACY_PAUSA_MS = '2500';
+    const legacyEnVuelo = reconciliarLegacyClip();
+
+    // Durante la pausa, el camino MODERNO crea y asienta una fila con
+    // VERSION DESFASADA (que NO libera cocina).
+    await esperar(600);
+    const rB = await crearEnlace(folio);
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ total: 610, items: [{ nombre: 'Producto XXL', cantidad: 1, precio_unitario: 610 }] })]);
+    CHECKOUTS.get(rB.referenciaExterna).estado = 'COMPLETED';
+    const { verificarYAsentarClip } = await import('../src/services/webhookPagos.js');
+    const [filaB] = (await filas(folio)).filter(f => f.referencia_externa === rB.referenciaExterna);
+    const asiento = await verificarYAsentarClip({ pago: filaB, checkoutId: rB.referenciaExterna });
+    assert.strictEqual(asiento.razon, 'transicion_version_desfasada', `el fixture no dejo la version desfasada: ${asiento.razon}`);
+
+    await legacyEnVuelo;
+    delete process.env.XABOR_PAGOS_LEGACY_PAUSA_MS;
+
+    // Con el re-chequeo bajo el lock: el legacy ve que el folio YA es del
+    // ledger; el dinero de L1 queda registrado con anomalia (no en
+    // silencio) y la cocina JAMAS se libera por el camino sin gates.
+    const p = await pedidoDe(folio);
+    assert.strictEqual(p.estado, 'pendiente_pago',
+      `TOCTOU: el camino legacy libero cocina pese al asiento moderno con version desfasada (estado=${p.estado})`);
+    assert.strictEqual(await comandasDe(folio), 0, 'salio comanda por la carrera legacy/moderno');
+  });
+
+  await t('35. CLIP-G4: dinero en un checkout legacy de un folio que YA tiene ledger -> visible con anomalia, cero cocina, cero silencio', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 510);
+    // Primero nace el intento MODERNO (fila de ledger, checkout L2, sin pagar).
+    const rB = await crearEnlace(folio);
+    const [filaB] = await filas(folio);
+    assert.ok(filaB.referencia_externa && filaB.referencia_externa === rB.referenciaExterna);
+    // Y el pedido arrastra un enlace LEGACY DISTINTO (L1) con dinero real.
+    const idL1 = 'clip-cea-legacy-g4';
+    CHECKOUTS.set(idL1, { referencia: folio, estado: 'COMPLETED', monto: 510, expiresAt: null, expiredAt: null });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb WHERE folio=$1 AND negocio_id=$2`,
+      [folio, NEG, JSON.stringify({ clip_link_id: idL1 })]);
+
+    const { reconciliarLegacyClip } = await import('../src/services/webhookPagos.js');
+    await reconciliarLegacyClip();
+
+    const p = await pedidoDe(folio);
+    assert.strictEqual(p.datos?.pago_confirmado, true,
+      'el dinero del checkout legacy quedo INVISIBLE: la existencia del ledger lo silencio');
+    assert.strictEqual(p.estado, 'pendiente_pago', 'el camino legacy sin gates libero cocina');
+    assert.strictEqual(await comandasDe(folio), 0);
+    const filaBTras = await filaId(filaB.id);
+    assert.strictEqual(filaBTras.metadata_sanitizada?.anomalia, 'dinero_en_checkout_legacy_fuera_del_ledger',
+      'no quedo anomalia durable: el dinero fuera del ledger paso sin ruido');
+  });
+
+  await t('36. CLIP-G5: llegar a la ventana de 90 dias sin terminal autenticada deja RUIDO DURABLE, nunca silencio', async () => {
+    const idCk = 'clip-cea-viejo-g5';
+    CHECKOUTS.set(idCk, { referencia: 'ref-g5', estado: 'PENDING', monto: 100, expiresAt: null, expiredAt: null });
+    const { rows: [v] } = await pool.query(
+      `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, referencia_externa,
+                          tipo, moneda, monto, estado, version_pedido_hash, created_at)
+       VALUES ($1, 'CEA-G5', 'clip', 'ref-g5', $2, 'enlace_pago', 'MXN', 100, 'pendiente', 'v-g5', NOW() - interval '91 days')
+       RETURNING id`, [NEG, idCk]);
+    // Y una hermana IGUAL de vieja pero con terminal verificado: NO se marca.
+    const { rows: [conTerminal] } = await pool.query(
+      `INSERT INTO pagos (negocio_id, pedido_folio, proveedor, referencia_interna, referencia_externa,
+                          tipo, moneda, monto, estado, version_pedido_hash, created_at, metadata_sanitizada)
+       VALUES ($1, 'CEA-G5T', 'clip', 'ref-g5t', 'clip-cea-viejo-g5t', 'enlace_pago', 'MXN', 100, 'vencido', 'v-g5t',
+               NOW() - interval '91 days', '{"provider_terminal_status":"CHECKOUT_EXPIRED"}'::jsonb)
+       RETURNING id`, [NEG]);
+    try {
+      const { marcarEnvejecidosSinTerminalClip } = await import('../src/services/webhookPagos.js');
+      const marcadas = await marcarEnvejecidosSinTerminalClip();
+      assert.ok(marcadas >= 1, 'ninguna fila envejecida quedo marcada');
+      const f = await filaId(v.id);
+      assert.strictEqual(f.metadata_sanitizada?.anomalia, 'envejecido_sin_terminal_proveedor',
+        'la fila salio de la ventana automatica SIN ruido durable');
+      assert.strictEqual(f.estado, 'requiere_revision',
+        'una pendiente envejecida debio pasar al vocabulario de revision humana');
+      const t2 = await filaId(conTerminal.id);
+      assert.ok(!t2.metadata_sanitizada?.anomalia, 'una fila CON terminal verificado fue marcada como envejecida');
+      // Idempotente: la segunda pasada no re-marca.
+      const otraVez = await marcarEnvejecidosSinTerminalClip();
+      const f2 = await filaId(v.id);
+      assert.strictEqual(f2.metadata_sanitizada?.envejecido_sin_terminal_at, f.metadata_sanitizada?.envejecido_sin_terminal_at,
+        `la segunda pasada re-marco la fila (marcadas=${otraVez})`);
+    } finally {
+      await pool.query(`DELETE FROM pagos WHERE id = ANY($1)`, [[v.id, conTerminal.id]]);
+    }
+  });
+
+  await t('37. CLIP-G6: la frontera es EXACTAMENTE la precision del contrato -- +999ms valido, +1000ms valido, +1001ms bloqueado', async () => {
+    // La justificacion del segundo es la precision del contrato (fechas
+    // truncadas a segundos): el desfase maximo por redondeo es <1s. La
+    // prueba demuestra LA FRONTERA, no solo un ejemplo lejano.
+    for (const [modo, esperadoUrl] of [['ajusta999ms', true], ['ajusta1000ms', true], ['ajusta1001ms', false]]) {
+      const folio = folioNuevo();
+      await pedido(folio, 515);
+      modoClip = modo;
+      const r = await crearEnlace(folio);
+      modoClip = 'normal';
+      if (esperadoUrl) {
+        assert.ok(r.url, `${modo}: un desfase dentro de la precision del contrato debio entregarse`);
+      } else {
+        assert.ok(!r.url, `${modo}: un desfase POR ENCIMA de la precision entrego la URL laxa`);
+        assert.strictEqual(r.requiereRevision, true, `${modo}: no quedo en revision`);
+      }
+    }
+  });
+
+  await t('38. CLIP-G7: un COMPLETED autenticado DESPUES del terminal EXPIRED no desaparece en silencio -- dinero asentado + contradiccion durable', async () => {
+    const folio = folioNuevo();
+    await pedido(folio, 520);
+    const r = await crearEnlace(folio);
+    const [fila] = await filas(folio);
+    // Terminal EXPIRED verificado (evidencia autenticada, durable).
+    CHECKOUTS.get(r.referenciaExterna).estado = 'EXPIRED';
+    const { procesarExpiracionProveedorClip, verificarYAsentarClip } = await import('../src/services/webhookPagos.js');
+    const rExp = await procesarExpiracionProveedorClip({ pago: await filaId(fila.id), checkoutId: r.referenciaExterna });
+    assert.ok(rExp.ok, `no quedo el terminal: ${rExp.razon}`);
+    assert.strictEqual((await filaId(fila.id)).metadata_sanitizada?.provider_terminal_status, 'CHECKOUT_EXPIRED');
+
+    // "Imposible": el proveedor ahora reporta COMPLETED. El dinero manda.
+    CHECKOUTS.get(r.referenciaExterna).estado = 'COMPLETED';
+    const rec = await verificarYAsentarClip({ pago: await filaId(fila.id), checkoutId: r.referenciaExterna });
+    assert.ok(rec.ok === true || rec.razon === 'transicion_pago_tardio',
+      `el COMPLETED posterior al terminal fue ignorado: ${rec.razon}`);
+    const f = await filaId(fila.id);
+    assert.strictEqual(f.estado, 'pagado', 'el dinero desaparecio en silencio por la marca terminal');
+    assert.strictEqual(f.metadata_sanitizada?.terminal_contradicho_por_pago, true,
+      'la contradiccion del terminal no quedo durable: silencio operativo');
+    assert.strictEqual(await comandasDe(folio), 0, 'un pago tras terminal/vencimiento libero cocina');
   });
 
 } catch (e) {
