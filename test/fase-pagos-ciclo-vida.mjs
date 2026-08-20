@@ -55,13 +55,16 @@ const clipMock = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v2/checkout') {
       const body = JSON.parse(cuerpo || '{}');
       const id = `clip-cv-${++checkoutsClip}`;
+      const eco = body.expires_at ? new Date(Date.parse(body.expires_at)).toISOString() : new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
       CHECKOUTS.set(id, {
         referencia: body.metadata?.external_reference || null,
         estado: 'PENDING',
         monto: Number(body.amount),
+        expiraAt: eco,
       });
       res.end(JSON.stringify({
         payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
+        expired_at: eco,
       }));
       return;
     }

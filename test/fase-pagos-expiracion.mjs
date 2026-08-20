@@ -57,12 +57,14 @@ const clipMock = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v2/checkout') {
       const body = JSON.parse(cuerpo || '{}');
       const id = `clip-exp-${++checkoutsClip}`;
+      const eco = body.expires_at ? new Date(Date.parse(body.expires_at)).toISOString() : new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
       CHECKOUTS.set(id, {
         referencia: body.metadata?.external_reference || null,
-        estado: 'PENDING', monto: Number(body.amount), expiraAt: null,
+        estado: 'PENDING', monto: Number(body.amount), expiraAt: eco,
       });
       res.end(JSON.stringify({
         payment_request_id: id, payment_request_url: `https://pago.mock.clip/${id}`, status: 'CHECKOUT',
+        expired_at: eco,
       }));
       return;
     }
@@ -292,9 +294,16 @@ try {
     assert.ok(f.xabor_espera_hasta, 'no se escribió el deadline interno');
     const minutos = (new Date(f.xabor_espera_hasta) - Date.now()) / 60000;
     assert.ok(minutos > 25 && minutos <= 30, `deadline fuera de rango: ${minutos.toFixed(1)} min`);
-    // Y NO se tocó `expires_at`: eso lo dice el proveedor, no nosotros.
-    assert.strictEqual(f.expires_at, null,
-      'se escribió expires_at con una decisión interna: eso sacaría el checkout de la reconciliación');
+    // `expires_at` lo dice el PROVEEDOR, no nosotros. Desde CLIP expires_at,
+    // Clip DECLARA la expiración efectiva del checkout (expired_at, eco de la
+    // solicitada) y esa -- y solo esa -- es la que puede vivir aquí: debe
+    // coincidir con lo que el proveedor devolvió (≈ T solicitada), jamás una
+    // decisión interna distinta.
+    assert.ok(f.expires_at, 'el proveedor declaró una expiración y no quedó registrada');
+    assert.ok(Math.abs(new Date(f.expires_at) - new Date(f.xabor_espera_hasta)) < 1000,
+      'pagos.expires_at no es el valor declarado por el proveedor (eco de la T solicitada)');
+    assert.strictEqual(f.metadata_sanitizada?.provider_expires_at ? true : false, true,
+      'sin rastro de que expires_at vino del proveedor');
 
     await vencerYa(f.id);
     assert.strictEqual(await expirarPagosVencidos(), 1);
