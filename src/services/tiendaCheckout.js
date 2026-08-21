@@ -622,9 +622,26 @@ export async function crearPedidoTienda({
       cuposTomados = reservadas;
     }
 
-    // 6) Método de pago: solo los que el negocio tiene habilitados.
+    // 6) Método de pago: SOLO los de la allow-list propia de esta tienda
+    //    (metodosPagoTienda). Un método manipulado desde el navegador -- o uno
+    //    habilitado en el POS pero no en la tienda -- no existe aquí. Si la
+    //    lista queda vacía, se distingue el motivo para el cliente: pasarela
+    //    caída (config online-only con proveedor no utilizable) vs tienda sin
+    //    métodos configurados. Fail closed en ambos: jamás una caída
+    //    silenciosa a "paga después".
     const metodos = await metodosPagoTienda(tienda.negocioId, modo);
-    if (!metodos.length) throw new TiendaError('Esta tienda aún no tiene métodos de pago configurados', 'SIN_METODOS_PAGO');
+    if (!metodos.length) {
+      const { metodosPagoTiendaConfigurados } = await import('./tiendaOnline.js');
+      const permitidos = await metodosPagoTiendaConfigurados(tienda.negocioId);
+      if (permitidos.includes('enlace_pago')) {
+        throw new TiendaError(
+          'Los pagos en línea no están disponibles temporalmente. Intenta más tarde.',
+          'PAGO_EN_LINEA_NO_DISPONIBLE', 503);
+      }
+      throw new TiendaError(
+        'Esta tienda aún no tiene métodos de pago configurados',
+        'SIN_METODOS_PAGO', 503);
+    }
     // Si el cliente mandó un método, tiene que ser uno realmente habilitado:
     // caer de vuelta al primero convertiría "quise pagar en línea" en "pago
     // al recibir" sin que nadie se entere.
@@ -810,9 +827,16 @@ export async function pagoDeCheckout(trackingToken) {
     return { estado: r.estado === 'cancelado' ? 'cancelado' : 'no_requiere_pago', url: null, folio: r.pedido_folio };
   }
 
-  const { crearEnlacePago } = await import('./pagosService.js');
+  const { crearEnlacePago, urlPublicaXabor } = await import('./pagosService.js');
   const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
   const principal = await obtenerProveedorPrincipal(r.negocio_id);
+  // URL de retorno construida EN SERVIDOR a partir del tracking token (ya
+  // validado 48-hex por pedidoDeTracking): el proveedor regresa al cliente a
+  // SU seguimiento en vez de a la página genérica. Jamás se acepta una URL
+  // del navegador (cero open redirect) y el redirect NUNCA es autoridad de
+  // pago: la página consulta el estado real. Sin URL pública configurada, el
+  // proveedor conserva su retorno histórico.
+  const raizPublica = urlPublicaXabor();
   const enlace = await crearEnlacePago({
     // actor: null — el endpoint es público (sin usuario autenticado) y
     // pagos.created_by es un UUID nullable: un actor sintético revienta el
@@ -820,6 +844,7 @@ export async function pagoDeCheckout(trackingToken) {
     // y su vínculo en tienda_pedidos.
     negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: null,
     descripcion: `Pedido ${r.pedido_folio}`,
+    urlRetorno: raizPublica ? `${raizPublica}/seguimiento/${trackingToken.trim()}` : null,
   });
   return {
     estado: 'pendiente_pago',
@@ -899,7 +924,9 @@ export async function seguimientoPublico(trackingToken) {
 }
 
 const ETIQUETAS_ETAPA = {
-  recibido: 'Recibido',
+  // La tienda en línea solo cobra en línea: si el pedido está en etapas, el
+  // pago ya se confirmó -- la primera etapa lo dice con todas sus letras.
+  recibido: 'Pedido confirmado',
   preparando: 'En preparación',
   listo: 'Listo',
   en_camino: 'En camino',

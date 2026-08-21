@@ -23,6 +23,46 @@ const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf
 
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool } = await import('../src/services/database.js');
+const { createServer } = await import('http');
+
+// La tienda SOLO cobra en linea: mock minimo de Clip v2 para poder PAGAR los
+// pedidos cuyos casos necesitan efectos operativos (comanda/oferta/panel).
+const PUERTO_CLIP_CRASH = Number(process.env.TEST_PORT_CRASH_CLIP || 4599);
+const MOCK_CHECKOUTS = new Map();
+let mockN = 0;
+const clipMock = createServer((req, res) => {
+  let cuerpo = '';
+  req.on('data', c => { cuerpo += c; });
+  req.on('end', () => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'POST' && req.url === '/v2/checkout') {
+      const b = JSON.parse(cuerpo || '{}');
+      const id = `clip-crash-${++mockN}`;
+      const expiresAt = b.expires_at ? new Date(Date.parse(b.expires_at)).toISOString()
+        : new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
+      MOCK_CHECKOUTS.set(id, { referencia: b.metadata?.external_reference || null, estado: 'PENDING', monto: Number(b.amount), expiresAt });
+      res.end(JSON.stringify({ payment_request_id: id, object_type: 'payment_link', status: 'CHECKOUT_CREATED',
+        payment_request_url: `https://pago.mock.clip/${id}`,
+        created_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), expires_at: expiresAt }));
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
+      const id = decodeURIComponent(req.url.split('/').pop());
+      const c = MOCK_CHECKOUTS.get(id);
+      if (!c) { res.statusCode = 404; res.end('{}'); return; }
+      const status = c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING';
+      res.end(JSON.stringify({ object_type: 'payment_link', payment_request_id: id, status,
+        amount: c.monto ?? null, currency: 'MXN',
+        metadata: { external_reference: c.referencia, customer_info: {} },
+        payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
+        created_at: '2026-08-21T00:00:00Z', expires_at: c.expiresAt || null, last_status_message: status }));
+      return;
+    }
+    res.statusCode = 404; res.end('{}');
+  });
+});
+await new Promise(r => clipMock.listen(PUERTO_CLIP_CRASH, r));
+process.env.CLIP_API_BASE_URL = `http://localhost:${PUERTO_CLIP_CRASH}`;
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -73,7 +113,7 @@ const comprar = (base, cuerpo) => fetch(`${base}/api/tienda/${SLUG}/checkout`, {
 const carrito = (tk, extra = {}) => ({
   checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
   modalidad: 'recoger', cliente: { nombre: 'Cliente crash', telefono: '8998000001' },
-  metodoPago: 'efectivo', ...extra,
+  metodoPago: 'enlace_pago', ...extra,
 });
 
 // ── Consultas de verificación ──
@@ -128,8 +168,13 @@ async function limpiar() {
   await pool.query(
     `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
     [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM pagos WHERE negocio_id = $1`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM pedido_emisiones WHERE negocio_id = $1 AND folio IN
+    (SELECT folio FROM pedidos_activos WHERE negocio_id = $1 AND datos->>'canal' = 'tienda_online')`, [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM compras_reales WHERE negocio_id = $1 AND cliente_telefono LIKE '8998%'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_promocion_usos WHERE negocio_id = $1`, [NEG]);
   await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id = $1`, [NEG]);
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id = $1`, [NEG]);
   await pool.query(
     `DELETE FROM pedidos_activos WHERE negocio_id = $1 AND datos->>'canal' = 'tienda_online'`, [NEG]);
@@ -216,6 +261,49 @@ async function derivacionesDe(tk) {
   return r?.derivaciones || {};
 }
 
+// Paga un pedido de la tienda por el camino REAL: pide el enlace por la ruta
+// publica (crea el checkout en el mock), lo marca COMPLETED y dispara el
+// webhook (contrato moderno: me_reference_id = pagos.id). Espera a que el
+// pago active el pedido. Es lo que separa "checkout tecnico" de "orden".
+async function pagarPedido(base, folio) {
+  const { rows: [tp] } = await pool.query(
+    `SELECT tracking_token FROM tienda_pedidos WHERE negocio_id = $1 AND pedido_folio = $2`, [NEG, folio]);
+  assert.ok(tp?.tracking_token, `sin tracking para pagar ${folio}`);
+  const pr = await fetch(`${base}/api/tienda/seguimiento/${tp.tracking_token}/pago`, { method: 'POST' });
+  const pb = await pr.json().catch(() => ({}));
+  assert.strictEqual(pr.status, 200, `POST pago ${folio}: ${JSON.stringify(pb)}`);
+  const { rows: [fila] } = await pool.query(
+    `SELECT id, referencia_externa FROM pagos WHERE negocio_id = $1 AND pedido_folio = $2
+      ORDER BY created_at DESC LIMIT 1`, [NEG, folio]);
+  MOCK_CHECKOUTS.get(fila.referencia_externa).estado = 'COMPLETED';
+  const wr = await fetch(`${base}/webhook/clip`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resource: 'CHECKOUT', resource_status: 'COMPLETED',
+      me_reference_id: String(fila.id), payment_request_id: fila.referencia_externa }),
+  });
+  assert.strictEqual(wr.status, 200, `webhook ${folio}`);
+  const lim = Date.now() + 12000;
+  for (;;) {
+    const { rows: [px] } = await pool.query(
+      `SELECT estado FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`, [NEG, folio]);
+    if (px && px.estado !== 'pendiente_pago') break;
+    if (Date.now() > lim) throw new Error(`el pago nunca activo ${folio}`);
+    await new Promise(r => setTimeout(r, 150));
+  }
+  // El estado cambia ANTES de que los efectos aterricen; si el caso apaga su
+  // servidor con la derivación en vuelo, mediría un mundo a medias. La marca
+  // durable de "los efectos de emisión corrieron" es la deuda SALDADA de
+  // pedido_emisiones (vale igual en modo Edge y legacy).
+  const lim2 = Date.now() + 12000;
+  for (;;) {
+    const { rows: [em] } = await pool.query(
+      `SELECT estado FROM pedido_emisiones WHERE negocio_id = $1 AND folio = $2`, [NEG, folio]);
+    if (em?.estado === 'saldada') return;
+    if (Date.now() > lim2) throw new Error(`la emision de ${folio} nunca se saldo (${em?.estado || 'sin fila'})`);
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+
 // Modo legacy: sin Edge montado (si Edge se hace cargo, el camino viejo ni se
 // intenta) y con la configuración que lo elige explícitamente.
 async function ponerModoLegacy(activo) {
@@ -258,8 +346,17 @@ async function preparar() {
     `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'reglas_atencion',$2)
      ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`, [NEG, JSON.stringify(reglas)]);
   await pool.query(`UPDATE metodos_pago SET habilitado = FALSE WHERE negocio_id = $1`, [NEG]);
-  await pool.query(`INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'efectivo',TRUE)
+  await pool.query(`INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'enlace_pago',TRUE)
     ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE`, [NEG]);
+  // Proveedor de FORMA valida (testConnection de Clip no toca red ni cobra).
+  {
+    const { guardarIntegracionPago, marcarProveedorPrincipal } =
+      await import('../src/services/integracionesService.js');
+    await guardarIntegracionPago(NEG, 'clip',
+      { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+      { actualizadoPor: SEED.superadminUsuarioId });
+    await marcarProveedorPrincipal(NEG, 'clip', SEED.superadminUsuarioId);
+  }
   await pool.query(
     `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
      VALUES ($1,'publicada',$2,'Crash',$3)
@@ -420,12 +517,18 @@ try {
       'el crash fue ANTES de emitir: no debería haber comandas todavía');
 
     let r;
-    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-    assert.strictEqual(r.body.folio, pedido.folio);
+    await conServidor({}, async (base) => {
+      r = await comprar(base, carrito(tk));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(r.body.folio, pedido.folio);
+      // Regla del canal: el retry recupera el CHECKOUT, pero sin pagar sigue
+      // sin haber papel. La comanda llega con el pago confirmado.
+      assert.strictEqual(await trabajosDeFolio(pedido.folio), 0, 'hubo comanda sin pagar');
+      await pagarPedido(base, pedido.folio);
+    });
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
     assert.strictEqual(await trabajosDeFolio(pedido.folio), 1,
-      'el retry no dejó exactamente una comanda por destino');
+      'el pago no dejó exactamente una comanda por destino');
   });
 
   await t('C2. cinco reintentos posteriores: sigue habiendo 1 pedido y 1 comanda', async () => {
@@ -434,7 +537,10 @@ try {
     await conServidor({}, async (base) => {
       const r = await comprar(base, carrito(tk));
       folio = r.body.folio;
-      assert.strictEqual(await trabajosDeFolio(folio), 1, 'el checkout normal no imprimió');
+      // Regla del canal: el checkout NO imprime; imprime el pago, una vez.
+      assert.strictEqual(await trabajosDeFolio(folio), 0, 'el checkout imprimió sin pagar');
+      await pagarPedido(base, folio);
+      assert.strictEqual(await trabajosDeFolio(folio), 1, 'el pago no dejó su comanda');
       for (let i = 0; i < 5; i++) {
         const rr = await comprar(base, carrito(tk));
         assert.strictEqual(rr.body.folio, folio, 'un reintento devolvió otro folio');
@@ -460,11 +566,14 @@ try {
     assert.strictEqual(await trabajosDeFolio(pedido.folio), 0, 'no debería haber comanda aún');
 
     let r;
-    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-    assert.strictEqual(r.body.folio, pedido.folio);
+    await conServidor({}, async (base) => {
+      r = await comprar(base, carrito(tk));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(r.body.folio, pedido.folio);
+      await pagarPedido(base, pedido.folio);
+    });
     assert.strictEqual(await trabajosDeFolio(pedido.folio), 1,
-      'el retry devolvió 200 pero la comanda nunca se emitió');
+      'tras recuperar el checkout y pagar, la comanda no se emitió exactamente una vez');
   });
 
   // ─── D) Concurrencia + fallo inyectado ───
@@ -482,6 +591,8 @@ try {
     await conServidor({}, async (base) => {
       respuestas = await Promise.all(
         Array.from({ length: 10 }, () => comprar(base, carrito(tk, { codigo: 'CONCURRE' }))));
+      const ok = respuestas.find(r => r.status === 200);
+      if (ok?.body?.folio) await pagarPedido(base, ok.body.folio);
     });
     const exitosas = respuestas.filter(r => r.status === 200);
     assert.ok(exitosas.length >= 1, 'ninguno de los 10 recuperó el pedido');
@@ -519,7 +630,7 @@ try {
       const r = await comprar(base, {
         checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
         modalidad: 'domicilio', direccion: 'Calle Crash 10', colonia: 'Centro',
-        cliente: { nombre: 'Domicilio crash', telefono: '8998000200' }, metodoPago: 'efectivo' });
+        cliente: { nombre: 'Domicilio crash', telefono: '8998000200' }, metodoPago: 'enlace_pago' });
       assert.ok(r.status >= 400, 'no falló pese a la inyección');
       // Que falle no basta: tiene que fallar por la INYECCIÓN, después de
       // crear el pedido. Si falla antes (config, dirección), la prueba no
@@ -529,12 +640,19 @@ try {
     });
     [{ folio } = {}] = await pedidosDelToken(tk);
     assert.ok(folio, 'el pedido debería existir');
+    // Regla del canal: la oferta a repartidores y el papel salen con el PAGO.
+    // Se recupera el checkout, se paga, y ESA es la línea base de efectos.
+    await conServidor({}, async (base) => {
+      const rr = await comprar(base, carrito(tk));
+      assert.strictEqual(rr.status, 200, JSON.stringify(rr.body));
+      await pagarPedido(base, folio);
+    });
     const trasCrash = await trabajosDeFolio(folio);
     const { rows: [n1] } = await pool.query(
       `SELECT COUNT(*)::int AS n FROM notificaciones_repartidor WHERE pedido_folio = $1`, [folio])
       .catch(() => ({ rows: [{ n: 0 }] }));
 
-    // Tres reintentos: la emisión ya está marcada, así que no vuelve a correr.
+    // Tres reintentos: la emisión ya corrió con el pago, no vuelve a correr.
     await conServidor({}, async (base) => {
       for (let i = 0; i < 3; i++) await comprar(base, carrito(tk));
     });
@@ -574,12 +692,15 @@ try {
       });
     }
     let r;
-    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    await conServidor({}, async (base) => {
+      r = await comprar(base, carrito(tk));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      await pagarPedido(base, r.body.folio);
+    });
     const finales = await pedidosDelToken(tk);
     assert.strictEqual(finales.length, 1, `cuatro crashes dejaron ${finales.length} pedidos`);
     assert.strictEqual(await trabajosDeFolio(finales[0].folio), 1,
-      'cuatro crashes y una reanudación no dejaron exactamente una comanda');
+      'cuatro crashes, una reanudación y un pago no dejaron exactamente una comanda');
   });
 
   // ─── E) Fallo ANTES de crear el pedido: sí se suelta todo ───
@@ -595,7 +716,7 @@ try {
       const r = await comprar(base, {
         checkoutToken: tk, items: [{ productoId: PRODUCTO, cantidad: 1 }],
         modalidad: 'domicilio', codigo: 'LIBERACRASH',
-        cliente: { nombre: 'Sin dir', telefono: '8998000050' }, metodoPago: 'efectivo',
+        cliente: { nombre: 'Sin dir', telefono: '8998000050' }, metodoPago: 'enlace_pago',
       });
       assert.ok(r.status >= 400, 'el pedido inválido se creó');
     });
@@ -698,9 +819,12 @@ try {
       await asentar(400); // volcado inicial del tablero
       const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk))));
+      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+      // Regla del canal: diez reintentos de un checkout sin pagar no emiten
+      // NADA; el único broadcast legacy sale con el pago, una vez.
+      await pagarPedido(base, folio);
       await asentar();
       espia.close();
-      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
       assert.strictEqual(legacy.length, 1,
         `el print-agent legacy recibió ${legacy.length} comandas del folio ${folio} (debe ser exactamente 1)`);
       assert.strictEqual(legacy[0].printJobId, `${folio}:comanda`,
@@ -728,18 +852,23 @@ try {
       await asentar(400);
       const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       await Promise.all([comprar(base, carrito(tk)), comprar(base, carrito(tk))]);
+      // Dos finalizadores simultáneos completan el checkout sin emitir nada
+      // (pendiente_pago); la emisión ocurre UNA vez, con el pago.
+      await pagarPedido(base, folio);
       await asentar();
       panel.close();
       assert.strictEqual(avisos.length, 1,
-        `la derivación emision corrió ${avisos.length} veces con dos finalizadores simultáneos`);
+        `la emisión corrió ${avisos.length} veces (dos finalizadores + un pago: debe ser 1)`);
     });
   });
 
-  await t('K3. crash DESPUÉS de imprimir por legacy y ANTES de marcar → el retry NO reimprime', async () => {
-    // El caso que un lock no puede resolver: el efecto externo ya ocurrió y la
-    // marca no llegó a escribirse. Solo la idempotencia real del efecto salva
-    // el papel. El proceso además MUERE entre los dos intentos: la memoria
-    // tiene que estar en la base, no en el proceso.
+  await t('K3. legacy: cero papel sin pagar; el pago emite UNA vez y los reintentos no reimprimen', async () => {
+    // Antes este caso reproducía "el papel salió y la marca no se escribió".
+    // Con la regla del canal, el papel legacy NO puede salir en el checkout
+    // (pendiente_pago): lo que se fija ahora es (1) ni siquiera un crash en
+    // plena derivación de emisión suelta papel sin pagar; (2) el papel sale
+    // UNA vez, con el pago; (3) reintentos posteriores no reimprimen (ledger
+    // legacy por print_job_id).
     const tk = token();
     let folio = null;
 
@@ -751,31 +880,31 @@ try {
       await asentar();
       espia.close();
       assert.ok(r.status >= 400, 'el checkout no falló pese al fallo inyectado');
-      assert.strictEqual(legacy.length, 1, 'el papel no llegó a salir: el escenario no se reprodujo');
-      folio = legacy[0].pedido?.id;
+      assert.strictEqual(legacy.length, 0, 'salió papel legacy SIN pagar');
     });
+    [{ folio } = {}] = await pedidosDelToken(tk);
+    assert.ok(folio, 'el pedido debería existir');
+    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0,
+      'quedó rastro de papel emitido sin pagar');
 
-    assert.ok(!('emision' in await derivacionesDe(tk)),
-      'la marca se escribió pese al fallo: el escenario no se reprodujo');
-    assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1,
-      'el ledger de impresión no recordó la emisión que sí ocurrió');
-
-    // Servidor NUEVO -- proceso nuevo, memoria en cero.
+    // Proceso NUEVO: recupera el checkout, paga, y reintenta después.
     await conServidor({}, async (base) => {
       const espia = await abrirWS(base, '/');
       await asentar(400); // volcado inicial del tablero
       const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       const r = await comprar(base, carrito(tk));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      await pagarPedido(base, folio);
+      await asentar();
+      for (let i = 0; i < 3; i++) await comprar(base, carrito(tk));
       await asentar();
       espia.close();
-      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-      assert.strictEqual(legacy.length, 0,
-        '¡PAPEL DUPLICADO! el reintento volvió a mandar la comanda al print-agent legacy');
+      assert.strictEqual(legacy.length, 1,
+        `salieron ${legacy.length} comandas legacy (debe ser exactamente 1, con el pago)`);
     });
 
     assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1,
-      'el ledger de impresión legacy quedó con más de una emisión');
-    assert.ok('emision' in await derivacionesDe(tk), 'el reintento no completó la derivación');
+      'el ledger de impresión legacy no quedó con exactamente una emisión');
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
   });
 
@@ -794,8 +923,11 @@ try {
         assert.strictEqual(r.status, 200, `reintento ${i}: ${JSON.stringify(r.body)}`);
       }
       await asentar();
+      assert.strictEqual(legacy.length, 0, 'un reintento sin pagar soltó papel legacy');
+      await pagarPedido(base, folio);
+      await asentar();
       espia.close();
-      assert.strictEqual(legacy.length, 1, `salieron ${legacy.length} comandas legacy en seis intentos`);
+      assert.strictEqual(legacy.length, 1, `salieron ${legacy.length} comandas legacy (debe ser 1, con el pago)`);
     });
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
   });
@@ -827,10 +959,11 @@ try {
       await asentar(400);
       const avisos = espiar(panel, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk))));
+      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+      await pagarPedido(base, folio);
       await asentar();
       panel.close();
-      assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
-      assert.strictEqual(avisos.length, 1, `el panel recibió ${avisos.length} avisos del mismo pedido`);
+      assert.strictEqual(avisos.length, 1, `el panel recibió ${avisos.length} avisos del mismo pedido (10 reintentos + 1 pago)`);
     });
 
     assert.strictEqual(await trabajosDeFolio(folio), 1,
@@ -859,6 +992,7 @@ try {
     await conServidor({}, async (base) => {
       const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk, { codigo: 'LEDGERCONC' }))));
       assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
+      await pagarPedido(base, folio);
     });
 
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
@@ -905,10 +1039,14 @@ try {
     assert.strictEqual(b.body?.codigo, 'CHECKOUT_EN_CURSO', JSON.stringify(b.body));
     assert.ok(!('emision' in await derivacionesDe(tk)), 'la marca quedó escrita pese al fallo');
 
-    // Y el siguiente reintento sí recupera: el lock ya está libre.
+    // Y el siguiente reintento sí recupera: el lock ya está libre. Pagar es
+    // lo que produce el papel.
     let r;
-    await conServidor({}, async (base) => { r = await comprar(base, carrito(tk)); });
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    await conServidor({}, async (base) => {
+      r = await comprar(base, carrito(tk));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      await pagarPedido(base, folio);
+    });
     assert.ok('emision' in await derivacionesDe(tk), 'el reintento no completó la emisión');
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
     assert.strictEqual(await trabajosDeFolio(folio), 1, 'no quedó exactamente 1 comanda');
@@ -932,6 +1070,7 @@ try {
       await asentar(400);
       const pb = comprar(base, carrito(tk));
       [a, b] = await Promise.all([pa, pb]);
+      if (a.status === 200 || b.status === 200) await pagarPedido(base, folio);
       await asentar();
       panel.close();
     });
@@ -974,8 +1113,12 @@ try {
 
     const folios = new Set(ok.map(r => r.body.folio));
     assert.strictEqual(folios.size, N, 'hubo folios repetidos entre checkouts distintos');
+    // Regla del canal: los 12 son checkouts técnicos sin pagar -- cero papel.
     for (const f of folios) {
-      assert.strictEqual(await trabajosDeFolio(f), 1, `el folio ${f} no tiene exactamente 1 comanda`);
+      const { rows: [px] } = await pool.query(
+        `SELECT estado FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`, [NEG, f]);
+      assert.strictEqual(px?.estado, 'pendiente_pago', `el folio ${f} nació operativo sin pagar`);
+      assert.strictEqual(await trabajosDeFolio(f), 0, `el folio ${f} imprimió sin pagar`);
     }
   });
 
@@ -988,6 +1131,7 @@ try {
     if (lineas.length) console.log('-- log del servidor --');
     lineas.slice(-6).forEach(l => console.log(l));
   }
+  clipMock.close();
   await limpiar().catch(() => {});
   // Se devuelve a Nonna Maye su modo legado: es el estado real del producto,
   // no un residuo de esta suite.

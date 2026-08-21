@@ -757,8 +757,8 @@ async function pasoPago() {
     METODOS = r.metodos || [];
   } catch (e) { METODOS = []; }
   if (!METODOS.length) {
-    $('ck-cuerpo').innerHTML = `<div class="vacio"><div class="ico">💳</div><h3>Sin formas de pago configuradas</h3>
-      <p>El negocio aún no habilitó cómo recibir pagos en línea. Contáctalo directamente para pedir.</p></div>`;
+    $('ck-cuerpo').innerHTML = `<div class="vacio"><div class="ico">💳</div><h3>Pagos en línea no disponibles</h3>
+      <p>Los pagos en línea no están disponibles temporalmente. Intenta más tarde.</p></div>`;
     return;
   }
   if (!METODOS.some(m => m.id === CK.metodoPago)) CK.metodoPago = METODOS[0].id;
@@ -851,7 +851,9 @@ function pintarResumen(c) {
   $('ck-pie').innerHTML = bloqueoMinimo
     ? `<div class="aviso" style="margin:0 0 10px">🛒 <div>El pedido mínimo a domicilio es ${dinero(c.pedidoMinimo)}. Te faltan ${dinero(c.faltaParaMinimo)}.</div></div>
        <button class="btn sec" onclick="cerrarTodo()">Agregar más productos</button>`
-    : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">Confirmar pedido <span class="btn-precio">${dinero(c.total)}</span></button>`;
+    : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">${
+        metodo && metodo.pagaDespues === false ? 'Realizar pedido y pagar' : 'Realizar pedido'
+      } <span class="btn-precio">${dinero(c.total)}</span></button>`;
 }
 
 function formatoFecha(iso) {
@@ -979,12 +981,16 @@ async function pedirEnlacePago(tk) {
       return;
     }
     // La URL exacta que devolvió el servidor: no se toca ni se reconstruye.
+    // La sesión con la pasarela ya se creó (idempotente): se navega directo,
+    // dejando el botón como respaldo por si el navegador bloquea la salida.
     if (btn) {
       btn.disabled = false;
       btn.textContent = 'Pagar ahora';
       btn.onclick = () => { btn.disabled = true; location.href = d.url; };
     }
+    $('pago-estado').textContent = 'Abriendo la pasarela de pagos…';
     pidiendoPago = false;
+    location.href = d.url;
   } catch (e) {
     pidiendoPago = false;
     if (btn) {

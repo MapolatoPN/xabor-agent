@@ -15,6 +15,7 @@ import {
   resolverTienda, TiendaError, catalogoPublico, reglasDelNegocio, estadoApertura,
   metodosPagoTienda, obtenerConfigTienda, guardarConfigTienda, checklistPublicacion,
   cambiarEstadoTienda, listarProductosPublicables, publicarProductos, actualizarProductoTienda,
+  estadoPagosTienda, guardarMetodosPagoTienda,
 } from './tiendaOnline.js';
 import {
   cotizarCarrito, crearPedidoTienda, seguimientoPublico,
@@ -163,17 +164,25 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
 
   app.get('/api/admin/tienda', ...gate, async (req, res) => {
     try {
-      const [config, checklist] = await Promise.all([
+      const [config, checklist, pagos] = await Promise.all([
         obtenerConfigTienda(req.negocioId),
         checklistPublicacion(req.negocioId),
+        estadoPagosTienda(req.negocioId),
       ]);
-      res.json({ config, checklist });
+      res.json({ config, checklist, pagos });
     } catch (e) { responderError(res, e, 'GET admin tienda'); }
   });
 
   app.put('/api/admin/tienda', ...gate, async (req, res) => {
     try {
-      res.json({ ok: true, config: await guardarConfigTienda(req.negocioId, req.body || {}) });
+      // La allow-list de métodos de la tienda es configuración PROPIA del
+      // canal (independiente de metodos_pago del POS) y se valida contra el
+      // catálogo soportado: un método inventado rechaza el guardado entero.
+      if (req.body?.metodosPago !== undefined) {
+        await guardarMetodosPagoTienda(req.negocioId, req.body.metodosPago);
+      }
+      const config = await guardarConfigTienda(req.negocioId, req.body || {});
+      res.json({ ok: true, config, pagos: await estadoPagosTienda(req.negocioId) });
     } catch (e) { responderError(res, e, 'PUT admin tienda'); }
   });
 

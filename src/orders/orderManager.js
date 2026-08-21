@@ -602,6 +602,22 @@ export function actualizarEstadoPedido(id, nuevoEstado, negocioId) {
     return null;
   }
 
+  // ── Invariante tienda_online: sin dinero confirmado no hay cocina ──
+  // Un pedido del canal tienda_online en pendiente_pago SOLO sale de ahí por
+  // el flujo de pagos (confirmarPedidoPendientePago, que no pasa por aquí) o
+  // por cancelación. Ningún cambio manual de estado —un clic del panel, un
+  // llamador nuevo— puede meterlo a cocina sin pagar. Vive AQUÍ y no solo en
+  // el PATCH para que cualquier llamador herede la regla. Otros canales
+  // (anticipo estructurado de WhatsApp, POS, Rappi) conservan su
+  // comportamiento: la condición exige canal tienda_online.
+  if (pedido.estado === 'pendiente_pago' && pedido.canal === 'tienda_online'
+      && nuevoEstado !== 'cancelado') {
+    eventoTxn('transicion_bloqueada_pago_pendiente', negocioIdNorm, { folio: id, destino: nuevoEstado });
+    const e = new Error(`El pedido ${id} de la tienda en línea aún no está pagado`);
+    e.codigo = 'PAGO_PENDIENTE';
+    throw e;
+  }
+
   _persistirCambioEstado(pedido, nuevoEstado);
   return pedido;
 }

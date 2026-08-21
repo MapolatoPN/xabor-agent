@@ -5,7 +5,7 @@
  */
 import { crearLinkDePago, consultarEstadoPago, ClipNoConfiguradoError, ExpiracionInvalidaError } from '../clip-api.js';
 
-export async function createPaymentLink({ negocioId, pedidoId, total, descripcion, cliente, pagoId, expiresAt = null }) {
+export async function createPaymentLink({ negocioId, pedidoId, total, descripcion, cliente, pagoId, expiresAt = null, urlRetorno = null }) {
   // Clip metadata.external_reference: maximo 36 caracteres (contrato oficial).
   // Lo que viaja es pagos.id (UUID, exactamente 36): identidad durable de ESTA
   // fila, que ya existe ANTES del POST. La referencia interna larga (~76
@@ -17,7 +17,7 @@ export async function createPaymentLink({ negocioId, pedidoId, total, descripcio
     e.code = 'REFERENCIA_PROVEEDOR_INVALIDA';
     throw e;
   }
-  const r = await crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente, referenciaExterna: referenciaClip, expiresAt });
+  const r = await crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente, referenciaExterna: referenciaClip, expiresAt, urlRetorno });
   // Causa raíz del incidente "el bot no envió el enlace": aquí se devolvía
   // r.status CRUDO de Clip ('CHECKOUT'), que pagosService escribía tal
   // cual en pagos.estado y violaba su CHECK -- el enlace se creaba en

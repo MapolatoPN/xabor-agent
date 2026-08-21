@@ -11,9 +11,49 @@
 // Uso: mismas env vars que la batería (DATABASE_URL, PANEL_SECRET, …).
 import assert from 'assert';
 import { randomBytes, randomUUID } from 'crypto';
+import { createServer } from 'http';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const PUERTO = process.env.TEST_PORT || '4209';
+const PUERTO_CLIP = Number(process.env.TEST_PORT_PROD_CLIP || 4210);
+
+// Mock minimo de Clip v2 (la tienda ahora SOLO cobra en linea): eco del
+// checkout + GET que refleja el external_reference. Cero Clip real.
+const CHECKOUTS = new Map();
+let checkoutsClip = 0;
+const clipMock = createServer((req, res) => {
+  let cuerpo = '';
+  req.on('data', c => { cuerpo += c; });
+  req.on('end', () => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'POST' && req.url === '/v2/checkout') {
+      const b = JSON.parse(cuerpo || '{}');
+      const id = `clip-prod-${++checkoutsClip}`;
+      const expiresAt = b.expires_at ? new Date(Date.parse(b.expires_at)).toISOString()
+        : new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
+      CHECKOUTS.set(id, { referencia: b.metadata?.external_reference || null, estado: 'PENDING', monto: Number(b.amount), expiresAt });
+      res.end(JSON.stringify({ payment_request_id: id, object_type: 'payment_link', status: 'CHECKOUT_CREATED',
+        payment_request_url: `https://pago.mock.clip/${id}`, created_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        expires_at: expiresAt }));
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/v2/checkout/')) {
+      const id = decodeURIComponent(req.url.split('/').pop());
+      const c = CHECKOUTS.get(id);
+      if (!c) { res.statusCode = 404; res.end('{}'); return; }
+      const status = c.estado === 'COMPLETED' ? 'CHECKOUT_COMPLETED' : 'CHECKOUT_PENDING';
+      res.end(JSON.stringify({ object_type: 'payment_link', payment_request_id: id, status,
+        amount: c.monto ?? null, currency: 'MXN',
+        metadata: { external_reference: c.referencia, customer_info: {} },
+        payment_request_url: `https://completa-tu-pago.payclip.com/${id}`,
+        created_at: '2026-08-21T00:00:00Z', expires_at: c.expiresAt || null, last_status_message: status }));
+      return;
+    }
+    res.statusCode = 404; res.end('{}');
+  });
+});
+await new Promise(r => clipMock.listen(PUERTO_CLIP, r));
+process.env.CLIP_API_BASE_URL = `http://localhost:${PUERTO_CLIP}`;
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool } = await import('../src/services/database.js');
 
@@ -31,7 +71,7 @@ const SLUG = `taqueria-quinta-${SUFIJO}`;
 const NOMBRE = `Taquería Quinta ${SUFIJO}`;
 const EMAIL = `duena-${SUFIJO}@prueba.local`;
 
-let NEGOCIO = null, ADMIN = null, base;
+let NEGOCIO = null, ADMIN = null, ADMIN_UID = null, base;
 const token = () => randomBytes(24).toString('hex');
 const url = r => `${base}${r}`;
 
@@ -61,6 +101,7 @@ async function darDeAltaNegocio() {
   await pool.query(
     `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol, activo) VALUES ($1,$2,'admin',TRUE)`,
     [u.id, NEGOCIO]);
+  ADMIN_UID = u.id;
   ADMIN = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: u.id, negocioId: NEGOCIO, rol: 'admin' }))}`;
 
   // Contratar los módulos. Esto es exactamente lo que hace el Superadmin
@@ -79,6 +120,11 @@ async function limpiar() {
     `DELETE FROM tienda_promociones WHERE negocio_id = $1`,
     `DELETE FROM tienda_campanas WHERE negocio_id = $1`,
     `DELETE FROM tienda_pedidos WHERE negocio_id = $1`,
+    `DELETE FROM pagos WHERE negocio_id = $1`,
+    `DELETE FROM pedido_emisiones WHERE negocio_id = $1`,
+    `DELETE FROM compras_reales WHERE negocio_id = $1`,
+    `DELETE FROM folios_pedido_usados WHERE negocio_id = $1`,
+    `DELETE FROM integraciones_canal WHERE negocio_id = $1`,
     `DELETE FROM tienda_productos WHERE negocio_id = $1`,
     `DELETE FROM tienda_config WHERE negocio_id = $1`,
     `DELETE FROM pedidos_activos WHERE negocio_id = $1`,
@@ -175,8 +221,17 @@ try {
     await pool.query(
       `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'reglas_atencion',$2)`,
       [NEGOCIO, JSON.stringify(reglas)]);
+    // La tienda en línea SOLO cobra en línea: la dueña habilita el enlace de
+    // pago y conecta su proveedor (mismas operaciones del panel; credenciales
+    // de FORMA válida — testConnection de Clip no toca red ni cobra).
     await pool.query(
-      `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'efectivo',TRUE)`, [NEGOCIO]);
+      `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'enlace_pago',TRUE)`, [NEGOCIO]);
+    const { guardarIntegracionPago, marcarProveedorPrincipal } =
+      await import('../src/services/integracionesService.js');
+    await guardarIntegracionPago(NEGOCIO, 'clip',
+      { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+      { actualizadoPor: ADMIN_UID });
+    await marcarProveedorPrincipal(NEGOCIO, 'clip', ADMIN_UID);
   });
 
   await t('8. personaliza su tienda desde el panel', async () => {
@@ -255,20 +310,48 @@ try {
       modalidad: 'domicilio', zona: 'Centro', codigo: 'TACOS10',
       direccion: 'Hidalgo 45, entre Juárez y Morelos',
       cliente: { nombre: 'Primer cliente', telefono: '8991234567' },
-      metodoPago: 'efectivo',
+      metodoPago: 'enlace_pago',
     });
     assert.strictEqual(r.status, 200, JSON.stringify(r.body));
     folio = r.body.folio; tracking = r.body.trackingToken;
     assert.ok(folio, 'no hubo folio');
+
+    // La compra REAL incluye PAGAR: el pedido nace pendiente_pago (aún no es
+    // una orden del restaurante), el cliente pide su enlace y paga en el
+    // proveedor (mock), y el webhook verificado lo confirma.
+    const { rows: [antes] } = await pool.query(
+      `SELECT estado FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, NEGOCIO]);
+    assert.strictEqual(antes.estado, 'pendiente_pago', 'no nació pendiente de pago');
+    const pago = await post(`/api/tienda/seguimiento/${tracking}/pago`, undefined);
+    assert.strictEqual(pago.status, 200, JSON.stringify(pago.body));
+    assert.ok(pago.body.url, 'sin enlace de pago');
+    const { rows: [fila] } = await pool.query(
+      `SELECT id, referencia_externa FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2`, [NEGOCIO, folio]);
+    CHECKOUTS.get(fila.referencia_externa).estado = 'COMPLETED';
+    const wh = await post('/webhook/clip', {
+      resource: 'CHECKOUT', resource_status: 'COMPLETED',
+      me_reference_id: String(fila.id), payment_request_id: fila.referencia_externa,
+    });
+    assert.strictEqual(wh.status, 200);
+    const lim = Date.now() + 12000;
+    for (;;) {
+      const { rows: [p] } = await pool.query(
+        `SELECT estado FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, NEGOCIO]);
+      if (p.estado !== 'pendiente_pago') break;
+      if (Date.now() > lim) throw new Error('el pago nunca confirmó el pedido');
+      await new Promise(res => setTimeout(res, 150));
+    }
   });
 
-  await t('16. el pedido entró a la operación como cualquier otro', async () => {
+  await t('16. el pedido entró a la operación como cualquier otro — y entró YA PAGADO', async () => {
     const { rows } = await pool.query(
       `SELECT datos, estado FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, NEGOCIO]);
     assert.strictEqual(rows.length, 1, 'el pedido no llegó al tablero');
+    assert.strictEqual(rows[0].estado, 'nuevo', `estado operativo: ${rows[0].estado}`);
     assert.strictEqual(rows[0].datos.canal, 'tienda_online');
     assert.strictEqual(rows[0].datos.total, 133);
-    assert.strictEqual(rows[0].datos.pago_confirmado, false, 'nació cobrado');
+    assert.strictEqual(rows[0].datos.pago_confirmado, true,
+      'una orden de tienda visible para cocina debe estar pagada');
   });
 
   await t('17. el cliente puede seguir su pedido', async () => {
@@ -299,7 +382,7 @@ try {
     await post('/api/admin/tienda/estado', { estado: 'pausada' }, ADMIN);
     const r = await post(`/api/tienda/${SLUG}/checkout`, {
       checkoutToken: token(), items: [{ productoId: PROD['Taco de asada'], cantidad: 4 }],
-      modalidad: 'recoger', cliente: { nombre: 'Tarde', telefono: '8991234568' }, metodoPago: 'efectivo' });
+      modalidad: 'recoger', cliente: { nombre: 'Tarde', telefono: '8991234568' }, metodoPago: 'enlace_pago' });
     assert.ok(r.status >= 400, 'una tienda pausada aceptó un pedido');
     const { rows } = await pool.query(
       `SELECT COUNT(*)::int n FROM pedidos_activos WHERE negocio_id = $1`, [NEGOCIO]);

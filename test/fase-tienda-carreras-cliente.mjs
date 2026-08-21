@@ -54,7 +54,11 @@ const comprar = (telefono, codigo, extra = {}) => post(`/api/tienda/${SLUG}/chec
   checkoutToken: token(), items: [{ productoId: PRODUCTO, cantidad: 1 }],
   modalidad: 'recoger', codigo,
   cliente: { nombre: 'Cliente carrera', telefono },
-  metodoPago: 'efectivo', ...extra,
+  // Regla del canal (tienda_online = solo pago en línea): el checkout nace
+  // pendiente_pago y las promociones quedan RESERVADAS -- la carrera que esta
+  // suite ataca es exactamente la de la RESERVA, así que su semántica no
+  // cambia (usosConfirmados cuenta filas reales sin importar estado).
+  metodoPago: 'enlace_pago', ...extra,
 });
 
 async function crearPromo(datos) {
@@ -91,6 +95,7 @@ async function limpiar() {
   await pool.query(
     `DELETE FROM tienda_promocion_usos WHERE negocio_id = $1`, [NEG]);
   await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id = $1`, [NEG]);
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id = $1`, [NEG]);
   await pool.query(
     `DELETE FROM pedidos_activos WHERE negocio_id = $1 AND datos->>'canal' = 'tienda_online'`, [NEG]);
@@ -136,8 +141,16 @@ async function preparar() {
     `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'reglas_atencion',$2)
      ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`, [NEG, JSON.stringify(reglas)]);
   await pool.query(`UPDATE metodos_pago SET habilitado = FALSE WHERE negocio_id = $1`, [NEG]);
-  await pool.query(`INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'efectivo',TRUE)
+  await pool.query(`INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'enlace_pago',TRUE)
     ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE`, [NEG]);
+  // Proveedor en línea de FORMA válida: testConnection de Clip solo valida
+  // forma (cero red, cero cobros); es lo que exige metodosPagoTienda.
+  const { guardarIntegracionPago, marcarProveedorPrincipal } =
+    await import('../src/services/integracionesService.js');
+  await guardarIntegracionPago(NEG, 'clip',
+    { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+    { actualizadoPor: SEED.superadminUsuarioId });
+  await marcarProveedorPrincipal(NEG, 'clip', SEED.superadminUsuarioId);
   await pool.query(
     `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
      VALUES ($1,'publicada',$2,'Carreras',$3)

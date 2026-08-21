@@ -206,14 +206,16 @@ try {
     assert.strictEqual(p.datos.pago_confirmado, false, 'no quedó marcado como por cobrar');
   });
 
-  await t('2. EFECTIVO conserva su comportamiento: comanda inmediata', async () => {
+  await t('2. EFECTIVO ya no existe en la tienda: el servidor lo rechaza y no nace ningún pedido', async () => {
+    // Regla invertida a propósito (tienda_online = solo pago en línea): el
+    // caso anterior aseraba comanda inmediata con efectivo.
     const tk = token();
     const r = await comprar(carrito(tk, 'efectivo'));
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-    const p = await pedidoDe(r.body.folio);
-    assert.strictEqual(p.estado, 'nuevo', 'el efectivo dejó de entrar a cocina de inmediato');
-    assert.strictEqual(await trabajosDeFolio(r.body.folio), 1,
-      'el pedido en efectivo no generó su comanda');
+    assert.strictEqual(r.status, 400, JSON.stringify(r.body));
+    assert.strictEqual(r.body.codigo, 'METODO_PAGO_INVALIDO');
+    const { rows } = await pool.query(
+      `SELECT 1 FROM tienda_pedidos WHERE negocio_id=$1 AND checkout_token=$2 AND pedido_folio IS NOT NULL`, [NEG, tk]);
+    assert.strictEqual(rows.length, 0, 'el efectivo creo un pedido');
   });
 
   await t('3. el pago confirmado libera la comanda: exactamente UNA', async () => {
@@ -326,19 +328,33 @@ try {
     assert.strictEqual(traducirEstado(null), 'requiere_revision');
   });
 
-  await t('10. un negocio sin proveedor en línea sigue vendiendo en efectivo', async () => {
-    await metodos(['efectivo']);
+  await t('10. la allow-list PROPIA de la tienda gobierna (no metodos_pago del POS): sin pasarela, solo-online no vende y dual-mode sí', async () => {
+    // La tienda tiene su propia configuracion de metodos: apagar metodos del
+    // POS no la afecta, y sin pasarela utilizable el default (solo tarjeta
+    // en linea) falla cerrado mientras una tienda que permitio efectivo
+    // sigue vendiendo.
+    const permitir = (lista) => pool.query(
+      `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'tienda_metodos_pago',$2)
+       ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`, [NEG, JSON.stringify(lista)]);
     try {
-      const tk = token();
-      const r = await comprar(carrito(tk, 'efectivo'));
-      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-      assert.strictEqual((await pedidoDe(r.body.folio)).estado, 'nuevo');
-      // Y el método en línea ya no se ofrece.
+      await desconectarProveedor();
+      // Default (solo online) sin pasarela: nada que ofrecer, 503 para todo.
       const cat = await fetch(`${base}/api/tienda/${SLUG}/pagos?modalidad=recoger`).then(x => x.json());
-      const ids = (cat.metodos || []).map(m => m.id);
-      assert.ok(!ids.includes('enlace_pago'), 'ofrece pago en línea sin tenerlo habilitado');
+      assert.strictEqual((cat.metodos || []).length, 0, 'ofrecio metodos sin pasarela');
+      for (const metodo of ['efectivo', 'enlace_pago']) {
+        const r = await comprar(carrito(token(), metodo));
+        assert.strictEqual(r.status, 503, `${metodo}: ${JSON.stringify(r.body)}`);
+        assert.strictEqual(r.body.codigo, 'PAGO_EN_LINEA_NO_DISPONIBLE');
+      }
+      // Dual-mode explicito: el efectivo permitido sigue vendiendo sin pasarela.
+      await permitir(['enlace_pago', 'efectivo']);
+      const r2 = await comprar(carrito(token(), 'efectivo'));
+      assert.strictEqual(r2.status, 200, JSON.stringify(r2.body));
+      assert.strictEqual((await pedidoDe(r2.body.folio)).estado, 'nuevo');
     } finally {
-      await metodos(['efectivo', 'enlace_pago']);
+      await pool.query(
+        `DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`, [NEG]);
+      await conectarProveedor();
     }
   });
 
@@ -402,14 +418,13 @@ try {
   });
 
   // ═══ P0-3: no ofrecer pago en línea sin proveedor real ═══
-  await t('13. con enlace_pago habilitado pero SIN integración, la tienda NO lo ofrece', async () => {
-    // Misma fila habilitada, pero sin proveedor conectado: no basta.
+  await t('13. con enlace_pago habilitado pero SIN integración, la tienda NO ofrece nada (fail closed)', async () => {
+    // Misma fila habilitada, pero sin proveedor conectado: no basta. Y como
+    // la tienda ya no cae a "paga después", la lista queda VACIA.
     await desconectarProveedor();
     const cat = await fetch(`${base}/api/tienda/${SLUG}/pagos?modalidad=recoger`).then(x => x.json());
-    const ids = (cat.metodos || []).map(m => m.id);
-    assert.ok(!ids.includes('enlace_pago'),
-      'ofrece "Pagar en línea" sin proveedor: cada pedido quedaría condenado a pendiente_pago');
-    assert.ok(ids.includes('efectivo'), 'el efectivo dejó de funcionar');
+    assert.strictEqual((cat.metodos || []).length, 0,
+      'ofrecio metodos sin proveedor: cada pedido quedaria condenado o sin cobrar');
   });
 
   await t('14. y el checkout tampoco lo acepta por la puerta de atrás', async () => {

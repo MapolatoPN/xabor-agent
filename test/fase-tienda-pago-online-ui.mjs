@@ -177,6 +177,7 @@ async function limpiar() {
   await pool.query(
     `DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`,
     [NEG]).catch(() => {});
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id IN ($1,$2)`, [NEG, NEG_B]);
   // Misma higiene que carreras-cliente: compras_reales del telefono propio de
   // esta suite, para no envenenar promociones de primera compra de otros.
@@ -258,19 +259,20 @@ try {
   await preparar();
   srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
 
-  // ═══ 1. Efectivo: el comportamiento anterior no cambia ═══════════════════
-  await t('1. checkout con EFECTIVO: pedido inmediato, comanda inmediata, sin superficie de pago', async () => {
-    const r = await comprar(carrito(token(), 'efectivo'));
-    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-    assert.strictEqual(r.body.metodoPago?.pagaDespues, true, 'efectivo debe pagar despues');
-    const p = await pedidoDe(r.body.folio);
-    assert.notStrictEqual(p.estado, 'pendiente_pago', 'efectivo no puede nacer pendiente_pago');
-    const comandas = await esperarHasta(async () => (await trabajosDeFolio(r.body.folio)) === 1 ? 1 : null);
-    assert.strictEqual(comandas, 1, 'efectivo debe imprimir comanda de inmediato');
-    // Y el GET de pago dice la verdad: este pedido no espera pago en línea.
-    const g = await getPago(r.body.trackingToken);
-    assert.strictEqual(g.status, 200);
-    assert.strictEqual(g.body.esperandoPago, false);
+  // ═══ 1. Regla del canal: la tienda en línea SOLO cobra en línea ═══════════
+  // (Antes este caso aseraba que el efectivo imprimía comanda inmediata; esa
+  // regla se invirtió a propósito: tienda_online no ofrece "paga después".)
+  await t('1. checkout con EFECTIVO: rechazado por el servidor, cero pedido — la tienda solo cobra en línea', async () => {
+    const tk = token();
+    const r = await comprar(carrito(tk, 'efectivo'));
+    assert.strictEqual(r.status, 400, JSON.stringify(r.body));
+    assert.strictEqual(r.body.codigo, 'METODO_PAGO_INVALIDO');
+    const { rows } = await pool.query(
+      `SELECT 1 FROM tienda_pedidos WHERE negocio_id=$1 AND checkout_token=$2 AND pedido_folio IS NOT NULL`, [NEG, tk]);
+    assert.strictEqual(rows.length, 0, 'el efectivo creo un pedido');
+    // Y la tienda publica ofrece UNICAMENTE pago en linea.
+    const m = await fetch(`${base}/api/tienda/${SLUG}/pagos?modalidad=recoger`).then(x => x.json());
+    assert.deepStrictEqual((m.metodos || []).map(x => x.id), ['enlace_pago']);
   });
 
   // ═══ 2. enlace_pago: nace pendiente_pago, cero comandas ══════════════════

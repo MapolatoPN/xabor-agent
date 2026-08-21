@@ -289,51 +289,96 @@ export async function hayProveedorEnLineaUtilizable(negocioId) {
   }
 }
 
+// ── MÉTODOS DE PAGO DE LA TIENDA: allow-list PROPIA por negocio ────────────
+// La Tienda Online tiene su propia configuración de métodos (estilo Shopify),
+// INDEPENDIENTE de metodos_pago del POS: que el mostrador cobre en efectivo
+// no significa que la tienda pública lo ofrezca, y al revés. La allow-list
+// vive en configuracion.tienda_metodos_pago (JSON, validada contra este
+// catálogo cerrado); el navegador JAMÁS puede habilitar un método que la
+// tienda no configuró. Sin configuración, el default es SOLO pago con
+// tarjeta en línea: una tienda nueva nunca cocina sin dinero confirmado
+// hasta que el negocio decida explícitamente ofrecer "paga después".
+export const METODOS_TIENDA_SOPORTADOS = ['enlace_pago', 'efectivo', 'terminal', 'transferencia'];
+const METODOS_TIENDA_DEFAULT = ['enlace_pago'];
+
+export async function metodosPagoTiendaConfigurados(negocioId) {
+  const { rows: [r] } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`,
+    [negocioId]);
+  if (!r) return [...METODOS_TIENDA_DEFAULT];
+  let lista = [];
+  try { lista = JSON.parse(r.valor); } catch { lista = []; }
+  return [...new Set((Array.isArray(lista) ? lista : [])
+    .map(String).filter(m => METODOS_TIENDA_SOPORTADOS.includes(m)))];
+}
+
+export async function guardarMetodosPagoTienda(negocioId, lista) {
+  if (!Array.isArray(lista)) throw new TiendaError('Lista de métodos inválida', 'METODOS_INVALIDOS');
+  const invalidos = lista.map(String).filter(m => !METODOS_TIENDA_SOPORTADOS.includes(m));
+  if (invalidos.length) {
+    throw new TiendaError(`Método de pago no soportado: ${invalidos[0]}`, 'METODO_NO_SOPORTADO');
+  }
+  const limpias = [...new Set(lista.map(String))];
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'tienda_metodos_pago',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = $2`,
+    [negocioId, JSON.stringify(limpias)]);
+  return limpias;
+}
+
+// Estado para el backoffice (Configuración → Tienda → Pagos): la allow-list,
+// el catálogo soportado y el proveedor de pasarela RESUELTO para este tenant
+// (nunca hardcodeado): nombre + si de verdad puede cobrar.
+export async function estadoPagosTienda(negocioId) {
+  const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
+  const principal = await obtenerProveedorPrincipal(negocioId).catch(() => null);
+  return {
+    soportados: [...METODOS_TIENDA_SOPORTADOS],
+    permitidos: await metodosPagoTiendaConfigurados(negocioId),
+    proveedor: {
+      nombre: principal?.proveedor || null,
+      utilizable: await hayProveedorEnLineaUtilizable(negocioId),
+    },
+  };
+}
+
+// Lo que la tienda pública OFRECE: la allow-list construida como métodos
+// presentables. "Pago con tarjeta en línea" exige LAS DOS cosas a la vez, sin
+// que una reactive a la otra: (a) está en la allow-list de ESTA tienda y
+// (b) hay un proveedor real utilizable para este tenant. Los métodos "paga
+// después" solo existen si el negocio los permitió explícitamente aquí.
 export async function metodosPagoTienda(negocioId, modalidad) {
-  const { rows } = await pool.query(
-    `SELECT tipo, habilitado FROM metodos_pago WHERE negocio_id = $1 AND habilitado = TRUE`,
-    [negocioId]
-  );
-  const habilitados = new Set(rows.map(r => r.tipo));
+  const permitidos = await metodosPagoTiendaConfigurados(negocioId);
   const alRecibir = modalidad === 'domicilio' ? 'al recibir' : 'al recoger';
   const metodos = [];
-  if (habilitados.has('efectivo')) {
+  if (permitidos.includes('enlace_pago') && await hayProveedorEnLineaUtilizable(negocioId)) {
     metodos.push({
-      id: 'efectivo', icono: '💵',
-      etiqueta: `Efectivo ${alRecibir}`,
+      id: 'enlace_pago', icono: '💳', etiqueta: 'Pago con tarjeta en línea',
+      detalle: 'Serás dirigido a la pasarela de pagos segura',
+      pagaDespues: false,
+    });
+  }
+  if (permitidos.includes('efectivo')) {
+    metodos.push({
+      id: 'efectivo', icono: '💵', etiqueta: `Efectivo ${alRecibir}`,
       detalle: 'Pagas en persona cuando te entreguen tu pedido',
       pagaDespues: true,
     });
   }
-  if (habilitados.has('terminal')) {
+  if (permitidos.includes('terminal')) {
     metodos.push({
-      id: 'terminal', icono: '💳',
-      etiqueta: `Tarjeta ${alRecibir}`,
+      id: 'terminal', icono: '💳', etiqueta: `Tarjeta ${alRecibir}`,
       detalle: 'Terminal bancaria al momento de la entrega',
       pagaDespues: true,
     });
   }
-  if (habilitados.has('transferencia')) {
-    // Las instrucciones (CLABE, banco, titular) son datos del negocio y viven
-    // en su configuración: nunca se codifican aquí.
+  if (permitidos.includes('transferencia')) {
     const reglas = await reglasDelNegocio(negocioId);
     metodos.push({
       id: 'transferencia', icono: '🏦', etiqueta: 'Transferencia bancaria',
       detalle: 'El negocio te comparte los datos para transferir',
       instrucciones: reglas.pagoInstrucciones || null,
       pagaDespues: true,
-    });
-  }
-  // "Pagar en línea" NO depende sólo de que la fila esté habilitada: exige un
-  // proveedor REAL detrás -- implementado, activo, con credenciales de ESTE
-  // negocio y marcado como principal. Sin eso, ofrecerlo crearía pedidos
-  // condenados a quedarse en pendiente_pago para siempre: el cliente creería
-  // que va a pagar y nunca aparecería dónde.
-  if (habilitados.has('enlace_pago') && await hayProveedorEnLineaUtilizable(negocioId)) {
-    metodos.push({
-      id: 'enlace_pago', icono: '🔗', etiqueta: 'Pagar en línea',
-      detalle: 'Recibirás una liga de pago segura',
-      pagaDespues: false,
     });
   }
   return metodos;
@@ -415,17 +460,17 @@ export async function guardarConfigTienda(negocioId, cambios = {}) {
 // Calculado desde datos reales: una tienda incompleta no se publica en
 // silencio, y el negocio ve exactamente qué le falta.
 export async function checklistPublicacion(negocioId) {
-  const [cfg, reglas, cat, metodos] = await Promise.all([
+  const [cfg, reglas, cat, metodosTienda] = await Promise.all([
     obtenerConfigTienda(negocioId),
     reglasDelNegocio(negocioId),
     pool.query(
       `SELECT COUNT(*)::int AS n FROM tienda_productos WHERE negocio_id = $1 AND publicado = TRUE`,
       [negocioId]
     ).then(r => r.rows[0].n),
-    pool.query(
-      `SELECT COUNT(*)::int AS n FROM metodos_pago WHERE negocio_id = $1 AND habilitado = TRUE`,
-      [negocioId]
-    ).then(r => r.rows[0].n),
+    // La MISMA fuente que ve el cliente: la tienda solo cobra en línea, así
+    // que el checklist exige exactamente lo que el checkout va a exigir
+    // (enlace_pago habilitado Y proveedor utilizable) -- nunca dos criterios.
+    metodosPagoTienda(negocioId),
   ]);
   const { rows: [neg] } = await pool.query(
     `SELECT nombre, slug FROM negocios WHERE id = $1`, [negocioId]);
@@ -452,8 +497,10 @@ export async function checklistPublicacion(negocioId) {
         : reglas.zonas.length ? `${reglas.zonas.length} zona${reglas.zonas.length !== 1 ? 's' : ''} con precio`
         : reglas.costoEnvioBase > 0 ? `Envío base $${reglas.costoEnvioBase}`
         : 'Define un costo de envío o al menos una zona' },
-    { clave: 'pagos', etiqueta: 'Métodos de pago', listo: metodos > 0,
-      detalle: metodos ? `${metodos} habilitado${metodos !== 1 ? 's' : ''}` : 'Ninguno habilitado' },
+    { clave: 'pagos', etiqueta: 'Métodos de pago de la tienda', listo: metodosTienda.length > 0,
+      detalle: metodosTienda.length
+        ? metodosTienda.map(m => m.etiqueta).join(' · ')
+        : 'Configura los métodos de pago de la tienda (y conecta la pasarela si cobras con tarjeta en línea)' },
   ];
   return { items, listaParaPublicar: items.every(i => i.listo), estado: cfg?.estado || 'borrador' };
 }

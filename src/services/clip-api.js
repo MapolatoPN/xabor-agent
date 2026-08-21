@@ -186,7 +186,7 @@ export async function consultarEstadoPago(linkId, negocioId) {
  * @returns {Promise<{ linkId: string, url: string, status: string }>}
  * @throws {ClipNoConfiguradoError} si el negocio no tiene Clip configurado/activo
  */
-export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {}, referenciaExterna, expiresAt = null }) {
+export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion, cliente = {}, referenciaExterna, expiresAt = null, urlRetorno = null }) {
   // La expiración se valida ANTES de resolver credenciales o salir a la red:
   // un expiresAt inválido es un bug del llamador y jamás debe producir un
   // POST. Si el llamador no manda expiresAt (caminos legacy: programados aún
@@ -218,7 +218,14 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
 
   const baseUrl    = process.env.PUBLIC_URL || 'https://xabor.up.railway.app';
   const webhookUrl = `${baseUrl}/webhook/clip`;
-  const paginaGracias = `${baseUrl}/pago/gracias`;
+  // Retorno post-pago: si el llamador construyó una URL de retorno propia
+  // (hoy: la tienda en línea regresa al seguimiento del pedido; el llamador
+  // ya la validó contra la URL pública propia), se usa; si no, se conserva
+  // EXACTAMENTE el retorno histórico. El redirect nunca es autoridad de pago:
+  // la confirmación viene del webhook/reconciliación verificados.
+  const paginaGracias = (typeof urlRetorno === 'string' && /^https?:\/\//.test(urlRetorno))
+    ? urlRetorno
+    : `${baseUrl}/pago/gracias`;
 
   const body = {
     amount: Number(total),

@@ -142,7 +142,8 @@ function cajaPago(p, cancelado) {
     </div>`;
   }
   if (p.pagoEstado === 'pagado' && !cancelado) {
-    return `<div class="aviso exito">✓ <div>Pago confirmado.</div></div>`;
+    return `<div class="aviso exito">✓ <div><strong>¡Pedido confirmado!</strong><br>
+      <span style="font-weight:400">Recibimos tu pago correctamente.</span></div></div>`;
   }
   if (cancelado && p.pagoEstado === 'vencido') {
     return `<div class="aviso error">⚠️ <div>El enlace de pago venció y el pedido no se completó.</div></div>`;
@@ -203,7 +204,7 @@ function pintar(d) {
     ${d.programadoPara ? `<div class="aviso" style="background:var(--superficie-2)">📅
       <div>Programado para <strong>${esc(formatoFecha(d.programadoPara))}</strong></div></div>` : ''}
 
-    ${d.cancelado ? '' : `<div class="linea-tiempo">
+    ${d.cancelado || (PAGO && PAGO.esperandoPago) ? '' : `<div class="linea-tiempo">
       ${d.etapas.map(e => `<div class="etapa${e.cumplida ? ' cumplida' : ''}${e.actual ? ' actual' : ''}">
         <div class="etapa-nom">${esc(e.etiqueta)}</div>
         ${e.actual ? `<div class="etapa-sub">${esc(textoEtapa(e.clave, d.modalidad))}</div>` : ''}
@@ -222,7 +223,7 @@ function pintar(d) {
 
 function textoEtapa(clave, modalidad) {
   return ({
-    recibido: 'El negocio ya vio tu pedido',
+    recibido: 'Recibimos tu pago; el negocio ya tiene tu pedido',
     preparando: 'Están preparando tu pedido',
     listo: modalidad === 'domicilio' ? 'Listo, esperando repartidor' : 'Ya puedes pasar por él',
     en_camino: 'Tu pedido va en camino',

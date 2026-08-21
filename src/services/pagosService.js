@@ -29,7 +29,7 @@ import { randomBytes } from 'crypto';
 // de la configuración del servidor y, si no está, no se manda ninguna: mejor
 // sin webhook (y reconciliar por consulta) que un webhook apuntando a donde
 // diga un tercero.
-function urlPublicaXabor() {
+export function urlPublicaXabor() {
   const base = process.env.XABOR_URL_PUBLICA || process.env.BASE_URL || '';
   return /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : null;
 }
@@ -91,7 +91,7 @@ const expiracionPeligrosaDe = (fila) =>
  * pago para un pedido. Nunca acepta el total del llamador como fuente de
  * verdad -- siempre se recalcula desde pedidos_activos.
  */
-export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idempotencyKey = null, descripcion = null }) {
+export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idempotencyKey = null, descripcion = null, urlRetorno = null }) {
   // Mismo contrato que crearLinkDePago (clip-api.js, Incidente P0):
   // negocioId ausente/inválido es un bug del llamador, nunca un estado de
   // negocio -> TenantContextRequiredError, lanzada antes de tocar la BD.
@@ -124,7 +124,7 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
   if (enVuelo) return enVuelo;
 
   const promesa = conObligacionDePagoExclusiva(negocioId, pedidoId,
-    () => resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor }))
+    () => resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor, urlRetorno }))
     .finally(() => _intentosEnVuelo.delete(claveObligacion));
   _intentosEnVuelo.set(claveObligacion, promesa);
   return promesa;
@@ -137,7 +137,7 @@ export async function crearEnlacePago({ negocioId, pedidoId, actor = null, idemp
 const _intentosEnVuelo = new Map();
 
 // El cuerpo real, ya con la obligacion del pedido en exclusiva.
-async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor }) {
+async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempotencyKey, actor, urlRetorno = null }) {
   // Retardo inyectable: sirve para probar que quien despierta del claim NO
   // trabaja con el pedido que existia cuando pidio el turno. Mismo candado de
   // produccion que el resto de la inyeccion de fallos del proyecto.
@@ -506,6 +506,13 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // Identidad corta y durable para proveedores cuyo external_reference
       // tiene limite de longitud (Clip: 36). Es la MISMA fila: pagos.id.
       pagoId: registro.id,
+      // URL de retorno post-pago OPCIONAL (hoy: la tienda en línea regresa al
+      // seguimiento del pedido). Se acepta ÚNICAMENTE si vive bajo la URL
+      // pública propia -- un llamador descuidado no puede convertir esto en
+      // open redirect -- y si no viene, cada adaptador conserva su retorno
+      // histórico. El redirect JAMÁS es autoridad de pago.
+      urlRetorno: (typeof urlRetorno === 'string' && urlPublicaXabor()
+        && urlRetorno.startsWith(urlPublicaXabor() + '/')) ? urlRetorno : null,
       notificationUrl,
       // Solo se manda a quien la documente. Inventar un header de idempotencia
       // que el proveedor ignora es peor que no mandarlo: haría creer que la

@@ -1386,7 +1386,14 @@ wss.on('connection', (ws) => {
     // que evitaba el sonido y la impresion era una bandera temporal del
     // navegador. Con la clave determinista, lo que ese panel ya proceso no
     // vuelve a producir efecto por reconectarse.
-    const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => p.estado !== 'entregado');
+    // Un checkout de la tienda en línea sin pagar NO es una orden del
+    // restaurante: no se vuelca al tablero. Cuando el pago se confirme,
+    // confirmarPedidoPendientePago lo emite como nuevo_pedido normal. Los
+    // pendiente_pago de OTROS canales (anticipo de WhatsApp) conservan su
+    // comportamiento histórico.
+    const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p =>
+      p.estado !== 'entregado'
+      && !(p.canal === 'tienda_online' && p.estado === 'pendiente_pago'));
     pedidosNegocio.forEach(pedido => {
       ws.send(JSON.stringify(conIdentidadDePedido(
         { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
@@ -2563,7 +2570,17 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   if (!estadosValidos.includes(estado)) {
     return res.status(400).json({ error: 'Estado inválido' });
   }
-  const pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
+  let pedido;
+  try {
+    pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
+  } catch (e) {
+    // Invariante tienda_online (orderManager): un pedido de la tienda en
+    // línea sin pagar no puede moverse a cocina desde el panel.
+    if (e.codigo === 'PAGO_PENDIENTE') {
+      return res.status(409).json({ error: e.message, codigo: 'PAGO_PENDIENTE' });
+    }
+    throw e;
+  }
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
 
   // Notificar al cliente por WhatsApp cuando el pedido está listo
@@ -6730,7 +6747,17 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
     if (row.estado === 'entregado') return res.json({ ok: true, ya: true });
     return res.status(409).json({ error: 'El pedido no se pudo marcar entregado' });
   }
-  const pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id) || { ...datosEntregado, id: folio };
+  // El invariante de tienda_online (PAGO_PENDIENTE) es inalcanzable aquí — un
+  // pedido sin pagar jamás se ofrece a repartidores — pero si llegara a
+  // lanzarse, la fila durable ya quedó entregada arriba: se degrada al
+  // fallback en vez de tirar la ruta.
+  let pedido;
+  try {
+    pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id) || { ...datosEntregado, id: folio };
+  } catch (e) {
+    if (e.codigo !== 'PAGO_PENDIENTE') throw e;
+    pedido = { ...datosEntregado, id: folio };
+  }
   broadcastNegocio(req.repartidor.negocio_id, { tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   // Este broadcast() directo se queda legado a propósito (misma razón que
   // el comentario de arriba: sin req.negocioId real). No es una fuga real:

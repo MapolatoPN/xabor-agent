@@ -109,12 +109,23 @@ async function prepararNegocio(negocioId, etiqueta, slug, productos) {
   // Se fija el conjunto EXACTO: apagar los demás hace que la prueba no dependa
   // de lo que alguien haya dejado configurado antes en esta base.
   await pool.query(`UPDATE metodos_pago SET habilitado = FALSE WHERE negocio_id = $1`, [negocioId]);
-  for (const tipo of ['efectivo', 'transferencia']) {
+  for (const tipo of ['efectivo', 'enlace_pago']) {
     await pool.query(
       `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,$2,TRUE)
        ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE`, [negocioId, tipo]);
   }
 
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'tienda_metodos_pago'`, [negocioId]).catch(() => {});
+  // La tienda solo cobra en linea: proveedor de FORMA valida (testConnection
+  // de Clip no toca red ni cobra), que es lo que exige metodosPagoTienda.
+  {
+    const { guardarIntegracionPago, marcarProveedorPrincipal } =
+      await import('../src/services/integracionesService.js');
+    await guardarIntegracionPago(negocioId, 'clip',
+      { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' },
+      { actualizadoPor: SEED.superadminUsuarioId });
+    await marcarProveedorPrincipal(negocioId, 'clip', SEED.superadminUsuarioId);
+  }
   await pool.query(
     `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades, acepta_programados, anticipacion_minutos)
      VALUES ($1,'publicada',$2,$3,$4,TRUE,60)
@@ -247,10 +258,12 @@ try {
   });
 
   await t('publico', 'los métodos de pago son los que el negocio habilitó', async () => {
+    // Regla del canal (invertida a proposito): aunque el negocio tenga
+    // efectivo habilitado para sus otros canales, la tienda publica ofrece
+    // UNICAMENTE pago en linea.
     const { body } = await get(`/api/tienda/${SLUG_A}/pagos?modalidad=recoger`);
-    const ids = body.metodos.map(m => m.id).sort();
-    assert.deepStrictEqual(ids, ['efectivo', 'transferencia']);
-    assert.ok(body.metodos.find(m => m.id === 'transferencia').instrucciones);
+    assert.deepStrictEqual(body.metodos.map(m => m.id), ['enlace_pago']);
+    assert.strictEqual(body.metodos[0].pagaDespues, false);
   });
 
   // ─── 2. Estados de la tienda ───
@@ -376,7 +389,7 @@ try {
     const { status, body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza(2, 'Grande')], modalidad: 'recoger',
       cliente: { nombre: 'Ana Cliente', telefono: '8991110001' },
-      metodoPago: 'efectivo',
+      metodoPago: 'enlace_pago',
     });
     assert.strictEqual(status, 200, JSON.stringify(body));
     assert.ok(body.folio, 'no devolvió folio');
@@ -396,7 +409,7 @@ try {
     const tk = token();
     const cuerpo = {
       checkoutToken: tk, items: [itemPizza()], modalidad: 'recoger',
-      cliente: { nombre: 'Repetido', telefono: '8991110002' }, metodoPago: 'efectivo',
+      cliente: { nombre: 'Repetido', telefono: '8991110002' }, metodoPago: 'enlace_pago',
     };
     const a = await post(`/api/tienda/${SLUG_A}/checkout`, cuerpo);
     const b = await post(`/api/tienda/${SLUG_A}/checkout`, cuerpo);
@@ -413,7 +426,7 @@ try {
     const tk = token();
     const cuerpo = {
       checkoutToken: tk, items: [itemPizza()], modalidad: 'recoger',
-      cliente: { nombre: 'Carrera', telefono: '8991110003' }, metodoPago: 'efectivo',
+      cliente: { nombre: 'Carrera', telefono: '8991110003' }, metodoPago: 'enlace_pago',
     };
     const [a, b] = await Promise.all([
       post(`/api/tienda/${SLUG_A}/checkout`, cuerpo),
@@ -445,18 +458,23 @@ try {
     assert.ok(r.status >= 400, 'creó un pedido a domicilio sin dirección');
   });
 
-  await t('checkout', 'un método de pago que el negocio no habilitó se rechaza', async () => {
-    const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
-      checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
-      cliente: { nombre: 'Pago falso', telefono: '8991110006' }, metodoPago: 'enlace_pago' });
-    assert.ok(r.status >= 400, 'aceptó un método de pago no habilitado');
+  await t('checkout', 'un método que la tienda no ofrece se rechaza (aunque esté habilitado para otros canales)', async () => {
+    // 'efectivo' está habilitado en metodos_pago (otros canales lo usan) pero
+    // la tienda pública solo ofrece pago en línea; 'transferencia' ni siquiera
+    // está habilitada. Ninguno de los dos puede colarse por el cuerpo.
+    for (const metodo of ['efectivo', 'transferencia']) {
+      const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
+        checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
+        cliente: { nombre: 'Pago falso', telefono: '8991110006' }, metodoPago: metodo });
+      assert.ok(r.status >= 400, `aceptó ${metodo}, que la tienda no ofrece`);
+    }
   });
 
   await t('checkout', 'el pedido a domicilio guarda zona, dirección y envío', async () => {
     const { status, body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'domicilio', zona: 'Centro',
       direccion: 'Calle Falsa 123, colonia Centro',
-      cliente: { nombre: 'Domicilio', telefono: '8991110007' }, metodoPago: 'efectivo' });
+      cliente: { nombre: 'Domicilio', telefono: '8991110007' }, metodoPago: 'enlace_pago' });
     assert.strictEqual(status, 200, JSON.stringify(body));
     const { rows } = await pool.query(
       `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [body.folio, NEG_A]);
@@ -484,13 +502,13 @@ try {
       const sinColonia = await post(`/api/tienda/${SLUG_A}/checkout`, {
         checkoutToken: token(), items: [itemPizza()], modalidad: 'domicilio',
         direccion: 'Reforma 100', cliente: { nombre: 'Plano', telefono: '8996660001' },
-        metodoPago: 'efectivo' });
+        metodoPago: 'enlace_pago' });
       assert.ok(sinColonia.status >= 400, 'aceptó un domicilio sin colonia ni zona');
 
       const conColonia = await post(`/api/tienda/${SLUG_A}/checkout`, {
         checkoutToken: token(), items: [itemPizza()], modalidad: 'domicilio',
         direccion: 'Reforma 100', colonia: 'Del Valle',
-        cliente: { nombre: 'Plano', telefono: '8996660002' }, metodoPago: 'efectivo' });
+        cliente: { nombre: 'Plano', telefono: '8996660002' }, metodoPago: 'enlace_pago' });
       assert.strictEqual(conColonia.status, 200, JSON.stringify(conColonia.body));
       const { rows } = await pool.query(
         `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`,
@@ -511,7 +529,7 @@ try {
     const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [{ productoId: PROD.A['Refresco tienda'], cantidad: 1 }],
       modalidad: 'domicilio', zona: 'Centro', direccion: 'Calle corta 1',
-      cliente: { nombre: 'Minimo', telefono: '8991110008' }, metodoPago: 'efectivo' });
+      cliente: { nombre: 'Minimo', telefono: '8991110008' }, metodoPago: 'enlace_pago' });
     assert.ok(r.status >= 400, 'se creó un pedido por debajo del mínimo');
   });
 
@@ -521,7 +539,7 @@ try {
     const { status, body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
       cliente: { nombre: 'Programado', telefono: '8991110009' },
-      metodoPago: 'efectivo', programadoPara: cuando });
+      metodoPago: 'enlace_pago', programadoPara: cuando });
     assert.strictEqual(status, 200, JSON.stringify(body));
   });
 
@@ -529,7 +547,7 @@ try {
     const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
       cliente: { nombre: 'Ya mero', telefono: '8991110010' },
-      metodoPago: 'efectivo', programadoPara: new Date(Date.now() + 60000).toISOString() });
+      metodoPago: 'enlace_pago', programadoPara: new Date(Date.now() + 60000).toISOString() });
     assert.ok(r.status >= 400, 'aceptó un programado para dentro de un minuto');
   });
 
@@ -538,7 +556,7 @@ try {
       const r = await post(`/api/tienda/${SLUG_A}/checkout`, {
         checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
         cliente: { nombre: 'Fecha rara', telefono: '8991110011' },
-        metodoPago: 'efectivo', programadoPara: p });
+        metodoPago: 'enlace_pago', programadoPara: p });
       assert.ok(r.status >= 400, `aceptó programar para ${p}`);
     }
   });
@@ -654,7 +672,7 @@ try {
     await crearPromo({ nombre: 'Un solo uso', tipo: 'monto_fijo', valor: 20, codigo: 'UNICO', limiteUsos: 1 });
     const r1 = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger', codigo: 'UNICO',
-      cliente: { nombre: 'Uso 1', telefono: '8992220001' }, metodoPago: 'efectivo' });
+      cliente: { nombre: 'Uso 1', telefono: '8992220001' }, metodoPago: 'enlace_pago' });
     assert.strictEqual(r1.status, 200, JSON.stringify(r1.body));
     const q = await post(`/api/tienda/${SLUG_A}/cotizar`, {
       items: [itemPizza()], modalidad: 'recoger', codigo: 'UNICO', telefono: '8992220002' });
@@ -673,7 +691,7 @@ try {
     await crearPromo({ nombre: 'Carrera de cupón', tipo: 'monto_fijo', valor: 20, codigo: 'CARRERA', limiteUsos: 1 });
     const hacer = (tel) => post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger', codigo: 'CARRERA',
-      cliente: { nombre: 'Carrera cupón', telefono: tel }, metodoPago: 'efectivo' });
+      cliente: { nombre: 'Carrera cupón', telefono: tel }, metodoPago: 'enlace_pago' });
     await Promise.all([hacer('8992220010'), hacer('8992220011')]);
     const { rows } = await pool.query(
       `SELECT p.usos, COUNT(u.id)::int AS registrados FROM tienda_promociones p
@@ -851,7 +869,7 @@ try {
     const veneno = '<img src=x onerror=alert(1)>';
     const { status, body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
-      cliente: { nombre: veneno, telefono: '8994440001' }, metodoPago: 'efectivo',
+      cliente: { nombre: veneno, telefono: '8994440001' }, metodoPago: 'enlace_pago',
       notas: veneno });
     assert.strictEqual(status, 200, JSON.stringify(body));
     const { rows } = await pool.query(
@@ -868,7 +886,7 @@ try {
     const { body } = await post(`/api/tienda/${SLUG_A}/checkout`, {
       checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
       cliente: { nombre: 'Linea\r\nInyectada\u0000nula', telefono: '8994440002' },
-      metodoPago: 'efectivo' });
+      metodoPago: 'enlace_pago' });
     const { rows } = await pool.query(
       `SELECT datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [body.folio, NEG_A]);
     const nombre = rows[0].datos?.cliente?.nombre || '';
@@ -922,7 +940,7 @@ try {
       const hacer = () => fetch(`http://localhost:4208/api/tienda/${SLUG_A}/checkout`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ checkoutToken: token(), items: [itemPizza()], modalidad: 'recoger',
-          cliente: { nombre: 'Flood', telefono: '8995550001' }, metodoPago: 'efectivo' }),
+          cliente: { nombre: 'Flood', telefono: '8995550001' }, metodoPago: 'enlace_pago' }),
       });
       const codigos = [];
       for (let i = 0; i < 5; i++) codigos.push((await hacer()).status);

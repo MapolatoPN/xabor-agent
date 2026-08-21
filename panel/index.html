@@ -2334,6 +2334,26 @@ function getFormaPago(p) {
   if (p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true) return '';
   return p.forma_pago || p.cliente?.forma_pago || p.pago || '';
 }
+// PRESENTACIÓN de la forma de pago: el valor interno no cambia (los reportes
+// y la API siguen viendo 'enlace_pago'); solo lo que lee el operador. Un
+// pedido de tienda en línea visible en el tablero YA está pagado (el tablero
+// excluye los pendiente_pago de ese canal), así que su etiqueta lo dice.
+function etiquetaFormaPago(p) {
+  const crudo = getFormaPago(p);
+  if (!crudo) return '';
+  if (crudo === 'enlace_pago' || crudo.startsWith('enlace_pago ')) {
+    return p.pago_confirmado === true ? 'Pago con tarjeta en línea · ✓ Pagado' : 'Pago con tarjeta en línea · Pendiente';
+  }
+  if (crudo.startsWith('efectivo')) return 'Efectivo';
+  if (crudo.startsWith('terminal')) return 'Terminal';
+  if (crudo.startsWith('transferencia')) return 'Transferencia';
+  return crudo;
+}
+// Origen del pedido (canal REAL del backend; jamás inferido del método de
+// pago). Solo la tienda pública lleva distintivo propio por ahora.
+function etiquetaCanal(p) {
+  return p.canal === 'tienda_online' ? '🌐 Tienda en línea' : '';
+}
 function getPrecioItem(item) {
   return (item.precio_unitario || item.precio || 0) * (item.cantidad || 1);
 }
@@ -2347,6 +2367,17 @@ let panelListo = false;
 // una segunda pestaña o en cada reconexión. Nunca puede quedar detrás de un
 // dedupe: un pedido activo que no se proyecta es un pedido perdido.
 function upsertPedidoEnTablero(pedido) {
+  // Un checkout de la tienda en línea sin pagar NO es una orden del
+  // restaurante: el servidor ya no lo vuelca, y esta guarda hace que ningún
+  // evento suelto lo proyecte tampoco. Reaparece como nuevo_pedido normal
+  // cuando el pago se confirma.
+  if (pedido.canal === 'tienda_online' && pedido.estado === 'pendiente_pago') {
+    const previa = document.getElementById(`comanda-${pedido.id}`);
+    if (previa) previa.remove();
+    delete pedidos[pedido.id];
+    actualizarContador();
+    return null;
+  }
   pedidos[pedido.id] = pedido;
   sinPedidos.style.display = 'none';
   let card = document.getElementById(`comanda-${pedido.id}`);
@@ -2539,7 +2570,7 @@ function renderComanda(p) {
   const badgeLabel   = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
   const nombre       = getNombre(p);
   const telefono     = getTelefono(p);
-  const formaPago    = getFormaPago(p);
+  const formaPago    = etiquetaFormaPago(p);
 
   // Número de orden corto (dígitos del folio: XAB-0035 → 35)
   const numOrden = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
@@ -2607,6 +2638,7 @@ function renderComanda(p) {
       <div class="comanda-cliente">
         <div class="comanda-nombre">${nombre}</div>
         ${formaPago ? `<span class="comanda-pago">Pago: ${formaPago}</span>` : ''}
+        ${etiquetaCanal(p) ? `<span class="comanda-canal">${etiquetaCanal(p)}</span>` : ''}
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
         <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
         ${esPorCobrar(p) ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : ''}
@@ -2800,7 +2832,7 @@ function ticketHTML(p) {
   const badgeLabel    = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
   const nombre        = getNombre(p);
   const telefono      = getTelefono(p);
-  const formaPago     = getFormaPago(p);
+  const formaPago     = etiquetaFormaPago(p);
   const numOrden      = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
   const totalNum      = parseFloat(p.total || 0);
   const envio         = parseFloat(p.costo_envio || 0);
@@ -2811,7 +2843,10 @@ function ticketHTML(p) {
   const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
   const esMixto       = mixtoEfectivo > 0 || mixtoTerminal > 0;
   const totalArt      = (p.items || []).reduce((s, i) => s + (i.cantidad || 1), 0);
-  const canalLabel    = esPresencial ? 'Presencial' : (p.canal === 'rappi' ? 'Rappi' : (p.canal === 'whatsapp' ? 'WhatsApp' : (p.canal || 'Sistema')));
+  const canalLabel    = esPresencial ? 'Presencial'
+    : (p.canal === 'rappi' ? 'Rappi'
+    : (p.canal === 'whatsapp' ? 'WhatsApp'
+    : (p.canal === 'tienda_online' ? 'Tienda en línea' : (p.canal || 'Sistema'))));
   const ahora         = new Date().toLocaleString('es-MX', { timeZone:'America/Matamoros', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
 
   const itemsRows = (p.items || []).map(item => `
@@ -3146,7 +3181,7 @@ function tndPintarChipEstado() {
 async function tndCargarConfig() {
   const r = await apiFetch('/api/admin/tienda');
   const d = await r.json();
-  TND.config = d.config; TND.checklist = d.checklist;
+  TND.config = d.config; TND.checklist = d.checklist; TND.pagos = d.pagos || null;
   tndPintarChipEstado();
   return d;
 }
@@ -3666,6 +3701,26 @@ async function tndAjustes() {
         <div class="ayuda">Cuánto tiempo antes te tienen que avisar para un pedido programado.</div></div>
     </div>
 
+    <div class="tnd-card">
+      <h3>Pagos de la tienda</h3>
+      <div class="sub">Independiente de los métodos del punto de venta: aquí decides cómo
+        cobra tu tienda en línea. Un pedido con pago con tarjeta en línea solo entra a
+        cocina cuando el pago está confirmado.</div>
+      ${[
+        ['enlace_pago', '💳 Pago con tarjeta en línea (pasarela de pagos)'],
+        ['efectivo', '💵 Efectivo al recibir / al recoger'],
+        ['terminal', '💳 Tarjeta con terminal al recibir'],
+        ['transferencia', '🏦 Transferencia bancaria'],
+      ].map(([id, lbl]) => `<label style="display:flex;gap:9px;align-items:center;padding:7px 0;font-size:0.85rem;">
+        <input type="checkbox" class="tc-metodo" value="${id}" ${(TND.pagos?.permitidos || []).includes(id) ? 'checked' : ''} style="width:auto"> ${lbl}</label>`).join('')}
+      <div class="ayuda" style="margin-top:9px;">Pasarela de pagos:
+        ${TND.pagos?.proveedor?.nombre
+          ? `<strong>${tndEsc(TND.pagos.proveedor.nombre.replace('_', ' '))}</strong> — ${TND.pagos.proveedor.utilizable
+              ? '<span style="color:var(--color-success);font-weight:700;">✓ lista para cobrar</span>'
+              : '<span style="color:var(--color-danger);font-weight:700;">⚠ no disponible</span> (revisa Configuración → Integraciones)'}`
+          : 'sin conectar — conéctala en Configuración → Integraciones para cobrar con tarjeta en línea'}</div>
+    </div>
+
     <div style="display:flex;gap:9px;align-items:center;">
       <button class="tnd-btn" onclick="tndGuardarAjustes()">Guardar cambios</button>
       <span id="tc-estado" style="font-size:0.8rem;"></span>
@@ -3696,6 +3751,7 @@ async function tndGuardarAjustes() {
     modalidades,
     aceptaProgramados: document.getElementById('tc-programados').checked,
     anticipacionMinutos: parseInt(document.getElementById('tc-anticipacion').value, 10) || 0,
+    metodosPago: [...document.querySelectorAll('.tc-metodo:checked')].map(x => x.value),
   };
   est.style.color = 'var(--color-text-secondary)';
   est.textContent = 'Guardando…';
