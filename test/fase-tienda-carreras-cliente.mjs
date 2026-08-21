@@ -95,6 +95,14 @@ async function limpiar() {
   await pool.query(
     `DELETE FROM pedidos_activos WHERE negocio_id = $1 AND datos->>'canal' = 'tienda_online'`, [NEG]);
   await pool.query(`DELETE FROM pedidos WHERE negocio_id = $1 AND telefono LIKE '8997%'`, [NEG]).catch(() => {});
+  // compras_reales (migracion 058) llego DESPUES de esta suite y es lo que
+  // lee clienteYaComproDeVerdad para solo_primera_compra: sin esta limpieza,
+  // la primera corrida verde deja al "telefono virgen" con una compra real
+  // registrada y toda corrida posterior falla el caso B. Acotado a la familia
+  // de telefonos propios de esta suite.
+  await pool.query(
+    `DELETE FROM compras_reales WHERE negocio_id = $1 AND cliente_telefono LIKE '8997000%'`,
+    [NEG]).catch(() => {});
   await pool.query(`DELETE FROM tienda_productos WHERE negocio_id = $1`, [NEG]);
   await pool.query(`DELETE FROM tienda_config WHERE negocio_id = $1`, [NEG]);
   await pool.query(

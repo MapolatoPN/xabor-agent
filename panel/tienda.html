@@ -908,6 +908,15 @@ async function confirmarPedido() {
 }
 
 function mostrarExito(r) {
+  // Pago en línea: el pedido existe pero NO está confirmado hasta que entre el
+  // dinero. La decisión final es del servidor: si el POST de pago responde
+  // no_requiere_pago, se cae a la pantalla normal.
+  const enLinea = r.metodoPago ? r.metodoPago.pagaDespues === false : CK.metodoPago === 'enlace_pago';
+  if (enLinea && r.trackingToken) { mostrarExitoConPago(r); return; }
+  mostrarExitoNormal(r);
+}
+
+function mostrarExitoNormal(r) {
   $('ck-pips').innerHTML = '';
   $('ck-titulo').textContent = '¡Pedido recibido!';
   $('ck-atras').style.visibility = 'hidden';
@@ -921,6 +930,70 @@ function mostrarExito(r) {
   </div>`;
   $('ck-pie').innerHTML = `<button class="btn" onclick="location.href='/seguimiento/${encodeURIComponent(r.trackingToken)}'">Seguir mi pedido</button>
     <button class="btn sec" style="margin-top:9px" onclick="location.reload()">Hacer otro pedido</button>`;
+}
+
+// El enlace lo pide SIEMPRE el servidor (autoridad de negocio, monto y
+// proveedor): aquí no se construye ninguna URL de pago ni viaja ningún total.
+// El POST es idempotente del lado del servidor: repetirlo devuelve el MISMO
+// enlace, jamás un segundo cobro.
+let pidiendoPago = false;
+async function mostrarExitoConPago(r) {
+  const tk = r.trackingToken;
+  $('ck-pips').innerHTML = '';
+  $('ck-titulo').textContent = '¡Pedido recibido!';
+  $('ck-atras').style.visibility = 'hidden';
+  $('ck-cuerpo').innerHTML = `<div class="exito-caja">
+    <div class="exito-ico">✓</div>
+    <div style="font-size:13px;color:var(--texto-2);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Tu folio</div>
+    <div class="exito-folio">#${esc(r.folio)}</div>
+    <p style="color:var(--texto);font-size:14px;margin:12px 0 0;font-weight:700">
+      Falta completar tu pago para confirmar el pedido.</p>
+    <p style="color:var(--texto-2);font-size:13.5px;margin:8px 0 0">
+      ${TIENDA.negocio} preparará tu pedido en cuanto el pago quede confirmado.<br>
+      Puedes regresar a esta página para consultar tu pago.</p>
+    <div id="pago-estado" style="margin-top:12px;font-size:13.5px;color:var(--texto-2)"></div>
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" id="btn-pagar" disabled><span class="spin"></span> Obteniendo tu enlace de pago…</button>
+    <button class="btn sec" style="margin-top:9px" onclick="location.href='/seguimiento/${encodeURIComponent(tk)}'">Seguir mi pedido</button>`;
+  await pedirEnlacePago(tk);
+}
+
+async function pedirEnlacePago(tk) {
+  if (pidiendoPago) return;
+  pidiendoPago = true;
+  const btn = $('btn-pagar');
+  try {
+    const d = await api('/api/tienda/seguimiento/' + encodeURIComponent(tk) + '/pago', { method: 'POST' });
+    if (d.estado !== 'pendiente_pago') {
+      // El servidor dice que este pedido ya no espera pago: pantalla normal.
+      pidiendoPago = false;
+      mostrarExitoNormal({ folio: d.folio, trackingToken: tk });
+      return;
+    }
+    if (!d.url) {
+      // Enlace retenido por el servidor (revisión): mensaje neutral, sin
+      // ofrecer más pagos.
+      if (btn) btn.outerHTML = '';
+      $('pago-estado').textContent = 'Estamos verificando tu pago. Consulta el seguimiento en un momento.';
+      pidiendoPago = false;
+      return;
+    }
+    // La URL exacta que devolvió el servidor: no se toca ni se reconstruye.
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Pagar ahora';
+      btn.onclick = () => { btn.disabled = true; location.href = d.url; };
+    }
+    pidiendoPago = false;
+  } catch (e) {
+    pidiendoPago = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Reintentar';
+      btn.onclick = () => { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Obteniendo tu enlace de pago…'; pedirEnlacePago(tk); };
+    }
+    $('pago-estado').textContent = 'No pudimos consultar el pago. Intenta nuevamente.';
+  }
 }
 
 // ─── Hojas ──────────────────────────────────────────────────────────────────

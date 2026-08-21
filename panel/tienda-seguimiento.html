@@ -59,6 +59,11 @@ h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em}
   display:flex;gap:9px;align-items:flex-start}
 .aviso.error{background:var(--error-bg);color:var(--error)}
 .aviso.exito{background:var(--exito-bg);color:var(--exito)}
+.btn{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:var(--marca);
+  color:#fff;font-size:15.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:12px}
+.btn:disabled{opacity:.55;cursor:default}
+.aviso.pago{background:var(--superficie-2);display:block}
+.pago-err{font-size:13px;color:var(--error);margin-top:8px}
 .vacio{padding:70px 24px;text-align:center;color:var(--texto-2)}
 .vacio .ico{font-size:42px;margin-bottom:14px;opacity:.5}
 .vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
@@ -77,12 +82,27 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let ultimaEtapa = null;
+// Estado de pago (solo memoria; nada financiero se guarda en el navegador).
+// La consulta es de SOLO LECTURA: jamás crea enlaces. El POST solo ocurre
+// cuando el cliente toca "Pagar ahora" y el servidor decide todo lo demás.
+let PAGO = null;
+let consultarPago = true;
 
 async function cargar() {
   try {
     const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Pedido no encontrado');
+    if (consultarPago) {
+      try {
+        const rp = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago');
+        if (rp.ok) PAGO = await rp.json();
+        // Un pedido que se paga en persona no tiene nada que consultar aquí;
+        // uno ya pagado tampoco: se conserva el último estado y se deja de
+        // preguntar.
+        if (PAGO && !PAGO.esperandoPago) consultarPago = false;
+      } catch (e) { /* la falla de esta consulta no tumba el seguimiento */ }
+    }
     pintar(d);
     // Sondeo suave: el pedido cambia de estado en minutos, no en segundos.
     // Se detiene solo cuando ya no hay nada más que esperar.
@@ -92,6 +112,65 @@ async function cargar() {
       <h3>No encontramos ese pedido</h3>
       <p>La liga puede estar incompleta o el pedido ya no está disponible.<br>
       Contacta al negocio con tu número de folio.</p></div>`;
+  }
+}
+
+// ── Pago en línea ─────────────────────────────────────────────────────────
+// Estados que pinta esta caja (la autoridad es SIEMPRE el servidor):
+//   esperando + pendiente/null      → falta pagar → [Pagar ahora]
+//   esperando + pagado              → "Estamos confirmando tu pago…"
+//   esperando + requiere_revision   → "Estamos verificando tu pago."
+//   esperando + vencido             → venció → [Generar nuevo enlace]
+//   ya no espera + pagado           → "Pago confirmado."
+//   cancelado + vencido             → aviso de enlace vencido
+function cajaPago(p, cancelado) {
+  if (!p) return '';
+  if (p.esperandoPago) {
+    if (p.pagoEstado === 'pagado') {
+      return `<div class="aviso pago">⏳ <strong>Estamos confirmando tu pago…</strong><br>
+        <span style="font-weight:400;color:var(--texto-2)">En cuanto quede confirmado, tu pedido pasará a preparación.</span></div>`;
+    }
+    if (p.pagoEstado === 'requiere_revision') {
+      return `<div class="aviso pago">🔎 <strong>Estamos verificando tu pago.</strong><br>
+        <span style="font-weight:400;color:var(--texto-2)">Si tienes dudas, contacta al negocio con tu folio.</span></div>`;
+    }
+    const vencido = p.pagoEstado === 'vencido';
+    return `<div class="aviso pago">${vencido ? '⚠️ <strong>El enlace de pago venció.</strong>'
+        : '💳 <strong>Tu pedido está esperando el pago.</strong><br><span style="font-weight:400;color:var(--texto-2)">Falta completar tu pago para confirmar el pedido.</span>'}
+      <button class="btn" id="btn-pagar" onclick="pagarAhora()">${vencido ? 'Generar nuevo enlace' : 'Pagar ahora'}</button>
+      <div class="pago-err" id="pago-err"></div>
+    </div>`;
+  }
+  if (p.pagoEstado === 'pagado' && !cancelado) {
+    return `<div class="aviso exito">✓ <div>Pago confirmado.</div></div>`;
+  }
+  if (cancelado && p.pagoEstado === 'vencido') {
+    return `<div class="aviso error">⚠️ <div>El enlace de pago venció y el pedido no se completó.</div></div>`;
+  }
+  return '';
+}
+
+let pagando = false;
+async function pagarAhora() {
+  if (pagando) return;
+  pagando = true;
+  const b = $('btn-pagar');
+  if (b) { b.disabled = true; b.textContent = 'Obteniendo enlace…'; }
+  try {
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No pudimos consultar el pago');
+    if (d.url) { location.href = d.url; return; }
+    // Sin URL: o el pedido ya no espera pago, o el enlace está en revisión.
+    // En ambos casos la verdad está en la base: se vuelve a cargar.
+    pagando = false;
+    consultarPago = true;
+    cargar();
+  } catch (e) {
+    pagando = false;
+    if (b) { b.disabled = false; b.textContent = 'Pagar ahora'; }
+    const err = $('pago-err');
+    if (err) err.textContent = 'No pudimos consultar el pago. Intenta nuevamente.';
   }
 }
 
@@ -113,6 +192,8 @@ function pintar(d) {
       <div class="folio">#${esc(d.folio)}</div>
       <div class="folio-modo">${sub}</div>
     </div>
+
+    ${cajaPago(PAGO, d.cancelado)}
 
     ${d.cancelado
       ? `<div class="aviso error">⚠️ <div>Este pedido fue cancelado. Si crees que es un error, comunícate con el negocio.</div></div>`

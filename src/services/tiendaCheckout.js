@@ -814,7 +814,11 @@ export async function pagoDeCheckout(trackingToken) {
   const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
   const principal = await obtenerProveedorPrincipal(r.negocio_id);
   const enlace = await crearEnlacePago({
-    negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: 'tienda_online',
+    // actor: null — el endpoint es público (sin usuario autenticado) y
+    // pagos.created_by es un UUID nullable: un actor sintético revienta el
+    // INSERT. El origen sigue auditable por el pedido (canal 'tienda_online')
+    // y su vínculo en tienda_pedidos.
+    negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: null,
     descripcion: `Pedido ${r.pedido_folio}`,
   });
   return {
