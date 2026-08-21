@@ -87,45 +87,72 @@ try {
   if (dup.n > 0) throw new Error(`${dup.n} pedido(s) con mas de una compra real registrada`);
 
   // ─── AUDITORIA DE DATOS REALES DEL BACKFILL ──────────────────────────────
+  //
+  // 058 hizo una FOTO del historico existente al momento del backfill.
+  // Las filas legacy_desconocido se insertaron juntas y su created_at conserva
+  // de forma durable ese instante. Pedidos creados DESPUES de ese corte ya no
+  // pertenecen al backfill: su compra real se registra por el flujo operativo.
+  //
+  // Sin este corte, cada nuevo pedido agregado a `pedidos` despues de 058
+  // acaba siendo exigido falsamente como una fila legacy con el timestamp del
+  // espejo historico, aunque su identidad operacional provenga de
+  // pedidos_activos.created_at.
+  const { rows: [corte] } = await pool.query(
+    `SELECT MAX(created_at) AS backfill_at
+       FROM compras_reales
+      WHERE origen = 'legacy_desconocido'`);
+  const backfillAt = corte.backfill_at || null;
+
   const { rows: [aud] } = await pool.query(
     `SELECT COUNT(*)::int AS historico_total,
             COUNT(DISTINCT (negocio_id::text || '|' || folio))::int AS folios_unicos,
             COUNT(*) FILTER (WHERE (
               SELECT COUNT(*) FROM pedidos p2
-               WHERE p2.negocio_id = p.negocio_id AND p2.folio = p.folio) > 1)::int
+               WHERE p2.negocio_id = p.negocio_id
+                 AND p2.folio = p.folio
+                 AND p2.created_at::timestamptz <= $1::timestamptz) > 1)::int
               AS filas_de_folio_reciclado
        FROM pedidos p
-      WHERE p.folio IS NOT NULL AND p.created_at IS NOT NULL`);
+      WHERE p.folio IS NOT NULL
+        AND p.created_at IS NOT NULL
+        AND p.created_at::timestamptz <= $1::timestamptz`,
+    [backfillAt]);
+
   const { rows: [c] } = await pool.query(
     `SELECT COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE origen = 'legacy_desconocido')::int AS legacy
        FROM compras_reales`);
 
   console.log('[predeploy-058] Auditoria del backfill:');
-  console.log(`  historico elegible en pedidos ...... ${aud.historico_total}`);
-  console.log(`  folios unicos ...................... ${aud.folios_unicos}`);
+  console.log(`  corte durable del backfill ......... ${backfillAt ? new Date(backfillAt).toISOString() : 'sin filas legacy'}`);
+  console.log(`  historico elegible al corte ........ ${aud.historico_total}`);
+  console.log(`  folios unicos al corte ............. ${aud.folios_unicos}`);
   console.log(`  filas de folio reciclado ........... ${aud.filas_de_folio_reciclado}`);
   console.log(`  filas legacy en el ledger .......... ${c.legacy} (de ${c.total} compras)`);
   console.log('  excluidas como no-compra ........... 0 (politica: no se excluye nada)');
 
-  // LA GARANTIA, ahora que la exclusion se retiro entera: NINGUNA fila
-  // historica puede quedarse fuera del ledger. Si alguna falta, es que alguien
-  // volvio a meter una heuristica de correspondencia que los datos no soportan.
+  // La garantia se aplica SOLO a la foto historica que 058 backfilleo.
+  // Los pedidos posteriores al corte pertenecen al camino operacional normal.
   const { rows: [fuga] } = await pool.query(
     `SELECT COUNT(*)::int AS n
        FROM pedidos p
-      WHERE p.folio IS NOT NULL AND p.created_at IS NOT NULL
+      WHERE p.folio IS NOT NULL
+        AND p.created_at IS NOT NULL
+        AND p.created_at::timestamptz <= $1::timestamptz
         AND NOT EXISTS (
           SELECT 1 FROM compras_reales cr
-           WHERE cr.negocio_id = p.negocio_id AND cr.folio = p.folio
-             AND cr.pedido_creado_at = p.created_at)`);
+           WHERE cr.negocio_id = p.negocio_id
+             AND cr.folio = p.folio
+             AND cr.pedido_creado_at = p.created_at)`,
+    [backfillAt]);
+
   if (fuga.n > 0) {
     throw new Error(
-      `${fuga.n} fila(s) historica(s) quedaron fuera del ledger: la politica dice que ` +
-      `TODO el historico entra como legacy_desconocido, asi que alguien reintrodujo ` +
-      `una exclusion basada en una correspondencia que no se puede demostrar`);
+      `${fuga.n} fila(s) historica(s) DEL BACKFILL quedaron fuera del ledger`
+    );
   }
-  console.log('[predeploy-058] Politica verificada: el historico completo esta en el ledger.');
+
+  console.log('[predeploy-058] Politica verificada: el historico al corte 058 esta completo en el ledger.');
 
   await pool.end();
   process.exit(0);
