@@ -322,9 +322,11 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     });
   }
 
-  // La referencia que viaja al proveedor es SIEMPRE la de la fila, nunca una
-  // recalculada: para una fila historica es la vieja, y asi el webhook que la
-  // devuelva sigue resolviendo.
+  // La referencia interna es SIEMPRE la de la fila, nunca una recalculada:
+  // para una fila historica es la vieja, y asi el webhook que la devuelva
+  // sigue resolviendo. Que cadena viaja al proveedor depende de SU contrato:
+  // Mercado Pago recibe esta referencia interna; Clip recibe pagos.id
+  // (metadata.external_reference: maximo 36 caracteres, contrato oficial).
   const referenciaInterna = registro.referencia_interna;
   const capacidades = adaptador.getCapabilities();
 
@@ -501,6 +503,9 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
     const resultado = await adaptador.createPaymentLink({
       negocioId, pedidoId, total, descripcion: descripcion || `Pedido Xabor #${pedidoId}`,
       cliente: pedido.cliente || {}, referencia: referenciaInterna, credenciales,
+      // Identidad corta y durable para proveedores cuyo external_reference
+      // tiene limite de longitud (Clip: 36). Es la MISMA fila: pagos.id.
+      pagoId: registro.id,
       notificationUrl,
       // Solo se manda a quien la documente. Inventar un header de idempotencia
       // que el proveedor ignora es peor que no mandarlo: haría creer que la
@@ -570,7 +575,10 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // La validacion de expiracion del adaptador lanza ANTES de tocar la red
       // (por contrato): no hay checkout que pudiera haber nacido. Lo mismo la
       // frontera durable ausente (CLIP-B): se lanza antes del POST.
-      || e.code === 'EXPIRACION_INVALIDA' || e.code === 'SIN_FRONTERA_DURABLE';
+      || e.code === 'EXPIRACION_INVALIDA' || e.code === 'SIN_FRONTERA_DURABLE'
+      // La barrera de external_reference (Clip: maximo 36 chars) tambien
+      // lanza ANTES de tocar la red: cero checkouts que pudieran haber nacido.
+      || e.code === 'REFERENCIA_PROVEEDOR_INVALIDA';
     if (e.code === 'CREACION_AMBIGUA') throw e;      // el motivo ya quedo anotado
     if (antesDeSalir) {
       await marcarPagoFallido(registro.id, e.code || e.message);

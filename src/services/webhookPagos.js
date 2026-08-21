@@ -229,6 +229,24 @@ export async function aplicarPagoVerificadoDesde({ negocioId, proveedor, real, p
 }
 
 /**
+ * ¿La referencia AUTENTICADA que devolvio el proveedor pertenece a ESTA fila?
+ *
+ * Identidades autorizadas de una fila, SOLO por igualdad exacta:
+ *   · pagos.id — contrato moderno de Clip (metadata.external_reference tiene
+ *     limite oficial de 36 caracteres; el UUID mide exactamente 36).
+ *   · pagos.referencia_interna — checkouts historicos que viajaron con la
+ *     referencia interna completa (y el contrato vigente de Mercado Pago).
+ * Nada de coincidencias parciales, startsWith, includes ni parseos: una
+ * referencia de OTRA fila -- o ausente -- falla cerrado.
+ */
+export function esReferenciaDeEstaFila(referencia, pago) {
+  if (referencia == null || !pago) return false;
+  const r = String(referencia);
+  if (pago.id != null && r === String(pago.id)) return true;
+  return pago.referencia_interna != null && r === String(pago.referencia_interna);
+}
+
+/**
  * VERIFICACION Y ASIENTO DE UN CHECKOUT DE CLIP.
  *
  * Un solo camino para las dos entradas -- el webhook y la reconciliacion de
@@ -247,8 +265,10 @@ export async function verificarYAsentarClip({ pago, checkoutId }) {
   if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
   if (!real.pagado) return { ok: false, razon: `estado_no_pagado:${real.estadoProveedor || 'desconocido'}` };
 
-  // El checkout consultado tiene que ser el de ESTA fila.
-  if (real.referenciaInterna !== pago.referencia_interna) {
+  // El checkout consultado tiene que ser el de ESTA fila: su external_reference
+  // autenticado debe ser pagos.id (contrato moderno, <=36 chars) o su
+  // referencia interna historica -- igualdad exacta, nunca parcial.
+  if (!esReferenciaDeEstaFila(real.referenciaInterna, pago)) {
     await marcarAnomaliaPago(pago.id, negocioId, 'referencia_no_coincide',
       'el checkout reconsultado en Clip lleva otra referencia interna');
     return { ok: false, razon: 'referencia_no_coincide' };
@@ -355,7 +375,7 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
   const { getPaymentStatus } = await import('./providers/clipProvider.js');
   const real = await getPaymentStatus(checkoutId, negocioId);
   if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
-  if (real.referenciaInterna !== pago.referencia_interna) {
+  if (!esReferenciaDeEstaFila(real.referenciaInterna, pago)) {
     await marcarAnomaliaPago(pago.id, negocioId, 'referencia_no_coincide',
       'un aviso de expiracion nombro un checkout con otra referencia interna');
     return { ok: false, razon: 'referencia_no_coincide' };

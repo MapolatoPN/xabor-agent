@@ -204,6 +204,16 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
     expiracion = prepararExpiracionClip(expiresAt, ahoraClip); // lanza ExpiracionInvalidaError
   }
 
+  // Clip metadata.external_reference: String, MAXIMO 36 caracteres (contrato
+  // oficial v2). Se valida ANTES de resolver credenciales o salir a la red, y
+  // JAMAS se trunca: una referencia recortada dejaria de identificar la fila.
+  const externalReference = String(referenciaExterna || pedidoId || '');
+  if (!externalReference || externalReference.length > 36) {
+    const e = new Error(`external_reference invalida para Clip (${externalReference.length} caracteres, maximo 36): no se manda el POST`);
+    e.code = 'REFERENCIA_PROVEEDOR_INVALIDA';
+    throw e;
+  }
+
   const auth = await obtenerAuthHeader(negocioId);
 
   const baseUrl    = process.env.PUBLIC_URL || 'https://xabor.up.railway.app';
@@ -221,13 +231,12 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
     },
     webhook_url: webhookUrl,
     metadata: {
-      // referenciaExterna (Fase 12, arquitectura de pagos multiempresa):
-      // cuando el llamador es pagosService.js, aquí viaja
-      // "negocioId:folio:versionHash" en vez del folio suelto -- así el
-      // webhook de Clip puede resolver negocio_id sin adivinar ni
-      // depender de un pedido en memoria. Default = pedidoId para no
-      // romper ningún llamador legacy que todavía no pasa este campo.
-      external_reference: String(referenciaExterna || pedidoId),
+      // Clip metadata.external_reference: maximo 36 caracteres (contrato
+      // oficial). El camino moderno (pagosService via clipProvider) manda
+      // pagos.id (UUID, exactamente 36); los llamadores legacy (programados
+      // aun no activados en whatsapp-meta.js) siguen mandando el folio.
+      // Validada arriba antes de salir a la red; nunca truncada.
+      external_reference: externalReference,
       customer_info: {}
     }
   };

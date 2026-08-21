@@ -3018,6 +3018,22 @@ export async function obtenerPagoPorId(pagoId, negocioId) {
 }
 
 /**
+ * Resolucion de la fila Clip por SU id: el contrato moderno manda pagos.id
+ * como metadata.external_reference (maximo 36 caracteres, limite oficial de
+ * Clip), asi que el webhook llega nombrando un UUID sin negocio embebido. El
+ * tenant NO se adivina de la referencia: la fila trae su negocio_id y todo lo
+ * que sigue (credenciales, reconsulta autenticada) usa ESE. Solo igualdad
+ * exacta de UUID -- una cadena que no lo sea no toca la base.
+ */
+const RE_UUID_PAGO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export async function obtenerPagoClipPorId(pagoId) {
+  if (typeof pagoId !== 'string' || !RE_UUID_PAGO.test(pagoId.trim())) return null;
+  const { rows: [r] } = await pool.query(
+    `SELECT * FROM pagos WHERE id = $1 AND proveedor = 'clip'`, [pagoId.trim()]);
+  return r || null;
+}
+
+/**
  * ¿Esta fila ya tiene una identidad externa durable? Cualquiera de estas
  * pruebas basta: si existe una, el proveedor creo algo y jamas puede volver a
  * recibir un POST de creacion por esta fila.

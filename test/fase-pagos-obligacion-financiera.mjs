@@ -456,7 +456,7 @@ try {
     const f = (await filas(folio))[0];
     assert.strictEqual(f.referencia_externa, null, 'fixture: la creación debía haber quedado sin id');
 
-    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === String(f.id) || c.referencia === f.referencia_interna)?.[0];
     assert.ok(linkId, 'el checkout creado no lleva la referencia de la fila');
     CHECKOUTS.get(linkId).estado = 'COMPLETED';
 
@@ -728,7 +728,7 @@ try {
     const f = (await filas(folio))[0];
     assert.strictEqual(f.referencia_externa, null, 'fixture: la creación debía quedar ambigua');
 
-    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === String(f.id) || c.referencia === f.referencia_interna)?.[0];
     CHECKOUTS.get(linkId).estado = 'COMPLETED';
 
     clipReconsultaCaida = true;
@@ -812,7 +812,7 @@ try {
     await assert.rejects(() => crearEnlace(folio));
     clipCortaRespuesta = false;
     const f = (await filas(folio))[0];
-    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === String(f.id) || c.referencia === f.referencia_interna)?.[0];
     CHECKOUTS.get(linkId).estado = 'COMPLETED';
 
     // Servidor gemelo que muere justo antes de escribir el candidato.
@@ -843,7 +843,7 @@ try {
     await assert.rejects(() => crearEnlace(folio));
     clipCortaRespuesta = false;
     const f = (await filas(folio))[0];
-    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === f.referencia_interna)?.[0];
+    const linkId = [...CHECKOUTS.entries()].find(([, c]) => c.referencia === String(f.id) || c.referencia === f.referencia_interna)?.[0];
     CHECKOUTS.get(linkId).estado = 'COMPLETED';
 
     clipReconsultaCaida = true;

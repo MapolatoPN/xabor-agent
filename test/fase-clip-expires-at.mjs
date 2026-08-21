@@ -382,16 +382,19 @@ try {
     // jamas sale a la red.
     const { createPaymentLink } = await import('../src/services/providers/clipProvider.js');
     const antesB = REQUESTS.length;
+    // Contrato del adaptador tras el fix external_reference<=36: exige pagoId
+    // (pagos.id viaja como external_reference). El invariante probado aqui no
+    // cambia: la expiracion invalida se rechaza ANTES de cualquier POST.
     await assert.rejects(
       () => createPaymentLink({
         negocioId: NEG, pedidoId: folio, total: 100, descripcion: 'x',
-        cliente: {}, referencia: 'ref-invalida-cea', expiresAt: new Date('no-es-fecha'),
+        cliente: {}, pagoId: '00000000-0000-4000-8000-0000000cea04', expiresAt: new Date('no-es-fecha'),
       }),
       /ExpiracionInvalidaError/, 'un expiresAt invalido debio rechazarse antes del POST');
     await assert.rejects(
       () => createPaymentLink({
         negocioId: NEG, pedidoId: folio, total: 100, descripcion: 'x',
-        cliente: {}, referencia: 'ref-pasada-cea', expiresAt: new Date(Date.now() - 60e3),
+        cliente: {}, pagoId: '00000000-0000-4000-8000-0000000cea04', expiresAt: new Date(Date.now() - 60e3),
       }),
       /ExpiracionInvalidaError/, 'un expiresAt en el pasado debio rechazarse antes del POST');
     assert.strictEqual(REQUESTS.length, antesB,
