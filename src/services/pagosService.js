@@ -28,9 +28,11 @@ import { randomBytes } from 'crypto';
 // el Host ni el X-Forwarded-Host de la petición: los pone el cliente. Se toma
 // de la configuración del servidor y, si no está, no se manda ninguna: mejor
 // sin webhook (y reconciliar por consulta) que un webhook apuntando a donde
-// diga un tercero.
+// diga un tercero. PUBLIC_URL cierra el orden: es la misma configuración
+// server-side que clip-api ya usa para webhook_url y /pago/gracias — una sola
+// URL pública que mantener, no tres.
 export function urlPublicaXabor() {
-  const base = process.env.XABOR_URL_PUBLICA || process.env.BASE_URL || '';
+  const base = process.env.XABOR_URL_PUBLICA || process.env.BASE_URL || process.env.PUBLIC_URL || '';
   return /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : null;
 }
 

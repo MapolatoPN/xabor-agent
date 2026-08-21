@@ -257,7 +257,9 @@ async function pedidoConEnlace() {
 let srv = null;
 try {
   await preparar();
-  srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 90000 });
+  srv = await arrancarServidor(
+    { PORT: PUERTO, XABOR_TIENDA_LIMITE_CHECKOUT: '500', XABOR_TIENDA_LIMITE_LECTURA: '500' },
+    { timeoutMs: 90000 });
 
   // ═══ 1. Regla del canal: la tienda en línea SOLO cobra en línea ═══════════
   // (Antes este caso aseraba que el efectivo imprimía comanda inmediata; esa
@@ -469,6 +471,102 @@ try {
     assert.strictEqual(checkoutsClip, antes + 1,
       `el proveedor recibio ${checkoutsClip - antes} POST de creacion (debe ser 1)`);
     assert.strictEqual((await pagosDeFolio(r.body.folio)).length, 1);
+  });
+
+  // ═══ 15-20. urlPublicaXabor: orden de resolución y retorno post-pago ═════
+  // Producción solo define PUBLIC_URL (la misma fuente server-side que
+  // clip-api usa para webhook_url); XABOR_URL_PUBLICA y BASE_URL no existen.
+  // El smoke XAB-0170 demostró que sin este orden el urlRetorno nace null y
+  // Clip regresa a /pago/gracias en vez del seguimiento del pedido.
+  const conEnv = async (cambios, fn) => {
+    const claves = ['XABOR_URL_PUBLICA', 'BASE_URL', 'PUBLIC_URL'];
+    const previos = Object.fromEntries(claves.map(k => [k, process.env[k]]));
+    try {
+      for (const k of claves) delete process.env[k];
+      for (const [k, v] of Object.entries(cambios)) process.env[k] = v;
+      return await fn();
+    } finally {
+      for (const k of claves) {
+        if (previos[k] === undefined) delete process.env[k];
+        else process.env[k] = previos[k];
+      }
+    }
+  };
+  const { urlPublicaXabor, crearEnlacePago } = await import('../src/services/pagosService.js');
+
+  await t('15. con SOLO PUBLIC_URL definida (forma de produccion), urlPublicaXabor() la devuelve', async () => {
+    await conEnv({ PUBLIC_URL: 'https://xabor.mx' }, () => {
+      assert.strictEqual(urlPublicaXabor(), 'https://xabor.mx');
+    });
+  });
+
+  await t('16. XABOR_URL_PUBLICA tiene prioridad sobre PUBLIC_URL', async () => {
+    await conEnv({ XABOR_URL_PUBLICA: 'https://prioritaria.xabor.mx', PUBLIC_URL: 'https://xabor.mx' }, () => {
+      assert.strictEqual(urlPublicaXabor(), 'https://prioritaria.xabor.mx');
+    });
+  });
+
+  await t('17. BASE_URL tiene prioridad sobre PUBLIC_URL', async () => {
+    await conEnv({ BASE_URL: 'https://base.xabor.mx', PUBLIC_URL: 'https://xabor.mx' }, () => {
+      assert.strictEqual(urlPublicaXabor(), 'https://base.xabor.mx');
+    });
+  });
+
+  await t('18. valor invalido -> null (fail-closed, jamas una URL insegura) y el slash final se elimina', async () => {
+    await conEnv({ PUBLIC_URL: 'xabor.mx' }, () => {
+      assert.strictEqual(urlPublicaXabor(), null, 'sin esquema http(s) debe ser null');
+    });
+    await conEnv({ PUBLIC_URL: 'javascript:alert(1)' }, () => {
+      assert.strictEqual(urlPublicaXabor(), null, 'un esquema no-http jamas produce URL');
+    });
+    // Si la variable de MAYOR prioridad es invalida NO se cae a la siguiente:
+    // una configuracion rota se nota (null), no se enmascara en silencio.
+    await conEnv({ XABOR_URL_PUBLICA: 'basura', PUBLIC_URL: 'https://xabor.mx' }, () => {
+      assert.strictEqual(urlPublicaXabor(), null);
+    });
+    await conEnv({ PUBLIC_URL: 'https://xabor.mx///' }, () => {
+      assert.strictEqual(urlPublicaXabor(), 'https://xabor.mx');
+    });
+  });
+
+  await t('19. con el env de produccion (solo PUBLIC_URL) el checkout manda a Clip redirection_url al /seguimiento/<token>', async () => {
+    const PUERTO2 = String(Number(PUERTO) + 7);
+    const base2 = `http://localhost:${PUERTO2}`;
+    const srv2 = await arrancarServidor(
+      { PORT: PUERTO2, PUBLIC_URL: base2 },
+      { timeoutMs: 90000, omitir: ['XABOR_URL_PUBLICA', 'BASE_URL'] });
+    try {
+      const tk = token();
+      const r = await fetch(`${base2}/api/tienda/${SLUG}/checkout`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(carrito(tk, 'enlace_pago')),
+      }).then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const antes = REQUESTS.length;
+      const pago = await fetch(`${base2}/api/tienda/seguimiento/${encodeURIComponent(r.body.trackingToken)}/pago`, { method: 'POST' })
+        .then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
+      assert.strictEqual(pago.status, 200, JSON.stringify(pago.body));
+      assert.strictEqual(REQUESTS.length, antes + 1, 'Clip no recibio exactamente un checkout');
+      const esperada = `${base2}/seguimiento/${r.body.trackingToken}`;
+      assert.deepStrictEqual(REQUESTS[REQUESTS.length - 1].redirection_url,
+        { success: esperada, error: esperada, default: esperada },
+        `redirection_url no apunta al seguimiento: ${JSON.stringify(REQUESTS[REQUESTS.length - 1].redirection_url)}`);
+    } finally {
+      await srv2.detener();
+    }
+  });
+
+  await t('20. crearEnlacePago SIN urlRetorno (bot/POS) conserva el retorno historico /pago/gracias byte a byte', async () => {
+    const tk = token();
+    const r = await comprar(carrito(tk, 'enlace_pago'));
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const antes = REQUESTS.length;
+    await crearEnlacePago({ negocioId: NEG, pedidoId: r.body.folio, actor: null });
+    assert.strictEqual(REQUESTS.length, antes + 1, 'Clip no recibio exactamente un checkout');
+    const esperada = `${process.env.PUBLIC_URL || 'https://xabor.up.railway.app'}/pago/gracias`;
+    assert.deepStrictEqual(REQUESTS[REQUESTS.length - 1].redirection_url,
+      { success: esperada, error: esperada, default: esperada },
+      `el retorno historico cambio: ${JSON.stringify(REQUESTS[REQUESTS.length - 1].redirection_url)}`);
   });
 
 } catch (e) {
