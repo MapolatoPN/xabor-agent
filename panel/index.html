@@ -6110,6 +6110,40 @@ function pintarWhatsappAutoservicio() {
     (waConectando ? 'not-allowed' : 'pointer') + ';opacity:' + (waConectando ? '.5' : '1') +
     ';margin-right:8px;margin-bottom:8px;">' + txt + '</button>';
 
+  // Reconexión/reintento SIEMPRE con el flujo del modo guardado en la
+  // integración (coexistence relanza su propio diálogo, no el de número
+  // nuevo). El servidor es la autoridad del modo; aquí solo se elige qué
+  // ventana abrir.
+  const fnReconectar = e.connectionMode === 'coexistence' ? 'conectarWhatsappCoexistencia()' : 'conectarWhatsapp()';
+
+  if (e.estadoVisible === 'falta_completar_conexion') {
+    // Credenciales guardadas, activación pendiente: se reintenta SIN
+    // repetir el OAuth de Meta. "Reconectar" queda como último recurso.
+    cont.innerHTML = '<div style="' + marco + '">' +
+      '<div style="font-weight:800;font-size:1rem;margin-bottom:10px;">WhatsApp</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
+        '<span style="width:9px;height:9px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>' +
+        '<span style="font-weight:700;">Falta completar conexi&oacute;n</span></div>' +
+      '<div style="color:#666;font-size:0.88rem;line-height:1.6;margin-bottom:12px;">Tu cuenta qued&oacute; conectada con Meta pero falta un paso de activaci&oacute;n. Puedes reintentarlo aqu&iacute; mismo, sin volver a iniciar sesi&oacute;n con Facebook.</div>' +
+      '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin-bottom:10px;"></div>' +
+      btn('Reintentar activaci&oacute;n', 'reintentarActivacionWhatsapp()', true) + btn('Reconectar', fnReconectar) +
+      '</div>';
+    return;
+  }
+
+  if (e.estadoVisible === 'requiere_reconexion') {
+    cont.innerHTML = '<div style="' + marco + '">' +
+      '<div style="font-weight:800;font-size:1rem;margin-bottom:10px;">WhatsApp</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
+        '<span style="width:9px;height:9px;border-radius:50%;background:#ef4444;display:inline-block;"></span>' +
+        '<span style="font-weight:700;">Requiere reconexi&oacute;n</span></div>' +
+      '<div style="color:#666;font-size:0.88rem;line-height:1.6;margin-bottom:12px;">La conexi&oacute;n con Meta se interrumpi&oacute; (permiso caducado o cuenta desconectada). Vuelve a conectar para reactivar los mensajes.</div>' +
+      '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin-bottom:10px;"></div>' +
+      btn('Reconectar', fnReconectar, true) +
+      '</div>';
+    return;
+  }
+
   if (!e.conectado) {
     // Selector de autoservicio: el negocio elige cómo usa WhatsApp hoy y
     // Xabor lanza el flujo de Meta correcto. Sin WABA IDs, sin tokens, sin
@@ -6138,11 +6172,15 @@ function pintarWhatsappAutoservicio() {
 
   const tonos = { ok: '#22c55e', espera: '#f59e0b', problema: '#ef4444' };
   const en = e.estadoNombre || { etiqueta: 'Desconocido', tono: 'espera' };
+  // "Coexistencia activa" solo con la evidencia del modelo (estado activo +
+  // modo coexistence + app suscrita, ver estadoWhatsappNegocio); si no, el
+  // genérico honesto "WhatsApp conectado".
+  const tituloConectado = e.estadoVisible === 'coexistencia_activa' ? 'Coexistencia activa' : 'WhatsApp conectado';
   cont.innerHTML = '<div style="' + marco + '">' +
     '<div style="font-weight:800;font-size:1rem;margin-bottom:10px;">WhatsApp</div>' +
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
       '<span style="width:9px;height:9px;border-radius:50%;background:#22c55e;display:inline-block;"></span>' +
-      '<span style="font-weight:700;">Conectado</span></div>' +
+      '<span style="font-weight:700;">' + tituloConectado + '</span></div>' +
     '<div style="font-size:0.9rem;line-height:1.9;color:#333;">' +
       (e.nombreVisible ? '<div><strong>' + e.nombreVisible + '</strong></div>' : '') +
       (e.numero ? '<div>' + e.numero + '</div>' : '') +
@@ -6151,7 +6189,7 @@ function pintarWhatsappAutoservicio() {
       '<div>Atención automática: ' + (e.botActivo ? 'Activa' : 'Pausada') + '</div>' +
     '</div>' +
     '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin:12px 0;"></div>' +
-    '<div style="margin-top:12px;">' + btn('Verificar conexión', 'verificarWhatsapp()') + btn('Reconectar', 'conectarWhatsapp()') + '</div>' +
+    '<div style="margin-top:12px;">' + btn('Verificar conexión', 'verificarWhatsapp()') + btn('Reconectar', fnReconectar) + '</div>' +
     '</div>';
 }
 
@@ -6855,6 +6893,21 @@ async function verificarWhatsapp() {
     waProgreso(d.ok ? 'Todo listo.' : (d.acciones || []).join(' '));
   } catch (_) {
     waProgreso('No pudimos verificar la conexión.');
+  }
+}
+
+// Reintentar activación SIN repetir el OAuth de Meta: el servidor lee el
+// connection_mode guardado en la integración (el navegador no manda modo).
+async function reintentarActivacionWhatsapp() {
+  waProgreso('Reintentando activación...');
+  try {
+    const r = await apiFetch('/api/integraciones/whatsapp/reintentar-activacion', { method: 'POST' });
+    const d = await r.json();
+    if (d.estadoNegocio) waEstadoActual = d.estadoNegocio;
+    pintarWhatsappAutoservicio();
+    waProgreso(d.ok ? 'Activación completada.' : (d.error || 'Aún no se pudo completar. Intenta de nuevo en unos minutos.'));
+  } catch (_) {
+    waProgreso('No pudimos completar la activación.');
   }
 }
 

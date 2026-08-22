@@ -91,14 +91,20 @@ export function traducirErrorMeta(error) {
  * visible y si está recibiendo mensajes.
  */
 export async function estadoWhatsappNegocio(negocioId) {
+  // FILA CANÓNICA: la integración whatsapp/'meta' es SIEMPRE la autoridad
+  // para estado y UI. Una fila legacy (proveedor NULL) es compatibilidad de
+  // routing temporal, jamás autoridad -- elegir "la más nueva" entre
+  // cualquier fila fue exactamente lo que hizo al panel describir la fila
+  // equivocada cuando conviven ambas.
   const { rows } = await pool.query(
     `SELECT id, estado, display_phone_number, verified_name, estado_nombre, waba_id,
             identificador, numero_registrado_cloud_api, app_suscrita_waba,
+            connection_mode,
             conectado_at, ultima_prueba_at, ultima_prueba_ok,
             ultimo_error_codigo, ultimo_error_at, ambiente
        FROM integraciones_canal
       WHERE negocio_id = $1 AND canal = 'whatsapp'
-      ORDER BY principal DESC NULLS LAST, created_at DESC
+      ORDER BY (proveedor = 'meta') DESC NULLS LAST, principal DESC NULLS LAST, created_at DESC
       LIMIT 1`,
     [negocioId]);
 
@@ -107,6 +113,8 @@ export async function estadoWhatsappNegocio(negocioId) {
     return {
       conectado: false,
       estado: 'no_conectado',
+      estadoVisible: 'no_conectado',
+      connectionMode: null,
       numero: null,
       nombreVisible: null,
       estadoNombre: traducirEstadoNombre(null),
@@ -129,10 +137,28 @@ export async function estadoWhatsappNegocio(negocioId) {
   // pendiente_activacion, error, suspendido y eliminado NO son conexiones
   // vivas, por mas que exista la fila.
   const conectado = Boolean(fila.waba_id) && fila.estado === 'activo';
+  const modo = fila.connection_mode || 'cloud_api';
+
+  // Estado VISIBLE del panel (máquina interna → etiqueta honesta):
+  //   desconectado/error        → requiere_reconexion ("Requiere reconexión")
+  //   pendiente_activacion      → falta_completar_conexion (reintento SIN OAuth)
+  //   activo + coexistence+sus  → coexistencia_activa
+  //   activo                    → conectado
+  //   resto                     → no_conectado
+  // 'desconectado' es el ÚNICO estado interno para esa condición; la UI lo
+  // traduce -- no existe (ni debe existir) un estado DB 'requiere_reconexion'.
+  const estadoVisible =
+    (fila.estado === 'desconectado' || fila.estado === 'error') ? 'requiere_reconexion'
+    : fila.estado === 'pendiente_activacion' ? 'falta_completar_conexion'
+    : (conectado && modo === 'coexistence' && Boolean(fila.app_suscrita_waba)) ? 'coexistencia_activa'
+    : conectado ? 'conectado'
+    : 'no_conectado';
 
   return {
     conectado,
     estado: fila.estado || 'desconocido',
+    estadoVisible,
+    connectionMode: modo,
     numero: fila.display_phone_number || null,
     nombreVisible: fila.verified_name || null,
     estadoNombre: traducirEstadoNombre(fila.estado_nombre),
@@ -148,6 +174,25 @@ export async function estadoWhatsappNegocio(negocioId) {
     hayError: Boolean(fila.ultimo_error_codigo),
     ultimoErrorEn: fila.ultimo_error_at || null,
   };
+}
+
+/**
+ * Qué le falta a la conexión, en lenguaje del cliente y SENSIBLE AL MODO.
+ * Pura (recibe el estado ya leído) para poder probarse sin HTTP.
+ *
+ * En coexistence, /register se OMITE a propósito (el número ya quedó
+ * registrado por el flujo de la Business App), así que
+ * numero_registrado_cloud_api=false JAMÁS debe traducirse en "falta
+ * registrar el número": sería un mensaje técnico falso.
+ */
+export function accionesFaltantes(estado) {
+  const faltantes = [];
+  if (!estado.wabaConfigurada) faltantes.push('Falta terminar la conexion con Meta.');
+  if (!estado.appSuscrita) faltantes.push('La cuenta de WhatsApp aun no esta suscrita para recibir mensajes.');
+  if (!estado.numeroRegistrado && estado.connectionMode !== 'coexistence') {
+    faltantes.push('Falta completar el registro del numero en Meta.');
+  }
+  return faltantes;
 }
 
 // Claves que jamás pueden salir hacia el panel del negocio. La prueba

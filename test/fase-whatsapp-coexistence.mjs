@@ -307,12 +307,17 @@ await t('DESCONEXION', '21. PARTNER_REMOVED marca la integración como desconect
   assert.strictEqual(r.status, 200);
   await esperar(800);
   const { rows: [fila] } = await pool.query(
-    `SELECT estado, connection_mode FROM integraciones_canal WHERE negocio_id = $1 AND canal='whatsapp'`, [NEG_A]);
+    `SELECT estado, activo, connection_mode FROM integraciones_canal WHERE negocio_id = $1 AND canal='whatsapp'`, [NEG_A]);
   assert.strictEqual(fila.estado, 'desconectado', 'el estado refleja la desconexión');
+  // Invariante WhatsApp: desconectado => activo=FALSE (la integración deja
+  // de reclamar routing de webhooks; ver estadoIntegracionWhatsapp.js).
+  assert.strictEqual(fila.activo, false, 'una integración desconectada no puede seguir enrutando');
   const msgs = await mensajesDe(NEG_A, TEL_CLIENTE);
   assert.ok(msgs.length > 0, 'el historial NUNCA se borra');
-  // Se restaura para el resto de la suite/otras suites.
-  await pool.query(`UPDATE integraciones_canal SET estado = 'activo' WHERE negocio_id = $1 AND canal='whatsapp'`, [NEG_A]);
+  // Se restaura COMPLETO (estado + activo derivado) para el resto de la
+  // suite: sin activo=TRUE, los ecos de los casos 22-23 se descartarían
+  // fail-closed por falta de routing.
+  await pool.query(`UPDATE integraciones_canal SET estado = 'activo', activo = TRUE WHERE negocio_id = $1 AND canal='whatsapp'`, [NEG_A]);
 });
 
 // ═══════════ 22. Aislamiento cross-negocio ═══════════

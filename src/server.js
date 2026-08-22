@@ -92,7 +92,7 @@ import {
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
-import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, traducirErrorMeta } from './services/whatsappAutoservicio.js';
+import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
@@ -5436,10 +5436,30 @@ app.get('/api/integraciones/whatsapp/estado', requireAuthSeguro, requireModulo('
 app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
   try {
     const estado = await estadoWhatsappNegocio(req.negocioId);
-    const faltantes = [];
-    if (!estado.wabaConfigurada) faltantes.push('Falta terminar la conexion con Meta.');
-    if (!estado.appSuscrita) faltantes.push('La cuenta de WhatsApp aun no esta suscrita para recibir mensajes.');
-    if (!estado.numeroRegistrado) faltantes.push('Falta completar el registro del numero en Meta.');
+    // Mensajes sensibles al modo: en coexistence el registro se omite a
+    // propósito y jamás se reporta como faltante (ver accionesFaltantes).
+    const faltantes = accionesFaltantes(estado);
+
+    // Coexistence: la evidencia de que el modo dual sigue vivo son los
+    // campos oficiales del número (is_on_biz_app) -- se consultan con las
+    // credenciales del negocio SOLO en este "Verificar conexión" (lectura
+    // a Meta, jamás un mensaje al cliente). Sin credenciales resolubles no
+    // se adivina: simplemente no se agrega ni quita nada.
+    if (estado.connectionMode === 'coexistence' && estado.conectado) {
+      try {
+        const { obtenerCredencialesWhatsappNegocio } = await import('./services/database.js');
+        const cred = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+        if (cred) {
+          const { verificarModoNumero } = await import('./services/metaEmbeddedSignup.js');
+          const modo = await verificarModoNumero(cred.phoneNumberId, cred.accessToken);
+          if (modo.ok && modo.isOnBizApp !== true) {
+            faltantes.push('El numero ya no esta vinculado a la WhatsApp Business App del telefono.');
+          }
+        }
+      } catch (eCoex) {
+        console.error('[WA autoservicio] verificacion coexistence:', eCoex.message);
+      }
+    }
 
     await pool.query(
       `UPDATE integraciones_canal SET ultima_prueba_at = NOW(), ultima_prueba_ok = $2
@@ -5456,6 +5476,25 @@ app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModu
     const traducido = traducirErrorMeta(e);
     console.error('[WA autoservicio] verificar:', e.message);
     res.status(502).json({ ok: false, mensaje: traducido.mensaje });
+  }
+});
+
+// Reintentar activación SIN repetir OAuth: si el Embedded Signup ya dejó
+// credenciales completas (token + PNID + WABA) pero alguna etapa posterior
+// falló (suscripción, verificación de modo), el negocio puede reintentar
+// desde su panel. El connection_mode NO viene del frontend: la autoridad es
+// el guardado en la integración canónica (completarActivacionWhatsapp lo lee
+// de la fila cuando no se le pasa modo) -- un retry de coexistence jamás
+// dispara /register. Tenant de la sesión, mismo trío de middlewares del
+// autoservicio.
+app.post('/api/integraciones/whatsapp/reintentar-activacion', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
+  try {
+    const resultado = await completarActivacionWhatsapp(req.negocioId, req.usuarioId);
+    if (!resultado.ok && resultado.error) return res.status(400).json({ error: resultado.error });
+    res.json({ ok: resultado.ok, estado: resultado.estado, estadoNegocio: await estadoWhatsappNegocio(req.negocioId) });
+  } catch (e) {
+    console.error('[WA autoservicio] reintentar-activacion:', e.message);
+    res.status(500).json({ error: 'No pudimos completar la activacion' });
   }
 });
 

@@ -17,8 +17,12 @@ import crypto from 'crypto';
 import { pool, registrarAuditoriaPlataforma, registrarAuditoriaSecundaria, normalizarActor, habilitarMetodoPagoPorProveedorPrincipal } from './database.js';
 import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifradoIntegraciones.js';
 import { esProveedorValido, validarPuedeActivarse, obtenerAdaptador } from './paymentProviders.js';
+import { activoParaEstadoWhatsapp, ESTADOS_WHATSAPP } from './estadoIntegracionWhatsapp.js';
 
-const ESTADOS_VALIDOS = ['no_configurado', 'pendiente_configuracion', 'pendiente_activacion', 'activo', 'suspendido', 'error'];
+// La máquina de estados de WhatsApp (incluye 'desconectado' — Meta
+// desconectó/el token murió; la UI lo presenta como "Requiere reconexión")
+// es la fuente; se conserva el nombre histórico para los llamadores.
+const ESTADOS_VALIDOS = [...ESTADOS_WHATSAPP];
 
 /**
  * Corrección de contrato (seguimiento del Incidente P0, 2 de agosto de
@@ -142,6 +146,14 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
   }
 
   const nuevoEstado = 'pendiente_activacion'; // ambos campos obligatorios ya están validados arriba -- falta confirmar activación real (ver completarActivacionWhatsapp)
+  // INVARIANTE WhatsApp: `activo` se DERIVA del estado (una integración con
+  // credenciales pero sin activación confirmada NO reclama routing de
+  // webhooks: antes quedaba activo=TRUE y recibía mensajes que no podía
+  // responder). Scope explícito a whatsapp/meta: esta función está
+  // parametrizada por canal/proveedor y otros canales futuros no heredan
+  // esta semántica en silencio -- conservan el comportamiento histórico.
+  const esWhatsappMeta = canal.trim() === 'whatsapp' && proveedor.trim() === 'meta';
+  const activoNuevo = esWhatsappMeta ? activoParaEstadoWhatsapp(nuevoEstado) : true;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -157,22 +169,22 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
       await client.query(
         `UPDATE integraciones_canal SET
            identificador = $1, waba_id = $2, business_id = $3, display_phone_number = $4,
-           nombre = COALESCE($5, nombre), estado = $6, activo = TRUE,
-           actualizado_por = $7, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
-         WHERE id = $8`,
+           nombre = COALESCE($5, nombre), estado = $6, activo = $7,
+           actualizado_por = $8, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
+         WHERE id = $9`,
         [phoneNumberId.trim(), wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, actualizadoPorId, integracionId]
+         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId, integracionId]
       );
     } else {
       const { rows: [nueva] } = await client.query(
         `INSERT INTO integraciones_canal
            (negocio_id, canal, proveedor, identificador, waba_id, business_id, display_phone_number,
             nombre, estado, activo, conectado_at, actualizado_por)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,NOW(),$10)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11)
          RETURNING id`,
         [negocioId.trim(), canal.trim(), proveedor.trim(), phoneNumberId.trim(),
          wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, actualizadoPorId]
+         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId]
       );
       integracionId = nueva.id;
     }
@@ -353,7 +365,7 @@ export async function obtenerCredencialesDescifradas(negocioId, canal, proveedor
  */
 async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
   const { rows } = await pool.query(
-    `SELECT ic.id, ic.identificador, ic.waba_id, ic.estado,
+    `SELECT ic.id, ic.identificador, ic.waba_id, ic.estado, ic.connection_mode,
             cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version,
             cc.pin_verificacion_cifrado, cc.pin_iv, cc.pin_auth_tag, cc.pin_formato_version
      FROM integraciones_canal ic
@@ -375,7 +387,10 @@ async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
       authTag: row.pin_auth_tag, version: row.pin_formato_version,
     });
   }
-  return { integracionId: row.id, phoneNumberId: row.identificador, wabaId: row.waba_id, accessToken, pin };
+  return {
+    integracionId: row.id, phoneNumberId: row.identificador, wabaId: row.waba_id,
+    connectionMode: row.connection_mode || 'cloud_api', accessToken, pin,
+  };
 }
 
 /**
@@ -399,14 +414,19 @@ async function obtenerCredencialesParaActivacion(negocioId, canal, proveedor) {
  */
 const MODOS_CONEXION_VALIDOS = ['cloud_api', 'coexistence'];
 
-export async function completarActivacionWhatsapp(negocioId, actor, { connectionMode = 'cloud_api' } = {}) {
+export async function completarActivacionWhatsapp(negocioId, actor, { connectionMode = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, error: 'negocioId inválido' };
   }
   // El modo lo decide el servidor validando contra la lista cerrada -- lo
   // que mande el frontend jamás se pasa tal cual a la base ni cambia el
   // comportamiento sin caer en una de las DOS ramas conocidas.
-  if (!MODOS_CONEXION_VALIDOS.includes(connectionMode)) {
+  // connectionMode EXPLÍCITO solo en la conexión inicial (callback del
+  // Embedded Signup, donde la fila aún no tiene modo real guardado). Para
+  // REINTENTOS se omite y la autoridad es el connection_mode YA guardado en
+  // la integración canónica: el frontend jamás puede convertir un retry de
+  // coexistence en un /register fuera de lugar (ni al revés).
+  if (connectionMode !== null && !MODOS_CONEXION_VALIDOS.includes(connectionMode)) {
     return { ok: false, error: 'Modo de conexión no reconocido' };
   }
   const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
@@ -414,6 +434,7 @@ export async function completarActivacionWhatsapp(negocioId, actor, { connection
   if (!datos) {
     return { ok: false, error: 'No hay credenciales completas para activar (falta phone_number_id, waba_id o token)' };
   }
+  if (connectionMode === null) connectionMode = datos.connectionMode;
 
   const { registrarNumeroCloudApi, suscribirAppWaba, verificarModoNumero } = await import('./metaEmbeddedSignup.js');
 
@@ -474,14 +495,17 @@ export async function completarActivacionWhatsapp(negocioId, actor, { connection
 
     await client.query(
       `UPDATE integraciones_canal SET
-         estado = $1,
-         numero_registrado_cloud_api = $2, app_suscrita_waba = $3,
-         connection_mode = $4,
+         estado = $1, activo = $2,
+         numero_registrado_cloud_api = $3, app_suscrita_waba = $4,
+         connection_mode = $5,
          ultimo_intento_activacion_at = NOW(),
-         ultimo_error_codigo = $5, ultimo_error_at = $6,
-         actualizado_por = $7, updated_at = NOW()
-       WHERE id = $8`,
-      [nuevoEstado, resultadoRegistro.ok, resultadoSuscripcion.ok,
+         ultimo_error_codigo = $6, ultimo_error_at = $7,
+         actualizado_por = $8, updated_at = NOW()
+       WHERE id = $9`,
+      // INVARIANTE: activo se deriva del estado EN LA MISMA UPDATE --
+      // activación exitosa => activo/true; fallida => pendiente_activacion/false.
+      [nuevoEstado, activoParaEstadoWhatsapp(nuevoEstado),
+       resultadoRegistro.ok, resultadoSuscripcion.ok,
        connectionMode,
        codigoErrorControlado, ambosOk ? null : new Date(),
        actualizadoPorId, datos.integracionId]

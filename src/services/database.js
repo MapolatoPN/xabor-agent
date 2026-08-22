@@ -4413,9 +4413,14 @@ export async function obtenerIntegracionCanal(canal, identificador) {
 export async function marcarIntegracionDesconectadaPorWaba(wabaId) {
   if (typeof wabaId !== 'string' || !wabaId.trim()) return 0;
   try {
+    // INVARIANTE WhatsApp (ver estadoIntegracionWhatsapp.js): activo se
+    // deriva del estado en el MISMO UPDATE. 'desconectado' => activo=FALSE:
+    // una integración que Meta desconectó no puede seguir reclamando el
+    // routing de webhooks ni validando el fallback de entorno. La UI lo
+    // presenta como "Requiere reconexión".
     const { rowCount } = await pool.query(
       `UPDATE integraciones_canal
-       SET estado = 'desconectado', updated_at = NOW()
+       SET estado = 'desconectado', activo = FALSE, updated_at = NOW()
        WHERE canal = 'whatsapp' AND proveedor = 'meta' AND waba_id = $1`,
       [wabaId.trim()]);
     return rowCount;
@@ -4837,8 +4842,29 @@ export async function obtenerCredencialesWhatsappNegocio(negocioId) {
   const envToken = process.env.WHATSAPP_TOKEN || process.env.META_WHATSAPP_TOKEN || '';
   if (!envPhoneId || !envToken) return null;
 
+  // GATE DE LEGADO (regla fuerte): el env global es un PUENTE de
+  // compatibilidad para negocios que todavía arrastran una fila legacy
+  // (canal 'whatsapp' con proveedor NULL, anterior al modelo de
+  // credenciales cifradas). Un negocio conectado por el onboarding
+  // moderno JAMÁS puede caer aquí: sin fila legacy, fail-closed. La
+  // evidencia es estructural (existe la fila), no una lista de nombres.
+  const { rows: legacyRows } = await pool.query(
+    `SELECT 1 FROM integraciones_canal
+      WHERE negocio_id = $1 AND canal = 'whatsapp' AND proveedor IS NULL
+      LIMIT 1`,
+    [id]
+  );
+  if (!legacyRows[0]) return null;
+
+  // Y además el PNID del entorno debe pertenecer inequívocamente a ESTE
+  // negocio (la fila ACTIVA dueña de ese identificador es la que se va a
+  // usar) -- misma validación fail-closed de siempre.
   const propietario = await obtenerIntegracionCanal('whatsapp', envPhoneId);
   if (propietario && propietario.negocioId === id) {
+    // Log seguro: sin token, sin teléfono, sin PII -- solo el hecho de que
+    // este negocio sigue colgado del puente, para que la migración a
+    // credenciales propias no se olvide.
+    console.warn(`[WA] Envío por PUENTE LEGACY de entorno (negocio ${id.slice(0, 8)}…, PNID …${envPhoneId.slice(-4)}) — migrar a credenciales cifradas propias`);
     return { phoneNumberId: envPhoneId, accessToken: envToken };
   }
   return null;
