@@ -170,6 +170,14 @@ export async function cargarReglas(negocioId) {
   }
 }
 
+/**
+ * Claves de `menu_productos.opciones` que son METADATA TÉCNICA interna, no
+ * opciones que el cliente pueda elegir: nunca se muestran en el menú del
+ * prompt. Hoy: `tipo_item` (marca estructural del cargo de envío que usa
+ * validadorOrden.esProductoEnvio). Toda clave técnica nueva se agrega aquí.
+ */
+export const CLAVES_OPCIONES_TECNICAS = new Set(['tipo_item']);
+
 function formatearMenu(categorias) {
   let texto = '';
   for (const categoria of categorias) {
@@ -192,13 +200,37 @@ function formatearMenu(categorias) {
           texto += `  ${g.nombre} (${reglaTxt}): ${opcsTxt}\n`;
         }
       }
-      // Fallback: campo opciones legacy del producto
+      // Fallback: campo opciones legacy del producto.
+      //
+      // `opciones` guarda DOS cosas distintas y el menú visible solo puede
+      // mostrar una: opciones COMERCIALES (lo que el cliente elige, formato
+      // legacy: array de strings, u objeto cuyas propiedades son arrays) y
+      // METADATA TÉCNICA interna (hoy `tipo_item`, la marca estructural del
+      // cargo de envío que usa validadorOrden). Mezclarlas rompió el bot en
+      // producción: `'envio'.join` no existe y la excepción tumbaba TODO el
+      // prompt, para cualquier mensaje. Aquí las claves técnicas se omiten
+      // y ningún formato inesperado puede lanzar: el menú del prompt jamás
+      // vuelve a ser un punto de falla del canal.
       if ((!p.modificadores || !p.modificadores.length) && p.opciones) {
-        const opts = typeof p.opciones === 'string' ? JSON.parse(p.opciones) : p.opciones;
+        let opts = null;
+        try {
+          opts = typeof p.opciones === 'string' ? JSON.parse(p.opciones) : p.opciones;
+        } catch {
+          opts = null; // JSON corrupto en catálogo: se ignora, nunca tumba el prompt
+        }
         if (Array.isArray(opts)) {
           texto += `  Opciones: ${opts.join(', ')}\n`;
-        } else {
+        } else if (opts && typeof opts === 'object') {
           for (const [clave, valores] of Object.entries(opts)) {
+            if (CLAVES_OPCIONES_TECNICAS.has(clave)) continue;   // metadata interna: jamás al cliente
+            // Fail-safe: solo se muestran las claves comerciales con el
+            // formato legacy conocido (array). Un formato inesperado se
+            // OMITE con log seguro (solo la clave, nunca el contenido) --
+            // preferimos un menú incompleto a un bot mudo.
+            if (!Array.isArray(valores)) {
+              console.warn(`[Prompts] Opción de menú con formato inesperado, omitida: producto_id=${p.id} clave=${clave}`);
+              continue;
+            }
             texto += `  ${clave.charAt(0).toUpperCase() + clave.slice(1)}: ${valores.join(', ')}\n`;
           }
         }

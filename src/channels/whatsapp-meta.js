@@ -948,8 +948,18 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
     }, 8000);
 
-    const resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId, telefono);
-    clearTimeout(waitTimer);
+    // INVARIANTE: el timer provisional se cancela SIEMPRE. Antes vivía
+    // justo después del await, y una excepción de procesarMensaje se lo
+    // saltaba: el fallo era instantáneo pero el cliente igual recibía
+    // "Dame un momento..." 8 s después y luego silencio permanente
+    // (incidente real: metadata técnica del catálogo rompiendo el prompt).
+    // El finally lo hace imposible.
+    let resultado;
+    try {
+      resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId, telefono);
+    } finally {
+      clearTimeout(waitTimer);
+    }
 
     // ── P0: red secundaria contra la confirmación verbal falsa ──
     // Si el bot AFIRMA que hay pedido pero no emitió <ORDEN_CONFIRMADA>,
@@ -1230,6 +1240,21 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
   } catch (error) {
     console.error('[Meta WA] Error en procesarConClaude:', error.message);
     registrarError(negocioId);
+    // El cliente YA escribió: dejarlo sin respuesta es el peor final
+    // posible (más aún si alcanzó a recibir el provisional de 8 s). Se
+    // manda UNA sola respuesta honesta y neutra -- sin nombrar modelos,
+    // proveedores ni detalles técnicos -- y se registra como cualquier
+    // mensaje saliente para que el panel muestre la conversación real.
+    // Si el envío de esta disculpa también falla, se registra y se acaba
+    // aquí: nunca un reintento en bucle.
+    try {
+      const msgFallo = 'Disculpa, tuve un problema al procesar tu mensaje. ¿Puedes intentarlo de nuevo en un momento?';
+      await enviarMensaje(telefono, msgFallo, credenciales);
+      const msgErr = await guardarMensaje(telefono, nombreMeta, 'saliente', msgFallo, negocioId, 'bot');
+      if (msgErr && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgErr });
+    } catch (errorAviso) {
+      console.error(`[Meta WA] Tampoco se pudo avisar del fallo al cliente: ${errorAviso.message}`);
+    }
   }
 }
 
