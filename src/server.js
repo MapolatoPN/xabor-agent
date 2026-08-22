@@ -1753,7 +1753,45 @@ app.post('/webhook/pagos/:proveedor/:routingToken', async (req, res) => {
   }
 });
 
-app.post('/webhook/clip', async (req, res) => {
+// ── Normalizador de body EXCLUSIVO de /webhook/clip ─────────────────────────
+// Causa raíz XAB-0171: express.json() global solo parsea Content-Type
+// `application/json` EXACTO; el webhook real de Clip llega con otro tipo, el
+// stream queda sin leer, req.body queda undefined y el handler descartaba
+// TODOS los avisos -- el asiento quedaba siempre en manos del reconciliador
+// de 5 minutos. El express.raw de la ruta (límite chico) lee el stream solo
+// cuando el parser global no lo hizo (body-parser marca req._body), y aquí
+// se interpreta ÚNICAMENTE la forma: JSON válido → objeto; cualquier otra
+// cosa → objeto vacío y el handler lo ignora fail-closed como siempre. La
+// autoridad del pago no cambia: sigue siendo la reconsulta autenticada.
+function normalizarBodyWebhookClip(req, _res, next) {
+  const crudo = req.body;
+  let cuerpo = crudo;
+  const texto = Buffer.isBuffer(crudo) ? crudo.toString('utf8')
+    : (typeof crudo === 'string' ? crudo : null);
+  if (texto !== null) {
+    cuerpo = null;
+    if (texto.trim()) {
+      try {
+        const j = JSON.parse(texto);
+        if (j && typeof j === 'object' && !Array.isArray(j)) cuerpo = j;
+      } catch { /* body no-JSON → fail closed abajo */ }
+    }
+  }
+  if (!cuerpo || typeof cuerpo !== 'object' || Array.isArray(cuerpo)) cuerpo = {};
+  // Diagnóstico SEGURO cuando no hay nada interpretable: solo la FORMA del
+  // body (tipo, llaves) -- jamás valores, tokens, headers de auth ni PII.
+  if (['resource', 'resource_status', 'me_reference_id', 'payment_request_id']
+      .every(k => cuerpo[k] === undefined)) {
+    const llaves = Buffer.isBuffer(crudo) ? '"(buffer no-JSON)"'
+      : (crudo && typeof crudo === 'object' && !Buffer.isBuffer(crudo))
+        ? JSON.stringify(Object.keys(crudo).slice(0, 15)) : '[]';
+    console.warn(`[Clip] Webhook sin campos interpretables — content-type: ${req.headers['content-type'] || '(ausente)'}, typeof body: ${typeof crudo}, esArray: ${Array.isArray(crudo)}, llaves: ${llaves}`);
+  }
+  req.body = cuerpo;
+  next();
+}
+
+app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), normalizarBodyWebhookClip, async (req, res) => {
   // EL ACK NO ES LO PRIMERO.
   //
   // Antes se respondía 200 al entrar y todo lo demás ocurría después. Eso deja

@@ -844,7 +844,10 @@ export async function pagoDeCheckout(trackingToken) {
     // y su vínculo en tienda_pedidos.
     negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: null,
     descripcion: `Pedido ${r.pedido_folio}`,
-    urlRetorno: raizPublica ? `${raizPublica}/seguimiento/${trackingToken.trim()}` : null,
+    // `retorno=pago` es SOLO un marcador de UX: al volver de la pasarela la
+    // página de seguimiento muestra "Estamos verificando tu pago…" y sondea
+    // más seguido mientras el servidor verifica. Jamás autoridad de pago.
+    urlRetorno: raizPublica ? `${raizPublica}/seguimiento/${trackingToken.trim()}?retorno=pago` : null,
   });
   return {
     estado: 'pendiente_pago',

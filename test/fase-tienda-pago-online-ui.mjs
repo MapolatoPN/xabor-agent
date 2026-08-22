@@ -547,7 +547,9 @@ try {
         .then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
       assert.strictEqual(pago.status, 200, JSON.stringify(pago.body));
       assert.strictEqual(REQUESTS.length, antes + 1, 'Clip no recibio exactamente un checkout');
-      const esperada = `${base2}/seguimiento/${r.body.trackingToken}`;
+      // `?retorno=pago` es el marcador de UX de la ventana de verificación;
+      // jamás autoridad de pago (la página consulta el estado real).
+      const esperada = `${base2}/seguimiento/${r.body.trackingToken}?retorno=pago`;
       assert.deepStrictEqual(REQUESTS[REQUESTS.length - 1].redirection_url,
         { success: esperada, error: esperada, default: esperada },
         `redirection_url no apunta al seguimiento: ${JSON.stringify(REQUESTS[REQUESTS.length - 1].redirection_url)}`);
@@ -567,6 +569,104 @@ try {
     assert.deepStrictEqual(REQUESTS[REQUESTS.length - 1].redirection_url,
       { success: esperada, error: esperada, default: esperada },
       `el retorno historico cambio: ${JSON.stringify(REQUESTS[REQUESTS.length - 1].redirection_url)}`);
+  });
+
+  // ═══ 21-24. Webhook Clip: normalización de body (XAB-0171) ════════════════
+  // El webhook REAL de producción llega con Content-Type distinto de
+  // application/json y el parser global lo dejaba sin leer: TODOS los avisos
+  // se descartaban y el asiento quedaba en manos del reconciliador de 5 min.
+  // Estos casos fijan el camino rápido restaurado SIN mover la autoridad:
+  // el webhook jamás decide nada, solo dispara la reconsulta autenticada.
+  const webhookCrudo = (cuerpo, contentType) => fetch(`${base}/webhook/clip`, {
+    method: 'POST', headers: contentType ? { 'Content-Type': contentType } : {},
+    body: cuerpo,
+  });
+  const cuerpoWebhook = (fila) => JSON.stringify({
+    resource: 'CHECKOUT', resource_status: 'COMPLETED',
+    me_reference_id: String(fila.id), payment_request_id: fila.referencia_externa,
+  });
+
+  await t('21. webhook JSON con Content-Type text/plain (forma XAB-0171): se normaliza, requery autenticado y asienta', async () => {
+    const fx2 = await pedidoConEnlace();
+    CHECKOUTS.get(fx2.fila.referencia_externa).estado = 'COMPLETED';
+    const r = await webhookCrudo(cuerpoWebhook(fx2.fila), 'text/plain');
+    assert.strictEqual(r.status, 200);
+    const pagada = await esperarHasta(async () => (await pagosDeFolio(fx2.folio))[0]?.estado === 'pagado' ? 1 : null);
+    assert.ok(pagada, `el webhook text/plain no asento (estado: ${(await pagosDeFolio(fx2.folio))[0]?.estado})`);
+    assert.notStrictEqual((await pedidoDe(fx2.folio)).estado, 'pendiente_pago');
+    const comandas = await esperarHasta(async () => (await trabajosDeFolio(fx2.folio)) === 1 ? 1 : null);
+    assert.strictEqual(comandas, 1, 'no salio exactamente una comanda');
+  });
+
+  await t('22. body invalido (texto no-JSON, array JSON, vacio): acuse 200 y CERO efectos', async () => {
+    const fx2 = await pedidoConEnlace();
+    // Hasta el dinero real esta listo en el mock: solo un body interpretable
+    // podria disparar el requery. Ninguno de estos debe hacerlo.
+    CHECKOUTS.get(fx2.fila.referencia_externa).estado = 'COMPLETED';
+    for (const [cuerpo, tipo] of [['esto no es json', 'text/plain'], ['[1,2,3]', 'application/json'], ['', 'text/plain']]) {
+      const r = await webhookCrudo(cuerpo, tipo);
+      assert.strictEqual(r.status, 200, `acuse para ${tipo || '(sin tipo)'}: ${r.status}`);
+    }
+    await esperar(500);
+    assert.strictEqual((await pagosDeFolio(fx2.folio))[0].estado, 'pendiente', 'un body no interpretable asento un pago');
+    assert.strictEqual(await trabajosDeFolio(fx2.folio), 0, 'un body no interpretable emitio comanda');
+    assert.strictEqual((await pedidoDe(fx2.folio)).estado, 'pendiente_pago');
+  });
+
+  await t('23. webhook COMPLETED manipulado con Clip aun PENDING: el requery manda y NO asienta; con dinero real, el mismo webhook (application/json) si', async () => {
+    const fx2 = await pedidoConEnlace();
+    const cuerpo = cuerpoWebhook(fx2.fila);
+    const r1 = await webhookCrudo(cuerpo, 'application/json');
+    assert.strictEqual(r1.status, 200);
+    await esperar(500);
+    assert.strictEqual((await pagosDeFolio(fx2.folio))[0].estado, 'pendiente', 'un webhook sin dinero real marco pagado');
+    assert.strictEqual(await trabajosDeFolio(fx2.folio), 0);
+    CHECKOUTS.get(fx2.fila.referencia_externa).estado = 'COMPLETED';
+    const r2 = await webhookCrudo(cuerpo, 'application/json');
+    assert.strictEqual(r2.status, 200);
+    const pagada = await esperarHasta(async () => (await pagosDeFolio(fx2.folio))[0]?.estado === 'pagado' ? 1 : null);
+    assert.ok(pagada, 'el camino application/json no asento');
+  });
+
+  await t('24. webhooks COMPLETED duplicados (mezcla de content-types): un asiento, una emision, una comanda', async () => {
+    const fx2 = await pedidoConEnlace();
+    CHECKOUTS.get(fx2.fila.referencia_externa).estado = 'COMPLETED';
+    const cuerpo = cuerpoWebhook(fx2.fila);
+    const rs = await Promise.all([
+      webhookCrudo(cuerpo, 'application/json'),
+      webhookCrudo(cuerpo, 'text/plain'),
+      webhookCrudo(cuerpo, 'application/json'),
+    ]);
+    for (const r of rs) assert.strictEqual(r.status, 200);
+    const pagada = await esperarHasta(async () => (await pagosDeFolio(fx2.folio))[0]?.estado === 'pagado' ? 1 : null);
+    assert.ok(pagada, 'ningun duplicado asento');
+    await esperar(700); // deja aterrizar cualquier duplicado rezagado
+    const { rows: [em] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM pedido_emisiones WHERE negocio_id = $1 AND folio = $2`, [NEG, fx2.folio]);
+    assert.strictEqual(em.n, 1, `emisiones: ${em.n} (debe ser 1)`);
+    const comandas = await esperarHasta(async () => (await trabajosDeFolio(fx2.folio)) >= 1 ? await trabajosDeFolio(fx2.folio) : null);
+    assert.strictEqual(comandas, 1, `comandas: ${comandas} (debe ser 1)`);
+    assert.strictEqual((await pagosDeFolio(fx2.folio)).length, 1);
+  });
+
+  // ═══ 25-26. UX post-pasarela: ventana de verificación ════════════════════
+  await t('25. /seguimiento con retorno de pasarela: "Estamos verificando tu pago…", sin boton de pagar, sondeo acelerado', async () => {
+    const html = await (await fetch(`${base}/seguimiento/x`)).text();
+    assert.ok(html.includes('Estamos verificando tu pago'), 'falta el mensaje de verificacion');
+    assert.ok(html.includes('No vuelvas a pagar'), 'falta la advertencia anti doble pago');
+    assert.ok(html.includes("get('retorno') === 'pago'"), 'la ventana no depende del marcador retorno=pago');
+    assert.ok(html.includes('enVentanaVerificacion() ? 5000 : 25000'), 'no hay sondeo acelerado durante la ventana');
+    const idxVerif = html.indexOf('Estamos verificando tu pago');
+    const bloque = html.slice(idxVerif, idxVerif + 300);
+    assert.ok(!bloque.includes('btn-pagar'), 'la caja de verificacion ofrece el boton de pagar');
+  });
+
+  await t('26. sin el marcador de retorno, la UX historica queda intacta', async () => {
+    const html = await (await fetch(`${base}/seguimiento/x`)).text();
+    assert.ok(html.includes('Tu pedido está esperando el pago'), 'desaparecio el estado historico de espera');
+    assert.ok(html.includes('Pagar ahora'), 'desaparecio el CTA de pago del camino normal');
+    assert.ok(html.includes('RETORNO_PAGO ? Date.now() + 2 * 60 * 1000 : 0'),
+      'sin marcador la ventana debe quedar cerrada (VERIFICACION_HASTA = 0)');
   });
 
 } catch (e) {

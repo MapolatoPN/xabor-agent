@@ -88,6 +88,18 @@ let ultimaEtapa = null;
 let PAGO = null;
 let consultarPago = true;
 
+// Retorno desde la pasarela (?retorno=pago en la URL que la pasarela usa
+// para regresar): abre una VENTANA DE VERIFICACIÓN de 2 minutos en la que
+// la pantalla dice "Estamos verificando tu pago…" en vez de "esperando el
+// pago", oculta el botón de pagar (evita un doble intento) y sondea cada
+// 5 s en lugar de 25 s. Es SOLO presentación: la autoridad del pago sigue
+// siendo el servidor; si de verdad sigue pendiente al cerrar la ventana,
+// la pantalla vuelve al comportamiento histórico y permite pagar.
+const RETORNO_PAGO = new URLSearchParams(location.search).get('retorno') === 'pago';
+const VERIFICACION_HASTA = RETORNO_PAGO ? Date.now() + 2 * 60 * 1000 : 0;
+const enVentanaVerificacion = () =>
+  Date.now() < VERIFICACION_HASTA && !!(PAGO && PAGO.esperandoPago);
+
 async function cargar() {
   try {
     const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
@@ -105,8 +117,12 @@ async function cargar() {
     }
     pintar(d);
     // Sondeo suave: el pedido cambia de estado en minutos, no en segundos.
-    // Se detiene solo cuando ya no hay nada más que esperar.
-    if (!d.cancelado && d.etapaActual !== 'entregado') setTimeout(cargar, 25000);
+    // Se detiene solo cuando ya no hay nada más que esperar. En la ventana
+    // de verificación post-pasarela se acelera a 5 s para que "¡Pedido
+    // confirmado!" aparezca en cuanto el servidor asiente el pago.
+    if (!d.cancelado && d.etapaActual !== 'entregado') {
+      setTimeout(cargar, enVentanaVerificacion() ? 5000 : 25000);
+    }
   } catch (e) {
     $('app').innerHTML = `<div class="vacio"><div class="ico">🔍</div>
       <h3>No encontramos ese pedido</h3>
@@ -135,6 +151,14 @@ function cajaPago(p, cancelado) {
         <span style="font-weight:400;color:var(--texto-2)">Si tienes dudas, contacta al negocio con tu folio.</span></div>`;
     }
     const vencido = p.pagoEstado === 'vencido';
+    // Recién de vuelta de la pasarela: el cliente probablemente YA pagó y el
+    // servidor todavía verifica. "Verificando" (no "confirmado": eso solo lo
+    // dice el servidor) y sin botón de pagar para no invitar a un doble
+    // intento. Si el enlace venció, manda el estado real, no la ventana.
+    if (!vencido && enVentanaVerificacion()) {
+      return `<div class="aviso pago">🔎 <strong>Estamos verificando tu pago…</strong><br>
+        <span style="font-weight:400;color:var(--texto-2)">Esto puede tardar unos segundos. No vuelvas a pagar.</span></div>`;
+    }
     return `<div class="aviso pago">${vencido ? '⚠️ <strong>El enlace de pago venció.</strong>'
         : '💳 <strong>Tu pedido está esperando el pago.</strong><br><span style="font-weight:400;color:var(--texto-2)">Falta completar tu pago para confirmar el pedido.</span>'}
       <button class="btn" id="btn-pagar" onclick="pagarAhora()">${vencido ? 'Generar nuevo enlace' : 'Pagar ahora'}</button>
