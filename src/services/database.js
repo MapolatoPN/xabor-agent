@@ -3044,6 +3044,36 @@ export function tieneIdentidadExternaDurable(fila) {
 }
 
 /**
+ * Resuelve el pago de Clip a partir del ID DEL CHECKOUT (payment_request_id),
+ * que es lo unico que trae el webhook real de Clip
+ * ({ id, origin: 'checkout-api', event_type }).
+ *
+ * OJO -- son DOS identificadores distintos y confundirlos seria un fallo
+ * financiero: `pagos.id` (UUID de 36) es lo que viaja como
+ * metadata.external_reference HACIA Clip, mientras que
+ * `pagos.referencia_externa` es el payment_request_id que Clip nos devuelve
+ * al crear el checkout. El webhook trae ESTE segundo.
+ *
+ * Tambien mira el CANDIDATO guardado en metadata (creacion ambigua: la fila
+ * aun no adopto identidad externa), que es justo el caso donde el webhook es
+ * la unica pista para cerrar el cobro. Devolver la fila NO asienta nada: la
+ * autoridad sigue siendo la reconsulta autenticada.
+ */
+export async function obtenerPagoClipPorCheckoutId(checkoutId) {
+  if (typeof checkoutId !== 'string' || !checkoutId.trim()) return null;
+  const id = checkoutId.trim();
+  const { rows } = await pool.query(
+    `SELECT * FROM pagos
+      WHERE proveedor = 'clip'
+        AND (referencia_externa = $1 OR metadata_sanitizada->>'clip_checkout_candidato' = $1)
+      ORDER BY (referencia_externa = $1) DESC, created_at DESC
+      LIMIT 2`, [id]);
+  // Dos filas y ninguna con identidad adoptada = ambiguo: fail closed.
+  if (rows.length > 1 && rows[0].referencia_externa !== id) return null;
+  return rows[0] || null;
+}
+
+/**
  * Marca que un pedido fue una COMPRA REAL.
  *
  * TRES COSAS DISTINTAS: pedido creado (`pedidos`), dinero recibido (`pagos`) y

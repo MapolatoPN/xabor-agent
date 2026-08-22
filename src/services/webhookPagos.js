@@ -670,7 +670,13 @@ export async function derivarPedidoPorPagoAsentado({ pagoId, negocioId, folio })
     return { derivado: false, razon: deuda.resultado };
   }
 
-  const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
+  const { confirmarPedidoPendientePago, marcarPagoConfirmadoEnMemoria } = await import('../orders/orderManager.js');
+  // La base ya quedo con datos.pago_confirmado=true dentro de
+  // consumirDeudaDeDerivacion; aqui se mantiene coherente la copia EN MEMORIA
+  // que alimenta el replay del panel: sin esto, un F5 mostraba 'Pendiente' un
+  // pedido ya cobrado (incidente XAB-0179). Aplica a los DOS caminos --
+  // webhook rapido y reconciliador -- porque ambos pasan por aqui.
+  marcarPagoConfirmadoEnMemoria(folio, negocioId);
   await confirmarPedidoPendientePago(folio, negocioId);
   await saldarDerivacionPago(pagoId, negocioId);
   return { derivado: true };

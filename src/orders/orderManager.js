@@ -656,6 +656,31 @@ export function actualizarEstadoPedidoLegacySinNegocio(id, nuevoEstado) {
 // TODOS los negocios para el volcado del WebSocket legado) está eliminada. El
 // agente legado ahora recibe solo los trabajos pendientes de SU negocio, desde
 // la cola de impresión, y no el tablero en memoria.
+/**
+ * Marca en MEMORIA que el pedido ya tiene su pago confirmado.
+ *
+ * Por que existe: el asiento del dinero escribe `datos.pago_confirmado` en la
+ * BASE (consumirDeudaDeDerivacion), pero el tablero del panel se repuebla al
+ * recargar con el replay de `obtenerPedidos()`, que sirve ESTE arreglo en
+ * memoria. Sin esta marca el pedido se veia "Pagado" en vivo (por el evento
+ * WS) y volvia a "Pendiente" tras un F5, hasta el siguiente reinicio: un
+ * pedido cobrado mostrado como pendiente al operador (incidente XAB-0179).
+ *
+ * La autoridad sigue siendo la base: esto solo mantiene coherente la copia en
+ * memoria que este proceso ya usa para todo lo demas (mismo patron que
+ * actualizarEstadoPedido). Si el pedido no esta en memoria no se inventa nada
+ * -- al reconstruir desde la base el flag viene incluido.
+ */
+export function marcarPagoConfirmadoEnMemoria(folio, negocioId) {
+  if (typeof folio !== 'string' || !folio.trim()) return false;
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const pedido = pedidos.find(p => p.id === folio.trim() && p.negocioId === negocioId.trim());
+  if (!pedido) return false;
+  pedido.pago_confirmado = true;
+  if (pedido.datos && typeof pedido.datos === 'object') pedido.datos.pago_confirmado = true;
+  return true;
+}
+
 export function obtenerPedidos(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   const negocioIdNorm = negocioId.trim();

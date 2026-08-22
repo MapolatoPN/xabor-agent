@@ -45,7 +45,7 @@ import {
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -1814,6 +1814,65 @@ app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), nor
     const status = evento?.resource_status;
     const ref    = evento?.me_reference_id;
     console.log(`[Clip] Webhook recibido — pedido: ${ref}, status: ${status}, resource: ${evento?.resource}`);
+
+    // ── ESQUEMA REAL DE CLIP (checkout-api) ────────────────────────────────
+    //
+    // El webhook que Clip envía de verdad -- confirmado en producción y por su
+    // documentación -- es:
+    //     { id: "<payment_request_id>", origin: "checkout-api",
+    //       event_type: "INSERT" | "UPDATE" }
+    //
+    // Tres cosas que NO se hacen aquí, a propósito:
+    //   · `event_type` NO es autoridad de pago: INSERT/UPDATE solo dicen que
+    //     algo cambió, jamás que se cobró. No se traduce a "COMPLETED".
+    //   · `id` es el payment_request_id (pagos.referencia_externa), NO
+    //     pagos.id (ese es el external_reference que viaja HACIA Clip).
+    //     Confundirlos resolvería la fila equivocada.
+    //   · el payload no asienta nada: solo DESPIERTA la misma reconsulta
+    //     autenticada de siempre (verificarYAsentarClip), que es quien decide
+    //     con el estado real del checkout. Fail-closed intacto.
+    //
+    // Un `event_type` desconocido/futuro también dispara la reconsulta
+    // (origin + id válidos bastan): preguntarle a Clip nunca es peligroso;
+    // creerle al aviso, sí. Un `origin` distinto NO se interpreta.
+    const idWebhook = typeof evento?.id === 'string' ? evento.id.trim() : '';
+    const origenWebhook = typeof evento?.origin === 'string' ? evento.origin.trim() : '';
+    const esquemaCheckoutApi = Boolean(idWebhook) && Boolean(origenWebhook)
+      && evento?.resource === undefined && evento?.me_reference_id === undefined;
+    if (esquemaCheckoutApi) {
+      const tipoEvento = typeof evento?.event_type === 'string' ? evento.event_type.trim() : '';
+      if (origenWebhook !== 'checkout-api') {
+        console.warn(`[Clip] Webhook de origen no soportado: origin=${origenWebhook} event_type=${tipoEvento || '(vacio)'} — ignorado (fail closed)`);
+        acusar();
+        return;
+      }
+      const pagoCk = await obtenerPagoClipPorCheckoutId(idWebhook);
+      if (!pagoCk) {
+        console.warn(`[Clip] Webhook checkout-api sin fila de pago para el checkout indicado (event_type=${tipoEvento || '(vacio)'}) — se ignora (fail closed)`);
+        acusar();
+        return;
+      }
+      // Evento capturado y resoluble: recién ahora se acusa recibo.
+      acusar();
+      const rCk = await verificarYAsentarClip({ pago: pagoCk, checkoutId: idWebhook });
+      if (!rCk.ok) {
+        // Lo normal en un INSERT (el checkout acaba de nacer y no hay dinero):
+        // no es un error, es el fail-closed haciendo su trabajo.
+        console.log(`[Clip] Webhook checkout-api ${tipoEvento || '(sin tipo)'} no asentó ${pagoCk.id}: ${rCk.razon}`);
+        if (rCk.razon === 'transicion_doble_cobro') {
+          broadcastNegocio(pagoCk.negocio_id, {
+            tipo: 'pago_anomalia', anomalia: 'doble_cobro_real',
+            pedidoId: pagoCk.pedido_folio, pagos: rCk.transicion?.pagosImplicados,
+          });
+        }
+        return;
+      }
+      await derivarPedidoPorPagoAsentado({
+        pagoId: pagoCk.id, negocioId: pagoCk.negocio_id, folio: pagoCk.pedido_folio });
+      broadcastNegocio(pagoCk.negocio_id, { tipo: 'pago_confirmado', pedidoId: pagoCk.pedido_folio, proveedor: 'clip' });
+      console.log(`[Clip] ✅ Pago ${rCk.transicion.resultado} para pedido ${pagoCk.pedido_folio} (webhook checkout-api ${tipoEvento || 'sin tipo'})`);
+      return;
+    }
 
     // Dos generaciones de external_reference moderno (mas el legacy por folio
     // del final):
