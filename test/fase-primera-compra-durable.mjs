@@ -167,6 +167,7 @@ async function limpiar() {
     await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id=$1`, [n]);
     await pool.query(`DELETE FROM integraciones_canal WHERE negocio_id=$1 AND canal='pagos'`, [n]);
     await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->>'canal'='tienda_online'`, [n]);
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [n]);
   }
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1`, [NEG]);
   await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id=$1`, [NEG]);
@@ -216,6 +217,14 @@ async function preparar() {
       `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,$2,TRUE)
        ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado=TRUE`, [NEG, tipo]);
   }
+  // Allow-list de la TIENDA (regla de 32d9c40, independiente de metodos_pago
+  // del POS): sin fila, la tienda solo ofrece 'Pago con tarjeta en línea'.
+  // Esta suite compra también con EFECTIVO, así que lo habilita explícito,
+  // igual que haría el negocio en Configuración → Tienda → Ajustes → Pagos.
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'tienda_metodos_pago',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor=$2`,
+    [NEG, JSON.stringify(['enlace_pago', 'efectivo'])]);
   await pool.query(
     `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
      VALUES ($1,'publicada',$2,'PC',$3)
