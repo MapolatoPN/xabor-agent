@@ -19,7 +19,7 @@
 // así que un producto de otro negocio es indistinguible de uno inexistente.
 // ═══════════════════════════════════════════════════════════════════════════
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
-import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
+import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -31,6 +31,13 @@ export const RECHAZOS = {
   PRODUCTO_NO_DISPONIBLE: 'PRODUCTO_NO_DISPONIBLE',
   PRODUCTO_AGOTADO: 'PRODUCTO_AGOTADO',
   CANTIDAD_INVALIDA: 'CANTIDAD_INVALIDA',
+  // XAB-0175: FALTANTE != INVÁLIDA. Faltante = la orden llegó al resumen
+  // sin que el cliente ELIGIERA forma de pago (orden incompleta, se
+  // pregunta conservando el pedido). Inválida = el cliente sí eligió algo
+  // pero ese método no está habilitado para este negocio. Confundirlas
+  // producía el mensaje falso "esa forma de pago no está disponible" y un
+  // regreso al menú que tiraba el pedido armado.
+  FORMA_PAGO_FALTANTE: 'FORMA_PAGO_FALTANTE',
   FORMA_PAGO_INVALIDA: 'FORMA_PAGO_INVALIDA',
   MENU_VACIO: 'MENU_VACIO',
   ORDEN_SIN_ITEMS: 'ORDEN_SIN_ITEMS',
@@ -217,6 +224,13 @@ export async function validarOrdenPropuesta(orden, negocioId) {
   }
 
   // Forma de pago: solo métodos habilitados de verdad para este negocio.
+  // FALTANTE != INVÁLIDA (XAB-0175): sin elección del cliente la orden
+  // está INCOMPLETA (jamás se asume efectivo ni ningún default); con una
+  // elección que el negocio no acepta, es INVÁLIDA. En ambos casos el
+  // rechazo lleva los métodos REALES (obtenerPagoAceptadoReal ->
+  // obtenerMetodosPagoDisponibles(negocioId, {paraBot:true}), la misma
+  // fuente única que alimenta el prompt) para que el canal pueda
+  // ofrecerlos sin inventar nada.
   const formaLLM = String(orden?.forma_pago || '').toLowerCase().trim();
   const tipoNormalizado = FORMA_PAGO_ALIAS[formaLLM];
   let habilitados = [];
@@ -224,8 +238,13 @@ export async function validarOrdenPropuesta(orden, negocioId) {
     habilitados = (await obtenerMetodosPagoDisponibles(negocioId, { paraBot: true })).map((m) => m.tipo);
   } catch { habilitados = ['efectivo']; }
   if (!habilitados.length) habilitados = ['efectivo'];
-  if (!tipoNormalizado || !habilitados.includes(tipoNormalizado)) {
-    rechazos.push({ codigo: RECHAZOS.FORMA_PAGO_INVALIDA, nombre: formaLLM.slice(0, 40) });
+  if (!formaLLM) {
+    const disponibles = await obtenerPagoAceptadoReal(negocioId);
+    rechazos.push({ codigo: RECHAZOS.FORMA_PAGO_FALTANTE, disponibles });
+    eventoTxn('forma_pago_faltante', negocioId, {});
+  } else if (!tipoNormalizado || !habilitados.includes(tipoNormalizado)) {
+    const disponibles = await obtenerPagoAceptadoReal(negocioId);
+    rechazos.push({ codigo: RECHAZOS.FORMA_PAGO_INVALIDA, nombre: formaLLM.slice(0, 40), disponibles });
     eventoTxn('forma_pago_invalida', negocioId, { forma: formaLLM.slice(0, 40) });
   }
 
@@ -291,15 +310,35 @@ export async function validarOrdenPropuesta(orden, negocioId) {
 // Texto honesto para el cliente cuando la orden se rechaza -- lo redacta
 // CÓDIGO, nunca el modelo. Sin jerga ni códigos internos.
 export function mensajeRechazoParaCliente(rechazos) {
+  const listaDisponibles = () => {
+    const conLista = rechazos.find((r) => Array.isArray(r.disponibles) && r.disponibles.length);
+    return conLista ? conLista.disponibles.join(', ') : 'efectivo';
+  };
+
+  // XAB-0175: si lo ÚNICO que falla es la forma de pago, el pedido NO se
+  // tira ni se manda al cliente de vuelta al menú -- se conserva tal cual
+  // (items, cantidades, modalidad, datos) y solo se pregunta cómo pagar,
+  // con los métodos reales del negocio.
+  const soloFormaPago = rechazos.length > 0 && rechazos.every((r) =>
+    r.codigo === RECHAZOS.FORMA_PAGO_FALTANTE || r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA);
+  if (soloFormaPago) {
+    const faltante = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_FALTANTE);
+    return faltante
+      ? `¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: ${listaDisponibles()}.`
+      : `Esa forma de pago no está disponible. Puedes pagar con: ${listaDisponibles()}. ¿Cuál prefieres? Tu pedido sigue tal como lo armamos.`;
+  }
+
   const noExisten = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_EXISTE && r.nombre).map((r) => r.nombre);
   const agotados = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_AGOTADO).map((r) => r.nombre);
   const noDisponibles = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_DISPONIBLE).map((r) => r.nombre);
-  const formaPago = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA);
+  const formaPagoInvalida = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA);
+  const formaPagoFaltante = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_FALTANTE);
   const partes = [];
   if (noExisten.length) partes.push(`no manejamos ${noExisten.join(', ')} en nuestro menú actual`);
   if (agotados.length) partes.push(`${agotados.join(', ')} está agotado por hoy`);
   if (noDisponibles.length) partes.push(`${noDisponibles.join(', ')} no está disponible en este momento`);
-  if (formaPago) partes.push('esa forma de pago no está disponible');
+  if (formaPagoInvalida) partes.push(`esa forma de pago no está disponible (puedes pagar con: ${listaDisponibles()})`);
+  if (formaPagoFaltante) partes.push(`falta elegir la forma de pago (puedes pagar con: ${listaDisponibles()})`);
   const motivo = partes.length ? partes.join('; ') : 'algunos datos del pedido no pudieron validarse';
   return `Una disculpa: no pude registrar tu pedido porque ${motivo}. ¿Te gustaría elegir algo de nuestro menú? Con gusto te lo comparto.`;
 }

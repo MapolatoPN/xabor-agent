@@ -760,7 +760,8 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
 }
 </ORDEN_CONFIRMADA>
 
-No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.`}
+No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.
+La forma de pago es OBLIGATORIA antes del resumen final: si el cliente aún no la eligió, pregúntala ofreciendo SOLO los métodos aceptados de este negocio; NUNCA la asumas (ni "efectivo" por defecto) ni la inventes, y NUNCA emitas el bloque sin ella. El resumen final SIEMPRE incluye la forma de pago elegida. Si la forma de pago se agrega o cambia DESPUÉS de un "sí", ese "sí" deja de valer: repite el resumen completo (con la forma de pago) y espera una NUEVA confirmación explícita antes de emitir el bloque. Si el sistema te avisa que faltó la forma de pago, el pedido sigue vigente: no lo vuelvas a pedir ni regreses al menú.`}
 ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.contenido).join('\n') : ''}`;
 }
 

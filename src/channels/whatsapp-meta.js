@@ -1018,7 +1018,18 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           console.error(`[TXN] evento=orden_rechazada negocio=${negocioId} motivos=${(e.rechazos || []).map(r => r.codigo).join(',')}`);
           if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'alerta_transaccional', subtipo: 'orden_rechazada', motivos: (e.rechazos || []).map(r => r.codigo) });
           resultado.texto = mensajeRechazoParaCliente(e.rechazos || []);
-          agregarMensaje(sessionId, 'assistant', `[SISTEMA] El pedido NO fue registrado. Motivos: ${(e.rechazos || []).map(r => `${r.codigo}${r.nombre ? ` (${r.nombre})` : ''}`).join(', ')}. No afirmes que existe un pedido; ofrece alternativas reales del menú.`);
+          // XAB-0175: FALTANTE != INVÁLIDA. Si lo ÚNICO que falta es la
+          // forma de pago, el pedido está completo en todo lo demás: la
+          // instrucción de sesión ordena CONSERVARLO (items, cantidades,
+          // modalidad, datos) y recuperar determinísticamente -- preguntar
+          // el pago con los métodos reales, repetir el resumen COMPLETO y
+          // exigir una NUEVA confirmación (el "sí" anterior no autoriza un
+          // pedido que cambió). Jamás regresar al menú ni asumir efectivo.
+          const soloFaltaPago = (e.rechazos || []).length > 0
+            && (e.rechazos || []).every(r => r.codigo === 'FORMA_PAGO_FALTANTE');
+          agregarMensaje(sessionId, 'assistant', soloFaltaPago
+            ? `[SISTEMA] El pedido NO fue registrado todavía: FALTA LA FORMA DE PAGO. El pedido sigue VIGENTE tal como está (items, cantidades, modalidad, nombre, teléfono, dirección y notas): NO lo vuelvas a pedir, NO regreses al menú. Pregunta cómo desea pagar ofreciendo ÚNICAMENTE los métodos aceptados de este negocio. Nunca asumas efectivo ni ningún método por defecto. Cuando el cliente elija, repite el resumen COMPLETO incluyendo la forma de pago y pide confirmación explícita de nuevo — el "sí" anterior NO sirve como autorización. Solo tras esa nueva confirmación emite <ORDEN_CONFIRMADA> otra vez.`
+            : `[SISTEMA] El pedido NO fue registrado. Motivos: ${(e.rechazos || []).map(r => `${r.codigo}${r.nombre ? ` (${r.nombre})` : ''}`).join(', ')}. No afirmes que existe un pedido; ofrece alternativas reales del menú.`);
           resultado.orden = null;
         } else if (e.codigo === 'MODO_SOLICITUD') {
           // Negocio en modo solicitud: el marcador del modelo (que no
