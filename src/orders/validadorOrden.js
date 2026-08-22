@@ -80,11 +80,27 @@ async function cargarCatalogo(negocioId) {
   // SIEMPRE filtrado por negocio_id (Invariante 6): el catálogo de otro
   // tenant simplemente no existe desde aquí.
   const { rows } = await pool.query(
-    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, c.activa AS categoria_activa
+    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.opciones, c.activa AS categoria_activa
      FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
      WHERE p.negocio_id = $1`,
     [negocioId]);
   return rows;
+}
+
+/**
+ * Identificación ESTRUCTURAL de un producto legacy de envío (P0 XAB-0176:
+ * Clip cobró $370 por un pedido de $310 porque "Envío" existía como
+ * producto del menú Y como costo_envio canónico, y el total sumó ambos).
+ *
+ * La marca vive en el catálogo: `menu_productos.opciones.tipo_item = 'envio'`.
+ * DELIBERADAMENTE no se reconoce por nombre/categoría ("Envío", "Delivery",
+ * etc.): una heurística de texto no es aceptable como autoridad de un
+ * cálculo financiero. Un producto sin la marca es mercancía, punto -- si un
+ * negocio arrastra un producto-envío sin marcar, se marca en el catálogo,
+ * no se adivina aquí.
+ */
+export function esProductoEnvio(producto) {
+  return producto?.opciones?.tipo_item === 'envio';
 }
 
 function resolverProducto(nombreLLM, catalogo) {
@@ -168,6 +184,24 @@ export async function validarOrdenPropuesta(orden, negocioId) {
       eventoTxn('producto_no_encontrado', negocioId, { nombre: String(it?.nombre || '').slice(0, 60) });
       continue;
     }
+    // UNA SOLA fuente de verdad para el envío: el costo canónico de las
+    // reglas (más abajo). Un item que resuelve a un producto MARCADO como
+    // envío jamás se cobra como mercancía -- ni en domicilio (duplicaría el
+    // costo canónico: el bug real de XAB-0176) ni en recoger (donde no
+    // existe envío que cobrar). Su precio de catálogo tampoco es autoridad
+    // de zona/gratis. Se ignora con observabilidad estructurada; aplica
+    // aunque el producto esté no_disponible/agotado (se ignora igual, sin
+    // tumbar la orden por un cargo que de todos modos no es mercancía).
+    if (r.producto && esProductoEnvio(r.producto)) {
+      ajustes.push({
+        tipo: 'item_envio_legacy_ignorado',
+        producto: r.producto.nombre,
+        producto_id: r.producto.id,
+        llm: Number.isFinite(Number(it?.precio_unitario)) ? Number(it?.precio_unitario) : null,
+      });
+      eventoTxn('item_envio_legacy_ignorado', negocioId, { producto_id: r.producto.id });
+      continue;
+    }
     if (r.estado === 'no_disponible') {
       rechazos.push({ codigo: RECHAZOS.PRODUCTO_NO_DISPONIBLE, nombre: r.producto.nombre });
       eventoTxn('producto_rechazado', negocioId, { motivo: 'no_disponible', producto_id: r.producto.id });
@@ -205,6 +239,14 @@ export async function validarOrdenPropuesta(orden, negocioId) {
       precio_unitario: precioFinal,
       notas: String(it?.notas || '').slice(0, NOTAS_MAX) || undefined,
     });
+  }
+
+  // Si tras excluir cargos de envío no queda NINGUNA mercancía, la orden
+  // no es una orden (un pedido de "solo envío" no existe): fail-closed.
+  if (!itemsCanonicos.length && !rechazos.length) {
+    rechazos.push({ codigo: RECHAZOS.ORDEN_SIN_ITEMS });
+    eventoTxn('orden_sin_items', negocioId, { motivo: 'solo_items_de_envio' });
+    return { ok: false, rechazos, ajustes };
   }
 
   // Un 2x1 jamás puede regalar más unidades de las que se cobran; si el
