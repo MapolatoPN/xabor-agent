@@ -6189,7 +6189,18 @@ function pintarWhatsappAutoservicio() {
       '<div>Atención automática: ' + (e.botActivo ? 'Activa' : 'Pausada') + '</div>' +
     '</div>' +
     '<div id="wa-progreso" style="font-size:0.85rem;color:#666;margin:12px 0;"></div>' +
-    '<div style="margin-top:12px;">' + btn('Verificar conexión', 'verificarWhatsapp()') + btn('Reconectar', fnReconectar) + '</div>' +
+    '<div style="margin-top:12px;">' + btn('Verificar conexión', 'verificarWhatsapp()') + btn('Reconectar', fnReconectar) +
+    // MIGRACIÓN Cloud API -> coexistencia. Un negocio ya conectado por Cloud
+    // no tenía forma de pasarse a WhatsApp Business App: "Reconectar" respeta
+    // el modo guardado (correcto para quien sigue en Cloud) y las tres
+    // opciones iniciales solo aparecen cuando la integración está sin
+    // conectar. Este botón es el ÚNICO camino explícito para pedir el flujo
+    // de coexistencia; no cambia nada por sí mismo: el estado solo se mueve
+    // si Meta devuelve un onboarding válido (completarActivacionWhatsapp).
+    (e.connectionMode !== 'coexistence'
+      ? btn('Cambiar a WhatsApp Business App', 'conectarWhatsappCoexistencia()')
+      : '') +
+    '</div>' +
     '</div>';
 }
 

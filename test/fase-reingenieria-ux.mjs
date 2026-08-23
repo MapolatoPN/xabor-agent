@@ -126,14 +126,24 @@ t('ids de la reingeniería aparecen exactamente una vez', () => {
     assert.strictEqual(n, 1, `id ${id}: ${n} apariciones`);
   }
 });
-// wa-progreso: documentado como falso positivo — son dos plantillas de ramas
+// wa-progreso: documentado como falso positivo — son plantillas de ramas
 // mutuamente excluyentes DENTRO del renderer congelado de WhatsApp
-// (pintarWhatsappAutoservicio pinta conectado O no-conectado, nunca ambos).
-// No se toca ese código; este contrato solo fija que siga siendo así.
-t('wa-progreso solo existe dentro del renderer de WhatsApp (2 ramas excluyentes)', () => {
-  assert.strictEqual(html.split('id="wa-progreso"').length - 1, 2);
+// (pintarWhatsappAutoservicio pinta UNA tarjeta y sale). Empezaron siendo
+// dos (conectado / no-conectado) y hoy son cuatro: se sumaron "falta
+// completar conexión" y "requiere reconexión" al hacer coherente el estado
+// de la integración. Sigue llegando UNA sola al DOM por ejecución, así que
+// el invariante real no es el número: es que TODAS vivan dentro de ese
+// renderer y que las ramas sigan siendo excluyentes.
+t('wa-progreso solo existe dentro del renderer de WhatsApp (ramas excluyentes)', () => {
   const fn = html.slice(html.indexOf('function pintarWhatsappAutoservicio'), html.indexOf('// --- Menu automatico'));
-  assert.strictEqual(fn.split('id="wa-progreso"').length - 1, 2, 'wa-progreso apareció fuera del renderer congelado');
+  const enArchivo = html.split('id="wa-progreso"').length - 1;
+  const enRenderer = fn.split('id="wa-progreso"').length - 1;
+  assert.strictEqual(enArchivo, 4, `wa-progreso aparece ${enArchivo} veces en el panel`);
+  assert.strictEqual(enRenderer, enArchivo, 'wa-progreso apareció fuera del renderer congelado');
+  // Cada tarjeta cierra su rama con return: nunca se pintan dos a la vez.
+  const returns = (fn.match(/\n\s*return;/g) || []).length;
+  assert.ok(returns >= enRenderer - 1,
+    `ramas con salida propia: ${returns} para ${enRenderer} plantillas — alguna dejó de ser excluyente`);
 });
 
 console.log(`\n${pasadas} pasadas, 0 fallidas`);
