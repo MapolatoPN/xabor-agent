@@ -87,8 +87,8 @@ async function limpiar() {
   await pool.query(`DELETE FROM clientes WHERE negocio_id = $1 AND telefono = $2`, [NEG, TEL]);
   await pool.query(`DELETE FROM menu_productos WHERE negocio_id = $1 AND nombre LIKE 'MMT %'`, [NEG]);
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre LIKE 'MMT %'`, [NEG]);
-  await pool.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN (SELECT id FROM integraciones_canal WHERE negocio_id = $1 AND canal='whatsapp' AND identificador = $2)`, [NEG, PNID]);
-  await pool.query(`DELETE FROM integraciones_canal WHERE negocio_id = $1 AND canal='whatsapp' AND identificador = $2`, [NEG, PNID]);
+  await pool.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN (SELECT id FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp')`, [NEG]);
+  await pool.query(`DELETE FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp'`, [NEG]);
 }
 
 let srv = null;

@@ -776,12 +776,22 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     if (detectarSolicitudEnlacePago(texto)) {
       const activos = (await obtenerPedidosActivosPorTelefono(telefono, negocioId)) || [];
       const sinPagar = activos.filter(p => !(p.datos?.pago_confirmado === true || p.datos?.pago_confirmado === 'true'));
-      if (activos.length > 0 && sinPagar.length === 0) {
-        const msg = `Tu pedido ${activos[0].folio} ya está pagado ✔. No necesitas hacer nada más.`;
-        await enviarMensaje(telefono, msg, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
-        return;
-      }
+      // SIN NADA QUE COBRAR, EL CANAL NO SE ADJUDICA LA INTENCION.
+      //
+      // Antes, si TODOS los pedidos activos estaban pagados, este atajo
+      // respondia "tu pedido ya esta pagado" y CORTABA el mensaje. Un pedido
+      // pagado sigue "activo" hasta que el negocio lo marca entregado, asi que
+      // un cliente recurrente que dijera "una coca y paso por ella, pago con
+      // enlace" quedaba bloqueado: su compra nueva ni se leia (caso real sobre
+      // XAB-0179). El atajo existe para UNA cosa -- entregar el enlace de un
+      // pedido que SI debe dinero -- y fuera de eso el mensaje sigue su curso
+      // normal hacia el agente, que puede abrir el pedido nuevo o explicar que
+      // el anterior ya se pago.
+      //
+      // Esto NO debilita la proteccion de doble cobro: esa vive en la capa de
+      // pagos (crearEnlacePago lanza PedidoInvalidoError sobre un pedido ya
+      // pagado, y pagoYaConfirmado consulta la base). El canal nunca fue la
+      // barrera financiera.
       if (sinPagar.length === 1) {
         const folioActivo = sinPagar[0].folio;
         // El método debe estar habilitado para ESTE negocio -- nunca se
