@@ -236,87 +236,97 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .exito-folio{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:10px 0 4px}
 .pie-legal{padding:24px 16px calc(90px + var(--safe-b));text-align:center;font-size:11.5px;color:var(--texto-3)}
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
-   La tienda nació móvil y en un monitor se veía como una columna de 760px
-   con espacio muerto a los lados. Este bloque la adapta al ancho disponible
-   SIN tocar el DOM ni una línea de JavaScript: mismo markup, mismo estado
-   del carrito, mismo checkout, mismas validaciones. Todo es presentación.
+   La tienda nació móvil. Este bloque la convierte en una tienda de
+   escritorio SIN tocar el DOM de compra ni una línea de la lógica: mismo
+   estado de carrito, mismo checkout, mismas validaciones.
 
-   Va DESPUÉS del bloque de .hoja a propósito: las reglas de overlay
-   (pointer-events de la hoja cerrada/abierta y del velo) corrigen un bug
-   real de clicks invisibles en escritorio y no se tocan.
+   REGLA QUE NO SE PUEDE ROMPER: ningún ancestro de .cats ni de .barra puede
+   llevar overflow distinto de visible. Un `overflow:hidden` en #contenido
+   (que estuvo aquí para redondear esquinas) hace que `position:sticky`
+   resuelva contra esa caja en vez del viewport: la barra de categorías
+   dejaba de quedar fija, se iba de pantalla, y el observer de categorías
+   arrastraba el documento hacia arriba para "mostrar" el chip activo. Ese
+   fue el bug de "la página regresa sola". Las esquinas se redondean ahora
+   en la portada, que no es ancestro de nada pegajoso.
    ═══════════════════════════════════════════════════════════════════════ */
 @media(min-width:1024px){
   .app{max-width:1180px;box-shadow:none;background:transparent}
   #contenido{background:var(--fondo);border:1px solid var(--borde);border-radius:18px;
-    overflow:hidden;margin:22px 0 40px}
+    margin:22px 0 40px}
+  /* La portada se recorta a sí misma: así #contenido no necesita overflow. */
+  .portada{height:168px;border-radius:17px 17px 0 0;overflow:hidden}
 
-  /* Portada y cabecera con aire: 150px de portada y un logo de 56px se
-     veían como una miniatura estirada en un monitor. */
-  .portada{height:230px}
-  .cabecera{padding:18px 26px 14px;gap:16px}
-  .logo{width:74px;height:74px;margin-top:-42px;border-radius:18px}
-  .logo-txt{font-size:28px}
-  h1{font-size:26px}
-  .cab-sub{font-size:14.5px}
-  .aviso{margin:0 26px 12px}
+  /* Cabecera compacta: el nombre, el estado y las modalidades caben en una
+     sola franja en vez de apilar tres bandas antes del primer producto. */
+  .cabecera{padding:14px 24px 10px;gap:14px;align-items:center}
+  .logo{width:62px;height:62px;margin-top:-34px;border-radius:16px}
+  .logo-txt{font-size:24px}
+  h1{font-size:23px}
+  .cab-sub{font-size:14px}
+  .badges{margin-top:6px}
+  .aviso{margin:0 24px 10px;padding:9px 12px;font-size:13px}
 
-  /* Categorías: se quedan sticky horizontales (la solución menos invasiva
-     -- el observer que resalta la categoría visible y el scroll suave
-     siguen siendo los mismos) con proporción de monitor. */
-  .cats{padding:12px 0;top:0}
-  .cats-in{padding:0 26px;gap:9px}
-  .cat-chip{font-size:14px;padding:8px 16px}
+  /* Categorías: pegadas arriba y compactas. */
+  .cats{padding:10px 0;top:0;border-radius:0}
+  .cats-in{padding:0 24px;gap:8px}
+  .cat-chip{font-size:13.5px;padding:7px 15px}
 
-  /* Catálogo en rejilla. El <h2> de la categoría ocupa la fila completa,
-     así que la sección puede ser grid sin envolver nada en un div nuevo. */
-  .cat-sec{padding:26px 26px 8px;display:grid;gap:14px;
-    grid-template-columns:repeat(2,minmax(0,1fr));scroll-margin-top:64px}
-  .cat-tit{grid-column:1/-1;font-size:19px;margin:0}
-  .prod{margin-bottom:0;padding:14px;gap:14px;align-items:center}
+  /* Catálogo en rejilla. El <h2> de la categoría ocupa la fila completa, así
+     que la sección puede ser grid sin envolver nada en un div nuevo. */
+  .cat-sec{padding:20px 24px 4px;display:grid;gap:14px;
+    grid-template-columns:repeat(2,minmax(0,1fr));scroll-margin-top:60px}
+  .cat-tit{grid-column:1/-1;font-size:18px;margin:0}
+
+  /* Tarjeta de producto: alto uniforme por fila y precio siempre abajo, con
+     o sin foto. Es lo que hace que una fila se lea como una fila. */
+  .prod{margin-bottom:0;padding:14px;gap:14px;align-items:stretch}
   .prod:hover{border-color:var(--marca);box-shadow:var(--sombra)}
-  .prod-nom{font-size:15.5px}
-  .prod-desc{font-size:13.5px}
-  .prod-precio{font-size:16px;margin-top:8px}
-  /* La foto crece y mantiene proporción fija: con o sin imagen, las
-     tarjetas de una misma fila miden lo mismo. */
-  .prod-img{width:104px;height:104px}
-  .pie-legal{padding:30px 26px 40px}
+  .prod-info{display:flex;flex-direction:column}
+  .prod-nom{font-size:15px}
+  .prod-desc{font-size:13px;-webkit-line-clamp:2;min-height:2.6em}
+  .prod-precio{font-size:16px;margin-top:auto;padding-top:8px}
+  .prod-img,.prod-img-vacia{width:96px;height:96px;align-self:center}
+  .pie-legal{padding:26px 24px 30px}
 
-  /* El llamado al carrito deja de ser una barra de teléfono de borde a
-     borde y se vuelve una pastilla centrada. Es el MISMO botón, el mismo
-     estado y el mismo onclick. */
+  /* Hojas de producto/carrito/checkout: contenidas y legibles, no una hoja
+     de teléfono flotando en medio del monitor. */
+  #hoja-checkout,#hoja-carrito{max-width:620px}
+  .hoja-cab{padding:18px 24px 12px}
+  .hoja-cuerpo{padding:0 24px}
+  .hoja-pie{padding:14px 24px calc(14px + var(--safe-b))}
+
+  /* El llamado al carrito deja de ir de borde a borde. */
   .barra{max-width:420px;padding-bottom:calc(18px + var(--safe-b))}
-
-  /* Checkout contenido y legible, no una hoja de teléfono flotando. */
-  #hoja-checkout,#hoja-carrito{max-width:640px}
-  .hoja-cab{padding:20px 26px 14px}
-  .hoja-cuerpo{padding:0 26px}
-  .hoja-pie{padding:16px 26px calc(16px + var(--safe-b))}
 }
 
-/* ── Carrito siempre a la vista ────────────────────────────────────────
-   Solo a partir de 1280px: reservar una franja de 300px para el carrito
-   cuando la pantalla no la tiene de sobra dejaría un hueco vacío al lado
-   del catálogo cada vez que el carrito está vacío -- peor que la barra
-   inferior. Aquí sí hay ancho para las dos columnas.
+/* ── Carrito como columna real ──────────────────────────────────────────
+   Desde 1280px el carrito deja de ser un bloque flotante suelto y pasa a
+   ser la segunda columna del contenedor: pegajoso, alineado con el
+   catálogo y con la misma piel que el resto de la tienda.
 
-   No es un carrito nuevo: es el MISMO #btn-carrito, con el mismo estado y
-   el mismo onclick, presentado como panel fijo en vez de barra inferior.
-   Al pulsarlo abre la misma hoja de siempre, con el mismo checkout. */
+   La columna es `auto`, no un ancho fijo: cuando el carrito está vacío
+   lleva .oculto (display:none) y la columna mide 0. Nunca queda un hueco
+   reservado al lado del catálogo -- que es justo lo que se veía mal.
+
+   Sigue siendo el MISMO #btn-carrito, con el mismo estado y el mismo
+   onclick; aquí solo cambia dónde y cómo se dibuja. */
 @media(min-width:1280px){
-  .app{max-width:1280px;padding-right:312px}
-  .barra{max-width:none;left:auto;right:max(20px,calc(50vw - 632px));bottom:auto;top:96px;
-    width:280px;padding:0;background:none}
-  .barra .btn{border-radius:16px;padding:18px;flex-direction:column;gap:8px;
-    align-items:stretch;box-shadow:var(--sombra);font-size:15.5px;line-height:1.35}
-  .barra .btn-precio{margin-left:0;font-size:19px}
+  .app{max-width:1400px;display:grid;grid-template-columns:minmax(0,1fr) auto;
+    gap:24px;align-items:start}
+  #cargando,#contenido{grid-column:1;min-width:0}
+  .barra{grid-column:2;position:sticky;top:22px;
+    left:auto;right:auto;bottom:auto;width:290px;max-width:none;margin:22px 0 0;
+    padding:0;background:none;pointer-events:auto;z-index:10}
+  .barra .btn{flex-direction:column;align-items:stretch;gap:10px;
+    border-radius:16px;padding:16px 18px;font-size:15px;line-height:1.35;
+    box-shadow:var(--sombra)}
+  .barra .btn-precio{margin-left:0;font-size:20px}
 }
 
 /* Monitores anchos: una columna más de catálogo. Tope en 3 -- con 4 las
    tarjetas quedan tan angostas que la descripción se corta siempre. */
 @media(min-width:1500px){
-  .app{max-width:1460px}
-  .barra{right:max(20px,calc(50vw - 722px))}
+  .app{max-width:1500px}
   .cat-sec{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 
@@ -340,13 +350,18 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
     <div id="catalogo"></div>
     <div class="pie-legal">Tienda en línea con <strong>Xabor</strong></div>
   </div>
-</div>
 
-<div class="barra oculto" id="barra">
+  <!-- El carrito vive DENTRO del contenedor para poder ser una columna de
+       verdad en escritorio (sticky, junto al catálogo) en vez de un bloque
+       naranja flotando aparte. En móvil sigue siendo position:fixed abajo,
+       así que estar anidado aquí no cambia nada de su comportamiento. Es el
+       MISMO botón, el mismo estado y el mismo onclick. -->
+  <div class="barra oculto" id="barra">
   <button class="btn" id="btn-carrito" onclick="abrirCarrito()">
     <span id="carrito-n">0</span> · Ver pedido
     <span class="btn-precio" id="carrito-total">$0</span>
   </button>
+  </div>
 </div>
 
 <div class="velo" id="velo" onclick="cerrarTodo()"></div>
@@ -530,14 +545,37 @@ function tarjetaProducto(p) {
 function irACategoria(id) {
   document.getElementById('cat-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+// Centra el chip activo DENTRO de su propia barra horizontal.
+//
+// Antes esto era `chip.scrollIntoView({inline:'center', block:'nearest'})`, y
+// ahí estaba el bug de "la página regresa sola hacia arriba": scrollIntoView
+// desplaza TODOS los ancestros desplazables, incluido el documento. Mientras
+// la barra de categorías estuvo pegada arriba nunca se notó (el chip siempre
+// era visible, así que `block:'nearest'` no tenía nada que hacer); en cuanto
+// la barra dejó de estar pegada y salió de pantalla, cada vez que el observer
+// cambiaba de categoría el navegador tiraba del documento hacia arriba para
+// mostrar el chip. Medido en producción: salto de -59px en pleno scroll.
+//
+// scrollLeft solo puede mover ESTA barra. El scroll de la página no se toca
+// nunca desde aquí: resaltar una categoría es un cambio visual, jamás una
+// navegación.
+function centrarChipActivo(barra, activo) {
+  if (!barra || !activo || barra.scrollWidth <= barra.clientWidth) return;
+  const rb = barra.getBoundingClientRect();
+  const ra = activo.getBoundingClientRect();
+  const destino = barra.scrollLeft + (ra.left - rb.left) - (rb.width - ra.width) / 2;
+  barra.scrollTo({ left: Math.max(0, destino), behavior: 'smooth' });
+}
+
 function observarCategorias() {
   if (!('IntersectionObserver' in window)) return;
+  const barra = document.getElementById('cats');
   const obs = new IntersectionObserver(entradas => {
     const visible = entradas.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
     if (!visible) return;
     const id = visible.target.id.replace('cat-', '');
     document.querySelectorAll('.cat-chip').forEach(ch => ch.classList.toggle('on', ch.dataset.cat === id));
-    document.querySelector('.cat-chip.on')?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    centrarChipActivo(barra, document.querySelector('.cat-chip.on'));
   }, { rootMargin: '-56px 0px -70% 0px' });
   document.querySelectorAll('.cat-sec').forEach(s => obs.observe(s));
 }

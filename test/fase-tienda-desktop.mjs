@@ -80,18 +80,28 @@ t('3. el contenedor deja de ser una columna de teléfono', () => {
   assert.match(CSS, /\.app\{max-width:560px/, 'se perdió el ancho base móvil');
   assert.match(layout, /\.app\{max-width:1180px/);
   const b = anchos.find(x => x.includes('.app{'));
-  assert.match(b, /\.app\{max-width:1280px;padding-right:312px\}/);
+  assert.match(b, /\.app\{max-width:1400px;display:grid/,
+    'desde 1280 el contenedor debe ser una rejilla de dos columnas (catálogo + carrito)');
+  const muyAncho = muyAnchos.find(x => x.includes('.app{'));
+  assert.match(muyAncho, /max-width:1500px/);
 });
-
-t('4. el carrito lateral solo aparece cuando hay ancho para él', () => {
-  // Reservar la franja del carrito antes de 1280 dejaría un hueco vacío al
-  // lado del catálogo cada vez que el carrito está vacío.
-  assert.ok(!/padding-right:312px/.test(layout),
-    'el bloque de 1024px reserva espacio de carrito: deja hueco muerto');
+t('4. el carrito es una columna real y no reserva hueco cuando está vacío', () => {
+  // Antes esto se resolvía reservando 312px de padding en el contenedor, y
+  // con el carrito vacío quedaba un hueco muerto al lado del catálogo. Ahora
+  // el carrito ES la segunda columna: `auto` mide 0 cuando lleva .oculto.
+  assert.ok(!/padding-right:312px/.test(layout + anchos.join('')),
+    'volvió la franja reservada a mano: deja hueco muerto con el carrito vacío');
   const b = anchos.find(x => x.includes('.barra{'));
-  assert.ok(b, 'falta la presentación lateral del carrito');
-  assert.match(b, /\.barra\{[^}]*top:96px/, 'el carrito lateral debe quedar a la vista al hacer scroll');
-  assert.match(b, /\.barra\{[^}]*width:280px/);
+  assert.ok(b, 'falta la presentación de columna del carrito');
+  assert.match(b, /grid-template-columns:minmax\(0,1fr\) auto/,
+    'la columna del carrito debe ser auto para colapsar cuando está vacío');
+  assert.match(b, /\.barra\{grid-column:2;position:sticky/,
+    'el carrito debe quedar pegado mientras se recorre el catálogo');
+  // Y jamás con overflow recortado en la cadena: eso rompe sticky (bug del scroll).
+  for (const bloque of [layout, ...anchos, ...muyAnchos]) {
+    assert.ok(!/#contenido\{[^}]*overflow:\s*hidden/.test(bloque),
+      'recortar el overflow de #contenido rompe el sticky y devuelve el bug del scroll');
+  }
 });
 
 t('5. el carrito lateral es el MISMO botón, no un carrito nuevo', () => {
@@ -106,7 +116,7 @@ t('5. el carrito lateral es el MISMO botón, no un carrito nuevo', () => {
 });
 
 t('6. el checkout de escritorio es más legible, no otro checkout', () => {
-  assert.match(layout, /#hoja-checkout,#hoja-carrito\{max-width:640px\}/);
+  assert.match(layout, /#hoja-checkout,#hoja-carrito\{max-width:620px\}/);
   assert.strictEqual([...HTML.matchAll(/id="hoja-checkout"/g)].length, 1);
   assert.strictEqual([...HTML.matchAll(/id="hoja-carrito"/g)].length, 1);
 });
@@ -198,7 +208,7 @@ t('13. los breakpoints van en escalera y no se pisan', () => {
 t('14. la foto del producto conserva proporción fija en la rejilla', () => {
   // Sin alto fijo, dos tarjetas de la misma fila con y sin foto miden
   // distinto y la rejilla queda dispareja.
-  assert.match(layout, /\.prod-img\{width:104px;height:104px\}/);
+  assert.match(layout, /\.prod-img,\.prod-img-vacia\{width:96px;height:96px/);
   assert.match(CSS, /\.prod-img\{width:82px;height:82px;[^}]*object-fit:cover/, 'cambió la foto en móvil');
   assert.match(HTML, /class="prod-img" src="\$\{esc\(p\.imagen\)\}" alt="" loading="lazy"/,
     'la foto del catálogo perdió el lazy loading');
