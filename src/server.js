@@ -4336,12 +4336,26 @@ app.post('/internal/analizar-semana', async (req, res) => {
 // Rappi — marcar productos sin stock
 app.put('/api/rappi/stockout', requireAuth, manejarStockout);
 
-// Rappi — subir catálogo completo (Nonna Maye / store 900172582)
+// Rappi — subir catálogo completo.
+//
+// RUTA CANÓNICA: /api/admin/rappi/subir-menu (más abajo), que resuelve el
+// negocio de la sesión. Esta de aquí es la LEGACY (token global sin negocio):
+// se conserva por compatibilidad con lo que ya existía, pero ya no puede
+// publicar "el menú" a secas -- el catálogo es por negocio. Resuelve el
+// negocio DUEÑO del store configurado (misma tabla que enruta los pedidos
+// entrantes de Rappi) y falla cerrado si no lo encuentra: nunca publica un
+// menú adivinado.
 app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
   try {
-    const catalogo = construirCatalogoRappi();
+    const { obtenerIntegracionCanal } = await import('./services/database.js');
+    const storeId = process.env.RAPPI_STORE_ID || null;
+    const duena = storeId ? await obtenerIntegracionCanal('rappi', storeId) : null;
+    if (!duena?.negocioId) {
+      return res.status(409).json({ error: 'No hay negocio vinculado al store de Rappi configurado' });
+    }
+    const catalogo = await construirCatalogoRappi(duena.negocioId);
     const resultado = await subirCatalogo(catalogo);
-    console.log('[Rappi] Catálogo subido:', JSON.stringify(resultado));
+    console.log(`[Rappi] Catálogo subido — negocio=${duena.negocioId.slice(0, 8)}… store=…${String(storeId).slice(-4)} items=${catalogo.items.length}`);
     res.json({ ok: true, resultado });
   } catch (e) {
     console.error('[Rappi] Error subiendo catálogo:', e.message);
@@ -4352,7 +4366,13 @@ app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
 // Rappi — actualizar solo el schedule (sin re-subir todo el catálogo)
 app.post('/api/rappi/actualizar-schedule', requireAuth, async (req, res) => {
   try {
-    const resultado = await actualizarSchedule();
+    const { obtenerIntegracionCanal } = await import('./services/database.js');
+    const storeId = process.env.RAPPI_STORE_ID || null;
+    const duena = storeId ? await obtenerIntegracionCanal('rappi', storeId) : null;
+    if (!duena?.negocioId) {
+      return res.status(409).json({ error: 'No hay negocio vinculado al store de Rappi configurado' });
+    }
+    const resultado = await actualizarSchedule(duena.negocioId);
     console.log('[Rappi] Schedule actualizado:', JSON.stringify(resultado));
     res.json({ ok: true, resultado });
   } catch (e) {
@@ -7587,7 +7607,7 @@ app.get('/api/admin/rappi/menu-status', requireAdminSeguro, requireModulo('rappi
 
 app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
   try {
-    const catalogo = construirCatalogoRappi();
+    const catalogo = await construirCatalogoRappi(req.negocioId);
     const result = await subirCatalogo(catalogo);
     console.log('[Rappi] Menú subido manualmente:', JSON.stringify(result).slice(0, 200));
     res.json({ ok: true, result });
