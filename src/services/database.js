@@ -4380,6 +4380,51 @@ async function resolverNegocioActualId() {
 // actualizarProducto/crearUsuarioConPassword) — "no encontrado" y "error
 // real" son casos distintos y no deben confundirse devolviendo null en
 // ambos.
+/**
+ * Configuración NO sensible de un canal para UN negocio
+ * (integraciones_canal.configuracion). Siempre filtrada por negocio_id: el
+ * llamador nunca puede leer la configuración de otro tenant aunque pase un
+ * canal que exista en varios.
+ *
+ * Devuelve {} si el negocio no tiene ese canal configurado -- ausencia no
+ * es error: quien consume esto ya cae a sus valores por defecto.
+ */
+export async function obtenerConfiguracionCanal(negocioId, canal) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return {};
+  if (typeof canal !== 'string' || !canal.trim()) return {};
+  const { rows } = await pool.query(
+    `SELECT configuracion FROM integraciones_canal
+      WHERE negocio_id = $1 AND canal = $2
+      ORDER BY created_at ASC LIMIT 1`,
+    [negocioId.trim(), canal.trim().toLowerCase()]);
+  const cfg = rows[0]?.configuracion;
+  return (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg : {};
+}
+
+/**
+ * Mezcla claves dentro de esa configuración (nunca la reemplaza completa:
+ * `configuracion` es compartida por metadatos de canal que este llamador no
+ * conoce, como cooking_time). Si el negocio no tiene el canal configurado
+ * devuelve null y NO crea la integración: dar de alta un canal es un acto
+ * explícito con identificador propio, no un efecto colateral de guardar
+ * una preferencia.
+ */
+export async function guardarConfiguracionCanal(negocioId, canal, parche) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (typeof canal !== 'string' || !canal.trim()) return null;
+  if (!parche || typeof parche !== 'object' || Array.isArray(parche)) return null;
+  const { rows } = await pool.query(
+    `UPDATE integraciones_canal
+        SET configuracion = COALESCE(configuracion, '{}'::jsonb) || $3::jsonb,
+            updated_at = NOW()
+      WHERE id = (SELECT id FROM integraciones_canal
+                   WHERE negocio_id = $1 AND canal = $2
+                   ORDER BY created_at ASC LIMIT 1)
+      RETURNING configuracion`,
+    [negocioId.trim(), canal.trim().toLowerCase(), JSON.stringify(parche)]);
+  return rows[0]?.configuracion ?? null;
+}
+
 export async function obtenerIntegracionCanal(canal, identificador) {
   if (typeof canal !== 'string' || !canal.trim()) return null;
   if (typeof identificador !== 'string' || !identificador.trim()) return null;

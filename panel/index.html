@@ -1371,6 +1371,32 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
         <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🛵 Rappi</div>
         <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Sube el menú actual al catálogo de Rappi. Hazlo cada vez que modifiques precios o productos.</div>
+
+        <!-- Precios en Rappi: cambia SOLO el precio que se publica en Rappi.
+             El precio del menú de Xabor (mostrador, WhatsApp, tienda) no se
+             toca nunca. Nada se guarda mientras se escribe: la vista previa
+             es inmediata, el guardado es explícito. -->
+        <div id="rappi-precios" style="border:1px solid #e5e2da;border-radius:12px;padding:16px;margin-bottom:16px;background:#fbfaf8;">
+          <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:10px;">Precios en Rappi</div>
+          <label for="rp-estrategia" style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Estrategia</label>
+          <select id="rp-estrategia" onchange="rappiPreciosCambio()" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;background:#fff;">
+            <option value="precio_base">Usar mismo precio de Xabor</option>
+            <option value="sumar_porcentaje">Aumentar un porcentaje</option>
+            <option value="recuperar_comision">Recuperar comisión</option>
+          </select>
+          <div id="rp-fila-pct" style="margin-bottom:12px;">
+            <label for="rp-porcentaje" style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Porcentaje</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <input id="rp-porcentaje" type="number" min="0" max="80" step="1" value="0" oninput="rappiPreciosCambio()"
+                     style="width:110px;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;" />
+              <span style="font-size:0.9rem;color:#666;">%</span>
+            </div>
+          </div>
+          <div id="rp-preview" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:10px 12px;font-size:0.88rem;margin-bottom:12px;"></div>
+          <div id="rp-explica" style="font-size:0.78rem;color:#888;line-height:1.45;margin-bottom:12px;"></div>
+          <button onclick="guardarPreciosRappi()" id="btn-rp-guardar" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:0.88rem;font-weight:700;cursor:pointer;width:100%;">Guardar configuración</button>
+          <div id="rp-fb" style="margin-top:8px;font-size:0.82rem;text-align:center;"></div>
+        </div>
         <button onclick="subirMenuRappi()" id="btn-rappi-menu" style="background:#ff441b;color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;width:100%;">
           📤 Subir menú a Rappi
         </button>
@@ -2992,7 +3018,7 @@ function mostrarTab(tab) {
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
-  if (tab === 'menu')      { cargarMenuEditor(); cargarMenuAutomatico(); }
+  if (tab === 'menu')      { cargarMenuEditor().then(cargarPreciosRappi); cargarMenuAutomatico(); }
   if (tab === 'entrenamiento') { cargarEntrenamientoForm(); cargarBotWhatsappPanel(); }
   if (tab === 'diagnostico') cargarDiagnostico();
   if (tab === 'cotizaciones') cargarCotizaciones();
@@ -7964,6 +7990,107 @@ async function eliminarOpcionUI(id) {
   if (!confirm('¿Eliminar esta opción?')) return;
   await apiFetch(`/api/admin/menu/modificadores/opciones/${id}`, { method: 'DELETE' });
   recargarGrupos();
+}
+
+// ─── Precios en Rappi ────────────────────────────────────────────────────────
+// Espejo EXACTO de src/services/rappiPricing.js (misma fórmula, mismo
+// redondeo al peso entero, mismo tope). Si alguna vez divergen, la suite
+// fase-rappi-precios-canal lo detecta: compara esta función contra el
+// cálculo del backend en una matriz de casos.
+const RP_PORCENTAJE_MAXIMO = 80;
+let rpPrecioMuestra = 180;   // se reemplaza con un producto real del menú si hay
+
+function precioRappiPreview(precioBase, estrategia, porcentaje) {
+  const base = Number(precioBase);
+  if (!Number.isFinite(base) || base < 0) return 0;
+  const pct = Number(porcentaje);
+  if (estrategia === 'precio_base' || !Number.isFinite(pct) || pct <= 0) return Math.round(base);
+  if (pct > RP_PORCENTAJE_MAXIMO) return Math.round(base);
+  if (estrategia === 'sumar_porcentaje') return Math.round(base * (1 + pct / 100));
+  if (estrategia === 'recuperar_comision') {
+    const divisor = 1 - pct / 100;
+    if (!(divisor > 0)) return Math.round(base);
+    return Math.round(base / divisor);
+  }
+  return Math.round(base);
+}
+
+function rappiPreciosCambio() {
+  const estrategia = document.getElementById('rp-estrategia')?.value || 'precio_base';
+  const pctInput = document.getElementById('rp-porcentaje');
+  const filaPct = document.getElementById('rp-fila-pct');
+  const preview = document.getElementById('rp-preview');
+  const explica = document.getElementById('rp-explica');
+  if (!preview) return;
+  if (filaPct) filaPct.style.display = estrategia === 'precio_base' ? 'none' : '';
+  const pct = Number(pctInput?.value || 0);
+  const base = rpPrecioMuestra;
+  const enRappi = precioRappiPreview(base, estrategia, pct);
+  preview.innerHTML = `Precio Xabor: <b>$${Math.round(base)}</b> &nbsp;→&nbsp; Precio Rappi: <b style="color:#ff441b;">$${enRappi}</b>`;
+
+  let texto = '';
+  if (estrategia === 'precio_base') {
+    texto = 'Rappi mostrará el mismo precio que cobras en tu mostrador.';
+  } else if (estrategia === 'sumar_porcentaje') {
+    texto = `Se le suma ${pct}% al precio de tu menú. Ojo: la comisión de Rappi se calcula sobre el precio publicado, así que esto no recupera la comisión completa.`;
+  } else {
+    const neto = Math.round(enRappi * (1 - pct / 100));
+    texto = `Sube el precio lo necesario para que, después de que Rappi retenga ${pct}%, te quede aproximadamente el precio de tu menú (≈ $${neto}).`;
+  }
+  if (estrategia !== 'precio_base' && (!Number.isFinite(pct) || pct < 0 || pct > RP_PORCENTAJE_MAXIMO)) {
+    texto = `El porcentaje debe estar entre 0 y ${RP_PORCENTAJE_MAXIMO}.`;
+  }
+  explica.textContent = texto;
+  const fb = document.getElementById('rp-fb');
+  if (fb) fb.textContent = '';   // cualquier cambio invalida el "guardado" anterior
+}
+
+async function cargarPreciosRappi() {
+  const sel = document.getElementById('rp-estrategia');
+  if (!sel) return;
+  try {
+    const r = await apiFetch('/api/admin/rappi/precios');
+    if (r.ok) {
+      const d = await r.json();
+      sel.value = d.pricing?.estrategia || 'precio_base';
+      document.getElementById('rp-porcentaje').value = Number(d.pricing?.porcentaje || 0);
+    }
+  } catch { /* sin configuración: quedan los valores por defecto del formulario */ }
+  // Precio de muestra: un producto REAL del menú, para que la vista previa
+  // hable de algo que el dueño reconoce. Si aún no hay menú cargado, queda
+  // el ejemplo de $180.
+  try {
+    const cats = Array.isArray(menuData) ? menuData : [];
+    for (const c of cats) {
+      const p = (c.productos || []).find(x => Number(x.precio) > 0);
+      if (p) { rpPrecioMuestra = Number(p.precio); break; }
+    }
+  } catch { /* el ejemplo por defecto sirve igual */ }
+  rappiPreciosCambio();
+}
+
+async function guardarPreciosRappi() {
+  const btn = document.getElementById('btn-rp-guardar');
+  const fb = document.getElementById('rp-fb');
+  const estrategia = document.getElementById('rp-estrategia').value;
+  const porcentaje = Number(document.getElementById('rp-porcentaje').value || 0);
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try {
+    const r = await apiFetch('/api/admin/rappi/precios', {
+      method: 'PUT', body: JSON.stringify({ pricing: { estrategia, porcentaje } }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      fb.style.color = '#16a34a';
+      fb.textContent = '✅ Guardado. Sube el menú a Rappi para que el nuevo precio se publique.';
+    } else {
+      fb.style.color = '#ef4444';
+      fb.textContent = '❌ ' + (d.error || 'No se pudo guardar');
+    }
+  } catch (e) {
+    fb.style.color = '#ef4444';
+    fb.textContent = '❌ Error de conexión';
+  }
+  btn.disabled = false; btn.textContent = 'Guardar configuración';
 }
 
 async function subirMenuRappi() {

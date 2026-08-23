@@ -7605,11 +7605,50 @@ app.get('/api/admin/rappi/menu-status', requireAdminSeguro, requireModulo('rappi
   }
 });
 
+// ─── Rappi: precio por canal ───────────────────────────────────────────────
+// Configura CÓMO se calcula el precio que sale a Rappi, sin tocar nunca el
+// precio base del menú (ver src/services/rappiPricing.js). La preferencia
+// vive en integraciones_canal.configuracion.rappi_pricing, del negocio de la
+// sesión -- nunca se lee ni se escribe la de otro tenant.
+app.get('/api/admin/rappi/precios', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
+  try {
+    const { obtenerConfiguracionCanal } = await import('./services/database.js');
+    const { normalizarPricingRappi, PORCENTAJE_MAXIMO } = await import('./services/rappiPricing.js');
+    const cfg = await obtenerConfiguracionCanal(req.negocioId, 'rappi');
+    res.json({ ok: true, pricing: normalizarPricingRappi(cfg?.rappi_pricing), porcentajeMaximo: PORCENTAJE_MAXIMO });
+  } catch (e) {
+    console.error('[Rappi precios] GET:', e.message);
+    res.status(500).json({ error: 'No pudimos leer la configuración de precios' });
+  }
+});
+
+app.put('/api/admin/rappi/precios', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
+  try {
+    const { guardarConfiguracionCanal } = await import('./services/database.js');
+    const { validarPricingRappi } = await import('./services/rappiPricing.js');
+    const validacion = validarPricingRappi(req.body?.pricing);
+    if (!validacion.ok) return res.status(400).json({ error: validacion.error });
+    const cfg = await guardarConfiguracionCanal(req.negocioId, 'rappi', { rappi_pricing: validacion.valor });
+    if (cfg === null) {
+      return res.status(409).json({ error: 'Este negocio todavía no tiene la integración de Rappi configurada' });
+    }
+    res.json({ ok: true, pricing: validacion.valor });
+  } catch (e) {
+    console.error('[Rappi precios] PUT:', e.message);
+    res.status(500).json({ error: 'No pudimos guardar la configuración de precios' });
+  }
+});
+
 app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
   try {
+    const { obtenerConfiguracionCanal } = await import('./services/database.js');
+    const { describirPricingRappi } = await import('./services/rappiPricing.js');
+    const cfgCanal = await obtenerConfiguracionCanal(req.negocioId, 'rappi');
     const catalogo = await construirCatalogoRappi(req.negocioId);
     const result = await subirCatalogo(catalogo);
-    console.log('[Rappi] Menú subido manualmente:', JSON.stringify(result).slice(0, 200));
+    // Queda asentado CON QUÉ REGLA se publicó: si un precio en la app se ve
+    // raro, el log dice si fue el ajuste de canal o el menú.
+    console.log(`[Rappi] Menú subido manualmente (${catalogo.items.length} items, ${describirPricingRappi(cfgCanal?.rappi_pricing)}):`, JSON.stringify(result).slice(0, 200));
     res.json({ ok: true, result });
   } catch(e) {
     console.error('[Rappi] Error subiendo menú:', e.message);

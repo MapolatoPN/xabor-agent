@@ -254,13 +254,27 @@ export function esPublicableEnRappi(p) {
  * El ESQUEMA no cambia: es el mismo que Rappi ya aceptó (items planos con
  * children, camelCase, category embebida). Aquí solo cambia de dónde salen
  * los datos.
+ *
+ * PRECIO POR CANAL: el precio que sale a Rappi puede llevar el ajuste que el
+ * negocio configuró (integraciones_canal.configuracion.rappi_pricing, ver
+ * rappiPricing.js). El ajuste se aplica AQUÍ y solo aquí: `menu_productos.precio`
+ * nunca se toca, y POS / WhatsApp / tienda / pagos siguen operando con el
+ * precio base. Una configuración ausente o inválida cae a precio base sin
+ * lanzar -- publicar caro de menos es recuperable; no poder publicar, no.
  */
-export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID } = {}) {
+export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pricing = undefined } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('construirCatalogoRappi: negocioId obligatorio (el menú es por negocio)');
   }
   const nid = negocioId.trim();
-  const { pool } = await import('./database.js');
+  const { pool, obtenerConfiguracionCanal } = await import('./database.js');
+  const { calcularPrecioRappi } = await import('./rappiPricing.js');
+
+  // `pricing` explícito solo lo usa la vista previa del panel (calcular sin
+  // guardar). El camino de publicación real siempre lee lo persistido.
+  const configPrecios = pricing !== undefined
+    ? pricing
+    : (await obtenerConfiguracionCanal(nid, 'rappi').catch(() => ({})))?.rappi_pricing;
 
   // Menú del negocio -- SIEMPRE filtrado por negocio_id en ambas tablas: el
   // catálogo de otro tenant no existe desde aquí.
@@ -328,7 +342,10 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID } =
           categoryMaxQty: Number(g.maximo) || 1,
           categorySortPos: Number(g.orden) || 1,
           sortingPosition: ++posOpcion,
-          price: Number(o.precio_extra) || 0,
+          // El extra también paga comisión: si el ajuste solo tocara el
+          // precio base, un producto con muchos extras seguiría dejando
+          // menos ingreso neto que en mostrador. Un extra de $0 sigue en $0.
+          price: calcularPrecioRappi(o.precio_extra, configPrecios),
         }));
       }
     }
@@ -337,8 +354,9 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID } =
       sku: skuDeProducto(p),
       name: p.nombre,
       type: 'PRODUCT',
-      // Precio REAL del menú: sin markup, sin redondeos ocultos.
-      price: Number(p.precio),
+      // Precio del menú real con el ajuste de canal configurado (sin ajuste
+      // configurado, es exactamente Number(p.precio) redondeado al peso).
+      price: calcularPrecioRappi(p.precio, configPrecios),
       category: {
         id: `${PREFIJO_SKU}cat-${p.categoria_id}`,
         name: p.categoria_nombre,
