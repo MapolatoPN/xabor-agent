@@ -141,12 +141,27 @@ header {
 }
 /* Navegación agrupada por áreas de trabajo: el rótulo del grupo no es
    clickeable -- solo organiza. Los botones siguen siendo .tab-btn de siempre. */
+/* Encabezado de seccion: es un <button> de verdad (no un div con onclick)
+   para que llegue por teclado, anuncie su estado con aria-expanded y el
+   lector de pantalla lo lea como control, no como texto suelto. */
 .nav-grupo {
   font-size: 0.68rem; font-weight: 800; letter-spacing: 0.8px;
   text-transform: uppercase; color: var(--color-text-muted);
   padding: 14px 14px 4px; user-select: none;
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: none; font-family: inherit; text-align: left;
+  cursor: pointer; border-radius: var(--radius-md);
 }
+.nav-grupo:hover { color: var(--color-text-secondary); }
+.nav-grupo:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
 .nav-grupo:first-of-type { padding-top: 4px; }
+.nav-grupo-flecha {
+  font-size: 0.6rem; line-height: 1; width: 9px; flex-shrink: 0;
+  transition: transform .15s;
+}
+.nav-grupo[aria-expanded="false"] .nav-grupo-flecha { transform: rotate(-90deg); }
+.nav-seccion { display: flex; flex-direction: column; gap: 2px; }
+.nav-seccion[hidden] { display: none; }
 /* "+ Nuevo pedido": la acción primaria de todo el panel. Vive arriba de la
    navegación porque crear un pedido es el trabajo, no una sección más. */
 .nav-nuevo-pedido {
@@ -1023,7 +1038,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="nav-nuevo-pedido" id="btn-nuevo-pedido" data-modulo="pos" onclick="abrirNuevoPedido()">+ Nuevo pedido</button>
   <button class="tab-btn" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
 
-  <div class="nav-grupo">Operación</div>
+  <button type="button" class="nav-grupo" id="navgrp-operacion" aria-expanded="true" aria-controls="navsec-operacion" onclick="toggleGrupoNav('operacion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Operación</button>
+  <div class="nav-seccion" id="navsec-operacion" role="group" aria-labelledby="navgrp-operacion">
   <!-- Las capturas por modalidad (mostrador/envíos) NO son destinos de
        navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
        modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
@@ -1036,32 +1052,43 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Restaurante</button>
   <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
+  </div>
 
-  <div class="nav-grupo">Catálogo</div>
+  <button type="button" class="nav-grupo" id="navgrp-catalogo" aria-expanded="true" aria-controls="navsec-catalogo" onclick="toggleGrupoNav('catalogo')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Catálogo</button>
+  <div class="nav-seccion" id="navsec-catalogo" role="group" aria-labelledby="navgrp-catalogo">
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
   <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo.
        Por eso vive en Catálogo y no en Configuración -- lo que se administra
        aquí es qué del menú sale a la calle y con qué promociones. -->
   <button class="tab-btn admin-only" id="tab-tienda"    data-modulo="tienda_online" onclick="mostrarTab('tienda')">Tienda en línea</button>
+  </div>
 
-  <div class="nav-grupo">Clientes</div>
+  <button type="button" class="nav-grupo" id="navgrp-clientes" aria-expanded="true" aria-controls="navsec-clientes" onclick="toggleGrupoNav('clientes')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Clientes</button>
+  <div class="nav-seccion" id="navsec-clientes" role="group" aria-labelledby="navgrp-clientes">
   <button class="tab-btn"        id="tab-chats"      data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
   <button class="tab-btn admin-only" id="tab-rewards"     data-modulo="rewards" onclick="mostrarTab('rewards')">Rewards</button>
   <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
+  </div>
 
-  <div class="nav-grupo">Automatización</div>
+  <button type="button" class="nav-grupo" id="navgrp-automatizacion" aria-expanded="true" aria-controls="navsec-automatizacion" onclick="toggleGrupoNav('automatizacion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Automatización</button>
+  <div class="nav-seccion" id="navsec-automatizacion" role="group" aria-labelledby="navgrp-automatizacion">
   <button class="tab-btn admin-only" id="tab-entrenamiento" onclick="mostrarTab('entrenamiento')">Asistente</button>
   <button class="tab-btn admin-only" id="tab-llamadas"  data-modulo="voz" onclick="mostrarTab('llamadas')">Llamadas</button>
+  </div>
 
-  <div class="nav-grupo">Administración</div>
+  <button type="button" class="nav-grupo" id="navgrp-administracion" aria-expanded="true" aria-controls="navsec-administracion" onclick="toggleGrupoNav('administracion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Administración</button>
+  <div class="nav-seccion" id="navsec-administracion" role="group" aria-labelledby="navgrp-administracion">
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
   <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
+  </div>
 
-  <div class="nav-grupo">Configuración</div>
+  <button type="button" class="nav-grupo" id="navgrp-configuracion" aria-expanded="true" aria-controls="navsec-configuracion" onclick="toggleGrupoNav('configuracion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Configuración</button>
+  <div class="nav-seccion" id="navsec-configuracion" role="group" aria-labelledby="navgrp-configuracion">
   <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Configuración</button>
   <button class="tab-btn admin-only" id="tab-diagnostico" onclick="mostrarTab('diagnostico')">Estado</button>
+  </div>
 </div>
 
 <main>
@@ -2128,6 +2155,9 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   }
   // Ocultar tabs de módulos no habilitados para este negocio
   aplicarModulosUI();
+  // El plegado se restaura DESPUÉS de aplicar permisos: así una sección que
+  // quedó sin destinos visibles se oculta con la información ya resuelta.
+  restaurarGruposNav();
   // Si el tab activo (comandas, por default) quedó oculto, mostrar el
   // primero disponible en vez de una vista en blanco sin pestaña marcada.
   const tabActivo = document.querySelector('.tab-btn.activo');
@@ -2988,6 +3018,96 @@ function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes','rewards','cotizaciones'];
 
+// ═══ Navegación lateral plegable ═══════════════════════════════════════════
+// Las secciones son las MISMAS de siempre (mismos ids tab-*, mismas rutas,
+// mismos permisos): lo único nuevo es que se pueden cerrar para que el menú
+// no muestre catorce destinos a la vez. Nada aquí decide qué puede ver el
+// usuario -- eso lo siguen resolviendo admin-only / data-modulo / el backend.
+const NAV_GRUPOS = ['operacion', 'catalogo', 'clientes', 'automatizacion', 'administracion', 'configuracion'];
+const NAV_LS_CLAVE = 'xaborNavGrupos';
+// Qué sección contiene cada destino. Si un tab no está aquí (Inicio) no
+// pertenece a ninguna sección plegable y siempre se ve.
+const NAV_GRUPO_DE_TAB = {
+  comandas: 'operacion', restaurante: 'operacion', historial: 'operacion', repartidores: 'operacion',
+  menu: 'catalogo', tienda: 'catalogo',
+  chats: 'clientes', clientes: 'clientes', rewards: 'clientes', cotizaciones: 'clientes',
+  entrenamiento: 'automatizacion', llamadas: 'automatizacion',
+  ventas: 'administracion', corte: 'administracion', usuarios: 'administracion',
+  config: 'configuracion', diagnostico: 'configuracion',
+};
+
+function navPreferencias() {
+  try {
+    const crudo = JSON.parse(localStorage.getItem(NAV_LS_CLAVE) || 'null');
+    if (crudo && typeof crudo === 'object' && !Array.isArray(crudo)) return crudo;
+  } catch { /* preferencia corrupta: se ignora y se usa el default */ }
+  return null;
+}
+
+function navGuardarPreferencia(clave, abierta) {
+  try {
+    const prefs = navPreferencias() || {};
+    prefs[clave] = !!abierta;
+    localStorage.setItem(NAV_LS_CLAVE, JSON.stringify(prefs));
+  } catch { /* modo privado / sin storage: el plegado sigue funcionando en memoria */ }
+}
+
+function aplicarGrupoNav(clave, abierta) {
+  const cab = document.getElementById('navgrp-' + clave);
+  const sec = document.getElementById('navsec-' + clave);
+  if (!cab || !sec) return;
+  cab.setAttribute('aria-expanded', abierta ? 'true' : 'false');
+  sec.hidden = !abierta;
+}
+
+function toggleGrupoNav(clave) {
+  const cab = document.getElementById('navgrp-' + clave);
+  if (!cab) return;
+  const abierta = cab.getAttribute('aria-expanded') !== 'true';
+  aplicarGrupoNav(clave, abierta);
+  navGuardarPreferencia(clave, abierta);
+}
+
+// La sección del destino activo SIEMPRE se abre, aunque el usuario la
+// hubiera dejado cerrada: nunca debe verse resaltada una opción que no está
+// a la vista. No se persiste -- es una apertura de cortesía, no una
+// preferencia que el usuario haya expresado.
+function abrirGrupoDelTab(tab) {
+  const clave = NAV_GRUPO_DE_TAB[tab];
+  if (clave) aplicarGrupoNav(clave, true);
+}
+
+// Un encabezado sin ningún destino visible (operador sin permisos de admin,
+// o negocio sin esos módulos) se oculta completo: un título que no abre nada
+// es ruido, y peor, insinúa funciones que ese usuario no tiene.
+function ocultarGruposNavVacios() {
+  for (const clave of NAV_GRUPOS) {
+    const cab = document.getElementById('navgrp-' + clave);
+    const sec = document.getElementById('navsec-' + clave);
+    if (!cab || !sec) continue;
+    const visibles = [...sec.querySelectorAll('.tab-btn')].filter(b => b.style.display !== 'none');
+    cab.style.display = visibles.length ? '' : 'none';
+    if (!visibles.length) sec.hidden = true;
+  }
+}
+
+function restaurarGruposNav() {
+  const prefs = navPreferencias();
+  // Sin preferencia guardada, TODAS las secciones arrancan cerradas -- también
+  // en monitor. Abrirlas todas por tener espacio dejaba el menú igual de
+  // saturado que antes, que es justo lo que este cambio viene a resolver; el
+  // ancho disponible no es razón para mostrar catorce destinos a la vez.
+  // La sección del destino activo se abre en seguida (más abajo), así que el
+  // usuario nunca aterriza en un menú completamente plegado.
+  for (const clave of NAV_GRUPOS) {
+    const abierta = prefs && clave in prefs ? !!prefs[clave] : false;
+    aplicarGrupoNav(clave, abierta);
+  }
+  const activo = document.querySelector('#tabs-nav .tab-btn.activo');
+  if (activo) abrirGrupoDelTab(String(activo.id || '').replace(/^tab-/, ''));
+  ocultarGruposNavVacios();
+}
+
 function mostrarTab(tab) {
   // Ocultar vistas principales
   ['comandas','presencial'].forEach(v => {
@@ -3011,6 +3131,7 @@ function mostrarTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
   const tabEl = document.getElementById('tab-' + tab);
   if (tabEl) tabEl.classList.add('activo');
+  abrirGrupoDelTab(tab);
   // Acciones al abrir cada sección
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
   if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad('llevar'); }
