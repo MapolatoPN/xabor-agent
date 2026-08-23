@@ -174,9 +174,10 @@ export async function cargarReglas(negocioId) {
  * Claves de `menu_productos.opciones` que son METADATA TÉCNICA interna, no
  * opciones que el cliente pueda elegir: nunca se muestran en el menú del
  * prompt. Hoy: `tipo_item` (marca estructural del cargo de envío que usa
- * validadorOrden.esProductoEnvio). Toda clave técnica nueva se agrega aquí.
+ * validadorOrden.esProductoEnvio) e `imagen` (la foto del platillo, ver
+ * imagenesProducto.js). Toda clave técnica nueva se agrega aquí.
  */
-export const CLAVES_OPCIONES_TECNICAS = new Set(['tipo_item']);
+export const CLAVES_OPCIONES_TECNICAS = new Set(['tipo_item', 'imagen']);
 
 function formatearMenu(categorias) {
   let texto = '';

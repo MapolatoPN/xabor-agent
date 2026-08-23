@@ -96,6 +96,10 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .prod-precio{font-size:15px;font-weight:800;margin-top:6px;color:var(--texto)}
 .prod-img{width:82px;height:82px;border-radius:var(--r-s);object-fit:cover;background:var(--superficie-2);flex-shrink:0}
+/* Marcador de "sin foto": mismo tamaño que la foto para que la fila no se
+   descuadre, pero discreto -- nunca compite con las tarjetas que sí la tienen. */
+.prod-img-vacia{background:var(--superficie-2);display:flex;align-items:center;justify-content:center}
+.prod-img-vacia::after{content:'🍽';font-size:24px;opacity:.28}
 .etiqueta{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px;background:var(--marca);
   color:#fff;text-transform:uppercase;letter-spacing:.03em}
 .etiqueta.gris{background:var(--superficie-2);color:var(--texto-2)}
@@ -499,6 +503,14 @@ function pintarCatalogo() {
   observarCategorias();
 }
 
+// ¿Algún producto del catálogo tiene foto? De eso depende si a los que NO
+// tienen se les pinta un marcador: en una tienda donde nadie subió fotos,
+// llenar cada tarjeta con un cuadro vacío sería una desmejora; en una donde
+// sí las hay, sin marcador la rejilla queda dispareja.
+function hayFotosEnCatalogo() {
+  return CATALOGO.some(c => (c.productos || []).some(p => p.imagen));
+}
+
 function tarjetaProducto(p) {
   const fuera = p.disponible === false || p.agotado === true;
   return `<button class="prod${fuera ? ' agotado' : ''}" ${fuera ? 'disabled' : ''} onclick="abrirProducto(${p.id})">
@@ -509,7 +521,9 @@ function tarjetaProducto(p) {
       ${p.descripcion ? `<p class="prod-desc">${esc(p.descripcion)}</p>` : ''}
       <div class="prod-precio">${dinero(p.precio)}</div>
     </div>
-    ${p.imagen ? `<img class="prod-img" src="${esc(p.imagen)}" alt="" loading="lazy">` : ''}
+    ${p.imagen
+      ? `<img class="prod-img" src="${esc(p.imagen)}" alt="" loading="lazy">`
+      : (hayFotosEnCatalogo() ? '<div class="prod-img prod-img-vacia" aria-hidden="true"></div>' : '')}
   </button>`;
 }
 

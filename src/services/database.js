@@ -542,11 +542,15 @@ export async function obtenerMenuCompleto(negocioId) {
         gruposMap[g.producto_id].push(g);
       }
     }
+    // `imagen` sale DERIVADA de opciones.imagen (ver imagenesProducto.js):
+    // así el POS y el editor de menú piden una URL y nunca tienen que saber
+    // que la foto vive dentro de un JSONB. Un producto sin foto trae null.
+    const { urlImagenProducto } = await import('./imagenesProducto.js');
     return cats.rows.map(c => ({
       ...c,
       productos: prods.rows
         .filter(p => p.categoria_id === c.id)
-        .map(p => ({ ...p, modificadores: gruposMap[p.id] || [] }))
+        .map(p => ({ ...p, modificadores: gruposMap[p.id] || [], imagen: urlImagenProducto(p) }))
     }));
   } catch(e) {
     console.error('[DB] obtenerMenuCompleto:', e.message);

@@ -507,6 +507,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 }
 .pos-producto:hover { border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
 .pos-producto:active { transform: scale(0.97); }
+/* Miniatura del producto en el POS. Es OPCIONAL: un producto sin foto
+   conserva exactamente la tarjeta de siempre, sin hueco reservado -- el POS
+   se usa con prisa y no puede volverse una galería. */
+.pos-prod-img {
+  width: 100%; height: 74px; object-fit: cover;
+  border-radius: 8px; margin-bottom: 7px; background: var(--color-surface-2);
+}
 .pos-prod-nombre { font-size: 0.85rem; font-weight: 600; color: var(--color-text-primary); line-height: 1.25; margin-bottom: 5px; }
 .pos-prod-precio { font-size: 0.9rem; font-weight: 800; color: var(--color-brand); }
 
@@ -4225,6 +4232,7 @@ async function renderMenuPOS() {
     <div class="pos-productos-grid">
       ${cat.productos.filter(p => p.disponible).map(p => `
         <button class="pos-producto" onclick="elegirProductoPOS('${cat.id}','${p.id}')">
+          ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy">` : ''}
           <div class="pos-prod-nombre">${p.nombre}${(p.modificadores && p.modificadores.length) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</div>
           <div class="pos-prod-precio">$${parseFloat(p.precio).toFixed(0)}</div>
         </button>`).join('')}
@@ -7363,6 +7371,7 @@ function renderMenuEditor() {
               <button onclick="moverProducto(${catIdx},${pIdx},-1)" ${pIdx===0?'disabled':''} style="background:none;border:none;cursor:pointer;color:${pIdx===0?'#ddd':'#666'};font-size:0.65rem;padding:0;line-height:1;">▲</button>
               <button onclick="moverProducto(${catIdx},${pIdx},1)" ${pIdx===cat.productos.length-1?'disabled':''} style="background:none;border:none;cursor:pointer;color:${pIdx===cat.productos.length-1?'#ddd':'#666'};font-size:0.65rem;padding:0;line-height:1;">▼</button>
             </div>
+            ${p.imagen ? `<img src="${p.imagen}" alt="" loading="lazy" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;">` : ''}
             <div style="flex:1;min-width:140px;">
               <div style="font-weight:600;font-size:0.9rem;">${p.nombre}${p.destacado ? ' ⭐' : ''}</div>
               <div style="font-size:0.78rem;color:#888;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.descripcion||''}</div>
@@ -7376,7 +7385,7 @@ function renderMenuEditor() {
               <input type="checkbox" ${p.agotado ? 'checked' : ''} onchange="toggleAgotado(${p.id},this.checked)" />
               Agotado
             </label>
-            <button onclick="abrirModalEditarProducto(${p.id},'${p.nombre.replace(/'/g,"\\'")}',${p.precio},'${(p.descripcion||'').replace(/'/g,"\\'")}',${cat.id},${!!p.destacado})" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
+            <button onclick="abrirModalEditarProducto(${p.id},'${p.nombre.replace(/'/g,"\\'")}',${p.precio},'${(p.descripcion||'').replace(/'/g,"\\'")}',${cat.id},${!!p.destacado},'${p.imagen||''}')" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
             <button onclick="duplicarProductoUI(${p.id})" style="background:none;border:1px solid #d1d5db;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;" title="Duplicar producto">⧉</button>
             <button onclick="abrirModalModificadores(${p.id},'${p.nombre.replace(/'/g,"\\'")}')" style="background:none;border:1px solid #d1d5db;border-radius:7px;padding:4px 8px;line-height:0;cursor:pointer;" title="Modificadores"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
             <button onclick="eliminarProductoUI(${p.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
@@ -7451,12 +7460,12 @@ function abrirModalCategoria() {
 
 // Modal producto — nuevo
 function abrirModalProducto(categoriaId) {
-  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true, destacado: false }, false);
+  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true, destacado: false, imagen: null }, false);
 }
 
 // Modal producto — editar
-function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId, destacado) {
-  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true, destacado: !!destacado }, true);
+function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId, destacado, imagen) {
+  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true, destacado: !!destacado, imagen: imagen || null }, true);
 }
 
 function mostrarModalProducto(datos, esEdicion) {
@@ -7478,9 +7487,35 @@ function mostrarModalProducto(datos, esEdicion) {
       <textarea id="mp-desc" rows="3" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.85rem;resize:vertical;margin-bottom:12px;">${datos.descripcion}</textarea>
       <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Categoría</label>
       <select id="mp-cat" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;">${cats}</select>
-      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#374151;margin-bottom:20px;cursor:pointer;">
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#374151;margin-bottom:16px;cursor:pointer;">
         <input type="checkbox" id="mp-destacado" ${datos.destacado ? 'checked' : ''}> Destacar este producto
       </label>
+      <!-- Foto del platillo. Solo al EDITAR: la foto se guarda contra el id
+           del producto, así que en uno nuevo se explica en una línea en vez
+           de fingir un control que todavía no puede funcionar. Nunca
+           bloquea guardar: un producto sin foto es perfectamente válido. -->
+      <div style="border-top:1px solid #f1f0ed;padding-top:14px;margin-bottom:18px;">
+        <div style="font-size:0.8rem;color:#666;margin-bottom:8px;">Foto del platillo</div>
+        ${esEdicion ? `
+        <div style="display:flex;gap:12px;align-items:center;">
+          <div id="mp-foto-preview" style="width:76px;height:76px;border-radius:10px;background:#f1f0ed;border:1px solid #e5e2da;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.4rem;color:#bbb;overflow:hidden;">
+            ${datos.imagen ? `<img src="${datos.imagen}" alt="" style="width:100%;height:100%;object-fit:cover;">` : '🍽️'}
+          </div>
+          <div style="flex:1;min-width:0;">
+            <input type="file" id="mp-foto-input" accept="image/jpeg,image/png,image/webp" style="display:none;" onchange="subirFotoProducto(${datos.id})">
+            <button type="button" onclick="document.getElementById('mp-foto-input').click()" id="mp-foto-btn"
+              style="background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:7px 14px;font-size:0.82rem;cursor:pointer;">
+              ${datos.imagen ? 'Cambiar foto' : 'Subir foto'}
+            </button>
+            <button type="button" onclick="eliminarFotoProducto(${datos.id})" id="mp-foto-quitar"
+              style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:8px;padding:7px 12px;font-size:0.82rem;cursor:pointer;margin-left:6px;${datos.imagen ? '' : 'display:none;'}">
+              Eliminar
+            </button>
+            <div id="mp-foto-fb" style="font-size:0.76rem;color:#888;margin-top:6px;">JPG, PNG o WEBP.</div>
+          </div>
+        </div>` : `
+        <div style="font-size:0.8rem;color:#999;">Guarda el producto primero y podrás subirle una foto.</div>`}
+      </div>
       <div style="display:flex;gap:10px;">
         <button onclick="document.getElementById('modal-producto').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:10px;font-size:0.9rem;cursor:pointer;">Cancelar</button>
         <button onclick="guardarProducto(${esEdicion ? datos.id : 'null'})" style="flex:2;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px;font-size:0.9rem;font-weight:700;cursor:pointer;">${esEdicion ? 'Guardar cambios' : 'Agregar'}</button>
@@ -7488,6 +7523,86 @@ function mostrarModalProducto(datos, esEdicion) {
     </div>`;
   document.body.appendChild(div);
   document.getElementById('mp-nombre').focus();
+}
+
+// ─── Foto del producto ───────────────────────────────────────────────────────
+// La imagen viaja en base64 dentro del JSON, igual que la del menú de
+// WhatsApp: el backend valida el tipo REAL por magic bytes (no la extensión)
+// y comprime antes de guardar, así que aquí no hace falta ni conviene
+// duplicar esa validación -- solo se filtra lo evidente para no hacer viajar
+// 20 MB que el servidor va a rechazar.
+const FOTO_TIPOS_ACEPTADOS = ['image/jpeg', 'image/png', 'image/webp'];
+
+function fotoProductoFeedback(texto, color) {
+  const fb = document.getElementById('mp-foto-fb');
+  if (fb) { fb.textContent = texto; fb.style.color = color || '#888'; }
+}
+
+async function subirFotoProducto(productoId) {
+  const input = document.getElementById('mp-foto-input');
+  const archivo = input?.files?.[0];
+  if (!archivo) return;
+  if (!FOTO_TIPOS_ACEPTADOS.includes(archivo.type)) {
+    fotoProductoFeedback('Solo JPG, PNG o WEBP.', '#ef4444');
+    input.value = '';
+    return;
+  }
+  const btn = document.getElementById('mp-foto-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Subiendo…'; }
+  fotoProductoFeedback('Subiendo…');
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const lector = new FileReader();
+      lector.onload = () => resolve(String(lector.result).split(',')[1] || '');
+      lector.onerror = () => reject(new Error('no se pudo leer el archivo'));
+      lector.readAsDataURL(archivo);
+    });
+    const r = await apiFetch(`/api/admin/menu/productos/${productoId}/imagen`, {
+      method: 'POST', body: JSON.stringify({ base64, filename: archivo.name }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      fotoProductoFeedback(d.error || 'No se pudo subir la foto', '#ef4444');
+    } else {
+      pintarFotoProducto(d.imagen);
+      fotoProductoFeedback('Foto actualizada.', '#16a34a');
+      cargarMenuEditor();   // la lista y el POS ya muestran la nueva
+    }
+  } catch {
+    fotoProductoFeedback('Error de conexión', '#ef4444');
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Cambiar foto'; }
+  if (input) input.value = '';
+}
+
+async function eliminarFotoProducto(productoId) {
+  if (!confirm('¿Quitar la foto de este producto?')) return;
+  fotoProductoFeedback('Quitando…');
+  try {
+    const r = await apiFetch(`/api/admin/menu/productos/${productoId}/imagen`, { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { fotoProductoFeedback(d.error || 'No se pudo quitar la foto', '#ef4444'); return; }
+    pintarFotoProducto(null);
+    fotoProductoFeedback('Foto eliminada.', '#16a34a');
+    cargarMenuEditor();
+  } catch {
+    fotoProductoFeedback('Error de conexión', '#ef4444');
+  }
+}
+
+// Deja la vista previa y los botones en el estado que corresponde. Al
+// quitar la foto NUNCA queda un <img> apuntando a un archivo borrado: se
+// reemplaza por el marcador de "sin foto".
+function pintarFotoProducto(url) {
+  const preview = document.getElementById('mp-foto-preview');
+  const quitar = document.getElementById('mp-foto-quitar');
+  const btn = document.getElementById('mp-foto-btn');
+  if (preview) {
+    preview.innerHTML = url
+      ? `<img src="${url}" alt="" style="width:100%;height:100%;object-fit:cover;">`
+      : '🍽️';
+  }
+  if (quitar) quitar.style.display = url ? '' : 'none';
+  if (btn) btn.textContent = url ? 'Cambiar foto' : 'Subir foto';
 }
 
 async function guardarProducto(id) {

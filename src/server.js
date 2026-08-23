@@ -54,6 +54,7 @@ import { resolverProductoConModificadores, ModificadoresError } from './services
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
+import { guardarImagenProducto, eliminarImagenProducto, leerImagenProducto, tamanoMaximoBytes as productoImagenMaximoBytes } from './services/imagenesProducto.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
@@ -3794,6 +3795,65 @@ app.patch('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), requi
     }
     console.error('[PATCH /api/admin/menu/productos/:id] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el producto' });
+  }
+});
+
+// ─── Foto del producto ─────────────────────────────────────────────────────
+// Misma infraestructura de imágenes que el menú automático de WhatsApp
+// (validación por magic bytes, compresión, almacenamiento local/R2): ver
+// src/services/imagenesProducto.js. Subir y borrar van SIEMPRE filtrados
+// por el negocio de la sesión; servir la foto es público a propósito
+// (la tienda en línea la muestra a cualquier visitante).
+app.post('/api/admin/menu/productos/:id/imagen', resolverNegocioSeguro('admin'), requireModulo('menu'),
+  rateLimitMiddleware(req => `producto-imagen:${req.negocioId}`, 30, 60 * 1000),
+  async (req, res) => {
+    const { base64, filename } = req.body || {};
+    if (typeof base64 !== 'string' || !base64.trim()) {
+      return res.status(400).json({ error: 'No recibimos ninguna imagen' });
+    }
+    let buffer;
+    try { buffer = Buffer.from(base64, 'base64'); }
+    catch { return res.status(400).json({ error: 'La imagen no se pudo leer' }); }
+    if (buffer.length > productoImagenMaximoBytes()) {
+      return res.status(413).json({ error: `La imagen pesa más de ${Math.round(productoImagenMaximoBytes() / 1024 / 1024)} MB` });
+    }
+    try {
+      const r = await guardarImagenProducto(req.negocioId, req.params.id, buffer, filename);
+      if (!r.ok) return res.status(r.codigo || 400).json({ error: r.error });
+      res.json({ ok: true, imagen: r.url });
+    } catch (e) {
+      console.error('[ImagenProducto] subir:', e.message);
+      res.status(500).json({ error: 'No pudimos guardar la foto del producto' });
+    }
+  });
+
+app.delete('/api/admin/menu/productos/:id/imagen', resolverNegocioSeguro('admin'), requireModulo('menu'), async (req, res) => {
+  try {
+    const r = await eliminarImagenProducto(req.negocioId, req.params.id);
+    if (!r.ok) return res.status(r.codigo || 400).json({ error: r.error });
+    res.json({ ok: true, imagen: null });
+  } catch (e) {
+    console.error('[ImagenProducto] eliminar:', e.message);
+    res.status(500).json({ error: 'No pudimos quitar la foto del producto' });
+  }
+});
+
+// Servir la foto. Público: es contenido de catálogo, el mismo que ya se ve
+// en la tienda en línea. Solo resuelve por id de producto y solo devuelve la
+// imagen -- nunca datos del negocio. Una referencia rota responde 404 y el
+// catálogo se ve sin foto, jamás con un error.
+app.get('/img/producto/:id', async (req, res) => {
+  try {
+    const imagen = await leerImagenProducto(req.params.id);
+    if (!imagen) return res.status(404).end();
+    res.setHeader('Content-Type', imagen.mimeType);
+    // La URL trae la huella de la versión (?v=): al cambiar la foto cambia
+    // la URL, así que este caché largo nunca sirve una foto vieja.
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(imagen.buffer);
+  } catch (e) {
+    console.error('[ImagenProducto] servir:', e.message);
+    res.status(404).end();
   }
 });
 

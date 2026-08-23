@@ -64,6 +64,13 @@ function generarStorageKey(negocioId, extension, { categoria = 'documento', conv
     const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
     return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/menu/${archivoId}.${ext}`;
   }
+  if (categoria === 'producto') {
+    // Foto de platillo: UUID nuevo en cada reemplazo (nunca se sobrescribe
+    // el objeto anterior), igual que el menú. Así la URL cambia al cambiar
+    // la foto y ningún caché puede seguir sirviendo la vieja.
+    const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
+    return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/productos/${archivoId}.${ext}`;
+  }
   if (categoria === 'imagen') {
     const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
     return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/chats/${sanearSegmentoRuta(conversacionId)}/${archivoId}.${ext}`;

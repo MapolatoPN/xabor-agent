@@ -13,6 +13,7 @@
 //   · horarios/envío/zonas     → configuracion.reglas_atencion (fuente única
 //     que ya usan POS y bot; la tienda LEE, no redefine)
 import { pool } from './database.js';
+import { urlImagenProducto } from './imagenesProducto.js';
 
 // Zona horaria: hoy el modelo de negocios no tiene columna de timezone (deuda
 // conocida). En vez de esparcir un literal por el código, se resuelve por
@@ -191,6 +192,7 @@ export async function catalogoPublico(negocioId) {
   const { rows } = await pool.query(
     `SELECT c.id AS categoria_id, c.nombre AS categoria, c.orden AS categoria_orden,
             p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.orden,
+            p.opciones,
             tp.badge, tp.destacado, tp.descripcion_comercial, tp.imagen_url, tp.precio_tienda,
             tp.orden AS orden_tienda
        FROM menu_productos p
@@ -250,7 +252,10 @@ export async function catalogoPublico(negocioId) {
       // El precio que se muestra es el del catálogo (o su override de canal);
       // el que se cobra lo recalcula SIEMPRE el servidor al hacer checkout.
       precio: Number(r.precio_tienda ?? r.precio),
-      imagen: r.imagen_url || null,
+      // La URL escrita a mano en la tienda gana si existe (es un override
+      // explícito que algún negocio ya configuró); si no, la foto subida al
+      // producto, que es la misma que ve el POS.
+      imagen: r.imagen_url || urlImagenProducto(r),
       badge: r.badge || null,
       destacado: r.destacado === true,
       agotado: r.agotado === true || r.disponible === false,
