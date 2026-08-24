@@ -607,9 +607,16 @@
       </select>
     </div>
     <div class="campo">
+      <label>Tipo de negocio</label>
+      <div id="ng-presets" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px;"></div>
+      <div style="font-size:0.75rem;color:#aaa;">Es un atajo: activa un paquete recomendado que después puedes ajustar.</div>
+    </div>
+    <div class="campo">
       <label>Módulos iniciales</label>
       <div id="ng-modulos-check"></div>
+      <div id="ng-modulos-fb" style="font-size:0.78rem;margin-top:6px;min-height:16px;"></div>
     </div>
+    <div id="ng-checklist" style="display:none;margin-bottom:14px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;"></div>
     <div class="feedback" id="ng-feedback"></div>
     <div id="ng-invitacion-enlace" style="display:none;margin-bottom:14px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
       <div style="font-size:0.78rem;font-weight:700;color:#92400e;margin-bottom:6px;">⚠️ Este enlace no se volverá a mostrar. Cópialo ahora.</div>
@@ -679,6 +686,178 @@
 </div>
 
 <script>
+// Dependencias, grupos y presets: los sirve el backend junto con la lista de
+// módulos, del MISMO archivo con el que valida (modulosDependencias.js). Si
+// esta pantalla los duplicara, dejaría pasar combinaciones que el backend
+// rechaza -- que es justo el desfase que ya nos costó una vez con
+// 'restaurante' invisible.
+let DEPENDENCIAS_MOD = {};
+let GRUPOS_MOD = [];
+let PRESETS_MOD = [];
+
+function modDeps(clave) { return DEPENDENCIAS_MOD[clave] || []; }
+function modNombre(clave) { return NOMBRES_MODULO[clave] || clave; }
+function modExplicacion(clave) {
+  const deps = modDeps(clave).map(modNombre);
+  if (!deps.length) return '';
+  const ultimo = deps.pop();
+  return deps.length ? `↳ requiere ${deps.join(', ')} y ${ultimo}` : `↳ requiere ${ultimo}`;
+}
+function modSeleccionados() {
+  return [...document.querySelectorAll('.ng-mod-check:checked')].map(c => c.value);
+}
+// Qué módulos YA elegidos dejarían de funcionar si se quita `clave`.
+function modDependientes(clave) {
+  return modSeleccionados().filter(m => modDeps(m).includes(clave));
+}
+
+function pintarModulosNuevoNegocio() {
+  const cont = document.getElementById('ng-modulos-check');
+  const grupos = GRUPOS_MOD.length ? GRUPOS_MOD : [{ clave: 'todos', nombre: 'Módulos', modulos: MODULOS }];
+  // Un módulo nuevo que aún no esté en ningún grupo NO puede desaparecer de
+  // la pantalla: se recoge al final.
+  const enGrupos = new Set(grupos.flatMap(g => g.modulos));
+  const sueltos = MODULOS.filter(m => !enGrupos.has(m));
+  const secciones = sueltos.length ? [...grupos, { clave: 'otros', nombre: 'Otros', modulos: sueltos }] : grupos;
+
+  cont.innerHTML = secciones.map((g, i) => {
+    const modulos = g.modulos.filter(m => MODULOS.includes(m));
+    if (!modulos.length) return '';
+    return `
+      <div style="border:1px solid #e5e2da;border-radius:8px;margin-bottom:8px;overflow:hidden;">
+        <button type="button" class="ng-grupo-cab" aria-expanded="${i === 0 ? 'true' : 'false'}"
+                aria-controls="ng-grupo-${g.clave}" onclick="toggleGrupoModulos('${g.clave}')"
+                style="width:100%;display:flex;align-items:center;gap:6px;background:#faf9f7;border:none;padding:9px 12px;font:inherit;font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:#888;cursor:pointer;text-align:left;">
+          <span class="ng-grupo-flecha" style="font-size:0.6rem;">${i === 0 ? '▾' : '▸'}</span>${g.nombre}
+          <span style="margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;" id="ng-grupo-conteo-${g.clave}"></span>
+        </button>
+        <div id="ng-grupo-${g.clave}" ${i === 0 ? '' : 'hidden'} style="padding:8px 12px;">
+          ${modulos.map(m => `
+            <label style="display:block;margin:5px 0;font-size:0.82rem;font-weight:400;">
+              <input type="checkbox" value="${m}" class="ng-mod-check" data-modulo="${m}" onchange="alCambiarModulo('${m}', this)">
+              ${modNombre(m)}
+              ${modExplicacion(m) ? `<span style="color:#aaa;font-size:0.74rem;display:block;margin-left:22px;">${modExplicacion(m)}</span>` : ''}
+            </label>`).join('')}
+        </div>
+      </div>`;
+  }).join('');
+  actualizarConteosModulos();
+}
+
+function toggleGrupoModulos(clave) {
+  const cab = document.querySelector(`[aria-controls="ng-grupo-${clave}"]`);
+  const sec = document.getElementById('ng-grupo-' + clave);
+  if (!cab || !sec) return;
+  const abierta = cab.getAttribute('aria-expanded') !== 'true';
+  cab.setAttribute('aria-expanded', abierta ? 'true' : 'false');
+  sec.hidden = !abierta;
+  cab.querySelector('.ng-grupo-flecha').textContent = abierta ? '▾' : '▸';
+}
+
+function actualizarConteosModulos() {
+  const sel = new Set(modSeleccionados());
+  for (const g of [...GRUPOS_MOD, { clave: 'otros', modulos: MODULOS }]) {
+    const el = document.getElementById('ng-grupo-conteo-' + g.clave);
+    if (!el) continue;
+    const n = (g.modulos || []).filter(m => sel.has(m)).length;
+    el.textContent = n ? `${n} activo${n !== 1 ? 's' : ''}` : '';
+    el.style.color = n ? '#16a34a' : '#bbb';
+  }
+}
+
+// Marcar un módulo ACTIVA sus dependencias (y lo dice). Desmarcar uno del que
+// otro depende se rechaza con la razón, en vez de dejar un negocio roto.
+function alCambiarModulo(clave, input) {
+  const fb = document.getElementById('ng-modulos-fb');
+  if (input.checked) {
+    const activados = [];
+    const pendientes = [...modDeps(clave)];
+    while (pendientes.length) {
+      const dep = pendientes.shift();
+      const chk = document.querySelector(`.ng-mod-check[data-modulo="${dep}"]`);
+      if (chk && !chk.checked) { chk.checked = true; activados.push(modNombre(dep)); pendientes.push(...modDeps(dep)); }
+    }
+    fb.style.color = '#666';
+    fb.textContent = activados.length
+      ? `Se activó también ${activados.join(', ')} porque ${modNombre(clave)} lo necesita.` : '';
+  } else {
+    const dependientes = modDependientes(clave);
+    if (dependientes.length) {
+      input.checked = true;
+      fb.style.color = '#b45309';
+      fb.textContent = `${modNombre(clave)} es necesario mientras ${dependientes.map(modNombre).join(' y ')} esté activo.`;
+    } else {
+      fb.textContent = '';
+    }
+  }
+  actualizarConteosModulos();
+}
+
+// Los presets son ATAJOS, no restricciones: dejan un paquete recomendado y
+// después se puede personalizar libremente.
+function aplicarPresetNegocio(clave) {
+  const preset = PRESETS_MOD.find(p => p.clave === clave);
+  document.querySelectorAll('.ng-preset-btn').forEach(b => {
+    const activo = b.dataset.preset === clave;
+    b.style.borderColor = activo ? '#1c1c1c' : '#e5e2da';
+    b.style.background = activo ? '#1c1c1c' : '#fff';
+    b.style.color = activo ? '#fff' : '#333';
+  });
+  document.querySelectorAll('.ng-mod-check').forEach(c => { c.checked = false; });
+  if (preset) {
+    for (const m of preset.modulos) {
+      const chk = document.querySelector(`.ng-mod-check[data-modulo="${m}"]`);
+      if (chk) chk.checked = true;
+    }
+  }
+  const fb = document.getElementById('ng-modulos-fb');
+  fb.style.color = '#666';
+  fb.textContent = preset && preset.modulos.length
+    ? `Paquete recomendado para ${preset.nombre}. Puedes agregar o quitar lo que necesites.`
+    : 'Elige módulo por módulo.';
+  actualizarConteosModulos();
+}
+
+function pintarPresetsNegocio() {
+  const cont = document.getElementById('ng-presets');
+  if (!cont) return;
+  cont.innerHTML = (PRESETS_MOD.length ? PRESETS_MOD : []).map(p => `
+    <button type="button" class="ng-preset-btn" data-preset="${p.clave}" onclick="aplicarPresetNegocio('${p.clave}')"
+            title="${p.descripcion}"
+            style="border:1px solid #e5e2da;background:#fff;color:#333;border-radius:8px;padding:8px 14px;font:inherit;font-size:0.82rem;font-weight:600;cursor:pointer;">
+      ${p.nombre}
+    </button>`).join('');
+}
+
+// Checklist de puesta en marcha: qué falta después del alta, acotado a lo
+// que el negocio SÍ contrató. Evita tener que volver a Superadmin o entrar
+// a la base para saberlo.
+function pintarChecklistOnboarding(modulos, negocioNombre) {
+  const cont = document.getElementById('ng-checklist');
+  if (!cont) return;
+  const m = new Set(modulos || []);
+  const pasos = [
+    ['Negocio creado', true],
+    ['Administrador con contraseña', false],
+  ];
+  if (m.has('menu')) pasos.push(['Cargar el menú', false]);
+  if (m.has('usuarios')) pasos.push(['Dar de alta al equipo', false]);
+  if (m.has('whatsapp')) pasos.push(['Conectar WhatsApp', false]);
+  if (m.has('pagos')) pasos.push(['Configurar cobros en línea', false]);
+  if (m.has('impresion')) pasos.push(['Instalar Xabor Edge y asignar impresoras', false]);
+  if (m.has('caja')) pasos.push(['Registrar el fondo inicial de caja', false]);
+  if (m.has('restaurante')) pasos.push(['Configurar mesas y meseros', false]);
+  if (m.has('tienda_online')) pasos.push(['Publicar la tienda en línea', false]);
+  if (m.has('rappi')) pasos.push(['Vincular Rappi y publicar el menú', false]);
+  cont.innerHTML = `
+    <div style="font-size:0.82rem;font-weight:800;margin-bottom:8px;">Para poner a operar ${negocioNombre || 'el negocio'}:</div>
+    ${pasos.map(([titulo, listo]) => `
+      <div style="display:flex;gap:8px;align-items:center;font-size:0.85rem;padding:3px 0;color:${listo ? '#16a34a' : '#555'};">
+        <span>${listo ? '✓' : '○'}</span><span>${titulo}</span>
+      </div>`).join('')}`;
+  cont.style.display = 'block';
+}
+
 // Módulos: la fuente ÚNICA es el backend (GET /api/superadmin/modulos-disponibles,
 // derivado de MODULOS_VALIDOS). Estas listas locales son solo el FALLBACK si
 // esa carga falla — el desfase que dejó a 'restaurante' invisible en esta
@@ -690,11 +869,16 @@ let NOMBRES_MODULO = { pos:'POS', usuarios:'Usuarios', caja:'Caja', menu:'Menú'
   try {
     const r = await fetch('/api/superadmin/modulos-disponibles', { credentials: 'same-origin' });
     if (!r.ok) return; // fallback local (ya incluye restaurante)
-    const { modulos } = await r.json();
+    const { modulos, grupos, presets, dependencias } = await r.json();
     if (Array.isArray(modulos) && modulos.length) {
       MODULOS = modulos.map(m => m.clave);
       NOMBRES_MODULO = Object.fromEntries(modulos.map(m => [m.clave, m.nombre]));
     }
+    // Dependencias, grupos y presets vienen del MISMO archivo con el que el
+    // backend valida: la pantalla no puede quedar más permisiva que él.
+    if (dependencias && typeof dependencias === 'object') DEPENDENCIAS_MOD = dependencias;
+    if (Array.isArray(grupos) && grupos.length) GRUPOS_MOD = grupos;
+    if (Array.isArray(presets) && presets.length) PRESETS_MOD = presets;
   } catch { /* fallback local */ }
 })();
 const NOMBRES_CHECKLIST = {
@@ -2310,11 +2494,10 @@ function abrirModalNuevoNegocio() {
   document.getElementById('ng-invitacion-enlace').style.display = 'none';
   document.getElementById('ng-botones').style.display = 'flex';
   document.getElementById('ng-btn-listo').style.display = 'none';
-  document.getElementById('ng-modulos-check').innerHTML = MODULOS.map(m => `
-    <label style="display:inline-flex;align-items:center;gap:4px;margin:3px 10px 3px 0;font-size:0.8rem;font-weight:400;">
-      <input type="checkbox" value="${m}" class="ng-mod-check"> ${NOMBRES_MODULO[m]}
-    </label>
-  `).join('');
+  document.getElementById('ng-modulos-fb').textContent = '';
+  document.getElementById('ng-checklist').style.display = 'none';
+  pintarPresetsNegocio();
+  pintarModulosNuevoNegocio();
   document.getElementById('ng-modal').classList.add('visible');
 }
 function cerrarModalNuevoNegocio() { document.getElementById('ng-modal').classList.remove('visible'); }
@@ -2341,6 +2524,7 @@ async function crearNegocio() {
   const body = await r.json().catch(() => ({}));
   if (r.ok) {
     fb.className = 'feedback ok'; fb.textContent = '✓ Negocio creado';
+    pintarChecklistOnboarding(modulosIniciales, nombre);
     if (body.invitacionEnviadaPorCorreo) {
       setTimeout(() => { cerrarModalNuevoNegocio(); cargarNegocios(); irVista('dashboard'); }, 700);
     } else {

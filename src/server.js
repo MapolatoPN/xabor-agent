@@ -46,6 +46,10 @@ import {
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
 import {
+  DEPENDENCIAS as DEPENDENCIAS_MODULOS, GRUPOS as GRUPOS_MODULOS, PRESETS as PRESETS_MODULOS,
+  validarCombinacion, expandirDependencias, describirDependencias, checklistOnboarding,
+} from './services/modulosDependencias.js';
+import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
   ticketCorte, zonaHorariaNegocio, fechaOperativaHoy, esFechaValida,
 } from './services/cortesCaja.js';
@@ -4857,6 +4861,11 @@ const MODULOS_VALIDOS_API = [
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
   'asistente_comercial_cotizaciones', 'restaurante', 'tienda_online',
 ];
+// Etiquetas legibles para los mensajes de error de dependencias. Salen de
+// listarModulosDisponibles() -- la misma fuente única que usa la UI, para que
+// un módulo nuevo no aparezca aquí como clave cruda.
+const NOMBRES_MODULOS_SUPERADMIN = Object.fromEntries(
+  listarModulosDisponibles().map(m => [m.clave, m.nombre]));
 const MODULO_ESTADOS_DISPONIBLES_API = ['activo', 'configurado'];
 const PLANES_VALIDOS_API = ['prueba', 'basico', 'pro', 'personalizado'];
 const ESTADOS_NEGOCIO_VALIDOS_API = ['pendiente', 'activo', 'suspendido'];
@@ -4889,6 +4898,13 @@ app.post('/api/superadmin/negocios', requireSuperadmin, async (req, res) => {
   if (!['pendiente', 'activo'].includes(estadoInicial)) return res.status(400).json({ error: 'Estado inicial inválido (solo pendiente o activo)' });
   if (modulosIniciales !== undefined && (!Array.isArray(modulosIniciales) || modulosIniciales.some(m => !MODULOS_VALIDOS_API.includes(m)))) {
     return res.status(400).json({ error: 'Módulos iniciales inválidos' });
+  }
+  // La UI previene, el backend GARANTIZA. Un alta por API (o una pantalla
+  // desactualizada) no puede crear un negocio con Restaurante sin Menú:
+  // el hueco no se vería hoy, se vería en operación dentro de una semana.
+  const combinacion = validarCombinacion(modulosIniciales || [], { nombresUI: NOMBRES_MODULOS_SUPERADMIN });
+  if (!combinacion.ok) {
+    return res.status(400).json({ error: combinacion.error, faltantes: combinacion.faltantes });
   }
 
   try {
@@ -5092,6 +5108,25 @@ app.patch('/api/superadmin/negocios/:negocioId/plan-comercial', requireSuperadmi
 app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, async (req, res) => {
   const { modulos } = req.body;
   if (!modulos || typeof modulos !== 'object' || Array.isArray(modulos)) return res.status(400).json({ error: 'Formato de módulos inválido' });
+  // Misma garantía al EDITAR: quitarle el Menú a un negocio con Restaurante
+  // lo deja sin poder capturar items en una mesa. Se valida el resultado
+  // final (lo que quedaría activo), no solo el parche.
+  try {
+    const actualesRes = await pool.query(
+      `SELECT modulo, estado FROM negocio_modulos WHERE negocio_id = $1`, [req.params.negocioId]);
+    const finales = new Set(actualesRes.rows
+      .filter(r => MODULO_ESTADOS_DISPONIBLES_API.includes(r.estado)).map(r => r.modulo));
+    for (const [modulo, estado] of Object.entries(modulos)) {
+      if (MODULO_ESTADOS_DISPONIBLES_API.includes(estado)) finales.add(modulo);
+      else finales.delete(modulo);
+    }
+    const combinacionFinal = validarCombinacion([...finales], { nombresUI: NOMBRES_MODULOS_SUPERADMIN });
+    if (!combinacionFinal.ok) {
+      return res.status(400).json({ error: combinacionFinal.error, faltantes: combinacionFinal.faltantes });
+    }
+  } catch (e) {
+    console.error('[PATCH modulos] validación de dependencias:', e.message);
+  }
   try {
     const resultado = await actualizarModulosNegocioSuperadmin(req.params.negocioId, modulos, req.usuarioId);
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
@@ -5113,7 +5148,15 @@ app.patch('/api/superadmin/negocios/:negocioId/modulos', requireSuperadmin, asyn
 // de duplicarlas hardcodeadas, que es exactamente el desfase que dejó a
 // 'restaurante' invisible en el panel.
 app.get('/api/superadmin/modulos-disponibles', requireSuperadmin, (req, res) => {
-  res.json({ modulos: listarModulosDisponibles() });
+  // La pantalla NO duplica ni la lista ni las dependencias: las recibe de
+  // aquí, del mismo módulo con el que el backend valida. Si divergieran,
+  // la UI dejaría pasar combinaciones que el backend rechaza.
+  const modulos = listarModulosDisponibles().map(m => ({
+    ...m,
+    requiere: DEPENDENCIAS_MODULOS[m.clave] || [],
+    explicacion: describirDependencias(m.clave, NOMBRES_MODULOS_SUPERADMIN),
+  }));
+  res.json({ modulos, grupos: GRUPOS_MODULOS, presets: PRESETS_MODULOS, dependencias: DEPENDENCIAS_MODULOS });
 });
 
 // ─── Readiness del módulo Restaurante (Superadmin, solo lectura) ────────────
