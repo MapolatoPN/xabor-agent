@@ -498,6 +498,41 @@ try {
     assert.ok(!/fechaHoyMX\(\)/.test(ruta), 'quedó la fecha con zona horaria fija');
   });
 
+  await t('35. DÍAS DISTINTOS a la vez: ni folios duplicados ni un día sin corte', async () => {
+    // Lo destapó el gate previo al despliegue, no esta suite: el caso 17 solo
+    // probaba concurrencia sobre la MISMA fecha, que el UNIQUE de (negocio,
+    // fecha) ya cubría. Con fechas DISTINTAS el UNIQUE no aplica, los cierres
+    // contaban lo mismo para armar el folio y el segundo reventaba contra el
+    // único de folio -- ese día se quedaba SIN corte.
+    const diasConc = ['2025-11-01', '2025-11-02', '2025-11-03', '2025-11-04'];
+    for (const d of diasConc) {
+      await pedido(NEG_A, { fecha: d, hora: 12, folio: `CC-K${suf}-${d.slice(8)}`, formaPago: 'efectivo', total: 100 });
+    }
+    const resultados = await Promise.allSettled(
+      diasConc.flatMap(d => [0, 1, 2].map(() =>
+        cerrarCorte(NEG_A, { fecha: d, efectivoContado: 100, usuarioId: USUARIO }))));
+    const rechazadas = resultados.filter(r => r.status === 'rejected');
+    assert.strictEqual(rechazadas.length, 0,
+      `un cierre legítimo falló: ${rechazadas[0]?.reason?.message}`);
+    const { rows: [c] } = await pool.query(
+      `SELECT COUNT(*)::int n, COUNT(DISTINCT folio)::int folios
+         FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa >= '2025-11-01' AND fecha_operativa <= '2025-11-04'`,
+      [NEG_A]);
+    assert.strictEqual(c.n, 4, `se esperaban 4 cortes y quedaron ${c.n}: hay días sin corte`);
+    assert.strictEqual(c.folios, 4, 'se repitió un folio entre días distintos');
+  });
+
+  await t('36. una lectura dentro de la transacción no puede agotar el pool', () => {
+    const svc = readFileSync(join(__dirname, '..', 'src', 'services', 'cortesCaja.js'), 'utf8');
+    const tx = svc.slice(svc.indexOf('const client = await pool.connect();'), svc.indexOf('export async function obtenerCorteCerrado'));
+    // Pedir OTRO cliente del pool teniendo uno tomado cuelga el proceso bajo
+    // concurrencia: dentro de la transacción todo va con `client`.
+    assert.ok(!/obtenerCorteCerrado\(negocioId, fechaOperativa\)(?!,)/.test(tx),
+      'hay una lectura dentro de la transacción que pide otro cliente del pool');
+    assert.match(tx, /obtenerCorteCerrado\(negocioId, fechaOperativa, client\)/);
+    assert.match(tx, /pg_advisory_xact_lock/, 'falta el cerrojo que serializa los cierres del negocio');
+  });
+
 } catch (e) {
   console.error('ERROR FATAL EN LA SUITE:', e);
   fallidas++; fallos.push(`fatal: ${e.message}`);

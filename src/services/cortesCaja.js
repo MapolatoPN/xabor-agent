@@ -334,6 +334,35 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Cerrojo por NEGOCIO mientras dure la transacción.
+    //
+    // El folio se numera contando los cortes del negocio, y eso no es seguro
+    // bajo concurrencia: dos cierres de DÍAS DISTINTOS que corren a la vez
+    // cuentan lo mismo, arman el mismo folio y el segundo revienta contra el
+    // índice único de folio -- ese día se quedaba SIN corte y el cajero veía
+    // un error crudo de base de datos. El UNIQUE de (negocio, fecha) no lo
+    // cubre justamente porque las fechas son distintas.
+    //
+    // Lo detectó el gate previo al despliegue: 3 días cerrados a la vez
+    // dejaban solo 2 cortes. Con el cerrojo, los cierres del mismo negocio
+    // se serializan y cada uno ve el conteo ya actualizado; los cierres de
+    // negocios distintos no se estorban. Se libera solo al terminar la
+    // transacción, haya COMMIT o ROLLBACK.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('cortes_caja'), hashtext($1))`, [negocioId]);
+
+    // Con el cerrojo tomado, otro cierre pudo haber ganado la carrera de
+    // ESTE mismo día mientras esperábamos: se vuelve a mirar antes de armar
+    // uno nuevo.
+    const { rows: yaCerrado } = await client.query(
+      `SELECT id FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa = $2`,
+      [negocioId, fechaOperativa]);
+    if (yaCerrado[0]) {
+      await client.query('ROLLBACK');
+      // Con el MISMO cliente: pedir otro del pool aquí lo agotaría.
+      return { corte: await obtenerCorteCerrado(negocioId, fechaOperativa, client), yaExistia: true };
+    }
+
     const { rows: [corte] } = await client.query(
       `INSERT INTO cortes_caja (
          negocio_id, fecha_operativa, estado, folio, usuario_id, cerrado_at,
@@ -361,7 +390,7 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
       // Otra petición ganó la carrera: no es un error, es exactamente lo que
       // el índice único debe hacer. Se devuelve el corte que sí quedó.
       await client.query('ROLLBACK');
-      const ganador = await obtenerCorteCerrado(negocioId, fechaOperativa);
+      const ganador = await obtenerCorteCerrado(negocioId, fechaOperativa, client);
       return { corte: ganador, yaExistia: true };
     }
 
@@ -382,8 +411,14 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
   }
 }
 
-export async function obtenerCorteCerrado(negocioId, fecha) {
-  const { rows } = await pool.query(
+/**
+ * Lee el corte de un día. `ejecutor` permite reusar el cliente de una
+ * transacción en curso: pedir OTRO cliente del pool mientras se tiene uno
+ * tomado agota el pool y cuelga el proceso bajo concurrencia -- pasó en el
+ * gate previo al despliegue, con 20 cierres simultáneos.
+ */
+export async function obtenerCorteCerrado(negocioId, fecha, ejecutor = pool) {
+  const { rows } = await ejecutor.query(
     `SELECT c.*, u.nombre AS usuario_nombre
        FROM cortes_caja c LEFT JOIN usuarios u ON u.id = c.usuario_id
       WHERE c.negocio_id = $1 AND c.fecha_operativa = $2`,
