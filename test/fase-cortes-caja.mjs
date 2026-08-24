@@ -533,6 +533,47 @@ try {
     assert.match(tx, /pg_advisory_xact_lock/, 'falta el cerrojo que serializa los cierres del negocio');
   });
 
+  await t('37. clasifica las formas de pago REALES de producción, no solo las claves técnicas', async () => {
+    // `datos.forma_pago` es texto libre acumulado por años: conviven la clave
+    // técnica y la etiqueta que escribió la interfaz. Con una lista exacta,
+    // 35 pedidos reales de producción caían en "Otros" -- el total salía bien
+    // pero el desglose mentía. Estos son los valores que existen HOY en la
+    // base de producción, contados el 24-ago.
+    const reales = [
+      ['efectivo', 'efectivo', 41],
+      ['terminal (tarjeta presente)', 'tarjeta', 19],
+      ['enlace de pago', 'enlace', 16],
+      ['enlace_pago', 'enlace', 8],
+      ['terminal', 'tarjeta', 5],
+      ['tarjeta', 'tarjeta', 2],
+      ['por_cobrar', 'otros', 7],
+      ['pendiente', 'otros', 1],
+      ['no especificada', 'otros', 1],
+    ];
+    for (const [valor, esperado] of reales) {
+      assert.strictEqual(clasificarFormaPago(valor), esperado,
+        `"${valor}" se clasificó como ${clasificarFormaPago(valor)} y debía ser ${esperado}`);
+    }
+    // Variantes de mayúsculas, acentos y proveedores.
+    for (const [valor, esperado] of [['Efectivo', 'efectivo'], ['Clip', 'enlace'],
+      ['Mercado Pago', 'enlace'], ['pago en línea', 'enlace'], ['transferencia', 'otros'],
+      [null, 'otros'], ['', 'otros'], ['  ', 'otros']]) {
+      assert.strictEqual(clasificarFormaPago(valor), esperado, `falló "${valor}"`);
+    }
+    // Y con esas etiquetas el cálculo agrupa donde debe.
+    const D = '2025-12-01';
+    await pedido(NEG_A, { fecha: D, hora: 9, folio: `CC-R${suf}-1`, formaPago: 'terminal (tarjeta presente)', total: 185 });
+    await pedido(NEG_A, { fecha: D, hora: 10, folio: `CC-R${suf}-2`, formaPago: 'enlace de pago', total: 644 });
+    await pedido(NEG_A, { fecha: D, hora: 11, folio: `CC-R${suf}-3`, formaPago: 'efectivo', total: 280 });
+    const c = await calcularCorteVivo(NEG_A, D);
+    assert.strictEqual(c.ventas_tarjeta, 185, 'la etiqueta larga de terminal no se agrupó como tarjeta');
+    assert.strictEqual(c.ventas_enlace, 644, '"enlace de pago" no se agrupó como enlace');
+    assert.strictEqual(c.ventas_efectivo, 280);
+    assert.strictEqual(c.ventas_otros, 0, 'algo cayó en Otros que no debía');
+    // Y el efectivo esperado sigue siendo SOLO el efectivo.
+    assert.strictEqual(c.efectivo_esperado, 280);
+  });
+
 } catch (e) {
   console.error('ERROR FATAL EN LA SUITE:', e);
   fallidas++; fallos.push(`fatal: ${e.message}`);

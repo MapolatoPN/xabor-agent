@@ -41,15 +41,25 @@ const TZ_POR_DEFECTO = 'America/Matamoros';
 
 // Clasificación por naturaleza del dinero, no por nombre comercial. Solo
 // 'efectivo' incrementa el dinero físico de la caja.
-const FORMAS_EFECTIVO = new Set(['efectivo']);
-const FORMAS_TARJETA = new Set(['terminal', 'tarjeta']);
-const FORMAS_ENLACE = new Set(['enlace_pago', 'enlace', 'pago_online', 'clip', 'mercadopago', 'mercado_pago']);
+//
+// Se reconoce por CONTENIDO y no por lista exacta porque `datos.forma_pago`
+// es texto libre acumulado por años: en producción conviven la clave técnica
+// ('enlace_pago', 'terminal') y la etiqueta que escribió la interfaz
+// ('enlace de pago', 'terminal (tarjeta presente)'). Con una lista exacta,
+// 35 pedidos reales caían en "Otros" -- el total y el efectivo esperado
+// salían bien, pero el desglose que el dueño mira mentía. Lo detectó el
+// preview contra producción, previo al despliegue.
+const SIN_ACENTOS = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
 export function clasificarFormaPago(forma) {
-  const f = String(forma || '').trim().toLowerCase();
-  if (FORMAS_EFECTIVO.has(f)) return 'efectivo';
-  if (FORMAS_TARJETA.has(f)) return 'tarjeta';
-  if (FORMAS_ENLACE.has(f)) return 'enlace';
+  const f = SIN_ACENTOS(String(forma || '').trim().toLowerCase());
+  if (!f) return 'otros';
+  // 'por_cobrar' y 'pendiente' NO son formas de pago: son ausencia de cobro,
+  // y el cálculo los aparta antes de llegar aquí.
+  if (f.includes('efectivo')) return 'efectivo';
+  if (f.includes('terminal') || f.includes('tarjeta')) return 'tarjeta';
+  if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') ||
+      f.includes('pago_online') || f.includes('pago en linea')) return 'enlace';
   return 'otros';
 }
 
