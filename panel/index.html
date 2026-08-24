@@ -1289,7 +1289,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
       <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-          <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">FONDO INICIAL</div><div style="font-size:1.5rem;font-weight:800;color:#06d6a0;" id="corte-fondo">—</div></div>
+          <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">FONDO INICIAL</div>
+            <div style="display:flex;align-items:baseline;gap:10px;">
+              <div style="font-size:1.5rem;font-weight:800;color:#06d6a0;" id="corte-fondo">—</div>
+              <button onclick="registrarFondoCaja()" id="btn-fondo-caja" style="background:none;border:1px solid #444;color:#aaa;border-radius:6px;padding:3px 9px;font-size:0.72rem;cursor:pointer;font-family:inherit;">Registrar</button>
+            </div>
+          </div>
           <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div><div style="font-size:1.5rem;font-weight:800;color:#FF6B35;" id="corte-num">0</div></div>
         </div>
         <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
@@ -5507,6 +5512,8 @@ function pintarArqueoCorte(data) {
     if (nota) { nota.value = data.nota || ''; nota.disabled = true; }
     document.getElementById('arq-nota-fila').style.display = data.nota ? '' : 'none';
     btnCerrar.style.display = 'none';
+    const btnFondo = document.getElementById('btn-fondo-caja');
+    if (btnFondo) btnFondo.style.display = 'none';
     btnTicket.style.display = '';
     btnReimp.style.display = '';
     pintarDiferenciaCorte(Number(data.diferencia) || 0, data.efectivo_contado !== null);
@@ -5515,6 +5522,8 @@ function pintarArqueoCorte(data) {
     contado.value = '';
     if (nota) { nota.value = ''; nota.disabled = false; }
     btnCerrar.style.display = '';
+    const btnFondo = document.getElementById('btn-fondo-caja');
+    if (btnFondo) btnFondo.style.display = '';
     btnTicket.style.display = 'none';
     btnReimp.style.display = 'none';
     corteCalcularDiferencia();
@@ -5538,6 +5547,24 @@ function corteCalcularDiferencia() {
   pintarDiferenciaCorte(dif, hayConteo);
   // Una diferencia NUNCA impide cerrar; solo pide una explicación.
   document.getElementById('arq-nota-fila').style.display = hayConteo && dif !== 0 ? '' : 'none';
+}
+
+// El fondo inicial es el arranque del día: sin poder capturarlo el arqueo
+// nunca cuadra. Va contra el DÍA que se está viendo, y el backend rechaza
+// tocar el de un día ya cerrado.
+async function registrarFondoCaja() {
+  const actual = CORTE_DATA ? Number(CORTE_DATA.fondo_inicial || 0) : 0;
+  const valor = prompt(`Fondo inicial de caja para el ${corteFechaLegible(CORTE_FECHA)}:`, actual || '');
+  if (valor === null) return;
+  const monto = Number(String(valor).replace(/[^0-9.]/g, ''));
+  const fb = document.getElementById('corte-fb');
+  if (!Number.isFinite(monto) || monto < 0) { fb.style.color = '#ef4444'; fb.textContent = 'Monto inválido'; return; }
+  try {
+    const r = await apiFetch('/api/caja/fondo', { method: 'POST', body: JSON.stringify({ monto, fecha: CORTE_FECHA }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { fb.style.color = '#16a34a'; fb.textContent = 'Fondo registrado.'; await cargarCorte(); }
+    else { fb.style.color = '#ef4444'; fb.textContent = d.error || 'No se pudo registrar el fondo'; }
+  } catch { fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión'; }
 }
 
 async function cerrarCorteDia() {

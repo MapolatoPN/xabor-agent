@@ -3736,16 +3736,25 @@ function fechaHoyMX() {
 
 app.post('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
   const { monto } = req.body;
-  if (!monto || isNaN(monto) || Number(monto) < 0) {
+  if (monto === undefined || monto === null || isNaN(monto) || Number(monto) < 0) {
     return res.status(400).json({ error: 'Monto inválido' });
   }
-  const fecha = fechaHoyMX();
+  // Día OPERATIVO del negocio (su zona horaria), y se admite indicar cuál:
+  // el fondo de un día que ya se cerró no se puede tocar -- eso reescribiría
+  // un arqueo firmado.
+  const tz = await zonaHorariaNegocio(req.negocioId);
+  const fecha = esFechaValida(req.body?.fecha) ? req.body.fecha : fechaOperativaHoy(tz);
+  const cerrado = await obtenerCorteCerrado(req.negocioId, fecha);
+  if (cerrado) {
+    return res.status(409).json({ error: `El corte del ${fecha} ya está cerrado (${cerrado.folio}): su fondo no se puede cambiar` });
+  }
   await guardarFondoCaja(fecha, Number(monto), req.negocioId);
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
 app.get('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
-  const fecha = fechaHoyMX();
+  const tz = await zonaHorariaNegocio(req.negocioId);
+  const fecha = esFechaValida(req.query?.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
   const registro = await obtenerFondoCaja(fecha, req.negocioId);
   res.json({ fecha, fondo: registro ? parseFloat(registro.fondo) : null });
 });

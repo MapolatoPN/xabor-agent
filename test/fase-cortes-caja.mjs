@@ -483,6 +483,21 @@ try {
     assert.match(calc, /dif !== 0 \? '' : 'none'/);
   });
 
+  await t('34. el fondo inicial se puede registrar desde la pantalla, y no en un día cerrado', () => {
+    const PANEL = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
+    // Sin poder capturar el fondo, el arqueo nunca cuadra: el módulo quedaría
+    // dependiendo de que alguien entre a la base.
+    assert.ok(PANEL.includes('function registrarFondoCaja'), 'falta el alta de fondo en la pantalla');
+    assert.match(PANEL, /id="btn-fondo-caja"/);
+    assert.match(PANEL, /'\/api\/caja\/fondo', \{ method: 'POST', body: JSON\.stringify\(\{ monto, fecha: CORTE_FECHA \}\) \}/,
+      'el fondo debe ir contra el día que se está viendo, no contra "hoy"');
+    // Y el backend rechaza tocar el fondo de un día ya cerrado.
+    assert.match(SERVIDOR, /El corte del \$\{fecha\} ya está cerrado \(\$\{cerrado\.folio\}\): su fondo no se puede cambiar/);
+    const ruta = SERVIDOR.slice(SERVIDOR.indexOf("app.post('/api/caja/fondo'"), SERVIDOR.indexOf("app.get('/api/caja/fondo'"));
+    assert.match(ruta, /zonaHorariaNegocio\(req\.negocioId\)/, 'el fondo debe usar el día operativo del negocio');
+    assert.ok(!/fechaHoyMX\(\)/.test(ruta), 'quedó la fecha con zona horaria fija');
+  });
+
 } catch (e) {
   console.error('ERROR FATAL EN LA SUITE:', e);
   fallidas++; fallos.push(`fatal: ${e.message}`);
