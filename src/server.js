@@ -45,6 +45,10 @@ import {
   estadoImpresion, listarTrabajos,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
+import {
+  calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
+  ticketCorte, zonaHorariaNegocio, fechaOperativaHoy, esFechaValida,
+} from './services/cortesCaja.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
@@ -3975,53 +3979,141 @@ app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
 // tiene UNIQUE(negocio_id, fecha) en vez de UNIQUE(fecha) global — dos
 // negocios pueden tener cada uno su propio fondo el mismo día sin
 // pisarse. Ver migrations/009_caja_fondos_por_negocio*.
+// ─── Cortes de caja (V1: cierres históricos) ───────────────────────────────
+//
+// El corte de un día ABIERTO se calcula vivo; el de un día CERRADO se lee del
+// snapshot y no se recalcula jamás. Esa distinción es todo el módulo: la
+// respuesta trae `cerrado: true|false` para que la pantalla nunca presente un
+// resumen vivo como si fuera un arqueo firmado.
 app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
-  const d = inicioDelDiaMX().toISOString();
-  const h = new Date().toISOString();
-  const [ventas, resumen, fondoReg] = await Promise.all([
-    obtenerVentas(d, h, req.negocioId),
-    obtenerResumenVentas(d, h, req.negocioId),
-    obtenerFondoCaja(fechaHoyMX(), req.negocioId)
-  ]);
-  const fondo = fondoReg ? parseFloat(fondoReg.fondo) : 0;
-  // Reingeniería UX: INGRESO COBRADO vs OPERACIÓN PENDIENTE. Un pedido
-  // abierto (por_cobrar sin pago_confirmado) NO entra al agrupado por forma
-  // de pago ni al efectivo esperado — aún no hay forma de pago real. Se
-  // reporta aparte en `pendiente` para que el corte lo muestre explícito.
-  const esPendiente = (v) => v.forma_pago === 'por_cobrar' && v.pago_confirmado !== true;
-  const porPago = {};
-  let pendienteNum = 0, pendienteTotal = 0;
-  (ventas || []).forEach(v => {
-    if (esPendiente(v)) {
-      pendienteNum++;
-      pendienteTotal += parseFloat(v.total || 0);
-      return;
+  try {
+    const tz = await zonaHorariaNegocio(req.negocioId);
+    const fecha = esFechaValida(req.query.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
+    const cerrado = await obtenerCorteCerrado(req.negocioId, fecha);
+    if (cerrado) {
+      const s = cerrado.snapshot_json || {};
+      return res.json({
+        cerrado: true, fecha_operativa: fecha, timezone: tz, folio: cerrado.folio,
+        cerrado_at: cerrado.cerrado_at, usuario: cerrado.usuario_nombre || null,
+        fondo_inicial: Number(cerrado.fondo_inicial),
+        ventas_totales: Number(cerrado.ventas_totales),
+        ventas_efectivo: Number(cerrado.ventas_efectivo),
+        ventas_tarjeta: Number(cerrado.ventas_tarjeta),
+        ventas_enlace: Number(cerrado.ventas_enlace),
+        ventas_otros: Number(cerrado.ventas_otros),
+        entradas: Number(cerrado.entradas), retiros: Number(cerrado.retiros),
+        gastos: Number(cerrado.gastos), devoluciones_efectivo: Number(cerrado.devoluciones_efectivo),
+        efectivo_esperado: Number(cerrado.efectivo_esperado),
+        efectivo_contado: cerrado.efectivo_contado === null ? null : Number(cerrado.efectivo_contado),
+        diferencia: Number(cerrado.diferencia), nota: cerrado.nota,
+        pedidos_count: cerrado.pedidos_count, cancelaciones_count: cerrado.cancelaciones_count,
+        devoluciones_total: Number(cerrado.devoluciones_total),
+        pendiente: s.pendiente || { num: 0, total: 0 },
+        detalle_formas: s.detalle_formas || {}, pedidos: s.pedidos || [],
+        movimientos: s.movimientos || [], cobros_dias_anteriores: s.cobros_dias_anteriores || [],
+        total_dia: Number(cerrado.ventas_totales), num_pedidos: cerrado.pedidos_count,
+      });
     }
-    const pago = v.forma_pago || 'no especificado';
-    if (!porPago[pago]) porPago[pago] = { count: 0, total: 0 };
-    porPago[pago].count++;
-    porPago[pago].total += parseFloat(v.total || 0);
-  });
-  const totalVentas = resumen.total_ventas || 0; // ya excluye por_cobrar (obtenerResumenVentas)
-  // Efectivo en caja = fondo inicial + ventas en efectivo COBRADAS
-  const ventasEfectivo = (porPago['efectivo']?.total || 0) + (porPago['Efectivo']?.total || 0);
-  res.json({
-    fecha: new Date().toLocaleDateString('es-MX', { timeZone: 'America/Matamoros', dateStyle: 'full' }),
-    fondo_inicial: fondo,
-    total_dia: totalVentas,
-    efectivo_esperado: fondo + ventasEfectivo,
-    num_pedidos: resumen.num_pedidos || 0,
-    pendiente: { num: pendienteNum, total: Math.round(pendienteTotal * 100) / 100 },
-    por_pago: porPago,
-    pedidos: (ventas || []).map(v => ({
-      folio: v.folio || '#'+v.id,
-      hora: new Date(v.created_at).toLocaleTimeString('es-MX', { timeZone: 'America/Matamoros', hour: '2-digit', minute: '2-digit', hour12: true }),
-      cliente: v.nombre_cliente || '—',
-      forma_pago: v.forma_pago || '—',
-      total: parseFloat(v.total || 0)
-    }))
-  });
+    const vivo = await calcularCorteVivo(req.negocioId, fecha);
+    res.json({ cerrado: false, ...vivo, total_dia: vivo.ventas_totales, num_pedidos: vivo.pedidos_count });
+  } catch (e) {
+    console.error('[Corte] GET:', e.message);
+    res.status(500).json({ error: 'No pudimos calcular el corte' });
+  }
 });
+
+app.get('/api/corte-caja/historial', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    res.json(await listarCortes(req.negocioId, { limite: req.query.limite }));
+  } catch (e) {
+    console.error('[Corte] historial:', e.message);
+    res.status(500).json({ error: 'No pudimos leer el historial de cortes' });
+  }
+});
+
+app.post('/api/corte-caja/movimientos', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const mov = await registrarMovimiento(req.negocioId, {
+      tipo: req.body?.tipo, monto: req.body?.monto, motivo: req.body?.motivo,
+      usuarioId: req.usuarioId, fecha: req.body?.fecha || null });
+    res.status(201).json(mov);
+  } catch (e) {
+    const codigos = { TIPO_INVALIDO: 400, MONTO_INVALIDO: 400, MOTIVO_REQUERIDO: 400, CORTE_CERRADO: 409 };
+    if (codigos[e.code]) return res.status(codigos[e.code]).json({ error: e.message });
+    console.error('[Corte] movimiento:', e.message);
+    res.status(500).json({ error: 'No pudimos registrar el movimiento' });
+  }
+});
+
+// Cerrar es IDEMPOTENTE: dos clicks devuelven el mismo corte con 200 y
+// `ya_existia: true`, nunca dos cortes ni un error confuso.
+app.post('/api/corte-caja/cerrar', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const { corte, yaExistia } = await cerrarCorte(req.negocioId, {
+      fecha: req.body?.fecha || null,
+      efectivoContado: req.body?.efectivo_contado,
+      nota: req.body?.nota || null,
+      usuarioId: req.usuarioId,
+    });
+    // La impresión NUNCA gobierna el cierre: el corte ya está asentado en la
+    // base antes de que se intente imprimir. Si la impresora está apagada, se
+    // informa y queda el botón de reimprimir.
+    const impresion = await imprimirCorte(req.negocioId, corte).catch(e => ({ error: e.message }));
+    res.json({ ok: true, ya_existia: yaExistia, corte, impresion });
+  } catch (e) {
+    if (e.code === 'CONTADO_INVALIDO') return res.status(400).json({ error: e.message });
+    console.error('[Corte] cerrar:', e.message);
+    res.status(500).json({ error: 'No pudimos cerrar el corte' });
+  }
+});
+
+app.get('/api/corte-caja/:fecha/ticket', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    if (!esFechaValida(req.params.fecha)) return res.status(400).json({ error: 'Fecha invalida' });
+    const corte = await obtenerCorteCerrado(req.negocioId, req.params.fecha);
+    if (!corte) return res.status(404).json({ error: 'Ese dia no tiene corte cerrado' });
+    const negocioNombre = await obtenerNombreNegocio(req.negocioId).catch(() => 'XABOR');
+    res.json({ folio: corte.folio, ticket: ticketCorte(corte, { negocioNombre: negocioNombre || 'XABOR' }) });
+  } catch (e) {
+    console.error('[Corte] ticket:', e.message);
+    res.status(500).json({ error: 'No pudimos armar el ticket' });
+  }
+});
+
+// Reimprimir NO crea otro corte ni recalcula nada: vuelve a mandar el mismo
+// papel, armado desde el mismo snapshot.
+app.post('/api/corte-caja/:fecha/imprimir', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    if (!esFechaValida(req.params.fecha)) return res.status(400).json({ error: 'Fecha invalida' });
+    const corte = await obtenerCorteCerrado(req.negocioId, req.params.fecha);
+    if (!corte) return res.status(404).json({ error: 'Ese dia no tiene corte cerrado' });
+    res.json({ ok: true, impresion: await imprimirCorte(req.negocioId, corte, { reimpresion: true }) });
+  } catch (e) {
+    console.error('[Corte] imprimir:', e.message);
+    res.status(500).json({ error: 'No pudimos enviar el corte a la impresora' });
+  }
+});
+
+// Un solo camino de impresión para cierre y reimpresión, y es el MISMO Xabor
+// Edge que imprime comandas y cuentas: documento 'corte_caja' ruteado a la
+// impresora que el negocio asignó a Caja. Sin sistema paralelo.
+async function imprimirCorte(negocioId, corte, { reimpresion = false } = {}) {
+  const negocioNombre = await obtenerNombreNegocio(negocioId).catch(() => 'XABOR');
+  const texto = ticketCorte(corte, { negocioNombre: negocioNombre || 'XABOR' });
+  const resumen = await crearTrabajosDeDocumento({
+    negocioId, documento: 'corte_caja',
+    origenTipo: 'corte_caja',
+    // La reimpresión es una intención NUEVA (debe salir otro papel), así que
+    // lleva su propio origenId; el cierre usa el id del corte para que un
+    // doble click no dispare dos impresiones.
+    origenId: reimpresion ? `${corte.id}:re:${Date.now()}` : corte.id,
+    payload: { folio: corte.folio, fecha_operativa: corte.fecha_operativa, texto, reimpresion },
+  });
+  return {
+    enviados: resumen.creados.length, duplicados: resumen.duplicados.length,
+    sin_ruta: resumen.sinRuta.length > 0, avisos: resumen.avisos, error: resumen.error,
+  };
+}
 
 // Control operativo por conversación. Admin y staff pueden usarlo; el
 // recurso se valida contra el negocio de la sesión antes de leer o escribir.

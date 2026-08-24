@@ -120,6 +120,8 @@ header {
 .tab-btn.activo {
   background: var(--color-brand-light); color: var(--color-brand); font-weight: 600;
 }
+.corte-atajo{background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 12px;font-size:0.82rem;color:#555;cursor:pointer;font-family:inherit;}
+.corte-atajo:hover{background:#f8f7f4;}
 .rep-fil-btn {
   border: none; background: none; padding: 5px 12px; border-radius: 6px;
   font-size: 0.8rem; font-weight: 600; cursor: pointer; color: #888; transition: all .15s;
@@ -1261,14 +1263,30 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Corte de caja -->
     <div id="vista-corte">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <div>
-          <div style="font-size:1.1rem;font-weight:800;color:#1a1a1a;" id="corte-fecha">—</div>
-          <div style="font-size:0.8rem;color:#aaa;">Resumen del día</div>
+      <!-- Selector de día operativo. El corte deja de ser "lo de hoy" y pasa
+           a ser el de un día concreto, que se puede revisar aunque ya haya
+           pasado. El estado (ABIERTO / CERRADO) va siempre a la vista: un
+           resumen vivo nunca debe parecer un arqueo firmado. -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="corteDia(-1)" title="Día anterior" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:1rem;">‹</button>
+          <div style="text-align:center;min-width:190px;">
+            <div style="font-size:1.05rem;font-weight:800;color:#1a1a1a;" id="corte-fecha">—</div>
+            <div style="font-size:0.75rem;" id="corte-estado">—</div>
+          </div>
+          <button onclick="corteDia(1)" id="corte-siguiente" title="Día siguiente" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:1rem;">›</button>
         </div>
-        <button onclick="cargarCorte()" style="background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:7px 14px;font-size:0.82rem;color:#555;cursor:pointer;">🔄 Actualizar</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button onclick="corteIrA(0)" class="corte-atajo">Hoy</button>
+          <button onclick="corteIrA(1)" class="corte-atajo">Ayer</button>
+          <button onclick="corteIrA(2)" class="corte-atajo">Antier</button>
+          <input type="date" id="corte-fecha-input" onchange="corteIrAFecha(this.value)" style="border:1px solid #e5e2da;border-radius:8px;padding:6px 8px;font-size:0.82rem;font-family:inherit;" />
+          <button onclick="cargarCorte()" class="corte-atajo">🔄</button>
+        </div>
       </div>
+
       <div id="corte-pagos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px;"></div>
+
       <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
           <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">FONDO INICIAL</div><div style="font-size:1.5rem;font-weight:800;color:#06d6a0;" id="corte-fondo">—</div></div>
@@ -1276,14 +1294,69 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
         <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
           <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">VENTAS DEL DÍA</div><div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div></div>
-          <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO EN CAJA</div><div style="font-size:2rem;font-weight:800;color:#22c55e;" id="corte-efectivo">$0</div></div>
+          <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO ESPERADO</div><div style="font-size:2rem;font-weight:800;color:#22c55e;" id="corte-efectivo">$0</div></div>
         </div>
       </div>
-      <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;">
+
+      <!-- ARQUEO. Lo que hace que esto sea un corte y no un reporte: se
+           cuenta el dinero, se compara con lo esperado y queda constancia. -->
+      <div id="corte-arqueo" style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:16px;">
+        <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:12px;">Arqueo de caja</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;align-items:end;">
+          <div>
+            <div style="font-size:0.78rem;color:#666;margin-bottom:4px;">Efectivo esperado</div>
+            <div style="font-size:1.35rem;font-weight:800;" id="arq-esperado">$0.00</div>
+          </div>
+          <div>
+            <label for="arq-contado" style="font-size:0.78rem;color:#666;display:block;margin-bottom:4px;">Efectivo contado</label>
+            <input id="arq-contado" type="number" step="0.01" min="0" placeholder="0.00" oninput="corteCalcularDiferencia()"
+                   style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:1rem;font-weight:700;box-sizing:border-box;" />
+          </div>
+          <div>
+            <div style="font-size:0.78rem;color:#666;margin-bottom:4px;">Diferencia</div>
+            <div style="font-size:1.35rem;font-weight:800;" id="arq-diferencia">—</div>
+          </div>
+        </div>
+        <div id="arq-nota-fila" style="margin-top:12px;display:none;">
+          <label for="arq-nota" style="font-size:0.78rem;color:#666;display:block;margin-bottom:4px;">Nota de la diferencia</label>
+          <input id="arq-nota" maxlength="200" placeholder="¿A qué se debió?" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;" />
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+          <button onclick="cerrarCorteDia()" id="btn-cerrar-corte" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:0.9rem;font-weight:700;cursor:pointer;">Cerrar corte</button>
+          <button onclick="verTicketCorte()" id="btn-ticket-corte" style="display:none;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:11px 18px;font-size:0.88rem;cursor:pointer;">🧾 Ver ticket</button>
+          <button onclick="reimprimirCorte()" id="btn-reimprimir-corte" style="display:none;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:11px 18px;font-size:0.88rem;cursor:pointer;">🖨️ Reimprimir</button>
+          <span id="corte-fb" style="font-size:0.85rem;"></span>
+        </div>
+      </div>
+
+      <!-- Movimientos de caja: lo mínimo para que el efectivo cuadre. -->
+      <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:16px;">
+        <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:12px;">Movimientos de caja</div>
+        <div id="corte-movimientos" style="margin-bottom:12px;"></div>
+        <div id="corte-mov-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <select id="mov-tipo" style="border:1px solid #e5e2da;border-radius:8px;padding:9px 10px;font-size:0.88rem;font-family:inherit;">
+            <option value="entrada">Entrada</option>
+            <option value="retiro">Retiro</option>
+            <option value="gasto">Gasto</option>
+          </select>
+          <input id="mov-monto" type="number" step="0.01" min="0.01" placeholder="Monto" style="width:110px;border:1px solid #e5e2da;border-radius:8px;padding:9px 10px;font-size:0.88rem;" />
+          <input id="mov-motivo" maxlength="120" placeholder="Motivo" style="flex:1;min-width:160px;border:1px solid #e5e2da;border-radius:8px;padding:9px 10px;font-size:0.88rem;" />
+          <button onclick="agregarMovimientoCaja()" style="background:#e8a020;color:#1c1c1c;border:none;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;">Agregar</button>
+        </div>
+        <div id="mov-fb" style="font-size:0.82rem;margin-top:8px;"></div>
+      </div>
+
+      <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;margin-bottom:16px;">
         <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Pedidos del día</div>
         <div id="corte-lista"></div>
       </div>
+
+      <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;">
+        <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Historial de cortes</div>
+        <div style="overflow-x:auto;"><div id="corte-historial"></div></div>
+      </div>
     </div>
+
 
     <!-- Historial -->
     <div id="vista-historial" style="display:none;">
@@ -5301,50 +5374,333 @@ async function enviarCotizacion(id) {
 }
 
 // ─── Corte de caja ───────────────────────────────────────────────────────────
+// ═══ Corte de caja ═════════════════════════════════════════════════════════
+// Un día ABIERTO muestra un resumen vivo; un día CERRADO muestra el snapshot
+// congelado. La pantalla nunca puede presentar uno como el otro: por eso el
+// estado se pinta arriba y el arqueo se bloquea en cuanto hay corte.
+let CORTE_FECHA = null;      // 'YYYY-MM-DD' del día que se está viendo
+let CORTE_DATA = null;       // última respuesta del servidor
+
+const pesosCorte = (n) => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function corteFechaLegible(f) {
+  if (!f) return '—';
+  const [y, m, d] = String(f).split('-').map(Number);
+  const meses = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
+  return `${d} ${meses[m - 1]} ${y}`;
+}
+function corteSumarDias(fecha, dias) {
+  const t = Date.parse(`${fecha}T12:00:00Z`) + dias * 86400000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+function corteHoyLocal() {
+  // Referencia del navegador solo para el selector; la verdad del día
+  // operativo la resuelve el servidor con la zona horaria del negocio.
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function corteDia(delta) { CORTE_FECHA = corteSumarDias(CORTE_FECHA || corteHoyLocal(), delta); cargarCorte(); }
+function corteIrA(diasAtras) { CORTE_FECHA = corteSumarDias(corteHoyLocal(), -diasAtras); cargarCorte(); }
+function corteIrAFecha(f) { if (f) { CORTE_FECHA = f; cargarCorte(); } }
+
 async function cargarCorte() {
-  document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando...</div>';
-  const data = await apiFetch('/api/corte-caja').then(r => r.json()).catch(() => null);
-  if (!data) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;">Error al cargar</div>'; return; }
+  const lista = document.getElementById('corte-lista');
+  if (lista) lista.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando…</div>';
+  const url = '/api/corte-caja' + (CORTE_FECHA ? `?fecha=${encodeURIComponent(CORTE_FECHA)}` : '');
+  const data = await apiFetch(url).then(r => r.json()).catch(() => null);
+  if (!data || data.error) {
+    if (lista) lista.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;">Error al cargar</div>';
+    return;
+  }
+  CORTE_DATA = data;
+  CORTE_FECHA = data.fecha_operativa;
+  const inp = document.getElementById('corte-fecha-input');
+  if (inp) inp.value = CORTE_FECHA;
+  const sig = document.getElementById('corte-siguiente');
+  if (sig) sig.disabled = CORTE_FECHA >= corteHoyLocal();
 
-  document.getElementById('corte-fecha').textContent    = data.fecha;
-  document.getElementById('corte-total').textContent    = '$' + parseFloat(data.total_dia||0).toFixed(2);
-  document.getElementById('corte-num').textContent      = data.num_pedidos || 0;
-  document.getElementById('corte-fondo').textContent    = data.fondo_inicial != null ? '$' + parseFloat(data.fondo_inicial).toFixed(2) : 'Sin registrar';
-  document.getElementById('corte-efectivo').textContent = '$' + parseFloat(data.efectivo_esperado||0).toFixed(2);
+  document.getElementById('corte-fecha').textContent = corteFechaLegible(CORTE_FECHA);
+  const est = document.getElementById('corte-estado');
+  est.innerHTML = data.cerrado
+    ? `<span style="color:#16a34a;font-weight:700;">● CERRADO · ${data.folio}</span>`
+    : '<span style="color:#b45309;font-weight:700;">○ ABIERTO · resumen en vivo</span>';
 
-  const pagoIcons = { 'efectivo': '💵', 'terminal (tarjeta presente)': '💳', 'enlace de pago': '🔗' };
-  // COBRADO por forma de pago. Los pedidos abiertos (por cobrar) NO entran
-  // aquí ni al efectivo esperado: van en su propia tarjeta.
-  const pagosHTML = Object.entries(data.por_pago || {}).map(([pago, info]) => `
-    <div class="pos-card" style="border-left:4px solid #e8a020;">
-      <div class="pos-card-label">${pagoIcons[pago]||'💰'} ${pago.charAt(0).toUpperCase()+pago.slice(1)}</div>
-      <div class="pos-card-value">$${info.total.toFixed(2)}</div>
-      <div style="font-size:0.75rem;color:#aaa;margin-top:2px;">${info.count} pedido${info.count!==1?'s':''}</div>
+  document.getElementById('corte-total').textContent = pesosCorte(data.ventas_totales);
+  document.getElementById('corte-num').textContent = data.pedidos_count || 0;
+  document.getElementById('corte-fondo').textContent = pesosCorte(data.fondo_inicial);
+  document.getElementById('corte-efectivo').textContent = pesosCorte(data.efectivo_esperado);
+
+  // Tarjetas por NATURALEZA del dinero: es la distinción que hace cuadrar la
+  // caja (tarjeta y enlace no ponen un peso en el cajón).
+  const naturalezas = [
+    ['Efectivo', data.ventas_efectivo, '💵', '#22c55e'],
+    ['Tarjeta', data.ventas_tarjeta, '💳', '#3b82f6'],
+    ['Clip / enlace', data.ventas_enlace, '🔗', '#8b5cf6'],
+    ['Otros', data.ventas_otros, '💰', '#6b7280'],
+  ].filter(([, monto]) => Number(monto) > 0);
+  let tarjetas = naturalezas.map(([nombre, monto, ico, color]) => `
+    <div class="pos-card" style="border-left:4px solid ${color};">
+      <div class="pos-card-label">${ico} ${nombre}</div>
+      <div class="pos-card-value">${pesosCorte(monto)}</div>
     </div>`).join('');
   const pend = data.pendiente || { num: 0, total: 0 };
-  const pendienteHTML = pend.num > 0 ? `
+  if (pend.num > 0) tarjetas += `
     <div class="pos-card" style="border-left:4px solid #f59e0b;background:#fffbeb;">
       <div class="pos-card-label">⏳ Por cobrar</div>
-      <div class="pos-card-value">$${parseFloat(pend.total||0).toFixed(2)}</div>
-      <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${pend.num} pedido${pend.num!==1?'s':''} sin cobrar — no suma al efectivo esperado</div>
-    </div>` : '';
-  document.getElementById('corte-pagos').innerHTML =
-    (pagosHTML + pendienteHTML) || '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas hoy</div>';
+      <div class="pos-card-value">${pesosCorte(pend.total)}</div>
+      <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${pend.num} pedido${pend.num !== 1 ? 's' : ''} sin cobrar — no suma al efectivo esperado</div>
+    </div>`;
+  const tardios = data.cobros_dias_anteriores || [];
+  if (tardios.length) tarjetas += `
+    <div class="pos-card" style="border-left:4px solid #8b5cf6;background:#faf5ff;">
+      <div class="pos-card-label">📅 Cobrado de días anteriores</div>
+      <div class="pos-card-value">${pesosCorte(tardios.reduce((s, c) => s + Number(c.monto || 0), 0))}</div>
+      <div style="font-size:0.75rem;color:#6b21a8;margin-top:2px;">${tardios.length} pago${tardios.length !== 1 ? 's' : ''} confirmado${tardios.length !== 1 ? 's' : ''} hoy de pedidos de otros días</div>
+    </div>`;
+  document.getElementById('corte-pagos').innerHTML = tarjetas ||
+    '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas este día</div>';
 
-  const lista = data.pedidos || [];
-  if (!lista.length) { document.getElementById('corte-lista').innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos hoy</div>'; return; }
-  document.getElementById('corte-lista').innerHTML = lista.map(p => `
+  pintarArqueoCorte(data);
+  pintarMovimientosCorte(data);
+
+  const pedidos = data.pedidos || [];
+  document.getElementById('corte-lista').innerHTML = pedidos.length ? pedidos.map(p => `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.88rem;">
       <div style="display:flex;gap:12px;align-items:center;flex:1;min-width:0;">
-        <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${p.hora}</span>
+        <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${corteHora(p.hora)}</span>
         <span style="font-weight:700;color:#1a1a1a;white-space:nowrap;">${p.folio}</span>
-        <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</span>
+        <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente || '—'}</span>
       </div>
       <div style="display:flex;gap:14px;align-items:center;flex-shrink:0;">
-        <span style="font-size:0.75rem;color:${p.forma_pago === 'por_cobrar' ? '#b45309' : '#aaa'};">${p.forma_pago === 'por_cobrar' ? '⏳ por cobrar' : p.forma_pago}</span>
-        <span style="font-weight:800;color:${p.forma_pago === 'por_cobrar' ? '#b45309' : '#22c55e'};">$${p.total.toFixed(2)}</span>
+        <span style="font-size:0.75rem;color:#aaa;">${p.forma_pago}</span>
+        <span style="font-weight:800;color:#22c55e;">${pesosCorte(p.total)}</span>
       </div>
-    </div>`).join('');
+    </div>`).join('')
+    : '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos cobrados este día</div>';
+
+  cargarHistorialCortes();
+}
+
+function corteHora(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true });
+  } catch { return ''; }
+}
+
+function pintarArqueoCorte(data) {
+  const esperado = document.getElementById('arq-esperado');
+  const contado = document.getElementById('arq-contado');
+  const btnCerrar = document.getElementById('btn-cerrar-corte');
+  const btnTicket = document.getElementById('btn-ticket-corte');
+  const btnReimp = document.getElementById('btn-reimprimir-corte');
+  const nota = document.getElementById('arq-nota');
+  esperado.textContent = pesosCorte(data.efectivo_esperado);
+  document.getElementById('corte-fb').textContent = '';
+
+  if (data.cerrado) {
+    // Un corte cerrado se lee, no se edita. Nada en esta pantalla puede
+    // reescribir un arqueo firmado.
+    contado.value = data.efectivo_contado === null ? '' : data.efectivo_contado;
+    contado.disabled = true;
+    if (nota) { nota.value = data.nota || ''; nota.disabled = true; }
+    document.getElementById('arq-nota-fila').style.display = data.nota ? '' : 'none';
+    btnCerrar.style.display = 'none';
+    btnTicket.style.display = '';
+    btnReimp.style.display = '';
+    pintarDiferenciaCorte(Number(data.diferencia) || 0, data.efectivo_contado !== null);
+  } else {
+    contado.disabled = false;
+    contado.value = '';
+    if (nota) { nota.value = ''; nota.disabled = false; }
+    btnCerrar.style.display = '';
+    btnTicket.style.display = 'none';
+    btnReimp.style.display = 'none';
+    corteCalcularDiferencia();
+  }
+}
+
+function pintarDiferenciaCorte(dif, hayConteo) {
+  const el = document.getElementById('arq-diferencia');
+  if (!hayConteo) { el.textContent = '—'; el.style.color = '#aaa'; return; }
+  const etiqueta = dif > 0 ? 'SOBRANTE' : dif < 0 ? 'FALTANTE' : 'CUADRADO';
+  const color = dif > 0 ? '#2563eb' : dif < 0 ? '#dc2626' : '#16a34a';
+  el.innerHTML = `<span style="color:${color};">${dif > 0 ? '+' : ''}${pesosCorte(dif)}</span>
+    <span style="font-size:0.75rem;font-weight:800;color:${color};display:block;">${etiqueta}</span>`;
+}
+
+function corteCalcularDiferencia() {
+  if (!CORTE_DATA || CORTE_DATA.cerrado) return;
+  const bruto = document.getElementById('arq-contado').value;
+  const hayConteo = bruto !== '' && bruto !== null;
+  const dif = hayConteo ? Math.round((Number(bruto) - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100 : 0;
+  pintarDiferenciaCorte(dif, hayConteo);
+  // Una diferencia NUNCA impide cerrar; solo pide una explicación.
+  document.getElementById('arq-nota-fila').style.display = hayConteo && dif !== 0 ? '' : 'none';
+}
+
+async function cerrarCorteDia() {
+  const btn = document.getElementById('btn-cerrar-corte');
+  const fb = document.getElementById('corte-fb');
+  const contado = document.getElementById('arq-contado').value;
+  const nota = document.getElementById('arq-nota')?.value || null;
+  if (!confirm(`¿Cerrar el corte del ${corteFechaLegible(CORTE_FECHA)}?\n\nUn corte cerrado ya no se recalcula ni admite movimientos nuevos.`)) return;
+  btn.disabled = true; btn.textContent = 'Cerrando…';
+  try {
+    const r = await apiFetch('/api/corte-caja/cerrar', {
+      method: 'POST',
+      body: JSON.stringify({ fecha: CORTE_FECHA, efectivo_contado: contado === '' ? null : Number(contado), nota }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      fb.style.color = '#16a34a';
+      const imp = d.impresion || {};
+      // La impresión no gobierna el cierre: si la impresora está apagada el
+      // corte igual quedó cerrado, y se dice con todas sus letras.
+      let aviso = d.ya_existia ? 'Este día ya estaba cerrado.' : `Corte cerrado (${d.corte?.folio || ''}).`;
+      if (imp.error || imp.sin_ruta) {
+        fb.style.color = '#b45309';
+        aviso += ' No se pudo imprimir — usa Reimprimir cuando la impresora esté lista.';
+      } else if (imp.enviados) {
+        aviso += ' Ticket enviado a la impresora.';
+      }
+      fb.textContent = aviso;
+      await cargarCorte();
+    } else {
+      fb.style.color = '#ef4444';
+      fb.textContent = d.error || 'No se pudo cerrar el corte';
+    }
+  } catch {
+    fb.style.color = '#ef4444';
+    fb.textContent = 'Error de conexión';
+  }
+  btn.disabled = false; btn.textContent = 'Cerrar corte';
+}
+
+function pintarMovimientosCorte(data) {
+  const cont = document.getElementById('corte-movimientos');
+  const form = document.getElementById('corte-mov-form');
+  const movs = data.movimientos || [];
+  const signo = { entrada: '+', retiro: '−', gasto: '−' };
+  const color = { entrada: '#16a34a', retiro: '#dc2626', gasto: '#dc2626' };
+  cont.innerHTML = movs.length ? movs.map(m => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f5f4f1;font-size:0.86rem;">
+      <div><b style="text-transform:capitalize;">${m.tipo}</b> <span style="color:#888;">${m.motivo || ''}</span>
+        ${m.usuario ? `<span style="color:#bbb;font-size:0.78rem;">· ${m.usuario}</span>` : ''}</div>
+      <b style="color:${color[m.tipo]};">${signo[m.tipo]}${pesosCorte(m.monto)}</b>
+    </div>`).join('')
+    : '<div style="color:#aaa;font-size:0.85rem;">Sin movimientos este día</div>';
+  // Un día cerrado no admite movimientos nuevos: agregarlos reescribiría un
+  // arqueo ya firmado.
+  form.style.display = data.cerrado ? 'none' : 'flex';
+  document.getElementById('mov-fb').textContent = '';
+}
+
+async function agregarMovimientoCaja() {
+  const fb = document.getElementById('mov-fb');
+  const tipo = document.getElementById('mov-tipo').value;
+  const monto = Number(document.getElementById('mov-monto').value);
+  const motivo = document.getElementById('mov-motivo').value.trim();
+  if (!Number.isFinite(monto) || monto <= 0) { fb.style.color = '#ef4444'; fb.textContent = 'El monto debe ser mayor que cero'; return; }
+  if (!motivo) { fb.style.color = '#ef4444'; fb.textContent = 'Escribe un motivo'; return; }
+  try {
+    const r = await apiFetch('/api/corte-caja/movimientos', {
+      method: 'POST', body: JSON.stringify({ tipo, monto, motivo, fecha: CORTE_FECHA }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      document.getElementById('mov-monto').value = '';
+      document.getElementById('mov-motivo').value = '';
+      await cargarCorte();
+    } else {
+      fb.style.color = '#ef4444';
+      fb.textContent = d.error || 'No se pudo registrar';
+    }
+  } catch {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión';
+  }
+}
+
+async function cargarHistorialCortes() {
+  const cont = document.getElementById('corte-historial');
+  if (!cont) return;
+  const lista = await apiFetch('/api/corte-caja/historial').then(r => r.json()).catch(() => []);
+  if (!Array.isArray(lista) || !lista.length) {
+    cont.innerHTML = '<div style="padding:18px;color:#aaa;font-size:0.85rem;">Todavía no hay cortes cerrados</div>';
+    return;
+  }
+  const dif = (d) => {
+    const n = Number(d) || 0;
+    const color = n > 0 ? '#2563eb' : n < 0 ? '#dc2626' : '#16a34a';
+    return `<span style="color:${color};font-weight:700;">${n > 0 ? '+' : ''}${pesosCorte(n)}</span>`;
+  };
+  cont.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:760px;">
+      <thead><tr style="background:#faf9f7;color:#888;text-align:left;">
+        <th style="padding:8px 12px;">Fecha</th><th style="padding:8px 12px;">Folio</th>
+        <th style="padding:8px 12px;">Ventas</th><th style="padding:8px 12px;">Efectivo</th>
+        <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Esperado</th>
+        <th style="padding:8px 12px;">Contado</th><th style="padding:8px 12px;">Diferencia</th>
+        <th style="padding:8px 12px;">Usuario</th><th style="padding:8px 12px;">Acciones</th>
+      </tr></thead>
+      <tbody>${lista.map(c => {
+        const f = String(c.fecha_operativa).slice(0, 10);
+        const electronico = Number(c.ventas_tarjeta || 0) + Number(c.ventas_enlace || 0) + Number(c.ventas_otros || 0);
+        return `<tr style="border-top:1px solid #f1f0ed;">
+          <td style="padding:8px 12px;font-weight:700;">${corteFechaLegible(f)}</td>
+          <td style="padding:8px 12px;color:#888;">${c.folio}</td>
+          <td style="padding:8px 12px;">${pesosCorte(c.ventas_totales)}</td>
+          <td style="padding:8px 12px;">${pesosCorte(c.ventas_efectivo)}</td>
+          <td style="padding:8px 12px;">${pesosCorte(electronico)}</td>
+          <td style="padding:8px 12px;">${pesosCorte(c.efectivo_esperado)}</td>
+          <td style="padding:8px 12px;">${c.efectivo_contado === null ? '<span style="color:#bbb;">sin contar</span>' : pesosCorte(c.efectivo_contado)}</td>
+          <td style="padding:8px 12px;">${dif(c.diferencia)}</td>
+          <td style="padding:8px 12px;color:#888;">${c.usuario_nombre || '—'}</td>
+          <td style="padding:8px 12px;white-space:nowrap;">
+            <button onclick="corteIrAFecha('${f}')" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:3px 9px;font-size:0.78rem;cursor:pointer;">Ver</button>
+            <button onclick="verTicketCorte('${f}')" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:3px 9px;font-size:0.78rem;cursor:pointer;">🧾</button>
+            <button onclick="reimprimirCorte('${f}')" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:3px 9px;font-size:0.78rem;cursor:pointer;">🖨️</button>
+          </td></tr>`;
+      }).join('')}</tbody></table>`;
+}
+
+async function verTicketCorte(fecha) {
+  const f = fecha || CORTE_FECHA;
+  const r = await apiFetch(`/api/corte-caja/${f}/ticket`).then(x => x.json()).catch(() => null);
+  if (!r || r.error) { alert(r?.error || 'No se pudo obtener el ticket'); return; }
+  const previo = document.getElementById('modal-ticket-corte');
+  if (previo) previo.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-ticket-corte';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:600;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:22px;max-width:420px;width:100%;max-height:86vh;overflow:auto;">
+      <div style="font-weight:800;margin-bottom:12px;">🧾 ${r.folio}</div>
+      <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.35;background:#faf9f7;border:1px solid #e5e2da;border-radius:8px;padding:14px;white-space:pre;overflow-x:auto;margin:0;">${r.ticket.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</pre>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button onclick="document.getElementById('modal-ticket-corte').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:10px;cursor:pointer;">Cerrar</button>
+        <button onclick="reimprimirCorte('${f}')" style="flex:1;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;">🖨️ Imprimir</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+// Reimprimir NO crea otro corte ni recalcula nada: vuelve a mandar el mismo
+// papel del mismo snapshot.
+async function reimprimirCorte(fecha) {
+  const f = fecha || CORTE_FECHA;
+  const fb = document.getElementById('corte-fb');
+  try {
+    const r = await apiFetch(`/api/corte-caja/${f}/imprimir`, { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    const imp = d.impresion || {};
+    if (r.ok && imp.enviados) { if (fb) { fb.style.color = '#16a34a'; fb.textContent = 'Ticket enviado a la impresora.'; } }
+    else if (r.ok) { if (fb) { fb.style.color = '#b45309'; fb.textContent = 'No hay impresora configurada para el corte (Configuración → Impresión).'; } }
+    else if (fb) { fb.style.color = '#ef4444'; fb.textContent = d.error || 'No se pudo imprimir'; }
+    if (!fb) alert(imp.enviados ? 'Ticket enviado a la impresora' : 'No se pudo imprimir');
+  } catch {
+    if (fb) { fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión'; }
+  }
 }
 
 // ─── Historial ───────────────────────────────────────────────────────────────

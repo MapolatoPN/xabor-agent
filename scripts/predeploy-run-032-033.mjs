@@ -67,6 +67,7 @@ const SCRIPTS = [
   // durable que garantice que llegue a cocina si el proceso muere antes de
   // terminar emitirPedido.
   '063-emision-operacional',
+  '064-cortes-caja',
 ];
 
 for (const nombre of SCRIPTS) {
