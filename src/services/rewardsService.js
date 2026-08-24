@@ -92,12 +92,39 @@ export async function actualizarConfig(tenantId = DEFAULT_TENANT, datos) {
 // coincide con el tenant que está inscribiendo -- el mismo teléfono puede
 // ser cliente "dueño" de otro negocio en `clientes` y aun así tener aquí
 // una cuenta de Rewards totalmente independiente para este tenant.
+/**
+ * Asegura que exista la fila de `clientes` a la que apunta la FK
+ * `rewards_accounts.telefono -> clientes(telefono)`.
+ *
+ * Por qué hace falta: un cliente de WhatsApp siempre tiene fila (la crea la
+ * conversación), pero uno que compra por POS, tienda web o Rappi puede no
+ * tenerla nunca. La acumulación entonces reventaba con
+ * `violates foreign key constraint rewards_accounts_telefono_fkey` y el
+ * cliente se quedaba sin sus puntos aunque el pedido y el cobro hubieran
+ * salido perfectos (incidente XAB-0180).
+ *
+ * Es DO NOTHING a propósito, no DO UPDATE: `clientes.telefono` es una PK
+ * GLOBAL con una columna negocio_id. Si ese teléfono ya existe porque compró
+ * en otro negocio, tocar la fila lo movería de negocio o le borraría el
+ * nombre. Aquí solo hace falta que la fila EXISTA para que la FK se cumpla;
+ * la identidad de Rewards es propia y vive en (telefono, tenant_id).
+ *
+ * Recibe el `client` de la transacción para que crear el cliente y acreditar
+ * los puntos sean el mismo acto: o pasan los dos, o no pasa ninguno.
+ */
+async function asegurarClienteParaRewards(ejecutor, telefono, nombre, tenantId) {
+  await ejecutor.query(
+    `INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
+     VALUES ($1, $2, NOW(), $3)
+     ON CONFLICT (telefono) DO NOTHING`,
+    [telefono, nombre || null, tenantId || null]);
+}
+
 export async function obtenerOCrearCuenta(telefono, nombre, tenantId = DEFAULT_TENANT) {
-  const { rows: [cliente] } = await pool.query(
-    'SELECT telefono FROM clientes WHERE telefono = $1',
-    [telefono]
-  );
-  if (!cliente) throw new Error(`[Rewards] Cliente ${telefono} no existe en tabla clientes`);
+  // Antes esto lanzaba "Cliente no existe" y dejaba el alta manual sin
+  // salida. Un teléfono que llega por aquí viene de una compra o de un alta
+  // deliberada: se asegura la fila y se sigue, con la misma regla de arriba.
+  await asegurarClienteParaRewards(pool, telefono, nombre, tenantId);
 
   // Conflicto en la UNIQUE (telefono, tenant_id) -- nunca en telefono solo:
   // el mismo teléfono en otro tenant_id no genera conflicto aquí, inserta
@@ -200,6 +227,12 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
   try {
     await client.query('BEGIN');
 
+    // La FK de rewards_accounts apunta a clientes: si ese teléfono nunca se
+    // dio de alta (compra por POS, tienda web o Rappi), el INSERT de abajo
+    // reventaría y el cliente perdería sus puntos. Se asegura primero, en la
+    // MISMA transacción.
+    await asegurarClienteParaRewards(client, telefono, pedido.cliente?.nombre, tenantId);
+
     // Obtener o crear cuenta
     const { rows: [cuentaBase] } = await client.query(
       `INSERT INTO rewards_accounts (telefono, tenant_id)
@@ -218,13 +251,21 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     const balanceAnterior  = cuenta.puntos_balance;
     const balancePosterior = balanceAnterior + puntos;
 
-    // Registrar movimiento — UNIQUE(tenant_id, folio_venta, tipo) impide duplicados
-    await client.query(
+    // Registrar movimiento. El índice único parcial
+    // (tenant_id, folio_venta, tipo) WHERE tipo IN ('acumulacion','canje')
+    // es la garantía real de "una compra = una acumulación": un webhook
+    // repetido, el reconciliador o un reintento no pueden acreditar dos
+    // veces. Se declara ON CONFLICT DO NOTHING para que ese caso sea un
+    // camino NORMAL y silencioso, en vez de una excepción que aborta la
+    // transacción y se pierde en un catch.
+    const movimiento = await client.query(
       `INSERT INTO rewards_movements
          (account_id, tenant_id, tipo, puntos, balance_anterior, balance_posterior,
           folio_venta, usuario, motivo, metadata)
        VALUES ($1, $2, 'acumulacion', $3, $4, $5, $6, 'sistema',
-               'Acumulación automática por venta', $7)`,
+               'Acumulación automática por venta', $7)
+       ON CONFLICT (tenant_id, folio_venta, tipo)
+         WHERE tipo IN ('acumulacion','canje') DO NOTHING`,
       [
         cuenta.id, tenantId, puntos,
         balanceAnterior, balancePosterior,
@@ -232,6 +273,14 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
         JSON.stringify({ total_venta: pedido.total, canal, cliente: telefono })
       ]
     );
+
+    if (movimiento.rowCount === 0) {
+      // Ya se había acreditado esta venta. Se confirma sin tocar el balance:
+      // el saldo del cliente no puede moverse dos veces por la misma compra.
+      await client.query('COMMIT');
+      console.log(`[Rewards] ${folio} ya tenía acumulación — no se acredita de nuevo`);
+      return { puntos: 0, balancePosterior: balanceAnterior, telefono, yaAcreditado: true };
+    }
 
     // Actualizar balance del cliente
     await client.query(
@@ -283,8 +332,10 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
       console.log(`[Rewards] Duplicado ignorado — ${folio} ya tenía acumulación`);
       return null;
     }
-    // Cualquier otro error: loguear con contexto suficiente para diagnóstico
-    console.error(`[Rewards] ❌ Error acumulando puntos — folio:${folio} cliente:${telefono}`, e.message);
+    // Cualquier otro error: línea estructurada y buscable. La acumulación es
+    // idempotente, así que volver a dispararla para ese folio es seguro y es
+    // la forma de recuperarla sin tocar la base a mano.
+    console.error(`[Rewards] FALLO_ACUMULACION folio=${folio} negocio=${tenantId} cliente=${telefono} code=${e.code || 'sin_code'} constraint=${e.constraint || '-'} :: ${e.message}`);
     throw e;
   } finally {
     client.release();
