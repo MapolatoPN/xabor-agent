@@ -120,6 +120,8 @@ header {
 .tab-btn.activo {
   background: var(--color-brand-light); color: var(--color-brand); font-weight: 600;
 }
+.corte-cifra{font-size:2rem;font-weight:800;line-height:1.1;}
+@media (max-width:640px){.corte-cifra{font-size:1.5rem;}}
 .corte-atajo{background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 12px;font-size:0.82rem;color:#555;cursor:pointer;font-family:inherit;}
 .corte-atajo:hover{background:#f8f7f4;}
 .rep-fil-btn {
@@ -1297,9 +1299,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           </div>
           <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">PEDIDOS</div><div style="font-size:1.5rem;font-weight:800;color:#FF6B35;" id="corte-num">0</div></div>
         </div>
-        <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
-          <div><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">VENTAS DEL DÍA</div><div style="font-size:2rem;font-weight:800;color:#fff;" id="corte-total">$0</div></div>
-          <div style="text-align:right;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO ESPERADO</div><div style="font-size:2rem;font-weight:800;color:#22c55e;" id="corte-efectivo">$0</div></div>
+        <div style="border-top:1px solid #333;padding-top:14px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="min-width:0;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">VENTAS DEL DÍA</div><div class="corte-cifra" style="color:#fff;" id="corte-total">$0</div></div>
+          <div style="text-align:right;min-width:0;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO ESPERADO</div><div class="corte-cifra" style="color:#22c55e;" id="corte-efectivo">$0</div></div>
         </div>
       </div>
 
