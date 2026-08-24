@@ -537,7 +537,11 @@ function tarjetaProducto(p) {
       <div class="prod-precio">${dinero(p.precio)}</div>
     </div>
     ${p.imagen
-      ? `<img class="prod-img" src="${esc(p.imagen)}" alt="" loading="lazy">`
+      // onerror: si la foto ya no existe (se borró del storage, o la URL
+      // externa se cayó), la tarjeta se convierte en el placeholder de
+      // siempre en vez de mostrar el icono de imagen rota del navegador.
+      ? `<img class="prod-img" src="${esc(p.imagen)}" alt="" loading="lazy"
+             onerror="this.outerHTML='<div class=\'prod-img prod-img-vacia\' aria-hidden=\'true\'></div>'">`
       : (hayFotosEnCatalogo() ? '<div class="prod-img prod-img-vacia" aria-hidden="true"></div>' : '')}
   </button>`;
 }
@@ -602,7 +606,8 @@ function abrirProducto(id, indiceEdicion = -1) {
   $('btn-agregar').firstChild.textContent = indiceEdicion >= 0 ? 'Actualizar ' : 'Agregar ';
 
   const partes = [];
-  if (p.imagen) partes.push(`<img src="${esc(p.imagen)}" alt="" style="width:100%;height:190px;object-fit:cover">`);
+  // Misma regla en el detalle: una foto rota se quita, no se muestra rota.
+  if (p.imagen) partes.push(`<img src="${esc(p.imagen)}" alt="" style="width:100%;height:190px;object-fit:cover" onerror="this.remove()">`);
   if (p.descripcion) partes.push(`<p style="padding:14px 16px 0;margin:0;font-size:14px;color:var(--texto-2)">${esc(p.descripcion)}</p>`);
   partes.push(`<div style="padding:12px 16px;font-size:17px;font-weight:800">${dinero(p.precio)}</div>`);
 

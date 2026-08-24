@@ -206,8 +206,15 @@ try {
     const conFoto = menu.flatMap(c => c.productos).find(p => p.id === ids['FP Louisiana']);
     assert.match(conFoto.imagen, new RegExp(`^/img/producto/${ids['FP Louisiana']}\\?v=[a-zA-Z0-9]+$`));
     // El POS solo pinta la miniatura si hay foto: sin ella, la tarjeta de siempre.
-    assert.match(PANEL_HTML, /\$\{p\.imagen \? `<img class="pos-prod-img"[^`]*loading="lazy">` : ''\}/);
+    assert.match(PANEL_HTML, /\$\{p\.imagen \? `<img class="pos-prod-img"[^`]*loading="lazy"[^`]*>` : ''\}/);
     assert.match(PANEL_HTML, /\.pos-prod-img \{/);
+  });
+
+  await t('10b. una foto rota en el POS se quita en vez de mostrarse rota', () => {
+    // Un producto cuya imagen se borró del storage no puede dejar el icono
+    // de imagen rota del navegador en la rejilla de venta.
+    assert.match(PANEL_HTML, /pos-prod-img[^`]*onerror="this\.remove\(\)"/,
+      'la miniatura del POS debe desaparecer si la URL ya no sirve');
   });
 
   await t('11. la tienda en línea muestra la misma foto', async () => {
