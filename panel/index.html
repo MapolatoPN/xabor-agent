@@ -4305,7 +4305,7 @@ async function renderMenuPOS() {
     <div class="pos-productos-grid">
       ${cat.productos.filter(p => p.disponible).map(p => `
         <button class="pos-producto" onclick="elegirProductoPOS('${cat.id}','${p.id}')">
-          ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy">` : ''}
+          ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy" onerror="this.remove()">` : ''}
           <div class="pos-prod-nombre">${p.nombre}${(p.modificadores && p.modificadores.length) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</div>
           <div class="pos-prod-precio">$${parseFloat(p.precio).toFixed(0)}</div>
         </button>`).join('')}
@@ -8618,7 +8618,37 @@ function rappiPreciosCambio() {
   const pct = Number(pctInput?.value || 0);
   const base = rpPrecioMuestra;
   const enRappi = precioRappiPreview(base, estrategia, pct);
-  preview.innerHTML = `Precio Xabor: <b>$${Math.round(base)}</b> &nbsp;→&nbsp; Precio Rappi: <b style="color:#ff441b;">$${enRappi}</b>`;
+  // Comparación de las TRES estrategias con el mismo precio y la misma
+  // comisión. Sin verlas juntas es imposible ver por qué "aumentar 25%" no
+  // es lo mismo que "recuperar 25%": la comisión se cobra sobre el precio
+  // PUBLICADO, así que subir 25% deja un neto menor al del mostrador.
+  const pctComparar = Number.isFinite(pct) && pct > 0 && pct <= RP_PORCENTAJE_MAXIMO ? pct : 25;
+  const filas = [
+    ['precio_base', 'Mismo precio'],
+    ['sumar_porcentaje', `Aumentar ${pctComparar}%`],
+    ['recuperar_comision', 'Recuperar comisión'],
+  ].map(([clave, etiqueta]) => {
+    const publicado = precioRappiPreview(base, clave, pctComparar);
+    const neto = Math.round(publicado * (1 - pctComparar / 100));
+    const conserva = neto >= Math.round(base);
+    const activa = clave === estrategia;
+    return `<tr style="${activa ? 'background:#fff7ed;font-weight:700;' : ''}">
+      <td style="padding:4px 8px;">${activa ? '▸ ' : ''}${etiqueta}</td>
+      <td style="padding:4px 8px;text-align:right;">$${publicado}</td>
+      <td style="padding:4px 8px;text-align:right;color:${conserva ? '#16a34a' : '#b45309'};">$${neto}${conserva ? ' ✓' : ''}</td>
+    </tr>`;
+  }).join('');
+  preview.innerHTML = `
+    <div style="margin-bottom:8px;">Precio Xabor: <b>$${Math.round(base)}</b> · comisión estimada <b>${pctComparar}%</b></div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+      <thead><tr style="color:#999;font-size:0.75rem;text-transform:uppercase;letter-spacing:.4px;">
+        <th style="padding:2px 8px;text-align:left;">Estrategia</th>
+        <th style="padding:2px 8px;text-align:right;">En Rappi</th>
+        <th style="padding:2px 8px;text-align:right;">Te queda</th>
+      </tr></thead>
+      <tbody>${filas}</tbody>
+    </table>
+    <div style="font-size:0.72rem;color:#aaa;margin-top:6px;">"Te queda" es el neto estimado después de la comisión. ✓ marca las que conservan tu ingreso.</div>`;
 
   let texto = '';
   if (estrategia === 'precio_base') {
