@@ -6,6 +6,7 @@ import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
+import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
@@ -113,6 +114,10 @@ function encolarMensaje(clave, texto, procesarFn) {
   }, 6000);
 }
 
+// Imagen entrante: la foto se archiva para el chat del panel Y sigue al bot.
+// Las piezas puras (marca del turno, agrupación, texto de fallback) viven en
+// utils/turnoImagen.js -- sin dependencias, para poder probarlas sin
+// levantar el servidor entero.
 const router = Router();
 
 // Fase A (aislamiento de WhatsApp): getPhoneNumberId()/getAccessToken()
@@ -531,10 +536,31 @@ async function manejarDocumentoEntrante(message, negocioId, nombreMeta) {
 // así que en la práctica nunca bloquea a un negocio real por esto, pero
 // el chequeo se deja explícito por si algún negocio lo suspende.
 async function manejarImagenEntrante(message, negocioId, nombreMeta) {
+  const telefonoCliente = message.from;
+  // Fallback determinista, sin modelo: no se puede ver la foto, así que lo
+  // único honesto es decirlo y preguntar. Devuelve null para que el webhook
+  // corte -- pero habiendo contestado, nunca en silencio.
+  const responderYCortar = async (motivo) => {
+    try {
+      const cred = await obtenerCredencialesWhatsappNegocio(negocioId);
+      if (cred) {
+        await enviarMensaje(telefonoCliente, TEXTO_FALLBACK_IMAGEN, cred);
+        await guardarMensaje(telefonoCliente, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
+      } else {
+        console.warn(`[Meta WA] Imagen en ${negocioId}: sin credenciales, no se pudo enviar el fallback (${motivo})`);
+      }
+    } catch (e) {
+      console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} motivo=${motivo} :: ${e.message}`);
+    }
+    return null;
+  };
+
   const habilitado = await moduloHabilitado(negocioId, 'chat_imagenes');
   if (!habilitado) {
-    console.log(`[Meta WA] Imagen recibida pero chat_imagenes no está habilitado para el negocio ${negocioId} — descartada`);
-    return;
+    // Módulo apagado significa "no archives la foto", nunca "ignora al
+    // cliente": se le contesta igual.
+    console.log(`[Meta WA] Imagen sin chat_imagenes en el negocio ${negocioId} — no se archiva, pero se responde`);
+    return responderYCortar('modulo_apagado');
   }
 
   const telefono  = message.from;
@@ -545,8 +571,8 @@ async function manejarImagenEntrante(message, negocioId, nombreMeta) {
   const filename  = `imagen-${wamid}`;
 
   if (!mediaId || !mimeType.startsWith('image/')) {
-    console.log(`[Meta WA] Imagen de tipo no soportado (${mimeType || 'desconocido'}) para negocio ${negocioId} — descartada`);
-    return;
+    console.log(`[Meta WA] Imagen de tipo no soportado (${mimeType || 'desconocido'}) en ${negocioId} — no se archiva, pero se responde`);
+    return responderYCortar('mime_no_soportado');
   }
 
   if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
@@ -555,21 +581,30 @@ async function manejarImagenEntrante(message, negocioId, nombreMeta) {
   const msg = await guardarMensaje(telefono, nombreMeta, 'entrante', caption ? `📷 ${caption}` : '📷 Imagen', negocioId, 'cliente', wamid, 'imagen', documento.id);
   if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
 
+  // La descarga es para el CHAT DEL PANEL (que el dueño vea la foto). Que
+  // falle no cambia lo que se le contesta al cliente: el bot no puede ver la
+  // imagen de todos modos, así que el turno sigue su curso igual. Antes un
+  // fallo aquí hacía `return` y se llevaba la respuesta por delante.
   try {
     const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
     if (!credenciales?.accessToken) {
       await marcarDocumentoError(documento.id, 'sin_credenciales');
       if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: false, motivo: 'sin_credenciales' });
-      return;
+    } else {
+      const { buffer } = await descargarMediaDeMeta(mediaId, credenciales);
+      const resultado = await procesarImagenEntranteDescargada(documento.id, negocioId, telefono, buffer);
+      if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: resultado.ok, motivo: resultado.motivo });
     }
-    const { buffer } = await descargarMediaDeMeta(mediaId, credenciales);
-    const resultado = await procesarImagenEntranteDescargada(documento.id, negocioId, telefono, buffer);
-    if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: resultado.ok, motivo: resultado.motivo });
   } catch (e) {
-    console.error(`[Meta WA] Error descargando imagen del negocio ${negocioId}:`, e.message);
-    await marcarDocumentoError(documento.id, 'error_descarga');
+    console.error(`[Meta WA] FALLO_DESCARGA_IMAGEN negocio=${negocioId} :: ${e.message}`);
+    await marcarDocumentoError(documento.id, 'error_descarga').catch(() => {});
     if (wsBroadcast) wsBroadcast(negocioId, { tipo: 'documento_actualizado', documentoId: documento.id, ok: false, motivo: 'error_descarga' });
   }
+
+  // El turno que seguirá al bot. Con caption es una pregunta real del
+  // cliente ("¿tienen este combo?") que el agente puede contestar con el
+  // menú; sin caption, la cola de 6s resolverá el fallback.
+  return turnoDeImagen(caption);
 }
 
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
@@ -1495,13 +1530,19 @@ router.post('/', async (req, res) => {
       await manejarDocumentoEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
       return;
     }
+    // La imagen se archiva para el chat del panel y ADEMÁS sigue al flujo
+    // del bot: antes se hacía `return` aquí y el cliente quedaba en
+    // silencio. manejarImagenEntrante devuelve el texto del turno (marca +
+    // caption) o null si ya respondió por su cuenta (módulo apagado, tipo
+    // no soportado): en ese caso sí se corta, pero habiendo contestado.
+    let turnoImagen = null;
     if (message.type === 'image') {
-      await manejarImagenEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
-      return;
+      turnoImagen = await manejarImagenEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
+      if (turnoImagen === null) return;
     }
 
     const telefono   = message.from;
-    const texto      = message.text.body;
+    const texto      = turnoImagen !== null ? turnoImagen : message.text.body;
     const messageId  = message.id;
     const nombreMeta = value.contacts?.[0]?.profile?.name || '';
 
@@ -1593,8 +1634,21 @@ router.post('/', async (req, res) => {
     // Procesamiento con Claude — debounced 6 segundos
     // Si el cliente manda varios mensajes seguidos, se combinan en uno
     console.log(`[Meta WA] Bot de WhatsApp activo para el negocio ${negocioId} — encolando para procesar con IA`);
-    encolarMensaje(`${negocioId}:${telefono}`, texto, (textoCombinado) => {
-      procesarConClaude(telefono, textoCombinado, nombreMeta, negocioId);
+    encolarMensaje(`${negocioId}:${telefono}`, texto, async (textoCombinado) => {
+      // INVARIANTE: este turno termina en un mensaje al cliente, siempre.
+      // Si en los 6 segundos solo llegaron fotos y ninguna palabra, el
+      // modelo no tiene nada que interpretar (no ve imágenes): se contesta
+      // con el texto determinista, en vez de callar o de inventar.
+      if (soloImagenes(textoCombinado)) {
+        try {
+          await enviarMensaje(telefono, TEXTO_FALLBACK_IMAGEN, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
+        } catch (e) {
+          console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
+        }
+        return;
+      }
+      procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado), nombreMeta, negocioId);
     });
 
   } catch (error) {
