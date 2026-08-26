@@ -112,8 +112,11 @@ t('10. el webhook YA NO corta el flujo al recibir una imagen', () => {
     'la imagen vuelve a terminar en un return incondicional: el cliente queda mudo');
   assert.ok(/turnoImagen = await manejarImagenEntrante\(/.test(webhook),
     'el manejador debe devolver el turno para que siga al bot');
-  assert.ok(/if \(turnoImagen === null\) return;/.test(webhook),
-    'solo se corta cuando el manejador YA respondió por su cuenta');
+  // Contrato smoke C: el manejador ya no tiene un camino "yo respondí,
+  // corta" -- devuelve turno SIEMPRE y la única que responde es la cola al
+  // vencer la ventana.
+  assert.ok(!/if \(turnoImagen === null\) return;/.test(webhook),
+    'reapareció el corte por respuesta paralela del manejador');
 });
 
 t('11. el turno de la imagen entra a la MISMA cola que el texto', () => {
@@ -143,20 +146,24 @@ t('12. la cola garantiza respuesta: agente o fallback, nunca nada', () => {
 t('13. módulo apagado y MIME no soportado responden, ya no descartan', () => {
   assert.ok(!/chat_imagenes no está habilitado[\s\S]{0,140}?\n\s*return;\n/.test(manejador),
     'con el módulo apagado se vuelve a descartar en silencio');
-  assert.ok(/return responderYCortar\('modulo_apagado'\)/.test(manejador));
-  assert.ok(/return responderYCortar\('mime_no_soportado'\)/.test(manejador));
-  // Ambas salidas mandan el fallback antes de cortar.
-  const helper = manejador.slice(manejador.indexOf('const responderYCortar'), manejador.indexOf('const habilitado'));
-  assert.ok(/enviarMensaje\(telefonoCliente, TEXTO_FALLBACK_IMAGEN/.test(helper));
-  assert.ok(/return null;/.test(helper), 'debe señalar al webhook que ya contestó');
+  // Contrato smoke C: esas salidas ya no contestan por su cuenta (eso era
+  // una respuesta paralela con la ventana de 6s todavía abierta) --
+  // devuelven el turno y la cola decide al vencer, igual que el camino
+  // normal. Lo único que cambia entre caminos es si la foto se archiva.
+  assert.strictEqual((manejador.match(/return turnoDeImagen\(caption\);/g) || []).length, 3,
+    'módulo apagado, MIME no soportado y camino normal deben devolver turno');
+  assert.ok(!/responderYCortar/.test(manejador), 'el helper de respuesta paralela debe estar eliminado');
+  assert.ok(!/return null;/.test(manejador), 'ya no existe el camino "ya contesté yo"');
 });
 
 t('14. un fallo de descarga NO se lleva la respuesta por delante', () => {
-  // Antes: `return` dentro del try/catch de descarga -> silencio.
-  const descarga = manejador.slice(manejador.indexOf('const credenciales = await obtenerCredencialesWhatsappNegocio'));
-  assert.ok(!/sin_credenciales'\);[\s\S]{0,200}?\n\s*return;/.test(descarga),
-    'un fallo de credenciales vuelve a cortar la respuesta');
-  assert.ok(/return turnoDeImagen\(caption\);/.test(manejador),
+  // Antes: `return` dentro del try/catch de descarga -> silencio. Ahora la
+  // descarga vive en un IIFE en segundo plano: sus `return` internos cortan
+  // la DESCARGA, nunca el turno, porque el turno se devuelve fuera del IIFE.
+  const iife = manejador.slice(manejador.indexOf('(async () => {'), manejador.indexOf('})();'));
+  assert.ok(/descargarMediaDeMeta/.test(iife), 'la descarga debe vivir en el segundo plano');
+  assert.ok(/sin_credenciales/.test(iife), 'el fallo de credenciales se maneja dentro del segundo plano');
+  assert.ok(/return turnoDeImagen\(caption\);/.test(manejador.slice(manejador.indexOf('})();'))),
     'pase lo que pase con la descarga, el turno debe seguir al bot');
   // Y el error queda observable y sanitizado (sin teléfono ni media_id).
   assert.ok(/FALLO_DESCARGA_IMAGEN negocio=/.test(manejador), 'el fallo debe dejar rastro buscable');
