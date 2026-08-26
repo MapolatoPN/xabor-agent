@@ -42,6 +42,7 @@ const {
   visionHabilitada, analizarImagenCliente, analizarImagenesDeTurno,
   construirBloqueContextoVisual, validarAnalisisVisual, reiniciarCacheVision,
   normalizarImagenParaVision, PROMPT_VISION, SCHEMA_ANALISIS, VISION_MAX_IMAGENES_POR_TURNO,
+  PROMPT_VISION_V2_BASE, SCHEMA_ANALISIS_V2,
 } = await import('../src/agent/vision.js');
 const { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN, NOTA_IMAGEN_PARA_IA } =
   await import('../src/utils/turnoImagen.js');
@@ -471,11 +472,13 @@ await t('ADV. prompt injection dentro de la imagen: se CITA, jamás se obedece',
 await t('ADV2. el contexto visual JAMÁS entra como system: solo turno de usuario', async () => {
   // En la llamada de VISIÓN, el system es el prompt del analizador y la
   // imagen/caption van como user:
+  // V2: el system es el prompt universal (base fija + contexto del
+  // negocio); el contenido de la imagen sigue entrando SOLO como user.
   mock.responder = (body) => {
-    assert.strictEqual(body.system, PROMPT_VISION, 'el system de visión es el prompt del analizador, fijo');
+    assert.ok(body.system.startsWith(PROMPT_VISION_V2_BASE), 'el system de visión arranca con la base universal fija');
     assert.strictEqual(body.messages[0].role, 'user');
     assert.strictEqual(body.messages[0].content[0].type, 'image');
-    assert.deepStrictEqual(body.output_config, { format: { type: 'json_schema', schema: SCHEMA_ANALISIS } }, 'structured output declarado');
+    assert.deepStrictEqual(body.output_config, { format: { type: 'json_schema', schema: SCHEMA_ANALISIS_V2 } }, 'structured output V2 declarado');
     return respuestaDeAnalisis(analisisBase());
   };
   const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-sys', imagen: FIX.flyerCombo, mimeType: 'image/png', caption: 'hola' });
