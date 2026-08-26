@@ -222,7 +222,11 @@ await t('M. el manejador nunca responde por su cuenta: decide la cola', () => {
     'manejarImagenEntrante vuelve a enviar el fallback en paralelo, con la ventana todavia abierta');
   assert.ok(!/return null;/.test(manejador),
     'ya no existe el camino "ya conteste yo": el manejador siempre devuelve turno');
-  assert.strictEqual((manejador.match(/return turnoDeImagen\(caption\);/g) || []).length, 3,
+  // Vision V1: el camino archivado devuelve la marca CON el id del
+  // documento (turnoDeImagen(caption, documento.id)) para que el analisis
+  // sepa que archivo mirar; los otros dos caminos no archivan nada y
+  // siguen sin id. El contrato real es el mismo: TRES returns de turno.
+  assert.strictEqual((manejador.match(/return turnoDeImagen\(caption(?:, documento\.id)?\);/g) || []).length, 3,
     'los tres caminos (modulo apagado, mime no soportado, normal) deben devolver turno');
 });
 

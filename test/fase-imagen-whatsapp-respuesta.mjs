@@ -130,7 +130,9 @@ t('12. la cola garantiza respuesta: agente o fallback, nunca nada', () => {
   const cola = webhook.slice(webhook.indexOf('encolarMensaje(`${negocioId}'));
   assert.ok(/if \(soloImagenes\(textoCombinado\)\)/.test(cola), 'falta la rama del fallback');
   assert.ok(/TEXTO_FALLBACK_IMAGEN/.test(cola), 'el fallback debe enviarse de verdad');
-  assert.ok(/procesarConClaude\(telefono, prepararTurnoParaIA\(textoCombinado\)/.test(cola),
+  // Vision V1: el turno puede llevar ademas los contextos visuales del
+  // analisis (segundo argumento); la limpieza de la marca es la misma.
+  assert.ok(/procesarConClaude\(telefono, prepararTurnoParaIA\(textoCombinado, contextosVisuales\)/.test(cola),
     'el turno debe limpiarse antes de ir al modelo');
   // El fallback se ENVÍA una sola vez (aparece dos veces en el código: al
   // enviarlo y al guardarlo en el chat, que es lo correcto).
@@ -150,7 +152,9 @@ t('13. módulo apagado y MIME no soportado responden, ya no descartan', () => {
   // una respuesta paralela con la ventana de 6s todavía abierta) --
   // devuelven el turno y la cola decide al vencer, igual que el camino
   // normal. Lo único que cambia entre caminos es si la foto se archiva.
-  assert.strictEqual((manejador.match(/return turnoDeImagen\(caption\);/g) || []).length, 3,
+  // Vision V1: el camino archivado lleva el id del documento en la marca
+  // (turnoDeImagen(caption, documento.id)); los que no archivan, no.
+  assert.strictEqual((manejador.match(/return turnoDeImagen\(caption(?:, documento\.id)?\);/g) || []).length, 3,
     'módulo apagado, MIME no soportado y camino normal deben devolver turno');
   assert.ok(!/responderYCortar/.test(manejador), 'el helper de respuesta paralela debe estar eliminado');
   assert.ok(!/return null;/.test(manejador), 'ya no existe el camino "ya contesté yo"');
@@ -163,7 +167,7 @@ t('14. un fallo de descarga NO se lleva la respuesta por delante', () => {
   const iife = manejador.slice(manejador.indexOf('(async () => {'), manejador.indexOf('})();'));
   assert.ok(/descargarMediaDeMeta/.test(iife), 'la descarga debe vivir en el segundo plano');
   assert.ok(/sin_credenciales/.test(iife), 'el fallo de credenciales se maneja dentro del segundo plano');
-  assert.ok(/return turnoDeImagen\(caption\);/.test(manejador.slice(manejador.indexOf('})();'))),
+  assert.ok(/return turnoDeImagen\(caption, documento\.id\);/.test(manejador.slice(manejador.indexOf('})();'))),
     'pase lo que pase con la descarga, el turno debe seguir al bot');
   // Y el error queda observable y sanitizado (sin teléfono ni media_id).
   assert.ok(/FALLO_DESCARGA_IMAGEN negocio=/.test(manejador), 'el fallo debe dejar rastro buscable');

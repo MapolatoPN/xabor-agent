@@ -6,7 +6,8 @@ import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
-import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
+import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
+import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
 import { encolarMensaje } from '../utils/colaMensajes.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
@@ -24,6 +25,10 @@ import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from
 import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } from '../services/documentos.js';
 import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '../services/imagenes.js';
 import { getIntegracion } from '../server.js';
+
+// Vision V1 recibe aqui su resolver de credencial (misma precedencia que
+// brain.js: config del panel -> env) para no acoplar vision.js a server.js.
+configurarVision({ resolverApiKey: () => getIntegracion('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '' });
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
 import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
@@ -590,7 +595,7 @@ async function manejarImagenEntrante(message, negocioId, nombreMeta) {
   // El turno que seguirá al bot, DE INMEDIATO: la foto entra a la cola
   // dentro de la misma ventana en la que llegó, que es lo que permite
   // agruparla con el texto que la acompaña (antes o después).
-  return turnoDeImagen(caption);
+  return turnoDeImagen(caption, documento.id);
 }
 
 // ─── Marcar mensaje como leído (mejora UX) ───────────────────────────────────
@@ -1641,7 +1646,24 @@ router.post('/', async (req, res) => {
         }
         return;
       }
-      procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado), nombreMeta, negocioId);
+      // Vision V1 (fuera del camino del webhook: esto ya corre al vencer
+      // la cola). Si el negocio tiene vision_imagenes activo y el turno
+      // trae fotos archivadas, se analizan (max 2) y cada marca se
+      // sustituye por su [CONTEXTO VISUAL]; cualquier fallo -- flag
+      // apagado, descarga incompleta, proveedor caido, output invalido --
+      // deja ESA foto con la nota de siempre. Una sola llamada al agente,
+      // una sola respuesta: la decision agente-vs-fallback ya se tomo
+      // arriba y vision no la reabre.
+      let contextosVisuales = null;
+      try {
+        const docIds = documentosDelTurno(textoCombinado);
+        if (docIds.length && await visionHabilitada(negocioId)) {
+          contextosVisuales = await analizarImagenesDeTurno(negocioId, docIds);
+        }
+      } catch (e) {
+        console.error(`[VISION] fallback negocio=${negocioId} :: ${e.message}`);
+      }
+      procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
     });
 
   } catch (error) {
