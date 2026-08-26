@@ -49,7 +49,16 @@ const USD_POR_MTOK_OUTPUT = 5.0;
 // ─── Límites V1 ─────────────────────────────────────────────────────────────
 export const VISION_MAX_IMAGENES_POR_TURNO = 2;
 export const VISION_LADO_MAXIMO_PX = 1568;       // recomendado por el proveedor: legible sin desperdiciar tokens
-const VISION_TIMEOUT_MS = () => (Number(process.env.VISION_TIMEOUT_MS) > 0 ? Number(process.env.VISION_TIMEOUT_MS) : 20_000);
+// max_tokens de la LLAMADA DE VISION (no toca a Brain). El smoke real de
+// Alora produjo invalid_output con una generacion cercana al limite de
+// 1024: el schema V2 con una foto real llena arrays largos. 2048 es techo,
+// no costo: se factura solo el output efectivamente generado.
+export const VISION_MAX_TOKENS = 2048;
+// 40s de techo tecnico: la PRIMERA llamada con un schema nuevo paga la
+// compilacion del structured output (cache 24h del proveedor) y el smoke
+// real la midio en >20s. No es una promesa de UX: es para no abortar un
+// analisis que si iba a llegar.
+const VISION_TIMEOUT_MS = () => (Number(process.env.VISION_TIMEOUT_MS) > 0 ? Number(process.env.VISION_TIMEOUT_MS) : 40_000);
 const VISION_ESPERA_DESCARGA_MS = () => (Number(process.env.VISION_ESPERA_DESCARGA_MS) > 0 ? Number(process.env.VISION_ESPERA_DESCARGA_MS) : 8_000);
 const VISION_MAX_REINTENTOS = 1;                 // un solo reintento de red; jamás loops
 
@@ -435,6 +444,17 @@ function validarAnalisisVisualV2(a) {
   return a;
 }
 
+// Razon corta (para telemetria) de por que un output no valido. Nunca
+// devuelve contenido: solo una etiqueta.
+function razonInvalidez(texto) {
+  const limpio = String(texto ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let obj;
+  try { obj = JSON.parse(limpio); } catch { return 'json_no_parseable'; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 'no_es_objeto';
+  if (obj.version !== VERSION_ANALISIS && obj.version !== VERSION_ANALISIS_V2) return `version_desconocida_${obj.version}`;
+  return `campos_invalidos_v${obj.version}`;
+}
+
 // ─── El analizador (Fase 3) ─────────────────────────────────────────────────
 /**
  * Analiza UNA imagen. Devuelve { ok:true, analisis, cacheHit } o
@@ -473,7 +493,7 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
     try {
       respuesta = await getAnthropicVision().messages.create({
         model: MODELO_VISION,
-        max_tokens: 1024,
+        max_tokens: VISION_MAX_TOKENS,
         system: construirPromptVision(contextoNegocio),
         output_config: { format: { type: 'json_schema', schema: SCHEMA_ANALISIS_V2 } },
         messages: [{
@@ -488,8 +508,16 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
     } catch (e) {
       ultimoError = e;
       const status = e?.status ?? null;
-      const reint = intento < VISION_MAX_REINTENTOS && (status === 429 || status === 500 || status === 502 || status === 503 || status === 529 || e?.name === 'APIConnectionError' || e?.name === 'APIConnectionTimeoutError');
-      console.error(`[VISION] ${status === 429 ? 'rate_limited' : (e?.name || '').includes('Timeout') ? 'timeout' : 'provider_error'} negocio=${negocioId.slice(0, 8)} media=${media} status=${status ?? 'red'} intento=${intento + 1}`);
+      // SDK 0.30: TODAS sus clases de error tienen name === 'Error'
+      // (comprobado en el smoke real de Alora: el timeout se clasifico
+      // como provider_error y NO reintento). instanceof es lo unico
+      // confiable. Reintentable: timeout, fallo de conexion y
+      // 429/5xx/529 transitorios. Un 4xx permanente (schema/auth) jamas.
+      const esTimeout = e instanceof Anthropic.APIConnectionTimeoutError;
+      const esConexion = e instanceof Anthropic.APIConnectionError;
+      const reint = intento < VISION_MAX_REINTENTOS &&
+        (esTimeout || esConexion || status === 429 || status === 500 || status === 502 || status === 503 || status === 529);
+      console.error(`[VISION] ${esTimeout ? 'timeout' : status === 429 ? 'rate_limited' : 'provider_error'} negocio=${negocioId.slice(0, 8)} media=${media} status=${status ?? 'red'} clase=${e?.constructor?.name || 'desconocida'} intento=${intento + 1} reintenta=${reint}`);
       if (!reint) break;
     }
   }
@@ -501,7 +529,12 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
   const textoRespuesta = respuesta.content?.[0]?.text ?? '';
   const analisis = validarAnalisisVisual(textoRespuesta);
   if (!analisis) {
-    console.error(`[VISION] invalid_output negocio=${negocioId.slice(0, 8)} media=${media}`);
+    // Telemetria de diagnostico SANITIZADA: stop_reason + usage + longitud
+    // + razon, jamas el contenido generado. Con esto, un truncamiento por
+    // max_tokens (stop_reason=max_tokens) se distingue inequivocamente de
+    // un problema de schema/parser (stop_reason=end_turn).
+    const bloques = (respuesta.content || []).map(b => b?.type || '?').join(',');
+    console.error(`[VISION] invalid_output negocio=${negocioId.slice(0, 8)} media=${media} ms=${Date.now() - inicio} modelo=${respuesta.model ?? MODELO_VISION} stop_reason=${respuesta.stop_reason ?? 'n/d'} tokens_in=${respuesta.usage?.input_tokens ?? 'n/d'} tokens_out=${respuesta.usage?.output_tokens ?? 'n/d'} bloques=${bloques || 'ninguno'} len=${textoRespuesta.length} razon=${razonInvalidez(textoRespuesta)}`);
     return { ok: false, motivo: 'output_invalido' };
   }
 

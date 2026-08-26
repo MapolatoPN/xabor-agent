@@ -36,7 +36,7 @@ const {
   visionHabilitada, analizarImagenCliente, analizarImagenesDeTurno,
   construirBloqueContextoVisual, validarAnalisisVisual, reiniciarCacheVision,
   construirPromptVision, obtenerContextoNegocioVision, guiaDeGiro, GUIAS_POR_GIRO,
-  PROMPT_VISION_V2_BASE, SCHEMA_ANALISIS_V2, VERSION_ANALISIS_V2,
+  PROMPT_VISION_V2_BASE, SCHEMA_ANALISIS_V2, VERSION_ANALISIS_V2, VISION_MAX_TOKENS,
 } = await import('../src/agent/vision.js');
 const { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN, NOTA_IMAGEN_PARA_IA } =
   await import('../src/utils/turnoImagen.js');
@@ -542,6 +542,142 @@ await t('UPGRADE. V1→V2 con flag ya activo: sin reinicio, sin fila nueva, sin 
   // 5) Cero migraciones: vision.js no toca esquema.
   const V = readFileSync(join(RAIZ, 'src', 'agent', 'vision.js'), 'utf8');
   assert.ok(!/CREATE TABLE|ALTER TABLE/i.test(V));
+});
+
+// ═══ ROBUSTEZ DE LA LLAMADA REAL (fix del smoke de Alora) ═══════════════════
+// El smoke real fallo dos veces: timeout exacto de 20s sin reintento (el
+// SDK 0.30 pone name='Error' en TODAS sus clases, la condicion por nombre
+// jamas matcheaba) e invalid_output sin telemetria (generacion cercana al
+// limite de 1024 tokens con una foto real). Estos contratos fijan el fix.
+const capturarLogs = async (fn) => {
+  const logs = [];
+  const oL = console.log, oE = console.error;
+  console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
+  try { await fn(); } finally { console.log = oL; console.error = oE; }
+  return logs;
+};
+
+await t('RB1. la llamada de visión usa max_tokens=2048 (solo visión, Brain intacto)', async () => {
+  assert.strictEqual(VISION_MAX_TOKENS, 2048);
+  let visto = null;
+  mock.responder = (body) => { visto = body.max_tokens; return respuestaV2(analisisV2()); };
+  const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb1', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.ok(r.ok);
+  assert.strictEqual(visto, 2048, 'el proveedor debe recibir el techo nuevo');
+  const BRAIN = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8');
+  assert.ok(/max_tokens: 1024/.test(BRAIN), 'Brain conserva su max_tokens de siempre');
+});
+
+await t('RB2-RB4. timeout: clase real del SDK reconocida, UN reintento, análisis final', async () => {
+  // 1er intento: mas lento que VISION_TIMEOUT_MS (600ms en la suite) ->
+  // APIConnectionTimeoutError real del SDK; 2o intento: responde.
+  let llamadas = 0;
+  mock.responder = () => (++llamadas === 1)
+    ? { ...respuestaV2(analisisV2()), delayMs: 2000 }
+    : respuestaV2(analisisV2());
+  const logs = await capturarLogs(async () => {
+    const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb2', imagen: FIX.generica, mimeType: 'image/png' });
+    assert.ok(r.ok, 'el timeout aislado debe recuperarse con UN reintento');
+    assert.strictEqual(r.analisis.version, 2);
+  });
+  assert.strictEqual(llamadas, 2, 'exactamente dos intentos');
+  assert.ok(logs.some(l => /\[VISION\] timeout .*clase=APIConnectionTimeoutError.*reintenta=true/.test(l)),
+    'el timeout debe clasificarse por su clase REAL y marcarse reintentable');
+  // Y ambos timeouts -> fallback, sin tercer intento:
+  llamadas = 0;
+  mock.responder = () => { llamadas++; return { ...respuestaV2(analisisV2()), delayMs: 2000 }; };
+  const r2 = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb4', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.strictEqual(r2.ok, false);
+  await dormir(2500);   // deja aterrizar las respuestas tardias del mock
+  assert.strictEqual(llamadas, 2, 'maximo un reintento, jamas loops');
+});
+
+await t('RB5-RB6. 429 y 5xx transitorios reintentan y se recuperan', async () => {
+  for (const status of [429, 503]) {
+    reiniciarCacheVision();
+    let llamadas = 0;
+    mock.responder = () => (++llamadas === 1)
+      ? { status, body: { type: 'error', error: { type: 'transitorio' } } }
+      : respuestaV2(analisisV2());
+    const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: `media-rb5-${status}`, imagen: FIX.generica, mimeType: 'image/png' });
+    assert.ok(r.ok, `${status} aislado debe recuperarse`);
+    assert.strictEqual(llamadas, 2);
+  }
+});
+
+await t('RB7. 4xx permanente NO reintenta (schema/auth no se martillea)', async () => {
+  let llamadas = 0;
+  mock.responder = () => { llamadas++; return { status: 400, body: { type: 'error', error: { type: 'invalid_request_error' } } }; };
+  const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb7', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(llamadas, 1, 'un 400 permanente jamas se reintenta');
+});
+
+await t('RB8. invalid_output por truncamiento: stop_reason/usage/len diagnosticables, sin contenido', async () => {
+  const jsonTruncado = JSON.stringify(analisisV2()).slice(0, 900);   // se corto a media generacion
+  mock.responder = () => ({ status: 200, body: {
+    id: 'msg', type: 'message', role: 'assistant', model: 'claude-haiku-4-5-20251001',
+    content: [{ type: 'text', text: jsonTruncado }], stop_reason: 'max_tokens',
+    usage: { input_tokens: 1300, output_tokens: 1024 },
+  } });
+  const logs = await capturarLogs(async () => {
+    const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb8', imagen: FIX.generica, mimeType: 'image/png' });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.motivo, 'output_invalido');
+  });
+  const linea = logs.find(l => l.includes('[VISION] invalid_output'));
+  assert.ok(linea, 'debe existir la linea de diagnostico');
+  assert.ok(/stop_reason=max_tokens/.test(linea), 'el truncamiento queda inequivoco');
+  assert.ok(/tokens_in=1300 tokens_out=1024/.test(linea), 'el usage ya no se pierde');
+  assert.ok(/len=900/.test(linea) && /razon=json_no_parseable/.test(linea));
+  assert.ok(!linea.includes('arreglo floral'), 'el contenido generado jamas se loguea');
+});
+
+await t('RB9. invalid_output con stop_reason=end_turn: diagnosticable como schema/parser', async () => {
+  mock.responder = () => ({ status: 200, body: {
+    id: 'msg', type: 'message', role: 'assistant', model: 'claude-haiku-4-5-20251001',
+    content: [{ type: 'text', text: JSON.stringify({ version: 7, sorpresa: true }) }], stop_reason: 'end_turn',
+    usage: { input_tokens: 1300, output_tokens: 40 },
+  } });
+  const logs = await capturarLogs(async () => {
+    const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb9', imagen: FIX.generica, mimeType: 'image/png' });
+    assert.strictEqual(r.ok, false);
+  });
+  const linea = logs.find(l => l.includes('[VISION] invalid_output'));
+  assert.ok(/stop_reason=end_turn/.test(linea));
+  assert.ok(/razon=version_desconocida_7/.test(linea), 'la razon distingue schema/parser de truncamiento');
+});
+
+await t('RB10. success sigue registrando usage y costo estimado', async () => {
+  const logs = await capturarLogs(async () => {
+    const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-rb10', imagen: FIX.generica, mimeType: 'image/png' });
+    assert.ok(r.ok);
+  });
+  assert.ok(logs.some(l => /\[VISION\] success .*tokens_in=1250 tokens_out=260 usd_est=0\.00/.test(l)));
+});
+
+await t('RB11. primer intento falla, segundo funciona: UNA respuesta CON contexto', async () => {
+  let llamadas = 0;
+  mock.responder = () => (++llamadas === 1)
+    ? { status: 503, body: { type: 'error', error: { type: 'overloaded' } } }
+    : respuestaV2(analisisV2());
+  const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+  const c = crearCanal();
+  c.imagen(docId, '¿pueden hacer algo así?');
+  await c.esperarTurno();
+  assert.strictEqual(c.outbounds.length, 1, 'el retry no puede duplicar la respuesta');
+  assert.ok(c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'), 'el analisis del reintento SI llega al agente');
+});
+
+await t('RB12. ambos intentos fallan: fallback único con la nota, jamás silencio', async () => {
+  mock.responder = () => ({ status: 503, body: { type: 'error', error: { type: 'overloaded' } } });
+  const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+  const c = crearCanal();
+  c.imagen(docId, '¿pueden hacer esto?');
+  await c.esperarTurno();
+  assert.strictEqual(c.outbounds.length, 1);
+  assert.ok(c.outbounds[0].texto.includes(NOTA_IMAGEN_PARA_IA));
+  assert.ok(!c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'));
 });
 
 // ═══ VERACIDAD Y ARQUITECTURA ═══════════════════════════════════════════════
