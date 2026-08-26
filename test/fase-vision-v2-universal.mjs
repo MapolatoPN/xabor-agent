@@ -452,6 +452,98 @@ await t('53. fallo total de visión: la nota de siempre, jamás silencio', async
   assert.ok(c.outbounds[0].texto.includes(NOTA_IMAGEN_PARA_IA));
 });
 
+// ═══ HUECOS CERRADOS EN EL GATE PRE-DEPLOY ══════════════════════════════════
+await t('6b. textura: el prompt la pide y una textura extraída viaja al agente', () => {
+  assert.ok(/texturas/.test(PROMPT_VISION_V2_BASE), 'el prompt universal debe pedir texturas');
+  const a = analisisV2({
+    materiales: ['cartón kraft texturizado', 'papel rugoso'],
+    contenedor: { tipo: 'caja', material: 'cartón', detalles: ['acabado mate', 'textura corrugada'] },
+  });
+  const b = construirBloqueContextoVisual(validarAnalisisVisual(a));
+  assert.ok(/cartón kraft texturizado/.test(b), 'la textura del material se pierde');
+  assert.ok(/textura corrugada/.test(b), 'la textura del contenedor se pierde');
+});
+
+await t('22b-25b. variantes florales: ramo, caja floral, florero y tipo jardín RENDERIZAN', () => {
+  const variantes = [
+    ['ramo', 'papel_ramo', 'compacto/redondo'],
+    ['caja_floral', 'caja', 'ordenado/moderno'],
+    ['florero', 'florero_vidrio', 'vertical/clasico'],
+    ['arreglo_evento', 'base_ceramica', 'tipo jardín/silvestre'],
+  ];
+  for (const [tipo, cont, estilo] of variantes) {
+    const a = analisisV2({
+      contenedor: { tipo: cont, material: null, detalles: [] },
+      atributos_especializados: {
+        vertical: 'floreria',
+        atributos: [
+          { clave: 'tipo_arreglo', valor: tipo },
+          { clave: 'estilo_floral', valor: estilo },
+        ],
+      },
+    });
+    const v = validarAnalisisVisual(a);
+    assert.ok(v, `variante ${tipo} debe validar`);
+    const b = construirBloqueContextoVisual(v);
+    assert.ok(b.includes(`tipo_arreglo: ${tipo}`), `falta tipo_arreglo ${tipo} en el bloque`);
+    assert.ok(b.includes(cont), `falta el contenedor ${cont}`);
+    assert.ok(b.includes(`estilo_floral: ${estilo}`), `falta el estilo ${estilo}`);
+  }
+});
+
+await t('ALORA. flag ON sin fila de giro (estado post-deploy): turno completo con core universal', async () => {
+  // NEG_B es exactamente el estado en que quedaría Alora si se desplegara
+  // V2 sin tocar nada: vision_imagenes='true' y CERO fila 'giro'.
+  const sistemas = [];
+  mock.responder = (body) => {
+    sistemas.push(body.system);
+    return respuestaV2(analisisV2({ atributos_especializados: { vertical: null, atributos: [] } }));
+  };
+  const { docId } = await crearImagenLista(NEG_B, FIX.bolsaKraftFloral);
+  const c = crearCanal(NEG_B);
+  c.imagen(docId, '¿pueden hacer algo así?');
+  await c.esperarTurno();
+  assert.strictEqual(c.outbounds.length, 1, 'una sola respuesta, sin romper el turno');
+  assert.ok(c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'), 'el análisis core sí corre');
+  assert.ok(!/atributos \(/.test(c.outbounds[0].texto), 'sin giro no se inventan atributos especializados');
+  assert.strictEqual(sistemas.length, 1, 'una sola llamada al proveedor (structured output no falló)');
+  assert.ok(!/GIRO /.test(sistemas[0]), 'sin fila de giro no viaja ninguna guía de vertical');
+  assert.ok(sistemas[0].startsWith(PROMPT_VISION_V2_BASE), 'el prompt base universal se usa igual');
+});
+
+await t('UPGRADE. V1→V2 con flag ya activo: sin reinicio, sin fila nueva, sin migración', async () => {
+  // 1) El flag viejo (puesto en tiempos de V1) habilita V2 tal cual: se
+  //    lee de la DB en cada turno -- no hay caché de proceso que reiniciar.
+  assert.strictEqual(await visionHabilitada(NEG_B), true, 'la fila vieja del flag basta');
+  // 2) Un output formato V1 (proveedor rezagado, reintento en vuelo) no
+  //    rompe: valida, se cachea y renderiza.
+  mock.responder = () => ({
+    status: 200,
+    body: { ...respuestaV2(analisisV2()).body, content: [{ type: 'text', text: JSON.stringify({
+      version: 1, tipo: 'promocion', descripcion: 'Flyer', texto_visible: [],
+      productos_detectados: [], precios_visibles: [], marca_visible: null,
+      fecha_visible: null, vigencia_visible: null, requiere_validacion: true,
+      incertidumbres: [], confianza_general: 0.8,
+    }) }] },
+  });
+  const rV1 = await analizarImagenCliente({ negocioId: NEG_B, mediaId: 'media-upgrade-v1', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.ok(rV1.ok, 'un análisis V1 en vuelo no puede romper el upgrade');
+  assert.ok(construirBloqueContextoVisual(rV1.analisis).includes('[CONTEXTO VISUAL]'));
+  // 3) El cache mixto convive: ese V1 cacheado + un V2 nuevo en el mismo proceso.
+  mock.responder = () => respuestaV2(analisisV2());
+  const rV2 = await analizarImagenCliente({ negocioId: NEG_B, mediaId: 'media-upgrade-v2', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.ok(rV2.ok && rV2.analisis.version === 2);
+  const rCache = await analizarImagenCliente({ negocioId: NEG_B, mediaId: 'media-upgrade-v1', imagen: FIX.generica, mimeType: 'image/png' });
+  assert.strictEqual(rCache.cacheHit, true, 'el cache con entradas V1 sigue sirviendo');
+  // 4) Documentos archivados ANTES del upgrade siguen siendo analizables
+  //    (crearImagenLista usa el mismo pipeline que produjo los existentes) y
+  //    una conversación en curso con marca sin id cae a la nota, como siempre.
+  assert.ok(prepararTurnoParaIA(turnoDeImagen('hola')).includes(NOTA_IMAGEN_PARA_IA));
+  // 5) Cero migraciones: vision.js no toca esquema.
+  const V = readFileSync(join(RAIZ, 'src', 'agent', 'vision.js'), 'utf8');
+  assert.ok(!/CREATE TABLE|ALTER TABLE/i.test(V));
+});
+
 // ═══ VERACIDAD Y ARQUITECTURA ═══════════════════════════════════════════════
 await t('V1. Vision describe, Brain conversa: sin respuesta final en el schema', () => {
   const claves = JSON.stringify(SCHEMA_ANALISIS_V2);
