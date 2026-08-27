@@ -1111,6 +1111,30 @@ export async function guardarPedido(telefono, pedido, negocioId) {
   }
 }
 
+// ─── Registro local de facturación por pedido ───────────────────────────────
+// La emisión de CFDI (Facturapi, vía panel o WhatsApp) no dejaba rastro
+// local: el UUID se devolvía al cliente y se descartaba. facturas_pedido es
+// el enlace pedido→factura que faltaba, y la fuente con la que los ajustes
+// de cierre bloquean ventas facturadas. Se registra EN EL MOMENTO de emitir
+// -- el único punto veraz. NUNCA lanza: la factura ya existe en el proveedor
+// y no puede deshacerse; si el registro falla queda constancia CRÍTICA en el
+// log (ese pedido aparecería como no facturado ante los ajustes).
+export async function registrarFacturaEmitida({ negocioId, folio, facturaId = null, uuid = null, total = null, fuente }) {
+  try {
+    if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('negocioId requerido');
+    if (typeof folio !== 'string' || !folio.trim()) throw new Error('folio requerido');
+    if (!['panel', 'whatsapp'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
+    await pool.query(
+      `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [negocioId.trim(), folio.trim(), facturaId, uuid, total, fuente]);
+    return true;
+  } catch (e) {
+    console.error(`[DB] CRÍTICO: factura emitida SIN registro local (folio=${folio}, factura=${facturaId}): ${e.message}`);
+    return false;
+  }
+}
+
 // ─── Historial de pedidos entregados ─────────────────────────────────────────
 // negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
 export async function obtenerPedidosEntregados(limite = 100, negocioId) {

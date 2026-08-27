@@ -1244,6 +1244,14 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.', credenciales);
         } else {
           const factura = await generarFactura(pedido, datosFactura);
+          // Registro local pedido→factura (bloqueo de ajustes de cierre).
+          // Nunca lanza: la factura ya existe en el proveedor.
+          const { registrarFacturaEmitida: _rfe } = await import('../services/database.js');
+          await _rfe({
+            negocioId, folio: String(pedido.folio || pedido.id || datosFactura.folio || ''),
+            facturaId: factura.id || null, uuid: factura.uuid || null,
+            total: pedido.total ?? null, fuente: 'whatsapp',
+          });
           if (datosFactura.email) await enviarFacturaPorEmail(factura.id, datosFactura.email).catch(() => {});
           const msgFactura = datosFactura.email
             ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
