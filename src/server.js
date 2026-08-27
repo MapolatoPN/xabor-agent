@@ -53,6 +53,10 @@ import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
   ticketCorte, zonaHorariaNegocio, fechaOperativaHoy, esFechaValida,
 } from './services/cortesCaja.js';
+import {
+  ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
+  revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
+} from './services/ajustesCierre.js';
 import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
@@ -4113,6 +4117,70 @@ app.post('/api/corte-caja/:fecha/imprimir', requireAuthSeguro, requireModulo('ca
     console.error('[Corte] imprimir:', e.message);
     res.status(500).json({ error: 'No pudimos enviar el corte a la impresora' });
   }
+});
+
+// ─── Ajustes de cierre semanal ──────────────────────────────────────────────
+// Revisión de ventas NO facturadas de una semana operativa y registro de
+// descuentos/bonificaciones/cortesías/devoluciones/ajustes. SOLO admin: un
+// ajuste administrativo cambia cifras del reporte financiero. La venta
+// original y los cortes cerrados jamás se tocan (ver ajustesCierre.js).
+const CODIGOS_AJUSTES_400 = new Set([
+  'FECHA_INVALIDA', 'FOLIOS_REQUERIDOS', 'FOLIOS_DUPLICADOS', 'FOLIO_INVALIDO',
+  'TIPO_INVALIDO', 'MODO_INVALIDO', 'VALOR_INVALIDO', 'PORCENTUAL_INDIVIDUAL',
+  'MOTIVO_REQUERIDO', 'OBJETIVO_REQUERIDO',
+]);
+function responderErrorAjuste(res, e, contexto) {
+  if (CODIGOS_AJUSTES_400.has(e.code)) return res.status(400).json({ error: e.message, code: e.code });
+  // Conflicto de carrera preview→commit: merece su propio estado para que la
+  // UI lo distinga de un error de captura.
+  if (e.code === 'FACTURADA_TRAS_PREVIEW' || e.code === 'SELECCION_NO_ELEGIBLE') {
+    return res.status(409).json({ error: e.message, code: e.code, rechazos: e.rechazos || [] });
+  }
+  console.error(`[Ajustes] ${contexto}:`, e.message);
+  res.status(500).json({ error: 'Error en ajustes de cierre' });
+}
+
+app.get('/api/admin/ajustes-cierre/semana', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const [datos, ajustes] = await Promise.all([
+      ventasDeSemana(req.negocioId, req.query.fecha || null),
+      ajustesDeSemana(req.negocioId, req.query.fecha || null),
+    ]);
+    res.json({ ...datos, ajustes, tipos: TIPOS_AJUSTE, modos: MODOS_AJUSTE });
+  } catch (e) { responderErrorAjuste(res, e, 'semana'); }
+});
+
+app.post('/api/admin/ajustes-cierre/preview', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const { fecha, folios, tipo, modo, valor, motivo } = req.body || {};
+    res.json(await previewAjuste(req.negocioId, { fecha, folios, tipo, modo, valor, motivo }));
+  } catch (e) { responderErrorAjuste(res, e, 'preview'); }
+});
+
+app.post('/api/admin/ajustes-cierre/aplicar', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const { fecha, folios, tipo, modo, valor, motivo } = req.body || {};
+    const r = await aplicarAjuste(req.negocioId, { fecha, folios, tipo, modo, valor, motivo }, req.usuarioId || null);
+    res.json({ ok: true, ...r });
+  } catch (e) { responderErrorAjuste(res, e, 'aplicar'); }
+});
+
+app.post('/api/admin/ajustes-cierre/revertir', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const { ajusteId, loteId, motivo } = req.body || {};
+    const r = await revertirAjuste(req.negocioId, { ajusteId, loteId, motivo, usuarioId: req.usuarioId || null });
+    if (r.revertidos === 0) return res.status(404).json({ error: 'No hay ajustes aplicados con ese identificador' });
+    res.json({ ok: true, ...r });
+  } catch (e) { responderErrorAjuste(res, e, 'revertir'); }
+});
+
+app.get('/api/admin/ajustes-cierre/semana.csv', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    const { nombre, csv } = await csvSemana(req.negocioId, req.query.fecha || null);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=${nombre}`);
+    res.send('\ufeff' + csv);
+  } catch (e) { responderErrorAjuste(res, e, 'csv'); }
 });
 
 // Un solo camino de impresión para cierre y reimpresión, y es el MISMO Xabor

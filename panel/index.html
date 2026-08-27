@@ -1092,6 +1092,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div class="nav-seccion" id="navsec-administracion" role="group" aria-labelledby="navgrp-administracion">
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
+  <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Ajustes</button>
   <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
   </div>
 
@@ -1364,6 +1365,64 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
     </div>
 
+
+    <!-- Ajustes de cierre semanal: ventas NO facturadas de la semana y
+         registro de descuentos/bonificaciones/cortesías/devoluciones. La
+         venta original y los cortes cerrados jamás se tocan; una venta
+         facturada está bloqueada. -->
+    <div id="vista-ajustes" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="ajSemana(-1)" title="Semana anterior" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:1rem;">‹</button>
+          <div style="text-align:center;min-width:220px;">
+            <div style="font-weight:800;font-size:0.95rem;" id="aj-semana-titulo">Semana</div>
+            <div style="font-size:0.75rem;color:#888;" id="aj-semana-rango"></div>
+          </div>
+          <button onclick="ajSemana(1)" title="Semana siguiente" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:1rem;">›</button>
+          <button onclick="cargarAjustes()" class="corte-atajo">🔄</button>
+        </div>
+        <a id="aj-csv" href="#" style="font-size:0.82rem;font-weight:700;color:#1d4ed8;text-decoration:none;border:1px solid #dbeafe;background:#eff6ff;border-radius:8px;padding:7px 12px;">⬇ CSV de la semana</a>
+      </div>
+
+      <div id="aj-resumen" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;"></div>
+
+      <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;margin-bottom:14px;">
+        <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <span style="font-weight:700;font-size:0.88rem;">Ventas de la semana</span>
+          <span style="font-size:0.75rem;color:#888;">Una venta facturada está bloqueada para ajustes.</span>
+        </div>
+        <div style="overflow-x:auto;"><div id="aj-ventas"></div></div>
+      </div>
+
+      <div id="aj-form" style="display:none;background:#fff;border-radius:12px;border:1px solid #e5e2da;padding:14px 18px;margin-bottom:14px;">
+        <div style="font-weight:700;font-size:0.88rem;margin-bottom:10px;">Ajuste para <span id="aj-form-n">0</span> venta(s) seleccionada(s)</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+          <label style="font-size:0.78rem;color:#555;">Tipo<br>
+            <select id="aj-tipo" style="margin-top:4px;padding:8px;border:1px solid #e5e2da;border-radius:8px;">
+              <option value="descuento">Descuento</option><option value="bonificacion">Bonificación</option>
+              <option value="cortesia">Cortesía</option><option value="devolucion">Devolución</option>
+              <option value="ajuste">Ajuste</option>
+            </select></label>
+          <label style="font-size:0.78rem;color:#555;">Modo<br>
+            <select id="aj-modo" onchange="ajModoCambio()" style="margin-top:4px;padding:8px;border:1px solid #e5e2da;border-radius:8px;">
+              <option value="fijo">Monto fijo por ticket ($)</option>
+              <option value="porcentual">Porcentaje (una venta)</option>
+            </select></label>
+          <label style="font-size:0.78rem;color:#555;"><span id="aj-valor-lbl">Monto por ticket</span><br>
+            <input id="aj-valor" type="number" min="0.01" step="0.01" placeholder="5.00" style="margin-top:4px;padding:8px;border:1px solid #e5e2da;border-radius:8px;width:110px;"></label>
+          <label style="font-size:0.78rem;color:#555;flex:1;min-width:180px;">Motivo (obligatorio)<br>
+            <input id="aj-motivo" type="text" placeholder="Ej. cortesía por demora" style="margin-top:4px;padding:8px;border:1px solid #e5e2da;border-radius:8px;width:100%;box-sizing:border-box;"></label>
+          <button onclick="ajPreview()" style="padding:9px 16px;border:none;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;cursor:pointer;">Vista previa</button>
+        </div>
+        <div id="aj-preview" style="display:none;margin-top:12px;border-top:1px dashed #e5e2da;padding-top:12px;"></div>
+      </div>
+
+      <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;">
+        <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Ajustes registrados esta semana</div>
+        <div style="overflow-x:auto;"><div id="aj-lista"></div></div>
+      </div>
+      <div id="aj-feedback" style="margin-top:10px;font-size:0.85rem;font-weight:600;"></div>
+    </div>
 
     <!-- Historial -->
     <div id="vista-historial" style="display:none;">
@@ -3103,7 +3162,7 @@ ${clienteSection}
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-const TODAS_LAS_TABS = ['comandas','presencial','corte','historial','ventas','chats','llamadas','config','clientes','rewards','cotizaciones'];
+const TODAS_LAS_TABS = ['comandas','presencial','corte','ajustes','historial','ventas','chats','llamadas','config','clientes','rewards','cotizaciones'];
 
 // ═══ Navegación lateral plegable ═══════════════════════════════════════════
 // Las secciones son las MISMAS de siempre (mismos ids tab-*, mismas rutas,
@@ -3202,7 +3261,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -3210,7 +3269,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -3223,6 +3282,7 @@ function mostrarTab(tab) {
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
   if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad('llevar'); }
   if (tab === 'corte')     cargarCorte();
+  if (tab === 'ajustes')   cargarAjustes();
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
@@ -5410,6 +5470,189 @@ function corteHoyLocal() {
 function corteDia(delta) { CORTE_FECHA = corteSumarDias(CORTE_FECHA || corteHoyLocal(), delta); cargarCorte(); }
 function corteIrA(diasAtras) { CORTE_FECHA = corteSumarDias(corteHoyLocal(), -diasAtras); cargarCorte(); }
 function corteIrAFecha(f) { if (f) { CORTE_FECHA = f; cargarCorte(); } }
+
+// ─── Ajustes de cierre semanal ──────────────────────────────────────────────
+// La UI nunca decide elegibilidad por su cuenta: pinta lo que el backend
+// responde y el backend revalida TODO al confirmar (una venta facturada
+// entre la vista previa y la confirmación rechaza el lote completo).
+let AJ_FECHA = null, AJ_DATA = null, AJ_OCUPADO = false;
+
+function ajSemana(delta) {
+  const base = (AJ_DATA && AJ_DATA.semana && AJ_DATA.semana.lunes) || AJ_FECHA || corteHoyLocal();
+  AJ_FECHA = corteSumarDias(base, delta * 7);
+  cargarAjustes();
+}
+
+async function cargarAjustes() {
+  const cont = document.getElementById('aj-ventas');
+  if (cont) cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando…</div>';
+  document.getElementById('aj-preview').style.display = 'none';
+  const url = '/api/admin/ajustes-cierre/semana' + (AJ_FECHA ? `?fecha=${encodeURIComponent(AJ_FECHA)}` : '');
+  const data = await apiFetch(url).then(r => r.json()).catch(() => null);
+  if (!data || data.error) {
+    if (cont) cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;">Error al cargar</div>';
+    return;
+  }
+  AJ_DATA = data;
+  AJ_FECHA = data.semana.lunes;
+  ajRender();
+}
+
+const ajMx = (n) => '$' + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function ajRender() {
+  const d = AJ_DATA;
+  document.getElementById('aj-semana-titulo').textContent = 'Semana del ' + d.semana.lunes;
+  document.getElementById('aj-semana-rango').textContent = d.semana.lunes + ' — ' + d.semana.domingo + ' · ' + d.semana.timezone;
+  document.getElementById('aj-csv').href = '/api/admin/ajustes-cierre/semana.csv?fecha=' + encodeURIComponent(d.semana.lunes);
+  const r = d.resumen;
+  const card = (t, v, extra) => `<div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:12px 14px;"><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase;">${t}</div><div style="font-size:1.05rem;font-weight:800;margin-top:2px;">${v}</div>${extra ? `<div style="font-size:0.72rem;color:#888;">${extra}</div>` : ''}</div>`;
+  document.getElementById('aj-resumen').innerHTML =
+    card('Ventas', r.ventas_count, ajMx(r.total_original)) +
+    card('Facturadas (bloqueadas)', r.facturadas_count, ajMx(r.facturadas_total)) +
+    card('No facturadas', r.no_facturadas_count, ajMx(r.no_facturadas_total)) +
+    card('Ajustado', ajMx(r.ajustado_total), r.ajustadas_count + ' venta(s)') +
+    card('Neto de la semana', ajMx(r.neto_total), 'original − ajustes');
+
+  const filas = d.ventas.map(v => {
+    const badge = v.facturada
+      ? '<span style="background:#fef3c7;color:#92400e;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">🔒 Facturada</span>'
+      : (v.abierta ? '<span style="background:#f3f4f6;color:#6b7280;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Sin cobro</span>'
+                   : '<span style="background:#dcfce7;color:#166534;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Elegible</span>');
+    const aviso = v.revisar_manual ? ' <span title="Se facturó después de ajustarla: el CFDI salió con los datos originales. Revisión manual." style="cursor:help;">⚠️</span>' : '';
+    return `<tr style="border-top:1px solid #f1f0ed;">
+      <td style="padding:8px 10px;"><input type="checkbox" class="aj-check" value="${v.folio}" ${v.elegible ? '' : 'disabled'} onchange="ajSeleccion()"></td>
+      <td style="padding:8px 10px;font-weight:700;">${v.folio}${aviso}</td>
+      <td style="padding:8px 10px;font-size:0.8rem;">${v.fecha_operativa}</td>
+      <td style="padding:8px 10px;font-size:0.8rem;">${v.cliente || '—'}</td>
+      <td style="padding:8px 10px;font-size:0.8rem;">${v.forma_pago}</td>
+      <td style="padding:8px 10px;text-align:right;">${ajMx(v.total_original)}</td>
+      <td style="padding:8px 10px;text-align:center;">${badge}</td>
+      <td style="padding:8px 10px;text-align:right;color:#b91c1c;">${v.ajustes_total > 0 ? '−' + ajMx(v.ajustes_total) : '—'}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;">${ajMx(v.total_neto)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('aj-ventas').innerHTML = d.ventas.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:0.85rem;"><thead><tr style="color:#888;font-size:0.72rem;text-transform:uppercase;">
+        <th style="padding:8px 10px;"></th><th style="padding:8px 10px;text-align:left;">Folio</th><th style="padding:8px 10px;text-align:left;">Día</th>
+        <th style="padding:8px 10px;text-align:left;">Cliente</th><th style="padding:8px 10px;text-align:left;">Pago</th>
+        <th style="padding:8px 10px;text-align:right;">Original</th><th style="padding:8px 10px;">Facturación</th>
+        <th style="padding:8px 10px;text-align:right;">Ajustes</th><th style="padding:8px 10px;text-align:right;">Neto</th></tr></thead>
+        <tbody>${filas}</tbody></table>`
+    : '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin ventas esta semana</div>';
+
+  const ajustes = (d.ajustes || []).map(a => `<tr style="border-top:1px solid #f1f0ed;${a.estado === 'revertido' ? 'opacity:0.55;' : ''}">
+      <td style="padding:8px 10px;font-weight:700;">${a.folio}</td>
+      <td style="padding:8px 10px;font-size:0.8rem;">${a.tipo}${a.modo === 'porcentual' ? ` (${a.porcentaje}%)` : ''}</td>
+      <td style="padding:8px 10px;text-align:right;color:#b91c1c;">−${ajMx(a.monto_ajuste)}</td>
+      <td style="padding:8px 10px;text-align:right;">${ajMx(a.monto_neto)}</td>
+      <td style="padding:8px 10px;font-size:0.78rem;">${a.motivo}${a.estado === 'revertido' ? `<br><i>Revertido: ${a.motivo_reversion || ''}</i>` : ''}</td>
+      <td style="padding:8px 10px;font-size:0.78rem;">${a.usuario || '—'}</td>
+      <td style="padding:8px 10px;">${a.estado === 'aplicado'
+        ? `<button onclick="ajRevertir('${a.id}')" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:7px;padding:4px 9px;cursor:pointer;font-size:0.75rem;font-weight:700;">Revertir</button>`
+        : '<span style="font-size:0.75rem;color:#888;">Revertido</span>'}</td>
+    </tr>`).join('');
+  document.getElementById('aj-lista').innerHTML = ajustes
+    ? `<table style="width:100%;border-collapse:collapse;font-size:0.85rem;"><thead><tr style="color:#888;font-size:0.72rem;text-transform:uppercase;">
+        <th style="padding:8px 10px;text-align:left;">Folio</th><th style="padding:8px 10px;text-align:left;">Tipo</th>
+        <th style="padding:8px 10px;text-align:right;">Ajuste</th><th style="padding:8px 10px;text-align:right;">Neto</th>
+        <th style="padding:8px 10px;text-align:left;">Motivo</th><th style="padding:8px 10px;text-align:left;">Por</th><th style="padding:8px 10px;"></th></tr></thead>
+        <tbody>${ajustes}</tbody></table>`
+    : '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin ajustes registrados esta semana</div>';
+  ajSeleccion();
+}
+
+function ajFolios() {
+  return Array.from(document.querySelectorAll('.aj-check:checked')).map(c => c.value);
+}
+function ajSeleccion() {
+  const n = ajFolios().length;
+  document.getElementById('aj-form').style.display = n ? '' : 'none';
+  document.getElementById('aj-form-n').textContent = n;
+  ajModoCambio();
+}
+function ajModoCambio() {
+  const modo = document.getElementById('aj-modo').value;
+  const n = ajFolios().length;
+  document.getElementById('aj-valor-lbl').textContent = modo === 'porcentual' ? 'Porcentaje (%)' : 'Monto por ticket';
+  const fb = document.getElementById('aj-feedback');
+  if (modo === 'porcentual' && n > 1) {
+    fb.style.color = '#b45309';
+    fb.textContent = 'El ajuste porcentual se aplica a UNA venta a la vez; para varias usa monto fijo por ticket.';
+  } else if (fb.textContent.startsWith('El ajuste porcentual')) fb.textContent = '';
+}
+
+function ajSolicitud() {
+  return {
+    fecha: AJ_FECHA,
+    folios: ajFolios(),
+    tipo: document.getElementById('aj-tipo').value,
+    modo: document.getElementById('aj-modo').value,
+    valor: Number(document.getElementById('aj-valor').value),
+    motivo: document.getElementById('aj-motivo').value.trim(),
+  };
+}
+
+async function ajPreview() {
+  if (AJ_OCUPADO) return;
+  AJ_OCUPADO = true;
+  const fb = document.getElementById('aj-feedback');
+  fb.textContent = '';
+  try {
+    const r = await apiFetch('/api/admin/ajustes-cierre/preview', { method: 'POST', body: JSON.stringify(ajSolicitud()) });
+    const d = await r.json();
+    if (!r.ok) { fb.style.color = '#b91c1c'; fb.textContent = d.error || 'No se pudo calcular la vista previa'; return; }
+    const cont = document.getElementById('aj-preview');
+    const filas = d.renglones.map(x => `<tr><td style="padding:4px 10px;font-weight:700;">${x.folio}</td>
+      <td style="padding:4px 10px;text-align:right;">${ajMx(x.monto_original)}</td>
+      <td style="padding:4px 10px;text-align:right;color:#b91c1c;">−${ajMx(x.monto_ajuste)}</td>
+      <td style="padding:4px 10px;text-align:right;font-weight:700;">${ajMx(x.monto_neto)}</td></tr>`).join('');
+    const rech = d.rechazos.map(x => `<div style="color:#b91c1c;font-size:0.8rem;">✕ ${x.folio}: ${x.detalle}</div>`).join('');
+    cont.innerHTML = `<div style="font-weight:700;font-size:0.85rem;margin-bottom:6px;">Vista previa — ${d.tipo} ${d.modo === 'porcentual' ? d.valor + '%' : ajMx(d.valor) + ' por ticket'}</div>
+      <table style="border-collapse:collapse;font-size:0.83rem;"><thead><tr style="color:#888;font-size:0.7rem;text-transform:uppercase;"><th style="padding:4px 10px;text-align:left;">Folio</th><th style="padding:4px 10px;">Original</th><th style="padding:4px 10px;">Ajuste</th><th style="padding:4px 10px;">Neto</th></tr></thead><tbody>${filas}</tbody></table>
+      <div style="margin-top:6px;font-weight:800;">Total del ajuste: −${ajMx(d.total_ajuste)}</div>${rech}
+      ${d.aplicable ? `<button onclick="ajConfirmar()" style="margin-top:10px;padding:9px 18px;border:none;border-radius:9px;background:#b91c1c;color:#fff;font-weight:800;cursor:pointer;">Confirmar ajuste</button>` : '<div style="margin-top:8px;color:#b45309;font-size:0.8rem;font-weight:700;">Corrige la selección: hay ventas no elegibles.</div>'}`;
+    cont.style.display = '';
+  } catch { fb.style.color = '#b91c1c'; fb.textContent = 'No se pudo calcular la vista previa'; }
+  finally { AJ_OCUPADO = false; }
+}
+
+async function ajConfirmar() {
+  if (AJ_OCUPADO) return;
+  AJ_OCUPADO = true;
+  const fb = document.getElementById('aj-feedback');
+  try {
+    const r = await apiFetch('/api/admin/ajustes-cierre/aplicar', { method: 'POST', body: JSON.stringify(ajSolicitud()) });
+    const d = await r.json();
+    if (!r.ok) {
+      fb.style.color = '#b91c1c';
+      fb.textContent = d.error || 'No se pudo aplicar el ajuste';
+      // Conflicto (p. ej. facturada tras la vista previa): recargar para que
+      // la tabla nunca quede mintiendo.
+      await cargarAjustes();
+      return;
+    }
+    fb.style.color = '#166534';
+    fb.textContent = `Ajuste aplicado a ${d.aplicados} venta(s) por −${ajMx(d.total_ajuste)}.`;
+    document.getElementById('aj-motivo').value = '';
+    document.getElementById('aj-valor').value = '';
+    await cargarAjustes();
+  } catch { fb.style.color = '#b91c1c'; fb.textContent = 'No se pudo aplicar el ajuste'; await cargarAjustes(); }
+  finally { AJ_OCUPADO = false; }
+}
+
+async function ajRevertir(id) {
+  const motivo = prompt('Motivo de la reversión (obligatorio):');
+  if (motivo === null) return;
+  const fb = document.getElementById('aj-feedback');
+  try {
+    const r = await apiFetch('/api/admin/ajustes-cierre/revertir', { method: 'POST', body: JSON.stringify({ ajusteId: id, motivo }) });
+    const d = await r.json();
+    if (!r.ok) { fb.style.color = '#b91c1c'; fb.textContent = d.error || 'No se pudo revertir'; return; }
+    fb.style.color = '#166534'; fb.textContent = 'Ajuste revertido (queda como constancia, no se borra).';
+    await cargarAjustes();
+  } catch { fb.style.color = '#b91c1c'; fb.textContent = 'No se pudo revertir'; }
+}
 
 async function cargarCorte() {
   const lista = document.getElementById('corte-lista');
