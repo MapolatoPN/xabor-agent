@@ -71,6 +71,7 @@ import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
+  obtenerAsistenteIaNegocio, actualizarAsistenteIaNegocio,
   reenviarInvitacion, validarInvitacion, crearPasswordDesdeInvitacion, registrarAuditoriaPlataforma,
   obtenerBotWhatsappActivoNegocio, actualizarBotWhatsappActivoNegocio, obtenerChecklistActivacionBot,
   actualizarDatosNegocioSuperadmin, actualizarAdminNegocioSuperadmin, obtenerInvitacionesNegocio,
@@ -5096,6 +5097,50 @@ app.patch('/api/superadmin/negocios/:negocioId/plan', requireSuperadmin, async (
 // Plan comercial (Fase 7) -- exclusivo de Superadmin, seguimiento
 // interno de mensualidad/fechas/estado del contrato. Nunca se expone en
 // ninguna ruta de autoservicio del propio negocio.
+// ─── Asistente IA (Vision + giro) por negocio ──────────────────────────────
+// Administra las claves EXISTENTES de configuracion (vision_imagenes /
+// giro) sin SQL manual y sin deploy: el motor las lee por turno. El
+// catalogo de giros es sugerencia de UI, no un ENUM -- un slug limpio
+// nuevo es valido y el motor cae a core universal si no lo reconoce.
+const GIROS_SUGERIDOS = [
+  { clave: 'restaurante', nombre: 'Restaurante' },
+  { clave: 'floreria_eventos', nombre: 'Florería y eventos' },
+  { clave: 'pasteleria', nombre: 'Pastelería / repostería' },
+  { clave: 'boutique', nombre: 'Boutique / ropa' },
+  { clave: 'ferreteria', nombre: 'Ferretería / refacciones' },
+  { clave: 'retail', nombre: 'Retail / productos' },
+  { clave: 'servicios', nombre: 'Servicios' },
+];
+
+app.get('/api/superadmin/negocios/:negocioId/asistente-ia', requireSuperadmin, async (req, res) => {
+  try {
+    const estado = await obtenerAsistenteIaNegocio(req.params.negocioId);
+    if (!estado) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ ...estado, girosSugeridos: GIROS_SUGERIDOS });
+  } catch (e) {
+    console.error('[GET /api/superadmin/.../asistente-ia] Error:', e.message);
+    res.status(500).json({ error: 'Error al consultar el asistente IA' });
+  }
+});
+
+app.patch('/api/superadmin/negocios/:negocioId/asistente-ia', requireSuperadmin, async (req, res) => {
+  // SOLO estos dos campos se leen del body: cualquier otra clave se
+  // ignora -- este endpoint jamas escribe configuraciones arbitrarias.
+  const { vision, giro } = req.body || {};
+  try {
+    const r = await actualizarAsistenteIaNegocio(req.params.negocioId, { vision, giro }, req.usuarioId);
+    if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
+    const estado = await obtenerAsistenteIaNegocio(req.params.negocioId);
+    res.json({ ok: true, ...estado });
+  } catch (e) {
+    if (e.code === 'VISION_INVALIDO' || e.code === 'GIRO_INVALIDO' || e.code === 'SIN_CAMBIOS') {
+      return res.status(400).json({ error: e.message });
+    }
+    console.error('[PATCH /api/superadmin/.../asistente-ia] Error:', e.message);
+    res.status(500).json({ error: 'Error al actualizar el asistente IA' });
+  }
+});
+
 app.get('/api/superadmin/negocios/:negocioId/plan-comercial', requireSuperadmin, async (req, res) => {
   const plan = await obtenerPlanComercial(req.params.negocioId);
   if (!plan) return res.status(404).json({ error: 'Negocio no encontrado' });

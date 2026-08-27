@@ -7859,6 +7859,94 @@ export async function actualizarEstadoNegocioSuperadmin(negocioId, nuevoEstado, 
   }
 }
 
+// ─── Asistente IA por negocio (Superadmin) ─────────────────────────────────
+// La UI de Superadmin administra Vision y el giro SIN crear una fuente de
+// verdad nueva: lee y escribe las MISMAS claves de `configuracion` que ya
+// consume el motor (vision_imagenes / giro, ver src/agent/vision.js).
+// Sin fila de vision_imagenes el default es OFF -- fail closed, igual que
+// visionHabilitada().
+export async function obtenerAsistenteIaNegocio(negocioId) {
+  const { rows: negocio } = await pool.query('SELECT id FROM negocios WHERE id = $1', [negocioId]);
+  if (!negocio.length) return null;
+  const { rows } = await pool.query(
+    `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave IN ('vision_imagenes', 'giro')`,
+    [negocioId]);
+  const cfg = Object.fromEntries(rows.map(r => [r.clave, r.valor]));
+  const [waRows, ciRows] = await Promise.all([
+    pool.query(`SELECT estado, activo FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp' ORDER BY created_at ASC LIMIT 1`, [negocioId]),
+    pool.query(`SELECT estado FROM negocio_modulos WHERE negocio_id = $1 AND modulo = 'chat_imagenes'`, [negocioId]),
+  ]);
+  return {
+    vision: cfg.vision_imagenes === 'true',
+    giro: cfg.giro || null,
+    whatsapp: waRows.rows[0] ? (waRows.rows[0].activo && waRows.rows[0].estado === 'activo' ? 'activo' : waRows.rows[0].estado) : 'sin_integracion',
+    chatImagenes: ciRows.rows[0]?.estado || 'sin_modulo',
+  };
+}
+
+// Giro: minusculas, [a-z0-9_], 2-40 chars. No es un catalogo cerrado -- la
+// UI sugiere los giros conocidos pero un slug limpio nuevo es valido (el
+// motor cae a core universal para giros que no reconoce). '' o null
+// limpian el giro.
+const RE_GIRO = /^[a-z][a-z0-9_]{1,39}$/;
+export function esGiroValido(giro) {
+  return giro === null || giro === '' || (typeof giro === 'string' && RE_GIRO.test(giro));
+}
+
+export async function actualizarAsistenteIaNegocio(negocioId, { vision, giro }, superadminId) {
+  if (vision !== undefined && typeof vision !== 'boolean') {
+    throw Object.assign(new Error('vision debe ser boolean'), { code: 'VISION_INVALIDO' });
+  }
+  if (giro !== undefined && !esGiroValido(giro)) {
+    throw Object.assign(new Error('giro invalido: minusculas, letras/numeros/guion bajo, 2-40 caracteres'), { code: 'GIRO_INVALIDO' });
+  }
+  if (vision === undefined && giro === undefined) {
+    throw Object.assign(new Error('nada que actualizar'), { code: 'SIN_CAMBIOS' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT id FROM negocios WHERE id = $1 FOR UPDATE', [negocioId]);
+    if (!rows.length) { await client.query('ROLLBACK'); return null; }
+    const { rows: antesRows } = await client.query(
+      `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave IN ('vision_imagenes', 'giro')`, [negocioId]);
+    const antes = Object.fromEntries(antesRows.map(r => [r.clave, r.valor]));
+
+    if (vision !== undefined) {
+      await client.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, 'vision_imagenes', $2)
+         ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = EXCLUDED.valor`,
+        [negocioId, vision ? 'true' : 'false']);
+    }
+    if (giro !== undefined) {
+      if (giro === null || giro === '') {
+        await client.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'giro'`, [negocioId]);
+      } else {
+        await client.query(
+          `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, 'giro', $2)
+           ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = EXCLUDED.valor`,
+          [negocioId, giro]);
+      }
+    }
+    await registrarAuditoriaPlataforma({
+      superadminId, accion: 'cambiar_asistente_ia', negocioId,
+      estadoAnterior: { vision_imagenes: antes.vision_imagenes ?? null, giro: antes.giro ?? null },
+      estadoNuevo: {
+        vision_imagenes: vision !== undefined ? String(vision) : (antes.vision_imagenes ?? null),
+        giro: giro !== undefined ? (giro || null) : (antes.giro ?? null),
+      },
+    }, client);
+    await client.query('COMMIT');
+    return { id: negocioId };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] Error actualizarAsistenteIaNegocio:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function actualizarPlanNegocioSuperadmin(negocioId, nuevoPlan, superadminId) {
   if (!PLANES_VALIDOS.includes(nuevoPlan)) throw Object.assign(new Error('Plan inválido'), { code: 'PLAN_INVALIDO' });
   const client = await pool.connect();

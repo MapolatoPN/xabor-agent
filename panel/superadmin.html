@@ -286,6 +286,28 @@
       </div>
 
       <div class="card seccion-detalle">
+        <h2>Asistente IA</h2>
+        <div class="fila-lista"><span>Análisis de imágenes (Vision)</span>
+          <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="dt-ia-vision" onchange="cambiarVisionIA(this.checked)">
+            <span id="dt-ia-vision-txt">OFF</span>
+          </label>
+        </div>
+        <div style="font-size:0.78rem;color:#888;margin:2px 0 10px;">Vision permite que Xabor comprenda fotografías enviadas por los clientes en WhatsApp.</div>
+        <div class="fila-lista"><span>Giro del negocio</span>
+          <span>
+            <select id="dt-ia-giro" onchange="giroSelectCambio()"></select>
+            <input id="dt-ia-giro-otro" type="text" placeholder="giro_personalizado" style="display:none;width:150px;margin-left:6px;padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:0.8rem;">
+            <button onclick="guardarGiroIA()" style="margin-left:6px;">Guardar</button>
+          </span>
+        </div>
+        <div id="dt-ia-giro-ayuda" style="font-size:0.78rem;color:#888;margin:2px 0 10px;"></div>
+        <div class="fila-lista"><span>WhatsApp</span><span id="dt-ia-wa"></span></div>
+        <div class="fila-lista"><span>Chat de imágenes</span><span id="dt-ia-chatimg"></span></div>
+        <div class="feedback" id="dt-ia-feedback"></div>
+      </div>
+
+      <div class="card seccion-detalle">
         <h2>Restaurante — preparación</h2>
         <div id="dt-restaurante" class="empty">Cargando…</div>
       </div>
@@ -1282,6 +1304,7 @@ async function verDetalleNegocio(id) {
     </div>
   `).join('');
   cargarRestauranteReadiness(negocioActualId);
+  cargarAsistenteIA(negocioActualId);
 
   const chk = n.checklist || {};
   document.getElementById('dt-checklist').innerHTML = Object.keys(NOMBRES_CHECKLIST).map(k => `
@@ -1410,6 +1433,83 @@ async function guardarNumMesas() {
   if (!r.ok) { alert(j.error || 'Número de mesas inválido (entero entre 1 y 500)'); return; }
   cargarRestauranteReadiness(negocioActualId);
 }
+// ─── Asistente IA (Vision + giro) ───────────────────────────────────────────
+// Administra configuracion.vision_imagenes y configuracion.giro -- las
+// MISMAS claves que lee el motor de Vision. Sin fila: OFF (fail closed).
+let iaGuardando = false;   // candado anti doble click: un write a la vez
+async function cargarAsistenteIA(id) {
+  const fb = document.getElementById('dt-ia-feedback');
+  fb.textContent = '';
+  try {
+    const r = await api('/api/superadmin/negocios/' + id + '/asistente-ia');
+    if (!r.ok) { fb.textContent = 'No se pudo cargar el asistente IA'; return; }
+    const d = await r.json();
+    pintarAsistenteIA(d);
+  } catch { fb.textContent = 'No se pudo cargar el asistente IA'; }
+}
+function pintarAsistenteIA(d) {
+  const chk = document.getElementById('dt-ia-vision');
+  chk.checked = d.vision === true;
+  document.getElementById('dt-ia-vision-txt').textContent = d.vision ? 'ON' : 'OFF';
+  const sel = document.getElementById('dt-ia-giro');
+  const sugeridos = d.girosSugeridos || [];
+  const esConocido = !d.giro || sugeridos.some(g => g.clave === d.giro);
+  sel.innerHTML = '<option value="">Sin configurar</option>'
+    + sugeridos.map(g => `<option value="${g.clave}" ${d.giro === g.clave ? 'selected' : ''}>${g.nombre}</option>`).join('')
+    + `<option value="__otro__" ${!esConocido ? 'selected' : ''}>Otro…</option>`;
+  const otro = document.getElementById('dt-ia-giro-otro');
+  otro.style.display = esConocido ? 'none' : 'inline-block';
+  otro.value = esConocido ? '' : d.giro;
+  document.getElementById('dt-ia-giro-ayuda').textContent = d.giro
+    ? '' : (d.vision ? 'Vision funcionará en modo universal hasta configurar un giro.' : '');
+  const badge = (v) => v === 'activo' ? '✅ Activo' : (v === 'sin_integracion' || v === 'sin_modulo') ? '— Sin configurar' : '⚠️ ' + v;
+  document.getElementById('dt-ia-wa').textContent = badge(d.whatsapp);
+  document.getElementById('dt-ia-chatimg').textContent = badge(d.chatImagenes);
+}
+function giroSelectCambio() {
+  const esOtro = document.getElementById('dt-ia-giro').value === '__otro__';
+  document.getElementById('dt-ia-giro-otro').style.display = esOtro ? 'inline-block' : 'none';
+}
+async function cambiarVisionIA(activar) {
+  if (iaGuardando) return;
+  iaGuardando = true;
+  const fb = document.getElementById('dt-ia-feedback');
+  try {
+    const r = await api('/api/superadmin/negocios/' + negocioActualId + '/asistente-ia', {
+      method: 'PATCH', body: JSON.stringify({ vision: !!activar }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      fb.textContent = d.error || 'No se pudo guardar';
+      // el switch no puede quedar mintiendo: recargar el estado real
+      await cargarAsistenteIA(negocioActualId);
+      return;
+    }
+    pintarAsistenteIA(d);
+    fb.textContent = d.vision ? 'Vision activado para ' + document.getElementById('dt-titulo').textContent : 'Vision desactivado';
+  } catch {
+    fb.textContent = 'No se pudo guardar';
+    await cargarAsistenteIA(negocioActualId);
+  } finally { iaGuardando = false; }
+}
+async function guardarGiroIA() {
+  if (iaGuardando) return;
+  iaGuardando = true;
+  const fb = document.getElementById('dt-ia-feedback');
+  const sel = document.getElementById('dt-ia-giro').value;
+  const giro = sel === '__otro__' ? document.getElementById('dt-ia-giro-otro').value.trim().toLowerCase() : sel;
+  try {
+    const r = await api('/api/superadmin/negocios/' + negocioActualId + '/asistente-ia', {
+      method: 'PATCH', body: JSON.stringify({ giro }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.textContent = d.error || 'No se pudo guardar el giro'; await cargarAsistenteIA(negocioActualId); return; }
+    pintarAsistenteIA(d);
+    fb.textContent = 'Giro actualizado';
+  } catch { fb.textContent = 'No se pudo guardar el giro'; await cargarAsistenteIA(negocioActualId); }
+  finally { iaGuardando = false; }
+}
+
 async function cambiarChecklistItem(clave, valor) {
   await api(`/api/superadmin/negocios/${negocioActualId}/checklist`, { method:'PATCH', body: JSON.stringify({ checklist: { [clave]: valor } }) });
 }
