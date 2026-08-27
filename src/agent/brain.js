@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getIntegracion, broadcastNegocio } from '../server.js';
-import { construirSystemPrompt, construirBloqueModoComercial } from './prompts.js';
+import { construirSystemPrompt, construirBloqueModoComercial, BLOQUE_REGLAS_CONTEXTO_VISUAL, hayContextoVisual } from './prompts.js';
 import { agregarMensaje, getSession } from './session.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo } from '../services/database.js';
@@ -97,7 +97,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const respuesta = await getAnthropic().messages.create({
       model: MODELO,
       max_tokens: 1024,
-      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueComercial,
+      // Las reglas del contexto visual solo se pagan cuando la sesión trae
+      // una foto analizada (Vision V2); el resto de turnos no cambia.
+      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueComercial
+        + (hayContextoVisual(session.mensajes) ? BLOQUE_REGLAS_CONTEXTO_VISUAL : ''),
       messages: session.mensajes
     });
 
