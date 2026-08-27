@@ -56,6 +56,43 @@ function requerirNegocio(negocioId) {
 
 // ─── Semana operativa ───────────────────────────────────────────────────────
 
+// ─── Frontera de facturación confiable (fail-closed histórico) ──────────────
+// Antes de que facturas_pedido empezara a registrar emisiones NO existe un
+// vínculo confiable pedido→CFDI (auditoría del gate: Facturapi nunca recibió
+// el folio; `invoices` del SAT no enlaza a pedidos). Por eso NO se puede
+// afirmar "no facturada" de una venta anterior a esa frontera: se clasifica
+// como HISTORICA_NO_VERIFICABLE y queda fuera de todo ajuste.
+//
+// La frontera vive en `configuracion` (clave `ajustes_facturacion_confiable_desde`,
+// por negocio) como un INSTANTE ISO-8601 en UTC. Se compara contra
+// pedidos_activos.created_at, que también es un instante UTC — comparación de
+// instantes, sin ninguna ambigüedad de zona horaria. Una fecha desnuda
+// ('YYYY-MM-DD') se interpreta como medianoche UTC de ese día.
+//
+// FAIL-CLOSED: si la clave NO existe, la frontera es +infinito, es decir
+// TODAS las ventas son históricas no verificables y NADA es elegible. El
+// módulo queda inerte hasta que el rollout fije la clave al instante del
+// despliegue del sistema confiable. Nunca se hardcodea una fecha aquí.
+export const CLAVE_CUTOFF = 'ajustes_facturacion_confiable_desde';
+
+export async function fronteraFacturacionConfiable(negocioId) {
+  const nid = requerirNegocio(negocioId);
+  const { rows } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = $2 LIMIT 1`,
+    [nid, CLAVE_CUTOFF]);
+  const crudo = rows[0]?.valor?.trim();
+  if (!crudo) return { instante: null, configurada: false };   // fail-closed
+  // Fecha desnuda → medianoche UTC; instante ISO → tal cual.
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(crudo) ? `${crudo}T00:00:00Z` : crudo;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    // Un valor corrupto NO abre la puerta: se comporta como sin configurar.
+    console.error(`[Ajustes] cutoff inválido para ${nid}: ${crudo} — fail-closed`);
+    return { instante: null, configurada: false, invalida: true };
+  }
+  return { instante: d, configurada: true };
+}
+
 /** Lunes ('YYYY-MM-DD') de la semana a la que pertenece la fecha dada. */
 export function lunesDeSemana(fecha) {
   if (!esFechaValida(fecha)) throw err(`Fecha inválida: ${fecha}`, 'FECHA_INVALIDA');
@@ -99,6 +136,7 @@ export async function semanaOperativa(negocioId, fecha = null) {
 export async function ventasDeSemana(negocioId, fecha = null) {
   const semana = await semanaOperativa(negocioId, fecha);
   const { negocioId: nid, timezone: tz, inicio, fin } = semana;
+  const cutoff = await fronteraFacturacionConfiable(nid);
 
   const { rows } = await pool.query(
     `SELECT pa.folio, pa.estado, pa.created_at,
@@ -127,6 +165,16 @@ export async function ventasDeSemana(negocioId, fecha = null) {
     const ajustesTotal = dinero(v.ajustes_total);
     const abierta = String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true;
     const facturada = v.facturada === true;
+    // TERCERA CATEGORÍA: si la venta es anterior a la frontera de facturación
+    // confiable (o no hay frontera configurada), no podemos afirmar su estado
+    // de CFDI. NUNCA se trata como "no facturada": es histórica no verificable
+    // y no es seleccionable ni ajustable.
+    const historica = !facturada &&
+      (!cutoff.configurada || new Date(v.created_at) < cutoff.instante);
+    // Categoría canónica, fuente única para UI y backend:
+    const categoria = facturada ? 'FACTURADA'
+      : historica ? 'HISTORICA_NO_VERIFICABLE'
+      : 'NO_FACTURADA_VERIFICABLE';
     // Facturada DESPUÉS de ajustada: como el bloqueo impide ajustar ventas
     // ya facturadas, una venta con ambas cosas solo pudo facturarse después
     // del ajuste — y el CFDI salió con los datos originales del pedido. Se
@@ -143,28 +191,45 @@ export async function ventasDeSemana(negocioId, fecha = null) {
       facturada,
       facturada_at: v.facturada_at || null,
       abierta,
+      historica_no_verificable: historica,
+      categoria,
       ajustes_total: ajustesTotal,
       ajustes_num: v.ajustes_num,
       total_neto: dinero(total - ajustesTotal),
-      elegible: !facturada && !abierta,
+      // Solo una venta con estado de facturación VERIFICADO como no-facturada
+      // (y cobrada) puede ajustarse. Facturada, abierta o histórica: no.
+      elegible: categoria === 'NO_FACTURADA_VERIFICABLE' && !abierta,
+      // Aviso pre-CFDI: tiene ajustes y aún no está facturada. Si se factura
+      // después desde el flujo actual, el CFDI llevará los importes ORIGINALES.
+      aviso_pre_factura: !facturada && v.ajustes_num > 0,
       revisar_manual: facturadaTrasAjuste === true,
     };
   });
 
+  const suma = (pred) => dinero(ventas.filter(pred).reduce((s, v) => s + v.total_original, 0));
   const resumen = {
     ventas_count: ventas.length,
     total_original: dinero(ventas.reduce((s, v) => s + v.total_original, 0)),
     facturadas_count: ventas.filter(v => v.facturada).length,
-    facturadas_total: dinero(ventas.filter(v => v.facturada).reduce((s, v) => s + v.total_original, 0)),
-    no_facturadas_count: ventas.filter(v => !v.facturada).length,
-    no_facturadas_total: dinero(ventas.filter(v => !v.facturada).reduce((s, v) => s + v.total_original, 0)),
+    facturadas_total: suma(v => v.facturada),
+    // "No facturadas" ahora significa VERIFICABLES: excluye las históricas.
+    no_facturadas_count: ventas.filter(v => v.categoria === 'NO_FACTURADA_VERIFICABLE').length,
+    no_facturadas_total: suma(v => v.categoria === 'NO_FACTURADA_VERIFICABLE'),
+    historicas_no_verificables_count: ventas.filter(v => v.historica_no_verificable).length,
+    historicas_no_verificables_total: suma(v => v.historica_no_verificable),
     abiertas_count: ventas.filter(v => v.abierta).length,
+    elegibles_count: ventas.filter(v => v.elegible).length,
     ajustado_total: dinero(ventas.reduce((s, v) => s + v.ajustes_total, 0)),
     ajustadas_count: ventas.filter(v => v.ajustes_num > 0).length,
+    sin_ajustes_count: ventas.filter(v => v.ajustes_num === 0).length,
     neto_total: dinero(ventas.reduce((s, v) => s + v.total_neto, 0)),
   };
 
-  return { semana: { lunes: semana.lunes, domingo: semana.domingo, timezone: tz }, resumen, ventas };
+  return {
+    semana: { lunes: semana.lunes, domingo: semana.domingo, timezone: tz },
+    cutoff: { configurada: cutoff.configurada, desde: cutoff.instante ? cutoff.instante.toISOString() : null },
+    resumen, ventas,
+  };
 }
 
 /** Ajustes registrados para la semana (aplicados y revertidos). */
@@ -243,6 +308,9 @@ function evaluarAjuste(ventasPorFolio, { folios, modo, valor }) {
     const v = ventasPorFolio.get(folio);
     if (!v) { rechazos.push({ folio, razon: 'NO_EXISTE', detalle: 'No es una venta de esta semana' }); continue; }
     if (v.facturada) { rechazos.push({ folio, razon: 'FACTURADA', detalle: 'Venta facturada: bloqueada para ajustes' }); continue; }
+    // Fail-closed histórico: el backend rechaza aunque el frontend lo hubiera
+    // dejado pasar. No se confía en la UI (misma evaluación en preview/commit).
+    if (v.historica_no_verificable) { rechazos.push({ folio, razon: 'HISTORICA_NO_VERIFICABLE', detalle: 'Facturación histórica no verificable: no ajustable desde este módulo' }); continue; }
     if (v.abierta) { rechazos.push({ folio, razon: 'ABIERTA', detalle: 'Pedido sin cobro confirmado: aún no es una venta' }); continue; }
     const disponible = dinero(v.total_original - v.ajustes_total);
     const ajuste = modo === 'fijo' ? valor : dinero(disponible * (valor / 100));
@@ -285,6 +353,7 @@ export async function aplicarAjuste(negocioId, solicitud, usuarioId = null) {
   const nid = requerirNegocio(negocioId);
   const s = validarSolicitud(solicitud);
   const semana = await semanaOperativa(nid, solicitud.fecha || null);
+  const cutoff = await fronteraFacturacionConfiable(nid);
 
   const client = await pool.connect();
   try {
@@ -318,9 +387,13 @@ export async function aplicarAjuste(negocioId, solicitud, usuarioId = null) {
                            WHERE a.negocio_id = $1::uuid AND a.folio = $2
                              AND a.estado = 'aplicado'), 0) AS ajustes_total`,
         [nid, v.folio]);
+      const facturada = f.facturada === true;
       ventasPorFolio.set(v.folio, {
         total_original: dinero(v.total),
-        facturada: f.facturada === true,
+        facturada,
+        // Misma frontera fail-closed, revalidada dentro de la transacción.
+        historica_no_verificable: !facturada &&
+          (!cutoff.configurada || new Date(v.created_at) < cutoff.instante),
         abierta: String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true,
         ajustes_total: dinero(f.ajustes_total),
       });
@@ -333,6 +406,12 @@ export async function aplicarAjuste(negocioId, solicitud, usuarioId = null) {
       if (facturadas.length) {
         throw Object.assign(
           err(`No se aplicó ningún ajuste: ${facturadas.join(', ')} ya ${facturadas.length === 1 ? 'fue facturada' : 'fueron facturadas'}. Recarga la lista y revisa la selección.`, 'FACTURADA_TRAS_PREVIEW'),
+          { rechazos });
+      }
+      const historicas = rechazos.filter(r => r.razon === 'HISTORICA_NO_VERIFICABLE').map(r => r.folio);
+      if (historicas.length) {
+        throw Object.assign(
+          err(`No se aplicó ningún ajuste: ${historicas.join(', ')} ${historicas.length === 1 ? 'corresponde' : 'corresponden'} a facturación histórica no verificable y no ${historicas.length === 1 ? 'puede' : 'pueden'} ajustarse desde este módulo.`, 'FACTURACION_HISTORICA_NO_VERIFICADA'),
           { rechazos });
       }
       throw Object.assign(err('No se aplicó ningún ajuste: hay ventas no elegibles en la selección', 'SELECCION_NO_ELEGIBLE'), { rechazos });
@@ -404,20 +483,29 @@ export async function csvSemana(negocioId, fecha = null) {
     if (!porFolio.has(a.folio)) porFolio.set(a.folio, []);
     porFolio.get(a.folio).push(`${a.tipo} ${a.modo === 'porcentual' ? a.porcentaje + '%' : '$' + a.monto_ajuste.toFixed(2)} (${a.motivo})`);
   }
+  // Etiqueta legible de la categoría de facturación (fuente única: v.categoria).
+  const etiquetaCategoria = (v) => v.categoria === 'FACTURADA' ? 'FACTURADA'
+    : v.categoria === 'HISTORICA_NO_VERIFICABLE' ? 'HISTORICA_NO_VERIFICABLE'
+    : 'NO_FACTURADA_VERIFICABLE';
   const lineas = [
     ['semana', 'folio', 'fecha_operativa', 'cliente', 'forma_pago', 'total_original',
-     'facturada', 'ajustes', 'total_ajustado', 'total_neto', 'detalle_ajustes', 'revisar_manual'].join(','),
+     'facturada', 'categoria_facturacion', 'ajustes', 'total_ajustado', 'total_neto',
+     'detalle_ajustes', 'aviso_pre_factura', 'revisar_manual'].join(','),
   ];
   for (const v of ventas) {
     lineas.push([
       `${semana.lunes} a ${semana.domingo}`, v.folio, v.fecha_operativa, csvCampo(v.cliente),
       csvCampo(v.forma_pago), v.total_original.toFixed(2), v.facturada ? 'SI' : 'NO',
+      etiquetaCategoria(v),
       v.ajustes_num, v.ajustes_total.toFixed(2), v.total_neto.toFixed(2),
       csvCampo(porFolio.has(v.folio) ? porFolio.get(v.folio).join(' | ') : ''),
+      v.aviso_pre_factura ? 'REVISAR_ANTES_DE_FACTURAR' : '',
       v.revisar_manual ? 'SI' : '',
     ].join(','));
   }
   lineas.push('');
-  lineas.push(`TOTALES,,,,,${resumen.total_original.toFixed(2)},,${'' + resumen.ajustadas_count},${resumen.ajustado_total.toFixed(2)},${resumen.neto_total.toFixed(2)},,`);
+  lineas.push(`TOTALES,,,,,${resumen.total_original.toFixed(2)},,,${'' + resumen.ajustadas_count},${resumen.ajustado_total.toFixed(2)},${resumen.neto_total.toFixed(2)},,,`);
+  lineas.push('');
+  lineas.push(`RESUMEN,facturadas,${resumen.facturadas_count},no_facturadas_verificables,${resumen.no_facturadas_count},historicas_no_verificables,${resumen.historicas_no_verificables_count},elegibles,${resumen.elegibles_count}`);
   return { nombre: `ajustes-cierre-${semana.lunes}.csv`, csv: lineas.join('\n') };
 }

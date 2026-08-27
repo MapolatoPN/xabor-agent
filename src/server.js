@@ -4133,7 +4133,8 @@ function responderErrorAjuste(res, e, contexto) {
   if (CODIGOS_AJUSTES_400.has(e.code)) return res.status(400).json({ error: e.message, code: e.code });
   // Conflicto de carrera preview→commit: merece su propio estado para que la
   // UI lo distinga de un error de captura.
-  if (e.code === 'FACTURADA_TRAS_PREVIEW' || e.code === 'SELECCION_NO_ELEGIBLE') {
+  if (e.code === 'FACTURADA_TRAS_PREVIEW' || e.code === 'SELECCION_NO_ELEGIBLE' ||
+      e.code === 'FACTURACION_HISTORICA_NO_VERIFICADA') {
     return res.status(409).json({ error: e.message, code: e.code, rechazos: e.rechazos || [] });
   }
   console.error(`[Ajustes] ${contexto}:`, e.message);

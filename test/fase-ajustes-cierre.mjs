@@ -44,6 +44,15 @@ await pool.query(`DELETE FROM pedidos_activos WHERE folio LIKE 'AJC-%' OR folio 
 await pool.query(
   `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'caja','activo')
    ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`, [NEG_A]);
+// Frontera de facturación confiable ANTERIOR a la semana fixture: así las 100
+// ventas del bloque principal quedan del lado VERIFICABLE y los tests de
+// elegibilidad/ajuste siguen siendo válidos. Los casos históricos (HV*) crean
+// ventas ANTES de esta fecha aparte.
+const CUTOFF = '2026-08-05T00:00:00Z';
+await pool.query(
+  `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'ajustes_facturacion_confiable_desde',$2)
+   ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = EXCLUDED.valor`, [NEG_A, CUTOFF]);
+await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'ajustes_facturacion_confiable_desde'`, [NEG_B]);
 
 // 100 ventas de $100, repartidas de lunes a domingo (10:00 local ≈ 15:00Z).
 for (let i = 1; i <= 100; i++) {
@@ -82,6 +91,23 @@ await pool.query(
   `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
    VALUES ('AJC-0777', 'entregado', $1, '2026-08-17T04:40:00Z', '2026-08-17T04:40:00Z', $2)`,
   [JSON.stringify({ total: 100, forma_pago: 'efectivo', pago_confirmado: true }), NEG_A]);
+
+// Ventas HISTÓRICAS: creadas ANTES del cutoff (2026-08-05). Pertenecen a la
+// semana operativa 2026-08-03..09 (lunes 2026-08-03). Su estado de CFDI no es
+// verificable salvo que estén en facturas_pedido.
+const SEMANA_HIST = '2026-08-04';         // un martes de la semana previa
+await pool.query(
+  `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
+   VALUES ('AJC-H001', 'entregado', $1, '2026-08-04T15:00:00Z', '2026-08-04T15:00:00Z', $2)`,
+  [JSON.stringify({ total: 100, forma_pago: 'efectivo', pago_confirmado: true, cliente: { nombre: 'Histórico sin factura' } }), NEG_A]);
+await pool.query(
+  `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
+   VALUES ('AJC-H002', 'entregado', $1, '2026-08-04T15:00:00Z', '2026-08-04T15:00:00Z', $2)`,
+  [JSON.stringify({ total: 100, forma_pago: 'efectivo', pago_confirmado: true, cliente: { nombre: 'Histórico con factura' } }), NEG_A]);
+// H002 sí tiene registro en facturas_pedido → FACTURADA gana sobre histórica.
+await pool.query(
+  `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
+   VALUES ($1::uuid, 'AJC-H002', 'fapi-h2', '00000000-0000-0000-0000-0000000000h2', 100, 'panel')`, [NEG_A]);
 
 const base = { tipo: 'descuento', modo: 'fijo', valor: 5, motivo: 'prueba', fecha: FECHA };
 
@@ -319,6 +345,135 @@ await t('26. registrarFacturaEmitida: valida y NUNCA lanza', async () => {
   assert.strictEqual(await registrarFacturaEmitida({ negocioId: NEG_A, folio: 'AJC-0002', facturaId: 're-1', fuente: 'panel' }), true, 'refacturación legítima: segundo renglón permitido');
 });
 
+// ═══ B7: fail-closed histórico (14 casos del re-gate) ═══════════════════════
+await t('HV1. venta posterior al cutoff sin factura → elegible', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, FECHA);
+  const v = ventas.find(x => x.folio === folio(55));   // 2026-08-xx, >= cutoff, sin factura
+  assert.strictEqual(v.categoria, 'NO_FACTURADA_VERIFICABLE');
+  assert.strictEqual(v.elegible, true);
+});
+
+await t('HV2. venta posterior al cutoff con facturas_pedido → bloqueada (FACTURADA)', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, FECHA);
+  const v = ventas.find(x => x.folio === folio(1));
+  assert.strictEqual(v.categoria, 'FACTURADA');
+  assert.strictEqual(v.elegible, false);
+});
+
+await t('HV3. venta anterior al cutoff → HISTORICA_NO_VERIFICABLE (no "no facturada")', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, SEMANA_HIST);
+  const v = ventas.find(x => x.folio === 'AJC-H001');
+  assert.strictEqual(v.categoria, 'HISTORICA_NO_VERIFICABLE');
+  assert.strictEqual(v.historica_no_verificable, true);
+  assert.strictEqual(v.facturada, false);
+  assert.strictEqual(v.elegible, false, 'no seleccionable');
+});
+
+await t('HV3b. anterior al cutoff PERO en facturas_pedido → FACTURADA gana sobre histórica', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, SEMANA_HIST);
+  const v = ventas.find(x => x.folio === 'AJC-H002');
+  assert.strictEqual(v.categoria, 'FACTURADA');
+  assert.strictEqual(v.historica_no_verificable, false);
+});
+
+await t('HV4. histórica no verificable NO es seleccionable (elegible=false)', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, SEMANA_HIST);
+  assert.ok(ventas.filter(v => v.historica_no_verificable).every(v => v.elegible === false));
+});
+
+await t('HV5. request manual para ajustar una histórica → rechazado por el BACKEND', async () => {
+  await assert.rejects(
+    previewAjuste(NEG_A, { ...base, fecha: SEMANA_HIST, folios: ['AJC-H001'] }).then(p => {
+      // preview la rechaza; y aplicar lanza el código dedicado:
+      assert.strictEqual(p.aplicable, false);
+      assert.strictEqual(p.rechazos[0].razon, 'HISTORICA_NO_VERIFICABLE');
+      return aplicarAjuste(NEG_A, { ...base, fecha: SEMANA_HIST, folios: ['AJC-H001'] });
+    }),
+    (e) => e.code === 'FACTURACION_HISTORICA_NO_VERIFICADA');
+});
+
+await t('HV6. selección múltiple bloquea el lote si incluye una histórica', async () => {
+  // Mezcla una elegible de la semana histórica (ninguna hay) → usamos dos
+  // históricas: el lote entero se rechaza, cero renglones escritos.
+  const antes = (await pool.query(`SELECT COUNT(*)::int n FROM ajustes_cierre WHERE negocio_id=$1::uuid AND folio IN ('AJC-H001','AJC-H002')`, [NEG_A])).rows[0].n;
+  await assert.rejects(aplicarAjuste(NEG_A, { ...base, fecha: SEMANA_HIST, folios: ['AJC-H001', 'AJC-H002'] }),
+    (e) => e.code === 'FACTURACION_HISTORICA_NO_VERIFICADA' || e.code === 'FACTURADA_TRAS_PREVIEW');
+  const despues = (await pool.query(`SELECT COUNT(*)::int n FROM ajustes_cierre WHERE negocio_id=$1::uuid AND folio IN ('AJC-H001','AJC-H002')`, [NEG_A])).rows[0].n;
+  assert.strictEqual(despues, antes, 'nada escrito');
+});
+
+await t('HV7. el resumen separa las 3 categorías', async () => {
+  const { resumen } = await ventasDeSemana(NEG_A, SEMANA_HIST);
+  assert.ok('facturadas_count' in resumen);
+  assert.ok('no_facturadas_count' in resumen);
+  assert.ok('historicas_no_verificables_count' in resumen);
+  assert.strictEqual(resumen.historicas_no_verificables_count, 1, 'AJC-H001');
+  assert.strictEqual(resumen.facturadas_count, 1, 'AJC-H002');
+  assert.strictEqual(resumen.no_facturadas_count, 0, 'ninguna verificable esa semana');
+});
+
+await t('HV8. el cutoff de A no afecta a B', async () => {
+  // B no tiene cutoff configurado (fail-closed): toda venta de B es histórica.
+  await pool.query(
+    `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
+     VALUES ('AJB-0002', 'entregado', $1, '2026-08-12T15:00:00Z', '2026-08-12T15:00:00Z', $2)`,
+    [JSON.stringify({ total: 100, forma_pago: 'efectivo', pago_confirmado: true }), NEG_B]);
+  const { ventas, cutoff } = await ventasDeSemana(NEG_B, FECHA);
+  assert.strictEqual(cutoff.configurada, false, 'B sin config');
+  const v = ventas.find(x => x.folio === 'AJB-0002');
+  assert.strictEqual(v.categoria, 'HISTORICA_NO_VERIFICABLE');
+});
+
+await t('HV9. SIN config explícita → fail-closed (todo histórico, nada elegible)', async () => {
+  const { ventas, resumen, cutoff } = await ventasDeSemana(NEG_B, FECHA);
+  assert.strictEqual(cutoff.configurada, false);
+  assert.strictEqual(resumen.elegibles_count, 0, 'nada ajustable sin frontera');
+  assert.ok(ventas.every(v => v.facturada || v.historica_no_verificable), 'nada verificable-no-facturada');
+});
+
+await t('HV10. venta ajustada NO facturada muestra aviso pre-CFDI', async () => {
+  const { ventas } = await ventasDeSemana(NEG_A, FECHA);
+  const v = ventas.find(x => x.folio === folio(50));   // ajustada en test 13, no facturada
+  assert.strictEqual(v.aviso_pre_factura, true);
+});
+
+await t('HV11. el aviso NO implica que el CFDI ya se modificó (solo señala revisión)', () => {
+  // Contrato de fuente en el panel: el texto habla de importes ORIGINALES.
+  const HTML = readFileSync(join(RAIZ, 'panel', 'index.html'), 'utf8');
+  assert.ok(/importes ORIGINALES/.test(HTML));
+  assert.ok(/Revisión requerida antes de facturar/.test(HTML));
+  assert.ok(!/el CFDI ya (se|fue)/i.test(HTML.match(/aviso_pre_factura[\s\S]{0,400}/)?.[0] || ''), 'no afirma que ya cambió');
+});
+
+await t('HV12. la generación de CFDI permanece intacta (el módulo no la INVOCA)', () => {
+  const SRC = readFileSync(join(RAIZ, 'src', 'services', 'ajustesCierre.js'), 'utf8');
+  // No importa ni llama la emisión (menciones en comentarios sí se permiten):
+  assert.ok(!/from ['"].*facturapi/i.test(SRC), 'no importa facturapi');
+  assert.ok(!/generarFactura\s*\(/.test(SRC), 'no llama generarFactura');
+  assert.ok(!/apiCall\s*\(|POST['"],\s*['"]\/invoices/.test(SRC), 'no emite a Facturapi');
+});
+
+await t('HV13. facturación posterior sigue registrando facturas_pedido (hook intacto)', async () => {
+  const okReg = await registrarFacturaEmitida({ negocioId: NEG_A, folio: folio(50), facturaId: 'fapi-post50', fuente: 'panel' });
+  assert.strictEqual(okReg, true);
+  const { ventas } = await ventasDeSemana(NEG_A, FECHA);
+  const v = ventas.find(x => x.folio === folio(50));
+  assert.strictEqual(v.facturada, true, 'ahora aparece facturada');
+  assert.strictEqual(v.revisar_manual, true, 'y como se ajustó antes, marcada para revisión');
+});
+
+await t('HV14. ventas posteriores al rollout quedan clasificadas correctamente', async () => {
+  // Una venta creada justo DESPUÉS del cutoff, sin factura → verificable/elegible.
+  await pool.query(
+    `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
+     VALUES ('AJC-POST', 'entregado', $1, '2026-08-13T15:00:00Z', '2026-08-13T15:00:00Z', $2)`,
+    [JSON.stringify({ total: 100, forma_pago: 'efectivo', pago_confirmado: true }), NEG_A]);
+  const { ventas } = await ventasDeSemana(NEG_A, FECHA);
+  const v = ventas.find(x => x.folio === 'AJC-POST');
+  assert.strictEqual(v.categoria, 'NO_FACTURADA_VERIFICABLE');
+  assert.strictEqual(v.elegible, true);
+});
+
 // ═══ B24: adversarial (HTTP) ════════════════════════════════════════════════
 const srv = await arrancarServidor({ PORT: PUERTO, OPENAI_API_KEY: '' }, { timeoutMs: 30000 });
 const BASE_URL = srv.base;
@@ -369,6 +524,15 @@ await t('ADV5. revertir un ajuste inexistente → 404 sin efectos', async () => 
   const r = await http('/api/admin/ajustes-cierre/revertir', {
     metodo: 'POST', body: { ajusteId: '00000000-0000-4000-8000-000000000000', motivo: 'x' } });
   assert.strictEqual(r.status, 404);
+});
+
+await t('ADV6. HTTP: ajustar una histórica → 409 FACTURACION_HISTORICA_NO_VERIFICADA', async () => {
+  const r = await http('/api/admin/ajustes-cierre/aplicar', {
+    metodo: 'POST', body: { ...base, fecha: SEMANA_HIST, folios: ['AJC-H001'] } });
+  assert.strictEqual(r.status, 409);
+  const d = await r.json();
+  assert.strictEqual(d.code, 'FACTURACION_HISTORICA_NO_VERIFICADA');
+  assert.ok(Array.isArray(d.rechazos) && d.rechazos[0].razon === 'HISTORICA_NO_VERIFICABLE');
 });
 
 srv.detener();

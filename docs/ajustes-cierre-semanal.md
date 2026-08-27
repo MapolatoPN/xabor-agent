@@ -35,6 +35,38 @@ confirmación explícita, lista de ajustes con reversión y CSV.
    (mismo kit que los cortes: una venta del domingo 23:40 hora local
    pertenece a su semana aunque en UTC ya sea lunes). Fecha provista pero
    malformada → 400, jamás caer en silencio a "hoy".
+6. **Fail-closed histórico.** Tres categorías de facturación, no dos:
+   `FACTURADA` (en `facturas_pedido`), `NO_FACTURADA_VERIFICABLE` y
+   `HISTORICA_NO_VERIFICABLE`. Solo la segunda (y cobrada) es elegible.
+
+## Frontera de facturación confiable (fail-closed)
+
+Antes de que `facturas_pedido` empezara a registrar emisiones no existe un
+vínculo confiable pedido→CFDI (ver la auditoría del gate). Por eso una venta
+anterior a esa frontera **no** se trata como "no facturada": es
+`HISTORICA_NO_VERIFICABLE` — visible pero **no seleccionable ni ajustable**,
+y contada aparte del "no facturadas".
+
+- **Configuración:** clave `ajustes_facturacion_confiable_desde` en la tabla
+  `configuracion`, **por negocio** (no hay tabla de settings nueva).
+- **Formato e interpretación:** un instante ISO-8601 en **UTC** (p. ej.
+  `2026-08-27T14:32:00Z`). Una fecha desnuda `YYYY-MM-DD` se interpreta como
+  **medianoche UTC** de ese día. Se compara contra `pedidos_activos.created_at`,
+  que también es un instante UTC — **comparación de instantes, sin
+  ambigüedad de zona horaria**. Una venta es histórica si `created_at <`
+  frontera.
+- **Default fail-closed:** si la clave **no existe** (o su valor es corrupto),
+  la frontera es +infinito: **todas** las ventas no facturadas son
+  históricas no verificables y **nada** es elegible. El módulo queda inerte a
+  propósito hasta que el rollout fije la clave. **Nunca** se hardcodea una
+  fecha en el código.
+- **Rollout:** al desplegar, se establece la clave por negocio al instante
+  del despliegue del sistema confiable. Un negocio puede adelantar su propia
+  frontera más tarde, solo tras una reconciliación manual de su histórico.
+- **Bloqueo backend:** `aplicarAjuste` revalida la frontera dentro de la
+  transacción; un intento sobre una histórica se rechaza con
+  `FACTURACION_HISTORICA_NO_VERIFICADA` (HTTP 409). No se confía en el
+  frontend: el checkbox deshabilitado es solo cortesía visual.
 
 ## Tipos y modos de ajuste
 

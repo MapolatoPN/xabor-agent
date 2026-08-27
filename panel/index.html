@@ -5507,22 +5507,33 @@ function ajRender() {
   document.getElementById('aj-csv').href = '/api/admin/ajustes-cierre/semana.csv?fecha=' + encodeURIComponent(d.semana.lunes);
   const r = d.resumen;
   const card = (t, v, extra) => `<div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:12px 14px;"><div style="font-size:0.72rem;color:#888;font-weight:700;text-transform:uppercase;">${t}</div><div style="font-size:1.05rem;font-weight:800;margin-top:2px;">${v}</div>${extra ? `<div style="font-size:0.72rem;color:#888;">${extra}</div>` : ''}</div>`;
-  document.getElementById('aj-resumen').innerHTML =
+  // Aviso de frontera: mientras no se configure la fecha confiable, TODA venta
+  // no facturada es histórica no verificable (fail-closed) — el módulo queda
+  // inerte a propósito hasta el rollout.
+  const avisoCutoff = !d.cutoff || !d.cutoff.configurada
+    ? `<div style="grid-column:1/-1;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 14px;font-size:0.8rem;color:#92400e;">⚠ No hay fecha de facturación confiable configurada para este negocio. Todas las ventas se muestran como <b>facturación histórica no verificable</b> y no pueden ajustarse hasta que se establezca la fecha de corte.</div>`
+    : '';
+  document.getElementById('aj-resumen').innerHTML = avisoCutoff +
     card('Ventas', r.ventas_count, ajMx(r.total_original)) +
     card('Facturadas (bloqueadas)', r.facturadas_count, ajMx(r.facturadas_total)) +
-    card('No facturadas', r.no_facturadas_count, ajMx(r.no_facturadas_total)) +
-    card('Ajustado', ajMx(r.ajustado_total), r.ajustadas_count + ' venta(s)') +
+    card('No facturadas verificables', r.no_facturadas_count, ajMx(r.no_facturadas_total)) +
+    card('Históricas no verificables', r.historicas_no_verificables_count, ajMx(r.historicas_no_verificables_total)) +
+    card('Ajustado', ajMx(r.ajustado_total), r.ajustadas_count + ' con · ' + r.sin_ajustes_count + ' sin') +
     card('Neto de la semana', ajMx(r.neto_total), 'original − ajustes');
 
   const filas = d.ventas.map(v => {
     const badge = v.facturada
       ? '<span style="background:#fef3c7;color:#92400e;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">🔒 Facturada</span>'
-      : (v.abierta ? '<span style="background:#f3f4f6;color:#6b7280;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Sin cobro</span>'
-                   : '<span style="background:#dcfce7;color:#166534;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Elegible</span>');
+      : (v.historica_no_verificable
+          ? '<span title="Xabor no puede verificar de forma inequívoca el estado de facturación de esta venta porque corresponde al periodo anterior al registro automático de CFDI. No puede ajustarse desde este módulo." style="background:#fef2f2;color:#b91c1c;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;cursor:help;">⚠ Histórica no verificable</span>'
+          : (v.abierta ? '<span style="background:#f3f4f6;color:#6b7280;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Sin cobro</span>'
+                       : '<span style="background:#dcfce7;color:#166534;border-radius:6px;padding:2px 7px;font-size:0.72rem;font-weight:700;">Elegible</span>'));
+    // Aviso pre-CFDI: venta con ajustes que aún NO está facturada.
+    const avisoPre = v.aviso_pre_factura ? ' <span title="Esta venta tiene ajustes administrativos registrados. Si posteriormente se factura desde el flujo actual, el CFDI se generará con los importes ORIGINALES de la venta. Revisión requerida antes de facturar." style="cursor:help;">🧾⚠️</span>' : '';
     const aviso = v.revisar_manual ? ' <span title="Se facturó después de ajustarla: el CFDI salió con los datos originales. Revisión manual." style="cursor:help;">⚠️</span>' : '';
     return `<tr style="border-top:1px solid #f1f0ed;">
       <td style="padding:8px 10px;"><input type="checkbox" class="aj-check" value="${v.folio}" ${v.elegible ? '' : 'disabled'} onchange="ajSeleccion()"></td>
-      <td style="padding:8px 10px;font-weight:700;">${v.folio}${aviso}</td>
+      <td style="padding:8px 10px;font-weight:700;">${v.folio}${avisoPre}${aviso}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.fecha_operativa}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.cliente || '—'}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.forma_pago}</td>
