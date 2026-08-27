@@ -72,8 +72,13 @@ function sumarDias(fecha, dias) {
 }
 
 /** Semana operativa [lunes..domingo] y su rango UTC en la tz del negocio. */
+// Una fecha PROVISTA pero malformada se rechaza (fail closed): caer en
+// silencio a "hoy" mostraría la semana equivocada como si fuera la pedida.
 export async function semanaOperativa(negocioId, fecha = null) {
   const nid = requerirNegocio(negocioId);
+  if (fecha !== null && fecha !== undefined && fecha !== '' && !esFechaValida(fecha)) {
+    throw err(`Fecha inválida: ${fecha}`, 'FECHA_INVALIDA');
+  }
   const tz = await zonaHorariaNegocio(nid);
   const ref = fecha && esFechaValida(fecha) ? fecha : fechaOperativaHoy(tz);
   const lunes = lunesDeSemana(ref);
@@ -165,6 +170,9 @@ export async function ventasDeSemana(negocioId, fecha = null) {
 /** Ajustes registrados para la semana (aplicados y revertidos). */
 export async function ajustesDeSemana(negocioId, fecha = null) {
   const nid = requerirNegocio(negocioId);
+  if (fecha !== null && fecha !== undefined && fecha !== '' && !esFechaValida(fecha)) {
+    throw err(`Fecha inválida: ${fecha}`, 'FECHA_INVALIDA');
+  }
   const lunes = lunesDeSemana(fecha && esFechaValida(fecha) ? fecha
     : fechaOperativaHoy(await zonaHorariaNegocio(nid)));
   const { rows } = await pool.query(
