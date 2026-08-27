@@ -149,12 +149,15 @@ function crearCanal(negocioId = NEG_A) {
   const clave = `${negocioId}:${TEL}`;
   const outbounds = [];
   const entregar = async (textoCombinado) => {
-    if (soloImagenes(textoCombinado)) { outbounds.push({ tipo: 'fallback', texto: TEXTO_FALLBACK_IMAGEN }); return; }
+    // Réplica del callback de producción (política nueva): visión corre
+    // PRIMERO; la foto muda solo cae al fallback si visión está apagada o falló.
     let contextos = null;
     try {
       const ids = documentosDelTurno(textoCombinado);
       if (ids.length && await visionHabilitada(negocioId)) contextos = await analizarImagenesDeTurno(negocioId, ids);
     } catch { /* nota */ }
+    const esFotoMuda = soloImagenes(textoCombinado);
+    if (esFotoMuda && !(contextos && contextos.size)) { outbounds.push({ tipo: 'fallback', texto: TEXTO_FALLBACK_IMAGEN }); return; }
     outbounds.push({ tipo: 'agente', texto: prepararTurnoParaIA(textoCombinado, contextos) });
   };
   return {
@@ -678,6 +681,79 @@ await t('RB12. ambos intentos fallan: fallback único con la nota, jamás silenc
   assert.strictEqual(c.outbounds.length, 1);
   assert.ok(c.outbounds[0].texto.includes(NOTA_IMAGEN_PARA_IA));
   assert.ok(!c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'));
+});
+
+// ═══ FOTO SOLA (cambio de producto tras el smoke B de Alora) ════════════════
+await t('FS1-FS4. visión ON + foto sola: Vision ejecuta, Brain ejecuta, sin fallback, UNA respuesta', async () => {
+  const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+  const antes = mock.requests.length;
+  const c = crearCanal();
+  c.imagen(docId, null);                       // SIN caption, SIN texto
+  await c.esperarTurno();
+  await dormir(VENTANA * 2);
+  assert.strictEqual(c.outbounds.length, 1, 'una sola respuesta');
+  assert.strictEqual(c.outbounds[0].tipo, 'agente', 'la foto muda va al agente cuando visión está activa');
+  assert.ok(c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'), 'Brain recibe el análisis');
+  assert.ok(!c.outbounds[0].texto.includes(TEXTO_FALLBACK_IMAGEN), 'ya no se usa el fallback en foto sola exitosa');
+  assert.strictEqual(mock.requests.length - antes, 1, 'exactamente un análisis');
+});
+
+await t('FS6. foto primero, texto 5s después (en ventana): NO responde antes, un turno', async () => {
+  const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+  const c = crearCanal();
+  c.imagen(docId, null);
+  await dormir(Math.round(VENTANA * 0.8));     // los ~5s reales, a escala
+  assert.strictEqual(c.outbounds.length, 0, 'la ventana debe seguir abierta: nada de responder antes');
+  c.texto('quiero algo así');
+  await c.esperarTurno();
+  assert.strictEqual(c.outbounds.length, 1);
+  assert.ok(c.outbounds[0].texto.includes('quiero algo así'));
+  assert.ok(c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'));
+});
+
+await t('FS8. visión OFF + foto sola: política anterior intacta (fallback determinista)', async () => {
+  await ponerCfg(NEG_A, 'vision_imagenes', 'false');
+  try {
+    const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+    const antes = mock.requests.length;
+    const c = crearCanal();
+    c.imagen(docId, null);
+    await c.esperarTurno();
+    assert.strictEqual(c.outbounds.length, 1);
+    assert.strictEqual(c.outbounds[0].tipo, 'fallback', 'sin visión, la foto muda conserva el texto de siempre');
+    assert.strictEqual(mock.requests.length, antes, 'y cero llamadas al proveedor');
+  } finally {
+    await ponerCfg(NEG_A, 'vision_imagenes', 'true');
+  }
+});
+
+await t('FS9. visión FALLA + foto sola: fallback único, jamás silencio ni doble envío', async () => {
+  mock.responder = () => ({ status: 500, body: { type: 'error', error: { type: 'api_error' } } });
+  const { docId } = await crearImagenLista(NEG_A, FIX.bolsaKraftFloral);
+  const c = crearCanal();
+  c.imagen(docId, null);
+  await c.esperarTurno();
+  await dormir(VENTANA * 2);
+  assert.strictEqual(c.outbounds.length, 1);
+  assert.strictEqual(c.outbounds[0].tipo, 'fallback', 'foto muda + visión caída = el texto determinista de siempre');
+});
+
+await t('FS10-FS11. duplicado y cache: la foto muda tampoco se paga dos veces', async () => {
+  const r1 = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-fs-cache', imagen: FIX.bolsaKraftFloral, mimeType: 'image/png' });
+  const antes = mock.requests.length;
+  const r2 = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-fs-cache', imagen: FIX.bolsaKraftFloral, mimeType: 'image/png' });
+  assert.ok(r1.ok && r2.ok && r2.cacheHit === true);
+  assert.strictEqual(mock.requests.length, antes, 'cache/dedupe intactos para la foto muda');
+});
+
+await t('RN1. contrato de la política nueva en la fuente desplegable (ROJO contra e440df4)', () => {
+  const WA = readFileSync(DIR_FUENTES ? join(DIR_FUENTES, 'whatsapp-meta.js') : join(RAIZ, 'src', 'channels', 'whatsapp-meta.js'), 'utf8').replace(/\r\n/g, '\n');
+  const cola = WA.slice(WA.indexOf('encolarMensaje(`${negocioId}'));
+  assert.ok(/esFotoMuda && !\(contextosVisuales && contextosVisuales\.size\)/.test(cola),
+    'la foto muda con visión ON debe analizarse (esperado FALLO contra la política anterior)');
+  const posVision = cola.indexOf('analizarImagenesDeTurno');
+  const posMuda = cola.indexOf('esFotoMuda');
+  assert.ok(posVision >= 0 && posMuda > posVision, 'visión corre antes de la decisión de fallback');
 });
 
 // ═══ VERACIDAD Y ARQUITECTURA ═══════════════════════════════════════════════

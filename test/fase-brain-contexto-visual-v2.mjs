@@ -159,6 +159,13 @@ t('20. "tenemos exactamente ese" / "idéntico" / "está disponible": prohibidas'
   assert.ok(/podemos hacer algo inspirado en ese estilo/.test(R), 'y la alternativa correcta está ofrecida');
 });
 
+t('FS12. foto SIN texto: Brain no asume intención de compra y hace MÁXIMO 1 pregunta', () => {
+  assert.ok(/FOTO SIN TEXTO/.test(R), 'existe la regla de foto muda (esperado FALLO contra el HEAD anterior)');
+  assert.ok(/NO asumas intención de compra/.test(R));
+  assert.ok(/MÁXIMO 1 pregunta/.test(R));
+  assert.ok(/¿Buscas algo parecido\?/.test(R));
+});
+
 // ═══ Contratos rojos (mecanismo BRAIN_FUENTES_DIR) ══════════════════════════
 t('R1. prompts.js define las reglas del contexto visual', () => {
   assert.ok(/BLOQUE_REGLAS_CONTEXTO_VISUAL/.test(PROMPTS), 'no existen las reglas (esperado contra el HEAD anterior)');

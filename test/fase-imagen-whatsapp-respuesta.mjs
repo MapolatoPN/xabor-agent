@@ -128,7 +128,10 @@ t('11. el turno de la imagen entra a la MISMA cola que el texto', () => {
 
 t('12. la cola garantiza respuesta: agente o fallback, nunca nada', () => {
   const cola = webhook.slice(webhook.indexOf('encolarMensaje(`${negocioId}'));
-  assert.ok(/if \(soloImagenes\(textoCombinado\)\)/.test(cola), 'falta la rama del fallback');
+  // Política nueva (foto muda con visión ON se analiza): la rama del
+  // fallback exige foto muda Y visión sin resultado.
+  assert.ok(/const esFotoMuda = soloImagenes\(textoCombinado\);/.test(cola), 'falta la clasificación de foto muda');
+  assert.ok(/if \(esFotoMuda && !\(contextosVisuales && contextosVisuales\.size\)\)/.test(cola), 'falta la rama del fallback');
   assert.ok(/TEXTO_FALLBACK_IMAGEN/.test(cola), 'el fallback debe enviarse de verdad');
   // Vision V1: el turno puede llevar ademas los contextos visuales del
   // analisis (segundo argumento); la limpieza de la marca es la misma.
@@ -141,7 +144,7 @@ t('12. la cola garantiza respuesta: agente o fallback, nunca nada', () => {
   assert.strictEqual((cola.match(/guardarMensaje\([^)]*TEXTO_FALLBACK_IMAGEN/g) || []).length, 1,
     'el fallback debe quedar registrado en el chat exactamente una vez');
   // Y es un if con return: el modelo no se llama además del fallback.
-  assert.ok(/soloImagenes\(textoCombinado\)\)[\s\S]*?return;[\s\S]*?procesarConClaude/.test(cola),
+  assert.ok(/esFotoMuda && !\(contextosVisuales && contextosVisuales\.size\)\)[\s\S]*?return;[\s\S]*?procesarConClaude/.test(cola),
     'el fallback debe cortar antes de llamar al modelo');
 });
 

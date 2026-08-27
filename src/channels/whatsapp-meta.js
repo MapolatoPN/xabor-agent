@@ -1634,26 +1634,20 @@ router.post('/', async (req, res) => {
     console.log(`[Meta WA] Bot de WhatsApp activo para el negocio ${negocioId} — encolando para procesar con IA`);
     encolarMensaje(`${negocioId}:${telefono}`, texto, async (textoCombinado) => {
       // INVARIANTE: este turno termina en un mensaje al cliente, siempre.
-      // Si en los 6 segundos solo llegaron fotos y ninguna palabra, el
-      // modelo no tiene nada que interpretar (no ve imágenes): se contesta
-      // con el texto determinista, en vez de callar o de inventar.
-      if (soloImagenes(textoCombinado)) {
-        try {
-          await enviarMensaje(telefono, TEXTO_FALLBACK_IMAGEN, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
-        } catch (e) {
-          console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
-        }
-        return;
-      }
-      // Vision V1 (fuera del camino del webhook: esto ya corre al vencer
-      // la cola). Si el negocio tiene vision_imagenes activo y el turno
-      // trae fotos archivadas, se analizan (max 2) y cada marca se
-      // sustituye por su [CONTEXTO VISUAL]; cualquier fallo -- flag
-      // apagado, descarga incompleta, proveedor caido, output invalido --
-      // deja ESA foto con la nota de siempre. Una sola llamada al agente,
-      // una sola respuesta: la decision agente-vs-fallback ya se tomo
-      // arriba y vision no la reabre.
+      //
+      // Vision corre PRIMERO (fuera del camino del webhook: esto ya corre
+      // al vencer la cola de 6s): si el negocio tiene vision_imagenes
+      // activo y el turno trae fotos archivadas, se analizan (max 2) y
+      // cada marca se sustituye por su [CONTEXTO VISUAL].
+      //
+      // CAMBIO DE PRODUCTO (smoke B de Alora, 26-ago): una foto SIN
+      // caption ya no se despacha con "no puedo verla" cuando vision esta
+      // activo -- se analiza igual y Brain responde con lo que se ve (sin
+      // asumir intencion de compra: ver BLOQUE_REGLAS_CONTEXTO_VISUAL).
+      // El fallback determinista queda reservado para: vision apagada
+      // (caso C) o vision fallida sin ningun texto del cliente (caso D).
+      // Con texto del cliente y vision fallida, el agente recibe la nota
+      // de siempre. Una decision, una respuesta: jamas doble envio.
       let contextosVisuales = null;
       try {
         const docIds = documentosDelTurno(textoCombinado);
@@ -1662,6 +1656,18 @@ router.post('/', async (req, res) => {
         }
       } catch (e) {
         console.error(`[VISION] fallback negocio=${negocioId} :: ${e.message}`);
+      }
+      const esFotoMuda = soloImagenes(textoCombinado);
+      if (esFotoMuda && !(contextosVisuales && contextosVisuales.size)) {
+        // Foto sola SIN analisis disponible: el modelo no tiene nada que
+        // interpretar (no ve imagenes) -- texto determinista, como siempre.
+        try {
+          await enviarMensaje(telefono, TEXTO_FALLBACK_IMAGEN, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
+        } catch (e) {
+          console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
+        }
+        return;
       }
       procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
     });

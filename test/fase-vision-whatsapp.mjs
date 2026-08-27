@@ -125,12 +125,15 @@ function crearCanal(negocioId = NEG_A, telefono = TEL) {
   const clave = `${negocioId}:${telefono}`;
   const outbounds = [];
   const entregar = async (textoCombinado) => {
-    if (soloImagenes(textoCombinado)) { outbounds.push({ tipo: 'fallback', texto: TEXTO_FALLBACK_IMAGEN }); return; }
+    // Réplica del callback de producción (política nueva): visión corre
+    // PRIMERO; la foto muda solo cae al fallback si visión está apagada o falló.
     let contextos = null;
     try {
       const ids = documentosDelTurno(textoCombinado);
       if (ids.length && await visionHabilitada(negocioId)) contextos = await analizarImagenesDeTurno(negocioId, ids);
     } catch { /* fallback: nota */ }
+    const esFotoMuda = soloImagenes(textoCombinado);
+    if (esFotoMuda && !(contextos && contextos.size)) { outbounds.push({ tipo: 'fallback', texto: TEXTO_FALLBACK_IMAGEN }); return; }
     outbounds.push({ tipo: 'agente', texto: prepararTurnoParaIA(textoCombinado, contextos) });
   };
   return {
@@ -154,15 +157,19 @@ await t('1. imagen + caption: UNA respuesta del agente CON contexto visual', asy
   assert.ok(c.outbounds[0].texto.includes('$299 MXN'), 'el precio visible debe llegar al agente');
 });
 
-await t('2. imagen sola: fallback único, CERO llamadas a visión (política V1 documentada)', async () => {
+await t('2. imagen sola con visión ON: se ANALIZA y responde el agente (política nueva)', async () => {
+  // Cambio de producto (smoke B de Alora): la foto muda ya no se despacha
+  // con "no puedo verla" cuando vision_imagenes está activo.
   const { docId } = await crearImagenLista(NEG_A, FIX.flyer2x1);
   const antes = mock.requests.length;
   const c = crearCanal();
   c.imagen(docId, null);
   await c.esperarTurno();
-  assert.strictEqual(c.outbounds.length, 1);
-  assert.strictEqual(c.outbounds[0].tipo, 'fallback', 'foto muda → fallback determinista de siempre');
-  assert.strictEqual(mock.requests.length, antes, 'una foto sin intención no gasta análisis en V1');
+  assert.strictEqual(c.outbounds.length, 1, 'una sola respuesta');
+  assert.strictEqual(c.outbounds[0].tipo, 'agente', 'la foto muda con visión ON va al AGENTE');
+  assert.ok(c.outbounds[0].texto.includes('[CONTEXTO VISUAL]'), 'con el análisis de la foto');
+  assert.ok(!c.outbounds[0].texto.includes(TEXTO_FALLBACK_IMAGEN));
+  assert.strictEqual(mock.requests.length - antes, 1, 'exactamente un análisis');
 });
 
 await t('3. texto → imagen en ventana: UNA respuesta con texto + contexto visual', async () => {
@@ -488,12 +495,16 @@ await t('ADV2. el contexto visual JAMÁS entra como system: solo turno de usuari
 });
 
 // ═══ Contratos estructurales (la prueba roja de la Fase 23) ═════════════════
-await t('C1. la cola de producción analiza visión DESPUÉS de decidir agente-vs-fallback', () => {
+await t('C1. la cola de producción analiza visión ANTES de decidir agente-vs-fallback', () => {
+  // Política nueva (foto muda con visión ON se analiza): visión corre
+  // primero y el fallback queda solo para visión apagada/fallida sin texto.
   const cola = FUENTE_WA.slice(FUENTE_WA.indexOf('encolarMensaje(`${negocioId}'));
   assert.ok(/analizarImagenesDeTurno/.test(cola), 'VISION NO EXISTE en el callback de la cola (esperado en 0425c98)');
-  const posFallback = cola.indexOf('soloImagenes(textoCombinado)');
+  const posMuda = cola.indexOf('esFotoMuda');
   const posVision = cola.indexOf('analizarImagenesDeTurno');
-  assert.ok(posFallback >= 0 && posVision > posFallback, 'visión debe correr después de la decisión de fallback');
+  assert.ok(posVision >= 0 && posMuda > posVision, 'visión debe correr ANTES de la decisión de fallback (política nueva)');
+  assert.ok(/esFotoMuda && !\(contextosVisuales && contextosVisuales\.size\)/.test(cola),
+    'el fallback exige foto muda Y visión sin resultado');
   assert.ok(/prepararTurnoParaIA\(textoCombinado, contextosVisuales\)/.test(cola), 'el turno del agente lleva los contextos');
 });
 
