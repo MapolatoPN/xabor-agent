@@ -44,20 +44,28 @@ function t(nombre, fn) {
 }
 
 // ═══ P0 — HORARIO ANTES DE ARMAR (contrato de fuente) ═══════════════════════
-t('1. el prompt exige avisar el horario ANTES de armar el pedido', () => {
-  assert.ok(/AVISA EL HORARIO ANTES DE ARMAR EL PEDIDO/.test(PROMPTS),
-    'falta la regla de aviso temprano (esperado FALLO contra la versión previa)');
+// La regla debe estar en la parte SIEMPRE incluida del prompt (todos los
+// canales), NO dentro del bloque solo-voz `canalTexto` (canal==='voz'?...).
+// Un primer intento la puso ahí y el bot de WhatsApp nunca la recibió.
+const idxCanalVozClose = PROMPTS.indexOf("const canalTexto = canal === 'voz'");
+const idxReglaCritica = PROMPTS.indexOf('HORARIO — REGLA CRÍTICA');
+t('1. existe la REGLA CRÍTICA de avisar el horario antes de armar', () => {
+  assert.ok(idxReglaCritica > -1,
+    'falta el bloque HORARIO — REGLA CRÍTICA (esperado FALLO contra la versión previa)');
+  assert.ok(/NUNCA empieces a preguntar la focaccia\/el producto sin haber avisado el horario primero/.test(PROMPTS));
 });
-t('2. cerrado/pre-apertura: primera respuesta a intención de compra avisa horario', () => {
-  assert.ok(/tu PRIMERA respuesta debe avisarle el horario ANTES de empezar a preguntarle/.test(PROMPTS));
+t('2. la regla es CANAL-AGNÓSTICA: gateada por estado, no por canal===voz', () => {
+  // Debe estar controlada por !estado.abierto (main return), no dentro de
+  // canalTexto. Comprobamos que el bloque se emite con `${!estado.abierto ?`.
+  assert.ok(/\$\{!estado\.abierto \? `\s*\n## HORARIO — REGLA CRÍTICA/.test(PROMPTS),
+    'el bloque debe colgar de !estado.abierto en el cuerpo principal, no del canal de voz');
+});
+t('3. ofrece pedido anticipado y avisa UNA SOLA VEZ', () => {
   assert.ok(/puedo tomar tu pedido desde ahora/i.test(PROMPTS), 'ofrece pedido anticipado');
+  assert.ok(/Avisa el horario UNA SOLA VEZ en la conversación/.test(PROMPTS));
 });
-t('3. el horario se avisa UNA SOLA VEZ por conversación', () => {
-  assert.ok(/UNA SOLA VEZ POR CONVERSACIÓN/.test(PROMPTS));
-  assert.ok(/NO se lo repitas en cada mensaje/.test(PROMPTS));
-});
-t('4. tras el aviso, se toma el pedido con normalidad (no se fuerza)', () => {
-  assert.ok(/si el cliente quiere continuar, arma el pedido con normalidad; si no quiere esperar, ciérralo sin fricción/.test(PROMPTS));
+t('4. tras el aviso, se arma o se cierra sin fricción (no se fuerza)', () => {
+  assert.ok(/Si el cliente acepta, continúa armando el pedido con normalidad; si no quiere esperar, cierra sin fricción/.test(PROMPTS));
 });
 t('5. pre-apertura en el bloque de estado también obliga a avisar primero', () => {
   assert.ok(/AVÍSALE ESTO PRIMERO \(antes de preguntarle qué quiere\)/.test(PROMPTS));

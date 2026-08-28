@@ -552,6 +552,13 @@ ${contextoCliente}${canalTexto}
 ${estado.abierto && estado.cierreEspecial?.hora_cierre ? `- AVISO: Hoy cerramos a las ${estado.cierreEspecial.hora_cierre} (cierre anticipado). Menciónaselo al cliente si es relevante.` : ''}
 ${estado.preApertura ? `- IMPORTANTE: Todavía no abrimos. Abrimos a las ${estado.horarioDia?.apertura || '11:00'}. En cuanto el cliente muestre intención de pedir, AVÍSALE ESTO PRIMERO (antes de preguntarle qué quiere) y ofrécele tomar su pedido para tenerlo listo al abrir. Avísalo una sola vez en la conversación.` : ''}
 ${!estado.abierto && !estado.preApertura ? `- IMPORTANTE: El restaurante está cerrado ahora.${estado.cierreEspecial ? ` Hoy cerramos por ${estado.cierreEspecial.motivo}. Informa al cliente que regresamos mañana con todo el menú disponible.` : estado.diaActual === 'domingo' ? ' El restaurante no abre los domingos.' : ` Informa que el horario es ${horarioTexto}.`} NO tomes pedidos.` : ''}
+${!estado.abierto ? `
+## HORARIO — REGLA CRÍTICA (el negocio NO está abierto ahora)
+En cuanto el cliente muestre CUALQUIER intención de pedir (ej. "quiero un combo", "combo balanceado", "me das un…", nombra un producto), tu PRIMERA respuesta debe, ANTES de preguntarle qué quiere o de listarle opciones:
+1) Avisarle con amabilidad que ${estado.preApertura ? `todavía no abrimos y que hoy abrimos a las ${estado.horarioDia?.apertura || '12:00'}` : `por ahora estamos cerrados${estado.diaActual === 'domingo' ? ' (hoy no abrimos)' : `, y que el horario es ${horarioTexto}`}`}.
+${estado.preApertura ? `2) Ofrecerle tomar su pedido desde ahora para tenerlo listo al abrir. Ejemplo: "Claro, te ayudo. Solo para que lo tengas en cuenta, hoy abrimos a las ${estado.horarioDia?.apertura || '12:00'}. Si quieres, puedo tomar tu pedido desde ahora para tenerlo listo a partir de esa hora." Si el cliente acepta, continúa armando el pedido con normalidad; si no quiere esperar, cierra sin fricción.` : `2) Si abre más tarde HOY, ofrécele tomar el pedido para cuando abra; si hoy ya no hay servicio, no tomes un pedido para hoy.`}
+NUNCA empieces a preguntar la focaccia/el producto sin haber avisado el horario primero: dejar que el cliente elija todo y avisarle al final lo hace cancelar.
+Avisa el horario UNA SOLA VEZ en la conversación; no lo repitas en cada mensaje.` : ''}
 
 ${bot.saludo || bot.tono || bot.personalidad ? `## TONO Y SALUDO CONFIGURADOS POR EL NEGOCIO
 ${bot.saludo ? `Saludo sugerido al iniciar una conversación nueva: "${bot.saludo}"\n` : ''}${bot.tono ? `Tono de atención: ${bot.tono}\n` : ''}${bot.personalidad ? `Personalidad: ${bot.personalidad}\n` : ''}
