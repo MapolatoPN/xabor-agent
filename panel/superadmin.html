@@ -1447,12 +1447,17 @@ async function cargarAsistenteIA(id) {
     pintarAsistenteIA(d);
   } catch { fb.textContent = 'No se pudo cargar el asistente IA'; }
 }
+// Catálogo recordado entre llamadas: la respuesta de un PATCH puede no
+// traer girosSugeridos, y sin él un giro conocido (restaurante) caería a
+// "Otro...". Se conserva el último catálogo visto para no depender de eso.
+let girosCatalogo = [];
 function pintarAsistenteIA(d) {
   const chk = document.getElementById('dt-ia-vision');
   chk.checked = d.vision === true;
   document.getElementById('dt-ia-vision-txt').textContent = d.vision ? 'ON' : 'OFF';
   const sel = document.getElementById('dt-ia-giro');
-  const sugeridos = d.girosSugeridos || [];
+  if (Array.isArray(d.girosSugeridos) && d.girosSugeridos.length) girosCatalogo = d.girosSugeridos;
+  const sugeridos = girosCatalogo;
   const esConocido = !d.giro || sugeridos.some(g => g.clave === d.giro);
   sel.innerHTML = '<option value="">Sin configurar</option>'
     + sugeridos.map(g => `<option value="${g.clave}" ${d.giro === g.clave ? 'selected' : ''}>${g.nombre}</option>`).join('')

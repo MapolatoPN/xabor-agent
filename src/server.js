@@ -5207,7 +5207,9 @@ app.patch('/api/superadmin/negocios/:negocioId/asistente-ia', requireSuperadmin,
     const r = await actualizarAsistenteIaNegocio(req.params.negocioId, { vision, giro }, req.usuarioId);
     if (!r) return res.status(404).json({ error: 'Negocio no encontrado' });
     const estado = await obtenerAsistenteIaNegocio(req.params.negocioId);
-    res.json({ ok: true, ...estado });
+    // Misma forma que el GET: la UI repinta el selector de giro con este
+    // objeto, y sin el catálogo caería a "Otro..." para giros conocidos.
+    res.json({ ok: true, ...estado, girosSugeridos: GIROS_SUGERIDOS });
   } catch (e) {
     if (e.code === 'VISION_INVALIDO' || e.code === 'GIRO_INVALIDO' || e.code === 'SIN_CAMBIOS') {
       return res.status(400).json({ error: e.message });
