@@ -9,6 +9,7 @@ import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion,
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
+import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -447,11 +448,15 @@ function extraerFactura(texto) {
 }
 
 function limpiarTexto(texto) {
-  return texto
+  const sinTags = texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
     .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
     .replace(/<ENVIAR_MENU>/g, '')
     .trim();
+  // Última capa antes de guardar/enviar: WhatsApp no entiende Markdown.
+  // Convierte **negrita**→*negrita* y des-escapa \* para que el cliente y el
+  // panel no vean los símbolos literales. Ver src/utils/formatoWhatsapp.js.
+  return normalizarFormatoWhatsApp(sinTags);
 }
