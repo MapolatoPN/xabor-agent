@@ -891,26 +891,36 @@ export async function upsertCliente(telefono, nombre, negocioId) {
 }
 
 // ─── Control manual del bot por conversación ──────────────────────────────────
-// negocioId OBLIGATORIO — falla cerrado (Incidente P0). Antes cualquier
-// negocio podía pausar/reactivar el bot de un cliente de OTRO negocio con
-// solo conocer su teléfono, y de paso creaba clientes nuevos con
-// negocio_id NULL. El WHERE del ON CONFLICT hace que la escritura sea un
-// no-op si el teléfono ya pertenece a otro negocio (nunca lo reasigna).
+// El estado "bot pausado" (Tomar conversación / Devolver al bot) vive en
+// `conversaciones_control`, con UNIQUE (negocio_id, telefono) — NO en la fila
+// global de `clientes`. Migración 066. Motivo: `clientes.telefono` es PK
+// GLOBAL y un mismo número conversa con varios negocios; el estado por
+// conversación debe ser independiente por negocio (Nonna puede pausar sin
+// afectar a Alora, y cada negocio siempre puede pausar SU propia
+// conversación aunque la fila `clientes` pertenezca a otro).
+
+// UPSERT por (negocio_id, telefono). Acepta `client` para correr dentro de
+// una transacción (estado + auditoría atómicos). Devuelve true si escribió.
+export async function upsertControlConversacion(telefono, pausado, negocioId, updatedBy = null, client = pool) {
+  const { rowCount } = await client.query(`
+    INSERT INTO conversaciones_control (negocio_id, telefono, bot_pausado, updated_by, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (negocio_id, telefono)
+      DO UPDATE SET bot_pausado = EXCLUDED.bot_pausado, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+  `, [negocioId, telefono, pausado, updatedBy]);
+  return rowCount > 0;
+}
+
+// Compatibilidad: firma standalone (pool) usada por llamadores existentes.
+// negocioId OBLIGATORIO — falla cerrado. Ya NO depende de que la fila
+// `clientes` pertenezca al negocio: escribe la fila de control del negocio.
 export async function setBotPausado(telefono, pausado, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] setBotPausado: negocioId inválido u omitido — rechazado, no se escribe sin negocio');
     return false;
   }
   try {
-    const nonnaMayeId = await obtenerNegocioIdPorSlug('nonna-maye');
-    const incluirNull = !!nonnaMayeId && negocioId === nonnaMayeId;
-    const { rowCount } = await pool.query(`
-      INSERT INTO clientes (telefono, bot_pausado, negocio_id)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (telefono) DO UPDATE SET bot_pausado = $2
-        WHERE clientes.negocio_id = $3 OR ($4::boolean AND clientes.negocio_id IS NULL)
-    `, [telefono, pausado, negocioId, incluirNull]);
-    return rowCount > 0;
+    return await upsertControlConversacion(telefono, pausado, negocioId.trim());
   } catch (e) {
     console.error('[DB] Error setBotPausado:', e.message);
     return false;
@@ -934,23 +944,19 @@ export async function toggleClienteInterno(telefono, esInterno, negocioId) {
   return rowCount > 0;
 }
 
-// Fase de piloto (auditoría de aislamiento del chat manual): antes
-// consultaba bot_pausado por teléfono SIN filtrar por negocio -- un
-// staff de cualquier negocio con el módulo whatsapp podía consultar el
-// estado de pausa de un teléfono de OTRO negocio. negocioId ahora es
-// obligatorio; mismo criterio de compatibilidad que obtenerConversacion
-// para los clientes de Nonna Maye anteriores a la migración 007 (única
-// excepción real de negocio_id NULL en clientes).
-export async function getBotPausado(telefono, negocioId) {
+// Lee el estado de pausa de la conversación de ESTE negocio, independiente
+// de cualquier otro negocio con el mismo teléfono. Sin fila: false (el bot
+// responde). Acepta `client` para leer el estado anterior dentro de la misma
+// transacción del cambio. negocioId OBLIGATORIO — falla cerrado.
+export async function getBotPausado(telefono, negocioId, client = pool) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] getBotPausado: negocioId inválido u omitido — rechazado (fail closed)');
     return false;
   }
   try {
-    const incluirNull = await _esNonnaMaye(negocioId);
-    const result = await pool.query(
-      'SELECT bot_pausado FROM clientes WHERE telefono = $1 AND (negocio_id = $2 OR ($3::boolean AND negocio_id IS NULL))',
-      [telefono, negocioId.trim(), incluirNull]
+    const result = await client.query(
+      'SELECT bot_pausado FROM conversaciones_control WHERE negocio_id = $1 AND telefono = $2',
+      [negocioId.trim(), telefono]
     );
     return result.rows[0]?.bot_pausado || false;
   } catch (e) {

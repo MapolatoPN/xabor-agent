@@ -112,6 +112,11 @@ await t('DEDUP', 'mensajes salientes sin message_id_externo nunca se deduplican 
 });
 
 // ═══════════ AISLAMIENTO getBotPausado (cierre de gap encontrado en auditoría) ═══════════
+// El estado de pausa vive ahora en conversaciones_control (migración 066),
+// no en la fila global de clientes. Pausar ya NO crea implícitamente la
+// conversación: para que el endpoint la reconozca como propia debe existir
+// una conversación real (mensajes) del negocio. Se siembra la de A.
+await guardarMensaje('5218781003001', 'Cliente Aislamiento', 'entrante', 'hola', SEED.negocioA, 'cliente');
 await t('AISLAMIENTO', 'pausar el bot para un cliente de A no es visible al consultar estado-bot desde B (mismo teléfono)', async () => {
   const tel = '5218781003001';
   await setBotPausado(tel, true, SEED.negocioA);
