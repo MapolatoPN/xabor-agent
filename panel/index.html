@@ -485,6 +485,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 /* ─── Chats: rediseño mensajería (móvil-first, desktop intacto) ──────────── */
 /* Split desktop: lista + detalle a lo alto del viewport (en móvil colapsa) */
 .chats-split { display: flex; gap: 14px; height: calc(100vh - 130px); }
+/* Ancho del sidebar de la bandeja en DESKTOP. En móvil la media query lo pone
+   a 100% (antes vivía en un style inline width:280px que ganaba por
+   especificidad y dejaba una franja vacía a la derecha en la bandeja móvil). */
+#lista-chats { width: 280px; flex-shrink: 0; padding: 6px; }
 /* Buscador (una sola fila compacta) + contador a la derecha */
 .chats-search { display: flex; flex-direction: row; align-items: center; gap: 8px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-pill); padding: 7px 14px; margin: 0 0 8px; }
 .chats-search-ico { flex-shrink: 0; font-size: 0.9rem; opacity: .7; }
@@ -1585,7 +1589,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Tarjeta de estado GLOBAL del bot del negocio -->
       <div id="chats-banner-bot" class="chat-botcard" style="display:none;"></div>
       <div class="chats-split">
-        <div id="lista-chats" style="width:280px;flex-shrink:0;padding:6px;">
+        <div id="lista-chats">
           <div id="contactos-lista"></div>
         </div>
         <div id="chat-area">
