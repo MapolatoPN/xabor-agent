@@ -57,7 +57,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -4215,16 +4215,43 @@ async function validarConversacionPropia(req, res, next) {
 }
 
 async function cambiarAtencionConversacion(req, res, pausado) {
-  const anterior = await getBotPausado(req.params.telefono, req.negocioId);
-  const actualizado = await setBotPausado(req.params.telefono, pausado, req.negocioId);
-  if (!actualizado) return res.status(403).json({ error: 'No se pudo modificar esta conversación' });
-  await registrarAuditoriaPlataforma({
-    superadminId: req.usuarioId, accion: pausado ? 'tomar_conversacion' : 'devolver_conversacion_bot',
-    negocioId: req.negocioId, estadoAnterior: { telefono: req.params.telefono, bot_pausado: anterior },
-    estadoNuevo: { telefono: req.params.telefono, bot_pausado: pausado },
-  });
-  broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono: req.params.telefono, pausado });
-  res.json({ ok: true, pausado });
+  const { telefono } = req.params;
+  const negocioId = req.negocioId;
+  // Actor obligatorio y con su rol REAL. El path legado (Bearer admin/staff
+  // sin sesión de cookie) nunca setea req.usuarioId: sin un actor no se puede
+  // auditar ni mutar. Se rechaza limpio (401) en vez de reventar (500) o
+  // inventar un actor. El panel moderno usa cookie de sesión y sí lo trae.
+  if (!req.usuarioId) {
+    return res.status(401).json({ error: 'Sesión sin usuario: vuelve a iniciar sesión para tomar la conversación.' });
+  }
+  // Un superadmin operando un negocio AJENO por soporte se audita como
+  // superadmin; un admin/staff del propio negocio, como actor del negocio.
+  const actor = req.esSoporte ? { superadminId: req.usuarioId } : { actorUsuarioId: req.usuarioId };
+
+  const client = await pool.connect();
+  try {
+    // ATÓMICO: estado + auditoría en una sola transacción. Si la auditoría
+    // falla, el estado NO queda cambiado (antes: se pausaba y luego el 500 de
+    // la auditoría dejaba estado parcial + error al cliente). El broadcast
+    // solo sale DESPUÉS del commit.
+    await client.query('BEGIN');
+    const anterior = await getBotPausado(telefono, negocioId, client);
+    await upsertControlConversacion(telefono, pausado, negocioId, req.usuarioId, client);
+    await registrarAuditoriaPlataforma({
+      ...actor, accion: pausado ? 'tomar_conversacion' : 'devolver_conversacion_bot',
+      negocioId, estadoAnterior: { telefono, bot_pausado: anterior },
+      estadoNuevo: { telefono, bot_pausado: pausado },
+    }, client);
+    await client.query('COMMIT');
+    broadcastNegocio(negocioId, { tipo: 'bot_pausado', telefono, pausado });
+    res.json({ ok: true, pausado });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch { /* ya cerrada */ }
+    console.error('[Conversacion] cambiarAtencion:', e.message);
+    res.status(500).json({ error: 'No se pudo cambiar la atención de esta conversación.' });
+  } finally {
+    client.release();
+  }
 }
 
 app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
