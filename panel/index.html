@@ -475,24 +475,29 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #chat-footer { padding: 10px 12px; border-top: 1px solid var(--color-border); display: flex; align-items: flex-end; gap: 8px; background: var(--color-surface); }
 #chat-input { flex: 1; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 20px; color: var(--color-text-primary); padding: 10px 14px; font-size: 0.92rem; font-family: inherit; resize: none; max-height: 120px; line-height: 1.35; transition: border-color .15s; }
 #chat-input:focus { outline: none; border-color: var(--color-brand); }
-#btn-toggle-bot { font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: var(--radius-pill); cursor: pointer; transition: all .2s; }
-#chat-atencion-estado { font-size: 0.72rem; font-weight: 700; color: #475569; white-space: nowrap; }
+/* #btn-toggle-bot y #chat-atencion-estado ahora se estilan por sus clases
+   .chat-cta / .chat-estado-titulo (rediseño mensajería). Se eliminan las
+   reglas por-ID legadas que forzaban nowrap y encogían el botón. */
 @media (max-width: 640px) {
   #chat-header { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
-  #chat-atencion-estado { order: 3; width: 100%; padding-left: 34px; }
-  #btn-toggle-bot { padding: 7px 10px; }
 }
 
 /* ─── Chats: rediseño mensajería (móvil-first, desktop intacto) ──────────── */
-/* Buscador + filtros de la bandeja */
-.chats-search { display: flex; align-items: center; gap: 8px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-pill); padding: 9px 14px; margin: 0 0 10px; }
-.chats-search input { flex: 1; border: none; background: none; outline: none; font-size: 0.9rem; color: var(--color-text-primary); font-family: inherit; }
-.chats-filtros { display: flex; gap: 8px; margin-bottom: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
-.chats-filtro { flex-shrink: 0; font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; transition: all .15s; }
+/* Split desktop: lista + detalle a lo alto del viewport (en móvil colapsa) */
+.chats-split { display: flex; gap: 14px; height: calc(100vh - 130px); }
+/* Buscador (una sola fila compacta) + contador a la derecha */
+.chats-search { display: flex; flex-direction: row; align-items: center; gap: 8px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-pill); padding: 7px 14px; margin: 0 0 8px; }
+.chats-search-ico { flex-shrink: 0; font-size: 0.9rem; opacity: .7; }
+.chats-search input { flex: 1; min-width: 0; border: none; background: none; outline: none; font-size: 0.9rem; color: var(--color-text-primary); font-family: inherit; }
+.chats-search input::placeholder { color: var(--color-text-muted); }
+.chats-search .chats-topbar-chip { flex-shrink: 0; white-space: nowrap; }
+.chats-filtros { display: flex; gap: 8px; margin-bottom: 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.chats-filtro { flex-shrink: 0; font-size: 0.76rem; font-weight: 600; padding: 5px 13px; border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; transition: all .15s; }
 .chats-filtro.activo { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
+.chats-topbar-chip { font-size: 0.74rem; font-weight: 600; color: var(--color-text-secondary); }
 
-/* Tarjeta de estado global del bot del negocio */
-.chat-botcard { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius-lg); margin-bottom: 12px; border: 1px solid transparent; }
+/* Tarjeta de estado global del bot del negocio (compacta) */
+.chat-botcard { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius-lg); margin-bottom: 10px; border: 1px solid transparent; }
 .chat-botcard.activo  { background: #ecfdf5; border-color: #a7f3d0; }
 .chat-botcard.pausado { background: #fffbeb; border-color: #fde68a; }
 .chat-botcard-ico { font-size: 1.3rem; line-height: 1; }
@@ -726,8 +731,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   #btn-volver-menu { display: inline-block !important; }
 
   /* ── Chats ── */
-  #vista-chats > div { flex-direction: column; height: auto; gap: 0; }
-  #lista-chats { width: 100%; border-radius: 12px; }
+  #vista-chats > .chats-split { flex-direction: column; height: auto; gap: 0; }
+  /* La bandeja se siente como inbox (fondo limpio), no una tarjeta dashboard */
+  #lista-chats { width: 100%; border: none; box-shadow: none; background: transparent; border-radius: 0; padding: 0; }
+  .chat-row { border-radius: 10px; }
   #chat-area { height: calc(100vh - 180px); min-height: 300px; margin-top: 10px; border-radius: 12px; }
   /* Single-panel nav: por defecto chat-area oculto en mobile */
   #chat-area.mobile-hidden { display: none !important; }
@@ -1564,15 +1571,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
-      <!-- Cabecera móvil de la bandeja: negocio · conexión · activos -->
-      <div class="chats-topbar">
-        <span class="chats-topbar-nombre" id="chats-topbar-nombre">Chats</span>
-        <span class="chats-topbar-chip" id="chats-topbar-activos" style="margin-left:auto;">0 conversaciones</span>
-      </div>
-      <!-- Buscador -->
+      <!-- Buscador + contador (una sola línea compacta) -->
       <div class="chats-search">
-        <span aria-hidden="true">🔍</span>
+        <span class="chats-search-ico" aria-hidden="true">🔍</span>
         <input id="chat-buscador" type="search" placeholder="Buscar conversaciones" aria-label="Buscar conversaciones" oninput="filtrarConversaciones()" autocomplete="off">
+        <span class="chats-topbar-chip" id="chats-topbar-activos"></span>
       </div>
       <!-- Filtros (solo estados con datos reales) -->
       <div class="chats-filtros" id="chats-filtros" role="tablist" aria-label="Filtrar conversaciones">
@@ -1581,7 +1584,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
       <!-- Tarjeta de estado GLOBAL del bot del negocio -->
       <div id="chats-banner-bot" class="chat-botcard" style="display:none;"></div>
-      <div style="display:flex;gap:14px;height:calc(100vh - 130px);">
+      <div class="chats-split">
         <div id="lista-chats" style="width:280px;flex-shrink:0;padding:6px;">
           <div id="contactos-lista"></div>
         </div>
@@ -5012,6 +5015,9 @@ async function abrirConversacion(telefono, nombre) {
   const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.ok ? r.json() : Promise.reject()).catch(() => ({ pausado:false, botWhatsappActivo:atencionNegocioActiva }));
   atencionNegocioActiva = estado.botWhatsappActivo;
   actualizarBotonBot(estado.pausado);
+  // La tarjeta de estado recién mostrada cambió la altura disponible: ahora
+  // que el layout es definitivo, fijar el scroll al último mensaje.
+  scrollChatAlFondo();
 }
 
 // Estado de ESTA conversación + acción principal. Diferencia dos conceptos
@@ -5127,19 +5133,38 @@ function contenidoBurbujaMensaje(m) {
   return escaparHTML(m.texto);
 }
 
+// Hora de la burbuja: discreta. Solo la hora si el mensaje es de hoy; si no,
+// fecha breve + hora (nunca la fecha larga completa en cada burbuja).
+function horaBurbuja(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d)) return '';
+  const hora = d.toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return hora;
+  return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' }) + ', ' + hora;
+}
 function burbujaMensajeHTML(m) {
   const sal = m.direccion === 'saliente';
   return `<div class="chat-msg-row ${sal?'saliente':'entrante'}">
       <div class="chat-burbuja ${sal?'saliente':'entrante'}">
         ${contenidoBurbujaMensaje(m)}
-        <div class="chat-burbuja-meta">${etiquetaOrigen(m)}${horaCST(m.timestamp)}</div>
+        <div class="chat-burbuja-meta">${etiquetaOrigen(m)}${horaBurbuja(m.timestamp)}</div>
       </div></div>`;
+}
+function scrollChatAlFondo() {
+  const cont = document.getElementById('chat-mensajes');
+  if (!cont) return;
+  // Fija el scroll al último mensaje. Se llama tras el rAF (frame actual) y
+  // otra vez tras un pequeño delay, para ganarle a los reflows que cambian la
+  // altura disponible (mostrar la tarjeta de estado, cargar una imagen).
+  const irAlFondo = () => { cont.scrollTop = cont.scrollHeight; };
+  requestAnimationFrame(irAlFondo);
+  setTimeout(irAlFondo, 80);
 }
 function renderMensajes(msgs) {
   const cont = document.getElementById('chat-mensajes');
   if (!msgs.length) { cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">💬</div>Todavía no hay mensajes</div>'; return; }
   cont.innerHTML = msgs.map(burbujaMensajeHTML).join('');
-  cont.scrollTop = cont.scrollHeight;
+  scrollChatAlFondo();
 }
 
 function recibirMensajeWS(msg, documento) {
@@ -5504,7 +5529,7 @@ function contenidoTarjetaImagen(m) {
   const etiquetaEstado = { pendiente: '⏳ Recibiendo…', descargando: '⏳ Recibiendo…', error: '⚠️ No se pudo procesar la imagen' }[estado] || '';
   const cuerpo = (estado === 'listo' && idDoc)
     ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener" aria-label="Ver imagen" onclick="event.preventDefault(); abrirVisorImagen(this.href);">
-         <img class="chat-img" src="/api/imagenes/${idDoc}/archivo" loading="lazy">
+         <img class="chat-img" src="/api/imagenes/${idDoc}/archivo" loading="lazy" onload="scrollChatAlFondo()">
        </a>`
     : `<div style="width:200px;height:150px;border-radius:10px;background:#e5e2da;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#888;">${etiquetaEstado || '📷'}</div>`;
   const descarga = (estado === 'listo' && idDoc) ? `<a href="/api/imagenes/${idDoc}/archivo" download data-doc-accion="descargar" aria-label="Descargar imagen" style="font-weight:700;color:var(--color-brand);text-decoration:none;">⤓</a>` : '';
