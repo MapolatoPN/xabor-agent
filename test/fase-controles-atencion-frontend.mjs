@@ -6,10 +6,14 @@ const casos = [
   ['control móvil visible', /id="chat-atencion-estado"/],
   ['acción tomar conversación', /Tomar conversación/],
   ['acción devolver al bot', /Devolver al bot/],
-  ['estado automático', /'Atención automática'/],
-  ['estado humano', /'Atención humana'/],
-  ['prioridad de pausa general', /!atencionNegocioActiva[\s\S]{0,120}Atención automática pausada en todo el negocio/],
-  ['aviso persistente en bandeja', /La atención automática del negocio está pausada/],
+  // Rediseño UX mensajería (sprint ux-chats-mobile): los textos de estado se
+  // reescribieron para distinguir claramente el bot GLOBAL del negocio de la
+  // pausa por-conversación (ver fase-chats-mobile-ux). Se conserva la
+  // intención de cada control, con el copy nuevo.
+  ['estado automático (bot atendiendo)', /'Bot atendiendo'/],
+  ['estado humano (atención manual)', /Estás atendiendo esta conversación/],
+  ['prioridad de pausa general', /!atencionNegocioActiva[\s\S]{0,400}Automatización pausada en el negocio/],
+  ['aviso de bot pausado en la bandeja', /Atención automática pausada/],
   ['error inline sin alert bloqueante', /mostrarErrorChat\(data\.error/],
   ['operador consulta estado general', /apiFetch\('\/api\/bot-whatsapp'\)/],
 ];

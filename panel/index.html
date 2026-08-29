@@ -470,17 +470,112 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 /* ─── Vista Chats ───────────────────────────────────────────────────────── */
 #lista-chats { background: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow-y: auto; box-shadow: var(--shadow-xs); }
 #chat-area { flex: 1; display: flex; flex-direction: column; background: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow: hidden; box-shadow: var(--shadow-xs); }
-#chat-header { padding: 14px 16px; border-bottom: 1px solid var(--color-border); font-weight: 700; display: flex; align-items: center; justify-content: space-between; }
+#chat-header { padding: 10px 14px; border-bottom: 1px solid var(--color-border); font-weight: 700; display: flex; align-items: center; gap: 10px; }
 #chat-mensajes { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; background: var(--color-bg); }
-#chat-footer { padding: 12px 14px; border-top: 1px solid var(--color-border); display: flex; gap: 8px; background: var(--color-surface); }
-#chat-input { flex: 1; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); padding: 10px; font-size: 0.9rem; font-family: inherit; resize: none; transition: all .15s; }
-#chat-input:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
+#chat-footer { padding: 10px 12px; border-top: 1px solid var(--color-border); display: flex; align-items: flex-end; gap: 8px; background: var(--color-surface); }
+#chat-input { flex: 1; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 20px; color: var(--color-text-primary); padding: 10px 14px; font-size: 0.92rem; font-family: inherit; resize: none; max-height: 120px; line-height: 1.35; transition: border-color .15s; }
+#chat-input:focus { outline: none; border-color: var(--color-brand); }
 #btn-toggle-bot { font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: var(--radius-pill); cursor: pointer; transition: all .2s; }
 #chat-atencion-estado { font-size: 0.72rem; font-weight: 700; color: #475569; white-space: nowrap; }
 @media (max-width: 640px) {
   #chat-header { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
   #chat-atencion-estado { order: 3; width: 100%; padding-left: 34px; }
   #btn-toggle-bot { padding: 7px 10px; }
+}
+
+/* ─── Chats: rediseño mensajería (móvil-first, desktop intacto) ──────────── */
+/* Buscador + filtros de la bandeja */
+.chats-search { display: flex; align-items: center; gap: 8px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-pill); padding: 9px 14px; margin: 0 0 10px; }
+.chats-search input { flex: 1; border: none; background: none; outline: none; font-size: 0.9rem; color: var(--color-text-primary); font-family: inherit; }
+.chats-filtros { display: flex; gap: 8px; margin-bottom: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.chats-filtro { flex-shrink: 0; font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; transition: all .15s; }
+.chats-filtro.activo { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
+
+/* Tarjeta de estado global del bot del negocio */
+.chat-botcard { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius-lg); margin-bottom: 12px; border: 1px solid transparent; }
+.chat-botcard.activo  { background: #ecfdf5; border-color: #a7f3d0; }
+.chat-botcard.pausado { background: #fffbeb; border-color: #fde68a; }
+.chat-botcard-ico { font-size: 1.3rem; line-height: 1; }
+.chat-botcard-txt { flex: 1; min-width: 0; }
+.chat-botcard-titulo { font-weight: 700; font-size: 0.86rem; }
+.chat-botcard.activo  .chat-botcard-titulo { color: #047857; }
+.chat-botcard.pausado .chat-botcard-titulo { color: #b45309; }
+.chat-botcard-sub { font-size: 0.76rem; color: var(--color-text-secondary); margin-top: 1px; }
+
+/* Fila de conversación tipo bandeja */
+.chat-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; cursor: pointer; border-radius: var(--radius-md); transition: background .12s; }
+.chat-row:hover { background: var(--color-surface-2); }
+.chat-row.activo { background: var(--color-brand-light); }
+.chat-avatar { flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%; background: linear-gradient(135deg, #ffd9c9, #ffb59b); color: #8a3d1e; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.05rem; overflow: hidden; }
+.chat-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.chat-row-cuerpo { flex: 1; min-width: 0; }
+.chat-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chat-row-nombre { font-weight: 600; font-size: 0.92rem; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row-hora { flex-shrink: 0; font-size: 0.72rem; color: var(--color-text-secondary); }
+.chat-row-bot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.chat-row-preview { font-size: 0.82rem; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row-punto { flex-shrink: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--color-brand); }
+
+/* Estado de la conversación (bot atendiendo / atención manual) + CTA */
+.chat-estado-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); flex-wrap: wrap; }
+.chat-estado-info { flex: 1; min-width: 140px; }
+.chat-estado-titulo { font-weight: 700; font-size: 0.85rem; }
+.chat-estado-sub { font-size: 0.75rem; color: var(--color-text-secondary); margin-top: 1px; }
+.chat-cta { flex-shrink: 0; font-size: 0.82rem; font-weight: 700; padding: 9px 16px; border-radius: var(--radius-md); cursor: pointer; border: 1px solid transparent; transition: all .15s; min-height: 40px; }
+.chat-cta-primario { background: var(--color-brand); color: #fff; }
+.chat-cta-primario:hover { filter: brightness(1.05); }
+.chat-cta-secundario { background: var(--color-surface); color: var(--color-brand); border-color: var(--color-brand); }
+.chat-cta:disabled { opacity: .6; cursor: default; }
+
+/* Burbujas */
+.chat-msg-row { display: flex; }
+.chat-msg-row.saliente { justify-content: flex-end; }
+.chat-burbuja { max-width: 78%; padding: 8px 12px; font-size: 0.88rem; word-break: break-word; line-height: 1.4; }
+.chat-burbuja.entrante { background: #f1f0ed; color: #1a1a1a; border-radius: 14px 14px 14px 4px; }
+.chat-burbuja.saliente { background: var(--color-brand-light); color: #1a1a1a; border-radius: 14px 14px 4px 14px; border: 1px solid #ffe3d6; }
+.chat-burbuja-meta { font-size: 0.66rem; opacity: 0.55; margin-top: 4px; text-align: right; }
+.chat-img { max-width: 240px; max-height: 260px; border-radius: 10px; display: block; object-fit: cover; cursor: pointer; }
+.chat-img-pie { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.74rem; color: var(--color-text-secondary); margin-top: 4px; }
+
+/* Composer sticky */
+.chat-composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--color-border); background: var(--color-surface); }
+.chat-composer textarea { flex: 1; border: 1px solid var(--color-border); border-radius: 20px; padding: 10px 14px; font-size: 0.92rem; font-family: inherit; resize: none; max-height: 120px; line-height: 1.35; background: var(--color-surface); color: var(--color-text-primary); }
+.chat-composer textarea:focus { outline: none; border-color: var(--color-brand); }
+.chat-btn-icono { flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--color-surface-2); border: 1px solid var(--color-border); font-size: 1.15rem; cursor: pointer; }
+.chat-btn-enviar { flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--color-brand); color: #fff; border: none; font-size: 1.2rem; cursor: pointer; }
+.chat-btn-enviar:disabled { opacity: .5; }
+
+/* Skeleton, vacíos, toast */
+.chat-skel { padding: 11px 12px; display: flex; gap: 12px; align-items: center; }
+.chat-skel-av { width: 44px; height: 44px; border-radius: 50%; background: var(--color-surface-2); }
+.chat-skel-l { height: 10px; border-radius: 6px; background: var(--color-surface-2); }
+@keyframes chatpulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.chat-skel-av, .chat-skel-l { animation: chatpulse 1.2s ease-in-out infinite; }
+.chat-empty { text-align: center; color: var(--color-text-secondary); padding: 40px 20px; font-size: 0.9rem; }
+.chat-empty-ico { font-size: 2rem; margin-bottom: 8px; opacity: .5; }
+.chat-toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); background: #1c1c1c; color: #fff; padding: 11px 18px; border-radius: 12px; font-size: 0.85rem; box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 400; max-width: 90vw; text-align: center; }
+
+/* Header móvil de la bandeja (nombre negocio · conexión · activos) */
+.chats-topbar { display: none; }
+
+@media (max-width: 640px) {
+  .chats-topbar { display: flex; align-items: center; gap: 10px; padding: 4px 2px 10px; }
+  .chats-topbar-nombre { font-weight: 800; font-size: 1.05rem; }
+  .chats-topbar-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.74rem; font-weight: 600; color: var(--color-text-secondary); }
+  /* Detalle full-screen: el chat-area ocupa el viewport real (dvh). z-index
+     por encima del bottom-nav (200) para que el composer nunca quede tapado;
+     además se oculta la navbar mientras se atiende el chat (paso 17). */
+  #vista-chats.chat-abierto { position: fixed; inset: 0; z-index: 210; background: var(--color-bg); padding: 0; margin: 0; }
+  body.chat-fullscreen #bottom-nav { display: none !important; }
+  #vista-chats.chat-abierto > .chats-topbar,
+  #vista-chats.chat-abierto > .chats-search,
+  #vista-chats.chat-abierto > .chats-filtros,
+  #vista-chats.chat-abierto > #chats-banner-bot { display: none !important; }
+  #vista-chats.chat-abierto > div { height: 100dvh; gap: 0; }
+  #vista-chats.chat-abierto #chat-area { height: 100dvh; margin-top: 0; border-radius: 0; border: none; }
+  #chat-mensajes { padding: 12px 12px; }
+  #chat-footer.chat-composer { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .chat-estado-card { position: sticky; top: 0; z-index: 2; }
 }
 
 /* ─── Vista Historial ───────────────────────────────────────────────────── */
@@ -1469,28 +1564,54 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
-      <div id="chats-banner-bot" style="display:none;padding:8px 14px;border-radius:8px;font-size:0.8rem;margin-bottom:10px;"></div>
+      <!-- Cabecera móvil de la bandeja: negocio · conexión · activos -->
+      <div class="chats-topbar">
+        <span class="chats-topbar-nombre" id="chats-topbar-nombre">Chats</span>
+        <span class="chats-topbar-chip" id="chats-topbar-activos" style="margin-left:auto;">0 conversaciones</span>
+      </div>
+      <!-- Buscador -->
+      <div class="chats-search">
+        <span aria-hidden="true">🔍</span>
+        <input id="chat-buscador" type="search" placeholder="Buscar conversaciones" aria-label="Buscar conversaciones" oninput="filtrarConversaciones()" autocomplete="off">
+      </div>
+      <!-- Filtros (solo estados con datos reales) -->
+      <div class="chats-filtros" id="chats-filtros" role="tablist" aria-label="Filtrar conversaciones">
+        <button class="chats-filtro activo" data-filtro="todos" onclick="setFiltroChats('todos')">Todos</button>
+        <button class="chats-filtro" data-filtro="sin_responder" onclick="setFiltroChats('sin_responder')">Sin responder</button>
+      </div>
+      <!-- Tarjeta de estado GLOBAL del bot del negocio -->
+      <div id="chats-banner-bot" class="chat-botcard" style="display:none;"></div>
       <div style="display:flex;gap:14px;height:calc(100vh - 130px);">
-        <div id="lista-chats" style="width:240px;flex-shrink:0;">
-          <div style="padding:12px 16px;border-bottom:1px solid #f1f0ed;font-size:0.78rem;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.5px;">Conversaciones</div>
+        <div id="lista-chats" style="width:280px;flex-shrink:0;padding:6px;">
           <div id="contactos-lista"></div>
         </div>
         <div id="chat-area">
           <div id="chat-header">
-            <button id="btn-chat-volver" onclick="volverAContactos()" title="Volver">‹</button>
-            <span id="chat-header-nombre" style="color:#888;">Selecciona una conversación</span>
-            <span id="chat-atencion-estado" title="Indica quién responderá los próximos mensajes"></span>
-            <button id="btn-toggle-bot" onclick="toggleBotPausado()" style="display:none;">Tomar conversación</button>
+            <button id="btn-chat-volver" onclick="volverAContactos()" aria-label="Volver a la lista de conversaciones" title="Volver">‹</button>
+            <div class="chat-avatar" id="chat-header-avatar" style="width:38px;height:38px;font-size:0.9rem;" aria-hidden="true"></div>
+            <div style="flex:1;min-width:0;">
+              <div id="chat-header-nombre" style="color:#888;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Selecciona una conversación</div>
+              <div id="chat-header-sub" style="font-size:0.72rem;color:var(--color-text-secondary);"></div>
+            </div>
+          </div>
+          <!-- Estado de ESTA conversación + acción principal -->
+          <div class="chat-estado-card" id="chat-estado-card" style="display:none;">
+            <span id="chat-estado-ico" aria-hidden="true" style="font-size:1.3rem;">🤖</span>
+            <div class="chat-estado-info">
+              <div class="chat-estado-titulo" id="chat-atencion-estado"></div>
+              <div class="chat-estado-sub" id="chat-estado-sub"></div>
+            </div>
+            <button id="btn-toggle-bot" class="chat-cta chat-cta-primario" onclick="toggleBotPausado()" style="display:none;">Tomar conversación</button>
           </div>
           <div id="chat-mensajes"></div>
           <div id="chat-error" style="display:none;padding:6px 14px;color:#c0392b;font-size:0.78rem;background:#fdecea;"></div>
-          <div id="chat-footer">
-            <button id="btn-adjuntar-pdf" data-modulo="chat_documentos_pdf" onclick="document.getElementById('input-pdf-adjunto').click()"
-                    title="Adjuntar PDF" style="align-self:flex-end;background:#f5f4f2;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;">📎</button>
+          <div id="chat-footer" class="chat-composer">
+            <button id="btn-adjuntar-pdf" class="chat-btn-icono" data-modulo="chat_documentos_pdf" onclick="document.getElementById('input-pdf-adjunto').click()"
+                    aria-label="Adjuntar PDF" title="Adjuntar PDF">📎</button>
             <input type="file" id="input-pdf-adjunto" accept="application/pdf" style="display:none;" onchange="prepararPdfAdjunto(event)">
             <div style="position:relative;align-self:flex-end;">
-              <button id="btn-adjuntar-imagen" data-modulo="chat_imagenes" onclick="toggleMenuAdjuntarImagen(event)"
-                      title="Adjuntar foto" style="background:#f5f4f2;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;">📷</button>
+              <button id="btn-adjuntar-imagen" class="chat-btn-icono" data-modulo="chat_imagenes" onclick="toggleMenuAdjuntarImagen(event)"
+                      aria-label="Adjuntar o tomar foto" title="Adjuntar foto">📷</button>
               <div id="menu-adjuntar-imagen" style="display:none;position:absolute;bottom:100%;left:0;margin-bottom:6px;background:#fff;border:1px solid #e5e2da;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.12);overflow:hidden;white-space:nowrap;z-index:50;">
                 <button onclick="document.getElementById('input-imagenes-camara').click(); cerrarMenuAdjuntarImagen();" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.85rem;">📸 Tomar foto</button>
                 <button onclick="document.getElementById('input-imagenes-galeria').click(); cerrarMenuAdjuntarImagen();" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.85rem;border-top:1px solid #f1f0ed;">🖼️ Elegir de la galería</button>
@@ -1498,8 +1619,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             </div>
             <input type="file" id="input-imagenes-camara" accept="image/jpeg,image/jpg,image/png,image/webp" capture="environment" style="display:none;" onchange="agregarImagenesAlPendiente(event.target.files); event.target.value='';">
             <input type="file" id="input-imagenes-galeria" accept="image/jpeg,image/jpg,image/png,image/webp" multiple style="display:none;" onchange="agregarImagenesAlPendiente(event.target.files); event.target.value='';">
-            <textarea id="chat-input" placeholder="Escribe un mensaje..." rows="2"></textarea>
-            <button id="btn-chat-enviar" onclick="enviarDesdeChat()" style="background:#FF6B35;color:#fff;font-weight:700;padding:8px 16px;border-radius:8px;align-self:flex-end;">Enviar</button>
+            <textarea id="chat-input" placeholder="Escribe un mensaje…" rows="1" aria-label="Escribe un mensaje" oninput="autogrowChat(this)" onkeydown="chatInputKey(event)"></textarea>
+            <button id="btn-chat-enviar" class="chat-btn-enviar" onclick="enviarDesdeChat()" aria-label="Enviar mensaje" title="Enviar">➤</button>
           </div>
         </div>
       </div>
@@ -2389,9 +2510,10 @@ const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.ho
 let ws;
 function conectarWS() {
   ws = new WebSocket(WS_URL);
-  ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; panelListo = false; setTimeout(() => { panelListo = true; }, 3000); };
+  ws.onopen  = () => { dot.className = 'conectado'; labelWs.textContent = 'Conectado'; if (typeof sincronizarConexionChats==='function') sincronizarConexionChats(); panelListo = false; setTimeout(() => { panelListo = true; }, 3000); };
   ws.onclose = () => {
     dot.className = 'desconectado'; labelWs.textContent = 'Desconectado';
+    if (typeof sincronizarConexionChats==='function') sincronizarConexionChats();
     // Antes de reintentar, reconfirmar que la sesión sigue siendo válida.
     // Si el servidor rechazó el handshake por sesión expirada/revocada,
     // reintentar cada 3s sin comprobar generaría una tormenta indefinida de
@@ -4716,29 +4838,105 @@ let chatAbierto = null;
 let chatNuevos  = 0;
 let atencionNegocioActiva = false;
 
+// Cache de la lista para buscador/filtro client-side (datos REALES del
+// endpoint: telefono, nombre, texto, direccion, timestamp — no hay unread ni
+// estado por-chat en la lista, así que no se fabrica ninguno).
+let _conversaciones = [];
+let _filtroChats = 'todos';
+
+// Hora corta para el listado: solo la hora si es hoy, si no una fecha breve
+// (para que el nombre de la conversación tenga espacio, como en mensajería).
+function horaListaChat(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d)) return '';
+  const ahora = new Date();
+  const mismoDia = d.toDateString() === ahora.toDateString();
+  if (mismoDia) return d.toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
+  const ayer = new Date(ahora); ayer.setDate(ahora.getDate() - 1);
+  if (d.toDateString() === ayer.toDateString()) return 'Ayer';
+  return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+}
+function inicialAvatar(nombre, telefono) {
+  const s = (nombre || '').trim();
+  if (s) return s[0].toUpperCase();
+  return '👤';
+}
+function avatarChatHTML(nombre, telefono, clase) {
+  return `<div class="${clase || 'chat-avatar'}" aria-hidden="true">${escaparHTML(inicialAvatar(nombre, telefono))}</div>`;
+}
+
 async function cargarConversaciones() {
   const cont = document.getElementById('contactos-lista');
-  // Módulo habilitado no es lo mismo que integración configurada -- un
-  // negocio puede tener whatsapp=activo sin tener aún su propio
-  // phone_number_id/token en integraciones. Mientras no los tenga, el
-  // backend ya rechaza el envío (409); aquí solo evitamos una llamada de
-  // lectura innecesaria y mostramos el estado real en vez de "sin
-  // conversaciones" (que sugeriría que el canal sí funciona).
   if (!WHATSAPP_CONFIGURADO) {
-    cont.innerHTML = '<div style="padding:16px;color:#aaa;font-size:0.82rem;">📵 WhatsApp pendiente de configuración para este negocio</div>';
+    cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">📵</div>WhatsApp pendiente de configuración para este negocio</div>';
     return;
   }
+  cont.innerHTML = [0,1,2,3,4].map(() =>
+    `<div class="chat-skel"><div class="chat-skel-av"></div><div style="flex:1"><div class="chat-skel-l" style="width:55%;margin-bottom:7px"></div><div class="chat-skel-l" style="width:80%"></div></div></div>`).join('');
   const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => []);
-  if (!lista.length) { cont.innerHTML = '<div style="padding:16px;color:#aaa;font-size:0.82rem;">Sin conversaciones aún</div>'; return; }
-  cont.innerHTML = lista.map(c => `
-    <div onclick="abrirConversacion('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}')"
-         id="contacto-${c.telefono}"
-         style="padding:11px 16px;cursor:pointer;border-bottom:1px solid #f1f0ed;transition:background .12s;"
-         onmouseover="this.style.background='#f8f7f4'" onmouseout="this.style.background=chatAbierto==='${c.telefono}'?'#f0efeb':''">
-      <div style="font-weight:600;font-size:0.88rem;">${c.nombre || '📞 '+c.telefono}</div>
-      <div style="font-size:0.75rem;color:#aaa;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.texto||''}</div>
-      <div style="font-size:0.7rem;color:#ccc;margin-top:2px;">${horaCST(c.timestamp)}</div>
-    </div>`).join('');
+  _conversaciones = Array.isArray(lista) ? lista : [];
+  actualizarTopbarChats();
+  renderConversaciones();
+}
+
+function setFiltroChats(f) {
+  _filtroChats = f;
+  document.querySelectorAll('#chats-filtros .chats-filtro').forEach(b =>
+    b.classList.toggle('activo', b.dataset.filtro === f));
+  renderConversaciones();
+}
+function filtrarConversaciones() { renderConversaciones(); }
+
+function renderConversaciones() {
+  const cont = document.getElementById('contactos-lista');
+  const q = (document.getElementById('chat-buscador')?.value || '').trim().toLowerCase();
+  let filas = _conversaciones;
+  // Filtro "Sin responder": el último mensaje es del cliente (direccion
+  // entrante) -> el negocio aún no respondió. Dato REAL, no inventado.
+  if (_filtroChats === 'sin_responder') filas = filas.filter(c => c.direccion === 'entrante');
+  if (q) filas = filas.filter(c => ((c.nombre||'') + ' ' + (c.telefono||'') + ' ' + (c.texto||'')).toLowerCase().includes(q));
+  if (!_conversaciones.length) {
+    cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">💬</div>No hay conversaciones todavía</div>';
+    return;
+  }
+  if (!filas.length) {
+    cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">🔍</div>' + (q ? 'No encontramos conversaciones' : 'Nada por aquí') + '</div>';
+    return;
+  }
+  cont.innerHTML = filas.map(c => {
+    const nombre = c.nombre || c.telefono;
+    const sinResponder = c.direccion === 'entrante';
+    const preview = (c.texto || '').trim() || (c.direccion === 'saliente' ? 'Tú: —' : '—');
+    return `<div class="chat-row${chatAbierto===c.telefono?' activo':''}" id="contacto-${c.telefono}" role="button" tabindex="0"
+         onclick="abrirConversacion('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}')"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+      ${avatarChatHTML(c.nombre, c.telefono)}
+      <div class="chat-row-cuerpo">
+        <div class="chat-row-top">
+          <span class="chat-row-nombre">${escaparHTML(nombre)}</span>
+          <span class="chat-row-hora">${horaListaChat(c.timestamp)}</span>
+        </div>
+        <div class="chat-row-bot">
+          <span class="chat-row-preview">${escaparHTML(preview)}</span>
+          ${sinResponder ? '<span class="chat-row-punto" title="Esperando respuesta"></span>' : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function actualizarTopbarChats() {
+  const n = _conversaciones.length;
+  const act = document.getElementById('chats-topbar-activos');
+  if (act) act.textContent = n === 1 ? '1 conversación' : `${n} conversaciones`;
+  sincronizarConexionChats();
+}
+function sincronizarConexionChats() {
+  const chip = document.getElementById('chats-topbar-conexion');
+  if (!chip) return;
+  const conectado = document.getElementById('dot')?.className !== 'desconectado';
+  chip.textContent = conectado ? '● Conectado' : '● Sin conexión';
+  chip.style.color = conectado ? '#047857' : '#b45309';
 }
 
 async function cargarBannerBotChats() {
@@ -4749,19 +4947,27 @@ async function cargarBannerBotChats() {
     if (!r.ok) { banner.style.display = 'none'; return; }
     const { botWhatsappActivo } = await r.json();
     atencionNegocioActiva = botWhatsappActivo;
-    if (botWhatsappActivo) {
-      banner.style.display = 'none';
-    } else {
-      banner.style.display = '';
-      banner.style.background = '#f1f5f9'; banner.style.color = '#475569';
-      banner.textContent = 'La atención automática del negocio está pausada';
-    }
+    // Tarjeta compacta del ESTADO GLOBAL del bot del negocio (distinto de la
+    // pausa por-conversación). Verde suave = activo, ámbar suave = pausado.
+    banner.style.display = '';
+    banner.className = 'chat-botcard ' + (botWhatsappActivo ? 'activo' : 'pausado');
+    banner.innerHTML = botWhatsappActivo
+      ? `<span class="chat-botcard-ico" aria-hidden="true">🤖</span>
+         <div class="chat-botcard-txt"><div class="chat-botcard-titulo">Bot activo</div>
+         <div class="chat-botcard-sub">La atención automática está respondiendo.</div></div>`
+      : `<span class="chat-botcard-ico" aria-hidden="true">🌙</span>
+         <div class="chat-botcard-txt"><div class="chat-botcard-titulo">Atención automática pausada</div>
+         <div class="chat-botcard-sub">Los clientes pueden escribirte y tú respondes manualmente.</div></div>`;
     if (chatAbierto) actualizarBotonBot(document.getElementById('btn-toggle-bot').dataset.pausado === '1');
   } catch { banner.style.display = 'none'; }
 }
 
 function volverAContactos() {
   chatAbierto = null;
+  document.getElementById('vista-chats')?.classList.remove('chat-abierto');
+  document.body.classList.remove('chat-fullscreen');
+  document.getElementById('chat-estado-card').style.display = 'none';
+  document.querySelectorAll('#contactos-lista .chat-row').forEach(d => d.classList.remove('activo'));
   ajustarLayoutChatMovil();
 }
 
@@ -4787,13 +4993,18 @@ window.addEventListener('resize', ajustarLayoutChatMovil);
 async function abrirConversacion(telefono, nombre) {
   chatAbierto = telefono;
   mostrarErrorChat(null);
-  document.getElementById('chat-header-nombre').textContent = `💬 ${nombre || telefono}`;
+  const nom = nombre || telefono;
+  document.getElementById('chat-header-nombre').textContent = nom;
   document.getElementById('chat-header-nombre').style.color = '#1a1a1a';
-  document.querySelectorAll('#contactos-lista > div').forEach(d => d.style.background = '');
-  const el = document.getElementById(`contacto-${telefono}`);
-  if (el) el.style.background = '#f0efeb';
-  // Mobile: ocultar lista, mostrar chat
+  document.getElementById('chat-header-avatar').textContent = inicialAvatar(nombre, telefono);
+  document.getElementById('chat-header-sub').textContent = '';
+  // Móvil: detalle a pantalla completa (dvh). Desktop conserva split-view.
+  document.getElementById('vista-chats').classList.add('chat-abierto');
+  document.body.classList.add('chat-fullscreen');
+  document.querySelectorAll('#contactos-lista .chat-row').forEach(d => d.classList.remove('activo'));
+  document.getElementById(`contacto-${telefono}`)?.classList.add('activo');
   ajustarLayoutChatMovil();
+  document.getElementById('chat-mensajes').innerHTML = '<div class="chat-empty" style="padding:24px;">Cargando…</div>';
   const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
   renderMensajes(msgs);
   document.getElementById('chat-input').dataset.telefono = telefono;
@@ -4803,20 +5014,44 @@ async function abrirConversacion(telefono, nombre) {
   actualizarBotonBot(estado.pausado);
 }
 
+// Estado de ESTA conversación + acción principal. Diferencia dos conceptos
+// distintos (paso 8): estado GLOBAL del negocio vs pausa de UNA conversación.
 function actualizarBotonBot(pausado) {
-  const btn = document.getElementById('btn-toggle-bot');
-  const estado = document.getElementById('chat-atencion-estado');
-  btn.style.display = chatAbierto ? '' : 'none';
-  btn.textContent = pausado ? 'Devolver al bot' : 'Tomar conversación';
-  btn.style.background = pausado ? '#dcfce7' : '#fee2e2';
-  btn.style.color      = pausado ? '#15803d' : '#b91c1c';
-  btn.dataset.pausado  = pausado ? '1' : '0';
-  estado.textContent = !atencionNegocioActiva
-    ? 'Atención automática pausada en todo el negocio'
-    : (pausado ? 'Atención humana' : 'Atención automática');
-  estado.title = !atencionNegocioActiva
-    ? 'Los mensajes se reciben, pero ninguna conversación obtiene respuestas automáticas.'
-    : (pausado ? 'El equipo responde manualmente en esta conversación.' : 'El bot puede responder en esta conversación.');
+  const card   = document.getElementById('chat-estado-card');
+  const btn    = document.getElementById('btn-toggle-bot');
+  const titulo = document.getElementById('chat-atencion-estado');
+  const sub    = document.getElementById('chat-estado-sub');
+  const ico    = document.getElementById('chat-estado-ico');
+  if (!card) return;
+  btn.dataset.pausado = pausado ? '1' : '0';
+  if (!chatAbierto) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  if (!atencionNegocioActiva) {
+    // GLOBAL pausado: no hay bot que "tomar" en esta conversación; se responde
+    // manualmente. No mostramos un CTA contradictorio (paso 12).
+    ico.textContent = '🌙';
+    titulo.textContent = 'Automatización pausada en el negocio';
+    sub.textContent = 'El bot no responde a nadie ahora; puedes atender esta conversación.';
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  if (pausado) {
+    // Conversación TOMADA (atención manual).
+    ico.textContent = '👤';
+    titulo.textContent = 'Estás atendiendo esta conversación';
+    sub.textContent = 'El bot no responde aquí mientras tú atiendes.';
+    btn.textContent = 'Devolver al bot';
+    btn.className = 'chat-cta chat-cta-secundario';
+  } else {
+    // Bot atendiendo esta conversación.
+    ico.textContent = '🤖';
+    titulo.textContent = 'Bot atendiendo';
+    sub.textContent = 'El bot está respondiendo esta conversación.';
+    btn.textContent = 'Tomar conversación';
+    btn.className = 'chat-cta chat-cta-primario';
+  }
 }
 
 async function toggleBotPausado() {
@@ -4892,17 +5127,18 @@ function contenidoBurbujaMensaje(m) {
   return escaparHTML(m.texto);
 }
 
+function burbujaMensajeHTML(m) {
+  const sal = m.direccion === 'saliente';
+  return `<div class="chat-msg-row ${sal?'saliente':'entrante'}">
+      <div class="chat-burbuja ${sal?'saliente':'entrante'}">
+        ${contenidoBurbujaMensaje(m)}
+        <div class="chat-burbuja-meta">${etiquetaOrigen(m)}${horaCST(m.timestamp)}</div>
+      </div></div>`;
+}
 function renderMensajes(msgs) {
   const cont = document.getElementById('chat-mensajes');
-  cont.innerHTML = msgs.map(m => {
-    const sal = m.direccion === 'saliente';
-    return `<div style="display:flex;justify-content:${sal?'flex-end':'flex-start'};">
-      <div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
-                  background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${contenidoBurbujaMensaje(m)}
-        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(m)}${horaCST(m.timestamp)}</div>
-      </div></div>`;
-  }).join('');
+  if (!msgs.length) { cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">💬</div>Todavía no hay mensajes</div>'; return; }
+  cont.innerHTML = msgs.map(burbujaMensajeHTML).join('');
   cont.scrollTop = cont.scrollHeight;
 }
 
@@ -4918,18 +5154,13 @@ function recibirMensajeWS(msg, documento) {
   }
   if (chatAbierto && msg.telefono === chatAbierto) {
     const cont = document.getElementById('chat-mensajes');
-    const sal  = msg.direccion === 'saliente';
+    const vacio = cont.querySelector('.chat-empty'); if (vacio) cont.innerHTML = '';
     const mensajeConDocumento = documento
       ? { ...msg, documento_id_real: documento.id, documento_filename: documento.filename, documento_size_bytes: documento.size_bytes, documento_estado: documento.estado, documento_caption: documento.caption }
       : msg;
-    const div  = document.createElement('div');
-    div.style.cssText = `display:flex;justify-content:${sal?'flex-end':'flex-start'}`;
-    div.innerHTML = `<div style="max-width:75%;padding:8px 12px;border-radius:${sal?'12px 12px 0 12px':'12px 12px 12px 0'};
-                        background:${sal?'#dcfce7':'#f1f0ed'};color:#1a1a1a;font-size:0.88rem;word-break:break-word;">
-        ${contenidoBurbujaMensaje(mensajeConDocumento)}
-        <div style="font-size:0.68rem;opacity:0.5;margin-top:4px;text-align:right;">${etiquetaOrigen(msg)}${horaCST(msg.timestamp)}</div>
-      </div>`;
-    cont.appendChild(div);
+    const wrap = document.createElement('div');
+    wrap.innerHTML = burbujaMensajeHTML(mensajeConDocumento);
+    cont.appendChild(wrap.firstElementChild);
     cont.scrollTop = cont.scrollHeight;
   }
   if (enChats) cargarConversaciones();
@@ -4976,11 +5207,28 @@ function actualizarTarjetaDocumentoWS({ documentoId, ok, motivo }) {
   }
 }
 
+// Errores como toast discreto (no banner rojo ni alert). Traducción humana:
+// se muestra el mensaje seguro del backend o un texto genérico amable.
+// Composer: el textarea crece con el contenido (hasta el max del CSS) y
+// Enter envía; Shift+Enter inserta salto de línea (como apps de mensajería).
+function autogrowChat(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
+function chatInputKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviarDesdeChat(); }
+}
+
+let _chatToastTimer = null;
 function mostrarErrorChat(texto) {
   const err = document.getElementById('chat-error');
-  if (!texto) { err.style.display = 'none'; err.textContent = ''; return; }
-  err.textContent = texto;
-  err.style.display = '';
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  const prev = document.getElementById('chat-toast');
+  if (prev) prev.remove();
+  if (!texto) return;
+  const t = document.createElement('div');
+  t.id = 'chat-toast'; t.className = 'chat-toast'; t.setAttribute('role', 'alert');
+  t.textContent = texto;
+  document.body.appendChild(t);
+  clearTimeout(_chatToastTimer);
+  _chatToastTimer = setTimeout(() => t.remove(), 3800);
 }
 
 async function enviarDesdeChat() {
@@ -4998,6 +5246,7 @@ async function enviarDesdeChat() {
       mostrarErrorChat('No se pudo enviar: ' + (d.error || 'error desconocido'));
     } else {
       input.value = '';
+      input.style.height = 'auto';
     }
   } catch {
     mostrarErrorChat('Error de conexión. El mensaje no se envió, intenta de nuevo.');
@@ -5254,18 +5503,20 @@ function contenidoTarjetaImagen(m) {
   const idDoc = m.documento_id_real || m.documento_id;
   const etiquetaEstado = { pendiente: '⏳ Recibiendo…', descargando: '⏳ Recibiendo…', error: '⚠️ No se pudo procesar la imagen' }[estado] || '';
   const cuerpo = (estado === 'listo' && idDoc)
-    ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener" onclick="event.preventDefault(); abrirVisorImagen(this.href);">
-         <img src="/api/imagenes/${idDoc}/archivo" loading="lazy" style="max-width:220px;max-height:220px;border-radius:8px;display:block;object-fit:cover;cursor:pointer;">
+    ? `<a href="/api/imagenes/${idDoc}/archivo" target="_blank" rel="noopener" aria-label="Ver imagen" onclick="event.preventDefault(); abrirVisorImagen(this.href);">
+         <img class="chat-img" src="/api/imagenes/${idDoc}/archivo" loading="lazy">
        </a>`
-    : `<div style="width:180px;height:140px;border-radius:8px;background:#e5e2da;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#888;">${etiquetaEstado || '📷'}</div>`;
-  const descarga = (estado === 'listo' && idDoc) ? `<a href="/api/imagenes/${idDoc}/archivo" download data-doc-accion="descargar" style="font-size:0.75rem;font-weight:700;">Descargar</a>` : '';
+    : `<div style="width:200px;height:150px;border-radius:10px;background:#e5e2da;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:#888;">${etiquetaEstado || '📷'}</div>`;
+  const descarga = (estado === 'listo' && idDoc) ? `<a href="/api/imagenes/${idDoc}/archivo" download data-doc-accion="descargar" aria-label="Descargar imagen" style="font-weight:700;color:var(--color-brand);text-decoration:none;">⤓</a>` : '';
   return `
     <div class="tarjeta-documento tarjeta-imagen" data-documento-id="${idDoc || ''}" data-categoria="imagen"
          data-direccion="${m.direccion || ''}" data-origen="${m.origen || ''}" data-caption="${caption}" style="min-width:150px;">
       ${cuerpo}
-      ${caption ? `<div style="font-size:0.8rem;margin-top:4px;">${caption}</div>` : ''}
-      <div style="font-size:0.72rem;opacity:0.65;margin-top:2px;">${remitente}</div>
-      ${estado === 'listo' ? `<div class="tarjeta-documento-acciones" style="margin-top:4px;">${descarga}</div>` : ''}
+      ${caption ? `<div style="font-size:0.82rem;margin-top:5px;">${caption}</div>` : ''}
+      <div class="chat-img-pie">
+        <span>📷 Imagen${remitente ? ' · ' + remitente : ''}</span>
+        <span class="tarjeta-documento-acciones">${descarga}</span>
+      </div>
       ${estado === 'error' ? `<div class="tarjeta-documento-estado" style="font-size:0.75rem;color:#c0392b;margin-top:4px;">${etiquetaEstado}</div>` : ''}
     </div>`;
 }
