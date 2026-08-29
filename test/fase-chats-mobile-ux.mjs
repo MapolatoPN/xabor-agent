@@ -33,9 +33,14 @@ t('2. filas de conversación estilo bandeja (avatar + nombre + hora + preview)',
 });
 t('3. detalle full-screen en móvil (position:fixed dentro de @media 640)', () => {
   const mq = HTML.slice(HTML.indexOf('@media (max-width: 640px)', HTML.indexOf('.chats-topbar { display: none; }')));
-  assert.ok(/#vista-chats\.chat-abierto\s*\{\s*position:\s*fixed;\s*inset:\s*0/.test(HTML), 'chat-abierto ocupa el viewport');
+  // Full-screen = position:fixed anclado arriba + height:100dvh (viewport
+  // DINÁMICO). Se dejó de usar inset:0 a propósito: en Safari iOS inset:0 =
+  // viewport de layout (más alto que 100dvh) y ese desfase dejaba una franja
+  // bajo el composer. Igualar contenedor e hijos a 100dvh lo elimina.
+  assert.ok(/#vista-chats\.chat-abierto\s*\{\s*position:\s*fixed;[^}]*height:\s*100dvh/.test(HTML), 'chat-abierto ocupa el viewport dinámico (100dvh)');
   assert.ok(/100dvh/.test(HTML), 'usa dvh para el teclado móvil');
   assert.ok(/env\(safe-area-inset-bottom\)/.test(HTML), 'respeta safe-area inferior');
+  assert.ok(/viewport-fit=cover/.test(HTML), 'viewport-fit=cover activa el safe-area en iOS');
 });
 t('4. composer sticky con botones táctiles (44px) y aria-labels', () => {
   assert.ok(/\.chat-composer\b/.test(HTML));

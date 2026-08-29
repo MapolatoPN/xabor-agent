@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Xabor — Panel de Comandas</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -520,13 +520,17 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .chat-row-cuerpo { flex: 1; min-width: 0; }
 .chat-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .chat-row-nombre { font-weight: 600; font-size: 0.92rem; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat-row-hora { flex-shrink: 0; font-size: 0.72rem; color: var(--color-text-secondary); }
+.chat-row-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.chat-row-hora { font-size: 0.72rem; color: var(--color-text-secondary); }
 .chat-row-bot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
 .chat-row-preview { font-size: 0.82rem; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-row-punto { flex-shrink: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--color-brand); }
 
 /* Estado de la conversación (bot atendiendo / atención manual) + CTA */
 .chat-estado-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); flex-wrap: wrap; }
+/* Estado global pausado: sin CTA, franja delgada de una sola línea */
+.chat-estado-card.compacta { padding: 7px 14px; gap: 10px; }
+.chat-estado-card.compacta .chat-estado-titulo { font-weight: 600; font-size: 0.82rem; }
 .chat-estado-info { flex: 1; min-width: 140px; }
 .chat-estado-titulo { font-weight: 700; font-size: 0.85rem; }
 .chat-estado-sub { font-size: 0.75rem; color: var(--color-text-secondary); margin-top: 1px; }
@@ -574,7 +578,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   /* Detalle full-screen: el chat-area ocupa el viewport real (dvh). z-index
      por encima del bottom-nav (200) para que el composer nunca quede tapado;
      además se oculta la navbar mientras se atiende el chat (paso 17). */
-  #vista-chats.chat-abierto { position: fixed; inset: 0; z-index: 210; background: var(--color-bg); padding: 0; margin: 0; }
+  /* Altura = viewport DINÁMICO (100dvh), no inset:0 (=viewport de layout, más
+     alto en Safari iOS). Igualar contenedor e hijos a 100dvh evita la franja/
+     margen que aparecía bajo el composer en Safari/iPhone. */
+  #vista-chats.chat-abierto { position: fixed; top: 0; left: 0; right: 0; height: 100dvh; z-index: 210; background: var(--color-bg); padding: 0; margin: 0; }
   body.chat-fullscreen #bottom-nav { display: none !important; }
   #vista-chats.chat-abierto > .chats-topbar,
   #vista-chats.chat-abierto > .chats-search,
@@ -4921,11 +4928,13 @@ function renderConversaciones() {
       <div class="chat-row-cuerpo">
         <div class="chat-row-top">
           <span class="chat-row-nombre">${escaparHTML(nombre)}</span>
-          <span class="chat-row-hora">${horaListaChat(c.timestamp)}</span>
+          <span class="chat-row-meta">
+            <span class="chat-row-hora">${horaListaChat(c.timestamp)}</span>
+            ${sinResponder ? '<span class="chat-row-punto" title="Esperando respuesta"></span>' : ''}
+          </span>
         </div>
         <div class="chat-row-bot">
           <span class="chat-row-preview">${escaparHTML(preview)}</span>
-          ${sinResponder ? '<span class="chat-row-punto" title="Esperando respuesta"></span>' : ''}
         </div>
       </div>
     </div>`;
@@ -5039,13 +5048,18 @@ function actualizarBotonBot(pausado) {
 
   if (!atencionNegocioActiva) {
     // GLOBAL pausado: no hay bot que "tomar" en esta conversación; se responde
-    // manualmente. No mostramos un CTA contradictorio (paso 12).
+    // manualmente. No mostramos un CTA contradictorio (paso 12). Franja compacta
+    // de una sola línea (sin subtítulo) porque el título ya es autoexplicativo.
+    card.classList.add('compacta');
     ico.textContent = '🌙';
     titulo.textContent = 'Automatización pausada en el negocio';
-    sub.textContent = 'El bot no responde a nadie ahora; puedes atender esta conversación.';
+    sub.textContent = '';
+    sub.style.display = 'none';
     btn.style.display = 'none';
     return;
   }
+  card.classList.remove('compacta');
+  sub.style.display = '';
   btn.style.display = '';
   if (pausado) {
     // Conversación TOMADA (atención manual).
@@ -5092,8 +5106,10 @@ function escaparHTML(str) {
 
 function etiquetaOrigen(m) {
   if (m.direccion !== 'saliente') return '';
-  if (m.origen === 'bot')    return '<span style="opacity:0.55;">🤖 Bot</span> · ';
-  if (m.origen === 'humano') return '<span style="opacity:0.55;">🧑 Tú</span> · ';
+  // La alineación (derecha) y el color (peach) ya indican que el mensaje es
+  // tuyo, así que NO se repite "Tú". Solo se conserva "Bot" porque distinguir
+  // una respuesta automática de una manual sí es información real.
+  if (m.origen === 'bot') return '<span style="opacity:0.55;">🤖 Bot</span> · ';
   return '';
 }
 
