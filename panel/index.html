@@ -1664,7 +1664,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     <div id="vista-menu" style="display:none;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
         <div style="font-size:1.1rem;font-weight:800;">🍽️ Editor de Menú</div>
-        <button onclick="abrirModalCategoria()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;">+ Nueva categoría</button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button onclick="abrirImportarMenuPDF()" style="background:#fff;color:#1c1c1c;border:1px solid #1c1c1c;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;">📄 Importar menú desde PDF</button>
+          <button onclick="abrirModalCategoria()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;">+ Nueva categoría</button>
+        </div>
       </div>
       <div id="menu-editor"></div>
 
@@ -8383,6 +8386,145 @@ async function eliminarProductoUI(id) {
   if (!confirm('¿Eliminar este producto?')) return;
   await apiFetch(`/api/admin/menu/productos/${id}`, { method:'DELETE' });
   cargarMenuEditor();
+}
+
+// ─── Importar menú desde PDF (Fase 1) ───────────────────────────────────────
+let _importDraft = null;
+function abrirImportarMenuPDF() {
+  document.getElementById('modal-import-pdf')?.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-import-pdf';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:600;display:flex;align-items:center;justify-content:center;padding:16px;';
+  div.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:24px;width:100%;max-width:840px;max-height:90vh;overflow:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div style="font-weight:800;font-size:1rem;">📄 Importar menú desde PDF</div>
+        <button onclick="document.getElementById('modal-import-pdf').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#888;line-height:1;">×</button>
+      </div>
+      <div id="import-cuerpo">
+        <p style="font-size:0.88rem;color:#555;margin:0 0 14px;">Sube el PDF de tu menú (con texto, no escaneado). Lo analizamos y te mostramos una vista previa para revisar antes de guardar. <b>Nada se guarda hasta que confirmes.</b></p>
+        <input type="file" id="import-pdf-input" accept="application/pdf" style="display:block;margin-bottom:16px;">
+        <button onclick="analizarPDFImport()" id="btn-analizar-pdf" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer;">Analizar menú</button>
+        <div id="import-estado" style="margin-top:14px;font-size:0.88rem;"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+async function analizarPDFImport() {
+  const input = document.getElementById('import-pdf-input');
+  const file = input?.files?.[0];
+  const estado = document.getElementById('import-estado');
+  if (!file) { estado.innerHTML = '<span style="color:#b91c1c;">Selecciona un PDF primero.</span>'; return; }
+  if (file.type !== 'application/pdf') { estado.innerHTML = '<span style="color:#b91c1c;">El archivo debe ser un PDF.</span>'; return; }
+  if (file.size > 10 * 1024 * 1024) { estado.innerHTML = '<span style="color:#b91c1c;">El PDF pesa más de 10 MB. Comprímelo o divídelo.</span>'; return; }
+  const btn = document.getElementById('btn-analizar-pdf'); btn.disabled = true;
+  estado.innerHTML = '⏳ Analizando menú… (esto puede tardar unos segundos)';
+  try {
+    const base64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(',')[1]);
+      r.onerror = () => rej(new Error('lectura'));
+      r.readAsDataURL(file);
+    });
+    const resp = await apiFetch('/api/admin/menu/importar-pdf', { method: 'POST', body: JSON.stringify({ base64 }) });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 422 && data.codigo === 'PDF_REQUIERE_VISION') {
+      estado.innerHTML = `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px;color:#92400e;">${escaparHTML(data.error)}</div>`;
+      btn.disabled = false; return;
+    }
+    if (!resp.ok || !data.ok) {
+      estado.innerHTML = `<span style="color:#b91c1c;">${escaparHTML(data.error || 'No pudimos analizar el PDF.')}</span>`;
+      btn.disabled = false; return;
+    }
+    _importDraft = data;
+    renderPreviewImport(data);
+  } catch (e) {
+    estado.innerHTML = '<span style="color:#b91c1c;">Error al analizar el PDF.</span>';
+    btn.disabled = false;
+  }
+}
+
+function _badgeImport(estado) {
+  const map = { NUEVO: ['#dcfce7', '#166534', 'Nuevo'], YA_EXISTE: ['#f1f5f9', '#475569', 'Ya existe'], PRECIO_CAMBIO: ['#fef9c3', '#854d0e', 'Precio cambió'], REQUIERE_REVISION: ['#ffedd5', '#9a3412', 'Requiere revisión'] };
+  const [bg, fg, txt] = map[estado] || ['#eee', '#333', estado];
+  return `<span style="background:${bg};color:${fg};border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:700;white-space:nowrap;">${txt}</span>`;
+}
+
+function renderPreviewImport(data) {
+  const r = data.resumen;
+  let filas = '';
+  data.categorias.forEach((cat, ci) => {
+    filas += `<div style="margin-top:14px;font-weight:800;font-size:0.9rem;">${escaparHTML(cat.nombre)} ${cat.es_nueva ? '<span style="font-size:0.7rem;color:#166534;font-weight:700;">(categoría nueva)</span>' : ''}</div>`;
+    cat.productos.forEach((p, pi) => {
+      const dupSel = (p.id_existente != null)
+        ? `<select data-import-decision style="font-size:0.78rem;padding:3px;border-radius:6px;">
+             <option value="omitir" ${p.decision === 'omitir' ? 'selected' : ''}>Omitir</option>
+             <option value="actualizar" ${p.decision === 'actualizar' ? 'selected' : ''}>Actualizar</option>
+             <option value="crear" ${p.decision === 'crear' ? 'selected' : ''}>Crear como nuevo</option>
+           </select>`
+        : `<input type="hidden" data-import-decision value="crear"><span style="font-size:0.72rem;color:#999;">—</span>`;
+      const advert = (p.advertencias || []).length ? `<div style="font-size:0.72rem;color:#9a3412;">⚠ ${p.advertencias.map(escaparHTML).join(', ')}</div>` : '';
+      const precioAdv = p.precio === null ? '<div style="font-size:0.72rem;color:#b91c1c;font-weight:700;">⚠ Precio no detectado</div>' : '';
+      const nMods = (p.modificadores || []).reduce((a, g) => a + (g.opciones || []).length, 0);
+      filas += `
+      <div class="import-fila" data-ci="${ci}" data-pi="${pi}" data-cat="${escaparHTML(cat.nombre)}" data-id-existente="${p.id_existente ?? ''}"
+           style="display:grid;grid-template-columns:26px 1fr 92px 132px auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid #f1f0ed;">
+        <input type="checkbox" data-import-check ${p.importar ? 'checked' : ''} style="margin-top:6px;">
+        <div><input data-import-nombre value="${escaparHTML(p.nombre)}" style="width:100%;border:1px solid #ddd;border-radius:6px;padding:5px 7px;font-size:0.82rem;">
+          ${p.pagina_origen ? `<span style="font-size:0.68rem;color:#999;">pág. ${p.pagina_origen}</span>` : ''}${nMods ? ` · <span style="font-size:0.68rem;color:#166534;">${nMods} extra(s)</span>` : ''}${advert}</div>
+        <input data-import-precio type="number" step="0.01" min="0" value="${p.precio ?? ''}" placeholder="—"
+          style="width:100%;border:1px solid ${p.precio === null ? '#fca5a5' : '#ddd'};border-radius:6px;padding:5px 7px;font-size:0.82rem;">
+        <div>${_badgeImport(p.estado)}${p.precio_actual != null ? `<div style="font-size:0.68rem;color:#999;">antes $${p.precio_actual}</div>` : ''}${precioAdv}</div>
+        <div>${dupSel}</div>
+      </div>`;
+    });
+  });
+  document.getElementById('import-cuerpo').innerHTML = `
+    <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;font-size:0.85rem;">
+      Encontramos: <b>${r.categorias}</b> categorías · <b>${r.productos}</b> productos · <b>${r.requieren_revision}</b> requieren revisión · <b>${r.duplicados}</b> posibles duplicados.
+      <div style="color:#666;font-size:0.78rem;margin-top:4px;">Revisa, corrige los precios faltantes y elige qué importar. Los duplicados están en <b>Omitir</b> por defecto — nunca se actualizan solos.</div>
+    </div>
+    <div style="max-height:50vh;overflow:auto;">${filas || '<div style="color:#888;padding:20px;text-align:center;">No detectamos productos en el PDF.</div>'}</div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+      <button onclick="document.getElementById('modal-import-pdf').remove()" style="background:#eee;border:none;border-radius:8px;padding:10px 18px;font-weight:700;cursor:pointer;">Cancelar</button>
+      <button onclick="confirmarImportarMenu()" id="btn-confirmar-import" style="background:#15803d;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer;">Importar seleccionados</button>
+    </div>`;
+}
+
+async function confirmarImportarMenu() {
+  const filas = [...document.querySelectorAll('#modal-import-pdf .import-fila')];
+  const porCat = {};
+  for (const f of filas) {
+    const cat = f.dataset.cat;
+    const ci = +f.dataset.ci, pi = +f.dataset.pi;
+    const modificadores = (_importDraft?.categorias?.[ci]?.productos?.[pi]?.modificadores) || [];
+    const precioRaw = f.querySelector('[data-import-precio]').value;
+    (porCat[cat] ||= []).push({
+      importar: f.querySelector('[data-import-check]').checked,
+      decision: f.querySelector('[data-import-decision]').value,
+      nombre: f.querySelector('[data-import-nombre]').value.trim(),
+      precio: precioRaw === '' ? null : Number(precioRaw),
+      id_existente: f.dataset.idExistente ? Number(f.dataset.idExistente) : null,
+      modificadores,
+    });
+  }
+  const plan = { categorias: Object.entries(porCat).map(([nombre, productos]) => ({ nombre, productos })) };
+  const btn = document.getElementById('btn-confirmar-import'); btn.disabled = true; btn.textContent = 'Importando…';
+  try {
+    const resp = await apiFetch('/api/admin/menu/importar-pdf/confirmar', { method: 'POST', body: JSON.stringify({ plan }) });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) { btn.disabled = false; btn.textContent = 'Importar seleccionados'; alert(data.error || 'No pudimos importar el menú.'); return; }
+    document.getElementById('modal-import-pdf').remove();
+    const rs = data.resumen;
+    const toast = document.createElement('div');
+    toast.textContent = `✅ Menú importado: ${rs.productos_creados} nuevos, ${rs.productos_actualizados} actualizados.`;
+    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#15803d;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:0.9rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.2);';
+    document.body.appendChild(toast); setTimeout(() => toast.remove(), 5000);
+    cargarMenuEditor();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Importar seleccionados'; alert('Error al importar el menú.');
+  }
 }
 
 // Modal categoría

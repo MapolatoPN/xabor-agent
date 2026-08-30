@@ -658,6 +658,80 @@ export async function eliminarOpcionModificador(opcionId, negocioId) {
   await pool.query('DELETE FROM menu_modificadores_opciones WHERE id=$1 AND negocio_id=$2', [opcionId, negId]);
 }
 
+// ─── Importación de menú (PDF) — persistencia ATÓMICA ────────────────────────
+// Aplica un plan de acciones YA revalidado (ver menuImport.revalidarConfirmacion)
+// dentro de UNA sola transacción con un client dedicado: resuelve/crea
+// categorías por nombre (normalizado, scoped por negocio), crea productos
+// nuevos con sus modificadores, o actualiza productos existentes (base:
+// nombre/descripcion/precio; NO toca modificadores existentes). Cualquier
+// error => ROLLBACK total (nunca importaciones parciales). negocioId es
+// OBLIGATORIO (fail-closed) y todo va scoped por negocio_id — jamás se
+// escribe ni se actualiza un producto de otro negocio.
+export async function importarMenuAtomico(negocioId, acciones) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    const e = new Error('importarMenuAtomico: negocioId requerido'); e.codigo = 'TENANT_REQUERIDO'; throw e;
+  }
+  const negId = negocioId.trim();
+  const norm = (s) => (s || '').toString().toLowerCase().normalize('NFD')
+    .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const resumen = { categorias_creadas: 0, productos_creados: 0, productos_actualizados: 0, modificadores_creados: 0, opciones_creadas: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: cats } = await client.query('SELECT id, nombre FROM menu_categorias WHERE negocio_id=$1', [negId]);
+    const catPorNombre = new Map(cats.map(c => [norm(c.nombre), c.id]));
+    const asegurarCategoria = async (nombre) => {
+      const k = norm(nombre);
+      if (catPorNombre.has(k)) return catPorNombre.get(k);
+      const { rows } = await client.query(
+        `INSERT INTO menu_categorias (negocio_id, nombre, orden)
+         VALUES ($1,$2,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_categorias WHERE negocio_id=$1)) RETURNING id`,
+        [negId, nombre]);
+      catPorNombre.set(k, rows[0].id); resumen.categorias_creadas++; return rows[0].id;
+    };
+    const crearModificadores = async (productoId, modificadores) => {
+      for (const g of (modificadores || [])) {
+        const { rows: gr } = await client.query(
+          `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+           VALUES ($1,$2,$3,FALSE,0,1,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2)) RETURNING id`,
+          [negId, productoId, g.nombre]);
+        resumen.modificadores_creados++;
+        for (const o of (g.opciones || [])) {
+          await client.query(
+            `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, orden)
+             VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_opciones WHERE grupo_id=$2))`,
+            [negId, gr[0].id, o.nombre, o.precio_extra || 0]);
+          resumen.opciones_creadas++;
+        }
+      }
+    };
+    for (const a of (Array.isArray(acciones) ? acciones : [])) {
+      if (a.decision === 'actualizar') {
+        const { rowCount } = await client.query(
+          `UPDATE menu_productos SET nombre=$1, descripcion=$2, precio=$3 WHERE id=$4 AND negocio_id=$5`,
+          [a.producto.nombre, a.producto.descripcion || '', a.producto.precio, a.id_existente, negId]);
+        if (rowCount === 0) { const e = new Error('producto a actualizar no pertenece al negocio'); e.codigo = 'CROSS_TENANT'; throw e; }
+        resumen.productos_actualizados++;
+      } else {
+        const categoriaId = await asegurarCategoria(a.categoria);
+        const { rows: pr } = await client.query(
+          `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, agotado, orden)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2)) RETURNING id`,
+          [negId, categoriaId, a.producto.nombre, a.producto.descripcion || '', a.producto.precio, a.producto.disponible !== false, a.producto.agotado === true]);
+        resumen.productos_creados++;
+        await crearModificadores(pr[0].id, a.producto.modificadores);
+      }
+    }
+    await client.query('COMMIT');
+    return resumen;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Menú — CRUD categorías ───────────────────────────────────────────────────
 export async function crearCategoria(nombre, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();

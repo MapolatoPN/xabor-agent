@@ -67,6 +67,9 @@ import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, drive
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
 import { guardarImagenProducto, eliminarImagenProducto, leerImagenProducto, tamanoMaximoBytes as productoImagenMaximoBytes } from './services/imagenesProducto.js';
+import { extraerTextoPorPagina } from './services/pdfTexto.js';
+import { LIMITE_PDF_BYTES, extraerMenuConIA, validarYnormalizarDraft, compararConMenuActual, revalidarConfirmacion } from './services/menuImport.js';
+import { importarMenuAtomico } from './services/database.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
@@ -3885,6 +3888,77 @@ app.get('/img/producto/:id', async (req, res) => {
     res.status(404).end();
   }
 });
+
+// ─── Importar menú desde PDF (Fase 1: PDF nativo con texto) ──────────────────
+// ANÁLISIS: recibe el PDF (base64), extrae texto por página, lo pasa a la IA
+// (structured output) y devuelve un DRAFT comparado contra el menú REAL del
+// negocio. NO escribe NADA en menu_* — cero cambios al catálogo aquí.
+app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), requireModulo('menu'),
+  rateLimitMiddleware(req => `menu-import:${req.negocioId}`, 6, 60 * 1000),
+  async (req, res) => {
+    const { base64 } = req.body || {};
+    if (typeof base64 !== 'string' || !base64.trim()) {
+      return res.status(400).json({ error: 'No recibimos ningún PDF' });
+    }
+    let buffer;
+    try { buffer = Buffer.from(base64, 'base64'); }
+    catch { return res.status(400).json({ error: 'El PDF no se pudo leer' }); }
+    if (buffer.length > LIMITE_PDF_BYTES) {
+      return res.status(413).json({ error: `El PDF pesa más de ${Math.round(LIMITE_PDF_BYTES / 1024 / 1024)} MB. Comprímelo o divídelo.` });
+    }
+    const val = await validarPdfReal(buffer);
+    if (!val.valido) {
+      if (val.motivo === 'mime_invalido') return res.status(415).json({ error: 'El archivo no es un PDF válido.' });
+      if (val.motivo === 'tamano_excedido') return res.status(413).json({ error: 'El PDF es demasiado grande.' });
+      return res.status(400).json({ error: 'El PDF está vacío o dañado.' });
+    }
+    try {
+      const { paginas } = await extraerTextoPorPagina(buffer);
+      const jsonIA = await extraerMenuConIA(paginas, { resolverApiKey: () => getIntegracion('anthropic_api_key') });
+      const draft = validarYnormalizarDraft(jsonIA);
+      const menuActual = await obtenerMenuCompleto(req.negocioId);
+      const comparado = compararConMenuActual(draft, menuActual);
+      res.json({ ok: true, ...comparado });
+    } catch (e) {
+      if (e.codigo === 'PDF_REQUIERE_VISION') {
+        return res.status(422).json({ ok: false, codigo: 'PDF_REQUIERE_VISION',
+          error: 'Este menú parece estar formado por imágenes. La importación de menús escaneados estará disponible en el siguiente paso.' });
+      }
+      if (e.codigo === 'PDF_ILEGIBLE') {
+        return res.status(400).json({ ok: false, codigo: 'PDF_ILEGIBLE', error: 'No pudimos leer el PDF. ¿Está dañado?' });
+      }
+      if (e.codigo === 'IA_OUTPUT_INVALIDO' || e.codigo === 'IA_ERROR') {
+        console.error('[importar-pdf IA]', e.message);
+        return res.status(502).json({ ok: false, codigo: e.codigo, error: 'No pudimos analizar el menú en este momento. Intenta de nuevo.' });
+      }
+      console.error('[importar-pdf]', e.message);
+      res.status(500).json({ error: 'No pudimos analizar el PDF.' });
+    }
+  });
+
+// CONFIRMACIÓN: el draft viene del navegador y NO es confiable. Revalida
+// server-side (negocio de la sesión, schema, precios, decisiones, cross-tenant)
+// y persiste de forma ATÓMICA (una transacción; ROLLBACK total ante error).
+app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'), requireModulo('menu'),
+  rateLimitMiddleware(req => `menu-import-confirmar:${req.negocioId}`, 12, 60 * 1000),
+  async (req, res) => {
+    const plan = req.body?.plan;
+    try {
+      // Ids de productos que SÍ son de este negocio (para 'actualizar' seguro).
+      const menuActual = await obtenerMenuCompleto(req.negocioId);
+      const idsNegocio = new Set();
+      for (const c of menuActual) for (const p of (c.productos || [])) idsNegocio.add(Number(p.id));
+      const { acciones, errores } = revalidarConfirmacion(plan, idsNegocio);
+      const resumen = await importarMenuAtomico(req.negocioId, acciones);
+      res.json({ ok: true, resumen, avisos: errores });
+    } catch (e) {
+      if (e.codigo === 'PLAN_INVALIDO') return res.status(400).json({ error: 'El plan de importación es inválido.' });
+      if (e.codigo === 'NADA_QUE_IMPORTAR') return res.status(400).json({ error: 'No hay productos válidos para importar.', avisos: e.errores || [] });
+      if (e.codigo === 'CROSS_TENANT') return res.status(403).json({ error: 'Un producto a actualizar no pertenece a este negocio.' });
+      console.error('[importar-pdf/confirmar]', e.message);
+      res.status(500).json({ error: 'No pudimos importar el menú. No se guardó nada.' });
+    }
+  });
 
 app.delete('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), requireModulo('menu'), async (req, res) => {
   await eliminarProducto(req.params.id, req.negocioId);
