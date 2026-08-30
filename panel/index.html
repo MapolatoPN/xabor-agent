@@ -8457,12 +8457,16 @@ function renderPreviewImport(data) {
   data.categorias.forEach((cat, ci) => {
     filas += `<div style="margin-top:14px;font-weight:800;font-size:0.9rem;">${escaparHTML(cat.nombre)} ${cat.es_nueva ? '<span style="font-size:0.7rem;color:#166534;font-weight:700;">(categoría nueva)</span>' : ''}</div>`;
     cat.productos.forEach((p, pi) => {
+      const nModsPrev = (p.modificadores || []).reduce((a, g) => a + (g.opciones || []).length, 0);
+      const notaActualizar = (p.id_existente != null)
+        ? `<div style="font-size:0.66rem;color:#777;margin-top:3px;max-width:130px;">Actualizar cambia nombre, descripción y precio. Los extras/modificadores existentes NO se modifican.${nModsPrev ? ` (Los ${nModsPrev} extra(s) del PDF no se importan al Actualizar.)` : ''}</div>`
+        : '';
       const dupSel = (p.id_existente != null)
         ? `<select data-import-decision style="font-size:0.78rem;padding:3px;border-radius:6px;">
              <option value="omitir" ${p.decision === 'omitir' ? 'selected' : ''}>Omitir</option>
              <option value="actualizar" ${p.decision === 'actualizar' ? 'selected' : ''}>Actualizar</option>
              <option value="crear" ${p.decision === 'crear' ? 'selected' : ''}>Crear como nuevo</option>
-           </select>`
+           </select>${notaActualizar}`
         : `<input type="hidden" data-import-decision value="crear"><span style="font-size:0.72rem;color:#999;">—</span>`;
       const advert = (p.advertencias || []).length ? `<div style="font-size:0.72rem;color:#9a3412;">⚠ ${p.advertencias.map(escaparHTML).join(', ')}</div>` : '';
       const precioAdv = p.precio === null ? '<div style="font-size:0.72rem;color:#b91c1c;font-weight:700;">⚠ Precio no detectado</div>' : '';

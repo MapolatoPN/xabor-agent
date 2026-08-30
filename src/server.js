@@ -3927,6 +3927,10 @@ app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), require
       if (e.codigo === 'PDF_ILEGIBLE') {
         return res.status(400).json({ ok: false, codigo: 'PDF_ILEGIBLE', error: 'No pudimos leer el PDF. ¿Está dañado?' });
       }
+      if (e.codigo === 'MENU_DEMASIADO_GRANDE') {
+        return res.status(422).json({ ok: false, codigo: 'MENU_DEMASIADO_GRANDE',
+          error: 'El menú es demasiado grande para analizarlo completo de una sola vez. Prueba con un archivo más pequeño o dividido.' });
+      }
       if (e.codigo === 'IA_OUTPUT_INVALIDO' || e.codigo === 'IA_ERROR') {
         console.error('[importar-pdf IA]', e.message);
         return res.status(502).json({ ok: false, codigo: e.codigo, error: 'No pudimos analizar el menú en este momento. Intenta de nuevo.' });
