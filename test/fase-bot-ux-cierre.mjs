@@ -52,7 +52,10 @@ const idxReglaCritica = PROMPTS.indexOf('HORARIO — REGLA CRÍTICA');
 t('1. existe la REGLA CRÍTICA de avisar el horario antes de armar', () => {
   assert.ok(idxReglaCritica > -1,
     'falta el bloque HORARIO — REGLA CRÍTICA (esperado FALLO contra la versión previa)');
-  assert.ok(/NUNCA empieces a preguntar la focaccia\/el producto sin haber avisado el horario primero/.test(PROMPTS));
+  // Grounding comercial (2026-08-30): la frase se genericó (quitó "la
+  // focaccia/") para no filtrar producto de Nonna a otros negocios en esta
+  // línea universal. La REGLA CRÍTICA de horario sigue intacta.
+  assert.ok(/NUNCA empieces a preguntar el producto sin haber avisado el horario primero/.test(PROMPTS));
 });
 t('2. la regla es CANAL-AGNÓSTICA: gateada por estado, no por canal===voz', () => {
   // Debe estar controlada por !estado.abierto (main return), no dentro de

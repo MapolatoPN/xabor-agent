@@ -51,7 +51,11 @@ t('1. florería + "algo así": reconoce características y estructura la venta',
   assert.ok(/reconoce 1-3 características útiles/.test(R), 'la estructura empieza reconociendo lo visible');
   assert.ok(/veo un arreglo en una bolsa kraft con asas, en tonos rosas y amarillos/.test(R),
     'el ejemplo canónico del caso Alora está en las reglas');
-  assert.ok(/algo inspirado en esa referencia/.test(R), 'la posibilidad se ofrece como inspiración, no como réplica');
+  // Grounding comercial (2026-08-30): endurecido. La imagen fuera de catálogo
+  // ya NO se ofrece como "algo inspirado" (eso también es una promesa); se toma
+  // como REFERENCIA y se remite a confirmación humana del equipo.
+  assert.ok(/tomas la imagen como referencia y que el equipo confirma si es posible/.test(R),
+    'la posibilidad se remite a confirmación del equipo, no se promete');
   assert.ok(/MÁXIMO 2 preguntas/.test(R));
 });
 
@@ -156,7 +160,12 @@ t('20. "tenemos exactamente ese" / "idéntico" / "está disponible": prohibidas'
   assert.ok(/"tenemos exactamente ese"/.test(R));
   assert.ok(/"podemos hacerlo idéntico"/.test(R));
   assert.ok(/"está disponible"/.test(R));
-  assert.ok(/podemos hacer algo inspirado en ese estilo/.test(R), 'y la alternativa correcta está ofrecida');
+  // Grounding comercial (2026-08-30): "podemos hacerlo" también prohibido; la
+  // alternativa correcta para algo no catalogado es referencia + confirmación
+  // humana, sin afirmar que el negocio puede hacerlo.
+  assert.ok(/"podemos hacerlo"/.test(R), 'también se prohíbe "podemos hacerlo"');
+  assert.ok(/tomar la imagen como REFERENCIA y remitir a confirmación humana/.test(R),
+    'la alternativa correcta es referencia + confirmación del equipo');
 });
 
 t('FS12. foto SIN texto: Brain no asume intención de compra y hace MÁXIMO 1 pregunta', () => {

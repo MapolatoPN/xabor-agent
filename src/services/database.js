@@ -505,7 +505,11 @@ export async function seedMenuDesdeJSON(menuJSON, negocioId) {
 // ─── Menú — lectura ───────────────────────────────────────────────────────────
 export async function obtenerMenuCompleto(negocioId) {
   try {
-    const id = negocioId || await resolverNegocioActualId();
+    // Fail-closed (grounding comercial): sin negocioId válido NO se consulta
+    // el negocio por defecto (Nonna). Un turno sin tenant devuelve menú vacío,
+    // jamás el catálogo de Nonna ni de ningún otro negocio.
+    if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+    const id = negocioId.trim();
     const cats = await pool.query(
       'SELECT * FROM menu_categorias WHERE activa = TRUE AND negocio_id = $1 ORDER BY orden',
       [id]
@@ -4396,6 +4400,25 @@ async function resolverNegocioActualId() {
   return _negocioActualIdCache;
 }
 
+// ─── Identificación REAL del negocio actual (grounding comercial) ──────────
+// ¿El negocioId dado es el de Nonna Maye? Identificación por el negocio_id
+// REAL (resuelto por slug, cacheado), NUNCA por giro ni por fallback. Sirve
+// para inyectar contenido de prompt hard-codeado de Nonna SOLO cuando el
+// negocio actual es realmente Nonna. Fail-closed: sin negocioId válido, o si
+// no se puede resolver el id de Nonna, devuelve false (ningún otro negocio ve
+// contenido de Nonna). NO usa resolverNegocioActualId() como default del
+// llamador -- solo para saber cuál ES el id de Nonna con el que comparar.
+export async function esNegocioNonna(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  try {
+    const nonnaId = await resolverNegocioActualId();
+    return !!nonnaId && negocioId.trim() === nonnaId;
+  } catch (e) {
+    console.error('[DB] Error esNegocioNonna:', e.message);
+    return false;
+  }
+}
+
 // ─── Multiempresa — mapeo canal → negocio (Fase 5, migración 008) ──────────
 // Resuelve el negocio (y sucursal, si aplica) dueño de un identificador de
 // integración externo (store_id de Rappi, phone_number_id de WhatsApp,
@@ -4867,7 +4890,11 @@ export async function actualizarEstadoMembresia(usuarioId, negocioId, activo) {
 // ─── Configuración del negocio ───────────────────────────────────────────────
 export async function obtenerConfiguracion(negocioId) {
   try {
-    const id = negocioId || await resolverNegocioActualId();
+    // Fail-closed (grounding comercial): sin negocioId válido NO se consulta
+    // la configuración de Nonna por defecto. Devuelve {} — nunca datos de otro
+    // negocio (nombre, dirección, avisos, etc.).
+    if (typeof negocioId !== 'string' || !negocioId.trim()) return {};
+    const id = negocioId.trim();
     const result = await pool.query('SELECT clave, valor FROM configuracion WHERE negocio_id = $1', [id]);
     const config = {};
     result.rows.forEach(r => { config[r.clave] = r.valor; });
