@@ -50,6 +50,9 @@ await pool.query(
 await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, codigo, nombre, precio, disponible, orden)
    VALUES ($1,$2,'GC-B1','GC Producto Solo B',300,TRUE,0)`, [NEG_B, cB[0].id]);
+await pool.query(
+  `INSERT INTO menu_productos (negocio_id, categoria_id, codigo, nombre, precio, disponible, agotado, orden)
+   VALUES ($1,$2,'GC-AG','GC Producto Agotado A',150,TRUE,TRUE,1)`, [NEG_A, cA[0].id]);
 
 // ═══ 1. Identificación real de Nonna (nunca por fallback/giro) ═══════════════
 await t('1. esNegocioNonna: solo el negocio real de Nonna, nunca null/otro', async () => {
@@ -163,6 +166,24 @@ await t('16. producto de OTRO negocio jamás valida en el negocio actual (aislam
   assert.strictEqual(v.ok, false, 'producto de B no existe para A');
   const cods = (v.rechazos || []).map(r => r.codigo);
   assert.ok(cods.includes('PRODUCTO_NO_EXISTE'), 'PRODUCTO_NO_EXISTE (no se resuelve cruzado)');
+});
+
+// ═══ Toma de pedidos (spec Mapolato Obispado): agotados y modificaciones ════
+await t('17. producto AGOTADO no aparece en el menú del prompt de su negocio', async () => {
+  const p = await construirSystemPrompt(null, 'whatsapp', NEG_A);
+  assert.ok(!p.includes('GC Producto Agotado A'), 'el agotado se omite del menú del prompt');
+  assert.ok(p.includes('GC Producto Real A'), 'el disponible sí aparece');
+});
+await t('18. pedir un producto AGOTADO = fail-closed con PRODUCTO_AGOTADO (no se vende)', async () => {
+  const orden = { items: [{ nombre: 'GC Producto Agotado A', cantidad: 1, precio_unitario: 150 }], forma_pago: 'efectivo', modalidad: 'recoger en tienda' };
+  const v = await validarOrdenPropuesta(orden, NEG_A);
+  assert.strictEqual(v.ok, false, 'agotado no se puede confirmar');
+  assert.ok((v.rechazos || []).some(r => r.codigo === 'PRODUCTO_AGOTADO'), 'código PRODUCTO_AGOTADO');
+});
+await t('19. modificación/personalización NO configurada = solicitud a confirmación humana', async () => {
+  const p = await construirSystemPrompt(null, 'whatsapp', NEG_A);
+  assert.ok(/personalización no configurada/.test(p), 'la regla fuera-de-catálogo cubre una modificación no configurada');
+  assert.ok(p.includes('PENDIENTE DE CONFIRMACIÓN HUMANA'), 'se remite a confirmación humana, no se asume que cocina puede');
 });
 
 // ── Limpieza ──
