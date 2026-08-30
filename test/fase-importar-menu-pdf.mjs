@@ -154,9 +154,20 @@ await t('IA. el schema es estricto (additionalProperties:false + required)', () 
 });
 
 // ═══ 7 · precio null no es importable ═══════════════════════════════════════
-await t('7. producto con precio null NO puede confirmarse (revalidación rechaza)', () => {
-  const plan = { categorias: [{ nombre: 'X', productos: [{ importar: true, decision: 'crear', nombre: 'IMP NullPrice', precio: null }] }] };
-  assert.throws(() => revalidarConfirmacion(plan, new Set()), (e) => e.codigo === 'NADA_QUE_IMPORTAR');
+await t('7. producto SELECCIONADO con precio null BLOQUEA la confirmación (PRECIO_FALTANTE), no importa parcial', () => {
+  // Seleccionado + null → bloquea TODA la confirmación (no se salta en silencio).
+  const plan = { categorias: [{ nombre: 'X', productos: [
+    { importar: true, decision: 'crear', nombre: 'IMP OkPrecio', precio: 40 },
+    { importar: true, decision: 'crear', nombre: 'IMP NullPrice', precio: null },
+  ] }] };
+  assert.throws(() => revalidarConfirmacion(plan, new Set()), (e) => e.codigo === 'PRECIO_FALTANTE');
+  // Desmarcado (importar:false) NO bloquea: los demás sí continúan.
+  const plan2 = { categorias: [{ nombre: 'X', productos: [
+    { importar: false, decision: 'crear', nombre: 'IMP NullExcluido', precio: null },
+    { importar: true, decision: 'crear', nombre: 'IMP OkPrecio', precio: 40 },
+  ] }] };
+  const { acciones } = revalidarConfirmacion(plan2, new Set());
+  assert.strictEqual(acciones.length, 1, 'el válido pasa cuando el null está desmarcado');
 });
 
 // ═══ 8-12 · dedupe contra menú real + persistencia ══════════════════════════

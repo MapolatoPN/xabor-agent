@@ -8498,6 +8498,19 @@ function renderPreviewImport(data) {
 
 async function confirmarImportarMenu() {
   const filas = [...document.querySelectorAll('#modal-import-pdf .import-fila')];
+  // Guard: un producto SELECCIONADO sin precio válido bloquea la importación
+  // (nada parcial en silencio). El usuario corrige el precio o lo desmarca.
+  const sinPrecio = filas.filter(f => {
+    if (!f.querySelector('[data-import-check]').checked) return false;
+    if (f.querySelector('[data-import-decision]').value === 'omitir') return false;
+    const v = f.querySelector('[data-import-precio]').value;
+    const n = v === '' ? NaN : Number(v);
+    return !(isFinite(n) && n > 0);
+  }).map(f => f.querySelector('[data-import-nombre]').value.trim());
+  if (sinPrecio.length) {
+    alert(`Hay productos seleccionados sin precio válido: ${sinPrecio.join(', ')}.\nCorrige el precio o desmárcalos antes de importar.`);
+    return;
+  }
   const porCat = {};
   for (const f of filas) {
     const cat = f.dataset.cat;

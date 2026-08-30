@@ -330,8 +330,13 @@ export function revalidarConfirmacion(plan, idsProductosNegocio) {
       if (!p?.importar) continue;                         // el usuario lo excluyó
       if (p.decision === 'omitir') continue;
       const nombre = limpiarStr(p?.nombre, MAX_NOMBRE_PRODUCTO);
-      if (!nombre) { errores.push('producto importable sin nombre'); continue; }
-      if (!precioValido(p?.precio)) { errores.push(`"${nombre}": precio inválido/ausente — no importable`); continue; }
+      if (!nombre) { const e = new Error('Un producto seleccionado no tiene nombre'); e.codigo = 'PLAN_INVALIDO'; throw e; }
+      // Precio null/ inválido en un producto SELECCIONADO bloquea TODA la
+      // confirmación (no se importa parcial en silencio): el usuario debe
+      // corregir el precio o desmarcarlo. Desmarcado ya se saltó arriba.
+      if (!precioValido(p?.precio)) {
+        const e = new Error(`"${nombre}" está seleccionado sin un precio válido`); e.codigo = 'PRECIO_FALTANTE'; throw e;
+      }
       const decision = p.decision;   // ya validado: 'crear' o 'actualizar'
       let idExistente = null;
       if (decision === 'actualizar') {

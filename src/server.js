@@ -3956,6 +3956,7 @@ app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'
       const resumen = await importarMenuAtomico(req.negocioId, acciones);
       res.json({ ok: true, resumen, avisos: errores });
     } catch (e) {
+      if (e.codigo === 'PRECIO_FALTANTE') return res.status(400).json({ codigo: 'PRECIO_FALTANTE', error: `${e.message}. Corrige el precio o desmárcalo antes de importar.` });
       if (e.codigo === 'PLAN_INVALIDO') return res.status(400).json({ error: 'El plan de importación es inválido.' });
       if (e.codigo === 'NADA_QUE_IMPORTAR') return res.status(400).json({ error: 'No hay productos válidos para importar.', avisos: e.errores || [] });
       if (e.codigo === 'CROSS_TENANT') return res.status(403).json({ error: 'Un producto a actualizar no pertenece a este negocio.' });
