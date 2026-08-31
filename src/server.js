@@ -3958,6 +3958,7 @@ app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'
     } catch (e) {
       if (e.codigo === 'PRECIO_FALTANTE') return res.status(400).json({ codigo: 'PRECIO_FALTANTE', error: `${e.message}. Corrige el precio o desmárcalo antes de importar.` });
       if (e.codigo === 'PLAN_INVALIDO') return res.status(400).json({ error: 'El plan de importación es inválido.' });
+      if (e.codigo === 'PLAN_IMPORTACION_INVALIDO') return res.status(400).json({ codigo: 'PLAN_IMPORTACION_INVALIDO', error: `${e.message}. Revisa los modificadores antes de importar.` });
       if (e.codigo === 'NADA_QUE_IMPORTAR') return res.status(400).json({ error: 'No hay productos válidos para importar.', avisos: e.errores || [] });
       if (e.codigo === 'CROSS_TENANT') return res.status(403).json({ error: 'Un producto a actualizar no pertenece a este negocio.' });
       console.error('[importar-pdf/confirmar]', e.message);

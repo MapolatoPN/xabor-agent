@@ -60,9 +60,15 @@ export const SCHEMA_MENU = {
                   items: {
                     type: 'object',
                     additionalProperties: false,
-                    required: ['nombre', 'opciones'],
+                    required: ['nombre', 'requerido', 'minimo', 'maximo', 'opciones'],
                     properties: {
                       nombre: { type: 'string' },
+                      // Cardinalidad del grupo. SOLO cuando el PDF la expresa
+                      // ("elige 1", "hasta 2"); si no, null (→ revisión humana).
+                      // Nunca 0/1 silencioso (ver decisión del sprint de cierre).
+                      requerido: { type: ['boolean', 'null'] },
+                      minimo: { type: ['integer', 'null'] },
+                      maximo: { type: ['integer', 'null'] },
                       opciones: {
                         type: 'array',
                         items: {
@@ -103,11 +109,12 @@ REGLAS ABSOLUTAS:
 - PROHIBIDO: inventar o "redondear" precios; escribir descripciones o ingredientes que no estén en el texto; inferir promociones; crear productos que no aparezcan; asumir disponibilidad; asumir variantes.
 - Un producto es un platillo/bebida con (idealmente) un precio. NO conviertas en producto: encabezados decorativos, eslóganes, horarios, direcciones, teléfonos, redes sociales, "síguenos", leyendas de alérgenos, notas al pie ni el nombre del restaurante.
 - PRECIO: usa número (ej. 89 o 89.50). Si el precio no se lee o es ambiguo, precio=null y agrega la advertencia "PRECIO_NO_DETECTADO".
-- MODIFICADORES/EXTRAS: SOLO cuando el texto expresa inequívocamente un EXTRA ADITIVO con signo + (ej. "Pollo +$35", "Extra queso +20"). Eso va como un modificador con precio_extra=35. NO conviertas tamaños con precios ABSOLUTOS (ej. "Chico $80 / Grande $110") en modificadores: en ese caso deja el producto con precio=null (o el precio base si es evidente) y agrega la advertencia "VARIANTE_REQUIERE_REVISION" para que un humano decida. NUNCA inventes un precio base y un delta.
+- MODIFICADORES/EXTRAS: un grupo de modificadores es una elección del cliente que el texto describe explícitamente, de dos tipos: (a) EXTRA ADITIVO con signo + (ej. "Pollo +$35", "Extra queso +20") → opción con precio_extra=35; (b) GRUPO DE SELECCIÓN (ej. "Proteína: elige 1 — Pollo, Cecina, Huevo", "Guarniciones: elige 2") → cada opción con precio_extra=0 salvo que el texto le ponga "+$N". precio_extra es SIEMPRE un incremento (0 si no agrega costo), NUNCA un precio absoluto. Tamaños con precios ABSOLUTOS distintos (ej. "Chico $80 / Grande $110") NO son modificadores: deja el producto con precio=null (o el base si es evidente) y agrega la advertencia "VARIANTE_REQUIERE_REVISION". NUNCA inventes un precio base y un delta.
+- CARDINALIDAD de cada grupo (requerido, minimo, maximo): complétala SOLO si el texto lo dice literalmente. "elige 1"/"elige una" → requerido=true, minimo=1, maximo=1. "elige 2" → requerido=true, minimo=2, maximo=2. "elige hasta 2"/"máximo 2"/"opcional (hasta 2)" → requerido=false, minimo=0, maximo=2. Si el texto NO expresa la cantidad, deja requerido=null, minimo=null, maximo=null y agrega la advertencia "MODIFICADOR_REQUIERE_REVISION" al producto. NUNCA inventes cantidades que no estén escritas (no asumas 0/1).
 - descripcion: solo el texto descriptivo real del platillo si existe; si no, null.
 - pagina_origen: el número de página (1-based) donde aparece el producto. texto_origen: el fragmento textual corto de donde lo sacaste (para que un humano lo verifique).
 - confidence: 0..1, qué tan seguro estás de haber leído bien ese producto/precio.
-- advertencias: lista de banderas legibles (p. ej. "PRECIO_NO_DETECTADO", "VARIANTE_REQUIERE_REVISION", "DESCRIPCION_AMBIGUA").
+- advertencias: lista de banderas legibles (p. ej. "PRECIO_NO_DETECTADO", "VARIANTE_REQUIERE_REVISION", "MODIFICADOR_REQUIERE_REVISION", "DESCRIPCION_AMBIGUA").
 - Agrupa los productos en las categorías tal como el menú las presenta. Si el menú no tiene categorías claras, usa una sola categoría "General".
 
 Responde ÚNICAMENTE con el JSON del schema. Nada de texto adicional.`;
@@ -196,6 +203,28 @@ function normalizarNombre(s) {
 }
 
 /**
+ * Normaliza y VALIDA la cardinalidad de un grupo de modificadores contra su
+ * número de opciones. NUNCA inventa 0/1: si el dato falta o es incoherente,
+ * marca requiere_revision (para que un humano lo complete/corrija en el
+ * preview) — nunca lo persiste como si fuera correcto.
+ *   requerido: boolean|null   minimo: entero|null   maximo: entero|null
+ * Válido ⇔ los tres definidos y: minimo>=0, maximo>=1, maximo>=minimo,
+ *   0<numOpciones, maximo<=numOpciones, y requerido === (minimo>=1).
+ */
+function cardinalidadGrupo(reqRaw, minRaw, maxRaw, numOpciones) {
+  const minimo = Number.isInteger(minRaw) ? minRaw : null;
+  const maximo = Number.isInteger(maxRaw) ? maxRaw : null;
+  // requerido: si viene boolean se respeta; si no, se deriva de minimo.
+  const requerido = typeof reqRaw === 'boolean' ? reqRaw
+    : (minimo !== null ? minimo >= 1 : null);
+  const valido = minimo !== null && maximo !== null && requerido !== null
+    && minimo >= 0 && maximo >= 1 && maximo >= minimo
+    && numOpciones > 0 && maximo <= numOpciones
+    && requerido === (minimo >= 1);
+  return { requerido, minimo, maximo, requiere_revision: !valido };
+}
+
+/**
  * Valida y normaliza el JSON de la IA (o del navegador) a un draft seguro.
  * precio=null se CONSERVA (válido en draft, no importable). Recorta a los
  * límites del modelo real. Descarta entradas sin nombre.
@@ -215,8 +244,13 @@ export function validarYnormalizarDraft(json) {
       const advert = Array.isArray(p?.advertencias) ? p.advertencias.filter(x => typeof x === 'string').slice(0, 10) : [];
       const precio = precioValido(p?.precio) ? Math.round(p.precio * 100) / 100 : null;
       if (precio === null && !advert.includes('PRECIO_NO_DETECTADO')) advert.push('PRECIO_NO_DETECTADO');
-      // Modificadores: solo extras aditivos (precio_extra >= 0)
+      // Modificadores: opciones con precio_extra >= 0 (0 = sin costo) y
+      // cardinalidad (requerido/minimo/maximo) SOLO si el PDF la expresa; si
+      // falta o es incoherente, el grupo queda marcado requiere_revision y el
+      // producto recibe la advertencia MODIFICADOR_REQUIERE_REVISION (editable
+      // en el preview). Nunca se inventa 0/1.
       const modificadores = [];
+      let hayModRevision = false;
       for (const g of (Array.isArray(p?.modificadores) ? p.modificadores : [])) {
         const gnom = limpiarStr(g?.nombre, MAX_NOMBRE_MOD);
         if (!gnom) continue;
@@ -227,8 +261,17 @@ export function validarYnormalizarDraft(json) {
             ? Math.round(o.precio_extra * 100) / 100 : 0;
           if (onom) opciones.push({ nombre: onom, precio_extra: pe });
         }
-        if (opciones.length) modificadores.push({ nombre: gnom, opciones });
+        if (!opciones.length) continue;
+        const card = cardinalidadGrupo(g?.requerido, g?.minimo, g?.maximo, opciones.length);
+        if (card.requiere_revision) hayModRevision = true;
+        modificadores.push({
+          nombre: gnom,
+          requerido: card.requerido, minimo: card.minimo, maximo: card.maximo,
+          requiere_revision: card.requiere_revision,
+          opciones,
+        });
       }
+      if (hayModRevision && !advert.includes('MODIFICADOR_REQUIERE_REVISION')) advert.push('MODIFICADOR_REQUIERE_REVISION');
       productos.push({
         nombre,
         descripcion: limpiarStr(p?.descripcion, 2000),
@@ -271,7 +314,9 @@ export function compararConMenuActual(draft, menuActual = []) {
       const key = normalizarNombre(p.nombre);
       const match = existentes.find(e => e.key === key);
       let estado, decision, id_existente = null;
-      const requiereRevision = p.precio === null || p.advertencias.includes('VARIANTE_REQUIERE_REVISION');
+      const requiereRevision = p.precio === null
+        || p.advertencias.includes('VARIANTE_REQUIERE_REVISION')
+        || p.advertencias.includes('MODIFICADOR_REQUIERE_REVISION');
       if (match) {
         id_existente = match.id;
         const precioCambio = p.precio !== null && Math.abs(match.precio - p.precio) > 0.001;
@@ -345,6 +390,11 @@ export function revalidarConfirmacion(plan, idsProductosNegocio) {
           errores.push(`"${nombre}": actualizar apunta a un producto que no es de este negocio`); continue;
         }
       }
+      // Modificadores del navegador (hostil): se revalida TODO, incluida la
+      // cardinalidad. Nunca se persiste 0/1 por defecto; un grupo con
+      // cardinalidad inválida (min/max/requerido incoherentes o ausentes)
+      // RECHAZA toda la confirmación (fail closed) — el usuario debe corregirlo
+      // en el preview antes de aprobar.
       const modificadores = [];
       for (const g of (Array.isArray(p?.modificadores) ? p.modificadores : [])) {
         const gnom = limpiarStr(g?.nombre, MAX_NOMBRE_MOD);
@@ -355,7 +405,13 @@ export function revalidarConfirmacion(plan, idsProductosNegocio) {
           const pe = (typeof o?.precio_extra === 'number' && isFinite(o.precio_extra) && o.precio_extra >= 0) ? Math.round(o.precio_extra * 100) / 100 : 0;
           if (onom) opciones.push({ nombre: onom, precio_extra: pe });
         }
-        if (opciones.length) modificadores.push({ nombre: gnom, opciones });
+        if (!opciones.length) continue;
+        const card = cardinalidadGrupo(g?.requerido, g?.minimo, g?.maximo, opciones.length);
+        if (card.requiere_revision) {
+          const e = new Error(`El grupo "${gnom}" de "${nombre}" tiene cardinalidad inválida (requerido/mínimo/máximo vs. ${opciones.length} opciones)`);
+          e.codigo = 'PLAN_IMPORTACION_INVALIDO'; throw e;
+        }
+        modificadores.push({ nombre: gnom, requerido: card.requerido, minimo: card.minimo, maximo: card.maximo, opciones });
       }
       acciones.push({
         decision, id_existente: idExistente, categoria: nombreCat,
@@ -374,4 +430,4 @@ export function revalidarConfirmacion(plan, idsProductosNegocio) {
   return { acciones, errores };
 }
 
-export const _internos = { normalizarNombre, precioValido, formatearPaginasParaIA };
+export const _internos = { normalizarNombre, precioValido, formatearPaginasParaIA, cardinalidadGrupo };

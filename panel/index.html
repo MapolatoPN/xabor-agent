@@ -8451,18 +8451,66 @@ function _badgeImport(estado) {
   return `<span style="background:${bg};color:${fg};border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:700;white-space:nowrap;">${txt}</span>`;
 }
 
+// ── Cardinalidad de un grupo (espejo client-side de cardinalidadGrupo) ──────
+function _cardGrupoValidaImport(g) {
+  const nOpc = (g.opciones || []).length;
+  const min = Number.isInteger(g.minimo) ? g.minimo : null;
+  const max = Number.isInteger(g.maximo) ? g.maximo : null;
+  const req = typeof g.requerido === 'boolean' ? g.requerido : (min !== null ? min >= 1 : null);
+  return min !== null && max !== null && req !== null
+    && min >= 0 && max >= 1 && max >= min && nOpc > 0 && max <= nOpc && req === (min >= 1);
+}
+function _prodModRevisionImport(p) {
+  return (p.modificadores || []).some(g => !_cardGrupoValidaImport(g));
+}
+let _importAbiertos = new Set();   // paneles de revisión expandidos ("ci:pi")
+
+function renderReviewPanelImport(ci, pi, p) {
+  if (!(p.modificadores || []).length) return '';
+  const abierto = _importAbiertos.has(`${ci}:${pi}`);
+  const modRev = _prodModRevisionImport(p);
+  let grupos = '';
+  (p.modificadores || []).forEach((g, gi) => {
+    const opciones = (g.opciones || []).map(o =>
+      `<div style="font-size:0.74rem;color:#444;">• ${escaparHTML(o.nombre)} <span style="color:#999;">${o.precio_extra > 0 ? '+$' + o.precio_extra : '$0'}</span></div>`).join('');
+    const valida = _cardGrupoValidaImport(g);
+    grupos += `
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-top:8px;background:#fff;">
+        <div style="font-weight:700;font-size:0.8rem;margin-bottom:4px;">Grupo: ${escaparHTML(g.nombre)} <span style="color:#999;font-weight:400;">(${(g.opciones || []).length} opciones)</span></div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:0.76rem;margin-bottom:6px;">
+          <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="card-req-${ci}-${pi}-${gi}" ${g.requerido ? 'checked' : ''} onchange="setCardImport(${ci},${pi},${gi},'requerido',this.checked)"> Requerido</label>
+          <label style="display:flex;align-items:center;gap:4px;">Mín <input type="number" id="card-min-${ci}-${pi}-${gi}" min="0" value="${Number.isInteger(g.minimo) ? g.minimo : ''}" onchange="setCardImport(${ci},${pi},${gi},'minimo',this.value)" style="width:52px;border:1px solid #ddd;border-radius:6px;padding:3px 5px;"></label>
+          <label style="display:flex;align-items:center;gap:4px;">Máx <input type="number" id="card-max-${ci}-${pi}-${gi}" min="1" value="${Number.isInteger(g.maximo) ? g.maximo : ''}" onchange="setCardImport(${ci},${pi},${gi},'maximo',this.value)" style="width:52px;border:1px solid #ddd;border-radius:6px;padding:3px 5px;"></label>
+          <span id="card-val-${ci}-${pi}-${gi}" style="font-size:0.72rem;font-weight:700;color:${valida ? '#166534' : '#b45309'};">${valida ? '✓ ok' : '⚠ define mín/máx'}</span>
+        </div>
+        ${opciones}
+      </div>`;
+  });
+  const btnAprobar = modRev
+    ? `<button id="aprobar-${ci}-${pi}" onclick="aprobarProductoImport(${ci},${pi})" style="margin-top:10px;background:#15803d;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-weight:700;cursor:pointer;font-size:0.8rem;">✓ Aprobar e importar</button>`
+    : '';
+  return `
+    <div class="import-review" data-ci="${ci}" data-pi="${pi}" style="display:${abierto ? 'block' : 'none'};grid-column:1 / -1;background:#f8fafc;border-radius:10px;padding:10px 12px;margin:4px 0 10px;">
+      ${modRev ? '<div style="font-size:0.78rem;color:#9a3412;font-weight:700;margin-bottom:2px;">⚠ Este producto NO se importará hasta que revises sus modificadores.</div>' : ''}
+      ${grupos}
+      ${btnAprobar}
+    </div>`;
+}
+
 function renderPreviewImport(data) {
   const r = data.resumen;
+  _importAbiertos = new Set();
   let filas = '';
   data.categorias.forEach((cat, ci) => {
     filas += `<div style="margin-top:14px;font-weight:800;font-size:0.9rem;">${escaparHTML(cat.nombre)} ${cat.es_nueva ? '<span style="font-size:0.7rem;color:#166534;font-weight:700;">(categoría nueva)</span>' : ''}</div>`;
     cat.productos.forEach((p, pi) => {
       const nModsPrev = (p.modificadores || []).reduce((a, g) => a + (g.opciones || []).length, 0);
+      const modRev = _prodModRevisionImport(p);
       const notaActualizar = (p.id_existente != null)
         ? `<div style="font-size:0.66rem;color:#777;margin-top:3px;max-width:130px;">Actualizar cambia nombre, descripción y precio. Los extras/modificadores existentes NO se modifican.${nModsPrev ? ` (Los ${nModsPrev} extra(s) del PDF no se importan al Actualizar.)` : ''}</div>`
         : '';
       const dupSel = (p.id_existente != null)
-        ? `<select data-import-decision style="font-size:0.78rem;padding:3px;border-radius:6px;">
+        ? `<select data-import-decision onchange="_actualizarResumenAccionImport()" style="font-size:0.78rem;padding:3px;border-radius:6px;">
              <option value="omitir" ${p.decision === 'omitir' ? 'selected' : ''}>Omitir</option>
              <option value="actualizar" ${p.decision === 'actualizar' ? 'selected' : ''}>Actualizar</option>
              <option value="crear" ${p.decision === 'crear' ? 'selected' : ''}>Crear como nuevo</option>
@@ -8471,38 +8519,110 @@ function renderPreviewImport(data) {
       const advert = (p.advertencias || []).length ? `<div style="font-size:0.72rem;color:#9a3412;">⚠ ${p.advertencias.map(escaparHTML).join(', ')}</div>` : '';
       const precioAdv = p.precio === null ? '<div style="font-size:0.72rem;color:#b91c1c;font-weight:700;">⚠ Precio no detectado</div>' : '';
       const nMods = (p.modificadores || []).reduce((a, g) => a + (g.opciones || []).length, 0);
+      const verBtn = nMods
+        ? `<button type="button" onclick="toggleReviewImport(${ci},${pi})" style="background:none;border:none;color:#166534;font-size:0.68rem;font-weight:700;cursor:pointer;padding:0;">Ver / revisar ${nMods} opciones ▾</button>`
+        : '';
+      // Producto con modificadores ambiguos: checkbox bloqueado hasta "Aprobar".
+      const checkAttrs = `${(p.importar && !modRev) ? 'checked' : ''} ${modRev ? 'disabled' : ''}`;
       filas += `
       <div class="import-fila" data-ci="${ci}" data-pi="${pi}" data-cat="${escaparHTML(cat.nombre)}" data-id-existente="${p.id_existente ?? ''}"
            style="display:grid;grid-template-columns:26px 1fr 92px 132px auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid #f1f0ed;">
-        <input type="checkbox" data-import-check ${p.importar ? 'checked' : ''} style="margin-top:6px;">
+        <input type="checkbox" data-import-check ${checkAttrs} onchange="_actualizarResumenAccionImport()" style="margin-top:6px;">
         <div><input data-import-nombre value="${escaparHTML(p.nombre)}" style="width:100%;border:1px solid #ddd;border-radius:6px;padding:5px 7px;font-size:0.82rem;">
-          ${p.pagina_origen ? `<span style="font-size:0.68rem;color:#999;">pág. ${p.pagina_origen}</span>` : ''}${nMods ? ` · <span style="font-size:0.68rem;color:#166534;">${nMods} extra(s)</span>` : ''}${advert}</div>
+          ${p.pagina_origen ? `<span style="font-size:0.68rem;color:#999;">pág. ${p.pagina_origen}</span>` : ''}${nMods ? ` · <span style="font-size:0.68rem;color:#166534;">${nMods} extra(s)</span>` : ''} ${verBtn}${advert}</div>
         <input data-import-precio type="number" step="0.01" min="0" value="${p.precio ?? ''}" placeholder="—"
           style="width:100%;border:1px solid ${p.precio === null ? '#fca5a5' : '#ddd'};border-radius:6px;padding:5px 7px;font-size:0.82rem;">
-        <div>${_badgeImport(p.estado)}${p.precio_actual != null ? `<div style="font-size:0.68rem;color:#999;">antes $${p.precio_actual}</div>` : ''}${precioAdv}</div>
+        <div data-import-badge>${_badgeImport(p.estado)}${p.precio_actual != null ? `<div style="font-size:0.68rem;color:#999;">antes $${p.precio_actual}</div>` : ''}${precioAdv}</div>
         <div>${dupSel}</div>
-      </div>`;
+      </div>
+      ${renderReviewPanelImport(ci, pi, p)}`;
     });
   });
   document.getElementById('import-cuerpo').innerHTML = `
     <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;font-size:0.85rem;">
       Encontramos: <b>${r.categorias}</b> categorías · <b>${r.productos}</b> productos · <b>${r.requieren_revision}</b> requieren revisión · <b>${r.duplicados}</b> posibles duplicados.
-      <div style="color:#666;font-size:0.78rem;margin-top:4px;">Revisa, corrige los precios faltantes y elige qué importar. Los duplicados están en <b>Omitir</b> por defecto — nunca se actualizan solos.</div>
+      <div style="color:#666;font-size:0.78rem;margin-top:4px;">Los productos con extras ambiguos (⚠ requieren revisión) NO se importan hasta que revises sus modificadores y pulses <b>Aprobar</b>. Los duplicados están en <b>Omitir</b> por defecto.</div>
     </div>
     <div style="max-height:50vh;overflow:auto;">${filas || '<div style="color:#888;padding:20px;text-align:center;">No detectamos productos en el PDF.</div>'}</div>
-    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+    <div id="import-resumen-accion" style="text-align:right;font-size:0.82rem;color:#374151;margin-top:12px;font-weight:700;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px;">
       <button onclick="document.getElementById('modal-import-pdf').remove()" style="background:#eee;border:none;border-radius:8px;padding:10px 18px;font-weight:700;cursor:pointer;">Cancelar</button>
       <button onclick="confirmarImportarMenu()" id="btn-confirmar-import" style="background:#15803d;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer;">Importar seleccionados</button>
     </div>`;
+  _actualizarResumenAccionImport();
+}
+
+function toggleReviewImport(ci, pi) {
+  const k = `${ci}:${pi}`;
+  const panel = document.querySelector(`#modal-import-pdf .import-review[data-ci="${ci}"][data-pi="${pi}"]`);
+  if (!panel) return;
+  if (_importAbiertos.has(k)) { _importAbiertos.delete(k); panel.style.display = 'none'; }
+  else { _importAbiertos.add(k); panel.style.display = 'block'; }
+}
+
+// Edita cardinalidad y la mantiene coherente (requerido⇔mínimo, máximo acotado
+// a [max(mín,1)..nº opciones]). Escribe en _importDraft para que confirmar la
+// envíe; nunca deja 0/1 silencioso porque el usuario ve y ajusta los valores.
+function setCardImport(ci, pi, gi, campo, valorRaw) {
+  const g = _importDraft?.categorias?.[ci]?.productos?.[pi]?.modificadores?.[gi];
+  if (!g) return;
+  const nOpc = (g.opciones || []).length;
+  if (campo === 'minimo') {
+    let m = parseInt(valorRaw, 10); if (!Number.isInteger(m) || m < 0) m = 0; if (m > nOpc) m = nOpc;
+    g.minimo = m; g.requerido = m >= 1;
+    if (!Number.isInteger(g.maximo) || g.maximo < Math.max(m, 1)) g.maximo = Math.max(m, 1);
+    if (g.maximo > nOpc) g.maximo = nOpc;
+  } else if (campo === 'maximo') {
+    const lo = Math.max(Number.isInteger(g.minimo) ? g.minimo : 0, 1);
+    let m = parseInt(valorRaw, 10); if (!Number.isInteger(m)) m = lo;
+    m = Math.min(Math.max(m, lo), nOpc || 1); g.maximo = m;
+  } else if (campo === 'requerido') {
+    const on = !!valorRaw; g.requerido = on;
+    if (on) { if (!Number.isInteger(g.minimo) || g.minimo < 1) g.minimo = 1; } else { g.minimo = 0; }
+    if (!Number.isInteger(g.maximo) || g.maximo < Math.max(g.minimo, 1)) g.maximo = Math.max(g.minimo, 1);
+    if (g.maximo > nOpc) g.maximo = nOpc;
+  }
+  g.requiere_revision = !_cardGrupoValidaImport(g);
+  const minEl = document.getElementById(`card-min-${ci}-${pi}-${gi}`); if (minEl) minEl.value = g.minimo;
+  const maxEl = document.getElementById(`card-max-${ci}-${pi}-${gi}`); if (maxEl) maxEl.value = g.maximo;
+  const reqEl = document.getElementById(`card-req-${ci}-${pi}-${gi}`); if (reqEl) reqEl.checked = g.requerido;
+  const valEl = document.getElementById(`card-val-${ci}-${pi}-${gi}`);
+  if (valEl) { const ok = _cardGrupoValidaImport(g); valEl.textContent = ok ? '✓ ok' : '⚠ define mín/máx'; valEl.style.color = ok ? '#166534' : '#b45309'; }
+  const btn = document.getElementById(`aprobar-${ci}-${pi}`);
+  if (btn) btn.disabled = _prodModRevisionImport(_importDraft.categorias[ci].productos[pi]);
+}
+
+function aprobarProductoImport(ci, pi) {
+  const p = _importDraft?.categorias?.[ci]?.productos?.[pi];
+  if (!p) return;
+  if (_prodModRevisionImport(p)) { alert('Completa mínimo/máximo válidos en todos los grupos antes de aprobar.'); return; }
+  const fila = document.querySelector(`#modal-import-pdf .import-fila[data-ci="${ci}"][data-pi="${pi}"]`);
+  if (fila) {
+    const chk = fila.querySelector('[data-import-check]'); chk.disabled = false; chk.checked = true;
+    const badge = fila.querySelector('[data-import-badge]');
+    if (badge) badge.innerHTML = '<span style="background:#dcfce7;color:#166534;border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:700;">✓ Aprobado</span>';
+  }
+  const btn = document.getElementById(`aprobar-${ci}-${pi}`);
+  if (btn) { btn.disabled = true; btn.textContent = '✓ Aprobado'; btn.style.background = '#9ca3af'; }
+  _actualizarResumenAccionImport();
+}
+
+function _actualizarResumenAccionImport() {
+  const filas = [...document.querySelectorAll('#modal-import-pdf .import-fila')];
+  const total = filas.length;
+  const importables = filas.filter(f => f.querySelector('[data-import-check]').checked && f.querySelector('[data-import-decision]').value !== 'omitir').length;
+  const fuera = total - importables;
+  const el = document.getElementById('import-resumen-accion');
+  if (el) el.innerHTML = `Se importarán <b>${importables}</b> de <b>${total}</b> productos.` + (fuera ? ` <span style="color:#9a3412;">${fuera} quedarán fuera.</span>` : '');
 }
 
 async function confirmarImportarMenu() {
   const filas = [...document.querySelectorAll('#modal-import-pdf .import-fila')];
+  const seleccionadas = f => f.querySelector('[data-import-check]').checked && f.querySelector('[data-import-decision]').value !== 'omitir';
   // Guard: un producto SELECCIONADO sin precio válido bloquea la importación
   // (nada parcial en silencio). El usuario corrige el precio o lo desmarca.
   const sinPrecio = filas.filter(f => {
-    if (!f.querySelector('[data-import-check]').checked) return false;
-    if (f.querySelector('[data-import-decision]').value === 'omitir') return false;
+    if (!seleccionadas(f)) return false;
     const v = f.querySelector('[data-import-precio]').value;
     const n = v === '' ? NaN : Number(v);
     return !(isFinite(n) && n > 0);
@@ -8511,6 +8631,23 @@ async function confirmarImportarMenu() {
     alert(`Hay productos seleccionados sin precio válido: ${sinPrecio.join(', ')}.\nCorrige el precio o desmárcalos antes de importar.`);
     return;
   }
+  // Guard: cardinalidad inválida en un producto seleccionado (defensa; el flujo
+  // de Aprobar ya lo impide, y el backend revalida fail-closed de todos modos).
+  const modInvalido = filas.filter(f => {
+    if (!seleccionadas(f)) return false;
+    const p = _importDraft?.categorias?.[+f.dataset.ci]?.productos?.[+f.dataset.pi];
+    return p && _prodModRevisionImport(p);
+  }).map(f => f.querySelector('[data-import-nombre]').value.trim());
+  if (modInvalido.length) {
+    alert(`Estos productos tienen modificadores sin mínimo/máximo válido: ${modInvalido.join(', ')}.\nRevísalos (Ver / revisar opciones) y pulsa Aprobar, o desmárcalos.`);
+    return;
+  }
+  // Resumen antes de confirmar: importar N de T (T-N quedan fuera).
+  const total = filas.length;
+  const importables = filas.filter(seleccionadas).length;
+  const fuera = total - importables;
+  if (!importables) { alert('No hay productos seleccionados para importar.'); return; }
+  if (!confirm(`Se importarán ${importables} de ${total} productos.` + (fuera ? `\n${fuera} quedarán fuera (no seleccionados o requieren revisión).` : '') + `\n\n¿Continuar?`)) return;
   const porCat = {};
   for (const f of filas) {
     const cat = f.dataset.cat;

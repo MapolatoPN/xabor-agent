@@ -1,7 +1,8 @@
 // Importar menú desde PDF — Fase 1 (PDF nativo con texto).
 // Determinista: extracción de texto REAL (pdfjs) + IA MOCKEADA (stub) + DB real
-// (pg-noche). Cubre los 24 casos del encargo a nivel de función (los endpoints
-// solo cablean estas funciones + auth de sesión + límite de tamaño).
+// (pg-noche). Cubre los casos del encargo a nivel de función (los endpoints
+// solo cablean estas funciones + auth de sesión + límite de tamaño), incluida
+// la cardinalidad de modificadores (min/max/requerido) del sprint de cierre.
 //
 // Uso: DATABASE_URL=... node test/fase-importar-menu-pdf.mjs
 import { readFileSync } from 'fs';
@@ -112,13 +113,16 @@ await t('17. límite de archivo definido y por debajo del body de express', asyn
 
 // ═══ IA → draft (mock) ══════════════════════════════════════════════════════
 const paginas1 = [{ pagina: 1, texto: 'TACOS\nTaco al pastor $25' }];
-await t('4. extras "+precio" → modificadores (precio_extra)', async () => {
+await t('4. extras "+precio" → modificadores (precio_extra); sin cardinalidad → grupo a revisión', async () => {
   const json = { categorias: [{ nombre: 'Tacos', productos: [prodIA('IMP Taco', 25, {
-    modificadores: [{ nombre: 'Extras', opciones: [{ nombre: 'Pollo', precio_extra: 35 }, { nombre: 'Huevo', precio_extra: 25 }] }] })] }] };
+    modificadores: [{ nombre: 'Extras', requerido: null, minimo: null, maximo: null, opciones: [{ nombre: 'Pollo', precio_extra: 35 }, { nombre: 'Huevo', precio_extra: 25 }] }] })] }] };
   const draft = validarYnormalizarDraft(await extraerMenuConIA(paginas1, { anthropic: stubIA(json) }));
   const p = draft.categorias[0].productos[0];
   assert.strictEqual(p.modificadores.length, 1);
   assert.deepStrictEqual(p.modificadores[0].opciones.map(o => o.precio_extra), [35, 25]);
+  // El PDF no dijo la cardinalidad → grupo marcado y advertencia (nunca 0/1 silencioso)
+  assert.strictEqual(p.modificadores[0].requiere_revision, true);
+  assert.ok(p.advertencias.includes('MODIFICADOR_REQUIERE_REVISION'));
 });
 await t('5. tamaños/precios ambiguos → warning VARIANTE_REQUIERE_REVISION', async () => {
   const json = { categorias: [{ nombre: 'Cafe', productos: [prodIA('IMP Latte', null, { advertencias: ['VARIANTE_REQUIERE_REVISION'] })] }] };
@@ -207,7 +211,7 @@ await t('10-11-22-23. crear como nuevo + actualizar + modificadores (persistenci
   const idsNegocio = new Set(menu.flatMap(c => c.productos).map(p => Number(p.id)));
   const plan = { categorias: [{ nombre: 'IMP Nueva Cat', productos: [
     { importar: true, decision: 'crear', nombre: 'IMP Quesadilla', precio: 45,
-      modificadores: [{ nombre: 'IMP Extras', opciones: [{ nombre: 'IMP Pollo', precio_extra: 20 }] }] },
+      modificadores: [{ nombre: 'IMP Extras', requerido: false, minimo: 0, maximo: 1, opciones: [{ nombre: 'IMP Pollo', precio_extra: 20 }] }] },
     { importar: true, decision: 'actualizar', id_existente: existente.id, nombre: 'IMP Enchiladas', precio: 110 },
   ] }] };
   const { acciones } = revalidarConfirmacion(plan, idsNegocio);
@@ -221,10 +225,13 @@ await t('10-11-22-23. crear como nuevo + actualizar + modificadores (persistenci
   // 11: el existente se actualizó a 110
   const { rows: e } = await pool.query(`SELECT precio FROM menu_productos WHERE id=$1`, [existente.id]);
   assert.strictEqual(Number(e[0].precio), 110);
-  // 23: el modificador quedó asociado al producto nuevo
+  // 23: el modificador quedó asociado al producto nuevo con su cardinalidad
   const { rows: g } = await pool.query(
-    `SELECT g.id FROM menu_modificadores_grupos g JOIN menu_productos p ON p.id=g.producto_id WHERE p.nombre='IMP Quesadilla' AND g.negocio_id=$1`, [NEG_A]);
+    `SELECT g.id, g.requerido, g.minimo, g.maximo FROM menu_modificadores_grupos g JOIN menu_productos p ON p.id=g.producto_id WHERE p.nombre='IMP Quesadilla' AND g.negocio_id=$1`, [NEG_A]);
   assert.strictEqual(g.length, 1);
+  assert.strictEqual(g[0].requerido, false);
+  assert.strictEqual(g[0].minimo, 0);
+  assert.strictEqual(g[0].maximo, 1);
   const { rows: o } = await pool.query(`SELECT precio_extra FROM menu_modificadores_opciones WHERE grupo_id=$1`, [g[0].id]);
   assert.strictEqual(Number(o[0].precio_extra), 20);
 });
@@ -331,6 +338,133 @@ await t('P2-4. UPDATE exitoso + fallo posterior → ROLLBACK devuelve el estado 
   const { rows } = await pool.query(`SELECT precio, descripcion FROM menu_productos WHERE id=$1`, [prodId]);
   assert.strictEqual(Number(rows[0].precio), 100, 'precio revertido a 100 (no quedó 120)');
   assert.ok(rows[0].descripcion == null || rows[0].descripcion === '', 'descripción revertida (no quedó "nueva desc del PDF")');
+});
+
+// ═══ Cardinalidad de modificadores (sprint de cierre) ═══════════════════════
+const { cardinalidadGrupo } = _internos;
+const card = (req, min, max, nOpc) => cardinalidadGrupo(req, min, max, nOpc);
+const grupoIA = (nombre, requerido, minimo, maximo, opcs) => ({ nombre, requerido, minimo, maximo, opciones: opcs.map(n => ({ nombre: n, precio_extra: 0 })) });
+
+await t('M1. "elige 1" → requerido/1/1 válido', () => {
+  const c = card(true, 1, 1, 5);
+  assert.deepStrictEqual([c.requerido, c.minimo, c.maximo, c.requiere_revision], [true, 1, 1, false]);
+});
+await t('M2. "elige 2" → 2/2 válido', () => {
+  const c = card(true, 2, 2, 6);
+  assert.deepStrictEqual([c.minimo, c.maximo, c.requiere_revision], [2, 2, false]);
+});
+await t('M3. "hasta 2" → opcional 0/2 válido', () => {
+  const c = card(false, 0, 2, 4);
+  assert.deepStrictEqual([c.requerido, c.minimo, c.maximo, c.requiere_revision], [false, 0, 2, false]);
+});
+await t('M4. requerido sin cardinalidad → requiere_revision', () => {
+  assert.strictEqual(card(true, null, null, 5).requiere_revision, true);
+});
+await t('M5. cardinalidad ambigua (min sin max) → requiere_revision', () => {
+  assert.strictEqual(card(true, 1, null, 5).requiere_revision, true);
+});
+await t('M6. min>max → requiere_revision (draft) y backend RECHAZA (PLAN_IMPORTACION_INVALIDO)', () => {
+  assert.strictEqual(card(true, 3, 2, 5).requiere_revision, true);
+  const plan = { categorias: [{ nombre: 'IMP CatCard', productos: [
+    { importar: true, decision: 'crear', nombre: 'IMP MinMayorMax', precio: 50,
+      modificadores: [grupoIA('IMP G', true, 3, 2, ['a', 'b', 'c', 'd', 'e'])] }] }] };
+  assert.throws(() => revalidarConfirmacion(plan, new Set()), (e) => e.codigo === 'PLAN_IMPORTACION_INVALIDO');
+});
+await t('M7. max>opciones → requiere_revision (draft) y backend RECHAZA', () => {
+  assert.strictEqual(card(true, 1, 10, 5).requiere_revision, true);
+  const plan = { categorias: [{ nombre: 'IMP CatCard', productos: [
+    { importar: true, decision: 'crear', nombre: 'IMP MaxMayorOpc', precio: 50,
+      modificadores: [grupoIA('IMP G', true, 1, 10, ['a', 'b', 'c'])] }] }] };
+  assert.throws(() => revalidarConfirmacion(plan, new Set()), (e) => e.codigo === 'PLAN_IMPORTACION_INVALIDO');
+});
+await t('M8. precio_extra conserva valor a través de revalidar (0 y +N)', () => {
+  const plan = { categorias: [{ nombre: 'IMP CatCard', productos: [
+    { importar: true, decision: 'crear', nombre: 'IMP ConExtra', precio: 60,
+      modificadores: [{ nombre: 'IMP Prote', requerido: true, minimo: 1, maximo: 1,
+        opciones: [{ nombre: 'Pollo', precio_extra: 0 }, { nombre: 'Bistec', precio_extra: 40 }] }] }] }] };
+  const { acciones } = revalidarConfirmacion(plan, new Set());
+  assert.deepStrictEqual(acciones[0].producto.modificadores[0].opciones.map(o => o.precio_extra), [0, 40]);
+});
+await t('M9. producto con MODIFICADOR_REQUIERE_REVISION inicia NO seleccionado (importar:false)', () => {
+  const draft = validarYnormalizarDraft({ categorias: [{ nombre: 'IMP CatR', productos: [prodIA('IMP AmbiguoMod', 100, {
+    modificadores: [{ nombre: 'G', requerido: null, minimo: null, maximo: null, opciones: [{ nombre: 'a', precio_extra: 0 }] }] })] }] });
+  const comp = compararConMenuActual(draft, []);
+  const p = comp.categorias[0].productos[0];
+  assert.strictEqual(p.estado, 'REQUIERE_REVISION');
+  assert.strictEqual(p.importar, false);
+});
+await t('M10+M11. aprobado (importar:true+cardinalidad válida) se crea; no aprobado NO se crea', async () => {
+  const plan = { categorias: [{ nombre: 'IMP CatAprob', productos: [
+    { importar: true, decision: 'crear', nombre: 'IMP Aprobado', precio: 90,
+      modificadores: [grupoIA('IMP Sel', true, 1, 1, ['a', 'b', 'c'])] },
+    { importar: false, decision: 'crear', nombre: 'IMP NoAprobado', precio: 90,
+      modificadores: [grupoIA('IMP Sel', true, 1, 1, ['a', 'b'])] },
+  ] }] };
+  const { acciones } = revalidarConfirmacion(plan, new Set());
+  assert.strictEqual(acciones.length, 1);
+  await importarMenuAtomico(NEG_A, acciones);
+  const { rows: si } = await pool.query(`SELECT 1 FROM menu_productos WHERE negocio_id=$1 AND nombre='IMP Aprobado'`, [NEG_A]);
+  const { rows: no } = await pool.query(`SELECT 1 FROM menu_productos WHERE negocio_id=$1 AND nombre='IMP NoAprobado'`, [NEG_A]);
+  assert.strictEqual(si.length, 1);
+  assert.strictEqual(no.length, 0);
+});
+await t('M12. resumen cuenta requieren_revision (importada vs excluida)', () => {
+  const draft = validarYnormalizarDraft({ categorias: [{ nombre: 'IMP CatRes', productos: [
+    prodIA('IMP Limpio', 50, { modificadores: [grupoIA('G', true, 1, 1, ['a', 'b'])] }),
+    prodIA('IMP Revisar', 50, { modificadores: [{ nombre: 'G', requerido: null, minimo: null, maximo: null, opciones: [{ nombre: 'a', precio_extra: 0 }] }] }),
+  ] }] });
+  const comp = compararConMenuActual(draft, []);
+  assert.strictEqual(comp.resumen.requieren_revision, 1);
+  assert.strictEqual(comp.categorias[0].productos.filter(p => p.importar).length, 1);
+});
+await t('M13. Chilaquiles Sencillos: grupos aprobados persisten min/max/requerido exactos', async () => {
+  const draft = validarYnormalizarDraft({ categorias: [{ nombre: 'IMP Chilaquiles', productos: [
+    prodIA('IMP Chilaquiles Sencillos', 195, { modificadores: [
+      grupoIA('IMP Salsa', true, 1, 1, ['Verde', 'Roja', 'Mole', 'Chipotle', 'Frijol']),
+      grupoIA('IMP Proteina', true, 1, 1, ['Pollo', 'Cecina', 'Arrachera']),
+      grupoIA('IMP Guarniciones', true, 2, 2, ['Frijol', 'Aguacate', 'Crema', 'Queso', 'Nopal', 'Cebolla']),
+    ] }),
+  ] }] });
+  const comp = compararConMenuActual(draft, []);
+  // producto limpio (cardinalidad completa) → NUEVO importable
+  assert.strictEqual(comp.categorias[0].productos[0].estado, 'NUEVO');
+  const p = comp.categorias[0].productos[0];
+  const plan = { categorias: [{ nombre: 'IMP Chilaquiles', productos: [
+    { importar: true, decision: 'crear', nombre: p.nombre, precio: p.precio, modificadores: p.modificadores }] }] };
+  const { acciones } = revalidarConfirmacion(plan, new Set());
+  await importarMenuAtomico(NEG_A, acciones);
+  const { rows } = await pool.query(
+    `SELECT g.nombre, g.requerido, g.minimo, g.maximo,
+            (SELECT count(*)::int FROM menu_modificadores_opciones o WHERE o.grupo_id=g.id) nopc
+     FROM menu_modificadores_grupos g JOIN menu_productos p ON p.id=g.producto_id
+     WHERE p.negocio_id=$1 AND p.nombre='IMP Chilaquiles Sencillos' ORDER BY g.nombre`, [NEG_A]);
+  const byName = Object.fromEntries(rows.map(r => [r.nombre, r]));
+  assert.deepStrictEqual([byName['IMP Salsa'].minimo, byName['IMP Salsa'].maximo, byName['IMP Salsa'].nopc], [1, 1, 5]);
+  assert.deepStrictEqual([byName['IMP Proteina'].minimo, byName['IMP Proteina'].maximo, byName['IMP Proteina'].nopc], [1, 1, 3]);
+  assert.deepStrictEqual([byName['IMP Guarniciones'].minimo, byName['IMP Guarniciones'].maximo, byName['IMP Guarniciones'].nopc], [2, 2, 6]);
+  assert.strictEqual(byName['IMP Guarniciones'].requerido, true);
+});
+await t('M14+M15 (cardinalidad): Mixtos 2/2 y Bowl 1/1 persisten; ambiguo NO importable', async () => {
+  // Mixtos: Proteína 2/2, Salsa 2/2 · Bowl: Proteína 1/1, Salsa 1/1
+  const draft = validarYnormalizarDraft({ categorias: [{ nombre: 'IMP Chilaquiles2', productos: [
+    prodIA('IMP Chilaquiles Mixtos', 205, { modificadores: [
+      grupoIA('IMP ProteMix', true, 2, 2, ['Pollo', 'Cecina', 'Arrachera']),
+      grupoIA('IMP SalsaMix', true, 2, 2, ['Verde', 'Roja', 'Mole']),
+    ] }),
+    prodIA('IMP Bowl', 140, { modificadores: [
+      grupoIA('IMP ProteBowl', true, 1, 1, ['Pollo', 'Cecina']),
+      grupoIA('IMP SalsaBowl', true, 1, 1, ['Verde', 'Roja']),
+    ] }),
+  ] }] });
+  const comp = compararConMenuActual(draft, []);
+  const acc = comp.categorias[0].productos.map(p => ({ importar: true, decision: 'crear', nombre: p.nombre, precio: p.precio, modificadores: p.modificadores }));
+  const { acciones } = revalidarConfirmacion({ categorias: [{ nombre: 'IMP Chilaquiles2', productos: acc }] }, new Set());
+  await importarMenuAtomico(NEG_A, acciones);
+  const q = async (prod, grupo) => (await pool.query(
+    `SELECT g.minimo, g.maximo FROM menu_modificadores_grupos g JOIN menu_productos p ON p.id=g.producto_id WHERE p.negocio_id=$1 AND p.nombre=$2 AND g.nombre=$3`, [NEG_A, prod, grupo])).rows[0];
+  assert.deepStrictEqual(await q('IMP Chilaquiles Mixtos', 'IMP ProteMix'), { minimo: 2, maximo: 2 });
+  assert.deepStrictEqual(await q('IMP Chilaquiles Mixtos', 'IMP SalsaMix'), { minimo: 2, maximo: 2 });
+  assert.deepStrictEqual(await q('IMP Bowl', 'IMP ProteBowl'), { minimo: 1, maximo: 1 });
 });
 
 await limpiar();

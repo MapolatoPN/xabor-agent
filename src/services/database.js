@@ -691,10 +691,16 @@ export async function importarMenuAtomico(negocioId, acciones) {
     };
     const crearModificadores = async (productoId, modificadores) => {
       for (const g of (modificadores || [])) {
+        // Cardinalidad REVALIDADA por revalidarConfirmacion (nunca 0/1 silencioso).
+        // Los fallbacks son solo defensa si se llama a bajo nivel sin revalidar.
+        const nOpc = Array.isArray(g?.opciones) ? g.opciones.length : 0;
+        const requerido = g?.requerido === true;
+        const minimo = Number.isInteger(g?.minimo) ? g.minimo : (requerido ? 1 : 0);
+        const maximo = Number.isInteger(g?.maximo) ? g.maximo : Math.max(minimo, nOpc || 1);
         const { rows: gr } = await client.query(
           `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
-           VALUES ($1,$2,$3,FALSE,0,1,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2)) RETURNING id`,
-          [negId, productoId, g.nombre]);
+           VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2)) RETURNING id`,
+          [negId, productoId, g.nombre, requerido, minimo, maximo]);
         resumen.modificadores_creados++;
         for (const o of (g.opciones || [])) {
           await client.query(
