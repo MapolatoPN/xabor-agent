@@ -192,7 +192,7 @@ export async function registrarPedido(orden, canal = 'test') {
       throw err;
     }
 
-    const v = await validarOrdenPropuesta(orden, negocioId);
+    const v = await validarOrdenPropuesta(orden, negocioId, { canal });
     if (!v.ok) {
       const err = new Error(`ORDEN_INVALIDA: ${v.rechazos.map((r) => r.codigo + (r.nombre ? `(${r.nombre})` : '')).join(', ')}`);
       err.codigo = 'ORDEN_INVALIDA';

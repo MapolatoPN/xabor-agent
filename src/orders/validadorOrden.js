@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
+import { calcularPromociones } from '../services/tiendaPromociones.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -80,7 +81,7 @@ async function cargarCatalogo(negocioId) {
   // SIEMPRE filtrado por negocio_id (Invariante 6): el catálogo de otro
   // tenant simplemente no existe desde aquí.
   const { rows } = await pool.query(
-    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.opciones, c.activa AS categoria_activa
+    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa
      FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
      WHERE p.negocio_id = $1`,
     [negocioId]);
@@ -131,10 +132,13 @@ function resolverProducto(nombreLLM, catalogo) {
  *          nombre real del catálogo, precio real, y totales recalculados.
  *   ajustes: [{ tipo, ... }] observabilidad de mismatches corregidos.
  */
-export async function validarOrdenPropuesta(orden, negocioId) {
+export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarOrdenPropuesta: negocioId obligatorio');
   }
+  // Canal para el motor de promociones (una promo puede restringirse a canales).
+  // Se toma del llamador (registrarPedido) o de la propia orden; default whatsapp.
+  const canalPromo = String(opts.canal || orden?.canal || 'whatsapp').toLowerCase().trim() || 'whatsapp';
   const rechazos = [];
   const ajustes = [];
 
@@ -156,20 +160,11 @@ export async function validarOrdenPropuesta(orden, negocioId) {
     return { ok: false, rechazos, ajustes };
   }
 
-  // Promo 2x1: la ÚNICA circunstancia en la que un precio 0 del modelo es
-  // legítimo hoy (instrucción explícita del prompt de Nonna Maye). La
-  // decide el BACKEND consultando las reglas reales y su ventana horaria,
-  // nunca la palabra del modelo.
-  let promo2x1Activa = false;
-  try {
-    const reglas = await cargarReglas(negocioId);
-    const estado = obtenerEstadoRestaurante(reglas);
-    promo2x1Activa = estado.promocionesActivas?.some((p) => p.condicion === '2x1_focaccias') || false;
-  } catch { /* sin promo si las reglas no cargan */ }
-
+  // Las promociones (incl. 2x1) las calcula el MOTOR determinístico al final
+  // (calcularPromociones), NUNCA el modelo. Aquí cada item se canoniza a su
+  // precio REAL de catálogo; ya no se acepta ningún "precio 0" propuesto por
+  // el LLM. El descuento lo decide el backend sobre los items canónicos.
   const itemsCanonicos = [];
-  let itemsPagados = 0;
-  let itemsGratis = 0;
 
   for (const it of itemsLLM) {
     const cantidad = Number(it?.cantidad);
@@ -215,28 +210,24 @@ export async function validarOrdenPropuesta(orden, negocioId) {
 
     const precioReal = Number(r.producto.precio);
     const precioLLM = Number(it?.precio_unitario);
-    let precioFinal = precioReal;
-    if (precioLLM === 0 && promo2x1Activa) {
-      // Candidato a "gratis por 2x1" -- se valida el balance al final.
-      precioFinal = 0;
-      itemsGratis += cantidad;
-      eventoTxn('precio_promocional_cero', negocioId, { producto_id: r.producto.id });
-    } else {
-      itemsPagados += cantidad;
-      if (Number.isFinite(precioLLM) && precioLLM !== precioReal) {
-        ajustes.push({ tipo: 'precio_mismatch', producto: r.producto.nombre, llm: precioLLM, real: precioReal });
-        eventoTxn('precio_mismatch', negocioId, { producto_id: r.producto.id, llm: precioLLM, real: precioReal });
-      }
+    // El precio SIEMPRE es el real del catálogo. Un "0" del modelo ya no se
+    // acepta: el 2x1/descuento lo aplica el motor de promociones, no el LLM.
+    if (Number.isFinite(precioLLM) && precioLLM !== precioReal) {
+      ajustes.push({ tipo: 'precio_mismatch', producto: r.producto.nombre, llm: precioLLM, real: precioReal });
+      eventoTxn('precio_mismatch', negocioId, { producto_id: r.producto.id, llm: precioLLM, real: precioReal });
     }
 
     // Representación CANÓNICA: el nombre del LLM deja de ser autoridad --
     // queda el id y el nombre reales del catálogo; lo dictado se conserva
-    // solo como nota informativa acotada.
+    // solo como nota informativa acotada. `categoria_id` y `precio_base`
+    // alimentan al motor de promociones (elegibilidad y beneficio por unidad).
     itemsCanonicos.push({
       producto_id: r.producto.id,
+      categoria_id: r.producto.categoria_id ?? null,
       nombre: r.producto.nombre,
       cantidad,
-      precio_unitario: precioFinal,
+      precio_unitario: precioReal,
+      precio_base: precioReal,
       notas: String(it?.notas || '').slice(0, NOTAS_MAX) || undefined,
     });
   }
@@ -247,22 +238,6 @@ export async function validarOrdenPropuesta(orden, negocioId) {
     rechazos.push({ codigo: RECHAZOS.ORDEN_SIN_ITEMS });
     eventoTxn('orden_sin_items', negocioId, { motivo: 'solo_items_de_envio' });
     return { ok: false, rechazos, ajustes };
-  }
-
-  // Un 2x1 jamás puede regalar más unidades de las que se cobran; si el
-  // balance no da, los "gratis" excedentes se recobran a precio real.
-  if (itemsGratis > itemsPagados) {
-    for (const item of itemsCanonicos) {
-      if (itemsGratis <= itemsPagados) break;
-      if (item.precio_unitario === 0) {
-        const real = catalogo.find((p) => p.id === item.producto_id);
-        item.precio_unitario = Number(real?.precio || 0);
-        itemsGratis -= item.cantidad;
-        itemsPagados += item.cantidad;
-        ajustes.push({ tipo: 'gratis_sin_respaldo_recobrado', producto: item.nombre });
-        eventoTxn('precio_mismatch', negocioId, { motivo: 'gratis_sin_respaldo', producto_id: item.producto_id });
-      }
-    }
   }
 
   // Forma de pago: solo métodos habilitados de verdad para este negocio.
@@ -320,16 +295,43 @@ export async function validarOrdenPropuesta(orden, negocioId) {
     }
   }
 
-  // Descuentos: hoy NO existe ningún motor de descuentos autorizado para
-  // el bot (el 2x1 se expresa como precio 0 por item; el envío gratis como
-  // costo_envio 0). Cualquier "descuento" del modelo se ignora.
+  // ── DESCUENTOS: los calcula el MOTOR DE PROMOCIONES, jamás el modelo ──
+  // Fuente única de verdad para todos los canales (calcularPromociones sobre
+  // tienda_promociones). Cualquier "descuento" que el modelo escribiera se
+  // ignora. Fail-safe: si el motor falla, el pedido sale SIN descuento —
+  // nunca se regala por un error.
   const descuentoLLM = Number(orden?.descuento) || 0;
   if (descuentoLLM !== 0) {
     ajustes.push({ tipo: 'descuento_ignorado', llm: descuentoLLM });
     eventoTxn('descuento_ignorado', negocioId, { llm: descuentoLLM });
   }
 
-  const total = subtotal + costoEnvio;
+  let descuento = 0, promocionesAplicadas = [], oportunidadesPromo = [];
+  try {
+    const promo = await calcularPromociones({
+      negocioId, subtotal,
+      items: itemsCanonicos.map((i) => ({
+        producto_id: i.producto_id, categoria_id: i.categoria_id,
+        cantidad: i.cantidad, precio_unitario: i.precio_unitario, precio_base: i.precio_base,
+      })),
+      costoEnvio, modalidad: esDomicilio ? 'domicilio' : 'recoger',
+      canal: canalPromo, telefono: orden?.cliente?.telefono || null,
+      timezone: reglas?.timezone || 'America/Matamoros',
+    });
+    // El motor puede otorgar envío gratis, pero el envío ya lo resuelve la
+    // lógica de reglas de arriba; aquí SOLO se toma el descuento de producto.
+    descuento = Math.max(0, Math.min(Number(promo.descuento) || 0, subtotal));
+    promocionesAplicadas = (promo.aplicadas || []).filter((a) => !a.envioGratis).map((a) => ({
+      id: a.id, nombre: a.nombre, tipo: a.tipo, descuento: a.descuento,
+      unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
+    }));
+    oportunidadesPromo = promo.oportunidades || [];
+    if (descuento > 0) eventoTxn('promo_aplicada', negocioId, { descuento, tipos: promocionesAplicadas.map((p) => p.tipo) });
+  } catch (e) {
+    eventoTxn('promo_engine_error', negocioId, { error: String(e?.message || e).slice(0, 120) });
+  }
+
+  const total = Math.max(0, subtotal - descuento + costoEnvio);
   const totalLLM = Number(orden?.total);
   if (Number.isFinite(totalLLM) && totalLLM !== total) {
     ajustes.push({ tipo: 'total_mismatch', llm: totalLLM, real: total });
@@ -341,9 +343,11 @@ export async function validarOrdenPropuesta(orden, negocioId) {
     items: itemsCanonicos,
     subtotal,
     costo_envio: costoEnvio,
-    descuento: 0,
+    descuento,
     total,
-    forma_pago_tipo: tipoNormalizado, // canónico (tipo de metodos_pago)
+    promociones: promocionesAplicadas,       // snapshot para ticket / historial
+    promo_oportunidades: oportunidadesPromo,  // pista que el agente solo VERBALIZA
+    forma_pago_tipo: tipoNormalizado,         // canónico (tipo de metodos_pago)
   };
 
   return { ok: true, orden: ordenCanonica, rechazos: [], ajustes };

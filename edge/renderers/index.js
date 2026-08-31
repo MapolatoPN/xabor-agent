@@ -77,6 +77,12 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
 
   partes.push(linea('-', ancho));
   if (payload.subtotal != null) partes.push(columnas('Subtotal', dinero(payload.subtotal), ancho));
+  // Descuento por promoción (si el pedido trae uno). El nombre de la promo,
+  // cuando viene, ayuda a que el cliente vea qué se aplicó.
+  if (Number(payload.descuento) > 0) {
+    const etiqueta = payload.promocion ? `Descuento (${String(payload.promocion).slice(0, ancho - 14)})` : 'Descuento';
+    partes.push(columnas(etiqueta, `-${dinero(payload.descuento)}`, ancho));
+  }
   if (payload.propina) partes.push(columnas('Propina', dinero(payload.propina), ancho));
   partes.push(BOLD_ON, SIZE_2H, columnas('TOTAL', dinero(payload.total), Math.floor(ancho / 2)), SIZE_NORMAL, BOLD_OFF);
 

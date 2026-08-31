@@ -39,7 +39,7 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
   // Solo productos del negocio de la sesión: el WHERE negocio_id es la
   // frontera de tenant; un id de otro negocio simplemente no aparece aquí.
   const { rows } = await pool.query(
-    `SELECT id, nombre, precio, disponible, agotado FROM menu_productos
+    `SELECT id, nombre, precio, disponible, agotado, categoria_id FROM menu_productos
      WHERE negocio_id = $1 AND id = ANY($2::int[])`,
     [negocioId, ids.map(Number)]
   );
@@ -73,6 +73,7 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
     const notasLibres = String(crudo.notas || '').slice(0, 300);
     return {
       producto_id: Number(pid),
+      categoria_id: prod.categoria_id ?? null,
       nombre: prod.nombre,
       cantidad,
       precio_unitario: precioUnitario,

@@ -6549,10 +6549,29 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     // productos ajenos / no disponibles) — nunca se confía en el total del
     // frontend.
     const { items: itemsValidados, subtotal } = await recalcularItemsDesdeMenu(negocioId, items);
+    // Promociones automáticas por el MOTOR ÚNICO (canal 'pos'). Un descuento
+    // manual del cajero (si lo hubo) se conserva y se SUMA al promocional.
+    // Fail-safe: si el motor falla, el pedido sale solo con el descuento manual.
+    let descuentoPromo = 0, promocionesPos = [];
+    try {
+      const { calcularPromociones } = await import('./services/tiendaPromociones.js');
+      const promo = await calcularPromociones({
+        negocioId, subtotal, items: itemsValidados,
+        costoEnvio: Number(costoEnvio) || 0, modalidad: String(tipo) === 'domicilio' ? 'domicilio' : 'recoger',
+        canal: 'pos', telefono: cliente?.telefono || null,
+      });
+      descuentoPromo = Math.max(0, Number(promo.descuento) || 0);
+      promocionesPos = (promo.aplicadas || []).filter(a => !a.envioGratis).map(a => ({
+        id: a.id, nombre: a.nombre, tipo: a.tipo, descuento: a.descuento, unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
+      }));
+    } catch (e) { console.error('[POS] motor de promociones falló:', e.message); }
+    const descuentoManual = Math.max(0, Number(descuento) || 0);
+    const descuentoTotal = Math.min(subtotal, descuentoManual + descuentoPromo);
     const orden = construirOrdenPOS({
       negocioId, tipo, items: itemsValidados, subtotal,
-      costoEnvio, descuento, cliente, direccion, formaPago, notas,
+      costoEnvio, descuento: descuentoTotal, cliente, direccion, formaPago, notas,
     });
+    if (promocionesPos.length) orden.promociones = promocionesPos;
 
     const pedido = await registrarPedido(orden, 'pos');
     emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`)); // comanda + impresión + tablero (no bloquea si no hay impresora)
