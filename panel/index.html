@@ -8486,8 +8486,10 @@ function renderReviewPanelImport(ci, pi, p) {
         ${opciones}
       </div>`;
   });
+  // El botón nace deshabilitado si la cardinalidad aún es inválida (modRev);
+  // setCardImport lo habilita en cuanto todos los grupos quedan válidos.
   const btnAprobar = modRev
-    ? `<button id="aprobar-${ci}-${pi}" onclick="aprobarProductoImport(${ci},${pi})" style="margin-top:10px;background:#15803d;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-weight:700;cursor:pointer;font-size:0.8rem;">✓ Aprobar e importar</button>`
+    ? `<button id="aprobar-${ci}-${pi}" onclick="aprobarProductoImport(${ci},${pi})" disabled style="margin-top:10px;background:#15803d;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-weight:700;cursor:pointer;font-size:0.8rem;">✓ Aprobar e importar</button>`
     : '';
   return `
     <div class="import-review" data-ci="${ci}" data-pi="${pi}" style="display:${abierto ? 'block' : 'none'};grid-column:1 / -1;background:#f8fafc;border-radius:10px;padding:10px 12px;margin:4px 0 10px;">
@@ -8589,7 +8591,22 @@ function setCardImport(ci, pi, gi, campo, valorRaw) {
   const valEl = document.getElementById(`card-val-${ci}-${pi}-${gi}`);
   if (valEl) { const ok = _cardGrupoValidaImport(g); valEl.textContent = ok ? '✓ ok' : '⚠ define mín/máx'; valEl.style.color = ok ? '#166534' : '#b45309'; }
   const btn = document.getElementById(`aprobar-${ci}-${pi}`);
-  if (btn) btn.disabled = _prodModRevisionImport(_importDraft.categorias[ci].productos[pi]);
+  if (btn) {
+    const p = _importDraft.categorias[ci].productos[pi];
+    const fila = document.querySelector(`#modal-import-pdf .import-fila[data-ci="${ci}"][data-pi="${pi}"]`);
+    const chk = fila?.querySelector('[data-import-check]');
+    // GATE: editar la cardinalidad de un producto YA aprobado REVOCA la
+    // aprobación — vuelve a REQUIERE REVISIÓN y hay que re-aprobar. Así nunca
+    // queda "Aprobado" con una cardinalidad distinta a la que se revisó.
+    if (chk && chk.checked) {
+      chk.checked = false; chk.disabled = true;
+      const badge = fila.querySelector('[data-import-badge]');
+      if (badge) badge.innerHTML = _badgeImport('REQUIERE_REVISION');
+      _actualizarResumenAccionImport();
+    }
+    btn.textContent = '✓ Aprobar e importar'; btn.style.background = '#15803d';
+    btn.disabled = _prodModRevisionImport(p);
+  }
 }
 
 function aprobarProductoImport(ci, pi) {
