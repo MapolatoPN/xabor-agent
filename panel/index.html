@@ -3784,10 +3784,15 @@ async function tndTodos(publicado) {
 
 // ── Promociones ──
 const TND_TIPOS = {
-  envio_gratis: 'Envío gratis',
+  '2x1': '2x1',
+  segundo_descuento: 'Segundo producto con descuento',
   porcentaje: 'Descuento %',
   monto_fijo: 'Descuento fijo',
+  envio_gratis: 'Envío gratis',
 };
+const TND_TIPOS_UNIDAD = new Set(['2x1', 'segundo_descuento']);
+const TND_DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const TND_CANALES = { pos: 'Punto de venta', whatsapp: 'WhatsApp', tienda_online: 'Tienda online' };
 
 async function tndPromociones() {
   const cont = document.getElementById('tnd-sec-promociones');
@@ -3817,6 +3822,11 @@ function tndTarjetaPromo(p) {
   if (p.tipo === 'porcentaje') reglas.push(`${p.valor}% de descuento${p.maxDescuento ? ` (tope ${tndDinero(p.maxDescuento)})` : ''}`);
   if (p.tipo === 'monto_fijo') reglas.push(`${tndDinero(p.valor)} de descuento`);
   if (p.tipo === 'envio_gratis') reglas.push('Envío sin costo');
+  if (p.tipo === '2x1') reglas.push(`Compra ${p.cantidadRequerida || 2}, el de menor precio gratis`);
+  if (p.tipo === 'segundo_descuento') reglas.push(`Compra ${p.cantidadRequerida || 2}, el de menor precio ${p.valor}% off`);
+  if (Array.isArray(p.diasSemana) && p.diasSemana.length && p.diasSemana.length < 7) reglas.push(p.diasSemana.map(d => TND_DIAS[d]).join(', '));
+  if (Array.isArray(p.canales) && p.canales.length) reglas.push(p.canales.map(c => TND_CANALES[c] || c).join('/'));
+  if (Array.isArray(p.categorias) && p.categorias.length) reglas.push(`${p.categorias.length} categoría(s) participante(s)`);
   if (p.minimoCompra > 0) reglas.push(`compra mínima ${tndDinero(p.minimoCompra)}`);
   if (p.codigo) reglas.push(`con código <strong>${tndEsc(p.codigo)}</strong>`);
   else reglas.push('automática');
@@ -3846,15 +3856,23 @@ function tndTarjetaPromo(p) {
   </div>`;
 }
 
-function tndEditarPromo(id) {
+async function tndEditarPromo(id) {
   const p = id ? TND.promos.find(x => x.id === id) : null;
   const cont = document.getElementById('tnd-form-promo');
+  cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
+  // Categorías del menú para acotar los participantes.
+  let cats = [];
+  try { cats = (await apiFetch('/api/menu').then(r => r.ok ? r.json() : [])).map(c => ({ id: c.id, nombre: c.nombre })); } catch (e) { cats = []; }
+  const catsSel = new Set((p?.categorias || []).map(Number));
+  const diasSel = new Set((p?.diasSemana || []).map(Number));
+  const canSel = new Set(p?.canales && p.canales.length ? p.canales : (p ? [] : ['pos', 'whatsapp']));
+  const participaCats = !!(p?.categorias && p.categorias.length);
   cont.innerHTML = `
     <div class="tnd-card" style="border-color:var(--color-brand);">
       <h3>${p ? 'Editar promoción' : 'Nueva promoción'}</h3>
-      <div class="sub">Todo lo que dejes vacío significa "sin restricción".</div>
+      <div class="sub">Todo lo que dejes vacío significa "sin restricción". El descuento lo calcula Xabor, nunca el navegador.</div>
       <div class="tnd-campo"><label>Nombre (lo ve el cliente)</label>
-        <input id="pr-nombre" maxlength="80" value="${tndEsc(p?.nombre || '')}" placeholder="Envío gratis en pedidos de $300"></div>
+        <input id="pr-nombre" maxlength="80" value="${tndEsc(p?.nombre || '')}" placeholder="Martes 2x1 en Hotcakes"></div>
       <div class="tnd-fila">
         <div class="tnd-campo"><label>Tipo</label>
           <select id="pr-tipo" onchange="tndPromoTipo()">
@@ -3863,6 +3881,38 @@ function tndEditarPromo(id) {
         <div class="tnd-campo" id="pr-valor-caja"><label id="pr-valor-lbl">Valor</label>
           <input id="pr-valor" type="number" step="0.01" min="0" value="${p?.valor ?? ''}"></div>
       </div>
+      <div class="tnd-fila" id="pr-card-caja" style="display:none;">
+        <div class="tnd-campo"><label>Compra (cantidad requerida)</label>
+          <input id="pr-cantreq" type="number" min="1" step="1" value="${p?.cantidadRequerida ?? 2}"></div>
+        <div class="tnd-campo"><label>Beneficia (cantidad)</label>
+          <input id="pr-cantben" type="number" min="1" step="1" value="${p?.cantidadBeneficiada ?? 1}"></div>
+      </div>
+      <div class="tnd-campo"><label>Participan</label>
+        <select id="pr-participa" onchange="tndPromoParticipa()">
+          <option value="todo"${participaCats ? '' : ' selected'}>Todo el menú</option>
+          <option value="categorias"${participaCats ? ' selected' : ''}>Solo categorías específicas</option>
+        </select></div>
+      <div class="tnd-campo" id="pr-cats-caja" style="display:${participaCats ? 'block' : 'none'};">
+        <label>Categorías participantes</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;">
+          ${cats.length ? cats.map(c => `<label style="display:flex;gap:5px;align-items:center;font-size:0.8rem;font-weight:400;"><input type="checkbox" class="pr-cat" value="${c.id}" ${catsSel.has(Number(c.id)) ? 'checked' : ''} style="width:auto"> ${tndEsc(c.nombre)}</label>`).join('')
+            : '<span style="font-size:0.8rem;color:var(--color-text-secondary);">Carga tu menú (categorías) para acotar los participantes.</span>'}
+        </div>
+      </div>
+      <div class="tnd-campo"><label>Días (vacío = todos)</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 12px;">
+          ${TND_DIAS.map((d, i) => `<label style="display:flex;gap:4px;align-items:center;font-size:0.8rem;font-weight:400;"><input type="checkbox" class="pr-dia" value="${i}" ${diasSel.has(i) ? 'checked' : ''} style="width:auto"> ${d}</label>`).join('')}
+        </div></div>
+      <div class="tnd-fila">
+        <div class="tnd-campo"><label>Horario desde (opcional)</label>
+          <input id="pr-hini" type="time" value="${(p?.horaInicio || '').slice(0, 5)}"></div>
+        <div class="tnd-campo"><label>Horario hasta (opcional)</label>
+          <input id="pr-hfin" type="time" value="${(p?.horaFin || '').slice(0, 5)}"></div>
+      </div>
+      <div class="tnd-campo"><label>Canales (vacío = tienda online)</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;">
+          ${Object.entries(TND_CANALES).map(([k, v]) => `<label style="display:flex;gap:5px;align-items:center;font-size:0.8rem;font-weight:400;"><input type="checkbox" class="pr-canal" value="${k}" ${canSel.has(k) ? 'checked' : ''} style="width:auto"> ${v}</label>`).join('')}
+        </div></div>
       <div class="tnd-fila">
         <div class="tnd-campo"><label>Compra mínima</label>
           <input id="pr-minimo" type="number" step="0.01" min="0" value="${p?.minimoCompra ?? ''}" placeholder="Sin mínimo"></div>
@@ -3908,9 +3958,20 @@ function tndPromoTipo() {
   const t = document.getElementById('pr-tipo').value;
   const caja = document.getElementById('pr-valor-caja');
   const lbl = document.getElementById('pr-valor-lbl');
-  // "Envío gratis" no tiene monto: el valor lo pone el costo de envío real.
-  caja.style.display = t === 'envio_gratis' ? 'none' : '';
-  lbl.textContent = t === 'porcentaje' ? 'Porcentaje (%)' : 'Monto a descontar';
+  const card = document.getElementById('pr-card-caja');
+  // Cardinalidad solo para 2x1 / segundo producto.
+  if (card) card.style.display = TND_TIPOS_UNIDAD.has(t) ? '' : 'none';
+  // "Envío gratis" y "2x1" no llevan monto: el 2x1 regala el de menor precio.
+  caja.style.display = (t === 'envio_gratis' || t === '2x1') ? 'none' : '';
+  lbl.textContent = t === 'porcentaje' ? 'Porcentaje (%)'
+    : t === 'segundo_descuento' ? '% del segundo producto'
+      : 'Monto a descontar';
+}
+
+function tndPromoParticipa() {
+  const modo = document.getElementById('pr-participa').value;
+  const caja = document.getElementById('pr-cats-caja');
+  if (caja) caja.style.display = modo === 'categorias' ? 'block' : 'none';
 }
 
 async function tndGuardarPromo(id) {
@@ -3932,7 +3993,19 @@ async function tndGuardarPromo(id) {
     campaniaId: document.getElementById('pr-campania').value || null,
     soloPrimeraCompra: document.getElementById('pr-primera').checked,
     activa: document.getElementById('pr-activa').checked,
+    // Cardinalidad (2x1 / segundo producto)
+    cantidadRequerida: document.getElementById('pr-cantreq') ? parseInt(document.getElementById('pr-cantreq').value, 10) || null : null,
+    cantidadBeneficiada: document.getElementById('pr-cantben') ? parseInt(document.getElementById('pr-cantben').value, 10) || null : null,
+    // Días (0=Dom..6=Sáb), horario, canales, categorías participantes
+    diasSemana: [...document.querySelectorAll('.pr-dia:checked')].map(e => Number(e.value)),
+    horaInicio: document.getElementById('pr-hini').value || null,
+    horaFin: document.getElementById('pr-hfin').value || null,
+    canales: [...document.querySelectorAll('.pr-canal:checked')].map(e => e.value),
+    categorias: document.getElementById('pr-participa').value === 'categorias'
+      ? [...document.querySelectorAll('.pr-cat:checked')].map(e => Number(e.value)) : null,
   };
+  // "Todos los días" y "todos los canales por defecto" = mandar null/omitir
+  if (cuerpo.diasSemana.length === 0) cuerpo.diasSemana = null;
   try {
     const r = await apiFetch('/api/admin/tienda/promociones' + (id ? '/' + id : ''), {
       method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },

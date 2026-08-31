@@ -390,22 +390,26 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
 
   let textoPromociones = '';
 
-  // Promo 2x1 (tiene prioridad si está activa)
-  if (promo2x1Activa) {
-    textoPromociones += '🔥 PROMO ACTIVA AHORA — 2x1 FOCACCIAS:\n';
-    textoPromociones += '- Por cada focaccia o panini que el cliente pague, lleva OTRO IGUAL gratis.\n';
-    textoPromociones += '- Aplica a TODOS los paninis/focaccias (son lo mismo, mismo pan casero): Focaccia Bar, Chicken Louisiana, Chicken Parm, Chicken Fit.\n';
-    textoPromociones += '- Se pueden COMBINAR distintos: Louisiana+Fit, Fit+Parm, Focaccia Bar+Louisiana, cualquier combinación.\n';
-    textoPromociones += '- REGLA DE PRECIO: siempre se cobra el de MAYOR precio; el de menor precio es el gratis.\n';
-    textoPromociones += '- Ejemplo: Louisiana ($180) + Fit ($179) → cobra $180, el Fit va gratis a $0.\n';
-    textoPromociones += '- Ejemplo: Parm ($195) + Focaccia Bar ($225) → cobra $225, el Parm va a $0.\n';
-    textoPromociones += '- SOLO para recoger en sucursal. NO aplica a domicilio.\n';
-    textoPromociones += '- Válido hasta las 15:00 o hasta agotar existencias.\n';
-    textoPromociones += '- Cuando el cliente ordene una focaccia/panini para recoger, INFÓRMALE de la promo y pregunta cuál quiere de segunda.\n';
-    textoPromociones += '- En el JSON: agrega el panini gratis con "precio_unitario": 0 y nota "2x1 gratis".\n';
-    textoPromociones += '- Si pide a domicilio, infórmale que el 2x1 es solo para recoger.\n\n';
-  } else if (promo2x1) {
-    // La promo existe pero no está activa ahora — no mencionarla proactivamente
+  // 2x1 / descuentos: los calcula y aplica EL MOTOR DE PROMOCIONES
+  // (tienda_promociones), NUNCA el modelo. Aquí las promociones vigentes se
+  // listan SOLO como información para que el agente las mencione; el precio y
+  // el descuento finales los pone el sistema al validar la orden.
+  //
+  // NEUTRALIZADO a propósito: el antiguo "2x1_focaccias" de
+  // configuracion.reglas_atencion ya NO instruye al modelo a escribir
+  // precio_unitario:0 (el backend lo ignoraría). Para que un 2x1 vuelva a
+  // aplicar hay que crearlo en el módulo de Promociones (se guarda en
+  // tienda_promociones y el motor lo calcula solo).
+  let promosMotor = [];
+  try {
+    const { describirPromocionesVigentes } = await import('../services/tiendaPromociones.js');
+    promosMotor = await describirPromocionesVigentes(negocioId, { canal });
+  } catch { /* sin promos si el motor no responde */ }
+  for (const pm of promosMotor) {
+    textoPromociones += `🔥 ${pm.nombre}: ${pm.descripcion}\n`;
+  }
+  if (promosMotor.length) {
+    textoPromociones += '- El SISTEMA calcula el descuento y el total finales; tú SOLO informas que la promo existe. NUNCA pongas precios en 0 ni inventes el descuento.\n\n';
   }
 
   if (promoEnvioGratis) {
@@ -730,6 +734,17 @@ ${botAvisos}
 REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó (comparar con la fecha de hoy arriba), NO lo menciones ni lo apliques bajo ninguna circunstancia. Solo aplica avisos cuya fecha sea hoy o futura, o que no tengan fecha límite.
 
 ` : ''}## REGLAS CRÍTICAS — NUNCA LAS ROMPAS
+- PROMOTION SAFETY RULE — LAS PROMOCIONES LAS CALCULA XABOR, NO TÚ:
+  · NUNCA calcules descuentos ni promociones con tu propio razonamiento.
+  · NUNCA decidas por tu cuenta si un producto participa en una promoción.
+  · NUNCA decidas por tu cuenta qué producto es el gratis o el rebajado.
+  · NUNCA conviertas un 2x1 en "50%" ni un "50%" en 2x1: son promociones distintas.
+  · NUNCA combines promociones por tu cuenta.
+  · NUNCA pongas un "precio_unitario": 0 ni un descuento inventado en el JSON.
+  · SOLO comunicas: las promociones que Xabor te informó arriba y los precios/
+    descuentos/totales que el SISTEMA calcula al validar la orden. Si el sistema
+    no aplicó una promoción, NO digas que se aplicó. Ante la duda, no asumas: los
+    números que devuelve Xabor son la única fuente de verdad.
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.
 - Si no sabes la respuesta a algo del menú, dilo claramente ("esa información no la tengo disponible") — NUNCA digas "lo verifico con el equipo" ni prometas confirmar algo después. Eso genera falsas expectativas.
 - Si piden algo que no está en el menú, discúlpate y ofrece la alternativa más cercana.
