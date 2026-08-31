@@ -154,9 +154,61 @@ function baseParaPromo(promo, ctx) {
   }, 0));
 }
 
+// ── Promociones POR UNIDAD (2x1 / segundo producto con %) ──────────────────
+// Unidades elegibles expandidas por cantidad y ordenadas de MENOR a MAYOR
+// precio BASE (sin modificadores). El beneficio cae SIEMPRE sobre las más
+// baratas, así el resultado es determinístico e independiente del orden en que
+// el cliente agregó los productos. La IA nunca decide cuál queda gratis.
+function unidadesElegiblesOrdenadas(promo, ctx) {
+  const prods = Array.isArray(promo.productos) ? promo.productos.map(Number) : null;
+  const cats = Array.isArray(promo.categorias) ? promo.categorias.map(Number) : null;
+  const todo = (!prods || !prods.length) && (!cats || !cats.length);
+  const unidades = [];
+  for (const it of (ctx.items || [])) {
+    const incluido = todo
+      || (prods && prods.includes(Number(it.producto_id)))
+      || (cats && cats.includes(Number(it.categoria_id)));
+    if (!incluido) continue;
+    // Precio BASE del producto participante, nunca el inflado por extras: el
+    // beneficio aplica sobre el precio elegible, no sobre los modificadores.
+    const precio = Number(it.precio_base != null ? it.precio_base : it.precio_unitario) || 0;
+    const n = Math.max(0, Math.floor(Number(it.cantidad) || 0));
+    for (let i = 0; i < n; i++) unidades.push(precio);
+  }
+  return unidades.sort((a, b) => a - b);
+}
+
+// Cuántas unidades elegibles faltan para completar el SIGUIENTE grupo (para la
+// pista comercial "agrega 1 más y aprovecha el 2x1"). 0 si no hay elegibles.
+function unidadesParaSiguienteGrupo(promo, ctx) {
+  const n = unidadesElegiblesOrdenadas(promo, ctx).length;
+  if (n <= 0) return 0;
+  const X = Number(promo.cantidad_requerida) >= 1 ? Number(promo.cantidad_requerida) : 2;
+  return (X - (n % X)) % X;
+}
+
+function calcularBeneficioPorUnidad(promo, ctx) {
+  const unidades = unidadesElegiblesOrdenadas(promo, ctx);
+  const X = Number(promo.cantidad_requerida) >= 1 ? Number(promo.cantidad_requerida) : 2;
+  const Y = Number(promo.cantidad_beneficiada) >= 1 ? Number(promo.cantidad_beneficiada) : 1;
+  let grupos = Math.floor(unidades.length / X);
+  if (promo.max_aplicaciones != null) grupos = Math.min(grupos, Math.max(0, Number(promo.max_aplicaciones)));
+  const beneficiadas = Math.min(grupos * Y, unidades.length);
+  if (beneficiadas <= 0) return { descuento: 0, envioGratis: false, unidadesBeneficiadas: 0 };
+  const baratas = unidades.slice(0, beneficiadas); // las N más baratas
+  // 2x1 → 100% de descuento; segundo_descuento → `valor`% sobre la unidad.
+  const factor = promo.tipo === 'segundo_descuento' ? (Number(promo.valor) / 100) : 1;
+  let d = dinero(baratas.reduce((s, p) => s + p * factor, 0));
+  if (promo.max_descuento != null) d = Math.min(d, dinero(promo.max_descuento));
+  return { descuento: d, envioGratis: false, unidadesBeneficiadas: beneficiadas };
+}
+
 function calcularDescuento(promo, ctx) {
   if (promo.tipo === 'envio_gratis') {
     return { descuento: 0, envioGratis: true };
+  }
+  if (promo.tipo === '2x1' || promo.tipo === 'segundo_descuento') {
+    return calcularBeneficioPorUnidad(promo, ctx);
   }
   const base = baseParaPromo(promo, ctx);
   let d = promo.tipo === 'porcentaje'
@@ -225,7 +277,7 @@ export async function calcularPromociones({
     }
     if (bloqueadoPorNoAcumulable && promo.tipo !== 'envio_gratis') continue;
 
-    const { descuento, envioGratis: gratis } = calcularDescuento(promo, ctx);
+    const { descuento, envioGratis: gratis, unidadesBeneficiadas } = calcularDescuento(promo, ctx);
     if (gratis) {
       if (modalidad !== 'domicilio') continue; // envío gratis no significa nada al recoger
       envioGratis = true;
@@ -241,8 +293,30 @@ export async function calcularPromociones({
       descuento,
       envioGratis: gratis,
       automatica: promo.automatica === true,
+      unidadesBeneficiadas: unidadesBeneficiadas || 0,
     });
     if (!promo.acumulable && promo.tipo !== 'envio_gratis') bloqueadoPorNoAcumulable = true;
+  }
+
+  // ── OPORTUNIDADES ─────────────────────────────────────────────────────────
+  // El backend detecta cuándo el cliente está a pocas unidades de un beneficio
+  // per-unit (2x1 / segundo producto) y lo reporta para que el agente lo
+  // VERBALICE — nunca para que lo calcule. Solo para promos vigentes (ventana,
+  // canal, modalidad, vigencia OK) con al menos una unidad elegible ya en el
+  // carrito y que aún no completan su próximo grupo.
+  const oportunidades = [];
+  for (const promo of rows) {
+    if (promo.tipo !== '2x1' && promo.tipo !== 'segundo_descuento') continue;
+    if (motivoNoAplica(promo, ctx)) continue;
+    const faltan = unidadesParaSiguienteGrupo(promo, ctx);
+    if (faltan <= 0) continue;
+    oportunidades.push({
+      promocionId: promo.id,
+      nombre: promo.nombre,
+      tipo: promo.tipo,
+      codigo: 'ADD_ONE_MORE_ELIGIBLE_ITEM',
+      unidadesFaltantes: faltan,
+    });
   }
 
   // Si escribió un código y no quedó aplicado ni rechazado con motivo, no existe.
@@ -266,6 +340,7 @@ export async function calcularPromociones({
     ahorro: dinero(descuentoTotal + (envioGratis ? envioBase : 0)),
     aplicadas,
     rechazos,
+    oportunidades,
   };
 }
 
@@ -1089,7 +1164,8 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
 }
 
 // ── CRUD de promociones (backoffice) ──────────────────────────────────────
-const TIPOS = ['envio_gratis', 'porcentaje', 'monto_fijo'];
+const TIPOS = ['envio_gratis', 'porcentaje', 'monto_fijo', '2x1', 'segundo_descuento'];
+const TIPOS_POR_UNIDAD = new Set(['2x1', 'segundo_descuento']);
 
 export async function listarPromociones(negocioId) {
   const { rows } = await pool.query(
@@ -1127,6 +1203,14 @@ export async function listarPromociones(negocioId) {
   return rows.map(r => ({
     id: r.id, nombre: r.nombre, tipo: r.tipo, codigo: r.codigo,
     automatica: r.automatica, valor: Number(r.valor),
+    cantidadRequerida: r.cantidad_requerida == null ? null : Number(r.cantidad_requerida),
+    cantidadBeneficiada: r.cantidad_beneficiada == null ? null : Number(r.cantidad_beneficiada),
+    maxAplicaciones: r.max_aplicaciones == null ? null : Number(r.max_aplicaciones),
+    canales: Array.isArray(r.canales) ? r.canales : (r.canales ? JSON.parse(r.canales) : ['tienda_online']),
+    categorias: Array.isArray(r.categorias) ? r.categorias : (r.categorias ? JSON.parse(r.categorias) : null),
+    productos: Array.isArray(r.productos) ? r.productos : (r.productos ? JSON.parse(r.productos) : null),
+    diasSemana: Array.isArray(r.dias_semana) ? r.dias_semana : (r.dias_semana ? JSON.parse(r.dias_semana) : null),
+    horaInicio: r.hora_inicio || null, horaFin: r.hora_fin || null,
     minimoCompra: Number(r.minimo_compra), maxDescuento: r.max_descuento == null ? null : Number(r.max_descuento),
     vigenciaDesde: r.vigencia_desde, vigenciaHasta: r.vigencia_hasta,
     limiteUsos: r.limite_usos, limitePorCliente: r.limite_por_cliente,
@@ -1167,9 +1251,33 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
   if (tipo === 'monto_fijo' && valor <= 0) {
     throw new PromocionError('El descuento debe ser mayor a cero', 'VALOR_INVALIDO');
   }
+  if (tipo === 'segundo_descuento' && (valor <= 0 || valor > 100)) {
+    throw new PromocionError('El porcentaje del segundo producto debe estar entre 1 y 100', 'VALOR_INVALIDO');
+  }
+
+  // Cardinalidad de los tipos per-unit (2x1 / segundo producto). Defaults
+  // sensatos: comprar 2, beneficiar 1. Nunca beneficiar más de lo requerido.
+  let cantidadRequerida = null, cantidadBeneficiada = null, maxAplicaciones = null;
+  if (TIPOS_POR_UNIDAD.has(tipo)) {
+    cantidadRequerida = Number.isInteger(Number(datos.cantidadRequerida)) && Number(datos.cantidadRequerida) >= 1
+      ? Number(datos.cantidadRequerida) : 2;
+    cantidadBeneficiada = Number.isInteger(Number(datos.cantidadBeneficiada)) && Number(datos.cantidadBeneficiada) >= 1
+      ? Number(datos.cantidadBeneficiada) : 1;
+    if (cantidadBeneficiada > cantidadRequerida) {
+      throw new PromocionError('La cantidad beneficiada no puede exceder la requerida', 'CARDINALIDAD_INVALIDA');
+    }
+    if (datos.maxAplicaciones != null && datos.maxAplicaciones !== '') {
+      const m = parseInt(datos.maxAplicaciones, 10);
+      if (!Number.isInteger(m) || m < 1) throw new PromocionError('El máximo de aplicaciones debe ser un entero ≥ 1', 'CARDINALIDAD_INVALIDA');
+      maxAplicaciones = m;
+    }
+  }
 
   const campos = {
     nombre, tipo, codigo, automatica, valor,
+    cantidad_requerida: cantidadRequerida,
+    cantidad_beneficiada: cantidadBeneficiada,
+    max_aplicaciones: maxAplicaciones,
     minimo_compra: Math.max(0, Number(datos.minimoCompra) || 0),
     max_descuento: datos.maxDescuento == null || datos.maxDescuento === '' ? null : Number(datos.maxDescuento),
     vigencia_desde: datos.vigenciaDesde || null,
@@ -1219,6 +1327,47 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
   } catch (e) {
     if (e.code === '23505') throw new PromocionError('Ya existe una promoción con ese código en este negocio', 'CODIGO_DUPLICADO');
     throw e;
+  }
+}
+
+// Descripción HUMANA de las promociones vigentes AHORA para un canal, pensada
+// para inyectarse en el prompt del agente como INFORMACIÓN (nunca como algo que
+// el modelo deba calcular). El backend decide qué está vigente; el agente solo
+// lo verbaliza. Devuelve [{ nombre, tipo, descripcion }].
+export async function describirPromocionesVigentes(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM tienda_promociones WHERE negocio_id = $1 AND activa = TRUE AND automatica = TRUE
+      ORDER BY prioridad ASC, created_at ASC`, [negocioId]);
+  const ctx = { subtotal: Infinity, items: [], modalidad: 'recoger', canal, timezone, ahora,
+    clienteTienePedidos: false, usosDelCliente: {}, cuposYaApartados: new Set() };
+  const out = [];
+  for (const p of rows) {
+    const canales = Array.isArray(p.canales) ? p.canales : ['tienda_online'];
+    if (!canales.includes(canal)) continue;
+    // Solo el filtro temporal/estructural, no el de carrito (aquí no hay carrito).
+    if (p.vigencia_desde && ahora < new Date(p.vigencia_desde)) continue;
+    if (p.vigencia_hasta && ahora > new Date(p.vigencia_hasta)) continue;
+    const { diaSemana, minutos } = partesEnZona(ahora, timezone);
+    if (Array.isArray(p.dias_semana) && p.dias_semana.length && !p.dias_semana.map(Number).includes(diaSemana)) continue;
+    const aMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+    const ini = aMin(p.hora_inicio), fin = aMin(p.hora_fin);
+    if (ini !== null && fin !== null && (minutos < ini || minutos >= fin)) continue;
+    out.push({ nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p) });
+  }
+  return out;
+}
+
+// Frase legible por tipo (sin jerga técnica). No calcula nada: solo describe.
+export function descripcionLegiblePromo(p) {
+  const X = Number(p.cantidad_requerida) >= 1 ? Number(p.cantidad_requerida) : 2;
+  switch (p.tipo) {
+    case '2x1': return `Compra ${X} productos participantes y el de menor precio va gratis.`;
+    case 'segundo_descuento': return `Compra ${X} productos participantes y el de menor precio lleva ${Number(p.valor)}% de descuento.`;
+    case 'porcentaje': return `${Number(p.valor)}% de descuento en los productos participantes.`;
+    case 'monto_fijo': return `$${Number(p.valor)} de descuento cuando aplica.`;
+    case 'envio_gratis': return 'Envío gratis cuando se cumplen las condiciones.';
+    default: return p.nombre;
   }
 }
 

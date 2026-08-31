@@ -68,6 +68,11 @@ const SCRIPTS = [
   // terminar emitirPedido.
   '063-emision-operacional',
   '064-cortes-caja',
+  // 067 amplia `tienda_promociones` con los tipos per-unit '2x1' y
+  // 'segundo_descuento' (motor de promociones multi-canal). Idempotente y no
+  // destructivo. Va aqui para que el ALTER corra ANTES de que el binario nuevo
+  // (que ya conoce los tipos) empiece a atender pedidos.
+  '067-promociones-multitipo',
 ];
 
 for (const nombre of SCRIPTS) {
