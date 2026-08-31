@@ -246,6 +246,81 @@ export async function resolverSucursal(negocioId, sucursalId = null) {
   return rows.length ? rows[0].id : null;
 }
 
+// ─── Enriquecimiento de categoría (routing category-first) ──────────────────
+//
+// Los items de un pedido/comanda NO traen su categoría: ni el POS/presencial
+// (carrito del panel) ni el validador del LLM la adjuntan. El motor de routing
+// la necesita para las reglas ambito='categoria'. Aquí se DERIVA de
+// producto_id → menu_categorias.nombre, tenant-scoped, JUSTO antes de rutear.
+// No se persiste en el snapshot del pedido histórico: solo alimenta la
+// resolución de destinos (los trabajos que salen quedan congelados en su fila,
+// así que una caída/reconexión posterior reentrega el MISMO trabajo, nunca
+// vuelve a decidir la estación).
+//
+// Nunca adivina la categoría:
+//   · fuente principal = producto_id (scoped a este negocio);
+//   · si un item no tiene producto_id (o no matchea), se resuelve por NOMBRE
+//     SOLO si existe EXACTAMENTE un producto con ese nombre normalizado en el
+//     negocio; 0 coincidencias o >1 → sin categoría.
+// Un item sin categoría cae al defecto (documento/comanda = Cocina General) en
+// el motor. No toca nombre, precio, cantidad, notas ni el resto del snapshot:
+// devuelve copias con `categoria` añadida (o el item tal cual si no se resolvió).
+export async function adjuntarCategorias(negocioId, items) {
+  const nid = exigirNegocio(negocioId);
+  const lista = Array.isArray(items) ? items : [];
+  if (!lista.length) return lista;
+
+  // 1) Por producto_id (fuente principal). menu_productos.id es entero.
+  const ids = [...new Set(
+    lista.map(i => Number(i?.producto_id)).filter(n => Number.isInteger(n) && n > 0)
+  )];
+  const catPorId = new Map();
+  if (ids.length) {
+    const { rows } = await pool.query(
+      `SELECT p.id, c.nombre AS categoria
+         FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
+        WHERE p.negocio_id = $1 AND p.id = ANY($2::int[])`,
+      [nid, ids]
+    );
+    for (const r of rows) catPorId.set(r.id, r.categoria);
+  }
+
+  // 2) Fallback por nombre SOLO si hay items sin categoría por id, y SOLO para
+  //    nombres que correspondan a exactamente un producto del negocio.
+  const faltan = lista.some(i => {
+    const pid = Number(i?.producto_id);
+    return !(Number.isInteger(pid) && catPorId.has(pid));
+  });
+  let catPorNombre = null; // Map(nombreNorm -> categoria) — solo nombres únicos
+  if (faltan) {
+    const { rows } = await pool.query(
+      `SELECT p.nombre, c.nombre AS categoria
+         FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
+        WHERE p.negocio_id = $1`,
+      [nid]
+    );
+    const conteo = new Map(); // nombreNorm -> { categoria, n }
+    for (const r of rows) {
+      const k = normalizarClave(r.nombre);
+      if (!k) continue;
+      const prev = conteo.get(k);
+      if (prev) prev.n += 1; else conteo.set(k, { categoria: r.categoria, n: 1 });
+    }
+    catPorNombre = new Map();
+    for (const [k, v] of conteo) if (v.n === 1) catPorNombre.set(k, v.categoria);
+  }
+
+  return lista.map(item => {
+    const pid = Number(item?.producto_id);
+    let categoria = (Number.isInteger(pid) && catPorId.has(pid)) ? catPorId.get(pid) : null;
+    if (!categoria && catPorNombre) {
+      const k = normalizarClave(item?.producto ?? item?.nombre);
+      if (k && catPorNombre.has(k)) categoria = catPorNombre.get(k);
+    }
+    return categoria ? { ...item, categoria } : item;
+  });
+}
+
 // ─── Comanda ────────────────────────────────────────────────────────────────
 //
 // Toma la ronda tal como la devuelve restauranteService.enviarComanda y crea
@@ -262,7 +337,8 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
     if (!sid) { resumen.avisos.push('el negocio no tiene sucursal activa: no se generaron trabajos'); return resumen; }
 
     const reglas = await cargarReglas(nid, sid);
-    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(comanda.items, reglas);
+    const items = await adjuntarCategorias(nid, comanda.items);
+    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
     resumen.sinRuta = sinRuta;
     resumen.avisos.push(...avisos);
     if (!grupos.length) return resumen;
@@ -332,7 +408,7 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
     if (!sid) { resumen.avisos.push('el negocio no tiene sucursal activa: no se generaron trabajos'); return resumen; }
 
     const reglas = await cargarReglas(nid, sid);
-    const items = Array.isArray(pedido.items) ? pedido.items : [];
+    const items = await adjuntarCategorias(nid, Array.isArray(pedido.items) ? pedido.items : []);
     const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
     resumen.sinRuta = sinRuta;
     resumen.avisos.push(...avisos);

@@ -7690,6 +7690,7 @@ function pintarImpresoras() {
         '<b>No tienes una impresora configurada para Cocina.</b> Las comandas no se imprimir&aacute;n autom&aacute;ticamente. ' +
         'Si quieres comandas en papel, marca la casilla <b>Cocina</b> en una de tus impresoras y guarda.</div>';
     }
+    html += renderRutasPreparacion();
     html += impBoton('Conectar otro equipo', 'conectarEquipoImpresion()');
   }
 
@@ -7697,8 +7698,77 @@ function pintarImpresoras() {
   cont.innerHTML = html;
 }
 
+// Sección "Rutas de preparación": mapea CATEGORÍA → impresora reutilizando
+// GET/POST/DELETE /api/impresion/rutas (ambito='categoria'). Category-first;
+// lo no configurado cae a Cocina General (documento/comanda). Solo aparece si
+// hay al menos una impresora configurada.
+function renderRutasPreparacion() {
+  var imps = impImpresorasPrep || [];
+  if (!imps.length) return '';
+  var cats = impCategoriasPrep || [];
+  var rutas = impRutasPrep || [];
+  var optsImp = imps.map(function (i) {
+    return '<option value="' + escaparHTML(i.id) + '">' + escaparHTML(i.nombre) + '</option>';
+  }).join('');
+  var lista = rutas.length
+    ? rutas.map(function (r) {
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f0ed;font-size:0.88rem;">' +
+          '<span><b>' + escaparHTML(r.clave) + '</b> &rarr; ' + escaparHTML(r.impresora_nombre || '') + '</span>' +
+          '<button onclick="eliminarRutaPreparacion(\'' + escaparHTML(r.id) + '\')" style="background:none;border:none;color:#b91c1c;cursor:pointer;font-size:0.82rem;">Eliminar</button>' +
+        '</div>';
+      }).join('')
+    : '<div style="color:#888;font-size:0.85rem;padding:6px 0;">A&uacute;n no hay rutas por categor&iacute;a. Todo lo no configurado sale en <b>Cocina General</b>.</div>';
+  var formulario = cats.length
+    ? '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">' +
+        '<label style="font-size:0.8rem;color:#555;">Categor&iacute;a<br><select id="ruta-prep-cat" style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;">' +
+          cats.map(function (c) { return '<option value="' + escaparHTML(c) + '">' + escaparHTML(c) + '</option>'; }).join('') +
+        '</select></label>' +
+        '<label style="font-size:0.8rem;color:#555;">Impresora<br><select id="ruta-prep-imp" style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;">' + optsImp + '</select></label>' +
+        '<button onclick="guardarRutaPreparacion()" id="btn-ruta-prep" style="background:#15803d;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;">Guardar ruta</button>' +
+      '</div>'
+    : '<div style="color:#b45309;font-size:0.85rem;margin-top:8px;">Carga tu men&uacute; (categor&iacute;as) para crear rutas por categor&iacute;a.</div>';
+  return '<div style="background:#fff;border:1px solid #eee;border-radius:12px;padding:14px 16px;margin-top:14px;">' +
+    '<div style="font-weight:800;font-size:0.95rem;margin-bottom:2px;">&#129517; Rutas de preparaci&oacute;n</div>' +
+    '<div style="color:#666;font-size:0.82rem;margin-bottom:8px;">Env&iacute;a cada categor&iacute;a a su estaci&oacute;n. Lo que no tenga ruta cae en <b>Cocina General</b>. La cuenta/ticket es aparte (Caja).</div>' +
+    lista + formulario +
+    '<div id="ruta-prep-msg" style="font-size:0.83rem;margin-top:8px;"></div>' +
+  '</div>';
+}
+
+async function guardarRutaPreparacion() {
+  var cat = document.getElementById('ruta-prep-cat');
+  var imp = document.getElementById('ruta-prep-imp');
+  var msg = document.getElementById('ruta-prep-msg');
+  if (!cat || !imp || !cat.value || !imp.value) { if (msg) { msg.style.color = '#b45309'; msg.textContent = 'Elige categoría e impresora.'; } return; }
+  var btn = document.getElementById('btn-ruta-prep'); if (btn) btn.disabled = true;
+  try {
+    var r = await apiFetch('/api/impresion/rutas', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ impresoraId: imp.value, ambito: 'categoria', clave: cat.value, modo: 'agregar' }),
+    });
+    var data = await r.json().catch(function () { return {}; });
+    if (!r.ok) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = data.error || 'No se pudo guardar la ruta.'; } if (btn) btn.disabled = false; return; }
+    await cargarImpresoras();
+  } catch (e) {
+    if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Error al guardar la ruta.'; }
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function eliminarRutaPreparacion(id) {
+  var msg = document.getElementById('ruta-prep-msg');
+  try {
+    var r = await apiFetch('/api/impresion/rutas/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!r.ok) { var d = await r.json().catch(function () { return {}; }); if (msg) { msg.style.color = '#b91c1c'; msg.textContent = d.error || 'No se pudo eliminar.'; } return; }
+    await cargarImpresoras();
+  } catch (e) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Error al eliminar.'; } }
+}
+
 var impRefrescoTimer = null;
 var impDescarga = null;
+// Rutas de preparación (category-first): categorías del menú, impresoras
+// configuradas y reglas ambito='categoria' vigentes.
+var impCategoriasPrep = null, impImpresorasPrep = null, impRutasPrep = null;
 
 async function cargarImpresoras() {
   if (ROL !== 'admin') return;
@@ -7707,6 +7777,19 @@ async function cargarImpresoras() {
     var r = await apiFetch('/api/impresion/self-service');
     impEstado = r.ok ? await r.json() : null;
   } catch (err) { impEstado = null; }
+
+  // Categorías (menú), impresoras configuradas (con su id) y rutas de categoría.
+  // Si algo falla, la sección simplemente no se pinta.
+  try {
+    var res = await Promise.all([
+      apiFetch('/api/menu').then(function (x) { return x.ok ? x.json() : []; }).catch(function () { return []; }),
+      apiFetch('/api/impresion/impresoras').then(function (x) { return x.ok ? x.json() : { impresoras: [] }; }).catch(function () { return { impresoras: [] }; }),
+      apiFetch('/api/impresion/rutas').then(function (x) { return x.ok ? x.json() : { rutas: [] }; }).catch(function () { return { rutas: [] }; }),
+    ]);
+    impCategoriasPrep = Array.isArray(res[0]) ? res[0].map(function (c) { return c.nombre; }).filter(Boolean) : [];
+    impImpresorasPrep = (res[1].impresoras || []).map(function (i) { return { id: i.id, nombre: i.nombre }; });
+    impRutasPrep = (res[2].rutas || []).filter(function (x) { return x.ambito === 'categoria'; });
+  } catch (err) { /* sección opcional */ }
 
   // La URL de descarga cambia poco: se pide una vez por sesión de pestaña.
   if (impDescarga === null) {
