@@ -816,7 +816,8 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
       "nombre": "...",
       "cantidad": 1,
       "precio_unitario": 000,
-      "notas": "... (personalizaciones, ej: spread pesto, proteína salami)"
+      "modificadores": ["... (opciones/extras ELEGIDOS por su nombre EXACTO del menú, ej: \"Salchicha americana\". El SISTEMA les pone el precio; tú NUNCA lo sumas ni lo inventas)"],
+      "notas": "... (aclaraciones SIN costo, ej: sin cebolla)"
     }
   ],
   "subtotal": 000,
@@ -829,6 +830,7 @@ Cuando el cliente confirme el pedido final, emite un bloque JSON con este format
 }
 </ORDEN_CONFIRMADA>
 
+MODIFICADORES Y EXTRAS: cuando el cliente elige una opción con costo (ej. "con salchicha americana +$40"), inclúyela en el arreglo "modificadores" del item por su nombre EXACTO del menú. El SISTEMA le pone el precio real del catálogo y lo suma al total; tú NUNCA sumes el extra al "precio_unitario" ni inventes su importe. En tu resumen al cliente puedes mencionar el extra, pero el subtotal/total oficiales los fija el sistema al registrar — no afirmes un total que tú calculaste como definitivo.
 No emitas ese bloque hasta que el cliente haya confirmado explícitamente con un "sí", "correcto", "está bien" o equivalente.
 La forma de pago es OBLIGATORIA antes del resumen final: si el cliente aún no la eligió, pregúntala ofreciendo SOLO los métodos aceptados de este negocio; NUNCA la asumas (ni "efectivo" por defecto) ni la inventes, y NUNCA emitas el bloque sin ella. El resumen final SIEMPRE incluye la forma de pago elegida. Si la forma de pago se agrega o cambia DESPUÉS de un "sí", ese "sí" deja de valer: repite el resumen completo (con la forma de pago) y espera una NUEVA confirmación explícita antes de emitir el bloque. Si el sistema te avisa que faltó la forma de pago, el pedido sigue vigente: no lo vuelvas a pedir ni regreses al menú.`}
 ${overrides.length > 0 ? '\n## MEJORAS APRENDIDAS\n' + overrides.map(o => o.contenido).join('\n') : ''}`;

@@ -131,6 +131,62 @@ export function resolverSeleccion(producto, grupos, seleccion) {
   };
 }
 
+// Normaliza un nombre para matching tolerante: sin acentos, minúsculas, sin
+// espacios repetidos. Solo para EMPAREJAR, nunca para mostrar.
+function normNombre(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Resolución de modificadores para el PATH DEL LLM (WhatsApp/voz): el modelo
+// emite NOMBRES de opciones, no IDs. Empareja cada nombre contra las opciones
+// REALES del producto (por nombre normalizado) y toma el precio_extra CANÓNICO
+// de la base — el LLM nunca decide el importe. Es LENIENTE a propósito (no
+// impone min/max de grupos como la UI): un nombre no reconocido NO se cobra y
+// se reporta en `noReconocidos`; nunca inventa un precio ni tumba el pedido.
+// Reutiliza el mismo catálogo (cargarGruposDeProductos) y la misma regla de
+// precio que POS/Restaurante — no hay una segunda implementación de precios.
+//
+//   grupos:  los del producto (de cargarGruposDeProductos), cada uno con .opciones
+//   nombres: ["Salchicha americana", ...] (o [{opcion:"..."}])
+// Devuelve { modificadores, precioExtras, texto, noReconocidos }.
+export function resolverModificadoresLLM(grupos, nombres) {
+  const pedidos = (Array.isArray(nombres) ? nombres : [])
+    .map((n) => (n && typeof n === 'object') ? (n.opcion ?? n.nombre ?? '') : n)
+    .map((n) => String(n || '').trim())
+    .filter(Boolean);
+
+  // Índice opción-normalizada → {grupo, opcion}. Solo opciones DISPONIBLES.
+  const indice = new Map();
+  for (const g of (grupos || [])) {
+    for (const o of (g.opciones || [])) {
+      if (o.disponible === false) continue;
+      const clave = normNombre(o.nombre);
+      if (!indice.has(clave)) indice.set(clave, { g, o });
+    }
+  }
+
+  const modificadores = [];
+  const noReconocidos = [];
+  const yaTomadas = new Set();
+  for (const nombre of pedidos) {
+    const hit = indice.get(normNombre(nombre));
+    if (!hit) { noReconocidos.push(nombre); continue; }
+    if (yaTomadas.has(hit.o.id)) continue; // mismo extra repetido: se cuenta una vez
+    yaTomadas.add(hit.o.id);
+    modificadores.push({
+      grupo_id: hit.g.id, grupo: hit.g.nombre,
+      opcion_id: hit.o.id, opcion: hit.o.nombre,
+      precio_extra: num(hit.o.precio_extra), // SIEMPRE el de la base
+    });
+  }
+  return {
+    modificadores,
+    precioExtras: num(modificadores.reduce((s, m) => s + m.precio_extra, 0)),
+    texto: textoModificadores(modificadores),
+    noReconocidos,
+  };
+}
+
 // Texto para comanda/ticket: "Salsas: Verde · Proteína: Bistec en Salsa".
 // Es lo que ve la cocina, así que agrupa por grupo y respeta el orden.
 export function textoModificadores(modificadores) {

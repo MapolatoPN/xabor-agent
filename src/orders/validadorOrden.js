@@ -21,6 +21,7 @@
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
+import { cargarGruposDeProductos, resolverModificadoresLLM } from '../services/modificadores.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -226,9 +227,12 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       categoria_id: r.producto.categoria_id ?? null,
       nombre: r.producto.nombre,
       cantidad,
-      precio_unitario: precioReal,
-      precio_base: precioReal,
+      precio_unitario: precioReal,   // BASE por ahora; los modificadores se
+      precio_base: precioReal,       // suman abajo (extras canónicos).
       notas: String(it?.notas || '').slice(0, NOTAS_MAX) || undefined,
+      // Modificadores CRUDOS del LLM (nombres); se resuelven contra catálogo
+      // más abajo. El LLM nunca fija el importe.
+      _modsLLM: Array.isArray(it?.modificadores) ? it.modificadores : [],
     });
   }
 
@@ -266,6 +270,35 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   }
 
   if (rechazos.length) return { ok: false, rechazos, ajustes };
+
+  // ── MODIFICADORES: precio CANÓNICO del catálogo (nunca del LLM) ──
+  // El LLM emite NOMBRES de opciones; aquí se resuelven contra las opciones
+  // reales del producto y se suma su precio_extra al precio_unitario. El
+  // precio_base queda INTACTO (solo la base): así el 2x1/descuentos aplican
+  // sobre la base y los extras se siguen cobrando. Un nombre inventado o no
+  // disponible NO se cobra (se reporta en ajustes) y nunca tumba la orden.
+  try {
+    const gruposPorProd = await cargarGruposDeProductos(negocioId, itemsCanonicos.map((i) => i.producto_id));
+    for (const item of itemsCanonicos) {
+      const { modificadores, precioExtras, texto, noReconocidos } =
+        resolverModificadoresLLM(gruposPorProd.get(item.producto_id) || [], item._modsLLM);
+      if (modificadores.length) {
+        item.modificadores = modificadores;                     // ticket / cocina / historial
+        item.precio_unitario = item.precio_base + precioExtras; // base + extras canónicos
+        if (texto) item.modificadores_texto = texto;
+      }
+      if (noReconocidos.length) {
+        ajustes.push({ tipo: 'modificador_no_reconocido', producto: item.nombre, ignorados: noReconocidos });
+        eventoTxn('modificador_no_reconocido', negocioId, { producto_id: item.producto_id, ignorados: noReconocidos.slice(0, 5) });
+      }
+      delete item._modsLLM;
+    }
+  } catch (e) {
+    // Fail-safe: ante cualquier error se cobran solo las bases (nunca se regala
+    // ni se inventa un extra). Se limpia el rastro temporal.
+    eventoTxn('modificadores_error', negocioId, { error: String(e?.message || e).slice(0, 120) });
+    for (const item of itemsCanonicos) delete item._modsLLM;
+  }
 
   // ── Totales: SIEMPRE recalculados ──
   const reglas = await cargarReglas(negocioId).catch(() => null);
