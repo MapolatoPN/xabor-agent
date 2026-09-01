@@ -142,6 +142,22 @@ async function respuestaDelBot(telefono, desde) {
   return r || [];
 }
 const ordenJSON = (obj) => `Perfecto, confirmo tu pedido.\n<ORDEN_CONFIRMADA>\n${JSON.stringify(obj)}\n</ORDEN_CONFIRMADA>`;
+const previewJSON = (obj) => `Aquí tu resumen.\n<ORDEN_PREVIEW>\n${JSON.stringify(obj)}\n</ORDEN_PREVIEW>`;
+// Flujo REAL de WhatsApp con pricing oficial: turno 1 el modelo emite
+// <ORDEN_PREVIEW> (el sistema muestra el resumen oficial, no registra); turno 2,
+// tras el "sí", emite <ORDEN_CONFIRMADA> (el sistema registra). El enforcement
+// de brain.js exige este preview previo en WhatsApp antes de registrar.
+async function confirmarWA(pnid, tel, obj, msg1, msg2) {
+  anthropicMock.encolarRespuesta(previewJSON(obj));
+  let antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(pnid, tel, msg1);
+  const preview = await respuestaDelBot(tel, antes);
+  anthropicMock.encolarRespuesta(ordenJSON(obj));
+  antes = metaMock.obtenerMensajesEnviados().length;
+  await mensajeEntrante(pnid, tel, msg2);
+  const confirm = await respuestaDelBot(tel, antes);
+  return { preview, confirm };
+}
 const ordenBase = (items, extras = {}) => ({
   cliente: { nombre: 'Cliente P0', telefono: null, calle: null, colonia: null, entre_calles: null },
   modalidad: 'recoger en tienda',
@@ -235,11 +251,9 @@ await t('T2b', 'integración: LLM emite orden con producto inventado → cero pe
 await t('T7', 'anticipo obligatorio sin pago → pedido pendiente_pago, SIN comanda, mensaje honesto', async () => {
   await actualizarConfiguracion({ pedido_requiere_anticipo: 'true' }, NEG_A);
   const tel = '5218800712001';
-  anthropicMock.encolarRespuesta(ordenJSON(ordenBase(
-    [{ nombre: 'P0 Panini Prueba', cantidad: 2, precio_unitario: 180 }], { total: 360 })));
-  const antes = metaMock.obtenerMensajesEnviados().length;
-  await mensajeEntrante(PNID_A, tel, 'Sí, confirma mi pedido de 2 paninis');
-  const respuestas = await respuestaDelBot(tel, antes);
+  const { confirm: respuestas } = await confirmarWA(PNID_A, tel,
+    ordenBase([{ nombre: 'P0 Panini Prueba', cantidad: 2, precio_unitario: 180 }], { total: 360 }),
+    'quiero 2 paninis', 'Sí, confirma mi pedido de 2 paninis');
   const peds = await esperarHasta(async () => {
     const r = await pedidosDeTel(NEG_A, '52188007120%');
     return r.length ? r : null;
@@ -283,11 +297,9 @@ await t('T8', 'anticipo validado por backend (webhook de pago) → transición p
 await t('T9', 'negocio SIN anticipo conserva el flujo actual (pedido nace nuevo, total del backend)', async () => {
   await actualizarConfiguracion({ pedido_requiere_anticipo: 'false' }, NEG_A);
   const tel = '5218800713001';
-  anthropicMock.encolarRespuesta(ordenJSON(ordenBase(
-    [{ nombre: 'P0 Panini Prueba', cantidad: 1, precio_unitario: 9999 }], { total: 9999 })));
-  const antes = metaMock.obtenerMensajesEnviados().length;
-  await mensajeEntrante(PNID_A, tel, 'Sí, confirmo');
-  const respuestas = await respuestaDelBot(tel, antes);
+  const { preview, confirm: respuestas } = await confirmarWA(PNID_A, tel,
+    ordenBase([{ nombre: 'P0 Panini Prueba', cantidad: 1, precio_unitario: 9999 }], { total: 9999 }),
+    'quiero 1 panini', 'Sí, confirmo');
   const peds = await esperarHasta(async () => {
     const r = await pedidosDeTel(NEG_A, '52188007130%');
     return r.length ? r : null;
@@ -295,7 +307,9 @@ await t('T9', 'negocio SIN anticipo conserva el flujo actual (pedido nace nuevo,
   assert.ok(peds?.length === 1);
   assert.strictEqual(peds[0].estado, 'nuevo');
   assert.strictEqual(Number(peds[0].datos.total), 180, 'el total es el del backend, no los $9999 del LLM');
-  assert.ok(respuestas.join(' ').includes('$180'), 'el cliente recibe el total REAL');
+  // El total REAL ($180) lo ve el cliente en el PREVIEW oficial (nunca los $9999).
+  assert.ok((preview.join(' ') + ' ' + respuestas.join(' ')).includes('$180'), 'el cliente recibe el total REAL');
+  assert.ok(!(preview.join(' ')).includes('9999'), 'jamás el total inventado por el LLM');
 });
 
 await t('T11', 'confirmación verbal SIN orden → detectada, alertada y aclarada al cliente', async () => {

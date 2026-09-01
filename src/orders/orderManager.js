@@ -155,6 +155,67 @@ export async function cargarPedidosDesdeDB() {
 // server.js, chat-test.js) deben usar `await registrarPedido(...)` --
 // llamarla sin await ahora devuelve una Promise, no el pedido, y
 // pedido.id sería undefined.
+// ─── PREVIEW OFICIAL (preconfirmación con pricing del backend) ──────────────
+//
+// El LLM propone; XABOR calcula. El cliente NUNCA confirma un total redactado
+// por el modelo. `previsualizarPedido` usa EXACTAMENTE el mismo pipeline que el
+// registro (validarOrdenPropuesta: catálogo + modificadores canónicos +
+// calcularPromociones) pero NO persiste nada. registrarPedido vuelve a correr
+// ese mismo pipeline, así que el total del preview y el registrado coinciden
+// salvo que el catálogo/promoción cambien entre ambos — ese caso lo detecta la
+// capa conversacional comparando el total (ver brain.js) y pide reconfirmar.
+export async function previsualizarPedido(orden, negocioId, opts = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    return { ok: false, rechazos: [{ codigo: 'TENANT_CONTEXT_REQUIRED' }], ajustes: [] };
+  }
+  const v = await validarOrdenPropuesta(orden, negocioId, opts);
+  if (!v.ok) return { ok: false, rechazos: v.rechazos, ajustes: v.ajustes };
+  const o = v.orden;
+  const items = (o.items || []).map((it) => ({
+    producto_id: it.producto_id,
+    nombre: it.nombre,
+    cantidad: it.cantidad,
+    precio_base: it.precio_base,
+    modificadores: (it.modificadores || []).map((m) => ({ nombre: m.opcion, precio: m.precio_extra })),
+    total_item: Math.round(Number(it.precio_unitario) * Number(it.cantidad) * 100) / 100,
+  }));
+  const preview = {
+    valid: true,
+    items,
+    subtotal: o.subtotal,
+    costo_envio: o.costo_envio || 0,
+    promociones: (o.promociones || []).map((p) => ({ nombre: p.nombre, descuento: p.descuento })),
+    descuento_total: o.descuento || 0,
+    total: o.total,
+    modalidad: o.modalidad || null,
+  };
+  return { ok: true, preview, orden: o, ajustes: v.ajustes };
+}
+
+// Resumen para el CLIENTE redactado por CÓDIGO a partir del PREVIEW OFICIAL —
+// nunca por el modelo. La promoción se muestra como línea de DESCUENTO, nunca
+// como "gratis" (sería engañoso cuando el item bonificado lleva extras que sí
+// se cobran).
+export function resumenPedidoOficial(preview) {
+  const dinero = (n) => { const x = Number(n || 0); return `$${x % 1 === 0 ? x.toFixed(0) : x.toFixed(2)}`; };
+  const lineas = ['Tu pedido queda así:', ''];
+  for (const it of preview.items || []) {
+    const cant = Number(it.cantidad) > 1 ? `${it.cantidad}x ` : '';
+    lineas.push(`• ${cant}${it.nombre} — ${dinero(it.total_item)}`);
+    for (const m of it.modificadores || []) {
+      lineas.push(`   + ${m.nombre}${Number(m.precio) ? ` (${dinero(m.precio)})` : ''}`);
+    }
+  }
+  lineas.push('');
+  lineas.push(`Subtotal: ${dinero(preview.subtotal)}`);
+  for (const p of preview.promociones || []) lineas.push(`${p.nombre}: -${dinero(p.descuento)}`);
+  if (Number(preview.costo_envio)) lineas.push(`Envío: ${dinero(preview.costo_envio)}`);
+  lineas.push(`Total: ${dinero(preview.total)}`);
+  lineas.push('');
+  lineas.push('¿Confirmas que todo está correcto?');
+  return lineas.join('\n');
+}
+
 export async function registrarPedido(orden, canal = 'test') {
   // Fail-closed universal (Incidente P0, Fase 0): TODO canal debe traer
   // orden.negocioId ya resuelto por el borde del canal (WhatsApp, Voz,

@@ -10,6 +10,9 @@ import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, f
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
+import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
+import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
+import { decidirConfirmacion } from './confirmacionPolicy.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -110,6 +113,61 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
 
     const orden = extraerOrden(textoRespuesta);
 
+    // ── PRICING OFICIAL (preconfirmación con el backend) ──
+    // El LLM propone; XABOR calcula. El cliente NUNCA confirma un total escrito
+    // por el modelo. <ORDEN_PREVIEW> pide el resumen oficial ANTES de confirmar;
+    // <ORDEN_CONFIRMADA> confirma. Ambos pasan por el MISMO pipeline
+    // (previsualizarPedido → validarOrdenPropuesta), así que el total mostrado y
+    // el registrado coinciden salvo cambio de catálogo/promoción — que aquí se
+    // detecta comparando contra el último preview y obliga a reconfirmar.
+    const propuestaPreview = extraerBloque(textoRespuesta, 'ORDEN_PREVIEW');
+    let ordenParaRegistrar = orden;
+    let textoOficialPricing = null;
+    if (typeof negocioId === 'string' && negocioId.trim()) {
+      try {
+        if (orden) {
+          const v = await previsualizarPedido(orden, negocioId, { canal });
+          if (v.ok) {
+            const d = decidirConfirmacion({
+              canal, prevTotal: session.pedidoPreview?.total, nuevoTotal: v.preview.total,
+            });
+            if (d.accion === 'registrar') {
+              // Coincide con el último preview oficial, o es confirmación directa
+              // en un canal con compatibilidad (voz/test/api). El total registrado
+              // es SIEMPRE el oficial del backend (mismo pipeline).
+              session.pedidoPreview = null;
+            } else if (d.accion === 'reconfirmar_cambio') {
+              // Había un preview oficial y el total CAMBIÓ (catálogo/promo): NO
+              // registrar en silencio; mostrar el nuevo total y pedir confirmar.
+              session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+              ordenParaRegistrar = null;
+              textoOficialPricing = `Hubo un cambio en el total de tu pedido.\n\n${resumenPedidoOficial(v.preview)}`;
+            } else { // 'preview_requerido'
+              // WhatsApp SIN preview oficial previo (o perdido por reinicio del
+              // proceso): jamás se registra sobre un total que el cliente no vio
+              // de Xabor. Se genera el preview oficial y se pide confirmar ESE.
+              session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+              ordenParaRegistrar = null;
+              textoOficialPricing = resumenPedidoOficial(v.preview);
+            }
+          }
+          // Si !v.ok se deja pasar: registrarPedido revalida con el mismo
+          // pipeline y el canal redacta el rechazo honesto.
+        } else if (propuestaPreview) {
+          const v = await previsualizarPedido(propuestaPreview, negocioId, { canal });
+          if (v.ok) {
+            session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+            textoOficialPricing = resumenPedidoOficial(v.preview);
+          } else {
+            session.pedidoPreview = null;
+            textoOficialPricing = mensajeRechazoParaCliente(v.rechazos || []);
+          }
+        }
+      } catch (e) {
+        console.error('[brain] preview pricing oficial:', e.message);
+      }
+    }
+
     // Registrar intents y actualizar oportunidad (background, no bloquea)
     registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
       .catch(e => console.error('[brain] registrarIntents:', e.message));
@@ -139,9 +197,13 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
       }
     }
 
+    // El pricing OFICIAL del backend REEMPLAZA cualquier cifra que el modelo
+    // hubiera escrito: el cliente solo ve/confirma números de Xabor.
+    if (textoOficialPricing) textoFinal = textoOficialPricing;
+
     return {
       texto: textoFinal,
-      orden,
+      orden: ordenParaRegistrar,
       factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
@@ -425,6 +487,16 @@ async function procesarCapturaComercial(sesionComercial, negocioId, textoRespues
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Extrae y parsea un bloque JSON <TAG>...</TAG> (p. ej. ORDEN_PREVIEW). Igual
+// que extraerOrden pero genérico. Devuelve null si no existe o no parsea.
+function extraerBloque(texto, tag) {
+  const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
+  const match = texto.match(re);
+  if (!match) return null;
+  try { return JSON.parse(match[1].trim()); }
+  catch (e) { console.error(`[brain] ⚠️ ${tag} presente pero JSON inválido:`, e.message); return null; }
+}
+
 function extraerOrden(texto) {
   const match = texto.match(/<ORDEN_CONFIRMADA>([\s\S]*?)<\/ORDEN_CONFIRMADA>/);
   if (!match) return null;
@@ -450,6 +522,7 @@ function extraerFactura(texto) {
 function limpiarTexto(texto) {
   const sinTags = texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
+    .replace(/<ORDEN_PREVIEW>[\s\S]*?<\/ORDEN_PREVIEW>/g, '')
     .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
