@@ -39,7 +39,7 @@ function responderError(res, e, contexto) {
   return res.status(500).json({ error: 'No se pudo completar la operación' });
 }
 
-export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) {
+export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno }) {
   // ══════════════════ SUPERFICIE PÚBLICA ══════════════════
   // Rate limit por IP: la tienda es pública y hay que protegerla de scraping
   // de catálogo, fuerza bruta de cupones y avalanchas de checkout.
@@ -161,6 +161,10 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
 
   // ══════════════════ BACKOFFICE (sesión + módulo) ══════════════════
   const gate = [requireAuthSeguro, requireModulo('tienda_online')];
+  // Promociones dejó de ser exclusiva de la tienda: aplica a POS y WhatsApp.
+  // Un negocio con `menu` o `pos` (aunque no tenga tienda_online) puede
+  // administrarla. El resto del backoffice de tienda sigue con `gate`.
+  const gatePromos = [requireAuthSeguro, requireModuloAlguno(['tienda_online', 'menu', 'pos'])];
 
   app.get('/api/admin/tienda', ...gate, async (req, res) => {
     try {
@@ -214,7 +218,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
   });
 
   // ── Promociones y campañas ──
-  app.get('/api/admin/tienda/promociones', ...gate, async (req, res) => {
+  app.get('/api/admin/tienda/promociones', ...gatePromos, async (req, res) => {
     try {
       const [promociones, campanas] = await Promise.all([
         listarPromociones(req.negocioId), listarCampanas(req.negocioId),
@@ -223,19 +227,19 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo }) 
     } catch (e) { responderError(res, e, 'GET promociones'); }
   });
 
-  app.post('/api/admin/tienda/promociones', ...gate, async (req, res) => {
+  app.post('/api/admin/tienda/promociones', ...gatePromos, async (req, res) => {
     try {
       res.json({ ok: true, ...(await guardarPromocion(req.negocioId, req.body || {})) });
     } catch (e) { responderError(res, e, 'POST promocion'); }
   });
 
-  app.put('/api/admin/tienda/promociones/:id', ...gate, async (req, res) => {
+  app.put('/api/admin/tienda/promociones/:id', ...gatePromos, async (req, res) => {
     try {
       res.json({ ok: true, ...(await guardarPromocion(req.negocioId, req.body || {}, req.params.id)) });
     } catch (e) { responderError(res, e, 'PUT promocion'); }
   });
 
-  app.delete('/api/admin/tienda/promociones/:id', ...gate, async (req, res) => {
+  app.delete('/api/admin/tienda/promociones/:id', ...gatePromos, async (req, res) => {
     try {
       const ok = await eliminarPromocion(req.negocioId, req.params.id);
       if (!ok) return res.status(404).json({ error: 'Promoción no encontrada' });

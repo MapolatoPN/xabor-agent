@@ -4923,12 +4923,34 @@ function requireModulo(modulo) {
   };
 }
 
+// Igual que requireModulo pero pasa si el negocio tiene CUALQUIERA de los
+// módulos dados. Para funciones que dejaron de ser exclusivas de un módulo:
+// p. ej. Promociones nació en la Tienda online, pero ahora aplica también a
+// POS y WhatsApp, así que un negocio con `menu` o `pos` (sin tienda) también
+// debe poder administrarla.
+function requireModuloAlguno(modulos) {
+  const lista = Array.isArray(modulos) ? modulos : [modulos];
+  return async (req, res, next) => {
+    if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+      return responderModuloBloqueado(res, 'sesion_invalida', 'Sesión inválida — no se pudo determinar el negocio');
+    }
+    if (!(await negocioEstaActivo(req.negocioId))) {
+      return responderModuloBloqueado(res, 'negocio_suspendido', 'Negocio suspendido o inactivo');
+    }
+    for (const m of lista) {
+      const estado = await obtenerEstadoModulo(req.negocioId, m);
+      if (MODULO_ESTADOS_DISPONIBLES_API.includes(estado)) return next();
+    }
+    return responderModuloBloqueado(res, 'modulo_no_contratado', 'Esta función no está incluida para este negocio.');
+  };
+}
+
 // ─── Tienda Online ────────────────────────────────────────────────────────
 // Vive en su propio módulo porque tiene dos superficies muy distintas (una
 // pública sin sesión y otra de backoffice) y porque este archivo ya es
 // demasiado grande. Se monta aquí, después de requireModulo, porque las
 // rutas de backoffice lo necesitan.
-registrarRutasTienda(app, { requireAuthSeguro, requireModulo });
+registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

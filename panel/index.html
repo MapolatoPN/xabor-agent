@@ -1184,7 +1184,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo.
        Por eso vive en Catálogo y no en Configuración -- lo que se administra
        aquí es qué del menú sale a la calle y con qué promociones. -->
-  <button class="tab-btn admin-only" id="tab-tienda"    data-modulo="tienda_online" onclick="mostrarTab('tienda')">Tienda en línea</button>
+  <button class="tab-btn admin-only" id="tab-tienda"    data-modulo-any="tienda_online,menu,pos" onclick="mostrarTab('tienda')">Tienda en línea</button>
   </div>
 
   <button type="button" class="nav-grupo" id="navgrp-clientes" aria-expanded="true" aria-controls="navsec-clientes" onclick="toggleGrupoNav('clientes')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Clientes</button>
@@ -1768,12 +1768,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
 
       <div class="tnd-subnav" id="tnd-subnav">
-        <button class="tnd-sub activo" data-sec="resumen"     onclick="tndIr('resumen')">Resumen</button>
-        <button class="tnd-sub"        data-sec="productos"   onclick="tndIr('productos')">Productos</button>
+        <button class="tnd-sub activo" data-sec="resumen"     data-modulo="tienda_online" onclick="tndIr('resumen')">Resumen</button>
+        <button class="tnd-sub"        data-sec="productos"   data-modulo="tienda_online" onclick="tndIr('productos')">Productos</button>
         <button class="tnd-sub"        data-sec="promociones" onclick="tndIr('promociones')">Promociones</button>
-        <button class="tnd-sub"        data-sec="campanas"    onclick="tndIr('campanas')">Campañas</button>
-        <button class="tnd-sub"        data-sec="metricas"    onclick="tndIr('metricas')">Métricas</button>
-        <button class="tnd-sub"        data-sec="ajustes"     onclick="tndIr('ajustes')">Apariencia</button>
+        <button class="tnd-sub"        data-sec="campanas"    data-modulo="tienda_online" onclick="tndIr('campanas')">Campañas</button>
+        <button class="tnd-sub"        data-sec="metricas"    data-modulo="tienda_online" onclick="tndIr('metricas')">Métricas</button>
+        <button class="tnd-sub"        data-sec="ajustes"     data-modulo="tienda_online" onclick="tndIr('ajustes')">Apariencia</button>
       </div>
 
       <div id="tnd-sec-resumen"     class="tnd-sec"></div>
@@ -2380,6 +2380,19 @@ function aplicarModulosUI() {
   document.querySelectorAll('[data-modulo]').forEach(el => {
     if (!MODULOS.includes(el.dataset.modulo)) el.style.display = 'none';
   });
+  // data-modulo-any="a,b,c": se muestra si el negocio tiene CUALQUIERA. Para
+  // funciones que dejaron de ser exclusivas de un módulo (p. ej. Promociones,
+  // disponible con tienda_online, menu o pos).
+  document.querySelectorAll('[data-modulo-any]').forEach(el => {
+    const alguno = String(el.dataset.moduloAny || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!alguno.some(m => MODULOS.includes(m))) el.style.display = 'none';
+  });
+  // Negocio SIN tienda online pero CON menu/pos: la pestaña "Tienda en línea"
+  // se convierte en "Promociones" (única subsección que le aplica).
+  const tabTienda = document.getElementById('tab-tienda');
+  if (tabTienda && !MODULOS.includes('tienda_online') && (MODULOS.includes('menu') || MODULOS.includes('pos'))) {
+    tabTienda.textContent = 'Promociones';
+  }
 }
 
 // Si el tab activo por default (o el que haya quedado marcado) terminó
@@ -3592,7 +3605,11 @@ const tndVeces = n => Number(n) === 1 ? '1 uso' : `${n} usos`;
 const tndPedidos = n => Number(n) === 1 ? '1 pedido' : `${n} pedidos`;
 
 async function tndAbrir() {
-  tndIr(TND.seccion || 'resumen');
+  // Sin módulo tienda_online (negocio de solo menu/pos) la única subsección
+  // que aplica es Promociones — entrar a 'resumen' llamaría endpoints de
+  // tienda que devuelven 403. El resto del subnav ya está oculto por módulo.
+  const soloPromos = !MODULOS.includes('tienda_online');
+  tndIr(soloPromos ? 'promociones' : (TND.seccion || 'resumen'));
 }
 
 function tndIr(sec) {
