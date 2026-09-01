@@ -1613,9 +1613,13 @@ export async function responderConsultaPromos(negocioId, cuando, { canal = 'what
 }
 
 // Frase legible de las condiciones por modificadores de una promo, resolviendo
-// grupo/opción a NOMBRES (nunca IDs). Ej: "Participan los preparados con: Salsa
-// Roja o Verde; Proteína Pollo; 2 en Guarniciones sencillas."
-function fraseCondiciones(condiciones, gruposPorProd) {
+// grupo/opción a NOMBRES (nunca IDs). Texto NATURAL por operador: el nombre del
+// grupo es metadata interna y NO se antepone en condiciones de elección (evita
+// "Waffles o Hotcakes Hotcakes" cuando el grupo ya está redactado como
+// alternativa). Solo se usa el nombre del grupo como sustantivo en las
+// condiciones de CANTIDAD ("2 guarniciones"). Ej. miércoles:
+// "Participan los preparados con Roja o Verde, Pechuga de pollo y 2 guarniciones sencillas."
+export function fraseCondiciones(condiciones, gruposPorProd) {
   const cond = Array.isArray(condiciones) ? condiciones : [];
   const partes = [];
   for (const c of cond) {
@@ -1625,19 +1629,22 @@ function fraseCondiciones(condiciones, gruposPorProd) {
     const nombreOp = (id) => (grupo.opciones || []).find((o) => Number(o.id) === Number(id))?.nombre;
     const opts = (Array.isArray(c.option_ids) ? c.option_ids : []).map(nombreOp).filter(Boolean);
     if (c.operador === 'una_de' && opts.length) {
-      partes.push(`${grupo.nombre} ${opts.length === 1 ? opts[0] : opts.slice(0, -1).join(', ') + ' o ' + opts[opts.length - 1]}`);
+      // "Hotcakes" · "Roja o Verde" — solo las opciones, nunca el nombre del grupo.
+      partes.push(opts.length === 1 ? opts[0] : `${opts.slice(0, -1).join(', ')} o ${opts[opts.length - 1]}`);
     } else if (c.operador === 'incluye' && opts.length) {
-      partes.push(`${grupo.nombre} ${listaLegible(opts)}`);
+      // "Pechuga de pollo" — la(s) opción(es) requerida(s).
+      partes.push(listaLegible(opts));
     } else if (c.operador === 'cantidad') {
       const min = c.min != null ? Number(c.min) : null, max = c.max != null ? Number(c.max) : null;
+      const g = String(grupo.nombre || '').toLowerCase();
       let q = '';
-      if (min != null && max != null) q = min === max ? `${min}` : `entre ${min} y ${max}`;
-      else if (min != null) q = `al menos ${min}`;
-      else if (max != null) q = `hasta ${max}`;
-      if (q) partes.push(`${q} en ${grupo.nombre}`);
+      if (min != null && max != null) q = min === max ? `${min} ${g}` : `entre ${min} y ${max} ${g}`;
+      else if (min != null) q = `al menos ${min} ${g}`;
+      else if (max != null) q = `hasta ${max} ${g}`;
+      if (q) partes.push(q);
     }
   }
-  return partes.length ? `Participan los preparados con: ${partes.join('; ')}.` : '';
+  return partes.length ? `Participan los preparados con ${listaLegible(partes)}.` : '';
 }
 
 // Une nombres en lenguaje natural: "A", "A y B", "A, B y C".

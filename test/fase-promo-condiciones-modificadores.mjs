@@ -260,7 +260,8 @@ await t('19 · descripción informativa incluye Roja/Verde, Pollo y guarniciones
   const txt = p.condicionesTexto + ' ' + p.participantesTexto;
   assert.ok(/Roja/.test(txt) && /Verde/.test(txt), 'salsas');
   assert.ok(/Pollo/.test(txt), 'proteína');
-  assert.ok(/Guarniciones sencillas/.test(txt), 'guarniciones');
+  // Redacción natural (renderer nuevo): "2 guarniciones sencillas" en minúsculas.
+  assert.ok(/2 guarniciones sencillas/i.test(txt), 'guarniciones');
   await borra();
 });
 await t('20 · oportunidad SOLO si la unidad actual es elegible', async () => {

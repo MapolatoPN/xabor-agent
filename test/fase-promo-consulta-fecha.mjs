@@ -147,7 +147,8 @@ await t('TEST 9 · productos específicos → devuelve nombres reales', async ()
 
 await t('TEST 10 · condiciones por modificadores → devuelve condiciones legibles', async () => {
   const txt = await consulta('mañana');
-  assert.ok(/Salsa/.test(txt) && /Roja/.test(txt) && /Verde/.test(txt), 'condiciones legibles: ' + txt.slice(0, 200));
+  // Renderer natural: se muestran las opciones (Roja o Verde), no el nombre del grupo.
+  assert.ok(/Roja/.test(txt) && /Verde/.test(txt), 'condiciones legibles: ' + txt.slice(0, 200));
 });
 
 await t('TEST 11 · timezone: "mañana" se resuelve en la TZ del negocio', async () => {
