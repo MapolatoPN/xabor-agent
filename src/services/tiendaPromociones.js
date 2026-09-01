@@ -1306,6 +1306,21 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
     if (!rows.length) throw new PromocionError('La campaña no pertenece a este negocio', 'CAMPANIA_AJENA');
   }
 
+  // Los productos participantes deben ser del MISMO negocio: nunca se asocia el
+  // producto de otro. La UI solo ofrece los propios; esto lo hace fail-closed
+  // también ante una petición manipulada (aislamiento estricto por negocio).
+  if (Array.isArray(datos.productos) && datos.productos.length) {
+    const ids = [...new Set(datos.productos.map(Number).filter(Number.isInteger))];
+    if (ids.length) {
+      const { rows } = await pool.query(
+        `SELECT id FROM menu_productos WHERE id = ANY($1) AND negocio_id = $2`,
+        [ids, negocioId]);
+      if (rows.length !== ids.length) {
+        throw new PromocionError('Uno o más productos no pertenecen a este negocio', 'PRODUCTO_AJENO');
+      }
+    }
+  }
+
   const cols = Object.keys(campos);
   const vals = cols.map(c => campos[c]);
   try {

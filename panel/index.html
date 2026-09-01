@@ -3844,6 +3844,7 @@ function tndTarjetaPromo(p) {
   if (Array.isArray(p.diasSemana) && p.diasSemana.length && p.diasSemana.length < 7) reglas.push(p.diasSemana.map(d => TND_DIAS[d]).join(', '));
   if (Array.isArray(p.canales) && p.canales.length) reglas.push(p.canales.map(c => TND_CANALES[c] || c).join('/'));
   if (Array.isArray(p.categorias) && p.categorias.length) reglas.push(`${p.categorias.length} categoría(s) participante(s)`);
+  if (Array.isArray(p.productos) && p.productos.length) reglas.push(`${p.productos.length} producto(s) participante(s)`);
   if (p.minimoCompra > 0) reglas.push(`compra mínima ${tndDinero(p.minimoCompra)}`);
   if (p.codigo) reglas.push(`con código <strong>${tndEsc(p.codigo)}</strong>`);
   else reglas.push('automática');
@@ -3877,13 +3878,22 @@ async function tndEditarPromo(id) {
   const p = id ? TND.promos.find(x => x.id === id) : null;
   const cont = document.getElementById('tnd-form-promo');
   cont.innerHTML = '<div class="tnd-vacio">Cargando…</div>';
-  // Categorías del menú para acotar los participantes.
-  let cats = [];
-  try { cats = (await apiFetch('/api/menu').then(r => r.ok ? r.json() : [])).map(c => ({ id: c.id, nombre: c.nombre })); } catch (e) { cats = []; }
+  // Menú del negocio ACTUAL para acotar los participantes (categorías o
+  // productos específicos). La sesión ya está aislada por negocio: /api/menu
+  // solo devuelve lo propio, así que nunca se puede seleccionar lo de otro.
+  let menu = [];
+  try { const r = await apiFetch('/api/menu'); menu = r.ok ? await r.json() : []; } catch (e) { menu = []; }
+  if (!Array.isArray(menu)) menu = [];
+  const cats = menu.map(c => ({ id: c.id, nombre: c.nombre }));
+  const prods = menu.flatMap(c => (c.productos || []).map(pr => ({ id: pr.id, nombre: pr.nombre, categoria: c.nombre })));
   const catsSel = new Set((p?.categorias || []).map(Number));
+  const prodsSel = new Set((p?.productos || []).map(Number));
   const diasSel = new Set((p?.diasSemana || []).map(Number));
   const canSel = new Set(p?.canales && p.canales.length ? p.canales : (p ? [] : ['pos', 'whatsapp']));
-  const participaCats = !!(p?.categorias && p.categorias.length);
+  // Modo de participación (mutuamente excluyentes): productos si están
+  // guardados; si no, categorías; si no, "todo el menú".
+  const participaProds = !!(p?.productos && p.productos.length);
+  const participaCats = !participaProds && !!(p?.categorias && p.categorias.length);
   cont.innerHTML = `
     <div class="tnd-card" style="border-color:var(--color-brand);">
       <h3>${p ? 'Editar promoción' : 'Nueva promoción'}</h3>
@@ -3906,8 +3916,9 @@ async function tndEditarPromo(id) {
       </div>
       <div class="tnd-campo"><label>Participan</label>
         <select id="pr-participa" onchange="tndPromoParticipa()">
-          <option value="todo"${participaCats ? '' : ' selected'}>Todo el menú</option>
-          <option value="categorias"${participaCats ? ' selected' : ''}>Solo categorías específicas</option>
+          <option value="todo"${!participaCats && !participaProds ? ' selected' : ''}>Todo el menú</option>
+          <option value="categorias"${participaCats ? ' selected' : ''}>Categorías específicas</option>
+          <option value="productos"${participaProds ? ' selected' : ''}>Productos específicos</option>
         </select></div>
       <div class="tnd-campo" id="pr-cats-caja" style="display:${participaCats ? 'block' : 'none'};">
         <label>Categorías participantes</label>
@@ -3915,6 +3926,16 @@ async function tndEditarPromo(id) {
           ${cats.length ? cats.map(c => `<label style="display:flex;gap:5px;align-items:center;font-size:0.8rem;font-weight:400;"><input type="checkbox" class="pr-cat" value="${c.id}" ${catsSel.has(Number(c.id)) ? 'checked' : ''} style="width:auto"> ${tndEsc(c.nombre)}</label>`).join('')
             : '<span style="font-size:0.8rem;color:var(--color-text-secondary);">Carga tu menú (categorías) para acotar los participantes.</span>'}
         </div>
+      </div>
+      <div class="tnd-campo" id="pr-prods-caja" style="display:${participaProds ? 'block' : 'none'};">
+        <label>Productos participantes</label>
+        ${prods.length ? `
+        <input id="pr-prod-buscar" type="search" autocomplete="off" placeholder="Buscar producto por nombre…" oninput="tndFiltrarProds()" style="margin-bottom:8px;">
+        <div id="pr-prod-lista" style="display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px;">
+          ${prods.map(pr => `<label class="pr-prod-row" data-nombre="${tndEsc(String(pr.nombre).toLowerCase())}" style="display:flex;gap:7px;align-items:center;font-size:0.82rem;font-weight:400;padding:2px 0;"><input type="checkbox" class="pr-prod" value="${pr.id}" ${prodsSel.has(Number(pr.id)) ? 'checked' : ''} style="width:auto"><span>${tndEsc(pr.nombre)}${pr.categoria ? ` <span style="color:var(--color-text-secondary);font-size:0.72rem;">· ${tndEsc(pr.categoria)}</span>` : ''}</span></label>`).join('')}
+        </div>
+        <div id="pr-prod-vacio" style="display:none;font-size:0.78rem;color:var(--color-text-secondary);margin-top:6px;">Ningún producto coincide con la búsqueda.</div>`
+          : '<span style="font-size:0.8rem;color:var(--color-text-secondary);">Carga tu menú (productos) para acotar los participantes.</span>'}
       </div>
       <div class="tnd-campo"><label>Días (vacío = todos)</label>
         <div style="display:flex;flex-wrap:wrap;gap:6px 12px;">
@@ -3987,8 +4008,24 @@ function tndPromoTipo() {
 
 function tndPromoParticipa() {
   const modo = document.getElementById('pr-participa').value;
-  const caja = document.getElementById('pr-cats-caja');
-  if (caja) caja.style.display = modo === 'categorias' ? 'block' : 'none';
+  const cajaCats = document.getElementById('pr-cats-caja');
+  const cajaProds = document.getElementById('pr-prods-caja');
+  if (cajaCats) cajaCats.style.display = modo === 'categorias' ? 'block' : 'none';
+  if (cajaProds) cajaProds.style.display = modo === 'productos' ? 'block' : 'none';
+}
+
+// Filtro simple por nombre para la lista de productos participantes: útil
+// cuando el menú es largo. Solo oculta/muestra filas, no toca la selección.
+function tndFiltrarProds() {
+  const q = (document.getElementById('pr-prod-buscar')?.value || '').trim().toLowerCase();
+  let visibles = 0;
+  document.querySelectorAll('#pr-prod-lista .pr-prod-row').forEach(row => {
+    const ok = !q || (row.dataset.nombre || '').includes(q);
+    row.style.display = ok ? 'flex' : 'none';
+    if (ok) visibles++;
+  });
+  const vacio = document.getElementById('pr-prod-vacio');
+  if (vacio) vacio.style.display = visibles ? 'none' : 'block';
 }
 
 async function tndGuardarPromo(id) {
@@ -4020,6 +4057,8 @@ async function tndGuardarPromo(id) {
     canales: [...document.querySelectorAll('.pr-canal:checked')].map(e => e.value),
     categorias: document.getElementById('pr-participa').value === 'categorias'
       ? [...document.querySelectorAll('.pr-cat:checked')].map(e => Number(e.value)) : null,
+    productos: document.getElementById('pr-participa').value === 'productos'
+      ? [...document.querySelectorAll('.pr-prod:checked')].map(e => Number(e.value)) : null,
   };
   // "Todos los días" y "todos los canales por defecto" = mandar null/omitir
   if (cuerpo.diasSemana.length === 0) cuerpo.diasSemana = null;
