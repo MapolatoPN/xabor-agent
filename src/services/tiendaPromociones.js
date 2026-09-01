@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { pool, calcularVersionPedidoHash } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
 import { cargarGruposDeProductos } from './modificadores.js';
+import { resolverCuandoPromo } from './fechaPromos.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
 // inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
@@ -1446,16 +1447,16 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
   }
 }
 
-// Descripción HUMANA de las promociones vigentes AHORA para un canal, pensada
-// para inyectarse en el prompt del agente como INFORMACIÓN (nunca como algo que
-// el modelo deba calcular). El backend decide qué está vigente; el agente solo
-// lo verbaliza. Devuelve
-//   [{ nombre, tipo, descripcion, participacion:{modo,nombres}, participantesTexto }].
-// `participacion` resuelve los IDs guardados a NOMBRES legibles del MISMO
-// negocio (nunca IDs al LLM, nunca productos de otro negocio). El cálculo del
-// descuento sigue siendo 100% independiente (calcularPromociones); esto solo
-// informa.
-export async function describirPromocionesVigentes(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
+// Descripción HUMANA de las promociones automáticas de un negocio para una
+// FECHA objetivo (`ahora`) y canal, pensada para informar al agente (nunca para
+// calcular). El backend decide qué aplica; el agente solo lo verbaliza. Devuelve
+//   [{ nombre, tipo, descripcion, participacion, participantesTexto, condicionesTexto, horaInicio, horaFin }].
+// `minutos` (0-1439) activa el filtro por HORA del día: cuando es null se listan
+// TODAS las promos de ese día (consulta "¿qué hay el miércoles?") informando su
+// horario aparte; cuando trae una hora concreta se filtra por esa hora
+// ("¿qué hay mañana a las 16:00?"). Aislamiento estricto por negocio; nunca IDs
+// al LLM; el cálculo del descuento sigue 100% independiente (calcularPromociones).
+export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
   // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
@@ -1478,11 +1479,17 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
     // Solo el filtro temporal/estructural, no el de carrito (aquí no hay carrito).
     if (p.vigencia_desde && ahora < new Date(p.vigencia_desde)) continue;
     if (p.vigencia_hasta && ahora > new Date(p.vigencia_hasta)) continue;
-    const { diaSemana, minutos } = partesEnZona(ahora, timezone);
+    const { diaSemana } = partesEnZona(ahora, timezone);
     if (Array.isArray(p.dias_semana) && p.dias_semana.length && !p.dias_semana.map(Number).includes(diaSemana)) continue;
-    const aMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
-    const ini = aMin(p.hora_inicio), fin = aMin(p.hora_fin);
-    if (ini !== null && fin !== null && (minutos < ini || minutos >= fin)) continue;
+    // Filtro por HORA solo cuando se consulta una hora concreta (minutos != null).
+    // En una consulta por DÍA (minutos == null) se listan todas las del día y su
+    // horario se informa aparte — así "¿qué hay mañana?" a las 16:42 no descarta
+    // una promo de 00:00–15:00 (pero "¿mañana a las 16:00?" sí la excluiría).
+    if (minutos != null) {
+      const aMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+      const ini = aMin(p.hora_inicio), fin = aMin(p.hora_fin);
+      if (ini !== null && fin !== null && (minutos < ini || minutos >= fin)) continue;
+    }
     vigentes.push(p);
   }
   if (!vigentes.length) return [];
@@ -1544,9 +1551,65 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
     out.push({
       nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
       participacion, participantesTexto, condicionesTexto,
+      horaInicio: p.hora_inicio || null, horaFin: p.hora_fin || null,
     });
   }
   return out;
+}
+
+// AHORA: promociones vigentes en este instante (aplica el filtro de la hora
+// actual). Es el caso que ya se inyecta en el prompt del agente; mantiene el
+// comportamiento previo intacto (regresión). Delega en describirPromocionesParaFecha.
+export async function describirPromocionesVigentes(negocioId, opts = {}) {
+  const timezone = opts.timezone || 'America/Matamoros';
+  const ahora = opts.ahora || new Date();
+  let minutos = null;
+  try { minutos = partesEnZona(ahora, timezone).minutos; } catch { minutos = null; }
+  return describirPromocionesParaFecha(negocioId, { ...opts, ahora, timezone, minutos });
+}
+
+// Respuesta HUMANA (redactada por CÓDIGO, no por el modelo) a una consulta de
+// promociones para una fecha/día: "¿qué hay mañana?", "¿el miércoles?", "¿esta
+// semana?". Resuelve la expresión temporal en la TZ del negocio y consulta el
+// módulo estructurado (describirPromocionesParaFecha), reutilizando la misma
+// descripción de participantes/condiciones. Devuelve el texto, o null si la
+// expresión no se pudo resolver (el caller pedirá aclaración). Solo informa lo
+// que Xabor realmente tiene; jamás inventa ni usa memoria del modelo.
+export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
+  const r = resolverCuandoPromo(cuando, { ahora, timezone });
+  if (!r.ok) return null;
+  const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  const hhmm = (t) => String(t || '').slice(0, 5);
+
+  if (r.esSemana) {
+    const vistos = new Set();
+    const bloques = [];
+    for (const d of r.dias) {
+      const promos = await describirPromocionesParaFecha(negocioId, { canal, ahora: d.ahora, timezone, minutos: null });
+      const nuevos = promos.filter((p) => !vistos.has(p.nombre));
+      nuevos.forEach((p) => vistos.add(p.nombre));
+      if (nuevos.length) bloques.push(`${cap(d.diaNombre)}: ${nuevos.map((p) => p.nombre).join(', ')}`);
+    }
+    if (!bloques.length) return 'Esta semana no tenemos promociones programadas.';
+    return 'Promociones de esta semana:\n' + bloques.join('\n');
+  }
+
+  const d = r.dias[0];
+  const promos = await describirPromocionesParaFecha(negocioId, { canal, ahora: d.ahora, timezone, minutos: r.minutos });
+  const cuandoTxt = d.etiqueta ? `${d.etiqueta} ${d.diaNombre}` : `el ${d.diaNombre}`;
+  if (!promos.length) {
+    return r.minutos != null
+      ? `Para ${cuandoTxt} a esa hora no tenemos una promoción disponible.`
+      : `Para ${cuandoTxt} no tenemos promociones programadas.`;
+  }
+  const lineas = [`Para ${cuandoTxt} tenemos:`];
+  for (const p of promos) {
+    let l = `🔥 ${p.nombre}: ${p.descripcion}`;
+    if (p.participantesTexto) l += ` ${p.participantesTexto}`;
+    if (r.minutos == null && p.horaInicio && p.horaFin) l += ` (horario ${hhmm(p.horaInicio)}–${hhmm(p.horaFin)})`;
+    lineas.push(l);
+  }
+  return lineas.join('\n');
 }
 
 // Frase legible de las condiciones por modificadores de una promo, resolviendo

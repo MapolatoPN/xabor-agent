@@ -673,6 +673,11 @@ Luego incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta (el client
 ## PROMOCIONES ACTIVAS AHORA
 ${textoPromociones}
 
+## CONSULTA DE PROMOCIONES DE OTRO DÍA (hoy no basta)
+Lo de arriba son SOLO las promos vigentes en este momento. Si el cliente pregunta por promociones de un día o fecha distinta a "ahora mismo" —por ejemplo "¿qué promoción hay mañana?", "¿qué tienen el miércoles?", "¿la promo del viernes?", "¿qué promociones hay esta semana?"— NO respondas de memoria ni digas que no tienes la información. Emite este bloque al FINAL de tu respuesta y el sistema te dará la respuesta oficial:
+<CONSULTA_PROMOS>{"cuando":"<lo que dijo el cliente: mañana | miércoles | esta semana | 2026-09-02 | mañana a las 4pm>"}</CONSULTA_PROMOS>
+Follow-up: si venías hablando de promociones y el cliente solo dice un día ("Miércoles", "el viernes"), es una aclaración de esa consulta: emite <CONSULTA_PROMOS> con ese día. El sistema resuelve la fecha en la zona horaria del negocio y responde con lo que Xabor realmente tiene guardado; tú no inventas fechas ni promos.
+
 ## FACTURACIÓN (CFDI)
 Si el cliente pide factura, recibo fiscal o comprobante de impuestos por WhatsApp, sigue este flujo:
 

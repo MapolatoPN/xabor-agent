@@ -13,6 +13,7 @@ import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
 import { decidirConfirmacion } from './confirmacionPolicy.js';
+import { responderConsultaPromos } from '../services/tiendaPromociones.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -168,6 +169,21 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
       }
     }
 
+    // ── CONSULTA de promociones por FECHA (hoy/mañana/día/semana) ──
+    // El agente emite <CONSULTA_PROMOS>{"cuando":"..."}</CONSULTA_PROMOS> cuando
+    // el cliente pregunta por promociones de un día distinto a "ahora". El
+    // backend resuelve la fecha en la TZ del negocio y responde con lo REALMENTE
+    // guardado en el módulo estructurado — nunca memoria del modelo.
+    let textoConsultaPromos = null;
+    const consultaPromos = extraerBloque(textoRespuesta, 'CONSULTA_PROMOS');
+    if (consultaPromos && typeof negocioId === 'string' && negocioId.trim()) {
+      try {
+        const cuando = String(consultaPromos.cuando ?? consultaPromos.fecha ?? consultaPromos.dia ?? '').trim();
+        const resp = cuando ? await responderConsultaPromos(negocioId, cuando, { canal }) : null;
+        textoConsultaPromos = resp || '¿Para qué día te gustaría conocer las promociones? (por ejemplo: hoy, mañana, el miércoles o esta semana).';
+      } catch (e) { console.error('[brain] consulta promos por fecha:', e.message); }
+    }
+
     // Registrar intents y actualizar oportunidad (background, no bloquea)
     registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
       .catch(e => console.error('[brain] registrarIntents:', e.message));
@@ -200,6 +216,9 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // El pricing OFICIAL del backend REEMPLAZA cualquier cifra que el modelo
     // hubiera escrito: el cliente solo ve/confirma números de Xabor.
     if (textoOficialPricing) textoFinal = textoOficialPricing;
+    // La consulta de promociones por fecha la responde el backend (fuente
+    // estructurada), no la memoria del modelo.
+    if (textoConsultaPromos) textoFinal = textoConsultaPromos;
 
     return {
       texto: textoFinal,
@@ -523,6 +542,7 @@ function limpiarTexto(texto) {
   const sinTags = texto
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
     .replace(/<ORDEN_PREVIEW>[\s\S]*?<\/ORDEN_PREVIEW>/g, '')
+    .replace(/<CONSULTA_PROMOS>[\s\S]*?<\/CONSULTA_PROMOS>/g, '')
     .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
