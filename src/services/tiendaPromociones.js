@@ -13,6 +13,7 @@
 import { randomUUID } from 'crypto';
 import { pool, calcularVersionPedidoHash } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
+import { cargarGruposDeProductos } from './modificadores.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
 // inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
@@ -141,16 +142,78 @@ function motivoNoAplica(promo, ctx) {
   return null;
 }
 
+// ── Condiciones por MODIFICADORES (promociones condicionadas) ───────────────
+// Evalúa un item CANÓNICO (con item.modificadores = [{grupo_id, opcion_id,…}])
+// contra las condiciones de una promoción. Todas las condiciones son AND. Los
+// IDs son reales (grupo/opción del propio negocio, resueltos por el backend);
+// la IA nunca decide esto. Operadores V1:
+//   'una_de'   — toda opción elegida en el grupo debe estar en option_ids (y ≥1).
+//   'incluye'  — todos los option_ids requeridos deben estar seleccionados.
+//   'cantidad' — nº de opciones seleccionadas del grupo dentro de [min, max].
+// Devuelve { eligible, failedConditions }. Fail-closed: operador desconocido
+// o condición sin datos → no elegible.
+export function cumpleCondicionesModificadores(item, condiciones) {
+  const mods = Array.isArray(item?.modificadores) ? item.modificadores : [];
+  const failedConditions = [];
+  for (const c of (Array.isArray(condiciones) ? condiciones : [])) {
+    const grupoId = Number(c?.grupo_id);
+    if (!Number.isInteger(grupoId)) { failedConditions.push({ ...c, motivo: 'grupo_invalido' }); continue; }
+    const seleccion = mods.filter(m => Number(m.grupo_id) === grupoId).map(m => Number(m.opcion_id));
+    const permitidas = Array.isArray(c.option_ids) ? c.option_ids.map(Number) : [];
+    let ok;
+    switch (c.operador) {
+      case 'una_de':
+        ok = seleccion.length > 0 && seleccion.every(id => permitidas.includes(id));
+        break;
+      case 'incluye':
+        ok = permitidas.length > 0 && permitidas.every(id => seleccion.includes(id));
+        break;
+      case 'cantidad': {
+        const min = c.min != null ? Number(c.min) : 0;
+        const max = c.max != null ? Number(c.max) : Infinity;
+        ok = seleccion.length >= min && seleccion.length <= max;
+        break;
+      }
+      default:
+        ok = false; // fail-closed
+    }
+    if (!ok) failedConditions.push({ grupo_id: grupoId, operador: c.operador });
+  }
+  return { eligible: failedConditions.length === 0, failedConditions };
+}
+
+// Condiciones de la promo que aplican a un producto dado (producto_id null =
+// aplica a cualquier participante).
+function condicionesDeProducto(promo, productoId) {
+  const todas = Array.isArray(promo.condiciones_modificadores) ? promo.condiciones_modificadores : [];
+  return todas.filter(c => c.producto_id == null || Number(c.producto_id) === Number(productoId));
+}
+
+// ¿Esta LÍNEA del carrito participa en la promo? Producto/categoría incluidos Y
+// (si hay) condiciones de modificadores cumplidas. Fuente única de "participa"
+// para %/fijo (baseParaPromo) y per-unit (unidadesElegiblesOrdenadas).
+function lineaParticipa(promo, it) {
+  const prods = Array.isArray(promo.productos) ? promo.productos.map(Number) : null;
+  const cats = Array.isArray(promo.categorias) ? promo.categorias.map(Number) : null;
+  const todo = (!prods || !prods.length) && (!cats || !cats.length);
+  const incluido = todo
+    || (prods && prods.includes(Number(it.producto_id)))
+    || (cats && cats.includes(Number(it.categoria_id)));
+  if (!incluido) return false;
+  const cond = condicionesDeProducto(promo, it.producto_id);
+  if (cond.length && !cumpleCondicionesModificadores(it, cond).eligible) return false;
+  return true;
+}
+
 // Base sobre la que se calcula: todo el subtotal, o solo los productos/
 // categorías incluidos si la promoción está acotada.
 function baseParaPromo(promo, ctx) {
   const prods = Array.isArray(promo.productos) ? promo.productos.map(Number) : null;
   const cats = Array.isArray(promo.categorias) ? promo.categorias.map(Number) : null;
-  if ((!prods || !prods.length) && (!cats || !cats.length)) return ctx.subtotal;
+  const condiciones = Array.isArray(promo.condiciones_modificadores) ? promo.condiciones_modificadores : [];
+  if ((!prods || !prods.length) && (!cats || !cats.length) && !condiciones.length) return ctx.subtotal;
   return dinero((ctx.items || []).reduce((s, it) => {
-    const incluido = (prods && prods.includes(Number(it.producto_id))) ||
-                     (cats && cats.includes(Number(it.categoria_id)));
-    return incluido ? s + (Number(it.precio_unitario) || 0) * (Number(it.cantidad) || 1) : s;
+    return lineaParticipa(promo, it) ? s + (Number(it.precio_unitario) || 0) * (Number(it.cantidad) || 1) : s;
   }, 0));
 }
 
@@ -160,15 +223,12 @@ function baseParaPromo(promo, ctx) {
 // baratas, así el resultado es determinístico e independiente del orden en que
 // el cliente agregó los productos. La IA nunca decide cuál queda gratis.
 function unidadesElegiblesOrdenadas(promo, ctx) {
-  const prods = Array.isArray(promo.productos) ? promo.productos.map(Number) : null;
-  const cats = Array.isArray(promo.categorias) ? promo.categorias.map(Number) : null;
-  const todo = (!prods || !prods.length) && (!cats || !cats.length);
   const unidades = [];
   for (const it of (ctx.items || [])) {
-    const incluido = todo
-      || (prods && prods.includes(Number(it.producto_id)))
-      || (cats && cats.includes(Number(it.categoria_id)));
-    if (!incluido) continue;
+    // Participación POR UNIDAD: producto/categoría + condiciones de modificadores
+    // (salsa/proteína/guarniciones). Todas las unidades de una línea comparten
+    // sus modificadores, así que la línea entera es elegible o no.
+    if (!lineaParticipa(promo, it)) continue;
     // Precio BASE del producto participante, nunca el inflado por extras: el
     // beneficio aplica sobre el precio elegible, no sobre los modificadores.
     const precio = Number(it.precio_base != null ? it.precio_base : it.precio_unitario) || 0;
@@ -1209,6 +1269,7 @@ export async function listarPromociones(negocioId) {
     canales: Array.isArray(r.canales) ? r.canales : (r.canales ? JSON.parse(r.canales) : ['tienda_online']),
     categorias: Array.isArray(r.categorias) ? r.categorias : (r.categorias ? JSON.parse(r.categorias) : null),
     productos: Array.isArray(r.productos) ? r.productos : (r.productos ? JSON.parse(r.productos) : null),
+    condicionesModificadores: Array.isArray(r.condiciones_modificadores) ? r.condiciones_modificadores : (r.condiciones_modificadores ? JSON.parse(r.condiciones_modificadores) : null),
     diasSemana: Array.isArray(r.dias_semana) ? r.dias_semana : (r.dias_semana ? JSON.parse(r.dias_semana) : null),
     horaInicio: r.hora_inicio || null, horaFin: r.hora_fin || null,
     minimoCompra: Number(r.minimo_compra), maxDescuento: r.max_descuento == null ? null : Number(r.max_descuento),
@@ -1321,6 +1382,46 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
     }
   }
 
+  // Condiciones por MODIFICADORES: validación fail-closed y aislamiento estricto.
+  // Cada condición referencia IDs REALES del propio negocio; una petición
+  // manipulada nunca puede crear condiciones cross-tenant ni sobre un producto
+  // que no participa.
+  campos.condiciones_modificadores = null;
+  if (Array.isArray(datos.condicionesModificadores) && datos.condicionesModificadores.length) {
+    const OPERADORES = new Set(['una_de', 'incluye', 'cantidad']);
+    const participantes = new Set((Array.isArray(datos.productos) ? datos.productos : []).map(Number));
+    if (!participantes.size) throw new PromocionError('Las condiciones requieren productos participantes', 'CONDICION_SIN_PRODUCTO');
+    const gruposPorProd = await cargarGruposDeProductos(negocioId, [...participantes]);
+    const norm = [];
+    for (const c of datos.condicionesModificadores) {
+      const productoId = Number(c?.productoId ?? c?.producto_id);
+      const grupoId = Number(c?.grupoId ?? c?.grupo_id);
+      const operador = String(c?.operador || '');
+      if (!OPERADORES.has(operador)) throw new PromocionError('Operador de condición inválido', 'CONDICION_INVALIDA');
+      if (!participantes.has(productoId)) throw new PromocionError('La condición referencia un producto que no participa', 'CONDICION_PRODUCTO_AJENO');
+      const grupo = (gruposPorProd.get(productoId) || []).find(g => Number(g.id) === grupoId);
+      if (!grupo) throw new PromocionError('El grupo de modificadores no pertenece al producto', 'CONDICION_GRUPO_AJENO');
+      const opcionesValidas = new Set((grupo.opciones || []).map(o => Number(o.id)));
+      const optionIds = [...new Set((Array.isArray(c.optionIds ?? c.option_ids) ? (c.optionIds ?? c.option_ids) : []).map(Number).filter(Number.isInteger))];
+      for (const id of optionIds) {
+        if (!opcionesValidas.has(id)) throw new PromocionError('Una opción no pertenece al grupo del producto', 'CONDICION_OPCION_AJENA');
+      }
+      let min = c.min != null && c.min !== '' ? parseInt(c.min, 10) : null;
+      let max = c.max != null && c.max !== '' ? parseInt(c.max, 10) : null;
+      if (operador === 'cantidad') {
+        if (min == null && max == null) throw new PromocionError('La condición de cantidad necesita min o max', 'CONDICION_INVALIDA');
+        if (min != null && (!Number.isInteger(min) || min < 0)) throw new PromocionError('El mínimo de la condición es inválido', 'CONDICION_INVALIDA');
+        if (max != null && (!Number.isInteger(max) || max < 0)) throw new PromocionError('El máximo de la condición es inválido', 'CONDICION_INVALIDA');
+        if (min != null && max != null && min > max) throw new PromocionError('El mínimo no puede exceder el máximo', 'CONDICION_INVALIDA');
+      } else {
+        if (!optionIds.length) throw new PromocionError('La condición necesita al menos una opción', 'CONDICION_INVALIDA');
+        min = null; max = null;
+      }
+      norm.push({ producto_id: productoId, grupo_id: grupoId, operador, option_ids: optionIds, min, max });
+    }
+    campos.condiciones_modificadores = JSON.stringify(norm);
+  }
+
   const cols = Object.keys(campos);
   const vals = cols.map(c => campos[c]);
   try {
@@ -1403,6 +1504,18 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
     for (const r of cr) catNombre.set(Number(r.id), r.nombre);
   }
 
+  // 2b) Grupos+opciones de los productos que tienen CONDICIONES, para describir
+  // las restricciones legibles (Salsa Roja o Verde, Pollo, 2 guarniciones…).
+  // Acotado por negocio: nunca nombres de otro tenant.
+  const condProdIds = [...new Set(vigentes.flatMap((p) =>
+    (Array.isArray(p.condiciones_modificadores) ? p.condiciones_modificadores : [])
+      .map((c) => Number(c?.producto_id)).filter(Number.isInteger)))];
+  let gruposPorProd = new Map();
+  if (condProdIds.length) {
+    try { gruposPorProd = await cargarGruposDeProductos(negocioId, condProdIds); }
+    catch { gruposPorProd = new Map(); }
+  }
+
   // 3) Construir la salida. Un ID que ya no existe se IGNORA (no se inventa
   // nombre) y se deja rastro; la promo NO desaparece por ello.
   const out = [];
@@ -1426,12 +1539,42 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
     } else {
       participacion = { modo: 'todo', nombres: [] };
     }
+    const condicionesTexto = fraseCondiciones(p.condiciones_modificadores, gruposPorProd);
+    const participantesTexto = [fraseParticipantes(participacion), condicionesTexto].filter(Boolean).join(' ');
     out.push({
       nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
-      participacion, participantesTexto: fraseParticipantes(participacion),
+      participacion, participantesTexto, condicionesTexto,
     });
   }
   return out;
+}
+
+// Frase legible de las condiciones por modificadores de una promo, resolviendo
+// grupo/opción a NOMBRES (nunca IDs). Ej: "Participan los preparados con: Salsa
+// Roja o Verde; Proteína Pollo; 2 en Guarniciones sencillas."
+function fraseCondiciones(condiciones, gruposPorProd) {
+  const cond = Array.isArray(condiciones) ? condiciones : [];
+  const partes = [];
+  for (const c of cond) {
+    const grupos = gruposPorProd.get(Number(c?.producto_id)) || [];
+    const grupo = grupos.find((g) => Number(g.id) === Number(c?.grupo_id));
+    if (!grupo) continue;
+    const nombreOp = (id) => (grupo.opciones || []).find((o) => Number(o.id) === Number(id))?.nombre;
+    const opts = (Array.isArray(c.option_ids) ? c.option_ids : []).map(nombreOp).filter(Boolean);
+    if (c.operador === 'una_de' && opts.length) {
+      partes.push(`${grupo.nombre} ${opts.length === 1 ? opts[0] : opts.slice(0, -1).join(', ') + ' o ' + opts[opts.length - 1]}`);
+    } else if (c.operador === 'incluye' && opts.length) {
+      partes.push(`${grupo.nombre} ${listaLegible(opts)}`);
+    } else if (c.operador === 'cantidad') {
+      const min = c.min != null ? Number(c.min) : null, max = c.max != null ? Number(c.max) : null;
+      let q = '';
+      if (min != null && max != null) q = min === max ? `${min}` : `entre ${min} y ${max}`;
+      else if (min != null) q = `al menos ${min}`;
+      else if (max != null) q = `hasta ${max}`;
+      if (q) partes.push(`${q} en ${grupo.nombre}`);
+    }
+  }
+  return partes.length ? `Participan los preparados con: ${partes.join('; ')}.` : '';
 }
 
 // Une nombres en lenguaje natural: "A", "A y B", "A, B y C".

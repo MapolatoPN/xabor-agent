@@ -201,9 +201,18 @@ export function resumenPedidoOficial(preview) {
   const lineas = ['Tu pedido queda así:', ''];
   for (const it of preview.items || []) {
     const cant = Number(it.cantidad) > 1 ? `${it.cantidad}x ` : '';
-    lineas.push(`• ${cant}${it.nombre} — ${dinero(it.total_item)}`);
-    for (const m of it.modificadores || []) {
-      lineas.push(`   + ${m.nombre}${Number(m.precio) ? ` (${dinero(m.precio)})` : ''}`);
+    const mods = it.modificadores || [];
+    const tienePagados = mods.some((m) => Number(m.precio) > 0);
+    if (tienePagados) {
+      // Desglose claro: base + cada extra + total del producto (evita mostrar
+      // "$179 + Nutella $30" como si el extra fuera aparte del 179).
+      lineas.push(`• ${cant}${it.nombre}`);
+      lineas.push(`   base ${dinero(it.precio_base)}`);
+      for (const m of mods) lineas.push(`   + ${m.nombre}${Number(m.precio) ? ` ${dinero(m.precio)}` : ''}`);
+      lineas.push(`   Total producto ${dinero(it.total_item)}`);
+    } else {
+      lineas.push(`• ${cant}${it.nombre} — ${dinero(it.total_item)}`);
+      for (const m of mods) lineas.push(`   + ${m.nombre}`); // opciones sin costo
     }
   }
   lineas.push('');

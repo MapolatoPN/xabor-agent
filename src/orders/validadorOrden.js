@@ -346,6 +346,10 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       items: itemsCanonicos.map((i) => ({
         producto_id: i.producto_id, categoria_id: i.categoria_id,
         cantidad: i.cantidad, precio_unitario: i.precio_unitario, precio_base: i.precio_base,
+        // Los modificadores CANÓNICOS viajan al motor: las promociones
+        // condicionadas por modificadores (salsa/proteína/guarniciones) evalúan
+        // elegibilidad por unidad sobre ellos.
+        modificadores: i.modificadores || [],
       })),
       costoEnvio, modalidad: esDomicilio ? 'domicilio' : 'recoger',
       canal: canalPromo, telefono: orden?.cliente?.telefono || null,

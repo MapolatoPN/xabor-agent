@@ -73,6 +73,10 @@ const SCRIPTS = [
   // destructivo. Va aqui para que el ALTER corra ANTES de que el binario nuevo
   // (que ya conoce los tipos) empiece a atender pedidos.
   '067-promociones-multitipo',
+  // 068 agrega `condiciones_modificadores` (jsonb) a `tienda_promociones`
+  // (promociones condicionadas por modificadores). Idempotente y no destructivo:
+  // solo una columna nullable. Corre ANTES de que el binario nuevo la lea.
+  '068-promo-condiciones-modificadores',
 ];
 
 for (const nombre of SCRIPTS) {

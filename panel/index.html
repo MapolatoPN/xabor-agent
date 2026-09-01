@@ -3845,6 +3845,7 @@ function tndTarjetaPromo(p) {
   if (Array.isArray(p.canales) && p.canales.length) reglas.push(p.canales.map(c => TND_CANALES[c] || c).join('/'));
   if (Array.isArray(p.categorias) && p.categorias.length) reglas.push(`${p.categorias.length} categoría(s) participante(s)`);
   if (Array.isArray(p.productos) && p.productos.length) reglas.push(`${p.productos.length} producto(s) participante(s)`);
+  if (Array.isArray(p.condicionesModificadores) && p.condicionesModificadores.length) reglas.push(`${p.condicionesModificadores.length} condición(es) de preparación`);
   if (p.minimoCompra > 0) reglas.push(`compra mínima ${tndDinero(p.minimoCompra)}`);
   if (p.codigo) reglas.push(`con código <strong>${tndEsc(p.codigo)}</strong>`);
   else reglas.push('automática');
@@ -3886,6 +3887,18 @@ async function tndEditarPromo(id) {
   if (!Array.isArray(menu)) menu = [];
   const cats = menu.map(c => ({ id: c.id, nombre: c.nombre }));
   const prods = menu.flatMap(c => (c.productos || []).map(pr => ({ id: pr.id, nombre: pr.nombre, categoria: c.nombre })));
+  // Árbol de modificadores por producto (grupos + opciones) para el editor de
+  // condiciones. Solo grupos/opciones del propio negocio (los da /api/menu).
+  const prodMods = {};
+  for (const c of menu) for (const pr of (c.productos || [])) {
+    prodMods[pr.id] = (pr.modificadores || []).map(g => ({
+      id: g.id, nombre: g.nombre,
+      opciones: (g.opciones || []).map(o => ({ id: o.id, nombre: o.nombre })),
+    }));
+  }
+  TND._prodMods = prodMods;
+  TND._prodNombre = Object.fromEntries(prods.map(x => [Number(x.id), x.nombre]));
+  TND._condIniciales = Array.isArray(p?.condicionesModificadores) ? p.condicionesModificadores : [];
   const catsSel = new Set((p?.categorias || []).map(Number));
   const prodsSel = new Set((p?.productos || []).map(Number));
   const diasSel = new Set((p?.diasSemana || []).map(Number));
@@ -3932,10 +3945,16 @@ async function tndEditarPromo(id) {
         ${prods.length ? `
         <input id="pr-prod-buscar" type="search" autocomplete="off" placeholder="Buscar producto por nombre…" oninput="tndFiltrarProds()" style="margin-bottom:8px;">
         <div id="pr-prod-lista" style="display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px;">
-          ${prods.map(pr => `<label class="pr-prod-row" data-nombre="${tndEsc(String(pr.nombre).toLowerCase())}" style="display:flex;gap:7px;align-items:center;font-size:0.82rem;font-weight:400;padding:2px 0;"><input type="checkbox" class="pr-prod" value="${pr.id}" ${prodsSel.has(Number(pr.id)) ? 'checked' : ''} style="width:auto"><span>${tndEsc(pr.nombre)}${pr.categoria ? ` <span style="color:var(--color-text-secondary);font-size:0.72rem;">· ${tndEsc(pr.categoria)}</span>` : ''}</span></label>`).join('')}
+          ${prods.map(pr => `<label class="pr-prod-row" data-nombre="${tndEsc(String(pr.nombre).toLowerCase())}" style="display:flex;gap:7px;align-items:center;font-size:0.82rem;font-weight:400;padding:2px 0;"><input type="checkbox" class="pr-prod" value="${pr.id}" ${prodsSel.has(Number(pr.id)) ? 'checked' : ''} onchange="tndRenderCondiciones()" style="width:auto"><span>${tndEsc(pr.nombre)}${pr.categoria ? ` <span style="color:var(--color-text-secondary);font-size:0.72rem;">· ${tndEsc(pr.categoria)}</span>` : ''}</span></label>`).join('')}
         </div>
         <div id="pr-prod-vacio" style="display:none;font-size:0.78rem;color:var(--color-text-secondary);margin-top:6px;">Ningún producto coincide con la búsqueda.</div>`
           : '<span style="font-size:0.8rem;color:var(--color-text-secondary);">Carga tu menú (productos) para acotar los participantes.</span>'}
+      </div>
+      <div class="tnd-campo" id="pr-cond-caja" style="display:${participaProds ? 'block' : 'none'};">
+        <label>Condiciones de producto (opcional)</label>
+        <div style="font-size:0.75rem;color:var(--color-text-secondary);margin-bottom:6px;">
+          Exige que el producto participante haya sido configurado con ciertas opciones (p. ej. Salsa Roja o Verde, con Pollo, 2 guarniciones). Solo aparecen los grupos del propio producto.</div>
+        <div id="pr-cond-cont"></div>
       </div>
       <div class="tnd-campo"><label>Días (vacío = todos)</label>
         <div style="display:flex;flex-wrap:wrap;gap:6px 12px;">
@@ -3989,6 +4008,7 @@ async function tndEditarPromo(id) {
       <div id="pr-error" style="color:var(--color-danger);font-size:0.8rem;margin-top:10px;"></div>
     </div>`;
   tndPromoTipo();
+  if (participaProds) tndRenderCondiciones();
   cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -4010,8 +4030,84 @@ function tndPromoParticipa() {
   const modo = document.getElementById('pr-participa').value;
   const cajaCats = document.getElementById('pr-cats-caja');
   const cajaProds = document.getElementById('pr-prods-caja');
+  const cajaCond = document.getElementById('pr-cond-caja');
   if (cajaCats) cajaCats.style.display = modo === 'categorias' ? 'block' : 'none';
   if (cajaProds) cajaProds.style.display = modo === 'productos' ? 'block' : 'none';
+  if (cajaCond) { cajaCond.style.display = modo === 'productos' ? 'block' : 'none'; if (modo === 'productos') tndRenderCondiciones(); }
+}
+
+// Editor de CONDICIONES por modificadores: por cada producto participante con
+// grupos de modificadores, permite exigir opciones específicas. Solo muestra
+// grupos/opciones del propio producto (TND._prodMods viene de /api/menu).
+function tndRenderCondiciones() {
+  const cont = document.getElementById('pr-cond-cont');
+  if (!cont) return;
+  const mods = TND._prodMods || {};
+  const previas = TND._condIniciales || [];
+  const seleccionados = [...document.querySelectorAll('.pr-prod:checked')].map(e => Number(e.value));
+  const conGrupos = seleccionados.filter(pid => (mods[pid] || []).length);
+  if (!conGrupos.length) {
+    cont.innerHTML = '<div style="font-size:0.78rem;color:var(--color-text-secondary);">Los productos seleccionados no tienen grupos de modificadores, o no has seleccionado productos.</div>';
+    return;
+  }
+  const condDe = (pid, gid) => previas.find(c => Number(c.producto_id) === pid && Number(c.grupo_id) === gid);
+  cont.innerHTML = conGrupos.map(pid => `
+    <div class="cond-prod" data-prod="${pid}" style="border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;">
+      <div style="font-weight:600;font-size:0.82rem;margin-bottom:4px;">${tndEsc(TND._prodNombre?.[pid] || 'Producto')}</div>
+      ${(mods[pid] || []).map(g => {
+        const c = condDe(pid, Number(g.id));
+        const op = c ? (c.operador === 'cantidad' ? (c.min != null && c.min === c.max ? 'exacta' : 'minima') : c.operador) : '';
+        const sel = new Set((c?.option_ids || []).map(Number));
+        const cant = c && c.operador === 'cantidad' ? (c.min != null ? c.min : (c.max != null ? c.max : '')) : '';
+        return `<div class="cond-grupo" data-grupo="${g.id}" style="margin:6px 0 6px 6px;">
+          <label style="font-size:0.8rem;font-weight:500;">${tndEsc(g.nombre)}</label>
+          <select class="cond-op" onchange="tndCondOpCambio(this)" style="margin-left:6px;">
+            <option value="">(sin condición)</option>
+            <option value="una_de"${op === 'una_de' ? ' selected' : ''}>Debe ser una de</option>
+            <option value="incluye"${op === 'incluye' ? ' selected' : ''}>Debe incluir</option>
+            <option value="exacta"${op === 'exacta' ? ' selected' : ''}>Cantidad exacta</option>
+            <option value="minima"${op === 'minima' ? ' selected' : ''}>Cantidad mínima</option>
+          </select>
+          <div class="cond-ops" style="display:${op === 'una_de' || op === 'incluye' ? 'flex' : 'none'};flex-wrap:wrap;gap:5px 12px;margin:4px 0 0 8px;">
+            ${(g.opciones || []).map(o => `<label style="display:flex;gap:4px;align-items:center;font-size:0.78rem;font-weight:400;"><input type="checkbox" class="cond-opt" value="${o.id}" ${sel.has(Number(o.id)) ? 'checked' : ''} style="width:auto"> ${tndEsc(o.nombre)}</label>`).join('')}
+          </div>
+          <span class="cond-num" style="display:${op === 'exacta' || op === 'minima' ? 'inline' : 'none'};margin-left:8px;font-size:0.78rem;">Cantidad: <input type="number" class="cond-cant" min="0" step="1" value="${cant}" style="width:60px;"></span>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+}
+
+function tndCondOpCambio(sel) {
+  const grupo = sel.closest('.cond-grupo');
+  const v = sel.value;
+  const ops = grupo.querySelector('.cond-ops');
+  const num = grupo.querySelector('.cond-num');
+  if (ops) ops.style.display = (v === 'una_de' || v === 'incluye') ? 'flex' : 'none';
+  if (num) num.style.display = (v === 'exacta' || v === 'minima') ? 'inline' : 'none';
+}
+
+// Lee el editor y arma el arreglo de condiciones para el backend. Solo incluye
+// grupos con un operador elegido y datos válidos.
+function tndLeerCondiciones() {
+  const out = [];
+  document.querySelectorAll('#pr-cond-cont .cond-prod').forEach(bloque => {
+    const productoId = Number(bloque.dataset.prod);
+    bloque.querySelectorAll('.cond-grupo').forEach(g => {
+      const grupoId = Number(g.dataset.grupo);
+      const op = g.querySelector('.cond-op')?.value || '';
+      if (!op) return;
+      if (op === 'una_de' || op === 'incluye') {
+        const optionIds = [...g.querySelectorAll('.cond-opt:checked')].map(e => Number(e.value));
+        if (!optionIds.length) return; // sin opciones elegidas = sin condición
+        out.push({ productoId, grupoId, operador: op, optionIds });
+      } else if (op === 'exacta' || op === 'minima') {
+        const n = parseInt(g.querySelector('.cond-cant')?.value, 10);
+        if (!Number.isInteger(n) || n < 0) return;
+        out.push({ productoId, grupoId, operador: 'cantidad', min: n, max: op === 'exacta' ? n : null });
+      }
+    });
+  });
+  return out;
 }
 
 // Filtro simple por nombre para la lista de productos participantes: útil
@@ -4059,6 +4155,9 @@ async function tndGuardarPromo(id) {
       ? [...document.querySelectorAll('.pr-cat:checked')].map(e => Number(e.value)) : null,
     productos: document.getElementById('pr-participa').value === 'productos'
       ? [...document.querySelectorAll('.pr-prod:checked')].map(e => Number(e.value)) : null,
+    // Condiciones por modificadores: solo cuando participa por productos.
+    condicionesModificadores: document.getElementById('pr-participa').value === 'productos'
+      ? tndLeerCondiciones() : null,
   };
   // "Todos los días" y "todos los canales por defecto" = mandar null/omitir
   if (cuerpo.diasSemana.length === 0) cuerpo.diasSemana = null;

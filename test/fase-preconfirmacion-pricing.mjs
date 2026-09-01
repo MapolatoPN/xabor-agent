@@ -114,8 +114,11 @@ await t('TEST 4 · GPT INVENTA total: la orden trae total 189 pero backend calcu
     { nombre: 'Almuerzo Americano', cantidad: 1, modificadores: ['Salchicha americana'] },
   ], { subtotal: 149, descuento: 149, total: 189 }), NEG, { canal: 'whatsapp' });
   assert.strictEqual(v.preview.total, 259, 'ignora el total del modelo; usa el oficial');
-  assert.ok(resumenPedidoOficial(v.preview).includes('Total: $259'), 'el resumen presenta el oficial');
-  assert.ok(!resumenPedidoOficial(v.preview).includes('189'), 'nunca el número del modelo');
+  const resumen = resumenPedidoOficial(v.preview);
+  assert.ok(resumen.includes('Total: $259'), 'el resumen presenta el oficial');
+  // El fake del modelo era el TOTAL 189; jamás debe presentarse como total.
+  // (La base $189 del Almuerzo sí aparece legítimamente en el desglose.)
+  assert.ok(!/Total:\s*\$189/.test(resumen), 'nunca el total inventado por el modelo');
 });
 
 await t('TEST 5 · modificador inventado → no se cobra; se reporta; total sigue oficial', async () => {
