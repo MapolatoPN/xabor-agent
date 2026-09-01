@@ -1351,15 +1351,22 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
 // lo verbaliza. Devuelve [{ nombre, tipo, descripcion }].
 export async function describirPromocionesVigentes(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
+  // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
+  // Un canal null, '' o no-string es FAIL-CLOSED (devuelve vacío): NUNCA se
+  // asume un canal — informar promos de un canal equivocado es peor que no
+  // informar. El fix real es que cada caller pase su canal explícito
+  // (whatsapp-meta ⇒ 'whatsapp'); ver procesarMensaje/webhook.
+  if (typeof canal !== 'string') return [];
+  const canalNorm = canal.trim().toLowerCase();
+  if (!canalNorm) return [];
   const { rows } = await pool.query(
     `SELECT * FROM tienda_promociones WHERE negocio_id = $1 AND activa = TRUE AND automatica = TRUE
       ORDER BY prioridad ASC, created_at ASC`, [negocioId]);
-  const ctx = { subtotal: Infinity, items: [], modalidad: 'recoger', canal, timezone, ahora,
-    clienteTienePedidos: false, usosDelCliente: {}, cuposYaApartados: new Set() };
   const out = [];
   for (const p of rows) {
     const canales = Array.isArray(p.canales) ? p.canales : ['tienda_online'];
-    if (!canales.includes(canal)) continue;
+    if (!canales.includes(canalNorm)) continue;
     // Solo el filtro temporal/estructural, no el de carrito (aquí no hay carrito).
     if (p.vigencia_desde && ahora < new Date(p.vigencia_desde)) continue;
     if (p.vigencia_hasta && ahora > new Date(p.vigencia_hasta)) continue;

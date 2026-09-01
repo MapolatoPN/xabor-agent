@@ -992,7 +992,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // El finally lo hace imposible.
     let resultado;
     try {
-      resultado = await procesarMensaje(sessionId, texto, clienteCtx, null, negocioId, telefono);
+      // El canal DEBE viajar explícito: 'whatsapp'. Pasar null hacía que el
+      // filtro por canal de describirPromocionesVigentes (canales.includes(canal))
+      // descartara TODAS las promociones estructuradas en WhatsApp — el default
+      // 'whatsapp' de esa función solo cubre undefined, nunca null.
+      resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono);
     } finally {
       clearTimeout(waitTimer);
     }
