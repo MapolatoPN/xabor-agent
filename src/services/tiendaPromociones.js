@@ -1348,7 +1348,12 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
 // Descripción HUMANA de las promociones vigentes AHORA para un canal, pensada
 // para inyectarse en el prompt del agente como INFORMACIÓN (nunca como algo que
 // el modelo deba calcular). El backend decide qué está vigente; el agente solo
-// lo verbaliza. Devuelve [{ nombre, tipo, descripcion }].
+// lo verbaliza. Devuelve
+//   [{ nombre, tipo, descripcion, participacion:{modo,nombres}, participantesTexto }].
+// `participacion` resuelve los IDs guardados a NOMBRES legibles del MISMO
+// negocio (nunca IDs al LLM, nunca productos de otro negocio). El cálculo del
+// descuento sigue siendo 100% independiente (calcularPromociones); esto solo
+// informa.
 export async function describirPromocionesVigentes(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
@@ -1363,7 +1368,9 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
   const { rows } = await pool.query(
     `SELECT * FROM tienda_promociones WHERE negocio_id = $1 AND activa = TRUE AND automatica = TRUE
       ORDER BY prioridad ASC, created_at ASC`, [negocioId]);
-  const out = [];
+
+  // 1) Filtrar a las vigentes AHORA para este canal (criterio idéntico al previo).
+  const vigentes = [];
   for (const p of rows) {
     const canales = Array.isArray(p.canales) ? p.canales : ['tienda_online'];
     if (!canales.includes(canalNorm)) continue;
@@ -1375,9 +1382,73 @@ export async function describirPromocionesVigentes(negocioId, { canal = 'whatsap
     const aMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
     const ini = aMin(p.hora_inicio), fin = aMin(p.hora_fin);
     if (ini !== null && fin !== null && (minutos < ini || minutos >= fin)) continue;
-    out.push({ nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p) });
+    vigentes.push(p);
+  }
+  if (!vigentes.length) return [];
+
+  // 2) Resolver NOMBRES de participantes en 2 queries batch, SIEMPRE acotadas a
+  // este negocio (aislamiento estricto: jamás nombres de otro business_id).
+  const numeros = (v) => (Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger);
+  const prodIds = [...new Set(vigentes.flatMap((p) => numeros(p.productos)))];
+  const catIds = [...new Set(vigentes.flatMap((p) => numeros(p.categorias)))];
+  const prodNombre = new Map(), catNombre = new Map();
+  if (prodIds.length) {
+    const { rows: pr } = await pool.query(
+      `SELECT id, nombre FROM menu_productos WHERE negocio_id = $1 AND id = ANY($2)`, [negocioId, prodIds]);
+    for (const r of pr) prodNombre.set(Number(r.id), r.nombre);
+  }
+  if (catIds.length) {
+    const { rows: cr } = await pool.query(
+      `SELECT id, nombre FROM menu_categorias WHERE negocio_id = $1 AND id = ANY($2)`, [negocioId, catIds]);
+    for (const r of cr) catNombre.set(Number(r.id), r.nombre);
+  }
+
+  // 3) Construir la salida. Un ID que ya no existe se IGNORA (no se inventa
+  // nombre) y se deja rastro; la promo NO desaparece por ello.
+  const out = [];
+  for (const p of vigentes) {
+    const ids = numeros(p.productos), cats = numeros(p.categorias);
+    let participacion;
+    if (ids.length) {
+      const nombres = [];
+      for (const id of ids) {
+        if (prodNombre.has(id)) nombres.push(prodNombre.get(id));
+        else console.warn(`[Promos] producto participante ${id} (promo ${p.id}, negocio ${negocioId}) no existe en el menú — se ignora`);
+      }
+      participacion = { modo: 'productos', nombres };
+    } else if (cats.length) {
+      const nombres = [];
+      for (const id of cats) {
+        if (catNombre.has(id)) nombres.push(catNombre.get(id));
+        else console.warn(`[Promos] categoría participante ${id} (promo ${p.id}, negocio ${negocioId}) no existe — se ignora`);
+      }
+      participacion = { modo: 'categorias', nombres };
+    } else {
+      participacion = { modo: 'todo', nombres: [] };
+    }
+    out.push({
+      nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
+      participacion, participantesTexto: fraseParticipantes(participacion),
+    });
   }
   return out;
+}
+
+// Une nombres en lenguaje natural: "A", "A y B", "A, B y C".
+function listaLegible(arr) {
+  if (!arr.length) return '';
+  if (arr.length === 1) return String(arr[0]);
+  return arr.slice(0, -1).join(', ') + ' y ' + arr[arr.length - 1];
+}
+
+// Frase de participantes para el prompt (solo nombres, nunca IDs).
+export function fraseParticipantes({ modo, nombres } = {}) {
+  if (modo === 'todo') return 'Aplica a todo el menú.';
+  if (modo === 'categorias') {
+    return nombres && nombres.length ? `Categorías participantes: ${listaLegible(nombres)}.` : 'Aplica a categorías específicas.';
+  }
+  // 'productos' (default)
+  return nombres && nombres.length ? `Productos participantes: ${listaLegible(nombres)}.` : 'Aplica a productos específicos.';
 }
 
 // Frase legible por tipo (sin jerga técnica). No calcula nada: solo describe.

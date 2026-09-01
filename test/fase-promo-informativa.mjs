@@ -48,10 +48,18 @@ async function limpiar(negocioId) {
 }
 
 const NEG = await montarNegocio('promo-info-a', 'Promo Info A');
-await limpiar(NEG);
+const NEG_B = await montarNegocio('promo-info-b', 'Promo Info B');
+await limpiar(NEG); await limpiar(NEG_B);
 const cat = await categoria(NEG, 'DESAYUNOS');
+const catBebidas = await categoria(NEG, 'BEBIDAS');
 const pHotcakes = await producto(NEG, cat, 'Hotcakes Tradicionales', 150);
 const pProtein  = await producto(NEG, cat, 'Protein Pancakes', 170);
+const pWaffles  = await producto(NEG, cat, 'Waffles', 160);
+const pOmelette = await producto(NEG, cat, 'Omelette de Claras', 198); // misma cat, NO participa
+const pCafe     = await producto(NEG, catBebidas, 'Café Americano', 45);
+// Negocio B: producto ajeno (jamás debe resolverse su nombre en NEG).
+const catB = await categoria(NEG_B, 'OTROS');
+const pForaneo = await producto(NEG_B, catB, 'Producto Ajeno B', 99);
 
 const TZ = 'UTC';
 const MAR_10 = new Date('2024-01-02T10:00:00Z'); // martes 10:00
@@ -200,8 +208,103 @@ await t('TEST 10 · pricing NUNCA recibió el null del path informativo (respues
   await borra();
 });
 
+// ── PARTICIPANTES: nombres reales en el path informativo ──────────────────
+const nombresDe = (promos, nombre = 'Martes 2x1') => promos.find(p => p.nombre === nombre)?.participacion?.nombres || [];
+
+await t('PART 1 · productos específicos → devuelve los NOMBRES de los 3 productos', async () => {
+  await crearMartes2x1({ productos: [pHotcakes, pWaffles, pProtein] });
+  const promos = await describir('whatsapp', MAR_10);
+  const p = promos.find(x => x.nombre === 'Martes 2x1');
+  assert.strictEqual(p.participacion.modo, 'productos');
+  assert.deepStrictEqual([...p.participacion.nombres].sort(),
+    ['Hotcakes Tradicionales', 'Protein Pancakes', 'Waffles'].sort());
+  assert.ok(/Hotcakes Tradicionales/.test(p.participantesTexto) && /Waffles/.test(p.participantesTexto), 'el texto para el prompt incluye los nombres');
+  assert.ok(/Productos participantes:/.test(p.participantesTexto));
+  await borra();
+});
+
+await t('PART 2 · producto NO participante de la misma categoría → NO aparece', async () => {
+  await crearMartes2x1({ productos: [pHotcakes, pWaffles] });
+  const nombres = nombresDe(await describir('whatsapp', MAR_10));
+  assert.ok(!nombres.includes('Omelette de Claras'), 'el no-participante de la misma categoría no debe listarse');
+  assert.strictEqual(nombres.length, 2);
+  await borra();
+});
+
+await t('PART 3 · promo por CATEGORÍAS → devuelve nombres de categorías', async () => {
+  await guardarPromocion(NEG, {
+    nombre: 'Promo Cat', tipo: 'porcentaje', valor: 10, automatica: true,
+    diasSemana: [2], horaInicio: '07:00', horaFin: '15:00', canales: ['whatsapp'],
+    categorias: [cat, catBebidas],
+  });
+  const p = (await describir('whatsapp', MAR_10)).find(x => x.nombre === 'Promo Cat');
+  assert.strictEqual(p.participacion.modo, 'categorias');
+  assert.deepStrictEqual([...p.participacion.nombres].sort(), ['BEBIDAS', 'DESAYUNOS'].sort());
+  assert.ok(/Categorías participantes:/.test(p.participantesTexto));
+  await borra();
+});
+
+await t('PART 4 · promo TODO EL MENÚ → informa que aplica a todo el menú', async () => {
+  await guardarPromocion(NEG, {
+    nombre: 'Promo Todo', tipo: 'porcentaje', valor: 10, automatica: true,
+    diasSemana: [2], horaInicio: '07:00', horaFin: '15:00', canales: ['whatsapp'],
+    // sin productos ni categorias
+  });
+  const p = (await describir('whatsapp', MAR_10)).find(x => x.nombre === 'Promo Todo');
+  assert.strictEqual(p.participacion.modo, 'todo');
+  assert.strictEqual(p.participantesTexto, 'Aplica a todo el menú.');
+  await borra();
+});
+
+await t('PART 5 · aislamiento: un product_id de OTRO negocio jamás resuelve su nombre', async () => {
+  const id = await crearMartes2x1({ productos: [pHotcakes] });
+  // Se manipula la fila directamente para inyectar un ID ajeno (guardarPromocion
+  // ya lo bloquearía). El resolvedor está acotado por negocio_id ⇒ no lo nombra.
+  await pool.query(`UPDATE tienda_promociones SET productos = $1::jsonb WHERE id=$2 AND negocio_id=$3`,
+    [JSON.stringify([pHotcakes, pForaneo]), id, NEG]);
+  const p = (await describir('whatsapp', MAR_10)).find(x => x.nombre === 'Martes 2x1');
+  assert.ok(p, 'la promo sigue apareciendo');
+  assert.deepStrictEqual(p.participacion.nombres, ['Hotcakes Tradicionales'], 'solo el propio; nunca el ajeno');
+  assert.ok(!/Ajeno/.test(p.participantesTexto), 'jamás filtra el nombre del otro negocio');
+  await borra();
+});
+
+await t('PART 6 · product_id inexistente → se ignora sin romper ni inventar; la promo NO desaparece', async () => {
+  const id = await crearMartes2x1({ productos: [pHotcakes] });
+  await pool.query(`UPDATE tienda_promociones SET productos = $1::jsonb WHERE id=$2 AND negocio_id=$3`,
+    [JSON.stringify([pHotcakes, 999999999]), id, NEG]);
+  const promos = await describir('whatsapp', MAR_10);
+  const p = promos.find(x => x.nombre === 'Martes 2x1');
+  assert.ok(p, 'la promo NO desaparece porque un producto falte');
+  assert.deepStrictEqual(p.participacion.nombres, ['Hotcakes Tradicionales'], 'el id inexistente se ignora, no se inventa');
+  await borra();
+});
+
+await t('PART 7 · REGRESIÓN: "¿tienen promociones?" sigue mostrando el 2x1 activo', async () => {
+  await crearMartes2x1({ productos: [pHotcakes, pWaffles] });
+  const promos = await describir('whatsapp', MAR_10);
+  assert.strictEqual(promos.length, 1);
+  assert.strictEqual(promos[0].nombre, 'Martes 2x1');
+  assert.ok(/2x1|menor precio|gratis/i.test(promos[0].descripcion));
+  await borra();
+});
+
+await t('PART 8 · pricing IGUAL: la descripción informativa no altera el descuento', async () => {
+  await crearMartes2x1({ productos: [pHotcakes, pProtein] });
+  const r = await calcularPromociones({
+    negocioId: NEG, subtotal: 320,
+    items: [
+      { producto_id: pHotcakes, categoria_id: cat, precio_unitario: 150, precio_base: 150, cantidad: 1 },
+      { producto_id: pProtein,  categoria_id: cat, precio_unitario: 170, precio_base: 170, cantidad: 1 },
+    ],
+    canal: 'whatsapp', modalidad: 'recoger', timezone: TZ, ahora: MAR_10,
+  });
+  assert.strictEqual(r.descuento, 150, 'el motor calcula igual que antes');
+  await borra();
+});
+
 // ═══════════ RESUMEN ═══════════
-await limpiar(NEG);
+await limpiar(NEG); await limpiar(NEG_B);
 await pool.end();
 console.log(`\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallidas) { console.log('Fallos:\n  - ' + fallos.join('\n  - ')); process.exit(1); }

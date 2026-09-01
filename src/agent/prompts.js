@@ -406,7 +406,11 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
     promosMotor = await describirPromocionesVigentes(negocioId, { canal });
   } catch { /* sin promos si el motor no responde */ }
   for (const pm of promosMotor) {
-    textoPromociones += `🔥 ${pm.nombre}: ${pm.descripcion}\n`;
+    // participantesTexto trae los NOMBRES reales de productos/categorías que
+    // Xabor ya resolvió (nunca IDs) para que el agente pueda responder "¿cuáles
+    // participan?" sin deducirlo del menú.
+    const parts = pm.participantesTexto ? ` ${pm.participantesTexto}` : '';
+    textoPromociones += `🔥 ${pm.nombre}: ${pm.descripcion}${parts}\n`;
   }
   if (promosMotor.length) {
     textoPromociones += '- El SISTEMA calcula el descuento y el total finales; tú SOLO informas que la promo existe. NUNCA pongas precios en 0 ni inventes el descuento.\n\n';
