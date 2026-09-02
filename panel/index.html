@@ -698,6 +698,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .rw-card-lbl { font-size:0.75rem; color:#888; font-weight:500; }
 .rw-stab { transition:color .15s,border-color .15s; }
 .rw-stab.activo { color:#FF6B35 !important; border-bottom-color:#FF6B35 !important; }
+/* Sub-tabs de Rewards: en pantallas angostas la fila de 4 pestañas excedía el
+   viewport (único overflow horizontal detectado en la auditoría móvil). Se
+   contiene el desbordamiento DENTRO de la barra (scroll horizontal), nunca en
+   la página. Desktop no cambia (caben sin scroll). Mismo patrón que .chats-filtros. */
+#rw-subtabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+#rw-subtabs::-webkit-scrollbar { display: none; }
+#rw-subtabs .rw-stab { flex-shrink: 0; white-space: nowrap; }
 .rw-mov-fila { display:grid; grid-template-columns:90px 1fr auto auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid #f8f7f4; font-size:0.82rem; }
 .rw-mov-tipo { display:inline-block; padding:2px 8px; border-radius:12px; font-size:0.7rem; font-weight:700; }
 .rw-tipo-acumulacion  { background:#dcfce7; color:#16a34a; }
