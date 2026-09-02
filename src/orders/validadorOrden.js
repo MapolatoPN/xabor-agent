@@ -57,6 +57,11 @@ export const RECHAZOS = {
   // esa selección. El backend NUNCA rellena por su cuenta: se pregunta.
   GRUPO_REQUERIDO_FALTANTE: 'GRUPO_REQUERIDO_FALTANTE',
   GRUPO_EXCEDE_MAXIMO: 'GRUPO_EXCEDE_MAXIMO',
+  // El producto exige elegir en un grupo que NO tiene opciones suficientes que
+  // ofrecer (todas agotadas, o nunca se cargaron). El cliente no puede
+  // resolverlo por más que se le pregunte: es configuración del negocio. Se
+  // separa de GRUPO_REQUERIDO_FALTANTE para no dejarlo en un bucle imposible.
+  PRODUCTO_NO_CONFIGURADO_PARA_VENTA: 'PRODUCTO_NO_CONFIGURADO_PARA_VENTA',
 };
 
 // Canales cuyo pedido nace de un checkout EXTERNO ya cerrado (y normalmente ya
@@ -336,8 +341,17 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       // GRUPOS OBLIGATORIOS: misma semántica que ya aplica la UI/POS
       // (cardinalidadDeGrupo). Solo donde hay conversación para preguntar.
       if (!CANALES_CHECKOUT_EXTERNO.has(canalPromo)) {
-        const { faltantes, excedidos } = validarCardinalidadGrupos(
+        const { faltantes, excedidos, inconsistentes } = validarCardinalidadGrupos(
           gruposPorProd.get(item.producto_id) || [], modificadores);
+        // Catálogo mal configurado: NO es culpa del cliente ni algo que pueda
+        // resolver. Se rechaza el pedido y se avisa al negocio por log.
+        for (const inc of inconsistentes) {
+          rechazos.push({
+            codigo: RECHAZOS.PRODUCTO_NO_CONFIGURADO_PARA_VENTA,
+            producto: item.nombre, grupo: inc.grupo,
+          });
+          console.error(`[CATALOGO] evento=grupo_requerido_sin_opciones negocio=${negocioId} producto=${JSON.stringify(item.nombre)} grupo=${JSON.stringify(inc.grupo)} minimo=${inc.minimo} disponibles=${inc.disponibles}${inc.maximo != null ? ` maximo=${inc.maximo}` : ''}`);
+        }
         for (const f of faltantes) {
           rechazos.push({
             codigo: RECHAZOS.GRUPO_REQUERIDO_FALTANTE,
@@ -497,6 +511,16 @@ export function mensajeRechazoParaCliente(rechazos) {
     return faltante
       ? `¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: ${listaDisponibles()}.`
       : `Esa forma de pago no está disponible. Puedes pagar con: ${listaDisponibles()}. ¿Cuál prefieres? Tu pedido sigue tal como lo armamos.`;
+  }
+
+  // Producto mal configurado: el cliente no puede hacer nada al respecto, así
+  // que se le dice lo justo y sin detalle técnico. El diagnóstico va al log.
+  const noConfig = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_CONFIGURADO_PARA_VENTA);
+  if (noConfig.length) {
+    const prods = [...new Set(noConfig.map((r) => r.producto).filter(Boolean))];
+    return prods.length === 1
+      ? `Una disculpa: ${prods[0]} no está disponible para pedir por el momento. ¿Te muestro otra opción del menú?`
+      : 'Una disculpa: algunos productos de tu pedido no están disponibles para pedir por el momento. ¿Te muestro otras opciones del menú?';
   }
 
   // Falta elegir en uno o más grupos obligatorios: se piden JUNTOS, con las

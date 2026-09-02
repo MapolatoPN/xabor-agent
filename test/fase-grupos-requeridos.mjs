@@ -199,6 +199,52 @@ await t('validarCardinalidadGrupos reporta faltantes y excedidos con nombres rea
   assert.strictEqual(r.excedidos.length, 0);
 });
 
+// ═══ C1–C4 — CATÁLOGO INCONSISTENTE ════════════════════════════════════════
+// Un grupo obligatorio SIN opciones que ofrecer no es "falta que elijas": el
+// cliente no puede resolverlo por más que se le pregunte. Es configuración del
+// negocio y debe distinguirse, o el cliente queda en un bucle imposible.
+const ROTO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Mal Configurado',90) RETURNING id`, [NEG, cat])).id;
+const gRoto = await grupo(ROTO, 'Obligatorio Vacío', { requerido: true, minimo: 1, maximo: 1 });
+await pool.query(
+  `INSERT INTO menu_modificadores_opciones (negocio_id,grupo_id,nombre,precio_extra,disponible,orden)
+   VALUES ($1,$2,'Agotada',0,FALSE,0)`, [NEG, gRoto]);   // única opción, NO disponible
+const OPC_VACIO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Opcional Vacío',70) RETURNING id`, [NEG, cat])).id;
+await grupo(OPC_VACIO, 'Opcional Vacío', { requerido: false, minimo: 0, maximo: 0 });
+
+await t('C1. grupo requerido SIN opciones suficientes → catálogo inconsistente, NO preview', async () => {
+  const v = await previsualizarPedido(base([{ nombre: 'Producto Mal Configurado', cantidad: 1 }]), NEG, { canal: 'whatsapp' });
+  assert.strictEqual(v.ok, false, 'no puede venderse algo que no se puede configurar');
+  assert.strictEqual(v.preview, undefined);
+  assert.ok(v.rechazos.some((r) => r.codigo === RECHAZOS.PRODUCTO_NO_CONFIGURADO_PARA_VENTA));
+  // Y NO se reporta como si el cliente hubiera olvidado elegir.
+  assert.ok(!v.rechazos.some((r) => r.codigo === RECHAZOS.GRUPO_REQUERIDO_FALTANTE),
+    'no debe confundirse con "falta que elijas"');
+});
+await t('C2. el cliente NO recibe una petición imposible de resolver', async () => {
+  const v = await validarOrdenPropuesta(base([{ nombre: 'Producto Mal Configurado', cantidad: 1 }]), NEG, { canal: 'whatsapp' });
+  const msg = mensajeRechazoParaCliente(v.rechazos);
+  assert.match(msg, /no está disponible para pedir/i);
+  assert.ok(!/falta elegir/i.test(msg), 'jamás pedirle que elija de una lista vacía');
+  assert.ok(!/Obligatorio Vacío/.test(msg), 'sin detalle técnico del catálogo');
+});
+await t('C3. grupo requerido CON opciones suficientes → flujo normal', async () => {
+  const v = await previsualizarPedido(conMods([mod('Variante', 'Uno'), mod('Guarnición', 'G1', 'G2')]), NEG, { canal: 'whatsapp' });
+  assert.strictEqual(v.ok, true, 'un catálogo sano no se ve afectado');
+});
+await t('C4. grupo OPCIONAL sin opciones → no bloquea (no es obligatorio)', async () => {
+  const v = await previsualizarPedido(base([{ nombre: 'Producto Opcional Vacío', cantidad: 1 }]), NEG, { canal: 'whatsapp' });
+  assert.strictEqual(v.ok, true, 'un grupo opcional vacío es normal, no un error');
+  assert.strictEqual(v.preview.total, 70);
+});
+await t('C5. un máximo menor que el mínimo también es catálogo inconsistente', () => {
+  const g = [{ id: 1, nombre: 'Imposible', requerido: true, minimo: 3, maximo: 1,
+    opciones: [{ id: 1, nombre: 'A', disponible: true }, { id: 2, nombre: 'B', disponible: true },
+               { id: 3, nombre: 'C', disponible: true }] }];
+  const r = validarCardinalidadGrupos(g, []);
+  assert.strictEqual(r.inconsistentes.length, 1, 'max<min no se puede satisfacer nunca');
+  assert.strictEqual(r.faltantes.length, 0);
+});
+
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
 await pool.end();

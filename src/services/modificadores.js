@@ -164,18 +164,32 @@ export function validarCardinalidadGrupos(grupos, modificadores) {
     if (!elegidasPorGrupo.has(gid)) elegidasPorGrupo.set(gid, []);
     elegidasPorGrupo.get(gid).push(m.opcion);
   }
-  const faltantes = [], excedidos = [];
+  const faltantes = [], excedidos = [], inconsistentes = [];
   for (const g of (grupos || [])) {
     const { minimo, maximo } = cardinalidadDeGrupo(g);
     const elegidas = elegidasPorGrupo.get(Number(g.id)) || [];
     const alternativas = (g.opciones || []).filter((o) => o.disponible !== false).map((o) => o.nombre);
+    // CATÁLOGO INCONSISTENTE: el grupo exige elegir pero no hay opciones
+    // suficientes que ofrecer (todas agotadas, o nunca se cargaron). El cliente
+    // NO puede resolverlo por más que se le pregunte: pedirle una opción
+    // imposible lo dejaría en un bucle. Es un problema de configuración del
+    // negocio, y se separa de "falta que elijas".
+    if (alternativas.length < minimo) {
+      inconsistentes.push({ grupo: g.nombre, minimo, disponibles: alternativas.length });
+      continue;
+    }
+    // Un máximo por debajo del mínimo hace el grupo imposible de satisfacer.
+    if (maximo < minimo) {
+      inconsistentes.push({ grupo: g.nombre, minimo, maximo, disponibles: alternativas.length });
+      continue;
+    }
     if (elegidas.length < minimo) {
       faltantes.push({ grupo: g.nombre, minimo, elegidas: elegidas.length, alternativas });
     } else if (elegidas.length > maximo) {
       excedidos.push({ grupo: g.nombre, maximo, elegidas: elegidas.length, seleccion: elegidas });
     }
   }
-  return { faltantes, excedidos };
+  return { faltantes, excedidos, inconsistentes };
 }
 
 // Normaliza un nombre para matching tolerante: sin acentos, minúsculas, sin
