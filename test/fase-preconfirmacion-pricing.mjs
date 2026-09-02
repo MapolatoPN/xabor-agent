@@ -95,7 +95,9 @@ await t('TEST 2 · + Salchicha → subtotal 378, desc 149, total 229', async () 
   assert.strictEqual(v.preview.total, 229);
   const alm = v.preview.items.find(i => i.nombre === 'Almuerzo Americano');
   assert.strictEqual(alm.total_item, 229);
-  assert.deepStrictEqual(alm.modificadores, [{ nombre: 'Salchicha americana', precio: 40 }]);
+  // El preview lleva también el GRUPO de cada opción (XAB-0230): sin él el
+  // resumen no puede separar proteínas de guarniciones.
+  assert.deepStrictEqual(alm.modificadores, [{ grupo: 'Extras', nombre: 'Salchicha americana', precio: 40 }]);
 });
 
 await t('TEST 3 · dos modificadores (Nutella 30 + Salchicha 40) → subtotal 408, desc 149, total 259', async () => {

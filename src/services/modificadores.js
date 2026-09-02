@@ -146,31 +146,109 @@ function normNombre(s) {
 // Reutiliza el mismo catálogo (cargarGruposDeProductos) y la misma regla de
 // precio que POS/Restaurante — no hay una segunda implementación de precios.
 //
+// LA IDENTIDAD DE UNA OPCIÓN ES (grupo, opción), NUNCA EL NOMBRE SUELTO.
+// Incidente XAB-0230: "Bistec en Salsa" y "Queso Panela en Salsa" existen en
+// DOS grupos del mismo producto (Proteína y Guarniciones). El índice anterior
+// era nombre→PRIMER grupo hallado, así que las guarniciones del cliente se
+// registraron como proteínas: la línea quedó con 3 proteínas y 0 guarniciones,
+// las condiciones de la promo fallaron y la cocina recibió datos falsos.
+// Ahora: con grupo explícito se resuelve DENTRO del grupo; sin grupo solo se
+// resuelve si el nombre es único en el producto; si es ambiguo se devuelve en
+// `ambiguos` y NO se adivina.
+//
 //   grupos:  los del producto (de cargarGruposDeProductos), cada uno con .opciones
-//   nombres: ["Salchicha americana", ...] (o [{opcion:"..."}])
-// Devuelve { modificadores, precioExtras, texto, noReconocidos }.
+//   entradas admitidas (mezclables):
+//     "Salchicha americana"                              (legacy: nombre suelto)
+//     { opcion: "Salchicha americana" }                  (legacy: objeto)
+//     { grupo: "Guarniciones", opciones: ["A", "B"] }    (estructurado por grupo)
+//     { grupo_id: 12, opcion_id: 88 }                    (IDs, sin ambigüedad)
+// Devuelve { modificadores, precioExtras, texto, noReconocidos, ambiguos }.
 export function resolverModificadoresLLM(grupos, nombres) {
-  const pedidos = (Array.isArray(nombres) ? nombres : [])
-    .map((n) => (n && typeof n === 'object') ? (n.opcion ?? n.nombre ?? '') : n)
-    .map((n) => String(n || '').trim())
-    .filter(Boolean);
+  const listaGrupos = Array.isArray(grupos) ? grupos : [];
+  const disponibles = (g) => (g.opciones || []).filter((o) => o.disponible !== false);
 
-  // Índice opción-normalizada → {grupo, opcion}. Solo opciones DISPONIBLES.
-  const indice = new Map();
-  for (const g of (grupos || [])) {
-    for (const o of (g.opciones || [])) {
-      if (o.disponible === false) continue;
+  // Índice por (grupo normalizado → nombre opción normalizado → opción) y
+  // conteo global de cada nombre para detectar ambigüedad.
+  const porGrupo = new Map();   // clave grupo → { g, ops: Map(nombre → o) }
+  const porGrupoId = new Map(); // id grupo   → mismo objeto
+  const global = new Map();     // nombre op  → [{g,o}, ...]  (todas las coincidencias)
+  for (const g of listaGrupos) {
+    const entrada = { g, ops: new Map() };
+    for (const o of disponibles(g)) {
       const clave = normNombre(o.nombre);
-      if (!indice.has(clave)) indice.set(clave, { g, o });
+      if (!entrada.ops.has(clave)) entrada.ops.set(clave, o);
+      if (!global.has(clave)) global.set(clave, []);
+      global.get(clave).push({ g, o });
     }
+    porGrupo.set(normNombre(g.nombre), entrada);
+    porGrupoId.set(Number(g.id), entrada);
+  }
+
+  // Aplana la entrada a peticiones { nombre?, opcion_id?, grupo?, grupo_id? }.
+  const peticiones = [];
+  for (const n of (Array.isArray(nombres) ? nombres : [])) {
+    if (n && typeof n === 'object') {
+      const grupoNombre = n.grupo ?? n.grupo_nombre ?? null;
+      const grupoId = n.grupo_id != null ? Number(n.grupo_id) : null;
+      // Forma estructurada: un grupo con varias opciones.
+      if (Array.isArray(n.opciones)) {
+        for (const op of n.opciones) {
+          const esObj = op && typeof op === 'object';
+          peticiones.push({
+            nombre: String((esObj ? (op.opcion ?? op.nombre) : op) || '').trim(),
+            opcion_id: esObj && op.opcion_id != null ? Number(op.opcion_id) : (n.opcion_id != null ? null : null),
+            grupoNombre, grupoId,
+          });
+        }
+        continue;
+      }
+      peticiones.push({
+        nombre: String(n.opcion ?? n.nombre ?? '').trim(),
+        opcion_id: n.opcion_id != null ? Number(n.opcion_id) : null,
+        grupoNombre, grupoId,
+      });
+      continue;
+    }
+    peticiones.push({ nombre: String(n || '').trim(), opcion_id: null, grupoNombre: null, grupoId: null });
   }
 
   const modificadores = [];
   const noReconocidos = [];
+  const ambiguos = [];
   const yaTomadas = new Set();
-  for (const nombre of pedidos) {
-    const hit = indice.get(normNombre(nombre));
-    if (!hit) { noReconocidos.push(nombre); continue; }
+  for (const p of peticiones) {
+    if (!p.nombre && p.opcion_id == null) continue;
+    // 1) Grupo explícito (por id o por nombre): la búsqueda se acota al grupo.
+    let entrada = null;
+    if (p.grupoId != null && porGrupoId.has(p.grupoId)) entrada = porGrupoId.get(p.grupoId);
+    else if (p.grupoNombre) entrada = porGrupo.get(normNombre(p.grupoNombre)) || null;
+
+    let hit = null;
+    if (entrada) {
+      const o = p.opcion_id != null
+        ? disponibles(entrada.g).find((x) => Number(x.id) === p.opcion_id)
+        : entrada.ops.get(normNombre(p.nombre));
+      if (o) hit = { g: entrada.g, o };
+      else { noReconocidos.push(p.nombre || `#${p.opcion_id}`); continue; }
+    } else if (p.opcion_id != null) {
+      // 2) Sin grupo pero con id de opción: el id ya es identidad única.
+      for (const g of listaGrupos) {
+        const o = disponibles(g).find((x) => Number(x.id) === p.opcion_id);
+        if (o) { hit = { g, o }; break; }
+      }
+      if (!hit) { noReconocidos.push(p.nombre || `#${p.opcion_id}`); continue; }
+    } else {
+      // 3) Legacy: nombre suelto. Solo se acepta si es ÚNICO en el producto.
+      const coincidencias = global.get(normNombre(p.nombre)) || [];
+      if (!coincidencias.length) { noReconocidos.push(p.nombre); continue; }
+      if (coincidencias.length > 1) {
+        // FAIL-CLOSED: no se adivina. El canal pedirá aclaración.
+        ambiguos.push({ nombre: p.nombre, grupos: coincidencias.map((c) => c.g.nombre) });
+        continue;
+      }
+      hit = coincidencias[0];
+    }
+
     if (yaTomadas.has(hit.o.id)) continue; // mismo extra repetido: se cuenta una vez
     yaTomadas.add(hit.o.id);
     modificadores.push({
@@ -184,6 +262,7 @@ export function resolverModificadoresLLM(grupos, nombres) {
     precioExtras: num(modificadores.reduce((s, m) => s + m.precio_extra, 0)),
     texto: textoModificadores(modificadores),
     noReconocidos,
+    ambiguos,
   };
 }
 

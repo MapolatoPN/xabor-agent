@@ -176,7 +176,10 @@ export async function previsualizarPedido(orden, negocioId, opts = {}) {
     nombre: it.nombre,
     cantidad: it.cantidad,
     precio_base: it.precio_base,
-    modificadores: (it.modificadores || []).map((m) => ({ nombre: m.opcion, precio: m.precio_extra })),
+    // El GRUPO viaja al preview: sin él el resumen mezclaba proteínas y
+    // guarniciones en una lista plana y el cliente no podía verificar lo que
+    // pidió (XAB-0230).
+    modificadores: (it.modificadores || []).map((m) => ({ grupo: m.grupo || null, nombre: m.opcion, precio: m.precio_extra })),
     total_item: Math.round(Number(it.precio_unitario) * Number(it.cantidad) * 100) / 100,
   }));
   const preview = {
@@ -203,16 +206,33 @@ export function resumenPedidoOficial(preview) {
     const cant = Number(it.cantidad) > 1 ? `${it.cantidad}x ` : '';
     const mods = it.modificadores || [];
     const tienePagados = mods.some((m) => Number(m.precio) > 0);
+    // Las opciones se listan BAJO SU GRUPO, en el orden en que aparecen. Una
+    // lista plana ("Huevos, Bistec, Queso") impide al cliente distinguir la
+    // proteína de las guarniciones — justo lo que se malinterpretó en XAB-0230.
+    const grupos = [];
+    for (const m of mods) {
+      const g = m.grupo || '';
+      let entrada = grupos.find((x) => x.grupo === g);
+      if (!entrada) { entrada = { grupo: g, opciones: [] }; grupos.push(entrada); }
+      entrada.opciones.push(m);
+    }
+    const lineaOpcion = (m) => `${m.nombre}${Number(m.precio) ? ` ${dinero(m.precio)}` : ''}`;
     if (tienePagados) {
       // Desglose claro: base + cada extra + total del producto (evita mostrar
       // "$179 + Nutella $30" como si el extra fuera aparte del 179).
       lineas.push(`• ${cant}${it.nombre}`);
       lineas.push(`   base ${dinero(it.precio_base)}`);
-      for (const m of mods) lineas.push(`   + ${m.nombre}${Number(m.precio) ? ` ${dinero(m.precio)}` : ''}`);
+      for (const g of grupos) {
+        if (g.grupo) lineas.push(`   ${g.grupo}: ${g.opciones.map(lineaOpcion).join(', ')}`);
+        else for (const m of g.opciones) lineas.push(`   + ${lineaOpcion(m)}`);
+      }
       lineas.push(`   Total producto ${dinero(it.total_item)}`);
     } else {
       lineas.push(`• ${cant}${it.nombre} — ${dinero(it.total_item)}`);
-      for (const m of mods) lineas.push(`   + ${m.nombre}`); // opciones sin costo
+      for (const g of grupos) {
+        if (g.grupo) lineas.push(`   ${g.grupo}: ${g.opciones.map((m) => m.nombre).join(', ')}`);
+        else for (const m of g.opciones) lineas.push(`   + ${m.nombre}`); // opciones sin costo
+      }
     }
   }
   lineas.push('');

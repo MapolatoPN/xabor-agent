@@ -417,6 +417,11 @@ main { display: block; padding: 28px 32px; }
 .item-nombre-wrap { flex: 1; color: var(--color-text-primary); }
 .item-precio { width: 48px; text-align: right; flex-shrink: 0; font-weight: 600; color: var(--color-text-secondary); }
 .item-nota { font-size: 0.75rem; color: var(--color-text-muted); display: block; }
+/* Modificadores del item, agrupados por su grupo real (Salsa: Verde ·
+   Guarniciones: Bistec en Salsa, Queso Panela). La cocina los necesita: sin
+   esto la comanda solo decía "1x Chilaquiles Sencillos" (XAB-0230). */
+.item-mods { display: block; font-size: 0.75rem; color: var(--color-text-secondary); line-height: 1.35; }
+.item-mod-grupo { display: block; }
 
 .comanda-subtotales { border-top: 1px dashed var(--color-border-strong); padding: 6px 0; }
 .subtotal-linea { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--color-text-secondary); padding: 2px 0; }
@@ -2935,6 +2940,38 @@ function esPorCobrar(p) {
   return p && p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true;
 }
 
+// Modificadores del item AGRUPADOS por su grupo real, para el card y la
+// comanda. Consume EXCLUSIVAMENTE la estructura canónica que ya validó el
+// backend ({grupo, opcion}); nunca vuelve a interpretar texto ni a buscar
+// nombres contra el menú. Antes de XAB-0230 esto no se pintaba en ningún lado:
+// la cocina recibía "1x Chilaquiles Sencillos" sin saber salsa ni guarniciones.
+function modsAgrupados(item) {
+  const mods = Array.isArray(item?.modificadores) ? item.modificadores : [];
+  const porGrupo = new Map();
+  for (const m of mods) {
+    // Pedidos viejos pueden traer strings sueltos: se muestran sin grupo.
+    const grupo = (m && typeof m === 'object') ? (m.grupo || '') : '';
+    const opcion = (m && typeof m === 'object') ? (m.opcion || m.nombre || '') : String(m || '');
+    if (!opcion) continue;
+    if (!porGrupo.has(grupo)) porGrupo.set(grupo, []);
+    porGrupo.get(grupo).push(opcion);
+  }
+  return [...porGrupo.entries()];
+}
+function modsPorGrupoHTML(item) {
+  const grupos = modsAgrupados(item);
+  if (!grupos.length) return '';
+  return `<small class="item-mods">` + grupos.map(([grupo, opciones]) =>
+    `<span class="item-mod-grupo">${grupo ? esc(grupo) + ': ' : ''}${opciones.map(esc).join(', ')}</span>`
+  ).join('') + `</small>`;
+}
+// Escape mínimo: los nombres vienen del catálogo del negocio, pero se pintan
+// como HTML y no hay razón para confiar en que no traigan < o &.
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function renderComanda(p) {
   const horaCompleta = horaCST(p.timestamp);
   const esEntrega    = p.modalidad === 'entrega a domicilio';
@@ -2952,7 +2989,7 @@ function renderComanda(p) {
   const itemsHTML = (p.items || []).map(item => `
     <div class="item-linea">
       <span class="item-cant">${item.cantidad || 1}x</span>
-      <span class="item-nombre-wrap">${item.nombre || item.name || 'Producto'}${item.notas ? `<small class="item-nota">${item.notas}</small>` : ''}</span>
+      <span class="item-nombre-wrap">${item.nombre || item.name || 'Producto'}${modsPorGrupoHTML(item)}${item.notas ? `<small class="item-nota">${item.notas}</small>` : ''}</span>
       <span class="item-precio">${getPrecioItem(item) > 0 ? '$' + getPrecioItem(item).toFixed(0) : '—'}</span>
     </div>`).join('');
 
@@ -3161,6 +3198,8 @@ function comandaHTML(p) {
     <tr>
       <td style="width:28px;font-weight:900;font-size:16px;vertical-align:top;">${item.cantidad||1}x</td>
       <td style="vertical-align:top;font-size:14px;font-weight:700;">${item.nombre||item.name||'Producto'}
+        ${modsAgrupados(item).map(([grupo, opciones]) =>
+          `<div style="font-size:12px;font-weight:700;padding-left:6px;">${grupo ? esc(grupo) + ': ' : ''}${opciones.map(esc).join(', ')}</div>`).join('')}
         ${item.notas ? `<div style="font-size:11px;font-style:italic;font-weight:400;padding-left:4px;">${item.notas}</div>` : ''}
       </td>
     </tr>`).join('');

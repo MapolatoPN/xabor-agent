@@ -43,6 +43,10 @@ export const RECHAZOS = {
   FORMA_PAGO_INVALIDA: 'FORMA_PAGO_INVALIDA',
   MENU_VACIO: 'MENU_VACIO',
   ORDEN_SIN_ITEMS: 'ORDEN_SIN_ITEMS',
+  // XAB-0230: el nombre de la opción existe en más de un grupo del producto
+  // (p. ej. "Bistec en Salsa" como Proteína y como Guarnición). No se adivina:
+  // el canal pregunta a cuál se refiere el cliente.
+  MODIFICADOR_AMBIGUO: 'MODIFICADOR_AMBIGUO',
 };
 
 // Mismo mapeo tipo→texto que usa el prompt al OFRECER métodos
@@ -280,7 +284,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   try {
     const gruposPorProd = await cargarGruposDeProductos(negocioId, itemsCanonicos.map((i) => i.producto_id));
     for (const item of itemsCanonicos) {
-      const { modificadores, precioExtras, texto, noReconocidos } =
+      const { modificadores, precioExtras, texto, noReconocidos, ambiguos } =
         resolverModificadoresLLM(gruposPorProd.get(item.producto_id) || [], item._modsLLM);
       if (modificadores.length) {
         item.modificadores = modificadores;                     // ticket / cocina / historial
@@ -291,6 +295,23 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
         ajustes.push({ tipo: 'modificador_no_reconocido', producto: item.nombre, ignorados: noReconocidos });
         eventoTxn('modificador_no_reconocido', negocioId, { producto_id: item.producto_id, ignorados: noReconocidos.slice(0, 5) });
       }
+      // FAIL-CLOSED (XAB-0230): una opción cuyo nombre existe en VARIOS grupos
+      // del producto no se adivina. Antes se tomaba el primer grupo y la cocina
+      // recibía datos falsos; ahora la orden se detiene y el canal pregunta a
+      // qué grupo se refiere. Es un rechazo, no un ajuste: cobrar o cocinar algo
+      // que no sabemos qué es sería peor que preguntar.
+      if (ambiguos.length) {
+        for (const a of ambiguos) {
+          rechazos.push({
+            codigo: RECHAZOS.MODIFICADOR_AMBIGUO,
+            producto: item.nombre, nombre: a.nombre, grupos: a.grupos,
+          });
+        }
+        eventoTxn('modificador_ambiguo', negocioId, {
+          producto_id: item.producto_id,
+          ambiguos: ambiguos.map((a) => `${a.nombre}:[${a.grupos.join('|')}]`).slice(0, 5),
+        });
+      }
       delete item._modsLLM;
     }
   } catch (e) {
@@ -299,6 +320,9 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
     eventoTxn('modificadores_error', negocioId, { error: String(e?.message || e).slice(0, 120) });
     for (const item of itemsCanonicos) delete item._modsLLM;
   }
+
+  // Un modificador ambiguo detiene la orden aquí (el corte anterior ya pasó).
+  if (rechazos.length) return { ok: false, rechazos, ajustes };
 
   // ── Totales: SIEMPRE recalculados ──
   const reglas = await cargarReglas(negocioId).catch(() => null);
@@ -409,6 +433,18 @@ export function mensajeRechazoParaCliente(rechazos) {
     return faltante
       ? `¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: ${listaDisponibles()}.`
       : `Esa forma de pago no está disponible. Puedes pagar con: ${listaDisponibles()}. ¿Cuál prefieres? Tu pedido sigue tal como lo armamos.`;
+  }
+
+  // Ambigüedad de modificador: NO es un error del cliente ni tira el pedido —
+  // solo falta saber a qué grupo se refería. Se pregunta con las opciones reales.
+  const ambiguos = rechazos.filter((r) => r.codigo === RECHAZOS.MODIFICADOR_AMBIGUO);
+  if (ambiguos.length && ambiguos.length === rechazos.length) {
+    const a = ambiguos[0];
+    const grupos = Array.isArray(a.grupos) ? a.grupos : [];
+    const enumerado = grupos.length > 1
+      ? `${grupos.slice(0, -1).join(', ')} o ${grupos[grupos.length - 1]}`
+      : (grupos[0] || 'una de las opciones');
+    return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${enumerado}. ¿En cuál lo quieres?`;
   }
 
   const noExisten = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_EXISTE && r.nombre).map((r) => r.nombre);
