@@ -292,6 +292,15 @@ header {
   transform: translateX(100%);
   transition: transform .25s ease;
   visibility: hidden;
+  /* El drawer se llena desde el sidebar (todos los módulos habilitados), así
+     que puede tener más entradas que la pantalla; su contenido hace scroll. */
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+/* Encabezado de área dentro del drawer (Operación, Catálogo, ...). Espeja los
+   grupos del sidebar; es presentación, no define navegación ni permisos. */
+.mas-grupo {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--color-text-secondary); padding: 12px 14px 4px; opacity: .75;
 }
 #mas-sheet.open {
   transform: translateX(0);
@@ -2459,6 +2468,10 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   }
   // Ocultar tabs de módulos no habilitados para este negocio
   aplicarModulosUI();
+  // Navegación móvil: el drawer "Más" se GENERA desde el sidebar ya gateado
+  // (admin-only + aplicarModulosUI ya corrieron), nunca de una lista propia.
+  // Así móvil expone exactamente los mismos módulos habilitados que desktop.
+  construirDrawerMovil();
   // El plegado se restaura DESPUÉS de aplicar permisos: así una sección que
   // quedó sin destinos visibles se oculta con la información ya resuelta.
   restaurarGruposNav();
@@ -4491,6 +4504,76 @@ function abrirMasSheet() {
 function cerrarMasSheet() {
   document.getElementById('mas-sheet').classList.remove('open');
   document.getElementById('mas-overlay').classList.remove('open');
+}
+
+// ─── Paridad de navegación móvil ↔ desktop ───────────────────────────────────
+// El drawer "Más" NO tiene su propia lista de módulos: se deriva del sidebar
+// (#tabs-nav), que es la fuente única de navegación. Cada .tab-btn del sidebar
+// que quedó VISIBLE tras los gates (admin-only + aplicarModulosUI) y que no
+// vive ya en la barra inferior, se refleja aquí con su misma etiqueta y su
+// misma acción. Consecuencia: agregar un módulo al sidebar lo hace aparecer en
+// móvil automáticamente; es imposible que vuelvan a desincronizarse.
+// Los iconos son solo presentación (el drawer no define navegación ni permisos).
+const NAV_ICONOS = {
+  'tab-inicio':'ti ti-home', 'tab-comandas':'ti ti-layout-cards',
+  'tab-restaurante':'ti ti-tools-kitchen-2', 'tab-historial':'ti ti-history',
+  'tab-repartidores':'ti ti-bike', 'tab-menu':'ti ti-tools-kitchen-2',
+  'tab-tienda':'ti ti-building-store', 'tab-chats':'ti ti-message-circle',
+  'tab-clientes':'ti ti-users', 'tab-rewards':'ti ti-gift',
+  'tab-cotizaciones':'ti ti-file-invoice', 'tab-entrenamiento':'ti ti-robot',
+  'tab-llamadas':'ti ti-phone', 'tab-ventas':'ti ti-chart-bar',
+  'tab-corte':'ti ti-cash-register', 'tab-ajustes':'ti ti-adjustments',
+  'tab-usuarios':'ti ti-user-cog', 'tab-config':'ti ti-settings',
+  'tab-diagnostico':'ti ti-activity',
+};
+// Tabs que YA son entradas de la barra inferior: no se repiten en el drawer.
+const DRAWER_EXCLUIR = new Set(['tab-comandas', 'tab-chats', 'tab-corte']);
+
+function construirDrawerMovil() {
+  const cont = document.getElementById('mas-lista');
+  const sidebar = document.getElementById('tabs-nav');
+  if (!cont || !sidebar) return;
+  cont.innerHTML = '';
+  // Un tab entra al drawer si el sidebar lo dejó visible (gate ya resuelto) y
+  // no está en la barra inferior. Nunca se re-evalúan módulos ni rol aquí.
+  const entra = (btn) => btn && !DRAWER_EXCLUIR.has(btn.id) && btn.style.display !== 'none';
+  const crearItem = (btn) => {
+    const item = document.createElement('button');
+    item.className = 'mas-item' + (btn.classList.contains('admin-only') ? ' admin-only' : '');
+    const ic = document.createElement('i');
+    ic.className = NAV_ICONOS[btn.id] || 'ti ti-square-rounded';
+    item.appendChild(ic);
+    const txt = document.createElement('span');
+    // La etiqueta sale del propio botón del sidebar: hereda relabels ya
+    // resueltos (p. ej. "Tienda en línea" → "Promociones" sin tienda_online).
+    txt.textContent = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    item.appendChild(txt);
+    // La ACCIÓN es la del sidebar (una sola definición). Se limpia el estado
+    // activo de la barra inferior porque ninguna de sus 5 entradas es el
+    // destino del drawer.
+    item.addEventListener('click', () => {
+      cerrarMasSheet();
+      document.querySelectorAll('.bnav-item').forEach(b => b.classList.remove('activo'));
+      btn.click();
+    });
+    cont.appendChild(item);
+  };
+  // 1) Items sueltos antes de los grupos del sidebar (Inicio).
+  sidebar.querySelectorAll(':scope > .tab-btn').forEach(btn => { if (entra(btn)) crearItem(btn); });
+  // 2) Grupos, en el mismo orden y con el mismo encabezado que el sidebar.
+  sidebar.querySelectorAll('.nav-seccion').forEach(sec => {
+    const btns = [...sec.querySelectorAll('.tab-btn')].filter(entra);
+    if (!btns.length) return; // grupo sin destinos visibles: no se muestra
+    const clave = (sec.id || '').replace('navsec-', '');
+    const grp = document.getElementById('navgrp-' + clave);
+    if (grp) {
+      const h = document.createElement('div');
+      h.className = 'mas-grupo';
+      h.textContent = (grp.textContent || '').replace(/[▾▸▾▸]/g, '').replace(/\s+/g, ' ').trim();
+      cont.appendChild(h);
+    }
+    btns.forEach(crearItem);
+  });
 }
 
 async function cargarProgramados() {
@@ -10703,17 +10786,13 @@ async function cargarRepartidores() {
     <span style="font-size:0.88rem;font-weight:700;color:#1a1a1a;letter-spacing:.2px;">Más opciones</span>
     <button onclick="cerrarMasSheet()" style="background:none;border:none;font-size:1.3rem;color:#888;cursor:pointer;padding:2px 6px;line-height:1;">‹</button>
   </div>
-  <!-- Items como lista vertical -->
-  <div style="padding:10px 12px;display:flex;flex-direction:column;gap:4px;">
-    <button class="mas-item" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('historial')"><i class="ti ti-history"></i>Historial</button>
-    <button class="mas-item" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('ventas')"><i class="ti ti-chart-bar"></i>Ventas</button>
-    <button class="mas-item" data-modulo="voz" onclick="cerrarMasSheet();bnavTab('llamadas')"><i class="ti ti-phone"></i>Llamadas</button>
-    <button class="mas-item admin-only" data-modulo="menu" onclick="cerrarMasSheet();bnavTab('menu')"><i class="ti ti-tools-kitchen-2"></i>Men&#xFA;</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('config')"><i class="ti ti-settings"></i>Config</button>
-    <button class="mas-item admin-only" data-modulo="pos" onclick="cerrarMasSheet();bnavTab('repartidores')"><i class="ti ti-bike"></i>Repartidores</button>
-    <button class="mas-item admin-only" onclick="cerrarMasSheet();bnavTab('clientes')"><i class="ti ti-users"></i>Clientes</button>
-    <button class="mas-item admin-only" data-modulo="usuarios" onclick="cerrarMasSheet();bnavTab('usuarios')"><i class="ti ti-user-cog"></i>Usuarios</button>
-  </div>
+  <!-- Items: se GENERAN desde el sidebar (#tabs-nav), la fuente única de
+       navegación, en construirDrawerMovil(). Antes esto era una lista fija
+       mantenida a mano que se desincronizó del desktop (le faltaban Tienda en
+       línea/Promociones, Rewards, Asistente, Ajustes, etc.). Al derivarse del
+       sidebar ya gateado, el drawer no puede volver a quedarse atrás.
+       Ver docs/cierre-paridad-navegacion-movil.md. -->
+  <div id="mas-lista" style="padding:6px 12px 16px;display:flex;flex-direction:column;gap:2px;"></div>
 </div>
 
 </body>
