@@ -45,8 +45,128 @@ export function agregarMensaje(sessionId, rol, contenido) {
   return session;
 }
 
+/**
+ * Sustituye el último turno del asistente por lo que el cliente REALMENTE vio.
+ *
+ * Cuando el backend reemplaza la redacción del modelo por el resumen oficial,
+ * el historial se quedaba con el texto descartado: el modelo creía haber dicho
+ * algo que el cliente nunca leyó, y en el turno siguiente no sabía a qué
+ * resumen respondía el "sí". Aquí se alinean las dos versiones.
+ */
+export function reemplazarUltimoMensajeAsistente(sessionId, contenido) {
+  const session = getSession(sessionId);
+  for (let i = session.mensajes.length - 1; i >= 0; i--) {
+    if (session.mensajes[i].role === 'assistant') {
+      session.mensajes[i].content = contenido;
+      session.actualizado_en = new Date().toISOString();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function actualizarEstado(sessionId, nuevoEstado) {
   const session = getSession(sessionId);
   session.estado = nuevoEstado;
+  session.actualizado_en = new Date().toISOString();
+}
+
+// ─── Snapshot canónico del preview (confirmación determinista) ──────────────
+//
+// Cuando el backend muestra un resumen oficial, guarda AQUÍ la orden canónica
+// que validó — no solo el total. Así, si el cliente responde "sí", el pedido se
+// registra desde este snapshot y no depende de que el modelo vuelva a
+// reconstruirlo (caso real: preview de $255, "Sí", y ningún folio creado).
+//
+// `guardarPreviewPedido` reemplaza cualquier snapshot anterior: solo el preview
+// MÁS RECIENTE puede confirmarse.
+
+export function guardarPreviewPedido(sessionId, snapshot) {
+  const session = getSession(sessionId);
+  // Un preview recién calculado SIEMPRE nace confirmable: es lo que el cliente
+  // acaba de ver. Guardar uno nuevo reemplaza al anterior, así que una orden
+  // estructurada posterior deja obsoleto al viejo aunque el detector léxico
+  // hubiera clasificado mal la frase que la originó.
+  session.pedidoPreview = { ...snapshot, consumido: false, confirmable: true };
+  session.awaitingConfirmacion = true;
+  session.actualizado_en = new Date().toISOString();
+  return session.pedidoPreview;
+}
+
+/**
+ * El turno actual NO pudo clasificarse (puede o no cambiar el pedido). El
+ * snapshot se conserva —el flujo normal aún puede resolverlo y producir un
+ * preview nuevo— pero deja de ser directamente confirmable: un "sí" posterior
+ * no puede registrar un pedido que quizá ya no es el que el cliente quiere.
+ * Solo un preview nuevo vuelve a habilitarlo.
+ */
+export function marcarPreviewNoConfirmable(sessionId) {
+  const session = getSession(sessionId);
+  if (session.pedidoPreview) {
+    session.pedidoPreview.confirmable = false;
+    session.awaitingConfirmacion = false;
+    session.actualizado_en = new Date().toISOString();
+  }
+}
+
+/**
+ * Toma el snapshot y lo marca consumido EN LA MISMA VUELTA del event loop.
+ * Node ejecuta este cuerpo sin ceder el control (no hay `await` dentro), así que
+ * dos turnos concurrentes de la misma conversación no pueden obtenerlo ambos:
+ * el segundo ve `consumido: true` y recibe null. Es el candado que impide dos
+ * folios para un mismo carrito sin necesidad de un lock externo.
+ */
+export function consumirPreviewPedido(sessionId) {
+  const session = getSession(sessionId);
+  const snap = session.pedidoPreview;
+  if (!snap || snap.consumido) return null;
+  // Marcado como no confirmable por un turno indeterminado: no se registra.
+  if (snap.confirmable === false) return null;
+  snap.consumido = true;
+  session.awaitingConfirmacion = false;
+  session.actualizado_en = new Date().toISOString();
+  return snap;
+}
+
+/** Devuelve el snapshot vigente SIN consumirlo (para inspección/decisión). */
+export function verPreviewPedido(sessionId) {
+  const snap = getSession(sessionId).pedidoPreview;
+  return snap && !snap.consumido ? snap : null;
+}
+
+/**
+ * Igual que verPreviewPedido, pero SOLO si el snapshot sigue siendo
+ * confirmable. Es la única puerta que puede autorizar una escritura.
+ *
+ * Existe porque el camino legacy (<ORDEN_CONFIRMADA> emitida por el modelo)
+ * leía `session.pedidoPreview.total` directamente: con un snapshot marcado
+ * no-confirmable, una orden del mismo total volvía a pasar por 'registrar' y
+ * escribía igual. `confirmable=false` tiene que ser autoridad para TODOS los
+ * caminos, no solo para el determinista.
+ */
+export function verPreviewConfirmable(sessionId) {
+  const snap = verPreviewPedido(sessionId);
+  return snap && snap.confirmable !== false ? snap : null;
+}
+
+/**
+ * Reactiva un snapshot que se consumió pero cuyo registro NO llegó a ocurrir
+ * (p. ej. la escritura falló). Nunca revive uno cuyo pedido sí se creó: eso lo
+ * decide el llamador, que es quien conoce el resultado transaccional.
+ */
+export function restaurarPreviewPedido(sessionId, snapshot) {
+  const session = getSession(sessionId);
+  if (!snapshot) return null;
+  session.pedidoPreview = { ...snapshot, consumido: false };
+  session.awaitingConfirmacion = true;
+  session.actualizado_en = new Date().toISOString();
+  return session.pedidoPreview;
+}
+
+/** El pedido cambió (o el cliente pidió otra cosa): el preview queda obsoleto. */
+export function invalidarPreviewPedido(sessionId) {
+  const session = getSession(sessionId);
+  session.pedidoPreview = null;
+  session.awaitingConfirmacion = false;
   session.actualizado_en = new Date().toISOString();
 }

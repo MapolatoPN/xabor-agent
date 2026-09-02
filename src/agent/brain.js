@@ -1,7 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getIntegracion, broadcastNegocio } from '../server.js';
 import { construirSystemPrompt, construirBloqueModoComercial, BLOQUE_REGLAS_CONTEXTO_VISUAL, hayContextoVisual } from './prompts.js';
-import { agregarMensaje, getSession } from './session.js';
+import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido, marcarPreviewNoConfirmable,
+         verPreviewPedido, verPreviewConfirmable, restaurarPreviewPedido, invalidarPreviewPedido,
+         reemplazarUltimoMensajeAsistente } from './session.js';
+import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -12,7 +15,7 @@ import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
-import { decidirConfirmacion } from './confirmacionPolicy.js';
+import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
 import { responderConsultaPromos } from '../services/tiendaPromociones.js';
 import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
 
@@ -26,6 +29,40 @@ function getAnthropic() {
 
 // Modelo: haiku es rápido y barato, ideal para conversaciones
 const MODELO = 'claude-haiku-4-5-20251001';
+
+// El proveedor devuelve 529 (overloaded) en picos de carga: es transitorio y le
+// costaba al cliente un turno completo ("Disculpa, tuve un problema...").
+// Reintento ACOTADO con backoff exponencial + jitter — nunca un bucle: como
+// mucho dos reintentos, y si sigue fallando el error sube tal cual para que el
+// canal responda con honestidad. No duplica ejecuciones: solo se reintenta la
+// llamada al modelo, que no tiene efectos colaterales.
+const REINTENTOS_LLM = 2;
+const esSobrecarga = (e) => e?.status === 529 || e?.status === 429 ||
+  /overloaded|rate.?limit/i.test(String(e?.message || ''));
+
+async function llamarModeloConReintento(params, { etiqueta = 'brain' } = {}) {
+  let ultimo;
+  for (let intento = 0; intento <= REINTENTOS_LLM; intento++) {
+    const t0 = Date.now();
+    try {
+      return await getAnthropic().messages.create(params);
+    } catch (e) {
+      ultimo = e;
+      const latencia = Date.now() - t0;
+      if (!esSobrecarga(e) || intento === REINTENTOS_LLM) {
+        if (esSobrecarga(e)) {
+          console.error(`[LLM] provider=anthropic status=${e?.status || '529'} intento=${intento + 1}/${REINTENTOS_LLM + 1} latencia=${latencia}ms — agotados los reintentos`);
+        }
+        throw e;
+      }
+      // 400ms, 800ms (+ jitter de hasta 250ms) — corto: hay un cliente esperando.
+      const espera = 400 * Math.pow(2, intento) + Math.floor(Math.random() * 250);
+      console.warn(`[LLM] provider=anthropic status=${e?.status || '529'} intento=${intento + 1} latencia=${latencia}ms — reintentando en ${espera}ms (${etiqueta})`);
+      await new Promise((r) => setTimeout(r, espera));
+    }
+  }
+  throw ultimo;
+}
 
 // ─── Versión normal (WhatsApp, Rappi, panel) ─────────────────────────────────
 // negocioId: pasado tal cual por el llamador (ya resuelto de forma segura --
@@ -44,9 +81,103 @@ const MODELO = 'claude-haiku-4-5-20251001';
 // null en ese instante) nunca podía activar ninguna de las dos, sin
 // importar lo que dijera -- ver whatsapp-meta.js, que ahora sí pasa el
 // teléfono real del webhook en todos los casos.
+/**
+ * Registra el pedido a partir del snapshot canónico del último preview.
+ *
+ * SIEMPRE revalida con el pipeline oficial antes de escribir: el snapshot no
+ * salta validaciones, solo evita que el modelo tenga que recordar el pedido.
+ *  - total igual        → consume el snapshot y devuelve la orden canónica
+ *                         (el canal la registra y redacta el cierre real).
+ *  - total distinto     → NO registra: muestra el nuevo resumen y pide
+ *                         confirmar otra vez (política two-phase intacta).
+ *  - ya no es válida    → invalida el snapshot y explica con honestidad.
+ * Devuelve null si no pudo tomar el snapshot (otro turno lo consumió antes).
+ */
+async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
+  // Solo un snapshot CONFIRMABLE autoriza. Si un turno anterior quedó
+  // indeterminado, aquí no se registra: se devuelve null y el flujo normal
+  // resuelve la conversación (y, si procede, produce un preview nuevo).
+  const snap = verPreviewConfirmable(sessionId);
+  if (!snap) return null;
+  let v;
+  try {
+    v = await previsualizarPedido(snap.ordenCanonica, negocioId, { canal });
+  } catch (e) {
+    console.error('[brain] revalidación de snapshot:', e.message);
+    return null; // sigue el flujo normal; nunca se registra a ciegas
+  }
+  if (!v.ok) {
+    invalidarPreviewPedido(sessionId);
+    console.error(`[TXN] evento=snapshot_invalido negocio=${negocioId}`);
+    return { texto: mensajeRechazoParaCliente(v.rechazos || []), orden: null, sessionId };
+  }
+  if (Number(v.preview.total) !== Number(snap.total)) {
+    // El precio cambió entre el resumen y el "sí": no se registra en silencio.
+    const nuevo = guardarPreviewPedido(sessionId, snapshotDePreview(v));
+    console.error(`[TXN] evento=total_cambio_en_confirmacion negocio=${negocioId} previo=${snap.total} nuevo=${nuevo.total}`);
+    const texto = `Hubo un cambio en el total de tu pedido.\n\n${resumenPedidoOficial(v.preview)}`;
+    reemplazarUltimoMensajeAsistente(sessionId, texto);
+    agregarMensaje(sessionId, 'assistant', texto);
+    return { texto, orden: null, sessionId };
+  }
+  // Consumo ATÓMICO: si dos turnos concurrentes llegan aquí, solo uno obtiene
+  // el snapshot; el otro recibe null y no registra nada (un único folio).
+  const tomado = consumirPreviewPedido(sessionId);
+  if (!tomado) {
+    console.warn(`[TXN] evento=confirmacion_duplicada_ignorada negocio=${negocioId}`);
+    return { texto: '', orden: null, sessionId, duplicada: true };
+  }
+  console.log(`[TXN] evento=confirmacion_desde_snapshot negocio=${negocioId} total=${tomado.total}`);
+  // El texto lo redacta el canal tras la escritura real (folio + total). Aquí
+  // no se afirma nada: el pedido todavía no existe.
+  return { texto: '', orden: tomado.ordenCanonica, sessionId, desdeSnapshot: true, snapshot: tomado };
+}
+
+// Snapshot canónico de un preview válido: lo que el backend YA validó.
+function snapshotDePreview(v) {
+  return {
+    ordenCanonica: v.orden,
+    total: v.preview.total,
+    promociones: v.preview.promociones || [],
+    ts: Date.now(),
+    fingerprint: huellaOrden(v.orden),
+  };
+}
+
 export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
+
+  // ── CONFIRMACIÓN DETERMINISTA SOBRE EL PREVIEW OFICIAL ──────────────────
+  // Una vez que Xabor mostró un resumen oficial, el "sí" del cliente confirma
+  // ESE pedido canónico: se registra desde el snapshot, sin pedirle al modelo
+  // que lo reconstruya. Antes dependía de que volviera a emitir
+  // <ORDEN_CONFIRMADA>; cuando no lo hacía, el bot decía "pedido confirmado" y
+  // no existía ningún folio (caso real Mapolato, preview de $255).
+  // Va ANTES de cualquier llamada al modelo: es determinista, no cuesta
+  // latencia y no puede caerse por un 529 del proveedor.
+  if (verPreviewPedido(sessionId) && typeof negocioId === 'string' && negocioId.trim()) {
+    // Cuatro estados. El cuarto es el que hace seguro al sistema: si NO sabemos
+    // si el mensaje cambia el pedido, no se borra el snapshot (el flujo normal
+    // puede resolverlo y producir un preview nuevo) pero deja de ser
+    // confirmable — nunca se registra un pedido que quizá ya no es el que el
+    // cliente quiere. Frases como "los quiero rojos" o "quiero pollo en el
+    // segundo" caen aquí: son mutaciones que ningún detector léxico razonable
+    // reconocería, y tratarlas como consulta sería fail-open.
+    const clase = clasificarTurnoPostPreview(mensajeUsuario);
+    if (clase === 'mutacion') {
+      invalidarPreviewPedido(sessionId);
+      console.log(`[TXN] evento=preview_invalidado_por_cambio negocio=${negocioId}`);
+    } else if (clase === 'confirmacion') {
+      const resuelto = await confirmarDesdeSnapshot(sessionId, negocioId, canal);
+      if (resuelto) return resuelto;
+    } else if (clase === 'indeterminado') {
+      marcarPreviewNoConfirmable(sessionId);
+      console.log(`[TXN] evento=preview_no_confirmable_turno_indeterminado negocio=${negocioId}`);
+    }
+    // 'consulta_segura': el snapshot se conserva confirmable y el flujo normal
+    // responde la pregunta.
+  }
 
   // Enriquecer contexto con memoria del cliente (no bloquea si falla)
   const telefono = telefonoExplicito || clienteCtx?.telefono;
@@ -109,7 +240,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     : '';
 
   try {
-    const respuesta = await getAnthropic().messages.create({
+    const respuesta = await llamarModeloConReintento({
       model: MODELO,
       max_tokens: 1024,
       // Las reglas del contexto visual solo se pagan cuando la sesión trae
@@ -158,25 +289,38 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
         if (orden) {
           const v = await previsualizarPedido(orden, negocioId, { canal });
           if (v.ok) {
+            // SOLO un snapshot CONFIRMABLE puede autorizar una escritura. Antes
+            // se leía `session.pedidoPreview?.total` directamente, así que un
+            // snapshot marcado no-confirmable (turno indeterminado) seguía
+            // autorizando una <ORDEN_CONFIRMADA> del mismo total: bypass del
+            // fail-closed. Y la huella entra en la decisión porque dos pedidos
+            // distintos pueden costar lo mismo (cambiar Verde por Roja no mueve
+            // el total): la igualdad de precio no prueba que sea el pedido que
+            // el cliente aprobó.
+            const snapConfirmable = verPreviewConfirmable(sessionId);
             const d = decidirConfirmacion({
-              canal, prevTotal: session.pedidoPreview?.total, nuevoTotal: v.preview.total,
+              canal,
+              prevTotal: snapConfirmable?.total,
+              nuevoTotal: v.preview.total,
+              prevFingerprint: snapConfirmable?.fingerprint,
+              nuevoFingerprint: huellaOrden(v.orden),
             });
             if (d.accion === 'registrar') {
               // Coincide con el último preview oficial, o es confirmación directa
               // en un canal con compatibilidad (voz/test/api). El total registrado
               // es SIEMPRE el oficial del backend (mismo pipeline).
-              session.pedidoPreview = null;
+              invalidarPreviewPedido(sessionId);
             } else if (d.accion === 'reconfirmar_cambio') {
               // Había un preview oficial y el total CAMBIÓ (catálogo/promo): NO
               // registrar en silencio; mostrar el nuevo total y pedir confirmar.
-              session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+              guardarPreviewPedido(sessionId, snapshotDePreview(v));
               ordenParaRegistrar = null;
               textoOficialPricing = `Hubo un cambio en el total de tu pedido.\n\n${await resumenConExplicacion(v)}`;
             } else { // 'preview_requerido'
               // WhatsApp SIN preview oficial previo (o perdido por reinicio del
               // proceso): jamás se registra sobre un total que el cliente no vio
               // de Xabor. Se genera el preview oficial y se pide confirmar ESE.
-              session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+              guardarPreviewPedido(sessionId, snapshotDePreview(v));
               ordenParaRegistrar = null;
               textoOficialPricing = await resumenConExplicacion(v);
             }
@@ -186,10 +330,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
         } else if (propuestaPreview) {
           const v = await previsualizarPedido(propuestaPreview, negocioId, { canal });
           if (v.ok) {
-            session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
+            guardarPreviewPedido(sessionId, snapshotDePreview(v));
             textoOficialPricing = await resumenConExplicacion(v);
           } else {
-            session.pedidoPreview = null;
+            invalidarPreviewPedido(sessionId);
             textoOficialPricing = mensajeRechazoParaCliente(v.rechazos || []);
           }
         }
@@ -249,6 +393,15 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // estructurada), no la memoria del modelo.
     if (textoConsultaPromos) textoFinal = textoConsultaPromos;
 
+    // ── El historial debe contener lo que el cliente REALMENTE leyó ──
+    // Cuando el backend sustituye la redacción del modelo (resumen oficial,
+    // consulta de promos), el historial se quedaba con el texto descartado: el
+    // modelo creía haber dicho una cifra que el cliente nunca vio y, al recibir
+    // un "sí", no sabía a qué resumen respondía. Aquí se alinean.
+    if (textoOficialPricing || textoConsultaPromos) {
+      reemplazarUltimoMensajeAsistente(sessionId, textoFinal);
+    }
+
     return {
       texto: textoFinal,
       orden: ordenParaRegistrar,
@@ -280,7 +433,7 @@ export async function simularMensaje(sessionId, mensajeUsuario, negocioId) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
   try {
-    const respuesta = await getAnthropic().messages.create({
+    const respuesta = await llamarModeloConReintento({
       model: MODELO,
       max_tokens: 1024,
       system: await construirSystemPrompt(null, 'simulador', negocioId),

@@ -35,7 +35,7 @@ import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/dire
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
-import { agregarMensaje } from '../agent/session.js';
+import { agregarMensaje, restaurarPreviewPedido } from '../agent/session.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -1009,7 +1009,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // de wa_admin_numero ya no vuelve invisible la anomalía), (3) el
     // CLIENTE recibe una aclaración honesta de que su pedido aún no está
     // registrado -- nunca se queda creyendo en una confirmación falsa.
-    if (!resultado.orden) {
+    // Una confirmación que YA fue atendida por el snapshot canónico (registrada
+    // en este turno, o ignorada por duplicada) no es una "confirmación verbal
+    // sin orden": el camino determinista hizo su trabajo. La salvaguarda sigue
+    // intacta para todo lo demás — sin snapshot, sigue siendo fail-closed.
+    if (!resultado.orden && !resultado.duplicada) {
       const textoBot = resultado.texto || '';
       const pareceConfirmacion =
         /(?:tu\s+)?(?:pedido|orden)\s+(?:está|esta|quedó|quedo|queda|fue|ya\s+está|ya\s+esta)?\s*(?:confirmad|registrad|anotad|procesad|list[oa])/i.test(textoBot) ||
@@ -1097,6 +1101,14 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           resultado.orden = null;
         } else {
           console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
+          // La escritura falló por causas técnicas (no por la orden en sí). Si
+          // esta confirmación venía del snapshot canónico, se REACTIVA: el
+          // cliente ya dijo que sí y no debe rearmar el pedido — con volver a
+          // confirmar basta. Nunca se reactiva si el pedido llegó a crearse.
+          if (resultado.desdeSnapshot && resultado.snapshot) {
+            restaurarPreviewPedido(sessionId, resultado.snapshot);
+            console.warn(`[TXN] evento=snapshot_restaurado_tras_fallo negocio=${negocioId}`);
+          }
           await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
           return;
         }
