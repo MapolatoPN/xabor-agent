@@ -14,6 +14,7 @@ import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManage
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
 import { decidirConfirmacion } from './confirmacionPolicy.js';
 import { responderConsultaPromos } from '../services/tiendaPromociones.js';
+import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
 
 // Cliente lazy — se crea en runtime para respetar config desde panel
 let _anthropic = null;
@@ -98,6 +99,15 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     });
   }
 
+  // Causa OFICIAL de que una promoción no se haya aplicado al último preview.
+  // Se calculó en el turno del preview y se conserva para que, si el cliente
+  // pregunta después "¿y la promo?", el modelo tenga el motivo real en vez de
+  // inventar uno o prometer un ajuste futuro (caso XAB-0229).
+  const bloquePromoNoAplicada = session.promoNoAplicada
+    ? `\n\n## POR QUÉ NO APLICÓ LA PROMOCIÓN (dato oficial de Xabor)\n${session.promoNoAplicada}\n`
+      + `Si el cliente pregunta por la promoción o por el descuento, explícale ESTO con tus palabras y ofrécele cambiar las opciones para que aplique o continuar con el total ya mostrado. NUNCA digas que se aplicará después ni que el sistema lo ajustará.\n`
+    : '';
+
   try {
     const respuesta = await getAnthropic().messages.create({
       model: MODELO,
@@ -105,6 +115,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
       // Las reglas del contexto visual solo se pagan cuando la sesión trae
       // una foto analizada (Vision V2); el resto de turnos no cambia.
       system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueComercial
+        + bloquePromoNoAplicada
         + (hayContextoVisual(session.mensajes) ? BLOQUE_REGLAS_CONTEXTO_VISUAL : ''),
       messages: session.mensajes
     });
@@ -124,6 +135,24 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const propuestaPreview = extraerBloque(textoRespuesta, 'ORDEN_PREVIEW');
     let ordenParaRegistrar = orden;
     let textoOficialPricing = null;
+    // Resumen oficial + (si aplica) la razón REAL por la que una promoción
+    // vigente no se aplicó. La explicación la redacta el backend desde la
+    // configuración de la promo — nunca el modelo, que antes la inventaba
+    // ("el sistema ajustará el total después", caso XAB-0229). También queda
+    // en la sesión para que el turno siguiente ("¿y la promo?") tenga la
+    // causa autoritativa a la mano.
+    const resumenConExplicacion = async (v) => {
+      let explicacion = '';
+      try {
+        explicacion = await explicarPromosNoAplicadas(negocioId, v.orden, {
+          canal, promosAplicadas: v.preview?.promociones || [],
+        });
+      } catch (e) { console.error('[brain] explicar promo no aplicada:', e.message); }
+      session.promoNoAplicada = explicacion || null;
+      return explicacion
+        ? `${resumenPedidoOficial(v.preview)}\n\n${explicacion}`
+        : resumenPedidoOficial(v.preview);
+    };
     if (typeof negocioId === 'string' && negocioId.trim()) {
       try {
         if (orden) {
@@ -142,14 +171,14 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               // registrar en silencio; mostrar el nuevo total y pedir confirmar.
               session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
               ordenParaRegistrar = null;
-              textoOficialPricing = `Hubo un cambio en el total de tu pedido.\n\n${resumenPedidoOficial(v.preview)}`;
+              textoOficialPricing = `Hubo un cambio en el total de tu pedido.\n\n${await resumenConExplicacion(v)}`;
             } else { // 'preview_requerido'
               // WhatsApp SIN preview oficial previo (o perdido por reinicio del
               // proceso): jamás se registra sobre un total que el cliente no vio
               // de Xabor. Se genera el preview oficial y se pide confirmar ESE.
               session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
               ordenParaRegistrar = null;
-              textoOficialPricing = resumenPedidoOficial(v.preview);
+              textoOficialPricing = await resumenConExplicacion(v);
             }
           }
           // Si !v.ok se deja pasar: registrarPedido revalida con el mismo
@@ -158,7 +187,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           const v = await previsualizarPedido(propuestaPreview, negocioId, { canal });
           if (v.ok) {
             session.pedidoPreview = { total: v.preview.total, ts: Date.now() };
-            textoOficialPricing = resumenPedidoOficial(v.preview);
+            textoOficialPricing = await resumenConExplicacion(v);
           } else {
             session.pedidoPreview = null;
             textoOficialPricing = mensajeRechazoParaCliente(v.rechazos || []);

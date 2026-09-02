@@ -14,6 +14,12 @@ import { randomUUID } from 'crypto';
 import { pool, calcularVersionPedidoHash } from './database.js';
 import { partesEnZona } from './tiendaOnline.js';
 import { cargarGruposDeProductos } from './modificadores.js';
+// Primitivas de condiciones (módulo PURO, sin dependencias). Viven aparte para
+// que el motor y la capa explicativa (promoDiagnostico.js) las compartan sin
+// importarse mutuamente: promoDiagnostico depende de este módulo, nunca al
+// revés. `cumpleCondicionesModificadores` se re-exporta abajo porque sigue
+// siendo parte de la API pública de este servicio.
+import { cumpleCondicionesModificadores, condicionesEstructuradas } from './promoCondiciones.js';
 import { resolverCuandoPromo } from './fechaPromos.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
@@ -153,35 +159,10 @@ function motivoNoAplica(promo, ctx) {
 //   'cantidad' — nº de opciones seleccionadas del grupo dentro de [min, max].
 // Devuelve { eligible, failedConditions }. Fail-closed: operador desconocido
 // o condición sin datos → no elegible.
-export function cumpleCondicionesModificadores(item, condiciones) {
-  const mods = Array.isArray(item?.modificadores) ? item.modificadores : [];
-  const failedConditions = [];
-  for (const c of (Array.isArray(condiciones) ? condiciones : [])) {
-    const grupoId = Number(c?.grupo_id);
-    if (!Number.isInteger(grupoId)) { failedConditions.push({ ...c, motivo: 'grupo_invalido' }); continue; }
-    const seleccion = mods.filter(m => Number(m.grupo_id) === grupoId).map(m => Number(m.opcion_id));
-    const permitidas = Array.isArray(c.option_ids) ? c.option_ids.map(Number) : [];
-    let ok;
-    switch (c.operador) {
-      case 'una_de':
-        ok = seleccion.length > 0 && seleccion.every(id => permitidas.includes(id));
-        break;
-      case 'incluye':
-        ok = permitidas.length > 0 && permitidas.every(id => seleccion.includes(id));
-        break;
-      case 'cantidad': {
-        const min = c.min != null ? Number(c.min) : 0;
-        const max = c.max != null ? Number(c.max) : Infinity;
-        ok = seleccion.length >= min && seleccion.length <= max;
-        break;
-      }
-      default:
-        ok = false; // fail-closed
-    }
-    if (!ok) failedConditions.push({ grupo_id: grupoId, operador: c.operador });
-  }
-  return { eligible: failedConditions.length === 0, failedConditions };
-}
+// La implementación vive en promoCondiciones.js (módulo puro compartido con la
+// capa explicativa). Se re-exporta para no cambiar la API de este servicio:
+// sigue siendo la ÚNICA decisión de elegibilidad del sistema.
+export { cumpleCondicionesModificadores };
 
 // Condiciones de la promo que aplican a un producto dado (producto_id null =
 // aplica a cualquier participante).
@@ -1456,22 +1437,21 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
 // horario aparte; cuando trae una hora concreta se filtra por esa hora
 // ("¿qué hay mañana a las 16:00?"). Aislamiento estricto por negocio; nunca IDs
 // al LLM; el cálculo del descuento sigue 100% independiente (calcularPromociones).
-export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
+/**
+ * Filas CRUDAS de las promociones vigentes para un canal/momento. Es el mismo
+ * criterio temporal/estructural que ya usaba describirPromocionesParaFecha
+ * (extraído para poder reutilizarlo desde la capa explicativa, que necesita
+ * `condiciones_modificadores` y `productos` con IDs, no la versión legible).
+ * NO evalúa carrito ni calcula nada económico.
+ */
+export async function promocionesVigentesCrudas(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
-  // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
-  // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
-  // Un canal null, '' o no-string es FAIL-CLOSED (devuelve vacío): NUNCA se
-  // asume un canal — informar promos de un canal equivocado es peor que no
-  // informar. El fix real es que cada caller pase su canal explícito
-  // (whatsapp-meta ⇒ 'whatsapp'); ver procesarMensaje/webhook.
   if (typeof canal !== 'string') return [];
   const canalNorm = canal.trim().toLowerCase();
   if (!canalNorm) return [];
   const { rows } = await pool.query(
     `SELECT * FROM tienda_promociones WHERE negocio_id = $1 AND activa = TRUE AND automatica = TRUE
       ORDER BY prioridad ASC, created_at ASC`, [negocioId]);
-
-  // 1) Filtrar a las vigentes AHORA para este canal (criterio idéntico al previo).
   const vigentes = [];
   for (const p of rows) {
     const canales = Array.isArray(p.canales) ? p.canales : ['tienda_online'];
@@ -1492,6 +1472,18 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
     }
     vigentes.push(p);
   }
+  return vigentes;
+}
+
+export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
+  // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
+  // Un canal null, '' o no-string es FAIL-CLOSED (devuelve vacío): NUNCA se
+  // asume un canal — informar promos de un canal equivocado es peor que no
+  // informar. El fix real es que cada caller pase su canal explícito
+  // (whatsapp-meta ⇒ 'whatsapp'); ver procesarMensaje/webhook.
+  const vigentes = await promocionesVigentesCrudas(negocioId, { canal, ahora, timezone, minutos });
   if (!vigentes.length) return [];
 
   // 2) Resolver NOMBRES de participantes en 2 queries batch, SIEMPRE acotadas a
@@ -1548,9 +1540,16 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
     }
     const condicionesTexto = fraseCondiciones(p.condiciones_modificadores, gruposPorProd);
     const participantesTexto = [fraseParticipantes(participacion), condicionesTexto].filter(Boolean).join(' ');
+    // Condiciones POR GRUPO con nombres reales. `condicionesTexto` aplana todos
+    // los grupos en una sola frase ("Roja o Verde, Huevos... y 2 guarniciones"),
+    // que sirve para informar pero NO para guiar: no dice qué opción pertenece a
+    // qué grupo. Esta forma estructurada sí, y es la que el agente usa para
+    // preguntar "¿qué salsa: Roja o Verde?" sin deducir nada (caso XAB-0229).
+    const condiciones = condicionesEstructuradas(p, gruposPorProd);
     out.push({
+      id: p.id,
       nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
-      participacion, participantesTexto, condicionesTexto,
+      participacion, participantesTexto, condicionesTexto, condiciones,
       horaInicio: p.hora_inicio || null, horaFin: p.hora_fin || null,
     });
   }

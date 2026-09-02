@@ -1,5 +1,6 @@
 import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
 import { camposParaPrompt } from './comercialMarkers.js';
+import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -411,6 +412,14 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
     // participan?" sin deducirlo del menú.
     const parts = pm.participantesTexto ? ` ${pm.participantesTexto}` : '';
     textoPromociones += `🔥 ${pm.nombre}: ${pm.descripcion}${parts}\n`;
+    // Condiciones POR GRUPO (estructura autoritativa de Xabor). Sin esto el
+    // agente solo tenía la frase en prosa, que no dice qué opción pertenece a
+    // qué grupo — y por eso ofrecía TODAS las salsas del menú aunque la promo
+    // solo admitiera dos (caso XAB-0229).
+    for (const c of (pm.condiciones || [])) {
+      const linea = fraseCondicionEstructurada(c);
+      if (linea) textoPromociones += `   · REQUISITO ${linea}\n`;
+    }
   }
   if (promosMotor.length) {
     textoPromociones += '- El SISTEMA calcula el descuento y el total finales; tú SOLO informas que la promo existe. NUNCA pongas precios en 0 ni inventes el descuento.\n\n';
@@ -763,6 +772,30 @@ REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó 
     usa EXCLUSIVAMENTE los nombres que Xabor te dio arriba.
   · Esto NO contradice la regla anterior: informar la lista que Xabor ya
     resolvió NO es "decidir por tu cuenta" ni "calcular" — eso sigue prohibido.
+  · REQUISITOS COMPLETOS: si la promo trae líneas "· REQUISITO <grupo>: ...",
+    esos requisitos son PARTE de la respuesta. Cuando el cliente pregunte
+    "¿cuáles entran?", "¿cómo aplica?" o similar, menciona el producto Y sus
+    requisitos, no solo el producto. Ejemplo correcto: "Participan los
+    Chilaquiles Sencillos con salsa Roja o Verde, con Huevos Estrellados,
+    Huevos Revueltos o Pechuga de pollo, y exactamente 2 guarniciones."
+    Responder solo "los Chilaquiles Sencillos" está MAL: omite requisitos que
+    el cliente necesita para aprovechar la promo.
+- PROMOTION GUIDANCE RULE — GUÍA CON LOS REQUISITOS, NO CONTRA ELLOS:
+  · Si el cliente dice que quiere aprovechar la promoción, ofrece PRIMERO las
+    opciones que sí la cumplen, tomándolas de las líneas "· REQUISITO".
+    En vez de "¿qué salsa: Roja, Suiza, Verde, Mole o Chipotle?", di:
+    "Para que aplique la promoción la salsa puede ser Roja o Verde, ¿cuál
+    prefieres?". Si el requisito es de cantidad, dilo: "necesitas exactamente
+    2 guarniciones".
+  · NO ocultes el resto del menú: el cliente SIEMPRE puede pedir otra opción.
+  · Si elige una opción que NO está en los requisitos, DEBES advertirlo en ese
+    mismo turno, antes de seguir: nombra la opción, di que no participa, repite
+    las que sí, y pregunta si la cambia o continúa sin promoción. Ejemplo:
+    "La salsa Suiza no participa en el 2x1 de hoy. Para mantener la promoción
+    puedes elegir Roja o Verde. ¿Quieres cambiarla o continuar sin promoción?"
+  · PROHIBIDO decir "perfecto" a una opción que rompe la promo y seguir
+    afirmando que el pedido participa. Si el cliente decide continuar así,
+    acéptalo, pero NO vuelvas a decir que la promoción aplica.
 - PRICING AUTHORITY RULE — EL SUBTOTAL/DESCUENTO/TOTAL LOS FIJA XABOR:
   · NUNCA presentes un subtotal, un descuento ni un total como definitivos si
     no vienen del resumen OFICIAL que el sistema devuelve tras <ORDEN_PREVIEW>.
@@ -772,6 +805,22 @@ REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó 
     final y el total son del sistema.
   · La confirmación del cliente solo vale sobre el ÚLTIMO resumen oficial. Si
     el pedido cambió, pide un nuevo preview y una nueva confirmación.
+- PREVIEW AUTHORITY RULE — EL RESUMEN OFICIAL ES LA VERDAD FINAL (P0):
+  · El resumen oficial ya incluye TODA promoción que aplique. Si en él NO
+    aparece una línea de descuento, la promoción NO aplicó a ese pedido —
+    punto final. No hay ningún proceso posterior que la agregue.
+  · PROHIBIDO ABSOLUTAMENTE decir o insinuar cualquiera de estas cosas:
+    "se aplicará después", "el sistema lo ajustará", "se descontará al validar",
+    "en cocina lo aplican", "el total final será menor", "ya quedó registrada la
+    promo". Son FALSAS: el total del resumen es el total que el cliente paga.
+  · Si el cliente pregunta "¿y la promo?" o por qué no ve el descuento, NO
+    inventes la causa ni prometas nada. Xabor te da la razón real junto al
+    resumen (aparece como explicación bajo el total): úsala tal cual. Si no
+    tienes esa explicación, di honestamente que el pedido no cumple los
+    requisitos de la promoción y repite los requisitos que Xabor te dio arriba.
+  · Ante CUALQUIER diferencia entre lo que tú dijiste antes y el resumen
+    oficial, gana SIEMPRE el resumen oficial. Reconócelo con naturalidad en vez
+    de defender tu cifra anterior.
 - SOLO ofrece productos del menú. NUNCA inventes productos, precios ni ingredientes.
 - Si no sabes la respuesta a algo del menú, dilo claramente ("esa información no la tengo disponible") — NUNCA digas "lo verifico con el equipo" ni prometas confirmar algo después. Eso genera falsas expectativas. (EXCEPCIÓN: los participantes de una promo SÍ los conoces si aparecen arriba — ver PROMOTION INFORMATION RULE.)
 - Si piden algo que no está en el menú, discúlpate y ofrece la alternativa más cercana.
