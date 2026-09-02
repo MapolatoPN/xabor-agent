@@ -131,6 +131,53 @@ export function resolverSeleccion(producto, grupos, seleccion) {
   };
 }
 
+/**
+ * Cardinalidad exigida por un grupo, con la MISMA semántica que ya aplica
+ * `resolverSeleccion` (POS/Restaurante) desde siempre — no se inventa nada:
+ *
+ *   mínimo: si el grupo es `requerido`, al menos 1 aunque `minimo` sea 0/null;
+ *           si no lo es, `minimo` o 0.
+ *   máximo: `maximo` solo cuenta si es > 0; 0/null significan SIN LÍMITE.
+ *
+ * Se extrae aquí para que el camino del LLM aplique exactamente la misma regla
+ * que la UI, en vez de una segunda interpretación que pudiera divergir.
+ */
+export function cardinalidadDeGrupo(g) {
+  const minimo = g.requerido ? Math.max(1, Number(g.minimo) || 1) : (Number(g.minimo) || 0);
+  const maximo = Number(g.maximo) > 0 ? Number(g.maximo) : Infinity;
+  return { minimo, maximo };
+}
+
+/**
+ * Revisa que las opciones ya resueltas cumplan la cardinalidad de cada grupo
+ * del producto. Devuelve { faltantes, excedidos } con nombres reales y las
+ * alternativas del catálogo, para que el canal pueda pedir lo que falta.
+ *
+ * NUNCA rellena una selección: si falta un grupo obligatorio se pregunta. Elegir
+ * por el cliente (la primera opción, la más barata, la más pedida) sería
+ * venderle algo que no pidió.
+ */
+export function validarCardinalidadGrupos(grupos, modificadores) {
+  const elegidasPorGrupo = new Map();
+  for (const m of (modificadores || [])) {
+    const gid = Number(m.grupo_id);
+    if (!elegidasPorGrupo.has(gid)) elegidasPorGrupo.set(gid, []);
+    elegidasPorGrupo.get(gid).push(m.opcion);
+  }
+  const faltantes = [], excedidos = [];
+  for (const g of (grupos || [])) {
+    const { minimo, maximo } = cardinalidadDeGrupo(g);
+    const elegidas = elegidasPorGrupo.get(Number(g.id)) || [];
+    const alternativas = (g.opciones || []).filter((o) => o.disponible !== false).map((o) => o.nombre);
+    if (elegidas.length < minimo) {
+      faltantes.push({ grupo: g.nombre, minimo, elegidas: elegidas.length, alternativas });
+    } else if (elegidas.length > maximo) {
+      excedidos.push({ grupo: g.nombre, maximo, elegidas: elegidas.length, seleccion: elegidas });
+    }
+  }
+  return { faltantes, excedidos };
+}
+
 // Normaliza un nombre para matching tolerante: sin acentos, minúsculas, sin
 // espacios repetidos. Solo para EMPAREJAR, nunca para mostrar.
 function normNombre(s) {

@@ -21,7 +21,7 @@
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
-import { cargarGruposDeProductos, resolverModificadoresLLM } from '../services/modificadores.js';
+import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos } from '../services/modificadores.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -53,7 +53,19 @@ export const RECHAZOS = {
   // sabor — se vendió algo que la cocina no podía preparar. Ahora detiene la
   // orden y el canal ofrece las opciones REALES del grupo.
   MODIFICADOR_NO_DISPONIBLE: 'MODIFICADOR_NO_DISPONIBLE',
+  // El producto exige elegir en un grupo (Sabor, Tamaño…) y la orden llegó sin
+  // esa selección. El backend NUNCA rellena por su cuenta: se pregunta.
+  GRUPO_REQUERIDO_FALTANTE: 'GRUPO_REQUERIDO_FALTANTE',
+  GRUPO_EXCEDE_MAXIMO: 'GRUPO_EXCEDE_MAXIMO',
 };
+
+// Canales cuyo pedido nace de un checkout EXTERNO ya cerrado (y normalmente ya
+// cobrado). Ahí exigir una selección faltante no arregla nada: no hay
+// conversación donde preguntar, y rechazar solo destruye una venta que el
+// cliente ya pagó en la otra plataforma. La validación de cardinalidad se
+// aplica en los canales donde SÍ se puede preguntar; el resto de validaciones
+// (producto, precios, aislamiento) siguen igual para todos.
+const CANALES_CHECKOUT_EXTERNO = new Set(['rappi']);
 
 // Mismo mapeo tipo→texto que usa el prompt al OFRECER métodos
 // (prompts.js). La orden solo puede usar lo que el negocio tiene
@@ -321,6 +333,32 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
           solicitados: noDisponibles.map((n) => `${n.grupo}:${n.solicitado}`).slice(0, 5),
         });
       }
+      // GRUPOS OBLIGATORIOS: misma semántica que ya aplica la UI/POS
+      // (cardinalidadDeGrupo). Solo donde hay conversación para preguntar.
+      if (!CANALES_CHECKOUT_EXTERNO.has(canalPromo)) {
+        const { faltantes, excedidos } = validarCardinalidadGrupos(
+          gruposPorProd.get(item.producto_id) || [], modificadores);
+        for (const f of faltantes) {
+          rechazos.push({
+            codigo: RECHAZOS.GRUPO_REQUERIDO_FALTANTE,
+            producto: item.nombre, grupo: f.grupo,
+            minimo: f.minimo, elegidas: f.elegidas, alternativas: f.alternativas,
+          });
+        }
+        for (const e of excedidos) {
+          rechazos.push({
+            codigo: RECHAZOS.GRUPO_EXCEDE_MAXIMO,
+            producto: item.nombre, grupo: e.grupo, maximo: e.maximo, elegidas: e.elegidas,
+          });
+        }
+        if (faltantes.length || excedidos.length) {
+          eventoTxn('grupo_cardinalidad', negocioId, {
+            producto_id: item.producto_id,
+            faltantes: faltantes.map((f) => `${f.grupo}>=${f.minimo}`).slice(0, 5),
+            excedidos: excedidos.map((e) => `${e.grupo}<=${e.maximo}`).slice(0, 5),
+          });
+        }
+      }
       // FAIL-CLOSED (XAB-0230): una opción cuyo nombre existe en VARIOS grupos
       // del producto no se adivina. Antes se tomaba el primer grupo y la cocina
       // recibía datos falsos; ahora la orden se detiene y el canal pregunta a
@@ -459,6 +497,27 @@ export function mensajeRechazoParaCliente(rechazos) {
     return faltante
       ? `¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: ${listaDisponibles()}.`
       : `Esa forma de pago no está disponible. Puedes pagar con: ${listaDisponibles()}. ¿Cuál prefieres? Tu pedido sigue tal como lo armamos.`;
+  }
+
+  // Falta elegir en uno o más grupos obligatorios: se piden JUNTOS, con las
+  // opciones reales de cada uno. Nunca se rellena por el cliente.
+  const faltantes = rechazos.filter((r) => r.codigo === RECHAZOS.GRUPO_REQUERIDO_FALTANTE);
+  const excedidos = rechazos.filter((r) => r.codigo === RECHAZOS.GRUPO_EXCEDE_MAXIMO);
+  if ((faltantes.length || excedidos.length) && faltantes.length + excedidos.length === rechazos.length) {
+    const listar = (arr) => arr.length > 1
+      ? `${arr.slice(0, -1).join(', ')} y ${arr[arr.length - 1]}` : (arr[0] || '');
+    const partes = [];
+    for (const f of faltantes) {
+      const alts = Array.isArray(f.alternativas) ? f.alternativas.filter(Boolean) : [];
+      const cuantas = f.minimo > 1 ? `${f.minimo} opciones de ${f.grupo}` : f.grupo;
+      partes.push(alts.length
+        ? `falta elegir ${cuantas} para ${f.producto} (${listar(alts)})`
+        : `falta elegir ${cuantas} para ${f.producto}`);
+    }
+    for (const e of excedidos) {
+      partes.push(`en ${e.grupo} de ${e.producto} puedes elegir como máximo ${e.maximo} (elegiste ${e.elegidas})`);
+    }
+    return `Para completar tu pedido ${listar(partes)}. ¿Qué prefieres?`;
   }
 
   // Opción inexistente en un grupo real: se dice la verdad y se ofrecen las
