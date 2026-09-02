@@ -47,6 +47,12 @@ export const RECHAZOS = {
   // (p. ej. "Bistec en Salsa" como Proteína y como Guarnición). No se adivina:
   // el canal pregunta a cuál se refiere el cliente.
   MODIFICADOR_AMBIGUO: 'MODIFICADOR_AMBIGUO',
+  // XAB-0234: el cliente pidió un atributo CONCRETO de un grupo real que no
+  // existe en el catálogo ("Sabor: Mango" cuando solo hay Plátano/Melón/
+  // Papaya/Fresa). Antes se descartaba en silencio y el pedido seguía sin
+  // sabor — se vendió algo que la cocina no podía preparar. Ahora detiene la
+  // orden y el canal ofrece las opciones REALES del grupo.
+  MODIFICADOR_NO_DISPONIBLE: 'MODIFICADOR_NO_DISPONIBLE',
 };
 
 // Mismo mapeo tipo→texto que usa el prompt al OFRECER métodos
@@ -284,16 +290,36 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   try {
     const gruposPorProd = await cargarGruposDeProductos(negocioId, itemsCanonicos.map((i) => i.producto_id));
     for (const item of itemsCanonicos) {
-      const { modificadores, precioExtras, texto, noReconocidos, ambiguos } =
+      const { modificadores, precioExtras, texto, noReconocidos, ambiguos, noDisponibles } =
         resolverModificadoresLLM(gruposPorProd.get(item.producto_id) || [], item._modsLLM);
       if (modificadores.length) {
         item.modificadores = modificadores;                     // ticket / cocina / historial
         item.precio_unitario = item.precio_base + precioExtras; // base + extras canónicos
         if (texto) item.modificadores_texto = texto;
       }
+      // Texto que no casó con ninguna opción y que venía SIN grupo: puede ser
+      // una nota de preparación ("sin cebolla"), no una selección de menú. Se
+      // sigue tratando con lenidad — no se cobra y se reporta.
       if (noReconocidos.length) {
         ajustes.push({ tipo: 'modificador_no_reconocido', producto: item.nombre, ignorados: noReconocidos });
         eventoTxn('modificador_no_reconocido', negocioId, { producto_id: item.producto_id, ignorados: noReconocidos.slice(0, 5) });
+      }
+      // FAIL-CLOSED (XAB-0234): una selección ESTRUCTURADA que no existe detiene
+      // la orden. El cliente pidió algo concreto de un grupo real; venderle otra
+      // cosa (o el producto sin ese atributo) sería venderle lo que el negocio
+      // no puede preparar.
+      if (noDisponibles.length) {
+        for (const nd of noDisponibles) {
+          rechazos.push({
+            codigo: RECHAZOS.MODIFICADOR_NO_DISPONIBLE,
+            producto: item.nombre, grupo: nd.grupo,
+            nombre: nd.solicitado, alternativas: nd.alternativas,
+          });
+        }
+        eventoTxn('modificador_no_disponible', negocioId, {
+          producto_id: item.producto_id,
+          solicitados: noDisponibles.map((n) => `${n.grupo}:${n.solicitado}`).slice(0, 5),
+        });
       }
       // FAIL-CLOSED (XAB-0230): una opción cuyo nombre existe en VARIOS grupos
       // del producto no se adivina. Antes se tomaba el primer grupo y la cocina
@@ -433,6 +459,24 @@ export function mensajeRechazoParaCliente(rechazos) {
     return faltante
       ? `¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: ${listaDisponibles()}.`
       : `Esa forma de pago no está disponible. Puedes pagar con: ${listaDisponibles()}. ¿Cuál prefieres? Tu pedido sigue tal como lo armamos.`;
+  }
+
+  // Opción inexistente en un grupo real: se dice la verdad y se ofrecen las
+  // opciones REALES del catálogo (nunca una lista escrita en el prompt). El
+  // pedido se conserva; solo falta elegir un valor que sí exista.
+  const noDisp = rechazos.filter((r) => r.codigo === RECHAZOS.MODIFICADOR_NO_DISPONIBLE);
+  if (noDisp.length && noDisp.length === rechazos.length) {
+    const partes = noDisp.map((r) => {
+      const alts = Array.isArray(r.alternativas) ? r.alternativas.filter(Boolean) : [];
+      const lista = alts.length > 1
+        ? `${alts.slice(0, -1).join(', ')} y ${alts[alts.length - 1]}`
+        : (alts[0] || '');
+      const grupo = String(r.grupo || '').toLowerCase();
+      return alts.length
+        ? `no tenemos ${r.nombre}${grupo ? ` en ${grupo}` : ''}. Las opciones disponibles son ${lista}`
+        : `no tenemos ${r.nombre}${grupo ? ` en ${grupo}` : ''}`;
+    });
+    return `Una disculpa: ${partes.join('; ')}. ¿Cuál prefieres?`;
   }
 
   // Ambigüedad de modificador: NO es un error del cliente ni tira el pedido —

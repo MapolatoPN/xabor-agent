@@ -215,6 +215,7 @@ export function resolverModificadoresLLM(grupos, nombres) {
   const modificadores = [];
   const noReconocidos = [];
   const ambiguos = [];
+  const noDisponibles = [];
   const yaTomadas = new Set();
   for (const p of peticiones) {
     if (!p.nombre && p.opcion_id == null) continue;
@@ -229,7 +230,24 @@ export function resolverModificadoresLLM(grupos, nombres) {
         ? disponibles(entrada.g).find((x) => Number(x.id) === p.opcion_id)
         : entrada.ops.get(normNombre(p.nombre));
       if (o) hit = { g: entrada.g, o };
-      else { noReconocidos.push(p.nombre || `#${p.opcion_id}`); continue; }
+      else {
+        // SELECCIÓN ESTRUCTURADA que no existe: el cliente pidió un atributo
+        // concreto DENTRO de un grupo real ("Sabor: Mango") y ese valor no está
+        // en el catálogo. Antes se descartaba en silencio y el pedido seguía sin
+        // sabor: así se vendió un licuado que la cocina no podía preparar
+        // (XAB-0234). Ahora se reporta con las alternativas REALES del grupo
+        // para que el canal pueda ofrecerlas; el pedido NO avanza.
+        //
+        // Solo cae aquí lo que viene con GRUPO explícito: un texto libre sin
+        // grupo ("sin cebolla", "bien tostado") sigue el camino leniente de
+        // `noReconocidos` — una nota de preparación no es una opción de menú.
+        noDisponibles.push({
+          grupo: entrada.g.nombre,
+          solicitado: p.nombre || `#${p.opcion_id}`,
+          alternativas: disponibles(entrada.g).map((x) => x.nombre),
+        });
+        continue;
+      }
     } else if (p.opcion_id != null) {
       // 2) Sin grupo pero con id de opción: el id ya es identidad única.
       for (const g of listaGrupos) {
@@ -263,6 +281,7 @@ export function resolverModificadoresLLM(grupos, nombres) {
     texto: textoModificadores(modificadores),
     noReconocidos,
     ambiguos,
+    noDisponibles,
   };
 }
 

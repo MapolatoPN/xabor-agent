@@ -180,6 +180,11 @@ export async function previsualizarPedido(orden, negocioId, opts = {}) {
     // guarniciones en una lista plana y el cliente no podía verificar lo que
     // pidió (XAB-0230).
     modificadores: (it.modificadores || []).map((m) => ({ grupo: m.grupo || null, nombre: m.opcion, precio: m.precio_extra })),
+    // Las NOTAS de preparación viajan al preview. El validador siempre las
+    // conservó en el item canónico (y llegaban a la comanda), pero esta
+    // whitelist las omitía: el cliente pedía "sin cebolla", lo veía entendido
+    // en la charla y luego NO aparecía en el resumen que se le pedía confirmar.
+    notas: it.notas || undefined,
     total_item: Math.round(Number(it.precio_unitario) * Number(it.cantidad) * 100) / 100,
   }));
   const preview = {
@@ -234,6 +239,9 @@ export function resumenPedidoOficial(preview) {
         else for (const m of g.opciones) lineas.push(`   + ${m.nombre}`); // opciones sin costo
       }
     }
+    // La nota va DEBAJO DE SU ITEM: es una instrucción de preparación de ese
+    // producto, nunca del pedido completo.
+    if (it.notas) lineas.push(`   NOTA: ${it.notas}`);
   }
   lineas.push('');
   lineas.push(`Subtotal: ${dinero(preview.subtotal)}`);

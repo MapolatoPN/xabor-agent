@@ -157,10 +157,17 @@ await t('C2. formato legacy {opcion:"..."} sigue soportado', async () => {
   const r = resolverModificadoresLLM(gruposW, [{ opcion: 'Nutella' }]);
   assert.strictEqual(r.modificadores.length, 1);
 });
-await t('C3. nombre inexistente sigue reportándose como no reconocido', () => {
+await t('C3. nombre inexistente CON grupo explícito → noDisponibles (fail-closed)', () => {
+  // Cambió a propósito (XAB-0234): una selección estructurada que no existe ya
+  // no se reporta como "no reconocida y seguimos", sino que detiene la orden con
+  // las alternativas reales del grupo. Un texto libre SIN grupo conserva el
+  // camino leniente — ver fase-fidelidad-catalogo-notas.
   const r = resolverModificadoresLLM(gruposChila, [{ grupo: 'Salsa', opciones: ['Queso mágico'] }]);
   assert.strictEqual(r.modificadores.length, 0);
-  assert.deepStrictEqual(r.noReconocidos, ['Queso mágico']);
+  assert.strictEqual(r.noDisponibles.length, 1);
+  assert.strictEqual(r.noDisponibles[0].solicitado, 'Queso mágico');
+  assert.strictEqual(r.noDisponibles[0].grupo, 'Salsa');
+  assert.ok(r.noDisponibles[0].alternativas.includes('Roja'), 'debe ofrecer las salsas reales');
 });
 
 // ═══ CASO D — economía de XAB-0230 ══════════════════════════════════════════
