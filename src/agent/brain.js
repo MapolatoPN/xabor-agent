@@ -6,7 +6,7 @@ import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido
          reemplazarUltimoMensajeAsistente } from './session.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
-import { obtenerEstadoModulo } from '../services/database.js';
+import { obtenerEstadoModulo, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
 import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
@@ -14,7 +14,7 @@ import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
-import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
+import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente } from '../orders/validadorOrden.js';
 import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
 import { responderConsultaPromos } from '../services/tiendaPromociones.js';
 import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
@@ -131,6 +131,70 @@ async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
   // El texto lo redacta el canal tras la escritura real (folio + total). Aquí
   // no se afirma nada: el pedido todavía no existe.
   return { texto: '', orden: tomado.ordenCanonica, sessionId, desdeSnapshot: true, snapshot: tomado };
+}
+
+// ¿La respuesta ya la redactó el backend (no el modelo)? Esos turnos no
+// necesitan validación de borrador: no hay nada que el modelo haya afirmado.
+function esRespuestaDeSistema(texto) {
+  return /<ORDEN_PREVIEW>|<ORDEN_CONFIRMADA>|<CONSULTA_PROMOS>/.test(String(texto || ''));
+}
+
+/**
+ * ¿El mensaje del cliente menciona algún producto del catálogo REAL?
+ *
+ * Es la señal que decide si un turno sin borrador merece exigirlo. Se compara
+ * contra los nombres del menú del negocio —nunca contra una lista escrita a
+ * mano—, así que sirve igual para cualquier tenant. Basta con una palabra
+ * significativa del nombre para no depender de que el cliente escriba el
+ * nombre completo ("licuado" basta para "Licuado de la casa").
+ */
+async function mencionaProductoDelMenu(mensaje, negocioId) {
+  const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const texto = ` ${norm(mensaje)} `;
+  if (!texto.trim()) return false;
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.nombre FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
+        WHERE p.negocio_id = $1 AND p.disponible IS NOT FALSE AND c.activa`, [negocioId]);
+    for (const r of rows) {
+      const palabras = norm(r.nombre).split(' ').filter((w) => w.length >= 4);
+      if (palabras.some((w) => texto.includes(` ${w} `) || texto.includes(` ${w}s `))) return true;
+    }
+  } catch (e) { console.error('[brain] mencionaProductoDelMenu:', e.message); }
+  return false;
+}
+
+/**
+ * Segunda llamada ACOTADA que extrae el pedido en curso cuando el modelo no
+ * emitió su borrador. Es lo que convierte la validación en obligatoria en vez
+ * de depender de que el modelo se acuerde: si el turno tocaba un producto, el
+ * borrador se obtiene igual.
+ *
+ * Deliberadamente barata: solo el historial reciente, sin menú ni reglas, con
+ * un techo bajo de tokens. Devuelve null si el turno era una consulta.
+ */
+async function extraerBorradorForzado(session, negocioId) {
+  const historial = (session.mensajes || []).slice(-6);
+  if (!historial.length) return null;
+  const r = await llamarModeloConReintento({
+    model: MODELO,
+    max_tokens: 400,
+    system: 'Extrae el pedido que el cliente está armando en esta conversación, TAL CUAL lo pidió, '
+      + 'incluso si algo parece no existir en el menú (no lo corrijas ni lo sustituyas). '
+      + 'Responde SOLO con JSON: {"items":[{"nombre":"...","cantidad":1,'
+      + '"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}]}. '
+      + 'Usa el nombre del grupo que corresponda a cada opción (sabor, tamaño, leche, etc.). '
+      + 'Si el cliente solo pregunta algo y NO está armando un pedido, responde {"items":[]}.',
+    messages: historial,
+  }, { etiqueta: 'borrador' });
+  const txt = r?.content?.[0]?.text || '';
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const draft = JSON.parse(m[0]);
+    return Array.isArray(draft?.items) && draft.items.length ? draft : null;
+  } catch { return null; }
 }
 
 // Snapshot canónico de un preview válido: lo que el backend YA validó.
@@ -255,6 +319,43 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
 
     const orden = extraerOrden(textoRespuesta);
+
+    // ── VALIDACIÓN CONVERSACIONAL DE CATÁLOGO (antes de que el cliente lea nada) ──
+    // Proteger el preview y el registro no bastaba: el agente podía REAFIRMAR
+    // una opción inexistente durante la charla ("un licuado de mango grande"),
+    // mucho antes de que hubiera una orden que validar. El backend impedía
+    // venderlo, pero no impedía prometerlo.
+    //
+    // Por eso esto NO es opcional para el modelo. Si el turno toca un producto
+    // y no emitió su borrador, se le pide EXPLÍCITAMENTE en una segunda llamada
+    // acotada (`extraerBorradorForzado`): la validación ocurre igual. Y cuando
+    // el backend encuentra algo que no existe, su respuesta REEMPLAZA al texto
+    // del modelo — la verdad del catálogo no se negocia con la redacción.
+    let textoCatalogo = null;
+    if (typeof negocioId === 'string' && negocioId.trim() && !orden && !esRespuestaDeSistema(textoRespuesta)) {
+      try {
+        let borrador = extraerBloque(textoRespuesta, 'PEDIDO_BORRADOR');
+        if (!borrador && await mencionaProductoDelMenu(mensajeUsuario, negocioId)) {
+          borrador = await extraerBorradorForzado(session, negocioId);
+        }
+        if (borrador) {
+          const rc = await validarBorradorPedido(borrador, negocioId);
+          if (!rc.ok) {
+            const msg = mensajeBorradorParaCliente(rc);
+            if (msg) {
+              textoCatalogo = msg;
+              const detalle = rc.productos.flatMap((p) => (p.invalidos || []).map((i) => `${i.grupo}:${i.solicitado}`));
+              if (detalle.length) {
+                console.warn(`[TXN] evento=catalogo_conversacional_bloqueado negocio=${negocioId} invalidos=${JSON.stringify(detalle.slice(0, 5))}`);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Nunca tumba el turno: ante un fallo aquí el flujo sigue como antes.
+        console.error('[brain] validación conversacional de catálogo:', e.message);
+      }
+    }
 
     // ── PRICING OFICIAL (preconfirmación con el backend) ──
     // El LLM propone; XABOR calcula. El cliente NUNCA confirma un total escrito
@@ -388,6 +489,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
 
     // El pricing OFICIAL del backend REEMPLAZA cualquier cifra que el modelo
     // hubiera escrito: el cliente solo ve/confirma números de Xabor.
+    // La verdad del CATÁLOGO no se negocia con la redacción del modelo: si el
+    // backend detectó que algo de lo pedido no existe, su respuesta sustituye
+    // a la del modelo (que podía estar reafirmando lo imposible).
+    if (textoCatalogo) textoFinal = textoCatalogo;
     if (textoOficialPricing) textoFinal = textoOficialPricing;
     // La consulta de promociones por fecha la responde el backend (fuente
     // estructurada), no la memoria del modelo.
@@ -725,6 +830,7 @@ function limpiarTexto(texto) {
     .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
     .replace(/<ORDEN_PREVIEW>[\s\S]*?<\/ORDEN_PREVIEW>/g, '')
     .replace(/<CONSULTA_PROMOS>[\s\S]*?<\/CONSULTA_PROMOS>/g, '')
+    .replace(/<PEDIDO_BORRADOR>[\s\S]*?<\/PEDIDO_BORRADOR>/g, '')
     .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
     .replace(/<ESCALAR_A_HUMANO>/g, '')
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')

@@ -160,6 +160,135 @@ function resolverProducto(nombreLLM, catalogo) {
  *          nombre real del catálogo, precio real, y totales recalculados.
  *   ajustes: [{ tipo, ... }] observabilidad de mismatches corregidos.
  */
+/**
+ * VALIDACIÓN DEL BORRADOR CONVERSACIONAL (pre-preview).
+ *
+ * Existe porque proteger el preview y el registro no bastaba: el agente podía
+ * REAFIRMARLE al cliente una opción inexistente ("un licuado de mango grande")
+ * durante la charla, mucho antes de que hubiera una orden que validar. El
+ * backend impedía venderlo, pero no impedía prometerlo.
+ *
+ * Contrasta un pedido AÚN INCOMPLETO contra el catálogo real usando EXACTAMENTE
+ * las mismas primitivas que protegen el preview —`resolverProducto`,
+ * `resolverModificadoresLLM`, `validarCardinalidadGrupos`—, así que no hay una
+ * segunda definición de catálogo ni de cardinalidad que pueda divergir.
+ *
+ * NO valida nada económico: ni forma de pago, ni totales, ni promociones. No
+ * canoniza precios, no registra, no persiste. Solo responde "¿lo que el cliente
+ * pidió existe, y qué falta todavía?".
+ *
+ * Devuelve { ok, productos:[{...}] } donde cada producto trae:
+ *   invalidos      → opciones pedidas que NO existen (con alternativas reales)
+ *   inconsistentes → grupos obligatorios sin opciones que ofrecer
+ *   faltantes      → grupos obligatorios aún sin elegir (con alternativas)
+ *   excedidos      → grupos con más selecciones de las permitidas
+ *   ambiguos       → nombre presente en varios grupos, sin grupo explícito
+ */
+export async function validarBorradorPedido(borrador, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('validarBorradorPedido: negocioId obligatorio');
+  }
+  const items = Array.isArray(borrador?.items) ? borrador.items : [];
+  const salida = { ok: true, productos: [], productosNoExisten: [] };
+  if (!items.length) return salida;               // consulta pura: nada que validar
+
+  const catalogo = await cargarCatalogo(negocioId);
+  if (!catalogo.length) {
+    salida.ok = false;
+    salida.productosNoExisten = items.map((i) => String(i?.nombre || '').slice(0, 80)).filter(Boolean);
+    return salida;
+  }
+
+  const resueltos = [];
+  for (const it of items) {
+    const r = resolverProducto(it?.nombre, catalogo);
+    if (r.estado !== 'ok') {
+      salida.ok = false;
+      salida.productosNoExisten.push({ nombre: String(it?.nombre || '').slice(0, 80), estado: r.estado });
+      continue;
+    }
+    resueltos.push({ producto: r.producto, mods: Array.isArray(it?.modificadores) ? it.modificadores : [] });
+  }
+  if (!resueltos.length) return salida;
+
+  const gruposPorProd = await cargarGruposDeProductos(negocioId, resueltos.map((x) => x.producto.id));
+  for (const { producto, mods } of resueltos) {
+    const grupos = gruposPorProd.get(producto.id) || [];
+    const { modificadores, noDisponibles, ambiguos } = resolverModificadoresLLM(grupos, mods);
+    const { faltantes, excedidos, inconsistentes } = validarCardinalidadGrupos(grupos, modificadores);
+    const entrada = {
+      producto: producto.nombre,
+      elegidas: modificadores.map((m) => ({ grupo: m.grupo, opcion: m.opcion })),
+      invalidos: noDisponibles, ambiguos, inconsistentes, faltantes, excedidos,
+    };
+    if (noDisponibles.length || ambiguos.length || inconsistentes.length || faltantes.length || excedidos.length) {
+      salida.ok = false;
+    }
+    salida.productos.push(entrada);
+  }
+  return salida;
+}
+
+/**
+ * Redacta, por CÓDIGO, qué debe decirse tras validar un borrador. El orden es
+ * determinista y no negociable: primero lo que el cliente pidió y no existe
+ * (si no, se le seguiría preguntando por un producto imposible), luego el
+ * catálogo roto, luego lo que falta por elegir. Los grupos opcionales nunca
+ * aparecen como requisito.
+ *
+ * Devuelve null cuando no hay nada que corregir ni pedir (el turno sigue su
+ * curso normal).
+ */
+export function mensajeBorradorParaCliente(resultado) {
+  const listar = (arr) => {
+    const a = (arr || []).filter(Boolean);
+    if (!a.length) return '';
+    return a.length > 1 ? `${a.slice(0, -1).join(', ')} y ${a[a.length - 1]}` : String(a[0]);
+  };
+  const prods = resultado?.productos || [];
+
+  // 1) OPCIÓN EXPLÍCITA INVÁLIDA — máxima prioridad.
+  const invalidos = prods.flatMap((p) => (p.invalidos || []).map((i) => ({ ...i, producto: p.producto })));
+  if (invalidos.length) {
+    const partes = invalidos.map((i) => i.alternativas?.length
+      ? `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}; tengo ${listar(i.alternativas)}`
+      : `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}`);
+    return `Una disculpa: ${listar(partes)}. ¿Cuál prefieres?`;
+  }
+
+  // 2) CATÁLOGO IMPOSIBLE — el cliente no puede resolverlo.
+  const rotos = prods.filter((p) => (p.inconsistentes || []).length);
+  if (rotos.length) {
+    return `Una disculpa: ${listar([...new Set(rotos.map((p) => p.producto))])} no está disponible para pedir por el momento. ¿Te muestro otra opción del menú?`;
+  }
+
+  // 3) AMBIGÜEDAD — hay que preguntar a qué grupo se refería.
+  const amb = prods.flatMap((p) => p.ambiguos || []);
+  if (amb.length) {
+    const a = amb[0];
+    return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${listar(a.grupos)}. ¿En cuál lo quieres?`;
+  }
+
+  // 4) EXCESO de selecciones.
+  const exc = prods.flatMap((p) => (p.excedidos || []).map((e) => ({ ...e, producto: p.producto })));
+  if (exc.length) {
+    const e = exc[0];
+    return `En ${String(e.grupo).toLowerCase()} de ${e.producto} puedes elegir como máximo ${e.maximo} (elegiste ${e.elegidas}). ¿Cuáles dejamos?`;
+  }
+
+  // 5) GRUPOS REQUERIDOS FALTANTES — solo los obligatorios, nunca los opcionales.
+  const falt = prods.flatMap((p) => (p.faltantes || []).map((f) => ({ ...f, producto: p.producto })));
+  if (falt.length) {
+    const partes = falt.map((f) => {
+      const g = String(f.grupo).toLowerCase();
+      const alts = f.alternativas?.length ? ` (${listar(f.alternativas)})` : '';
+      return f.minimo > 1 ? `${f.minimo} opciones de ${g}${alts}` : `${g}${alts}`;
+    });
+    return `Para completar tu pedido me falta saber ${listar(partes)}. ¿Qué prefieres?`;
+  }
+  return null;
+}
+
 export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarOrdenPropuesta: negocioId obligatorio');
