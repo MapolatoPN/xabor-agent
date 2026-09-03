@@ -22,6 +22,7 @@ import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../se
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos } from '../services/modificadores.js';
+import { tieneRespaldo, spanEnTexto, normalizar } from '../agent/mencionesComerciales.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -62,6 +63,15 @@ export const RECHAZOS = {
   // resolverlo por más que se le pregunte: es configuración del negocio. Se
   // separa de GRUPO_REQUERIDO_FALTANTE para no dejarlo en un bucle imposible.
   PRODUCTO_NO_CONFIGURADO_PARA_VENTA: 'PRODUCTO_NO_CONFIGURADO_PARA_VENTA',
+  // FIDELIDAD DEL BORRADOR (F2): el borrador trae una selección que el cliente
+  // NUNCA expresó en el ciclo activo — la introdujo el modelo. No se acepta ni
+  // se cambia por otra: se descarta y el grupo vuelve a estar sin elegir.
+  SELECCION_SIN_RESPALDO: 'SELECCION_SIN_RESPALDO',
+  // FIDELIDAD DEL BORRADOR (F1/F3): el cliente nombró un atributo comercial que
+  // el borrador no recogió y que NO existe en ningún grupo del producto. Antes
+  // desaparecía y solo se le preguntaba lo que faltaba, como si nunca lo
+  // hubiera dicho. Ahora se le responde con la verdad del catálogo.
+  MENCION_NO_RESUELTA: 'MENCION_NO_RESUELTA',
 };
 
 // Canales cuyo pedido nace de un checkout EXTERNO ya cerrado (y normalmente ya
@@ -184,10 +194,17 @@ function resolverProducto(nombreLLM, catalogo) {
  *   excedidos      → grupos con más selecciones de las permitidas
  *   ambiguos       → nombre presente en varios grupos, sin grupo explícito
  */
-export async function validarBorradorPedido(borrador, negocioId) {
+export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarBorradorPedido: negocioId obligatorio');
   }
+  // Fidelidad: el texto REAL del cliente. `textoCiclo` son sus turnos del ciclo
+  // activo (respaldo de las selecciones) y `menciones` los atributos verbatim
+  // que afirmó en el último turno, ya verificados contra ese texto. Si el
+  // llamador no los aporta, la validación se comporta exactamente como antes.
+  const textoCiclo = String(opts.textoCiclo || '');
+  const conFidelidad = Boolean(textoCiclo.trim());
+  const mencionesTurno = Array.isArray(opts.menciones) ? opts.menciones : [];
   const items = Array.isArray(borrador?.items) ? borrador.items : [];
   const salida = { ok: true, productos: [], productosNoExisten: [] };
   if (!items.length) return salida;               // consulta pura: nada que validar
@@ -207,21 +224,88 @@ export async function validarBorradorPedido(borrador, negocioId) {
       salida.productosNoExisten.push({ nombre: String(it?.nombre || '').slice(0, 80), estado: r.estado });
       continue;
     }
-    resueltos.push({ producto: r.producto, mods: Array.isArray(it?.modificadores) ? it.modificadores : [] });
+    resueltos.push({
+      producto: r.producto,
+      mods: Array.isArray(it?.modificadores) ? it.modificadores : [],
+      notas: String(it?.notas || ''),
+    });
   }
   if (!resueltos.length) return salida;
 
   const gruposPorProd = await cargarGruposDeProductos(negocioId, resueltos.map((x) => x.producto.id));
-  for (const { producto, mods } of resueltos) {
+  for (const { producto, mods, notas } of resueltos) {
     const grupos = gruposPorProd.get(producto.id) || [];
-    const { modificadores, noDisponibles, ambiguos } = resolverModificadoresLLM(grupos, mods);
+    const base = resolverModificadoresLLM(grupos, mods);
+    let modificadores = base.modificadores;
+    let noDisponibles = base.noDisponibles;
+    const ambiguos = [...base.ambiguos];
+    const sinRespaldo = [];
+    const mencionesNoResueltas = [];
+
+    if (conFidelidad) {
+      // ── (A) PROVENANCE: toda selección tiene que venir del CLIENTE ────────
+      // Si el borrador trae una opción que el cliente nunca expresó en este
+      // ciclo, la puso el modelo. No se acepta ni se cambia por otra: se
+      // descarta y el grupo queda como estaba (normalmente, sin elegir), así
+      // que el flujo vuelve a preguntar en vez de asumir. Fail-closed.
+      const conservarConRespaldo = (valor, grupo, lista) => {
+        if (tieneRespaldo(valor, textoCiclo)) return true;
+        lista.push({ codigo: RECHAZOS.SELECCION_SIN_RESPALDO, grupo, opcion: valor });
+        return false;
+      };
+      modificadores = modificadores.filter((m) => conservarConRespaldo(m.opcion, m.grupo, sinRespaldo));
+      noDisponibles = noDisponibles.filter((n) => conservarConRespaldo(n.solicitado, n.grupo, sinRespaldo));
+
+      // ── (B) RECONCILIACIÓN: lo que el cliente dijo y el borrador no recogió ─
+      // Una mención sigue "representada" si aparece en cualquier parte de lo
+      // que el borrador sí entendió (nombre del producto, opción elegida,
+      // opción rechazada, ambigüedad o nota). Lo que no aparece por ningún
+      // lado es exactamente lo que se estaba perdiendo en silencio.
+      const representado = (span) => [
+        producto.nombre, notas,
+        ...modificadores.map((m) => m.opcion),
+        ...noDisponibles.map((n) => n.solicitado),
+        ...ambiguos.map((a) => a.nombre),
+      ].filter(Boolean).some((d) => spanEnTexto(span, d) || spanEnTexto(d, span));
+
+      for (const span of mencionesTurno) {
+        if (representado(span)) continue;
+        // El catálogo decide, no el código: puede ser una opción real que el
+        // borrador omitió (se recupera) o algo que el negocio no maneja.
+        const r = resolverModificadoresLLM(grupos, [span]);
+        if (r.modificadores.length) { modificadores.push(...r.modificadores); continue; }
+        if (r.ambiguos.length) { ambiguos.push(...r.ambiguos); continue; }
+        mencionesNoResueltas.push({ codigo: RECHAZOS.MENCION_NO_RESUELTA, texto: span });
+      }
+    }
+
     const { faltantes, excedidos, inconsistentes } = validarCardinalidadGrupos(grupos, modificadores);
+
+    // Para responder con la verdad del catálogo hay que decir en QUÉ grupo no
+    // existe lo que pidió. Se ofrecen los grupos que siguen sin elegir —los
+    // obligatorios primero—, siempre con sus opciones reales.
+    if (mencionesNoResueltas.length) {
+      const elegidoEn = (g) => modificadores.some((m) => normalizar(m.grupo) === normalizar(g.nombre));
+      const candidatos = (faltantes.length
+        ? faltantes.map((f) => ({ grupo: f.grupo, alternativas: f.alternativas || [] }))
+        : grupos.filter((g) => !elegidoEn(g)).map((g) => ({
+          grupo: g.nombre,
+          alternativas: (g.opciones || []).filter((o) => o.disponible !== false).map((o) => o.nombre),
+        }))).filter((c) => c.alternativas.length).slice(0, 2);
+      for (const m of mencionesNoResueltas) { m.producto = producto.nombre; m.gruposCandidatos = candidatos; }
+    }
+
     const entrada = {
       producto: producto.nombre,
       elegidas: modificadores.map((m) => ({ grupo: m.grupo, opcion: m.opcion })),
       invalidos: noDisponibles, ambiguos, inconsistentes, faltantes, excedidos,
+      sinRespaldo, mencionesNoResueltas,
     };
-    if (noDisponibles.length || ambiguos.length || inconsistentes.length || faltantes.length || excedidos.length) {
+    // `sinRespaldo` por sí solo NO invalida el borrador: descartar una opción
+    // que el cliente no pidió deja el pedido como estaba. Si esa opción era
+    // obligatoria, ya aparece como faltante y el flujo pregunta por ella.
+    if (noDisponibles.length || ambiguos.length || inconsistentes.length
+      || faltantes.length || excedidos.length || mencionesNoResueltas.length) {
       salida.ok = false;
     }
     salida.productos.push(entrada);
@@ -247,12 +331,28 @@ export function mensajeBorradorParaCliente(resultado) {
   };
   const prods = resultado?.productos || [];
 
-  // 1) OPCIÓN EXPLÍCITA INVÁLIDA — máxima prioridad.
-  const invalidos = prods.flatMap((p) => (p.invalidos || []).map((i) => ({ ...i, producto: p.producto })));
-  if (invalidos.length) {
-    const partes = invalidos.map((i) => i.alternativas?.length
-      ? `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}; tengo ${listar(i.alternativas)}`
-      : `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}`);
+  // 1) LO QUE EL CLIENTE PIDIÓ Y NO EXISTE — máxima prioridad, siempre.
+  // Da igual si llegó como selección estructurada del borrador (`invalidos`) o
+  // como una mención que el borrador se comió y recuperó la extracción
+  // independiente (`mencionesNoResueltas`): en ambos casos el cliente nombró
+  // algo que el negocio no puede preparar y lo primero es decírselo. Jamás se
+  // degrada a "me falta saber el sabor", que sería fingir que nunca lo dijo.
+  const noExiste = [
+    ...prods.flatMap((p) => (p.mencionesNoResueltas || []).map((m) => ({
+      solicitado: m.texto,
+      grupo: m.gruposCandidatos?.[0]?.grupo || null,
+      alternativas: m.gruposCandidatos?.[0]?.alternativas || [],
+      producto: p.producto,
+    }))),
+    ...prods.flatMap((p) => (p.invalidos || []).map((i) => ({ ...i, producto: p.producto }))),
+  ];
+  if (noExiste.length) {
+    const partes = noExiste.map((i) => {
+      const donde = i.grupo ? ` en ${String(i.grupo).toLowerCase()}` : ` para ${i.producto}`;
+      return i.alternativas?.length
+        ? `no tenemos ${i.solicitado}${donde}; tengo ${listar(i.alternativas)}`
+        : `no tenemos ${i.solicitado}${donde}`;
+    });
     return `Una disculpa: ${listar(partes)}. ¿Cuál prefieres?`;
   }
 

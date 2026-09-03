@@ -3,7 +3,8 @@ import { getIntegracion, broadcastNegocio } from '../server.js';
 import { construirSystemPrompt, construirBloqueModoComercial, BLOQUE_REGLAS_CONTEXTO_VISUAL, hayContextoVisual } from './prompts.js';
 import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido, marcarPreviewNoConfirmable,
          verPreviewPedido, verPreviewConfirmable, restaurarPreviewPedido, invalidarPreviewPedido,
-         reemplazarUltimoMensajeAsistente } from './session.js';
+         reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
+import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones } from './mencionesComerciales.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, pool } from '../services/database.js';
@@ -128,6 +129,9 @@ async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
     return { texto: '', orden: null, sessionId, duplicada: true };
   }
   console.log(`[TXN] evento=confirmacion_desde_snapshot negocio=${negocioId} total=${tomado.total}`);
+  // El carrito deja de estar en construcción: lo dicho hasta aquí pertenece a
+  // ESTE pedido y no puede respaldar selecciones del siguiente.
+  iniciarCicloPedido(sessionId);
   // El texto lo redacta el canal tras la escritura real (folio + total). Aquí
   // no se afirma nada: el pedido todavía no existe.
   return { texto: '', orden: tomado.ordenCanonica, sessionId, desdeSnapshot: true, snapshot: tomado };
@@ -195,6 +199,35 @@ async function extraerBorradorForzado(session, negocioId) {
     const draft = JSON.parse(m[0]);
     return Array.isArray(draft?.items) && draft.items.length ? draft : null;
   } catch { return null; }
+}
+
+/**
+ * Extracción INDEPENDIENTE de lo que el cliente dijo en su último turno.
+ *
+ * Corre aunque el modelo haya emitido un borrador impecable, porque el borrador
+ * no es autoridad sobre el mensaje del cliente: es la interpretación de un
+ * modelo que ya demostró omitir y sustituir atributos. Esta llamada solo ve el
+ * texto del cliente —ni menú, ni reglas, ni la respuesta del primer modelo—,
+ * así que no puede contagiarse de esa interpretación.
+ *
+ * Su salida NO se cree: `depurarMenciones` comprueba que cada span exista
+ * literalmente en el mensaje y esté en posición de atributo. Un extractor que
+ * alucine "fresa" sobre un mensaje que dice "mango" no pasa esa comprobación.
+ */
+async function extraerMencionesComerciales(mensajeUsuario) {
+  const texto = String(mensajeUsuario || '').trim();
+  if (!texto) return [];
+  const r = await llamarModeloConReintento({
+    model: MODELO,
+    max_tokens: 300,
+    system: INSTRUCCION_MENCIONES,
+    messages: [{ role: 'user', content: texto }],
+  }, { etiqueta: 'menciones' });
+  const depuradas = depurarMenciones(parsearMenciones(r?.content?.[0]?.text || ''), texto);
+  if (depuradas.descartadas.length) {
+    console.warn(`[TXN] evento=mencion_descartada detalle=${JSON.stringify(depuradas.descartadas.slice(0, 5))}`);
+  }
+  return depuradas.atributos;
 }
 
 // Snapshot canónico de un preview válido: lo que el backend YA validó.
@@ -332,21 +365,62 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // el backend encuentra algo que no existe, su respuesta REEMPLAZA al texto
     // del modelo — la verdad del catálogo no se negocia con la redacción.
     let textoCatalogo = null;
-    if (typeof negocioId === 'string' && negocioId.trim() && !orden && !esRespuestaDeSistema(textoRespuesta)) {
+    // `!sesionComercial`: un turno del Asistente Comercial NO está armando un
+    // pedido del menú — está capturando los campos de una COTIZACIÓN. Contrastar
+    // su texto contra el catálogo no protege nada (ese flujo no vende productos
+    // del menú ni llega a preview) y sí cuesta una llamada extra al modelo por
+    // turno. El guard es deliberadamente estrecho: solo apaga esta validación
+    // CONVERSACIONAL. Todo lo transaccional —<ORDEN_PREVIEW>, validarOrdenPropuesta,
+    // modificadores, cardinalidad, confirmación determinista y registro— sigue
+    // corriendo igual, tenga o no sesión comercial.
+    if (typeof negocioId === 'string' && negocioId.trim() && !orden && !sesionComercial
+        && !esRespuestaDeSistema(textoRespuesta)) {
       try {
         let borrador = extraerBloque(textoRespuesta, 'PEDIDO_BORRADOR');
-        if (!borrador && await mencionaProductoDelMenu(mensajeUsuario, negocioId)) {
+        // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
+        // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
+        // apagar por completo la extracción independiente: el marcador
+        // obligatorio se había vuelto la llave que desactivaba la única defensa
+        // que no dependía del modelo. Lo que decide ahora es si HAY ítems.
+        const conItems = (b) => Array.isArray(b?.items) && b.items.length > 0;
+        if (!conItems(borrador) && await mencionaProductoDelMenu(mensajeUsuario, negocioId)) {
           borrador = await extraerBorradorForzado(session, negocioId);
         }
-        if (borrador) {
-          const rc = await validarBorradorPedido(borrador, negocioId);
+        if (conItems(borrador)) {
+          // La extracción independiente corre SIEMPRE que se esté armando un
+          // pedido, aunque el borrador exista y parezca correcto: es la única
+          // forma de detectar que omitió (F1) o sustituyó (F2) lo que el
+          // cliente dijo. El respaldo se busca en todos los turnos del CICLO
+          // activo; las menciones, solo en el turno actual (lo que el cliente
+          // sostiene ahora, para que "mejor de fresa" reemplace al "mango"
+          // anterior sin quedar atrapado en él).
+          const menciones = await extraerMencionesComerciales(mensajeUsuario);
+          const rc = await validarBorradorPedido(borrador, negocioId, {
+            textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
+            menciones,
+          });
+          // El código viaja en la propia estructura (lo pone el validador), así
+          // que el log lo IMPRIME desde ahí: si algún día cambia, no hay dos
+          // fuentes que puedan desincronizarse.
+          const sinRespaldo = rc.productos.flatMap((p) => p.sinRespaldo || []);
+          if (sinRespaldo.length) {
+            console.warn(`[TXN] evento=seleccion_sin_respaldo codigo=${sinRespaldo[0].codigo} negocio=${negocioId}`
+              + ` descartadas=${JSON.stringify(sinRespaldo.slice(0, 5).map((s) => `${s.grupo}:${s.opcion}`))}`);
+          }
           if (!rc.ok) {
             const msg = mensajeBorradorParaCliente(rc);
             if (msg) {
               textoCatalogo = msg;
-              const detalle = rc.productos.flatMap((p) => (p.invalidos || []).map((i) => `${i.grupo}:${i.solicitado}`));
+              const noResueltas = rc.productos.flatMap((p) => p.mencionesNoResueltas || []);
+              const detalle = [
+                ...rc.productos.flatMap((p) => (p.invalidos || []).map((i) => `${i.grupo}:${i.solicitado}`)),
+                ...noResueltas.map((m) => `mencion:${m.texto}`),
+              ];
+              const codigos = [...new Set(noResueltas.map((m) => m.codigo).filter(Boolean))];
               if (detalle.length) {
-                console.warn(`[TXN] evento=catalogo_conversacional_bloqueado negocio=${negocioId} invalidos=${JSON.stringify(detalle.slice(0, 5))}`);
+                console.warn(`[TXN] evento=catalogo_conversacional_bloqueado negocio=${negocioId}`
+                  + `${codigos.length ? ` codigos=${JSON.stringify(codigos)}` : ''}`
+                  + ` invalidos=${JSON.stringify(detalle.slice(0, 5))}`);
               }
             }
           }
@@ -411,6 +485,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               // en un canal con compatibilidad (voz/test/api). El total registrado
               // es SIEMPRE el oficial del backend (mismo pipeline).
               invalidarPreviewPedido(sessionId);
+              iniciarCicloPedido(sessionId);   // cierra el ciclo: ver session.js
             } else if (d.accion === 'reconfirmar_cambio') {
               // Había un preview oficial y el total CAMBIÓ (catálogo/promo): NO
               // registrar en silencio; mostrar el nuevo total y pedir confirmar.
@@ -503,7 +578,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // consulta de promos), el historial se quedaba con el texto descartado: el
     // modelo creía haber dicho una cifra que el cliente nunca vio y, al recibir
     // un "sí", no sabía a qué resumen respondía. Aquí se alinean.
-    if (textoOficialPricing || textoConsultaPromos) {
+    // Incluye la corrección de catálogo: si el backend le dijo al cliente "no
+    // tenemos eso", el historial no puede seguir guardando la frase del modelo
+    // que sí lo prometía — en el turno siguiente la daría por acordada.
+    if (textoOficialPricing || textoConsultaPromos || textoCatalogo) {
       reemplazarUltimoMensajeAsistente(sessionId, textoFinal);
     }
 
