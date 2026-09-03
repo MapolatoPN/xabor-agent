@@ -174,6 +174,38 @@ await t('M10. una abreviación que encaja en DOS opciones del mismo artículo se
   assert.strictEqual(rc.productos[0].ambiguos.length, 1);
 });
 
+// ═══ M11/M12 — VARIAS UNIDADES DEL MISMO PRODUCTO ════════════════════════
+// La promoción "compra 1, el segundo a mitad de precio" del mismo producto
+// hace que este caso deje de ser exótico: el pedido normal son DOS artículos
+// idénticos. Preguntar "¿en cuál de los dos Combitos?" no tiene respuesta
+// posible, y repetir la pregunta una vez por unidad es igual de inservible.
+await t('M11. dos unidades del MISMO producto no producen una ambigüedad sin salida', async () => {
+  const rc = await val(
+    [item('Combito de Chilaquiles'), item('Combito de Chilaquiles')],
+    'quiero dos combitos en salsa suiza', ['suiza']);
+  assert.deepStrictEqual(rc.mencionesAmbiguas, [],
+    'son indistinguibles: "¿en cuál?" es una pregunta que el cliente no puede contestar');
+  const msg = mensajeBorradorParaCliente(rc);
+  assert.doesNotMatch(msg, /puede ir en Combito de Chilaquiles.*¿En cuál/,
+    `no se pregunta entre un producto y sí mismo: ${msg}`);
+  assert.match(msg, /falta saber/i, 'se pregunta por lo que falta, que SÍ tiene respuesta');
+});
+
+await t('M12. lo que falta se pregunta UNA vez, no una por unidad', async () => {
+  const rc = await val(
+    [item('Combito de Chilaquiles'), item('Combito de Chilaquiles')],
+    'quiero dos combitos', []);
+  const msg = mensajeBorradorParaCliente(rc);
+  assert.strictEqual((msg.match(/salsa/gi) || []).length, 1, `"salsa" repetida: ${msg}`);
+  assert.strictEqual((msg.match(/prote[íi]na/gi) || []).length, 1, `"proteína" repetida: ${msg}`);
+});
+
+await t('M12b. entre productos DISTINTOS sí se sigue preguntando cuál', async () => {
+  const rc = await val([item('Delta'), item('Epsilon')], 'un delta y un epsilon con canela', ['canela']);
+  assert.strictEqual(rc.mencionesAmbiguas.length, 1, 'aquí la pregunta sí tiene respuesta');
+  assert.match(mensajeBorradorParaCliente(rc), /"canela" puede ir en Delta y Epsilon/);
+});
+
 // ── Resumen ────────────────────────────────────────────────────────────────
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);

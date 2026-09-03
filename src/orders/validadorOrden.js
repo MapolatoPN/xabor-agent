@@ -302,11 +302,20 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         const c = candidatos[0];
         if (c.mods) c.e.modificadores.push(...c.mods); else c.e.ambiguos.push(...c.amb);
       } else if (candidatos.length > 1) {
-        // 4) Varios artículos podrían: NO se elige por posición ni por orden.
-        mencionesAmbiguas.push({
-          texto: span,
-          productos: [...new Set(candidatos.map((c) => c.e.producto.nombre))],
-        });
+        // 4) Varios artículos podrían recibirla.
+        const distintos = [...new Set(candidatos.map((c) => Number(c.e.producto.id)))];
+        if (distintos.length > 1) {
+          // Artículos DISTINTOS: no se elige por posición ni por orden, se pregunta.
+          mencionesAmbiguas.push({
+            texto: span,
+            productos: [...new Set(candidatos.map((c) => c.e.producto.nombre))],
+          });
+        }
+        // Varias unidades del MISMO producto (dos Combitos iguales): preguntar
+        // "¿en cuál?" no tiene respuesta posible — son indistinguibles. Tampoco
+        // se adivina cuál la recibe: la mención queda sin asignar y el grupo
+        // aparece como faltante, que es la pregunta que el cliente SÍ puede
+        // contestar. Fail-closed, sin callejón sin salida.
       } else {
         // 5) Ningún artículo la representa ni la resuelve: el negocio no la maneja.
         mencionesNoResueltas.push({
@@ -365,11 +374,19 @@ export function mensajeBorradorParaCliente(resultado) {
   const frasePendientes = () => {
     const falt = prods.flatMap((p) => (p.faltantes || []).map((f) => ({ ...f, producto: p.producto })));
     if (!falt.length) return '';
-    return listar(falt.map((f) => {
+    // Dos unidades del mismo producto piden lo mismo dos veces. Al cliente se le
+    // pregunta UNA vez por cada cosa que falta, no una por artículo.
+    const vistas = new Set();
+    const partes = [];
+    for (const f of falt) {
       const g = String(f.grupo).toLowerCase();
       const alts = f.alternativas?.length ? ` (${listar(f.alternativas)})` : '';
-      return f.minimo > 1 ? `${f.minimo} opciones de ${g}${alts}` : `${g}${alts}`;
-    }));
+      const frase = f.minimo > 1 ? `${f.minimo} opciones de ${g}${alts}` : `${g}${alts}`;
+      if (vistas.has(frase)) continue;
+      vistas.add(frase);
+      partes.push(frase);
+    }
+    return listar(partes);
   };
 
   // 1) LO QUE EL CLIENTE PIDIÓ Y NO EXISTE — máxima prioridad, siempre.
