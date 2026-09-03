@@ -17,7 +17,7 @@
 // Uso: DATABASE_URL=... node test/fase-promo-participantes.mjs
 import assert from 'assert';
 
-const { fraseCondiciones } = await import('../src/services/tiendaPromociones.js');
+const { fraseCondiciones, fraseParticipantes } = await import('../src/services/tiendaPromociones.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 function t(nombre, fn) {
@@ -70,9 +70,61 @@ t('P5. una promoción sin condiciones no cambia de comportamiento', () => {
 });
 
 // ═══ P6 — una opción agotada no se anuncia como excluida ═════════════════
-t('P6. una opción no disponible no aparece como "no participa"', () => {
+t('P6b. una opción no disponible no aparece como "no participa"', () => {
   const txt = fraseCondiciones(cond([240]), grupos([HOT, { ...WAF, disponible: false }]));
   assert.doesNotMatch(txt, /Waffles/, `lo que no se vende no se menciona: ${txt}`);
+});
+
+// ═══ P7-P15 — la lista de PRODUCTOS participantes también es cerrada ══════
+// Segundo caso real, mismo modo de fallo en otro eje. Tras responder bien la
+// promo, el cliente dijo "Quiero una promoción" y el bot enumeró:
+//   Combito de Chilaquiles, Hotcakes Tradicionales, Hotcakes de Sartén,
+//   Protein Pancakes
+// La promoción tiene UN solo producto participante (el Combito). Los otros tres
+// se parecen a la CONDICIÓN ("preparados con Hotcakes"), no a la lista de
+// participantes: pedirlos nunca daría descuento.
+//
+// Un producto que se prepara con lo que la condición pide NO es, por eso, un
+// producto participante. Esa distinción tiene que vivir en el dato.
+const COMBITO = 'Combito de Chilaquiles';
+
+t('P7/P8. la lista de productos participantes se declara CERRADA', () => {
+  const txt = fraseParticipantes({ modo: 'productos', nombres: [COMBITO] });
+  assert.match(txt, /Productos participantes: Combito de Chilaquiles\./, txt);
+  assert.match(txt, /Ningún otro producto del menú participa/,
+    `sin el cierre, el agente completa la lista desde el menú: ${txt}`);
+});
+
+t('P9/P10. ningún producto ajeno aparece en el texto oficial', () => {
+  const txt = fraseParticipantes({ modo: 'productos', nombres: [COMBITO] });
+  for (const ajeno of ['Hotcakes Tradicionales', 'Hotcakes de Sartén', 'Protein Pancakes']) {
+    assert.ok(!txt.includes(ajeno), `${ajeno} no participa y no puede nombrarse: ${txt}`);
+  }
+});
+
+t('P11. producto participante y opción participante no se confunden', () => {
+  const completo = `${fraseParticipantes({ modo: 'productos', nombres: [COMBITO] })} `
+    + `${fraseCondiciones(cond([240]), grupos([HOT, WAF]))}`;
+  assert.match(completo, /Productos participantes: Combito de Chilaquiles/, completo);
+  assert.match(completo, /Participan los preparados con Hotcakes/, completo);
+  assert.match(completo, /Waffles NO participa/, completo);
+  assert.match(completo, /Ningún otro producto del menú participa/, completo);
+});
+
+t('P12/P13. con dos productos configurados se listan exactamente esos dos', () => {
+  const txt = fraseParticipantes({ modo: 'productos', nombres: [COMBITO, 'Combito Especial'] });
+  assert.match(txt, /Combito de Chilaquiles y Combito Especial\./, txt);
+  assert.match(txt, /Ningún otro producto del menú participa/, txt);
+});
+
+t('P14. una promoción por CATEGORÍA cierra igual su alcance', () => {
+  const txt = fraseParticipantes({ modo: 'categorias', nombres: ['Desayunos'] });
+  assert.match(txt, /Categorías participantes: Desayunos\./, txt);
+  assert.match(txt, /Ningún producto fuera de esas categorías participa/, txt);
+});
+
+t('P15. "aplica a todo el menú" no lleva cierre: no hay nada que excluir', () => {
+  assert.strictEqual(fraseParticipantes({ modo: 'todo' }), 'Aplica a todo el menú.');
 });
 
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);

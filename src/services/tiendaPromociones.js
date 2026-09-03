@@ -1678,11 +1678,21 @@ function listaLegible(arr) {
 // Frase de participantes para el prompt (solo nombres, nunca IDs).
 export function fraseParticipantes({ modo, nombres } = {}) {
   if (modo === 'todo') return 'Aplica a todo el menú.';
+  // La lista es CERRADA y hay que decirlo. Enumerarla no basta: el agente leyó
+  // "Productos participantes: Combito de Chilaquiles" junto al menú completo y
+  // contestó que también entraban Hotcakes Tradicionales, Hotcakes de Sartén y
+  // Protein Pancakes — productos que solo se parecen de nombre a la condición
+  // de la promo. Ninguno participa, así que el descuento nunca se aplicaría:
+  // otra promesa falsa. El cierre viene del dato, no de una regla de prompt.
   if (modo === 'categorias') {
-    return nombres && nombres.length ? `Categorías participantes: ${listaLegible(nombres)}.` : 'Aplica a categorías específicas.';
+    return nombres && nombres.length
+      ? `Categorías participantes: ${listaLegible(nombres)}. Ningún producto fuera de esas categorías participa.`
+      : 'Aplica a categorías específicas.';
   }
   // 'productos' (default)
-  return nombres && nombres.length ? `Productos participantes: ${listaLegible(nombres)}.` : 'Aplica a productos específicos.';
+  return nombres && nombres.length
+    ? `Productos participantes: ${listaLegible(nombres)}. Ningún otro producto del menú participa.`
+    : 'Aplica a productos específicos.';
 }
 
 // Frase legible por tipo (sin jerga técnica). No calcula nada: solo describe.
