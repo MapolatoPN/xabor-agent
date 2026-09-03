@@ -81,6 +81,12 @@ for (const x of ['Hotcakes', 'Waffles']) await op(gcHW, x);
 const gcTop = await grupo(COMBITO, 'Topping', { orden: 3 });
 await op(gcTop, 'Miel y Mantequilla'); await op(gcTop, 'Nutella', 30);
 
+// Producto con DOS opciones que contienen "pollo": la abreviación no puede
+// resolverse ahí, y el backend tiene que preguntar en vez de elegir.
+const TORTA = await prod(catComb, 'Torta de Milanesa', 120);
+const gtProt = await grupo(TORTA, 'Proteína', { orden: 0 });
+for (const x of ['Pechuga de pollo', 'Milanesa de pollo']) await op(gtProt, x);
+
 const item = (n, mods = []) => ({ nombre: n, cantidad: 1, modificadores: mods });
 const mod = (g, ...o) => ({ grupo: g, opciones: o });
 const COMPLETO = [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
@@ -196,6 +202,51 @@ await t('G9. si a una unidad le falta un grupo, se pregunta ESE y una sola vez',
   const msg = mensajeBorradorParaCliente(rc);
   assert.strictEqual((msg.match(/topping/gi) || []).length, 1, `sin repetir por unidad: ${msg}`);
   assert.doesNotMatch(msg, /guarnici/i, msg);
+});
+
+// ═══ A1-A4 — el cliente abrevia también dentro de un grupo ═══════════════
+// "con pollo" contra una opción llamada "Pechuga de pollo" producía el absurdo
+// "no tenemos Pollo; tengo Pechuga de pollo". La tolerancia ya existía para las
+// menciones sueltas y faltaba en la selección estructurada; esa asimetría se
+// veía en la cara del cliente. El checkout no se afloja: la búsqueda queda
+// acotada al grupo que el modelo nombró y solo resuelve si el candidato es único.
+await t('A1. "Pollo" resuelve a "Pechuga de pollo" dentro de su grupo', async () => {
+  const rc = await val([item('Combito de Chilaquiles', [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pollo'),
+    mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Nutella')])],
+  'quiero un combito con salsa suiza, pollo, hotcakes y nutella');
+  const p = rc.productos[0];
+  assert.deepStrictEqual(p.invalidos, [], `no puede decir que no hay pollo: ${JSON.stringify(p.invalidos)}`);
+  assert.ok(p.elegidas.some((e) => e.grupo === 'Proteína' && e.opcion === 'Pechuga de pollo'),
+    `debe quedar elegida la opción real: ${JSON.stringify(p.elegidas)}`);
+  assert.strictEqual(rc.ok, true, mensajeBorradorParaCliente(rc) || '');
+});
+
+await t('A2. si dos opciones del grupo contienen la palabra, se pregunta', async () => {
+  const rc = await val([item('Torta de Milanesa', [mod('Proteína', 'Pollo')])],
+    'quiero una torta de milanesa con pollo');
+  const p = rc.productos[0];
+  assert.deepStrictEqual(p.elegidas, [], 'no se elige por el cliente entre dos candidatos');
+  assert.strictEqual(p.ambiguos.length, 1, JSON.stringify(p.ambiguos));
+  assert.strictEqual(p.ambiguos[0].nombre, 'Pollo');
+});
+
+await t('A3. una opción que NO existe en el grupo se sigue rechazando', async () => {
+  const rc = await val([item('Combito de Chilaquiles', [mod('Proteína', 'Camarón')])],
+    'quiero un combito con camarón');
+  const p = rc.productos[0];
+  assert.strictEqual(p.invalidos.length, 1, JSON.stringify(p.invalidos));
+  assert.strictEqual(p.invalidos[0].solicitado, 'Camarón');
+  assert.ok(p.invalidos[0].alternativas.includes('Pechuga de pollo'));
+});
+
+await t('A4. un texto libre SIN grupo sigue siendo nota, no selección', async () => {
+  const rc = await val([{ nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: ['sin cebolla'], notas: 'sin cebolla' }],
+  'quiero un combito sin cebolla');
+  const p = rc.productos[0];
+  assert.deepStrictEqual(p.invalidos, [], 'una nota no puede volverse un rechazo');
+  assert.deepStrictEqual(p.elegidas, [], 'ni una selección inventada');
 });
 
 // ── Resumen ────────────────────────────────────────────────────────────────

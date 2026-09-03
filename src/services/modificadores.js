@@ -335,9 +335,29 @@ export function resolverModificadoresLLM(grupos, nombres) {
 
     let hit = null;
     if (entrada) {
-      const o = p.opcion_id != null
+      let o = p.opcion_id != null
         ? disponibles(entrada.g).find((x) => Number(x.id) === p.opcion_id)
         : entrada.ops.get(normNombre(p.nombre));
+      // EL CLIENTE ABREVIA, TAMBIÉN AQUÍ. "con pollo" cuando la opción se llama
+      // "Pechuga de pollo" producía el absurdo "no tenemos Pollo; tengo Pechuga
+      // de pollo". La tolerancia ya existía para las menciones sueltas; faltaba
+      // en la selección estructurada, y esa asimetría se veía en la cara del
+      // cliente.
+      //
+      // El checkout NO se afloja: la búsqueda queda ACOTADA al grupo que el
+      // propio modelo nombró —no se busca por todo el producto— y solo resuelve
+      // si el candidato es ÚNICO dentro de él. Dos candidatos no se adivinan:
+      // caen en `ambiguos` y el canal pregunta. Misma regla que `resolverProducto`
+      // usa desde hace meses para los productos.
+      if (!o && p.opcion_id == null && p.nombre) {
+        const aprox = buscarOpcionPorMencion([entrada.g], p.nombre);
+        if (aprox.estado === 'resuelto') {
+          o = disponibles(entrada.g).find((x) => Number(x.id) === Number(aprox.modificador.opcion_id));
+        } else if (aprox.estado === 'ambiguo') {
+          ambiguos.push({ nombre: p.nombre, grupos: [entrada.g.nombre] });
+          continue;
+        }
+      }
       if (o) hit = { g: entrada.g, o };
       else {
         // SELECCIÓN ESTRUCTURADA que no existe: el cliente pidió un atributo
