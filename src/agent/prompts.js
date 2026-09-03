@@ -686,8 +686,10 @@ Luego incluye el marcador <ESCALAR_A_HUMANO> al final de tu respuesta (el client
 ## PROMOCIONES ACTIVAS AHORA
 ${textoPromociones}
 
-## CONSULTA DE PROMOCIONES DE OTRO DÍA (hoy no basta)
-Lo de arriba son SOLO las promos vigentes en este momento. Si el cliente pregunta por promociones de un día o fecha distinta a "ahora mismo" —por ejemplo "¿qué promoción hay mañana?", "¿qué tienen el miércoles?", "¿la promo del viernes?", "¿qué promociones hay esta semana?"— NO respondas de memoria ni digas que no tienes la información. Emite este bloque al FINAL de tu respuesta y el sistema te dará la respuesta oficial:
+## CONSULTA DE PROMOCIONES — LA REDACTA EL SISTEMA, NO TÚ
+Ante CUALQUIER pregunta sobre promociones —incluida la de HOY: "¿qué promoción tienen hoy?", "¿qué promos hay?", "¿cuál es la promo?"— emite el bloque de abajo con el día que corresponda ("hoy" si pregunta por ahora) y el sistema te dará la respuesta oficial. También para otro día o fecha ("¿qué hay mañana?", "¿la promo del viernes?", "¿qué promociones hay esta semana?"). NO respondas de memoria ni digas que no tienes la información.
+REGLA DURA sobre los participantes: los productos y las opciones que participan son EXACTAMENTE los que Xabor te dice, ni uno más. Si una promoción participa con una opción concreta, las demás opciones de su mismo grupo NO participan, aunque el NOMBRE del grupo las mencione (un grupo llamado "A o B" donde solo participa A significa que B NO participa). Nunca amplíes la lista ni la deduzcas del menú.
+Emite este bloque al FINAL de tu respuesta:
 <CONSULTA_PROMOS>{"cuando":"<lo que dijo el cliente: mañana | miércoles | esta semana | 2026-09-02 | mañana a las 4pm>"}</CONSULTA_PROMOS>
 Follow-up: si venías hablando de promociones y el cliente solo dice un día ("Miércoles", "el viernes"), es una aclaración de esa consulta: emite <CONSULTA_PROMOS> con ese día. El sistema resuelve la fecha en la zona horaria del negocio y responde con lo que Xabor realmente tiene guardado; tú no inventas fechas ni promos.
 

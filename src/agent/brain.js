@@ -550,8 +550,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const consultaPromos = extraerBloque(textoRespuesta, 'CONSULTA_PROMOS');
     if (consultaPromos && typeof negocioId === 'string' && negocioId.trim()) {
       try {
-        const cuando = String(consultaPromos.cuando ?? consultaPromos.fecha ?? consultaPromos.dia ?? '').trim();
-        const resp = cuando ? await responderConsultaPromos(negocioId, cuando, { canal }) : null;
+        // Si el marcador viene sin día, la pregunta era "¿qué promos hay?": es
+        // HOY. Devolver "¿para qué día?" a quien preguntó por hoy es un rodeo.
+        const cuando = String(consultaPromos.cuando ?? consultaPromos.fecha ?? consultaPromos.dia ?? '').trim() || 'hoy';
+        const resp = await responderConsultaPromos(negocioId, cuando, { canal });
         textoConsultaPromos = resp || '¿Para qué día te gustaría conocer las promociones? (por ejemplo: hoy, mañana, el miércoles o esta semana).';
       } catch (e) { console.error('[brain] consulta promos por fecha:', e.message); }
     }

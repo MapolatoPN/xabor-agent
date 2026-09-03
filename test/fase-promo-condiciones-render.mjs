@@ -29,16 +29,16 @@ const cond = (o) => ({ producto_id: P, grupo_id: o.g, operador: o.op, option_ids
 
 t('1 · grupo cuyo nombre contiene la opción → solo la opción (no el grupo)', () => {
   const txt = fraseCondiciones([cond({ g: 10, op: 'una_de', ids: [100] })], grupos);
-  assert.strictEqual(txt, 'Participan los preparados con Hotcakes.');
+  assert.strictEqual(txt, 'Participan los preparados con Hotcakes. Waffles NO participa en esta promoción.');
   assert.ok(!/Waffles o Hotcakes Hotcakes/.test(txt), 'jamás concatena grupo+opción');
 });
 
 t('2 · una_de con UNA opción → "con {opción}"', () => {
-  assert.strictEqual(fraseCondiciones([cond({ g: 11, op: 'una_de', ids: [110] })], grupos), 'Participan los preparados con Roja.');
+  assert.strictEqual(fraseCondiciones([cond({ g: 11, op: 'una_de', ids: [110] })], grupos), 'Participan los preparados con Roja. Verde y Suiza NO participan en esta promoción.');
 });
 
 t('3 · una_de con VARIAS opciones → "con {a} o {b}"', () => {
-  assert.strictEqual(fraseCondiciones([cond({ g: 11, op: 'una_de', ids: [110, 111] })], grupos), 'Participan los preparados con Roja o Verde.');
+  assert.strictEqual(fraseCondiciones([cond({ g: 11, op: 'una_de', ids: [110, 111] })], grupos), 'Participan los preparados con Roja o Verde. Suiza NO participa en esta promoción.');
 });
 
 t('4 · cantidad exacta → "con N {grupo}"', () => {
@@ -55,7 +55,7 @@ t('6 · REGRESIÓN miércoles: salsa Roja/Verde + Pechuga de pollo + 2 guarnicio
     cond({ g: 12, op: 'incluye', ids: [120] }),
     cond({ g: 13, op: 'cantidad', min: 2, max: 2 }),
   ], grupos);
-  assert.strictEqual(txt, 'Participan los preparados con Roja o Verde, Pechuga de pollo y 2 guarniciones sencillas.');
+  assert.strictEqual(txt, 'Participan los preparados con Roja o Verde, Pechuga de pollo y 2 guarniciones sencillas. Suiza NO participa en esta promoción.');
 });
 
 t('7 · cantidades min/max en lenguaje natural', () => {

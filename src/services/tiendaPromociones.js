@@ -1621,6 +1621,13 @@ export async function responderConsultaPromos(negocioId, cuando, { canal = 'what
 export function fraseCondiciones(condiciones, gruposPorProd) {
   const cond = Array.isArray(condiciones) ? condiciones : [];
   const partes = [];
+  // Opciones del MISMO grupo que NO participan. Decirlo es imprescindible
+  // cuando el grupo se llama, por ejemplo, "Hotcakes o Waffles": el agente leía
+  // "participan los preparados con Hotcakes" junto a un grupo cuyo NOMBRE es una
+  // disyuntiva y generalizaba a "Hotcakes o Waffles" — una promesa falsa (el
+  // motor sí rechazaba Waffles, pero el cliente ya se sentía engañado). Nada
+  // aquí conoce sabores ni productos: la exclusión sale del propio catálogo.
+  const exclusiones = [];
   for (const c of cond) {
     const grupos = gruposPorProd.get(Number(c?.producto_id)) || [];
     const grupo = grupos.find((g) => Number(g.id) === Number(c?.grupo_id));
@@ -1630,6 +1637,10 @@ export function fraseCondiciones(condiciones, gruposPorProd) {
     if (c.operador === 'una_de' && opts.length) {
       // "Hotcakes" · "Roja o Verde" — solo las opciones, nunca el nombre del grupo.
       partes.push(opts.length === 1 ? opts[0] : `${opts.slice(0, -1).join(', ')} o ${opts[opts.length - 1]}`);
+      for (const o of (grupo.opciones || [])) {
+        if (o.disponible === false) continue;
+        if (!opts.includes(o.nombre)) exclusiones.push(o.nombre);
+      }
     } else if (c.operador === 'incluye' && opts.length) {
       // "Pechuga de pollo" — la(s) opción(es) requerida(s).
       partes.push(listaLegible(opts));
@@ -1643,7 +1654,18 @@ export function fraseCondiciones(condiciones, gruposPorProd) {
       if (q) partes.push(q);
     }
   }
-  return partes.length ? `Participan los preparados con ${listaLegible(partes)}.` : '';
+  if (!partes.length) return '';
+  let frase = `Participan los preparados con ${listaLegible(partes)}.`;
+  const fuera = [...new Set(exclusiones)];
+  if (fuera.length) {
+    // Con pocas se nombran (es lo más claro para el cliente). Con muchas, la
+    // lista sería ruido: basta con cerrar la puerta. En ningún caso se nombra
+    // el GRUPO, que es justamente el texto del que el modelo generalizaba.
+    frase += fuera.length <= 3
+      ? ` ${listaLegible(fuera)} NO participa${fuera.length > 1 ? 'n' : ''} en esta promoción.`
+      : ' Ninguna otra opción participa en esta promoción.';
+  }
+  return frase;
 }
 
 // Une nombres en lenguaje natural: "A", "A y B", "A, B y C".
