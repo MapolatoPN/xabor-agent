@@ -33,9 +33,42 @@ function createSession(sessionId) {
       modalidad: null,   // 'recoger' | 'entrega a domicilio'
       total: 0
     },
+    // Índice en `mensajes` donde EMPIEZA el ciclo del pedido en curso. Todo lo
+    // que el cliente dijo antes pertenece a un pedido ya cerrado y no puede
+    // respaldar una selección del pedido actual (ver iniciarCicloPedido).
+    cicloPedido: 0,
     creado_en: new Date().toISOString(),
     actualizado_en: new Date().toISOString()
   };
+}
+
+// ─── Ciclo del pedido en curso ─────────────────────────────────────────────
+//
+// La sesión de WhatsApp vive mientras viva la conversación: el mismo cliente
+// puede hacer tres pedidos seguidos sobre el MISMO historial. Sin una frontera,
+// "que sea de fresa" dicho hace dos pedidos serviría para justificar un sabor
+// del pedido de ahora — un respaldo falso.
+//
+// La frontera mínima segura es un índice, no una máquina de estados: el ciclo
+// empieza donde terminó el pedido anterior. Se mueve en UN solo momento —
+// cuando una orden sale hacia el registro— porque es el único punto donde el
+// carrito deja de estar en construcción.
+
+/** Cierra el ciclo actual: lo dicho hasta aquí ya no respalda el pedido siguiente. */
+export function iniciarCicloPedido(sessionId) {
+  const session = getSession(sessionId);
+  session.cicloPedido = session.mensajes.length;
+  session.actualizado_en = new Date().toISOString();
+  return session.cicloPedido;
+}
+
+/** Turnos del CLIENTE (nunca del asistente) dentro del ciclo activo. */
+export function turnosUsuarioDelCiclo(sessionId) {
+  const session = getSession(sessionId);
+  const desde = Number.isInteger(session.cicloPedido) ? session.cicloPedido : 0;
+  return session.mensajes.slice(desde)
+    .filter((m) => m.role === 'user' && typeof m.content === 'string')
+    .map((m) => m.content);
 }
 
 export function agregarMensaje(sessionId, rol, contenido) {
