@@ -21,7 +21,8 @@
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
-import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos } from '../services/modificadores.js';
+import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
+import { tieneRespaldo, spanEnTexto, normalizar } from '../agent/mencionesComerciales.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -62,6 +63,15 @@ export const RECHAZOS = {
   // resolverlo por más que se le pregunte: es configuración del negocio. Se
   // separa de GRUPO_REQUERIDO_FALTANTE para no dejarlo en un bucle imposible.
   PRODUCTO_NO_CONFIGURADO_PARA_VENTA: 'PRODUCTO_NO_CONFIGURADO_PARA_VENTA',
+  // FIDELIDAD DEL BORRADOR (F2): el borrador trae una selección que el cliente
+  // NUNCA expresó en el ciclo activo — la introdujo el modelo. No se acepta ni
+  // se cambia por otra: se descarta y el grupo vuelve a estar sin elegir.
+  SELECCION_SIN_RESPALDO: 'SELECCION_SIN_RESPALDO',
+  // FIDELIDAD DEL BORRADOR (F1/F3): el cliente nombró un atributo comercial que
+  // el borrador no recogió y que NO existe en ningún grupo del producto. Antes
+  // desaparecía y solo se le preguntaba lo que faltaba, como si nunca lo
+  // hubiera dicho. Ahora se le responde con la verdad del catálogo.
+  MENCION_NO_RESUELTA: 'MENCION_NO_RESUELTA',
 };
 
 // Canales cuyo pedido nace de un checkout EXTERNO ya cerrado (y normalmente ya
@@ -160,6 +170,283 @@ function resolverProducto(nombreLLM, catalogo) {
  *          nombre real del catálogo, precio real, y totales recalculados.
  *   ajustes: [{ tipo, ... }] observabilidad de mismatches corregidos.
  */
+/**
+ * VALIDACIÓN DEL BORRADOR CONVERSACIONAL (pre-preview).
+ *
+ * Existe porque proteger el preview y el registro no bastaba: el agente podía
+ * REAFIRMARLE al cliente una opción inexistente ("un licuado de mango grande")
+ * durante la charla, mucho antes de que hubiera una orden que validar. El
+ * backend impedía venderlo, pero no impedía prometerlo.
+ *
+ * Contrasta un pedido AÚN INCOMPLETO contra el catálogo real usando EXACTAMENTE
+ * las mismas primitivas que protegen el preview —`resolverProducto`,
+ * `resolverModificadoresLLM`, `validarCardinalidadGrupos`—, así que no hay una
+ * segunda definición de catálogo ni de cardinalidad que pueda divergir.
+ *
+ * NO valida nada económico: ni forma de pago, ni totales, ni promociones. No
+ * canoniza precios, no registra, no persiste. Solo responde "¿lo que el cliente
+ * pidió existe, y qué falta todavía?".
+ *
+ * Devuelve { ok, productos:[{...}] } donde cada producto trae:
+ *   invalidos      → opciones pedidas que NO existen (con alternativas reales)
+ *   inconsistentes → grupos obligatorios sin opciones que ofrecer
+ *   faltantes      → grupos obligatorios aún sin elegir (con alternativas)
+ *   excedidos      → grupos con más selecciones de las permitidas
+ *   ambiguos       → nombre presente en varios grupos, sin grupo explícito
+ */
+export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('validarBorradorPedido: negocioId obligatorio');
+  }
+  // Fidelidad: el texto REAL del cliente. `textoCiclo` son sus turnos del ciclo
+  // activo (respaldo de las selecciones) y `menciones` los atributos verbatim
+  // que afirmó en el último turno, ya verificados contra ese texto. Si el
+  // llamador no los aporta, la validación se comporta exactamente como antes.
+  const textoCiclo = String(opts.textoCiclo || '');
+  const conFidelidad = Boolean(textoCiclo.trim());
+  const mencionesTurno = Array.isArray(opts.menciones) ? opts.menciones : [];
+  const items = Array.isArray(borrador?.items) ? borrador.items : [];
+  const salida = { ok: true, productos: [], productosNoExisten: [] };
+  if (!items.length) return salida;               // consulta pura: nada que validar
+
+  const catalogo = await cargarCatalogo(negocioId);
+  if (!catalogo.length) {
+    salida.ok = false;
+    salida.productosNoExisten = items.map((i) => String(i?.nombre || '').slice(0, 80)).filter(Boolean);
+    return salida;
+  }
+
+  const resueltos = [];
+  for (const it of items) {
+    const r = resolverProducto(it?.nombre, catalogo);
+    if (r.estado !== 'ok') {
+      salida.ok = false;
+      salida.productosNoExisten.push({ nombre: String(it?.nombre || '').slice(0, 80), estado: r.estado });
+      continue;
+    }
+    resueltos.push({
+      producto: r.producto,
+      mods: Array.isArray(it?.modificadores) ? it.modificadores : [],
+      notas: String(it?.notas || ''),
+    });
+  }
+  if (!resueltos.length) return salida;
+
+  const gruposPorProd = await cargarGruposDeProductos(negocioId, resueltos.map((x) => x.producto.id));
+
+  // ── PASE 1: cada artículo, por separado ─────────────────────────────────
+  // Solo lo que depende EXCLUSIVAMENTE del propio artículo: resolver los
+  // modificadores que el borrador le puso y descartar los que el cliente nunca
+  // expresó. Las menciones NO se tocan aquí: son del turno, no del artículo.
+  const estados = [];
+  for (const { producto, mods, notas } of resueltos) {
+    const grupos = gruposPorProd.get(producto.id) || [];
+    const base = resolverModificadoresLLM(grupos, mods);
+    let modificadores = base.modificadores;
+    let noDisponibles = base.noDisponibles;
+    const ambiguos = [...base.ambiguos];
+    const sinRespaldo = [];
+
+    if (conFidelidad) {
+      // PROVENANCE: toda selección tiene que venir del CLIENTE. Si el borrador
+      // trae una opción que nunca expresó en este ciclo, la puso el modelo. No
+      // se acepta ni se cambia por otra: se descarta y el grupo queda como
+      // estaba, así que el flujo vuelve a preguntar. Fail-closed.
+      const conservarConRespaldo = (valor, grupo, lista) => {
+        if (tieneRespaldo(valor, textoCiclo)) return true;
+        lista.push({ codigo: RECHAZOS.SELECCION_SIN_RESPALDO, grupo, opcion: valor });
+        return false;
+      };
+      modificadores = modificadores.filter((m) => conservarConRespaldo(m.opcion, m.grupo, sinRespaldo));
+      noDisponibles = noDisponibles.filter((n) => conservarConRespaldo(n.solicitado, n.grupo, sinRespaldo));
+    }
+    estados.push({ producto, grupos, notas, modificadores, noDisponibles, ambiguos, sinRespaldo });
+  }
+
+  // ── PASE 2: las menciones del turno, contra TODO el pedido ──────────────
+  // Las menciones pertenecen al MENSAJE, no a un artículo. Evaluarlas dentro
+  // del bucle de artículos hacía que cada uno rechazara las del otro: un pedido
+  // de Combito (salsa suiza, pollo) + Hotcakes (hotcakes, cajeta) respondía
+  // "no manejamos salsa suiza y pollo en Hotcakes Tradicionales" aunque el
+  // borrador estuviera perfecto. Una mención válida para OTRO artículo jamás
+  // puede volverse inválida porque el artículo actual no la reconozca.
+  const mencionesNoResueltas = [];
+  const mencionesAmbiguas = [];
+  if (conFidelidad) {
+    const representadaEn = (e, span) => [
+      e.producto.nombre, e.notas,
+      ...e.modificadores.map((m) => m.opcion),
+      ...e.noDisponibles.map((n) => n.solicitado),
+      ...e.ambiguos.map((a) => a.nombre),
+    ].filter(Boolean).some((d) => spanEnTexto(span, d) || spanEnTexto(d, span));
+
+    for (const span of mencionesTurno) {
+      // 1) ¿algún artículo del pedido ya la representa? Entonces está dicha.
+      if (estados.some((e) => representadaEn(e, span))) continue;
+
+      // 2) ¿qué artículos podrían resolverla contra SU catálogo?
+      const candidatos = [];
+      for (const e of estados) {
+        const r = resolverModificadoresLLM(e.grupos, [span]);
+        if (r.modificadores.length) { candidatos.push({ e, mods: r.modificadores }); continue; }
+        if (r.ambiguos.length) { candidatos.push({ e, amb: r.ambiguos }); continue; }
+        // El cliente abrevia ("grande" por "Grande 1 Litro"): misma tolerancia
+        // que el respaldo y que el nombre del producto, y solo si es único.
+        const aprox = buscarOpcionPorMencion(e.grupos, span);
+        if (aprox.estado === 'resuelto') candidatos.push({ e, mods: [aprox.modificador] });
+        else if (aprox.estado === 'ambiguo') candidatos.push({ e, amb: [{ nombre: span, grupos: aprox.grupos }] });
+      }
+
+      if (candidatos.length === 1) {
+        // 3) Un solo artículo puede recibirla: se le asigna.
+        const c = candidatos[0];
+        if (c.mods) c.e.modificadores.push(...c.mods); else c.e.ambiguos.push(...c.amb);
+      } else if (candidatos.length > 1) {
+        // 4) Varios artículos podrían: NO se elige por posición ni por orden.
+        mencionesAmbiguas.push({
+          texto: span,
+          productos: [...new Set(candidatos.map((c) => c.e.producto.nombre))],
+        });
+      } else {
+        // 5) Ningún artículo la representa ni la resuelve: el negocio no la maneja.
+        mencionesNoResueltas.push({
+          codigo: RECHAZOS.MENCION_NO_RESUELTA, texto: span,
+          productos: [...new Set(estados.map((e) => e.producto.nombre))],
+        });
+      }
+    }
+  }
+  salida.mencionesNoResueltas = mencionesNoResueltas;
+  salida.mencionesAmbiguas = mencionesAmbiguas;
+  if (mencionesNoResueltas.length || mencionesAmbiguas.length) salida.ok = false;
+
+  // ── PASE 3: cardinalidad, ya con las menciones repartidas ───────────────
+  for (const e of estados) {
+    const { faltantes, excedidos, inconsistentes } = validarCardinalidadGrupos(e.grupos, e.modificadores);
+    const entrada = {
+      producto: e.producto.nombre,
+      elegidas: e.modificadores.map((m) => ({ grupo: m.grupo, opcion: m.opcion })),
+      invalidos: e.noDisponibles, ambiguos: e.ambiguos, inconsistentes, faltantes, excedidos,
+      sinRespaldo: e.sinRespaldo,
+    };
+    // `sinRespaldo` por sí solo NO invalida el borrador: descartar una opción
+    // que el cliente no pidió deja el pedido como estaba. Si esa opción era
+    // obligatoria, ya aparece como faltante y el flujo pregunta por ella.
+    if (e.noDisponibles.length || e.ambiguos.length || inconsistentes.length
+      || faltantes.length || excedidos.length) {
+      salida.ok = false;
+    }
+    salida.productos.push(entrada);
+  }
+  return salida;
+}
+
+/**
+ * Redacta, por CÓDIGO, qué debe decirse tras validar un borrador. El orden es
+ * determinista y no negociable: primero lo que el cliente pidió y no existe
+ * (si no, se le seguiría preguntando por un producto imposible), luego el
+ * catálogo roto, luego lo que falta por elegir. Los grupos opcionales nunca
+ * aparecen como requisito.
+ *
+ * Devuelve null cuando no hay nada que corregir ni pedir (el turno sigue su
+ * curso normal).
+ */
+export function mensajeBorradorParaCliente(resultado) {
+  const listar = (arr) => {
+    const a = (arr || []).filter(Boolean);
+    if (!a.length) return '';
+    return a.length > 1 ? `${a.slice(0, -1).join(', ')} y ${a[a.length - 1]}` : String(a[0]);
+  };
+  const prods = resultado?.productos || [];
+
+  // Frase única para "lo que falta por elegir": la usan tanto el tramo de
+  // menciones imposibles como el de grupos requeridos, así que se escribe una
+  // sola vez y nunca puede quedar duplicada ni divergir entre ambos.
+  const frasePendientes = () => {
+    const falt = prods.flatMap((p) => (p.faltantes || []).map((f) => ({ ...f, producto: p.producto })));
+    if (!falt.length) return '';
+    return listar(falt.map((f) => {
+      const g = String(f.grupo).toLowerCase();
+      const alts = f.alternativas?.length ? ` (${listar(f.alternativas)})` : '';
+      return f.minimo > 1 ? `${f.minimo} opciones de ${g}${alts}` : `${g}${alts}`;
+    }));
+  };
+
+  // 1) LO QUE EL CLIENTE PIDIÓ Y NO EXISTE — máxima prioridad, siempre.
+  // Dos orígenes distintos que NO se mezclan:
+  //  · `invalidos`  → selección estructurada de un grupo REAL: sabemos el grupo
+  //                   y podemos ofrecer sus opciones.
+  //  · `mencionesNoResueltas` → el cliente nombró algo que no casó con ningún
+  //                   grupo. NO se le atribuye uno: decir "no tenemos mango en
+  //                   medida" es inventar. Se nombra el producto y ya.
+  // Cada texto aparece UNA sola vez, y las opciones pendientes se preguntan al
+  // final una sola vez (antes cada mención arrastraba su propia lista y el
+  // mensaje se repetía).
+  const invalidos = prods.flatMap((p) => (p.invalidos || []).map((i) => ({ ...i, producto: p.producto })));
+  // Las menciones no resueltas son del TURNO, no de un artículo: vienen en la
+  // raíz y se dicen UNA vez, nombrando el pedido completo. Colgarlas de cada
+  // artículo era lo que producía "no manejamos salsa suiza en Hotcakes".
+  const noResueltas = [...new Set((resultado?.mencionesNoResueltas || []).map((m) => m.texto))];
+  if (invalidos.length || noResueltas.length) {
+    const partes = [];
+    if (noResueltas.length) {
+      const donde = prods.length === 1 ? ` en ${prods[0].producto}` : '';
+      partes.push(`no manejamos ${listar(noResueltas.map((t) => `"${t}"`))}${donde}`);
+    }
+    for (const i of invalidos) {
+      partes.push(i.alternativas?.length
+        ? `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}; tengo ${listar(i.alternativas)}`
+        : `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}`);
+    }
+    // El cierre tiene que corresponder con lo que de verdad se ofreció.
+    //  · Si el mensaje YA lista opciones (una selección inválida trae las de su
+    //    grupo), se mantiene la prioridad decidida antes: primero se corrige lo
+    //    imposible y NO se pregunta lo que falta — sería ruido encima.
+    //  · Si solo hay menciones no resueltas, el mensaje no ofrece ninguna lista
+    //    (ya no se les atribuye un grupo), así que sin la pregunta el cliente se
+    //    quedaría eligiendo entre nada.
+    const hayLista = invalidos.some((i) => i.alternativas?.length);
+    if (hayLista) return `Una disculpa: ${listar(partes)}. ¿Cuál prefieres?`;
+    const pendientes = frasePendientes();
+    return pendientes
+      ? `Una disculpa: ${listar(partes)}. Para armarlo me falta saber ${pendientes}. ¿Qué prefieres?`
+      : `Una disculpa: ${listar(partes)}. ¿Te comparto lo que sí tenemos?`;
+  }
+
+  // 1b) MENCIÓN QUE ENCAJA EN VARIOS ARTÍCULOS — se pregunta a cuál va.
+  // Con dos artículos que aceptan lo mismo, elegir por orden sería inventar.
+  const ambig = resultado?.mencionesAmbiguas || [];
+  if (ambig.length) {
+    const a = ambig[0];
+    return `Una aclaración para no equivocarme: "${a.texto}" puede ir en ${listar(a.productos)}. ¿En cuál lo quieres?`;
+  }
+
+  // 2) CATÁLOGO IMPOSIBLE — el cliente no puede resolverlo.
+  const rotos = prods.filter((p) => (p.inconsistentes || []).length);
+  if (rotos.length) {
+    return `Una disculpa: ${listar([...new Set(rotos.map((p) => p.producto))])} no está disponible para pedir por el momento. ¿Te muestro otra opción del menú?`;
+  }
+
+  // 3) AMBIGÜEDAD — hay que preguntar a qué grupo se refería.
+  const amb = prods.flatMap((p) => p.ambiguos || []);
+  if (amb.length) {
+    const a = amb[0];
+    return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${listar(a.grupos)}. ¿En cuál lo quieres?`;
+  }
+
+  // 4) EXCESO de selecciones.
+  const exc = prods.flatMap((p) => (p.excedidos || []).map((e) => ({ ...e, producto: p.producto })));
+  if (exc.length) {
+    const e = exc[0];
+    return `En ${String(e.grupo).toLowerCase()} de ${e.producto} puedes elegir como máximo ${e.maximo} (elegiste ${e.elegidas}). ¿Cuáles dejamos?`;
+  }
+
+  // 5) GRUPOS REQUERIDOS FALTANTES — solo los obligatorios, nunca los opcionales.
+  const pendientes = frasePendientes();
+  if (pendientes) return `Para completar tu pedido me falta saber ${pendientes}. ¿Qué prefieres?`;
+  return null;
+}
+
 export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarOrdenPropuesta: negocioId obligatorio');
