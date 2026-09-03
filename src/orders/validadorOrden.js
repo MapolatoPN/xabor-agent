@@ -206,7 +206,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   const conFidelidad = Boolean(textoCiclo.trim());
   const mencionesTurno = Array.isArray(opts.menciones) ? opts.menciones : [];
   const items = Array.isArray(borrador?.items) ? borrador.items : [];
-  const salida = { ok: true, productos: [], productosNoExisten: [] };
+  const salida = { ok: true, productos: [], productosNoExisten: [], gruposDelPedido: [], gruposPendientes: [] };
   if (!items.length) return salida;               // consulta pura: nada que validar
 
   const catalogo = await cargarCatalogo(negocioId);
@@ -346,8 +346,71 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       salida.ok = false;
     }
     salida.productos.push(entrada);
+    // Los grupos REALES de este producto, con su nombre exacto de catálogo. Es
+    // lo único que puede preguntarse sobre él: ni un grupo de más, ni uno
+    // prestado de un producto vecino.
+    for (const g of e.grupos) salida.gruposDelPedido.push(String(g.nombre || ''));
+    for (const f of faltantes) salida.gruposPendientes.push(String(f.grupo || ''));
   }
+  salida.gruposDelPedido = [...new Set(salida.gruposDelPedido.filter(Boolean))];
+  salida.gruposPendientes = [...new Set(salida.gruposPendientes.filter(Boolean))];
   return salida;
+}
+
+/**
+ * Nombres de TODOS los grupos de modificadores del negocio.
+ *
+ * Sirve para detectar que el modelo está pidiendo opciones de un producto
+ * distinto al que el cliente pidió: el caso real fue exigirle "Guarniciones" a
+ * un Combito de Chilaquiles, grupo que pertenece a Chilaquiles Sencillos —el
+ * platillo CONTIGUO en el menú, con nombre parecido y los dos primeros grupos
+ * iguales—. Los nombres salen del catálogo del tenant, nunca de una lista
+ * escrita en el código.
+ */
+export async function nombresDeGruposDelNegocio(negocioId) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT nombre FROM menu_modificadores_grupos WHERE negocio_id = $1`, [negocioId]);
+  return rows.map((r) => String(r.nombre || '')).filter(Boolean);
+}
+
+/**
+ * ¿El modelo está PREGUNTANDO por opciones que el backend no tiene pendientes?
+ *
+ * Solo mira preguntas: mencionar un grupo ya elegido al recapitular es legítimo
+ * ("tu salsa suiza queda anotada"), pedirlo otra vez no. Y un grupo que no
+ * pertenece a ningún producto del pedido no puede preguntarse nunca.
+ */
+export function preguntaPorGrupoIndebido(texto, resultado, gruposNegocio = []) {
+  const t = String(texto || '');
+  if (!t.includes('?')) return null;
+  const norm = (x) => normalizar(x);
+  const pendientes = new Set((resultado?.gruposPendientes || []).map(norm));
+  const delPedido = new Set((resultado?.gruposDelPedido || []).map(norm));
+  const candidatos = [...new Set([...(resultado?.gruposDelPedido || []), ...gruposNegocio])];
+  const tn = ` ${norm(t)} `;
+  for (const g of candidatos) {
+    const gn = norm(g);
+    if (!gn || pendientes.has(gn)) continue;          // lo pendiente SÍ se pregunta
+    if (!tn.includes(` ${gn} `)) continue;
+    // Ajeno al pedido, o ya resuelto: en ninguno de los dos casos toca preguntarlo.
+    return { grupo: g, ajeno: !delPedido.has(gn) };
+  }
+  return null;
+}
+
+/**
+ * Estado del pedido redactado por CÓDIGO cuando ya no falta nada del producto.
+ * Sustituye a la pregunta inventada por el modelo sin inventar nada a su vez:
+ * solo repite lo que el cliente eligió y deja avanzar la conversación.
+ */
+export function resumenSeleccionesParaCliente(resultado) {
+  const prods = (resultado?.productos || []).filter((p) => (p.elegidas || []).length);
+  if (!prods.length) return null;
+  const partes = prods.map((p) => {
+    const sel = p.elegidas.map((e) => `${e.grupo}: ${e.opcion}`).join(', ');
+    return `${p.producto} (${sel})`;
+  });
+  return `Tu pedido va así: ${partes.join(' · ')}. ¿Continuamos?`;
 }
 
 /**

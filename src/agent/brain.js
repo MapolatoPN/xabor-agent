@@ -15,7 +15,8 @@ import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
-import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente } from '../orders/validadorOrden.js';
+import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente,
+         nombresDeGruposDelNegocio, preguntaPorGrupoIndebido, resumenSeleccionesParaCliente } from '../orders/validadorOrden.js';
 import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
 import { responderConsultaPromos } from '../services/tiendaPromociones.js';
 import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
@@ -427,6 +428,34 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           if (sinRespaldo.length) {
             console.warn(`[TXN] evento=seleccion_sin_respaldo codigo=${sinRespaldo[0].codigo} negocio=${negocioId}`
               + ` descartadas=${JSON.stringify(sinRespaldo.slice(0, 5).map((s) => `${s.grupo}:${s.opcion}`))}`);
+          }
+          // QUÉ FALTA LO DECIDE EL BACKEND, NO LA PROSA DEL MODELO.
+          //
+          // Con el borrador completo (`rc.ok`), el modelo seguía libre de pedir
+          // lo que se le ocurriera. En producción le exigió "Guarniciones" a un
+          // Combito de Chilaquiles: ese grupo pertenece a Chilaquiles
+          // Sencillos, el platillo CONTIGUO en el menú, con nombre parecido y
+          // los dos primeros grupos iguales. El cliente quedaba en un callejón
+          // sin salida, porque esa opción no existe para su producto y nunca
+          // podría registrarse.
+          //
+          // Es el cuarto caso del mismo patrón (opción, producto, grupo): el
+          // modelo completa desde el menú lo que no le dijimos explícitamente.
+          // Aquí se le quita la responsabilidad: los grupos de un producto son
+          // los suyos y solo los suyos, y preguntar por ellos es del backend.
+          if (rc.ok) {
+            try {
+              const indebido = preguntaPorGrupoIndebido(
+                textoRespuesta, rc, await nombresDeGruposDelNegocio(negocioId));
+              if (indebido) {
+                const resumen = resumenSeleccionesParaCliente(rc);
+                if (resumen) {
+                  textoCatalogo = resumen;
+                  console.warn(`[TXN] evento=pregunta_de_grupo_indebido negocio=${negocioId}`
+                    + ` grupo=${JSON.stringify(indebido.grupo)} ajeno=${indebido.ajeno}`);
+                }
+              }
+            } catch (e) { console.error('[brain] autoridad de grupos:', e.message); }
           }
           if (!rc.ok) {
             const msg = mensajeBorradorParaCliente(rc);
