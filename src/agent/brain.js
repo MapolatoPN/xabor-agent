@@ -279,10 +279,31 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   // Enriquecer contexto con memoria del cliente (no bloquea si falla)
   const telefono = telefonoExplicito || clienteCtx?.telefono;
   let memoriaCtx = '';
+  let nombreConocido = clienteCtx?.nombre || null;
   if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
     const perfil = await obtenerPerfilCliente(telefono, negocioId);
     memoriaCtx = construirContextoCliente(perfil);
+    nombreConocido = nombreConocido || perfil?.nombre || null;
   }
+
+  // ── DATOS QUE XABOR YA TIENE ────────────────────────────────────────────
+  // WhatsApp entrega el número en el webhook y aun así el bot lo pedía: el
+  // contexto de cliente (memory.js) devuelve cadena VACÍA cuando no hay perfil
+  // con nombre, así que un cliente nuevo llegaba al prompt sin ningún dato y el
+  // modelo, obedeciendo su guion, preguntaba nombre y teléfono. Eso, sumado a
+  // repreguntar la modalidad, fue el interrogatorio que hizo abandonar a una
+  // clienta real ("Tanto para hacer un pedido!?").
+  //
+  // Esto NO sustituye ninguna validación: el pedido se sigue armando y
+  // validando igual. Solo evita preguntar lo que ya se sabe.
+  const datosConocidos = [];
+  if (telefono && telefono !== '—') datosConocidos.push(`Teléfono: ${telefono}`);
+  if (nombreConocido) datosConocidos.push(`Nombre: ${nombreConocido}`);
+  const bloqueDatosConocidos = datosConocidos.length
+    ? `\n\n## DATOS QUE YA TIENES DE ESTE CLIENTE (no los preguntes)\n${datosConocidos.join('\n')}\n`
+      + `Úsalos tal cual al armar el pedido. Pregunta ÚNICAMENTE lo que no esté en esta lista.\n`
+      + `Si ya te dio la modalidad, la dirección o la forma de pago en esta conversación, tampoco vuelvas a pedirlas.\n`
+    : '';
 
   // Asistente Comercial de Cotizaciones (Fase 1-2): IntentDetector decide
   // si este mensaje activa/continúa el modo comercial. Nunca se activa
@@ -342,7 +363,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
       max_tokens: 1024,
       // Las reglas del contexto visual solo se pagan cuando la sesión trae
       // una foto analizada (Vision V2); el resto de turnos no cambia.
-      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueComercial
+      system: await construirSystemPrompt(clienteCtx, canal, negocioId) + memoriaCtx + bloqueDatosConocidos + bloqueComercial
         + bloquePromoNoAplicada
         + (hayContextoVisual(session.mensajes) ? BLOQUE_REGLAS_CONTEXTO_VISUAL : ''),
       messages: session.mensajes
