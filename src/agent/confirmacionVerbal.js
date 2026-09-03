@@ -50,9 +50,34 @@ const SENALES_MUTACION = [
 // pero el pedido deja de estar listo para confirmarse.
 const SENALES_NEGACION = [/^no$/, /^no gracias$/, /^asi no$/, /^nel$/, /^nop$/, /^para nada$/, /\bno\b/];
 
+// Muletillas de ÉNFASIS que envuelven un sí sin cambiar su sentido. Un cliente
+// que ya dijo que sí y a quien se le vuelve a preguntar no repite "sí" seco:
+// sube el tono ("que sí", "ya te dije que sí", "¡que siiiiii!"). Ese fue el
+// final del caso Edna — el bot no las reconocía, marcaba el turno como
+// indeterminado y volvía a preguntar, hasta que la clienta se fue.
+//
+// Es una regla de FORMA, no una colección de frases: se quita el envoltorio y
+// se vuelve a mirar el mismo núcleo afirmativo de siempre.
+const MULETILLAS_ENFASIS = /^(?:ya\s+(?:te\s+)?(?:lo\s+)?dije\s+que|ya\s+dije\s+que|que|pues|bueno|orale|obvio)\s+(?=\S)/;
+
+function nucleoAfirmativo(t) {
+  let s = t;
+  // Hasta dos capas ("pues que sí"), nunca en bucle.
+  for (let i = 0; i < 2 && MULETILLAS_ENFASIS.test(s); i++) s = s.replace(MULETILLAS_ENFASIS, '');
+  // Alargamiento enfático: "siiiiii" → "si", "daleee" → "dale". Solo a partir de
+  // TRES repeticiones, para no tocar las dobles legítimas del español
+  // ("correcto", "perro") ni romper afirmaciones ya conocidas como "sii".
+  s = s.replace(/([a-z])\1{2,}/g, '$1');
+  return s.trim();
+}
+
 /**
  * ¿El cliente confirmó de forma inequívoca? Conservador a propósito: ante
  * cualquier duda devuelve false y el flujo normal (LLM) sigue su curso.
+ *
+ * El orden importa: mutación y negación se evalúan sobre el texto COMPLETO y
+ * ANTES de quitar muletillas, para que "que sea grande" siga siendo un cambio y
+ * no se convierta en un "sí" al desnudarlo.
  */
 export function esConfirmacionVerbal(texto) {
   const t = normalizar(texto);
@@ -62,7 +87,7 @@ export function esConfirmacionVerbal(texto) {
   // "sí, pero cámbiale la salsa" NO confirma el resumen anterior.
   if (SENALES_MUTACION.some((re) => re.test(t))) return false;
   if (SENALES_NEGACION.some((re) => re.test(t))) return false;
-  return AFIRMACIONES.has(t);
+  return AFIRMACIONES.has(t) || AFIRMACIONES.has(nucleoAfirmativo(t));
 }
 
 /**
