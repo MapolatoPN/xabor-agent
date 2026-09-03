@@ -157,54 +157,6 @@ export function cardinalidadDeGrupo(g) {
  * por el cliente (la primera opción, la más barata, la más pedida) sería
  * venderle algo que no pidió.
  */
-/**
- * Resuelve una MENCIÓN del cliente contra las opciones reales del producto
- * admitiendo la forma abreviada: "grande" → "Grande 1 Litro".
- *
- * Por qué existe: `resolverModificadoresLLM` empareja por nombre COMPLETO
- * (Map exacto). Eso está bien para el camino transaccional —donde el modelo
- * emite el nombre canónico— pero es falso aplicado al habla del cliente, que
- * abrevia. La consecuencia real en producción fue decirle "no tenemos grande"
- * a alguien que sí podía pedirlo (XAB smoke, licuado "Grande 1 Litro").
- *
- * La regla NO es nueva ni inventada: es exactamente la que `resolverProducto`
- * (validadorOrden.js) usa desde hace meses para los PRODUCTOS — igualdad
- * normalizada; si no, contención por PALABRA COMPLETA en cualquier dirección,
- * y solo si el candidato es ÚNICO. Dos candidatos no se adivinan: se pregunta.
- *
- * Deliberadamente NO toca `resolverModificadoresLLM`: el checkout no se afloja.
- *
- * Devuelve { estado: 'resuelto' | 'ambiguo' | 'sin_coincidencia', ... }.
- */
-export function buscarOpcionPorMencion(grupos, mencion) {
-  const buscado = normNombre(mencion);
-  if (!buscado) return { estado: 'sin_coincidencia' };
-  const contienePalabra = (texto, sub) => ` ${texto} `.includes(` ${sub} `);
-
-  const universo = [];
-  for (const g of (grupos || [])) {
-    for (const o of (g.opciones || []).filter((x) => x.disponible !== false)) {
-      universo.push({ g, o, norm: normNombre(o.nombre) });
-    }
-  }
-  let candidatos = universo.filter((x) => x.norm === buscado);
-  if (!candidatos.length) {
-    candidatos = universo.filter((x) => contienePalabra(x.norm, buscado) || contienePalabra(buscado, x.norm));
-  }
-  // Una misma opción repetida en varios grupos ya la trata resolverModificadoresLLM
-  // como ambigua; aquí lo que se mide es cuántas OPCIONES distintas encajan.
-  const unicas = new Map(candidatos.map((c) => [`${c.g.id}:${c.o.id}`, c]));
-  if (unicas.size === 0) return { estado: 'sin_coincidencia' };
-  if (unicas.size > 1) {
-    return { estado: 'ambiguo', grupos: [...new Set([...unicas.values()].map((c) => c.g.nombre))] };
-  }
-  const { g, o } = [...unicas.values()][0];
-  return {
-    estado: 'resuelto',
-    modificador: { grupo_id: g.id, grupo: g.nombre, opcion_id: o.id, opcion: o.nombre, precio_extra: num(o.precio_extra) },
-  };
-}
-
 export function validarCardinalidadGrupos(grupos, modificadores) {
   const elegidasPorGrupo = new Map();
   for (const m of (modificadores || [])) {

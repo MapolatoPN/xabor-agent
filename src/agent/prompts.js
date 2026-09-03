@@ -196,13 +196,9 @@ function formatearMenu(categorias) {
           const opcsTxt = opcsDisp.map(o =>
             parseFloat(o.precio_extra) > 0 ? `${o.nombre} (+$${parseFloat(o.precio_extra).toFixed(0)})` : o.nombre
           ).join(', ');
-          // Un grupo NO requerido debe leerse como opcional SIEMPRE, no solo
-          // cuando admite una sola opción: "Complementos (hasta 3)" se
-          // interpretaba como "elige hasta 3" y el bot los pedía como si
-          // fueran obligatorios, aunque el catálogo dijera lo contrario.
           const reglaTxt = g.requerido
             ? (g.maximo === 1 ? 'elige 1' : `elige ${g.minimo}–${g.maximo}`)
-            : (g.maximo === 1 ? 'opcional' : `opcionales, hasta ${g.maximo}`);
+            : (g.maximo === 1 ? 'opcional' : `hasta ${g.maximo}`);
           texto += `  ${g.nombre} (${reglaTxt}): ${opcsTxt}\n`;
         }
       }
@@ -902,10 +898,6 @@ Ese bloque es una PROPUESTA: el sistema valida contra el menú y los precios rea
 </ORDEN_CONFIRMADA>
 
 MODIFICADORES Y EXTRAS — SIEMPRE CON SU GRUPO: cada opción elegida va dentro del grupo del que salió, con el NOMBRE EXACTO del grupo tal como aparece en el menú de arriba. Ejemplo para unos chilaquiles: "modificadores": [{"grupo":"Salsa","opciones":["Verde"]}, {"grupo":"Proteína","opciones":["Huevos Estrellados"]}, {"grupo":"Guarniciones","opciones":["Bistec en Salsa","Queso Panela en Salsa"]}]. Esto es OBLIGATORIO: hay opciones con el MISMO nombre en grupos distintos (p. ej. "Bistec en Salsa" existe como Proteína y como Guarnición), y sin el grupo el sistema no puede saber cuál eligió el cliente — si es ambiguo, tendrá que preguntar y el pedido se detiene. Nunca metas una guarnición en el grupo de la proteína ni al revés: respeta el grupo que el cliente indicó.
-BORRADOR DEL PEDIDO — OBLIGATORIO EN CADA TURNO QUE TOQUE UN PRODUCTO: siempre que el cliente pida, agregue, quite o cambie algo de su pedido, incluye AL FINAL de tu respuesta este bloque con TODO lo que llevas hasta ahora, aunque falten datos:
-<PEDIDO_BORRADOR>{"items":[{"nombre":"...","cantidad":1,"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}]}</PEDIDO_BORRADOR>
-Incluye lo que el cliente pidió TAL CUAL, aunque creas que no existe en el menú: el sistema lo verifica contra el catálogo y te corrige. NO lo omitas, NO lo "arregles" tú, NO sustituyas una opción por otra parecida. Si el cliente solo pregunta algo (precios, horarios, qué manejas) y NO está armando un pedido, NO incluyas el bloque.
-
 SI EL CLIENTE PIDE UNA OPCIÓN QUE NO ESTÁ EN EL MENÚ (un sabor, un tipo, un ingrediente): NO la sustituyas por otra parecida, NO la ignores y NO armes el pedido sin ella. Dile con claridad que no la hay y ofrécele las opciones REALES de ese grupo, tal como aparecen arriba. Ejemplo: si piden un licuado de un sabor que no manejas, responde "no tenemos ese sabor; tengo estos: …" y espera a que elija. Si no entiendes bien qué pidió (puede ser un error de dedo), pregunta en vez de adivinar: elegir por el cliente es venderle algo que la cocina no puede preparar.
 UN EXTRA CON COSTO NO CANCELA UNA PROMOCIÓN: el precio de una opción y su elegibilidad para una promo son cosas DISTINTAS. NUNCA digas ni supongas que algo "no entra en la promoción porque tiene costo adicional". Solo los REQUISITOS que Xabor te dio arriba deciden si una opción participa, y el total lo fija el sistema.
 MODIFICADORES Y EXTRAS: cuando el cliente elige una opción con costo (ej. "con salchicha americana +$40"), inclúyela en el arreglo "modificadores" del item con su grupo y su nombre EXACTO del menú. El SISTEMA le pone el precio real del catálogo y lo suma al total; tú NUNCA sumes el extra al "precio_unitario" ni inventes su importe. En tu resumen al cliente puedes mencionar el extra, pero el subtotal/total oficiales los fija el sistema al registrar — no afirmes un total que tú calculaste como definitivo. Si el cliente pide DOS o más unidades del MISMO producto pero con opciones distintas (p. ej. unos chilaquiles con salsa roja y otros con verde), emítelas como items SEPARADOS (cada uno con cantidad 1 y sus propios modificadores); solo usa cantidad>1 cuando las unidades son idénticas.
