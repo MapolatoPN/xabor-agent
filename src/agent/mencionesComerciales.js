@@ -53,6 +53,35 @@ export function spanEnTexto(span, texto) {
   return t.includes(` ${s} `) || t.includes(` ${s}s `) || t.includes(` ${s}es `);
 }
 
+/**
+ * Raíz de una palabra, quitando la flexión de género y número del español.
+ *
+ * El catálogo guarda "Suiza", "Roja", "Verde"; el cliente dice "suizos",
+ * "rojos", "verdes" —concordando con "chilaquiles"— y también "entera" por
+ * "Entera". Comparar literalmente hacía que su propia elección no contara como
+ * respaldo: el backend la descartaba y volvía a preguntar lo mismo, sin salida.
+ *
+ * Deliberadamente conservadora: solo recorta la terminación de palabras de al
+ * menos cuatro letras, así que no colapsa cosas distintas ("Papa" y "Papaya"
+ * siguen siendo distintas, "Melón" no se toca). No es un stemmer general: es la
+ * mínima tolerancia para que la concordancia gramatical no rompa un pedido.
+ */
+export function raizPalabra(p) {
+  let w = normalizar(p);
+  if (w.length >= 5 && w.endsWith('es')) w = w.slice(0, -2);
+  else if (w.length >= 4 && w.endsWith('s')) w = w.slice(0, -1);
+  if (w.length >= 4 && 'oae'.includes(w.slice(-1))) w = w.slice(0, -1);
+  return w;
+}
+
+/** ¿Dos textos son la misma cosa salvo género/número? ("suizos" ≡ "Suiza") */
+export function mismaRaiz(a, b) {
+  const pa = palabras(a).map(raizPalabra).filter(Boolean);
+  const pb = palabras(b).map(raizPalabra).filter(Boolean);
+  if (!pa.length || pa.length !== pb.length) return false;
+  return pa.every((w, i) => w === pb[i]);
+}
+
 /** Palabra inmediatamente anterior al span dentro del texto (o '' si abre). */
 function palabraPrevia(span, texto) {
   const s = normalizar(span);
@@ -133,7 +162,12 @@ export function tieneRespaldo(valor, textoCiclo) {
   if (!String(valor || '').trim()) return false;
   if (spanEnTexto(valor, textoCiclo)) return true;
   const significativas = palabras(valor).filter((w) => w.length >= 4);
-  return significativas.some((w) => spanEnTexto(w, textoCiclo));
+  if (significativas.some((w) => spanEnTexto(w, textoCiclo))) return true;
+  // El cliente concuerda en género y número con lo que está pidiendo:
+  // "chilaquiles SUIZOS" por la salsa "Suiza". Su propia elección tiene que
+  // contar como respaldo, o el backend la descarta y vuelve a preguntarla.
+  const raices = new Set(palabras(textoCiclo).map(raizPalabra).filter((w) => w.length >= 3));
+  return significativas.some((w) => raices.has(raizPalabra(w)));
 }
 
 // Instrucción del extractor independiente. Pide SPANS VERBATIM y separa

@@ -31,6 +31,8 @@ import assert from 'assert';
 const { pool } = await import('../src/services/database.js');
 const { validarBorradorPedido, nombresDeGruposDelNegocio,
         mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
+const { tieneRespaldo, mismaRaiz } = await import('../src/agent/mencionesComerciales.js');
+const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -202,6 +204,51 @@ await t('A4. un texto libre SIN grupo sigue siendo nota, no selección', async (
   const p = rc.productos[0];
   assert.deepStrictEqual(p.invalidos, [], 'una nota no puede volverse un rechazo');
   assert.deepStrictEqual(p.elegidas, [], 'ni una selección inventada');
+});
+
+// ═══ M1-M5 — el cliente concuerda en género y número ═════════════════════
+// Bucle real en producción: el cliente pidió "chilaquiles SUIZOS", el modelo
+// interpretó bien (Salsa: Suiza) y la validación de respaldo lo descartó porque
+// "suiza" no aparece literalmente en "suizos". El grupo volvía a quedar vacío,
+// el backend lo preguntaba otra vez, el cliente contestaba "Suizos" otra vez...
+// sin salida. En español el cliente concuerda con el platillo; su propia
+// elección tiene que contar como respaldo.
+const DICHO = 'seria un combito de chilaquiles suizos con huevos estrellados y waffles de nutella';
+
+await t('M1. "suizos" respalda la opción "Suiza"', () => {
+  assert.strictEqual(tieneRespaldo('Suiza', DICHO), true);
+  assert.strictEqual(tieneRespaldo('Huevos estrellados', DICHO), true);
+});
+
+await t('M2. la mención en plural/masculino resuelve a la opción real', () => {
+  const g = [{ id: 1, nombre: 'Salsa', opciones: [{ id: 1, nombre: 'Suiza' },
+    { id: 2, nombre: 'Roja' }, { id: 3, nombre: 'Verde' }] }];
+  for (const [dicho, esperado] of [['suizos', 'Suiza'], ['rojos', 'Roja'], ['verdes', 'Verde']]) {
+    assert.strictEqual(buscarOpcionPorMencion(g, dicho).modificador?.opcion, esperado, dicho);
+  }
+});
+
+await t('M3. el borrador completo NO se vacía por concordancia', async () => {
+  const rc = await val([item('Combito de Chilaquiles', COMPLETO)], DICHO
+    + ' con salsa suiza, pechuga de pollo, hotcakes y nutella');
+  assert.deepStrictEqual(rc.productos[0].sinRespaldo, [], 'nada puede descartarse por género/número');
+  assert.deepStrictEqual(rc.gruposPendientes, [], 'y por tanto no queda nada pendiente');
+});
+
+await t('M4. la raíz NO colapsa cosas distintas', () => {
+  for (const [a, b] of [['Papa', 'papaya'], ['Melón', 'mole'], ['Fresa', 'fresco'], ['Miel', 'mole']]) {
+    assert.strictEqual(mismaRaiz(a, b), false, `${a} y ${b} son cosas distintas`);
+  }
+  const g = [{ id: 1, nombre: 'Sabor', opciones: [{ id: 1, nombre: 'Papaya' }, { id: 2, nombre: 'Fresa' }] }];
+  assert.strictEqual(buscarOpcionPorMencion(g, 'papa').estado, 'sin_coincidencia',
+    '"papa" no puede convertirse en "Papaya"');
+});
+
+await t('M5. si la raíz encaja en DOS opciones, se sigue preguntando', () => {
+  const g = [{ id: 1, nombre: 'Medida', opciones: [{ id: 1, nombre: 'Grande 1 Litro' },
+    { id: 2, nombre: 'Grande 2 Litros' }] }];
+  assert.strictEqual(buscarOpcionPorMencion(g, 'grandes').estado, 'ambiguo',
+    'la tolerancia no puede volverse una adivinanza');
 });
 
 // ── Resumen ────────────────────────────────────────────────────────────────

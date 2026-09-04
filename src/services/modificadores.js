@@ -13,6 +13,7 @@
 // disponibilidad) sale de la base de datos del propio negocio. Nada de lo
 // que mande el cliente HTTP influye en el precio.
 import { pool } from './database.js';
+import { raizPalabra } from '../agent/mencionesComerciales.js';
 
 export class ModificadoresError extends Error {
   constructor(mensaje, codigo) {
@@ -180,6 +181,11 @@ export function buscarOpcionPorMencion(grupos, mencion) {
   const buscado = normNombre(mencion);
   if (!buscado) return { estado: 'sin_coincidencia' };
   const contienePalabra = (texto, sub) => ` ${texto} `.includes(` ${sub} `);
+  // El cliente concuerda en género y número con el platillo: "chilaquiles
+  // SUIZOS" por la salsa "Suiza". Sin esta tolerancia su elección no casaba
+  // con el catálogo y el backend volvía a preguntarla, sin salida.
+  const raizDe = (t) => t.split(' ').map(raizPalabra).filter(Boolean).join(' ');
+  const buscadoRaiz = raizDe(buscado);
 
   const universo = [];
   for (const g of (grupos || [])) {
@@ -190,6 +196,12 @@ export function buscarOpcionPorMencion(grupos, mencion) {
   let candidatos = universo.filter((x) => x.norm === buscado);
   if (!candidatos.length) {
     candidatos = universo.filter((x) => contienePalabra(x.norm, buscado) || contienePalabra(buscado, x.norm));
+  }
+  if (!candidatos.length && buscadoRaiz) {
+    candidatos = universo.filter((x) => {
+      const r = raizDe(x.norm);
+      return r === buscadoRaiz || contienePalabra(r, buscadoRaiz) || contienePalabra(buscadoRaiz, r);
+    });
   }
   // Una misma opción repetida en varios grupos ya la trata resolverModificadoresLLM
   // como ambigua; aquí lo que se mide es cuántas OPCIONES distintas encajan.
