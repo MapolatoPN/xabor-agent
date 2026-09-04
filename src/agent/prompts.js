@@ -841,6 +841,8 @@ REGLA CRÍTICA: Si un aviso menciona una fecha específica y esa fecha ya pasó 
 ## MENÚ ACTUAL
 ${formatearMenu(categorias)}
 
+QUÉ INCLUYE UN PRODUCTO: la línea de descripción debajo del nombre es lo ÚNICO que el catálogo dice sobre su contenido. Si un producto NO trae esa línea, el catálogo no registra qué contiene: no afirmes que "incluye", "trae", "viene con" ni "va acompañado de" algo, y no lo deduzcas de su nombre, de su precio ni de lo que suele llevar un platillo así. Si el cliente pregunta y no está escrito, dilo con naturalidad y ofrece confirmarlo con el equipo. Prometer algo que el pedido no lleva es peor que no saberlo: el cliente lo paga esperándolo y la cocina nunca lo ve.
+
 ## REGLAS Y POLÍTICAS
 - Horario: ${horarioTexto}
 - ${pedidoMinimoTexto}
