@@ -131,7 +131,9 @@ await t('E2E3. "sin complementos" se acepta y no se insiste', async () => {
   assert.doesNotMatch(r.texto, /complementos/i, `no se insiste en un grupo opcional rechazado: ${r.texto}`);
   assert.doesNotMatch(r.texto, /no manejamos|no tenemos/i,
     `"sin complementos" es una NOTA, no una selección inexistente: ${r.texto}`);
-  assert.match(r.texto, /Con gusto/, `el turno sigue su curso normal: ${r.texto}`);
+  // El producto quedó completo: el backend toma el turno y avanza al siguiente
+  // dato que falta, en vez de dejar que el modelo improvise.
+  assert.match(r.texto, /recoger|domicilio/i, `pide la modalidad sin asumirla: ${r.texto}`);
 });
 
 // ═══ E2E 4 — un sabor real abreviado con acento ═══════════════════════════

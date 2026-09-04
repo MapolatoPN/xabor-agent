@@ -385,6 +385,25 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     // acotada (`extraerBorradorForzado`): la validación ocurre igual. Y cuando
     // el backend encuentra algo que no existe, su respuesta REEMPLAZA al texto
     // del modelo — la verdad del catálogo no se negocia con la redacción.
+    // Resumen oficial + (si aplica) la razón REAL por la que una promoción
+    // vigente no se aplicó. La explicación la redacta el backend desde la
+    // configuración de la promo — nunca el modelo, que antes la inventaba
+    // ("el sistema ajustará el total después", caso XAB-0229). También queda
+    // en la sesión para que el turno siguiente ("¿y la promo?") tenga la
+    // causa autoritativa a la mano.
+    const resumenConExplicacion = async (v) => {
+      let explicacion = '';
+      try {
+        explicacion = await explicarPromosNoAplicadas(negocioId, v.orden, {
+          canal, promosAplicadas: v.preview?.promociones || [],
+        });
+      } catch (e) { console.error('[brain] explicar promo no aplicada:', e.message); }
+      session.promoNoAplicada = explicacion || null;
+      return explicacion
+        ? `${resumenPedidoOficial(v.preview)}\n\n${explicacion}`
+        : resumenPedidoOficial(v.preview);
+    };
+
     let textoCatalogo = null;
     // `!sesionComercial`: un turno del Asistente Comercial NO está armando un
     // pedido del menú — está capturando los campos de una COTIZACIÓN. Contrastar
@@ -428,6 +447,78 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
             console.warn(`[TXN] evento=seleccion_sin_respaldo codigo=${sinRespaldo[0].codigo} negocio=${negocioId}`
               + ` descartadas=${JSON.stringify(sinRespaldo.slice(0, 5).map((s) => `${s.grupo}:${s.opcion}`))}`);
           }
+          // ── FASE DE PEDIDO: EL TURNO ES DEL BACKEND ───────────────────────
+          // Mientras el cliente arma su pedido, el backend tiene TODA la
+          // información estructurada —qué hay en el carrito, qué falta, qué es
+          // imposible— y es quien escribe. El modelo queda en lo que hace bien:
+          // extraer a una estructura lo que el cliente dijo.
+          //
+          // Se llegó aquí después de que el modelo inventara, en días
+          // sucesivos, una opción que no participaba en la promo, productos
+          // participantes que no existían y un grupo entero prestado del
+          // platillo vecino. Intentar corregir su prosa a posteriori produjo
+          // algo peor: un bucle sin salida. La conclusión medida fue que
+          // cuando el backend escribe el mensaje completo funciona, y cuando se
+          // intenta influir en la prosa o repararla después, no.
+          //
+          // Cuatro estados, todos deterministas:
+          //   1. algo inválido/ambiguo      → mensaje de catálogo
+          //   2. faltan grupos obligatorios → pregunta de qué falta
+          //   3. completo, sin modalidad/pago → se pide ese dato
+          //   4. completo con todo          → resumen oficial + UNA confirmación
+          //
+          // El estado 4 NO se repite: si ya hay un snapshot vigente con la MISMA
+          // huella, el cliente ya vio ese resumen y el turno se le deja al
+          // modelo. Sin esa condición, cualquier pregunta posterior ("¿cuánto
+          // tarda?") volvería a imprimir el resumen y se realimentaría — el
+          // mismo bucle de antes, por otra puerta.
+          if (rc.ok) {
+            try {
+              const ordenBorrador = {
+                items: borrador.items,
+                forma_pago: borrador.forma_pago ?? borrador.formaPago,
+                modalidad: borrador.modalidad,
+                costo_envio: borrador.costo_envio,
+                cliente: {
+                  ...(borrador.cliente || {}),
+                  telefono: borrador.cliente?.telefono || telefono || undefined,
+                },
+              };
+              // La MODALIDAD no la asume nadie. `validarOrdenPropuesta` trata
+              // "sin modalidad" como recoger —razonable para un pedido ya
+              // cerrado— pero aquí estamos armándolo: dar por hecho que pasa a
+              // recoger, o cobrarle envío sin que lo pidiera, es decidir por él.
+              // Se pregunta antes de cualquier resumen.
+              const modalidad = String(ordenBorrador.modalidad || '').toLowerCase();
+              const esDomicilio = modalidad.includes('domicilio');
+              if (!modalidad) {
+                textoCatalogo = '¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?';
+              } else if (esDomicilio && !String(ordenBorrador.cliente?.direccion || '').trim()) {
+                textoCatalogo = '¿A qué dirección te lo enviamos? Necesito calle, número y colonia.';
+              }
+
+              const vigente = verPreviewConfirmable(sessionId);
+              // Se compara huella DE BORRADOR contra huella DE BORRADOR. El
+              // `fingerprint` del snapshot es el de la orden CANÓNICA (con ids y
+              // precios del catálogo) y nunca coincidiría con el del borrador
+              // crudo: compararlos daba siempre "distinto" y el resumen se
+              // reimprimía en cada turno.
+              const huella = huellaOrden(ordenBorrador);
+              if (!textoCatalogo && (!vigente || vigente.huellaBorrador !== huella)) {
+                const v = await previsualizarPedido(ordenBorrador, negocioId, { canal });
+                if (v.ok) {
+                  guardarPreviewPedido(sessionId, { ...snapshotDePreview(v), huellaBorrador: huella });
+                  textoCatalogo = await resumenConExplicacion(v);
+                  console.log(`[TXN] evento=preview_desde_borrador negocio=${negocioId} total=${v.preview.total}`);
+                } else {
+                  // Falta un dato operativo (forma de pago, modalidad…). El
+                  // backend lo pide con los métodos REALES del negocio; nunca
+                  // se pide confirmar un pedido al que aún le falta algo.
+                  textoCatalogo = mensajeRechazoParaCliente(v.rechazos || []);
+                }
+              }
+            } catch (e) { console.error('[brain] fase de pedido determinista:', e.message); }
+          }
           if (!rc.ok) {
             const msg = mensajeBorradorParaCliente(rc);
             if (msg) {
@@ -464,24 +555,6 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     const propuestaPreview = extraerBloque(textoRespuesta, 'ORDEN_PREVIEW');
     let ordenParaRegistrar = orden;
     let textoOficialPricing = null;
-    // Resumen oficial + (si aplica) la razón REAL por la que una promoción
-    // vigente no se aplicó. La explicación la redacta el backend desde la
-    // configuración de la promo — nunca el modelo, que antes la inventaba
-    // ("el sistema ajustará el total después", caso XAB-0229). También queda
-    // en la sesión para que el turno siguiente ("¿y la promo?") tenga la
-    // causa autoritativa a la mano.
-    const resumenConExplicacion = async (v) => {
-      let explicacion = '';
-      try {
-        explicacion = await explicarPromosNoAplicadas(negocioId, v.orden, {
-          canal, promosAplicadas: v.preview?.promociones || [],
-        });
-      } catch (e) { console.error('[brain] explicar promo no aplicada:', e.message); }
-      session.promoNoAplicada = explicacion || null;
-      return explicacion
-        ? `${resumenPedidoOficial(v.preview)}\n\n${explicacion}`
-        : resumenPedidoOficial(v.preview);
-    };
     if (typeof negocioId === 'string' && negocioId.trim()) {
       try {
         if (orden) {

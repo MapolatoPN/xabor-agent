@@ -196,8 +196,11 @@ await t('F4. una selección que el cliente SÍ expresó se acepta sin correcció
   ]));
   mock.encolarRespuesta(menciones(producto('bebida preparada'), atributo('alfa'), atributo('chico'), atributo('tipo uno')));
   const r = await turno('f4', 'quiero una bebida preparada alfa chico de tipo uno');
-  assert.match(r.texto, /Con gusto/, `el texto del modelo sobrevive cuando todo tiene respaldo: ${r.texto}`);
-  assert.doesNotMatch(r.texto, /no tenemos|falta saber/i, `nada que corregir ni preguntar: ${r.texto}`);
+  // Con el producto ya completo, el turno pasa al backend: no queda nada que
+  // corregir del catálogo, así que avanza pidiendo el dato operativo que falta.
+  assert.doesNotMatch(r.texto, /no tenemos|no manejamos|falta saber/i,
+    `nada que corregir del catálogo: ${r.texto}`);
+  assert.match(r.texto, /recoger|domicilio/i, `pregunta la modalidad, sin asumirla: ${r.texto}`);
   assert.ok(!r.eventos.some((e) => e.includes('seleccion_sin_respaldo')), JSON.stringify(r.eventos));
 });
 
@@ -228,8 +231,11 @@ await t('F7. "sin cebolla" sigue siendo nota y nunca se compara contra el catál
   // Otra vez el extractor se equivoca: la marca como atributo.
   mock.encolarRespuesta(menciones(atributo('alfa'), atributo('cebolla')));
   const r = await turno('f7', 'una bebida preparada alfa chico de tipo uno sin cebolla');
-  assert.doesNotMatch(r.texto, /no tenemos cebolla/i, `una nota libre no puede volverse un rechazo: ${r.texto}`);
-  assert.match(r.texto, /Con gusto/, `el turno sigue su curso normal: ${r.texto}`);
+  assert.doesNotMatch(r.texto, /no tenemos cebolla|no manejamos "cebolla"/i,
+    `una nota libre no puede volverse un rechazo: ${r.texto}`);
+  // El producto quedó completo, así que el turno pasa al backend y avanza al
+  // dato que falta. Lo que importa aquí es que la nota NO produjo un rechazo.
+  assert.match(r.texto, /recoger|domicilio/i, `avanza en vez de improvisar: ${r.texto}`);
 });
 
 // ═══ F8 — una consulta no muta el pedido ══════════════════════════════════
