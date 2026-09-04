@@ -30,7 +30,6 @@ import assert from 'assert';
 
 const { pool } = await import('../src/services/database.js');
 const { validarBorradorPedido, nombresDeGruposDelNegocio,
-        preguntaPorGrupoIndebido, resumenSeleccionesParaCliente,
         mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
@@ -101,26 +100,6 @@ const val = (items, texto = DIJO, menciones = []) =>
 
 const GRUPOS = await nombresDeGruposDelNegocio(NEG);
 
-// ═══ G1 — el caso literal de producción ═══════════════════════════════════
-const PROSA_INVENTADA = 'Para cada Combito de Chilaquiles tengo que elegir las guarniciones '
-  + '(puedes elegir 1 o 2 en cada uno). ¿Qué guarniciones prefieres?';
-
-await t('G1. con el pedido completo, una pregunta por Guarniciones NO puede llegar al cliente', async () => {
-  const rc = await val([item('Combito de Chilaquiles', COMPLETO)]);
-  assert.strictEqual(rc.ok, true, 'el borrador está completo y es válido');
-  assert.deepStrictEqual(rc.gruposPendientes, [], 'no falta nada del producto');
-
-  const indebido = preguntaPorGrupoIndebido(PROSA_INVENTADA, rc, GRUPOS);
-  assert.ok(indebido, 'debe detectarse que pregunta por un grupo que no toca');
-  assert.strictEqual(indebido.grupo, 'Guarniciones');
-  assert.strictEqual(indebido.ajeno, true, 'Guarniciones no pertenece al Combito');
-
-  const visible = resumenSeleccionesParaCliente(rc);
-  assert.doesNotMatch(visible, /guarnici/i, `la prosa inventada no sale: ${visible}`);
-  assert.match(visible, /Combito de Chilaquiles/, visible);
-  assert.match(visible, /Salsa: Suiza/, visible);
-  assert.match(visible, /Topping: Nutella/, visible);
-});
 
 // ═══ G2 — los grupos del producto son SOLO los suyos ══════════════════════
 await t('G2. el backend expone únicamente los grupos del producto exacto', async () => {
@@ -139,33 +118,16 @@ await t('G3. con un grupo pendiente, el backend pregunta ESE y solo ese', async 
   const msg = mensajeBorradorParaCliente(rc);
   assert.match(msg, /topping/i, msg);
   assert.doesNotMatch(msg, /guarnici/i, `jamás el grupo del vecino: ${msg}`);
-  // Preguntar por lo pendiente es legítimo: no se marca como indebido.
-  assert.strictEqual(preguntaPorGrupoIndebido('¿Qué topping quieres?', rc, GRUPOS), null);
 });
 
 // ═══ G4 — no se repite un grupo ya resuelto ═══════════════════════════════
-await t('G4. volver a preguntar un grupo YA elegido también es indebido', async () => {
-  const rc = await val([item('Combito de Chilaquiles', COMPLETO)]);
-  const indebido = preguntaPorGrupoIndebido('¿Qué salsa prefieres?', rc, GRUPOS);
-  assert.ok(indebido, 'la salsa ya está elegida: no se vuelve a pedir');
-  assert.strictEqual(indebido.grupo, 'Salsa');
-  assert.strictEqual(indebido.ajeno, false, 'sí es del producto, pero ya resuelto');
-});
 
 // ═══ G5 — recapitular NO es preguntar ═════════════════════════════════════
-await t('G5. mencionar un grupo al recapitular (sin preguntar) es legítimo', async () => {
-  const rc = await val([item('Combito de Chilaquiles', COMPLETO)]);
-  assert.strictEqual(
-    preguntaPorGrupoIndebido('Anotado: tu salsa suiza y tu topping de Nutella.', rc, GRUPOS), null,
-    'sin signo de pregunta no se toca el texto del modelo');
-});
 
 // ═══ G6 — el vecino SÍ puede preguntar sus guarniciones ═══════════════════
 await t('G6. en Chilaquiles Sencillos, Guarniciones sí es una pregunta válida', async () => {
   const rc = await val([item('Chilaquiles Sencillos', [mod('Salsa', 'Roja'), mod('Proteína', 'Pechuga de pollo')])]);
   assert.deepStrictEqual(rc.gruposPendientes, ['Guarniciones'], 'ahí sí falta');
-  assert.strictEqual(preguntaPorGrupoIndebido('¿Qué guarniciones quieres?', rc, GRUPOS), null,
-    'para SU producto la pregunta es correcta');
   assert.match(mensajeBorradorParaCliente(rc), /guarnici/i);
 });
 
@@ -177,11 +139,6 @@ await t('G7. con los dos artículos juntos, cada uno conserva sus propios grupos
   ]);
   assert.strictEqual(rc.ok, true, mensajeBorradorParaCliente(rc) || '');
   assert.deepStrictEqual(rc.gruposPendientes, [], 'ambos completos');
-  const visible = resumenSeleccionesParaCliente(rc);
-  assert.match(visible, /Combito de Chilaquiles \(/, visible);
-  assert.match(visible, /Chilaquiles Sencillos \(/, visible);
-  // Guarniciones es legítimo aquí porque el segundo artículo sí lo tiene.
-  assert.strictEqual(preguntaPorGrupoIndebido('¿Qué guarniciones?', rc, GRUPOS)?.grupo, 'Guarniciones');
 });
 
 // ═══ G8 — unidades repetidas del mismo producto ═══════════════════════════
@@ -190,8 +147,6 @@ await t('G8. dos unidades iguales no duplican ni inventan grupos', async () => {
   assert.strictEqual(rc.ok, true, mensajeBorradorParaCliente(rc) || '');
   assert.deepStrictEqual(rc.gruposDelPedido.sort(),
     ['Hotcakes o Waffles', 'Proteína', 'Salsa', 'Topping'], 'sin repetir grupos');
-  const indebido = preguntaPorGrupoIndebido(PROSA_INVENTADA, rc, GRUPOS);
-  assert.strictEqual(indebido?.grupo, 'Guarniciones', 'también aquí se bloquea la prosa inventada');
 });
 
 // ═══ G9 — dos unidades, una incompleta ════════════════════════════════════

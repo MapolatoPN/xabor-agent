@@ -374,46 +374,6 @@ export async function nombresDeGruposDelNegocio(negocioId) {
 }
 
 /**
- * ¿El modelo está PREGUNTANDO por opciones que el backend no tiene pendientes?
- *
- * Solo mira preguntas: mencionar un grupo ya elegido al recapitular es legítimo
- * ("tu salsa suiza queda anotada"), pedirlo otra vez no. Y un grupo que no
- * pertenece a ningún producto del pedido no puede preguntarse nunca.
- */
-export function preguntaPorGrupoIndebido(texto, resultado, gruposNegocio = []) {
-  const t = String(texto || '');
-  if (!t.includes('?')) return null;
-  const norm = (x) => normalizar(x);
-  const pendientes = new Set((resultado?.gruposPendientes || []).map(norm));
-  const delPedido = new Set((resultado?.gruposDelPedido || []).map(norm));
-  const candidatos = [...new Set([...(resultado?.gruposDelPedido || []), ...gruposNegocio])];
-  const tn = ` ${norm(t)} `;
-  for (const g of candidatos) {
-    const gn = norm(g);
-    if (!gn || pendientes.has(gn)) continue;          // lo pendiente SÍ se pregunta
-    if (!tn.includes(` ${gn} `)) continue;
-    // Ajeno al pedido, o ya resuelto: en ninguno de los dos casos toca preguntarlo.
-    return { grupo: g, ajeno: !delPedido.has(gn) };
-  }
-  return null;
-}
-
-/**
- * Estado del pedido redactado por CÓDIGO cuando ya no falta nada del producto.
- * Sustituye a la pregunta inventada por el modelo sin inventar nada a su vez:
- * solo repite lo que el cliente eligió y deja avanzar la conversación.
- */
-export function resumenSeleccionesParaCliente(resultado) {
-  const prods = (resultado?.productos || []).filter((p) => (p.elegidas || []).length);
-  if (!prods.length) return null;
-  const partes = prods.map((p) => {
-    const sel = p.elegidas.map((e) => `${e.grupo}: ${e.opcion}`).join(', ');
-    return `${p.producto} (${sel})`;
-  });
-  return `Tu pedido va así: ${partes.join(' · ')}. ¿Continuamos?`;
-}
-
-/**
  * Redacta, por CÓDIGO, qué debe decirse tras validar un borrador. El orden es
  * determinista y no negociable: primero lo que el cliente pidió y no existe
  * (si no, se le seguiría preguntando por un producto imposible), luego el
