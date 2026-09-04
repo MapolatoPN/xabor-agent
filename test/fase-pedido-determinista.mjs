@@ -218,6 +218,28 @@ await t('D7. resumen → "Sí" → UN registro, sin repreguntar', async () => {
   assert.strictEqual(mock.pendientes(), 0, 'la confirmación es determinista, sin llamar al modelo');
 });
 
+// ═══ D7b — el resumen del camino VIEJO tampoco se duplica ════════════════
+await t('D7b. si el resumen vino de <ORDEN_PREVIEW>, la fase NO lo repite', async () => {
+  deleteSession('d7b');
+  const items = [{ nombre: 'Combito de Chilaquiles', cantidad: 1, modificadores: COMPLETO }];
+  const ordenModelo = { items, ...CON_DATOS };
+  // Turno 1: el modelo emite el marcador viejo. Ese snapshot no lleva huella de
+  // borrador, así que sin la comprobación de huella canónica el turno siguiente
+  // reimprimiría el mismo resumen.
+  mock.encolarRespuesta(`Va tu resumen.\n<ORDEN_PREVIEW>${JSON.stringify(ordenModelo)}</ORDEN_PREVIEW>`);
+  const r1 = await turno('d7b');
+  assert.match(r1.texto, /Combito de Chilaquiles/, r1.texto);
+  assert.ok(verPreviewConfirmable('d7b'), 'queda confirmable');
+
+  // Turno 2: consulta segura; el modelo repite el borrador con el MISMO pedido.
+  mock.encolarRespuesta(borrador(COMPLETO, CON_DATOS));
+  mock.encolarRespuesta(menciones());
+  const r2 = await turno('d7b', '¿Cuánto tarda?');
+  assert.doesNotMatch(r2.texto, /Tu pedido queda/i, `no se repite el resumen: ${r2.texto}`);
+  assert.match(r2.texto, /Listo/, `el turno es del modelo: ${r2.texto}`);
+  assert.ok(verPreviewConfirmable('d7b'), 'y el pedido sigue confirmable');
+});
+
 // ═══ D8 — una mutación exige resumen nuevo ═══════════════════════════════
 await t('D8. cambiar el pedido invalida el resumen y produce uno nuevo', async () => {
   deleteSession('d8');

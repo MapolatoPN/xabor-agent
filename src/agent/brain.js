@@ -506,7 +506,14 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               const huella = huellaOrden(ordenBorrador);
               if (!textoCatalogo && (!vigente || vigente.huellaBorrador !== huella)) {
                 const v = await previsualizarPedido(ordenBorrador, negocioId, { canal });
-                if (v.ok) {
+                if (v.ok && vigente && vigente.fingerprint === huellaOrden(v.orden)) {
+                  // El cliente YA vio este mismo pedido, pero el resumen se
+                  // generó por el camino del modelo (<ORDEN_PREVIEW>), que no
+                  // deja huella de borrador. Sin esta comprobación se le
+                  // repetiría el resumen una vez. Se anota la huella y el turno
+                  // sigue siendo del modelo.
+                  vigente.huellaBorrador = huella;
+                } else if (v.ok) {
                   guardarPreviewPedido(sessionId, { ...snapshotDePreview(v), huellaBorrador: huella });
                   textoCatalogo = await resumenConExplicacion(v);
                   console.log(`[TXN] evento=preview_desde_borrador negocio=${negocioId} total=${v.preview.total}`);
