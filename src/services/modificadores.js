@@ -13,7 +13,7 @@
 // disponibilidad) sale de la base de datos del propio negocio. Nada de lo
 // que mande el cliente HTTP influye en el precio.
 import { pool } from './database.js';
-import { raizPalabra } from '../agent/mencionesComerciales.js';
+import { raizPalabra, sinDiminutivo } from '../agent/mencionesComerciales.js';
 
 export class ModificadoresError extends Error {
   constructor(mensaje, codigo) {
@@ -202,6 +202,23 @@ export function buscarOpcionPorMencion(grupos, mencion) {
       const r = raizDe(x.norm);
       return r === buscadoRaiz || contienePalabra(r, buscadoRaiz) || contienePalabra(buscadoRaiz, r);
     });
+  }
+  // ÚLTIMO recurso: el cliente pidió en diminutivo ("pollito" por "Pechuga de
+  // pollo"). Va al final a propósito. Media carta mexicana termina en
+  // diminutivo sin serlo —Carnitas, Gorditas, Burrito, Molletes—, y recortar
+  // eso de entrada convertiría "carnitas" en "carn", que es también la raíz de
+  // "Carne asada". Al intentarlo solo cuando la palabra tal cual no casó con
+  // nada, un catálogo que SÍ tiene Carnitas ya acertó arriba y aquí no se
+  // llega. Sigue exigiendo candidato único: si encaja en dos, se pregunta.
+  if (!candidatos.length) {
+    const base = buscado.split(' ').map((w) => sinDiminutivo(w) || w).join(' ');
+    const baseRaiz = base !== buscado ? raizDe(base) : '';
+    if (baseRaiz) {
+      candidatos = universo.filter((x) => {
+        const r = raizDe(x.norm);
+        return r === baseRaiz || contienePalabra(r, baseRaiz) || contienePalabra(baseRaiz, r);
+      });
+    }
   }
   // Una misma opción repetida en varios grupos ya la trata resolverModificadoresLLM
   // como ambigua; aquí lo que se mide es cuántas OPCIONES distintas encajan.

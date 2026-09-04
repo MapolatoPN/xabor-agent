@@ -168,6 +168,19 @@ export async function previsualizarPedido(orden, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, rechazos: [{ codigo: 'TENANT_CONTEXT_REQUIRED' }], ajustes: [] };
   }
+  // La invariante 7 protegía el REGISTRO, no el preview. La fase determinista
+  // arma un preview en cuanto el borrador tiene artículos, así que a un negocio
+  // en modo solicitud —que por definición no confirma pedidos ni promete
+  // precios finales— se le empezó a cotizar un total y a pedirle "¿confirmas?".
+  // El dinero seguía a salvo (el registro lo bloqueaba), pero la conversación
+  // prometía algo que jamás iba a ocurrir. El modo se respeta desde aquí, que
+  // es por donde pasan TODOS los caminos que muestran un total.
+  if (CANALES_ORDEN_LLM.has(opts.canal)) {
+    const cfg = await obtenerConfiguracion(negocioId).catch(() => ({}));
+    if ((cfg.modo_pedidos || 'transaccional') === 'solicitud') {
+      return { ok: false, rechazos: [{ codigo: 'MODO_SOLICITUD' }], ajustes: [] };
+    }
+  }
   const v = await validarOrdenPropuesta(orden, negocioId, opts);
   if (!v.ok) return { ok: false, rechazos: v.rechazos, ajustes: v.ajustes };
   const o = v.orden;

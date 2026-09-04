@@ -518,10 +518,17 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
                   textoCatalogo = await resumenConExplicacion(v);
                   console.log(`[TXN] evento=preview_desde_borrador negocio=${negocioId} total=${v.preview.total}`);
                 } else {
-                  // Falta un dato operativo (forma de pago, modalidad…). El
-                  // backend lo pide con los métodos REALES del negocio; nunca
-                  // se pide confirmar un pedido al que aún le falta algo.
-                  textoCatalogo = mensajeRechazoParaCliente(v.rechazos || []);
+                  // Un negocio en modo solicitud no cotiza ni confirma: la
+                  // fase determinista se aparta y deja su turno al modelo, que
+                  // ya tiene las reglas de ese modo en el prompt. Sin esto, el
+                  // backend le mostraba un total y le pedía confirmar.
+                  const soloSolicitud = (v.rechazos || []).some((r) => r.codigo === 'MODO_SOLICITUD');
+                  if (!soloSolicitud) {
+                    // Falta un dato operativo (forma de pago, modalidad…). El
+                    // backend lo pide con los métodos REALES del negocio; nunca
+                    // se pide confirmar un pedido al que aún le falta algo.
+                    textoCatalogo = mensajeRechazoParaCliente(v.rechazos || []);
+                  }
                 }
               }
             } catch (e) { console.error('[brain] fase de pedido determinista:', e.message); }

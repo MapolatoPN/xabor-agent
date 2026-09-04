@@ -362,6 +362,34 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   }
   salida.gruposDelPedido = [...new Set(salida.gruposDelPedido.filter(Boolean))];
   salida.gruposPendientes = [...new Set(salida.gruposPendientes.filter(Boolean))];
+
+  // ── Negar sin mirar el resto de la carta es perder una venta hecha ──────
+  // Caso real: el cliente pidió BISTEC en sus chilaquiles. No es una opción
+  // del grupo Proteína, así que el backend contestó "no tenemos Bistec en
+  // Salsa en proteína" — y el restaurante SÍ tiene Bistec en Salsa, como
+  // platillo. El cliente lee "no tenemos bistec" y se va.
+  // Antes de negar nada, se comprueba si eso que pidió existe en OTRA parte
+  // del catálogo del mismo negocio. Si existe, deja de ser una negativa y pasa
+  // a ser una oferta. La comprobación es contra el catálogo real, nunca contra
+  // una lista escrita a mano.
+  const existeEnCarta = (texto) => {
+    const t = String(texto || '').trim();
+    if (!t) return null;
+    const r = resolverProducto(t, catalogo);
+    return r.estado === 'ok' ? String(r.producto.nombre || '') : null;
+  };
+  for (const p of salida.productos) {
+    for (const i of (p.invalidos || [])) {
+      const otro = existeEnCarta(i.solicitado);
+      // Solo si es OTRO producto: que el nombre del propio platillo reaparezca
+      // no es una alternativa que ofrecer.
+      if (otro && otro !== p.producto) i.existeComoProducto = otro;
+    }
+  }
+  for (const m of (salida.mencionesNoResueltas || [])) {
+    const otro = existeEnCarta(m.texto);
+    if (otro) m.existeComoProducto = otro;
+  }
   return salida;
 }
 
@@ -435,16 +463,37 @@ export function mensajeBorradorParaCliente(resultado) {
   // raíz y se dicen UNA vez, nombrando el pedido completo. Colgarlas de cada
   // artículo era lo que producía "no manejamos salsa suiza en Hotcakes".
   const noResueltas = [...new Set((resultado?.mencionesNoResueltas || []).map((m) => m.texto))];
+  // Qué de lo no resuelto SÍ existe en la carta como platillo propio.
+  const mapaEnCarta = new Map((resultado?.mencionesNoResueltas || [])
+    .filter((m) => m.existeComoProducto).map((m) => [m.texto, m.existeComoProducto]));
   if (invalidos.length || noResueltas.length) {
     const partes = [];
+    // Lo que SÍ existe en la carta se ofrece; solo lo que no existe se niega.
+    const enCarta = [];
     if (noResueltas.length) {
-      const donde = prods.length === 1 ? ` en ${prods[0].producto}` : '';
-      partes.push(`no manejamos ${listar(noResueltas.map((t) => `"${t}"`))}${donde}`);
+      const sinNada = noResueltas.filter((t) => !mapaEnCarta.get(t));
+      for (const t of noResueltas) { const o = mapaEnCarta.get(t); if (o) enCarta.push(o); }
+      if (sinNada.length) {
+        const donde = prods.length === 1 ? ` en ${prods[0].producto}` : '';
+        partes.push(`no manejamos ${listar(sinNada.map((t) => `"${t}"`))}${donde}`);
+      }
     }
     for (const i of invalidos) {
+      const grupo = String(i.grupo).toLowerCase();
+      if (i.existeComoProducto) {
+        // Ni "no tenemos" ni una lista de sustitutos: el cliente pidió algo que
+        // el negocio vende, solo que no como opción de ese grupo.
+        partes.push(`${i.solicitado} no va como ${grupo} de ${i.producto}, pero lo tenemos aparte`);
+        enCarta.push(i.existeComoProducto);
+        continue;
+      }
       partes.push(i.alternativas?.length
-        ? `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}; tengo ${listar(i.alternativas)}`
-        : `no tenemos ${i.solicitado} en ${String(i.grupo).toLowerCase()}`);
+        ? `no tenemos ${i.solicitado} en ${grupo}; tengo ${listar(i.alternativas)}`
+        : `no tenemos ${i.solicitado} en ${grupo}`);
+    }
+    if (enCarta.length) {
+      const unicos = [...new Set(enCarta)];
+      return `Una disculpa: ${listar(partes)}. ¿Te lo agrego${unicos.length > 1 ? 'n' : ''} como ${listar(unicos)}?`;
     }
     // El cierre tiene que corresponder con lo que de verdad se ofreció.
     //  · Si el mensaje YA lista opciones (una selección inválida trae las de su

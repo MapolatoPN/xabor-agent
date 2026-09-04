@@ -74,6 +74,35 @@ export function raizPalabra(p) {
   return w;
 }
 
+/**
+ * La forma NO diminutiva de una palabra, o null si no parecía un diminutivo.
+ *
+ * "pollito" es "pollo" en la boca de cualquier cliente mexicano, y también
+ * "huevitos", "cafecito", "aguita". `raizPalabra` recorta género y número, no
+ * esto: la raíz de "pollito" es "pollit" y la de "pollo" es "poll", así que no
+ * casaban y el bot negaba algo que sí tenía.
+ *
+ * Deliberadamente SEPARADA de `raizPalabra` en vez de añadirse a ella, y esa
+ * separación es el control de seguridad: media carta mexicana termina en
+ * diminutivo SIN serlo —Carnitas, Gorditas, Burrito, Quesadillas, Molletes—, y
+ * recortarlos por defecto convertiría "carnitas" en "carn", que es también la
+ * raíz de "Carne asada". Por eso esta lectura se intenta SOLO al final, cuando
+ * la palabra tal cual no casó con nada: si el catálogo dice "Carnitas", la
+ * comparación normal ya acertó y aquí no se llega nunca.
+ */
+export function sinDiminutivo(p) {
+  const w = normalizar(p);
+  for (const suf of ['ecitos', 'ecitas', 'ecito', 'ecita', 'citos', 'citas',
+    'cito', 'cita', 'itos', 'itas', 'ito', 'ita']) {
+    if (!w.endsWith(suf)) continue;
+    const base = w.slice(0, -suf.length);
+    // Una base demasiado corta ya no es la misma palabra: "pita" no es "p".
+    if (base.length < 4) continue;
+    return base;
+  }
+  return null;
+}
+
 /** ¿Dos textos son la misma cosa salvo género/número? ("suizos" ≡ "Suiza") */
 export function mismaRaiz(a, b) {
   const pa = palabras(a).map(raizPalabra).filter(Boolean);
@@ -167,7 +196,14 @@ export function tieneRespaldo(valor, textoCiclo) {
   // "chilaquiles SUIZOS" por la salsa "Suiza". Su propia elección tiene que
   // contar como respaldo, o el backend la descarta y vuelve a preguntarla.
   const raices = new Set(palabras(textoCiclo).map(raizPalabra).filter((w) => w.length >= 3));
-  return significativas.some((w) => raices.has(raizPalabra(w)));
+  if (significativas.some((w) => raices.has(raizPalabra(w)))) return true;
+  // Y el cliente pide en diminutivo: "pollito" por "Pechuga de pollo". Aquí la
+  // tolerancia es especialmente barata: NO estamos eligiendo por él, estamos
+  // comprobando si respaldó una opción que el modelo ya interpretó. Un sí de
+  // más solo confía en esa lectura; un no de más le niega lo que sí pidió.
+  const dim = new Set(palabras(textoCiclo)
+    .map((w) => sinDiminutivo(w)).filter(Boolean).map(raizPalabra));
+  return significativas.some((w) => dim.has(raizPalabra(w)));
 }
 
 // Instrucción del extractor independiente. Pide SPANS VERBATIM y separa
