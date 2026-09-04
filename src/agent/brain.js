@@ -216,7 +216,7 @@ async function extraerBorradorForzado(session, negocioId) {
  */
 async function extraerMencionesComerciales(mensajeUsuario) {
   const texto = String(mensajeUsuario || '').trim();
-  if (!texto) return [];
+  if (!texto) return { menciones: [], respuestas: [] };
   const r = await llamarModeloConReintento({
     model: MODELO,
     max_tokens: 300,
@@ -227,7 +227,7 @@ async function extraerMencionesComerciales(mensajeUsuario) {
   if (depuradas.descartadas.length) {
     console.warn(`[TXN] evento=mencion_descartada detalle=${JSON.stringify(depuradas.descartadas.slice(0, 5))}`);
   }
-  return depuradas.atributos;
+  return { menciones: depuradas.atributos, respuestas: depuradas.respuestas };
 }
 
 // Snapshot canónico de un preview válido: lo que el backend YA validó.
@@ -415,10 +415,10 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           // activo; las menciones, solo en el turno actual (lo que el cliente
           // sostiene ahora, para que "mejor de fresa" reemplace al "mango"
           // anterior sin quedar atrapado en él).
-          const menciones = await extraerMencionesComerciales(mensajeUsuario);
+          const { menciones, respuestas } = await extraerMencionesComerciales(mensajeUsuario);
           const rc = await validarBorradorPedido(borrador, negocioId, {
             textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
-            menciones,
+            menciones, respuestas,
           });
           // El código viaja en la propia estructura (lo pone el validador), así
           // que el log lo IMPRIME desde ahí: si algún día cambia, no hay dos

@@ -386,6 +386,42 @@ await t('C3. la logística no entra como atributo; la nota de preparación va a 
   assert.deepStrictEqual(n.atributos, []);
   assert.deepStrictEqual(n.notas, ['cebolla']);
 });
+// ═══ C5-C8 — la respuesta directa a la pregunta del backend ══════════════
+// Smoke real: el bot preguntó por la leche, el cliente contestó "Leche entera"
+// y el bot VOLVIÓ a preguntar lo mismo. La mención se descartaba porque el
+// filtro exige un conector delante ("de mango", "con chocolate") y una
+// respuesta pelada no lo tiene. Ahora que el backend hace casi todas las
+// preguntas, esa es la forma MÁS común de turno.
+await t('C5. una respuesta pelada se conserva para resolver ("Leche entera")', () => {
+  for (const [texto, span] of [['Leche entera', 'leche entera'], ['Entera', 'entera'],
+    ['Suiza', 'suiza'], ['Nutella', 'nutella']]) {
+    const d = depurarMenciones([{ tipo: 'atributo', texto_fuente: span }], texto);
+    assert.deepStrictEqual(d.respuestas, [span], `"${texto}" debe poder resolver una selección`);
+    assert.deepStrictEqual(d.atributos, [], 'pero NO entra como atributo acusador');
+  }
+});
+
+await t('C6. una respuesta pelada NUNCA puede declarar que algo no existe', () => {
+  const d = depurarMenciones([{ tipo: 'atributo', texto_fuente: 'hola' }], 'Hola');
+  assert.deepStrictEqual(d.atributos, [], '"Hola" no puede producir "no manejamos hola"');
+  assert.deepStrictEqual(d.respuestas, ['hola'], 'se conserva, pero sin poder de acusación');
+});
+
+await t('C7. el atributo dentro de una frase sigue siendo atributo', () => {
+  const d = depurarMenciones(
+    [{ tipo: 'atributo', texto_fuente: 'mango' }, { tipo: 'atributo', texto_fuente: 'grande' }],
+    'quiero un licuado de mango grande');
+  assert.deepStrictEqual(d.atributos, ['mango', 'grande'], 'aquí sí hay posición de atributo');
+  assert.deepStrictEqual(d.respuestas, [], 'no es una respuesta pelada');
+});
+
+await t('C8. un mensaje largo con la palabra suelta no cuenta como respuesta', () => {
+  const d = depurarMenciones([{ tipo: 'atributo', texto_fuente: 'entera' }],
+    'entera la conversacion me parecio muy larga y confusa la verdad');
+  assert.deepStrictEqual(d.respuestas, [], 'una respuesta es corta por definición');
+  assert.deepStrictEqual(d.atributos, [], 'y tampoco está en posición de atributo');
+});
+
 await t('C4. brain.js cierra el ciclo en TODOS los caminos que registran', async () => {
   const { readFileSync } = await import('fs');
   const src = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');

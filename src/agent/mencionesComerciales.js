@@ -92,9 +92,32 @@ const CONECTORES_DE_ATRIBUTO = new Set(['de', 'del', 'con', 'sabor', 'sabores', 
  */
 export function esCandidatoDeAtributo(span, texto, anclas = []) {
   const previo = palabraPrevia(span, texto);
-  if (!previo) return false;                        // abre el mensaje: no modifica a nada
+  if (!previo) return false;                        // abre el mensaje: ver `esRespuestaDirecta`
   if (CONECTORES_DE_ATRIBUTO.has(previo)) return true;
   return anclas.some((a) => palabras(a).includes(previo));
+}
+
+/**
+ * ¿El mensaje ES la respuesta a una pregunta? ("Entera", "Leche entera", "Suiza")
+ *
+ * Cuando el backend pregunta —y ahora pregunta casi siempre— el cliente
+ * contesta con el nombre pelado de la opción. Ahí no hay conector delante,
+ * así que `esCandidatoDeAtributo` lo descartaba y la selección se perdía: en un
+ * smoke real, "Leche entera" no rescató nada y el bot volvió a pedir la leche.
+ *
+ * Estas menciones sirven para RESOLVER una selección que el borrador omitió,
+ * pero NUNCA para acusar al negocio de no vender algo. La asimetría es
+ * deliberada: recuperar una opción real es seguro; declarar inexistente lo que
+ * el cliente dijo, cuando en realidad era un saludo o una palabra suelta, no lo
+ * es. Por eso un "Hola" jamás puede producir "no manejamos hola".
+ */
+export function esRespuestaDirecta(span, texto) {
+  const t = normalizar(texto);
+  const s = normalizar(span);
+  if (!t || !s) return false;
+  if (palabraPrevia(span, texto)) return false;     // no abre el mensaje
+  // El mensaje ES la respuesta: el span cubre casi todo lo que se dijo.
+  return palabras(t).length <= palabras(s).length + 1;
 }
 
 /**
@@ -150,7 +173,9 @@ export function parsearMenciones(texto) {
  * normalizados a su forma verbatim recortada.
  */
 export function depurarMenciones(crudas, textoTurno) {
-  const salida = { atributos: [], productos: [], notas: [], descartadas: [] };
+  // `atributos`  → pueden resolver Y pueden declarar que algo no existe.
+  // `respuestas` → SOLO pueden resolver (ver `esRespuestaDirecta`).
+  const salida = { atributos: [], respuestas: [], productos: [], notas: [], descartadas: [] };
   const vistos = new Set();
   const anclas = [];
 
@@ -180,8 +205,14 @@ export function depurarMenciones(crudas, textoTurno) {
     // aunque el extractor la haya clasificado como atributo.
     if (esNotaDePreparacion(span, textoTurno)) { salida.notas.push(span); continue; }
 
-    // BARRERA 3 — posición gramatical de atributo (conector o encadenado).
+    // BARRERA 3 — posición gramatical de atributo (conector o encadenado), o
+    // bien el mensaje ENTERO es la respuesta a lo que se acaba de preguntar.
     if (!esCandidatoDeAtributo(span, textoTurno, anclas)) {
+      if (esRespuestaDirecta(span, textoTurno)) {
+        salida.respuestas.push(span);
+        anclas.push(span);
+        continue;
+      }
       salida.descartadas.push({ span, motivo: 'sin_posicion_de_atributo' });
       continue;
     }

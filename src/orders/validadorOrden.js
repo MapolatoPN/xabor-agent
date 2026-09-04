@@ -205,6 +205,11 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   const textoCiclo = String(opts.textoCiclo || '');
   const conFidelidad = Boolean(textoCiclo.trim());
   const mencionesTurno = Array.isArray(opts.menciones) ? opts.menciones : [];
+  // Respuestas directas a lo que el backend acaba de preguntar ("Entera",
+  // "Suiza"). Resuelven una selección omitida, pero NUNCA declaran que algo no
+  // existe: un mensaje que solo dice "Hola" no puede producir "no manejamos
+  // hola". Ver `esRespuestaDirecta` en mencionesComerciales.js.
+  const respuestasTurno = Array.isArray(opts.respuestas) ? opts.respuestas : [];
   const items = Array.isArray(borrador?.items) ? borrador.items : [];
   const salida = { ok: true, productos: [], productosNoExisten: [], gruposDelPedido: [], gruposPendientes: [] };
   if (!items.length) return salida;               // consulta pura: nada que validar
@@ -280,7 +285,8 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       ...e.ambiguos.map((a) => a.nombre),
     ].filter(Boolean).some((d) => spanEnTexto(span, d) || spanEnTexto(d, span));
 
-    for (const span of mencionesTurno) {
+    for (const span of [...mencionesTurno, ...respuestasTurno]) {
+      const soloResuelve = !mencionesTurno.includes(span);
       // 1) ¿algún artículo del pedido ya la representa? Entonces está dicha.
       if (estados.some((e) => representadaEn(e, span))) continue;
 
@@ -316,8 +322,10 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // se adivina cuál la recibe: la mención queda sin asignar y el grupo
         // aparece como faltante, que es la pregunta que el cliente SÍ puede
         // contestar. Fail-closed, sin callejón sin salida.
-      } else {
+      } else if (!soloResuelve) {
         // 5) Ningún artículo la representa ni la resuelve: el negocio no la maneja.
+        // Solo las menciones EN POSICIÓN de atributo llegan aquí; una respuesta
+        // directa que no casó con nada se descarta en silencio.
         mencionesNoResueltas.push({
           codigo: RECHAZOS.MENCION_NO_RESUELTA, texto: span,
           productos: [...new Set(estados.map((e) => e.producto.nombre))],
