@@ -3,6 +3,7 @@ import { getIntegracion, broadcastNegocio } from '../server.js';
 import { construirSystemPrompt, construirBloqueModoComercial, BLOQUE_REGLAS_CONTEXTO_VISUAL, hayContextoVisual } from './prompts.js';
 import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido, marcarPreviewNoConfirmable,
          verPreviewPedido, verPreviewConfirmable, restaurarPreviewPedido, invalidarPreviewPedido,
+         marcarOrdenConfirmada, yaConfirmadaAntes,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
 import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones } from './mencionesComerciales.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
@@ -129,6 +130,9 @@ async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
     return { texto: '', orden: null, sessionId, duplicada: true };
   }
   console.log(`[TXN] evento=confirmacion_desde_snapshot negocio=${negocioId} total=${tomado.total}`);
+  // Queda constancia de QUÉ pedido confirmó, no solo de que confirmó algo: un
+  // snapshot NUEVO del mismo pedido ya no puede volver a cobrarse.
+  marcarOrdenConfirmada(sessionId, tomado.fingerprint);
   // El carrito deja de estar en construcción: lo dicho hasta aquí pertenece a
   // ESTE pedido y no puede respaldar selecciones del siguiente.
   iniciarCicloPedido(sessionId);
@@ -513,6 +517,13 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
                   // repetiría el resumen una vez. Se anota la huella y el turno
                   // sigue siendo del modelo.
                   vigente.huellaBorrador = huella;
+                } else if (v.ok && yaConfirmadaAntes(sessionId, huellaOrden(v.orden))) {
+                  // Mismo caso por la otra puerta: el borrador sigue vivo en el
+                  // contexto del modelo después de registrar, así que la fase
+                  // determinista volvería a cotizar un pedido ya cobrado.
+                  console.warn(`[TXN] evento=preview_de_orden_ya_confirmada_bloqueado negocio=${negocioId}`);
+                  textoCatalogo = 'Ese pedido ya quedó registrado. '
+                    + 'Si quieres otro igual, dímelo y lo levanto de nuevo.';
                 } else if (v.ok) {
                   guardarPreviewPedido(sessionId, { ...snapshotDePreview(v), huellaBorrador: huella });
                   textoCatalogo = await resumenConExplicacion(v);
@@ -615,7 +626,15 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           // pipeline y el canal redacta el rechazo honesto.
         } else if (propuestaPreview) {
           const v = await previsualizarPedido(propuestaPreview, negocioId, { canal });
-          if (v.ok) {
+          if (v.ok && yaConfirmadaAntes(sessionId, huellaOrden(v.orden))) {
+            // El modelo reemitió el preview de un pedido YA COBRADO (tenía el
+            // resumen en su contexto). Ni snapshot ni resumen: eso es lo que
+            // convirtió un "sí" de cortesía en un segundo folio.
+            console.warn(`[TXN] evento=preview_de_orden_ya_confirmada_bloqueado negocio=${negocioId}`);
+            invalidarPreviewPedido(sessionId);
+            textoOficialPricing = 'Ese pedido ya quedó registrado. '
+              + 'Si quieres otro igual, dímelo y lo levanto de nuevo.';
+          } else if (v.ok) {
             guardarPreviewPedido(sessionId, snapshotDePreview(v));
             textoOficialPricing = await resumenConExplicacion(v);
           } else {

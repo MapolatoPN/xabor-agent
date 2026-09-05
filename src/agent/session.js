@@ -149,6 +149,45 @@ export function marcarPreviewNoConfirmable(sessionId) {
  * el segundo ve `consumido: true` y recibe null. Es el candado que impide dos
  * folios para un mismo carrito sin necesidad de un lock externo.
  */
+// ── UN "SÍ" NO PUEDE COBRAR DOS VECES EL MISMO PEDIDO ─────────────────────
+// XAB-0263: el cliente registró su pedido (XAB-0262), preguntó otra cosa
+// —"¿qué incluyen los desayunos sorpresa?"— y el modelo, con el resumen todavía
+// en su contexto, volvió a emitir <ORDEN_PREVIEW> del pedido YA COBRADO. El
+// backend construyó un snapshot confirmable NUEVO, reimprimió el resumen, el
+// cliente dijo "Sí" y se registró un segundo folio idéntico.
+//
+// El consumo atómico funcionaba: protegía contra dos "sí" sobre el MISMO
+// snapshot. No protegía contra un snapshot NUEVO del MISMO pedido.
+//
+// Guarda de UN SOLO USO: la primera vez que reaparece un pedido ya confirmado
+// se bloquea y se le dice al cliente que ya quedó registrado; si de verdad
+// quiere otro igual, su siguiente petición pasa. Bloquearlo para siempre
+// impediría repetir un pedido, que es legítimo y frecuente.
+
+/** Deja constancia de que el cliente ya confirmó exactamente este pedido. */
+export function marcarOrdenConfirmada(sessionId, fingerprint) {
+  if (!fingerprint) return;
+  const session = getSession(sessionId);
+  if (!Array.isArray(session.ordenesConfirmadas)) session.ordenesConfirmadas = [];
+  if (!session.ordenesConfirmadas.includes(fingerprint)) session.ordenesConfirmadas.push(fingerprint);
+  if (session.ordenesConfirmadas.length > 5) session.ordenesConfirmadas.shift();
+  session.actualizado_en = new Date().toISOString();
+}
+
+/**
+ * ¿Este pedido ya lo confirmó el cliente? CONSUME la marca: se avisa una vez y
+ * la siguiente petición idéntica se toma como un pedido nuevo de verdad.
+ */
+export function yaConfirmadaAntes(sessionId, fingerprint) {
+  if (!fingerprint) return false;
+  const session = getSession(sessionId);
+  const i = (session.ordenesConfirmadas || []).indexOf(fingerprint);
+  if (i < 0) return false;
+  session.ordenesConfirmadas.splice(i, 1);
+  session.actualizado_en = new Date().toISOString();
+  return true;
+}
+
 export function consumirPreviewPedido(sessionId) {
   const session = getSession(sessionId);
   const snap = session.pedidoPreview;

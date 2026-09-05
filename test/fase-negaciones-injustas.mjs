@@ -187,6 +187,60 @@ await t('S2. el negocio transaccional de al lado SÍ cotiza', async () => {
   assert.ok(verPreviewConfirmable(SID), 'aquí sí queda confirmable');
 });
 
+// ═══ UN "SÍ" NO PUEDE COBRAR DOS VECES ═════════════════════════════════════
+// XAB-0263, real y con dinero: el cliente registró su pedido (XAB-0262),
+// preguntó otra cosa —"¿qué incluyen los desayunos sorpresa?"— y el modelo, con
+// el resumen todavía en su contexto, reemitió el preview del pedido YA COBRADO.
+// El backend construyó un snapshot confirmable NUEVO, reimprimió el resumen, el
+// cliente dijo "Sí" y se registró un segundo folio idéntico de $170.
+// El consumo atómico protegía contra dos "sí" sobre el MISMO snapshot; no
+// contra un snapshot NUEVO del MISMO pedido.
+await t('X1. tras registrar, reemitir el mismo pedido NO vuelve a cobrarlo', async () => {
+  const SID = 'dup-cobro'; deleteSession(SID);
+  const item = { nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] };
+  const cuerpo = { items: [item], modalidad: 'recoger', forma_pago: 'efectivo',
+    cliente: { nombre: 'Mario' } };
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify(cuerpo) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r1 = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel, recoger, efectivo, a nombre de Mario',
+    null, 'whatsapp', NEG, '5210000000012');
+  assert.match(r1.texto, /\$/, `debe cotizar la primera vez — ${r1.texto}`);
+  assert.ok(verPreviewConfirmable(SID), 'y quedar confirmable');
+
+  const r2 = await procesarMensaje(SID, 'Si', null, 'whatsapp', NEG, '5210000000012');
+  assert.ok(r2.orden, 'el primer "sí" SÍ registra');
+
+  // El cliente pregunta otra cosa y el modelo reemite el preview del pedido ya
+  // cobrado, exactamente como pasó en producción.
+  mock.encolarRespuesta('Con gusto.\n<ORDEN_PREVIEW>' + JSON.stringify(cuerpo) + '</ORDEN_PREVIEW>');
+  const r3 = await procesarMensaje(SID, 'Que incluyen los desayunos sorpresa?',
+    null, 'whatsapp', NEG, '5210000000012');
+  assert.match(r3.texto, /ya quedó registrado/i, `hay que decírselo, no recotizar — ${r3.texto}`);
+  assert.strictEqual(verPreviewConfirmable(SID), null,
+    'y sobre todo: NADA confirmable, o el siguiente "sí" cobra de nuevo');
+
+  // Sin preview confirmable, el "sí" es un turno normal: el modelo contesta.
+  mock.encolarRespuesta('Perfecto, te aviso cuando esté.');
+  const r4 = await procesarMensaje(SID, 'Si', null, 'whatsapp', NEG, '5210000000012');
+  assert.strictEqual(r4.orden, null, 'un "sí" de cortesía no puede crear un segundo folio');
+});
+
+await t('X2. pero repetir un pedido a propósito SÍ se puede', async () => {
+  const SID = 'dup-cobro';
+  const item = { nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] };
+  const cuerpo = { items: [item], modalidad: 'recoger', forma_pago: 'efectivo',
+    cliente: { nombre: 'Mario' } };
+  // La guarda es de UN SOLO USO: ya avisó una vez, así que este sí procede.
+  mock.encolarRespuesta('Claro.\n<ORDEN_PREVIEW>' + JSON.stringify(cuerpo) + '</ORDEN_PREVIEW>');
+  const r = await procesarMensaje(SID, 'Sí, quiero otro igual', null, 'whatsapp', NEG, '5210000000012');
+  assert.match(r.texto, /\$/, `pedir otro igual es legítimo y frecuente — ${r.texto}`);
+  assert.ok(verPreviewConfirmable(SID), 'y tiene que poder confirmarse');
+});
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
