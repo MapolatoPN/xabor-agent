@@ -427,6 +427,40 @@ export function mensajeBorradorParaCliente(resultado) {
   };
   const prods = resultado?.productos || [];
 
+  // ── Lo primero: el PRODUCTO mismo ──────────────────────────────────────
+  // Este tramo faltaba, y su ausencia no se veía: cuando lo único malo era el
+  // producto (no existe, está apagado en el catálogo o se acabó), la función
+  // devolvía null. `rc.ok` era false, sí, pero sin mensaje el backend no tenía
+  // con qué tomar el turno y la prosa del modelo salía intacta.
+  //
+  // Caso real: el cliente pidió un Bowl de Chilaquiles que estaba marcado como
+  // NO DISPONIBLE. El backend lo sabía —`producto_rechazado motivo=
+  // "no_disponible"`— y se calló. El modelo, sin nada que ofrecer y sin que
+  // nadie le dijera por qué, se inventó primero una regla de formato ("solo se
+  // sirven en plato") y al día siguiente una cotización de $225 por algo que
+  // jamás se podía registrar. El cliente confirmó, y hasta entonces falló.
+  //
+  // Callarse no es neutral: deja el hueco que el modelo rellena.
+  const inexistentes = (resultado?.productosNoExisten || [])
+    .map((x) => (typeof x === 'string' ? { nombre: x, estado: 'no_existe' } : x))
+    .filter((x) => x && x.nombre);
+  if (inexistentes.length) {
+    const apagados = inexistentes.filter((x) => x.estado === 'no_disponible' || x.estado === 'agotado');
+    const ajenos = inexistentes.filter((x) => !(x.estado === 'no_disponible' || x.estado === 'agotado'));
+    const frases = [];
+    if (apagados.length) {
+      // "Se acabó" y "está apagado" se le dicen distinto al cliente: uno es de
+      // hoy y el otro no. El catálogo distingue los dos, así que nosotros
+      // también.
+      const seAcabaron = apagados.filter((x) => x.estado === 'agotado').map((x) => x.nombre);
+      const noVan = apagados.filter((x) => x.estado !== 'agotado').map((x) => x.nombre);
+      if (seAcabaron.length) frases.push(`por hoy se nos acabó ${listar(seAcabaron)}`);
+      if (noVan.length) frases.push(`${listar(noVan)} no está disponible por ahora`);
+    }
+    if (ajenos.length) frases.push(`no manejamos ${listar(ajenos.map((x) => `"${x.nombre}"`))}`);
+    return `Una disculpa: ${listar(frases)}. ¿Te comparto lo que sí tenemos?`;
+  }
+
   // Frase única para "lo que falta por elegir": la usan tanto el tramo de
   // menciones imposibles como el de grupos requeridos, así que se escribe una
   // sola vez y nunca puede quedar duplicada ni divergir entre ambos.

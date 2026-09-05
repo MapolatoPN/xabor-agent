@@ -111,6 +111,47 @@ await t('B2. lo que de verdad NO existe se sigue negando', async () => {
   assert.match(msg, /Pechuga de pollo/, `con las opciones reales del grupo: ${msg}`);
 });
 
+// ═══ EL PRODUCTO MISMO: CALLARSE NO ES NEUTRAL ═════════════════════════════
+// Cuando lo único malo era el producto, `mensajeBorradorParaCliente` devolvía
+// null: rc.ok era false pero sin mensaje, así que el backend no tomaba el turno
+// y la prosa del modelo salía intacta. El cliente pidió un Bowl marcado NO
+// DISPONIBLE; el backend lo sabía y se calló; el modelo se inventó primero una
+// regla de formato ("solo se sirven en plato") y luego una cotización de $225
+// por algo que jamás se podía registrar, que el cliente llegó a confirmar.
+await t('P1. un producto apagado en el catálogo se dice, no se calla', async () => {
+  await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible)
+    VALUES ($1,$2,'Bowl de Chilaquiles',225,FALSE)`, [NEG, cDes]);
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Bowl de Chilaquiles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero un bowl de chilaquiles' });
+  assert.strictEqual(rc.ok, false, 'el borrador es inválido');
+  const msg = mensajeBorradorParaCliente(rc);
+  assert.ok(msg, 'un rc.ok=false SIN mensaje deja el turno al modelo: ahí nace la invención');
+  assert.match(msg, /Bowl de Chilaquiles/, msg);
+  assert.match(msg, /no está disponible/i, msg);
+});
+
+await t('P2. "se acabó hoy" y "está apagado" no se dicen igual', async () => {
+  await pool.query(`UPDATE menu_productos SET disponible=TRUE, agotado=TRUE
+    WHERE negocio_id=$1 AND nombre='Bowl de Chilaquiles'`, [NEG]);
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Bowl de Chilaquiles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero un bowl' });
+  assert.match(mensajeBorradorParaCliente(rc), /se nos acab/i,
+    'lo de hoy se dice como lo de hoy: el cliente puede volver mañana');
+  await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1 AND nombre='Bowl de Chilaquiles'`, [NEG]);
+});
+
+await t('P3. lo que no existe se sigue diciendo como lo que no existe', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Sushi de Kobe', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero sushi de kobe' });
+  const msg = mensajeBorradorParaCliente(rc);
+  assert.match(msg, /no manejamos/i, msg);
+  assert.doesNotMatch(msg, /disponible por ahora|se nos acab/i,
+    'no insinuar que existe algo que nunca existió');
+});
+
 // ═══ MODO SOLICITUD ════════════════════════════════════════════════════════
 await t('S1. un negocio en modo solicitud NO recibe total ni "¿confirmas?"', async () => {
   const NS = (await q1(`INSERT INTO negocios (nombre, slug) VALUES ('Solo Solicitud','negaciones-solicitud')
