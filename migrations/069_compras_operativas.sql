@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS fondos_compras (
   monto         numeric(12,2) NOT NULL CHECK (monto > 0),
   responsable   text,
   notas         text,
-  created_by    uuid,
+  created_by    text,
   created_at    timestamptz NOT NULL DEFAULT NOW(),
   updated_at    timestamptz NOT NULL DEFAULT NOW()
 );
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS compras_operativas (
   advertencias            jsonb NOT NULL DEFAULT '[]'::jsonb,
   notas                   text,
   numero_ticket           text,
-  created_by              uuid,
+  created_by              text,
   created_at              timestamptz NOT NULL DEFAULT NOW(),
   updated_at              timestamptz NOT NULL DEFAULT NOW(),
   confirmed_at            timestamptz,
