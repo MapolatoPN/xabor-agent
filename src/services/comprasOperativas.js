@@ -34,6 +34,13 @@ function confianza(v) {
   return Math.max(0, Math.min(1, n));
 }
 function fecha(v) {
+  // pg puede devolver columnas DATE como Date según el parser/configuración.
+  // Aceptamos ambos formatos para que validar una fila recién leída de DB no
+  // convierta una fecha válida en null al momento de confirmar.
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null;
+    return v.toISOString().slice(0, 10);
+  }
   if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
   const d = new Date(`${v}T00:00:00Z`);
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
