@@ -74,6 +74,14 @@ t('confirmar exige proveedor, fecha y total; un borrador puede estar incompleto'
   assert.doesNotThrow(() => normalizarCompra({ proveedor: 'A', fecha: '2026-09-04', total: 1 }, { confirmar: true }));
 });
 
+t('DATE devuelto por PostgreSQL sigue siendo válido al confirmar', () => {
+  assert.doesNotThrow(() => normalizarCompra({
+    proveedor: 'A', fecha: new Date('2026-09-04T00:00:00.000Z'), total: '125.50',
+  }, { confirmar: true }));
+  const n = normalizarCompra({ fecha: new Date('2026-09-04T00:00:00.000Z') });
+  assert.equal(n.fecha, '2026-09-04');
+});
+
 t('valores negativos o estados inventados no atraviesan el normalizador', () => {
   const n = normalizarCompra({ total: -20, subtotal: -1, tipo_pago: 'bitcoin', estado_factura: 'quiza' });
   assert.equal(n.total, null); assert.equal(n.subtotal, null);
