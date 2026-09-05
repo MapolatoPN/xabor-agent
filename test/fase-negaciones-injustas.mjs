@@ -187,6 +187,73 @@ await t('S2. el negocio transaccional de al lado SÍ cotiza', async () => {
   assert.ok(verPreviewConfirmable(SID), 'aquí sí queda confirmable');
 });
 
+// ═══ DOS COSAS PEGADAS EN UNA SOLA MENCIÓN ═════════════════════════════════
+// Mensaje real: "Unos chilaquiles mixtos Salsa suiza y chipotle Prensado y
+// panela en salsa si. Frijoles porfavor". El extractor devolvió "Prensado y
+// panela en salsa" como UN solo span. Cada mitad casa con el catálogo; el
+// pegote no casa con nada, y el backend respondió «no manejamos "Prensado y
+// panela en salsa"» — bloqueando un pedido enteramente correcto.
+const MIXTOS = await prod(cDes, 'Chilaquiles Mixtos', 205);
+const gProM = await gr(MIXTOS, 'Proteína', 0);
+for (const x of ['Huevos Estrellados', 'Chicharron Prensado', 'Bistec en Salsa',
+  'Queso Panela en Salsa', 'Chicharron Cuerito en Salsa']) await op(gProM, x);
+const gGuar = await gr(MIXTOS, 'Guarniciones', 1);
+for (const x of ['Frijolitos naturales', 'Frijolitos con chorizo',
+  'Papas a la mexicana', 'Miel y Mantequilla']) await op(gGuar, x);
+
+const valM = (mods, texto, menciones) => validarBorradorPedido(
+  { items: [{ nombre: 'Chilaquiles Mixtos', cantidad: 1, modificadores: mods }] },
+  NEG, { textoCiclo: texto, menciones });
+
+await t('C1. "Prensado y panela en salsa" son DOS proteínas, no una inexistente', async () => {
+  const rc = await valM(
+    [mod('Proteína', 'Chicharron Prensado', 'Queso Panela en Salsa'),
+      mod('Guarniciones', 'Papas a la mexicana')],
+    'chilaquiles mixtos prensado y panela en salsa con papas a la mexicana',
+    ['Prensado y panela en salsa']);
+  const msg = mensajeBorradorParaCliente(rc);
+  assert.doesNotMatch(String(msg || ''), /no manejamos/i,
+    `las dos existen: no puede bloquear el pedido — ${msg}`);
+  assert.deepStrictEqual(rc.mencionesNoResueltas || [], [],
+    'la mención compuesta tiene que quedar resuelta');
+});
+
+await t('C2. una opción REAL con conector dentro no se parte', async () => {
+  // "Frijolitos con chorizo" y "Miel y Mantequilla" llevan conector en su
+  // nombre. Partir es el último recurso: resuelven enteras y nunca se cortan.
+  const rc = await valM(
+    [mod('Proteína', 'Chicharron Prensado'), mod('Guarniciones', 'Frijolitos con chorizo')],
+    'chilaquiles mixtos con prensado y frijolitos con chorizo',
+    ['Frijolitos con chorizo', 'Miel y Mantequilla']);
+  assert.deepStrictEqual(rc.mencionesNoResueltas || [], [],
+    'un nombre con "con" o "y" dentro sigue siendo un solo nombre');
+});
+
+await t('C3. el diminutivo también puede estar en el MENÚ', async () => {
+  // Al revés que "pollito": aquí el catálogo dice "Frijolitos" y el cliente
+  // escribe "Frijoles". Como hay DOS clases de frijolitos, lo correcto es
+  // preguntar cuál — nunca decir que no se manejan.
+  const rc = await valM(
+    [mod('Proteína', 'Chicharron Prensado')],
+    'chilaquiles mixtos con prensado y frijoles',
+    ['Frijoles']);
+  const msg = String(mensajeBorradorParaCliente(rc) || '');
+  assert.doesNotMatch(msg, /no manejamos "?Frijoles/i, `los tienen: ${msg}`);
+  assert.strictEqual((rc.mencionesNoResueltas || []).length, 0,
+    '"Frijoles" no puede quedar como algo que el negocio no maneja');
+});
+
+await t('C4. lo que de verdad no existe se sigue diciendo, y sin el conector', async () => {
+  const rc = await valM(
+    [mod('Proteína', 'Chicharron Prensado'), mod('Guarniciones', 'Papas a la mexicana')],
+    'chilaquiles mixtos con prensado y langosta, papas a la mexicana',
+    ['Prensado y langosta']);
+  const msg = String(mensajeBorradorParaCliente(rc) || '');
+  assert.match(msg, /langosta/i, `hay que decirlo — ${msg}`);
+  assert.doesNotMatch(msg, /Prensado y langosta/i,
+    `se nombra la parte que no existe, no el pegote entero: ${msg}`);
+});
+
 // ═══ UN "SÍ" NO PUEDE COBRAR DOS VECES ═════════════════════════════════════
 // XAB-0263, real y con dinero: el cliente registró su pedido (XAB-0262),
 // preguntó otra cosa —"¿qué incluyen los desayunos sorpresa?"— y el modelo, con

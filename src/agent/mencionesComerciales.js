@@ -103,6 +103,52 @@ export function sinDiminutivo(p) {
   return null;
 }
 
+/**
+ * ¿Estas dos palabras son la misma, mirando el diminutivo por AMBOS lados?
+ *
+ * El diminutivo puede estar en cualquiera de los dos. Ayer el cliente decía
+ * "pollito" y el menú "Pechuga de pollo"; hoy el menú dice "Frijolitos
+ * naturales" y el cliente escribe "Frijoles". Recortar solo del lado del
+ * cliente dejaba el segundo caso fuera —raíz de "frijoles" es "frijol", la de
+ * "frijolitos" es "frijolit"— y el pedido se bloqueaba por una guarnición que
+ * el catálogo sí tiene.
+ */
+export function mismaPalabraFlexible(a, b) {
+  const ra = raizPalabra(a), rb = raizPalabra(b);
+  if (ra === rb) return true;
+  const da = sinDiminutivo(a), db = sinDiminutivo(b);
+  if (da && raizPalabra(da) === rb) return true;
+  if (db && raizPalabra(db) === ra) return true;
+  if (da && db && raizPalabra(da) === raizPalabra(db)) return true;
+  return false;
+}
+
+// Conectores que UNEN cosas distintas en una sola frase del cliente:
+// "Prensado y panela en salsa" son DOS proteínas, no una con nombre largo.
+// Los limites de palabra NO son decorativos: sin ellos la "e" de "Prensado"
+// partiria la frase por dentro. Solo separa un conector RODEADO de espacios.
+const CONECTORES_DE_LISTA = /(?:\s*[,;]\s*|\s+(?:y|e|con|mas|más|tambien|también)\s+)/i;
+
+/**
+ * Parte una mención en las cosas que de verdad nombra.
+ *
+ * El extractor a veces devuelve un span que abarca dos selecciones unidas por
+ * un conector. Cada mitad casa con el catálogo; el pegote no casa con nada, y
+ * el backend acababa diciéndole al cliente «no manejamos "Prensado y panela en
+ * salsa"» cuando maneja las dos cosas.
+ *
+ * Devuelve [] si no hay nada que partir, para que quien llame sepa que ya
+ * probó la mención entera y no repita trabajo.
+ */
+export function partirMencion(texto) {
+  const t = String(texto || '').trim();
+  if (!t) return [];
+  const partes = t.split(CONECTORES_DE_LISTA)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3);
+  return partes.length > 1 ? partes : [];
+}
+
 /** ¿Dos textos son la misma cosa salvo género/número? ("suizos" ≡ "Suiza") */
 export function mismaRaiz(a, b) {
   const pa = palabras(a).map(raizPalabra).filter(Boolean);

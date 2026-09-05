@@ -22,7 +22,7 @@ import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../se
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
-import { tieneRespaldo, spanEnTexto, normalizar } from '../agent/mencionesComerciales.js';
+import { tieneRespaldo, spanEnTexto, normalizar, partirMencion } from '../agent/mencionesComerciales.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -285,8 +285,32 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       ...e.ambiguos.map((a) => a.nombre),
     ].filter(Boolean).some((d) => spanEnTexto(span, d) || spanEnTexto(d, span));
 
-    for (const span of [...mencionesTurno, ...respuestasTurno]) {
-      const soloResuelve = !mencionesTurno.includes(span);
+    // ── Una mención puede traer DOS cosas pegadas ─────────────────────────
+    // El extractor devolvió "Prensado y panela en salsa" como un solo span. Cada
+    // mitad casa con el catálogo; el pegote no casa con nada, y el backend
+    // acababa diciendo «no manejamos "Prensado y panela en salsa"» y bloqueando
+    // un pedido correcto.
+    // Partir es el ÚLTIMO recurso, y el orden importa: hay opciones reales que
+    // llevan un conector dentro —"Frijolitos con chorizo", "Miel y Mantequilla"—
+    // y esas resuelven enteras aquí, así que nunca se parten.
+    const puedeResolverse = (span) => estados.some((e) => representadaEn(e, span))
+      || estados.some((e) => {
+        const r = resolverModificadoresLLM(e.grupos, [span]);
+        if (r.modificadores.length || r.ambiguos.length) return true;
+        return buscarOpcionPorMencion(e.grupos, span).estado !== 'sin_coincidencia';
+      });
+    const expandir = (lista) => lista.flatMap((span) => {
+      if (puedeResolverse(span)) return [span];
+      const partes = partirMencion(span);
+      // Solo se acepta el corte si alguna parte SÍ existe en el catálogo: eso
+      // prueba que había dos cosas, y no un nombre que el negocio no maneja.
+      return partes.length && partes.some(puedeResolverse) ? partes : [span];
+    });
+    const menciones = expandir(mencionesTurno);
+    const respuestas = expandir(respuestasTurno);
+
+    for (const span of [...menciones, ...respuestas]) {
+      const soloResuelve = !menciones.includes(span);
       // 1) ¿algún artículo del pedido ya la representa? Entonces está dicha.
       if (estados.some((e) => representadaEn(e, span))) continue;
 

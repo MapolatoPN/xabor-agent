@@ -13,7 +13,7 @@
 // disponibilidad) sale de la base de datos del propio negocio. Nada de lo
 // que mande el cliente HTTP influye en el precio.
 import { pool } from './database.js';
-import { raizPalabra, sinDiminutivo } from '../agent/mencionesComerciales.js';
+import { raizPalabra, sinDiminutivo, mismaPalabraFlexible } from '../agent/mencionesComerciales.js';
 
 export class ModificadoresError extends Error {
   constructor(mensaje, codigo) {
@@ -211,12 +211,15 @@ export function buscarOpcionPorMencion(grupos, mencion) {
   // nada, un catálogo que SÍ tiene Carnitas ya acertó arriba y aquí no se
   // llega. Sigue exigiendo candidato único: si encaja en dos, se pregunta.
   if (!candidatos.length) {
-    const base = buscado.split(' ').map((w) => sinDiminutivo(w) || w).join(' ');
-    const baseRaiz = base !== buscado ? raizDe(base) : '';
-    if (baseRaiz) {
+    // El diminutivo puede estar en CUALQUIERA de los dos lados. Ayer el cliente
+    // decía "pollito" y el menú "Pechuga de pollo"; hoy el menú dice "Frijolitos
+    // naturales" y el cliente escribe "Frijoles". Mirar un solo lado dejaba
+    // fuera la mitad de los casos.
+    const palabrasBuscado = buscado.split(' ').filter((w) => w.length >= 4);
+    if (palabrasBuscado.length) {
       candidatos = universo.filter((x) => {
-        const r = raizDe(x.norm);
-        return r === baseRaiz || contienePalabra(r, baseRaiz) || contienePalabra(baseRaiz, r);
+        const pal = x.norm.split(' ').filter((w) => w.length >= 4);
+        return palabrasBuscado.every((b) => pal.some((w) => mismaPalabraFlexible(b, w)));
       });
     }
   }
