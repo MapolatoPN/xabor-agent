@@ -59,10 +59,11 @@ CREATE TABLE IF NOT EXISTS compras_operativas (
 
 -- El checksum se calcula sobre la imagen normalizada (sin EXIF). Evita que un
 -- mismo ticket se registre dos veces dentro del mismo negocio. El mismo archivo
--- en dos tenants es independiente por diseño.
+-- en dos tenants es independiente por diseño. Un borrador cancelado deja de
+-- bloquear un nuevo escaneo: cancelar significa que ese intento se descartó.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_compras_operativas_ticket_checksum
   ON compras_operativas (negocio_id, ticket_checksum)
-  WHERE ticket_checksum IS NOT NULL;
+  WHERE ticket_checksum IS NOT NULL AND estado <> 'cancelada';
 
 CREATE INDEX IF NOT EXISTS idx_compras_operativas_negocio_fecha
   ON compras_operativas (negocio_id, fecha DESC, created_at DESC);
