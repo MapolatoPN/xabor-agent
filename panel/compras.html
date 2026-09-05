@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Xabor · Compras</title>
+<style>
+:root{--orange:#ff6b35;--bg:#f5f3ef;--surface:#fff;--border:#e5e2da;--text:#1d1d1d;--muted:#777;--ok:#15803d;--warn:#b45309;--danger:#b91c1c;--dark:#1c1c1c}
+*{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+header{position:sticky;top:0;z-index:20;background:rgba(245,243,239,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:13px max(16px,env(safe-area-inset-right)) 13px max(16px,env(safe-area-inset-left));display:flex;align-items:center;gap:12px}
+.logo{font-weight:900;letter-spacing:.7px;color:var(--orange)} .logo span{color:var(--dark)} header .grow{flex:1} header a{font-size:.82rem;color:#555;text-decoration:none}
+main{max-width:1100px;margin:auto;padding:22px 18px 50px}.title{font-size:1.45rem;font-weight:850;margin:0}.sub{color:var(--muted);margin:4px 0 20px;font-size:.9rem}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}.card,.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px}.card{padding:15px}.card .k{font-size:.72rem;text-transform:uppercase;letter-spacing:.45px;color:var(--muted);font-weight:750}.card .v{font-size:1.35rem;font-weight:850;margin-top:5px}.card .s{font-size:.72rem;color:var(--muted);margin-top:4px}
+.actions{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin:0 0 16px}.panel{padding:17px}.panel h2{font-size:1rem;margin:0 0 8px}.panel p{font-size:.82rem;color:var(--muted);margin:0 0 12px;line-height:1.4}
+button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-weight:750;font-size:.87rem;cursor:pointer}.primary{background:var(--orange);color:#fff}.secondary{background:var(--dark);color:#fff}.ghost{background:#fff;border:1px solid var(--border);color:var(--text)}button:disabled{opacity:.45;cursor:not-allowed}.ticket-button{display:flex;align-items:center;justify-content:center;min-height:54px;font-size:1rem;width:100%}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}input,select,textarea{width:100%;border:1px solid var(--border);background:#fff;border-radius:9px;padding:9px 10px;font:inherit;color:var(--text)}.filters input,.filters select{width:auto;min-width:140px}.filters .q{min-width:220px;flex:1}
+.table{overflow:auto;border:1px solid var(--border);border-radius:14px;background:#fff}table{width:100%;border-collapse:collapse;min-width:720px}th,td{padding:11px 12px;border-bottom:1px solid #eee;text-align:left;font-size:.83rem}th{font-size:.7rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);background:#faf9f7}tr:last-child td{border-bottom:0}.money{font-weight:800}.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:.69rem;font-weight:800}.borrador{background:#fef3c7;color:#92400e}.confirmada{background:#dcfce7;color:#166534}.cancelada{background:#fee2e2;color:#991b1b}.facturado{background:#dcfce7;color:#166534}.pendiente,.no_facturado{background:#fff1f2;color:#9f1239}
+.empty{padding:30px;text-align:center;color:var(--muted)}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-end;justify-content:center;z-index:50}.overlay.open{display:flex}.modal{background:#fff;width:min(820px,100%);max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px}.modal-head{display:flex;align-items:center;gap:10px;margin-bottom:16px}.modal-head h3{margin:0;font-size:1.1rem}.modal-head .grow{flex:1}.x{font-size:1.1rem;background:transparent;padding:8px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:11px}.field label{font-size:.72rem;font-weight:750;color:var(--muted);display:block;margin:0 0 4px}.full{grid-column:1/-1}.items{margin-top:15px}.item{display:grid;grid-template-columns:2fr .7fr .8fr 1fr auto;gap:7px;align-items:end;padding:9px 0;border-bottom:1px solid #eee}.item label{font-size:.66rem;color:var(--muted);display:block;margin-bottom:3px}.item button{padding:8px}.modal-actions{position:sticky;bottom:-20px;background:#fff;border-top:1px solid #eee;margin:18px -20px -20px;padding:13px 20px;display:flex;justify-content:flex-end;gap:8px}.warning{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:10px;padding:9px 11px;font-size:.78rem;margin:10px 0}.ticket-preview{max-height:180px;max-width:100%;border-radius:10px;display:none;margin:8px auto 12px}.spinner{display:inline-block;width:15px;height:15px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}.toast{position:fixed;right:18px;bottom:18px;z-index:100;background:#222;color:#fff;padding:11px 14px;border-radius:10px;display:none;max-width:360px;font-size:.84rem}.toast.error{background:#991b1b}.hint{font-size:.74rem;color:var(--muted)}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}.actions{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.full{grid-column:auto}.item{grid-template-columns:1fr 1fr}.item .desc,.item .cat{grid-column:1/-1}.filters input,.filters select{min-width:0;flex:1}.modal{padding-bottom:24px}}
+</style>
+</head>
+<body>
+<header><div class="logo">X<span>ABOR</span></div><div class="grow"></div><a href="/">← Panel</a></header>
+<main>
+  <h1 class="title">Compras y tickets</h1>
+  <div class="sub">Fotografía el ticket, revisa lo que Xabor detectó y confirma. La IA nunca registra una compra sin tu revisión.</div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Transferido</div><div class="v" id="r-transferido">$0</div><div class="s">fondo para compras</div></div>
+    <div class="card"><div class="k">Comprobado</div><div class="v" id="r-comprobado">$0</div><div class="s">compras confirmadas</div></div>
+    <div class="card"><div class="k">Por comprobar</div><div class="v" id="r-saldo">$0</div><div class="s">transferido menos compras</div></div>
+    <div class="card"><div class="k">Sin factura</div><div class="v" id="r-sinfactura">$0</div><div class="s" id="r-sinfactura-count">0 tickets</div></div>
+  </div>
+
+  <div class="actions">
+    <section class="panel">
+      <h2>📷 Registrar compra con ticket</h2>
+      <p>Funciona desde el celular. Xabor extrae proveedor, fecha, total y renglones; tú corriges lo necesario antes de confirmar.</p>
+      <input id="ticket-file" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden>
+      <button class="primary ticket-button" id="btn-ticket" onclick="document.getElementById('ticket-file').click()">Tomar foto del ticket</button>
+      <div class="hint" style="margin-top:8px">JPG, PNG o WEBP. La foto se guarda privada y sin metadatos EXIF/GPS.</div>
+    </section>
+    <section class="panel">
+      <h2>💸 Fondo de compras</h2>
+      <p>Registra dinero entregado al responsable. No se cuenta como gasto hasta que haya compras confirmadas.</p>
+      <button class="secondary" onclick="abrirFondo()">Registrar transferencia</button>
+    </section>
+  </div>
+
+  <div class="filters">
+    <input class="q" id="f-q" placeholder="Proveedor o número de ticket" oninput="debounceLista()">
+    <select id="f-estado" onchange="cargarLista()"><option value="">Todos</option><option value="confirmada">Confirmadas</option><option value="borrador">Borradores</option><option value="cancelada">Canceladas</option></select>
+    <select id="f-factura" onchange="cargarLista()"><option value="">Factura: todas</option><option value="no_facturado">No facturado</option><option value="pendiente">Pendiente</option><option value="facturado">Facturado</option></select>
+    <button class="ghost" onclick="cargarTodo()">Actualizar</button>
+  </div>
+
+  <div class="table"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Total</th><th>Pago</th><th>Factura</th><th>Estado</th><th></th></tr></thead><tbody id="tbody"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody></table></div>
+</main>
+
+<div class="overlay" id="editor-overlay"><div class="modal">
+  <div class="modal-head"><h3>Revisar compra</h3><div class="grow"></div><button class="x" onclick="cerrarEditor()">✕</button></div>
+  <img class="ticket-preview" id="ticket-preview" alt="Vista previa del ticket">
+  <div id="warnings"></div>
+  <div class="grid">
+    <div class="field"><label>Proveedor *</label><input id="e-proveedor"></div>
+    <div class="field"><label>Fecha *</label><input id="e-fecha" type="date"></div>
+    <div class="field"><label>Total *</label><input id="e-total" type="number" step="0.01" min="0"></div>
+    <div class="field"><label>Subtotal</label><input id="e-subtotal" type="number" step="0.01" min="0"></div>
+    <div class="field"><label>Impuestos</label><input id="e-impuestos" type="number" step="0.01" min="0"></div>
+    <div class="field"><label>Número de ticket</label><input id="e-numero"></div>
+    <div class="field"><label>Tipo de compra</label><select id="e-pago"><option value="contado">Contado</option><option value="credito">Crédito</option></select></div>
+    <div class="field"><label>Factura</label><select id="e-factura"><option value="no_facturado">No facturado</option><option value="pendiente">Pendiente de factura</option><option value="facturado">Facturado</option></select></div>
+    <div class="field full"><label>Notas</label><textarea id="e-notas" rows="2"></textarea></div>
+  </div>
+  <div class="items"><div style="display:flex;align-items:center"><strong>Conceptos</strong><div style="flex:1"></div><button class="ghost" onclick="agregarItem()">+ renglón</button></div><div id="items"></div></div>
+  <div class="modal-actions"><button class="ghost" onclick="guardarBorrador()">Guardar borrador</button><button class="primary" onclick="confirmarActual()">Confirmar compra</button></div>
+</div></div>
+
+<div class="overlay" id="fondo-overlay"><div class="modal" style="max-width:520px">
+  <div class="modal-head"><h3>Registrar fondo de compras</h3><div class="grow"></div><button class="x" onclick="cerrarFondo()">✕</button></div>
+  <div class="grid"><div class="field"><label>Fecha</label><input id="fondo-fecha" type="date"></div><div class="field"><label>Monto *</label><input id="fondo-monto" type="number" step="0.01" min="0"></div><div class="field full"><label>Responsable</label><input id="fondo-responsable" placeholder="Ej. Papá"></div><div class="field full"><label>Notas</label><textarea id="fondo-notas" rows="2"></textarea></div></div>
+  <div class="modal-actions"><button class="ghost" onclick="cerrarFondo()">Cancelar</button><button class="primary" onclick="guardarFondo()">Registrar</button></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+let token = sessionStorage.getItem('xabor_token') || '';
+let compraActual = null; let categorias = []; let debounce = null;
+const money = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(Number(n||0));
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(url, opts={}){
+  const headers={...(opts.body?{'Content-Type':'application/json'}:{}),...(token?{'Authorization':`Bearer ${token}`}:{}) ,...(opts.headers||{})};
+  const r=await fetch(url,{...opts,headers,credentials:'same-origin'});
+  if(r.status===401){location.href='/login.html?redirect=/compras.html';return null}
+  if(!r.ok){let d={};try{d=await r.json()}catch{};throw new Error(d.error||`Error ${r.status}`)}
+  return r.status===204?null:r.json();
+}
+function toast(msg,error=false){const e=document.getElementById('toast');e.textContent=msg;e.className='toast'+(error?' error':'');e.style.display='block';setTimeout(()=>e.style.display='none',3500)}
+window.addEventListener('DOMContentLoaded',async()=>{try{const c=await api('/api/admin/compras/categorias');categorias=c?.categorias||[];await cargarTodo()}catch(e){toast(e.message,true)}});
+async function cargarTodo(){await Promise.all([cargarResumen(),cargarLista()])}
+async function cargarResumen(){const r=await api('/api/admin/compras/resumen');if(!r)return;document.getElementById('r-transferido').textContent=money(r.transferido);document.getElementById('r-comprobado').textContent=money(r.comprobado);document.getElementById('r-saldo').textContent=money(r.saldo_por_comprobar);document.getElementById('r-sinfactura').textContent=money(r.sin_factura_monto);document.getElementById('r-sinfactura-count').textContent=`${r.sin_factura_count||0} ticket${r.sin_factura_count===1?'':'s'}`}
+function debounceLista(){clearTimeout(debounce);debounce=setTimeout(cargarLista,300)}
+async function cargarLista(){const p=new URLSearchParams({size:'100'});const q=document.getElementById('f-q').value.trim(),e=document.getElementById('f-estado').value,f=document.getElementById('f-factura').value;if(q)p.set('q',q);if(e)p.set('estado',e);if(f)p.set('estado_factura',f);const d=await api('/api/admin/compras?'+p);const body=document.getElementById('tbody');if(!d?.compras?.length){body.innerHTML='<tr><td colspan="7" class="empty">Todavía no hay compras con estos filtros.</td></tr>';return}body.innerHTML=d.compras.map(c=>`<tr><td>${esc(c.fecha||'—')}</td><td>${esc(c.proveedor||'Sin revisar')}</td><td class="money">${c.total==null?'—':money(c.total)}</td><td>${c.tipo_pago==='credito'?'Crédito':'Contado'}</td><td><span class="badge ${esc(c.estado_factura)}">${esc(c.estado_factura.replaceAll('_',' '))}</span></td><td><span class="badge ${esc(c.estado)}">${esc(c.estado)}</span></td><td><button class="ghost" onclick="abrirCompra('${c.id}')">Ver</button></td></tr>`).join('')}
+
+document.getElementById('ticket-file').addEventListener('change',async ev=>{const file=ev.target.files?.[0];ev.target.value='';if(!file)return;const btn=document.getElementById('btn-ticket');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Analizando ticket…';try{const base64=await new Promise((ok,no)=>{const fr=new FileReader();fr.onload=()=>ok(fr.result);fr.onerror=no;fr.readAsDataURL(file)});const d=await api('/api/admin/compras/analizar-ticket',{method:'POST',body:JSON.stringify({base64,filename:file.name})});compraActual=d.compra;llenarEditor(compraActual);document.getElementById('ticket-preview').src=URL.createObjectURL(file);document.getElementById('ticket-preview').style.display='block';abrirEditor();toast('Ticket leído. Revisa antes de confirmar.')}catch(e){toast(e.message,true)}finally{btn.disabled=false;btn.textContent='Tomar foto del ticket'}});
+
+async function abrirCompra(id){try{compraActual=await api('/api/admin/compras/'+id);llenarEditor(compraActual);const img=document.getElementById('ticket-preview');if(compraActual.ticket_storage_key){img.src=`/api/admin/compras/${id}/ticket`;img.style.display='block'}else img.style.display='none';abrirEditor()}catch(e){toast(e.message,true)}}
+function abrirEditor(){document.getElementById('editor-overlay').classList.add('open')}function cerrarEditor(){document.getElementById('editor-overlay').classList.remove('open');compraActual=null}
+function setv(id,v){document.getElementById(id).value=v??''}
+function llenarEditor(c){setv('e-proveedor',c.proveedor);setv('e-fecha',c.fecha?.slice?.(0,10)||c.fecha);setv('e-total',c.total);setv('e-subtotal',c.subtotal);setv('e-impuestos',c.impuestos);setv('e-numero',c.numero_ticket);setv('e-pago',c.tipo_pago||'contado');setv('e-factura',c.estado_factura||'no_facturado');setv('e-notas',c.notas);const w=document.getElementById('warnings');w.innerHTML=(c.advertencias||[]).length?`<div class="warning"><strong>Revisa:</strong> ${c.advertencias.map(esc).join(' · ')}</div>`:'';document.getElementById('items').innerHTML='';(c.items||[]).forEach(i=>agregarItem(i));document.querySelectorAll('#editor-overlay input,#editor-overlay select,#editor-overlay textarea').forEach(x=>x.disabled=c.estado!=='borrador');document.querySelectorAll('#editor-overlay .modal-actions button').forEach(x=>x.style.display=c.estado==='borrador'?'':'none')}
+function categoriaOptions(actual){const lista=[...new Set([actual,...categorias].filter(Boolean))];return '<option value="">Sin categoría</option>'+lista.map(c=>`<option ${c===actual?'selected':''}>${esc(c)}</option>`).join('')}
+function agregarItem(i={}){const row=document.createElement('div');row.className='item';row.innerHTML=`<div class="desc"><label>Descripción</label><input class="i-desc" value="${esc(i.descripcion||'')}"></div><div><label>Cant.</label><input class="i-cant" type="number" step="0.001" min="0" value="${i.cantidad??''}"></div><div><label>Importe</label><input class="i-importe" type="number" step="0.01" min="0" value="${i.importe??''}"></div><div class="cat"><label>Categoría</label><select class="i-cat">${categoriaOptions(i.categoria||i.categoria_sugerida)}</select></div><button class="ghost" title="Quitar">✕</button>`;row.querySelector('button').onclick=()=>row.remove();document.getElementById('items').appendChild(row)}
+function recoger(){const n=v=>v===''?null:Number(v);return{proveedor:document.getElementById('e-proveedor').value,fecha:document.getElementById('e-fecha').value,total:n(document.getElementById('e-total').value),subtotal:n(document.getElementById('e-subtotal').value),impuestos:n(document.getElementById('e-impuestos').value),numero_ticket:document.getElementById('e-numero').value,tipo_pago:document.getElementById('e-pago').value,estado_factura:document.getElementById('e-factura').value,notas:document.getElementById('e-notas').value,items:[...document.querySelectorAll('.item')].map(r=>({descripcion:r.querySelector('.i-desc').value,cantidad:n(r.querySelector('.i-cant').value),importe:n(r.querySelector('.i-importe').value),categoria:r.querySelector('.i-cat').value||null}))}}
+async function guardarBorrador(){if(!compraActual)return;try{compraActual=await api('/api/admin/compras/'+compraActual.id,{method:'PUT',body:JSON.stringify(recoger())});llenarEditor(compraActual);toast('Borrador guardado');await cargarTodo()}catch(e){toast(e.message,true)}}
+async function confirmarActual(){if(!compraActual)return;try{compraActual=await api('/api/admin/compras/'+compraActual.id,{method:'PUT',body:JSON.stringify(recoger())});compraActual=await api('/api/admin/compras/'+compraActual.id+'/confirmar',{method:'POST'});toast('Compra confirmada');cerrarEditor();await cargarTodo()}catch(e){toast(e.message,true)}}
+function abrirFondo(){document.getElementById('fondo-fecha').value=new Date().toISOString().slice(0,10);document.getElementById('fondo-overlay').classList.add('open')}function cerrarFondo(){document.getElementById('fondo-overlay').classList.remove('open')}
+async function guardarFondo(){try{await api('/api/admin/compras/fondos',{method:'POST',body:JSON.stringify({fecha:document.getElementById('fondo-fecha').value,monto:Number(document.getElementById('fondo-monto').value),responsable:document.getElementById('fondo-responsable').value,notas:document.getElementById('fondo-notas').value})});cerrarFondo();toast('Fondo registrado');await cargarResumen()}catch(e){toast(e.message,true)}}
+</script>
+</body>
+</html>
