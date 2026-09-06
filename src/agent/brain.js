@@ -3,7 +3,8 @@ import { getIntegracion, broadcastNegocio } from '../server.js';
 import { construirSystemPrompt, construirBloqueModoComercial, BLOQUE_REGLAS_CONTEXTO_VISUAL, hayContextoVisual } from './prompts.js';
 import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido, marcarPreviewNoConfirmable,
          verPreviewPedido, verPreviewConfirmable, restaurarPreviewPedido, invalidarPreviewPedido,
-         marcarOrdenConfirmada, yaConfirmadaAntes,
+         marcarOrdenConfirmada, yaConfirmadaAntes, esperandoDato, anotarPreguntaPendiente,
+         datosDelPedido, recordarDatoPedido,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
 import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones } from './mencionesComerciales.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
@@ -427,6 +428,31 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
         // obligatorio se había vuelto la llave que desactivaba la única defensa
         // que no dependía del modelo. Lo que decide ahora es si HAY ítems.
         const conItems = (b) => Array.isArray(b?.items) && b.items.length > 0;
+
+        // ── El backend lee la RESPUESTA a la pregunta que él mismo hizo ──────
+        // Bucle real: pidió la dirección, el cliente escribió "Boulevard Cbtis
+        // 34 #208 Col Guillén", y volvió a pedirla. El dato solo viajaba dentro
+        // del borrador del modelo; si el modelo no lo ponía, nadie lo veía y el
+        // cliente contestaba a una pregunta que nadie estaba oyendo.
+        // Aquí NO hay modelo ni llamada extra: la pregunta la hizo el backend,
+        // así que la respuesta le toca a él.
+        const pendiente = esperandoDato(sessionId);
+        if (pendiente) {
+          const dicho = String(mensajeUsuario || '').trim();
+          if (pendiente === 'modalidad') {
+            // Contra las palabras de la pregunta, no contra una lista libre.
+            if (/\bdomicilio\b|\benv[íi]o\b|\bllev[ae]/i.test(dicho)) {
+              recordarDatoPedido(sessionId, 'modalidad', 'entrega a domicilio');
+            } else if (/\brecoger\b|\btienda\b|\bpaso\b|\bpasar[ée]?\b/i.test(dicho)) {
+              recordarDatoPedido(sessionId, 'modalidad', 'recoger');
+            }
+          } else if (pendiente === 'direccion') {
+            // Una dirección no se valida por forma —hay colonias sin número y
+            // referencias raras—, pero un "sí" o un "gracias" no es una calle.
+            const esRespuestaCorta = dicho.split(/\s+/).filter(Boolean).length < 3;
+            if (dicho && !esRespuestaCorta) recordarDatoPedido(sessionId, 'direccion', dicho.slice(0, 200));
+          }
+        }
         if (!conItems(borrador) && await mencionaProductoDelMenu(mensajeUsuario, negocioId)) {
           borrador = await extraerBorradorForzado(session, negocioId);
         }
@@ -493,12 +519,23 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               // cerrado— pero aquí estamos armándolo: dar por hecho que pasa a
               // recoger, o cobrarle envío sin que lo pidiera, es decidir por él.
               // Se pregunta antes de cualquier resumen.
+              // Lo que el cliente YA dijo y el backend capturó por su cuenta:
+              // el modelo puede omitirlo en su borrador, pero no puede borrarlo.
+              const recordado = datosDelPedido(sessionId);
+              if (!String(ordenBorrador.modalidad || '').trim() && recordado.modalidad) {
+                ordenBorrador.modalidad = recordado.modalidad;
+              }
+              if (!String(ordenBorrador.cliente?.direccion || '').trim() && recordado.direccion) {
+                ordenBorrador.cliente = { ...(ordenBorrador.cliente || {}), direccion: recordado.direccion };
+              }
               const modalidad = String(ordenBorrador.modalidad || '').toLowerCase();
               const esDomicilio = modalidad.includes('domicilio');
               if (!modalidad) {
                 textoCatalogo = '¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?';
+                anotarPreguntaPendiente(sessionId, 'modalidad');
               } else if (esDomicilio && !String(ordenBorrador.cliente?.direccion || '').trim()) {
                 textoCatalogo = '¿A qué dirección te lo enviamos? Necesito calle, número y colonia.';
+                anotarPreguntaPendiente(sessionId, 'direccion');
               }
 
               const vigente = verPreviewConfirmable(sessionId);

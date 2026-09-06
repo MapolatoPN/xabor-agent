@@ -58,6 +58,10 @@ function createSession(sessionId) {
 export function iniciarCicloPedido(sessionId) {
   const session = getSession(sessionId);
   session.cicloPedido = session.mensajes.length;
+  // El pedido anterior ya se cerró: su dirección y su forma de pago no pueden
+  // arrastrarse al siguiente sin que el cliente las vuelva a decir.
+  session.datosPedido = null;
+  session.esperandoDato = null;
   session.actualizado_en = new Date().toISOString();
   return session.cicloPedido;
 }
@@ -186,6 +190,45 @@ export function yaConfirmadaAntes(sessionId, fingerprint) {
   session.ordenesConfirmadas.splice(i, 1);
   session.actualizado_en = new Date().toISOString();
   return true;
+}
+
+// ── EL BACKEND LEE LAS RESPUESTAS A SUS PROPIAS PREGUNTAS ─────────────────
+// Bucle real: el backend pidió la dirección, el cliente la escribió —"Boulevard
+// Cbtis 34 #208 Col Guillén"— y el backend la volvió a pedir. Y otra vez. El
+// dato viajaba en el borrador del modelo, y si el modelo no lo ponía ahí, nadie
+// más lo veía; el cliente contestaba a una pregunta que nadie estaba oyendo.
+//
+// La pregunta la hace el backend, así que la respuesta también le toca a él.
+// Aquí NO hay modelo de por medio ni llamada extra: se recuerda qué se preguntó
+// y se lee lo que llega después. Lo recordado se fusiona con el borrador en
+// cada turno, así que un modelo olvidadizo ya no puede perder un dato dicho.
+
+/** Qué dato operativo está esperando el backend ('direccion', 'modalidad'...). */
+export function esperandoDato(sessionId) {
+  return getSession(sessionId).esperandoDato || null;
+}
+
+/** Deja anotado qué acaba de preguntar el backend. */
+export function anotarPreguntaPendiente(sessionId, campo) {
+  const session = getSession(sessionId);
+  session.esperandoDato = campo || null;
+  session.actualizado_en = new Date().toISOString();
+}
+
+/** Datos operativos ya dichos por el cliente y capturados por el backend. */
+export function datosDelPedido(sessionId) {
+  return getSession(sessionId).datosPedido || {};
+}
+
+/** Guarda un dato operativo dicho por el cliente. Vacío nunca sobreescribe. */
+export function recordarDatoPedido(sessionId, campo, valor) {
+  const v = String(valor || '').trim();
+  if (!campo || !v) return;
+  const session = getSession(sessionId);
+  if (!session.datosPedido) session.datosPedido = {};
+  session.datosPedido[campo] = v;
+  session.esperandoDato = null;
+  session.actualizado_en = new Date().toISOString();
 }
 
 export function consumirPreviewPedido(sessionId) {

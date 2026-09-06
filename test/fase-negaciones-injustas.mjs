@@ -29,7 +29,7 @@ const { validarBorradorPedido, mensajeBorradorParaCliente } = await import('../s
 const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
 const { tieneRespaldo, sinDiminutivo } = await import('../src/agent/mencionesComerciales.js');
 const { procesarMensaje } = await import('../src/agent/brain.js');
-const { deleteSession, verPreviewConfirmable } = await import('../src/agent/session.js');
+const { deleteSession, verPreviewConfirmable, datosDelPedido } = await import('../src/agent/session.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -306,6 +306,69 @@ await t('X2. pero repetir un pedido a propósito SÍ se puede', async () => {
   const r = await procesarMensaje(SID, 'Sí, quiero otro igual', null, 'whatsapp', NEG, '5210000000012');
   assert.match(r.texto, /\$/, `pedir otro igual es legítimo y frecuente — ${r.texto}`);
   assert.ok(verPreviewConfirmable(SID), 'y tiene que poder confirmarse');
+});
+
+// ═══ EL BACKEND LEE LA RESPUESTA A SU PROPIA PREGUNTA ══════════════════════
+// Bucle real: el backend pidió la dirección, el cliente escribió "Boulevard
+// Cbtis 34 #208 Col Guillén", y el backend la volvió a pedir. Y otra vez. El
+// dato solo viajaba dentro del borrador del modelo; si el modelo no lo ponía,
+// nadie lo veía y el cliente contestaba a una pregunta que nadie oía.
+await t('A1. la dirección dicha NO se vuelve a pedir', async () => {
+  const SID = 'dir-bucle'; deleteSession(SID);
+  const item = { nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] };
+  // Turno 1: pide a domicilio, sin dirección todavía.
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [item], modalidad: 'entrega a domicilio' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r1 = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel, a domicilio',
+    null, 'whatsapp', NEG, '5210000000013');
+  assert.match(r1.texto, /direcci[óo]n/i, `el backend tiene que pedirla — ${r1.texto}`);
+
+  // Turno 2: el cliente la da y el modelo NO la pone en su borrador.
+  mock.encolarRespuesta('Perfecto.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [item], modalidad: 'entrega a domicilio' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r2 = await procesarMensaje(SID, 'Boulevard Cbtis 34 #208 Col Guillén',
+    null, 'whatsapp', NEG, '5210000000013');
+  assert.doesNotMatch(r2.texto, /A qué dirección te lo enviamos/i,
+    `la dijo: volver a pedirla es el bucle — ${r2.texto}`);
+  assert.strictEqual(datosDelPedido(SID).direccion, 'Boulevard Cbtis 34 #208 Col Guillén',
+    'el backend tiene que haberla capturado él mismo');
+});
+
+await t('A2. un "sí" o un "gracias" NO se toman por una dirección', async () => {
+  const SID = 'dir-corta'; deleteSession(SID);
+  const item = { nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] };
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [item], modalidad: 'entrega a domicilio' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  await procesarMensaje(SID, 'Un combito a domicilio', null, 'whatsapp', NEG, '5210000000014');
+  mock.encolarRespuesta('Claro.');
+  await procesarMensaje(SID, 'Sí', null, 'whatsapp', NEG, '5210000000014');
+  assert.strictEqual(datosDelPedido(SID).direccion, undefined,
+    'guardar "Sí" como calle sería peor que preguntar otra vez');
+});
+
+await t('A3. la modalidad también se lee, contra las palabras de la pregunta', async () => {
+  const SID = 'modalidad-lee'; deleteSession(SID);
+  const item = { nombre: 'Combito de Chilaquiles', cantidad: 1,
+    modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] };
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({ items: [item] }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r1 = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel',
+    null, 'whatsapp', NEG, '5210000000015');
+  assert.match(r1.texto, /recoger|domicilio/i, r1.texto);
+  mock.encolarRespuesta('Perfecto.\n<PEDIDO_BORRADOR>' + JSON.stringify({ items: [item] }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r2 = await procesarMensaje(SID, 'Paso a recoger', null, 'whatsapp', NEG, '5210000000015');
+  assert.strictEqual(datosDelPedido(SID).modalidad, 'recoger', 'la respuesta la lee el backend');
+  assert.doesNotMatch(r2.texto, /recoger en tienda o prefieres/i,
+    `no puede volver a preguntar lo contestado — ${r2.texto}`);
 });
 
 mock.detener();
