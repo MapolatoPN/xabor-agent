@@ -371,6 +371,65 @@ await t('A3. la modalidad también se lee, contra las palabras de la pregunta', 
     `no puede volver a preguntar lo contestado — ${r2.texto}`);
 });
 
+// ═══ LA MODALIDAD LA DECIDE EL CLIENTE, NO EL MODELO ═══════════════════════
+// XAB-0271: el cliente nunca dijo si pasaba por su pedido o se lo llevaban. El
+// modelo escribió "recoger en tienda" en su borrador y, como el guard solo
+// preguntaba con el borrador VACÍO, la pregunta se saltó. El pedido quedó como
+// recoger, con costo_envio 0. Si ese cliente esperaba su comida en casa, nadie
+// se la iba a llevar.
+const itemM = () => ({ nombre: 'Combito de Chilaquiles', cantidad: 1,
+  modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Hotcakes o Waffles', 'Hotcakes'), mod('Topping', 'Miel')] });
+
+await t('M1. si el cliente no dijo modalidad, se le PREGUNTA aunque el modelo la invente', async () => {
+  const SID = 'modalidad-inventada'; deleteSession(SID);
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [itemM()], modalidad: 'recoger en tienda', forma_pago: 'efectivo' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'Quiero un combito suizo con pollo, hotcakes con miel',
+    null, 'whatsapp', NEG, '5210000000021');
+  assert.match(r.texto, /recoger en tienda o prefieres/i,
+    `el cliente no lo dijo: hay que preguntarlo — ${r.texto}`);
+  assert.strictEqual(verPreviewConfirmable(SID), null, 'y nada puede quedar confirmable todavía');
+});
+
+await t('M2. si el cliente SÍ lo dijo, no se le pregunta de más', async () => {
+  const SID = 'modalidad-dicha'; deleteSession(SID);
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [itemM()], modalidad: 'entrega a domicilio' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel, a domicilio',
+    null, 'whatsapp', NEG, '5210000000022');
+  assert.doesNotMatch(r.texto, /recoger en tienda o prefieres/i,
+    `lo dijo: preguntarlo otra vez es el bucle — ${r.texto}`);
+  assert.match(r.texto, /direcci[óo]n/i, `toca pedir la dirección — ${r.texto}`);
+});
+
+await t('M3. "para llevar" es que el cliente PASA por él, no que se lo lleven', async () => {
+  // En México "para llevar" es para llevárselo uno. Leerlo como domicilio le
+  // cobraría envío y mandaría un repartidor a alguien que iba a la tienda.
+  const SID = 'para-llevar'; deleteSession(SID);
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({ items: [itemM()] }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel, para llevar',
+    null, 'whatsapp', NEG, '5210000000023');
+  assert.doesNotMatch(r.texto, /direcci[óo]n/i,
+    `nadie va a llevárselo a su casa: no se le pide dirección — ${r.texto}`);
+});
+
+await t('M4. la forma de pago tampoco se da por dicha', async () => {
+  // Un pedido de tarjeta registrado como efectivo descuadra la caja.
+  const SID = 'pago-inventado'; deleteSession(SID);
+  mock.encolarRespuesta('Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [itemM()], modalidad: 'recoger', forma_pago: 'efectivo' }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'Un combito suizo con pollo, hotcakes con miel, paso a recoger',
+    null, 'whatsapp', NEG, '5210000000024');
+  assert.match(r.texto, /forma de pago|c[óo]mo deseas pagar/i,
+    `el cliente no eligió pago: hay que preguntarlo — ${r.texto}`);
+  assert.strictEqual(verPreviewConfirmable(SID), null, 'sin pago elegido no hay nada que confirmar');
+});
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);

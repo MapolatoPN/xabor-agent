@@ -6,7 +6,7 @@ import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido
          marcarOrdenConfirmada, yaConfirmadaAntes, esperandoDato, anotarPreguntaPendiente,
          datosDelPedido, recordarDatoPedido,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
-import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones } from './mencionesComerciales.js';
+import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespaldo } from './mencionesComerciales.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, pool } from '../services/database.js';
@@ -39,6 +39,13 @@ const MODELO = 'claude-haiku-4-5-20251001';
 // mucho dos reintentos, y si sigue fallando el error sube tal cual para que el
 // canal responda con honestidad. No duplica ejecuciones: solo se reintenta la
 // llamada al modelo, que no tiene efectos colaterales.
+// Cómo dice el cliente si pasa por su pedido o se lo llevan. Se comparan en
+// ESTE orden porque "para llevar" es, en México, que el cliente pasa por él:
+// leerlo como domicilio le cobraría envío y mandaría un repartidor a alguien
+// que iba a la tienda.
+const DICE_RECOGER = /\brecoger\b|\brecojo\b|\bpara llevar\b|\ben tienda\b|\bal local\b|\bmostrador\b|\bpas(o|ar[ée]?|amos)\s+(por|a)\b/i;
+const DICE_DOMICILIO = /\bdomicilio\b|\benv[íi]o\b|\benviar\b|\bmand(en|ar|a)\b|(me|nos)\s+lo\s+llev|llev\w*\s+a\s+(mi|la|el)\b|a\s+mi\s+casa\b/i;
+
 const REINTENTOS_LLM = 2;
 const esSobrecarga = (e) => e?.status === 529 || e?.status === 429 ||
   /overloaded|rate.?limit/i.test(String(e?.message || ''));
@@ -440,11 +447,14 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
         if (pendiente) {
           const dicho = String(mensajeUsuario || '').trim();
           if (pendiente === 'modalidad') {
-            // Contra las palabras de la pregunta, no contra una lista libre.
-            if (/\bdomicilio\b|\benv[íi]o\b|\bllev[ae]/i.test(dicho)) {
-              recordarDatoPedido(sessionId, 'modalidad', 'entrega a domicilio');
-            } else if (/\brecoger\b|\btienda\b|\bpaso\b|\bpasar[ée]?\b/i.test(dicho)) {
+            // "Para llevar" en Mexico es que el cliente PASA por su pedido, no
+            // que se lo lleven. Leerlo como domicilio le cobraria envio y
+            // mandaria un repartidor a alguien que iba a la tienda, asi que
+            // recoger se evalua PRIMERO y se queda con esa frase.
+            if (DICE_RECOGER.test(dicho)) {
               recordarDatoPedido(sessionId, 'modalidad', 'recoger');
+            } else if (DICE_DOMICILIO.test(dicho)) {
+              recordarDatoPedido(sessionId, 'modalidad', 'entrega a domicilio');
             }
           } else if (pendiente === 'direccion') {
             // Una dirección no se valida por forma —hay colonias sin número y
@@ -522,9 +532,38 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               // Lo que el cliente YA dijo y el backend capturó por su cuenta:
               // el modelo puede omitirlo en su borrador, pero no puede borrarlo.
               const recordado = datosDelPedido(sessionId);
-              if (!String(ordenBorrador.modalidad || '').trim() && recordado.modalidad) {
-                ordenBorrador.modalidad = recordado.modalidad;
+              const dichoPorElCliente = turnosUsuarioDelCiclo(sessionId).join(' \n ');
+
+              // LA MODALIDAD LA DECIDE EL CLIENTE, NO EL MODELO.
+              // XAB-0271: el cliente nunca dijo si pasaba o se lo llevaban, el
+              // modelo escribió "recoger en tienda" en su borrador, y como el
+              // guard solo preguntaba cuando el borrador venía VACÍO, la
+              // pregunta se saltó. El pedido quedó registrado como recoger, con
+              // costo_envio 0. Si ese cliente esperaba su comida en casa, nadie
+              // iba a llevársela.
+              // Ahora la palabra del modelo no cuenta: vale lo que el backend
+              // capturó al preguntar, o lo que el cliente dijo con sus propias
+              // palabras. Si no hay ninguna de las dos, se pregunta.
+              let modalidadReal = recordado.modalidad || '';
+              if (!modalidadReal) {
+                if (DICE_RECOGER.test(dichoPorElCliente)) modalidadReal = 'recoger';
+                else if (DICE_DOMICILIO.test(dichoPorElCliente)) modalidadReal = 'entrega a domicilio';
               }
+              if (String(ordenBorrador.modalidad || '').trim() && !modalidadReal) {
+                console.warn(`[TXN] evento=modalidad_sin_respaldo_descartada negocio=${negocioId}`
+                  + ` propuesta=${JSON.stringify(String(ordenBorrador.modalidad))}`);
+              }
+              ordenBorrador.modalidad = modalidadReal;
+
+              // La forma de pago corre el mismo riesgo y cuesta lo mismo: un
+              // pedido de tarjeta registrado como efectivo descuadra la caja.
+              const pagoPropuesto = String(ordenBorrador.forma_pago || '').trim();
+              if (pagoPropuesto && !tieneRespaldo(pagoPropuesto, dichoPorElCliente)) {
+                console.warn(`[TXN] evento=forma_pago_sin_respaldo_descartada negocio=${negocioId}`
+                  + ` propuesta=${JSON.stringify(pagoPropuesto)}`);
+                ordenBorrador.forma_pago = undefined;
+              }
+
               if (!String(ordenBorrador.cliente?.direccion || '').trim() && recordado.direccion) {
                 ordenBorrador.cliente = { ...(ordenBorrador.cliente || {}), direccion: recordado.direccion };
               }

@@ -153,7 +153,9 @@ await t('D3b. sin modalidad se PREGUNTA: no se da por hecho que pasa a recoger',
   const sinModalidad = { ...CON_DATOS }; delete sinModalidad.modalidad;
   mock.encolarRespuesta(borrador(COMPLETO, sinModalidad));
   mock.encolarRespuesta(menciones(attr('suiza')));
-  const r = await turno('d3b');
+  // El mensaje NO puede decir "para recoger": el backend lee las palabras del
+  // cliente, así que decirlo sería el caso contrario al que esta prueba fija.
+  const r = await turno('d3b', 'quiero un combito con salsa suiza, pechuga de pollo y nutella, pago en efectivo');
   assert.match(r.texto, /recoger|domicilio/i, r.texto);
   assert.strictEqual(verPreviewConfirmable('d3b'), null, 'nada confirmable sin saber cómo la recibe');
 });
@@ -162,7 +164,10 @@ await t('D3c. a domicilio SIN dirección se pide la dirección, no el pago', asy
   deleteSession('d3c');
   mock.encolarRespuesta(borrador(COMPLETO, { ...CON_DATOS, modalidad: 'entrega a domicilio' }));
   mock.encolarRespuesta(menciones(attr('suiza')));
-  const r = await turno('d3c');
+  // Lo pide el CLIENTE a domicilio: la modalidad ya no la decide el modelo, así
+  // que ponerla solo en su borrador mientras el cliente dice "para recoger"
+  // probaría lo contrario de lo que esta prueba quiere fijar.
+  const r = await turno('d3c', 'quiero un combito con salsa suiza, pechuga de pollo y nutella a domicilio, pago en efectivo');
   assert.match(r.texto, /direcci[óo]n/i, r.texto);
   assert.strictEqual(verPreviewConfirmable('d3c'), null, 'ni resumen ni confirmación sin dirección');
 });
