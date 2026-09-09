@@ -65,6 +65,10 @@ const clipMock = createServer((req, res) => {
         currency: 'MXN',
         metadata: { external_reference: creado.metadata?.external_reference || null },
         payment_request_url: `https://pago.mock.clip/${linkId}`,
+        // La reconsulta es el segundo intento de conocer la expiración
+        // efectiva: si tampoco la trae, el enlace se retiene igual. Mismo
+        // nombre que en la creación, por la misma razón (CLIP-D).
+        expires_at: creado.expires_at ?? null,
       }));
       return;
     }
@@ -74,10 +78,25 @@ const clipMock = createServer((req, res) => {
       body.__id = id;                       // para poder resolver el GET por SU id
       clipLlamadas.push(body);
       res.setHeader('Content-Type', 'application/json');
+      // `expires_at` NO es decorativo: desde el endurecimiento CLIP, si el
+      // proveedor no devuelve la expiración EFECTIVA del checkout que acaba de
+      // nacer, Xabor conserva la identidad del cobro pero NO entrega la URL
+      // ("expiracion_proveedor_no_verificable" -> fail closed). Un mock que la
+      // omite no simula a Clip: simula a un proveedor que incumple su propio
+      // contrato, y la suite entera se cae por una barrera que funciona.
+      //
+      // Y tiene que ser `expires_at`, no `expired_at`: son campos DISTINTOS y
+      // clip-api.js lo documenta (nota CLIP-D). `expires_at` es la frontera
+      // programada del contrato v2 y es la que se lee; `expired_at` pertenece
+      // al webhook y significa "instante en que YA expiró" -- deliberadamente
+      // NO se acepta como alias silencioso, para no volver a ocultar una URL
+      // válida. Se devuelve exactamente lo pedido, que es lo que hace Clip
+      // cuando el valor cae dentro de sus límites.
       res.end(JSON.stringify({
         payment_request_id: id,
         payment_request_url: `https://pago.mock.clip/${id}`,
         status: 'CHECKOUT',
+        expires_at: body.expires_at ?? null,
       }));
     } else {
       res.statusCode = 404;
@@ -116,6 +135,16 @@ await marcarProveedorPrincipal(SEED.negocioA, 'clip', SEED.superadminUsuarioId);
 // Se parte siempre sin rastros del namespace de la suite.
 await pool.query(`DELETE FROM pagos WHERE negocio_id = $1 AND pedido_folio LIKE 'XAB-9%'`, [SEED.negocioA]);
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE 'XAB-9%'`, [SEED.negocioA]);
+// El RECLAMO del folio vive aparte y SOBREVIVE al borrado del pedido: esa es
+// justamente su razón de ser en producción (un folio no se reutiliza jamás,
+// ni aunque el pedido desaparezca — migración 061). Pero aquí los folios son
+// fijos, así que sin limpiarlo la SEGUNDA corrida y todas las siguientes
+// encuentran el folio ya usado, `guardarPedidoActivo` no inserta nada, y la
+// suite se queda sin los pedidos que da por hechos: el atajo de enlace de
+// pago no halla nada que cobrar y el mensaje cae a la IA. Ese era el 11/16.
+// Esta línea faltaba porque la tabla llegó DESPUÉS de escribirse esta higiene.
+await pool.query(`DELETE FROM folios_pedido_usados WHERE negocio_id = $1 AND folio LIKE 'XAB-9%'`, [SEED.negocioA])
+  .catch(() => { /* base anterior a la 061 */ });
 
 const metaMock = await arrancarMetaMock();
 const anthropicMock = await arrancarAnthropicMock();
@@ -251,15 +280,28 @@ await t('VARIANTES', '"dónde pago" también dispara el envío del enlace', asyn
 });
 
 // ═══════════ Casos de negocio ═══════════
-await t('CASOS', 'pedido YA pagado: no se genera enlace nuevo, se informa que ya está pagado', async () => {
+// El contrato de este caso CAMBIÓ a propósito, y el test se quedó con el
+// anterior. Antes el atajo respondía "tu pedido ya está pagado" y CORTABA el
+// mensaje; un pedido pagado sigue "activo" hasta que el negocio lo marca
+// entregado, así que un cliente recurrente que escribía "una coca y paso por
+// ella, pago con enlace" quedaba bloqueado y su compra nueva ni se leía (caso
+// real sobre XAB-0179). Ahora, sin nada que cobrar, el canal NO se adjudica la
+// intención: el mensaje sigue su curso hacia el agente, que puede abrir el
+// pedido nuevo o explicar que el anterior ya se pagó.
+//
+// Lo que protege el dinero no era ese aviso sino no cobrar dos veces, y eso se
+// sigue exigiendo aquí -- reforzado: ni URL, ni un registro de pago nuevo.
+await t('CASOS', 'pedido YA pagado: cero enlace y cero cobro nuevo; el turno sigue su curso', async () => {
   const tel = '5218780010004';
   const folio = await crearPedidoActivoConfirmado(tel);
   await pool.query(`UPDATE pedidos_activos SET datos = jsonb_set(datos, '{pago_confirmado}', 'true') WHERE folio = $1`, [folio]);
   const antes = metaMock.obtenerMensajesEnviados().length;
   await mensajeEntrante(tel, 'quiero pagar con enlace');
   const r = await respuestaDelBot(tel, antes);
-  assert.ok(r.some(m => m.includes('ya está pagado')), `esperaba aviso de pagado; respondió ${JSON.stringify(r)}`);
+  assert.ok(r.length, 'el cliente recibe respuesta: el mensaje no se traga');
   assert.ok(!r.some(m => m.includes('pago.mock.clip')), 'jamás un enlace para un pedido pagado');
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM pagos WHERE pedido_folio = $1`, [folio]);
+  assert.strictEqual(rows[0].n, 0, 'un pedido ya pagado no genera ningún registro de cobro nuevo');
 });
 
 await t('CASOS', 'dos pedidos activos sin pagar: el bot pide el folio en vez de adivinar', async () => {
