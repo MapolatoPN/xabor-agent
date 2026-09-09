@@ -1,0 +1,24 @@
+# Fines de linea fijos para todas las maquinas.
+#
+# Por que existe este archivo: sin el, un Git recien instalado en Windows trae
+# core.autocrlf=true y convierte a CRLF 639 de los 652 archivos al clonar. Git
+# NO lo reporta como cambio, pero Node lee los bytes crudos: las suites que
+# hacen aserciones sobre el HTML del panel fallan sin decir por que
+# (fase-impresion-self-service fue una, el 2026-09-09, en la maquina nueva).
+#
+# Para auditar en cualquier checkout:
+#   git ls-files --eol | Select-String 'w/crlf'
+# Solo deben salir los .bat y .cmd.
+
+* text=auto eol=lf
+
+# Scripts de cmd.exe: CRLF es su forma nativa en Windows y es la unica familia
+# donde el interprete llega a importarle. PowerShell (.ps1) e Inno Setup (.iss)
+# leen LF sin problema, asi que se quedan con el default.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binarios: que Git no intente convertir nada aunque le parezcan texto.
+*.png binary
+*.ico binary
+*.xlsx binary
