@@ -196,6 +196,47 @@ await t('13 · 4 unidades elegibles → dos beneficios (180)', async () => {
   await borra();
 });
 
+// ═══════════ CANTIDAD MÍNIMA (el operador que no tenía cobertura) ═══════════
+// Incidente real: el menú ofrece 2 guarniciones y hubo clientes que solo querían
+// una. Con "cantidad exacta 2" (test 7) esa unidad NO calificaba y perdía la
+// promoción. La decisión del negocio fue que la promoción SE RESPETA, así que la
+// condición pasa a "cantidad mínima 1". Todo el archivo probaba `exacta`; el
+// operador que quedó configurado en producción no tenía una sola prueba.
+const CONDS_MIN = [{ grupo_id: gGuarn, operador: 'cantidad', min: 1, max: null }];
+await t('MIN-1 · mínima 1: UNA guarnición → elegible (el caso que se perdía)', () => {
+  const it = chila([mod(gSalsa, oRoja), mod(gProte, oPollo), mod(gGuarn, oFrijoles)]);
+  assert.strictEqual(cumpleCondicionesModificadores(it, CONDS_MIN).eligible, true);
+});
+await t('MIN-2 · mínima 1: DOS guarniciones siguen calificando (max null = sin tope)', () => {
+  const it = chila([mod(gSalsa, oRoja), mod(gProte, oPollo), mod(gGuarn, oFrijoles), mod(gGuarn, oPapa)]);
+  assert.strictEqual(cumpleCondicionesModificadores(it, CONDS_MIN).eligible, true);
+});
+await t('MIN-3 · mínima 1: CERO guarniciones → NO elegible (el mínimo sigue exigiendo)', () => {
+  const it = chila([mod(gSalsa, oRoja), mod(gProte, oPollo)]);
+  assert.strictEqual(cumpleCondicionesModificadores(it, CONDS_MIN).eligible, false);
+});
+await t('MIN-4 · motor: dos unidades con UNA guarnición cada una → segundo al 50%', async () => {
+  // La prueba que importa es esta: que el dinero salga bien, no solo el booleano.
+  await crearPromoChila({ condiciones: [
+    { productoId: pChila, grupoId: gSalsa, operador: 'una_de', optionIds: [oRoja, oVerde] },
+    { productoId: pChila, grupoId: gProte, operador: 'incluye', optionIds: [oPollo] },
+    { productoId: pChila, grupoId: gGuarn, operador: 'cantidad', min: 1, max: null },
+  ] });
+  const unaGuarn = () => chila([mod(gSalsa, oRoja), mod(gProte, oPollo), mod(gGuarn, oFrijoles)]);
+  const r = await calc([unaGuarn(), unaGuarn()]);
+  assert.strictEqual(r.descuento, 90, `con "exacta 2" esto daba 0; fue ${r.descuento}`);
+  await borra();
+});
+await t('MIN-5 · mixto: una unidad con 1 guarnición y otra con 2 → hacen pareja', async () => {
+  await crearPromoChila({ condiciones: [
+    { productoId: pChila, grupoId: gGuarn, operador: 'cantidad', min: 1, max: null },
+  ] });
+  const una = chila([mod(gSalsa, oRoja), mod(gProte, oPollo), mod(gGuarn, oFrijoles)]);
+  const r = await calc([una, elegibleVerde()]);
+  assert.strictEqual(r.descuento, 90, 'pedir distinto número de guarniciones no rompe la pareja');
+  await borra();
+});
+
 // ═══════════ GUARDAR: validación y aislamiento (fail-closed) ═══════════
 await t('14 · option_id AJENO (de otro negocio) → imposible guardar (CONDICION_OPCION_AJENA)', async () => {
   await assert.rejects(() => guardarPromocion(NEG, {

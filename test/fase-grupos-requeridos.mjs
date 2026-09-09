@@ -63,6 +63,13 @@ await op(gExtra, 'E1', 15);
 // Producto sin grupos requeridos (compatibilidad con el catálogo existente).
 const gLibre = await grupo(LIBRE, 'Opcional', { requerido: false, minimo: 0, maximo: 0 });
 await op(gLibre, 'L1');
+// Producto con un grupo de RANGO (1..2): el caso de las guarniciones donde el
+// menú ofrece dos y el cliente puede llevarse una sola. Va en su propio producto
+// a propósito: un grupo requerido más en CONREQ le faltaría a todas las demás
+// pruebas de este archivo.
+const RANGO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Rango',90) RETURNING id`, [NEG, cat])).id;
+const gRango = await grupo(RANGO, 'Guarnición', { requerido: true, minimo: 1, maximo: 2 });
+for (const v of ['R1', 'R2', 'R3']) await op(gRango, v);
 // Negocio ajeno.
 const catO = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'G',0) RETURNING id`, [OTRO])).id;
 const prodO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Con Requeridos',100) RETURNING id`, [OTRO, catO])).id;
@@ -243,6 +250,34 @@ await t('C5. un máximo menor que el mínimo también es catálogo inconsistente
   const r = validarCardinalidadGrupos(g, []);
   assert.strictEqual(r.inconsistentes.length, 1, 'max<min no se puede satisfacer nunca');
   assert.strictEqual(r.faltantes.length, 0);
+});
+
+// ═══ Grupo de RANGO 1..2 — "puedes elegir dos, con una basta" ═══════════════
+const rango = (...opciones) => base([{ nombre: 'Producto Rango', cantidad: 1,
+  modificadores: opciones.length ? [{ grupo: 'Guarnición', opciones }] : [] }]);
+
+await t('D1. una sola opción en un grupo 1..2 → pasa, el bot NO insiste', async () => {
+  const v = await previsualizarPedido(rango('R1'), NEG, { canal: 'whatsapp' });
+  assert.strictEqual(v.ok, true, v.motivo || 'con una guarnición ya se cumple el mínimo');
+});
+await t('D2. las dos opciones → también pasa', async () => {
+  const v = await previsualizarPedido(rango('R1', 'R2'), NEG, { canal: 'whatsapp' });
+  assert.strictEqual(v.ok, true);
+});
+await t('D3. ninguna → sigue faltando (mínimo 1 no es "opcional")', () => {
+  const g = [{ id: 1, nombre: 'Guarnición', requerido: true, minimo: 1, maximo: 2,
+    opciones: [{ id: 1, nombre: 'R1', disponible: true }, { id: 2, nombre: 'R2', disponible: true }] }];
+  const r = validarCardinalidadGrupos(g, []);
+  assert.strictEqual(r.faltantes.length, 1, 'un rango que empieza en 1 sigue siendo obligatorio');
+  assert.strictEqual(r.faltantes[0].minimo, 1);
+});
+await t('D4. tres opciones → excedido (el máximo del rango se sigue aplicando)', () => {
+  const g = [{ id: 1, nombre: 'Guarnición', requerido: true, minimo: 1, maximo: 2,
+    opciones: [{ id: 1, nombre: 'R1', disponible: true }, { id: 2, nombre: 'R2', disponible: true }, { id: 3, nombre: 'R3', disponible: true }] }];
+  const r = validarCardinalidadGrupos(g, [
+    { grupo_id: 1, opcion: 'R1' }, { grupo_id: 1, opcion: 'R2' }, { grupo_id: 1, opcion: 'R3' }]);
+  assert.strictEqual(r.excedidos.length, 1, 'abrir el mínimo no debe aflojar el máximo');
+  assert.strictEqual(r.excedidos[0].maximo, 2);
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
