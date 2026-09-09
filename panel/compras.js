@@ -1,3 +1,4 @@
+import { prepararCamaraTicket } from './compras-camara.js';
 const $ = id=>document.getElementById(id);
 const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n=>new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(Number(n||0));
@@ -119,12 +120,14 @@ $('editor-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
 },$('editor-form'));});
 $('new-manual').onclick=()=>run(async()=>{const c=await api('/manual',{method:'POST',body:{fecha:state.summary.hoy,tipo_pago:'credito'}});await openPurchase(c.id);});
 $('new-ticket').onclick=()=>$('ticket-file').click();
-$('ticket-file').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;run(async()=>{
+function analizarFoto(file){if(!file)return;return run(async()=>{
   if(file.size>8*1024*1024)throw new Error('La foto supera 8 MB. Usa una imagen más pequeña.');
   notice('Analizando ticket. Al terminar podrás revisar y corregir los datos.');
   const base64=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file);});
   const d=await api('/analizar-ticket',{method:'POST',body:{base64,filename:file.name}});await reload();await openPurchase(d.compra.id);notice('Ticket leído. Revisa las cifras y el origen del pago antes de confirmar.');
-});});
+});}
+$('ticket-file').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';analizarFoto(file);});
+prepararCamaraTicket({alCapturar:analizarFoto,alSubir:()=>$('ticket-file').click()});
 
 function newFund(){const form=$('fund-form');form.reset();optionsResponsables(form);field(form,'fecha').value=state.summary.hoy;field(form,'fecha').max=state.summary.hoy;state.fundKey=crypto.randomUUID();showDialog('fund-dialog');}
 $('new-fondo').onclick=newFund;
