@@ -93,6 +93,42 @@ await t('D3. media carta mexicana termina en -ito sin ser diminutivo', () => {
   assert.strictEqual(sinDiminutivo('pita'), null, 'una base de 3 letras ya no es la misma palabra');
 });
 
+// ═══ EL CLIENTE CONTESTA REPITIENDO EL NOMBRE DEL GRUPO ════════════════════
+// Caso de producción (negocio 5de544d8…, 2026-09-08 08:39 CDT, YA con 290ceda
+// desplegado): `catalogo_conversacional_bloqueado` con
+// invalidos=["mencion:proteína pollo"]. El cliente contestó repitiendo el
+// nombre del grupo junto con su elección — que es exactamente como se lo
+// preguntamos, "¿qué proteína llevan?" — y la mención no resolvió.
+//
+// "pollo" a secas SÍ resuelve. Lo que rompe es el nombre del grupo delante:
+// `contienePalabra` exige que la mención ENTERA quepa dentro del nombre de la
+// opción o al revés, y "proteina pollo" no cabe en "Pechuga de pollo" ni al
+// revés. El nombre del grupo es contexto, no contenido.
+const G2 = [
+  { id: 20, nombre: 'Salsa', opciones: [{ id: 1, nombre: 'Suiza' }, { id: 2, nombre: 'Roja' }] },
+  { id: 21, nombre: 'Proteína', opciones: [
+    { id: 3, nombre: 'Pechuga de pollo' }, { id: 4, nombre: 'Huevos estrellados' }] },
+];
+await t('G1. "proteína pollo" es la Pechuga de pollo, no una mención inválida', () => {
+  assert.strictEqual(buscarOpcionPorMencion(G2, 'proteína pollo').modificador?.opcion, 'Pechuga de pollo');
+  assert.strictEqual(buscarOpcionPorMencion(G2, 'proteina pollo').modificador?.opcion, 'Pechuga de pollo');
+  assert.strictEqual(buscarOpcionPorMencion(G2, 'proteína: pollo').modificador?.opcion, 'Pechuga de pollo');
+  assert.strictEqual(buscarOpcionPorMencion(G2, 'salsa suiza').modificador?.opcion, 'Suiza');
+  // Y sin el grupo delante se sigue resolviendo igual que siempre.
+  assert.strictEqual(buscarOpcionPorMencion(G2, 'pollo').modificador?.opcion, 'Pechuga de pollo');
+});
+
+await t('G2. quitar el nombre del grupo no puede volverse una adivinanza', () => {
+  // El grupo SOLO no elige por el cliente: no hay opción que deducir.
+  assert.notStrictEqual(buscarOpcionPorMencion(G2, 'proteína').estado, 'resuelto');
+  // Lo que no existe se sigue sin resolver, aunque venga con el grupo delante.
+  assert.notStrictEqual(buscarOpcionPorMencion(G2, 'proteína pulpo').estado, 'resuelto');
+  // Y si dentro del grupo sigue habiendo dos candidatos, se pregunta.
+  const amb = [{ id: 30, nombre: 'Tamaño', opciones: [
+    { id: 1, nombre: 'Grande 1 Litro' }, { id: 2, nombre: 'Grande 2 Litros' }] }];
+  assert.notStrictEqual(buscarOpcionPorMencion(amb, 'tamaño grande').estado, 'resuelto');
+});
+
 // ═══ NEGAR ALGO QUE SÍ ESTÁ EN LA CARTA ════════════════════════════════════
 await t('B1. el bistec se OFRECE, no se niega', async () => {
   const rc = await val([mod('Salsa', 'Suiza'), mod('Proteína', 'Bistec en Salsa')],

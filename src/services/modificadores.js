@@ -223,6 +223,36 @@ export function buscarOpcionPorMencion(grupos, mencion) {
       });
     }
   }
+  // El cliente contesta repitiendo el nombre del GRUPO junto con su elección
+  // —"proteína pollo"—, que es exactamente como se lo preguntamos ("¿qué
+  // proteína llevan?"). Ese nombre es contexto, no contenido, pero
+  // `contienePalabra` exige que la mención ENTERA quepa dentro del nombre de la
+  // opción o al revés, y "proteina pollo" no cabe en "Pechuga de pollo" ni al
+  // revés: la mención quedaba sin resolver aunque "pollo" a secas sí resolviera
+  // (caso real, negocio 5de544d8…, 2026-09-08 08:39 CDT).
+  //
+  // Se quita el nombre del grupo y se vuelve a resolver DENTRO de ese grupo,
+  // con las mismas reglas de siempre. Va al final, cuando nada más casó, por el
+  // mismo motivo que `partirMencion`: una opción que legítimamente lleve el
+  // nombre del grupo dentro ya resolvió más arriba y aquí no se llega.
+  if (!candidatos.length) {
+    // El separador se ignora: el cliente (o el modelo) escribe tanto
+    // "proteína pollo" como "Proteína: pollo", y los dos puntos no son parte
+    // del nombre del grupo.
+    const sinPuntuacion = (t) => t.replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
+    const buscadoLimpio = sinPuntuacion(buscado);
+    for (const g of (grupos || [])) {
+      const gn = sinPuntuacion(normNombre(g.nombre));
+      if (!gn || !contienePalabra(buscadoLimpio, gn)) continue;
+      const resto = ` ${buscadoLimpio} `.replace(` ${gn} `, ' ').replace(/\s+/g, ' ').trim();
+      if (!resto || resto === buscadoLimpio) continue;
+      // Recursivo sobre UN solo grupo, así que la exigencia de candidato único
+      // se mantiene: si dentro siguen encajando dos opciones devuelve 'ambiguo'
+      // y aquí no se acepta — se pregunta, como siempre.
+      const r = buscarOpcionPorMencion([g], resto);
+      if (r.estado === 'resuelto') return r;
+    }
+  }
   // Una misma opción repetida en varios grupos ya la trata resolverModificadoresLLM
   // como ambigua; aquí lo que se mide es cuántas OPCIONES distintas encajan.
   const unicas = new Map(candidatos.map((c) => [`${c.g.id}:${c.o.id}`, c]));
