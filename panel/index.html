@@ -1224,6 +1224,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <button type="button" class="nav-grupo" id="navgrp-administracion" aria-expanded="true" aria-controls="navsec-administracion" onclick="toggleGrupoNav('administracion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Administración</button>
   <div class="nav-seccion" id="navsec-administracion" role="group" aria-labelledby="navgrp-administracion">
+  <button class="tab-btn" id="tab-compras" onclick="location.href='/compras.html'">Compras y fondos</button>
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
   <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Ajustes</button>
@@ -3389,7 +3390,7 @@ const NAV_GRUPO_DE_TAB = {
   menu: 'catalogo', tienda: 'catalogo',
   chats: 'clientes', clientes: 'clientes', rewards: 'clientes', cotizaciones: 'clientes',
   entrenamiento: 'automatizacion', llamadas: 'automatizacion',
-  ventas: 'administracion', corte: 'administracion', usuarios: 'administracion',
+  compras: 'administracion', ventas: 'administracion', corte: 'administracion', usuarios: 'administracion',
   config: 'configuracion', diagnostico: 'configuracion',
 };
 
