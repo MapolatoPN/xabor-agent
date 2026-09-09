@@ -77,6 +77,19 @@ await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
    VALUES ($1,$2,'FOLIOTEST Producto',100,TRUE,FALSE,0)`, [A, catFolioP0.id]);
 
+// Y por la MISMA razón que el producto: el validador exige además una forma de
+// pago HABILITADA para el negocio. `metodos_pago.habilitado` es estado
+// compartido que otras suites de la batería encienden y apagan a su antojo
+// -- fase-bot-forma-pago lo alterna caso por caso y termina donde termine.
+// Corrida sola, esta suite pasaba; detrás de aquella fallaba con
+// FORMA_PAGO_INVALIDA(efectivo), que no dice nada del folio, que es lo que
+// aquí se prueba. La suite se garantiza lo que necesita en vez de heredarlo.
+for (const n of [A, B]) {
+  await pool.query(
+    `INSERT INTO metodos_pago (negocio_id, tipo, habilitado, orden) VALUES ($1,'efectivo',TRUE,0)
+     ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE`, [n]);
+}
+
 // ═════════ 1-4) Contrato de guardarPedidoActivo (sin contador) ═════════
 // Folios con prefijo FOLIOTEST-: invisibles para obtenerMaxFolioNum
 // (^XAB-[0-9]+$), así que no mueven el contador de ninguna instancia.
@@ -217,7 +230,21 @@ await t('CONCURRENCIA', 'dos negocios en paralelo: cada fila conserva su propio 
   for (const r of rows) assert.strictEqual(r.negocio_id, esperado.get(r.folio), `folio ${r.folio} quedó en el negocio equivocado`);
 });
 await t('CONCURRENCIA', 'multi-instancia: la otra réplica gana varios folios y esta reintenta hasta persistir los suyos', async () => {
-  const { rows: [{ max }] } = await pool.query(`SELECT COALESCE(MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS INTEGER)),0) max FROM pedidos_activos WHERE folio ~ '^XAB-[0-9]+$'`);
+  // Un folio libre NO es "el mayor de pedidos_activos + 1". Un folio puede
+  // estar RECLAMADO en folios_pedido_usados aunque su pedido ya no exista:
+  // esa tabla es justamente la que impide reutilizarlo jamás (migración 061),
+  // y sobrevive a cualquier borrado. Mirando solo pedidos_activos, los folios
+  // "ajenos" que esta prueba fabrica caían encima de reclamos viejos,
+  // `guardarPedidoActivo` no insertaba, y la fila que el test da por hecha no
+  // aparecía: fallaba con "Cannot read properties of null" según qué suites
+  // hubieran corrido antes.
+  const { rows: [{ max }] } = await pool.query(`
+    SELECT GREATEST(
+      COALESCE((SELECT MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS INTEGER))
+                  FROM pedidos_activos WHERE folio ~ '^XAB-[0-9]+$'), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING(folio FROM '^XAB-([0-9]+)$') AS INTEGER))
+                  FROM folios_pedido_usados WHERE folio ~ '^XAB-[0-9]+$'), 0)
+    ) AS max`);
   const ajenos = [];
   for (let i = 1; i <= 5; i++) ajenos.push(`XAB-${String(max + i).padStart(4, '0')}`);
   for (const f of ajenos) await guardarPedidoActivo({ id: f, estado: 'nuevo', canal: 'otra-instancia', total: 5 }, B);

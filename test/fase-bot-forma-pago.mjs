@@ -205,9 +205,27 @@ try {
     assert.strictEqual(v1.ok, false);
     assert.ok(v1.rechazos.some(r => r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA));
     // Con proveedor real activo y principal, el mismo método pasa.
+    // Otra suite de la batería pudo dejar ya una integración de pagos activa y
+    // PRINCIPAL para este negocio (fase-bot-enlace-pago configura Clip así).
+    // Dos índices únicos lo impiden: (negocio, canal, proveedor) y
+    // (negocio, canal) WHERE principal. Antes esto era un INSERT pelado y
+    // reventaba con "duplicate key" -- solo dentro de la batería, nunca al
+    // correr la suite sola.
+    //
+    // NO se borra lo que dejó la otra suite: eso rompería a las que corran
+    // después. Se cede el "principal" de cualquier otro proveedor y se hace
+    // upsert sobre la fila de clip, que es exactamente el estado que este caso
+    // necesita. Si no había ninguna, se crea la FPTEST de siempre y la limpieza
+    // de fixture se la lleva.
+    await pool.query(
+      `UPDATE integraciones_canal SET principal = FALSE
+        WHERE negocio_id = $1 AND canal = 'pagos' AND proveedor IS DISTINCT FROM 'clip'`, [NEG_A]);
     const { rows: [ic] } = await pool.query(
       `INSERT INTO integraciones_canal (negocio_id, canal, proveedor, identificador, estado, activo, principal)
-       VALUES ($1,'pagos','clip',$2,'activo',TRUE,TRUE) RETURNING id`, [NEG_A, `FPTEST${suf}`]);
+       VALUES ($1,'pagos','clip',$2,'activo',TRUE,TRUE)
+       ON CONFLICT (negocio_id, canal, proveedor) WHERE proveedor IS NOT NULL
+       DO UPDATE SET estado = 'activo', activo = TRUE, principal = TRUE
+       RETURNING id`, [NEG_A, `FPTEST${suf}`]);
     await pool.query(`UPDATE metodos_pago SET integracion_id = $2 WHERE negocio_id = $1 AND tipo = 'enlace_pago'`, [NEG_A, ic.id]);
     const v2 = await validarOrdenPropuesta(ordenBase({ forma_pago: 'enlace de pago' }), NEG_A);
     assert.strictEqual(v2.ok, true, JSON.stringify(v2.rechazos));
