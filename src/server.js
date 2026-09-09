@@ -99,6 +99,7 @@ import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendient
 import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
+import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -8424,6 +8425,32 @@ setInterval(() => {
   }).format(new Date());
   if (now === '22:01') enviarReporteDiario();
   if (now === '02:00') jobDiarioSAT(); // Sync SAT diaria a las 2am CST
+}, 60 * 1000);
+
+// ─── Job: rescate de conversaciones en espera ────────────────────────────────
+// Un cliente puede quedarse esperando sin que nadie se entere. Cuando alguien
+// del negocio contesta a mano desde su Business App, el bot calla 30 minutos en
+// ESA conversación (takeover, whatsapp-meta.js). Si quien la tomó se distrae,
+// el silencio dura hasta que vence el plazo -- y no queda rastro en ningún
+// lado. Ocurrió el 2026-09-09: un saludo manual silenció al bot, la clienta
+// escribió diez minutos después pidiendo hotcakes, nadie contestó en trece
+// minutos, y el restaurante concluyó que el bot se había roto (ya estaba
+// callado, por diseño, desde antes).
+//
+// Este job solo MIRA y AVISA: no responde por nadie, no toca el takeover y no
+// escribe en ninguna conversación. Cada minuto, no cada cinco: un cliente
+// esperando no admite esa granularidad. Nunca lanza -- el .catch existe para
+// que un fallo suyo jamás mate el intervalo.
+setInterval(() => {
+  revisarConversacionesEnEspera({
+    minutos: ESPERA_POR_DEFECTO_MIN,
+    broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+    enviarAvisoWhatsapp: async (numero, texto, negocioId) => {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+      if (!credenciales) return;   // sin integración propia verificada, no se envía nada
+      await enviarMensaje(numero, texto, credenciales);
+    },
+  }).catch((e) => console.error('[Rescate] job:', e.message));
 }, 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────

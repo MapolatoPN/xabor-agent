@@ -1410,6 +1410,22 @@ async function manejarEchoesBusinessApp(value, negocioId) {
     if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg });
     await activarTakeoverHumano(telefono, negocioId, HUMAN_TAKEOVER_MINUTOS);
     console.log(`[Meta WA] Mensaje manual del dueño (Business App) para ${telefono} — takeover humano ${HUMAN_TAKEOVER_MINUTOS} min`);
+    // Que el silencio NO sea invisible. Quien manda un saludo a mano desde la
+    // Business App casi nunca sabe que con eso calla al bot media hora en esa
+    // conversación. Sin aviso, desde fuera se ve idéntico a que el bot se
+    // rompió: eso concluyó el restaurante el 2026-09-09 tras un "Hola buen
+    // día" enviado UN SEGUNDO después de que el bot ya hubiera contestado.
+    // El evento solo informa al panel -- no cambia ninguna decisión del flujo,
+    // y si falla el envío no puede afectar al takeover, que ya quedó escrito.
+    if (wsBroadcast) {
+      try {
+        wsBroadcast(negocioId, {
+          tipo: 'takeover_humano_activo',
+          telefono: `***${String(telefono).slice(-4)}`,
+          minutos: HUMAN_TAKEOVER_MINUTOS,
+        });
+      } catch (e) { console.warn(`[Meta WA] aviso de takeover no emitido: ${e.message}`); }
+    }
   }
 }
 
