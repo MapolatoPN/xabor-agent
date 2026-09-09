@@ -136,10 +136,15 @@ Suites con pruebas nuevas (todas fallaban antes del arreglo correspondiente):
 - `fase-fidelidad-borrador` **27/27** (25 previas + 2 nuevas) — incidente 4
 - `fase-seguridad-transaccional` **18/18** (antes 14/18) — incidente 2
 
-**Regresión definitiva sobre base recién creada: 34/36 suites en verde**, con
-`fase-seguridad-transaccional` y `fase-confirmacion-determinista` repetidas al
-final para descartar intermitencia (18/18 y 38/38 las dos veces). Las dos que
-fallan están explicadas arriba y ninguna la causaron los cambios de esta sesión.
+**Regresión final: 38/38 suites en verde, cero fallos.** Las cuatro suites que
+habían dado problemas (`seguridad-transaccional`, `bot-enlace-pago`,
+`folio-concurrencia`, `bot-forma-pago`) se repiten al final de la batería, en
+las posiciones 35-38, precisamente para demostrar que ya no dependen del orden
+ni del estado que dejaron las 34 anteriores.
+
+Es la primera corrida de la sesión donde no queda ningún fallo sin explicar.
+Punto de partida: `fase-seguridad-transaccional` 14/18 y `fase-bot-enlace-pago`
+7/16, ambas citadas como "preexistentes" durante semanas.
 
 Sin regresiones en el camino de pedido: confirmacion-ux 13,
 pedido-determinista 13, flujo-real 6, multi-item 13, grupos-requeridos 24,
@@ -166,7 +171,7 @@ experimentos, no a ojo:
 |---|---|---|---|
 | `fase-bot-forma-pago` | falla (`duplicate key value`) | **verde** | contaminación local |
 | `fase-folio-concurrencia` | 22/1 | **23/23** | sensible al estado acumulado |
-| `fase-bot-enlace-pago` | 5/11 | **7/9 de 16** | **fallo real preexistente** |
+| `fase-bot-enlace-pago` | 5/11 | 7/9 de 16 | prueba desactualizada — **resuelto**, ver abajo |
 
 Sobre `folio-concurrencia` hay un matiz que conviene no perder: en base recién
 creada da 23/23, pero en la batería completa vuelve a dar 22/1 cuando le tocan
@@ -187,7 +192,78 @@ docker exec pg-restv2 psql -U postgres -c "CREATE DATABASE edged1"
 # y repetir los pasos 4 y 5 de la receta (migraciones + predeploy + 065/066 + seed)
 ```
 
-### `fase-bot-enlace-pago` — fallo real, NO corregido
+### `fase-bot-enlace-pago` — resuelto: era la prueba, no el producto
+
+**Corrección de lo que se escribió antes en este mismo documento.** Se reportó
+como "fallo real preexistente". Al investigarlo a fondo resultó ser **tres
+defectos de la prueba y cero del producto**. Pasa a **16/16, estable en tres
+corridas seguidas** (`027e303`).
+
+**1. Limpieza incompleta — la causa de la inestabilidad.** Los folios de la
+suite son fijos (`XAB-92xx/93xx`) y la higiene borraba `pagos` y
+`pedidos_activos`, pero no `folios_pedido_usados`. El **reclamo** del folio vive
+aparte y sobrevive al borrado del pedido — que es su razón de ser en producción:
+un folio no se reutiliza jamás, ni aunque el pedido desaparezca (migración 061).
+Esa tabla llegó **después** de escribirse la higiene.
+
+Efecto: la primera corrida contra base nueva creaba los pedidos; de la segunda
+en adelante `guardarPedidoActivo` veía el folio ya usado y no insertaba nada, en
+silencio. Sin pedidos, el atajo de enlace no hallaba nada que cobrar y el
+mensaje caía a la IA. Medido: **20 folios reclamados contra 1 solo pedido** en
+`pedidos_activos`. Eso explica el 5/16 vs 7/16 según cuántas veces se hubiera
+corrido antes.
+
+**2. El mock de Clip no cumplía el contrato de Clip.** No devolvía la expiración
+efectiva del checkout. Desde el endurecimiento CLIP, si el proveedor no dice
+cuándo vence el checkout recién creado, Xabor conserva la identidad del cobro
+pero **no entrega la URL**. Los logs lo decían con todas sus letras:
+
+```
+[Clip] No se pudo verificar la expiración efectiva del checkout de XAB-9200:
+       no se ofrecerá el enlace hasta revisarlo
+[Pagos] ... identidad conservada, URL NO entregada, requiere revisión
+```
+
+La barrera funcionaba y la suite se caía por ella. Y el campo tiene que ser
+`expires_at`, **no** `expired_at`: la nota CLIP-D de `clip-api.js` explica que
+son distintos y que el segundo no se acepta como alias silencioso. Me equivoqué
+en el primer intento y el comentario del código me corrigió.
+
+**3. Un test con el contrato anterior.** Exigía la respuesta "ya está pagado",
+que se quitó a propósito porque cortaba el mensaje y bloqueaba a clientes
+recurrentes (XAB-0179). Se actualizó al contrato vigente y se reforzó: ni URL,
+ni registro de pago nuevo, y el cliente recibe respuesta.
+
+**Patrón que conviene recordar:** de 53 suites que borran `pedidos_activos`,
+solo 4 limpian `folios_pedido_usados`. Para la mayoría da igual (dejan que la
+secuencia asigne el folio), pero **cualquier suite con folios literales tiene
+esta bomba puesta**. Si una suite falla de forma distinta según cuántas veces se
+haya corrido, mirar ahí primero.
+
+### Las dos que solo fallaban acompañadas — también resueltas
+
+Mismo patrón, dos apariciones más (`30969d9`). Ninguna del producto.
+
+**`fase-folio-concurrencia`**, dos fallos distintos:
+- `FORMA_PAGO_INVALIDA(efectivo)` sobre un negocio que sí tiene efectivo. Lo que
+  faltaba era `habilitado`: es estado compartido y `fase-bot-forma-pago` lo
+  alterna caso por caso. La suite ya se sembraba su propio producto (el
+  validador exige catálogo real); ahora también su forma de pago.
+- `Cannot read properties of null` en el caso multi-instancia: fabricaba folios
+  "ajenos" como `max(pedidos_activos)+1..5`, pero un folio libre no es eso — el
+  reclamo sobrevive al borrado del pedido. Ahora el máximo mira las dos tablas.
+
+**`fase-bot-forma-pago`**: `duplicate key` al crear su integración de pagos,
+porque `fase-bot-enlace-pago` deja una `pagos/clip` activa y **principal** para
+el mismo negocio, y hay dos índices únicos que lo impiden. Se resolvió **sin
+borrar** lo ajeno —eso rompería a las suites posteriores—: se cede el
+`principal` de otros proveedores y se hace upsert sobre la fila de clip.
+
+**Conclusión incómoda pero útil:** buena parte de los "fallos preexistentes"
+que se venían citando en los mensajes de commit no eran del producto. Eran
+suites heredando estado. Conviene desconfiar de esa etiqueta.
+
+### Nota histórica — el diagnóstico anterior, ya superado
 
 Preexistente en `main` y ajeno a esta sesión. Los nueve fallos están en la
 ENTREGA del enlace, no en la intención: `[INTENCION]` pasa (las 11 frases se
