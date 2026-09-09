@@ -30,6 +30,7 @@ import { getIntegracion } from '../server.js';
 // brain.js: config del panel -> env) para no acoplar vision.js a server.js.
 configurarVision({ resolverApiKey: () => getIntegracion('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '' });
 import { normalizarTelefonoMX } from '../utils/telefono.js';
+import { manejarCompraWhatsapp } from '../services/comprasWhatsapp.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
 import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
@@ -1556,6 +1557,28 @@ router.post('/', async (req, res) => {
       return;
     }
     const negocioId = integracion.negocioId;
+
+    // Compradores autorizados por negocio: fotos y comandos explícitos se
+    // resuelven antes del agente de pedidos, con las credenciales del tenant.
+    if (message.type === 'image' || message.type === 'text') {
+      let credencialesCompras;
+      const atendida = await manejarCompraWhatsapp({negocioId,message,
+        verificarCanal: async () => {
+          credencialesCompras = await obtenerCredencialesWhatsappNegocio(negocioId);
+          if (!credencialesCompras?.accessToken || credencialesCompras.phoneNumberId !== phoneNumberId)
+            throw new Error('Compras: faltan credenciales del número receptor');
+        },
+        descargar: async mediaId => descargarMediaDeMeta(mediaId, credencialesCompras),
+        responder: async textoCompra => {
+          const enviado = await enviarMensaje(message.from,textoCompra,credencialesCompras);
+          const wamidSalida = enviado?.messages?.[0]?.id;
+          if (!wamidSalida) throw new Error('Compras: Meta no confirmó la recepción de la respuesta');
+          const msg = await guardarMensaje(message.from,value.contacts?.[0]?.profile?.name || '',
+            'saliente',textoCompra,negocioId,'bot',wamidSalida);
+          if (msg && wsBroadcast) wsBroadcast(negocioId,{tipo:'nuevo_mensaje',mensaje:msg});
+        }});
+      if (atendida) return;
+    }
 
     if (message.type === 'document') {
       await manejarDocumentoEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
