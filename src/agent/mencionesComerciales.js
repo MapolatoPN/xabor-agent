@@ -269,15 +269,21 @@ export function tieneRespaldo(valor, textoCiclo) {
   // El cliente concuerda en género y número con lo que está pidiendo:
   // "chilaquiles SUIZOS" por la salsa "Suiza". Su propia elección tiene que
   // contar como respaldo, o el backend la descarta y vuelve a preguntarla.
-  const raices = new Set(palabras(textoCiclo).map(raizPalabra).filter((w) => w.length >= 3));
-  if (significativas.some((w) => raices.has(raizPalabra(w)))) return true;
-  // Y el cliente pide en diminutivo: "pollito" por "Pechuga de pollo". Aquí la
-  // tolerancia es especialmente barata: NO estamos eligiendo por él, estamos
-  // comprobando si respaldó una opción que el modelo ya interpretó. Un sí de
-  // más solo confía en esa lectura; un no de más le niega lo que sí pidió.
-  const dim = new Set(palabras(textoCiclo)
-    .map((w) => sinDiminutivo(w)).filter(Boolean).map(raizPalabra));
-  return significativas.some((w) => dim.has(raizPalabra(w)));
+  // Concordancia gramatical y diminutivo, mirando AMBOS lados: con la misma
+  // regla que ya usa `buscarOpcionPorMencion` para resolver, no con una segunda
+  // lectura propia. Esa asimetría costó un pedido real: aquí solo se recortaba
+  // el diminutivo del lado del CLIENTE ("pollito" → "Pechuga de pollo"), y el
+  // caso inverso —el catálogo en diminutivo, "Frijolitos naturales", y el
+  // cliente escribiendo "frijoles"— no tenía respaldo. La selección se
+  // descartaba, el grupo volvía a quedar vacío, y el bot preguntaba la misma
+  // guarnición una y otra vez sin salida posible (negocio 5de544d8…, 12:12).
+  //
+  // La tolerancia es barata por lo que ya decía este comentario: NO estamos
+  // eligiendo por el cliente, estamos comprobando si respaldó una opción que el
+  // modelo ya interpretó. Un sí de más solo confía en esa lectura; un no de más
+  // le niega lo que sí pidió, y eso es lo que lo deja sin poder pedir.
+  const delCliente = palabras(textoCiclo).filter((w) => w.length >= 3);
+  return significativas.some((w) => delCliente.some((c) => mismaPalabraFlexible(w, c)));
 }
 
 // Instrucción del extractor independiente. Pide SPANS VERBATIM y separa

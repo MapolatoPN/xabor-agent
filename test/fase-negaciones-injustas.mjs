@@ -93,6 +93,35 @@ await t('D3. media carta mexicana termina en -ito sin ser diminutivo', () => {
   assert.strictEqual(sinDiminutivo('pita'), null, 'una base de 3 letras ya no es la misma palabra');
 });
 
+// ═══ D4/D5 — el diminutivo está en el CATÁLOGO, no en el cliente ═══════════
+// Caso real (negocio 5de544d8…, 12:12): el menú dice "Frijolitos naturales" y
+// el cliente escribió "solo frijol". El modelo lo resolvió bien, pero el
+// respaldo solo recortaba el diminutivo del lado del CLIENTE, así que la
+// selección se descartaba (SELECCION_SIN_RESPALDO), el grupo volvía a quedar
+// vacío y el bot repreguntó la misma guarnición cinco veces sin salida.
+const GUARN = await prod(cDes, 'Plato Con Guarnición', 150);
+const gGua = (await q1(`INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
+   VALUES ($1,$2,'Guarniciones',TRUE,1,2,5) RETURNING id`, [NEG, GUARN])).id;
+for (const x of ['Frijolitos naturales', 'Papas a la mexicana']) await op(gGua, x);
+
+await t('D4. catálogo en diminutivo, cliente en llano: "frijol" respalda Frijolitos naturales', async () => {
+  assert.strictEqual(tieneRespaldo('Frijolitos naturales', 'quiero solo frijoles'), true,
+    'sin esto se descarta lo que sí pidió y el bot repregunta sin fin');
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Plato Con Guarnición', cantidad: 1,
+      modificadores: [{ grupo: 'Guarniciones', opciones: ['Frijolitos naturales'] }] }] },
+    NEG, { textoCiclo: 'rojo pechuga de pollo y solo frijol' });
+  assert.deepStrictEqual(rc.productos[0].sinRespaldo, [], 'la guarnición que sí pidió no se descarta');
+  assert.deepStrictEqual(rc.productos[0].faltantes, [], 'y el grupo deja de estar pendiente');
+});
+
+await t('D5. la tolerancia NO se vuelve un sí para cualquier cosa', () => {
+  assert.strictEqual(tieneRespaldo('Papas a la mexicana', 'quiero solo frijoles'), false,
+    'una opción que el cliente nunca nombró sigue sin respaldo');
+  assert.strictEqual(tieneRespaldo('Frijolitos naturales', 'quiero unos hotcakes'), false);
+  assert.strictEqual(tieneRespaldo('', 'quiero frijoles'), false);
+});
+
 // ═══ EL CLIENTE CONTESTA REPITIENDO EL NOMBRE DEL GRUPO ════════════════════
 // Caso de producción (negocio 5de544d8…, 2026-09-08 08:39 CDT, YA con 290ceda
 // desplegado): `catalogo_conversacional_bloqueado` con
