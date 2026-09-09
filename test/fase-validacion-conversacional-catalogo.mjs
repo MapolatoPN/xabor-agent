@@ -57,6 +57,19 @@ const gExtras = await grupo(BEBIDA, 'Extras', { requerido: false, minimo: 0, max
 for (const e of ['E1', 'E2', 'E3', 'E4']) await op(gExtras, e);
 const gSalsa = await grupo(PLATO, 'Salsa', { requerido: true, minimo: 1, maximo: 1 });
 await op(gSalsa, 'Verde'); await op(gSalsa, 'Roja');
+// Producto SOLO para el texto del menú que ve el modelo: desde que el panel deja
+// configurar mínimo y máximo por separado, hay cuatro formas de cardinalidad que
+// antes no se podían crear y que se imprimían mal (ver V5b). Va en su propio
+// producto para no alterar ningún otro caso de este archivo.
+const RANGOS = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Plato Rangos',150) RETURNING id`, [NEG, cat])).id;
+const gRango = await grupo(RANGOS, 'Guarnición', { requerido: true, minimo: 1, maximo: 2 });
+await op(gRango, 'G1'); await op(gRango, 'G2'); await op(gRango, 'G3');
+const gDoble = await grupo(RANGOS, 'Par Obligatorio', { requerido: true, minimo: 2, maximo: 2 });
+await op(gDoble, 'P1'); await op(gDoble, 'P2'); await op(gDoble, 'P3');
+const gSinTope = await grupo(RANGOS, 'Ingredientes', { requerido: true, minimo: 1, maximo: 0 });
+await op(gSinTope, 'I1'); await op(gSinTope, 'I2');
+const gLibres = await grupo(RANGOS, 'Aderezos', { requerido: false, minimo: 0, maximo: 0 });
+await op(gLibres, 'A1'); await op(gLibres, 'A2');
 // Producto con grupo obligatorio sin opciones utilizables.
 const gImposible = await grupo(ROTO, 'Obligatorio Vacío', { requerido: true, minimo: 1, maximo: 1 });
 await op(gImposible, 'Agotada', 0, false);
@@ -95,6 +108,34 @@ await t('V5. un grupo opcional con máximo>1 se anuncia como OPCIONAL en el prom
   assert.match(prompt, /Extras \(opcionales, hasta 3\)/,
     'antes decía "hasta 3" y el bot los pedía como obligatorios');
   assert.match(prompt, /Variante \(elige 1\)/, 'los requeridos siguen anunciándose igual');
+});
+
+// ═══ V5b — la cardinalidad del menú se anuncia con la MISMA regla que valida ═
+// El texto se armaba con los campos crudos (`g.minimo`, `g.maximo`), y ahora que
+// el panel deja configurarlos de verdad eso producía frases falsas: un máximo 0
+// —que significa SIN LÍMITE— salía como "elige 1–0".
+await t('V5b. rangos, pares y "sin límite" se anuncian correctamente', async () => {
+  const { construirSystemPrompt } = await import('../src/agent/prompts.js');
+  const prompt = await construirSystemPrompt(null, 'whatsapp', NEG);
+  assert.ok(!/–0\)/.test(prompt), 'ningún grupo puede anunciarse como "elige 1–0"');
+  assert.match(prompt, /Ingredientes \(elige al menos 1\)/, 'máximo 0 es SIN LÍMITE');
+  assert.match(prompt, /Aderezos \(opcionales, sin límite\)/);
+  assert.match(prompt, /Guarnición \(elige 1–2\)/, 'el rango se anuncia como rango');
+  assert.match(prompt, /Par Obligatorio \(elige 2\)/, 'mín=máx se dice una vez, no "2–2"');
+});
+
+await t('V5c. un grupo con requerido=false pero mínimo 2 NO se anuncia opcional', async () => {
+  // El validador exige 2 en ese caso (cardinalidadDeGrupo lee el mínimo igual),
+  // así que llamarlo "opcional" en el menú manda al bot a un pedido que luego
+  // se le bloquea. Fila heredada: hoy el escritor ya no la puede crear.
+  await pool.query(`UPDATE menu_modificadores_grupos SET requerido=FALSE WHERE id=$1`, [gDoble]);
+  try {
+    const { construirSystemPrompt } = await import('../src/agent/prompts.js');
+    const prompt = await construirSystemPrompt(null, 'whatsapp', NEG);
+    assert.match(prompt, /Par Obligatorio \(elige 2\)/, 'manda el mínimo, no la bandera');
+  } finally {
+    await pool.query(`UPDATE menu_modificadores_grupos SET requerido=TRUE WHERE id=$1`, [gDoble]);
+  }
 });
 
 // ═══ V6/V7 — faltantes vs opcionales ═══════════════════════════════════════

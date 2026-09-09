@@ -1,6 +1,7 @@
 import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
 import { camposParaPrompt } from './comercialMarkers.js';
 import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -200,9 +201,22 @@ function formatearMenu(categorias) {
           // cuando admite una sola opción: "Complementos (hasta 3)" se
           // interpretaba como "elige hasta 3" y el bot los pedía como si
           // fueran obligatorios, aunque el catálogo dijera lo contrario.
-          const reglaTxt = g.requerido
-            ? (g.maximo === 1 ? 'elige 1' : `elige ${g.minimo}–${g.maximo}`)
-            : (g.maximo === 1 ? 'opcional' : `opcionales, hasta ${g.maximo}`);
+          //
+          // La cardinalidad se lee con `cardinalidadDeGrupo`, la MISMA función
+          // que aplica el validador, no con los campos crudos. Leerlos crudos
+          // producía dos frases falsas: un máximo 0 (que significa SIN LÍMITE)
+          // se imprimía como "elige 1–0", y un grupo con `requerido=false` pero
+          // `minimo=2` se anunciaba como opcional aunque el validador después
+          // exigiera dos y bloqueara el pedido.
+          const { minimo: cMin, maximo: cMax } = cardinalidadDeGrupo(g);
+          const sinTope = !Number.isFinite(cMax);
+          const reglaTxt = cMin >= 1
+            ? (sinTope ? `elige al menos ${cMin}`
+              : cMin === cMax ? `elige ${cMax}`
+              : `elige ${cMin}–${cMax}`)
+            : (sinTope ? 'opcionales, sin límite'
+              : cMax === 1 ? 'opcional'
+              : `opcionales, hasta ${cMax}`);
           texto += `  ${g.nombre} (${reglaTxt}): ${opcsTxt}\n`;
         }
       }
