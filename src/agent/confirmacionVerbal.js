@@ -194,6 +194,32 @@ const CONSULTAS_SEGURAS = [
  * invalidar; no sabemos → no ejecutar el snapshot viejo.
  */
 export function clasificarTurnoPostPreview(texto) {
+  // Un TURNO puede traer varios mensajes. `colaMensajes` agrupa lo que el
+  // cliente escriba dentro de la ventana y los une con '\n', así que lo que
+  // llega aquí no siempre es una frase: cuando alguien contesta la forma de
+  // pago y enseguida confirma, el texto es "efectivo\nsi".
+  //
+  // Clasificado en bloque, ese turno hacía match con la consulta segura de
+  // formas de pago y NUNCA con la confirmación: el "sí" se perdía dentro del
+  // turno y el pedido no se registraba. Caso real 2026-09-09, dos veces en la
+  // misma tarde, con la clienta viendo "¿Confirmas?" después de haber dicho
+  // que sí (ver test/fase-confirmacion-agrupada.mjs).
+  //
+  // La combinación es FAIL-CLOSED y en este orden: basta UNA línea que cambie
+  // el pedido para invalidar, y una que no se entienda para no registrar. Solo
+  // se confirma cuando ninguna línea es peligrosa y alguna es afirmación
+  // inequívoca.
+  const lineas = String(texto || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lineas.length <= 1) return clasificarFrase(texto);
+  const clases = lineas.map(clasificarFrase);
+  if (clases.includes('mutacion')) return 'mutacion';
+  if (clases.includes('indeterminado')) return 'indeterminado';
+  if (clases.includes('confirmacion')) return 'confirmacion';
+  return 'consulta_segura';
+}
+
+/** Clasifica UNA frase. Antes era el cuerpo entero de la función de arriba. */
+function clasificarFrase(texto) {
   const t = normalizar(texto);
   if (!t) return 'indeterminado';
   if (esConfirmacionVerbal(texto)) return 'confirmacion';
