@@ -583,8 +583,41 @@ export async function obtenerModificadoresProducto(productoId, negocioId) {
   return grupos;
 }
 
+/**
+ * Deja la cardinalidad COHERENTE antes de escribirla. Existe porque el panel ya
+ * deja elegir mínimo y máximo por separado, y una combinación imposible
+ * (mín 3 / máx 1) no rompe el panel: rompe al CLIENTE. `validarCardinalidadGrupos`
+ * la marca `inconsistentes` y el producto deja de poder pedirse, por una
+ * configuración que el negocio guardó sin saber que se contradecía.
+ *
+ * Reglas — las mismas que ya aplica la revisión de importación de menú:
+ *   · `minimo` entero >= 0.
+ *   · `maximo` entero >= 0, donde 0 significa SIN LÍMITE (así lo lee
+ *     `cardinalidadDeGrupo`); si hay límite, nunca por debajo del mínimo.
+ *   · `requerido` NO es un campo aparte: es exactamente `minimo >= 1`.
+ *     "obligatorio elegir cero" y "opcional pero elige al menos uno" son las dos
+ *     formas de mentir con estos tres campos, y la segunda se guardaba de verdad:
+ *     desmarcar "¿es obligatorio?" en un grupo 2..2 dejaba `minimo` en 2 y el
+ *     grupo seguía exigiendo dos opciones.
+ *
+ * Se sube el máximo hasta el mínimo, nunca al revés: bajar el mínimo aflojaría
+ * en silencio un requisito que el negocio sí pidió.
+ */
+export function normalizarCardinalidadGrupo({ requerido, minimo, maximo }) {
+  const entero = (v) => {
+    const n = Number.parseInt(v, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  let min = entero(minimo);
+  let max = entero(maximo);
+  if (min === 0 && requerido === true) min = 1;   // requerido sin mínimo explícito
+  if (max > 0 && max < min) max = min;
+  return { requerido: min >= 1, minimo: min, maximo: max };
+}
+
 export async function crearGrupoModificador(productoId, { nombre, requerido=false, minimo=0, maximo=1 }, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();
+  const card = normalizarCardinalidadGrupo({ requerido, minimo, maximo });
 
   // negocio_id se deriva del producto padre — nunca se acepta suelto
   const { rows: prodRows } = await pool.query('SELECT negocio_id FROM menu_productos WHERE id=$1', [productoId]);
@@ -599,18 +632,43 @@ export async function crearGrupoModificador(productoId, { nombre, requerido=fals
     `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
      VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_modificadores_grupos WHERE producto_id=$2))
      RETURNING *`,
-    [negId, productoId, nombre, requerido, minimo, maximo]
+    [negId, productoId, nombre, card.requerido, card.minimo, card.maximo]
   );
   return rows[0];
 }
 
 export async function actualizarGrupoModificador(grupoId, campos, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();
+
+  // La cardinalidad se revisa COMPLETA aunque el PATCH traiga solo una parte:
+  // "máximo 1" es válido o imposible según el mínimo que ya esté guardado.
+  let card = null;
+  if (campos.requerido !== undefined || campos.minimo !== undefined || campos.maximo !== undefined) {
+    const { rows } = await pool.query(
+      'SELECT requerido, minimo, maximo FROM menu_modificadores_grupos WHERE id=$1 AND negocio_id=$2',
+      [grupoId, negId]
+    );
+    if (!rows[0]) return;   // inexistente o de otro negocio: como antes, no escribe
+    const actual = rows[0];
+    // Si el PATCH trae `minimo`, manda ese. Si solo trae `requerido`, ese es el
+    // que traduce: quitar lo obligatorio significa mínimo 0, no "sigue pidiendo 2".
+    const min = campos.minimo !== undefined ? campos.minimo
+      : campos.requerido !== undefined ? (campos.requerido ? Math.max(1, Number(actual.minimo) || 0) : 0)
+      : actual.minimo;
+    card = normalizarCardinalidadGrupo({
+      requerido: campos.requerido,
+      minimo: min,
+      maximo: campos.maximo !== undefined ? campos.maximo : actual.maximo,
+    });
+  }
+
   const sets = [], vals = [];
-  if (campos.nombre    !== undefined) { sets.push(`nombre=$${sets.length+1}`);    vals.push(campos.nombre); }
-  if (campos.requerido !== undefined) { sets.push(`requerido=$${sets.length+1}`); vals.push(campos.requerido); }
-  if (campos.minimo    !== undefined) { sets.push(`minimo=$${sets.length+1}`);    vals.push(campos.minimo); }
-  if (campos.maximo    !== undefined) { sets.push(`maximo=$${sets.length+1}`);    vals.push(campos.maximo); }
+  if (campos.nombre !== undefined) { sets.push(`nombre=$${sets.length+1}`); vals.push(campos.nombre); }
+  if (card) {
+    sets.push(`requerido=$${sets.length+1}`); vals.push(card.requerido);
+    sets.push(`minimo=$${sets.length+1}`);    vals.push(card.minimo);
+    sets.push(`maximo=$${sets.length+1}`);    vals.push(card.maximo);
+  }
   if (!sets.length) return;
   vals.push(grupoId, negId);
   await pool.query(`UPDATE menu_modificadores_grupos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
