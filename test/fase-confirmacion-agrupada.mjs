@@ -25,7 +25,15 @@
 //
 // Uso: DATABASE_URL=... node test/fase-confirmacion-agrupada.mjs
 import assert from 'assert';
+import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 
+const mock = await arrancarAnthropicMock();
+process.env.ANTHROPIC_BASE_URL = mock.baseUrl;
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test-agrupada';
+process.env.PORT = process.env.PORT || '4253';
+
+const { pool } = await import('../src/services/database.js');
+const { procesarMensaje } = await import('../src/agent/brain.js');
 const { encolarMensaje, VENTANA_AGRUPAMIENTO_MS } = await import('../src/utils/colaMensajes.js');
 const { clasificarTurnoPostPreview } = await import('../src/agent/confirmacionVerbal.js');
 const { getSession, deleteSession, guardarPreviewPedido, consumirPreviewPedido,
@@ -138,6 +146,56 @@ await t('C3. una negación agrupada nunca confirma', () => {
   assert.notStrictEqual(clasificarTurnoPostPreview('efectivo\nno, asi no'), 'confirmacion');
 });
 
+// ═══ D. El acuse, de punta a punta ═════════════════════════════════════════
+const q1 = async (sql, params) => (await pool.query(sql, params)).rows[0];
+const NEG = (await q1(`INSERT INTO negocios (nombre, slug) VALUES ('Confirmacion Agrupada','confirmacion-agrupada')
+   ON CONFLICT (slug) DO UPDATE SET nombre='Confirmacion Agrupada' RETURNING id`)).id;
+for (const tb of ['menu_modificadores_opciones', 'menu_modificadores_grupos', 'menu_productos', 'menu_categorias']) {
+  await pool.query(`DELETE FROM ${tb} WHERE negocio_id=$1`, [NEG]).catch(() => {});
+}
+const catD = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'GENERAL',0) RETURNING id`, [NEG])).id;
+await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Plato Simple',150)`, [NEG, catD]);
+const borrador = (formaPago) => 'Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+  items: [{ nombre: 'Plato Simple', cantidad: 1, modificadores: [] }],
+  modalidad: 'recoger', forma_pago: formaPago, cliente: { nombre: 'Ana' },
+}) + '</PEDIDO_BORRADOR>';
+
+await t('D1. el cliente que confirma en el mismo turno recibe ACUSE, no la pregunta a secas', async () => {
+  const SID = 'agrup-e2e'; nueva(SID); mock.drenar();
+  // Turno 1: pide sin forma de pago -> no hay preview (forma_pago_faltante).
+  mock.encolarRespuesta(borrador(null));
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  await procesarMensaje(SID, 'un plato simple para recoger, a nombre de Ana', null, 'whatsapp', NEG, '5210000000077');
+  assert.strictEqual(verPreviewConfirmable(SID), null, 'sin forma de pago no hay nada confirmable');
+
+  // Turno 2: contesta la forma de pago y confirma de un tirón — la cola los
+  // entrega como UN turno unido por '\n', igual que en producción.
+  mock.drenar();
+  mock.encolarRespuesta(borrador('efectivo'));
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'efectivo\nsi', null, 'whatsapp', NEG, '5210000000077');
+
+  assert.match(r.texto, /ya me confirmaste/i,
+    `debe reconocer su "sí" en vez de preguntar como si no hubiera dicho nada — ${r.texto}`);
+  assert.match(r.texto, /\$/, 'y seguir mostrando el total oficial');
+  assert.ok(verPreviewConfirmable(SID), 'el preview queda confirmable para su siguiente "sí"');
+});
+
+await t('D2. sin confirmación anticipada, el resumen NO lleva acuse', async () => {
+  const SID = 'agrup-e2e-2'; nueva(SID); mock.drenar();
+  mock.encolarRespuesta(borrador('efectivo'));
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(SID, 'un plato simple para recoger, efectivo, a nombre de Ana',
+    null, 'whatsapp', NEG, '5210000000078');
+  assert.doesNotMatch(r.texto, /ya me confirmaste/i,
+    `quien no confirmó no puede leer que confirmó — ${r.texto}`);
+  assert.match(r.texto, /\$/, 'el camino normal sigue intacto');
+});
+
+mock.detener();
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
-process.exitCode = fallidas > 0 ? 1 : 0;
+// Importar brain.js levanta el servidor y sus jobs: sin `exit` el proceso no
+// termina nunca. Mismo cierre que fase-negaciones-injustas.
+await pool.end().catch(() => {});
+process.exit(fallidas === 0 ? 0 : 1);

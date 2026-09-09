@@ -103,6 +103,14 @@ async function llamarModeloConReintento(params, { etiqueta = 'brain' } = {}) {
  *  - ya no es válida    → invalida el snapshot y explica con honestidad.
  * Devuelve null si no pudo tomar el snapshot (otro turno lo consumió antes).
  */
+// Acuse para el cliente que ya dijo que sí antes de que existiera un total.
+// No promete nada ni registra: solo evita que el resumen le suene a que no lo
+// escucharon. La pregunta del resumen ("¿Confirmas que todo está correcto?")
+// se conserva tal cual — sigue haciendo falta su visto bueno sobre ESTE total.
+const ACUSE_CONFIRMACION_ANTICIPADA =
+  'Vi que ya me confirmaste, gracias. El total lo acabo de calcular, así que '
+  + 'necesito tu visto bueno sobre este resumen antes de mandarlo a cocina.';
+
 async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
   // Solo un snapshot CONFIRMABLE autoriza. Si un turno anterior quedó
   // indeterminado, aquí no se registra: se devuelve null y el flujo normal
@@ -265,6 +273,16 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   // no existía ningún folio (caso real Mapolato, preview de $255).
   // Va ANTES de cualquier llamada al modelo: es determinista, no cuesta
   // latencia y no puede caerse por un 529 del proveedor.
+  // ¿Este turno traía un "sí" que NO llegó a registrar nada? Ocurre cuando la
+  // confirmación viaja en el MISMO turno que completa el pedido: el cliente
+  // confirmó ANTES de que existiera un total oficial. El backend no puede
+  // registrar ahí —sería cobrar un total que nunca vio— pero tampoco puede
+  // seguir como si no hubiera dicho nada: le responde "¿Confirmas que todo está
+  // correcto?" a alguien que acaba de decir que sí, y desde su lado el bot lo
+  // ignoró. Caso real 2026-09-09 (negocio 5de544d8…): la clienta contestó
+  // "efectivo" y "si" seguidos —un solo turno para la cola de mensajes— y se
+  // fue sin pedido. Dos veces la misma tarde.
+  let confirmoSinRegistrar = false;
   if (verPreviewPedido(sessionId) && typeof negocioId === 'string' && negocioId.trim()) {
     // Cuatro estados. El cuarto es el que hace seguro al sistema: si NO sabemos
     // si el mensaje cambia el pedido, no se borra el snapshot (el flujo normal
@@ -280,12 +298,19 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
     } else if (clase === 'confirmacion') {
       const resuelto = await confirmarDesdeSnapshot(sessionId, negocioId, canal);
       if (resuelto) return resuelto;
+      // No había snapshot confirmable: el "sí" no registró nada.
+      confirmoSinRegistrar = true;
     } else if (clase === 'indeterminado') {
       marcarPreviewNoConfirmable(sessionId);
       console.log(`[TXN] evento=preview_no_confirmable_turno_indeterminado negocio=${negocioId}`);
     }
     // 'consulta_segura': el snapshot se conserva confirmable y el flujo normal
     // responde la pregunta.
+  } else if (typeof negocioId === 'string' && negocioId.trim()
+    && clasificarTurnoPostPreview(mensajeUsuario) === 'confirmacion') {
+    // Confirmó sin que existiera preview alguno: es el turno que apenas va a
+    // calcular el total.
+    confirmoSinRegistrar = true;
   }
 
   // Enriquecer contexto con memoria del cliente (no bloquea si falla)
@@ -602,7 +627,9 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
                     + 'Si quieres otro igual, dímelo y lo levanto de nuevo.';
                 } else if (v.ok) {
                   guardarPreviewPedido(sessionId, { ...snapshotDePreview(v), huellaBorrador: huella });
-                  textoCatalogo = await resumenConExplicacion(v);
+                  textoCatalogo = confirmoSinRegistrar
+                    ? `${ACUSE_CONFIRMACION_ANTICIPADA}\n\n${await resumenConExplicacion(v)}`
+                    : await resumenConExplicacion(v);
                   console.log(`[TXN] evento=preview_desde_borrador negocio=${negocioId} total=${v.preview.total}`);
                 } else {
                   // Un negocio en modo solicitud no cotiza ni confirma: la
@@ -695,7 +722,9 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               // de Xabor. Se genera el preview oficial y se pide confirmar ESE.
               guardarPreviewPedido(sessionId, snapshotDePreview(v));
               ordenParaRegistrar = null;
-              textoOficialPricing = await resumenConExplicacion(v);
+              textoOficialPricing = confirmoSinRegistrar
+                ? `${ACUSE_CONFIRMACION_ANTICIPADA}\n\n${await resumenConExplicacion(v)}`
+                : await resumenConExplicacion(v);
             }
           }
           // Si !v.ok se deja pasar: registrarPedido revalida con el mismo
@@ -712,7 +741,9 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
               + 'Si quieres otro igual, dímelo y lo levanto de nuevo.';
           } else if (v.ok) {
             guardarPreviewPedido(sessionId, snapshotDePreview(v));
-            textoOficialPricing = await resumenConExplicacion(v);
+            textoOficialPricing = confirmoSinRegistrar
+              ? `${ACUSE_CONFIRMACION_ANTICIPADA}\n\n${await resumenConExplicacion(v)}`
+              : await resumenConExplicacion(v);
           } else {
             invalidarPreviewPedido(sessionId);
             textoOficialPricing = mensajeRechazoParaCliente(v.rechazos || []);
