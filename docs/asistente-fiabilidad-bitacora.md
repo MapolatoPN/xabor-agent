@@ -469,8 +469,25 @@ configuración vieja sí estaba cubierta.
   con chorizo", un "frijoles" a secas es ambiguo y lo desempata el modelo. Se ve
   en la confirmación antes de cerrar, pero conviene saberlo si los precios
   difieren.
-- Sigue abierto `print_agent_legacy_activo` para el negocio `5de544d8…`: sin él,
-  el ticket de cocina solo se imprime si el panel está abierto en un navegador.
+- **Corrección — `print_agent_legacy_activo` NO era el pendiente que se creyó.**
+  Durante la sesión se repitió que faltaba definir esa clave para que el negocio
+  `5de544d8…` imprimiera. Al leer el código con calma, esa clave gobierna
+  **solo** `printRouter` (elige entre el print-agent *legacy* por `/` y el
+  *autenticado* por `/ws/print-agent`). **Xabor Edge es un camino paralelo**:
+  `orderManager` llama `emitirComandaDePedidoPorEdge` aparte, y esa vía no mira
+  la clave. Para un negocio en Edge, que la fila no exista es lo correcto —
+  el camino viejo queda fail-closed, que es justo lo que se quiere.
+
+  Lo que sí gobierna la impresión por Edge, en `crearTrabajosDePedido`: una
+  **sucursal activa**, **impresoras registradas con su `terminal_id`** y
+  **reglas de ruteo por categoría**. Sin eso no se crea ningún trabajo,
+  `seHizoCargo` queda en `false` y el navegador imprime como respaldo — que es
+  exactamente el síntoma observado ("solo imprime si el panel está abierto").
+  Se configura en el panel: **Config → Impresoras**, con la casilla **Cocina**
+  marcada en alguna impresora.
+
+  Queda pendiente **verificarlo**: no se miró la configuración real del negocio,
+  porque exige la base de producción.
 - Los dos termómetros de la sesión nocturna
   (`preview_no_confirmable_turno_indeterminado`, `MENCION_NO_RESUELTA`) siguen
   sin medirse tras un día completo con los arreglos puestos.
