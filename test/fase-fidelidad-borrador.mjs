@@ -428,6 +428,41 @@ await t('C8. un mensaje largo con la palabra suelta no cuenta como respuesta', (
   assert.deepStrictEqual(d.atributos, [], 'y tampoco está en posición de atributo');
 });
 
+// ═══ C9-C10 — el cliente contesta VARIAS preguntas de una vez ═══════════════
+// Caso de producción (negocio 5de544d8…, 2026-09-08 08:45 CDT, con 290ceda ya
+// desplegado): `mencion_descartada` con cuatro spans a la vez, tres de ellos
+// por `sin_posicion_de_atributo`. El cliente contestó en una lista —salsa,
+// preparación, proteína y guarnición— y se perdió TODO.
+//
+// La cascada es lo que lo vuelve grave: `esRespuestaDirecta` exige que el span
+// abra el mensaje Y lo cubra casi entero, así que el primer renglón se
+// descarta; al descartarse no entra en `anclas`, y sin ancla el segundo tampoco
+// tiene de qué colgarse, y así hasta el último.
+await t('C9. una LISTA de respuestas conserva todos sus renglones', () => {
+  const texto = 'Salsa verde, en agua, proteina pollo, guarnicion papas con chorizo';
+  const spans = ['salsa verde', 'en agua', 'proteina pollo', 'guarnicion papas con chorizo'];
+  const d = depurarMenciones(spans.map((s) => ({ tipo: 'atributo', texto_fuente: s })), texto);
+  assert.deepStrictEqual(d.descartadas, [], 'ningún renglón de la lista se descarta');
+  assert.deepStrictEqual(d.respuestas, spans, 'los cuatro sirven para resolver una selección');
+  assert.deepStrictEqual(d.atributos, [], 'pero NINGUNO gana poder de acusación');
+});
+
+await t('C10. la lista no le da poder de acusación a nada', () => {
+  // Sigue valiendo la asimetría de C6: recuperar una opción real es seguro,
+  // declarar inexistente lo que el cliente dijo no lo es. Un saludo dentro de
+  // una lista tampoco puede producir "no manejamos hola".
+  const d = depurarMenciones(
+    [{ tipo: 'atributo', texto_fuente: 'hola' }, { tipo: 'atributo', texto_fuente: 'suiza' }],
+    'Hola, suiza');
+  assert.deepStrictEqual(d.atributos, [], 'nada de la lista acusa al negocio');
+  assert.deepStrictEqual(d.respuestas, ['hola', 'suiza'], 'ambos quedan solo para resolver');
+  // Y un mensaje sin comas se sigue comportando como siempre (C7 intacto).
+  const f = depurarMenciones(
+    [{ tipo: 'atributo', texto_fuente: 'mango' }, { tipo: 'atributo', texto_fuente: 'grande' }],
+    'quiero un licuado de mango grande');
+  assert.deepStrictEqual(f.atributos, ['mango', 'grande'], 'sin lista, el atributo sigue siendo atributo');
+});
+
 await t('C4. brain.js cierra el ciclo en TODOS los caminos que registran', async () => {
   const { readFileSync } = await import('fs');
   const src = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');

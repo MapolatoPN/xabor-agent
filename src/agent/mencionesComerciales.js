@@ -225,6 +225,34 @@ export function esRespuestaDirecta(span, texto) {
 }
 
 /**
+ * ¿El span ocupa un renglón ENTERO de una LISTA de respuestas?
+ *
+ * Cuando el backend hace varias preguntas seguidas, el cliente las contesta
+ * todas de una vez y separadas por comas: "Salsa verde, en agua, proteína
+ * pollo, guarnición papas con chorizo". Ninguno de esos renglones cumple
+ * `esRespuestaDirecta` —solo el primero abre el mensaje, y ninguno lo cubre
+ * entero— así que se descartaban por `sin_posicion_de_atributo`.
+ *
+ * Y se descartaban EN CASCADA, que es lo que lo vuelve grave: al caerse el
+ * primer renglón tampoco entra en `anclas`, y sin ancla el segundo no tiene de
+ * qué colgarse, y así hasta el último. El cliente perdía las cuatro
+ * selecciones de golpe (caso real, negocio 5de544d8…, 2026-09-08 08:45 CDT).
+ *
+ * Van a `respuestas`, NUNCA a `atributos`: se mantiene la asimetría de siempre
+ * —recuperar una opción real es seguro; declarar inexistente lo que el cliente
+ * dijo no lo es—, así que un saludo dentro de la lista sigue sin poder producir
+ * "no manejamos hola".
+ */
+export function esRespuestaEnLista(span, texto) {
+  const segmentos = String(texto || '').split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
+  // Con un solo segmento no hay lista: manda `esRespuestaDirecta`, como antes.
+  if (segmentos.length < 2) return false;
+  const s = normalizar(span);
+  if (!s) return false;
+  return segmentos.some((seg) => normalizar(seg) === s);
+}
+
+/**
  * ¿Esta selección del borrador tiene RESPALDO en lo que el cliente escribió
  * durante el ciclo activo?
  *
@@ -321,7 +349,18 @@ export function depurarMenciones(crudas, textoTurno) {
     // aunque el extractor la haya clasificado como atributo.
     if (esNotaDePreparacion(span, textoTurno)) { salida.notas.push(span); continue; }
 
-    // BARRERA 3 — posición gramatical de atributo (conector o encadenado), o
+    // BARRERA 3 — el mensaje es una LISTA de respuestas y este span ocupa un
+    // renglón entero. Va antes del filtro de posición a propósito: encadenar el
+    // segundo renglón al primero lo convertiría en ATRIBUTO, y un atributo sí
+    // puede acabar diciéndole al cliente que no manejamos algo. En una lista de
+    // respuestas ningún renglón acusa: todos se limitan a resolver.
+    if (esRespuestaEnLista(span, textoTurno)) {
+      salida.respuestas.push(span);
+      anclas.push(span);
+      continue;
+    }
+
+    // BARRERA 4 — posición gramatical de atributo (conector o encadenado), o
     // bien el mensaje ENTERO es la respuesta a lo que se acaba de preguntar.
     if (!esCandidatoDeAtributo(span, textoTurno, anclas)) {
       if (esRespuestaDirecta(span, textoTurno)) {
