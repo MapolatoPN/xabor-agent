@@ -9,7 +9,7 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
 - **WebSocket**: `ws` nativo
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
-- **Deploy**: Railway (auto-deploy desde GitHub `main`)
+- **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
 - **Timezone**: `America/Matamoros` (CST, UTC-6)
 
 ## Estructura de archivos
@@ -170,6 +170,40 @@ Al terminar deben existir **81 tablas** en `public`.
 **6. Correr una suite.** Cargar las variables y `node test/<suite>.mjs`. En
 PowerShell **no** uses `2>&1` con node: envuelve stderr en ErrorRecord y
 ensucia el diagnóstico. Redirige a archivo (`> $log 2>&1`) y lee el archivo.
+
+## Desplegar a producción
+
+**Un push a `main` NO despliega.** El auto-deploy desde GitHub está apagado, y
+esto se comprobó por las malas en las dos direcciones: primero se dio por
+supuesto que sí (porque unos merges coincidieron con despliegues ajenos) y
+después un push quedó seis minutos sin producir nada. El despliegue es siempre
+un acto explícito:
+
+```powershell
+railway redeploy --yes --from-source
+```
+
+Detalles que cuestan tiempo si no se saben:
+
+- **`railway link` es por DIRECTORIO.** Ejecutar el comando desde otra carpeta
+  falla con `No linked project found`. Hay que estar en `C:\xabor-agent`.
+- El comando escupe un *warning* de deprecación de `railway.json` que tapa su
+  propia salida. Con `--json` responde limpio: `{"success":true}`.
+- `--from-source` toma **el último commit del origen configurado**, no el
+  checkout local. Si alguien más mergeó a `main` antes, ese trabajo también sale
+  a producción — conviene mirar `git log HEAD..origin/main` antes de desplegar.
+
+**Verificar que llegó, no suponerlo.** `/health` responde 200 con el build
+viejo igual que con el nuevo, así que no prueba nada por sí solo. Lo que sí
+prueba: buscar una huella del código nuevo en lo que sirve producción, por
+ejemplo `Invoke-WebRequest https://xabor.mx/app` y comprobar que aparece un
+identificador que solo existe en el commit recién desplegado. Para cambios de
+servidor no hay huella externa equivalente: ahí la confirmación real es una
+conversación de prueba.
+
+**La hora de los logs de Railway es UTC-6**, no UTC. Se confirmó con una línea
+de Postgres que traía `UTC` embebido junto al sello del panel. Confundirlo lleva
+a concluir que un smoke corrió sobre código viejo cuando corrió sobre el nuevo.
 
 ## Principio innegociable: Estabilidad operacional primero
 

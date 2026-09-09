@@ -8,6 +8,12 @@ que a su vez sale de `main` @ `290ceda`).
 2026-09-08 08:37 CDT. Producción == `main`. Nada de lo de esta bitácora está
 desplegado.
 
+> **Actualización 2026-09-09 (tarde).** Ese párrafo ya no describe la realidad:
+> todo lo anterior se integró a `main` y se desplegó ese mismo día, y la sesión
+> continuó con los cuatro trabajos que registra la sección
+> «Continuación» al final de este documento. Se conserva el texto original
+> porque describe correctamente el estado en que se tomaron aquellas decisiones.
+
 ## Alcance
 
 Asistente de WhatsApp y toma de pedidos. **No se toca** `feature/compras-tickets`,
@@ -352,3 +358,119 @@ la familia de defectos recurrente — la hace no costar dinero.
 - `catalogo_conversacional_bloqueado invalidos=["Bebida:Limonada"]`
   (2026-09-08 08:49) usa la forma canónica `Grupo:Opción`, distinta de
   `mencion:`. No se investigó si comparte causa con el incidente 3.
+
+---
+
+# Continuación — 2026-09-09 (tarde), ya sobre `main` y desplegado
+
+Todo lo anterior se integró y se desplegó. Lo que sigue nació de un caso de
+operación: **el menú ofrece 2 guarniciones y hay clientes que quieren una sola,
+y el bot no supo atenderlo.** La decisión del negocio fue que **la promoción se
+respeta**. De ahí salieron cuatro trabajos encadenados.
+
+## Incidente 5 — el mínimo no se podía configurar, y `requerido` mentía
+
+El panel solo preguntaba el **máximo** y deducía el mínimo de "¿es obligatorio?"
+(1 o 0). Ni "elige exactamente 2" ni "elige 1 o 2" eran expresables. Las columnas
+`minimo`/`maximo` y `cardinalidadDeGrupo` ya lo soportaban **desde siempre**: era
+el formulario el que lo pisaba.
+
+Al abrirlo apareció un riesgo que antes era inalcanzable: una cardinalidad
+contradictoria (máx < mín) sale `inconsistentes` en `validarCardinalidadGrupos`
+y **el producto deja de poderse pedir**. El negocio podía romper sus propias
+ventas con dos clics. Por eso la garantía no quedó en el formulario sino en el
+escritor (`normalizarCardinalidadGrupo`): un PATCH de solo el máximo se valida
+contra el mínimo **ya guardado**, porque "máximo 1" es válido o imposible según
+lo que haya del otro lado.
+
+**Defecto preexistente que salió a la luz.** Desmarcar "¿es obligatorio?" en un
+grupo 2..2 guardaba `requerido=false` **dejando `minimo` en 2**, y
+`cardinalidadDeGrupo` seguía exigiendo dos. El negocio lo creía opcional y el bot
+seguía pidiendo dos. `requerido` no es un campo aparte: es `minimo >= 1`.
+
+Commit `31d1403`. Prueba `fase-cardinalidad-editable` (12 casos, 7 fallan sin el
+cambio).
+
+## Incidente 6 — el menú que lee el modelo se armaba con otra regla
+
+El texto del catálogo para el LLM usaba los campos crudos:
+`g.requerido ? (g.maximo === 1 ? 'elige 1' : 'elige {minimo}–{maximo}')`.
+
+Dos frases falsas. Una la **volvió alcanzable el incidente 5**: al ofrecer
+"máximo 0 = sin límite" en el panel, un grupo así se anunciaba como
+**"elige 1–0"**. La otra ya existía: un grupo con `requerido=false` y `minimo=2`
+se anunciaba **opcional** mientras el validador exigía dos y bloqueaba el pedido
+— el bot prometía una cosa y el backend rechazaba otra.
+
+Ahora usa `cardinalidadDeGrupo`, la misma función que aplica el validador.
+Commit `0f14192`, pruebas V5b/V5c.
+
+## Incidente 7 — el diminutivo también puede estar en el CATÁLOGO
+
+**El más caro de los cuatro, y el que ningún test habría encontrado solo.**
+
+Smoke real, 12:12: cliente pide chilaquiles "y solo frijol"; el bot repregunta
+las guarniciones **cinco veces**, con la clienta contestando bien cada vez. El
+pedido nunca se pudo cerrar. Log de producción:
+
+```
+[TXN] evento=seleccion_sin_respaldo codigo=SELECCION_SIN_RESPALDO
+      descartadas=["Guarniciones:Frijolitos naturales", ...]
+```
+
+El modelo **sí** resolvió "frijoles" → "Frijolitos naturales". Fue el **backend**
+el que lo descartó por falta de respaldo; el grupo volvía a quedar vacío, salía
+como faltante y el flujo preguntaba otra vez. **Cada respuesta correcta de la
+clienta se tiraba igual que la anterior**: un bucle sin salida posible.
+
+`tieneRespaldo` recortaba el diminutivo solo del lado del **cliente** ("pollito"
+→ "Pechuga de pollo") y no el inverso: catálogo en diminutivo
+("Frijol**itos** naturales") y cliente en forma llana ("frijoles"). Raíz de
+"frijoles" = `frijol`; de "frijolitos" = `frijolit`. No casaban por ningún camino.
+
+Lo que más conviene recordar: **la función correcta ya existía**
+(`mismaPalabraFlexible`, que mira el diminutivo por ambos lados) y su comentario
+describe este ejemplo con esas mismas palabras. Solo la usaba el que *resuelve*,
+no el que *verifica*. Es la misma forma de defecto que el incidente 6 y que el
+1 de la sesión nocturna: **dos lecturas distintas de los mismos campos**. Cuando
+aparezca otro caso de esta familia, el primer sitio donde mirar es si hay dos
+funciones interpretando el mismo dato.
+
+**Contrapartida aceptada a propósito.** Mirar el diminutivo por ambos lados hace
+el respaldo más permisivo: "Carnitas" pasa a tener respaldo en quien escribió
+"carne". Se acepta porque aquí no se elige por el cliente, solo se comprueba si
+respaldó una lectura que el modelo ya hizo. Un sí de más lo ve en la
+confirmación; un no de más lo deja sin poder pedir.
+
+Commit `6dad5b1`. Prueba D4 en `fase-negaciones-injustas` (falla sin el cambio);
+D5 es el control negativo.
+
+**Verificado en producción**, no solo en pruebas: smoke posterior con una sola
+guarnición, pedido cerrado y total cuadrando con la promoción aplicada.
+
+## Cobertura que faltaba de la configuración
+
+`fase-promo-condiciones-modificadores` probaba **solo** el operador `exacta` —
+su test 7 documenta el incidente ("1 guarnición → falla"). El operador `minima`,
+que es el que quedó configurado en producción, no tenía **ni una sola** prueba.
+MIN-1..MIN-5 lo cierran, incluida la que importa: que el **dinero** salga bien.
+`fase-grupos-requeridos` tampoco tenía ningún grupo de rango (D1..D4).
+
+Regla que deja este episodio: **cuando se cambia una configuración de operación,
+revisar si ese camino tenía pruebas.** Aquí la respuesta era "ninguna", y la
+configuración vieja sí estaba cubierta.
+
+## Pendiente de esta continuación
+
+- **No resuelto y sabido:** repartir "uno solo frijoles, el otro frijoles y papa"
+  entre los **dos** platillos. Es comprensión del modelo; las suites no lo
+  zanjan. El bucle desapareció, el reparto sigue sin verificarse.
+- **Ambigüedad de menú, no de código:** con "Frijolitos naturales" y "Frijolitos
+  con chorizo", un "frijoles" a secas es ambiguo y lo desempata el modelo. Se ve
+  en la confirmación antes de cerrar, pero conviene saberlo si los precios
+  difieren.
+- Sigue abierto `print_agent_legacy_activo` para el negocio `5de544d8…`: sin él,
+  el ticket de cocina solo se imprime si el panel está abierto en un navegador.
+- Los dos termómetros de la sesión nocturna
+  (`preview_no_confirmable_turno_indeterminado`, `MENCION_NO_RESUELTA`) siguen
+  sin medirse tras un día completo con los arreglos puestos.
