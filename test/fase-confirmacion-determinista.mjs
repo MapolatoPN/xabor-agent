@@ -99,6 +99,50 @@ await t('intención: un cambio se detecta como tal', () => {
   assert.strictEqual(esMutacionDePedido('Sí'), false);
 });
 
+// ═══ El cliente que confirma de más ═════════════════════════════════════════
+// Caso de producción (negocio 5de544d8…, 2026-09-08 08:22 CDT): el cliente
+// confirmó, el backend registró `preview_no_confirmable_turno_indeterminado`,
+// le repitió el resumen, y el cliente tuvo que volver a confirmar 67 segundos
+// después. El evento aparece 5 veces entre el 02 y el 08 de septiembre, en dos
+// negocios distintos.
+//
+// La causa no era el largo del mensaje sino que la lista de afirmaciones se
+// comparaba ENTERA contra el mensaje: "confirmalo por favor" (tres palabras) o
+// "listo, mandalo" (dos) tampoco pasaban. Nadie confirma siempre con la misma
+// palabra suelta; ser cortés no puede costarle el pedido a nadie.
+await t('intención: una confirmación con cortesía o con el verbo explícito SÍ confirma', () => {
+  for (const s of [
+    'confirmalo por favor', 'confírmalo por favor', 'si confirmame el pedido por favor',
+    'sí, todo correcto, confírmalo', 'ok confirmame ese pedido', 'esta bien asi, adelante',
+    'si por favor confirmalo', 'correcto, procede', 'listo, mandalo',
+    'sí gracias, confírmame por favor', 'perfecto, asi lo quiero', 'sale pues, confirmado',
+    'si, esta correcto todo, gracias', 'ya dije que sí, confírmalo',
+  ]) {
+    assert.strictEqual(esConfirmacionVerbal(s), true, `"${s}" debía ser confirmación`);
+    assert.strictEqual(clasificarTurnoPostPreview(s), 'confirmacion', `"${s}" debía clasificar como confirmación`);
+  }
+});
+
+// El control que impide que lo anterior se vuelva una adivinanza: la tolerancia
+// solo acepta palabras de confirmación y cortesía. En cuanto aparece CONTENIDO
+// —una cantidad, un producto, una modalidad— deja de ser un "sí" limpio, porque
+// podría estar reformulando el pedido y no confirmándolo.
+await t('intención: confirmar CON contenido no es un sí limpio (fail-closed)', () => {
+  for (const s of [
+    'Sí, confirma mi pedido de 2 paninis',   // reformula cantidades: nadie verificó que coincidan
+    'si confirmalo pero con salsa verde',
+    'ok confirma y mándalo a domicilio',
+    'listo, confirma 3 tacos',
+    'por favor', 'gracias', 'todo',           // cortesía sin ningún núcleo afirmativo
+  ]) {
+    assert.strictEqual(esConfirmacionVerbal(s), false, `"${s}" NO debía ser confirmación limpia`);
+  }
+  // Y lo que ya se sabía cambiar o negar sigue ganando sobre la afirmación.
+  for (const s of ['sí pero cámbiale la salsa', 'no, así no', 'confirma pero quita el queso']) {
+    assert.strictEqual(esConfirmacionVerbal(s), false, `"${s}" NUNCA debe confirmar`);
+  }
+});
+
 // ═══ CASO A — el caso real ══════════════════════════════════════════════════
 await t('A. preview $255 + "Sí" sin <ORDEN_CONFIRMADA> → se registra desde el snapshot', async () => {
   const sid = 'det-A'; nuevaSesion(sid);

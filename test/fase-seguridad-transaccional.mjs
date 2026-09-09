@@ -156,6 +156,12 @@ async function confirmarWA(pnid, tel, obj, msg1, msg2) {
   antes = metaMock.obtenerMensajesEnviados().length;
   await mensajeEntrante(pnid, tel, msg2);
   const confirm = await respuestaDelBot(tel, antes);
+  // El <ORDEN_CONFIRMADA> de arriba es un por si acaso: desde la confirmación
+  // determinista (b4ece87) el backend registra desde el snapshot SIN llamar al
+  // modelo, así que lo normal es que esa respuesta no se consuma. Si se queda
+  // en la cola se la come el siguiente test y lo hace fallar por algo ajeno a
+  // lo que prueba -- así se desincronizaba esta suite entera a partir de T7.
+  anthropicMock.drenar();
   return { preview, confirm };
 }
 const ordenBase = (items, extras = {}) => ({
@@ -251,9 +257,16 @@ await t('T2b', 'integración: LLM emite orden con producto inventado → cero pe
 await t('T7', 'anticipo obligatorio sin pago → pedido pendiente_pago, SIN comanda, mensaje honesto', async () => {
   await actualizarConfiguracion({ pedido_requiere_anticipo: 'true' }, NEG_A);
   const tel = '5218800712001';
+  // El mensaje de confirmación decía "Sí, confirma mi pedido de 2 paninis".
+  // Eso REFORMULA cantidades, y el guard post-preview lo trata como
+  // indeterminado a propósito: nadie ha comprobado que el "2" del cliente
+  // coincida con el resumen, y registrar ahí sería registrar un pedido que
+  // quizá ya no es el que quiere (ver fase-confirmacion-determinista). Lo que
+  // este test prueba es el ANTICIPO, no la redacción del sí, así que el mensaje
+  // ahora expresa la situación que quiere probar: un cliente que confirma.
   const { confirm: respuestas } = await confirmarWA(PNID_A, tel,
     ordenBase([{ nombre: 'P0 Panini Prueba', cantidad: 2, precio_unitario: 180 }], { total: 360 }),
-    'quiero 2 paninis', 'Sí, confirma mi pedido de 2 paninis');
+    'quiero 2 paninis', 'Sí, confírmalo por favor');
   const peds = await esperarHasta(async () => {
     const r = await pedidosDeTel(NEG_A, '52188007120%');
     return r.length ? r : null;

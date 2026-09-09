@@ -305,25 +305,44 @@ await t('WIZARD', '15. identificacion por papel: prueba disponible antes de asig
   assert.ok(HTML.includes('self-service/probar'), 'la prueba usa el endpoint que no exige destino');
 });
 
+// De un bloque de JS que arma HTML concatenando cadenas, deja SOLO lo que el
+// usuario alcanza a leer: primero el contenido de los literales de cadena
+// (fuera de ellos vive el codigo, que nadie ve), y de ahi los nodos de texto
+// (fuera de las etiquetas, donde viven estilos, ids y manejadores).
+//
+// Antes esto era una lista de excepciones -- se borraban apiFetch y los
+// nombres setTimeout/clearTimeout/impRefrescoTimer -- y la lista se quedo
+// corta: la seccion "Rutas de preparacion" trajo dos comentarios y un
+// `x.ambito === 'categoria'` que hicieron fallar la prueba por jerga que
+// nadie ve jamas. Ninguna de las tres cosas llega a la pantalla, y ninguna
+// se puede arreglar alargando la lista. El criterio correcto no es "que
+// palabras perdonamos" sino "que texto se pinta".
+function textoVisible(js) {
+  const sinComentarios = js
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  const literales = sinComentarios.match(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g) || [];
+  return literales
+    .map((s) => s.slice(1, -1))
+    .join(' ')
+    .replace(/<[^>]*>/g, ' ');
+}
+
 await t('WIZARD', '16. sin jerga tecnica visible en la seccion de impresoras del panel', async () => {
   const ini = HTML.indexOf('function impFilaImpresora');
   const fin = HTML.indexOf('async function cargarWhatsappAutoservicio');
-  // Lo prohibido es MOSTRAR jerga, no usarla en el codigo: se quitan las
-  // llamadas a API y los identificadores JS (setTimeout, clearTimeout,
-  // impRefrescoTimer) antes de revisar, porque nada de eso llega a pantalla.
-  const seccion = HTML.slice(ini, fin)
-    .replace(/apiFetch\([^)]*\)/g, '')
-    .replace(/setTimeout|clearTimeout|impRefrescoTimer/g, '');
-  for (const palabra of ['spooler', 'WebSocket', 'WMI', 'timeout', 'ambito', 'routingEngine', 'terminalId']) {
-    // terminalId viaja en el body JSON de la API (invisible); en el HTML
-    // pintado jamas debe aparecer -- por eso se revisa tras quitar apiFetch.
-    if (palabra === 'terminalId') {
-      const pintado = seccion.replace(/JSON\.stringify\([^)]*\)/g, '');
-      assert.ok(!/terminalId/.test(pintado), 'el terminalId nunca se pinta en la UI');
-      continue;
-    }
-    assert.ok(!new RegExp(palabra, 'i').test(seccion), `"${palabra}" no debe aparecer en la UI de impresoras`);
+  const seccion = HTML.slice(ini, fin);
+  const visible = textoVisible(seccion);
+  for (const palabra of ['spooler', 'WebSocket', 'WMI', 'timeout', 'ambito', 'routingEngine']) {
+    assert.ok(!new RegExp(palabra, 'i').test(visible), `"${palabra}" no debe aparecer en la UI de impresoras`);
   }
+  // terminalId es mas estricto que el resto: no basta con que no se lea, es
+  // que no debe estar en el HTML pintado ni siquiera dentro de un atributo.
+  // Viaja en el body JSON de la API, y ahi si es legitimo.
+  const pintado = seccion
+    .replace(/apiFetch\([^)]*\)/g, '')
+    .replace(/JSON\.stringify\([^)]*\)/g, '');
+  assert.ok(!/terminalId/.test(pintado), 'el terminalId nunca se pinta en la UI');
   assert.ok(seccion.includes('Volver a vincular'), 're-vinculacion visible para PC formateada');
   assert.ok(seccion.includes('No encontramos impresoras en Windows'), 'mensaje de cero impresoras sin jerga');
 });
