@@ -300,6 +300,33 @@ mientras había otra corrida viva.
   dispare despliegue (la rama de deploy se configura en el panel de Railway, no
   en `railway.toml`), así que los commits quedan en local.
 
+## Lo siguiente, ya decidido
+
+**Primero desplegar y medir**, antes de construir nada más: revisar el diff,
+desplegar los tres arreglos y comprobar si bajan los dos eventos termómetro
+(`preview_no_confirmable_turno_indeterminado` y `MENCION_NO_RESUELTA`). Si no
+bajan, el arreglo no era suficiente y eso hay que saberlo antes de añadir capas.
+
+Después, y por orden de valor, lo que haría falta para operar sin supervisión
+constante — el problema no es la cantidad de defectos sino que **hoy un pedido
+perdido no deja rastro**:
+
+1. **Rescate de pedidos perdidos.** Un job que detecte conversaciones con
+   borrador, sin folio y paradas N minutos, y avise. `confirmacion_verbal_sin_orden`
+   solo salta cuando el bot MIENTE; el cliente que se cansa y se va no produce
+   ningún evento. Convierte una venta perdida en silencio en una rescatable.
+   **Aviso decidido: las dos vías** — en el panel por WebSocket en tiempo real,
+   y por WhatsApp al admin si nadie lo atiende en X minutos.
+2. **Resumen diario de conversaciones atoradas**, colgado del reporte de las
+   22:01. Los eventos ya existen; hoy solo se loguean.
+3. **CI que corra la batería.** Ahora que es fiable (38/38, independiente del
+   orden), la puerta natural es exigirla en verde antes de tocar el botón de
+   deploy.
+
+Y un cambio de diseño, no de infraestructura: **cuando un guard bloquea, que el
+turno pase a un humano** en vez de dejar al cliente contra la pared. No elimina
+la familia de defectos recurrente — la hace no costar dinero.
+
 ## Pendiente
 
 - Los otros cuatro casos de `preview_no_confirmable_turno_indeterminado` no se
