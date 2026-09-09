@@ -1,4 +1,5 @@
 import { prepararCamaraTicket } from './compras-camara.js';
+import { prepararWhatsappCompras } from './compras-whatsapp.js';
 const $ = id=>document.getElementById(id);
 const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n=>new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(Number(n||0));
@@ -43,7 +44,7 @@ function initialPayment(){const form=$('editor-form');$('initial-payment').hidde
 field($('editor-form'),'tipo_pago').addEventListener('change',initialPayment);
 for(const id of ['editor-form','payment-form'])field($(id),'origen').addEventListener('change',()=>sourceFields($(id)));
 document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===btn)));for(const id of ['compras','fondos','proveedores'])$('view-'+id).hidden=id!==btn.dataset.view;}));
-async function context(){const [ctx,categories]=await Promise.all([api('/contexto'),api('/categorias')]);state.role=ctx.rol;state.responsables=ctx.responsables;state.categorias=categories.categorias;document.querySelectorAll('.admin').forEach(el=>el.hidden=state.role!=='admin');}
+async function context(){const [ctx,categories]=await Promise.all([api('/contexto'),api('/categorias')]);state.role=ctx.rol;state.responsables=ctx.responsables;state.categorias=categories.categorias;document.querySelectorAll('.admin').forEach(el=>el.hidden=state.role!=='admin');if(!document.getElementById('compras-whatsapp'))prepararWhatsappCompras({api,contexto:ctx});}
 async function summary(){
   const params=new URLSearchParams();if($('desde').value)params.set('desde',$('desde').value);if($('hasta').value)params.set('hasta',$('hasta').value);
   const s=await api('/resumen?'+params);state.summary=s;$('desde').value=s.desde;$('hasta').value=s.hasta;$('hasta').max=s.hoy;

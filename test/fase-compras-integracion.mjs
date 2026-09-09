@@ -26,6 +26,7 @@ await admin.query("INSERT INTO configuracion VALUES ($1,'timezone','America/Mata
 const migration=n=>readFile(new URL('../migrations/'+n,import.meta.url),'utf8');
 await admin.query(await migration('069_compras_operativas.sql'));
 await admin.query(await migration('070_compras_pagos_fondos.sql'));
+await admin.query(await migration('071_compras_whatsapp.sql'));
 const C = await import('../src/services/comprasOperativas.js');
 const F = await import('../src/services/comprasFinanzas.js');
 const {pool} = await import('../src/services/database.js');
@@ -53,6 +54,17 @@ const http=(path,{tenant=A,role='admin',method='GET',body}={})=>fetch(base+'/api
 try {
   const r=await F.crearResponsable(A,{nombre:'Papá'});
   const rb=await F.crearResponsable(B,{nombre:'Papá'});
+  await t('WhatsApp solo admin, responsable del mismo negocio y revocación',async()=>{
+    const body={telefono:'8780000001',responsable_id:r.id,activo:true};
+    assert.equal((await http('/whatsapp',{role:'staff',method:'PUT',body})).status,403);
+    assert.equal((await http('/whatsapp',{role:'staff'})).status,403);
+    assert.equal((await http('/whatsapp',{method:'PUT',body:{...body,responsable_id:rb.id}})).status,400);
+    assert.equal((await http('/whatsapp',{method:'PUT',body})).status,200);
+    assert.equal((await (await http('/whatsapp')).json()).autorizados[0].telefono,'528780000001');
+    assert.equal((await (await http('/whatsapp',{tenant:B})).json()).autorizados.length,0);
+    assert.equal((await http('/whatsapp',{method:'PUT',body:{...body,activo:false}})).status,200);
+    assert.equal((await (await http('/whatsapp')).json()).autorizados[0].activo,false);
+  });
   await t('migraciones idempotentes sin alterar datos',async()=>{
     await admin.query(await migration('069_compras_operativas.sql'));await admin.query(await migration('070_compras_pagos_fondos.sql'));
     assert.equal((await F.listarResponsables(A)).length,1);
@@ -192,6 +204,13 @@ try {
       await page.click('[data-view="fondos"]');await page.click('#new-responsable');await fill('#responsable-form [name="nombre"]','Responsable UI');await page.click('#responsable-form button:not([type])');
       await page.waitForFunction(()=>!document.querySelector('#responsable-dialog').open);await idle();
       const responsible=(await F.listarResponsables(B)).find(r=>r.nombre==='Responsable UI');assert(responsible);
+      await page.click('#compras-whatsapp');await page.waitForFunction(()=>document.querySelector('#whatsapp-compras-dialog select').options.length>0);
+      await fill('#whatsapp-compras-dialog [name="responsable_id"]',responsible.id);
+      await fill('#whatsapp-compras-dialog [name="telefono"]','8780000002');
+      await page.click('#whatsapp-compras-dialog [type="submit"]');
+      await page.waitForFunction(()=>document.querySelector('#whatsapp-compras-dialog [data-error]').textContent==='Autorización guardada.');
+      assert((await page.$eval('#whatsapp-compras-dialog [data-list]',el=>el.textContent)).includes('+528780000002'));
+      await page.click('#whatsapp-compras-dialog [data-close]');
       await page.click('#new-fondo');await fill('#fund-form [name="responsable_id"]',responsible.id);await fill('#fund-form [name="monto"]',1000);await page.click('#fund-form [type="submit"]');
       await page.waitForFunction(()=>!document.querySelector('#fund-dialog').open);await idle();
       assert.equal(await page.$eval('#m-fondo',el=>el.textContent),moneyTest(1000));
