@@ -60,6 +60,47 @@ const SENALES_NEGACION = [/^no$/, /^no gracias$/, /^asi no$/, /^nel$/, /^nop$/, 
 // se vuelve a mirar el mismo núcleo afirmativo de siempre.
 const MULETILLAS_ENFASIS = /^(?:ya\s+(?:te\s+)?(?:lo\s+)?dije\s+que|ya\s+dije\s+que|que|pues|bueno|orale|obvio)\s+(?=\S)/;
 
+// ── Un sí envuelto en cortesía sigue siendo un sí ───────────────────────────
+// La lista AFIRMACIONES se compara ENTERA contra el mensaje, así que solo
+// reconocía la frase exacta. "confirmalo por favor" (tres palabras) o "listo,
+// mandalo" (dos) no pasaban, y caían en 'indeterminado': el resumen dejaba de
+// ser confirmable y el cliente recibía el mismo resumen otra vez. En
+// producción (negocio 5de544d8…, 2026-09-08 08:22 CDT) eso obligó a un cliente
+// a confirmar dos veces con 67 segundos de diferencia; el evento aparece cinco
+// veces entre el 2 y el 8 de septiembre, en dos negocios.
+//
+// La tolerancia se abre por VOCABULARIO, no por longitud: se acepta el mensaje
+// mientras cada palabra sea o un núcleo afirmativo o relleno de cortesía. En
+// cuanto aparece una palabra con CONTENIDO —una cantidad, un producto, una
+// modalidad— deja de ser un sí limpio y vuelve a fail-closed, porque entonces
+// el cliente podría estar reformulando el pedido en vez de confirmarlo.
+
+// Verbos con los que el cliente pide explícitamente que se registre: por sí
+// solos ya son un sí ("confírmalo").
+const VERBOS_CONFIRMAR = new Set([
+  'confirmo', 'confirma', 'confirmalo', 'confirmala', 'confirmame', 'confirmenlo',
+  'confirmado', 'confirmada', 'procede', 'mandalo', 'mandala',
+  'envialo', 'enviala', 'registralo', 'registrala', 'anotalo', 'anotala',
+]);
+
+// Afirmaciones de UNA palabra (las de varias siguen resolviéndose por
+// AFIRMACIONES, que se compara contra el mensaje completo).
+const AFIRMACIONES_TOKEN = new Set([
+  'si', 'sip', 'sii', 'simon', 'sale', 'va', 'vale', 'ok', 'okey', 'okay',
+  'correcto', 'exacto', 'adelante', 'dale', 'listo', 'perfecto', 'excelente',
+  'claro', 'bien', 'acuerdo',
+]);
+
+// Cortesía, muletillas y referencias al pedido que ya está en pantalla. Nada
+// de esto puede cambiar lo que el cliente lleva; por eso puede acompañar a un
+// sí sin volverlo ambiguo.
+const RELLENO_CORTES = new Set([
+  'por', 'favor', 'porfa', 'porfavor', 'gracias', 'ya', 'pues', 'bueno', 'orale',
+  'todo', 'asi', 'esta', 'este', 'ese', 'esa', 'eso', 'es', 'lo', 'la', 'los', 'las',
+  'le', 'me', 'mi', 'el', 'un', 'una', 'y', 'que', 'de', 'del', 'al', 'a',
+  'pedido', 'orden', 'compra', 'quiero', 'dije', 'te',
+]);
+
 function nucleoAfirmativo(t) {
   let s = t;
   // Hasta dos capas ("pues que sí"), nunca en bucle.
@@ -82,12 +123,23 @@ function nucleoAfirmativo(t) {
 export function esConfirmacionVerbal(texto) {
   const t = normalizar(texto);
   if (!t) return false;
-  // Un mensaje largo casi nunca es un "sí" seco: es una instrucción.
-  if (t.split(' ').length > 5) return false;
-  // "sí, pero cámbiale la salsa" NO confirma el resumen anterior.
+  // "sí, pero cámbiale la salsa" NO confirma el resumen anterior. Va primero y
+  // sobre el texto COMPLETO: cualquier señal de cambio gana sobre el sí.
   if (SENALES_MUTACION.some((re) => re.test(t))) return false;
   if (SENALES_NEGACION.some((re) => re.test(t))) return false;
-  return AFIRMACIONES.has(t) || AFIRMACIONES.has(nucleoAfirmativo(t));
+  if (AFIRMACIONES.has(t) || AFIRMACIONES.has(nucleoAfirmativo(t))) return true;
+
+  // Ninguna palabra puede aportar contenido al pedido, y al menos una tiene que
+  // ser afirmativa: "por favor" solo, sin ningún sí, no confirma nada.
+  const palabras = nucleoAfirmativo(t).split(' ').filter(Boolean);
+  if (!palabras.length) return false;
+  let hayNucleo = false;
+  for (const w of palabras) {
+    if (AFIRMACIONES_TOKEN.has(w) || VERBOS_CONFIRMAR.has(w)) { hayNucleo = true; continue; }
+    if (RELLENO_CORTES.has(w)) continue;
+    return false;
+  }
+  return hayNucleo;
 }
 
 /**
