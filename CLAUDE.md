@@ -100,6 +100,77 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 - Cada 5 min: activar pedidos programados, sincronizar estado Rappi, reconciliar pagos Clip pendientes
 - Cada minuto a las 22:01 CST: enviar reporte de corte de caja por WhatsApp al número admin
 
+## Entorno local de pruebas (Docker) — receta completa
+
+Reconstruido desde cero el 2026-09-09 en una máquina nueva. Los pasos van en
+este orden; saltarse uno produce errores que no dicen lo que realmente falta.
+
+**0. Fines de línea.** Desde el 2026-09-09 el repo trae `.gitattributes`, que
+fija LF para todo y CRLF para `.bat`/`.cmd`. Con él, un clon nuevo queda bien
+sin configurar nada.
+
+Antes no existía, y el síntoma vale la pena recordarlo porque no se parece en
+nada a su causa: un Git recién instalado en Windows trae `core.autocrlf=true`
+y convertía 639 de los 652 archivos a CRLF al clonar. Git no lo reporta como
+cambio, pero Node lee los bytes crudos, y las suites que hacen aserciones
+sobre el HTML del panel fallaban sin mencionar jamás los fines de línea
+(`fase-impresion-self-service` fue una). Para auditar cualquier checkout:
+`git ls-files --eol | Select-String 'w/crlf'` — solo deben salir `.bat` y
+`.cmd`.
+
+Si alguna máquina ya tiene un checkout en CRLF, no hace falta `reset --hard`:
+basta `git config core.autocrlf false` y reescribir en disco los archivos
+desajustados quitándoles el `\r`. Después, **`git update-index --refresh`** —
+sin eso `git status` sigue mostrando cientos de archivos "modificados" que en
+realidad solo tienen la caché de `stat` vieja, y se pierde media hora
+persiguiendo un diff que no existe.
+
+**1. Base de datos.** Postgres 18.4 (la misma que producción), contenedor
+`pg-restv2`, puerto `55453`, base `edged1`:
+```powershell
+docker run -d --name pg-restv2 -e "POSTGRES_PASSWORD=<local>" -e POSTGRES_DB=edged1 -p 55453:5432 postgres:18.4
+```
+Después: `docker start pg-restv2`.
+
+**2. SSL es obligatorio, también en local.** El pool de `src/services/database.js`
+trae `ssl: { rejectUnauthorized: false }` fijo porque Railway lo exige, y esa
+opción gana sobre `sslmode=disable` en la cadena de conexión. Un contenedor
+Postgres recién creado NO trae SSL, y el síntoma es
+`FALLO: The server does not support SSL connections`. Se le genera un
+certificado autofirmado (basta con autofirmado: `rejectUnauthorized` está en
+`false`) y se prende SSL por `ALTER SYSTEM`, que persiste en
+`postgresql.auto.conf`:
+```powershell
+$pgdata = (docker exec pg-restv2 psql -U postgres -d edged1 -tAc 'show data_directory').Trim()
+docker exec -u root pg-restv2 bash -c "openssl req -new -x509 -days 3650 -nodes -text -subj '/CN=localhost' -out $pgdata/server.crt -keyout $pgdata/server.key && chmod 600 $pgdata/server.key && chown postgres:postgres $pgdata/server.key $pgdata/server.crt"
+docker exec pg-restv2 psql -U postgres -d edged1 -c "ALTER SYSTEM SET ssl='on'" -c "ALTER SYSTEM SET ssl_cert_file='server.crt'" -c "ALTER SYSTEM SET ssl_key_file='server.key'"
+docker restart pg-restv2
+```
+
+**3. Variables.** Copiar `dev-local.env.example.cmd` a `dev-local.env.cmd`
+(ignorado por git) y llenarlo. `INTEGRATIONS_ENCRYPTION_KEY` no es texto libre:
+debe ser **Base64 de exactamente 32 bytes** o `cifradoIntegraciones.js` falla
+cerrado.
+
+**4. Esquema — son TRES fuentes, no una.** Aplicar en este orden:
+- `node test/aplicar-migraciones.mjs` — pero su lista `ORDEN_MIGRACIONES` está
+  escrita a mano y **termina en `050`**. No recorre `migrations/`.
+- `node scripts/predeploy-0NN-*.mjs` de la **051 a la 068**, en orden. Ahí vive
+  el esquema posterior (`tienda_promociones`, pagos, folios, cortes).
+- La **065** y la **066** no tienen script `predeploy`: se aplican a mano con
+  `psql -f migrations/065_ajustes_cierre.sql` y `066_conversaciones_control.sql`
+  (`facturas_pedido`, `ajustes_cierre`, `conversaciones_control`).
+
+Al terminar deben existir **81 tablas** en `public`.
+
+**5. Datos de prueba.** `node test/seed-datos-prueba.mjs`. Genera
+`test/.datos-prueba.json`; sin ese archivo ~20 suites revientan con un
+`ENOENT` que no menciona el seed por ningún lado.
+
+**6. Correr una suite.** Cargar las variables y `node test/<suite>.mjs`. En
+PowerShell **no** uses `2>&1` con node: envuelve stderr en ErrorRecord y
+ensucia el diagnóstico. Redirige a archivo (`> $log 2>&1`) y lee el archivo.
+
 ## Principio innegociable: Estabilidad operacional primero
 
 > El restaurante nunca deja de vender mientras evolucionamos el producto.
