@@ -49,7 +49,7 @@ export const SCHEMA_TICKET = {
           unidad: { type: ['string', 'null'] },
           precio_unitario: { type: ['number', 'null'] },
           importe: { type: ['number', 'null'] },
-          categoria_sugerida: { type: ['string', 'null'], enum: [...CATEGORIAS_COMPRA, null] },
+          categoria_sugerida: { type: 'string', enum: [...CATEGORIAS_COMPRA] },
           confianza: { type: 'number' },
         },
       },
@@ -72,7 +72,7 @@ REGLAS ABSOLUTAS:
 - moneda: solo si aparece explícita o un símbolo inequívoco; si no, null.
 - descripcion: conserva una descripción corta fiel al renglón del ticket. No traduzcas marcas ni cambies el producto.
 - cantidad/unidad/precio_unitario/importe: solo cuando el ticket los soporte. Si un renglón solo muestra descripción e importe, deja lo demás null.
-- categoria_sugerida: elige SOLO una de: ${CATEGORIAS_COMPRA.join(', ')}. Si no hay información suficiente, usa "Otros" o null. La categoría es una sugerencia editable, nunca un hecho fiscal.
+- categoria_sugerida: elige SOLO una de: ${CATEGORIAS_COMPRA.join(', ')}. Si no hay información suficiente, usa "Otros". La categoría es una sugerencia editable, nunca un hecho fiscal.
 - confianza y confianza de cada item: número entre 0 y 1.
 - advertencias: usa frases breves y específicas como TOTAL_NO_LEGIBLE, FECHA_NO_LEGIBLE, RENGLON_PARCIAL, TOTAL_NO_COINCIDE_CON_ITEMS.
 - Si el ticket tiene descuentos/impuestos que impiden que la suma de renglones sea igual al total, NO alteres cifras para hacerlas cuadrar; conserva lo visible y agrega advertencia.

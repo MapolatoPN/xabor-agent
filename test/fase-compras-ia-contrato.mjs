@@ -8,6 +8,10 @@ const respuesta={stop_reason:'end_turn',content:[{type:'text',text:JSON.stringif
 const cliente=fn=>({messages:{create:fn}});
 await extraerTicketConIA(imagen,'image/jpeg',{anthropic:cliente(async(body,opts)=>{
   assert.equal(body.model,MODELO_TICKET);assert.equal(body.output_config.format.type,'json_schema');
+  // Anthropic rechaza enum con type ['string','null'] antes de procesar la foto.
+  const categoria=body.output_config.format.schema.properties.items.items.properties.categoria_sugerida;
+  assert.equal(categoria.type,'string');assert(categoria.enum.includes('Otros'));
+  assert(categoria.enum.every(v=>typeof v==='string'));
   assert.equal(body.messages[0].content[1].source.data,imagen.toString('base64'));
   assert.equal(opts.timeout,TICKET_TIMEOUT_MS);assert.equal(opts.maxRetries,0);return respuesta;
 })});ok++;
