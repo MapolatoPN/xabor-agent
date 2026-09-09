@@ -61,6 +61,13 @@ export function arrancarAnthropicMock() {
       // la SIGUIENTE llamada entrante, en el orden en que se registran.
       encolarRespuesta: (respuesta) => { cola.push(respuesta); },
       pendientes: () => cola.length,
+      // Descarta lo que quedó encolado y devuelve cuántas eran. Hace falta
+      // porque hay turnos que el backend resuelve SIN llamar al modelo (la
+      // confirmación determinista desde el snapshot es el caso principal): la
+      // respuesta que la prueba había preparado por si acaso se queda en la
+      // cola y la consume el SIGUIENTE test, que entonces falla por un motivo
+      // que no tiene nada que ver con lo que prueba.
+      drenar: () => { const n = cola.length; cola.length = 0; return n; },
       detener: () => server.close(),
     }));
   });
