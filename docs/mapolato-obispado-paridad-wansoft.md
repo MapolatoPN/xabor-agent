@@ -5,6 +5,59 @@ actualiza después de cada fase.
 
 Estado al **9 de agosto de 2026**, tras Xabor Edge V1.
 
+> ## Auditoría del 9 de septiembre de 2026
+>
+> Hecha contra el código, no contra este documento. La tabla de abajo tenía un
+> mes y **mentía en las dos direcciones**: daba por faltante algo que ya está
+> hecho, y no registraba dos brechas que sí importan.
+>
+> **Ya no es cierto que falte:**
+>
+> - **Corte de turno.** Existe completo en `src/services/cortesCaja.js`:
+>   movimientos, corte vivo, cierre con **efectivo contado**, ticket de corte y
+>   fecha operativa con zona horaria. `fase-cortes-caja` 38/38. Era la brecha
+>   que este documento llamaba "la más grande" y "lo que sostiene la
+>   suscripción a Wansoft".
+> - **UI de configuración de impresión.** Está (`Config → Impresoras`, commit
+>   `7c89cc4`), con asistente de vinculación del equipo y rutas por categoría.
+> - **Caja parcial.** Pagos divididos, métodos y propinas funcionan; con el
+>   corte completo, "Caja" pasa a CUBIERTO salvo por el cajón (ver abajo).
+>
+> **Brechas que este documento no registraba y son bloqueantes:**
+>
+> - **El cajón de dinero no existe en el código.** Búsqueda en todo el repo: no
+>   hay comando de pulso ESC/POS ni equivalente, ni en `edge/renderers/escpos.js`
+>   ni en el print-agent legado. Toda coincidencia de "drawer" es el menú
+>   lateral del panel en móvil. La caja principal de Obispado **no podrá abrir
+>   el cajón desde el sistema**. O se implementa (es chico: va en el renderer y
+>   en el ticket de caja) o se acepta explícitamente que se abre a mano.
+> - **El inventario de las cuatro impresoras está vacío.** Las cuatro en
+>   "PENDIENTE LEVANTAMIENTO EN SITIO": sin marca, IP, puerto, ancho de papel ni
+>   confirmación de ESC/POS. No se puede configurar lo que no se ha medido.
+>
+> **Sobre la impresión, con más precisión que "EN MOCK":** el único piloto verde
+> con hardware real es **Acuña, con UNA impresora y destino simple**. El piloto
+> de dos impresoras (Carnitas Moreno) se planeó el 12 de agosto y su documento
+> no se volvió a tocar. Obispado estrenaría **cuatro** con ruteo por categoría
+> —chilaquiles aparte de cocina general—, que es exactamente lo que ese piloto
+> iba a validar por primera vez.
+>
+> **Falsa alarma que conviene no repetir:** una corrida de la batería completa
+> mostró `fase-restaurante-e2e-piloto` en 3/24, lo que parecía indicar que el
+> módulo de restaurante no estaba listo. No era eso: eran dos aserciones
+> desatrasadas (activaba `restaurante` sin `menu`, que hoy es dependencia). Con
+> eso corregido, **24/24**. Aislados, el núcleo está sólido: mesas 28/28,
+> operación 30/30, meseros 22/22, ruteo de impresión 20/20, cortes 38/38.
+>
+> **Sin conexión:** sigue siendo la brecha mayor, pero ya no está solo diseñada.
+> Ver `xabor-edge-offline-diseno.md`: el motor local de sala, la sincronización
+> idempotente y la foto del catálogo están construidos y probados (43 pruebas).
+> Falta que las PCs de sala alcancen al Edge por la red local y el failover en
+> el panel.
+>
+> **Veredicto:** no cancelar Wansoft todavía. Piloto en paralelo, decisión sobre
+> el cajón, y levantamiento físico de las impresoras antes que nada.
+
 ## Escala de estados
 
 | Estado | Significa |
