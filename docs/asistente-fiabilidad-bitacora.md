@@ -460,6 +460,19 @@ Regla que deja este episodio: **cuando se cambia una configuración de operació
 revisar si ese camino tenía pruebas.** Aquí la respuesta era "ninguna", y la
 configuración vieja sí estaba cubierta.
 
+## Corrección — Compras por WhatsApp SÍ está desplegado
+
+Durante esta sesión reporté el PR #5 de Codex como "en `main` sin desplegar".
+**Es falso.** Quedó desplegado: commit de integración
+`73a412c90592aa72d5ac8b963386710cdde68bb6`, despliegue
+`4dc000e0-323c-45e5-b038-44d40707a0be` con SUCCESS en Railway. Mario Rodriguez
+ya está autorizado como comprador en Mapolato Obispado.
+
+Mi lectura vino de comparar contra el último commit que **yo** había desplegado
+y suponer que nadie más había desplegado después. Es el mismo error de método
+que la falsa alarma del auto-deploy: deducir el estado de producción en vez de
+comprobarlo.
+
 ## Pendiente de esta continuación
 
 - **No resuelto y sabido:** repartir "uno solo frijoles, el otro frijoles y papa"

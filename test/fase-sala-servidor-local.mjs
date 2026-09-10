@@ -217,6 +217,48 @@ await t('F1. responde CORS: el panel se sirvió desde la nube y llama a esta IP'
   assert.strictEqual(previo.status, 204, 'el preflight debe pasar');
 });
 
+// ═══ G. El Edge sirve el panel: sin esto, tres de las cuatro estaciones no
+//        pueden operar durante un corte ═════════════════════════════════════
+// Una página https NO puede hacer fetch a http (contenido mixto), y no hay
+// forma de pedir permiso desde el código. Solo `localhost` se salva. Si el
+// panel se abre DESDE el Edge, todo es del mismo origen y el problema
+// desaparece -- por eso esto no es un extra.
+await t('G1. sirve el panel en / y en /app', async () => {
+  for (const ruta of ['/', '/app']) {
+    const r = await fetch(base + ruta);
+    assert.strictEqual(r.status, 200, ruta);
+    assert.match(r.headers.get('content-type') || '', /text\/html/);
+    const html = await r.text();
+    assert.ok(html.includes('<script'), `${ruta} debe entregar el panel de verdad`);
+  }
+});
+
+await t('G2. sirve los archivos que el panel necesita, con su tipo', async () => {
+  const r = await fetch(`${base}/offline-sala.js`);
+  assert.strictEqual(r.status, 200);
+  assert.match(r.headers.get('content-type') || '', /javascript/);
+  assert.ok((await r.text()).includes('candidatosDeEdge'));
+});
+
+await t('G3. no se puede salir de la carpeta del panel', async () => {
+  // Esta PC guarda el token de la terminal y las ventas del día: nadie en la
+  // red del local puede pedirle un archivo de fuera.
+  for (const intento of ['/../edge/config.js', '/..%2f..%2fpackage.json', '/../../dev-local.env.cmd']) {
+    const r = await fetch(base + intento);
+    assert.ok(r.status === 403 || r.status === 404, `${intento} devolvió ${r.status}`);
+    const cuerpo = await r.text();
+    assert.ok(!cuerpo.includes('DATABASE_URL'), 'jamás debe salir un archivo de configuración');
+  }
+});
+
+await t('G4. servir el panel NO tapa la API local', async () => {
+  const r = await pedir('GET', '/local/salud');
+  assert.strictEqual(r.estado, 200);
+  assert.strictEqual(r.cuerpo.ok, true, '/local/* sigue siendo API, no un archivo');
+  const inventada = await fetch(`${base}/local/no-existe`);
+  assert.strictEqual(inventada.status, 404);
+});
+
 await servidor.detener();
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }

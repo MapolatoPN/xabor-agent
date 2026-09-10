@@ -192,6 +192,47 @@ await t('D4. la respuesta simulada se puede clonar, como hace apiFetch', async (
   assert.deepStrictEqual(await r.json(), { a: 1 }, 'clonar no consume el cuerpo');
 });
 
+// ═══ E. La regla del navegador que decide la arquitectura ═════════════════
+// Una página https no puede hacer fetch a http: se bloquea como contenido
+// mixto, sin excepción posible por código. Solo localhost se salva. Si esto
+// se ignora, el modo offline funciona en la caja y en ninguna otra estación.
+const { candidatosDeEdge, bloqueadoPorNavegador, PUERTO_EDGE } = await import('../panel/offline-sala.js');
+
+await t('E1. desde https NO se ofrece una IP de la LAN: el navegador la bloquearía', () => {
+  const c = candidatosDeEdge({
+    guardado: 'http://192.168.1.50:7071', host: '192.168.1.50',
+    origen: 'https://xabor.mx', protocolo: 'https:',
+  });
+  assert.ok(!c.some((u) => u.includes('192.168.1.50')),
+    'intentarlo solo gasta tiempo: el fetch nunca sale del navegador');
+  assert.ok(c.includes(`http://localhost:${PUERTO_EDGE}`), 'localhost sí es origen seguro');
+  assert.strictEqual(c[0], 'https://xabor.mx', 'el propio origen va primero');
+});
+
+await t('E2. desde el panel servido por el Edge, la LAN sí vale', () => {
+  const c = candidatosDeEdge({
+    guardado: 'http://192.168.1.50:7071', host: '192.168.1.50',
+    origen: 'http://192.168.1.50:7071', protocolo: 'http:',
+  });
+  assert.strictEqual(c[0], 'http://192.168.1.50:7071',
+    'abierto desde el Edge, todo es del mismo origen y no hay contenido mixto');
+});
+
+await t('E3. se detecta el bloqueo para poder DECIR a dónde ir', () => {
+  // Un fetch bloqueado rechaza igual que uno que no encontró a nadie, así que
+  // el bloqueo se deduce; si no, la estación se queda con un "sin conexión"
+  // sin salida teniendo el Edge a dos metros.
+  assert.strictEqual(
+    bloqueadoPorNavegador({ guardado: 'http://192.168.1.50:7071', protocolo: 'https:' }),
+    'http://192.168.1.50:7071');
+  assert.strictEqual(bloqueadoPorNavegador({ guardado: 'http://localhost:7071', protocolo: 'https:' }), null,
+    'localhost no está bloqueado');
+  assert.strictEqual(bloqueadoPorNavegador({ guardado: 'http://192.168.1.50:7071', protocolo: 'http:' }), null,
+    'desde http no hay contenido mixto');
+  assert.strictEqual(bloqueadoPorNavegador({ guardado: null, protocolo: 'https:' }), null,
+    'sin un Edge conocido no hay nada que avisar');
+});
+
 await pool.query(`DELETE FROM restaurante_cuenta_items WHERE negocio_id=$1`, [NEG]).catch(() => {});
 await pool.query(`DELETE FROM restaurante_cuentas WHERE negocio_id=$1`, [NEG]).catch(() => {});
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

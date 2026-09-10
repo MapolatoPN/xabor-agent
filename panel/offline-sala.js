@@ -19,13 +19,51 @@
 /** Dónde buscar un Edge. El usuario puede fijarlo si su red es rara. */
 export const PUERTO_EDGE = 7071;
 
-export function candidatosDeEdge({ guardado = null, host = null } = {}) {
+/**
+ * A qué direcciones se puede intentar llegar DESDE ESTA PÁGINA.
+ *
+ * Aquí manda una restricción del navegador que decide la arquitectura entera:
+ * una página servida por **https** no puede hacer `fetch` a **http** — se
+ * bloquea como contenido mixto, sin posibilidad de excepción por código. La
+ * única salvedad del estándar es `localhost` / `127.0.0.1`, que se consideran
+ * orígenes seguros.
+ *
+ * Consecuencia práctica en Obispado: la caja, si corre el Edge, llega por
+ * `localhost` sin problema. Las dos computadoras de meseros y la de para
+ * llevar NO pueden llegar a `http://192.168.x.x:7071` desde `https://xabor.mx`,
+ * por más que la red esté perfecta.
+ *
+ * Por eso el mismo origen va PRIMERO: cuando el navegador abre el panel que
+ * sirve el propio Edge (`http://<edge>:7071/`), todo es del mismo origen y no
+ * hay contenido mixto que valga. Ese es el modo local de las demás estaciones.
+ */
+export function candidatosDeEdge({ guardado = null, host = null, origen = null, protocolo = 'http:' } = {}) {
   const lista = [];
-  if (guardado) lista.push(guardado);
-  // Mismo equipo (la caja suele ser también el Edge) y el gateway típico.
-  if (host) lista.push(`http://${host}:${PUERTO_EDGE}`);
-  lista.push(`http://localhost:${PUERTO_EDGE}`);
+  const seguro = protocolo === 'https:';
+
+  // 1. El propio origen. Si esta página la sirvió el Edge, esto acierta y
+  //    ninguna otra alternativa hace falta.
+  if (origen) lista.push(origen);
+
+  const usable = (url) => !seguro || /^https:/.test(url) || /^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(url);
+
+  for (const u of [guardado, host ? `http://${host}:${PUERTO_EDGE}` : null, `http://localhost:${PUERTO_EDGE}`]) {
+    if (u && usable(u)) lista.push(u);
+  }
   return [...new Set(lista)];
+}
+
+/**
+ * ¿Hay un Edge en la red al que esta página NO puede llegar por la regla de
+ * contenido mixto? Se detecta por deducción, no por el error: un `fetch`
+ * bloqueado rechaza con el mismo `TypeError` que uno que no encontró a nadie.
+ * Si lo sabemos de antemano, se le puede decir al usuario qué hacer en vez de
+ * dejarle un "sin conexión" sin salida.
+ */
+export function bloqueadoPorNavegador({ guardado = null, protocolo = 'http:' } = {}) {
+  if (protocolo !== 'https:' || !guardado) return null;
+  if (/^https:/.test(guardado) || /^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(guardado)) return null;
+  return guardado;   // hay un Edge conocido, pero por ahí no se llega
 }
 
 /**
@@ -190,18 +228,33 @@ export function instalarEnVentana(ventana, { negocioId = null, almacen = null } 
     if (buscando) return buscando;
     ultimoIntento = Date.now();
     buscando = (async () => {
+      const loc = ventana.location || {};
+      const guardado = leer('xabor_edge_base');
       const found = await descubrirEdge(
-        candidatosDeEdge({ guardado: leer('xabor_edge_base'), host: ventana.location?.hostname }),
+        candidatosDeEdge({ guardado, host: loc.hostname, origen: loc.origin, protocolo: loc.protocol }),
         { negocioId: negocioId || leer('xabor_negocio_id') }
       );
       buscando = null;
-      if (!found) return null;
+      if (!found) {
+        // Si sabemos que hay un Edge y que el navegador no nos deja llegar,
+        // se avisa con la dirección exacta a la que hay que ir. Dejar solo
+        // "sin conexión" sería condenar a la estación a no operar teniendo el
+        // Edge a dos metros.
+        const bloqueado = bloqueadoPorNavegador({ guardado, protocolo: loc.protocol });
+        if (bloqueado) avisar('xabor:edge-bloqueado', { base: bloqueado });
+        return null;
+      }
       escribir('xabor_edge_base', found.base);
       cliente = crearClienteOffline({ base: found.base, token: leer('xabor_edge_token') });
-      ventana.dispatchEvent?.(new ventana.CustomEvent('xabor:sin-conexion', { detail: found.salud }));
+      avisar('xabor:sin-conexion', found.salud);
       return cliente;
     })();
     return buscando;
+  }
+
+  function avisar(nombre, detalle) {
+    try { ventana.dispatchEvent?.(new ventana.CustomEvent(nombre, { detail: detalle })); }
+    catch { /* sin CustomEvent (pruebas): el aviso es opcional */ }
   }
 
   const api = {
