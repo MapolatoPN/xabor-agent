@@ -360,6 +360,42 @@ await t('SEGURIDAD', '22. ni el PIN ni su hash aparecen en ninguna respuesta de 
   }
 });
 
+// ═══ COBRAR ES DE LA CAJA ══════════════════════════════════════════════════
+// Hasta ahora `/pagos` y `/cerrar` exigían solo estar autenticado, así que una
+// tablet de mesero podía cobrar. En Obispado TODOS los cobros pasan por la
+// caja principal: si el dinero puede entrar por dos puntos, el arqueo deja de
+// tener un único responsable. El modo sin conexión ya aplicaba esta regla, y
+// que un mesero pudiera cobrar con enlace y no sin él sería peor que
+// cualquiera de las dos reglas por separado.
+await t('CAJA', '23. un mesero de estación NO puede registrar un pago', async () => {
+  const r = await juan.pedir(`/api/restaurante/cuentas/${cuentaJuan}/pagos`,
+    { method: 'POST', body: { metodo: 'efectivo', monto: 10 } });
+  assert.strictEqual(r.status, 403, `el servidor debe rechazarlo, vino ${r.status}`);
+  assert.strictEqual(r.body.codigo, 'ROL_NO_AUTORIZADO');
+  assert.match(r.body.error, /caja/i, 'el mensaje dice a quién acudir');
+});
+
+await t('CAJA', '24. ni cerrar la cuenta', async () => {
+  const r = await juan.pedir(`/api/restaurante/cuentas/${cuentaJuan}/cerrar`, { method: 'POST' });
+  assert.strictEqual(r.status, 403);
+  assert.strictEqual(r.body.codigo, 'ROL_NO_AUTORIZADO');
+});
+
+await t('CAJA', '25. pero SÍ sigue capturando y mandando a cocina — es su trabajo', async () => {
+  const r = await juan.pedir(`/api/restaurante/cuentas/${cuentaJuan}/items`,
+    { method: 'POST', body: { items: [{ producto: 'Agua', cantidad: 1, precio_unitario: 25 }] } });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  const c = await juan.pedir(`/api/restaurante/cuentas/${cuentaJuan}/comanda`, { method: 'POST' });
+  assert.strictEqual(c.status, 200, 'un cambio de permisos no puede dejar a la cocina sin comandas');
+});
+
+await t('CAJA', '26. la caja (sesión de panel, no de estación) SÍ cobra', async () => {
+  const r = await admin.pedir(`/api/restaurante/cuentas/${cuentaJuan}/pagos`,
+    { method: 'POST', body: { metodo: 'efectivo', monto: 10 },
+      cookieManual: adminCookie(A.admin, A.id) });
+  assert.strictEqual(r.status, 200, `la caja tiene que poder cobrar: ${JSON.stringify(r.body)}`);
+});
+
 await limpiar();
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

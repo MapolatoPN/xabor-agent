@@ -3014,7 +3014,31 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireAdm
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
-app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+// COBRAR ES DE LA CAJA. Un mesero captura y manda a cocina; el dinero entra
+// por un solo punto. Hasta hoy `/pagos` y `/cerrar` exigían solo estar
+// autenticado, así que una tablet de mesero podía cobrar -- y el arqueo dejaba
+// de tener un único responsable.
+//
+// La señal es la sesión de ESTACIÓN (`req.esMesero`): alguien que entró con su
+// PIN en un dispositivo compartido de sala. La caja entra con su propia cuenta
+// de panel. Por eso estas dos rutas pasan por `requireOperacionRestaurante`,
+// que es quien resuelve esa distinción; para una sesión normal se comporta
+// exactamente como `requireAuthSeguro`.
+//
+// El modo sin conexión aplica la MISMA regla (edge/sala/servidorLocal.js): que
+// un mesero pudiera cobrar con enlace y no sin él sería peor que cualquiera de
+// las dos reglas por separado.
+function soloCaja(req, res, next) {
+  if (req.esMesero) {
+    return res.status(403).json({
+      error: 'Los cobros se hacen en la caja. Pídeselo a quien esté en caja.',
+      codigo: 'ROL_NO_AUTORIZADO',
+    });
+  }
+  next();
+}
+
+app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireOperacionRestaurante, soloCaja, requireModulo('restaurante'), async (req, res) => {
   try {
     const r = await registrarPago(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
     res.json({ ok: true, ...r });
@@ -3032,7 +3056,7 @@ app.get('/api/restaurante/cuentas/:cuentaId/dividir', requireOperacionRestaurant
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
-app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireOperacionRestaurante, soloCaja, requireModulo('restaurante'), async (req, res) => {
   try {
     const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId);
     // Ticket final de cuenta (tipo 'cuenta_final'): UNA sola vez, solo cuando
