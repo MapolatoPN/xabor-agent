@@ -912,6 +912,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/modificadores.js"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
+<!-- Failover de sala sin internet. Es un módulo: carga diferida y no bloquea
+     el arranque. Si no llega a cargar, `apiFetch` sigue funcionando contra la
+     nube exactamente como antes (usa `window.XaborOffline?.`). -->
+<script type="module" src="/offline-sala.js"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -2353,11 +2357,25 @@ async function cargarNegocio() {
 // llamadas caen casi al mismo tiempo (ej. carga inicial), solo se muestra
 // una vez cada pocos segundos.
 let ultimoAvisoModulo = 0;
+// SIN CONEXIÓN: si la nube no responde y hay un Xabor Edge en la red local,
+// la operación de SALA se atiende ahí. Solo se intenta cuando `fetch`
+// RECHAZA -- es decir, cuando no hubo respuesta. Un 4xx o un 5xx no son un
+// corte: son la nube diciendo algo, y hay que respetarlo. Confundirlos haría
+// que un error de permisos mandara al mesero a operar en local y se creara una
+// cuenta paralela.
+//
+// `XaborOffline.intentar` devuelve null si no hay Edge o si esa ruta no existe
+// sin enlace (reportes, configuración, menú): entonces se relanza el error
+// original y el panel dice la verdad. Ver panel/offline-sala.js.
 function apiFetch(url, opts = {}) {
   return fetch(url, {
     ...opts,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  }).catch(async (fallo) => {
+    const local = await (window.XaborOffline?.intentar?.(url, opts) ?? null);
+    if (local) return local;
+    throw fallo;
   }).then(async r => {
     if (r.status === 403) {
       try {
