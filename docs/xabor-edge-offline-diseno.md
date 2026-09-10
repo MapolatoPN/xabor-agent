@@ -68,6 +68,21 @@ que está en la misma red. Cuando el enlace vuelve, el Edge sube su outbox.
 | Motor local de sala | `edge/sala/operacionLocal.js` | `fase-sala-offline` — 22 |
 | Ingesta en la nube | `src/services/sincronizacionSala.js` | `fase-sala-sincronizacion` — 12 |
 | Foto del catálogo | `src/services/catalogoParaEdge.js` | `fase-catalogo-edge` — 9 |
+| El Edge sirviendo la sala en la LAN | `edge/sala/servidorLocal.js` | `fase-sala-servidor-local` — 13 |
+| Failover del panel | `panel/offline-sala.js` + 6 líneas en `apiFetch` | `fase-sala-failover` — 12 |
+| Caché del panel para sobrevivir a un F5 | `panel/sw.js` | `fase-sw-offline` — 10 |
+| Cajón de dinero | `edge/renderers/escpos.js` | `fase-cajon-dinero` — 9 |
+
+**87 pruebas.** El circuito está cerrado: un corte de internet ya no para la
+sala. Lo que queda no es diseño, es puesta en marcha.
+
+Dos decisiones que sostienen todo esto y conviene no revisar sin pensarlo:
+
+- **El failover se activa SOLO cuando `fetch` rechaza.** Un 4xx o un 5xx no son
+  un corte: son la nube diciendo algo. Confundirlos haría que un error de
+  permisos mandara al mesero a operar en local y se creara una cuenta paralela.
+- **El service worker es RED PRIMERO.** Al revés, cada despliegue dejaría
+  negocios en un panel viejo, y nadie sospecha del navegador.
 
 Decisiones que conviene no volver a discutir:
 
@@ -119,20 +134,32 @@ conflicto es la excepción, no la norma.
 
 ## Lo que falta, en orden
 
-1. **Servidor HTTP del Edge en la red local**, exponiendo la operación de sala
-   con la misma forma que `/api/restaurante/*`.
-2. **Failover en el panel**: detectar que la nube no responde y hablarle al
-   Edge. Toca `panel/index.html`, componente protegido — requiere aprobación.
-3. **Bucle de sincronización**: subir el outbox al reconectar y refrescar la
-   foto del catálogo mientras hay enlace.
-4. **Informe de reconciliación** en el panel: qué se creó sin enlace, con qué
-   folio, y qué quedó pendiente de decisión. Sin ese informe nadie puede
-   confiar en la caja del día.
+1. **Cablear las piezas en `edge/index.js`**: crear la sala local al arrancar,
+   persistirla en el almacén que ya existe (`leerEstado`/`escribirEstado`),
+   levantar el servidor y recibir la foto del catálogo por el WebSocket que ya
+   está abierto. Cada pieza está probada por separado; falta el arranque.
+2. **Bucle de sincronización**: subir el outbox al reconectar y refrescar la
+   foto mientras hay enlace. La ingesta y el `marcarLoteSincronizado` están;
+   falta el disparador.
+3. **Informe de reconciliación** en el panel: qué se creó sin enlace, con qué
+   folio, y qué quedó pendiente de decisión. `sincronizarLoteSala` ya devuelve
+   ese reporte; falta mostrarlo. Sin él nadie puede confiar en la caja del día.
+4. **Pantalla de sesión offline**: hoy el panel pide PIN contra la nube. Sin
+   enlace hay que pedirlo contra el Edge (`XaborOffline.abrirSesion`).
 5. **Prueba física**: cortar el internet del local a propósito, con el
-   restaurante operando, y ver qué pasa de verdad.
+   restaurante operando, y ver qué pasa de verdad. Nada de lo anterior
+   sustituye a esto.
 
-Los pasos 1 y 3 son código nuevo en el Edge. El 2 es el que decide si esto es
-usable, y el único que toca un componente protegido.
+## Límites que hay que decir en voz alta
+
+- **Hay que dejar el panel abierto.** Con el service worker, un F5 durante el
+  corte ya abre; pero un navegador cerrado y vuelto a abrir en una máquina que
+  nunca cargó el panel no tiene nada que servir.
+- **Un Edge, un local.** Si esa PC se apaga durante el corte, la sala se para
+  igual. La cola está en disco y se recupera al encender, pero mientras está
+  apagada no hay a quién hablarle.
+- **La terminal bancaria es otro aparato.** El Edge registra que ese cobro
+  ocurrió; nunca lo ejecuta.
 
 ## Lo que este diseño NO cubre
 
