@@ -6,7 +6,7 @@
 // formato del papel sin hardware y sin red -- basta comparar texto.
 import {
   INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_NORMAL,
-  lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal,
+  lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal, abrirCajon,
 } from './escpos.js';
 
 // ─── Comanda de cocina ──────────────────────────────────────────────────────
@@ -58,6 +58,12 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
 // todavía en Xabor -- no se insinúa que exista.
 export function renderCuenta(payload, { ancho = 42 } = {}) {
   const partes = [INIT];
+  // El cajón se abre AQUÍ y solo aquí: va colgado de la impresora de tickets,
+  // y una comanda de cocina jamás debe abrirlo. Lo decide quien emite el
+  // trabajo (un cobro en efectivo en la caja), no este renderer: en una
+  // terminal de mesero que imprima la cuenta para llevarla a la mesa no hay
+  // cajón que abrir.
+  if (payload.abrirCajon) partes.push(abrirCajon({ pin: payload.cajonPin }));
   partes.push(encabezado(String(payload.negocio || 'XABOR').toUpperCase(), ancho));
 
   if (payload.mesa != null) partes.push(texto(`Mesa ${payload.mesa}`));

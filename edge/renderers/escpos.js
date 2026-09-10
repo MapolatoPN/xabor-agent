@@ -28,6 +28,35 @@ export const CUT = b(GS, 0x56, 0x41, 0x03);
 
 export const lf = (n = 1) => Buffer.alloc(n, LF);
 
+/**
+ * Pulso para abrir el cajón de dinero: `ESC p m t1 t2`.
+ *
+ * El cajón no se conecta a la computadora sino a la impresora de tickets, por
+ * un RJ11 que parece un cable de teléfono. Se abre cuando la impresora recibe
+ * este pulso, así que va DENTRO del ticket, no por un canal aparte.
+ *
+ * `pin` es qué patilla del conector activa: 0 es la 2 y 1 la 5. No hay una
+ * correcta — depende de cómo esté cableado ese cajón — y por eso es
+ * configurable en `impresoras.config` en vez de estar fija aquí. Si el cajón no
+ * abre, lo primero que hay que probar es el otro pin.
+ *
+ * Las duraciones van en unidades de 2 ms y no pasan de 255 (510 ms). Un pulso
+ * demasiado corto no mueve el solenoide y uno demasiado largo lo calienta, así
+ * que se acotan: los valores por defecto (50/250 ms) son los que traen casi
+ * todos los ejemplos de fabricante.
+ */
+export function abrirCajon({ pin = 0, msOn = 50, msOff = 250 } = {}) {
+  const unidades = (ms, porDefecto) => {
+    const n = Math.round(Number(ms) / 2);
+    if (!Number.isFinite(n) || n < 1) return porDefecto;
+    return Math.min(255, n);
+  };
+  return b(ESC, 0x70, pin === 1 ? 0x01 : 0x00, unidades(msOn, 25), unidades(msOff, 125));
+}
+
+/** El pulso con los valores por defecto, para quien no necesita ajustarlo. */
+export const ABRIR_CAJON = abrirCajon();
+
 export function linea(char = '-', ancho = 42) {
   return Buffer.from(char.repeat(ancho) + '\n', 'latin1');
 }
