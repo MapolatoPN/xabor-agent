@@ -5,6 +5,7 @@ import { rateLimitMiddleware } from './rateLimit.js';
 import { extraerTicketConIA, CATEGORIAS_COMPRA } from './ticketComprasIA.js';
 import { crearResponsable, listarResponsables, registrarPagoCompra, revertirMovimiento, uuid } from './comprasFinanzas.js';
 import { pool } from './database.js';
+import { telefonoComprador } from './comprasWhatsappDialogo.js';
 import {
   CompraOperativaError,
   crearBorradorManual, crearBorradorDesdeTicket, actualizarBorrador,
@@ -56,6 +57,28 @@ export function registrarRutasCompras(app, { requireAuthSeguro, extraerTicket = 
     try { uuid(req.negocioId); next(); } catch(e) { responderError(res,e,'identidad'); }
   }];
   const limiteIA = rateLimitMiddleware(req => `compras-ticket:${req.negocioId || req.ip}`, 12, 60 * 1000);
+
+  app.get('/api/admin/compras/whatsapp', ...gate, soloAdmin, async(req,res)=>{
+    try {
+      const {rows} = await pool.query(`SELECT a.telefono,a.responsable_id,a.activo,r.nombre
+        FROM compras_whatsapp_autorizados a JOIN compras_responsables r ON r.negocio_id=a.negocio_id AND r.id=a.responsable_id
+        WHERE a.negocio_id=$1 ORDER BY r.nombre`,[req.negocioId]);
+      res.json({autorizados:rows});
+    } catch(e){responderError(res,e,'whatsapp autorizados');}
+  });
+  app.put('/api/admin/compras/whatsapp', ...gate, soloAdmin, async(req,res)=>{
+    try {
+      const telefono = telefonoComprador(req.body?.telefono), responsable = uuid(req.body?.responsable_id);
+      if (!telefono || typeof req.body?.activo!=='boolean') throw new CompraOperativaError('Revisa el número mexicano y el estado de autorización','WHATSAPP_INVALIDO');
+      const {rows:[propio]} = await pool.query('SELECT id FROM compras_responsables WHERE negocio_id=$1 AND id=$2',[req.negocioId,responsable]);
+      if (!propio) throw new CompraOperativaError('Responsable no encontrado','RESPONSABLE_INVALIDO');
+      await pool.query(`INSERT INTO compras_whatsapp_autorizados(negocio_id,telefono,responsable_id,activo,updated_by)
+        VALUES($1,$2,$3,$4,$5) ON CONFLICT(negocio_id,telefono) DO UPDATE
+        SET responsable_id=excluded.responsable_id,activo=excluded.activo,updated_by=excluded.updated_by,updated_at=now()`,
+      [req.negocioId,telefono,responsable,req.body.activo,req.usuarioId || null]);
+      res.json({ok:true});
+    } catch(e){responderError(res,e,'whatsapp configurar');}
+  });
 
   app.get('/api/admin/compras/categorias', ...gate, (_req, res) => {
     res.json({ categorias: CATEGORIAS_COMPRA });

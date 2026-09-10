@@ -225,6 +225,12 @@ export async function confirmarCompra(negocioId, compraId, input = {}, actor = n
     if (fila.estado === 'confirmada') return;
     if (fila.estado !== 'borrador') throw new CompraOperativaError('La compra no puede confirmarse', 'COMPRA_NO_CONFIRMABLE', 409);
     versionActual(fila,input.version);
+    // WhatsApp elige el tipo y registra el pago en esta misma transacción.
+    if (input.tipo_pago !== undefined) {
+      if (!TIPOS_PAGO.has(input.tipo_pago)) throw new CompraOperativaError('Tipo de compra inválido','TIPO_PAGO_INVALIDO');
+      fila.tipo_pago = input.tipo_pago;
+      await client.query('UPDATE compras_operativas SET tipo_pago=$3 WHERE id=$1 AND negocio_id=$2',[compraId,negocioId,fila.tipo_pago]);
+    }
     normalizarCompra(fila, { confirmar: true });
     centavos(fila.total);
     await fechaMovimiento(client,negocioId,fecha(fila.fecha));
