@@ -29,6 +29,7 @@
 // estén tan protegidos como una caja registradora.
 import { pool } from './database.js';
 import { obtenerMenuCompleto } from './database.js';
+import { obtenerCuenta } from './restauranteService.js';
 
 export const VERSION_CATALOGO = 1;
 
@@ -76,7 +77,22 @@ export async function construirCatalogoParaEdge(negocioId, { incluirPines = true
 
   const numMesas = parseInt(mesasQ.rows[0]?.valor, 10);
 
+  // Las mesas que están ABIERTAS ahora mismo. Van en la foto porque el
+  // internet no se cae con el restaurante vacío: sin esto, al perder el enlace
+  // las mesas en curso desaparecerían de la pantalla y el mesero tendría que
+  // reabrirlas, duplicando la cuenta y dejando la de la nube colgada.
+  const { rows: abiertas } = await pool.query(
+    `SELECT id FROM restaurante_cuentas WHERE negocio_id = $1 AND estado = 'abierta' ORDER BY mesa_numero`,
+    [nid]
+  );
+  const cuentasAbiertas = [];
+  for (const { id } of abiertas) {
+    const c = await obtenerCuenta(id, nid);
+    if (c) cuentasAbiertas.push(c);
+  }
+
   return {
+    cuentasAbiertas,
     version: VERSION_CATALOGO,
     negocioId: nid,
     generadoAt: new Date().toISOString(),

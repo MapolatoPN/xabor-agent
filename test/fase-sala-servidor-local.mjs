@@ -27,11 +27,19 @@ async function t(nombre, fn) {
 }
 
 const MESERO = randomUUID();
+const CAJA = randomUUID();
+const ADMIN = randomUUID();
 const PIN = '2468';
+const PIN_CAJA = '1357';
+const PIN_ADMIN = '9753';
 const catalogo = {
   version: 1, negocioId: randomUUID(), generadoAt: new Date().toISOString(),
   numMesas: 5, metodosPago: ['efectivo', 'terminal'],
-  meseros: [{ id: MESERO, nombre: 'Ana Mesera', rol: 'mesero', pin_hash: hashPin(PIN) }],
+  meseros: [
+    { id: MESERO, nombre: 'Ana Mesera', rol: 'mesero', pin_hash: hashPin(PIN) },
+    { id: CAJA, nombre: 'Caja Principal', rol: 'cajero', pin_hash: hashPin(PIN_CAJA) },
+    { id: ADMIN, nombre: 'Dueño', rol: 'admin', pin_hash: hashPin(PIN_ADMIN) },
+  ],
   menu: [{ id: 1, nombre: 'FUERTES', orden: 0, productos: [
     { id: 10, nombre: 'Chilaquiles', precio: 195, categoria_id: 1, modificadores: [] }] }],
 };
@@ -123,10 +131,24 @@ await t('B2. el catálogo sí trae lo necesario para capturar', async () => {
   const r = await pedir('GET', '/local/catalogo', { token });
   assert.strictEqual(r.estado, 200);
   assert.strictEqual(r.cuerpo.menu[0].productos[0].nombre, 'Chilaquiles');
-  assert.deepStrictEqual(r.cuerpo.meseros, [{ id: MESERO, nombre: 'Ana Mesera', rol: 'mesero' }]);
+  assert.deepStrictEqual(r.cuerpo.meseros, [
+    { id: MESERO, nombre: 'Ana Mesera', rol: 'mesero' },
+    { id: CAJA, nombre: 'Caja Principal', rol: 'cajero' },
+    { id: ADMIN, nombre: 'Dueño', rol: 'admin' },
+  ], 'la pantalla de PIN necesita saber quién es quién, sin sus hashes');
 });
 
 // ═══ C. Una mesa completa, toda por HTTP y sin nube ════════════════════════
+// Reparto real de Obispado: el mesero captura y manda a cocina; TODOS los
+// cobros pasan por la caja principal.
+let tokenCaja = null;
+await t('C0. la caja abre su propia sesión', async () => {
+  const r = await pedir('POST', '/local/sesion', { cuerpo: { meseroId: CAJA, pin: PIN_CAJA } });
+  assert.strictEqual(r.estado, 200, r.crudo);
+  assert.strictEqual(r.cuerpo.mesero.rol, 'cajero');
+  tokenCaja = r.cuerpo.token;
+});
+
 let cuentaId = null;
 await t('C1. abrir mesa, capturar, comandar, cobrar y cerrar', async () => {
   const abierta = await pedir('POST', '/local/mesas/abrir', { token, cuerpo: { mesa: 3, personas: 2 } });
@@ -143,11 +165,13 @@ await t('C1. abrir mesa, capturar, comandar, cobrar y cerrar', async () => {
   assert.strictEqual(comanda.cuerpo.comanda.comanda, 1);
   assert.strictEqual(comanda.cuerpo.comanda.items.length, 1, 'solo lo de esta ronda va a cocina');
 
+  // El cobro lo hace la CAJA, no el mesero.
   const pago = await pedir('POST', `/local/cuentas/${cuentaId}/pagos`, {
-    token, cuerpo: { metodo: 'efectivo', monto: 390, propina: 40 } });
+    token: tokenCaja, cuerpo: { metodo: 'efectivo', monto: 390, propina: 40 } });
+  assert.strictEqual(pago.estado, 200, pago.crudo);
   assert.strictEqual(pago.cuerpo.cuenta.saldo, 0);
 
-  const cerrada = await pedir('POST', `/local/cuentas/${cuentaId}/cerrar`, { token });
+  const cerrada = await pedir('POST', `/local/cuentas/${cuentaId}/cerrar`, { token: tokenCaja });
   assert.strictEqual(cerrada.estado, 200, cerrada.crudo);
   assert.match(cerrada.cuerpo.ventaFolio, /^RM-[0-9A-F]{8}-0$/, 'el ticket ya lleva folio definitivo');
 });
@@ -178,9 +202,47 @@ await t('D1. cada error de negocio trae su código y su HTTP', async () => {
   const viva = abierta.cuerpo.ocupadas[0].id;
   await pedir('POST', `/local/cuentas/${viva}/items`, {
     token, cuerpo: { items: [{ producto: 'Chilaquiles', precio_unitario: 195 }] } });
-  const saldo = await pedir('POST', `/local/cuentas/${viva}/cerrar`, { token });
+  const saldo = await pedir('POST', `/local/cuentas/${viva}/cerrar`, { token: tokenCaja });
   assert.strictEqual(saldo.estado, 409);
   assert.strictEqual(saldo.cuerpo.codigo, 'SALDO_PENDIENTE');
+});
+
+// ═══ H. Permisos: el mesero captura, la caja cobra ════════════════════════
+await t('H1. un mesero NO puede cobrar ni cerrar', async () => {
+  const abierta = await pedir('GET', '/local/mesas', { token });
+  const viva = abierta.cuerpo.ocupadas[0].id;
+  const pago = await pedir('POST', `/local/cuentas/${viva}/pagos`, {
+    token, cuerpo: { metodo: 'efectivo', monto: 10 } });
+  assert.strictEqual(pago.estado, 403, 'en Obispado todos los cobros pasan por la caja');
+  assert.strictEqual(pago.cuerpo.codigo, 'ROL_NO_AUTORIZADO');
+  assert.match(pago.cuerpo.error, /caja/i, 'el mensaje debe decirle a quién acudir');
+
+  const cierre = await pedir('POST', `/local/cuentas/${viva}/cerrar`, { token });
+  assert.strictEqual(cierre.estado, 403);
+});
+
+await t('H2. pero SÍ captura y manda a cocina — es su trabajo', async () => {
+  const abierta = await pedir('GET', '/local/mesas', { token });
+  const viva = abierta.cuerpo.ocupadas[0].id;
+  const items = await pedir('POST', `/local/cuentas/${viva}/items`, {
+    token, cuerpo: { items: [{ producto: 'Chilaquiles', precio_unitario: 195 }] } });
+  assert.strictEqual(items.estado, 200, items.crudo);
+  const comanda = await pedir('POST', `/local/cuentas/${viva}/comanda`, { token });
+  assert.strictEqual(comanda.estado, 200, 'un corte no puede dejar a la cocina sin comandas');
+});
+
+await t('H3. cancelar un producto ya capturado exige admin (igual que la nube)', async () => {
+  const abierta = await pedir('GET', '/local/mesas', { token });
+  const cuenta = abierta.cuerpo.ocupadas[0];
+  const item = cuenta.items[0];
+  const porMesero = await pedir('POST', `/local/cuentas/${cuenta.id}/items/${item.id}/cancelar`, {
+    token, cuerpo: { motivo: 'se equivocó' } });
+  assert.strictEqual(porMesero.estado, 403, 'la nube exige requireAdminSeguro; aquí igual');
+
+  const admin = await pedir('POST', '/local/sesion', { cuerpo: { meseroId: ADMIN, pin: PIN_ADMIN } });
+  const porAdmin = await pedir('POST', `/local/cuentas/${cuenta.id}/items/${item.id}/cancelar`, {
+    token: admin.cuerpo.token, cuerpo: { motivo: 'se equivocó' } });
+  assert.strictEqual(porAdmin.estado, 200, porAdmin.crudo);
 });
 
 await t('D2. un JSON roto no tumba el servidor', async () => {

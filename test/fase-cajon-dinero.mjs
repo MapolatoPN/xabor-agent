@@ -19,7 +19,7 @@
 import assert from 'assert';
 
 const { abrirCajon, ABRIR_CAJON } = await import('../edge/renderers/escpos.js');
-const { renderCuenta, renderComanda } = await import('../edge/renderers/index.js');
+const { renderCuenta, renderComanda, debeAbrirCajon } = await import('../edge/renderers/index.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 function t(nombre, fn) {
@@ -47,15 +47,42 @@ t('A1. una comanda de cocina JAMÁS abre el cajón', () => {
     'un pulso en la comanda abriría el cajón cada vez que entra un platillo');
 });
 
-t('A2. el ticket solo abre el cajón si se le pide explícitamente', () => {
-  assert.ok(!traePulso(renderCuenta(CUENTA, { ancho: 42 })),
-    'imprimir la cuenta para llevarla a la mesa no debe abrir la caja');
-  assert.ok(traePulso(renderCuenta({ ...CUENTA, abrirCajon: true }, { ancho: 42 })),
-    'con un cobro en efectivo en caja, sí');
+t('A2. el ticket de un cobro en EFECTIVO abre el cajón', () => {
+  assert.ok(traePulso(renderCuenta(CUENTA, { ancho: 42 })), 'es el cobro real en caja');
+  assert.strictEqual(debeAbrirCajon(CUENTA), true);
+});
+
+// Los tres papeles que se parecen a un cobro y NO lo son. Este bloque es la
+// razón de ser de `debeAbrirCajon`: sin una sola función decidiendo, cualquiera
+// de los tres acaba abriendo el cajón por descuido.
+t('A2b. la PRECUENTA que se lleva a la mesa NO abre el cajón', () => {
+  assert.strictEqual(debeAbrirCajon({ ...CUENTA, precuenta: true }), false);
+  assert.ok(!traePulso(renderCuenta({ ...CUENTA, precuenta: true }, { ancho: 42 })),
+    'todavía no hay dinero: quedaría abierto sin nadie delante');
+  // Una cuenta sin pagos registrados es, de hecho, una precuenta.
+  assert.strictEqual(debeAbrirCajon({ ...CUENTA, pagos: [] }), false);
+});
+
+t('A2c. la REIMPRESIÓN de un ticket ya cobrado NO abre el cajón', () => {
+  assert.strictEqual(debeAbrirCajon({ ...CUENTA, reimpresion: true }), false);
+  assert.ok(!traePulso(renderCuenta({ ...CUENTA, reimpresion: true }, { ancho: 42 })),
+    'el dinero entró hace rato; esto es solo una copia');
+});
+
+t('A2d. un cobro SIN efectivo no abre el cajón', () => {
+  for (const metodo of ['terminal', 'transferencia', 'enlace_pago']) {
+    const sinEfectivo = { ...CUENTA, pagos: [{ metodo, monto: 195 }] };
+    assert.strictEqual(debeAbrirCajon(sinEfectivo), false, metodo);
+    assert.ok(!traePulso(renderCuenta(sinEfectivo, { ancho: 42 })),
+      `${metodo}: no hay billetes que guardar ni cambio que dar`);
+  }
+  // Mixto CON efectivo sí: hay que dar cambio.
+  assert.strictEqual(debeAbrirCajon({ ...CUENTA, pagos: [
+    { metodo: 'terminal', monto: 100 }, { metodo: 'efectivo', monto: 95 }] }), true);
 });
 
 t('A3. el pulso va al principio: el cajón abre mientras sale el papel', () => {
-  const buf = renderCuenta({ ...CUENTA, abrirCajon: true }, { ancho: 42 });
+  const buf = renderCuenta(CUENTA, { ancho: 42 });
   const posPulso = buf.indexOf(PULSO);
   const posTotal = buf.indexOf(Buffer.from('TOTAL', 'latin1'));
   assert.ok(posPulso >= 0 && posTotal > posPulso,

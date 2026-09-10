@@ -56,6 +56,19 @@ const SESION_VIGENCIA_MS = 12 * 60 * 60 * 1000;   // un turno largo
 
 // Un error de negocio es 4xx con su código; cualquier otra cosa es 500 y se
 // registra. Nunca se le devuelve al cliente el detalle de un fallo interno.
+// Quién puede cobrar. En Obispado TODOS los cobros pasan por la caja
+// principal: un mesero captura y manda a cocina, pero no cobra ni cierra.
+//
+// OJO -- esto es MÁS ESTRICTO que la nube hoy: `/api/restaurante/cuentas/:id/pagos`
+// solo exige estar autenticado. Se implementa así porque es la operación real
+// del local, pero la divergencia hay que cerrarla: que un mesero pueda cobrar
+// con enlace y no sin él es exactamente el tipo de diferencia que confunde a
+// quien está trabajando. Queda anotado en el informe.
+const ROLES_QUE_COBRAN = new Set(['admin', 'cajero', 'caja', 'staff', 'superadmin']);
+// Cancelar un item ya capturado sí coincide con la nube: allá la ruta exige
+// `requireAdminSeguro`.
+const ROLES_QUE_CANCELAN = new Set(['admin', 'superadmin']);
+
 const HTTP_POR_CODIGO = {
   MESA_INVALIDA: 400, PERSONAS_INVALIDAS: 400, MESERO_INVALIDO: 400,
   ITEM_INVALIDO: 400, SIN_ITEMS: 400, METODO_INVALIDO: 400,
@@ -84,6 +97,16 @@ export function crearServidorLocal({
     if (!s) return null;
     if (s.expira < Date.now()) { sesiones.delete(token); return null; }
     return s;
+  }
+
+  // El mensaje dice QUÉ no se puede y con qué rol, para que el mesero sepa a
+  // quién llamar en vez de pensar que el sistema se rompió.
+  function exigirRol(sesion, permitidos, accion) {
+    if (permitidos.has(String(sesion?.rol || '').toLowerCase())) return null;
+    return { estado: 403, cuerpo: {
+      error: `Tu usuario no puede ${accion}. Pídeselo a la caja.`,
+      codigo: 'ROL_NO_AUTORIZADO', rol: sesion?.rol || null,
+    } };
   }
 
   // Se guarda ANTES de contestar. Ver la nota de arriba: un "ok" sobre algo que
@@ -178,18 +201,24 @@ export function crearServidorLocal({
     }, true],
 
     ['POST', /^\/local\/cuentas\/([^/]+)\/items\/([^/]+)\/cancelar$/, async (m, cuerpo, sesion) => {
+      const veto = exigirRol(sesion, ROLES_QUE_CANCELAN, 'cancelar un producto ya capturado');
+      if (veto) return veto;
       const r = sala.cancelarItem(m[1], m[2], { motivo: cuerpo.motivo, usuarioId: sesion.meseroId });
       await persistir();
       return { estado: 200, cuerpo: { item: r, cuenta: sala.obtenerCuenta(m[1]) } };
     }, true],
 
     ['POST', /^\/local\/cuentas\/([^/]+)\/pagos$/, async (m, cuerpo, sesion) => {
+      const veto = exigirRol(sesion, ROLES_QUE_COBRAN, 'cobrar');
+      if (veto) return veto;
       const pago = sala.registrarPago(m[1], { ...cuerpo, usuarioId: sesion.meseroId });
       await persistir();
       return { estado: 200, cuerpo: { pago, cuenta: sala.obtenerCuenta(m[1]) } };
     }, true],
 
     ['POST', /^\/local\/cuentas\/([^/]+)\/cerrar$/, async (m, _cuerpo, sesion) => {
+      const veto = exigirRol(sesion, ROLES_QUE_COBRAN, 'cerrar una cuenta');
+      if (veto) return veto;
       const r = sala.cerrarCuenta(m[1], { usuarioId: sesion.meseroId });
       await persistir();
       return { estado: 200, cuerpo: r };

@@ -20,8 +20,22 @@ import { crearTransportes } from './transports/index.js';
 import { crearWorker, recuperarInterrumpidos } from './worker.js';
 import { crearConexion } from './connection.js';
 import { listarImpresorasWindows } from './impresorasWindows.js';
+import { crearSalaLocal } from './sala/operacionLocal.js';
+import { crearServidorLocal } from './sala/servidorLocal.js';
+import { catalogoUtilizable } from '../src/services/catalogoParaEdge.js';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+
+// El almacén guarda texto; lo que se lee de disco puede estar corrupto por un
+// apagón a media escritura. Un JSON roto NO puede impedir que el Edge arranque:
+// se descarta y se sigue, que es infinitamente mejor que un restaurante sin
+// agente porque un archivo quedó a medias.
+function leerJson(almacen, clave) {
+  try {
+    const crudo = almacen.leerEstado(clave);
+    return crudo ? JSON.parse(crudo) : null;
+  } catch { return null; }
+}
 
 export function crearEdge({ config, logger, transportes: transportesInyectados = null } = {}) {
   const cfg = config || cargarConfig();
@@ -41,6 +55,87 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     log.info('edge.instalacion.nueva', { instalacionId });
   }
   const transportes = transportesInyectados || crearTransportes({ logger: log, timeoutMs: cfg.timeoutImpresoraMs });
+
+  // ── Sala local ────────────────────────────────────────────────────────────
+  // Se levanta ANTES de conectar, igual que la cola de impresión y por el mismo
+  // motivo: si el Edge arranca durante un corte, tiene que poder atender la
+  // sala sin haber hablado nunca con la nube. El estado sale del almacén, así
+  // que un corte de luz a media mesa no pierde ni la cuenta ni lo que faltaba
+  // por subir.
+  const salaGuardada = leerJson(almacen, 'sala');
+  const sala = crearSalaLocal({ uuid: randomUUID, estadoInicial: salaGuardada });
+  if (salaGuardada) {
+    log.info('sala.recuperada', {
+      cuentas: salaGuardada.cuentas?.length || 0,
+      pendientesDeSincronizar: salaGuardada.outbox?.length || 0,
+    });
+  }
+
+  let catalogo = leerJson(almacen, 'catalogo');
+  const servidorSala = crearServidorLocal({
+    sala,
+    obtenerCatalogo: () => catalogo,
+    // La persistencia es síncrona sobre el almacén que ya existe: el servidor
+    // no responde "ok" hasta que esto vuelve.
+    alCambiar: (estado) => almacen.escribirEstado('sala', JSON.stringify(estado)),
+    logger: log,
+    puerto: cfg.puertoSala ?? undefined,
+  });
+
+  /**
+   * Guarda la foto del catálogo y trae las mesas que ya estaban abiertas.
+   *
+   * Se valida ANTES de reemplazar: una foto vacía pisando a una buena dejaría
+   * al restaurante sin poder capturar justo cuando más falta hace.
+   */
+  function aplicarCatalogo(nuevo) {
+    const util = catalogoUtilizable(nuevo);
+    if (!util.ok) {
+      log.warn('catalogo.descartado', { motivo: util.motivo });
+      return { aplicado: false, motivo: util.motivo };
+    }
+    catalogo = nuevo;
+    almacen.escribirEstado('catalogo', JSON.stringify(nuevo));
+    const hidratacion = sala.hidratarCuentas(nuevo.cuentasAbiertas || []);
+    if (hidratacion.traidas) {
+      almacen.escribirEstado('sala', JSON.stringify(sala.serializar()));
+    }
+    log.info('catalogo.aplicado', {
+      productos: util.productos, meseros: util.meseros,
+      mesasTraidas: hidratacion.traidas, mesasRespetadas: hidratacion.respetadas,
+    });
+    return { aplicado: true, ...hidratacion };
+  }
+
+  /**
+   * Sube lo operado sin enlace. `enviarLote` lo inyecta quien tenga el
+   * transporte (hoy, la nube por WebSocket): este módulo no sabe de red.
+   *
+   * Solo se descarta de la cola lo que la nube CONFIRMÓ. Si la respuesta se
+   * pierde después de que allá se guardó, el reintento vuelve a mandar el
+   * mismo lote y la ingesta —upsert por UUID— no duplica nada.
+   */
+  async function sincronizarSala(enviarLote) {
+    if (typeof enviarLote !== 'function') return { intentado: false };
+    if (!sala.pendientesDeSincronizar()) return { intentado: false, pendientes: 0 };
+    const lote = sala.exportarLote();
+    try {
+      const r = await enviarLote(lote);
+      const confirmados = Array.isArray(r?.eventosConfirmados) ? r.eventosConfirmados : [];
+      const descartados = sala.marcarLoteSincronizado(confirmados);
+      almacen.escribirEstado('sala', JSON.stringify(sala.serializar()));
+      log.info('sala.sincronizada', {
+        enviados: lote.eventos.length, confirmados: descartados,
+        pendientes: sala.pendientesDeSincronizar(),
+        conflictos: r?.conflictos ?? 0,
+      });
+      return { intentado: true, ...r, descartados, pendientes: sala.pendientesDeSincronizar() };
+    } catch (e) {
+      // No se descarta nada: lo pendiente sigue pendiente y se reintenta.
+      log.warn('sala.sincronizacion.fallida', { error: e.message, pendientes: sala.pendientesDeSincronizar() });
+      return { intentado: true, error: e.message, pendientes: sala.pendientesDeSincronizar() };
+    }
+  }
 
   // ACKs que no se pudieron mandar (la nube estaba caída). Se guardan y se
   // reenvían al reconectar: sin esto, un trabajo impreso durante un corte de
@@ -139,6 +234,10 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     transportes,
     worker,
     conexion,
+    sala,
+    servidorSala,
+    aplicarCatalogo,
+    sincronizarSala,
 
     async iniciar({ conectar = true } = {}) {
       const { valida, errores } = validarConfig(cfg);
@@ -149,6 +248,17 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
 
       recuperarInterrumpidos(almacen, log);
       worker.iniciar();
+
+      // El servidor de sala va ANTES de conectar, y a propósito: si el Edge
+      // arranca durante un corte, las estaciones tienen que encontrarlo. Que
+      // no pueda escuchar (puerto ocupado) no puede impedir que imprima: se
+      // registra y se sigue.
+      try {
+        const p = await servidorSala.iniciar();
+        log.info('sala.escuchando', { puerto: p });
+      } catch (e) {
+        log.error('sala.no_escucha', { error: e.message });
+      }
 
       // El ancla: mientras el agente esté vivo, Node tiene que quedarse.
       //
@@ -199,7 +309,11 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       detenido = true;
       if (anclaVida) { clearInterval(anclaVida); anclaVida = null; }
       conexion.cerrar();
+      await servidorSala.detener().catch(() => {});
       await worker.detener();
+      // Última foto antes de soltar el almacén: si alguien detuvo el Edge con
+      // mesas abiertas, al encender tienen que seguir ahí.
+      try { almacen.escribirEstado('sala', JSON.stringify(sala.serializar())); } catch {}
       almacen.cerrar();
       log.info('edge.detenido', {});
     },

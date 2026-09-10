@@ -26,6 +26,7 @@
 // 4. NADA SE RESUELVE ADIVINANDO. Dos cuentas distintas sobre la misma mesa
 //    son una ambigüedad real de operación; se reporta y decide una persona.
 import { pool } from './database.js';
+import { obtenerCorteCerrado, zonaHorariaNegocio, fechaOperativaDe } from './cortesCaja.js';
 
 const aPesos = (centavos) => Number((Number(centavos || 0) / 100).toFixed(2));
 
@@ -37,6 +38,10 @@ export const CONFLICTOS = {
   PAGO_SOBRE_CUENTA_CERRADA: 'PAGO_SOBRE_CUENTA_CERRADA',
   // El mesero o el usuario que capturó ya no existe en la nube.
   USUARIO_DESCONOCIDO: 'USUARIO_DESCONOCIDO',
+  // La venta pertenece a un día cuyo corte YA se cerró. La venta entra igual
+  // (el dinero existió), pero el corte cerrado es una foto firmada y no se
+  // recalcula: se avisa para que alguien concilie a mano.
+  CORTE_YA_CERRADO: 'CORTE_YA_CERRADO',
   ERROR: 'ERROR',
 };
 
@@ -193,6 +198,21 @@ async function incorporarCuenta(nid, cuenta, ejecutor) {
 
     await client.query('COMMIT');
 
+    // ¿El día de esta venta ya tiene corte cerrado? El corte cerrado es una
+    // foto firmada: NO se recalcula ni se toca. Pero callarlo sería peor que
+    // el problema -- el dinero estaría en el sistema y no en la caja del día
+    // que le toca, y nadie se enteraría. Se reporta para conciliar a mano.
+    if (ventaFolio && cuenta.cerrada_at) {
+      const cerrado = await corteCerradoDe(nid, cuenta.cerrada_at);
+      if (cerrado) {
+        return {
+          ...base, estado: 'aplicada', ventaFolio, pagosNuevos, corteCerrado: cerrado,
+          conflicto: CONFLICTOS.CORTE_YA_CERRADO,
+          detalle: `la venta es del ${cerrado} y ese corte ya estaba cerrado; entró al sistema pero el corte NO se recalculó`,
+        };
+      }
+    }
+
     if (yaCerradaEnNube && pagosNuevos > 0) {
       return {
         ...base, estado: 'aplicada', ventaFolio,
@@ -206,6 +226,20 @@ async function incorporarCuenta(nid, cuenta, ejecutor) {
     return { ...base, estado: 'conflicto', conflicto: CONFLICTOS.ERROR, detalle: e.message };
   } finally {
     client.release();
+  }
+}
+
+/** La fecha operativa del cobro, si su corte ya está cerrado. */
+async function corteCerradoDe(nid, cerradaAt) {
+  try {
+    const tz = await zonaHorariaNegocio(nid);
+    const fecha = fechaOperativaDe(new Date(cerradaAt), tz);
+    const corte = await obtenerCorteCerrado(nid, fecha);
+    return corte ? fecha : null;
+  } catch {
+    // Si no se puede averiguar, no se inventa: la venta ya entró y callar un
+    // "no sé" es mejor que afirmar que el corte estaba abierto.
+    return null;
   }
 }
 

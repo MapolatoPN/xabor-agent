@@ -285,6 +285,59 @@ export function crearSalaLocal({ ahora = () => new Date(), uuid, estadoInicial =
         .map((c) => this.obtenerCuenta(c.id));
     },
 
+    /**
+     * Trae a local las mesas que ya estaban ABIERTAS en la nube.
+     *
+     * Es el caso normal de un corte: el internet no se cae con el restaurante
+     * vacío. Sin esto, al perder el enlace las mesas en curso desaparecerían de
+     * la pantalla y el mesero tendría que reabrirlas -- duplicando la cuenta y
+     * dejando la de la nube colgada.
+     *
+     * Conserva el UUID de la nube a propósito: al reconectar, esa cuenta ya
+     * existe allá y la sincronización la ACTUALIZA en vez de insertar otra.
+     *
+     * NO genera eventos en el outbox: no son cambios que el Edge haya hecho,
+     * son estado que ya estaba. Solo lo que se toque después viajará de vuelta.
+     * Y nunca pisa una cuenta que ya vive aquí: si el Edge tiene una versión
+     * local, esa es la que manda -- la nube no vio lo que pasó durante el corte.
+     */
+    hidratarCuentas(cuentas) {
+      let traidas = 0, respetadas = 0;
+      for (const c of (cuentas || [])) {
+        if (!c?.id) continue;
+        if (estado.cuentas.has(c.id)) { respetadas += 1; continue; }
+        estado.cuentas.set(c.id, {
+          id: c.id, mesa_numero: c.mesa, personas: c.personas,
+          mesero_usuario_id: c.mesero?.id ?? null, mesero_nombre: c.mesero?.nombre ?? null,
+          estado: c.estado || 'abierta',
+          abierta_por: c.mesero?.id ?? null, abierta_at: c.abiertaAt,
+          cerrada_por: null, cerrada_at: null,
+          comandas_emitidas: c.comandasEmitidas || 0, reversos: c.reversos || 0,
+          venta_folio: c.ventaFolio || null, notas: c.notas || null,
+          items: (c.items || []).map((i) => ({
+            id: i.id, producto: i.producto, cantidad: i.cantidad,
+            precio_unitario_centavos: aCentavos(i.precio_unitario) ?? 0,
+            modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+            notas: i.notas ?? null, estado: i.estado, comanda_num: i.comanda_num ?? null,
+            agregado_por: i.agregado_por ?? c.mesero?.id ?? null,
+            cancelado_por: i.cancelado_por ?? null,
+            motivo_cancelacion: i.motivo_cancelacion ?? null, cancelado_at: i.cancelado_at ?? null,
+            created_at: i.created_at,
+          })),
+          pagos: (c.pagos || []).map((p) => ({
+            id: p.id, metodo: p.metodo,
+            monto_centavos: aCentavos(p.monto) ?? 0,
+            propina_centavos: aCentavos(p.propina) ?? 0,
+            cubre: p.cubre ?? null, referencia: p.referencia ?? null,
+            registrado_por: p.registrado_por ?? c.mesero?.id ?? null, created_at: p.created_at,
+          })),
+          origen: 'nube',
+        });
+        traidas += 1;
+      }
+      return { traidas, respetadas };
+    },
+
     // ── Sincronización ─────────────────────────────────────────────────────
     /**
      * El lote que sube a la nube: los eventos pendientes MÁS el estado completo

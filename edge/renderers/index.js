@@ -56,14 +56,37 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
 // Aquí sí van los importes. No pretende ser un comprobante fiscal: es la
 // cuenta que se lleva a la mesa. La facturación es otro asunto y no existe
 // todavía en Xabor -- no se insinúa que exista.
+/**
+ * ¿Este papel debe abrir el cajón? Una sola función decide, y por eso ningún
+ * emisor puede abrirlo por descuido.
+ *
+ * Se abre SOLO en el ticket de un cobro real en efectivo. Los tres casos que
+ * se parecen y NO deben abrirlo:
+ *
+ *  · La PRECUENTA que se lleva a la mesa para que el cliente vea el total.
+ *    Todavía no hay dinero; abrir el cajón ahí lo deja abierto sin nadie
+ *    delante.
+ *  · La REIMPRESIÓN de un ticket ya cobrado. El dinero entró hace rato; el
+ *    cajón se abriría por un papel que solo es una copia.
+ *  · Un cobro que no tiene efectivo (terminal, transferencia, enlace). No hay
+ *    billetes que guardar ni cambio que dar.
+ *
+ * Y la comanda de cocina ni siquiera pasa por aquí: es otro renderer.
+ */
+export function debeAbrirCajon(payload = {}) {
+  if (payload.reimpresion) return false;
+  if (payload.precuenta) return false;
+  const pagos = Array.isArray(payload.pagos) ? payload.pagos : [];
+  if (!pagos.length) return false;   // sin cobro registrado, es una precuenta
+  return pagos.some((p) => String(p.metodo || '').toLowerCase() === 'efectivo' && Number(p.monto) > 0);
+}
+
 export function renderCuenta(payload, { ancho = 42 } = {}) {
   const partes = [INIT];
-  // El cajón se abre AQUÍ y solo aquí: va colgado de la impresora de tickets,
-  // y una comanda de cocina jamás debe abrirlo. Lo decide quien emite el
-  // trabajo (un cobro en efectivo en la caja), no este renderer: en una
-  // terminal de mesero que imprima la cuenta para llevarla a la mesa no hay
-  // cajón que abrir.
-  if (payload.abrirCajon) partes.push(abrirCajon({ pin: payload.cajonPin }));
+  // El cajón va colgado de la impresora de tickets, así que el pulso viaja
+  // dentro de ESTE papel y de ningún otro. La decisión no se delega al
+  // emisor: la toma `debeAbrirCajon` para que no haya dos criterios.
+  if (debeAbrirCajon(payload)) partes.push(abrirCajon({ pin: payload.cajonPin }));
   partes.push(encabezado(String(payload.negocio || 'XABOR').toUpperCase(), ancho));
 
   if (payload.mesa != null) partes.push(texto(`Mesa ${payload.mesa}`));
