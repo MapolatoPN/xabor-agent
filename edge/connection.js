@@ -31,6 +31,7 @@ import { calcularEspera } from './config.js';
 export const CODIGO_DESPLAZADA = 4001;
 
 export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null, instalacionId = null,
+                               alRecibirCatalogo = null,
                                alListarImpresoras = async () => ({ ok: false, impresoras: [], error: 'no disponible' }) }) {
   let ws = null;
   let intentos = 0;
@@ -38,6 +39,8 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
   let temporizadorReconexion = null;
   let temporizadorLatido = null;
   let identidad = null;
+  // Lotes de sala esperando respuesta de la nube, por id.
+  const lotesEnVuelo = new Map();
 
   const escuchas = { conectado: [], desconectado: [] };
   // Un escucha que falle no puede tumbar la conexión, pero tampoco debe
@@ -127,6 +130,21 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
 
       if (msg.tipo === 'trabajo_impresion' && msg.trabajo) {
         return alRecibirTrabajo(msg.trabajo);
+      }
+
+      if (msg.tipo === 'catalogo_sala' && msg.catalogo) {
+        return alRecibirCatalogo?.(msg.catalogo);
+      }
+
+      if (msg.tipo === 'sala_lote_resultado') {
+        const enVuelo = lotesEnVuelo.get(msg.loteId);
+        if (!enVuelo) return;   // llegó tarde, ya venció
+        clearTimeout(enVuelo.vence);
+        lotesEnVuelo.delete(msg.loteId);
+        // Un `ok:false` NO es una excepción de red: es la nube diciendo que no
+        // pudo. Se resuelve igual y quien llama decide -- pero sin
+        // `eventosConfirmados`, así que nada se descarta de la cola.
+        return enVuelo.resolve(msg);
       }
 
       if (msg.tipo === 'solicitar_impresoras') {
@@ -221,6 +239,40 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
         logger?.warn('conexion.ack.fallo', { jobId: trabajoId, error: e.message });
         return false;
       }
+    },
+
+    // ── Sala sin conexión ──────────────────────────────────────────────
+    /**
+     * Sube el lote de lo operado durante un corte y espera el resultado.
+     *
+     * Espera respuesta a propósito: el Edge solo puede descartar de su cola lo
+     * que la nube CONFIRMÓ. Si esto se resolviera sin esperar, una respuesta
+     * perdida vaciaría la cola de todas formas y ese trabajo no volvería a
+     * intentarse nunca.
+     *
+     * El tiempo de espera existe por lo mismo: sin él, una nube que acepta la
+     * conexión pero no contesta dejaría la sincronización colgada para siempre.
+     */
+    enviarLote(lote, { timeoutMs = 30000 } = {}) {
+      if (ws?.readyState !== WebSocket.OPEN) return Promise.reject(new Error('sin conexión con la nube'));
+      const loteId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      return new Promise((resolve, reject) => {
+        const vence = setTimeout(() => {
+          lotesEnVuelo.delete(loteId);
+          reject(new Error('la nube no respondió al lote'));
+        }, timeoutMs);
+        vence.unref?.();
+        lotesEnVuelo.set(loteId, { resolve, reject, vence });
+        try { ws.send(JSON.stringify({ tipo: 'sala_lote', loteId, lote })); }
+        catch (e) { clearTimeout(vence); lotesEnVuelo.delete(loteId); reject(e); }
+      });
+    },
+
+    /** Pide la foto del catálogo. La respuesta llega por `alRecibirCatalogo`. */
+    pedirCatalogo() {
+      if (ws?.readyState !== WebSocket.OPEN) return false;
+      try { ws.send(JSON.stringify({ tipo: 'solicitar_catalogo' })); return true; }
+      catch { return false; }
     },
 
     get conectado() { return ws?.readyState === WebSocket.OPEN && !!identidad; },

@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "xabor-local",
-      "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "dev-local.cmd"],
-      "port": 4500
+      "name": "edge-local",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/edge-local-demo.mjs", "7071"],
+      "port": 7071
     }
   ]
 }

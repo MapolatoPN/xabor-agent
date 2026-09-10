@@ -1,0 +1,98 @@
+<!-- Entrada al modo sin conexión.
+     La sirve el Edge en /login-negocio.html, que es a donde el panel manda a
+     quien no tiene sesión. La de la nube no vale aquí: postea a endpoints que
+     durante un corte no existen. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xabor — modo sin conexión</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; font:16px system-ui,-apple-system,"Segoe UI",sans-serif; background:#f6f5f2; color:#1f2937;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .caja { background:#fff; border:1px solid #e5e2da; border-radius:14px; padding:26px; width:100%; max-width:380px;
+          box-shadow:0 2px 14px rgba(0,0,0,.06); }
+  .aviso { background:#fef3c7; border:1px solid #fcd34d; border-radius:10px; padding:10px 12px; font-size:.86rem;
+           margin-bottom:18px; }
+  h1 { font-size:1.15rem; margin:0 0 4px; }
+  p.sub { margin:0 0 18px; color:#6b7280; font-size:.86rem; }
+  label { display:block; font-size:.82rem; font-weight:600; margin:14px 0 6px; }
+  select, input { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid #d8d4cc; border-radius:9px;
+                  font-size:1rem; font-family:inherit; background:#fff; }
+  input[type=password] { letter-spacing:.4em; font-size:1.3rem; text-align:center; }
+  button { width:100%; margin-top:18px; padding:13px; border:0; border-radius:9px; background:#FF6B35; color:#fff;
+           font-size:1rem; font-weight:700; cursor:pointer; font-family:inherit; }
+  button:disabled { opacity:.55; cursor:default; }
+  .error { color:#b91c1c; font-size:.85rem; margin-top:12px; min-height:1.2em; }
+  .pie { margin-top:18px; font-size:.76rem; color:#9ca3af; text-align:center; }
+</style>
+
+<div class="caja">
+  <div class="aviso"><strong>Modo sin conexión.</strong> Estás trabajando contra el equipo local del
+    restaurante. Lo que captures aquí se subirá solo cuando vuelva el internet.</div>
+  <h1>Entrar con tu PIN</h1>
+  <p class="sub" id="sub">Buscando el equipo local…</p>
+
+  <form id="f" hidden>
+    <label for="quien">¿Quién eres?</label>
+    <select id="quien"></select>
+    <label for="pin">PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+    <button id="btn" type="submit">Entrar</button>
+    <div class="error" id="err"></div>
+  </form>
+  <div class="pie" id="pie"></div>
+</div>
+
+<script>
+// Todo contra el MISMO origen: esta página la sirve el Edge, así que no hay
+// contenido mixto que valga y no hace falta configurar nada en el navegador.
+const $ = (id) => document.getElementById(id);
+
+async function arrancar() {
+  try {
+    const salud = await (await fetch('/local/salud')).json();
+    const { personal } = await (await fetch('/local/personal')).json();
+    if (!personal || !personal.length) {
+      $('sub').textContent = 'Este equipo todavía no tiene personal con PIN. Hay que crearlo con internet.';
+      return;
+    }
+    $('sub').textContent = `${salud.mesasAbiertas} mesa(s) abiertas · ${salud.pendientesDeSincronizar} cambio(s) por subir`;
+    $('quien').innerHTML = personal
+      .map((p) => `<option value="${p.id}">${p.nombre} — ${p.rol}</option>`).join('');
+    $('f').hidden = false;
+    $('pin').focus();
+    $('pie').textContent = 'Equipo local ' + location.host;
+  } catch (e) {
+    $('sub').textContent = 'No se pudo hablar con el equipo local. Revisa que esté encendido.';
+  }
+}
+
+$('f').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('err').textContent = '';
+  $('btn').disabled = true;
+  try {
+    const r = await fetch('/local/sesion', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ meseroId: $('quien').value, pin: $('pin').value }),
+    });
+    const d = await r.json();
+    if (!r.ok) { $('err').textContent = d.error || 'PIN incorrecto'; $('pin').value = ''; $('pin').focus(); return; }
+    // El token también en localStorage: las llamadas de sala lo mandan por
+    // cabecera, y la cookie sola no les sirve.
+    try {
+      localStorage.setItem('xabor_edge_token', d.token);
+      localStorage.setItem('xabor_edge_base', location.origin);
+    } catch {}
+    const destino = new URLSearchParams(location.search).get('redirect') || '/app';
+    location.href = destino;
+  } catch (e) {
+    $('err').textContent = 'No se pudo contactar al equipo local.';
+  } finally {
+    $('btn').disabled = false;
+  }
+});
+
+arrancar();
+</script>

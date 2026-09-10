@@ -154,11 +154,55 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   const conexion = crearConexion({
     config: cfg, logger: log, instalacionId,
     alRecibirTrabajo: (trabajo) => recibirTrabajo(trabajo),
-    alAutenticar: () => vaciarAcksPendientes(),
+    alRecibirCatalogo: (c) => { try { aplicarCatalogo(c); } catch (e) { log.warn('catalogo.fallo', { error: e.message }); } },
+    alAutenticar: () => {
+      vaciarAcksPendientes();
+      // Al recuperar el enlace: primero subir lo del corte, después refrescar
+      // la foto. En ese orden a propósito -- si llegara antes un catálogo con
+      // las mesas tal como las dejó la nube, no pisaría nada (hidratar respeta
+      // lo local), pero el informe de reconciliación saldría más confuso.
+      sincronizarConReintentos();
+      conexion.pedirCatalogo();
+    },
     // Capacidad cerrada: la nube pide la lista, el Edge la consulta con sus
     // propios medios. Nunca se recibe nada ejecutable desde la nube.
     alListarImpresoras: () => listarImpresorasWindows({ logger: log }),
   });
+
+  /**
+   * Sube lo pendiente reintentando, pero SIN insistir a ciegas.
+   *
+   * Los reintentos se espacian porque el caso típico de fallo es una nube que
+   * todavía no está bien: machacarla cada segundo no la arregla y llena el log
+   * de ruido. Y se para en cuanto no queda nada pendiente o la conexión se fue
+   * -- al volver, `alAutenticar` lo dispara otra vez.
+   *
+   * Nunca corren dos a la vez: dos envíos del mismo lote no duplicarían nada
+   * (la ingesta es idempotente), pero sí podrían confirmar y descartar eventos
+   * dos veces sobre una cola que ya cambió.
+   */
+  let sincronizando = false;
+  async function sincronizarConReintentos({ intentos = 4, esperaMs = 3000 } = {}) {
+    if (sincronizando) return;
+    sincronizando = true;
+    try {
+      for (let i = 0; i < intentos; i++) {
+        if (detenido || !conexion.conectado) return;
+        if (!sala.pendientesDeSincronizar()) return;
+        const r = await sincronizarSala((lote) => conexion.enviarLote(lote));
+        // Si quedó algo pendiente por CONFLICTO, reintentar no lo arregla:
+        // hace falta que una persona decida. Se deja de insistir.
+        if (!r.error && r.conflictos > 0) {
+          log.warn('sala.conflictos', { conflictos: r.conflictos, pendientes: r.pendientes });
+          return;
+        }
+        if (!r.error && !r.pendientes) return;
+        await new Promise((ok) => { const t = setTimeout(ok, esperaMs * (i + 1)); t.unref?.(); });
+      }
+    } finally {
+      sincronizando = false;
+    }
+  }
 
   function recibirTrabajo(trabajo) {
     if (detenido) return log.debug('trabajo.ignorado', { motivo: 'el Edge ya se detuvo', jobId: trabajo?.id });
@@ -238,6 +282,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     servidorSala,
     aplicarCatalogo,
     sincronizarSala,
+    sincronizarConReintentos,
 
     async iniciar({ conectar = true } = {}) {
       const { valida, errores } = validarConfig(cfg);

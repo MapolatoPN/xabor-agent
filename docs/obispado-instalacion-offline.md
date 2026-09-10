@@ -11,11 +11,20 @@ Qué hay que poner en cada máquina y qué hay que probar en sitio. Estado al
 
 | Estación | Rol | Qué corre |
 |---|---|---|
-| Caja principal | Cobra TODO | **Xabor Edge** + panel |
-| Meseros 1 y 2 | Capturan | Solo navegador |
-| Para llevar | Captura y cobra su propia venta | Solo navegador |
+| Caja principal | **Cobra TODO**, sin excepción | **Xabor Edge** + panel |
+| Meseros 1 y 2 | Solo capturan | Solo navegador |
+| Para llevar | **Solo captura** — no cobra | Solo navegador |
 | 4 impresoras | Chilaquiles · Cocina general · Bebidas · Tickets | En red por switch |
-| Cajón de dinero | | Colgado de la impresora de **tickets**, por RJ11 |
+| Cajón de dinero | Conexión física **sin confirmar** | Se asume colgado de la impresora de tickets por RJ11; **hay que verificarlo en sitio** |
+
+> **Para llevar NO cobra.** Toma el pedido y lo manda a cocina; el cliente paga
+> en la caja principal, igual que una mesa. Si el sistema le permitiera cobrar
+> ahí, habría dinero entrando por dos puntos y el arqueo dejaría de cuadrar.
+>
+> **El cajón no está confirmado físicamente.** Se asume colgado de la impresora
+> de tickets porque es lo habitual, pero nadie ha mirado el cable. Si estuviera
+> colgado de otra impresora —o conectado por USB a la PC— el pulso ESC/POS no
+> lo abre y hay que rehacer esa parte. Es de las primeras cosas que mirar.
 
 **El Edge va en la caja** por dos razones: es la máquina que se queda encendida
 y es la que tiene el cajón. Si esa PC se apaga durante un corte, la sala se

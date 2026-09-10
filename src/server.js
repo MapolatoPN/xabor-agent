@@ -1285,6 +1285,49 @@ async function manejarMensajeDeEdge(ws, raw) {
     return;
   }
 
+  // ── Sala sin conexión ─────────────────────────────────────────────────
+  // El Edge sube lo que operó durante un corte. La identidad NO viene del
+  // mensaje: se toma de `ws.negocioId`, que la autenticación de la terminal ya
+  // resolvió. Un Edge no puede sincronizar en otro negocio aunque lo pida.
+  if (msg.tipo === 'sala_lote') {
+    const respuesta = { tipo: 'sala_lote_resultado', loteId: msg.loteId || null };
+    try {
+      const { sincronizarLoteSala } = await import('./services/sincronizacionSala.js');
+      const r = await sincronizarLoteSala(ws.negocioId, msg.lote || {});
+      Object.assign(respuesta, {
+        ok: true, aplicadas: r.aplicadas, conflictos: r.conflictos,
+        eventosConfirmados: r.eventosConfirmados, reporte: r.reporte,
+      });
+      if (r.conflictos) {
+        console.warn(`[Sala] negocio=${ws.negocioId} sincronizó con ${r.conflictos} conflicto(s)`);
+      }
+      // El panel se entera en vivo: es lo que hace visible el informe de
+      // reconciliación sin que nadie tenga que ir a buscarlo.
+      broadcastNegocio(ws.negocioId, {
+        tipo: 'sala_sincronizada',
+        aplicadas: r.aplicadas, conflictos: r.conflictos, reporte: r.reporte,
+      });
+    } catch (e) {
+      // Se responde SIEMPRE, también al fallar: un Edge esperando en silencio
+      // reintentaría para siempre sin saber por qué.
+      console.error('[Sala] sincronización fallida:', e.message);
+      Object.assign(respuesta, { ok: false, error: 'No se pudo incorporar el lote' });
+    }
+    if (ws.readyState === 1) ws.send(JSON.stringify(respuesta));
+    return;
+  }
+
+  if (msg.tipo === 'solicitar_catalogo') {
+    try {
+      const { construirCatalogoParaEdge } = await import('./services/catalogoParaEdge.js');
+      const catalogo = await construirCatalogoParaEdge(ws.negocioId);
+      if (ws.readyState === 1) ws.send(JSON.stringify({ tipo: 'catalogo_sala', catalogo }));
+    } catch (e) {
+      console.error('[Sala] no se pudo armar el catálogo:', e.message);
+    }
+    return;
+  }
+
   if (msg.tipo === 'impresoras_detectadas') {
     const pendiente = solicitudesImpresoras.get(msg.solicitudId);
     // La solicitud tiene que ser de ESTA terminal: un Edge no puede contestar

@@ -115,6 +115,10 @@ export async function construirCatalogoParaEdge(negocioId, { incluirPines = true
         .map((p) => ({
           id: p.id, nombre: p.nombre, precio: Number(p.precio),
           categoria_id: cat.id,
+          // La pantalla de captura filtra por `disponible` (mesas.html:504).
+          // Aquí ya vienen solo los disponibles, pero si no se emite el campo
+          // el filtro los descarta a todos y la carta sale vacía.
+          disponible: true,
           modificadores: (p.modificadores || []).map((g) => ({
             id: g.id, nombre: g.nombre,
             requerido: g.requerido, minimo: g.minimo, maximo: g.maximo,

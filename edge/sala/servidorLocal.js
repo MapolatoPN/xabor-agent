@@ -29,6 +29,16 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyPin } from '../../src/services/password.js';
 import { ErrorSala } from './operacionLocal.js';
+// Los MISMOS adaptadores que usa el panel cuando llama al Edge desde la nube.
+// Reusarlos aquí evita tener dos traducciones de la misma respuesta -- que es
+// la familia de defectos que más caro ha salido en este proyecto.
+import { adaptarMesas, adaptarCuenta } from '../../panel/offline-sala.js';
+
+// La cookie existe porque el arranque del panel usa `fetch` CRUDO con
+// `credentials: 'same-origin'`, no `apiFetch`: no hay dónde meter un
+// Authorization. Con la cookie, la sesión local viaja sola y el panel arranca
+// sin tocar su código de arranque.
+const COOKIE = 'xabor_edge_sesion';
 
 // El Edge sirve TAMBIÉN el panel, y no es un extra: es lo que hace posible que
 // las otras computadoras operen durante un corte.
@@ -91,13 +101,58 @@ export function crearServidorLocal({
 
   function sesionDe(req) {
     const cab = req.headers.authorization || '';
-    const token = cab.startsWith('Bearer ') ? cab.slice(7) : null;
+    let token = cab.startsWith('Bearer ') ? cab.slice(7) : null;
+    if (!token) {
+      const m = /(?:^|;\s*)xabor_edge_sesion=([^;]+)/.exec(req.headers.cookie || '');
+      token = m ? decodeURIComponent(m[1]) : null;
+    }
     if (!token) return null;
     const s = sesiones.get(token);
     if (!s) return null;
     if (s.expira < Date.now()) { sesiones.delete(token); return null; }
     return s;
   }
+
+  /**
+   * Un item tal como lo manda la pantalla → un item con nombre y precio.
+   *
+   * El precio NUNCA viene del cliente: se busca en la foto del catálogo, igual
+   * que hace la nube. Si llegara ya resuelto (el otro camino, para un producto
+   * libre) se respeta tal cual.
+   */
+  function resolverItemDelMenu(i, sesion) {
+    const base = { ...i, agregadoPor: sesion.meseroId };
+    if (!i.producto_id) return base;
+    const cat = obtenerCatalogo();
+    let prod = null;
+    for (const c of (cat?.menu || [])) {
+      prod = (c.productos || []).find((p) => String(p.id) === String(i.producto_id));
+      if (prod) break;
+    }
+    if (!prod) return base;   // no está en la foto: que falle la validación
+
+    // Las opciones elegidas suman su extra y quedan escritas en el item, que
+    // es lo que después lee la comanda de cocina y el ticket.
+    const elegidas = Array.isArray(i.opciones) ? i.opciones.map(String) : [];
+    const modificadores = [];
+    let extra = 0;
+    for (const g of (prod.modificadores || [])) {
+      for (const o of (g.opciones || [])) {
+        if (!elegidas.includes(String(o.id))) continue;
+        extra += Number(o.precio_extra) || 0;
+        modificadores.push(`${g.nombre}: ${o.nombre}`);
+      }
+    }
+    return {
+      ...base,
+      producto: prod.nombre,
+      precio_unitario: Number(prod.precio) + extra,
+      modificadores: modificadores.length ? modificadores : (i.modificadores || []),
+    };
+  }
+
+  const nombreDeMesero = (id) =>
+    (obtenerCatalogo()?.meseros || []).find((m) => m.id === id)?.nombre || null;
 
   // El mensaje dice QUÉ no se puede y con qué rol, para que el mesero sepa a
   // quién llamar en vez de pensar que el sistema se rompió.
@@ -132,6 +187,15 @@ export function crearServidorLocal({
       } };
     }],
 
+    // Quién puede entrar. SIN sesión, porque es justo lo que necesita la
+    // pantalla de PIN para pintarse. Van solo nombre y rol -- nunca el hash --
+    // y es el mismo dato que muestra cualquier punto de venta físico al elegir
+    // mesero. La puerta sigue siendo el PIN.
+    ['GET', /^\/local\/personal$/, async () => ({
+      estado: 200,
+      cuerpo: { personal: (obtenerCatalogo()?.meseros || []).map((m) => ({ id: m.id, nombre: m.nombre, rol: m.rol })) },
+    })],
+
     ['POST', /^\/local\/sesion$/, async (_m, cuerpo) => {
       const cat = obtenerCatalogo();
       const mesero = (cat?.meseros || []).find((u) => u.id === cuerpo.meseroId);
@@ -146,9 +210,128 @@ export function crearServidorLocal({
         meseroId: mesero.id, nombre: mesero.nombre, rol: mesero.rol,
         expira: Date.now() + SESION_VIGENCIA_MS,
       });
-      log('sala.sesion.abierta', { mesero: mesero.nombre });
-      return { estado: 200, cuerpo: { token, mesero: { id: mesero.id, nombre: mesero.nombre, rol: mesero.rol } } };
+      log('sala.sesion.abierta', { mesero: mesero.nombre, rol: mesero.rol });
+      return {
+        estado: 200,
+        // La cookie existe porque el ARRANQUE del panel usa `fetch` crudo con
+        // `credentials: 'same-origin'`: no hay dónde meter un Authorization.
+        // Con ella, la sesión local viaja sola y el panel arranca sin tocar su
+        // código de arranque. No es HttpOnly porque el mismo token se usa por
+        // cabecera en las llamadas de sala; la puerta real es el PIN y este
+        // servidor solo existe dentro de la red del local.
+        cookies: [`${COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESION_VIGENCIA_MS / 1000)}`],
+        cuerpo: { token, mesero: { id: mesero.id, nombre: mesero.nombre, rol: mesero.rol } },
+      };
     }],
+
+    ['POST', /^\/local\/sesion\/cerrar$/, async () => ({
+      estado: 200, cookies: [`${COOKIE}=; Path=/; SameSite=Lax; Max-Age=0`], cuerpo: { ok: true },
+    })],
+
+    // ── Dialecto del panel ────────────────────────────────────────────────
+    // Servido por el Edge, el panel pide `/api/...` a ESTE servidor. Si
+    // devolviera 404, el failover de `apiFetch` ni se enteraría: un 404 no es
+    // un `fetch` rechazado, es una respuesta. Así que el Edge contesta esas
+    // rutas él mismo, con la forma de la nube.
+    //
+    // El arranque es lo que obliga: `/api/auth/me` se pide con `fetch` CRUDO,
+    // y si falla el panel se va a la pantalla de login y no arranca nada.
+    ['GET', /^\/api\/auth\/me$/, async (_m, _c, _s, req) => {
+      const s = sesionDe(req);
+      if (!s) return { estado: 401, cuerpo: { error: 'Sin sesión local' } };
+      const cat = obtenerCatalogo();
+      return { estado: 200, cuerpo: {
+        rol: s.rol, negocioId: cat?.negocioId || null, nombre: s.nombre,
+        // Solo lo que de verdad funciona sin enlace: anunciar módulos muertos
+        // pintaría pestañas que no responden.
+        modulos: ['restaurante', 'pos', 'menu'],
+        whatsappConfigurado: false,
+        offline: true,
+      } };
+    }],
+
+    ['GET', /^\/api\/config\/operativa$/, async () => {
+      const cat = obtenerCatalogo();
+      return { estado: 200, cuerpo: {
+        nombre: cat?.negocioNombre || 'Xabor (sin conexión)',
+        nombre_corto: cat?.negocioNombre || 'Sin conexión',
+        whatsapp: '', offline: true,
+      } };
+    }],
+
+    ['GET', /^\/api\/menu$/, async () => ({ estado: 200, cuerpo: obtenerCatalogo()?.menu || [] })],
+
+    ['GET', /^\/api\/restaurante\/mesas$/, async () => ({
+      estado: 200,
+      cuerpo: adaptarMesas({ numMesas: obtenerCatalogo()?.numMesas ?? 0, ocupadas: sala.listarMesasOcupadas() }),
+    }), true],
+
+    // Mismo contrato que la nube, incluida la forma de "sesión de estación":
+    // quien entró con su PIN YA se identificó, así que no se le vuelve a
+    // preguntar quién es. Sin `sesionMesero`/`yo`, el diálogo de abrir mesa
+    // pide un mesero de una lista vacía y no deja abrir nada.
+    ['GET', /^\/api\/restaurante\/meseros$/, async (_m, _c, sesion) => {
+      const cat = obtenerCatalogo();
+      const negocio = cat?.negocioNombre || null;
+      const yo = { id: sesion.meseroId, nombre: sesion.nombre || null };
+      if (String(sesion.rol).toLowerCase() === 'mesero') {
+        return { estado: 200, cuerpo: { meseros: [], sugerido: sesion.meseroId, sesionMesero: true, negocio, yo } };
+      }
+      // Caja y admin sí eligen a nombre de quién queda la mesa.
+      return { estado: 200, cuerpo: {
+        meseros: (cat?.meseros || []).map((m) => ({ id: m.id, nombre: m.nombre, rol: m.rol })),
+        sugerido: sesion.meseroId, sesionMesero: false, negocio, yo,
+      } };
+    }, true],
+
+    ['POST', /^\/api\/restaurante\/mesas\/abrir$/, async (_m, cuerpo, sesion) => {
+      const cuenta = sala.abrirMesa({
+        mesaNumero: cuerpo.mesa ?? cuerpo.mesaNumero, personas: cuerpo.personas,
+        meseroUsuarioId: cuerpo.meseroUsuarioId || sesion.meseroId,
+        meseroNombre: nombreDeMesero(cuerpo.meseroUsuarioId) || sesion.nombre,
+        abiertaPor: sesion.meseroId,
+      });
+      await persistir();
+      return { estado: 201, cuerpo: { ok: true, cuenta } };
+    }, true],
+
+    ['GET', /^\/api\/restaurante\/cuentas\/([^/]+)$/, async (m) => {
+      const cuenta = adaptarCuenta(sala.obtenerCuenta(m[1]));
+      if (!cuenta) return { estado: 404, cuerpo: { error: 'Cuenta no encontrada' } };
+      return { estado: 200, cuerpo: cuenta };
+    }, true],
+
+    ['POST', /^\/api\/restaurante\/cuentas\/([^/]+)\/items$/, async (m, cuerpo, sesion) => {
+      // La pantalla manda `producto_id` y las opciones elegidas: es el SERVIDOR
+      // quien resuelve nombre, precio y extras contra el menú -- así el precio
+      // nunca lo decide el cliente. Aquí se hace igual, contra la foto local.
+      const items = (cuerpo.items || []).map((i) => resolverItemDelMenu(i, sesion));
+      sala.agregarItems(m[1], items);
+      await persistir();
+      return { estado: 200, cuerpo: { ok: true, cuenta: adaptarCuenta(sala.obtenerCuenta(m[1])) } };
+    }, true],
+
+    ['POST', /^\/api\/restaurante\/cuentas\/([^/]+)\/comanda$/, async (m) => {
+      const comanda = sala.enviarComanda(m[1]);
+      await persistir();
+      return { estado: 200, cuerpo: { ok: true, comanda } };
+    }, true],
+
+    ['POST', /^\/api\/restaurante\/cuentas\/([^/]+)\/pagos$/, async (m, cuerpo, sesion) => {
+      const veto = exigirRol(sesion, ROLES_QUE_COBRAN, 'cobrar');
+      if (veto) return veto;
+      const pago = sala.registrarPago(m[1], { ...cuerpo, usuarioId: sesion.meseroId });
+      await persistir();
+      return { estado: 200, cuerpo: { ok: true, ...pago, cuenta: adaptarCuenta(sala.obtenerCuenta(m[1])) } };
+    }, true],
+
+    ['POST', /^\/api\/restaurante\/cuentas\/([^/]+)\/cerrar$/, async (m, _c, sesion) => {
+      const veto = exigirRol(sesion, ROLES_QUE_COBRAN, 'cerrar una cuenta');
+      if (veto) return veto;
+      const r = sala.cerrarCuenta(m[1], { usuarioId: sesion.meseroId });
+      await persistir();
+      return { estado: 200, cuerpo: r };
+    }, true],
 
     // El menú para pintar la pantalla de captura. Sin `pin_hash`: la foto lo
     // tiene, pero no sale de este proceso.
@@ -226,11 +409,12 @@ export function crearServidorLocal({
   ];
 
   const servidor = createServer((req, res) => {
-    const responder = (estado, cuerpo) => {
+    const responder = (estado, cuerpo, cookies = null) => {
       const json = JSON.stringify(cuerpo);
       res.writeHead(estado, {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(json),
+        ...(cookies?.length ? { 'Set-Cookie': cookies } : {}),
         // El panel se sirve desde la nube pero, sin enlace, tiene que poder
         // llamar a esta dirección. Sin CORS el navegador lo bloquea.
         'Access-Control-Allow-Origin': '*',
@@ -269,8 +453,8 @@ export function crearServidorLocal({
         catch { return responder(400, { error: 'JSON inválido' }); }
       }
       try {
-        const r = await manejador(patron.exec(ruta), cuerpo, sesion);
-        responder(r.estado, r.cuerpo);
+        const r = await manejador(patron.exec(ruta), cuerpo, sesion, req);
+        responder(r.estado, r.cuerpo, r.cookies);
       } catch (e) {
         if (e instanceof ErrorSala) {
           return responder(HTTP_POR_CODIGO[e.codigo] || 400, { error: e.message, codigo: e.codigo });
@@ -286,18 +470,36 @@ export function crearServidorLocal({
   // la terminal, y nadie en la red del local puede pedirle un archivo de
   // fuera del panel.
   async function servirPanel(ruta, res) {
-    const rel = ruta === '/' || ruta === '/app' ? 'index.html' : ruta.replace(/^\/+/, '');
+    // El panel manda a `/login-negocio.html` a quien no tiene sesión. La
+    // página de la nube no sirve aquí: postea a endpoints que durante un corte
+    // no existen. Se sustituye por la de PIN local.
+    // Las rutas "bonitas" que en la nube resuelve Express. Se copian aquí
+    // porque el nombre del archivo NO coincide con la ruta: `/restaurante`
+    // sirve `mesas.html`. Sin este mapa, el botón Restaurante del panel lleva
+    // a un "No encontrado" y la sala sin enlace muere justo ahí.
+    const ALIAS = {
+      '/': 'index.html', '/app': 'index.html',
+      '/restaurante': 'mesas.html', '/mesero': 'mesero.html',
+      '/login-negocio.html': 'login-edge.html', '/login.html': 'login-edge.html',
+    };
+    const rel = ALIAS[ruta] || ruta.replace(/^\/+/, '');
     const destino = normalize(join(raizPanel, rel));
     if (!destino.startsWith(normalize(raizPanel))) {
       res.writeHead(403).end('Prohibido');
       return;
     }
     try {
-      const info = await stat(destino);
+      // En la nube, `/restaurante` y `/mesero` son rutas de Express que
+      // sirven su .html. Aquí se resuelve igual: si la ruta no trae extensión
+      // y existe el archivo, se entrega. Sin esto, el botón "Restaurante" del
+      // panel lleva a un "No encontrado" -- que es exactamente donde muere la
+      // operación de sala sin enlace.
+      const conHtml = extname(destino) ? destino : `${destino}.html`;
+      const info = await stat(conHtml);
       if (!info.isFile()) throw new Error('no es archivo');
-      const cuerpo = await readFile(destino);
+      const cuerpo = await readFile(conHtml);
       res.writeHead(200, {
-        'Content-Type': TIPOS[extname(destino).toLowerCase()] || 'application/octet-stream',
+        'Content-Type': TIPOS[extname(conHtml).toLowerCase()] || 'application/octet-stream',
         'Content-Length': cuerpo.length,
         // El panel local no se cachea: si el Edge se actualiza, la estación
         // tiene que ver la versión nueva sin que nadie limpie nada.
