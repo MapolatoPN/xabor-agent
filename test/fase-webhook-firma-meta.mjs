@@ -229,6 +229,62 @@ await t('REENTREGA', 'R3. un wamid DISTINTO sí se procesa: no se rompe el flujo
     'y tiene que registrarse como siempre');
 });
 
+// ═══ SOBRES CON VARIOS MENSAJES ════════════════════════════════════════════
+//
+// Meta puede mandar varios mensajes en un mismo sobre. El flujo procesaba
+// `messages[0]` y descartaba el resto EN SILENCIO: el cliente manda dos
+// mensajes seguidos, Meta los agrupa, y el segundo no existe para nadie.
+//
+// Punto 4 de la auditoría del asistente ("procesar todos los mensajes del
+// sobre").
+await t('SOBRE', 'S1. los DOS mensajes de un mismo sobre se registran', async () => {
+  const base = `wamid.fw.sobre.${sufijo}`;
+  const cuerpo = payload([{
+    field: 'messages',
+    value: {
+      messaging_product: 'whatsapp', metadata: { phone_number_id: PNID_F },
+      contacts: [{ profile: { name: 'Cliente Firma' }, wa_id: TEL_CLIENTE }],
+      messages: [
+        { from: TEL_CLIENTE, id: `${base}.1`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Primero del sobre' } },
+        { from: TEL_CLIENTE, id: `${base}.2`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Segundo del sobre' } },
+      ],
+    },
+  }]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(2000);
+
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Primero del sobre' && m.direccion === 'entrante'),
+    'el primero se registraba desde siempre');
+  assert.ok(msgs.some((m) => m.texto === 'Segundo del sobre' && m.direccion === 'entrante'),
+    'el SEGUNDO se descartaba en silencio: el cliente lo escribió y no existía para nadie');
+});
+
+await t('SOBRE', 'S2. un mensaje roto del sobre no se lleva por delante a los demás', async () => {
+  // Cada mensaje va en su propio try. Si el primero revienta, el segundo tiene
+  // que atenderse igual: son dos cosas que dijo el cliente.
+  const base = `wamid.fw.sobreroto.${sufijo}`;
+  const cuerpo = payload([{
+    field: 'messages',
+    value: {
+      messaging_product: 'whatsapp', metadata: { phone_number_id: PNID_F },
+      contacts: [{ profile: { name: 'Cliente Firma' }, wa_id: TEL_CLIENTE }],
+      messages: [
+        // Sin `type`: el flujo lo descarta, y eso no puede detener al resto.
+        { from: TEL_CLIENTE, id: `${base}.1`, timestamp: `${Math.floor(Date.now() / 1000)}` },
+        { from: TEL_CLIENTE, id: `${base}.2`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Sobrevivo al roto' } },
+      ],
+    },
+  }]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(2000);
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Sobrevivo al roto' && m.direccion === 'entrante'),
+    'el mensaje válido del sobre tiene que llegar aunque su vecino no sirva');
+});
+
 // La prueba de PARTNER_REMOVED (FLUJOS 10) deja la integracion DESCONECTADA,
 // y a partir de ahi todo mensaje se descarta por fail closed. Estas van antes
 // a proposito: puestas despues pasaban sin comprobar nada.

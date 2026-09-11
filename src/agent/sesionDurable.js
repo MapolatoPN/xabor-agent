@@ -33,7 +33,7 @@
 // deuda de emisión y su idempotencia, y ese mecanismo no se toca. Dos rutas
 // hacia la cocina es justo lo que la 063 existe para impedir.
 import { pool } from '../services/database.js';
-import { getSession, deleteSession } from './session.js';
+import { getSession, deleteSession, registrarAlBorrarSesion } from './session.js';
 
 // Tope del historial que se persiste. El `Map` puede tener una conversación de
 // doscientos mensajes; la fila no necesita todos para reconstruir el carrito.
@@ -89,6 +89,9 @@ function aplicarFoto(session, foto) {
  */
 export async function hidratarSesion(sessionId, negocioId) {
   if (!sessionId || !negocioId) return { hidratada: false, motivo: 'sin identidad' };
+  // Si su borrado va en vuelo, esta conversación se dio por terminada hace
+  // un instante: recuperarla sería resucitar justo lo que se acaba de tirar.
+  if (borradosEnVuelo.has(sessionId)) return { hidratada: false, motivo: 'recién borrada' };
   const session = getSession(sessionId);
   const enMemoria = (session.mensajes?.length || 0) > 0
     || (session.pedido?.items?.length || 0) > 0
@@ -152,6 +155,39 @@ export async function persistirSesion(sessionId, negocioId) {
     return { guardada: false, motivo: e.message };
   }
 }
+
+// Borrar la memoria borra también la copia durable, SIEMPRE.
+//
+// Sin esto, `deleteSession()` --que llaman dos endpoints de `server.js` sin
+// saber nada de durabilidad-- dejaba la fila viva y el carrito viejo volvía
+// en el siguiente mensaje del cliente. Se detectó porque las suites que
+// reutilizan un id de sesión empezaron a heredar estado entre corridas.
+//
+// Se borra por `session_id` a secas: la clave ya lleva el negocio dentro
+// (`meta-<negocioId>-<telefono>`), así que no puede alcanzar a otro tenant.
+//
+// Es fuego y olvido: quien borra una sesión no debería esperar a la base, y
+// una fila que sobreviva un instante de más no hace daño -- la siguiente
+// hidratación solo ocurre si la memoria está vacía.
+// Conversaciones cuyo borrado está EN VUELO.
+//
+// El borrado de la fila es asíncrono y `deleteSession` es síncrono, así que
+// entre los dos hay una ventana: quien borre y vuelva a usar el mismo id en
+// el mismo tick --`deleteSession(id); getSession(id)`, que es justo lo que
+// hacen varias suites y lo que hará cualquiera-- encontraría la fila todavía
+// viva y recuperaría el carrito que acababa de tirar.
+//
+// La intención "esta conversación terminó" SÍ se conoce en el acto. Se anota
+// aquí y la hidratación la respeta, sin depender de que la base haya
+// terminado. Lo detectó `fase-confirmacion-agrupada`, no esta suite.
+const borradosEnVuelo = new Set();
+
+registrarAlBorrarSesion((sessionId) => {
+  borradosEnVuelo.add(sessionId);
+  pool.query('DELETE FROM conversacion_estado WHERE session_id = $1', [sessionId])
+    .catch((e) => console.error('[Sesion] no se pudo borrar la copia durable:', e.message))
+    .finally(() => borradosEnVuelo.delete(sessionId));
+});
 
 /**
  * Olvida la conversación, en memoria y en la base.

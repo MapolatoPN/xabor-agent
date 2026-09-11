@@ -22,7 +22,7 @@ import assert from 'assert';
 import { randomUUID } from 'node:crypto';
 
 const { pool } = await import('../src/services/database.js');
-const { getSession, deleteSession, agregarMensaje, recordarDatoPedido,
+const { getSession, deleteSession, desalojarDeMemoria, agregarMensaje, recordarDatoPedido,
   anotarPreguntaPendiente, guardarPreviewPedido } = await import('../src/agent/session.js');
 const { hidratarSesion, persistirSesion, olvidarSesion,
   purgarConversacionesViejas } = await import('../src/agent/sesionDurable.js');
@@ -66,8 +66,8 @@ await t('R1. tras PERDER la memoria, el carrito vuelve entero', async () => {
   armarCarrito(sid);
   await persistirSesion(sid, NEG);
 
-  // Esto ES el reinicio: el proceso nuevo no tiene nada en su Map.
-  deleteSession(sid);
+  // Esto ES el reinicio: la memoria se va, la base se queda.
+  desalojarDeMemoria(sid);
   assert.strictEqual(getSession(sid).pedido.items.length, 0, 'la memoria arranca vacía');
 
   const r = await hidratarSesion(sid, NEG);
@@ -106,7 +106,7 @@ await t('R3. el estado se guarda AUNQUE el turno falle', async () => {
   } catch { exploto = true; }
   assert.ok(exploto, 'el error sigue propagándose: no se traga');
 
-  deleteSession(sid);
+  desalojarDeMemoria(sid);
   await hidratarSesion(sid, NEG);
   assert.strictEqual(getSession(sid).pedido.items.length, 1,
     'lo acordado antes del fallo tiene que estar');
@@ -117,7 +117,7 @@ await t('A1. un negocio no ve la conversación de otro', async () => {
   const sid = `meta-${NEG}-5218780000004`;
   armarCarrito(sid);
   await persistirSesion(sid, NEG);
-  deleteSession(sid);
+  desalojarDeMemoria(sid);
 
   const r = await hidratarSesion(sid, OTRO);
   assert.strictEqual(r.hidratada, false, 'la misma clave en otro negocio no existe');
@@ -134,7 +134,7 @@ await t('A2. la clave lleva el negocio: el mismo teléfono en dos sucursales no 
   getSession(sidB).pedido.items = [{ nombre: 'Otra cosa', cantidad: 9, precio_unitario: 10 }];
   await persistirSesion(sidB, OTRO);
 
-  deleteSession(sidA); deleteSession(sidB);
+  desalojarDeMemoria(sidA); desalojarDeMemoria(sidB);
   await hidratarSesion(sidA, NEG);
   await hidratarSesion(sidB, OTRO);
   assert.strictEqual(getSession(sidA).pedido.items[0].nombre, 'Chilaquiles');
@@ -154,7 +154,7 @@ await t('H1. recortar el historial NO desplaza el ciclo del pedido', async () =>
   const marcaDelCiclo = s.mensajes[90].content;
   await persistirSesion(sid, NEG);
 
-  deleteSession(sid);
+  desalojarDeMemoria(sid);
   await hidratarSesion(sid, NEG);
   const r = getSession(sid);
   assert.ok(r.mensajes.length <= 60, `el historial se recorta: ${r.mensajes.length}`);
@@ -173,6 +173,48 @@ await t('O1. olvidar borra las DOS copias, no solo la de memoria', async () => {
   assert.ok(!fila, 'una fila huérfana resucitaría el carrito viejo en el siguiente mensaje');
   await hidratarSesion(sid, NEG);
   assert.strictEqual(getSession(sid).pedido.items.length, 0);
+});
+
+await t('O1b. deleteSession por sí solo YA borra la copia durable', async () => {
+  // El defecto que esto cierra: `server.js` tiene dos endpoints que llaman a
+  // `deleteSession` sin saber nada de durabilidad. Si la fila sobrevivía, el
+  // carrito viejo volvía en el siguiente mensaje del cliente.
+  //
+  // Se detectó porque las suites que reutilizan un id de sesión empezaron a
+  // heredar estado entre corridas: `fase-confirmacion-agrupada` pasó de 11/11
+  // a 10/11 sin que nadie tocara su código.
+  const sid = `meta-${NEG}-5218780000009`;
+  armarCarrito(sid);
+  await persistirSesion(sid, NEG);
+  deleteSession(sid);                                // sin llamar a olvidarSesion
+  await new Promise((r) => setTimeout(r, 400));      // el borrado es fuego y olvido
+  const fila = await q1(`SELECT 1 FROM conversacion_estado WHERE session_id=$1`, [sid]);
+  assert.ok(!fila, 'borrar la memoria tiene que borrar también la copia durable');
+  await hidratarSesion(sid, NEG);
+  assert.strictEqual(getSession(sid).pedido.items.length, 0, 'y no puede resucitar');
+});
+
+await t('O1c. borrar y REUSAR el mismo id en el acto no resucita el carrito', async () => {
+  // La carrera que introdujo la durabilidad: el borrado de la fila es
+  // asíncrono y `deleteSession` es síncrono. Entre los dos hay una ventana, y
+  // `deleteSession(id); getSession(id)` en el mismo tick es justo lo que hacen
+  // varias suites --y lo que hará cualquiera-- para empezar limpio.
+  //
+  // Sin la marca de "borrado en vuelo", la hidratación encontraba la fila aún
+  // viva y devolvía el carrito que se acababa de tirar. Lo detectó
+  // `fase-confirmacion-agrupada` pasando de 11/11 a 10/11 sin que nadie tocara
+  // su código: el estado de una corrida se colaba en la siguiente.
+  const sid = `meta-${NEG}-5218780000010`;
+  armarCarrito(sid);
+  await persistirSesion(sid, NEG);
+
+  // Sin esperar nada: se borra y se vuelve a usar en el mismo instante.
+  deleteSession(sid);
+  const r = await hidratarSesion(sid, NEG);
+  assert.strictEqual(r.hidratada, false,
+    'una conversación que se acaba de dar por terminada no puede recuperarse');
+  assert.strictEqual(getSession(sid).pedido.items.length, 0,
+    'el carrito viejo no puede volver por la puerta de atrás');
 });
 
 await t('O2. el barrido exige que alguien decida cuántos días', async () => {
