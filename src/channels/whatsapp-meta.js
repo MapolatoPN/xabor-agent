@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
+import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
@@ -96,6 +97,39 @@ async function registrarError(negocioId) {
     setTimeout(() => { entry.alertaEnviada = false; }, 15 * 60 * 1000);
   }
 }
+
+// ─── Aviso al dueño cuando el bot estuvo a punto de mentir ──────────────
+//
+// El candado de brain.js ya impidió que la negativa falsa saliera. Esto es lo
+// otro que faltaba: que alguien se ENTERE. Los ocho incidentes de esta familia
+// los encontró el dueño probando, nunca el sistema -- porque la alerta de
+// arriba cuenta EXCEPCIONES, y una negativa falsa no es una excepción: es un
+// turno que, para el código, salió perfecto.
+//
+// Un aviso por negocio cada 30 minutos: el objetivo es que se entere, no
+// llenarle el teléfono mientras se arregla la causa.
+const avisoNegativa = new Map(); // negocioId -> timestamp del último aviso
+const SILENCIO_MS = 30 * 60 * 1000;
+
+registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
+  const ahora = Date.now();
+  if ((avisoNegativa.get(negocioId) || 0) > ahora - SILENCIO_MS) return;
+  avisoNegativa.set(negocioId, ahora);
+  try {
+    const cfg = await obtenerConfiguracion(negocioId);
+    const admin = cfg.wa_admin_numero;
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+    if (!admin || !credenciales) return;
+    const h = hallazgos[0] || {};
+    const existen = (h.existen || []).slice(0, 3).join(', ');
+    await enviarMensaje(admin,
+      `🚨 *Xabor*: el bot iba a decirle a un cliente que no manejamos "${h.negado}", `
+      + `y sí lo tenemos (${existen}). El mensaje NO se envió: se le ofrecieron las opciones reales. `
+      + `Hay que revisar por qué no lo reconoció.`, credenciales).catch(() => {});
+  } catch (e) {
+    console.error('[Meta WA] aviso de negativa falsa:', e.message);
+  }
+});
 
 // ─── Debounce de mensajes — la cola de 6 s ──────────────────────────────
 // Vive en utils/colaMensajes.js y es la UNICA fuente de verdad del turno

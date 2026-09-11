@@ -7,10 +7,11 @@ import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido
          datosDelPedido, recordarDatoPedido,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
 import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespaldo } from './mencionesComerciales.js';
+import { revisarNegativas, terminosDelCatalogo, mensajeEnLugarDeLaNegativa, avisarNegativaFalsa } from './negativaVerificada.js';
 import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
-import { obtenerEstadoModulo, pool } from '../services/database.js';
+import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
 import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
@@ -297,12 +298,67 @@ function snapshotDePreview(v) {
 export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null, control = {}) {
   // WhatsApp hidrata bajo exclusión entre instancias y guarda DESPUÉS de los
   // efectos del canal, junto con el checkpoint del turno. Una sola escritura.
-  if(control.continuidadExterna) return procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito);
+  if(control.continuidadExterna) {
+    return conNegativasVerificadas(
+      await procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito), negocioId, sessionId);
+  }
   await hidratarSesion(sessionId, negocioId);
   try {
-    return await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito);
+    return conNegativasVerificadas(
+      await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito), negocioId, sessionId);
   } finally {
     await persistirSesion(sessionId, negocioId);
+  }
+}
+
+/**
+ * EL CANDADO. Último filtro antes de que una respuesta salga del cerebro.
+ *
+ * Aquí pasa TODO lo que el bot le dice a un cliente por este camino: lo que
+ * redactó el validador y lo que escribió el modelo. Es el único punto del
+ * sistema donde se puede garantizar algo sobre el contenido, y lo que se
+ * garantiza es una sola cosa:
+ *
+ *   NUNCA se le dice a un cliente que no tenemos algo que sí está en la carta.
+ *
+ * Ocho incidentes distintos tuvieron ese mismo daño y cada uno se arregló con
+ * una regla para su frase. Esto no es otra regla: es la comprobación de la
+ * afirmación contra el catálogo, en el momento de decirla. Si la negativa es
+ * falsa, el mensaje NO sale -- sale la verdad, construida con los nombres
+ * reales del catálogo -- y queda un aviso, porque una negativa interceptada es
+ * un defecto que se reporta solo en vez de esperar a que alguien lo encuentre
+ * probando.
+ *
+ * Falla ABIERTO a propósito: si el catálogo no se puede leer, la respuesta sale
+ * tal cual. Un candado que deja mudo al bot cuando la base tose sería peor que
+ * el problema que resuelve.
+ */
+async function conNegativasVerificadas(resultado, negocioId, sessionId) {
+  try {
+    const texto = resultado?.texto;
+    if (!texto || !String(texto).trim() || !negocioId) return resultado;
+    // Barato: solo se toca la base si el texto CONTIENE una negativa.
+    if (!/no\s+(manejamos|tenemos|contamos|disponemos|hay)/i.test(texto)) return resultado;
+
+    const catalogo = await obtenerMenuCompleto(negocioId);
+    const revision = revisarNegativas(texto, terminosDelCatalogo(catalogo));
+    if (revision.seguro) return resultado;
+
+    const sustituto = mensajeEnLugarDeLaNegativa(revision.hallazgos);
+    if (!sustituto) return resultado;
+
+    for (const h of revision.hallazgos) {
+      console.error(`[NEGATIVA FALSA] negocio=${negocioId} negado=${JSON.stringify(h.negado)} `
+        + `existen=${JSON.stringify(h.existen.slice(0, 5))}`);
+    }
+    // La sesión tiene que quedarse con lo que el cliente REALMENTE recibió; si
+    // no, el siguiente turno razona sobre una frase que nadie leyó.
+    reemplazarUltimoMensajeAsistente(sessionId, sustituto);
+    avisarNegativaFalsa(negocioId, revision.hallazgos);
+    return { ...resultado, texto: sustituto, negativaInterceptada: revision.hallazgos };
+  } catch (e) {
+    console.error('[brain] candado de negativas:', e.message);
+    return resultado;
   }
 }
 
