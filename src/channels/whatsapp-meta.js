@@ -2,7 +2,7 @@
 // Twilio se conserva SOLO para llamadas de voz
 
 import { Router } from 'express';
-import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
+import { randomBytes, createHmac, timingSafeEqual, createHash } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
@@ -10,7 +10,7 @@ import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, T
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
 import { encolarMensaje } from '../utils/colaMensajes.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { pool, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -1727,13 +1727,121 @@ async function procesarMensajeDelSobre(message, value) {
   });
 }
 
+// ─── Constancia durable de recepción ────────────────────────────────────────
+//
+// Una sola pregunta: ¿este sobre entró, y se terminó de procesar? No es una
+// cola de trabajo. `colaMensajes` ya serializa los turnos de una conversación
+// y `pedido_emisiones` ya garantiza que una comanda llegue a cocina; meter
+// aquí una tercera máquina de estados crearía una segunda ruta hacia el mismo
+// efecto, que es justo lo que la 063 existe para impedir.
+
+/**
+ * La referencia del sobre: los identificadores que Meta trae dentro.
+ *
+ * Se deriva del contenido y NO de la hora ni de un aleatorio, porque el punto
+ * es que una reentrega del MISMO sobre produzca la MISMA referencia y choque
+ * contra el índice único. Es la misma idea que `message_id_externo` en
+ * `mensajes`, un nivel más arriba.
+ *
+ * Si el sobre no trae ningún id reconocible --un payload raro, un ping-- se
+ * cae a un hash del cuerpo: sigue siendo determinista, que es lo único que
+ * esta función promete.
+ */
+function referenciaDelSobre(body) {
+  const ids = [];
+  for (const entrada of body?.entry || []) {
+    for (const cambio of entrada?.changes || []) {
+      const v = cambio?.value || {};
+      for (const m of v.messages || []) if (m?.id) ids.push(m.id);
+      for (const e of v.message_echoes || []) if (e?.id) ids.push(e.id);
+      for (const st of v.statuses || []) if (st?.id) ids.push(`st:${st.id}:${st.status || ''}`);
+    }
+  }
+  if (ids.length) return ids.sort().join('|').slice(0, 400);
+  return `sha:${createHash('sha256').update(JSON.stringify(body || {})).digest('hex')}`;
+}
+
+/**
+ * Deja constancia de que el sobre entró. Se llama ANTES de acusar recibo.
+ *
+ * Devuelve `{ id, referencia, duplicado }` o `{ error }`. El error se traduce
+ * en un 500 para que Meta reintente: es preferible una reentrega --que ya
+ * sabemos ignorar-- a perder el mensaje en silencio.
+ */
+async function anotarRecepcion(body) {
+  const referencia = referenciaDelSobre(body);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO webhook_entrante (canal, referencia, payload, intentos)
+       VALUES ('whatsapp', $1, $2::jsonb, 1)
+       ON CONFLICT (canal, referencia) DO NOTHING
+       RETURNING id`,
+      [referencia, JSON.stringify(body || {})]);
+    if (rows[0]) return { id: rows[0].id, referencia, duplicado: false };
+
+    // Ya existía: es una reentrega del mismo sobre. Se distingue si quedó a
+    // medias --entonces sí hay que retomarlo-- de si ya se terminó.
+    const { rows: previo } = await pool.query(
+      `SELECT id, estado FROM webhook_entrante WHERE canal = 'whatsapp' AND referencia = $1`, [referencia]);
+    if (!previo[0]) return { error: 'la fila desapareció entre el insert y la lectura' };
+    if (previo[0].estado === 'procesado') return { id: previo[0].id, referencia, duplicado: true };
+    // Quedó pendiente o falló: se reintenta y se cuenta el intento.
+    await pool.query(
+      `UPDATE webhook_entrante SET intentos = intentos + 1, estado = 'pendiente' WHERE id = $1`, [previo[0].id]);
+    return { id: previo[0].id, referencia, duplicado: false };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Cierra la constancia. Nunca lanza: el turno del cliente ya se atendió y no
+ * puede caerse por no poder anotar que se atendió.
+ */
+async function marcarRecepcion(id, estado, error = null) {
+  if (!id) return;
+  try {
+    await pool.query(
+      `UPDATE webhook_entrante
+          SET estado = $2, procesado_at = NOW(), ultimo_error = $3
+        WHERE id = $1`,
+      [id, estado, error ? String(error).slice(0, 500) : null]);
+  } catch (e) {
+    console.error('[Meta WA] no se pudo cerrar la constancia del sobre:', e.message);
+  }
+}
+
 router.post('/', async (req, res) => {
   // La firma se valida ANTES de responder y antes de CUALQUIER efecto.
   if (!firmaWebhookValida(req)) {
     console.warn('[Meta WA] Webhook rechazado: X-Hub-Signature-256 ausente o inválida (403)');
     return res.sendStatus(403);
   }
-  res.sendStatus(200); // Meta requiere 200 inmediato
+
+  // ── LA CONSTANCIA VA ANTES DEL ACUSE ──────────────────────────────────
+  //
+  // Antes se respondía 200 aquí mismo y se procesaba después. Si el proceso
+  // moría en esa ventana --un despliegue, un OOM, Railway moviendo el
+  // contenedor-- el mensaje no existía para nadie. Y lo grave no es la
+  // ventana: es que Meta YA tenía su 200, así que NO lo reintenta. El
+  // cliente escribió y nadie se enteró nunca.
+  //
+  // Ahora se deja constancia primero. Es UN insert, no la IA: Meta tolera de
+  // sobra ese tiempo, y lo pesado sigue ocurriendo después del acuse.
+  //
+  // Si la constancia falla, se responde 500 A PROPÓSITO: así Meta reintenta.
+  // Es preferible una reentrega --que ya sabemos ignorar-- a perder el
+  // mensaje en silencio.
+  const recibo = await anotarRecepcion(req.body);
+  if (recibo.error) {
+    console.error('[Meta WA] no se pudo dejar constancia del sobre — se pide reintento a Meta:', recibo.error);
+    return res.sendStatus(500);
+  }
+  res.sendStatus(200);
+  if (recibo.duplicado) {
+    console.warn(`[Meta WA] sobre ya procesado (ref=${recibo.referencia.slice(-16)}) — no se vuelve a procesar`);
+    return;
+  }
 
   try {
     const body = req.body;
@@ -1785,8 +1893,10 @@ router.post('/', async (req, res) => {
       }
     }
 
+    await marcarRecepcion(recibo.id, 'procesado');
   } catch (error) {
     console.error('[Meta WA] Error:', error.message);
+    await marcarRecepcion(recibo.id, 'fallido', error.message);
   }
 });
 

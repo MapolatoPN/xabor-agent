@@ -84,6 +84,11 @@ const SCRIPTS = [
   // guarda en una tabla inexistente perderia el carrito igual que antes, solo
   // que ademas llenando el log de errores.
   '076-conversacion-durable',
+  // 077 crea la constancia durable del webhook. Va ANTES del binario nuevo:
+  // el webhook escribe ahi ANTES de acusarle recibo a Meta, asi que sin la
+  // tabla fallaria cada mensaje entrante -- justo el punto que este cambio
+  // quiere hacer seguro.
+  '077-webhook-entrante',
 ];
 
 for (const nombre of SCRIPTS) {
