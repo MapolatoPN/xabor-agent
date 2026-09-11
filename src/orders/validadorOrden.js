@@ -155,7 +155,32 @@ function resolverProducto(nombreLLM, catalogo) {
   if (candidatos.length === 0) {
     candidatos = porNombre.filter((x) => x.norm.includes(buscado) || buscado.includes(x.norm));
   }
-  if (candidatos.length !== 1) return { estado: 'no_existe' };
+  // NO ENCONTRADO y ENCONTRADO VARIAS VECES son cosas distintas, y confundirlas
+  // le miente al cliente.
+  //
+  // Incidente del 2026-09-11: «quiero unos chilaquiles suizos con pollo» ->
+  // «Una disculpa: no manejamos "Chilaquiles"». El menú tiene TRES:
+  // Sencillos, Mixtos y Bowl de Chilaquiles. Los tres contienen la palabra, así
+  // que la búsqueda devolvía 3 candidatos, el `!== 1` los tiraba al mismo cajón
+  // que un producto inexistente y el cliente recibía una negativa falsa sobre
+  // algo que sí vendemos, tres veces.
+  //
+  // No resolver sigue siendo lo correcto: entre tres platillos no se adivina.
+  // Lo que cambia es que ahora se sabe POR QUÉ no se resolvió, y quien redacta
+  // el mensaje puede preguntar en vez de negar. Es la misma regla que ya
+  // aplican los modificadores (`modificadores.js`: los ambiguos caen aparte y
+  // el canal pregunta); los productos eran los únicos sin ella.
+  if (candidatos.length === 0) return { estado: 'no_existe' };
+  if (candidatos.length > 1) {
+    // Solo se ofrece lo que de verdad se puede pedir hoy: una variante apagada
+    // o agotada no entra en la pregunta. Y si NINGUNA se puede pedir, el
+    // platillo existe pero hoy no va -- eso ya tiene su propia frase honesta,
+    // que no es "no manejamos".
+    const ofrecibles = candidatos.filter((x) =>
+      x.p.categoria_activa && x.p.disponible !== false && x.p.agotado !== true);
+    if (!ofrecibles.length) return { estado: 'no_disponible', producto: candidatos[0].p };
+    return { estado: 'ambiguo', candidatos: ofrecibles.map((x) => x.p) };
+  }
   const prod = candidatos[0].p;
   if (!prod.categoria_activa || prod.disponible === false) return { estado: 'no_disponible', producto: prod };
   if (prod.agotado === true) return { estado: 'agotado', producto: prod };
@@ -241,7 +266,13 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
     const r = resolverProducto(it?.nombre, catalogo);
     if (r.estado !== 'ok') {
       salida.ok = false;
-      salida.productosNoExisten.push({ nombre: String(it?.nombre || '').slice(0, 80), estado: r.estado });
+      salida.productosNoExisten.push({
+        nombre: String(it?.nombre || '').slice(0, 80),
+        estado: r.estado,
+        // Los nombres reales entre los que hay que elegir. Solo viajan cuando
+        // el estado es 'ambiguo'; quien redacta el mensaje los ofrece.
+        ...(r.candidatos ? { candidatos: r.candidatos.map((p) => String(p.nombre || '')) } : {}),
+      });
       continue;
     }
     resueltos.push({
@@ -502,7 +533,12 @@ export function mensajeBorradorParaCliente(resultado) {
     .filter((x) => x && x.nombre);
   if (inexistentes.length) {
     const apagados = inexistentes.filter((x) => x.estado === 'no_disponible' || x.estado === 'agotado');
-    const ajenos = inexistentes.filter((x) => !(x.estado === 'no_disponible' || x.estado === 'agotado'));
+    // Ambiguo NO es ajeno: el platillo existe, lo que falta es saber cuál de
+    // sus variantes. Se separa antes de repartir el resto para que jamás caiga
+    // en la frase de "no manejamos".
+    const ambiguos = inexistentes.filter((x) => x.estado === 'ambiguo' && (x.candidatos || []).length);
+    const ajenos = inexistentes.filter((x) =>
+      !(x.estado === 'no_disponible' || x.estado === 'agotado' || x.estado === 'ambiguo'));
     const frases = [];
     if (apagados.length) {
       // "Se acabó" y "está apagado" se le dicen distinto al cliente: uno es de
@@ -514,7 +550,20 @@ export function mensajeBorradorParaCliente(resultado) {
       if (noVan.length) frases.push(`${listar(noVan)} no está disponible por ahora`);
     }
     if (ajenos.length) frases.push(`no manejamos ${listar(ajenos.map((x) => `"${x.nombre}"`))}`);
-    return `Una disculpa: ${listar(frases)}. ¿Te comparto lo que sí tenemos?`;
+    // La pregunta por las variantes va SIEMPRE en su propia frase, nunca dentro
+    // de la disculpa: pedirle al cliente que elija entre tres platillos que sí
+    // tenemos no es una mala noticia y no se disculpa.
+    const preguntas = ambiguos.map((x) => {
+      const opciones = x.candidatos;
+      // Con una sola variante pedible no hay nada que elegir: se confirma. Con
+      // varias, se enumeran y se pregunta. Nunca se elige por el cliente.
+      if (opciones.length === 1) return `De "${x.nombre}" tenemos ${opciones[0]}. ¿Te lo preparo así?`;
+      const lista = `${opciones.slice(0, -1).join(', ')} o ${opciones[opciones.length - 1]}`;
+      return `De "${x.nombre}" tenemos ${lista}. ¿Cuál prefieres?`;
+    });
+    if (!frases.length) return preguntas.join(' ');
+    const disculpa = `Una disculpa: ${listar(frases)}. ¿Te comparto lo que sí tenemos?`;
+    return preguntas.length ? `${preguntas.join(' ')} ${disculpa}` : disculpa;
   }
 
   // Frase única para "lo que falta por elegir": la usan tanto el tramo de
@@ -682,9 +731,18 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       continue;
     }
     const r = resolverProducto(it?.nombre, catalogo);
-    if (r.estado === 'no_existe') {
+    // 'ambiguo' se rechaza con la MISMA dureza que 'no_existe', y aquí no se
+    // negocia: este es el registro del pedido real. Un nombre que apunta a tres
+    // platillos no tiene `producto`, y sin este corte seguiría de largo hasta
+    // el código de abajo que lee `r.producto`. Que el cliente reciba una
+    // pregunta en vez de una negativa es trabajo del borrador conversacional,
+    // mucho antes de llegar hasta aquí.
+    if (r.estado === 'no_existe' || r.estado === 'ambiguo') {
       rechazos.push({ codigo: RECHAZOS.PRODUCTO_NO_EXISTE, nombre: String(it?.nombre || '').slice(0, 80) });
-      eventoTxn('producto_no_encontrado', negocioId, { nombre: String(it?.nombre || '').slice(0, 60) });
+      eventoTxn('producto_no_encontrado', negocioId, {
+        nombre: String(it?.nombre || '').slice(0, 60),
+        motivo: r.estado,
+      });
       continue;
     }
     // UNA SOLA fuente de verdad para el envío: el costo canónico de las
