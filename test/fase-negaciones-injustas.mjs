@@ -27,7 +27,7 @@ process.env.PORT = process.env.PORT || '4241';
 const { pool } = await import('../src/services/database.js');
 const { validarBorradorPedido, mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
 const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
-const { tieneRespaldo, sinDiminutivo } = await import('../src/agent/mencionesComerciales.js');
+const { tieneRespaldo, sinDiminutivo, esFragmentoDeAtributo, sinConectorInicial, depurarMenciones } = await import('../src/agent/mencionesComerciales.js');
 const { procesarMensaje } = await import('../src/agent/brain.js');
 const { deleteSession, verPreviewConfirmable, datosDelPedido } = await import('../src/agent/session.js');
 
@@ -493,6 +493,236 @@ await t('M4. la forma de pago tampoco se da por dicha', async () => {
   assert.match(r.texto, /forma de pago|c[óo]mo deseas pagar/i,
     `el cliente no eligió pago: hay que preguntarlo — ${r.texto}`);
   assert.strictEqual(verPreviewConfirmable(SID), null, 'sin pago elegido no hay nada que confirmar');
+});
+
+// ═══ FRAGMENTO COLGADO ═════════════════════════════════════════════════════
+//
+// Cuarto caso de la misma familia, y el más caro de ver porque el bot ya había
+// contestado bien un turno antes.
+//
+// Obispado, 2026-09-10 18:19, clienta ***7552:
+//
+//   18:18:44  clienta  "4 platillos de hotkeis con fruta de 139"
+//   18:18:54  bot      "...acompañadas de fruta fresca de temporada"   ✔
+//   18:19:03  clienta  "un platillo de waffles con fruta de 149"
+//   18:19:15  bot      'Una disculpa: no manejamos "con fruta".'       ✘
+//   18:19:53  HUMANO   entra a rescatar el pedido
+//
+// El extractor partió "waffles con fruta de 149" en DOS artículos del
+// borrador: `Waffles` y `con fruta`. El segundo no es un platillo, es la cola
+// del primero. El validador lo buscó en la lista de productos, no lo encontró
+// y acusó al negocio de no venderlo — cuando la descripción de Waffles dice
+// literalmente "acompañados de fruta".
+//
+// Detalle que delata el camino: el mensaje dice `no manejamos "con fruta"` SIN
+// nombre de producto. Los otros dicen `no manejamos "con pollo" en Chilaquiles
+// Sencillos`. Esa rama sin producto es `productosNoExisten`, que se llena
+// desde `borrador.items` — no desde las menciones.
+const cWaf = await cat('Waffles y Hotcakes', 2);
+const WAF = await prod(cWaf, 'Waffles', 159);
+const gTopW = await gr(WAF, 'Topping', 1);
+await op(gTopW, 'Miel y Mantequilla'); await op(gTopW, 'Nutella');
+await pool.query(`UPDATE menu_productos SET descripcion=$2 WHERE id=$1`,
+  [WAF, '2 piezas de waffle, acompañados de fruta y algún topping.']);
+// Una opción REAL que empieza por la palabra que sigue al conector: sirve para
+// comprobar que la recuperación de "de mango" no se pierde por el camino.
+const LIC = await prod(cWaf, 'Licuado', 55);
+const gSab = await gr(LIC, 'Sabor', 1);
+await op(gSab, 'Mango'); await op(gSab, 'Fresa');
+
+await t('F1. "con fruta" NO se declara producto inexistente', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [
+      { nombre: 'Waffles', cantidad: 1, modificadores: ['Nutella'] },
+      { nombre: 'con fruta', cantidad: 1, modificadores: [] },
+    ] },
+    NEG, { textoCiclo: 'Y un platillo de waffles con fruta de 149' });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i,
+    `el menú SÍ los incluye; acusar al negocio pierde la venta — ${msg}`);
+  assert.doesNotMatch(msg, /con fruta/i, `no puede citar el fragmento como producto — ${msg}`);
+  assert.ok(!(rc.productosNoExisten || []).some((x) => /con fruta/i.test(x?.nombre || x)),
+    'el fragmento no puede acabar en productosNoExisten');
+});
+
+await t('F2. y el producto real del mismo artículo se conserva', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [
+      { nombre: 'Waffles', cantidad: 1, modificadores: ['Nutella'] },
+      { nombre: 'con fruta', cantidad: 1, modificadores: [] },
+    ] },
+    NEG, { textoCiclo: 'Y un platillo de waffles con fruta de 149' });
+  // `productos[].producto` es el NOMBRE de catálogo, ya canonizado.
+  const nombres = (rc.productos || []).map((p) => p.producto);
+  assert.ok(nombres.some((n) => /Waffles/i.test(String(n))),
+    `descartar el fragmento no puede llevarse el platillo — ${JSON.stringify(nombres)}`);
+});
+
+await t('F3. la opción real se recupera cuando el fragmento la nombra', async () => {
+  // "de mango" es fragmento; Mango es una opción REAL del Licuado. Descartar
+  // el fragmento como PRODUCTO no puede impedir que la mención lo resuelva.
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Licuado', cantidad: 1, modificadores: [] },
+      { nombre: 'de mango', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'un licuado de mango', menciones: ['de mango'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i, `"de mango" no es una acusación — ${msg}`);
+  assert.strictEqual(buscarOpcionPorMencion(
+    [{ id: gSab, nombre: 'Sabor', opciones: [{ nombre: 'Mango' }, { nombre: 'Fresa' }] }], 'mango').estado,
+  'resuelto', 'y Mango se sigue resolviendo como la opción que es');
+});
+
+await t('F4. las demás variantes con conector inicial tampoco acusan', async () => {
+  for (const fragmento of ['con fruta', 'de mango', 'en salsa']) {
+    const rc = await validarBorradorPedido(
+      { items: [
+        { nombre: 'Waffles', cantidad: 1, modificadores: ['Nutella'] },
+        { nombre: fragmento, cantidad: 1, modificadores: [] },
+      ] },
+      NEG, { textoCiclo: `unos waffles ${fragmento}` });
+    const msg = mensajeBorradorParaCliente(rc) || '';
+    assert.doesNotMatch(msg, /no manejamos/i, `"${fragmento}" produjo una negación — ${msg}`);
+  }
+});
+
+await t('F5. lo que de verdad no existe SIGUE rechazándose', async () => {
+  // La corrección no puede convertirse en una puerta para aceptar cualquier
+  // texto: solo mira la PRIMERA palabra, y solo si es un conector de atributo.
+  for (const invento of ['Sushi de Kobe', 'Pizza Hawaiana', 'fruta']) {
+    const rc = await validarBorradorPedido(
+      { items: [{ nombre: invento, cantidad: 1, modificadores: [] }] },
+      NEG, { textoCiclo: `quiero ${invento}` });
+    assert.strictEqual(rc.ok, false, `"${invento}" no existe y tiene que rechazarse`);
+    assert.match(mensajeBorradorParaCliente(rc) || '', /no manejamos/i,
+      `"${invento}" debía producir una negación honesta`);
+  }
+  // Y un conector suelto no basta para tragarse nada.
+  assert.strictEqual(esFragmentoDeAtributo('de'), false, 'una palabra suelta no es fragmento');
+  assert.strictEqual(esFragmentoDeAtributo('Frijolitos con chorizo'), false,
+    'el conector INTERNO no cuenta: esa opción existe y se llama así');
+  assert.strictEqual(esFragmentoDeAtributo('Miel y Mantequilla'), false);
+});
+
+// ═══ LA SEGUNDA PUERTA ═════════════════════════════════════════════════════
+//
+// El mismo fragmento, entrando como MENCIÓN en vez de como artículo. F1-F5
+// taparon la puerta del borrador (`productosNoExisten`); estas tapan la de
+// las menciones (`no manejamos "X" en PRODUCTO`).
+//
+// En 30 días de producción, el bot emitió 11 negaciones automáticas y CUATRO
+// empezaban por preposición:
+//
+//   09-10  "con fruta"    → artículo  (la cubre F1)
+//   09-05  "con bistec"   → mención
+//   09-04  "con carne"    → mención, "en Chilaquiles Sencillos"
+//   09-04  "con pollo"    → mención, "en Chilaquiles Sencillos"
+//
+// Las tres últimas son clientes que pidieron su platillo CON una proteína que
+// el negocio sí tiene, y recibieron un "no manejamos". `sinConectorInicial`
+// las convierte en "bistec", "carne" y "pollo", que es lo que el cliente dijo
+// y lo que el catálogo sabe resolver.
+await t('H1. "con pollo" entra como "pollo" y no como una acusación', () => {
+  const r = depurarMenciones([{ texto_fuente: 'con pollo', tipo: 'atributo' }],
+    'chilaquiles sencillos con pollo');
+  assert.deepStrictEqual(r.atributos, ['pollo'],
+    'el conector viaja DENTRO del span y esquiva las tres barreras');
+  assert.strictEqual(r.descartadas.length, 0, 'y tampoco se pierde por el camino');
+});
+
+await t('H2. las tres variantes reales de producción quedan limpias', () => {
+  const casos = [
+    ['con pollo', 'chilaquiles sencillos con pollo', 'pollo'],
+    ['con carne', 'unos chilaquiles con carne', 'carne'],
+    ['con bistec', 'desayuno sorpresa con bistec', 'bistec'],
+    ['de mango', 'un licuado de mango', 'mango'],
+  ];
+  for (const [span, texto, esperado] of casos) {
+    const r = depurarMenciones([{ texto_fuente: span, tipo: 'atributo' }], texto);
+    assert.deepStrictEqual(r.atributos, [esperado], `"${span}" → esperaba ["${esperado}"]`);
+  }
+});
+
+await t('H3. y "con pollo" SÍ resuelve la proteína, no solo deja de acusar', async () => {
+  // Quitar la acusación no basta: la selección del cliente tiene que llegar.
+  // Contra el producto que SÍ tiene esa proteína: 'Combito de Chilaquiles'.
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'un combito de chilaquiles con pollo', menciones: ['pollo'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i, `"pollo" es una proteína real de ese platillo — ${msg}`);
+});
+
+await t('H4. lo que lleva el conector DENTRO no se toca', () => {
+  // "Frijolitos con chorizo" y "Miel y Mantequilla" son nombres de catálogo.
+  // Solo cuenta la PRIMERA palabra.
+  for (const intacto of ['Frijolitos con chorizo', 'Miel y Mantequilla', 'Queso panela en salsa']) {
+    assert.strictEqual(sinConectorInicial(intacto), intacto, `"${intacto}" no se puede recortar`);
+  }
+  assert.strictEqual(sinConectorInicial('de'), 'de', 'un conector suelto no se come a sí mismo');
+});
+
+await t('H5. un invento con conector sigue pudiendo negarse, ya sin la preposición', () => {
+  // La honestidad se conserva: si el cliente pide algo que no existe, el bot
+  // puede decirlo. Lo que cambia es que cita lo que el cliente dijo de verdad.
+  const r = depurarMenciones([{ texto_fuente: 'con unicornio', tipo: 'atributo' }],
+    'unos chilaquiles con unicornio');
+  assert.deepStrictEqual(r.atributos, ['unicornio'],
+    'negar "unicornio" es honesto; negar "con unicornio" es un error de lectura');
+});
+
+// ═══ LA RESPUESTA A UNA PREGUNTA DE LOGÍSTICA NO ACUSA ═════════════════════
+//
+// Incidente ***9939, Obispado, 2026-09-08 20:54:
+//
+//   20:53:27  bot      "¿A qué dirección te lo enviamos? Necesito calle,
+//                       número y colonia."
+//   20:53:53  clienta  "Nogal 900 acoros ai"
+//   20:54:05  bot      'Una disculpa: no manejamos "900" y "acoros" en Waffles.'
+//   20:54:23  HUMANO   entra a rescatar
+//
+// El backend había preguntado la dirección y la consumió bien. Pero después
+// mandó ESE MISMO texto al comparador de catálogo, porque el pedido ya tenía
+// artículos. Las barreras del módulo son posicionales y léxicas; una
+// dirección las cumple sin esfuerzo. Y `tieneRespaldo("900", ...)` es TRUE
+// porque la clienta escribió "900": ese guard comprueba autoría, no
+// pertinencia.
+await t('I1. la dirección no puede producir "no manejamos"', async () => {
+  const SID = 'neg-direccion'; deleteSession(SID);
+  // Turno 1: pide el platillo y elige domicilio. El backend queda esperando
+  // la dirección.
+  mock.encolarRespuesta('Claro.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1,
+      modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')] }],
+    modalidad: 'entrega a domicilio', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  await procesarMensaje(SID, 'Un combito suizo con pollo a domicilio, efectivo, a nombre de Ana',
+    null, 'whatsapp', NEG, '5210000000091');
+
+  // Turno 2: contesta la dirección. El extractor la lee como si fueran
+  // atributos del menú — que es justo lo que pasó en producción.
+  mock.encolarRespuesta('Perfecto.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1,
+      modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')] }],
+    modalidad: 'entrega a domicilio', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } }) + '</PEDIDO_BORRADOR>');
+  // Así lo clasificó el extractor en producción: 'Nogal' parece un nombre de
+  // producto, se vuelve ANCLA, y '900' y 'acoros' se encadenan a ella como
+  // atributos. Encadenados ya pueden acusar.
+  mock.encolarRespuesta(JSON.stringify({ menciones: [
+    { tipo: 'producto', texto_fuente: 'Nogal' },
+    { tipo: 'atributo', texto_fuente: '900' },
+    { tipo: 'atributo', texto_fuente: 'acoros' }] }));
+  const r = await procesarMensaje(SID, 'Nogal 900 acoros ai', null, 'whatsapp', NEG, '5210000000091');
+
+  assert.doesNotMatch(r.texto, /no manejamos/i,
+    `una dirección no es una selección del menú — ${r.texto}`);
+  assert.doesNotMatch(r.texto, /900|acoros/i,
+    `no puede citar trozos de la dirección como si fueran platillos — ${r.texto}`);
+});
+
+await t('I2. y la dirección SÍ se guarda: el turno no se pierde', async () => {
+  const d = datosDelPedido('neg-direccion') || {};
+  assert.match(String(d.direccion || ''), /Nogal/i,
+    `el dato que se preguntó tiene que quedar registrado — ${JSON.stringify(d)}`);
 });
 
 mock.detener();
