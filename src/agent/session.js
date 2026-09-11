@@ -10,8 +10,53 @@ export function getSession(sessionId) {
   return sessions.get(sessionId);
 }
 
+// Quien necesite enterarse de que una sesión se borró se registra aquí.
+//
+// Existe por un defecto concreto: desde que el pedido es durable
+// (`sesionDurable.js`), borrar SOLO la memoria dejaba la fila en la base, y
+// esa fila resucitaba el carrito viejo en el siguiente mensaje. Peor que no
+// haber persistido nada.
+//
+// Se resuelve con un aviso y no pidiéndole a cada llamador que recuerde
+// borrar las dos copias: `server.js` tiene dos endpoints que llaman a
+// `deleteSession` y ninguno tenía por qué saber de durabilidad. Una API que
+// se puede usar mal se usa mal.
+//
+// El aviso no puede tumbar el borrado: si un oyente falla, la sesión se
+// borra igual de la memoria.
+const oyentesDeBorrado = [];
+export function registrarAlBorrarSesion(cb) {
+  if (typeof cb === 'function') oyentesDeBorrado.push(cb);
+}
+
 export function deleteSession(sessionId) {
   sessions.delete(sessionId);
+  for (const cb of oyentesDeBorrado) {
+    try { cb(sessionId); } catch (e) { console.error('[Sesion] oyente de borrado fallido:', e.message); }
+  }
+}
+
+/**
+ * Saca la conversación de la MEMORIA sin olvidarla.
+ *
+ * No es lo mismo que `deleteSession`, y la diferencia importa desde que el
+ * pedido es durable:
+ *
+ *   deleteSession        el cliente/operador da la conversación por
+ *                        terminada. Se borran las DOS copias.
+ *   desalojarDeMemoria   solo se libera la memoria. La copia durable sigue,
+ *                        y el siguiente mensaje la recupera.
+ *
+ * Hace falta porque el `Map` crece sin límite: hoy guarda todas las
+ * conversaciones que ha visto el proceso desde que arrancó. Desalojar una
+ * vieja ya no pierde nada -- antes sí, y por eso no existía.
+ *
+ * Es también lo que le pasa al proceso cuando se reinicia: la memoria se va,
+ * la base se queda. Por eso las pruebas de durabilidad lo usan para imitar
+ * un reinicio sin inventarse un mecanismo aparte.
+ */
+export function desalojarDeMemoria(sessionId) {
+  return sessions.delete(sessionId);
 }
 
 export function getAllSessions() {
