@@ -83,8 +83,10 @@ mostrar "Registrar pago"** en 15 s.
   de folios de la hoja de ruta SÍ aplica: usa la secuencia global `XAB-NNNN`,
   no el folio derivado del UUID. Necesita identificador local y reconciliación
   propia.
-- **Reintentos cuando el WebSocket sigue vivo y la nube falla.** Hoy el bucle
-  hace 4 intentos y solo vuelve a arrancar al reconectar. Hueco real.
+- ~~Reintentos cuando el WebSocket sigue vivo y la nube falla.~~ **HECHO**
+  (`bc64cb4`): al agotarse los intentos rápidos con cola pendiente y enlace
+  vivo se programa uno nuevo con espera creciente, 30 s → 5 min. No se
+  reprograma sin conexión ni ante un conflicto.
 - **Informes de reconciliación persistidos y su pantalla.** Solo existe el
   evento `sala_sincronizada` por WebSocket, que no sobrevive a una recarga.
 - **Barrido completo de archivos servidos por el Edge** sin la nube.
