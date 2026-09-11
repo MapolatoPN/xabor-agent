@@ -19,7 +19,7 @@ import {
 } from './tiendaOnline.js';
 import {
   cotizarCarrito, crearPedidoTienda, seguimientoPublico,
-  pagoDeCheckout, estadoPagoDeCheckout,
+  pagoDeCheckout, estadoPagoDeCheckout, LIMITE_DIAS_PROGRAMADO,
 } from './tiendaCheckout.js';
 import {
   listarPromociones, guardarPromocion, eliminarPromocion, listarCampanas,
@@ -87,6 +87,13 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         modalidades: tienda.modalidades,
         aceptaProgramados: tienda.aceptaProgramados,
         anticipacionMinutos: tienda.anticipacionMinutos,
+        // Lo que el selector de fecha necesita para ofrecer SOLO lo que el
+        // negocio puede servir, en vez de dejar que el cliente elija a ciegas
+        // y se entere al final del checkout: su zona, sus horarios y hasta
+        // cuándo se puede programar.
+        timezone: reglas.timezone,
+        limiteDiasProgramado: LIMITE_DIAS_PROGRAMADO,
+        horarios: reglas.horarios || {},
         entrega: {
           costoBase: reglas.costoEnvioBase,
           pedidoMinimo: reglas.pedidoMinimo,

@@ -101,6 +101,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { esZonaValida, zonasDisponibles, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
   listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
@@ -4831,6 +4832,22 @@ app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   res.json(cfgOperativa);
 });
 
+// Catálogo de zonas horarias para el selector de Config. Se filtra por lo que
+// ESTE runtime reconoce: `America/Ciudad_Juarez` solo existe desde tzdata
+// 2022g, así que una imagen vieja no debe ofrecer una zona que luego no podrá
+// resolver. `actual` es lo que hoy usa el negocio (el default si nunca se
+// guardó), para que el panel no tenga que adivinarlo.
+app.get('/api/config/zonas-horarias', resolverNegocioSeguro('admin'), async (req, res) => {
+  const cfg = await obtenerConfiguracion(req.negocioId);
+  const guardada = String(cfg?.timezone || '').trim();
+  res.json({
+    grupos: zonasDisponibles(),
+    actual: esZonaValida(guardada) ? guardada : TZ_PROYECTO,
+    pordefecto: TZ_PROYECTO,
+    guardada: guardada || null,
+  });
+});
+
 // reglas_atencion llega del panel como objeto JS (Fase 2/4) -- se valida
 // con la MISMA función que usa prompts.js para decidir si confía en un
 // JSON guardado (validarEstructuraReglas), así que nunca se guarda algo
@@ -4847,6 +4864,16 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
       return res.status(400).json({ error: 'reglas_atencion no tiene la estructura esperada (horarios de los 7 días, pedidos.costo_envio, pedidos.pedido_minimo_entrega como número, cierres_especiales/promociones/politicas como arreglos)' });
     }
     cambios.reglas_atencion = JSON.stringify(reglas);
+  }
+  // La zona horaria se valida contra ICU, no contra una lista nuestra: una
+  // zona inventada no truena al guardarse sino mucho después, dentro de
+  // `Intl`, con la tienda ya en la calle. Falla cerrado aquí.
+  if ('timezone' in cambios) {
+    const tz = String(cambios.timezone || '').trim();
+    if (!esZonaValida(tz)) {
+      return res.status(400).json({ error: `Zona horaria desconocida: "${tz}"` });
+    }
+    cambios.timezone = tz;
   }
   const ok = await actualizarConfiguracion(cambios, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
