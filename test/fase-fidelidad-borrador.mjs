@@ -470,6 +470,24 @@ await t('C4. brain.js cierra el ciclo en TODOS los caminos que registran', async
     'confirmación desde snapshot y registro directo deben cerrar el ciclo');
 });
 
+await t('fallo del catálogo no deja salir promesas libres ni un pedido', async () => {
+  deleteSession('fallo-catalogo');
+  mock.encolarRespuesta(borradorLLM([]).replace('Con gusto.', 'Sí, tenemos todo y cuesta $1.'));
+  mock.encolarRespuesta(menciones(producto('bebida preparada'), atributo('omega')));
+  const query = pool.query;
+  pool.query = function(sql, ...args) {
+    if (String(sql).includes('p.descripcion')) throw new Error('catálogo inaccesible simulado');
+    return query.call(this, sql, ...args);
+  };
+  try {
+    const r = await turno('fallo-catalogo', 'quiero una bebida preparada de omega');
+    assert.match(r.texto, /no pude verificar/i);
+    assert.doesNotMatch(r.texto, /tenemos todo|cuesta \$1/i);
+    assert.equal(r.orden, null);
+    assert.equal(r.escalar, true);
+  } finally { pool.query = query; }
+});
+
 // ── Resumen ────────────────────────────────────────────────────────────────
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);

@@ -677,7 +677,7 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
                   }
                 }
               }
-            } catch (e) { console.error('[brain] fase de pedido determinista:', e.message); }
+            } catch (e) { throw e; }
           }
           if (!rc.ok) {
             const msg = mensajeBorradorParaCliente(rc);
@@ -700,8 +700,13 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           }
         }
       } catch (e) {
-        // Nunca tumba el turno: ante un fallo aquí el flujo sigue como antes.
+        // Sin validación no se permite continuar con promesas del modelo ni
+        // con un preview antiguo. El borrador permanece para poder recuperarlo.
         console.error('[brain] validación conversacional de catálogo:', e.message);
+        marcarPreviewNoConfirmable(sessionId);
+        const textoSeguro = 'No pude verificar tu pedido con el menú en este momento. Tu pedido aún no está confirmado; por favor intenta de nuevo o pide apoyo al personal.';
+        reemplazarUltimoMensajeAsistente(sessionId, textoSeguro);
+        return { texto: textoSeguro, orden: null, factura: null, escalar: true, enviarMenu: false, sessionId };
       }
     }
 

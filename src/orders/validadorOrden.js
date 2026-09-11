@@ -23,6 +23,7 @@ import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from 
 import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
+import { componenteIncluido } from '../agent/componentesIncluidos.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -119,7 +120,7 @@ async function cargarCatalogo(negocioId) {
   // SIEMPRE filtrado por negocio_id (Invariante 6): el catálogo de otro
   // tenant simplemente no existe desde aquí.
   const { rows } = await pool.query(
-    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa
+    `SELECT p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa
      FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
      WHERE p.negocio_id = $1`,
     [negocioId]);
@@ -290,6 +291,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   // puede volverse inválida porque el artículo actual no la reconozca.
   const mencionesNoResueltas = [];
   const mencionesAmbiguas = [];
+  const mencionesPorAclarar = [];
   if (conFidelidad) {
     const representadaEn = (e, span) => [
       e.producto.nombre, e.notas,
@@ -307,6 +309,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
     // llevan un conector dentro —"Frijolitos con chorizo", "Miel y Mantequilla"—
     // y esas resuelven enteras aquí, así que nunca se parten.
     const puedeResolverse = (span) => estados.some((e) => representadaEn(e, span))
+      || estados.some((e) => componenteIncluido(e.producto, span))
       || estados.some((e) => {
         const r = resolverModificadoresLLM(e.grupos, [span]);
         if (r.modificadores.length || r.ambiguos.length) return true;
@@ -360,6 +363,20 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // aparece como faltante, que es la pregunta que el cliente SÍ puede
         // contestar. Fail-closed, sin callejón sin salida.
       } else if (!soloResuelve) {
+        // La ausencia en un grupo no demuestra que el producto no lo incluya.
+        // Las opciones reales se resolvieron antes: nunca usar una descripción
+        // para borrar una selección, su precio o la cardinalidad requerida.
+        const incluidos = estados.filter(e => componenteIncluido(e.producto, span));
+        if (incluidos.length) {
+          const todos = new Set(estados.map(e => e.producto.id));
+          const respaldados = new Set(incluidos.map(e => e.producto.id));
+          if (respaldados.size !== todos.size) {
+            // Sin asociación inequívoca al artículo, preguntar; no prestar el
+            // ingrediente del hotcake a un waffle que no lo tiene descrito.
+            mencionesPorAclarar.push({ texto: span, incluidoEn: [...new Set(incluidos.map(e => e.producto.nombre))] });
+          }
+          continue;
+        }
         // 5) Ningún artículo la representa ni la resuelve: el negocio no la maneja.
         // Solo las menciones EN POSICIÓN de atributo llegan aquí; una respuesta
         // directa que no casó con nada se descarta en silencio.
@@ -372,6 +389,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   }
   salida.mencionesNoResueltas = mencionesNoResueltas;
   salida.mencionesAmbiguas = mencionesAmbiguas;
+  if (mencionesPorAclarar.length) { salida.mencionesPorAclarar = mencionesPorAclarar; salida.ok = false; }
   if (mencionesNoResueltas.length || mencionesAmbiguas.length) salida.ok = false;
 
   // ── PASE 3: cardinalidad, ya con las menciones repartidas ───────────────
@@ -508,10 +526,12 @@ export function mensajeBorradorParaCliente(resultado) {
     // pregunta UNA vez por cada cosa que falta, no una por artículo.
     const vistas = new Set();
     const partes = [];
+    const variosProductos = new Set(falt.map(f => f.producto)).size > 1;
     for (const f of falt) {
       const g = String(f.grupo).toLowerCase();
       const alts = f.alternativas?.length ? ` (${listar(f.alternativas)})` : '';
-      const frase = f.minimo > 1 ? `${f.minimo} opciones de ${g}${alts}` : `${g}${alts}`;
+      const producto = variosProductos ? ` para ${f.producto}` : '';
+      const frase = f.minimo > 1 ? `${f.minimo} opciones de ${g}${producto}${alts}` : `${g}${producto}${alts}`;
       if (vistas.has(frase)) continue;
       vistas.add(frase);
       partes.push(frase);
@@ -582,6 +602,10 @@ export function mensajeBorradorParaCliente(resultado) {
   }
 
   // 1b) MENCIÓN QUE ENCAJA EN VARIOS ARTÍCULOS — se pregunta a cuál va.
+  if (resultado?.mencionesPorAclarar?.length) {
+    const m = resultado.mencionesPorAclarar[0];
+    return `El menú de ${listar(m.incluidoEn)} ya contempla "${m.texto}". ¿A qué platillo te refieres?`;
+  }
   // Con dos artículos que aceptan lo mismo, elegir por orden sería inventar.
   const ambig = resultado?.mencionesAmbiguas || [];
   if (ambig.length) {
