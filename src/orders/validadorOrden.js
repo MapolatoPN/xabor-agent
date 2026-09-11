@@ -24,6 +24,7 @@ import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
+import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
 const NOTAS_MAX = 300;
@@ -934,7 +935,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       })),
       costoEnvio, modalidad: esDomicilio ? 'domicilio' : 'recoger',
       canal: canalPromo, telefono: orden?.cliente?.telefono || null,
-      timezone: reglas?.timezone || 'America/Matamoros',
+      timezone: reglas?.timezone || TZ_DEFAULT,
     });
     // El motor puede otorgar envío gratis, pero el envío ya lo resuelve la
     // lógica de reglas de arriba; aquí SOLO se toma el descuento de producto.

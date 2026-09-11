@@ -6920,6 +6920,31 @@ async function cargarReglasForm() {
   reglasActuales = reglas;
   zonasEntregaTmp = Array.isArray(reglas.pedidos?.zonas_entrega) ? [...reglas.pedidos.zonas_entrega] : [];
   renderReglasForm(reglas);
+  cargarZonasHorarias();
+}
+
+// El catálogo lo manda el servidor filtrado por lo que SU runtime reconoce:
+// no se ofrece aquí una zona que allá no se pueda resolver. Si la petición
+// falla, el selector queda deshabilitado con la zona vigente a la vista --
+// nunca en blanco, que invitaría a guardar un valor vacío.
+async function cargarZonasHorarias() {
+  const sel = document.getElementById('reg-timezone');
+  if (!sel) return;
+  try {
+    const r = await apiFetch('/api/config/zonas-horarias');
+    if (!r.ok) throw new Error('no disponible');
+    const d = await r.json();
+    sel.innerHTML = d.grupos.map(g => `<optgroup label="${g.grupo}">` +
+      g.zonas.map(z => `<option value="${z.zona}" ${z.zona === d.actual ? 'selected' : ''}>${z.lugares} — ${z.invierno}${z.verano !== z.invierno ? ' / ' + z.verano + ' en verano' : ''}</option>`).join('') +
+      '</optgroup>').join('');
+    if (!d.guardada) {
+      sel.insertAdjacentHTML('afterend',
+        `<div id="reg-tz-aviso" style="font-size:0.75rem;color:#b45309;margin:-6px 0 12px;">Todavía no has elegido zona: se está usando ${d.pordefecto} por defecto.</div>`);
+    }
+  } catch {
+    sel.innerHTML = '<option>No se pudo cargar el catálogo de zonas</option>';
+    sel.disabled = true;
+  }
 }
 
 function renderReglasForm(reglas) {
@@ -6952,7 +6977,11 @@ function renderReglasForm(reglas) {
   const numInput = (id, val) => `<input type="number" id="${id}" value="${val ?? ''}" style="${inp()}">`;
 
   document.getElementById('reglas-form').innerHTML = `
-    <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">Horarios</div>
+    <div style="font-weight:700;font-size:0.85rem;margin-bottom:4px;">Zona horaria</div>
+    <div style="font-size:0.75rem;color:#888;margin-bottom:8px;">Es la que le da sentido a los horarios de abajo: con ella se decide a qué hora abres, cuándo corta la caja y para cuándo queda un pedido programado. Si tu negocio es de frontera, elígela del primer grupo — esas cambian de horario con Estados Unidos y las demás no.</div>
+    <select id="reg-timezone" style="${inp()}"><option>Cargando zonas…</option></select>
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Horarios</div>
     ${horariosHtml}
 
     <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Operación</div>
@@ -7049,7 +7078,14 @@ async function guardarReglas() {
   const fbs = [document.getElementById('reglas-feedback'), document.getElementById('reglas-pagos-fb')].filter(Boolean);
   const setFb = (color, txt) => fbs.forEach(el => { el.style.color = color; el.textContent = txt; });
   setFb('#aaa', 'Guardando...');
-  const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify({ reglas_atencion: nuevasReglas }) });
+  // La zona viaja en el MISMO guardado que los horarios a propósito: son la
+  // misma decisión, y separarlas deja al negocio con horarios que significan
+  // otra cosa. El selector puede no existir (este guardado también se dispara
+  // desde Config -> Pagos), y entonces la zona sencillamente no se toca.
+  const tzSel = document.getElementById('reg-timezone');
+  const cuerpo = { reglas_atencion: nuevasReglas };
+  if (tzSel && !tzSel.disabled && (tzSel.value || '').includes('/')) cuerpo.timezone = tzSel.value;
+  const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify(cuerpo) });
   const body = await r.json().catch(() => ({}));
   if (r.ok) {
     reglasActuales = nuevasReglas;

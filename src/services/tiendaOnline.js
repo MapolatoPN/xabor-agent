@@ -14,12 +14,13 @@
 //     que ya usan POS y bot; la tienda LEE, no redefine)
 import { pool } from './database.js';
 import { urlImagenProducto } from './imagenesProducto.js';
+import { TZ_DEFAULT as TZ_PROYECTO } from './zonaHoraria.js';
 
-// Zona horaria: hoy el modelo de negocios no tiene columna de timezone (deuda
-// conocida). En vez de esparcir un literal por el código, se resuelve por
-// negocio desde `configuracion.timezone` si existe y, si no, se cae a este
-// default explícito. Cuando exista negocios.timezone, se cambia SOLO aquí.
-const TZ_DEFAULT = process.env.XABOR_TZ_DEFAULT || 'America/Matamoros';
+// Zona horaria: se resuelve por negocio desde `configuracion.timezone`, que
+// ya se elige desde Config en el panel. Si un negocio todavía no la tiene
+// guardada se cae a la del proyecto, que vive en `zonaHoraria.js` -- el
+// literal no se repite aquí a propósito.
+const TZ_DEFAULT = process.env.XABOR_TZ_DEFAULT || TZ_PROYECTO;
 
 export class TiendaError extends Error {
   constructor(mensaje, codigo, status = 400) {

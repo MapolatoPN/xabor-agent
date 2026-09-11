@@ -25,6 +25,7 @@ import {
   calcularPromociones, registrarUsosPromociones,
   reservarUsosPromociones, liberarUsosPromociones,
 } from './tiendaPromociones.js';
+import { instanteDesdeEntrada } from './zonaHoraria.js';
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const tokenOpaco = () => randomBytes(24).toString('hex'); // 192 bits: no enumerable
@@ -61,13 +62,25 @@ export function resolverEnvio(reglas, zonaNombre) {
 // ── Programación ──────────────────────────────────────────────────────────
 // El navegador puede mandar cualquier fecha: aquí se valida contra el
 // horario real del negocio, la anticipación mínima y la ventana permitida.
+//
+// La fecha se resuelve SIEMPRE en la zona del negocio, nunca en la del
+// proceso. El campo del checkout es un `<input type="datetime-local">`, que
+// manda texto sin zona ("2026-09-15T20:00"); antes eso caía en `new Date()`
+// y se interpretaba en la zona del contenedor, que corre en UTC porque el
+// Dockerfile no fija `TZ`. El cliente pedía las 8 de la noche y el pedido se
+// agendaba para las 3 de la tarde -- y la comprobación de horario de abajo
+// evaluaba esa hora equivocada, así que además rechazaba horas perfectamente
+// válidas. Una fecha que SÍ trae zona (un ISO con `Z` u offset, como el que
+// mandan las suites y cualquier cliente de API) se sigue respetando tal cual.
+export const LIMITE_DIAS_PROGRAMADO = 14;
+
 export function validarProgramacion({ tienda, reglas, programadoPara, ahora = new Date() }) {
   if (!programadoPara) return { programado: false, para: null };
   if (!tienda.aceptaProgramados) {
     throw new TiendaError('Esta tienda no acepta pedidos programados', 'PROGRAMADOS_NO_DISPONIBLES');
   }
-  const fecha = new Date(programadoPara);
-  if (Number.isNaN(fecha.getTime())) throw new TiendaError('Fecha inválida', 'FECHA_INVALIDA');
+  const fecha = instanteDesdeEntrada(programadoPara, reglas.timezone);
+  if (!fecha || Number.isNaN(fecha.getTime())) throw new TiendaError('Fecha inválida', 'FECHA_INVALIDA');
 
   const minMs = (tienda.anticipacionMinutos || 30) * 60000;
   if (fecha.getTime() - ahora.getTime() < minMs) {
@@ -75,7 +88,7 @@ export function validarProgramacion({ tienda, reglas, programadoPara, ahora = ne
       `Los pedidos programados requieren al menos ${tienda.anticipacionMinutos} minutos de anticipación`,
       'ANTICIPACION_INSUFICIENTE');
   }
-  const LIMITE_DIAS = 14;
+  const LIMITE_DIAS = LIMITE_DIAS_PROGRAMADO;
   if (fecha.getTime() - ahora.getTime() > LIMITE_DIAS * 86400000) {
     throw new TiendaError(`Solo se puede programar con ${LIMITE_DIAS} días de anticipación`, 'FECHA_LEJANA');
   }

@@ -1,4 +1,5 @@
 import { pool } from './database.js';
+import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 
 export class CompraOperativaError extends Error {
   constructor(message, codigo = 'COMPRA_INVALIDA', status = 400) {
@@ -52,9 +53,8 @@ export async function compraBloqueada(db, negocioId, id) {
 }
 export async function hoyNegocio(db, negocioId, now = new Date()) {
   const { rows } = await db.query("SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='timezone' LIMIT 1", [negocioId]);
-  let tz = rows[0]?.valor || 'America/Matamoros';
-  try { new Intl.DateTimeFormat('en', { timeZone: tz }).format(now); }
-  catch { tz = 'America/Matamoros'; }
+  let tz = rows[0]?.valor || TZ_DEFAULT;
+  if (!esZonaValida(tz)) tz = TZ_DEFAULT;
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(now).map(p=>[p.type,p.value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
 }

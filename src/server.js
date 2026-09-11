@@ -101,6 +101,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
   listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
@@ -3727,18 +3728,14 @@ app.get('/api/historial', requireAuthSeguro, requireModulo('pos'), async (req, r
 });
 
 // POS — Ventas (solo admin)
-// Medianoche en hora de México (Matamoros) — el servidor corre en UTC
-function inicioDelDiaMX() {
-  const ahora = new Date();
-  const mxDate = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Matamoros' }));
-  const offsetMs = ahora - mxDate; // diferencia UTC vs hora MX
-  mxDate.setHours(0, 0, 0, 0);    // medianoche en tiempo MX
-  return new Date(mxDate.getTime() + offsetMs); // convertir a UTC real
-}
+// Medianoche del día operativo EN LA ZONA DEL NEGOCIO. El contenedor corre en
+// UTC, así que esto no puede salir del reloj del proceso: sale de la zona que
+// el negocio eligió en Config -> Operación.
+const inicioDelDiaDelNegocio = (tz) => inicioDelDiaEn(tz);
 
 app.get('/api/ventas', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   const { desde, hasta } = req.query;
-  const d = desde || inicioDelDiaMX().toISOString();
+  const d = desde || inicioDelDiaDelNegocio(await zonaHorariaNegocio(req.negocioId)).toISOString();
   const h = hasta || new Date().toISOString();
   const ventas = await obtenerVentas(d, h, req.negocioId);
   res.json(ventas);
@@ -3746,16 +3743,15 @@ app.get('/api/ventas', requireAdminSeguro, requireModulo('pos'), async (req, res
 
 app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   const { desde, hasta } = req.query;
-  const d = desde || inicioDelDiaMX().toISOString();
+  const d = desde || inicioDelDiaDelNegocio(await zonaHorariaNegocio(req.negocioId)).toISOString();
   const h = hasta || new Date().toISOString();
   const resumen = await obtenerResumenVentas(d, h, req.negocioId);
   res.json(resumen);
 });
 
 // ─── Fondo de caja ────────────────────────────────────────────────────────────
-function fechaHoyMX() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros' }).format(new Date());
-}
+// El día operativo lo resuelve fechaOperativaHoy(tz) de cortesCaja.js, que ya
+// era por negocio: aquí no había que inventar una segunda versión.
 
 app.post('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
   const { monto } = req.body;
@@ -4856,6 +4852,22 @@ app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   res.json(cfgOperativa);
 });
 
+// Catálogo de zonas horarias para el selector de Config. Se filtra por lo que
+// ESTE runtime reconoce: `America/Ciudad_Juarez` solo existe desde tzdata
+// 2022g, así que una imagen vieja no debe ofrecer una zona que luego no podrá
+// resolver. `actual` es lo que hoy usa el negocio (el default si nunca se
+// guardó), para que el panel no tenga que adivinarlo.
+app.get('/api/config/zonas-horarias', resolverNegocioSeguro('admin'), async (req, res) => {
+  const cfg = await obtenerConfiguracion(req.negocioId);
+  const guardada = String(cfg?.timezone || '').trim();
+  res.json({
+    grupos: zonasDisponibles(),
+    actual: esZonaValida(guardada) ? guardada : TZ_PROYECTO,
+    pordefecto: TZ_PROYECTO,
+    guardada: guardada || null,
+  });
+});
+
 // reglas_atencion llega del panel como objeto JS (Fase 2/4) -- se valida
 // con la MISMA función que usa prompts.js para decidir si confía en un
 // JSON guardado (validarEstructuraReglas), así que nunca se guarda algo
@@ -4872,6 +4884,17 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
       return res.status(400).json({ error: 'reglas_atencion no tiene la estructura esperada (horarios de los 7 días, pedidos.costo_envio, pedidos.pedido_minimo_entrega como número, cierres_especiales/promociones/politicas como arreglos)' });
     }
     cambios.reglas_atencion = JSON.stringify(reglas);
+  }
+  // La zona horaria se valida contra ICU, no contra una lista nuestra: una
+  // zona inventada no truena al guardarse sino mucho después, dentro de
+  // `Intl`, con la tienda ya en la calle. Falla cerrado aquí.
+  if ('timezone' in cambios) {
+    const tz = String(cambios.timezone || '').trim();
+    if (!esZonaValida(tz)) {
+      return res.status(400).json({ error: `Zona horaria desconocida: "${tz}"` });
+    }
+    cambios.timezone = tz;
+    console.log(`[Zona] negocio=${req.negocioId} zona=${tz} por usuario=${req.usuarioId || 'legado'}`);
   }
   const ok = await actualizarConfiguracion(cambios, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
@@ -7583,7 +7606,7 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, requireModulo('pos
   }
   try {
     const periodo = req.query.periodo || 'hoy'; // hoy | ayer | antier | semana
-    const tz = 'America/Matamoros';
+    const tz = await zonaHorariaNegocio(req.negocioId);
     let whereDate;
     // created_at es TIMESTAMP WITHOUT TIME ZONE almacenado en UTC.
     // Conversión correcta: marcar como UTC primero, luego convertir a Matamoros.
@@ -7742,10 +7765,11 @@ app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, requireModulo('pos
            datos->>'modalidad' AS modalidad,
            datos->>'repartidor_id' AS repartidor_id,
            datos->>'repartidor_nombre' AS repartidor_nombre,
-           DATE(created_at AT TIME ZONE 'America/Matamoros') AS fecha_mx,
-           (NOW() AT TIME ZONE 'America/Matamoros')::date AS hoy_mx
+           DATE(created_at AT TIME ZONE $3) AS fecha_mx,
+           (NOW() AT TIME ZONE $3)::date AS hoy_mx
     FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2
-  `, [req.params.folio, req.negocioId]).catch(e => ({ rows: [], error: e.message }));
+  `, [req.params.folio, req.negocioId, await zonaHorariaNegocio(req.negocioId)])
+    .catch(e => ({ rows: [], error: e.message }));
   if (!rows[0]) return res.status(404).json({ error: 'no encontrado' });
   res.json(rows[0]);
 });
@@ -8367,16 +8391,15 @@ app.get('/api/llamadas/:callSid', requireAuthSeguro, requireModulo('voz'), async
 // ─── Job: Reporte diario WhatsApp a las 22:01 (America/Matamoros) ────────────
 const WHATSAPP_ADMIN_NUMERO = process.env.WHATSAPP_ADMIN_NUMERO || '';
 
-function inicioDelDiaTexto(fechaISO) {
-  // Devuelve medianoche CST del mismo día como ISO
-  const d = new Date(fechaISO);
-  const partes = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Matamoros', year:'numeric', month:'2-digit', day:'2-digit'
-  }).formatToParts(d);
-  const y = partes.find(p=>p.type==='year').value;
-  const m = partes.find(p=>p.type==='month').value;
-  const day = partes.find(p=>p.type==='day').value;
-  return new Date(`${y}-${m}-${day}T06:00:00.000Z`).toISOString(); // UTC-6 midnight ≈ 06:00Z
+// Medianoche del día operativo, en la zona del negocio.
+//
+// Antes esto devolvía `T06:00:00.000Z` fijo, con el comentario "UTC-6
+// midnight ≈ 06:00Z". El "≈" era literal: de marzo a noviembre Matamoros está
+// en UTC-5 y la medianoche local cae a las 05:00Z, así que el reporte abría su
+// ventana una hora tarde y lo vendido entre las 00:00 y la 1:00 se contaba en
+// el día anterior. Ahora sale de la zona, que sabe de horario de verano.
+function inicioDelDiaTexto(fechaISO, tz) {
+  return inicioDelDiaEn(tz, new Date(fechaISO)).toISOString();
 }
 
 // ⚠ LEGADO — job sin contexto de request: no hay req.negocioId disponible.
@@ -8389,12 +8412,13 @@ function inicioDelDiaTexto(fechaISO) {
 async function enviarReporteDiario() {
   if (!WHATSAPP_ADMIN_NUMERO) return;
   const ahora = new Date().toISOString();
-  const inicio = inicioDelDiaTexto(ahora);
   const negocioIdReporte = await resolverNegocioActualPorDefecto();
+  const tzReporte = await zonaHorariaNegocio(negocioIdReporte);
+  const inicio = inicioDelDiaTexto(ahora, tzReporte);
   const [ventas, resumen, fondoReg] = await Promise.all([
     obtenerVentas(inicio, ahora, negocioIdReporte),
     obtenerResumenVentas(inicio, ahora, negocioIdReporte),
-    obtenerFondoCaja(fechaHoyMX(), negocioIdReporte)
+    obtenerFondoCaja(fechaOperativaHoy(tzReporte), negocioIdReporte)
   ]);
   const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   const totalVentas   = parseFloat(resumen?.total_ventas || 0);
@@ -8417,7 +8441,7 @@ async function enviarReporteDiario() {
     `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
   const msg =
 `🧾 *CORTE DE CAJA — XABOR*
-📅 ${new Date().toLocaleDateString('es-MX', { timeZone:'America/Matamoros', dateStyle:'full' })}
+📅 ${new Date().toLocaleDateString('es-MX', { timeZone: tzReporte, dateStyle:'full' })}
 
 💰 Fondo inicial: ${fmtMXN(fondo)}
 🛒 Total ventas: ${fmtMXN(totalVentas)} (${resumen?.num_pedidos || 0} pedidos)
@@ -8443,10 +8467,16 @@ ${bloqueCanal}`;
   }
 }
 
-// Verificar cada minuto si es hora del reporte (22:01 CST)
+// Verificar cada minuto si es hora del reporte (22:01)
+//
+// ⚠ El DISPARO sigue siendo de un solo negocio, y a propósito: el reporte va
+// a un único WHATSAPP_ADMIN_NUMERO (ver la nota de legado arriba). Cambiar
+// solo su zona aquí daría la falsa impresión de que ya es multiempresa. El
+// contenido del reporte SÍ usa la zona del negocio que lo recibe; esta zona
+// es la del proyecto y se queda hasta que el job se rediseñe por negocio.
 setInterval(() => {
   const now = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Matamoros', hour:'2-digit', minute:'2-digit', hour12: false
+    timeZone: TZ_PROYECTO, hour:'2-digit', minute:'2-digit', hour12: false
   }).format(new Date());
   if (now === '22:01') enviarReporteDiario();
   if (now === '02:00') jobDiarioSAT(); // Sync SAT diaria a las 2am CST
@@ -8483,10 +8513,15 @@ setInterval(() => {
 // Lunes–Sábado 11:00–22:00 (America/Matamoros). Corre al inicio y cada 5 min.
 let rappiAbierto = null; // null = estado desconocido al arrancar
 
+// ⚠ LEGADO de un solo negocio: el horario (lunes-sábado 11:00-22:00) está
+// escrito aquí y no sale de reglas_atencion, así que la zona es lo de menos.
+// Se usa la del proyecto hasta que el job se rediseñe por negocio; ponerle una
+// zona configurable a un horario hardcodeado solo daría apariencia de que ya
+// es multiempresa.
 function estaAbiertoAhora() {
   const now = new Date();
   const partes = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Matamoros',
+    timeZone: TZ_PROYECTO,
     hour12: false,
     weekday: 'short',
     hour: '2-digit',
@@ -8505,7 +8540,7 @@ async function sincronizarRappi() {
   try {
     await actualizarEstadoTienda(abierto);
     rappiAbierto = abierto;
-    console.log(`[Rappi] Tienda ${abierto ? 'abierta ✅' : 'cerrada 🔴'} (${new Date().toLocaleString('es-MX', { timeZone: 'America/Matamoros' })})`);
+    console.log(`[Rappi] Tienda ${abierto ? 'abierta ✅' : 'cerrada 🔴'} (${new Date().toLocaleString('es-MX', { timeZone: TZ_PROYECTO })})`);
   } catch (e) {
     console.error('[Rappi] Error al sincronizar estado:', e.message);
   }
@@ -8593,7 +8628,11 @@ async function reconciliarPagosPendientes() {
 
 // ─── Seguimiento WA a oportunidades abandonadas ──────────────────────────────
 async function enviarSeguimientoOportunidades() {
-  const tz = 'America/Matamoros';
+  // ⚠ Este job recorre oportunidades de TODOS los negocios en una sola pasada,
+  // así que no hay un negocio al que preguntarle su zona. Usa la del proyecto.
+  // Para hacerlo por negocio habría que agrupar la consulta por negocio_id,
+  // que es un cambio de forma del job y no de zona horaria.
+  const tz = TZ_PROYECTO;
   try {
     // Teléfonos de repartidores registrados — excluirlos siempre
     const { rows: reps } = await pool.query(`SELECT telefono FROM repartidores WHERE telefono IS NOT NULL`);

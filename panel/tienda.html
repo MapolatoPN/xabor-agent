@@ -207,6 +207,23 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .og-sub{font-size:12.5px;color:var(--texto-2);margin-top:1px}
 .og-marca{margin-left:auto;font-size:17px;color:var(--marca);flex-shrink:0}
 
+/* ── Selector de día y hora (pedidos programados) ── */
+.prog-tit{font-size:12.5px;font-weight:700;color:var(--texto-2);margin:12px 0 7px}
+.dias{display:flex;gap:7px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
+.dia{flex:0 0 auto;min-width:64px;padding:9px 10px;border:1.5px solid var(--borde);
+  border-radius:var(--r-s);background:var(--superficie);text-align:center;transition:.15s}
+.dia.on{border-color:var(--marca);background:var(--marca-suave)}
+.dia:disabled{opacity:.38;pointer-events:none}
+.dia-sem{display:block;font-size:11px;color:var(--texto-2);text-transform:capitalize}
+.dia-num{display:block;font-size:17px;font-weight:700;line-height:1.3}
+.dia-mes{display:block;font-size:10.5px;color:var(--texto-3)}
+.horas{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:7px}
+.hora{padding:10px 4px;border:1.5px solid var(--borde);border-radius:var(--r-s);
+  background:var(--superficie);font-size:13.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;transition:.15s}
+.hora.on{border-color:var(--marca);background:var(--marca-suave)}
+.prog-vacio{font-size:13px;color:var(--texto-2);padding:8px 0 2px}
+
 .cupon-fila{display:flex;gap:8px}
 .cupon-fila input{flex:1;text-transform:uppercase}
 .cupon-fila button{padding:0 18px;border-radius:var(--r-s);background:var(--superficie-2);
@@ -765,7 +782,10 @@ function quitarLinea(i) { CARRITO.splice(i, 1); guardarCarrito(); pintarCarrito(
 const PASOS = ['modalidad', 'cuando', 'datos', 'pago', 'resumen'];
 let paso = 0;
 let CK = { modalidad: null, cuando: 'ahora', programadoPara: null, zona: null, codigo: null,
-           codigoAplicado: null, metodoPago: null, notas: '' };
+           codigoAplicado: null, metodoPago: null, notas: '',
+           // Día y hora elegidos por separado en el selector de programados.
+           // `programadoPara` se deriva de los dos (ver sincronizarProgramado).
+           progDia: null, progHora: null };
 let METODOS = [];
 
 function irAlCheckout() {
@@ -823,20 +843,122 @@ function pasoCuando() {
                  : 'No disponible: la tienda está cerrada',
       puedeAhora && CK.cuando === 'ahora', `elegirCuando('ahora')`, !puedeAhora)}
     ${puedeProgramar ? opcionGrande('📅', 'Programar', `Con al menos ${TIENDA.anticipacionMinutos} min de anticipación`, CK.cuando === 'programado', `elegirCuando('programado')`) : ''}
-    ${CK.cuando === 'programado' ? `<div class="campo" style="padding:6px 0 0">
-      <label for="ck-fecha">Fecha y hora de entrega</label>
-      <input type="datetime-local" id="ck-fecha" value="${esc(CK.programadoPara || '')}" min="${minProgramable()}" onchange="CK.programadoPara=this.value">
-      <div class="ayuda">Confirmaremos que el horario esté dentro del servicio del negocio.</div>
-    </div>` : ''}
+    ${CK.cuando === 'programado' ? selectorProgramado() : ''}
   </div>`;
-  const listo = CK.cuando === 'ahora' ? puedeAhora : !!CK.programadoPara;
+  const listo = CK.cuando === 'ahora' ? puedeAhora : !!(CK.progDia && CK.progHora);
   $('ck-pie').innerHTML = `<button class="btn" ${listo ? '' : 'disabled'} onclick="pasoAdelante()">Continuar</button>`;
 }
-function minProgramable() {
-  const d = new Date(Date.now() + (TIENDA.anticipacionMinutos + 5) * 60000 - new Date().getTimezoneOffset() * 60000);
-  return d.toISOString().slice(0, 16);
+
+// ── Selector de día y hora ────────────────────────────────────────────────
+// TODO se calcula en la zona horaria DEL NEGOCIO (`TIENDA.timezone`), no en
+// la del teléfono: un cliente de visita desde otra zona veía antes horas
+// corridas. Y solo se ofrece lo que el negocio puede servir de verdad -- días
+// cerrados apagados, horas dentro del horario de ese día y por encima de la
+// anticipación mínima. Antes era un `datetime-local` a secas: el cliente
+// elegía a ciegas y se enteraba de que no se podía al final del checkout, con
+// la dirección ya escrita.
+//
+// El valor que viaja al servidor es texto local sin zona ("2026-09-15T20:00")
+// y el servidor lo resuelve en la zona del negocio (ver `desdeHoraLocal` en
+// src/services/zonaHoraria.js). Aquí no se hace aritmética de husos.
+const DIAS_TIENDA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const PASO_MIN = 15;
+const zonaTienda = () => TIENDA.timezone || 'America/Matamoros';
+
+/** Día calendario y minuto del día de un instante, en la zona del negocio. */
+function partesTienda(fecha) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: zonaTienda(), hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(fecha).map(x => [x.type, x.value]));
+  return { iso: `${p.year}-${p.month}-${p.day}`, minutos: (+p.hour) * 60 + (+p.minute) };
 }
-function elegirCuando(v) { CK.cuando = v; if (v === 'ahora') CK.programadoPara = null; pintarPaso(); }
+// Aritmética de días sobre 'YYYY-MM-DD' anclada a mediodía UTC: nunca cruza
+// de día por un cambio de horario.
+const diaSemanaDe = (iso) => new Date(`${iso}T12:00:00Z`).getUTCDay();
+const sumarDias = (iso, n) => new Date(new Date(`${iso}T12:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+const aMinDia = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+const horarioDe = (iso) => (TIENDA.horarios || {})[DIAS_TIENDA[diaSemanaDe(iso)]];
+
+/** Los bloques de hora que ese día admite. Vacío = ese día no se puede. */
+function horasDe(iso) {
+  const h = horarioDe(iso);
+  if (!h || !h.abierto) return [];
+  const ini = aMinDia(h.apertura), fin = aMinDia(h.cierre);
+  if (ini === null || fin === null || fin <= ini) return [];
+  let desde = ini;
+  const hoy = partesTienda(new Date());
+  if (iso === hoy.iso) {
+    // El servidor exige anticipación sobre el instante real; aquí basta
+    // comparar horas de pared porque ambas están en la MISMA zona.
+    desde = Math.max(ini, hoy.minutos + (TIENDA.anticipacionMinutos || 30));
+  }
+  const bloques = [];
+  for (let m = Math.ceil(desde / PASO_MIN) * PASO_MIN; m < fin; m += PASO_MIN) bloques.push(m);
+  return bloques;
+}
+
+/** Los días de la ventana que el servidor acepta, con sus horas ya resueltas. */
+function diasProgramables() {
+  const hoy = partesTienda(new Date()).iso;
+  const ventana = Math.max(1, Number(TIENDA.limiteDiasProgramado) || 14);
+  const dias = [];
+  for (let i = 0; i < ventana; i++) {
+    const iso = sumarDias(hoy, i);
+    dias.push({ iso, horas: horasDe(iso) });
+  }
+  return dias;
+}
+
+function selectorProgramado() {
+  const dias = diasProgramables();
+  const abiertos = dias.filter(d => d.horas.length);
+  if (!abiertos.length) {
+    return `<div class="prog-vacio">No hay horarios disponibles para programar en los próximos
+      ${dias.length} días. Escríbenos y lo coordinamos.</div>`;
+  }
+  // Si el día elegido dejó de servir (pasó el tiempo, o se cambió de opción),
+  // se mueve solo al primero que sí sirve en vez de quedar en un estado muerto.
+  if (!abiertos.some(d => d.iso === CK.progDia)) { CK.progDia = abiertos[0].iso; CK.progHora = null; }
+  const elegido = dias.find(d => d.iso === CK.progDia);
+  if (CK.progHora && !elegido.horas.includes(aMinDia(CK.progHora))) CK.progHora = null;
+  sincronizarProgramado();
+
+  const chipsDia = dias.map(d => {
+    const dow = diaSemanaDe(d.iso);
+    const [, mes, num] = d.iso.split('-');
+    return `<button class="dia${d.iso === CK.progDia ? ' on' : ''}" ${d.horas.length ? '' : 'disabled'}
+      onclick="elegirDia('${d.iso}')" aria-label="${DIAS_TIENDA[dow]} ${+num} de ${MESES_CORTOS[+mes - 1]}">
+      <span class="dia-sem">${d.iso === dias[0].iso ? 'hoy' : DIAS_CORTOS[dow]}</span>
+      <span class="dia-num">${+num}</span>
+      <span class="dia-mes">${MESES_CORTOS[+mes - 1]}</span></button>`;
+  }).join('');
+
+  const chipsHora = elegido.horas.map(m => `<button class="hora${CK.progHora === hhmm(m) ? ' on' : ''}"
+    onclick="elegirHora('${hhmm(m)}')">${hhmm(m)}</button>`).join('');
+
+  return `<div>
+    <div class="prog-tit">¿Qué día?</div>
+    <div class="dias">${chipsDia}</div>
+    <div class="prog-tit">¿A qué hora?</div>
+    <div class="horas">${chipsHora}</div>
+  </div>`;
+}
+
+/** El valor que viaja al servidor sale SIEMPRE de estas dos piezas. */
+function sincronizarProgramado() {
+  CK.programadoPara = (CK.progDia && CK.progHora) ? `${CK.progDia}T${CK.progHora}` : null;
+}
+function elegirDia(iso) { CK.progDia = iso; CK.progHora = null; sincronizarProgramado(); pintarPaso(); }
+function elegirHora(hm) { CK.progHora = hm; sincronizarProgramado(); pintarPaso(); }
+function elegirCuando(v) {
+  CK.cuando = v;
+  if (v === 'ahora') { CK.programadoPara = null; CK.progDia = null; CK.progHora = null; }
+  pintarPaso();
+}
 
 function pasoDatos() {
   $('ck-titulo').textContent = CK.modalidad === 'domicilio' ? 'Tus datos y dirección' : 'Tus datos';
@@ -1002,11 +1124,24 @@ function pintarResumen(c) {
       } <span class="btn-precio">${dinero(c.total)}</span></button>`;
 }
 
-function formatoFecha(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+// El valor programado es hora local DEL NEGOCIO sin zona ("2026-09-15T20:00").
+// Se formatea a partir de sus propias piezas, no con `new Date()`: eso lo
+// interpretaría en la zona del teléfono y le mostraría al cliente una hora
+// distinta de la que acaba de elegir.
+function formatoFecha(valor) {
+  if (!valor) return '';
+  const m = /^(d{4})-(d{2})-(d{2})T(d{2}):(d{2})/.exec(String(valor));
+  if (!m) {
+    const d = new Date(valor);
+    return isNaN(d.getTime()) ? '' : d.toLocaleString('es-MX', { timeZone: zonaTienda(), weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  }
+  const [, Y, Mo, D, H, Mi] = m;
+  const dow = DIAS_TIENDA[diaSemanaDe(`${Y}-${Mo}-${D}`)];
+  const h12 = ((+H % 12) || 12), ampm = (+H) < 12 ? 'a.m.' : 'p.m.';
+  return `${dow} ${+D} de ${MESES_LARGOS[+Mo - 1]}, ${h12}:${Mi} ${ampm}`;
 }
+const MESES_LARGOS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio',
+  'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 function aplicarCupon() { CK.codigo = ($('ck-cupon').value || '').trim().toUpperCase() || null; pasoResumen(); }
 function quitarCupon() { CK.codigo = null; pasoResumen(); }
 

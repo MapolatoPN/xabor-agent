@@ -10,6 +10,7 @@
 // La escritura/oferta real sigue viviendo en whatsapp-meta.js
 // (notificarRepartidoresPorWA) -- este módulo solo decide y configura.
 import { pool } from './database.js';
+import { TZ_DEFAULT } from './zonaHoraria.js';
 
 export const CAMPOS_CONFIG_RED = [
   'red_activa', 'fuentes', 'horario_inicio', 'horario_fin', 'zonas', 'radio_km',
@@ -113,7 +114,7 @@ export function evaluarSolicitudRed(pedido, config, origen = 'auto', ahora = new
     // Horario (huso del negocio -- hoy la plataforma opera en
     // America/Matamoros, mismo criterio que el resto del código de horarios).
     if (config.horario_inicio && config.horario_fin) {
-      const hhmm = ahora.toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Matamoros' });
+      const hhmm = ahora.toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: TZ_DEFAULT });
       const dentro = config.horario_inicio <= config.horario_fin
         ? (hhmm >= config.horario_inicio && hhmm <= config.horario_fin)
         // Horario que cruza medianoche (p. ej. 18:00-02:00).

@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { setPagoPendiente, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
+import { zonaHorariaNegocio } from '../services/cortesCaja.js';
 
 const router = Router();
 
@@ -43,7 +44,10 @@ router.post('/start', async (req, res) => {
   sesiones.set(callSid, { sessionId, fromNum, negocioId });
   console.log(`[Voz] Nueva llamada: ${callSid} desde ${fromNum} — negocio ${negocioId}`);
 
-  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Monterrey', hour: 'numeric', hour12: false }));
+  // Zona del negocio. Antes decía 'America/Monterrey', que desde 2022 ya no
+  // cambia de horario mientras el resto del sistema usaba Matamoros, que sí:
+  // medio año el saludo iba una hora corrido respecto a todo lo demás.
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: await zonaHorariaNegocio(negocioId), hour: 'numeric', hour12: false }));
   const saludo  = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
   const greeting = `Hola, Xabor, ${saludo}, ¿cómo le podemos servir?`;
 

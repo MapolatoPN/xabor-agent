@@ -36,8 +36,12 @@
  *   fecha original. El corte de ayer, si ya está cerrado, no se toca jamás.
  */
 import { pool } from './database.js';
+import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 
-const TZ_POR_DEFECTO = 'America/Matamoros';
+// El literal vive en zonaHoraria.js, que es donde está también el catálogo
+// que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
+// lugares del sistema opinaran distinto sobre la misma zona.
+const TZ_POR_DEFECTO = TZ_DEFAULT;
 
 // Clasificación por naturaleza del dinero, no por nombre comercial. Solo
 // 'efectivo' incrementa el dinero físico de la caja.
@@ -76,7 +80,7 @@ export async function zonaHorariaNegocio(negocioId) {
     if (!tz) return TZ_POR_DEFECTO;
     // Una zona inválida haría estallar toda la pantalla de corte: se valida
     // antes de devolverla y se cae a la de siempre si no sirve.
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    if (!esZonaValida(tz)) return TZ_POR_DEFECTO;
     return tz;
   } catch {
     return TZ_POR_DEFECTO;

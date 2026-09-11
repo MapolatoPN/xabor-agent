@@ -5,6 +5,7 @@
 // objetivo se ancla al mediodía UTC de ese día calendario, de modo que
 // partesEnZona() del backend devuelva su día de la semana correcto.
 import { partesEnZona } from './tiendaOnline.js';
+import { TZ_DEFAULT } from './zonaHoraria.js';
 
 const DIAS = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
 const NOMBRE_DIA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
@@ -36,7 +37,7 @@ export function parseHora(s) {
 
 // Devuelve { ok, esSemana, minutos, dias:[{fechaISO, ahora, etiqueta, diaNombre}] }.
 // `ahora` de cada día es el instante ancla (mediodía UTC) para pasar al backend.
-export function resolverCuandoPromo(cuando, { ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
+export function resolverCuandoPromo(cuando, { ahora = new Date(), timezone = TZ_DEFAULT } = {}) {
   const t = norm(cuando);
   if (!t) return { ok: false };
   const hoyISO = partesEnZona(ahora, timezone).fechaISO;

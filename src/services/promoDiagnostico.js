@@ -17,6 +17,7 @@ import { cumpleCondicionesModificadores, condicionesEstructuradas,
          fraseCondicionEstructurada, listaO, listaY } from './promoCondiciones.js';
 import { promocionesVigentesCrudas } from './tiendaPromociones.js';
 import { cargarGruposDeProductos } from './modificadores.js';
+import { TZ_DEFAULT } from './zonaHoraria.js';
 
 // Re-export por compatibilidad: los consumidores que ya pedían estas piezas al
 // diagnóstico siguen funcionando, y su implementación es la del módulo puro.
@@ -138,7 +139,7 @@ export function explicarInelegibilidad(nombrePromo, razones) {
  * una promo que ya aplicó jamás se explica como fallida.
  */
 export async function explicarPromosNoAplicadas(negocioId, ordenValidada, {
-  canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', promosAplicadas = [],
+  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, promosAplicadas = [],
 } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return '';
   const items = Array.isArray(ordenValidada?.items) ? ordenValidada.items : [];
