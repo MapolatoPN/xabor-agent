@@ -1732,7 +1732,7 @@ router.post('/', async (req, res) => {
         }
         return;
       }
-      procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
+      await procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
     });
 
   } catch (error) {
