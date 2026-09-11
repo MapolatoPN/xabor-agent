@@ -499,7 +499,39 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           // activo; las menciones, solo en el turno actual (lo que el cliente
           // sostiene ahora, para que "mejor de fresa" reemplace al "mango"
           // anterior sin quedar atrapado en él).
-          const { menciones, respuestas } = await extraerMencionesComerciales(mensajeUsuario);
+          const extraidas = await extraerMencionesComerciales(mensajeUsuario);
+          let menciones = extraidas.menciones;
+          const respuestas = [...extraidas.respuestas];
+          // ── EL TURNO QUE CONTESTA UNA PREGUNTA DE LOGÍSTICA NO ACUSA ───
+          //
+          // Incidente ***9939, 2026-09-08 20:54:
+          //
+          //   bot      "¿A qué dirección te lo enviamos?"
+          //   clienta  "Nogal 900 acoros ai"
+          //   bot      'Una disculpa: no manejamos "900" y "acoros" en Waffles.'
+          //
+          // El backend YA sabía que había preguntado la dirección --la acaba
+          // de consumir arriba, con `esperandoDato`-- y aun así mandó el mismo
+          // texto al comparador de catálogo, porque el pedido ya tenía
+          // artículos. Las barreras de `mencionesComerciales` son posicionales
+          // y léxicas ("¿este texto está en el mensaje, en posición de
+          // atributo?") y una dirección cumple eso sin esfuerzo. La red de
+          // procedencia tampoco ayuda: `tieneRespaldo("900", ...)` es TRUE
+          // porque la clienta escribió "900" de verdad — ese guard comprueba
+          // autoría, no pertinencia.
+          //
+          // Faltaba la única pregunta que importaba: qué acababa de pedir el
+          // backend. Es estado propio, no una inferencia sobre el texto.
+          //
+          // No se salta la extracción entera a propósito: un cliente puede
+          // decir "Nogal 900, y agrégame un café" y ese café tiene que llegar.
+          // Los spans pasan a `respuestas`, que SOLO resuelven y nunca
+          // declaran inexistente nada — la misma asimetría de `esRespuestaDirecta`.
+          if (pendiente && menciones.length) {
+            respuestas.push(...menciones);
+            console.warn(`[TXN] evento=menciones_sin_acusacion dato=${pendiente} n=${menciones.length}`);
+            menciones = [];
+          }
           const rc = await validarBorradorPedido(borrador, negocioId, {
             textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
             menciones, respuestas,

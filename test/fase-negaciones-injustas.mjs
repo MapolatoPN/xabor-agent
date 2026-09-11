@@ -670,6 +670,61 @@ await t('H5. un invento con conector sigue pudiendo negarse, ya sin la preposici
     'negar "unicornio" es honesto; negar "con unicornio" es un error de lectura');
 });
 
+// ═══ LA RESPUESTA A UNA PREGUNTA DE LOGÍSTICA NO ACUSA ═════════════════════
+//
+// Incidente ***9939, Obispado, 2026-09-08 20:54:
+//
+//   20:53:27  bot      "¿A qué dirección te lo enviamos? Necesito calle,
+//                       número y colonia."
+//   20:53:53  clienta  "Nogal 900 acoros ai"
+//   20:54:05  bot      'Una disculpa: no manejamos "900" y "acoros" en Waffles.'
+//   20:54:23  HUMANO   entra a rescatar
+//
+// El backend había preguntado la dirección y la consumió bien. Pero después
+// mandó ESE MISMO texto al comparador de catálogo, porque el pedido ya tenía
+// artículos. Las barreras del módulo son posicionales y léxicas; una
+// dirección las cumple sin esfuerzo. Y `tieneRespaldo("900", ...)` es TRUE
+// porque la clienta escribió "900": ese guard comprueba autoría, no
+// pertinencia.
+await t('I1. la dirección no puede producir "no manejamos"', async () => {
+  const SID = 'neg-direccion'; deleteSession(SID);
+  // Turno 1: pide el platillo y elige domicilio. El backend queda esperando
+  // la dirección.
+  mock.encolarRespuesta('Claro.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1,
+      modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')] }],
+    modalidad: 'entrega a domicilio', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } }) + '</PEDIDO_BORRADOR>');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  await procesarMensaje(SID, 'Un combito suizo con pollo a domicilio, efectivo, a nombre de Ana',
+    null, 'whatsapp', NEG, '5210000000091');
+
+  // Turno 2: contesta la dirección. El extractor la lee como si fueran
+  // atributos del menú — que es justo lo que pasó en producción.
+  mock.encolarRespuesta('Perfecto.\n<PEDIDO_BORRADOR>' + JSON.stringify({
+    items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1,
+      modificadores: [mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')] }],
+    modalidad: 'entrega a domicilio', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } }) + '</PEDIDO_BORRADOR>');
+  // Así lo clasificó el extractor en producción: 'Nogal' parece un nombre de
+  // producto, se vuelve ANCLA, y '900' y 'acoros' se encadenan a ella como
+  // atributos. Encadenados ya pueden acusar.
+  mock.encolarRespuesta(JSON.stringify({ menciones: [
+    { tipo: 'producto', texto_fuente: 'Nogal' },
+    { tipo: 'atributo', texto_fuente: '900' },
+    { tipo: 'atributo', texto_fuente: 'acoros' }] }));
+  const r = await procesarMensaje(SID, 'Nogal 900 acoros ai', null, 'whatsapp', NEG, '5210000000091');
+
+  assert.doesNotMatch(r.texto, /no manejamos/i,
+    `una dirección no es una selección del menú — ${r.texto}`);
+  assert.doesNotMatch(r.texto, /900|acoros/i,
+    `no puede citar trozos de la dirección como si fueran platillos — ${r.texto}`);
+});
+
+await t('I2. y la dirección SÍ se guarda: el turno no se pierde', async () => {
+  const d = datosDelPedido('neg-direccion') || {};
+  assert.match(String(d.direccion || ''), /Nogal/i,
+    `el dato que se preguntó tiene que quedar registrado — ${JSON.stringify(d)}`);
+});
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
