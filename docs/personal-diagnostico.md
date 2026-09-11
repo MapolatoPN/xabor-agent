@@ -19,6 +19,9 @@ Esto es lo que más ahorra, y conviene mirarlo antes de proponer tabla nueva.
 | Gate en cada ruta | `requireModulo('personal')`, `resolverNegocioSeguro(rol)`, `requireAdminSeguro` |
 | Ajustes por negocio | `configuracion` (negocio_id, clave, valor) |
 | PIN con hash | `services/password.js` — scrypt con salt por registro, `hashPin`/`verifyPin`. **No se inventa criptografía nueva** |
+| Archivos privados | `services/almacenamiento.js` — `guardarArchivo`/`leerArchivo`/`eliminarArchivo`, drivers local y S3, sin URL pública permanente |
+| Validar y comprimir imágenes | `services/imagenes.js` — `validarImagenReal`, `comprimirImagen` |
+| Servir un archivo privado con permisos | `comprasRutas.js:130` — autoriza, lee, `private, no-store`, streaming |
 | Jornadas y días operativos | `cortesCaja.js`: `zonaHorariaNegocio`, `fechaOperativaDe`, `rangoUtcDeFecha`, `instanteLocal`. Ya resuelven horario de verano y bordes de día |
 | Auditoría de plataforma | `registrarAuditoriaPlataforma` |
 | Ventas para el dashboard | `pedidos_activos` + `calcularCorteVivo` (ventas por día operativo) |
@@ -31,35 +34,64 @@ pidió.
 
 ## 2. Lo que NO existe y hay que decidir
 
-### Almacén privado de archivos — el hueco real
+### Almacenamiento privado — YA EXISTE, se reutiliza
 
-No hay ninguno. La única imagen del sistema es `tienda_productos.imagen_url`,
-es decir **una URL**, no un archivo guardado. Y el disco de Railway es efímero:
-lo que se escriba en el contenedor desaparece en el siguiente despliegue.
+> **Corrección.** Una versión anterior de este documento afirmaba que no había
+> almacén privado y proponía `bytea`. **Era falso.** La conclusión salió de una
+> búsqueda truncada (`Found 10 files limit: 10`) que dejó fuera
+> `almacenamiento.js`. Nunca debí concluir desde un resultado recortado.
 
-Las selfies de checada son obligatoriamente privadas y con retención
-configurable, así que hacen falta bytes guardados de verdad.
+`src/services/almacenamiento.js` ya resuelve esto, y con **dos drivers**:
 
-**Decisión propuesta (reversible): `bytea` en Postgres**, con retención.
-Una selfie comprimida a ~640px ronda 40 KB. Veinte empleados × 4 movimientos ×
-30 días ≈ **96 MB al mes**, que con una retención de 90 días se estabiliza en
-~290 MB. Es asumible y no añade proveedor, credenciales ni dependencia nueva
-—que además el encargo prohíbe inventar—. Si algún día se quiere object
-storage, se cambia el adaptador de lectura/escritura sin tocar el modelo.
+- `guardarArchivo(buffer, { negocioId, extension, mimeType, categoria })` →
+  devuelve un `storage_key`. El `negocioId` entra en la clave, así que el
+  aislamiento está en el propio almacenamiento.
+- `leerArchivo(storageKey)` → buffer.
+- `eliminarArchivo(storageKey)` → es lo que hará la retención.
+- `obtenerUrlDescarga(storageKey, { ttlSegundos })` → prefirmada y de corta
+  duración, **solo** en el driver S3.
+- `driverEsLocal()`.
 
-Las fotos NUNCA se sirven por URL pública: van por una ruta autenticada que
-comprueba negocio, sucursal y permiso en cada petición.
+Y su cabecera ya dice lo que el encargo pide: *"Nunca se expone una URL pública
+permanente"*. En local se sirve por streaming desde un endpoint que revalida
+permisos en cada request; en S3, con URL prefirmada efímera.
 
-### La cámara no funciona desde el Edge por IP
+`src/services/imagenes.js` aporta `validarImagenReal` y `comprimirImagen` — la
+validación y compresión que necesita la selfie, ya escritas.
 
-`getUserMedia` exige contexto seguro: solo `https://` o `localhost`. El panel
-servido por el Edge en `http://192.168.x.x:7071` **no puede pedir la cámara**,
-y no hay forma de saltárselo sin desactivar seguridad del navegador.
+**El patrón exacto a copiar está en `comprasRutas.js:130`**:
 
-Consecuencia de diseño, y hay que decirla antes de construir: **el reloj
-checador vive en la nube** (`https://xabor.mx`), o en la propia máquina del
-Edge por `localhost`. El encargo ya dice que este módulo no incluye asistencia
-offline; esto lo confirma por una razón técnica dura, no por alcance.
+```js
+const meta = await obtenerTicketPrivado(req.negocioId, req.params.id);  // autoriza
+const buffer = await leerArchivo(meta.ticket_storage_key);
+res.set('Cache-Control', 'private, no-store');
+res.send(buffer);
+```
+
+Para Personal se hace igual, añadiendo las autorizaciones propias: **negocio,
+sucursal y empleado**. Un gerente solo ve evidencias de sus sucursales
+autorizadas; un empleado, solo las suyas.
+
+En las tablas se guardan **referencia y metadatos** —`storage_key`, mime,
+bytes, `creado_at`, `expira_at`—, nunca los bytes ni credenciales.
+
+### La cámara y el contexto seguro
+
+`getUserMedia` exige contexto seguro: `https://` o `localhost`. El panel
+servido por el Edge en `http://192.168.x.x:7071` no puede pedir la cámara sin
+desactivar seguridad del navegador, cosa que no se va a hacer.
+
+> **Corrección de la conclusión anterior.** De ahí deduje que "la asistencia
+> offline es técnicamente imposible". **No se sigue.** Es una limitación de
+> *ese* contexto concreto, y hay caminos —servir el Edge por HTTPS con
+> certificado instalado en las estaciones, o checar sin evidencia fotográfica—
+> que no exploré.
+>
+> La asistencia offline queda **fuera de alcance por decisión del encargo**, no
+> por imposibilidad. No se amplía ahora.
+
+Para este MVP: el reloj checador vive en la nube (`https://xabor.mx`) o en
+`localhost` de la propia máquina.
 
 ### Rol de gerente
 
@@ -88,7 +120,9 @@ por sucursal llevan `sucursal_id`.
   servidor**), `dispositivo_id`, `evidencia_id`, auditoría de correcciones.
   Índice único parcial por (empleado, tipo, ventana) para que un doble clic no
   cree dos.
-- **`personal_evidencias`** — `bytea`, mime, bytes, `creado_at`, `expira_at`.
+- **`personal_evidencias`** — **`storage_key`** (la referencia que devuelve
+  `guardarArchivo`), mime, bytes, `creado_at`, `expira_at`. Los bytes viven en
+  el almacenamiento, no en la base.
 - **`personal_incidencias`** — tipo, fecha, monto/tiempo, comentario, creador,
   autorizador, fecha de autorización.
 - **`personal_prenominas`** y **`personal_prenomina_conceptos`** — periodo,
@@ -132,8 +166,9 @@ las tablas quedan utilizables antes de confirmar.
    ataca con unicidad en base, no con comprobaciones en la aplicación.
 3. **El gasto duplicado en Finanzas.** Vínculo único entre gasto y periodo, y
    reintento idempotente.
-4. **Crecimiento de la base por las fotos.** Retención configurable desde el
-   día uno, aunque el borrado automático llegue después.
+4. **Crecimiento del almacenamiento por las fotos.** Retención configurable
+   desde el día uno, aunque el borrado automático llegue después;
+   `eliminarArchivo` ya existe para ejecutarlo.
 5. **Privacidad.** Aviso previo antes de activar selfies, y ninguna afirmación
    de verificación biométrica: se guarda una foto, no se reconoce a nadie.
 

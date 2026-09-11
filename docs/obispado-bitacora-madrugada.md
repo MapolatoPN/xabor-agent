@@ -152,14 +152,17 @@ esquema propuesto, las migraciones 073-076 y las 8 fases.
 
 Dos hallazgos de ese diagnóstico que condicionan el diseño:
 
-- **No existe almacén privado de archivos.** La única imagen del sistema es una
-  URL, y el disco de Railway es efímero. Las selfies irán en `bytea` con
-  retención — decisión reversible, sin añadir proveedor ni credenciales.
-- **`getUserMedia` exige contexto seguro.** El panel servido por el Edge en
-  `http://192.168.x.x` **no puede pedir la cámara**, y no hay forma sin
-  desactivar seguridad del navegador. El reloj checador vive en la nube o en
-  `localhost`. Confirma por razón técnica lo que el encargo ya decía: este
-  módulo no lleva asistencia offline.
+- **El almacenamiento privado YA EXISTE y se reutiliza**: `almacenamiento.js`
+  (`guardarArchivo`/`leerArchivo`/`eliminarArchivo`, drivers local y S3, sin
+  URL pública permanente), `imagenes.js` para validar y comprimir, y el patrón
+  de acceso autenticado de `comprasRutas.js:130`. Las evidencias guardan
+  `storage_key` y metadatos, nunca bytes ni credenciales.
+  *(Corrección: antes afirmé que no existía. Lo deduje de una búsqueda
+  truncada — `limit: 10` — que dejó fuera `almacenamiento.js`.)*
+- **`getUserMedia` exige contexto seguro**, así que el panel servido por el
+  Edge en `http://192.168.x.x` no puede pedir la cámara. La asistencia offline
+  queda fuera de alcance **por decisión del encargo**, no por imposibilidad:
+  de esa limitación concreta no se sigue que sea técnicamente imposible.
 
 ## Cómo repetir lo de esta madrugada
 
