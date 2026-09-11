@@ -186,6 +186,45 @@ export function esNotaDePreparacion(span, texto) {
 const CONECTORES_DE_ATRIBUTO = new Set(['de', 'del', 'con', 'sabor', 'sabores', 'estilo', 'tipo', 'en', 'y', 'o']);
 
 /**
+ * ¿Este texto ES un fragmento colgado de lo anterior? ("con fruta", "de mango")
+ *
+ * Un nombre de producto no empieza por una preposición. Cuando el extractor
+ * parte "waffles con fruta de 149" deja DOS artículos en el borrador —
+ * `Waffles` y `con fruta`— y el segundo no es un platillo: es la cola del
+ * primero.
+ *
+ * Caso real (Obispado, 2026-09-10 18:19, clienta ***7552):
+ *
+ *   18:18:44  clienta  "4 platillos de hotkeis con fruta de 139"
+ *   18:18:54  bot      "...acompañadas de fruta fresca de temporada"   ✔
+ *   18:19:03  clienta  "un platillo de waffles con fruta de 149"
+ *   18:19:15  bot      'Una disculpa: no manejamos "con fruta".'       ✘
+ *
+ * El catálogo SÍ los incluye —la descripción de Waffles dice "acompañados de
+ * fruta"— y el bot lo había citado bien un turno antes. Lo que falló fue
+ * buscar `con fruta` en la lista de PRODUCTOS y, al no encontrarlo, acusar al
+ * negocio de no venderlo. Tuvo que entrar una persona a rescatar el pedido.
+ *
+ * Por qué se mira el PRIMER token y no el anterior: las tres barreras de este
+ * módulo (`partirMencion`, `esNotaDePreparacion`, `esCandidatoDeAtributo`)
+ * examinan la palabra que PRECEDE al span. Aquí el conector viaja DENTRO, así
+ * que ninguna lo ve. `partirMencion` tampoco parte: su regex exige espacio a
+ * los dos lados del conector y aquí abre la cadena.
+ *
+ * Se exige más de una palabra para no tragarse un "de" suelto, y se compara
+ * contra la MISMA lista que usa `esCandidatoDeAtributo`: si un día se acepta
+ * un conector nuevo, las dos cosas cambian a la vez. Comprobado contra el
+ * catálogo real: NINGÚN producto ni opción empieza por uno de estos
+ * conectores, y las 37 opciones que llevan uno DENTRO ("Frijolitos con
+ * chorizo", "Miel y Mantequilla") no se ven afectadas — aquí solo cuenta la
+ * primera palabra.
+ */
+export function esFragmentoDeAtributo(texto) {
+  const p = palabras(texto);
+  return p.length > 1 && CONECTORES_DE_ATRIBUTO.has(p[0]);
+}
+
+/**
  * ¿El span está en posición de ATRIBUTO dentro del mensaje?
  *
  * Segunda barrera, determinista, detrás de la clasificación del extractor. Un
