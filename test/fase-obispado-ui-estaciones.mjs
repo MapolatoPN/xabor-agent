@@ -77,9 +77,20 @@ const navegador = await puppeteer.launch({ headless: 'new' });
 async function abrirEstacion(nombre) {
   const ctx = await navegador.createBrowserContext();
   const page = await ctx.newPage();
+  // Pantallas de verdad. A 800x600 --el tamaño por defecto-- la pantalla de
+  // mesas colapsa el panel de la cuenta detrás de un botón "Ver cuenta", y los
+  // botones de cobro quedan en el DOM pero fuera de la vista. Eso fue lo que
+  // hizo fallar D5 durante toda una madrugada: el contrato estaba bien y lo
+  // que no modelaba la realidad era la prueba.
+  await page.setViewport({ width: 1366, height: 768 });
   page.setDefaultTimeout(15000);
   const errores = [];
   page.on('pageerror', (e) => errores.push(String(e.message)));
+  // Cerrar una cuenta pide confirmación con un diálogo nativo. Sin atenderlo,
+  // la página se queda bloqueada y el navegador deja de responder -- que es lo
+  // que parecía "el botón no funciona". Se acepta, que es lo que hace la
+  // cajera.
+  page.on('dialog', (d) => d.accept().catch(() => {}));
   return { nombre, ctx, page, errores };
 }
 
@@ -266,9 +277,12 @@ await t('D2. MESERO 1 manda la comanda a cocina', async () => {
 });
 
 await t('D3. a MESERO 1 la pantalla NO le ofrece cobrar', async () => {
-  const texto = await m1.page.evaluate(() => document.body.innerText);
-  assert.ok(!/registrar pago|cobrar|cerrar cuenta/i.test(texto),
-    'un mesero no debe siquiera ver el botón de cobrar');
+  // Se mira el DOM, no el texto visible: un botón puede existir y estar fuera
+  // de la vista. Lo que importa es que NO EXISTA para un mesero.
+  const acciones = await m1.page.$eval('#cu-secundarias', (el) => el.innerHTML);
+  assert.ok(!/abrirPago|cerrarCuenta|dlg-libre/.test(acciones),
+    `un mesero no debe tener siquiera el botón: ${acciones.slice(0, 200)}`);
+  assert.match(acciones, /dividirIguales|abrirMover/, 'pero sí lo que sí le toca');
 });
 
 await t('D4. y si lo intentara, el servidor lo rechaza igual', async () => {
@@ -301,8 +315,9 @@ await t('D5. LA CAJA cobra y cierra la Mesa 1, desde la pantalla', async () => {
   // El botón se llama "Registrar pago". El panel ya lo oculta a los meseros
   // con `puedeCobrar() = !SESION_MESERO` (mesas.html:318): la caja entra sin
   // sesión de estación, así que sí lo ve.
-  await caja.page.waitForFunction(() => /Registrar pago/i.test(document.body.innerText));
-  await clicPorTexto(caja.page, 'Registrar pago');
+  await caja.page.waitForFunction(() =>
+    /abrirPago/.test(document.getElementById('cu-secundarias')?.innerHTML || ''));
+  await clicPorTexto(caja.page, 'Registrar pago', '#cu-secundarias');
   await caja.page.waitForFunction(() => document.querySelector('#dlg-pago')?.open === true);
   await caja.page.select('#pg-metodo', 'efectivo');
   await caja.page.click('#pg-monto');
@@ -310,8 +325,9 @@ await t('D5. LA CAJA cobra y cierra la Mesa 1, desde la pantalla', async () => {
   await clicPorTexto(caja.page, 'Registrar', '#dlg-pago');
   await caja.page.waitForFunction(() => document.querySelector('#dlg-pago')?.open !== true);
 
-  await caja.page.waitForFunction(() => /Cerrar cuenta/i.test(document.body.innerText));
-  await clicPorTexto(caja.page, 'Cerrar cuenta');
+  await caja.page.waitForFunction(() =>
+    /cerrarCuenta/.test(document.getElementById('cu-secundarias')?.innerHTML || ''));
+  await clicPorTexto(caja.page, 'Cerrar cuenta', '#cu-secundarias');
   await caja.page.waitForFunction(async () => {
     const r = await fetch('/local/salud');
     return (await r.json()).mesasAbiertas === 1;   // queda solo la del mesero 2
@@ -327,6 +343,37 @@ await t('D6. la Mesa 1 queda cerrada con folio, y la del otro mesero sigue viva'
   const folio = edge.sala.serializar().cuentas
     .find((c) => c.mesa_numero === 1 && c.estado === 'cerrada')?.venta_folio;
   assert.match(String(folio), /^RM-[0-9A-F]{8}-0$/, `folio inesperado: ${folio}`);
+});
+
+await t('D7. tras RECARGAR, el cobro sigue siendo uno solo y el folio no cambia', async () => {
+  const antes = edge.sala.serializar().cuentas.find((c) => c.mesa_numero === 1 && c.estado === 'cerrada');
+  assert.strictEqual(antes.pagos.length, 1, 'un cobro, no dos');
+
+  // F5 en la caja: es donde una interfaz mal hecha reenvía el último POST.
+  await caja.page.reload({ waitUntil: 'networkidle2' });
+  await caja.page.waitForSelector('.mesa');
+  await clicPorTexto(caja.page, 'Todas');
+  await caja.page.waitForFunction(() =>
+    [...document.querySelectorAll('.mesa')].some((b) => /Mesa 1\b/.test(b.textContent)));
+
+  const despues = edge.sala.serializar().cuentas.find((c) => c.id === antes.id);
+  assert.strictEqual(despues.pagos.length, 1, 'recargar no puede volver a cobrar');
+  assert.strictEqual(despues.venta_folio, antes.venta_folio, 'ni cambiar el folio ya impreso');
+  assert.strictEqual(despues.estado, 'cerrada');
+
+  // Y la Mesa 1 vuelve a estar libre en el tablero, sin rastro de la anterior.
+  const libre = await caja.page.evaluate(() =>
+    [...document.querySelectorAll('.mesa')]
+      .find((b) => /Mesa 1\b/.test(b.textContent)).textContent.toLowerCase());
+  assert.match(libre, /disponible/, 'la mesa cobrada queda libre');
+});
+
+await t('D8. la sesión de la caja sobrevive a la recarga', async () => {
+  const quien = await caja.page.evaluate(async () => {
+    const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    return r.ok ? (await r.json()).nombre : null;
+  });
+  assert.strictEqual(quien, 'Caja Principal', 'no debe mandarla al login tras un F5');
 });
 
 await navegador.close();

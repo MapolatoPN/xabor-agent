@@ -54,6 +54,13 @@ const COOKIE = 'xabor_edge_sesion';
 // mixto que bloquear. Es la diferencia entre que el modo offline funcione en
 // una computadora o en las cuatro.
 const RAIZ_PANEL = fileURLToPath(new URL('../../panel/', import.meta.url));
+// La nube sirve también `public/` (`/public/...`, y los iconos de marca en la
+// raíz). Sin esto el panel local carga, pero pidiendo el logo, el favicon y
+// los iconos a un servidor que no los tiene: cuatro 404 por pantalla. No
+// rompe la operación, y justamente por eso pasa desapercibido -- pero el Edge
+// tiene que poder servir TODO lo que la pantalla necesita mientras esté
+// encendido, sin depender de la nube ni de la caché de otro origen.
+const RAIZ_PUBLIC = fileURLToPath(new URL('../../public/', import.meta.url));
 const TIPOS = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -493,9 +500,32 @@ export function crearServidorLocal({
       '/restaurante': 'mesas.html', '/mesero': 'mesero.html',
       '/login-negocio.html': 'login-edge.html', '/login.html': 'login-edge.html',
     };
+    // Dos raíces, como en la nube: el panel y `public/`. Los iconos de marca
+    // se piden desde la raíz (`/favicon.ico`, `/icon-192.png`), no bajo
+    // `/public/`, así que también se buscan ahí.
     const rel = ALIAS[ruta] || ruta.replace(/^\/+/, '');
-    const destino = normalize(join(raizPanel, rel));
-    if (!destino.startsWith(normalize(raizPanel))) {
+    const raices = ruta.startsWith('/public/')
+      ? [[RAIZ_PUBLIC, rel.replace(/^public\//, '')]]
+      : [[raizPanel, rel], [RAIZ_PUBLIC, rel], [join(RAIZ_PUBLIC, 'brand'), rel]];
+
+    let destino = null, raizUsada = null;
+    for (const [raiz, r] of raices) {
+      const candidato = normalize(join(raiz, r));
+      if (!candidato.startsWith(normalize(raiz))) continue;   // intento de salirse
+      destino = candidato; raizUsada = raiz;
+      try { if ((await stat(extname(candidato) ? candidato : `${candidato}.html`)).isFile()) break; }
+      catch { destino = null; }
+    }
+    if (!destino) {
+      // Se mantiene la respuesta de siempre: 403 si intentó salirse, 404 si no
+      // existe. Distinguirlo importa para diagnosticar en sitio.
+      const primero = normalize(join(raizPanel, rel));
+      res.writeHead(primero.startsWith(normalize(raizPanel)) ? 404 : 403,
+        { 'Content-Type': 'text/plain; charset=utf-8' })
+        .end(primero.startsWith(normalize(raizPanel)) ? 'No encontrado' : 'Prohibido');
+      return;
+    }
+    if (!destino.startsWith(normalize(raizUsada))) {
       res.writeHead(403).end('Prohibido');
       return;
     }
