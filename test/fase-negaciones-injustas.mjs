@@ -25,7 +25,7 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test-negacione
 process.env.PORT = process.env.PORT || '4241';
 
 const { pool } = await import('../src/services/database.js');
-const { validarBorradorPedido, mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
+const { validarBorradorPedido, mensajeBorradorParaCliente, validarOrdenPropuesta } = await import('../src/orders/validadorOrden.js');
 const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
 const { tieneRespaldo, sinDiminutivo, esFragmentoDeAtributo, sinConectorInicial, depurarMenciones } = await import('../src/agent/mencionesComerciales.js');
 const { procesarMensaje } = await import('../src/agent/brain.js');
@@ -724,6 +724,92 @@ await t('I2. y la dirección SÍ se guarda: el turno no se pierde', async () => 
   assert.match(String(d.direccion || ''), /Nogal/i,
     `el dato que se preguntó tiene que quedar registrado — ${JSON.stringify(d)}`);
 });
+
+// ═══ Q — EL PLATILLO QUE EXISTE TRES VECES ═════════════════════════════════
+//
+// Incidente 2026-09-11, 6:40 p.m., prueba del dueño:
+//
+//   cliente  'Si quiero unos chilaquiles suizos con pollo, bistec en salsa y
+//             queso panela Además una orden de hotcakes de sartén'
+//   bot      'Una disculpa: no manejamos "Chilaquiles".'            ✘
+//
+// El menú de Obispado tiene TRES: Chilaquiles Sencillos, Chilaquiles Mixtos y
+// Bowl de Chilaquiles. Los tres contienen la palabra, la búsqueda devolvía tres
+// candidatos, y un `candidatos.length !== 1` los mandaba al mismo cajón que un
+// producto inexistente.
+//
+// No resolver estaba BIEN: entre tres platillos no se adivina. Lo que estaba
+// mal era el mensaje. Ambigüedad y ausencia son cosas distintas y el cliente
+// merece la pregunta, no la negativa.
+const cAmb = await cat('Chilaquiles (ambigüedad)', 40);
+await prod(cAmb, 'Chilaquiles Sencillos', 175);
+await prod(cAmb, 'Chilaquiles Mixtos', 195);
+
+const pedirChilaquiles = (nombre = 'Chilaquiles') => validarBorradorPedido(
+  { items: [{ nombre, cantidad: 1, modificadores: [] }] },
+  NEG, { textoCiclo: 'quiero unos chilaquiles suizos con pollo' });
+
+await t('Q1. un platillo con varias variantes NO se declara inexistente', async () => {
+  const rc = await pedirChilaquiles();
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i,
+    `el menú tiene tres chilaquiles; negarlos pierde la venta — ${msg}`);
+  const marcado = (rc.productosNoExisten || []).find((x) => /chilaquiles/i.test(x?.nombre || x));
+  assert.ok(marcado, 'el artículo sigue sin resolverse (correcto: no se adivina)');
+  assert.strictEqual(marcado.estado, 'ambiguo',
+    'debe distinguirse de un producto que de verdad no existe');
+});
+
+await t('Q2. se le ofrecen las variantes por su nombre y se le pregunta', async () => {
+  const msg = mensajeBorradorParaCliente(await pedirChilaquiles()) || '';
+  assert.match(msg, /Chilaquiles Sencillos/, `falta una variante — ${msg}`);
+  assert.match(msg, /Chilaquiles Mixtos/, `falta una variante — ${msg}`);
+  assert.match(msg, /¿Cuál prefieres\?/, `tiene que preguntar, no informar — ${msg}`);
+  assert.doesNotMatch(msg, /Una disculpa/i,
+    `pedirle que elija entre platillos que sí tenemos no es una mala noticia — ${msg}`);
+});
+
+await t('Q3. seguir sin adivinar: el pedido NO queda confirmable', async () => {
+  const rc = await pedirChilaquiles();
+  assert.strictEqual(rc.ok, false, 'un nombre que apunta a tres platillos no puede pasar');
+  const nombres = (rc.productos || []).map((p) => p.producto);
+  assert.deepStrictEqual(nombres.filter((n) => /chilaquiles/i.test(n)), [],
+    'no puede elegir una variante por su cuenta');
+});
+
+await t('Q4. y el registro REAL lo rechaza con la misma dureza', async () => {
+  // La puerta de atrás: validarOrden es la que registra el pedido de verdad, y
+  // ahí un estado nuevo sin su corte habría seguido de largo hasta el código
+  // que lee `r.producto`, que en un ambiguo no existe.
+  const v = await validarOrdenPropuesta({
+    items: [{ nombre: 'Chilaquiles', cantidad: 1, precio_unitario: 175, modificadores: [] }],
+    modalidad: 'recoger', forma_pago: 'efectivo', cliente: { nombre: 'Prueba' },
+  }, NEG);
+  assert.strictEqual(v.ok, false, 'un nombre ambiguo jamás puede registrarse');
+  assert.ok((v.rechazos || []).some((r) => /PRODUCTO_NO_EXISTE|no_existe/i.test(r.codigo || '')),
+    `debe rechazarse explícitamente — ${JSON.stringify(v.rechazos)}`);
+});
+
+await t('Q5. un producto que de verdad no existe SIGUE recibiendo la negativa', async () => {
+  // La red de seguridad: relajar la ambigüedad no puede volver mudo el caso
+  // legítimo. "Sushi de Kobe" no está en la carta y hay que decirlo.
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Sushi de Kobe', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero sushi de kobe' });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.match(msg, /no manejamos/i, `lo que no existe se dice — ${msg}`);
+  assert.match(msg, /Sushi de Kobe/i, `y se nombra — ${msg}`);
+});
+
+await t('Q6. una variante apagada no se ofrece entre las opciones', async () => {
+  await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible)
+    VALUES ($1,$2,'Chilaquiles Divorciados',215,FALSE)`, [NEG, cAmb]);
+  const msg = mensajeBorradorParaCliente(await pedirChilaquiles()) || '';
+  assert.doesNotMatch(msg, /Divorciados/,
+    `ofrecer algo apagado promete lo que no se puede entregar — ${msg}`);
+  assert.match(msg, /Chilaquiles Sencillos/, `las que sí van se siguen ofreciendo — ${msg}`);
+});
+
 
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
