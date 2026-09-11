@@ -18,7 +18,8 @@ import { randomUUID } from 'node:crypto';
 
 const { pool } = await import('../src/services/database.js');
 const { crearSalaLocal } = await import('../edge/sala/operacionLocal.js');
-const { sincronizarLoteSala, CONFLICTOS } = await import('../src/services/sincronizacionSala.js');
+const { sincronizarLoteSala, CONFLICTOS, listarReconciliaciones, marcarReconciliacionRevisada } =
+  await import('../src/services/sincronizacionSala.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -306,6 +307,105 @@ await t('S12. y el corte de ese día la cuenta como efectivo', async () => {
     'el dinero del sábado no puede aparecer en el corte del domingo');
 });
 
+// ═══ R. El informe de reconciliación, que tiene que sobrevivir ═════════════
+// Un informe que muere con la primera recarga no sirve para cuadrar una caja:
+// quien lo necesita lo mira al día siguiente.
+await t('R1. sincronizar deja un informe GUARDADO, no solo un evento', async () => {
+  await limpiar();
+  await pool.query(`DELETE FROM sala_reconciliaciones WHERE negocio_id=$1`, [NEG]).catch(() => {});
+  const s = sala();
+  mesaCobrada(s, 40, [item('Plato', 120)], [{ metodo: 'efectivo', monto: 120 }]);
+  const lote = { ...s.exportarLote(), loteId: 'lote-r1' };
+
+  const r = await sincronizarLoteSala(NEG, lote);
+  assert.ok(r.reconciliacionId, 'la sincronización devuelve el id del acta');
+
+  // "Recargar la pantalla" es exactamente esto: volver a leerlo desde la base.
+  const informes = await listarReconciliaciones(NEG);
+  assert.strictEqual(informes.length, 1);
+  assert.strictEqual(informes[0].aplicadas, 1);
+  assert.strictEqual(informes[0].conflictos, 0);
+  assert.strictEqual(informes[0].pendientes, 0, 'el corte subió completo');
+  assert.ok(Array.isArray(informes[0].reporte) && informes[0].reporte[0].ventaFolio,
+    'y guarda el detalle: qué mesa y con qué folio');
+});
+
+await t('R2. reenviar el MISMO lote no crea un segundo informe', async () => {
+  const s = sala();
+  mesaCobrada(s, 41, [item('Plato', 60)], [{ metodo: 'efectivo', monto: 60 }]);
+  const lote = { ...s.exportarLote(), loteId: 'lote-r2' };
+  await sincronizarLoteSala(NEG, lote);
+  await sincronizarLoteSala(NEG, lote);   // se perdió la respuesta y reintenta
+  const informes = await listarReconciliaciones(NEG);
+  const deR2 = informes.filter((i) => i.lote_id === 'lote-r2');
+  assert.strictEqual(deR2.length, 1, 'un acta por lote, aunque el lote viaje dos veces');
+});
+
+await t('R3. un CONFLICTO queda registrado, visible y sin subir', async () => {
+  await limpiar();
+  await pool.query(`DELETE FROM sala_reconciliaciones WHERE negocio_id=$1`, [NEG]).catch(() => {});
+  const ajena = randomUUID();
+  await pool.query(
+    `INSERT INTO restaurante_cuentas (id, negocio_id, mesa_numero, personas, mesero_usuario_id, abierta_por)
+     VALUES ($1,$2,44,2,$3,$3)`, [ajena, NEG, MESERO]);
+
+  const s = sala();
+  const buena = mesaCobrada(s, 45, [item('Plato', 90)], [{ metodo: 'efectivo', monto: 90 }]);
+  const choca = s.abrirMesa({ mesaNumero: 44, personas: 2, meseroUsuarioId: MESERO });
+  s.agregarItems(choca.id, [item('Plato', 50)]);
+
+  await sincronizarLoteSala(NEG, { ...s.exportarLote(), loteId: 'lote-r3' });
+  const [informe] = await listarReconciliaciones(NEG, { soloAbiertos: true });
+  assert.ok(informe, 'un conflicto tiene que aparecer entre los que necesitan atención');
+  assert.strictEqual(informe.conflictos, 1);
+  assert.ok(informe.pendientes > 0, 'y decir cuántas operaciones quedaron sin subir');
+  const fila = informe.reporte.find((f) => f.conflicto === CONFLICTOS.MESA_OCUPADA);
+  assert.ok(fila, 'con el motivo, no solo el número');
+  assert.strictEqual(fila.mesa, 44);
+  // Y lo independiente entró igual: un conflicto no bloquea lo demás.
+  assert.strictEqual(await contarVenta(buena.ventaFolio), 1);
+});
+
+await t('R4. marcar revisado es un ACUSE: no recalcula ni contabiliza nada', async () => {
+  const [abierto] = await listarReconciliaciones(NEG, { soloAbiertos: true });
+  const ventasAntes = (await q1(`SELECT COUNT(*)::int n FROM pedidos_activos WHERE negocio_id=$1`, [NEG])).n;
+
+  const r = await marcarReconciliacionRevisada(NEG, abierto.id, { usuarioId: MESERO, nota: 'se quedó la de la nube' });
+  assert.ok(r?.revisado_at, 'queda constancia de cuándo');
+
+  const ventasDespues = (await q1(`SELECT COUNT(*)::int n FROM pedidos_activos WHERE negocio_id=$1`, [NEG])).n;
+  assert.strictEqual(ventasDespues, ventasAntes, 'revisar NO mueve dinero ni ventas');
+  assert.deepStrictEqual(await listarReconciliaciones(NEG, { soloAbiertos: true }), [],
+    'y deja de pedir atención');
+  const [todos] = await listarReconciliaciones(NEG);
+  assert.strictEqual(todos.nota_revision, 'se quedó la de la nube', 'con lo que se decidió');
+});
+
+await t('R5. revisar dos veces no vuelve a "abrirlo" ni pisa la nota', async () => {
+  const [informe] = await listarReconciliaciones(NEG);
+  const otra = await marcarReconciliacionRevisada(NEG, informe.id, { usuarioId: MESERO, nota: 'otra cosa' });
+  assert.strictEqual(otra, null, 'ya estaba revisado');
+  const [despues] = await listarReconciliaciones(NEG);
+  assert.strictEqual(despues.nota_revision, 'se quedó la de la nube', 'la decisión original se conserva');
+});
+
+await t('R6. los informes NO se mezclan entre negocios', async () => {
+  // OTRO tiene los suyos (S8 sincronizó contra él): lo que no puede es ver los
+  // de NEG ni cerrarlos.
+  const mios = await listarReconciliaciones(NEG);
+  const ajenos = await listarReconciliaciones(OTRO);
+  const idsMios = new Set(mios.map((i) => i.id));
+  assert.ok(ajenos.every((i) => !idsMios.has(i.id)), 'ningún informe aparece en los dos negocios');
+  const lotesMios = new Set(mios.map((i) => i.lote_id).filter(Boolean));
+  assert.ok(ajenos.every((i) => !lotesMios.has(i.lote_id)), 'ni por lote');
+
+  const r = await marcarReconciliacionRevisada(OTRO, mios[0].id, { usuarioId: MESERO });
+  assert.strictEqual(r, null, 'ni puede cerrar un informe que no es suyo');
+  const [sigueIgual] = await listarReconciliaciones(NEG);
+  assert.strictEqual(sigueIgual.id, mios[0].id, 'y el ajeno no se toca');
+});
+
+await pool.query(`DELETE FROM sala_reconciliaciones WHERE negocio_id=$1`, [NEG]).catch(() => {});
 await limpiar();
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }

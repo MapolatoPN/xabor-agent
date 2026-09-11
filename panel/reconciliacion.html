@@ -1,0 +1,169 @@
+<!-- Informes de reconciliación: qué pasó al subir un corte operado sin internet.
+     Página aparte y no una pestaña dentro del panel: se consulta de vez en
+     cuando, casi siempre al día siguiente, y no tiene por qué cargar 650 KB
+     para eso. Se sirve igual desde la nube y desde el Edge. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reconciliación · Xabor</title>
+<style>
+  :root { color-scheme: light; --bg:#f6f5f2; --card:#fff; --linea:#e5e2da; --tinta:#1f2937;
+          --suave:#6b7280; --alerta:#b45309; --mal:#b91c1c; --bien:#047857; --marca:#FF6B35; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--tinta); font:15px system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { background:#111827; color:#fff; padding:12px 18px; display:flex; align-items:center; gap:14px; }
+  header b { color:var(--marca); }
+  header a { color:#d1d5db; text-decoration:none; margin-left:auto; font-size:.85rem; }
+  main { padding:18px; max-width:1000px; margin:0 auto; }
+  .filtros { display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+  button { font:inherit; border:1px solid var(--linea); background:#fff; border-radius:9px;
+           padding:8px 14px; cursor:pointer; }
+  button.activo { background:var(--marca); color:#fff; border-color:var(--marca); font-weight:600; }
+  .informe { background:var(--card); border:1px solid var(--linea); border-radius:12px;
+             padding:14px 16px; margin-bottom:12px; }
+  .informe.abierto { border-left:4px solid var(--alerta); }
+  .cab { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .cuando { font-weight:700; }
+  .cifras { display:flex; gap:14px; margin:8px 0; flex-wrap:wrap; font-size:.88rem; }
+  .cifra b { display:block; font-size:1.35rem; line-height:1.1; }
+  .cifra.mal b { color:var(--mal); } .cifra.bien b { color:var(--bien); }
+  .cifra.pend b { color:var(--alerta); }
+  .fila { border-top:1px solid var(--linea); padding:8px 0; font-size:.88rem; display:flex;
+          gap:10px; flex-wrap:wrap; align-items:baseline; }
+  .etq { font-size:.72rem; font-weight:700; padding:2px 8px; border-radius:99px; }
+  .etq.ok { background:#d1fae5; color:var(--bien); }
+  .etq.conflicto { background:#fee2e2; color:var(--mal); }
+  .detalle { color:var(--suave); }
+  .acciones { margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .revisado { color:var(--bien); font-size:.85rem; }
+  .vacio { color:var(--suave); text-align:center; padding:44px 10px; }
+  @media (max-width:420px) { main { padding:12px; } .cifras { gap:10px; } }
+</style>
+
+<header>
+  <span><b>XABOR</b> · Reconciliación</span>
+  <a href="/app">← Panel</a>
+</header>
+
+<main>
+  <div class="filtros">
+    <button id="f-todos" class="activo">Todos</button>
+    <button id="f-abiertos">Solo los que necesitan atención</button>
+    <span id="resumen" class="detalle"></span>
+  </div>
+  <div id="lista"><p class="vacio">Cargando…</p></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let SOLO_ABIERTOS = false;
+
+const fecha = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Traducción de los códigos a algo que se entienda sin abrir el código fuente.
+// Cada uno dice QUÉ pasó y QUÉ hay que hacer, porque un informe que solo
+// muestra `MESA_OCUPADA` obliga a preguntarle a alguien.
+const CONFLICTOS = {
+  MESA_OCUPADA: ['Dos cuentas para la misma mesa',
+    'Otro equipo tenía esa mesa abierta. Hay que decidir cuál es la del cliente que se sentó ahí: la de este corte NO se subió.'],
+  PAGO_SOBRE_CUENTA_CERRADA: ['Cobro sobre una cuenta ya cerrada',
+    'El cobro se guardó porque el dinero existió, pero la venta ya contabilizada no se recalculó.'],
+  CORTE_YA_CERRADO: ['Venta de un día con corte cerrado',
+    'La venta entró al sistema, pero el corte de ese día ya estaba cerrado y NO se recalculó. Hay que conciliarlo a mano.'],
+  USUARIO_DESCONOCIDO: ['El mesero ya no existe',
+    'Se dio de baja mientras el equipo estaba sin conexión. Esa cuenta no se subió.'],
+  ERROR: ['No se pudo incorporar', 'Falló al guardar. Se reintenta solo mientras siga en la cola del equipo.'],
+};
+
+async function cargar() {
+  const r = await fetch(`/api/restaurante/reconciliaciones${SOLO_ABIERTOS ? '?abiertos=1' : ''}`,
+    { credentials: 'same-origin' });
+  if (!r.ok) {
+    $('lista').innerHTML = `<p class="vacio">No se pudieron leer los informes (${r.status}).</p>`;
+    return;
+  }
+  const { informes } = await r.json();
+  pintar(informes || []);
+}
+
+function pintar(informes) {
+  const abiertos = informes.filter((i) => !i.revisado_at && (i.conflictos > 0 || i.pendientes > 0));
+  $('resumen').textContent = informes.length
+    ? `${informes.length} informe(s) · ${abiertos.length} sin revisar`
+    : '';
+
+  if (!informes.length) {
+    $('lista').innerHTML = `<p class="vacio">${SOLO_ABIERTOS
+      ? 'Nada pendiente de revisar. Todos los cortes subieron completos.'
+      : 'Todavía no se ha sincronizado ningún corte sin internet.'}</p>`;
+    return;
+  }
+
+  $('lista').innerHTML = informes.map((i) => {
+    const necesita = !i.revisado_at && (i.conflictos > 0 || i.pendientes > 0);
+    const filas = (i.reporte || []).map((f) => {
+      const [titulo, queHacer] = CONFLICTOS[f.conflicto] || [];
+      return `<div class="fila">
+        <span class="etq ${f.conflicto ? 'conflicto' : 'ok'}">${f.conflicto ? 'Conflicto' : 'Entró'}</span>
+        <span><b>Mesa ${esc(f.mesa ?? '—')}</b></span>
+        ${f.ventaFolio ? `<span class="detalle">${esc(f.ventaFolio)}</span>` : ''}
+        ${titulo ? `<span><b>${esc(titulo)}</b> — <span class="detalle">${esc(queHacer)}</span></span>`
+                 : `<span class="detalle">${esc(f.estado || '')}</span>`}
+        ${f.detalle && !titulo ? `<span class="detalle">${esc(f.detalle)}</span>` : ''}
+      </div>`;
+    }).join('');
+
+    return `<div class="informe ${necesita ? 'abierto' : ''}">
+      <div class="cab">
+        <span class="cuando">${fecha(i.created_at)}</span>
+        ${i.revisado_at
+          ? `<span class="revisado">✓ Revisado por ${esc(i.revisado_por_nombre || 'alguien')} el ${fecha(i.revisado_at)}</span>`
+          : ''}
+      </div>
+      <div class="cifras">
+        <span class="cifra bien"><b>${i.aplicadas}</b>entraron</span>
+        <span class="cifra ${i.conflictos ? 'mal' : ''}"><b>${i.conflictos}</b>en conflicto</span>
+        <span class="cifra ${i.pendientes ? 'pend' : ''}"><b>${i.pendientes}</b>sin subir</span>
+      </div>
+      ${filas}
+      ${i.nota_revision ? `<div class="fila detalle">Nota: ${esc(i.nota_revision)}</div>` : ''}
+      ${necesita ? `<div class="acciones">
+        <input id="nota-${i.id}" placeholder="Qué se decidió (opcional)"
+               style="flex:1;min-width:200px;padding:8px 10px;border:1px solid var(--linea);border-radius:9px;font:inherit;">
+        <button onclick="revisar('${i.id}')">Marcar como revisado</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// Marcar revisado NO recalcula ni contabiliza nada: es el acuse de que una
+// persona lo miró. Un corte cerrado no se toca desde aquí.
+async function revisar(id) {
+  const nota = document.getElementById(`nota-${id}`)?.value || null;
+  const r = await fetch(`/api/restaurante/reconciliaciones/${id}/revisar`, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nota }),
+  });
+  if (!r.ok) { alert('No se pudo marcar como revisado.'); return; }
+  await cargar();
+}
+
+$('f-todos').onclick = () => {
+  SOLO_ABIERTOS = false;
+  $('f-todos').classList.add('activo'); $('f-abiertos').classList.remove('activo');
+  cargar();
+};
+$('f-abiertos').onclick = () => {
+  SOLO_ABIERTOS = true;
+  $('f-abiertos').classList.add('activo'); $('f-todos').classList.remove('activo');
+  cargar();
+};
+
+cargar();
+</script>

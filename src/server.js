@@ -1293,7 +1293,11 @@ async function manejarMensajeDeEdge(ws, raw) {
     const respuesta = { tipo: 'sala_lote_resultado', loteId: msg.loteId || null };
     try {
       const { sincronizarLoteSala } = await import('./services/sincronizacionSala.js');
-      const r = await sincronizarLoteSala(ws.negocioId, msg.lote || {});
+      // El id del lote y la terminal viajan al informe: es lo que lo hace
+      // idempotente (un reenvío no apunta dos actas) y lo que permite saber
+      // desde qué equipo se subió el corte.
+      const r = await sincronizarLoteSala(ws.negocioId,
+        { ...(msg.lote || {}), loteId: msg.loteId ?? null, terminalId: ws.terminalId ?? null });
       Object.assign(respuesta, {
         ok: true, aplicadas: r.aplicadas, conflictos: r.conflictos,
         eventosConfirmados: r.eventosConfirmados, reporte: r.reporte,
@@ -2563,6 +2567,11 @@ app.get('/restaurante', (req, res) => {
   res.sendFile(join(__dirname, '../panel/mesas.html'));
 });
 
+// Informes de reconciliación de los cortes sin internet.
+app.get('/reconciliacion', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/reconciliacion.html'));
+});
+
 app.get('/superadmin', (req, res) => {
   res.sendFile(join(__dirname, '../panel/superadmin.html'));
 });
@@ -3120,6 +3129,43 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireOperacionRestaurant
 app.post('/api/restaurante/cuentas/:cuentaId/mover', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try { res.json({ ok: true, cuenta: await moverMesa(req.params.cuentaId, req.negocioId, req.body?.mesa) }); }
   catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// ─── Informes de reconciliación de sala ─────────────────────────────────────
+// Lo que pasó al subir un corte operado sin internet: qué entró, con qué folio,
+// qué chocó y qué quedó sin subir. Persistido, porque quien cuadra la caja lo
+// mira al día siguiente y un evento de WebSocket se pierde con la recarga.
+//
+// Solo admin: el informe menciona folios, totales y conflictos de dinero.
+app.get('/api/restaurante/reconciliaciones', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const { listarReconciliaciones } = await import('./services/sincronizacionSala.js');
+    const informes = await listarReconciliaciones(req.negocioId, {
+      limite: req.query.limite,
+      soloAbiertos: req.query.abiertos === '1',
+    });
+    res.json({ informes });
+  } catch (e) {
+    console.error('[Sala] listar reconciliaciones:', e.message);
+    res.status(500).json({ error: 'No se pudieron leer los informes' });
+  }
+});
+
+// Acuse de que una persona lo miró. NO recalcula ni contabiliza nada: un corte
+// cerrado no se toca desde aquí. Es lo que impide que un conflicto desaparezca
+// de la vista sin que nadie lo haya decidido.
+app.post('/api/restaurante/reconciliaciones/:id/revisar', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const { marcarReconciliacionRevisada } = await import('./services/sincronizacionSala.js');
+    const r = await marcarReconciliacionRevisada(req.negocioId, req.params.id, {
+      usuarioId: req.usuarioId, nota: req.body?.nota,
+    });
+    if (!r) return res.status(404).json({ error: 'Informe no encontrado o ya revisado' });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    console.error('[Sala] revisar reconciliación:', e.message);
+    res.status(500).json({ error: 'No se pudo marcar como revisado' });
+  }
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/reabrir', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {

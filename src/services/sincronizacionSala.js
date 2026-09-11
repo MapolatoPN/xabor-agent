@@ -83,7 +83,83 @@ export async function sincronizarLoteSala(negocioId, lote, { ejecutor = pool } =
 
   // Un evento de una cuenta que no vino en el lote no puede confirmarse: sin su
   // estado no hay nada que aplicar. Se deja en la cola del Edge a propósito.
-  return { aplicadas, conflictos, eventosConfirmados, reporte };
+  const resultado = { aplicadas, conflictos, eventosConfirmados, reporte };
+
+  // El informe se GUARDA, no solo se devuelve. Quien tiene que cuadrar la caja
+  // lo mira al día siguiente, no en el segundo en que ocurrió: un informe que
+  // muere con la primera recarga no sirve para nada.
+  //
+  // Guardar nunca puede tumbar una sincronización que YA se aplicó: si esto
+  // falla, el trabajo del corte está en la base igual y solo se pierde el
+  // acta. Por eso va fuera de las transacciones de cuenta y con su propio
+  // catch.
+  try {
+    resultado.reconciliacionId = await guardarInforme(nid, lote, resultado, ejecutor);
+  } catch (e) {
+    console.error('[Sala] no se pudo guardar el informe de reconciliación:', e.message);
+  }
+  return resultado;
+}
+
+/**
+ * Deja constancia del intento. Idempotente por `lote_id`: si la respuesta se
+ * pierde y el Edge reenvía el MISMO lote, no se apunta dos veces.
+ */
+async function guardarInforme(nid, lote, r, ejecutor) {
+  const { rows } = await ejecutor.query(
+    `INSERT INTO sala_reconciliaciones
+       (negocio_id, lote_id, terminal_id, aplicadas, conflictos, reporte, pendientes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (negocio_id, lote_id) WHERE lote_id IS NOT NULL DO UPDATE
+       SET aplicadas = EXCLUDED.aplicadas, conflictos = EXCLUDED.conflictos,
+           reporte = EXCLUDED.reporte, pendientes = EXCLUDED.pendientes
+     RETURNING id`,
+    [nid, lote?.loteId ?? null, lote?.terminalId ?? null,
+      r.aplicadas, r.conflictos, JSON.stringify(r.reporte),
+      // Lo que el Edge NO va a poder descartar de su cola: sus eventos no
+      // confirmados. Es la cifra que dice si el corte cerró completo.
+      (lote?.eventos || []).filter((e) => !r.eventosConfirmados.includes(e.id)).length]
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * Los informes de un negocio, el más reciente primero. Es lo que pinta la
+ * pantalla de reconciliación.
+ */
+export async function listarReconciliaciones(negocioId, { limite = 50, soloAbiertos = false, ejecutor = pool } = {}) {
+  const nid = validarNegocioId(negocioId);
+  const { rows } = await ejecutor.query(
+    `SELECT r.id, r.lote_id, r.aplicadas, r.conflictos, r.pendientes, r.reporte,
+            r.created_at, r.revisado_at, r.nota_revision, u.nombre AS revisado_por_nombre
+       FROM sala_reconciliaciones r
+       LEFT JOIN usuarios u ON u.id = r.revisado_por
+      WHERE r.negocio_id = $1
+        AND ($2::boolean = false OR (r.revisado_at IS NULL AND (r.conflictos > 0 OR r.pendientes > 0)))
+      ORDER BY r.created_at DESC
+      LIMIT $3`,
+    [nid, soloAbiertos, Math.min(Math.max(parseInt(limite, 10) || 50, 1), 200)]
+  );
+  return rows;
+}
+
+/**
+ * Marca un informe como revisado. NO cambia nada de lo contabilizado: es un
+ * acuse de que una persona lo miró. Un conflicto sigue abierto hasta entonces,
+ * y eso es lo que impide que desaparezca de la vista sin que nadie lo decida.
+ */
+export async function marcarReconciliacionRevisada(negocioId, id, { usuarioId = null, nota = null, ejecutor = pool } = {}) {
+  const nid = validarNegocioId(negocioId);
+  const { rows } = await ejecutor.query(
+    `UPDATE sala_reconciliaciones
+        SET revisado_por = $3, revisado_at = NOW(), nota_revision = $4
+      WHERE id = $1 AND negocio_id = $2 AND revisado_at IS NULL
+      RETURNING id, revisado_at`,
+    [id, nid, usuarioId, nota ? String(nota).slice(0, 500) : null]
+  );
+  // Sin fila: o no existe, o es de otro negocio, o ya estaba revisado. Los
+  // tres se contestan igual -- no se dice cuál.
+  return rows[0] || null;
 }
 
 async function incorporarCuenta(nid, cuenta, ejecutor) {

@@ -78,6 +78,10 @@ const SCRIPTS = [
   // solo una columna nullable. Corre ANTES de que el binario nuevo la lea.
   '068-promo-condiciones-modificadores',
   '070-compras-pagos-fondos',
+  // 072 guarda los informes de reconciliación de sala. Sin ella, el resultado
+  // de subir un corte solo existe como evento de WebSocket y se pierde con la
+  // primera recarga -- inservible para cuadrar una caja al día siguiente.
+  '072-sala-reconciliaciones',
 ];
 
 for (const nombre of SCRIPTS) {
