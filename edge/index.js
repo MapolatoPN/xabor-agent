@@ -157,6 +157,8 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     alRecibirCatalogo: (c) => { try { aplicarCatalogo(c); } catch (e) { log.warn('catalogo.fallo', { error: e.message }); } },
     alAutenticar: () => {
       vaciarAcksPendientes();
+      // Enlace nuevo: la espera larga se reinicia desde cero.
+      cancelarReintentoLento();
       // Al recuperar el enlace: primero subir lo del corte, después refrescar
       // la foto. En ese orden a propósito -- si llegara antes un catálogo con
       // las mesas tal como las dejó la nube, no pisaría nada (hidratar respeta
@@ -182,23 +184,70 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
    * dos veces sobre una cola que ya cambió.
    */
   let sincronizando = false;
+  let reintentoLento = null;
+  let esperaLentaMs = 0;
+  // Techo de la espera larga. Cinco minutos: lo bastante para no machacar una
+  // nube que está mal, lo bastante poco para que el dinero del corte no espere
+  // media hora a subir cuando se recupere.
+  const ESPERA_LENTA_MAX = 5 * 60 * 1000;
+
+  function cancelarReintentoLento() {
+    if (reintentoLento) { clearTimeout(reintentoLento); reintentoLento = null; }
+    esperaLentaMs = 0;
+  }
+
+  /**
+   * Vuelve a intentarlo MÁS TARDE aunque el WebSocket siga vivo.
+   *
+   * Sin esto quedaba un hueco real: los cuatro intentos iniciales se agotaban,
+   * y si la conexión NO se caía —la nube contestando mal, o una base saturada—
+   * nadie volvía a intentarlo nunca. El corte se quedaba sin subir hasta que
+   * alguien reiniciara el Edge.
+   *
+   * La espera crece (30 s, 60 s, 120 s… hasta 5 min) porque el fallo típico es
+   * una nube que todavía no está bien, y machacarla no la arregla.
+   */
+  function programarReintentoLento() {
+    if (detenido || reintentoLento) return;
+    esperaLentaMs = esperaLentaMs ? Math.min(esperaLentaMs * 2, ESPERA_LENTA_MAX) : 30000;
+    log.info('sala.reintento.programado', { enMs: esperaLentaMs, pendientes: sala.pendientesDeSincronizar() });
+    reintentoLento = setTimeout(() => {
+      reintentoLento = null;
+      sincronizarConReintentos().catch(() => {});
+    }, esperaLentaMs);
+    reintentoLento.unref?.();
+  }
+
   async function sincronizarConReintentos({ intentos = 4, esperaMs = 3000 } = {}) {
-    if (sincronizando) return;
+    // Nunca dos a la vez: dos envíos del mismo lote no duplicarían nada (la
+    // ingesta es idempotente), pero sí podrían confirmar y descartar eventos
+    // dos veces sobre una cola que ya cambió.
+    if (sincronizando) return { intentado: false, motivo: 'ya_en_curso' };
     sincronizando = true;
     try {
       for (let i = 0; i < intentos; i++) {
-        if (detenido || !conexion.conectado) return;
-        if (!sala.pendientesDeSincronizar()) return;
+        if (detenido) return { intentado: false, motivo: 'detenido' };
+        if (!conexion.conectado) {
+          // Sin enlace no se reprograma: al volver, `alAutenticar` lo dispara.
+          return { intentado: false, motivo: 'sin_conexion' };
+        }
+        if (!sala.pendientesDeSincronizar()) { cancelarReintentoLento(); return { intentado: false, pendientes: 0 }; }
         const r = await sincronizarSala((lote) => conexion.enviarLote(lote));
-        // Si quedó algo pendiente por CONFLICTO, reintentar no lo arregla:
-        // hace falta que una persona decida. Se deja de insistir.
+        // Un CONFLICTO no se arregla reintentando: hace falta que una persona
+        // decida. Se deja de insistir con esos, pero lo demás ya subió -- la
+        // ingesta trata cada cuenta por separado.
         if (!r.error && r.conflictos > 0) {
           log.warn('sala.conflictos', { conflictos: r.conflictos, pendientes: r.pendientes });
-          return;
+          cancelarReintentoLento();
+          return r;
         }
-        if (!r.error && !r.pendientes) return;
+        if (!r.error && !r.pendientes) { cancelarReintentoLento(); return r; }
         await new Promise((ok) => { const t = setTimeout(ok, esperaMs * (i + 1)); t.unref?.(); });
       }
+      // Se agotaron los intentos rápidos y sigue habiendo cola con la conexión
+      // viva: aquí es donde antes se abandonaba para siempre.
+      if (sala.pendientesDeSincronizar() && conexion.conectado) programarReintentoLento();
+      return { intentado: true, pendientes: sala.pendientesDeSincronizar(), agotadoRapido: true };
     } finally {
       sincronizando = false;
     }
@@ -352,6 +401,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       // corta la conexión, luego se espera a que termine el envío en curso, y
       // solo al final se cierra el almacén.
       detenido = true;
+      cancelarReintentoLento();
       if (anclaVida) { clearInterval(anclaVida); anclaVida = null; }
       conexion.cerrar();
       await servidorSala.detener().catch(() => {});
