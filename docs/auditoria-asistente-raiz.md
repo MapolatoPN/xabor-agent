@@ -1,5 +1,7 @@
 # Auditoría del asistente de pedidos por WhatsApp
 
+Este documento conserva el diagnóstico inicial. El estado de la integración de continuidad, sus pruebas y límites está en [Continuidad del asistente](whatsapp-continuidad-operacion.md); las referencias a correcciones todavía locales más abajo corresponden al momento de la auditoría.
+
 ## Dictamen y alcance
 
 El asistente tiene controles útiles de catálogo, cálculo y confirmación; no es simplemente un prompt conectado a WhatsApp. Sin embargo, el recorrido completo todavía tiene huecos de continuidad, procesamiento y significado del catálogo. No hay evidencia suficiente para considerarlo listo para tomar pedidos sin supervisión. Seguir agregando correcciones a frases aisladas no resuelve esos huecos.

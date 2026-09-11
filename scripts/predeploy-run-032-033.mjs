@@ -78,7 +78,18 @@ const SCRIPTS = [
   // solo una columna nullable. Corre ANTES de que el binario nuevo la lea.
   '068-promo-condiciones-modificadores',
   '070-compras-pagos-fondos',
-  '076-whatsapp-continuidad',
+  // 076 crea `conversacion_estado`: el pedido conversacional deja de vivir
+  // solo en la memoria del proceso. Va ANTES de que el binario nuevo atienda
+  // trafico -- `sesionDurable.js` escribe en cada turno, y un backend que
+  // guarda en una tabla inexistente perderia el carrito igual que antes, solo
+  // que ademas llenando el log de errores.
+  '076-conversacion-durable',
+  // 077 crea la constancia durable del webhook. Va ANTES del binario nuevo:
+  // el webhook escribe ahi ANTES de acusarle recibo a Meta, asi que sin la
+  // tabla fallaria cada mensaje entrante -- justo el punto que este cambio
+  // quiere hacer seguro.
+  '077-webhook-entrante',
+  '078-whatsapp-continuidad',
 ];
 
 for (const nombre of SCRIPTS) {

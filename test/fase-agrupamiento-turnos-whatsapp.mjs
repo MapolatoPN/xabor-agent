@@ -202,7 +202,7 @@ await t('K. en produccion la ventana sigue siendo la de 6 segundos', () => {
   assert.strictEqual(VENTANA_AGRUPAMIENTO_MS, 6000, 'esta correccion no cambia la ventana');
   const durable = readFileSync(join(__dirname,'..','src','services','whatsappContinuidad.js'),'utf8');
   assert.match(durable,/ventanaMs = 6000/);
-  assert.match(FUENTE,/continuidadWA.recibir\(entradas\)/,'el webhook debe persistir los mensajes antes de contestar');
+  assert.match(FUENTE,/await continuidadWA.recibir\(entradas,req.body\);\s*res.sendStatus\(200\)/,'el webhook debe persistir los mensajes y el sobre antes de contestar');
   assert.match(durable,/WHERE negocio_id=\$1 AND telefono=\$2/,'el lote pertenece a una conversación del negocio');
 });
 

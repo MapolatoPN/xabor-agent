@@ -31,7 +31,7 @@ async function post(messages,base=s1.base,adicionales=[]){
  const body=JSON.stringify({object:'whatsapp_business_account',entry:[{changes:[{field:'messages',value:{metadata:{phone_number_id:pnid},messages,contacts:[{profile:{name:'Cliente de prueba'}}]}}]},...adicionales]});
  return fetch(base+'/webhook/whatsapp',{method:'POST',headers:{'Content-Type':'application/json','X-Hub-Signature-256':'sha256='+createHmac('sha256',secret).update(body).digest('hex')},body});
 }
-async function estado(){return (await pool.query('SELECT * FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[n,phone])).rows[0];}
+async function estado(){return (await pool.query("SELECT c.*,s.estado AS sesion FROM whatsapp_conversaciones c LEFT JOIN conversacion_estado s ON s.negocio_id=c.negocio_id AND s.session_id='meta-' || c.negocio_id::text || '-' || c.telefono WHERE c.negocio_id=$1 AND c.telefono=$2",[n,phone])).rows[0];}
 try {
  s1=await arrancarServidor({...env,PORT:'4986'});s2=await arrancarServidor({...env,PORT:'4987'});
  await t('recepción confirma después de guardar todos los mensajes y dos servidores responden una sola vez',async()=>{
@@ -59,6 +59,14 @@ try {
   await post([msg('c3-'+phone,'hola de nuevo')]);await esperar(async()=>Number((await estado()).revision)===2);
   assert.equal(vioHistorial,true);assert.equal((await estado()).requiere_revision,false);
  });
+ await t('la ruta legada no borra carritos reales ni sesiones ajenas',async()=>{
+  const real=`meta-${n}-${phone}`;
+  assert.equal((await fetch(s1.base+'/session/'+real,{method:'DELETE'})).status,401);
+  assert.equal((await fetch(s1.base+'/session/'+real,{method:'DELETE',headers:{Cookie:cookie}})).status,403);
+  assert.equal((await fetch(s1.base+'/session/'+`sim-${b}-test`,{method:'DELETE',headers:{Cookie:cookie}})).status,403);
+  assert.equal((await fetch(s1.base+'/session/'+`sim-${n}-test`,{method:'DELETE',headers:{Cookie:cookie}})).status,200);
+  assert.ok((await estado()).sesion.mensajes.length);
+ });
  await t('preview persistido confirma una sola venta tras reinicio y reentrega',async()=>{
   await detener(s1);s1=null;
   categoriaPrueba=(await pool.query("INSERT INTO menu_categorias(negocio_id,nombre,activa,orden) VALUES($1,'Continuidad E2E',true,990) RETURNING id",[n])).rows[0].id;
@@ -66,7 +74,7 @@ try {
   const sesion=(await estado()).sesion;
   sesion.pedidoPreview={ordenCanonica:{cliente:{nombre:'Cliente de prueba',telefono:phone},modalidad:'recoger',forma_pago:'efectivo',canal:'whatsapp',items:[{producto_id:productoPrueba,nombre:'Platillo Continuidad E2E',cantidad:1}]},total:149,fingerprint:'preview-e2e',ts:Date.now(),consumido:false,confirmable:true};
   sesion.awaitingConfirmacion=true;
-  await pool.query('UPDATE whatsapp_conversaciones SET sesion=$3 WHERE negocio_id=$1 AND telefono=$2',[n,phone,JSON.stringify(sesion)]);
+  await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[n,`meta-${n}-${phone}`,JSON.stringify(sesion)]);
   s1=await arrancarServidor({...env,PORT:'4986'});
   await post([msg('confirmacion-'+phone,'sí')]);await esperar(async()=>Number((await estado()).revision)===3);
   const pedidos=async()=>(await pool.query("SELECT datos FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2",[n,phone])).rows;
@@ -121,6 +129,7 @@ try {
  await detener(s1);await detener(s2);ia.detener();meta.detener();
  await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
  await pool.query('DELETE FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
+ await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[n,`meta-${n}-${phone}`]);
  await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
  await pool.query("DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2",[n,phone]);
  await pool.query("DELETE FROM pedidos WHERE negocio_id=$1 AND telefono=$2",[n,phone]);

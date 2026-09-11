@@ -1004,7 +1004,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // descartara TODAS las promociones estructuradas en WhatsApp — el default
       // 'whatsapp' de esa función solo cubre undefined, nunca null.
       falloDuranteInterpretacion = true;
-      resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono);
+      resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono, {continuidadExterna:true});
       falloDuranteInterpretacion = false;
     } finally {
       clearTimeout(waitTimer);
@@ -1531,7 +1531,7 @@ router.post('/', async (req, res) => {
         }
       }
     }
-    const mensajes = await continuidadWA.recibir(entradas);
+    const mensajes = await continuidadWA.recibir(entradas,req.body);
     res.sendStatus(200);
     for (const mensaje of mensajes) if(wsBroadcast) wsBroadcast(mensaje.negocio_id,{tipo:'nuevo_mensaje',mensaje});
   } catch(error) {

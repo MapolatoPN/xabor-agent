@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 // El pool de locks debe ser independiente del pool utilizado por los efectos.
 // Nunca se reejecuta un turno interrumpido después de comenzar sus efectos:
 // se conserva para revisión. Pendientes nunca empezados sí se recuperan solos.
@@ -6,19 +7,36 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
   const activos = new Map();
   const clave = (n, t) => `wa:${n}:${t}`;
 
-  async function recibir(entradas) {
+  async function recibir(entradas, sobre = null) {
     const db = await pool.connect();
     const mensajes = [];
     try {
       await db.query('BEGIN');
+      let reciboId;
+      if(sobre) {
+        const ids=[];
+        for(const e of sobre.entry || []) for(const c of e.changes || []) for(const m of c.value?.messages || []) if(m.id) ids.push(m.id);
+        const referencia=ids.length===1 ? ids[0] : 'sha:'+createHash('sha256').update(JSON.stringify(sobre)).digest('hex');
+        const {rows:[recibo]}=await db.query(`INSERT INTO webhook_entrante(canal,referencia,payload,intentos) VALUES('whatsapp',$1,$2,1)
+          ON CONFLICT(canal,referencia) DO UPDATE SET intentos=webhook_entrante.intentos+1 RETURNING id`,[referencia,JSON.stringify(sobre)]);
+        reciboId=recibo.id;
+      }
       for (const e of entradas) {
         if (!e.negocioId || !e.telefono || !e.wamid) throw new Error('IDENTIDAD_ENTRADA_REQUERIDA');
         await db.query(`INSERT INTO whatsapp_conversaciones(negocio_id,telefono) VALUES($1,$2) ON CONFLICT DO NOTHING`, [e.negocioId,e.telefono]);
         // Serializa recepción con el acuse humano: un mensaje que llegue
         // mientras se revisa no puede quedar marcado como atendido sin verlo.
         await db.query('SELECT 1 FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE', [e.negocioId,e.telefono]);
-        await db.query(`INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload) VALUES($1,$2,$3,$4) ON CONFLICT(negocio_id,wamid) DO NOTHING`,
+        const insertada=await db.query(`INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload) VALUES($1,$2,$3,$4) ON CONFLICT(negocio_id,wamid) DO NOTHING RETURNING id`,
           [e.negocioId,e.telefono,e.wamid,JSON.stringify(e.payload)]);
+        if(!insertada.rows.length) {console.log(`[wa-continuidad] reentrega ignorada wamid=${String(e.wamid).slice(-12)}`);continue;}
+        const previo=await db.query('SELECT 1 FROM mensajes WHERE negocio_id=$1 AND message_id_externo=$2',[e.negocioId,e.wamid]);
+        if(previo.rows.length) {
+          // Mensaje de la versión anterior: tener historial no prueba si sus
+          // efectos terminaron. Nunca volver a comprar por una reentrega vieja.
+          await db.query("UPDATE whatsapp_entradas SET estado='revision' WHERE id=$1",[insertada.rows[0].id]);
+          await db.query("UPDATE whatsapp_conversaciones SET requiere_revision=true,motivo='REENTREGA_LEGADA' WHERE negocio_id=$1 AND telefono=$2",[e.negocioId,e.telefono]);
+        }
         const m = e.payload.message;
         if (m && ['text','image','document'].includes(m.type)) {
           const texto = m.type === 'text' ? m.text?.body || '' : m.type === 'image' ? `📷 ${m.image?.caption || 'Imagen recibida'}` : `📄 ${m.document?.filename || 'Documento recibido'}`;
@@ -29,6 +47,7 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
           if (r.rows[0]) mensajes.push(r.rows[0]);
         }
       }
+      if(reciboId) await db.query("UPDATE webhook_entrante SET estado='procesado',procesado_at=now() WHERE id=$1",[reciboId]);
       await db.query('COMMIT');
       return mensajes;
     } catch (e) { await db.query('ROLLBACK').catch(() => {}); throw e; }
@@ -60,7 +79,9 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
         const r = await db.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS ok',[k]);
         bloqueado = r.rows[0].ok;
         if (!bloqueado) return;
-        const { rows:[c] } = await db.query('SELECT *,clock_timestamp() AS reloj FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[n,t]);
+        const { rows:[c] } = await db.query(`SELECT c.*,s.estado AS sesion,clock_timestamp() AS reloj FROM whatsapp_conversaciones c
+          LEFT JOIN conversacion_estado s ON s.negocio_id=c.negocio_id AND s.session_id='meta-' || c.negocio_id::text || '-' || c.telefono
+          WHERE c.negocio_id=$1 AND c.telefono=$2`,[n,t]);
         if (!c || c.requiere_revision) return;
         const { rows } = await db.query(`SELECT * FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('pendiente','procesando') ORDER BY id`,[n,t]);
         if (rows.some(e => e.estado === 'procesando')) {
@@ -83,7 +104,9 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
           if (desconectado) throw new Error('LOCK_PERDIDO');
           const sesion = await leerSesion(n,t);
           await db.query('BEGIN');
-          await db.query(`UPDATE whatsapp_conversaciones SET sesion=$3,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[n,t,JSON.stringify(sesion)]);
+          await db.query(`INSERT INTO conversacion_estado(negocio_id,session_id,estado) VALUES($1,$2,$3)
+            ON CONFLICT(negocio_id,session_id) DO UPDATE SET estado=excluded.estado,revision=conversacion_estado.revision+1,actualizado_at=now()`,[n,`meta-${n}-${t}`,JSON.stringify(sesion)]);
+          await db.query(`UPDATE whatsapp_conversaciones SET revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[n,t]);
           await db.query(`UPDATE whatsapp_entradas SET estado='completado',actualizado_at=now() WHERE negocio_id=$1 AND id=ANY($2::bigint[])`,[n,ids]);
           await db.query('COMMIT');
         } catch(e) {

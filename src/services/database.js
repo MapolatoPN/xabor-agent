@@ -1552,11 +1552,17 @@ export async function guardarMensaje(telefono, nombre, direccion, texto, negocio
       ON CONFLICT (message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING
       RETURNING *
     `, [telefono, nombre || null, direccion, texto, negocioId.trim(), origen || null, messageIdExterno || null, tipo, documentoId]);
-    if (result.rows[0]) return result.rows[0];
+    if (result.rows[0]) return { ...result.rows[0], yaExistia: false };
     if (messageIdExterno) {
       // ON CONFLICT no insertó nada -- ya existía este message_id (Meta
       // reentregó el webhook). Devolvemos la fila existente, no null,
       // para que el llamador no lo trate como un fallo de guardado.
+      //
+      // Y se marca `yaExistia`. Sin esa marca, el llamador no podía
+      // distinguir una reentrega de un mensaje nuevo --las dos devolvían
+      // una fila igual-- y seguía hasta encolar el turno. El indice unico
+      // impedia la burbuja repetida en el chat, pero NO impedia que el bot
+      // volviera a contestar. Registrar una vez no es procesar una vez.
       const existente = await pool.query(`SELECT * FROM mensajes WHERE message_id_externo = $1`, [messageIdExterno]);
       if (existente.rows[0]) {
         // El inbox guardó un marcador visible antes de descargar la imagen o
@@ -1568,7 +1574,7 @@ export async function guardarMensaje(telefono, nombre, direccion, texto, negocio
           if(completado.rows[0]) return completado.rows[0];
         }
         console.log(`[DB] guardarMensaje: mensaje duplicado ignorado (message_id_externo ya existía)`);
-        return existente.rows[0];
+        return { ...existente.rows[0], yaExistia: true };
       }
     }
     return null;

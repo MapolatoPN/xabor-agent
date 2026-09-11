@@ -7,6 +7,7 @@ import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido
          datosDelPedido, recordarDatoPedido,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
 import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespaldo } from './mencionesComerciales.js';
+import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, pool } from '../services/database.js';
@@ -271,7 +272,41 @@ function snapshotDePreview(v) {
   };
 }
 
-export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
+/**
+ * EL TURNO, CON EL PEDIDO A SALVO.
+ *
+ * Envoltorio de `procesarMensajeInterno`. Existe para poner los DOS puntos
+ * de durabilidad sin tocar ni una línea de las ~600 del cuerpo, que tiene
+ * docenas de `return` repartidos:
+ *
+ *   hidratar   ANTES. Si el proceso es nuevo --un despliegue, un crash,
+ *              Railway moviendo el contenedor-- el carrito vuelve de la base
+ *              y la conversación sigue donde iba. Va antes de que el cuerpo
+ *              llame a `agregarMensaje`: si el mensaje del cliente entrara
+ *              primero, la sesión dejaría de estar vacía y la hidratación se
+ *              saltaría a sí misma.
+ *
+ *   persistir  DESPUÉS, en un `finally`. Pase lo que pase, incluido un error
+ *              a media respuesta: lo que el cliente acordó no puede perderse
+ *              porque el turno fallara. Es justo el caso en que más duele.
+ *
+ * No cambia ninguna firma síncrona: `getSession()` sigue siendo síncrono y
+ * los llamadores de `brain.js` no se enteran. Convertir la sesión entera en
+ * asíncrona sería la rearquitectura que este arreglo NO necesita.
+ */
+export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null, control = {}) {
+  // WhatsApp hidrata bajo exclusión entre instancias y guarda DESPUÉS de los
+  // efectos del canal, junto con el checkpoint del turno. Una sola escritura.
+  if(control.continuidadExterna) return procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito);
+  await hidratarSesion(sessionId, negocioId);
+  try {
+    return await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito);
+  } finally {
+    await persistirSesion(sessionId, negocioId);
+  }
+}
+
+async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
@@ -509,7 +544,39 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
           // activo; las menciones, solo en el turno actual (lo que el cliente
           // sostiene ahora, para que "mejor de fresa" reemplace al "mango"
           // anterior sin quedar atrapado en él).
-          const { menciones, respuestas } = await extraerMencionesComerciales(mensajeUsuario);
+          const extraidas = await extraerMencionesComerciales(mensajeUsuario);
+          let menciones = extraidas.menciones;
+          const respuestas = [...extraidas.respuestas];
+          // ── EL TURNO QUE CONTESTA UNA PREGUNTA DE LOGÍSTICA NO ACUSA ───
+          //
+          // Incidente ***9939, 2026-09-08 20:54:
+          //
+          //   bot      "¿A qué dirección te lo enviamos?"
+          //   clienta  "Nogal 900 acoros ai"
+          //   bot      'Una disculpa: no manejamos "900" y "acoros" en Waffles.'
+          //
+          // El backend YA sabía que había preguntado la dirección --la acaba
+          // de consumir arriba, con `esperandoDato`-- y aun así mandó el mismo
+          // texto al comparador de catálogo, porque el pedido ya tenía
+          // artículos. Las barreras de `mencionesComerciales` son posicionales
+          // y léxicas ("¿este texto está en el mensaje, en posición de
+          // atributo?") y una dirección cumple eso sin esfuerzo. La red de
+          // procedencia tampoco ayuda: `tieneRespaldo("900", ...)` es TRUE
+          // porque la clienta escribió "900" de verdad — ese guard comprueba
+          // autoría, no pertinencia.
+          //
+          // Faltaba la única pregunta que importaba: qué acababa de pedir el
+          // backend. Es estado propio, no una inferencia sobre el texto.
+          //
+          // No se salta la extracción entera a propósito: un cliente puede
+          // decir "Nogal 900, y agrégame un café" y ese café tiene que llegar.
+          // Los spans pasan a `respuestas`, que SOLO resuelven y nunca
+          // declaran inexistente nada — la misma asimetría de `esRespuestaDirecta`.
+          if (pendiente && menciones.length) {
+            respuestas.push(...menciones);
+            console.warn(`[TXN] evento=menciones_sin_acusacion dato=${pendiente} n=${menciones.length}`);
+            menciones = [];
+          }
           const rc = await validarBorradorPedido(borrador, negocioId, {
             textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
             menciones, respuestas,

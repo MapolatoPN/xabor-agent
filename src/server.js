@@ -4335,7 +4335,8 @@ async function cambiarAtencionConversacion(req, res, pausado) {
         // Acuse humano: no reejecuta ni cancela ventas. El próximo mensaje
         // inicia ciclo nuevo; los anteriores quedaron atendidos manualmente.
         await client.query(`UPDATE whatsapp_entradas SET estado='revisado',actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`,[negocioId,telefono]);
-        await client.query(`UPDATE whatsapp_conversaciones SET requiere_revision=false,motivo=NULL,sesion=NULL,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[negocioId,telefono]);
+        await client.query(`UPDATE whatsapp_conversaciones SET requiere_revision=false,motivo=NULL,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[negocioId,telefono]);
+        await client.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[negocioId,`meta-${negocioId}-${telefono}`]);
       }
     }
     await upsertControlConversacion(telefono, pausado, negocioId, req.usuarioId, client);
@@ -4689,8 +4690,10 @@ app.post('/api/cotizaciones/:id/enviar', requireAuthSeguro, requireModulo('cotiz
   }
 });
 
-// Limpiar sesión
-app.delete('/session/:sessionId', (req, res) => {
+// Ruta legada del simulador: no puede borrar carritos reales ni sesiones
+// de otro negocio. WhatsApp se atiende desde los controles de conversación.
+app.delete('/session/:sessionId', requireAdminSeguro, (req, res) => {
+  if (!sessionIdPerteneceANegocio(req.params.sessionId,req.negocioId)) return res.status(403).json({error:'Sesión fuera del simulador de este negocio'});
   deleteSession(req.params.sessionId);
   res.json({ ok: true });
 });

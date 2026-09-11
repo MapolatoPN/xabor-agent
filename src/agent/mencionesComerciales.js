@@ -186,6 +186,69 @@ export function esNotaDePreparacion(span, texto) {
 const CONECTORES_DE_ATRIBUTO = new Set(['de', 'del', 'con', 'sabor', 'sabores', 'estilo', 'tipo', 'en', 'y', 'o']);
 
 /**
+ * ¿Este texto ES un fragmento colgado de lo anterior? ("con fruta", "de mango")
+ *
+ * Un nombre de producto no empieza por una preposición. Cuando el extractor
+ * parte "waffles con fruta de 149" deja DOS artículos en el borrador —
+ * `Waffles` y `con fruta`— y el segundo no es un platillo: es la cola del
+ * primero.
+ *
+ * Caso real (Obispado, 2026-09-10 18:19, clienta ***7552):
+ *
+ *   18:18:44  clienta  "4 platillos de hotkeis con fruta de 139"
+ *   18:18:54  bot      "...acompañadas de fruta fresca de temporada"   ✔
+ *   18:19:03  clienta  "un platillo de waffles con fruta de 149"
+ *   18:19:15  bot      'Una disculpa: no manejamos "con fruta".'       ✘
+ *
+ * El catálogo SÍ los incluye —la descripción de Waffles dice "acompañados de
+ * fruta"— y el bot lo había citado bien un turno antes. Lo que falló fue
+ * buscar `con fruta` en la lista de PRODUCTOS y, al no encontrarlo, acusar al
+ * negocio de no venderlo. Tuvo que entrar una persona a rescatar el pedido.
+ *
+ * Por qué se mira el PRIMER token y no el anterior: las tres barreras de este
+ * módulo (`partirMencion`, `esNotaDePreparacion`, `esCandidatoDeAtributo`)
+ * examinan la palabra que PRECEDE al span. Aquí el conector viaja DENTRO, así
+ * que ninguna lo ve. `partirMencion` tampoco parte: su regex exige espacio a
+ * los dos lados del conector y aquí abre la cadena.
+ *
+ * Se exige más de una palabra para no tragarse un "de" suelto, y se compara
+ * contra la MISMA lista que usa `esCandidatoDeAtributo`: si un día se acepta
+ * un conector nuevo, las dos cosas cambian a la vez. Comprobado contra el
+ * catálogo real: NINGÚN producto ni opción empieza por uno de estos
+ * conectores, y las 37 opciones que llevan uno DENTRO ("Frijolitos con
+ * chorizo", "Miel y Mantequilla") no se ven afectadas — aquí solo cuenta la
+ * primera palabra.
+ */
+/**
+ * Le quita a un span el conector con el que abre ("con pollo" → "pollo").
+ *
+ * SEGUNDA PUERTA del mismo defecto. La guarda de `validadorOrden` atrapa el
+ * fragmento que llega como ARTÍCULO del borrador; esta atrapa el que llega
+ * como MENCIÓN. Son la misma frase mal leída entrando por sitios distintos,
+ * y en 30 días produjeron cuatro negaciones falsas:
+ *
+ *   "con fruta"   (artículo  → la arregló la guarda del validador)
+ *   "con pollo"   (mención   → en Chilaquiles Sencillos)
+ *   "con carne"   (mención   → en Chilaquiles Sencillos)
+ *   "con bistec"  (mención)
+ *
+ * Quitar el conector no relaja nada: lo que queda se somete a las MISMAS
+ * barreras de siempre. "con pollo" pasa a ser "pollo", que sí resuelve
+ * contra el grupo Proteína; y si alguien dice "con unicornio", el bot sigue
+ * pudiendo decir que no maneja "unicornio" — que es verdad y es honesto.
+ * Lo que desaparece es acusar al negocio de no vender una preposición.
+ */
+export function sinConectorInicial(texto) {
+  if (!esFragmentoDeAtributo(texto)) return String(texto || '').trim();
+  return String(texto).trim().split(/\s+/).slice(1).join(' ');
+}
+
+export function esFragmentoDeAtributo(texto) {
+  const p = palabras(texto);
+  return p.length > 1 && CONECTORES_DE_ATRIBUTO.has(p[0]);
+}
+
+/**
  * ¿El span está en posición de ATRIBUTO dentro del mensaje?
  *
  * Segunda barrera, determinista, detrás de la clasificación del extractor. Un
@@ -368,7 +431,20 @@ export function depurarMenciones(crudas, textoTurno) {
 
     // BARRERA 4 — posición gramatical de atributo (conector o encadenado), o
     // bien el mensaje ENTERO es la respuesta a lo que se acaba de preguntar.
-    if (!esCandidatoDeAtributo(span, textoTurno, anclas)) {
+    //
+    // Aquí, y SOLO aquí, se le retira al span el conector con el que abre:
+    // "con pollo" → "pollo". Las tres barreras anteriores miran la palabra
+    // que PRECEDE al span, así que un conector que viaja DENTRO las esquiva
+    // todas y el span acababa comparándose entero contra el catálogo —de ahí
+    // «no manejamos "con pollo" en Chilaquiles Sencillos», con el pollo en la
+    // carta—. Cuatro negaciones falsas en 30 días de producción.
+    //
+    // No se normaliza antes a propósito: un renglón de una LISTA de
+    // respuestas ("Salsa verde, en agua, proteína pollo") no tiene poder de
+    // acusación y se conserva literal. La corrección solo hace falta donde
+    // se puede acusar, que es esta rama.
+    const limpio = sinConectorInicial(span);
+    if (!esCandidatoDeAtributo(limpio, textoTurno, anclas)) {
       if (esRespuestaDirecta(span, textoTurno)) {
         salida.respuestas.push(span);
         anclas.push(span);
@@ -377,8 +453,8 @@ export function depurarMenciones(crudas, textoTurno) {
       salida.descartadas.push({ span, motivo: 'sin_posicion_de_atributo' });
       continue;
     }
-    salida.atributos.push(span);
-    anclas.push(span);
+    salida.atributos.push(limpio);
+    anclas.push(limpio);
   }
   return salida;
 }

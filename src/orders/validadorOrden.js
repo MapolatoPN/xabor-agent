@@ -22,7 +22,7 @@ import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../se
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
-import { tieneRespaldo, spanEnTexto, normalizar, partirMencion } from '../agent/mencionesComerciales.js';
+import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -224,6 +224,19 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
 
   const resueltos = [];
   for (const it of items) {
+    // Un artículo cuyo nombre EMPIEZA por preposición es la cola del anterior,
+    // no un platillo: el extractor partió "waffles con fruta" en dos y este es
+    // el segundo trozo. Buscarlo en el catálogo solo puede terminar en una
+    // acusación falsa --«no manejamos "con fruta"»-- sobre algo que el menú SÍ
+    // incluye. Se descarta el fragmento y el resto del pedido sigue su curso.
+    //
+    // No se relaja nada más: un nombre que NO empiece por conector y no exista
+    // se sigue rechazando igual. `esFragmentoDeAtributo` exige más de una
+    // palabra y compara contra la misma lista de conectores de atributo.
+    if (esFragmentoDeAtributo(it?.nombre)) {
+      console.warn(`[Validador] fragmento descartado, no es un producto: "${String(it?.nombre || '').slice(0, 60)}"`);
+      continue;
+    }
     const r = resolverProducto(it?.nombre, catalogo);
     if (r.estado !== 'ok') {
       salida.ok = false;

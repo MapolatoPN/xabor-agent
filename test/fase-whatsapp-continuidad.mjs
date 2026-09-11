@@ -5,11 +5,13 @@ import {readFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {crearContinuidad} from '../src/services/whatsappContinuidad.js';
-import {getSession,restaurarSesion,deleteSession,guardarPreviewPedido,verPreviewConfirmable} from '../src/agent/session.js';
+import {getSession,restaurarSesion,desalojarDeMemoria,guardarPreviewPedido,verPreviewConfirmable} from '../src/agent/session.js';
 if(!/^postgres(?:ql)?:\/\/[^@]+@(127\.0\.0\.1|localhost):/.test(process.env.DATABASE_URL||'')) throw Error('Solo base local de prueba');
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false}});
 const locks=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false},max:3});
-await pool.query(await readFile(new URL('../migrations/076_whatsapp_continuidad.sql',import.meta.url),'utf8'));
+await pool.query(await readFile(new URL('../migrations/076_conversacion_durable.sql',import.meta.url),'utf8'));
+await pool.query(await readFile(new URL('../migrations/077_webhook_entrante_durable.sql',import.meta.url),'utf8'));
+await pool.query(await readFile(new URL('../migrations/078_whatsapp_continuidad.sql',import.meta.url),'utf8'));
 const n=randomUUID(), otro=randomUUID(), tel='521000000001';
 await pool.query("INSERT INTO negocios(id,nombre,slug) VALUES($1,'Continuidad test',$3),($2,'Continuidad otro',$4)",[n,otro,n,otro]);
 let pasadas=0,fallidas=0;
@@ -35,7 +37,7 @@ await t('dos trabajadores no ejecutan simultáneamente la misma conversación',a
 });
 await t('reinicio del motor recupera historial y preview confirmable desde PostgreSQL',async()=>{
  const c=crear({procesar:async()=>guardarPreviewPedido(sid(n,tel),{total:149,fingerprint:'original',orden:{items:[{producto_id:78,cantidad:1}]}})});
- await c.recibir([entrada('preview')]);await c.ejecutar(n,tel);deleteSession(sid(n,tel));
+ await c.recibir([entrada('preview')]);await c.ejecutar(n,tel);desalojarDeMemoria(sid(n,tel));
  const d=crear({procesar:async()=>{const s=getSession(sid(n,tel));assert.equal(s.mensajes.length,2);assert.equal(verPreviewConfirmable(sid(n,tel)).total,149);}});
  await d.recibir([entrada('confirmar')]);await d.ejecutar(n,tel);
  assert.equal((await pool.query('SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1',[n])).rows[0].requiere_revision,false);
@@ -47,6 +49,35 @@ await t('mismo teléfono en otro negocio tiene estado separado',async()=>{
 await t('mensaje pendiente nunca iniciado se recupera con un coordinador nuevo',async()=>{
  await a.recibir([entrada('pendiente',n,'521000000002')]);const antes=ejecuciones;
  await crear().ejecutar(n,'521000000002');assert.equal(ejecuciones,antes+1);
+});
+await t('el worker utiliza el carrito 076 existente, sin iniciar una segunda copia',async()=>{
+ const telefono='521000000008',foto=getSession(sid(n,telefono));foto.pedido.items=[{nombre:'Carrito anterior',cantidad:2}];
+ await pool.query('INSERT INTO conversacion_estado(negocio_id,session_id,estado) VALUES($1,$2,$3)',[n,sid(n,telefono),JSON.stringify(foto)]);
+ desalojarDeMemoria(sid(n,telefono));
+ const c=crear({procesar:async()=>assert.equal(getSession(sid(n,telefono)).pedido.items[0].cantidad,2)});
+ await c.recibir([entrada('continuar-version-anterior',n,telefono)]);await c.ejecutar(n,telefono);
+ assert.equal((await pool.query('SELECT revision FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[n,sid(n,telefono)])).rows[0].revision,'2');
+});
+await t('reentrega de un mensaje previo a 078 pide revisión sin repetir efectos',async()=>{
+ const telefono='521000000009',id='viejo-'+n;
+ await pool.query("INSERT INTO mensajes(negocio_id,telefono,direccion,texto,message_id_externo) VALUES($1,$2,'entrante','viejo',$3)",[n,telefono,id]);
+ const antes=ejecuciones;await a.recibir([entrada(id,n,telefono)]);await a.ejecutar(n,telefono);
+ assert.equal(ejecuciones,antes);assert.equal((await pool.query('SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[n,telefono])).rows[0].requiere_revision,true);
+});
+await t('078 convierte sobres viejos incompletos en revisión y se puede repetir',async()=>{
+ const telefono='521000000010',id='sobre-previo-'+n,pnid='previo-'+n;
+ await pool.query("INSERT INTO integraciones_canal(negocio_id,canal,identificador,activo) VALUES($1,'whatsapp',$2,true)",[n,pnid]);
+ try {
+  const payload={entry:[{changes:[{value:{metadata:{phone_number_id:pnid},messages:[{id,from:telefono,type:'text',text:{body:'pedido antes del cambio'}}]}}]}]};
+  await pool.query('INSERT INTO webhook_entrante(referencia,payload) VALUES($1,$2)',[id,JSON.stringify(payload)]);
+  const sql=await readFile(new URL('../migrations/078_whatsapp_continuidad.sql',import.meta.url),'utf8');await pool.query(sql);await pool.query(sql);
+  const rows=(await pool.query('SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2',[n,id])).rows;
+  assert.equal(rows.length,1);assert.equal(rows[0].estado,'revision');
+  const antes=ejecuciones;await a.ejecutar(n,telefono);assert.equal(ejecuciones,antes);
+ } finally {
+  await pool.query('DELETE FROM integraciones_canal WHERE negocio_id=$1 AND identificador=$2',[n,pnid]);
+  await pool.query('DELETE FROM webhook_entrante WHERE referencia=$1',[id]);
+ }
 });
 await t('fallo tras empezar efectos queda para revisión sin reejecución',async()=>{
  let efectos=0,avisos=0;

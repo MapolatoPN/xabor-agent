@@ -172,6 +172,190 @@ await t('FLUJOS', '9. firma válida + smb_app_state_sync → procesado (200)', a
   assert.strictEqual(r.status, 200);
 });
 
+// ═══ REENTREGAS ════════════════════════════════════════════════════════════
+//
+// Meta reentrega un webhook cuando no recibe el 200 a tiempo, y eso pasa.
+//
+// El índice único por `message_id_externo` impedía la burbuja repetida en el
+// chat, pero el flujo seguía hasta encolar el turno: **el bot contestaba dos
+// veces al mismo mensaje**. Registrar una vez no es procesar una vez.
+//
+// Hallazgo de la auditoría del asistente (punto 4). `guardarMensaje` ya sabía
+// que era una reentrega --entraba en la rama del ON CONFLICT-- pero devolvía
+// la fila existente igual que una nueva, así que el llamador no podía
+// distinguirlas.
+await t('REENTREGA', 'R1. la reentrega se RECONOCE y se corta antes de procesar', async () => {
+  // El observable no puede ser la fila en `mensajes`: el índice único ya
+  // impedía la fila repetida ANTES de este arreglo, así que esa aserción
+  // pasa con y sin la corrección y no demuestra nada. Lo que cambia es que
+  // el flujo se CORTA: se mira el log del servidor.
+  const wamid = `wamid.fw.reent.${sufijo}.1`;
+  const cuerpo = payload([cambioMensaje('Hola, quiero pedir', wamid)]);
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1500);
+  const antes = srv.obtenerSalida();
+  assert.ok(!/reentrega ignorada/.test(antes), 'la PRIMERA entrega no es una reentrega');
+
+  // Meta reintenta EXACTAMENTE el mismo sobre.
+  const r2 = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r2.status, 200, 'la reentrega se acusa igual: no es un error de Meta');
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  // Hay DOS cortes posibles, y los dos son correctos:
+  //   · a nivel de SOBRE  (`sobre ya procesado`), desde la constancia durable
+  //   · a nivel de MENSAJE (`reentrega ignorada`), por el wamid ya guardado
+  // El de sobre ocurre antes y es el que gana hoy. Se exige que corte por
+  // alguno de los dos: lo que no puede es seguir hasta procesar.
+  assert.match(despues, /reentrega ignorada|sobre ya procesado/,
+    'el flujo tiene que reconocerla y cortar; si no, el bot contesta dos veces');
+  assert.ok(despues.includes(String(wamid).slice(-12)),
+    'y decir de qué mensaje se trata, para poder auditarlo');
+});
+
+await t('REENTREGA', 'R2. y NO se registra dos veces en el historial', async () => {
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  const entrantes = msgs.filter((m) => m.texto === 'Hola, quiero pedir' && m.direccion === 'entrante');
+  assert.strictEqual(entrantes.length, 1, 'una sola fila para un solo mensaje del cliente');
+});
+
+await t('REENTREGA', 'R3. un wamid DISTINTO sí se procesa: no se rompe el flujo normal', async () => {
+  // La corrección no puede convertirse en un filtro que se coma mensajes
+  // legítimos. Dos mensajes distintos del mismo cliente son dos turnos.
+  const antes = srv.obtenerSalida();
+  const cuerpo = payload([cambioMensaje('Otra pregunta distinta', `wamid.fw.reent.${sufijo}.3`)]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  assert.ok(!/reentrega ignorada/.test(despues),
+    'un mensaje nuevo NO puede confundirse con una reentrega');
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Otra pregunta distinta' && m.direccion === 'entrante'),
+    'y tiene que registrarse como siempre');
+});
+
+// ═══ CONSTANCIA ANTES DEL ACUSE ════════════════════════════════════════════
+//
+// El webhook respondía `200` a Meta ANTES de escribir nada. Si el proceso
+// moría en esa ventana --un despliegue, un OOM-- el mensaje no existía para
+// nadie. Y lo grave no es la ventana: es que Meta YA tenía su 200, así que NO
+// lo reintenta. El cliente escribió y nadie se enteró nunca.
+await t('RECIBO', 'C1. el sobre queda anotado antes de contestarle a Meta', async () => {
+  const wamid = `wamid.fw.recibo.${sufijo}.1`;
+  const cuerpo = payload([cambioMensaje('Constancia primero', wamid)]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  // Sin esperar a que termine el proceso: la fila tiene que existir YA, porque
+  // se escribió antes del 200 que acabamos de recibir.
+  const { rows } = await pool.query(
+    `SELECT estado, intentos FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows.length, 1, 'la constancia se escribe ANTES del acuse, no después');
+  assert.strictEqual(Number(rows[0].intentos), 1);
+});
+
+await t('RECIBO', 'C2. y se cierra como procesado cuando termina', async () => {
+  await esperar(2000);
+  const { rows } = await pool.query(
+    `SELECT estado, procesado_at FROM webhook_entrante WHERE referencia = $1`,
+    [`wamid.fw.recibo.${sufijo}.1`]);
+  assert.strictEqual(rows[0].estado, 'procesado', 'sin esto, el arranque no sabría qué retomar');
+  assert.ok(rows[0].procesado_at, 'con su hora');
+});
+
+await t('RECIBO', 'C3. el MISMO sobre dos veces no se procesa dos veces', async () => {
+  const wamid = `wamid.fw.recibo.${sufijo}.2`;
+  const cuerpo = payload([cambioMensaje('Sobre repetido', wamid)]);
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1800);
+  const antes = srv.obtenerSalida();
+
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  assert.match(despues, /sobre ya procesado|reentrega ignorada/,
+    'la reentrega tiene que cortarse, no volver a procesarse');
+
+  const { rows } = await pool.query(
+    `SELECT count(*)::int n FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows[0].n, 1, 'una fila por sobre, no una por entrega');
+});
+
+await t('RECIBO', 'C4. la referencia sale del CONTENIDO, no del reloj', async () => {
+  // Es lo que hace que una reentrega choque con la fila anterior. Si llevara
+  // la hora o un aleatorio, cada reentrega crearía su propia fila y el
+  // mecanismo entero no serviría de nada.
+  const wamid = `wamid.fw.recibo.${sufijo}.3`;
+  const uno = payload([cambioMensaje('Mismo contenido', wamid)]);
+  await postWebhook(uno, { 'X-Hub-Signature-256': firmar(uno) });
+  await esperar(1500);
+  // El mismo wamid en un sobre construido de nuevo (otro instante).
+  const dos = payload([cambioMensaje('Mismo contenido', wamid)]);
+  await postWebhook(dos, { 'X-Hub-Signature-256': firmar(dos) });
+  await esperar(1200);
+  const { rows } = await pool.query(
+    `SELECT count(*)::int n FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows[0].n, 1, 'dos entregas del mismo contenido son UNA constancia');
+});
+
+// ═══ SOBRES CON VARIOS MENSAJES ════════════════════════════════════════════
+//
+// Meta puede mandar varios mensajes en un mismo sobre. El flujo procesaba
+// `messages[0]` y descartaba el resto EN SILENCIO: el cliente manda dos
+// mensajes seguidos, Meta los agrupa, y el segundo no existe para nadie.
+//
+// Punto 4 de la auditoría del asistente ("procesar todos los mensajes del
+// sobre").
+await t('SOBRE', 'S1. los DOS mensajes de un mismo sobre se registran', async () => {
+  const base = `wamid.fw.sobre.${sufijo}`;
+  const cuerpo = payload([{
+    field: 'messages',
+    value: {
+      messaging_product: 'whatsapp', metadata: { phone_number_id: PNID_F },
+      contacts: [{ profile: { name: 'Cliente Firma' }, wa_id: TEL_CLIENTE }],
+      messages: [
+        { from: TEL_CLIENTE, id: `${base}.1`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Primero del sobre' } },
+        { from: TEL_CLIENTE, id: `${base}.2`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Segundo del sobre' } },
+      ],
+    },
+  }]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(2000);
+
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Primero del sobre' && m.direccion === 'entrante'),
+    'el primero se registraba desde siempre');
+  assert.ok(msgs.some((m) => m.texto === 'Segundo del sobre' && m.direccion === 'entrante'),
+    'el SEGUNDO se descartaba en silencio: el cliente lo escribió y no existía para nadie');
+});
+
+await t('SOBRE', 'S2. un mensaje roto del sobre no se lleva por delante a los demás', async () => {
+  // Cada mensaje va en su propio try. Si el primero revienta, el segundo tiene
+  // que atenderse igual: son dos cosas que dijo el cliente.
+  const base = `wamid.fw.sobreroto.${sufijo}`;
+  const cuerpo = payload([{
+    field: 'messages',
+    value: {
+      messaging_product: 'whatsapp', metadata: { phone_number_id: PNID_F },
+      contacts: [{ profile: { name: 'Cliente Firma' }, wa_id: TEL_CLIENTE }],
+      messages: [
+        // Sin `type`: el flujo lo descarta, y eso no puede detener al resto.
+        { from: TEL_CLIENTE, id: `${base}.1`, timestamp: `${Math.floor(Date.now() / 1000)}` },
+        { from: TEL_CLIENTE, id: `${base}.2`, timestamp: `${Math.floor(Date.now() / 1000)}`, type: 'text', text: { body: 'Sobrevivo al roto' } },
+      ],
+    },
+  }]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(2000);
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Sobrevivo al roto' && m.direccion === 'entrante'),
+    'el mensaje válido del sobre tiene que llegar aunque su vecino no sirva');
+});
+
+// La prueba de PARTNER_REMOVED (FLUJOS 10) deja la integracion DESCONECTADA,
+// y a partir de ahi todo mensaje se descarta por fail closed. Estas van antes
+// a proposito: puestas despues pasaban sin comprobar nada.
 await t('FLUJOS', '10. firma válida + PARTNER_REMOVED → marca desconectado', async () => {
   const cuerpo = payload([{ field: 'account_update', value: { event: 'PARTNER_REMOVED', waba_info: { waba_id: WABA_F } } }]);
   const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
@@ -239,12 +423,17 @@ await t('SEGURIDAD', '16. la comparación de firmas es timing-safe (no igualdad 
     'no compara firmas con === de strings');
 });
 
+
+
+
 } finally {
   srv.detener();
   await new Promise((r) => { srv.proc.once('exit', r); setTimeout(r, 3000); });
   await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = $1 AND identificador = $2`, [NEG_A, PNID_F]).catch(() => {});
   await pool.query(`DELETE FROM mensajes WHERE negocio_id = $1 AND telefono LIKE '52879${sufijo}%'`, [NEG_A]).catch(() => {});
-  await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52879${sufijo}%'`).catch(() => {});
+
+
+await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52879${sufijo}%'`).catch(() => {});
 }
 
 console.log(`\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
