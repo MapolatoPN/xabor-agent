@@ -111,7 +111,7 @@ import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
-import whatsappRouter, { enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
+import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
@@ -3675,7 +3675,14 @@ app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('
 // Conversaciones WhatsApp
 app.get('/api/conversaciones', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
   const lista = await obtenerConversacionesRecientes(req.negocioId, 20);
-  res.json(lista);
+  try {
+    const {rows:revisiones}=await pool.query(`SELECT c.telefono,m.nombre,m.texto,m.direccion,m.timestamp,true AS "requiereRevision"
+      FROM whatsapp_conversaciones c LEFT JOIN LATERAL
+        (SELECT nombre,texto,direccion,timestamp FROM mensajes WHERE negocio_id=c.negocio_id AND telefono=c.telefono ORDER BY id DESC LIMIT 1) m ON true
+      WHERE c.negocio_id=$1 AND c.requiere_revision ORDER BY c.actualizado_at LIMIT 20`,[req.negocioId]);
+    const telefonos=new Set(revisiones.map(r=>r.telefono));
+    res.json([...revisiones,...lista.filter(r=>!telefonos.has(r.telefono))]);
+  } catch(e) { console.error('[wa-continuidad] bandeja:',e.message);res.status(503).json({error:'No se pudo consultar el estado de las conversaciones.'}); }
 });
 
 app.get('/api/conversacion/:telefono', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
@@ -4317,6 +4324,20 @@ async function cambiarAtencionConversacion(req, res, pausado) {
     // solo sale DESPUÉS del commit.
     await client.query('BEGIN');
     const anterior = await getBotPausado(telefono, negocioId, client);
+    if (!pausado) {
+      const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS ok',[`wa:${negocioId}:${telefono}`]);
+      if (!lock.rows[0].ok) { await client.query('ROLLBACK'); return res.status(409).json({error:'El asistente aún está terminando este turno. Intenta nuevamente en un momento.'}); }
+      const {rows:[control]} = await client.query('SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE',[negocioId,telefono]);
+      if (control?.requiere_revision) {
+        if(req.body?.revisionConfirmada !== true) { await client.query('ROLLBACK'); return res.status(409).json({error:'Revisa la conversación y los pedidos registrados antes de devolverla al bot.',requiereRevision:true}); }
+        const {rows:[ultimo]}=await client.query('SELECT max(id)::text AS id FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
+        if(String(req.body.hastaEntrada || '') !== String(ultimo.id || '')) { await client.query('ROLLBACK'); return res.status(409).json({error:'Llegaron mensajes nuevos. Vuelve a abrir la conversación y revísalos antes de reactivar.',requiereRevision:true}); }
+        // Acuse humano: no reejecuta ni cancela ventas. El próximo mensaje
+        // inicia ciclo nuevo; los anteriores quedaron atendidos manualmente.
+        await client.query(`UPDATE whatsapp_entradas SET estado='revisado',actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`,[negocioId,telefono]);
+        await client.query(`UPDATE whatsapp_conversaciones SET requiere_revision=false,motivo=NULL,sesion=NULL,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[negocioId,telefono]);
+      }
+    }
     await upsertControlConversacion(telefono, pausado, negocioId, req.usuarioId, client);
     await registrarAuditoriaPlataforma({
       ...actor, accion: pausado ? 'tomar_conversacion' : 'devolver_conversacion_bot',
@@ -4347,7 +4368,8 @@ app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModu
   const [pausado, botWhatsappActivo] = await Promise.all([
     getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
   ]);
-  res.json({ pausado, botWhatsappActivo });
+  const {rows:[control]} = await pool.query('SELECT requiere_revision,(SELECT max(id)::text FROM whatsapp_entradas e WHERE e.negocio_id=c.negocio_id AND e.telefono=c.telefono) AS ultima FROM whatsapp_conversaciones c WHERE negocio_id=$1 AND telefono=$2',[req.negocioId,req.params.telefono]);
+  res.json({ pausado: pausado || !!control?.requiere_revision, botWhatsappActivo, requiereRevision:!!control?.requiere_revision,hastaEntrada:control?.ultima || null });
 });
 
 // ─── Documentos PDF en el chat ────────────────────────────────────────────────
@@ -8675,6 +8697,7 @@ async function arrancar() {
   console.log(`[Startup] Pedidos cargados: ${cargados}`);
   await cargarConfig();
   await cargarIntegraciones();
+  await iniciarContinuidadWA();
 
   appReady = true;
   await new Promise((resolve, reject) => {

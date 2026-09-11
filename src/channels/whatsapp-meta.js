@@ -8,7 +8,8 @@ import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
-import { encolarMensaje } from '../utils/colaMensajes.js';
+import { crearContinuidad } from '../services/whatsappContinuidad.js';
+import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
@@ -36,7 +37,7 @@ import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/dire
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
-import { agregarMensaje, restaurarPreviewPedido } from '../agent/session.js';
+import { agregarMensaje, restaurarSesion, getSession } from '../agent/session.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -161,6 +162,7 @@ export async function enviarMensaje(telefono, texto, credenciales) {
   const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json'
@@ -178,7 +180,9 @@ export async function enviarMensaje(telefono, texto, credenciales) {
     const err = await resp.json();
     throw new Error(`Meta API: ${JSON.stringify(err)}`);
   }
-  return resp.json();
+  const respuesta = await resp.json();
+  if (!respuesta?.messages?.[0]?.id) throw new Error('META_NO_CONFIRMÓ_ENVIO');
+  return respuesta;
 }
 
 // ─── Enviar plantilla xabor_nuevo_servicio_reparto (oferta, SIN datos sensibles) ──
@@ -606,6 +610,7 @@ async function marcarLeido(messageId, credenciales) {
   try {
     await fetch(`${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`, {
       method: 'POST',
+      signal: AbortSignal.timeout(5000),
       headers: {
         'Authorization': `Bearer ${credenciales.accessToken}`,
         'Content-Type': 'application/json'
@@ -677,6 +682,7 @@ async function manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenc
 // por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
 // ni se usa un fallback aquí adentro.
 async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
+  let falloDuranteInterpretacion = false;
   // Fase A (aislamiento de WhatsApp): credenciales resueltas UNA sola vez
   // aquí, para ESTE negocio, y pasadas explícitamente a cada envío de
   // esta función -- nunca se vuelve a resolver por punto de envío, nunca
@@ -997,7 +1003,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // filtro por canal de describirPromocionesVigentes (canales.includes(canal))
       // descartara TODAS las promociones estructuradas en WhatsApp — el default
       // 'whatsapp' de esa función solo cubre undefined, nunca null.
+      falloDuranteInterpretacion = true;
       resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono);
+      falloDuranteInterpretacion = false;
     } finally {
       clearTimeout(waitTimer);
     }
@@ -1102,16 +1110,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           resultado.orden = null;
         } else {
           console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
-          // La escritura falló por causas técnicas (no por la orden en sí). Si
-          // esta confirmación venía del snapshot canónico, se REACTIVA: el
-          // cliente ya dijo que sí y no debe rearmar el pedido — con volver a
-          // confirmar basta. Nunca se reactiva si el pedido llegó a crearse.
-          if (resultado.desdeSnapshot && resultado.snapshot) {
-            restaurarPreviewPedido(sessionId, resultado.snapshot);
-            console.warn(`[TXN] evento=snapshot_restaurado_tras_fallo negocio=${negocioId}`);
-          }
-          await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
-          return;
+          // Una conexión puede caer después del COMMIT: no revivir el preview
+          // ni sugerir otro intento de compra sin revisar el resultado.
+          throw e; // Una escritura de resultado incierto requiere revisión, no otro folio.
         }
       }
       if (pedido) {
@@ -1309,13 +1310,22 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Si el envío de esta disculpa también falla, se registra y se acaba
     // aquí: nunca un reintento en bucle.
     try {
-      const msgFallo = 'Disculpa, tuve un problema al procesar tu mensaje. ¿Puedes intentarlo de nuevo en un momento?';
+      const msgFallo = falloDuranteInterpretacion
+        ? 'Disculpa, tuve un problema al procesar tu mensaje. ¿Puedes intentarlo de nuevo en un momento?'
+        : 'Hubo una interrupción al atender tu mensaje. Antes de repetir el pedido, el personal debe revisar si quedó registrado. La conversación quedó señalada para revisión.';
       await enviarMensaje(telefono, msgFallo, credenciales);
       const msgErr = await guardarMensaje(telefono, nombreMeta, 'saliente', msgFallo, negocioId, 'bot');
       if (msgErr && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgErr });
+      if (falloDuranteInterpretacion) {
+        // Este canal todavía no empezó a registrar la orden. El turno falló
+        // de forma conocida y fue avisado: el siguiente mensaje puede seguir.
+        agregarMensaje(`meta-${negocioId}-${telefono}`,'assistant',msgFallo);
+        return;
+      }
     } catch (errorAviso) {
       console.error(`[Meta WA] Tampoco se pudo avisar del fallo al cliente: ${errorAviso.message}`);
     }
+    throw error;
   }
 }
 
@@ -1500,64 +1510,40 @@ function firmaWebhookValida(req) {
   return timingSafeEqual(esperada, recibida);
 }
 
-// ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
+// ─── Recepción durable: se confirma únicamente después del COMMIT ───
 router.post('/', async (req, res) => {
-  // La firma se valida ANTES de responder y antes de CUALQUIER efecto.
-  if (!firmaWebhookValida(req)) {
-    console.warn('[Meta WA] Webhook rechazado: X-Hub-Signature-256 ausente o inválida (403)');
-    return res.sendStatus(403);
-  }
-  res.sendStatus(200); // Meta requiere 200 inmediato
-
+  if (!firmaWebhookValida(req)) return res.sendStatus(403);
+  if (req.body.object !== 'whatsapp_business_account') return res.sendStatus(200);
   try {
-    const body = req.body;
-    if (body.object !== 'whatsapp_business_account') return;
-
-    // Coexistence: los campos duales pueden venir en cualquier entry/change
-    // del payload; se despachan TODOS aparte, antes y sin pasar por el
-    // flujo de mensajes de cliente.
-    for (const entrada of body.entry || []) {
+    const entradas = [];
+    for (const entrada of req.body.entry || []) {
       for (const cambio of entrada.changes || []) {
-        if (CAMPOS_COEXISTENCE.has(cambio?.field)) await procesarCambioCoexistence(cambio);
+        if (CAMPOS_COEXISTENCE.has(cambio?.field)) { await procesarCambioCoexistence(cambio); continue; }
+        const value = cambio.value;
+        if (value?.statuses?.length) await procesarStatusesWebhook(value.statuses);
+        const phoneNumberId = value?.metadata?.phone_number_id;
+        const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp',phoneNumberId) : null;
+        if (!integracion) continue;
+        for (const message of value?.messages || []) {
+          if (!['text','image','document'].includes(message.type)) continue;
+          entradas.push({negocioId:integracion.negocioId,telefono:message.from,wamid:message.id,
+            payload:{message,value:{metadata:value.metadata,contacts:value.contacts}}});
+        }
       }
     }
+    const mensajes = await continuidadWA.recibir(entradas);
+    res.sendStatus(200);
+    for (const mensaje of mensajes) if(wsBroadcast) wsBroadcast(mensaje.negocio_id,{tipo:'nuevo_mensaje',mensaje});
+  } catch(error) {
+    console.error('[Meta WA] recepción no asegurada:',error.message);
+    if(!res.headersSent) res.sendStatus(503);
+  }
+});
 
-    // Flujo normal (idéntico al de siempre): primer change que NO sea de
-    // coexistence. Cuando no hay campos de coexistence esto es exactamente
-    // el changes[0] histórico.
-    const cambioNormal = body.entry?.[0]?.changes?.find((c) => !CAMPOS_COEXISTENCE.has(c?.field));
-    const value   = cambioNormal?.value;
-
-    // Estado de entrega (sent/delivered/read/failed) -- payload distinto
-    // al de mensajes entrantes (ver diagnóstico repartidores: esto se
-    // descartaba en silencio antes). Se procesa aparte y siempre, exista o
-    // no un mensaje entrante en el mismo payload (Meta nunca manda ambos
-    // juntos en la práctica, pero no se asume).
-    if (value?.statuses?.length) {
-      await procesarStatusesWebhook(value.statuses);
-    }
-
-    const message = value?.messages?.[0];
-    // 'document'/'image' se aceptan además de 'text' (aditivo -- cualquier
-    // otro tipo sigue descartándose exactamente igual que antes).
-    if (!message || (message.type !== 'text' && message.type !== 'document' && message.type !== 'image')) return;
-
-    // negocioId (Incidente P0): se resuelve EXCLUSIVAMENTE contra
-    // integraciones_canal usando el phone_number_id que manda Meta en el
-    // propio payload del webhook -- nunca de un valor que el cliente HTTP
-    // pudiera controlar, nunca adivinado. Si el phone_number_id no está
-    // mapeado a ningún negocio, el mensaje se descarta (fail closed): no
-    // se guarda, no se procesa con el bot, no se usa Nonna Maye como
-    // relleno. Esto requiere que integraciones_canal tenga una fila para
-    // 'whatsapp' antes de desplegar este cambio (ver plan de deploy).
+async function prepararMensajePersistido({value,message}, negocioId) {
     const phoneNumberId = value?.metadata?.phone_number_id;
-    const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp', phoneNumberId) : null;
-    if (!integracion) {
-      console.error(`[Meta WA] Webhook sin negocio mapeado para phone_number_id=${phoneNumberId || '(vacío)'} — mensaje descartado (fail closed)`);
-      return;
-    }
-    const negocioId = integracion.negocioId;
-
+    const integracionActual = await obtenerIntegracionCanal('whatsapp',phoneNumberId);
+    if(integracionActual?.negocioId !== negocioId) throw new Error('CANAL_CAMBIO_DE_NEGOCIO');
     // Compradores autorizados por negocio: fotos y comandos explícitos se
     // resuelven antes del agente de pedidos, con las credenciales del tenant.
     if (message.type === 'image' || message.type === 'text') {
@@ -1617,10 +1603,7 @@ router.post('/', async (req, res) => {
     // no se archiva (módulo apagado, MIME no soportado). Guardarla aquí
     // dependía del índice único por wamid para no duplicar la burbuja, y
     // además escribiría la marca interna del turno en el chat.
-    if (message.type !== 'image') {
-      const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId, 'cliente', messageId);
-      if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
-    }
+    // Los textos ya quedaron guardados y publicados al confirmar recepción.
     if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
     await marcarLeido(messageId, credenciales);
     // Tracking de respuesta a campañas (background, no bloquea)
@@ -1692,10 +1675,12 @@ router.post('/', async (req, res) => {
       // más abajo. No hay "return" aquí a propósito.
     }
 
-    // Procesamiento con Claude — debounced 6 segundos
-    // Si el cliente manda varios mensajes seguidos, se combinan en uno
-    console.log(`[Meta WA] Bot de WhatsApp activo para el negocio ${negocioId} — encolando para procesar con IA`);
-    encolarMensaje(`${negocioId}:${telefono}`, texto, async (textoCombinado) => {
+
+    return { telefono,texto,nombreMeta,negocioId };
+}
+
+async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, negocioId) {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
       // INVARIANTE: este turno termina en un mensaje al cliente, siempre.
       //
       // Vision corre PRIMERO (fuera del camino del webhook: esto ya corre
@@ -1729,16 +1714,35 @@ router.post('/', async (req, res) => {
           await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
         } catch (e) {
           console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
+          throw e;
         }
         return;
       }
       await procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
-    });
+}
 
-  } catch (error) {
-    console.error('[Meta WA] Error:', error.message);
+const continuidadWA = crearContinuidad({
+  pool,
+  locks: { connect: () => poolDeClaims().connect() },
+  cargarSesion: async (n,t,sesion) => restaurarSesion(`meta-${n}-${t}`,sesion),
+  leerSesion: async (n,t) => getSession(`meta-${n}-${t}`),
+  procesar: async (payloads,n,t) => {
+    const preparados = [];
+    for (const p of payloads) {
+      const r = await prepararMensajePersistido(p,n);
+      if(r) preparados.push(r);
+    }
+    // Una persona pudo tomar el chat mientras descargábamos una imagen.
+    if(await getBotPausado(t,n) || await getTakeoverHumanoActivo(t,n) || !await obtenerBotWhatsappActivoNegocio(n)) return;
+    if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
+  },
+  alRevision: async (n,t,motivo) => {
+    await setBotPausado(t,true,n);
+    if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true});
+    if(wsBroadcast) wsBroadcast(n,{tipo:'alerta_transaccional',subtipo:motivo,telefono:t});
   }
 });
+export const iniciarContinuidadWA = () => continuidadWA.iniciar();
 
 // ─── Enrutamiento repartidor/cliente (incidencia real, piloto Nonna Maye) ───
 // Antes de este cambio, la sola existencia de una fila en `repartidores`

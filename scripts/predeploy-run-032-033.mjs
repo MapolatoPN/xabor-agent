@@ -78,6 +78,7 @@ const SCRIPTS = [
   // solo una columna nullable. Corre ANTES de que el binario nuevo la lea.
   '068-promo-condiciones-modificadores',
   '070-compras-pagos-fondos',
+  '076-whatsapp-continuidad',
 ];
 
 for (const nombre of SCRIPTS) {

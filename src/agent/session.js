@@ -14,6 +14,16 @@ export function deleteSession(sessionId) {
   sessions.delete(sessionId);
 }
 
+// Solo el coordinador autenticado de WhatsApp restaura snapshots persistidos.
+// JSON clonado: ninguna sesión comparte referencias con otra conversación.
+export function restaurarSesion(sessionId, snapshot) {
+  const copia = snapshot ? JSON.parse(JSON.stringify(snapshot)) : createSession(sessionId);
+  if (!Array.isArray(copia.mensajes) || !copia.pedido) throw new Error('SESION_INVALIDA');
+  copia.id = sessionId;
+  sessions.set(sessionId, copia);
+  return copia;
+}
+
 export function getAllSessions() {
   return Array.from(sessions.values());
 }

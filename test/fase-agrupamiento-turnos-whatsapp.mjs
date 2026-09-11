@@ -200,10 +200,10 @@ await t('J. hay un solo turno pendiente por conversacion', async () => {
 
 await t('K. en produccion la ventana sigue siendo la de 6 segundos', () => {
   assert.strictEqual(VENTANA_AGRUPAMIENTO_MS, 6000, 'esta correccion no cambia la ventana');
-  assert.ok(/encolarMensaje\(`\$\{negocioId\}:\$\{telefono\}`, texto,/.test(FUENTE),
-    'el webhook debe seguir usando la cola compartida con la clave por negocio');
-  assert.ok(/from '\.\.\/utils\/colaMensajes\.js'/.test(FUENTE),
-    'la cola debe ser la unica fuente de verdad, importada, no una copia local');
+  const durable = readFileSync(join(__dirname,'..','src','services','whatsappContinuidad.js'),'utf8');
+  assert.match(durable,/ventanaMs = 6000/);
+  assert.match(FUENTE,/continuidadWA.recibir\(entradas\)/,'el webhook debe persistir los mensajes antes de contestar');
+  assert.match(durable,/WHERE negocio_id=\$1 AND telefono=\$2/,'el lote pertenece a una conversación del negocio');
 });
 
 // ── Contratos estructurales: la causa exacta del smoke C ────────────────────

@@ -161,6 +161,8 @@ const TEL_DEDUP = '5218789950021';
 const TEL_SIN_WA = '5218789950030';
 
 await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187899500%'`);
+await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono LIKE '52187899500%'`, [[SEED.negocioA,SEED.negocioB]]);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono LIKE '52187899500%'`, [[SEED.negocioA,SEED.negocioB]]);
 await pool.query(`DELETE FROM documentos WHERE telefono LIKE '52187899500%'`);
 await pool.query(`INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Cliente Img A',$2) ON CONFLICT (telefono) DO UPDATE SET negocio_id = $2`, [TEL_A1, SEED.negocioA]);
 await pool.query(`INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Cliente Img A2',$2) ON CONFLICT (telefono) DO UPDATE SET negocio_id = $2`, [TEL_A2, SEED.negocioA]);
@@ -218,6 +220,8 @@ await t('FRONTEND', 'botón adjuntar imagen existe y está gateado por data-modu
 });
 
 const metaMock = await arrancarMetaMock();
+const botAnterior=(await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id=$1',[SEED.negocioA])).rows[0].bot_whatsapp_activo;
+await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[SEED.negocioA]);
 const srv = await arrancarServidor({ PORT: PUERTO, META_GRAPH_BASE_URL: metaMock.baseUrl }, { timeoutMs: 30000 });
 
 try {
@@ -387,7 +391,14 @@ try {
       } }] }],
     };
     await fetch(srv.base + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    await new Promise(r => setTimeout(r, 500));
+    const limite = Date.now() + 15000;
+    while (true) {
+      const {rows}=await pool.query("SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2",[SEED.negocioA,wamid]);
+      const {rows:archivos}=await pool.query("SELECT estado FROM documentos WHERE negocio_id=$1 AND telefono=$2",[SEED.negocioA,telefono]);
+      if(rows.length && !['pendiente','procesando'].includes(rows[0].estado) && archivos.every(d=>d.estado!=='pendiente')) break;
+      assert.ok(Date.now()<limite,'El worker debe finalizar la recepción y el archivo');
+      await new Promise(r=>setTimeout(r,80));
+    }
   }
 
   await t('ENTRANTE', 'imagen entrante aparece en la conversación', async () => {
@@ -457,6 +468,7 @@ try {
   });
 } finally {
   srv.detener();
+  await pool.query('UPDATE negocios SET bot_whatsapp_activo=$2 WHERE id=$1',[SEED.negocioA,botAnterior]);
   metaMock.detener();
   await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave IN ('int_wa_phone_id','int_wa_token')`, [SEED.negocioA]);
 }

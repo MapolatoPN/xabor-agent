@@ -67,6 +67,9 @@ await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave
 // esta suite son propios (52187810xx...), limpiarlos siempre hace la suite
 // re-ejecutable y determinista sin importar cómo terminó la corrida previa.
 await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '52187810%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono LIKE '52187810%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono LIKE '52187810%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id = ANY($1) AND telefono LIKE '52187810%'`, [[SEED.negocioA, SEED.negocioB]]);
 await pool.query(`DELETE FROM perfiles_clientes WHERE telefono LIKE '52187810%'`);
 await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52187810%'`);
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = ANY($1)`, [[SEED.negocioA, SEED.negocioB]]);
@@ -160,6 +163,13 @@ await t('AISLAMIENTO', 'HTTP: GET estado-bot de un teléfono pausado en A, consu
       const tel = '5218781004001';
       const antesLen = srv.obtenerSalida().length;
       await simularWebhook(PNID_A, tel, 'hola, quiero ver el menú');
+      const limite = Date.now() + 12000;
+      while (true) {
+        const { rows: pendientes } = await pool.query("SELECT 1 FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('pendiente','procesando')", [SEED.negocioA, tel]);
+        if (!pendientes.length) break;
+        assert.ok(Date.now() < limite, 'La recepción durable debe terminar también con el bot apagado');
+        await new Promise(r => setTimeout(r, 50));
+      }
       const salidaNueva = srv.obtenerSalida().slice(antesLen);
       assert.ok(salidaNueva.includes(`Bot de WhatsApp desactivado para el negocio ${SEED.negocioA}`));
       assert.ok(!salidaNueva.includes('encolando para procesar con IA'));

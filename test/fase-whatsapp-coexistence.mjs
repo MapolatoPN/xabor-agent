@@ -29,6 +29,9 @@ const HTML = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
 
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool, guardarMensaje, getBotPausado, setBotPausado } = await import('../src/services/database.js');
+// Los métodos invocados en ESTE proceso también necesitan el mock; la
+// variable del servidor hijo no configura el proceso de la suite.
+process.env.META_EMBEDDED_SIGNUP_MOCK = 'true';
 const integraciones = await import('../src/services/integracionesService.js');
 
 let pasadas = 0, fallidas = 0;
