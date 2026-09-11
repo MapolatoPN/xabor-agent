@@ -2,6 +2,7 @@ import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obt
 import { camposParaPrompt } from './comercialMarkers.js';
 import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
+import { TZ_DEFAULT, esZonaValida } from '../services/zonaHoraria.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -165,7 +166,14 @@ export async function cargarReglas(negocioId) {
     const crudo = cfg.reglas_atencion;
     if (!crudo) return REGLAS_POR_DEFECTO;
     const parsed = JSON.parse(crudo);
-    return validarEstructuraReglas(parsed) ? parsed : REGLAS_POR_DEFECTO;
+    if (!validarEstructuraReglas(parsed)) return REGLAS_POR_DEFECTO;
+    // La zona NO vive dentro de reglas_atencion (es su propia clave de
+    // configuracion, la que se elige en Config -> Operacion): se adjunta aquí
+    // para que todo lo que ya recibe `reglas` la tenga sin cambiar ninguna
+    // firma. Nunca se persiste de vuelta dentro de reglas_atencion.
+    const zona = String(cfg.timezone || '').trim();
+    if (esZonaValida(zona)) parsed.timezone = zona;
+    return parsed;
   } catch (e) {
     console.error(`[Prompts] Error cargando reglas de negocio ${negocioId}, usando default:`, e.message);
     return REGLAS_POR_DEFECTO;
@@ -263,8 +271,11 @@ function formatearMenu(categorias) {
 // Exportada para validadorOrden.js (P0) -- misma razón que cargarReglas.
 export function obtenerEstadoRestaurante(reglas) {
   const ahora = new Date();
-  // Hora de México (Matamoros: CDT=UTC-5 en verano, CST=UTC-6 en invierno)
-  const horaMX = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Matamoros' }));
+  // La zona la trae el negocio (cargarReglas la adjunta desde
+  // configuracion.timezone). Antes estaba escrita a mano, así que un negocio
+  // fuera de la frontera tenía al bot diciendo una hora que no era la suya.
+  const zona = (reglas && reglas.timezone) || TZ_DEFAULT;
+  const horaMX = new Date(ahora.toLocaleString('en-US', { timeZone: zona }));
   const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
   const diaActual = diasSemana[horaMX.getDay()];
   const horaActual = horaMX.getHours() + horaMX.getMinutes() / 60;
@@ -310,7 +321,7 @@ export function obtenerEstadoRestaurante(reglas) {
     return horaActual >= hIni && horaActual < hFin;
   });
 
-  // Calcular offset UTC real de America/Matamoros en este momento
+  // Calcular el desfase UTC real de la zona del negocio en este momento
   const offsetMin = -Math.round((ahora - horaMX) / 60000); // diferencia en minutos
   const offsetH   = Math.floor(Math.abs(offsetMin) / 60);
   const offsetM   = Math.abs(offsetMin) % 60;

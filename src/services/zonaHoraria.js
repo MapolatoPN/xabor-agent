@@ -177,6 +177,27 @@ export function instanteDesdeEntrada(texto, zona) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** 'YYYY-MM-DD': el día de calendario que se está viviendo en `zona`. */
+export function fechaHoyEn(zona, ahora = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: zona }).format(ahora);
+}
+
+/**
+ * El instante real en que empezó (o empieza) el día de calendario de `ahora`
+ * en `zona`. Es el corte que decide a qué día operativo pertenece una venta,
+ * así que se calcula con `desdeHoraLocal` —la misma pieza que ya está
+ * probada— en vez de con un ida y vuelta por `toLocaleString`.
+ */
+export function inicioDelDiaEn(zona, ahora = new Date()) {
+  return desdeHoraLocal(`${fechaHoyEn(zona, ahora)}T00:00`, zona);
+}
+
+/** Minutos transcurridos del día en `zona` (0 = medianoche). */
+export function minutosDelDiaEn(zona, ahora = new Date()) {
+  const hm = aHoraLocal(ahora, zona).slice(11);
+  return (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5));
+}
+
 /** "2026-09-15T20:00" — la hora de pared en `zona` para ese instante. */
 export function aHoraLocal(fecha, zona) {
   const fmt = new Intl.DateTimeFormat('en-CA', {

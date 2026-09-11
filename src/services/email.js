@@ -1,3 +1,4 @@
+import { TZ_DEFAULT } from './zonaHoraria.js';
 // ─── Servicio de correo ─────────────────────────────────────────────────────
 // Proveedor: Resend, llamado directo por fetch a su API REST (sin agregar
 // una dependencia npm nueva). RESEND_API_KEY se lee únicamente de la
@@ -146,7 +147,7 @@ function plantillaNuevoProspecto(p) {
     ['Tipo de negocio', p.tipoNegocio],
     ['Volumen aproximado de mensajes', p.volumenMensajes || 'No especificado'],
     ['Comentario', p.comentario || 'Sin comentarios adicionales'],
-    ['Fecha', new Date(p.createdAt || Date.now()).toLocaleString('es-MX', { timeZone: 'America/Matamoros' })],
+    ['Fecha', new Date(p.createdAt || Date.now()).toLocaleString('es-MX', { timeZone: TZ_DEFAULT })],
   ];
   const enlace = `${PUBLIC_URL_BASE}/superadmin?prospecto=${encodeURIComponent(p.id)}`;
 

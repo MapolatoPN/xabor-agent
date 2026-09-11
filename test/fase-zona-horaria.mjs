@@ -16,12 +16,14 @@
 // `TZ=UTC` (producción), sin `TZ` (Windows local) o con cualquier otra. El
 // caso 8 lo comprueba de frente.
 import assert from 'assert';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import {
   TZ_DEFAULT, ZONAS_MEXICO, ZONAS_CATALOGO, esZonaValida, zonasDisponibles,
   offsetEnZona, desdeHoraLocal, esHoraLocalSinZona, instanteDesdeEntrada, aHoraLocal,
 } from '../src/services/zonaHoraria.js';
 import { validarProgramacion, LIMITE_DIAS_PROGRAMADO } from '../src/services/tiendaCheckout.js';
+import { obtenerEstadoRestaurante } from '../src/agent/prompts.js';
+import { normalizarFechaEvento } from '../src/agent/normalizarFecha.js';
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -307,6 +309,85 @@ t('21. el campo crudo de fecha y hora ya no existe en la tienda', () => {
     'volvió el <input type="datetime-local">: mandaba hora sin zona a un servidor que la leía en la suya');
   assert.ok(/class="dias"/.test(html) && /class="horas"/.test(html), 'falta el selector de día y hora');
 });
+
+// ─── 22-25. La zona deja de estar escrita a mano en el resto del sistema ───
+
+t('22. el reloj del bot sigue la zona del negocio', () => {
+  // Dos negocios con el MISMO horario y zonas distintas: a la misma hora
+  // absoluta, uno está abierto y el otro no. Antes ambos usaban la zona
+  // escrita en prompts.js, asi que el bot le decia a los dos lo mismo.
+  const ahora = new Date();
+  const horaEn = (zona) => Number(new Intl.DateTimeFormat('en-CA',
+    { timeZone: zona, hour: '2-digit', hourCycle: 'h23' }).format(ahora));
+  const dias = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+  // Cancún (UTC-5) y Tijuana (UTC-8/-7) están siempre a 3 horas.
+  const abierta = horaEn('America/Cancun');
+  const reglasCon = (zona) => ({
+    timezone: zona,
+    horarios: Object.fromEntries(dias.map(d => [d, {
+      abierto: true,
+      apertura: `${String(abierta).padStart(2, '0')}:00`,
+      cierre: `${String((abierta + 1) % 24).padStart(2, '0')}:00`,
+    }])),
+    pedidos: {}, promociones: [],
+  });
+  if (abierta === 23) return;  // la ventana cruzaría medianoche: sin señal limpia
+  const enCancun = obtenerEstadoRestaurante(reglasCon('America/Cancun'));
+  const enTijuana = obtenerEstadoRestaurante(reglasCon('America/Tijuana'));
+  assert.strictEqual(enCancun.abierto, true, 'debería estar abierto en su propia zona');
+  assert.strictEqual(enTijuana.abierto, false,
+    'con la misma ventana horaria y tres husos de diferencia no puede estar abierto también');
+});
+
+t('23. sin zona propia, el bot se comporta igual que antes', () => {
+  // La red de seguridad del cambio: un negocio que nunca eligió zona tiene
+  // que seguir viendo exactamente la hora de siempre.
+  const dias = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+  const horarios = Object.fromEntries(dias.map(d => [d, { abierto: true, apertura: '00:00', cierre: '23:59' }]));
+  const sinZona = obtenerEstadoRestaurante({ horarios, pedidos: {}, promociones: [] });
+  const conDefault = obtenerEstadoRestaurante({ timezone: TZ_DEFAULT, horarios, pedidos: {}, promociones: [] });
+  assert.strictEqual(sinZona.diaActual, conDefault.diaActual);
+  assert.strictEqual(sinZona.abierto, conDefault.abierto);
+});
+
+t('24. normalizarFechaEvento resuelve "hoy" en la zona que se le pase', () => {
+  // 2026-09-16T05:30Z: en Cancún ya es día 16 (00:30) y en Tijuana todavía es
+  // día 15 (22:30). "Hoy" no es lo mismo para los dos.
+  const ahora = new Date('2026-09-16T05:30:00Z');
+  assert.strictEqual(normalizarFechaEvento('hoy', { ahora, zona: 'America/Cancun' }).iso, '2026-09-16');
+  assert.strictEqual(normalizarFechaEvento('hoy', { ahora, zona: 'America/Tijuana' }).iso, '2026-09-15');
+  // Sin zona explícita se comporta como siempre (Matamoros: 00:30 del 16).
+  assert.strictEqual(normalizarFechaEvento('hoy', { ahora }).iso, '2026-09-16');
+});
+
+t('25. no quedan zonas escritas a mano fuera de su módulo', () => {
+  // Guardia contra la reincidencia: el literal vive en zonaHoraria.js y en
+  // ningún otro lado. La única excepción es clip-api.js, que usa CDMX por una
+  // razón distinta y documentada (es la zona que espera la API de Clip), no
+  // como respaldo de la del negocio.
+  const raiz = new URL('../src/', import.meta.url);
+  const permitidos = new Set(['services/zonaHoraria.js', 'services/clip-api.js']);
+  const culpables = [];
+  const recorrer = (dir, prefijo = '') => {
+    for (const e of readdirSync(new URL(dir, raiz), { withFileTypes: true })) {
+      const rel = prefijo + e.name;
+      if (e.isDirectory()) { recorrer(dir + e.name + '/', rel + '/'); continue; }
+      if (!e.name.endsWith('.js')) continue;
+      if (permitidos.has(rel)) continue;
+      const src = readFileSync(new URL(dir + e.name, raiz), 'utf8');
+      for (const linea of src.split('\n')) {
+        // Solo código: un literal dentro de un comentario es historia, no uso.
+        if (/^\s*(\/\/|\*)/.test(linea)) continue;
+        const m = linea.match(/['"]America\/[A-Za-z_]+['"]/);
+        if (m) culpables.push(`${rel}: ${m[0]}`);
+      }
+    }
+  };
+  recorrer('');
+  assert.deepStrictEqual(culpables, [],
+    'volvieron literales de zona horaria fuera de zonaHoraria.js:\n  ' + culpables.join('\n  '));
+});
+
 
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
 if (fallidas > 0) {

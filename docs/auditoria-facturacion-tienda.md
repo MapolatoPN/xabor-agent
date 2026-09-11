@@ -332,23 +332,38 @@ esa clave: **nadie**. No hay pantalla en el panel ni ruta de API que la fije.
 En la práctica, `America/Matamoros` no es un valor por defecto sino el único
 valor posible, salvo que alguien inserte la fila a mano en la base.
 
-**Y casi nadie la consulta.** Solo la tienda (`tiendaOnline.js`) y el
-validador de órdenes (`validadorOrden.js:937`) pasan por esa configuración.
-El resto del sistema trae la zona escrita a mano, en unos quince lugares: el
-corte de caja y su fecha operativa (`server.js:3726`, `3750`, `7561`,
-`7720-7721`), el reporte diario de las 22:01 (`server.js:8342-8424`), el
-recordatorio de pedidos programados por WhatsApp
-(`whatsapp-meta.js:741`, `1139`), el prompt del bot (`prompts.js:267`, `313`)
-y `normalizarFecha.js:39`.
+**Y buena parte del sistema no la consultaba.**
 
-Con un solo negocio esto no se nota. Con dos en zonas distintas, el segundo
-tendría el corte de caja, el reporte diario y las horas que dice el bot en la
-zona del primero.
+> **Corrección, el mismo día.** Una versión anterior de este documento decía
+> que el corte de caja traía la zona escrita a mano. **Es falso, y era
+> justamente el punto más delicado de la lista.**
+> `src/services/cortesCaja.js:70` tiene `zonaHorariaNegocio(negocioId)`, que
+> lee `configuracion.timezone`, la valida y cae al default; con
+> `fechaOperativaDe`, `fechaOperativaHoy` y `rangoUtcDeFecha` alrededor. El
+> corte, el fondo de caja y los ajustes de cierre ya pasaban por ahí, y
+> `comprasFinanzas.hoyNegocio` también. **Nada del camino del dinero dependía
+> de una zona fija.**
 
-Un detalle suelto del mismo tema: `src/channels/voice.js:46` usa
-`America/Monterrey` en vez de Matamoros. Monterrey no cambia de horario desde
-2022 y Matamoros sí, así que de marzo a noviembre el canal de llamadas evalúa
-la hora con una hora menos que el resto del sistema.
+Lo que sí estaba escrito a mano era el resto: el prompt del bot
+(`prompts.js:267`, `313`), el recordatorio de pedidos programados por WhatsApp
+(`whatsapp-meta.js:741`, `1139`), las ventas del día (`server.js:3726`), el
+reporte diario (`server.js:8369-8424`), `normalizarFecha.js:39` y los valores
+de respaldo de las promociones.
+
+Con un solo negocio no se notaba. Con dos en zonas distintas, el segundo
+tendría el reloj del bot y las horas de sus confirmaciones en la zona del
+primero, aunque su corte de caja saliera bien.
+
+Dos detalles sueltos del mismo tema:
+
+- `src/channels/voice.js:46` usaba `America/Monterrey` en vez de Matamoros.
+  Monterrey no cambia de horario desde 2022 y Matamoros sí, así que de marzo a
+  noviembre el canal de llamadas saludaba con una hora de diferencia respecto
+  a todo lo demás.
+- `inicioDelDiaTexto`, en el reporte diario, fijaba `T06:00:00.000Z` con el
+  comentario *«UTC-6 midnight ≈ 06:00Z»*. El «≈» era literal: medio año la
+  medianoche local cae a las 05:00Z, así que lo vendido entre las 00:00 y la
+  1:00 se contaba en el día anterior.
 
 ## 2.4 Sobre el calendario que pides
 
@@ -381,15 +396,82 @@ Un cliente de visita desde otra zona ve un mínimo corrido.
 
 Por impacto, no por esfuerzo:
 
-| # | Qué | Por qué primero |
-|---|---|---|
-| 1 | Zona horaria de los programados en la tienda | Es un pedido que hoy entra a la cocina a la hora equivocada, y ya está en producción |
-| 2 | Facturapi por negocio (canal `facturacion` en `integraciones_canal`) | Un CFDI con el RFC de otro contribuyente es un problema fiscal, no un bug |
-| 3 | Envío y descuento en el CFDI | El comprobante no cuadra con lo cobrado |
-| 4 | CP en el flujo de WhatsApp + alinear el gate con `getIntegracion` | Es lo que hace que la factura por WhatsApp no llegue nunca |
-| 5 | Facturar desde el cobro, y que el cajero pueda | Es el momento en que el cliente realmente la pide |
-| 6 | Selector de día y hora en la tienda | Lo que pediste; sobre el punto 1 ya arreglado |
-| 7 | Portal de autofactura | El más grande; conviene diseñarlo aparte (llave en el ticket, ventana de tiempo) |
+| # | Qué | Por qué primero | Estado |
+|---|---|---|---|
+| 1 | Zona horaria de los programados en la tienda | Es un pedido que hoy entra a la cocina a la hora equivocada, y ya está en producción | ✅ hecho |
+| 2 | Facturapi por negocio (canal `facturacion` en `integraciones_canal`) | Un CFDI con el RFC de otro contribuyente es un problema fiscal, no un bug | pendiente |
+| 3 | Envío y descuento en el CFDI | El comprobante no cuadra con lo cobrado | pendiente |
+| 4 | CP en el flujo de WhatsApp + alinear el gate con `getIntegracion` | Es lo que hace que la factura por WhatsApp no llegue nunca | pendiente |
+| 5 | Facturar desde el cobro, y que el cajero pueda | Es el momento en que el cliente realmente la pide | pendiente |
+| 6 | Selector de día y hora en la tienda | Lo que pediste; sobre el punto 1 ya arreglado | ✅ hecho |
+| 7 | Portal de autofactura | El más grande; conviene diseñarlo aparte (llave en el ticket, ventana de tiempo) | pendiente |
 
-Nada de esto está hecho: es una auditoría. Antes de tocar Facturación conviene
-saber qué trae la rama de Codex, que hoy no está publicada.
+Antes de tocar Facturación conviene saber qué trae la rama de Codex, que hoy
+no está publicada.
+
+---
+
+# Lo que ya quedó hecho
+
+En la rama `fix/zona-horaria-por-negocio`, en dos commits separados. **Sin
+desplegar.**
+
+## Etapa 1 — la hora que elige el cliente es la que llega a la cocina
+
+`src/services/zonaHoraria.js` (módulo nuevo y puro) resuelve el texto sin zona
+en la zona del negocio y da el mismo instante corra el proceso donde corra.
+Los dos días raros del año son decisiones explícitas: la hora que no existe se
+corre hacia adelante, la repetida toma la primera.
+
+El catálogo de zonas separa la frontera del resto, que es la única división
+que cambia las cuentas, y se valida contra ICU en vez de contra una lista
+nuestra. Config → Operación trae el selector, junto a los horarios y
+guardándose con ellos. Y la tienda ofrece día y hora en vez de un campo crudo:
+días cerrados apagados, horas dentro del horario de ese día y por encima de la
+anticipación, todo contado en la zona del negocio.
+
+Un ISO con zona explícita se sigue respetando tal cual: los clientes de API y
+las suites viejas no cambian.
+
+## Etapa 2 — la zona deja de estar escrita a mano
+
+`cortesCaja.zonaHorariaNegocio` ya existía y ya era por negocio, así que **no
+se creó un segundo resolvedor**: los sitios que faltaban se enchufaron a ese.
+Quedaron por negocio el reloj del bot, las dos horas que WhatsApp le dice al
+cliente sobre un pedido programado, el saludo del canal de voz, las ventas del
+día y el reporte diario. De paso se arreglaron el `America/Monterrey` de
+`voice.js` y el `T06:00:00.000Z` del reporte.
+
+El literal `America/Matamoros` vive ahora en un solo archivo, y una prueba
+recorre `src/` para que no vuelva a aparecer en ningún otro. La única
+excepción permitida es `clip-api.js`, que usa CDMX por una razón distinta y
+documentada.
+
+**Lo que NO se tocó, y por qué.** El disparo del reporte de las 22:01 y el job
+de horario de Rappi siguen siendo de un solo negocio. No es la zona lo que les
+falta: el reporte va a un único `WHATSAPP_ADMIN_NUMERO` y el horario de Rappi
+está escrito en el código en vez de salir de `reglas_atencion`. Ponerles una
+zona configurable habría dado apariencia de multiempresa sin serlo. Queda
+anotado en el propio código.
+
+## Pruebas
+
+`test/fase-zona-horaria.mjs`, 25 casos. Prueba de mordida en las dos etapas:
+
+- Etapa 1: con el defecto de vuelta y `TZ=UTC` caen los casos 10, 11 y 12, y
+  el 10 muestra `15:00` donde debía decir `20:00`.
+- Etapa 2: ignorando `reglas.timezone` cae el caso 22, y el 23 —la red de
+  seguridad, que exige que un negocio sin zona propia se comporte igual que
+  antes— sigue pasando.
+
+Sin regresión en tienda (online, desktop, productización, solo-pago-online,
+pago-online-ui, scroll-estable, overlay-desktop, recuperación-crash), caja
+(cortes, ajustes de cierre), bot (forma-pago, ux-cierre, fidelidad-borrador,
+negaciones-injustas), promociones (9 suites), compras y repartidores.
+
+Tres fallos que **ya estaban en `main` limpio** y no son de este cambio: uno de
+promociones de primera compra en `fase-tienda-online`, el `K5` de
+`fase-tienda-recuperacion-crash` y las cinco de `fase-comanda-edge-exclusiva`
+(esas están resueltas en `integracion/obispado-personal`). Y
+`fase-promociones-pagos` no corre en esta máquina: el puerto 4343 lo ocupa un
+servicio de Acer.

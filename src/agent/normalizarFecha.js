@@ -1,3 +1,5 @@
+import { TZ_DEFAULT } from '../services/zonaHoraria.js';
+
 /**
  * normalizarFecha.js — Validación determinista de la fecha de evento que un
  * cliente escribe en lenguaje natural durante la conversación con el
@@ -36,7 +38,11 @@
  *  - Cualquier otro texto no reconocido se rechaza como 'no_reconocida'.
  */
 
-const TIMEZONE = 'America/Matamoros';
+
+// Zona por defecto del proyecto. Se puede pasar otra por opciones (`zona`)
+// cuando se conoce la del negocio: las funciones de este módulo derivan "qué
+// día es hoy", y ese día cambia con la zona.
+const TIMEZONE = TZ_DEFAULT;
 
 const MESES = {
   enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
@@ -53,13 +59,13 @@ function quitarAcentos(s) {
 }
 
 /** 'YYYY-MM-DD' del día calendario actual en America/Matamoros. */
-function hoyISO(ahora) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE }).format(ahora);
+function hoyISO(ahora, zona = TIMEZONE) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: zona }).format(ahora);
 }
 
-/** Date a medianoche UTC representando el día calendario de `ahora` en Matamoros -- solo para aritmética de días, nunca para horas. */
-function anchorUTC(ahora) {
-  return new Date(`${hoyISO(ahora)}T00:00:00Z`);
+/** Date a medianoche UTC representando el día calendario de `ahora` en esa zona -- solo para aritmética de días, nunca para horas. */
+function anchorUTC(ahora, zona = TIMEZONE) {
+  return new Date(`${hoyISO(ahora, zona)}T00:00:00Z`);
 }
 
 function diasEnMes(year, month) {
@@ -83,13 +89,13 @@ function iso(year, month, day) {
  * o `{ ok: false, motivo, textoOriginal }` con motivo en
  * 'imposible' | 'pasada' | 'ambigua' | 'no_reconocida'.
  */
-export function normalizarFechaEvento(textoOriginal, { ahora = new Date() } = {}) {
+export function normalizarFechaEvento(textoOriginal, { ahora = new Date(), zona = TIMEZONE } = {}) {
   if (typeof textoOriginal !== 'string' || !textoOriginal.trim()) {
     return { ok: false, motivo: 'no_reconocida', textoOriginal };
   }
   const texto = quitarAcentos(textoOriginal.trim().toLowerCase()).replace(/\s+/g, ' ');
-  const anchor = anchorUTC(ahora);
-  const hoyIsoStr = hoyISO(ahora);
+  const anchor = anchorUTC(ahora, zona);
+  const hoyIsoStr = hoyISO(ahora, zona);
 
   const resolver = (year, month, day) => {
     if (!calendarioValido(year, month, day)) return { ok: false, motivo: 'imposible', textoOriginal };

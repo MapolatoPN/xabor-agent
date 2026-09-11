@@ -408,6 +408,7 @@ const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.fa
 // aquí para que server.js (y cualquier otro import existente de
 // whatsapp-meta.js) no necesite ningún cambio.
 import { subirMediaAMeta } from '../services/metaEnvioDocumentos.js';
+import { zonaHorariaNegocio } from '../services/cortesCaja.js';
 export { enviarDocumento } from '../services/metaEnvioDocumentos.js';
 
 // ─── Enviar imagen ya comprimida (buffer privado) via Meta Graph API ────────
@@ -738,7 +739,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           }
           let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${url}\n\nTotal: $${pedidoDB.total} MXN`;
           if (pedidoDB._origen === 'programado' && pedidoDB.programado_para) {
-            const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: 'America/Matamoros', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
+            const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: await zonaHorariaNegocio(negocioId), weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
             msg += `\n\nTu pedido está programado para el ${horaStr}. Paga ahora y estará listo a esa hora.`;
           }
           await enviarMensaje(telefono, msg, credenciales);
@@ -1136,7 +1137,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         // Confirmación al cliente con folio y hora — operación crítica
         try {
           const horaLocal = new Date(pedido.programado_para).toLocaleTimeString('es-MX', {
-            hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Matamoros'
+            hour: '2-digit', minute: '2-digit', hour12: true, timeZone: await zonaHorariaNegocio(negocioId),
           });
           const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
           await enviarMensaje(telefono, confirmMsg, credenciales);

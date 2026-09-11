@@ -21,6 +21,7 @@ import { cargarGruposDeProductos } from './modificadores.js';
 // siendo parte de la API pública de este servicio.
 import { cumpleCondicionesModificadores, condicionesEstructuradas } from './promoCondiciones.js';
 import { resolverCuandoPromo } from './fechaPromos.js';
+import { TZ_DEFAULT } from './zonaHoraria.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
 // inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
@@ -269,7 +270,7 @@ function calcularDescuento(promo, ctx) {
 //   · Envío gratis y descuento sí conviven (son beneficios distintos).
 export async function calcularPromociones({
   negocioId, subtotal, items = [], costoEnvio = 0, modalidad = 'recoger',
-  codigo = null, telefono = null, canal = 'tienda_online', timezone = 'America/Matamoros',
+  codigo = null, telefono = null, canal = 'tienda_online', timezone = TZ_DEFAULT,
   ahora = new Date(), cuposYaApartados = [],
 }) {
   const sub = dinero(subtotal);
@@ -811,7 +812,7 @@ export async function registrarUsosPromociones({
 // Devuelve { ok, accion } o { ok:false, razon, promociones } para que el
 // llamador decida -- aqui no se cocina ni se cobra nada.
 export async function resincronizarReservasPorVersion({
-  negocioId, folio, datosPedido, versionActual, timezone = 'America/Matamoros',
+  negocioId, folio, datosPedido, versionActual, timezone = TZ_DEFAULT,
 }) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     return { ok: false, razon: 'sin_negocio' };
@@ -1036,7 +1037,7 @@ function resolverEnvioBase(datos) {
  *
  * Volver a llamar a `crearEnlacePago` NO la limpia: ese camino solo lee.
  */
-export async function recalcularPromocionesDelPedido(negocioId, folio, { timezone = 'America/Matamoros' } = {}) {
+export async function recalcularPromocionesDelPedido(negocioId, folio, { timezone = TZ_DEFAULT } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, razon: 'sin_negocio' };
   const nid = negocioId.trim();
 
@@ -1444,7 +1445,7 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
  * `condiciones_modificadores` y `productos` con IDs, no la versión legible).
  * NO evalúa carrito ni calcula nada económico.
  */
-export async function promocionesVigentesCrudas(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
+export async function promocionesVigentesCrudas(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, minutos = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   if (typeof canal !== 'string') return [];
   const canalNorm = canal.trim().toLowerCase();
@@ -1475,7 +1476,7 @@ export async function promocionesVigentesCrudas(negocioId, { canal = 'whatsapp',
   return vigentes;
 }
 
-export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros', minutos = null } = {}) {
+export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, minutos = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
   // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
@@ -1560,7 +1561,7 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
 // actual). Es el caso que ya se inyecta en el prompt del agente; mantiene el
 // comportamiento previo intacto (regresión). Delega en describirPromocionesParaFecha.
 export async function describirPromocionesVigentes(negocioId, opts = {}) {
-  const timezone = opts.timezone || 'America/Matamoros';
+  const timezone = opts.timezone || TZ_DEFAULT;
   const ahora = opts.ahora || new Date();
   let minutos = null;
   try { minutos = partesEnZona(ahora, timezone).minutos; } catch { minutos = null; }
@@ -1574,7 +1575,7 @@ export async function describirPromocionesVigentes(negocioId, opts = {}) {
 // descripción de participantes/condiciones. Devuelve el texto, o null si la
 // expresión no se pudo resolver (el caller pedirá aclaración). Solo informa lo
 // que Xabor realmente tiene; jamás inventa ni usa memoria del modelo.
-export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = 'America/Matamoros' } = {}) {
+export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT } = {}) {
   const r = resolverCuandoPromo(cuando, { ahora, timezone });
   if (!r.ok) return null;
   const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;

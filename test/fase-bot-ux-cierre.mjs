@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
+import { TZ_DEFAULT } from '../src/services/zonaHoraria.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RAIZ = join(__dirname, '..');
@@ -76,8 +77,21 @@ t('6. no inventa horario: el estado sale de las reglas reales', () => {
   assert.strictEqual(estado.abierto, false);
   assert.strictEqual(estado.preApertura, false, 'día sin servicio no es pre-apertura');
 });
-t('7. timezone del negocio: se usa America/Matamoros, no UTC', () => {
-  assert.ok(/America\/Matamoros/.test(PROMPTS), 'la hora se calcula en la zona del negocio');
+t('7. timezone del negocio: la hora sale de SU zona, no de la del proceso', () => {
+  // Antes esto comprobaba que el literal 'America/Matamoros' estuviera escrito
+  // en prompts.js. Ya no está, y su ausencia es el arreglo: la zona la trae el
+  // negocio (cargarReglas la adjunta desde configuracion.timezone) y solo cae
+  // al default del proyecto si no eligió ninguna. Se comprueba la propiedad,
+  // que es lo que importaba, y se conserva la garantía original -- para un
+  // negocio sin zona propia la hora efectiva sigue siendo la de Matamoros.
+  assert.ok(!/'America\/[A-Za-z_]+'/.test(PROMPTS),
+    'volvió una zona escrita a mano en prompts.js: debe venir del negocio');
+  assert.ok(/reglas\.timezone\)\s*\|\|\s*TZ_DEFAULT/.test(PROMPTS),
+    'obtenerEstadoRestaurante debe usar la zona del negocio con TZ_DEFAULT de respaldo');
+  assert.ok(/parsed\.timezone = zona/.test(PROMPTS),
+    'cargarReglas debe adjuntar la zona del negocio a las reglas');
+  assert.strictEqual(TZ_DEFAULT, 'America/Matamoros',
+    'el respaldo del proyecto cambió: la hora efectiva de un negocio sin zona ya no es la de siempre');
 });
 t('8. día sin horario: formatearHorarioTexto lo marca cerrado, no inventa', () => {
   const txt = formatearHorarioTexto({ lunes:{abierto:true,apertura:'11:00',cierre:'22:00'}, martes:{abierto:true,apertura:'11:00',cierre:'22:00'}, miercoles:{abierto:true,apertura:'11:00',cierre:'22:00'}, jueves:{abierto:true,apertura:'11:00',cierre:'22:00'}, viernes:{abierto:true,apertura:'11:00',cierre:'22:00'}, sabado:{abierto:true,apertura:'11:00',cierre:'22:00'}, domingo:{abierto:false} });
