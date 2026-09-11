@@ -239,6 +239,17 @@ export function crearServidorLocal({
     ['GET', /^\/api\/auth\/me$/, async (_m, _c, _s, req) => {
       const s = sesionDe(req);
       if (!s) return { estado: 401, cuerpo: { error: 'Sin sesión local' } };
+      // Un MESERO no tiene sesión de panel, igual que en la nube: su acceso es
+      // de estación. Y esto no es un detalle -- `mesas.html` decide con esta
+      // respuesta: si contesta 200, da por hecho que es una sesión normal,
+      // deja `SESION_MESERO` en false y le PINTA "Registrar pago" y "Cerrar
+      // cuenta" a un mesero. El servidor los rechaza igual (403), pero
+      // ofrecerle lo que no le toca es exactamente lo que el panel evita con
+      // `puedeCobrar()`. Contestando 401 cae al camino de estación, que es el
+      // suyo.
+      if (String(s.rol).toLowerCase() === 'mesero') {
+        return { estado: 401, cuerpo: { error: 'Sesión de estación', codigo: 'SESION_ESTACION' } };
+      }
       const cat = obtenerCatalogo();
       return { estado: 200, cuerpo: {
         rol: s.rol, negocioId: cat?.negocioId || null, nombre: s.nombre,
