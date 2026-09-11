@@ -116,7 +116,11 @@ await t('ACTIVACION', '2. Superadmin ve Restaurante en la fuente única y lo act
   const lista = await api(base, '/api/superadmin/modulos-disponibles', { cookie: superadmin });
   assert.strictEqual(lista.status, 200);
   assert.ok(lista.body.modulos.some(m => m.clave === 'restaurante' && m.nombre === 'Restaurante (mesas y meseros)'));
-  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'activo' } } });
+  // `validarCombinacion` exige Menú para Restaurante: una carta es de donde se
+  // capturan los productos, y el hueco no se vería al activar sino en operación.
+  // Activar `restaurante` a secas responde 400 A PROPÓSITO -- esta prueba
+  // activaba solo ese módulo y por eso fallaba en cascada todo lo que sigue.
+  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'activo', menu: 'activo' } } });
   assert.strictEqual(r.status, 200, JSON.stringify(r.body));
   const mesas = await api(base, '/api/restaurante/mesas', { cookie: adminA });
   assert.strictEqual(mesas.status, 200, 'con el módulo activo la operación abre');
@@ -291,7 +295,7 @@ await t('MULTITENANT', 'B con el módulo apagado: toda la operación de restaura
   }
 });
 await t('MULTITENANT', 'con B activo: no ve las mesas ocupadas de A ni puede leer, pagar, cerrar o reabrir su cuenta', async () => {
-  await api(base, `/api/superadmin/negocios/${B.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'activo' } } });
+  await api(base, `/api/superadmin/negocios/${B.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { restaurante: 'activo', menu: 'activo' } } });
   const mesas = await api(base, '/api/restaurante/mesas', { cookie: adminB });
   assert.strictEqual(mesas.status, 200);
   assert.ok(mesas.body.mesas.every(m => m.ocupada === false), 'B arranca con todas sus mesas libres');
@@ -371,9 +375,13 @@ await t('DESACTIVAR', 'reactivar conserva la configuración de mesas y el histor
 await t('DESACTIVAR', 'apagar otro módulo no se ve afectado por las mesas abiertas de Restaurante', async () => {
   const cta = await api(base, '/api/restaurante/mesas/abrir', { cookie: meseroA, method: 'POST', body: { mesa: 3, personas: 1 } });
   assert.strictEqual(cta.status, 201);
-  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { pos: 'suspendido' } } });
+  // Se suspende un módulo SIN dependientes. Antes se usaba `pos`, pero
+  // `DEPENDENCIAS.restaurante = ['pos','menu']`: apagar POS con Restaurante
+  // activo lo rechaza la validación de combinación, que es correcta y no tiene
+  // nada que ver con lo que mide esta prueba (que el guard de mesas abiertas
+  // aplica SOLO al módulo restaurante).
+  const r = await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { whatsapp: 'suspendido' } } });
   assert.strictEqual(r.status, 200, 'el guard es solo para el módulo restaurante');
-  await api(base, `/api/superadmin/negocios/${A.id}/modulos`, { cookie: superadmin, method: 'PATCH', body: { modulos: { pos: 'activo' } } });
   // Cerrar la mesa de esta prueba para no dejar la cuenta colgada.
   await api(base, `/api/restaurante/cuentas/${cta.body.cuenta.id}/cerrar`, { cookie: adminA, method: 'POST' });
 });
