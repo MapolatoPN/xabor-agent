@@ -7,6 +7,7 @@ import { agregarMensaje, getSession, guardarPreviewPedido, consumirPreviewPedido
          datosDelPedido, recordarDatoPedido,
          reemplazarUltimoMensajeAsistente, turnosUsuarioDelCiclo, iniciarCicloPedido } from './session.js';
 import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespaldo } from './mencionesComerciales.js';
+import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, pool } from '../services/database.js';
@@ -261,7 +262,38 @@ function snapshotDePreview(v) {
   };
 }
 
+/**
+ * EL TURNO, CON EL PEDIDO A SALVO.
+ *
+ * Envoltorio de `procesarMensajeInterno`. Existe para poner los DOS puntos
+ * de durabilidad sin tocar ni una línea de las ~600 del cuerpo, que tiene
+ * docenas de `return` repartidos:
+ *
+ *   hidratar   ANTES. Si el proceso es nuevo --un despliegue, un crash,
+ *              Railway moviendo el contenedor-- el carrito vuelve de la base
+ *              y la conversación sigue donde iba. Va antes de que el cuerpo
+ *              llame a `agregarMensaje`: si el mensaje del cliente entrara
+ *              primero, la sesión dejaría de estar vacía y la hidratación se
+ *              saltaría a sí misma.
+ *
+ *   persistir  DESPUÉS, en un `finally`. Pase lo que pase, incluido un error
+ *              a media respuesta: lo que el cliente acordó no puede perderse
+ *              porque el turno fallara. Es justo el caso en que más duele.
+ *
+ * No cambia ninguna firma síncrona: `getSession()` sigue siendo síncrono y
+ * los llamadores de `brain.js` no se enteran. Convertir la sesión entera en
+ * asíncrona sería la rearquitectura que este arreglo NO necesita.
+ */
 export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
+  await hidratarSesion(sessionId, negocioId);
+  try {
+    return await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito);
+  } finally {
+    await persistirSesion(sessionId, negocioId);
+  }
+}
+
+async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
 
