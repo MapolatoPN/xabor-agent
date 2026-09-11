@@ -38,7 +38,7 @@ function t(nombre, fn) {
 // El manejador del webhook va desde que se lee el mensaje hasta su catch.
 // (El marcador de "Enrutamiento repartidor" aparece ANTES en el archivo:
 //  usarlo como fin daba un corte vacío y los contratos pasaban en falso.)
-const webhook = FUENTE.slice(FUENTE.indexOf("const message = value?.messages?.[0];"), FUENTE.indexOf("console.error('[Meta WA] Error:', error.message);"));
+const webhook = FUENTE.slice(FUENTE.indexOf('async function prepararMensajePersistido'), FUENTE.indexOf('export const iniciarContinuidadWA'));
 if (!webhook.trim()) throw new Error('no se pudo aislar el manejador del webhook');
 const manejador = FUENTE.slice(FUENTE.indexOf('async function manejarImagenEntrante'), FUENTE.indexOf('// ─── Marcar mensaje como leído'));
 
@@ -122,12 +122,12 @@ t('10. el webhook YA NO corta el flujo al recibir una imagen', () => {
 t('11. el turno de la imagen entra a la MISMA cola que el texto', () => {
   assert.ok(/const texto\s+= turnoImagen !== null \? turnoImagen : message\.text\.body;/.test(webhook),
     'el turno de imagen debe seguir el mismo camino que un texto');
-  assert.ok(/encolarMensaje\(`\$\{negocioId\}:\$\{telefono\}`, texto,/.test(webhook),
-    'debe reutilizar la cola de 6s -- es lo que agrupa foto + texto');
+  assert.ok(/preparados.map\(p=>p.texto\).join\('\\n'\)/.test(webhook),
+    'los textos y fotos preparados deben formar el mismo lote durable');
 });
 
 t('12. la cola garantiza respuesta: agente o fallback, nunca nada', () => {
-  const cola = webhook.slice(webhook.indexOf('encolarMensaje(`${negocioId}'));
+  const cola = webhook.slice(webhook.indexOf('async function procesarTextoPersistido'));
   // Política nueva (foto muda con visión ON se analiza): la rama del
   // fallback exige foto muda Y visión sin resultado.
   assert.ok(/const esFotoMuda = soloImagenes\(textoCombinado\);/.test(cola), 'falta la clasificación de foto muda');
@@ -180,10 +180,10 @@ t('14. un fallo de descarga NO se lleva la respuesta por delante', () => {
 
 // ── 15-16. Aislamiento e idempotencia ───────────────────────────────────────
 t('15. la cola es por negocio+teléfono: A no ve el turno de B', () => {
-  assert.ok(/encolarMensaje\(`\$\{negocioId\}:\$\{telefono\}`/.test(webhook),
-    'la clave de la cola debe incluir el negocio, o dos tenants se mezclarían');
+  assert.ok(/crearContinuidad/.test(webhook) && /procesar: async \(payloads,n,t\)/.test(webhook),
+    'el trabajador debe recibir negocio y teléfono del lote persistido');
   // Y el negocio se resuelve del phone_number_id del propio payload.
-  assert.ok(/obtenerIntegracionCanal\('whatsapp', phoneNumberId\)/.test(webhook));
+  assert.ok(/obtenerIntegracionCanal\('whatsapp',\s*phoneNumberId\)/.test(webhook));
 });
 
 t('16. el dedupe existente sigue en pie: webhook repetido no responde dos veces', () => {

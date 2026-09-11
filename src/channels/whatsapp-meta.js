@@ -2,15 +2,16 @@
 // Twilio se conserva SOLO para llamadas de voz
 
 import { Router } from 'express';
-import { randomBytes, createHmac, timingSafeEqual, createHash } from 'crypto';
+import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje } from '../agent/brain.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
-import { encolarMensaje } from '../utils/colaMensajes.js';
+import { crearContinuidad } from '../services/whatsappContinuidad.js';
+import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { pool, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -36,7 +37,7 @@ import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/dire
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
-import { agregarMensaje, restaurarPreviewPedido } from '../agent/session.js';
+import { agregarMensaje, restaurarSesion, getSession } from '../agent/session.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -161,6 +162,7 @@ export async function enviarMensaje(telefono, texto, credenciales) {
   const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json'
@@ -178,7 +180,9 @@ export async function enviarMensaje(telefono, texto, credenciales) {
     const err = await resp.json();
     throw new Error(`Meta API: ${JSON.stringify(err)}`);
   }
-  return resp.json();
+  const respuesta = await resp.json();
+  if (!respuesta?.messages?.[0]?.id) throw new Error('META_NO_CONFIRMÓ_ENVIO');
+  return respuesta;
 }
 
 // ─── Enviar plantilla xabor_nuevo_servicio_reparto (oferta, SIN datos sensibles) ──
@@ -606,6 +610,7 @@ async function marcarLeido(messageId, credenciales) {
   try {
     await fetch(`${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`, {
       method: 'POST',
+      signal: AbortSignal.timeout(5000),
       headers: {
         'Authorization': `Bearer ${credenciales.accessToken}`,
         'Content-Type': 'application/json'
@@ -677,6 +682,7 @@ async function manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenc
 // por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
 // ni se usa un fallback aquí adentro.
 async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
+  let falloDuranteInterpretacion = false;
   // Fase A (aislamiento de WhatsApp): credenciales resueltas UNA sola vez
   // aquí, para ESTE negocio, y pasadas explícitamente a cada envío de
   // esta función -- nunca se vuelve a resolver por punto de envío, nunca
@@ -997,7 +1003,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // filtro por canal de describirPromocionesVigentes (canales.includes(canal))
       // descartara TODAS las promociones estructuradas en WhatsApp — el default
       // 'whatsapp' de esa función solo cubre undefined, nunca null.
-      resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono);
+      falloDuranteInterpretacion = true;
+      resultado = await procesarMensaje(sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono, {continuidadExterna:true});
+      falloDuranteInterpretacion = false;
     } finally {
       clearTimeout(waitTimer);
     }
@@ -1102,16 +1110,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           resultado.orden = null;
         } else {
           console.error(`[WA] Error registrando pedido, no se confirma al cliente:`, e.message);
-          // La escritura falló por causas técnicas (no por la orden en sí). Si
-          // esta confirmación venía del snapshot canónico, se REACTIVA: el
-          // cliente ya dijo que sí y no debe rearmar el pedido — con volver a
-          // confirmar basta. Nunca se reactiva si el pedido llegó a crearse.
-          if (resultado.desdeSnapshot && resultado.snapshot) {
-            restaurarPreviewPedido(sessionId, resultado.snapshot);
-            console.warn(`[TXN] evento=snapshot_restaurado_tras_fallo negocio=${negocioId}`);
-          }
-          await enviarMensaje(telefono, 'Tuvimos un problema registrando tu pedido. Por favor intenta de nuevo en un momento.', credenciales);
-          return;
+          // Una conexión puede caer después del COMMIT: no revivir el preview
+          // ni sugerir otro intento de compra sin revisar el resultado.
+          throw e; // Una escritura de resultado incierto requiere revisión, no otro folio.
         }
       }
       if (pedido) {
@@ -1309,13 +1310,22 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Si el envío de esta disculpa también falla, se registra y se acaba
     // aquí: nunca un reintento en bucle.
     try {
-      const msgFallo = 'Disculpa, tuve un problema al procesar tu mensaje. ¿Puedes intentarlo de nuevo en un momento?';
+      const msgFallo = falloDuranteInterpretacion
+        ? 'Disculpa, tuve un problema al procesar tu mensaje. ¿Puedes intentarlo de nuevo en un momento?'
+        : 'Hubo una interrupción al atender tu mensaje. Antes de repetir el pedido, el personal debe revisar si quedó registrado. La conversación quedó señalada para revisión.';
       await enviarMensaje(telefono, msgFallo, credenciales);
       const msgErr = await guardarMensaje(telefono, nombreMeta, 'saliente', msgFallo, negocioId, 'bot');
       if (msgErr && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgErr });
+      if (falloDuranteInterpretacion) {
+        // Este canal todavía no empezó a registrar la orden. El turno falló
+        // de forma conocida y fue avisado: el siguiente mensaje puede seguir.
+        agregarMensaje(`meta-${negocioId}-${telefono}`,'assistant',msgFallo);
+        return;
+      }
     } catch (errorAviso) {
       console.error(`[Meta WA] Tampoco se pudo avisar del fallo al cliente: ${errorAviso.message}`);
     }
+    throw error;
   }
 }
 
@@ -1500,405 +1510,239 @@ function firmaWebhookValida(req) {
   return timingSafeEqual(esperada, recibida);
 }
 
-// ─── Webhook de mensajes entrantes (POST) ────────────────────────────────────
-/**
- * UN mensaje entrante del cliente, de principio a fin.
- *
- * Sale del manejador del webhook para que el sobre pueda traer VARIOS y se
- * procesen todos. El cuerpo es el mismo de siempre, sin una sola línea de
- * lógica cambiada: los `return` que antes salían del manejador ahora salen
- * de este mensaje, que es exactamente lo que se quiere -- saltárselo y
- * seguir con el siguiente.
- *
- * `value` es el bloque del cambio (metadata, contacts): lo comparten todos
- * los mensajes del mismo sobre.
- */
-async function procesarMensajeDelSobre(message, value) {
-  // 'document'/'image' se aceptan además de 'text' (aditivo -- cualquier
-  // otro tipo sigue descartándose exactamente igual que antes).
-  if (!message || (message.type !== 'text' && message.type !== 'document' && message.type !== 'image')) return;
-
-  // negocioId (Incidente P0): se resuelve EXCLUSIVAMENTE contra
-  // integraciones_canal usando el phone_number_id que manda Meta en el
-  // propio payload del webhook -- nunca de un valor que el cliente HTTP
-  // pudiera controlar, nunca adivinado. Si el phone_number_id no está
-  // mapeado a ningún negocio, el mensaje se descarta (fail closed): no
-  // se guarda, no se procesa con el bot, no se usa Nonna Maye como
-  // relleno. Esto requiere que integraciones_canal tenga una fila para
-  // 'whatsapp' antes de desplegar este cambio (ver plan de deploy).
-  const phoneNumberId = value?.metadata?.phone_number_id;
-  const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp', phoneNumberId) : null;
-  if (!integracion) {
-    console.error(`[Meta WA] Webhook sin negocio mapeado para phone_number_id=${phoneNumberId || '(vacío)'} — mensaje descartado (fail closed)`);
-    return;
-  }
-  const negocioId = integracion.negocioId;
-
-  // Compradores autorizados por negocio: fotos y comandos explícitos se
-  // resuelven antes del agente de pedidos, con las credenciales del tenant.
-  if (message.type === 'image' || message.type === 'text') {
-    let credencialesCompras;
-    const atendida = await manejarCompraWhatsapp({negocioId,message,
-      verificarCanal: async () => {
-        credencialesCompras = await obtenerCredencialesWhatsappNegocio(negocioId);
-        if (!credencialesCompras?.accessToken || credencialesCompras.phoneNumberId !== phoneNumberId)
-          throw new Error('Compras: faltan credenciales del número receptor');
-      },
-      descargar: async mediaId => descargarMediaDeMeta(mediaId, credencialesCompras),
-      responder: async textoCompra => {
-        const enviado = await enviarMensaje(message.from,textoCompra,credencialesCompras);
-        const wamidSalida = enviado?.messages?.[0]?.id;
-        if (!wamidSalida) throw new Error('Compras: Meta no confirmó la recepción de la respuesta');
-        const msg = await guardarMensaje(message.from,value.contacts?.[0]?.profile?.name || '',
-          'saliente',textoCompra,negocioId,'bot',wamidSalida);
-        if (msg && wsBroadcast) wsBroadcast(negocioId,{tipo:'nuevo_mensaje',mensaje:msg});
-      }});
-    if (atendida) return;
-  }
-
-  if (message.type === 'document') {
-    await manejarDocumentoEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
-    return;
-  }
-  // La imagen se archiva para el chat del panel y ADEMÁS sigue al flujo
-  // del bot: antes se hacía `return` aquí y el cliente quedaba en
-  // silencio. manejarImagenEntrante devuelve SIEMPRE el texto del turno
-  // (marca + caption) y nunca responde por su cuenta -- así la foto entra
-  // a la misma cola que el texto y una sola decisión, al vencer la
-  // ventana, produce una sola respuesta.
-  let turnoImagen = null;
-  if (message.type === 'image') {
-    turnoImagen = await manejarImagenEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
-  }
-
-  const telefono   = message.from;
-  const texto      = turnoImagen !== null ? turnoImagen : message.text.body;
-  const messageId  = message.id;
-  const nombreMeta = value.contacts?.[0]?.profile?.name || '';
-
-  console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
-
-  // Fase A: credenciales resueltas una vez para todo el manejo de este
-  // webhook (repartidores, marcar leído) -- mismo criterio que
-  // procesarConClaude. Puede ser null (negocio sin integración propia
-  // verificada); cada punto de envío de abajo ya maneja ese caso.
-  const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
-
-  // Acciones inmediatas (no debounced) -- ocurren SIEMPRE, sin importar
-  // el interruptor global del bot ni la pausa por cliente: guardar el
-  // mensaje, actualizar el cliente y emitir el evento para que
-  // aparezca en el chat de Xabor y se pueda atender manualmente.
-  // Una imagen NO pasa por aquí: o ya quedó guardada con su documento
-  // dentro de manejarImagenEntrante, o es un caso en que deliberadamente
-  // no se archiva (módulo apagado, MIME no soportado). Guardarla aquí
-  // dependía del índice único por wamid para no duplicar la burbuja, y
-  // además escribiría la marca interna del turno en el chat.
-  if (message.type !== 'image') {
-    const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId, 'cliente', messageId);
-    // ── UNA REENTREGA NO SE VUELVE A CONTESTAR ──────────────────────────
-    //
-    // Meta reentrega un webhook cuando no recibe el 200 a tiempo, y eso
-    // pasa. El indice unico por `message_id_externo` impedia la burbuja
-    // repetida en el chat, pero el flujo seguia hasta encolar el turno: el
-    // bot contestaba DOS VECES al mismo mensaje. Registrar una vez no es
-    // procesar una vez.
-    //
-    // Se corta aqui, despues de guardar y antes de cualquier efecto: ni
-    // se difunde al panel (la burbuja ya esta), ni se marca leido otra vez,
-    // ni se encola. El mensaje queda igual de registrado que antes.
-    if (msgGuardado?.yaExistia) {
-      console.warn(`[Meta WA] reentrega ignorada wamid=${String(messageId).slice(-12)} — ya se habia procesado`);
-      return;
-    }
-    if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
-  }
-  if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
-  await marcarLeido(messageId, credenciales);
-  // Tracking de respuesta a campañas (background, no bloquea)
-  marcarRespuestaCampana(telefono).catch(() => {});
-
-  // Comandos de Mario — sin debounce
-  const ultimosDiez = t => t.slice(-10);
-  const esMario = ultimosDiez(telefono) === ultimosDiez(process.env.MARIO_TELEFONO || '528781091115');
-  if (esMario) {
-    const esComando = await procesarAprobacion(texto, negocioId, credenciales);
-    if (esComando) return;
-  }
-
-  // Interruptor global de bot por negocio (migración 019) + pausa por
-  // cliente (ya existente) — el bot solo llama a brain.js si AMBOS lo
-  // permiten: bot_whatsapp_activo = TRUE Y bot_pausado_cliente =
-  // FALSE. El mensaje ya se guardó, se transmitió y el cliente ya se
-  // actualizó arriba (sigue apareciendo en el chat de Xabor para
-  // atención manual) -- aquí solo se decide si se invoca a la IA.
-  // Nunca se modifica bot_pausado desde aquí.
-  const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
-  if (!botGlobalActivo) {
-    console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
-    return;
-  }
-  const pausado = await getBotPausado(telefono, negocioId);
-  if (pausado) {
-    console.log(`[Meta WA] Bot pausado para ${telefono}`);
-    return;
-  }
-  // Takeover humano temporal (Coexistence): el dueño respondió hace poco
-  // desde su Business App -- el bot calla en ESTA conversación hasta que
-  // venza el plazo. Solo lectura: aquí jamás se escribe bot_pausado ni
-  // human_takeover_until.
-  const takeoverVigente = await getTakeoverHumanoActivo(telefono, negocioId);
-  if (takeoverVigente) {
-    console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
-    return;
-  }
-
-  // Detectar auto-registro: "repartidor Nombre Apellido" -- nunca para
-  // los comandos de modo (ver comentario en las constantes RE_* arriba),
-  // que también contienen la palabra "repartidor" pero significan otra
-  // cosa para un repartidor ya registrado.
-  const textoTrim = texto.trim();
-  const esComandoDeModo = RE_ENTRAR_MODO_REPARTIDOR.test(textoTrim) || RE_SALIR_MODO_REPARTIDOR.test(textoTrim);
-  const matchRep = !esComandoDeModo && (texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i));
-  if (matchRep) {
-    const nombreRep = matchRep[1].trim();
-    const rep = await registrarRepartidor(nombreRep, telefono, negocioId);
-    const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
-      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-      : 'https://xabor-agent-production.up.railway.app';
-    const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
-    await enviarMensaje(telefono, msgReg, credenciales);
-    await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId, 'cliente');
-    await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId, 'bot');
-    console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
-    return;
-  }
-
-  // Si el número ya es un repartidor registrado (de ESTE negocio)
-  const repartidor = await obtenerRepartidorPorTelefono(telefono, negocioId);
-  if (repartidor) {
-    const irAFlujoCliente = await enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId, credenciales });
-    if (!irAFlujoCliente) return;
-    // Intención de cliente detectada (o sin_modo/sin reparto activo/sin
-    // comando) -- cae al mismo flujo de IA que cualquier cliente normal,
-    // más abajo. No hay "return" aquí a propósito.
-  }
-
-  // Procesamiento con Claude — debounced 6 segundos
-  // Si el cliente manda varios mensajes seguidos, se combinan en uno
-  console.log(`[Meta WA] Bot de WhatsApp activo para el negocio ${negocioId} — encolando para procesar con IA`);
-  encolarMensaje(`${negocioId}:${telefono}`, texto, async (textoCombinado) => {
-    // INVARIANTE: este turno termina en un mensaje al cliente, siempre.
-    //
-    // Vision corre PRIMERO (fuera del camino del webhook: esto ya corre
-    // al vencer la cola de 6s): si el negocio tiene vision_imagenes
-    // activo y el turno trae fotos archivadas, se analizan (max 2) y
-    // cada marca se sustituye por su [CONTEXTO VISUAL].
-    //
-    // CAMBIO DE PRODUCTO (smoke B de Alora, 26-ago): una foto SIN
-    // caption ya no se despacha con "no puedo verla" cuando vision esta
-    // activo -- se analiza igual y Brain responde con lo que se ve (sin
-    // asumir intencion de compra: ver BLOQUE_REGLAS_CONTEXTO_VISUAL).
-    // El fallback determinista queda reservado para: vision apagada
-    // (caso C) o vision fallida sin ningun texto del cliente (caso D).
-    // Con texto del cliente y vision fallida, el agente recibe la nota
-    // de siempre. Una decision, una respuesta: jamas doble envio.
-    let contextosVisuales = null;
-    try {
-      const docIds = documentosDelTurno(textoCombinado);
-      if (docIds.length && await visionHabilitada(negocioId)) {
-        contextosVisuales = await analizarImagenesDeTurno(negocioId, docIds);
-      }
-    } catch (e) {
-      console.error(`[VISION] fallback negocio=${negocioId} :: ${e.message}`);
-    }
-    const esFotoMuda = soloImagenes(textoCombinado);
-    if (esFotoMuda && !(contextosVisuales && contextosVisuales.size)) {
-      // Foto sola SIN analisis disponible: el modelo no tiene nada que
-      // interpretar (no ve imagenes) -- texto determinista, como siempre.
-      try {
-        await enviarMensaje(telefono, TEXTO_FALLBACK_IMAGEN, credenciales);
-        await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
-      } catch (e) {
-        console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
-      }
-      return;
-    }
-    await procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
-  });
-}
-
-// ─── Constancia durable de recepción ────────────────────────────────────────
-//
-// Una sola pregunta: ¿este sobre entró, y se terminó de procesar? No es una
-// cola de trabajo. `colaMensajes` ya serializa los turnos de una conversación
-// y `pedido_emisiones` ya garantiza que una comanda llegue a cocina; meter
-// aquí una tercera máquina de estados crearía una segunda ruta hacia el mismo
-// efecto, que es justo lo que la 063 existe para impedir.
-
-/**
- * La referencia del sobre: los identificadores que Meta trae dentro.
- *
- * Se deriva del contenido y NO de la hora ni de un aleatorio, porque el punto
- * es que una reentrega del MISMO sobre produzca la MISMA referencia y choque
- * contra el índice único. Es la misma idea que `message_id_externo` en
- * `mensajes`, un nivel más arriba.
- *
- * Si el sobre no trae ningún id reconocible --un payload raro, un ping-- se
- * cae a un hash del cuerpo: sigue siendo determinista, que es lo único que
- * esta función promete.
- */
-function referenciaDelSobre(body) {
-  const ids = [];
-  for (const entrada of body?.entry || []) {
-    for (const cambio of entrada?.changes || []) {
-      const v = cambio?.value || {};
-      for (const m of v.messages || []) if (m?.id) ids.push(m.id);
-      for (const e of v.message_echoes || []) if (e?.id) ids.push(e.id);
-      for (const st of v.statuses || []) if (st?.id) ids.push(`st:${st.id}:${st.status || ''}`);
-    }
-  }
-  if (ids.length) return ids.sort().join('|').slice(0, 400);
-  return `sha:${createHash('sha256').update(JSON.stringify(body || {})).digest('hex')}`;
-}
-
-/**
- * Deja constancia de que el sobre entró. Se llama ANTES de acusar recibo.
- *
- * Devuelve `{ id, referencia, duplicado }` o `{ error }`. El error se traduce
- * en un 500 para que Meta reintente: es preferible una reentrega --que ya
- * sabemos ignorar-- a perder el mensaje en silencio.
- */
-async function anotarRecepcion(body) {
-  const referencia = referenciaDelSobre(body);
-  try {
-    const { rows } = await pool.query(
-      `INSERT INTO webhook_entrante (canal, referencia, payload, intentos)
-       VALUES ('whatsapp', $1, $2::jsonb, 1)
-       ON CONFLICT (canal, referencia) DO NOTHING
-       RETURNING id`,
-      [referencia, JSON.stringify(body || {})]);
-    if (rows[0]) return { id: rows[0].id, referencia, duplicado: false };
-
-    // Ya existía: es una reentrega del mismo sobre. Se distingue si quedó a
-    // medias --entonces sí hay que retomarlo-- de si ya se terminó.
-    const { rows: previo } = await pool.query(
-      `SELECT id, estado FROM webhook_entrante WHERE canal = 'whatsapp' AND referencia = $1`, [referencia]);
-    if (!previo[0]) return { error: 'la fila desapareció entre el insert y la lectura' };
-    if (previo[0].estado === 'procesado') return { id: previo[0].id, referencia, duplicado: true };
-    // Quedó pendiente o falló: se reintenta y se cuenta el intento.
-    await pool.query(
-      `UPDATE webhook_entrante SET intentos = intentos + 1, estado = 'pendiente' WHERE id = $1`, [previo[0].id]);
-    return { id: previo[0].id, referencia, duplicado: false };
-  } catch (e) {
-    return { error: e.message };
-  }
-}
-
-/**
- * Cierra la constancia. Nunca lanza: el turno del cliente ya se atendió y no
- * puede caerse por no poder anotar que se atendió.
- */
-async function marcarRecepcion(id, estado, error = null) {
-  if (!id) return;
-  try {
-    await pool.query(
-      `UPDATE webhook_entrante
-          SET estado = $2, procesado_at = NOW(), ultimo_error = $3
-        WHERE id = $1`,
-      [id, estado, error ? String(error).slice(0, 500) : null]);
-  } catch (e) {
-    console.error('[Meta WA] no se pudo cerrar la constancia del sobre:', e.message);
-  }
-}
-
+// ─── Recepción durable: se confirma únicamente después del COMMIT ───
 router.post('/', async (req, res) => {
-  // La firma se valida ANTES de responder y antes de CUALQUIER efecto.
-  if (!firmaWebhookValida(req)) {
-    console.warn('[Meta WA] Webhook rechazado: X-Hub-Signature-256 ausente o inválida (403)');
-    return res.sendStatus(403);
-  }
-
-  // ── LA CONSTANCIA VA ANTES DEL ACUSE ──────────────────────────────────
-  //
-  // Antes se respondía 200 aquí mismo y se procesaba después. Si el proceso
-  // moría en esa ventana --un despliegue, un OOM, Railway moviendo el
-  // contenedor-- el mensaje no existía para nadie. Y lo grave no es la
-  // ventana: es que Meta YA tenía su 200, así que NO lo reintenta. El
-  // cliente escribió y nadie se enteró nunca.
-  //
-  // Ahora se deja constancia primero. Es UN insert, no la IA: Meta tolera de
-  // sobra ese tiempo, y lo pesado sigue ocurriendo después del acuse.
-  //
-  // Si la constancia falla, se responde 500 A PROPÓSITO: así Meta reintenta.
-  // Es preferible una reentrega --que ya sabemos ignorar-- a perder el
-  // mensaje en silencio.
-  const recibo = await anotarRecepcion(req.body);
-  if (recibo.error) {
-    console.error('[Meta WA] no se pudo dejar constancia del sobre — se pide reintento a Meta:', recibo.error);
-    return res.sendStatus(500);
-  }
-  res.sendStatus(200);
-  if (recibo.duplicado) {
-    console.warn(`[Meta WA] sobre ya procesado (ref=${recibo.referencia.slice(-16)}) — no se vuelve a procesar`);
-    return;
-  }
-
+  if (!firmaWebhookValida(req)) return res.sendStatus(403);
+  if (req.body.object !== 'whatsapp_business_account') return res.sendStatus(200);
   try {
-    const body = req.body;
-    if (body.object !== 'whatsapp_business_account') return;
-
-    // Coexistence: los campos duales pueden venir en cualquier entry/change
-    // del payload; se despachan TODOS aparte, antes y sin pasar por el
-    // flujo de mensajes de cliente.
-    for (const entrada of body.entry || []) {
+    const entradas = [];
+    for (const entrada of req.body.entry || []) {
       for (const cambio of entrada.changes || []) {
-        if (CAMPOS_COEXISTENCE.has(cambio?.field)) await procesarCambioCoexistence(cambio);
+        if (CAMPOS_COEXISTENCE.has(cambio?.field)) { await procesarCambioCoexistence(cambio); continue; }
+        const value = cambio.value;
+        if (value?.statuses?.length) await procesarStatusesWebhook(value.statuses);
+        const phoneNumberId = value?.metadata?.phone_number_id;
+        const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp',phoneNumberId) : null;
+        if (!integracion) continue;
+        for (const message of value?.messages || []) {
+          if (!['text','image','document'].includes(message.type)) continue;
+          entradas.push({negocioId:integracion.negocioId,telefono:message.from,wamid:message.id,
+            payload:{message,value:{metadata:value.metadata,contacts:value.contacts}}});
+        }
       }
     }
-
-    // Flujo normal (idéntico al de siempre): primer change que NO sea de
-    // coexistence. Cuando no hay campos de coexistence esto es exactamente
-    // el changes[0] histórico.
-    const cambioNormal = body.entry?.[0]?.changes?.find((c) => !CAMPOS_COEXISTENCE.has(c?.field));
-    const value   = cambioNormal?.value;
-
-    // Estado de entrega (sent/delivered/read/failed) -- payload distinto
-    // al de mensajes entrantes (ver diagnóstico repartidores: esto se
-    // descartaba en silencio antes). Se procesa aparte y siempre, exista o
-    // no un mensaje entrante en el mismo payload (Meta nunca manda ambos
-    // juntos en la práctica, pero no se asume).
-    if (value?.statuses?.length) {
-      await procesarStatusesWebhook(value.statuses);
-    }
-
-    const entrantes = value?.messages || [];
-    // ── TODOS los mensajes del sobre, no solo el primero ────────────────
-    //
-    // Meta puede mandar varios mensajes en un mismo sobre. Este flujo
-    // procesaba `messages[0]` y descartaba el resto EN SILENCIO: el cliente
-    // manda dos mensajes seguidos, Meta los agrupa, y el segundo no existe
-    // para nadie.
-    //
-    // Se procesan EN SERIE y no en paralelo: dos mensajes del mismo cliente
-    // son dos turnos de la misma conversación, y atenderlos a la vez es
-    // justo la carrera que la cola de `colaMensajes` existe para evitar.
-    //
-    // Cada mensaje va en su propio try: uno que falle no puede llevarse por
-    // delante a los que vienen detrás.
-    for (const message of entrantes) {
-      try {
-        await procesarMensajeDelSobre(message, value);
-      } catch (e) {
-        console.error(`[Meta WA] fallo procesando un mensaje del sobre (${String(message?.id || '?').slice(-12)}):`, e.message);
-      }
-    }
-
-    await marcarRecepcion(recibo.id, 'procesado');
-  } catch (error) {
-    console.error('[Meta WA] Error:', error.message);
-    await marcarRecepcion(recibo.id, 'fallido', error.message);
+    const mensajes = await continuidadWA.recibir(entradas,req.body);
+    res.sendStatus(200);
+    for (const mensaje of mensajes) if(wsBroadcast) wsBroadcast(mensaje.negocio_id,{tipo:'nuevo_mensaje',mensaje});
+  } catch(error) {
+    console.error('[Meta WA] recepción no asegurada:',error.message);
+    if(!res.headersSent) res.sendStatus(503);
   }
 });
+
+async function prepararMensajePersistido({value,message}, negocioId) {
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const integracionActual = await obtenerIntegracionCanal('whatsapp',phoneNumberId);
+    if(integracionActual?.negocioId !== negocioId) throw new Error('CANAL_CAMBIO_DE_NEGOCIO');
+    // Compradores autorizados por negocio: fotos y comandos explícitos se
+    // resuelven antes del agente de pedidos, con las credenciales del tenant.
+    if (message.type === 'image' || message.type === 'text') {
+      let credencialesCompras;
+      const atendida = await manejarCompraWhatsapp({negocioId,message,
+        verificarCanal: async () => {
+          credencialesCompras = await obtenerCredencialesWhatsappNegocio(negocioId);
+          if (!credencialesCompras?.accessToken || credencialesCompras.phoneNumberId !== phoneNumberId)
+            throw new Error('Compras: faltan credenciales del número receptor');
+        },
+        descargar: async mediaId => descargarMediaDeMeta(mediaId, credencialesCompras),
+        responder: async textoCompra => {
+          const enviado = await enviarMensaje(message.from,textoCompra,credencialesCompras);
+          const wamidSalida = enviado?.messages?.[0]?.id;
+          if (!wamidSalida) throw new Error('Compras: Meta no confirmó la recepción de la respuesta');
+          const msg = await guardarMensaje(message.from,value.contacts?.[0]?.profile?.name || '',
+            'saliente',textoCompra,negocioId,'bot',wamidSalida);
+          if (msg && wsBroadcast) wsBroadcast(negocioId,{tipo:'nuevo_mensaje',mensaje:msg});
+        }});
+      if (atendida) return;
+    }
+
+    if (message.type === 'document') {
+      await manejarDocumentoEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
+      return;
+    }
+    // La imagen se archiva para el chat del panel y ADEMÁS sigue al flujo
+    // del bot: antes se hacía `return` aquí y el cliente quedaba en
+    // silencio. manejarImagenEntrante devuelve SIEMPRE el texto del turno
+    // (marca + caption) y nunca responde por su cuenta -- así la foto entra
+    // a la misma cola que el texto y una sola decisión, al vencer la
+    // ventana, produce una sola respuesta.
+    let turnoImagen = null;
+    if (message.type === 'image') {
+      turnoImagen = await manejarImagenEntrante(message, negocioId, value.contacts?.[0]?.profile?.name || '');
+    }
+
+    const telefono   = message.from;
+    const texto      = turnoImagen !== null ? turnoImagen : message.text.body;
+    const messageId  = message.id;
+    const nombreMeta = value.contacts?.[0]?.profile?.name || '';
+
+    console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
+
+    // Fase A: credenciales resueltas una vez para todo el manejo de este
+    // webhook (repartidores, marcar leído) -- mismo criterio que
+    // procesarConClaude. Puede ser null (negocio sin integración propia
+    // verificada); cada punto de envío de abajo ya maneja ese caso.
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+
+    // Acciones inmediatas (no debounced) -- ocurren SIEMPRE, sin importar
+    // el interruptor global del bot ni la pausa por cliente: guardar el
+    // mensaje, actualizar el cliente y emitir el evento para que
+    // aparezca en el chat de Xabor y se pueda atender manualmente.
+    // Una imagen NO pasa por aquí: o ya quedó guardada con su documento
+    // dentro de manejarImagenEntrante, o es un caso en que deliberadamente
+    // no se archiva (módulo apagado, MIME no soportado). Guardarla aquí
+    // dependía del índice único por wamid para no duplicar la burbuja, y
+    // además escribiría la marca interna del turno en el chat.
+    // Los textos ya quedaron guardados y publicados al confirmar recepción.
+    if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
+    await marcarLeido(messageId, credenciales);
+    // Tracking de respuesta a campañas (background, no bloquea)
+    marcarRespuestaCampana(telefono).catch(() => {});
+
+    // Comandos de Mario — sin debounce
+    const ultimosDiez = t => t.slice(-10);
+    const esMario = ultimosDiez(telefono) === ultimosDiez(process.env.MARIO_TELEFONO || '528781091115');
+    if (esMario) {
+      const esComando = await procesarAprobacion(texto, negocioId, credenciales);
+      if (esComando) return;
+    }
+
+    // Interruptor global de bot por negocio (migración 019) + pausa por
+    // cliente (ya existente) — el bot solo llama a brain.js si AMBOS lo
+    // permiten: bot_whatsapp_activo = TRUE Y bot_pausado_cliente =
+    // FALSE. El mensaje ya se guardó, se transmitió y el cliente ya se
+    // actualizó arriba (sigue apareciendo en el chat de Xabor para
+    // atención manual) -- aquí solo se decide si se invoca a la IA.
+    // Nunca se modifica bot_pausado desde aquí.
+    const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
+    if (!botGlobalActivo) {
+      console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
+      return;
+    }
+    const pausado = await getBotPausado(telefono, negocioId);
+    if (pausado) {
+      console.log(`[Meta WA] Bot pausado para ${telefono}`);
+      return;
+    }
+    // Takeover humano temporal (Coexistence): el dueño respondió hace poco
+    // desde su Business App -- el bot calla en ESTA conversación hasta que
+    // venza el plazo. Solo lectura: aquí jamás se escribe bot_pausado ni
+    // human_takeover_until.
+    const takeoverVigente = await getTakeoverHumanoActivo(telefono, negocioId);
+    if (takeoverVigente) {
+      console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
+      return;
+    }
+
+    // Detectar auto-registro: "repartidor Nombre Apellido" -- nunca para
+    // los comandos de modo (ver comentario en las constantes RE_* arriba),
+    // que también contienen la palabra "repartidor" pero significan otra
+    // cosa para un repartidor ya registrado.
+    const textoTrim = texto.trim();
+    const esComandoDeModo = RE_ENTRAR_MODO_REPARTIDOR.test(textoTrim) || RE_SALIR_MODO_REPARTIDOR.test(textoTrim);
+    const matchRep = !esComandoDeModo && (texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i));
+    if (matchRep) {
+      const nombreRep = matchRep[1].trim();
+      const rep = await registrarRepartidor(nombreRep, telefono, negocioId);
+      const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : 'https://xabor-agent-production.up.railway.app';
+      const msgReg = `¡Listo ${rep?.nombre || nombreRep}! ✅ Ya quedaste registrado como repartidor en Xabor.\nEntra aquí para ver y aceptar pedidos cuando lleguen:\n${BASE_URL}/repartidor.html`;
+      await enviarMensaje(telefono, msgReg, credenciales);
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'entrante', texto, negocioId, 'cliente');
+      await guardarMensaje(telefono, rep?.nombre || nombreRep, 'saliente', msgReg, negocioId, 'bot');
+      console.log(`[Meta WA] Repartidor auto-registrado: ${nombreRep} (${telefono})`);
+      return;
+    }
+
+    // Si el número ya es un repartidor registrado (de ESTE negocio)
+    const repartidor = await obtenerRepartidorPorTelefono(telefono, negocioId);
+    if (repartidor) {
+      const irAFlujoCliente = await enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId, credenciales });
+      if (!irAFlujoCliente) return;
+      // Intención de cliente detectada (o sin_modo/sin reparto activo/sin
+      // comando) -- cae al mismo flujo de IA que cualquier cliente normal,
+      // más abajo. No hay "return" aquí a propósito.
+    }
+
+
+    return { telefono,texto,nombreMeta,negocioId };
+}
+
+async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, negocioId) {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+      // INVARIANTE: este turno termina en un mensaje al cliente, siempre.
+      //
+      // Vision corre PRIMERO (fuera del camino del webhook: esto ya corre
+      // al vencer la cola de 6s): si el negocio tiene vision_imagenes
+      // activo y el turno trae fotos archivadas, se analizan (max 2) y
+      // cada marca se sustituye por su [CONTEXTO VISUAL].
+      //
+      // CAMBIO DE PRODUCTO (smoke B de Alora, 26-ago): una foto SIN
+      // caption ya no se despacha con "no puedo verla" cuando vision esta
+      // activo -- se analiza igual y Brain responde con lo que se ve (sin
+      // asumir intencion de compra: ver BLOQUE_REGLAS_CONTEXTO_VISUAL).
+      // El fallback determinista queda reservado para: vision apagada
+      // (caso C) o vision fallida sin ningun texto del cliente (caso D).
+      // Con texto del cliente y vision fallida, el agente recibe la nota
+      // de siempre. Una decision, una respuesta: jamas doble envio.
+      let contextosVisuales = null;
+      try {
+        const docIds = documentosDelTurno(textoCombinado);
+        if (docIds.length && await visionHabilitada(negocioId)) {
+          contextosVisuales = await analizarImagenesDeTurno(negocioId, docIds);
+        }
+      } catch (e) {
+        console.error(`[VISION] fallback negocio=${negocioId} :: ${e.message}`);
+      }
+      const esFotoMuda = soloImagenes(textoCombinado);
+      if (esFotoMuda && !(contextosVisuales && contextosVisuales.size)) {
+        // Foto sola SIN analisis disponible: el modelo no tiene nada que
+        // interpretar (no ve imagenes) -- texto determinista, como siempre.
+        try {
+          await enviarMensaje(telefono, TEXTO_FALLBACK_IMAGEN, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', TEXTO_FALLBACK_IMAGEN, negocioId, 'bot');
+        } catch (e) {
+          console.error(`[Meta WA] FALLO_FALLBACK_IMAGEN negocio=${negocioId} :: ${e.message}`);
+          throw e;
+        }
+        return;
+      }
+      await procesarConClaude(telefono, prepararTurnoParaIA(textoCombinado, contextosVisuales), nombreMeta, negocioId);
+}
+
+const continuidadWA = crearContinuidad({
+  pool,
+  locks: { connect: () => poolDeClaims().connect() },
+  cargarSesion: async (n,t,sesion) => restaurarSesion(`meta-${n}-${t}`,sesion),
+  leerSesion: async (n,t) => getSession(`meta-${n}-${t}`),
+  procesar: async (payloads,n,t) => {
+    const preparados = [];
+    for (const p of payloads) {
+      const r = await prepararMensajePersistido(p,n);
+      if(r) preparados.push(r);
+    }
+    // Una persona pudo tomar el chat mientras descargábamos una imagen.
+    if(await getBotPausado(t,n) || await getTakeoverHumanoActivo(t,n) || !await obtenerBotWhatsappActivoNegocio(n)) return;
+    if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
+  },
+  alRevision: async (n,t,motivo) => {
+    await setBotPausado(t,true,n);
+    if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true});
+    if(wsBroadcast) wsBroadcast(n,{tipo:'alerta_transaccional',subtipo:motivo,telefono:t});
+  }
+});
+export const iniciarContinuidadWA = () => continuidadWA.iniciar();
 
 // ─── Enrutamiento repartidor/cliente (incidencia real, piloto Nonna Maye) ───
 // Antes de este cambio, la sola existencia de una fila en `repartidores`

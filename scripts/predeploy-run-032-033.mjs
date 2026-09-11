@@ -89,6 +89,7 @@ const SCRIPTS = [
   // tabla fallaria cada mensaje entrante -- justo el punto que este cambio
   // quiere hacer seguro.
   '077-webhook-entrante',
+  '078-whatsapp-continuidad',
 ];
 
 for (const nombre of SCRIPTS) {

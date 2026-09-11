@@ -27,7 +27,7 @@ import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
 let _anthropic = null;
 function getAnthropic() {
   const key = getIntegracion('anthropic_api_key') || process.env.ANTHROPIC_API_KEY;
-  if (!_anthropic || _anthropic.apiKey !== key) _anthropic = new Anthropic({ apiKey: key });
+  if (!_anthropic || _anthropic.apiKey !== key) _anthropic = new Anthropic({ apiKey: key, timeout: 20000, maxRetries: 0 });
   return _anthropic;
 }
 
@@ -112,6 +112,14 @@ const ACUSE_CONFIRMACION_ANTICIPADA =
   'Vi que ya me confirmaste, gracias. El total lo acabo de calcular, así que '
   + 'necesito tu visto bueno sobre este resumen antes de mandarlo a cocina.';
 
+function respuestaSinVerificacion(sessionId) {
+  marcarPreviewNoConfirmable(sessionId);
+  const texto = 'No pude verificar tu pedido con el menú en este momento. Tu pedido aún no está confirmado; por favor intenta de nuevo o pide apoyo al personal.';
+  if(getSession(sessionId).mensajes.at(-1)?.role === 'user') agregarMensaje(sessionId,'assistant',texto);
+  else reemplazarUltimoMensajeAsistente(sessionId,texto);
+  return {texto,orden:null,factura:null,escalar:true,enviarMenu:false,sessionId};
+}
+
 async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
   // Solo un snapshot CONFIRMABLE autoriza. Si un turno anterior quedó
   // indeterminado, aquí no se registra: se devuelve null y el flujo normal
@@ -123,7 +131,7 @@ async function confirmarDesdeSnapshot(sessionId, negocioId, canal) {
     v = await previsualizarPedido(snap.ordenCanonica, negocioId, { canal });
   } catch (e) {
     console.error('[brain] revalidación de snapshot:', e.message);
-    return null; // sigue el flujo normal; nunca se registra a ciegas
+    return respuestaSinVerificacion(sessionId);
   }
   if (!v.ok) {
     invalidarPreviewPedido(sessionId);
@@ -186,7 +194,7 @@ async function mencionaProductoDelMenu(mensaje, negocioId) {
       const palabras = norm(r.nombre).split(' ').filter((w) => w.length >= 4);
       if (palabras.some((w) => texto.includes(` ${w} `) || texto.includes(` ${w}s `))) return true;
     }
-  } catch (e) { console.error('[brain] mencionaProductoDelMenu:', e.message); }
+  } catch (e) { console.error('[brain] mencionaProductoDelMenu:', e.message); throw e; }
   return false;
 }
 
@@ -215,11 +223,10 @@ async function extraerBorradorForzado(session, negocioId) {
   }, { etiqueta: 'borrador' });
   const txt = r?.content?.[0]?.text || '';
   const m = txt.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try {
-    const draft = JSON.parse(m[0]);
-    return Array.isArray(draft?.items) && draft.items.length ? draft : null;
-  } catch { return null; }
+  if (!m) throw new Error('BORRADOR_ILEGIBLE');
+  const draft = JSON.parse(m[0]);
+  if (!Array.isArray(draft?.items)) throw new Error('BORRADOR_SIN_ITEMS');
+  return draft.items.length ? draft : null;
 }
 
 /**
@@ -244,7 +251,10 @@ async function extraerMencionesComerciales(mensajeUsuario) {
     system: INSTRUCCION_MENCIONES,
     messages: [{ role: 'user', content: texto }],
   }, { etiqueta: 'menciones' });
-  const depuradas = depurarMenciones(parsearMenciones(r?.content?.[0]?.text || ''), texto);
+  const bruto = r?.content?.[0]?.text || '';
+  const json = bruto.match(/\{[\s\S]*\}/);
+  if (!json || !Array.isArray(JSON.parse(json[0])?.menciones)) throw new Error('MENCIONES_ILEGIBLES');
+  const depuradas = depurarMenciones(parsearMenciones(bruto), texto);
   if (depuradas.descartadas.length) {
     console.warn(`[TXN] evento=mencion_descartada detalle=${JSON.stringify(depuradas.descartadas.slice(0, 5))}`);
   }
@@ -284,7 +294,10 @@ function snapshotDePreview(v) {
  * los llamadores de `brain.js` no se enteran. Convertir la sesión entera en
  * asíncrona sería la rearquitectura que este arreglo NO necesita.
  */
-export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
+export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null, control = {}) {
+  // WhatsApp hidrata bajo exclusión entre instancias y guarda DESPUÉS de los
+  // efectos del canal, junto con el checkpoint del turno. Una sola escritura.
+  if(control.continuidadExterna) return procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito);
   await hidratarSesion(sessionId, negocioId);
   try {
     return await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito);
@@ -735,10 +748,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // Sin validación no se permite continuar con promesas del modelo ni
         // con un preview antiguo. El borrador permanece para poder recuperarlo.
         console.error('[brain] validación conversacional de catálogo:', e.message);
-        marcarPreviewNoConfirmable(sessionId);
-        const textoSeguro = 'No pude verificar tu pedido con el menú en este momento. Tu pedido aún no está confirmado; por favor intenta de nuevo o pide apoyo al personal.';
-        reemplazarUltimoMensajeAsistente(sessionId, textoSeguro);
-        return { texto: textoSeguro, orden: null, factura: null, escalar: true, enviarMenu: false, sessionId };
+        return respuestaSinVerificacion(sessionId);
       }
     }
 
@@ -820,6 +830,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         }
       } catch (e) {
         console.error('[brain] preview pricing oficial:', e.message);
+        return respuestaSinVerificacion(sessionId);
       }
     }
 

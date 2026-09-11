@@ -2620,7 +2620,10 @@ function conectarWS() {
       if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje, msg.documento);
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
-      if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) actualizarBotonBot(msg.pausado);
+      if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
+        document.getElementById('btn-toggle-bot').dataset.revision = msg.requiereRevision ? '1' : '0';
+        actualizarBotonBot(msg.pausado);
+      }
       if (msg.tipo === 'repartidor_asignado') {
         const p = pedidos[msg.folio];
         if (p) {
@@ -5281,7 +5284,7 @@ function renderConversaciones() {
   cont.innerHTML = filas.map(c => {
     const nombre = c.nombre || c.telefono;
     const sinResponder = c.direccion === 'entrante';
-    const preview = (c.texto || '').trim() || (c.direccion === 'saliente' ? 'Tú: —' : '—');
+    const preview = c.requiereRevision ? '⚠ Requiere revisión antes de continuar' : ((c.texto || '').trim() || (c.direccion === 'saliente' ? 'Tú: —' : '—'));
     return `<div class="chat-row${chatAbierto===c.telefono?' activo':''}" id="contacto-${c.telefono}" role="button" tabindex="0"
          onclick="abrirConversacion('${c.telefono}','${(c.nombre||'').replace(/'/g,"\\'")}')"
          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
@@ -5388,6 +5391,8 @@ async function abrirConversacion(telefono, nombre) {
   document.getElementById('chat-input').dataset.nombre   = nombre || '';
   const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.ok ? r.json() : Promise.reject()).catch(() => ({ pausado:false, botWhatsappActivo:atencionNegocioActiva }));
   atencionNegocioActiva = estado.botWhatsappActivo;
+  document.getElementById('btn-toggle-bot').dataset.revision = estado.requiereRevision ? '1' : '0';
+  document.getElementById('btn-toggle-bot').dataset.hastaEntrada = estado.hastaEntrada || '';
   actualizarBotonBot(estado.pausado);
   // La tarjeta de estado recién mostrada cambió la altura disponible: ahora
   // que el layout es definitivo, fijar el scroll al último mensaje.
@@ -5407,7 +5412,7 @@ function actualizarBotonBot(pausado) {
   if (!chatAbierto) { card.style.display = 'none'; return; }
   card.style.display = '';
 
-  if (!atencionNegocioActiva) {
+  if (!atencionNegocioActiva && btn.dataset.revision !== '1') {
     // GLOBAL pausado: no hay bot que "tomar" en esta conversación; se responde
     // manualmente. No mostramos un CTA contradictorio (paso 12). Franja compacta
     // de una sola línea (sin subtítulo) porque el título ya es autoexplicativo.
@@ -5422,6 +5427,14 @@ function actualizarBotonBot(pausado) {
   card.classList.remove('compacta');
   sub.style.display = '';
   btn.style.display = '';
+  if (btn.dataset.revision === '1') {
+    ico.textContent = '⚠️';
+    titulo.textContent = 'Conversación pendiente de revisión';
+    sub.textContent = 'Se interrumpió un turno. Revisa los mensajes y los pedidos registrados antes de continuar; Xabor no repetirá la operación automáticamente.';
+    btn.textContent = atencionNegocioActiva ? 'Revisé y atendí los pendientes; devolver al bot' : 'Revisé y atendí los pendientes';
+    btn.className = 'chat-cta chat-cta-secundario';
+    return;
+  }
   if (pausado) {
     // Conversación TOMADA (atención manual).
     ico.textContent = '👤';
@@ -5445,7 +5458,9 @@ async function toggleBotPausado() {
   const pausado  = btn.dataset.pausado === '1';
   const endpoint = pausado ? 'reactivar' : 'pausar';
   btn.disabled = true;
-  const r = await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method:'POST' });
+  const revisionConfirmada = pausado && btn.dataset.revision === '1';
+  if(revisionConfirmada && !confirm('¿Ya revisaste los pedidos y atendiste todos los mensajes pendientes? Esto no cancela ni repite ventas. El siguiente mensaje iniciará un pedido nuevo.')) { btn.disabled=false; return; }
+  const r = await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revisionConfirmada,hastaEntrada:btn.dataset.hastaEntrada}) });
   btn.disabled = false;
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -5453,6 +5468,7 @@ async function toggleBotPausado() {
     return;
   }
   mostrarErrorChat(null);
+  btn.dataset.revision = '0';
   actualizarBotonBot(!pausado);
 }
 
@@ -5525,7 +5541,7 @@ function horaBurbuja(iso) {
 }
 function burbujaMensajeHTML(m) {
   const sal = m.direccion === 'saliente';
-  return `<div class="chat-msg-row ${sal?'saliente':'entrante'}">
+  return `<div class="chat-msg-row ${sal?'saliente':'entrante'}" data-mensaje-id="${esc(String(m.id || ''))}">
       <div class="chat-burbuja ${sal?'saliente':'entrante'}">
         ${contenidoBurbujaMensaje(m)}
         <div class="chat-burbuja-meta">${etiquetaOrigen(m)}${horaBurbuja(m.timestamp)}</div>
@@ -5566,7 +5582,9 @@ function recibirMensajeWS(msg, documento) {
       : msg;
     const wrap = document.createElement('div');
     wrap.innerHTML = burbujaMensajeHTML(mensajeConDocumento);
-    cont.appendChild(wrap.firstElementChild);
+    const existente = msg.id && [...cont.querySelectorAll('[data-mensaje-id]')].find(e => e.dataset.mensajeId === String(msg.id));
+    if (existente) existente.replaceWith(wrap.firstElementChild);
+    else cont.appendChild(wrap.firstElementChild);
     cont.scrollTop = cont.scrollHeight;
   }
   if (enChats) cargarConversaciones();

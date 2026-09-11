@@ -1565,6 +1565,14 @@ export async function guardarMensaje(telefono, nombre, direccion, texto, negocio
       // volviera a contestar. Registrar una vez no es procesar una vez.
       const existente = await pool.query(`SELECT * FROM mensajes WHERE message_id_externo = $1`, [messageIdExterno]);
       if (existente.rows[0]) {
+        // El inbox guardó un marcador visible antes de descargar la imagen o
+        // documento. Completar únicamente ese marcador del MISMO negocio.
+        if (documentoId && !existente.rows[0].documento_id && existente.rows[0].negocio_id === negocioId.trim()) {
+          const completado = await pool.query(`UPDATE mensajes SET documento_id=$2,tipo=$3,texto=$4
+            WHERE message_id_externo=$1 AND negocio_id=$5 AND telefono=$6 AND documento_id IS NULL AND direccion='entrante' RETURNING *`,
+            [messageIdExterno,documentoId,tipo,texto,negocioId.trim(),telefono]);
+          if(completado.rows[0]) return completado.rows[0];
+        }
         console.log(`[DB] guardarMensaje: mensaje duplicado ignorado (message_id_externo ya existía)`);
         return { ...existente.rows[0], yaExistia: true };
       }

@@ -488,6 +488,13 @@ await t('fallo del catálogo no deja salir promesas libres ni un pedido', async 
   } finally { pool.query = query; }
 });
 
+await t('extractor ilegible no equivale a cero atributos solicitados',async()=>{
+ deleteSession('extractor-ilegible');
+ mock.encolarRespuesta(borradorLLM([]));mock.encolarRespuesta('respuesta truncada');
+ const r=await turno('extractor-ilegible','quiero una bebida preparada de omega');
+ assert.match(r.texto,/no pude verificar/i);assert.equal(r.orden,null);assert.equal(r.escalar,true);
+});
+
 // ── Resumen ────────────────────────────────────────────────────────────────
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);

@@ -147,6 +147,11 @@ await pool.query(`UPDATE negocios SET bot_whatsapp_activo = TRUE WHERE id IN ($1
 await pool.query(`DELETE FROM whatsapp_menu_imagenes WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM whatsapp_menu_automatico WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187893%'`);
+// Esta suite reutiliza wamids. Limpiar SOLO su namespace durable para que una
+// corrida anterior no sea interpretada (correctamente) como reentrega.
+await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
+await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
 
 const ckAdminA = cookie(ADMIN_A, NEG_A, 'admin');
 const ckStaffA = cookie(STAFF_A, NEG_A, 'staff');
@@ -550,6 +555,9 @@ await t('PANEL-HTML', 'la sección Menú automático vive en Catálogo (vista-me
   metaMock.detener();
   await pool.query(`DELETE FROM whatsapp_menu_automatico WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]).catch(() => {});
   await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187893%'`).catch(() => {});
+  await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
+  await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
+  await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
   await pool.query(`DELETE FROM integraciones_canal WHERE identificador IN ($1,$2)`, [PNID_A, PNID_B]).catch(() => {});
   for (const n of [NEG_A, NEG_B]) {
     const prev = estadoPrevio[n];

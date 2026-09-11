@@ -498,7 +498,7 @@ await t('ADV2. el contexto visual JAMÁS entra como system: solo turno de usuari
 await t('C1. la cola de producción analiza visión ANTES de decidir agente-vs-fallback', () => {
   // Política nueva (foto muda con visión ON se analiza): visión corre
   // primero y el fallback queda solo para visión apagada/fallida sin texto.
-  const cola = FUENTE_WA.slice(FUENTE_WA.indexOf('encolarMensaje(`${negocioId}'));
+  const cola = FUENTE_WA.slice(FUENTE_WA.indexOf('async function procesarTextoPersistido'));
   assert.ok(/analizarImagenesDeTurno/.test(cola), 'VISION NO EXISTE en el callback de la cola (esperado en 0425c98)');
   const posMuda = cola.indexOf('esFotoMuda');
   const posVision = cola.indexOf('analizarImagenesDeTurno');
@@ -509,7 +509,8 @@ await t('C1. la cola de producción analiza visión ANTES de decidir agente-vs-f
 });
 
 await t('C2. el webhook NUNCA llama a visión en su camino crítico', () => {
-  const webhook = FUENTE_WA.slice(FUENTE_WA.indexOf('const message = value?.messages?.[0];'), FUENTE_WA.indexOf('encolarMensaje(`${negocioId}'));
+  const webhook = FUENTE_WA.slice(FUENTE_WA.indexOf('// ─── Recepción durable:'), FUENTE_WA.indexOf('async function prepararMensajePersistido'));
+  assert.ok(webhook.length > 100, 'se debe inspeccionar el webhook real');
   assert.ok(!/analizarImagen|verificarTienda|messages\.create/.test(webhook), 'ninguna llamada lenta antes de encolar');
   const manejador = FUENTE_WA.slice(FUENTE_WA.indexOf('async function manejarImagenEntrante'), FUENTE_WA.indexOf('// ─── Marcar mensaje como leído'));
   assert.ok(!/analizarImagen/.test(manejador), 'manejarImagenEntrante tampoco analiza: solo archiva y devuelve el turno');
@@ -525,7 +526,7 @@ await t('C4. existe el módulo de visión (src/agent/vision.js)', () => {
 });
 
 await t('C5. el bloque visual entra por el turno del usuario, jamás por system', () => {
-  const cola = FUENTE_WA.slice(FUENTE_WA.indexOf('encolarMensaje(`${negocioId}'));
+  const cola = FUENTE_WA.slice(FUENTE_WA.indexOf('async function procesarTextoPersistido'));
   assert.ok(/procesarConClaude\(telefono, prepararTurnoParaIA\(textoCombinado, contextosVisuales\), nombreMeta, negocioId\)/.test(cola),
     'el contexto visual viaja como texto del turno hacia procesarConClaude (rol user en brain)');
   const BRAIN = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8').replace(/\r\n/g, '\n');
