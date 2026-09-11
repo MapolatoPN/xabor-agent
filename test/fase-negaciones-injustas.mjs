@@ -27,7 +27,7 @@ process.env.PORT = process.env.PORT || '4241';
 const { pool } = await import('../src/services/database.js');
 const { validarBorradorPedido, mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
 const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
-const { tieneRespaldo, sinDiminutivo, esFragmentoDeAtributo } = await import('../src/agent/mencionesComerciales.js');
+const { tieneRespaldo, sinDiminutivo, esFragmentoDeAtributo, sinConectorInicial, depurarMenciones } = await import('../src/agent/mencionesComerciales.js');
 const { procesarMensaje } = await import('../src/agent/brain.js');
 const { deleteSession, verPreviewConfirmable, datosDelPedido } = await import('../src/agent/session.js');
 
@@ -601,6 +601,73 @@ await t('F5. lo que de verdad no existe SIGUE rechazándose', async () => {
   assert.strictEqual(esFragmentoDeAtributo('Frijolitos con chorizo'), false,
     'el conector INTERNO no cuenta: esa opción existe y se llama así');
   assert.strictEqual(esFragmentoDeAtributo('Miel y Mantequilla'), false);
+});
+
+// ═══ LA SEGUNDA PUERTA ═════════════════════════════════════════════════════
+//
+// El mismo fragmento, entrando como MENCIÓN en vez de como artículo. F1-F5
+// taparon la puerta del borrador (`productosNoExisten`); estas tapan la de
+// las menciones (`no manejamos "X" en PRODUCTO`).
+//
+// En 30 días de producción, el bot emitió 11 negaciones automáticas y CUATRO
+// empezaban por preposición:
+//
+//   09-10  "con fruta"    → artículo  (la cubre F1)
+//   09-05  "con bistec"   → mención
+//   09-04  "con carne"    → mención, "en Chilaquiles Sencillos"
+//   09-04  "con pollo"    → mención, "en Chilaquiles Sencillos"
+//
+// Las tres últimas son clientes que pidieron su platillo CON una proteína que
+// el negocio sí tiene, y recibieron un "no manejamos". `sinConectorInicial`
+// las convierte en "bistec", "carne" y "pollo", que es lo que el cliente dijo
+// y lo que el catálogo sabe resolver.
+await t('H1. "con pollo" entra como "pollo" y no como una acusación', () => {
+  const r = depurarMenciones([{ texto_fuente: 'con pollo', tipo: 'atributo' }],
+    'chilaquiles sencillos con pollo');
+  assert.deepStrictEqual(r.atributos, ['pollo'],
+    'el conector viaja DENTRO del span y esquiva las tres barreras');
+  assert.strictEqual(r.descartadas.length, 0, 'y tampoco se pierde por el camino');
+});
+
+await t('H2. las tres variantes reales de producción quedan limpias', () => {
+  const casos = [
+    ['con pollo', 'chilaquiles sencillos con pollo', 'pollo'],
+    ['con carne', 'unos chilaquiles con carne', 'carne'],
+    ['con bistec', 'desayuno sorpresa con bistec', 'bistec'],
+    ['de mango', 'un licuado de mango', 'mango'],
+  ];
+  for (const [span, texto, esperado] of casos) {
+    const r = depurarMenciones([{ texto_fuente: span, tipo: 'atributo' }], texto);
+    assert.deepStrictEqual(r.atributos, [esperado], `"${span}" → esperaba ["${esperado}"]`);
+  }
+});
+
+await t('H3. y "con pollo" SÍ resuelve la proteína, no solo deja de acusar', async () => {
+  // Quitar la acusación no basta: la selección del cliente tiene que llegar.
+  // Contra el producto que SÍ tiene esa proteína: 'Combito de Chilaquiles'.
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Combito de Chilaquiles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'un combito de chilaquiles con pollo', menciones: ['pollo'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i, `"pollo" es una proteína real de ese platillo — ${msg}`);
+});
+
+await t('H4. lo que lleva el conector DENTRO no se toca', () => {
+  // "Frijolitos con chorizo" y "Miel y Mantequilla" son nombres de catálogo.
+  // Solo cuenta la PRIMERA palabra.
+  for (const intacto of ['Frijolitos con chorizo', 'Miel y Mantequilla', 'Queso panela en salsa']) {
+    assert.strictEqual(sinConectorInicial(intacto), intacto, `"${intacto}" no se puede recortar`);
+  }
+  assert.strictEqual(sinConectorInicial('de'), 'de', 'un conector suelto no se come a sí mismo');
+});
+
+await t('H5. un invento con conector sigue pudiendo negarse, ya sin la preposición', () => {
+  // La honestidad se conserva: si el cliente pide algo que no existe, el bot
+  // puede decirlo. Lo que cambia es que cita lo que el cliente dijo de verdad.
+  const r = depurarMenciones([{ texto_fuente: 'con unicornio', tipo: 'atributo' }],
+    'unos chilaquiles con unicornio');
+  assert.deepStrictEqual(r.atributos, ['unicornio'],
+    'negar "unicornio" es honesto; negar "con unicornio" es un error de lectura');
 });
 
 mock.detener();
