@@ -19,6 +19,7 @@
 export const VENTANA_AGRUPAMIENTO_MS = 6000;
 
 const bufferMensajes = new Map();
+const enCurso = new Map();
 
 /**
  * Encola `texto` bajo `clave` y reinicia la ventana. Al vencer, entrega todo
@@ -38,7 +39,13 @@ export function encolarMensaje(clave, texto, procesarFn, ventanaMs = VENTANA_AGR
   entry.timer = setTimeout(() => {
     const textosCombinados = bufferMensajes.get(clave)?.textos.join('\n') || texto;
     bufferMensajes.delete(clave);
-    procesarFn(textosCombinados);
+    // Agrupar no serializa: un segundo lote puede vencer mientras el primero
+    // espera al proveedor. Encadenar TODO el callback, incluido el envío.
+    const anterior = enCurso.get(clave) || Promise.resolve();
+    const actual = anterior.then(() => procesarFn(textosCombinados))
+      .catch(error => console.error('[colaMensajes] turno fallido:', error.message));
+    enCurso.set(clave, actual);
+    actual.finally(() => { if (enCurso.get(clave) === actual) enCurso.delete(clave); });
   }, ventanaMs);
 }
 
