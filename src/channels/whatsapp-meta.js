@@ -1537,7 +1537,25 @@ router.post('/', async (req, res) => {
       await procesarStatusesWebhook(value.statuses);
     }
 
-    const message = value?.messages?.[0];
+    // ── SOBRES CON VARIOS MENSAJES ──────────────────────────────────────
+    //
+    // Meta puede mandar varios mensajes en un mismo sobre. Este flujo
+    // procesa SOLO el primero, y los demas se descartan en silencio.
+    //
+    // No se arregla aqui a proposito. Procesarlos todos obliga a extraer
+    // ~250 lineas del manejador --el camino de entrada de TODO el negocio--
+    // y no hay ni una evidencia de que ocurra en produccion. Cambiar el
+    // archivo mas critico del sistema por un caso hipotetico es mal negocio.
+    //
+    // Asi que se hace MEDIBLE: si algun dia pasa, queda en el log con el
+    // numero de mensajes perdidos, y entonces se reestructura con datos en
+    // la mano en vez de por precaucion.
+    const entrantes = value?.messages || [];
+    if (entrantes.length > 1) {
+      console.warn(`[Meta WA] SOBRE CON ${entrantes.length} MENSAJES — solo se procesa el primero, `
+        + `${entrantes.length - 1} descartado(s). wamids=${entrantes.map((m) => String(m?.id || '?').slice(-8)).join(',')}`);
+    }
+    const message = entrantes[0];
     // 'document'/'image' se aceptan además de 'text' (aditivo -- cualquier
     // otro tipo sigue descartándose exactamente igual que antes).
     if (!message || (message.type !== 'text' && message.type !== 'document' && message.type !== 'image')) return;
@@ -1619,6 +1637,21 @@ router.post('/', async (req, res) => {
     // además escribiría la marca interna del turno en el chat.
     if (message.type !== 'image') {
       const msgGuardado = await guardarMensaje(telefono, nombreMeta, 'entrante', texto, negocioId, 'cliente', messageId);
+      // ── UNA REENTREGA NO SE VUELVE A CONTESTAR ──────────────────────────
+      //
+      // Meta reentrega un webhook cuando no recibe el 200 a tiempo, y eso
+      // pasa. El indice unico por `message_id_externo` impedia la burbuja
+      // repetida en el chat, pero el flujo seguia hasta encolar el turno: el
+      // bot contestaba DOS VECES al mismo mensaje. Registrar una vez no es
+      // procesar una vez.
+      //
+      // Se corta aqui, despues de guardar y antes de cualquier efecto: ni
+      // se difunde al panel (la burbuja ya esta), ni se marca leido otra vez,
+      // ni se encola. El mensaje queda igual de registrado que antes.
+      if (msgGuardado?.yaExistia) {
+        console.warn(`[Meta WA] reentrega ignorada wamid=${String(messageId).slice(-12)} — ya se habia procesado`);
+        return;
+      }
       if (msgGuardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
     }
     if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
