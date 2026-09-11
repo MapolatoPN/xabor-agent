@@ -172,6 +172,66 @@ await t('FLUJOS', '9. firma válida + smb_app_state_sync → procesado (200)', a
   assert.strictEqual(r.status, 200);
 });
 
+// ═══ REENTREGAS ════════════════════════════════════════════════════════════
+//
+// Meta reentrega un webhook cuando no recibe el 200 a tiempo, y eso pasa.
+//
+// El índice único por `message_id_externo` impedía la burbuja repetida en el
+// chat, pero el flujo seguía hasta encolar el turno: **el bot contestaba dos
+// veces al mismo mensaje**. Registrar una vez no es procesar una vez.
+//
+// Hallazgo de la auditoría del asistente (punto 4). `guardarMensaje` ya sabía
+// que era una reentrega --entraba en la rama del ON CONFLICT-- pero devolvía
+// la fila existente igual que una nueva, así que el llamador no podía
+// distinguirlas.
+await t('REENTREGA', 'R1. la reentrega se RECONOCE y se corta antes de procesar', async () => {
+  // El observable no puede ser la fila en `mensajes`: el índice único ya
+  // impedía la fila repetida ANTES de este arreglo, así que esa aserción
+  // pasa con y sin la corrección y no demuestra nada. Lo que cambia es que
+  // el flujo se CORTA: se mira el log del servidor.
+  const wamid = `wamid.fw.reent.${sufijo}.1`;
+  const cuerpo = payload([cambioMensaje('Hola, quiero pedir', wamid)]);
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1500);
+  const antes = srv.obtenerSalida();
+  assert.ok(!/reentrega ignorada/.test(antes), 'la PRIMERA entrega no es una reentrega');
+
+  // Meta reintenta EXACTAMENTE el mismo sobre.
+  const r2 = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r2.status, 200, 'la reentrega se acusa igual: no es un error de Meta');
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  assert.match(despues, /reentrega ignorada/,
+    'el flujo tiene que reconocerla y cortar; si no, el bot contesta dos veces');
+  assert.ok(despues.includes(String(wamid).slice(-12)),
+    'y decir de qué mensaje se trata, para poder auditarlo');
+});
+
+await t('REENTREGA', 'R2. y NO se registra dos veces en el historial', async () => {
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  const entrantes = msgs.filter((m) => m.texto === 'Hola, quiero pedir' && m.direccion === 'entrante');
+  assert.strictEqual(entrantes.length, 1, 'una sola fila para un solo mensaje del cliente');
+});
+
+await t('REENTREGA', 'R3. un wamid DISTINTO sí se procesa: no se rompe el flujo normal', async () => {
+  // La corrección no puede convertirse en un filtro que se coma mensajes
+  // legítimos. Dos mensajes distintos del mismo cliente son dos turnos.
+  const antes = srv.obtenerSalida();
+  const cuerpo = payload([cambioMensaje('Otra pregunta distinta', `wamid.fw.reent.${sufijo}.3`)]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  assert.ok(!/reentrega ignorada/.test(despues),
+    'un mensaje nuevo NO puede confundirse con una reentrega');
+  const msgs = await mensajesDe(TEL_CLIENTE);
+  assert.ok(msgs.some((m) => m.texto === 'Otra pregunta distinta' && m.direccion === 'entrante'),
+    'y tiene que registrarse como siempre');
+});
+
+// La prueba de PARTNER_REMOVED (FLUJOS 10) deja la integracion DESCONECTADA,
+// y a partir de ahi todo mensaje se descarta por fail closed. Estas van antes
+// a proposito: puestas despues pasaban sin comprobar nada.
 await t('FLUJOS', '10. firma válida + PARTNER_REMOVED → marca desconectado', async () => {
   const cuerpo = payload([{ field: 'account_update', value: { event: 'PARTNER_REMOVED', waba_info: { waba_id: WABA_F } } }]);
   const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
@@ -239,12 +299,17 @@ await t('SEGURIDAD', '16. la comparación de firmas es timing-safe (no igualdad 
     'no compara firmas con === de strings');
 });
 
+
+
+
 } finally {
   srv.detener();
   await new Promise((r) => { srv.proc.once('exit', r); setTimeout(r, 3000); });
   await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'whatsapp' AND negocio_id = $1 AND identificador = $2`, [NEG_A, PNID_F]).catch(() => {});
   await pool.query(`DELETE FROM mensajes WHERE negocio_id = $1 AND telefono LIKE '52879${sufijo}%'`, [NEG_A]).catch(() => {});
-  await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52879${sufijo}%'`).catch(() => {});
+
+
+await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52879${sufijo}%'`).catch(() => {});
 }
 
 console.log(`\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);
