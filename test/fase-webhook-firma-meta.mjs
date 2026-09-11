@@ -201,7 +201,12 @@ await t('REENTREGA', 'R1. la reentrega se RECONOCE y se corta antes de procesar'
   assert.strictEqual(r2.status, 200, 'la reentrega se acusa igual: no es un error de Meta');
   await esperar(1500);
   const despues = srv.obtenerSalida().slice(antes.length);
-  assert.match(despues, /reentrega ignorada/,
+  // Hay DOS cortes posibles, y los dos son correctos:
+  //   · a nivel de SOBRE  (`sobre ya procesado`), desde la constancia durable
+  //   · a nivel de MENSAJE (`reentrega ignorada`), por el wamid ya guardado
+  // El de sobre ocurre antes y es el que gana hoy. Se exige que corte por
+  // alguno de los dos: lo que no puede es seguir hasta procesar.
+  assert.match(despues, /reentrega ignorada|sobre ya procesado/,
     'el flujo tiene que reconocerla y cortar; si no, el bot contesta dos veces');
   assert.ok(despues.includes(String(wamid).slice(-12)),
     'y decir de qué mensaje se trata, para poder auditarlo');
@@ -227,6 +232,69 @@ await t('REENTREGA', 'R3. un wamid DISTINTO sí se procesa: no se rompe el flujo
   const msgs = await mensajesDe(TEL_CLIENTE);
   assert.ok(msgs.some((m) => m.texto === 'Otra pregunta distinta' && m.direccion === 'entrante'),
     'y tiene que registrarse como siempre');
+});
+
+// ═══ CONSTANCIA ANTES DEL ACUSE ════════════════════════════════════════════
+//
+// El webhook respondía `200` a Meta ANTES de escribir nada. Si el proceso
+// moría en esa ventana --un despliegue, un OOM-- el mensaje no existía para
+// nadie. Y lo grave no es la ventana: es que Meta YA tenía su 200, así que NO
+// lo reintenta. El cliente escribió y nadie se enteró nunca.
+await t('RECIBO', 'C1. el sobre queda anotado antes de contestarle a Meta', async () => {
+  const wamid = `wamid.fw.recibo.${sufijo}.1`;
+  const cuerpo = payload([cambioMensaje('Constancia primero', wamid)]);
+  const r = await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  assert.strictEqual(r.status, 200);
+  // Sin esperar a que termine el proceso: la fila tiene que existir YA, porque
+  // se escribió antes del 200 que acabamos de recibir.
+  const { rows } = await pool.query(
+    `SELECT estado, intentos FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows.length, 1, 'la constancia se escribe ANTES del acuse, no después');
+  assert.strictEqual(Number(rows[0].intentos), 1);
+});
+
+await t('RECIBO', 'C2. y se cierra como procesado cuando termina', async () => {
+  await esperar(2000);
+  const { rows } = await pool.query(
+    `SELECT estado, procesado_at FROM webhook_entrante WHERE referencia = $1`,
+    [`wamid.fw.recibo.${sufijo}.1`]);
+  assert.strictEqual(rows[0].estado, 'procesado', 'sin esto, el arranque no sabría qué retomar');
+  assert.ok(rows[0].procesado_at, 'con su hora');
+});
+
+await t('RECIBO', 'C3. el MISMO sobre dos veces no se procesa dos veces', async () => {
+  const wamid = `wamid.fw.recibo.${sufijo}.2`;
+  const cuerpo = payload([cambioMensaje('Sobre repetido', wamid)]);
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1800);
+  const antes = srv.obtenerSalida();
+
+  await postWebhook(cuerpo, { 'X-Hub-Signature-256': firmar(cuerpo) });
+  await esperar(1500);
+  const despues = srv.obtenerSalida().slice(antes.length);
+  assert.match(despues, /sobre ya procesado|reentrega ignorada/,
+    'la reentrega tiene que cortarse, no volver a procesarse');
+
+  const { rows } = await pool.query(
+    `SELECT count(*)::int n FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows[0].n, 1, 'una fila por sobre, no una por entrega');
+});
+
+await t('RECIBO', 'C4. la referencia sale del CONTENIDO, no del reloj', async () => {
+  // Es lo que hace que una reentrega choque con la fila anterior. Si llevara
+  // la hora o un aleatorio, cada reentrega crearía su propia fila y el
+  // mecanismo entero no serviría de nada.
+  const wamid = `wamid.fw.recibo.${sufijo}.3`;
+  const uno = payload([cambioMensaje('Mismo contenido', wamid)]);
+  await postWebhook(uno, { 'X-Hub-Signature-256': firmar(uno) });
+  await esperar(1500);
+  // El mismo wamid en un sobre construido de nuevo (otro instante).
+  const dos = payload([cambioMensaje('Mismo contenido', wamid)]);
+  await postWebhook(dos, { 'X-Hub-Signature-256': firmar(dos) });
+  await esperar(1200);
+  const { rows } = await pool.query(
+    `SELECT count(*)::int n FROM webhook_entrante WHERE referencia = $1`, [wamid]);
+  assert.strictEqual(rows[0].n, 1, 'dos entregas del mismo contenido son UNA constancia');
 });
 
 // ═══ SOBRES CON VARIOS MENSAJES ════════════════════════════════════════════
