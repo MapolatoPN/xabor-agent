@@ -170,6 +170,70 @@ await t('13. el equipo se entera igual: el silencio es solo hacia el cliente', a
   assert.match(cuerpo, /Motivo:/, 'y por qué');
 });
 
+// ═══ S — NO HAY BORRADOR NO ES BORRADOR ROTO ══════════════════════════════
+//
+// Incidente 2026-09-11, 11:11 p.m., con el bot ya desplegado: un cliente
+// escribió "Quiero unos chilaquiles" y NO recibió nada. En el log:
+//
+//   [Meta WA] Mario Cantú: Quiero unos chilaquiles
+//   [brain] validación conversacional de catálogo: BORRADOR_ILEGIBLE
+//   [Meta WA] conversación a revisión humana motivo=ESCALADA_MODELO
+//
+// El extractor de borrador pide al modelo un JSON con el pedido. Si el modelo
+// contesta en prosa --que es lo normal cuando todavía no hay pedido que
+// extraer-- no venía ningún JSON, y eso se trataba como error fatal: tumbaba el
+// turno, escalaba, y con la política de silencio el cliente se quedaba
+// esperando sin respuesta.
+//
+// "No extrajo pedido" es el resultado más común y es benigno. "Extrajo algo que
+// no se puede leer" sí es un error. Confundirlos costó la conversación entera.
+await t('S1. sin nada con forma de JSON: no hay borrador, y el turno sigue', async () => {
+  const { _extraerBorradorForzadoDeTexto } = await import('../src/agent/brain.js').catch(() => ({}));
+  // Si el helper no está exportado se comprueba por contrato sobre la fuente:
+  // lo que importa es que el caso "sin JSON" NO lance.
+  const fuente = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');
+  const i = fuente.indexOf('async function extraerBorradorForzado');
+  const cuerpo = fuente.slice(i, fuente.indexOf('\n}', i));
+  assert.ok(!/if\s*\(!m\)\s*throw/.test(cuerpo),
+    'un modelo que contesta en prosa no puede tumbar el turno: eso dejó a un cliente sin respuesta');
+  assert.match(cuerpo, /if\s*\(!m\)\s*return null;/,
+    'sin JSON = no hay borrador, y la conversación sigue su curso');
+});
+
+await t('S2. lo que SÍ es un borrador roto se sigue tratando como error', async () => {
+  // La otra mitad: relajar el caso benigno no puede volver ciego al caso malo.
+  const fuente = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');
+  const i = fuente.indexOf('async function extraerBorradorForzado');
+  const cuerpo = fuente.slice(i, fuente.indexOf('\n}', i));
+  assert.match(cuerpo, /JSON\.parse\(m\[0\]\)/,
+    'si vino algo con forma de JSON y no se puede leer, JSON.parse lanza y se falla cerrado');
+  assert.match(cuerpo, /BORRADOR_SIN_ITEMS/,
+    'un JSON sin `items` sigue siendo una respuesta malformada');
+});
+
+await t('S3. el panel explica el motivo REAL, no uno fijo', async () => {
+  // El panel mostraba "se interrumpió un turno" para los cinco motivos. Quien
+  // abría la conversación se ponía a buscar un pedido a medias cuando lo que
+  // había pasado era que el bot no reconoció un platillo.
+  const panel = readFileSync(new URL('../panel/index.html', import.meta.url), 'utf8');
+  assert.match(panel, /explicarMotivoRevision\(btn\.dataset\.motivo\)/,
+    'el texto tiene que salir del motivo, no estar escrito a mano');
+  for (const motivo of ['ESCALADA_MODELO', 'SIN_VERIFICAR_MENU', 'NEGATIVA_INTERCEPTADA',
+    'REENTREGA_LEGADA', 'EJECUCION_INTERRUMPIDA']) {
+    assert.ok(panel.includes(motivo + ':'), `falta qué decirle al equipo ante ${motivo}`);
+  }
+});
+
+await t('S4. el motivo llega al panel por los dos caminos', async () => {
+  const servidor = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+  assert.match(servidor, /motivoRevision: control\?\.motivo/,
+    'al abrir la conversación (HTTP)');
+  const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
+  assert.match(canal, /requiereRevision:true,motivo\}/,
+    'y en vivo, cuando ocurre (WebSocket)');
+});
+
+
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 await pool.end().catch(() => {});

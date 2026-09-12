@@ -4365,8 +4365,12 @@ app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModu
   const [pausado, botWhatsappActivo] = await Promise.all([
     getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
   ]);
-  const {rows:[control]} = await pool.query('SELECT requiere_revision,(SELECT max(id)::text FROM whatsapp_entradas e WHERE e.negocio_id=c.negocio_id AND e.telefono=c.telefono) AS ultima FROM whatsapp_conversaciones c WHERE negocio_id=$1 AND telefono=$2',[req.negocioId,req.params.telefono]);
-  res.json({ pausado: pausado || !!control?.requiere_revision, botWhatsappActivo, requiereRevision:!!control?.requiere_revision,hastaEntrada:control?.ultima || null });
+  const {rows:[control]} = await pool.query('SELECT requiere_revision,motivo,(SELECT max(id)::text FROM whatsapp_entradas e WHERE e.negocio_id=c.negocio_id AND e.telefono=c.telefono) AS ultima FROM whatsapp_conversaciones c WHERE negocio_id=$1 AND telefono=$2',[req.negocioId,req.params.telefono]);
+  // El MOTIVO viaja al panel. Sin él, la pantalla decía siempre "se interrumpió
+  // un turno" para los cinco motivos posibles: quien abría la conversación
+  // buscaba un pedido a medias cuando en realidad el bot no había entendido un
+  // platillo. Un aviso que no dice por qué hace perder el tiempo de quien lo lee.
+  res.json({ pausado: pausado || !!control?.requiere_revision, botWhatsappActivo, requiereRevision:!!control?.requiere_revision, motivoRevision: control?.motivo || null, hastaEntrada:control?.ultima || null });
 });
 
 // ─── Documentos PDF en el chat ────────────────────────────────────────────────

@@ -1886,7 +1886,7 @@ const continuidadWA = crearContinuidad({
   },
   alRevision: async (n,t,motivo) => {
     await setBotPausado(t,true,n);
-    if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true});
+    if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true,motivo});
     if(wsBroadcast) wsBroadcast(n,{tipo:'alerta_transaccional',subtipo:motivo,telefono:t});
   }
 });

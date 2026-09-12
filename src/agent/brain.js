@@ -224,7 +224,22 @@ async function extraerBorradorForzado(session, negocioId) {
   }, { etiqueta: 'borrador' });
   const txt = r?.content?.[0]?.text || '';
   const m = txt.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('BORRADOR_ILEGIBLE');
+  // NO HAY BORRADOR y BORRADOR ROTO son cosas distintas.
+  //
+  // Incidente 2026-09-11, 11:11 p.m.: un cliente escribió "Quiero unos
+  // chilaquiles" y no recibió NADA. En el log: BORRADOR_ILEGIBLE. El modelo
+  // había contestado en prosa en vez de JSON --que es lo normal cuando todavía
+  // no hay pedido que extraer-- y eso tumbaba el turno entero: escalaba, la
+  // conversación se iba a revisión humana y, con la política de silencio, el
+  // cliente se quedaba esperando.
+  //
+  // Que no venga NADA con forma de JSON significa que no extrajo pedido. Es el
+  // caso más común y es benigno: se devuelve null y la conversación sigue su
+  // curso, igual que antes de endurecer esta función. Lo que SÍ se sigue
+  // tratando como error es que venga algo con forma de JSON y no se pueda leer
+  // --ahí JSON.parse lanza solo-- o que se lea y no traiga `items`: eso es una
+  // respuesta malformada y no se puede seguir a ciegas.
+  if (!m) return null;
   const draft = JSON.parse(m[0]);
   if (!Array.isArray(draft?.items)) throw new Error('BORRADOR_SIN_ITEMS');
   return draft.items.length ? draft : null;
