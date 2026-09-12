@@ -60,7 +60,8 @@ evidencia del cliente. Los datos operativos no tocan artículos.
 - [x] Carrito persistente (falla C)
 - [x] Conversaciones completas: sustitución, respuestas cortas, apodos y erratas,
       prosa, borrador vacío, mensajes agrupados, reentregas, dos instancias
-- [x] Regresión de las suites vecinas (38 suites)
+- [x] Regresión de las suites vecinas (43 suites)
+- [x] Segunda auditoría de Codex: tres fallas del carrito, reproducidas y cerradas
 - [x] Auditoría de producción en solo lectura
 - [x] PR — rama `fix/pedido-fuente-de-verdad` empujada. `gh` no está
       autenticado en esta máquina, así que el PR queda por abrir desde
@@ -71,14 +72,14 @@ evidencia del cliente. Los datos operativos no tocan artículos.
 
 | Archivo | Qué hace |
 |---|---|
-| `src/orders/carritoDelPedido.js` (nuevo) | El carrito: reconcilia la propuesta del modelo contra el pedido que ya existía. Módulo puro. |
+| `src/orders/carritoDelPedido.js` (nuevo) | El carrito: reconcilia la propuesta del modelo contra el pedido que ya existía, **campo a campo**. Cada cambio —cantidad, modificador, nota, artículo— necesita respaldo del cliente. Módulo puro. |
 | `src/orders/evidenciaDeEleccion.js` (nuevo) | Si una palabra del cliente sostiene igual de bien a dos opciones hermanas, no elige ninguna. |
-| `src/agent/brain.js` | Engancha la reconciliación; reinyecta el carrito solo en turnos del pedido. |
+| `src/agent/brain.js` | Engancha la reconciliación en **las tres** fuentes de borrador (marcador del modelo, aclaración y extracción forzada); reinyecta el carrito solo en turnos del pedido; pregunta lo ambiguo. |
 | `src/agent/session.js` | Cerrar el ciclo vacía el carrito. |
 | `src/agent/sesionDurable.js` | El carrito viaja en la foto durable: sobrevive reinicios. |
 | `src/orders/validadorOrden.js` | Señalar desempata, no sustituye: un id que contradice al nombre Y a lo que dijo el cliente ya no gana. Las selecciones exigen distinguir. |
 
-## Pruebas de mordida
+## Pruebas de mordida (primera ronda)
 
 Cada garantía se desactivó por separado y se comprobó que la suite vuelve a
 fallar exactamente donde debe. Sin esto, verde no significa nada.
@@ -189,13 +190,14 @@ elegido.
 | K | el carrito en la ruta forzada | F15 |
 
 
-## Regresión: 38 suites vecinas
+## Regresión: 43 suites vecinas
 
-Se eligieron por importación real: todo lo que toca `brain.js`,
-`validadorOrden.js`, `session.js` o `sesionDurable.js`, más la recepción
-compartida de WhatsApp y Compras.
+Elegidas por importación real —todo lo que toca `brain.js`, `validadorOrden.js`,
+`session.js` o `sesionDurable.js`— más la recepción compartida de WhatsApp,
+Compras y los caminos de imagen (que importan porque el carrito ahora exige que
+el cliente haya NOMBRADO lo que se agrega, y un pedido por foto no nombra nada).
 
-**36 de 38 en verde.** Incluye lo que el mandato pide conservar:
+**41 de 43 en verde.** Entre ellas:
 
 | Suite | Qué defiende | Resultado |
 |---|---|---|
@@ -204,22 +206,31 @@ compartida de WhatsApp y Compras.
 | `fase-preconfirmacion-pricing` | precios, extras y totales reales | 18/18 |
 | `fase-promociones` / `fase-promo-informativa` | promociones | 19/19, 18/18 |
 | `fase-seguridad-transaccional` | idempotencia y aislamiento | 18/18 |
+| `fase-p0-aislamiento-pedidos` | aislamiento entre negocios | verde |
 | `fase-compras-whatsapp` + `-webhook` | **Compras por WhatsApp sigue funcionando** | 13/13 + verde |
 | `fase-bot-calla-y-avisa` | silencio, intervención humana, reactivación | 24/24 |
 | `fase-negaciones-injustas` | no negar lo que existe | 63/63 |
 | `fase-chilaquiles-contexto` | la suite de Codex para este incidente | 11/11 |
+| `fase-vision-whatsapp`, `fase-chat-imagenes` | pedir por foto sigue funcionando | verdes |
 | `fase-whatsapp-continuidad`, `fase-agrupamiento-turnos-whatsapp` | reentregas, mensajes agrupados | 13/13, 14/14 |
 
 **Las 2 que fallan, fallan igual en `c859e72`** —el commit que hoy corre en
 producción— comprobado en un worktree limpio de ese commit, con la misma base y
 las mismas variables:
 
-- `fase-continuidad-webhook`: 8/2 en las dos ramas, los mismos dos casos.
-- `fase-whatsapp-invariante-activo`: 13 OK · 2 fallos en las dos ramas (I y J,
-  sobre el puente de credenciales por variable de entorno).
+- `fase-continuidad-webhook`: 9/1 en las dos, el mismo caso (captura del panel
+  que expira a los 5 s).
+- `fase-hotfix-borrador-recuperable`: 2 de 8 en las dos, los mismos casos. Es
+  del Asistente Comercial, no del pedido del menú.
 
-Ninguna es de este trabajo. Quedan anotadas, no arregladas: tocarlas sería
-entrar en Integraciones, que no es el alcance.
+Ninguna es de este trabajo. Quedan anotadas, no arregladas.
+
+### Un falso positivo que conviene recordar
+
+En una corrida, `fase-chat-imagenes` dio 33/5 con fallos del worker de
+recepción. No era regresión: yo había lanzado otra suite EN PARALELO con el
+lote. Sola pasa 38/38. Está escrito en CLAUDE.md —las suites no toleran
+ejecución concurrente— y aun así lo hice.
 
 ### Corrección: la suite de Codex SÍ se había ejecutado
 
@@ -294,12 +305,25 @@ detecta con `JSON.stringify` de la línea.
 
 ## Lo que este trabajo NO resuelve
 
-- Que el modelo escriba mal el borrador. Se acota el daño —lo que omite ya no
-  borra, lo que contradice ya no gana— pero un modelo que invente un artículo
-  nuevo sigue metiéndolo, y eso lo ve el cliente en el resumen.
-- Las dos suites que fallan desde antes (`fase-continuidad-webhook`,
-  `fase-whatsapp-invariante-activo`).
-- La detección de "quitar" es léxica: verbo + artículo nombrado dentro de su
-  alcance. Una forma de pedirlo que no use ninguno de esos verbos no quita nada
-  —se conserva y el cliente lo corrige en el resumen—, que es el lado seguro del
-  error, pero es un límite real.
+- **Un nombre sin ninguna palabra en común.** Agregar un producto exige que el
+  cliente lo haya nombrado, con tolerancia a una errata. Quien diga «ponme un
+  refresco» y el modelo lo lea como "Coca Cola" se queda sin refresco: no hay
+  ninguna letra que los una. Lo ve en el resumen y lo pide otra vez. Es el lado
+  seguro del error —perder algo se repara en la conversación, cobrar algo que
+  nadie pidió llega a la puerta— pero es un límite real.
+- **La primera propuesta de un ciclo no pasa por esa puerta.** Si el modelo
+  inventa un artículo en el PRIMER borrador, el carrito no tiene nada que
+  proteger todavía y lo acepta; lo auditan las menciones y el validador, no
+  esto. La puerta existe para el modelo que añade cosas a un pedido que ya
+  estaba, que es lo que Codex reprodujo.
+- **Cambiar de idea sin decirlo en el turno.** Cambiar un grupo ya elegido pide
+  respaldo en el mensaje de ese turno. Un cliente que dice «suiza» en el primer
+  mensaje y luego solo contesta «sí» a una pregunta del bot sobre la salsa no
+  cambia nada: el bot le pregunta otra vez.
+- **La detección de «quitar» es léxica.** Verbo + artículo identificado dentro
+  de su alcance. Una forma de pedirlo sin ninguno de esos verbos no quita nada:
+  se conserva y el cliente lo corrige en el resumen.
+- **Las dos suites que fallan desde antes** (`fase-continuidad-webhook`,
+  `fase-hotfix-borrador-recuperable`).
+- **Nada de esto se ha visto contra un cliente real**, porque el bot de Obispado
+  sigue apagado.
