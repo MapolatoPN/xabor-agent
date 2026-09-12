@@ -116,6 +116,7 @@ export function iniciarCicloPedido(sessionId) {
   // El pedido anterior ya se cerró: su dirección y su forma de pago no pueden
   // arrastrarse al siguiente sin que el cliente las vuelva a decir.
   session.datosPedido = null;
+  session.aclaracionProducto = null;
   session.esperandoDato = null;
   session.actualizado_en = new Date().toISOString();
   return session.cicloPedido;

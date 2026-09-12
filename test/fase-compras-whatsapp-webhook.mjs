@@ -25,7 +25,8 @@ const sent=[],mock=express();mock.use(express.json());mock.post('/v20.0/:id/mess
 const http=mock.listen(0,'127.0.0.1');await new Promise(r=>http.once('listening',r));
 const srv=await arrancarServidor({PORT:'4973',META_APP_SECRET:secret,META_GRAPH_BASE_URL:'http://127.0.0.1:'+http.address().port,
   ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',WHATSAPP_TOKEN:'',WHATSAPP_PHONE_ID:''},{timeoutMs:30000});
-const day=new Date().toISOString().slice(0,10),source='wamid.compra.'+randomUUID();
+// La fecha UTC puede ser mañana en el negocio durante el turno nocturno.
+const day=await F.hoyNegocio(pool,A),source='wamid.compra.'+randomUUID();
 const compra=await C.crearBorradorManual(A,{proveedor:'Prueba webhook',fecha:day,total:50,tipo_pago:'credito'});
 await pool.query('INSERT INTO compras_whatsapp_tickets(negocio_id,telefono,wamid,compra_id,version_mostrada) VALUES($1,$2,$3,$4,$5)',[A,phone,source,compra.id,compra.version]);
 const codigo=compra.id.slice(0,8)+'-v'+compra.version;
@@ -41,7 +42,7 @@ try {
   assert.equal((await C.obtenerCompra(A,compra.id)).estado,'borrador');
   console.log('OK foto autorizada llega a Compras y devuelve resumen por Meta');
   await post({id:randomUUID(),type:'text',text:{body:'CONFIRMAR '+codigo+' CREDITO'}});
-  await waitFor(()=>sent.length===2);assert(sent[1].text.body.includes('registrada'));
+  await waitFor(()=>sent.length===2);assert(sent[1].text.body.includes('registrada'),sent[1].text.body+'\n'+srv.obtenerSalida().slice(-1800));
   assert.equal((await C.obtenerCompra(A,compra.id)).pendiente,50);
   console.log('OK confirmación firmada registra deuda sin pago');
   await post({id:randomUUID(),type:'text',text:{body:'CONFIRMAR '+codigo+' FONDO'}});

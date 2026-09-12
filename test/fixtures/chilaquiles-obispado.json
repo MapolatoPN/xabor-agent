@@ -1,0 +1,568 @@
+{
+  "catalogo": [
+    {
+      "id": 78,
+      "nombre": "Hotcakes Tradicionales",
+      "descripcion": "La orden incluye 2 piezas acompañadas de fruta fresca de temporada.",
+      "precio": "149.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 79,
+      "nombre": "Hotcakes de Sarten",
+      "descripcion": "La orden incluye 2 piezas acompañadas de fruta fresca de temporada y miel especial de la casa.",
+      "precio": "179.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 85,
+      "nombre": "Chilaquiles Sencillos",
+      "descripcion": "Los chilaquiles van servidos con una salsa, una proteína y 2 guarniciones, además lleva cilantro, queso, crema y cebolla.",
+      "precio": "195.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 106,
+      "nombre": "Combito de Chilaquiles",
+      "descripcion": "Los combitos están hechos para disfrutar lo mejor 2 dos platillos, en este caso de chilaquiles, eliges una salsa, una proteína, el postre que puede ser hotcakes o waffles y un topping si lo deseas.",
+      "precio": "195.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 107,
+      "nombre": "Chilaquiles Mixtos",
+      "descripcion": "Los chilaquiles van servidos con dos salsas, hasta dos proteínas y 2 guarniciones, además lleva cilantro, queso, crema y cebolla.",
+      "precio": "205.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 108,
+      "nombre": "Bowl de Chilaquiles",
+      "descripcion": "el bowl es la versión mas simple, solo lleva una salsa y una proteína, no incluye guarniciones.",
+      "precio": "140.00",
+      "disponible": true,
+      "agotado": false
+    },
+    {
+      "id": 131,
+      "nombre": "Taco de Bistec en Salsa",
+      "descripcion": "En Harina o Maíz, tu eliges.",
+      "precio": "30.00",
+      "disponible": true,
+      "agotado": false
+    }
+  ],
+  "grupos": [
+    {
+      "producto_id": 78,
+      "nombre": "Topping",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 4,
+      "opciones": [
+        {
+          "nombre": "Tradicional",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Nutella",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Hersheys",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Cajeta",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Lechera",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chispas de Chocolate",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Blueberries Cheesecake",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 85,
+      "nombre": "Salsa",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Roja",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Suiza",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Verde",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Mole",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chipotle",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 85,
+      "nombre": "Proteína",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Huevos Estrellados",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Huevos Revueltos",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Pechuga de pollo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Prensado",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Bistec en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Queso Panela en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Cuerito en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 85,
+      "nombre": "Guarniciones",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 2,
+      "opciones": [
+        {
+          "nombre": "Frijolitos naturales",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Frijolitos con chorizo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Papas a la mexicana",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Papas con chorizo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Bistec en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Queso panela en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron cuerito en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 106,
+      "nombre": "Salsa",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Suiza",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Roja",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Verde",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chipotle",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Mole",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 106,
+      "nombre": "Proteína",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Pechuga de pollo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Huevos estrellados",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Huevos revueltos",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharrón prensado",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 106,
+      "nombre": "Hotcakes o Waffles",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Hotcakes",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Waffles",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 106,
+      "nombre": "Topping",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Miel y Mantequilla",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Nutella",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Cajeta",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Lechera",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Blueberries Cheesecake",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Hershey´s",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 107,
+      "nombre": "Salsa",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 2,
+      "opciones": [
+        {
+          "nombre": "Roja",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Suiza",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Verde",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Mole",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chipotle",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 107,
+      "nombre": "Proteína",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 2,
+      "opciones": [
+        {
+          "nombre": "Huevos Estrellados",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Huevos Revueltos",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Pechuga de pollo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Prensado",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Bistec en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Queso Panela en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Cuerito en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 107,
+      "nombre": "Guarniciones",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 2,
+      "opciones": [
+        {
+          "nombre": "Frijolitos naturales",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Frijolitos con chorizo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Papas a la mexicana",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Papas con chorizo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Bistec en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Queso panela en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron cuerito en salsa",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 108,
+      "nombre": "Salsa",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Roja",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Suiza",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Verde",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Mole",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chipotle",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 108,
+      "nombre": "Proteína",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Huevos Estrellados",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Huevos Revueltos",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Pechuga de pollo",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Prensado",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Bistec en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Queso Panela en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        },
+        {
+          "nombre": "Chicharron Cuerito en Salsa",
+          "precio_extra": 30,
+          "disponible": true
+        }
+      ]
+    },
+    {
+      "producto_id": 131,
+      "nombre": "Tortilla",
+      "requerido": true,
+      "minimo": 1,
+      "maximo": 1,
+      "opciones": [
+        {
+          "nombre": "Harina",
+          "precio_extra": 0,
+          "disponible": true
+        },
+        {
+          "nombre": "Maíz",
+          "precio_extra": 0,
+          "disponible": true
+        }
+      ]
+    }
+  ]
+}

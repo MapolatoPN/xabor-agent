@@ -248,6 +248,23 @@ function resolverProducto(nombreLLM, catalogo, idLLM = null) {
  *          nombre real del catálogo, precio real, y totales recalculados.
  *   ajustes: [{ tipo, ... }] observabilidad de mismatches corregidos.
  */
+// Respuesta limitada a elegir una presentación; el borrador aún debe validarse.
+export function continuarAclaracionProducto(pendiente, mensaje) {
+  if(!Array.isArray(pendiente?.borrador?.items) || !Array.isArray(pendiente.candidatos)) return null;
+  const texto=normalizarNombreProducto(mensaje).replace(/^(?:(?:quiero|prefiero|los|las|unos|unas|el|la)\s+)+/,'').replace(/[.!?]+$/,'').trim();
+  if(!texto) return null;
+  const elegibles=pendiente.candidatos.filter(n=>{
+    const nombre=normalizarNombreProducto(n);
+    return nombre===texto || nombre.endsWith(' '+texto);
+  });
+  if(elegibles.length!==1) return null;
+  const copia=structuredClone(pendiente.borrador);
+  const items=copia.items.filter(i=>i.nombre===pendiente.nombre);
+  if(items.length!==1) return null;
+  items[0].nombre=elegibles[0];delete items[0].id;delete items[0].producto_id;
+  return copia;
+}
+
 /**
  * VALIDACIÓN DEL BORRADOR CONVERSACIONAL (pre-preview).
  *
@@ -327,7 +344,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
     // Eso no es adivinar: es dejar de ofrecerle lo que no puede pedir. Si al
     // filtrar queda UNA sola variante, no hay nada que preguntar.
     if (r.estado === 'ambiguo' && Array.isArray(r.candidatos) && r.candidatos.length > 1) {
-      const pedidas = opcionesDelItem(it);
+      const pedidas = opcionesDelItem(it).filter(a => !conFidelidad || tieneRespaldo(a, textoCiclo));
       if (pedidas.length) {
         try {
           const grupos = await cargarGruposDeProductos(negocioId, r.candidatos.map((c) => c.id));
@@ -345,6 +362,10 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
           console.error('[Validador] no se pudo estrechar por modificadores:', e.message);
         }
       }
+      if (r.estado === 'ambiguo') {
+        r.detalles = r.candidatos.map(p => ({nombre:p.nombre,precio:Number(p.precio),descripcion:p.descripcion||''}));
+        r.atributos = pedidas;
+      }
     }
     if (r.estado !== 'ok') {
       salida.ok = false;
@@ -354,7 +375,8 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // Los nombres reales entre los que hay que elegir. Solo viajan cuando
         // el estado es 'ambiguo'; quien redacta el mensaje los ofrece.
         ...(r.candidatos ? { candidatos: r.candidatos.map((p) => String(p.nombre || '')) } : {}),
-        ...(r.estado === 'ambiguo' ? { pedidas: opcionesDelItem(it) } : {}),
+        ...(r.estado === 'ambiguo' ? { pedidas: r.atributos || [] } : {}),
+        ...(r.detalles ? {detalles:r.detalles,atributos:r.atributos} : {}),
       });
       continue;
     }
@@ -455,7 +477,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // que el respaldo y que el nombre del producto, y solo si es único.
         const aprox = buscarOpcionPorMencion(e.grupos, span);
         if (aprox.estado === 'resuelto') candidatos.push({ e, mods: [aprox.modificador] });
-        else if (aprox.estado === 'ambiguo') candidatos.push({ e, amb: [{ nombre: span, grupos: aprox.grupos }] });
+        else if (aprox.estado === 'ambiguo') candidatos.push({ e, amb: [{ nombre: span, grupos: aprox.grupos, opciones: aprox.opciones }] });
       }
 
       if (candidatos.length === 1) {
@@ -638,6 +660,10 @@ export function mensajeBorradorParaCliente(resultado) {
     // tenemos no es una mala noticia y no se disculpa.
     const preguntas = ambiguos.map((x) => {
       const opciones = x.candidatos;
+      if(x.detalles?.length && x.atributos?.length) {
+        const detalle=x.detalles.map(p=>`${p.nombre} ($${p.precio.toFixed(2)}): ${p.descripcion}`).join('\n');
+        return `Ya anoté que quieres "${x.nombre}" con ${listar(x.atributos)}. Para elegir la presentación:\n${detalle}\n¿Cuál prefieres? Conservo esos detalles para continuar; el pedido aún no está confirmado.`;
+      }
       // Con una sola variante pedible no hay nada que elegir: se confirma. Con
       // varias, se enumeran y se pregunta. Nunca se elige por el cliente.
       // Lo que el cliente YA dijo se le devuelve, para que no parezca que no
@@ -762,6 +788,9 @@ export function mensajeBorradorParaCliente(resultado) {
   const amb = prods.flatMap((p) => p.ambiguos || []);
   if (amb.length) {
     const a = amb[0];
+    if (a.grupos?.length === 1 && a.opciones?.length > 1) {
+      return `Para "${a.nombre}" tenemos ${listar(a.opciones)}. ¿Cuál prefieres?`;
+    }
     return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${listar(a.grupos)}. ¿En cuál lo quieres?`;
   }
 

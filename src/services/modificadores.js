@@ -258,7 +258,11 @@ export function buscarOpcionPorMencion(grupos, mencion) {
   const unicas = new Map(candidatos.map((c) => [`${c.g.id}:${c.o.id}`, c]));
   if (unicas.size === 0) return { estado: 'sin_coincidencia' };
   if (unicas.size > 1) {
-    return { estado: 'ambiguo', grupos: [...new Set([...unicas.values()].map((c) => c.g.nombre))] };
+    return {
+      estado: 'ambiguo',
+      grupos: [...new Set([...unicas.values()].map(c => c.g.nombre))],
+      opciones: [...new Set([...unicas.values()].map(c => c.o.nombre))],
+    };
   }
   const { g, o } = [...unicas.values()][0];
   return {
@@ -416,7 +420,7 @@ export function resolverModificadoresLLM(grupos, nombres) {
         if (aprox.estado === 'resuelto') {
           o = disponibles(entrada.g).find((x) => Number(x.id) === Number(aprox.modificador.opcion_id));
         } else if (aprox.estado === 'ambiguo') {
-          ambiguos.push({ nombre: p.nombre, grupos: [entrada.g.nombre] });
+          ambiguos.push({ nombre: p.nombre, grupos: [entrada.g.nombre], opciones: aprox.opciones });
           continue;
         }
       }

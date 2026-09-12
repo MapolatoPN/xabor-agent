@@ -125,6 +125,15 @@ try {
   assert.equal((await estado()).requiere_revision,false);assert.equal((await estado()).sesion,null);
   assert.equal((await pool.query("SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2",[n,'c4-'+phone])).rows[0].estado,'revisado');
  });
+ await t('pedir una persona pasa a revisión sin llamar al modelo ni romper el silencio configurado',async()=>{
+  ia.drenar();ia.encolarRespuesta('ESTO NO DEBE ENVIARSE');
+  const antes=meta.obtenerMensajesEnviados().filter(m=>m.to===phone).length;
+  await post([msg('humano-'+phone,'Quiero hablar con una persona')]);
+  await esperar(async()=>(await estado()).requiere_revision);
+  assert.equal((await estado()).motivo,'SOLICITUD_CLIENTE');
+  assert.equal(ia.pendientes(),1);
+  assert.equal(meta.obtenerMensajesEnviados().filter(m=>m.to===phone).length,antes);
+ });
 } finally {
  await detener(s1);await detener(s2);ia.detener();meta.detener();
  await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[n,phone]);

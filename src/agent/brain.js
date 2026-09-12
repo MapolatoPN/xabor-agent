@@ -19,7 +19,7 @@ import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
-import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente } from '../orders/validadorOrden.js';
+import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente, continuarAclaracionProducto } from '../orders/validadorOrden.js';
 import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
 import { responderConsultaPromos } from '../services/tiendaPromociones.js';
 import { explicarPromosNoAplicadas } from '../services/promoDiagnostico.js';
@@ -570,6 +570,9 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         && !esRespuestaDeSistema(textoRespuesta)) {
       try {
         let borrador = extraerBloque(textoRespuesta, 'PEDIDO_BORRADOR');
+        // Si responde únicamente a nuestra elección pendiente, el pedido ya
+        // existe como datos: no se reconstruye a partir de otra suposición.
+        borrador=continuarAclaracionProducto(session.aclaracionProducto,mensajeUsuario)||borrador;
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
         // apagar por completo la extracción independiente: el marcador
@@ -686,6 +689,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           // tarda?") volvería a imprimir el resumen y se realimentaría — el
           // mismo bucle de antes, por otra puerta.
           if (rc.ok) {
+            session.aclaracionProducto=null;
             try {
               const ordenBorrador = {
                 items: borrador.items,
@@ -796,6 +800,8 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
             } catch (e) { throw e; }
           }
           if (!rc.ok) {
+            const ambiguos=(rc.productosNoExisten||[]).filter(p=>p.estado==='ambiguo');
+            session.aclaracionProducto=ambiguos.length===1 ? {nombre:ambiguos[0].nombre,candidatos:ambiguos[0].candidatos,borrador:structuredClone(borrador)} : null;
             const msg = mensajeBorradorParaCliente(rc);
             if (msg) {
               textoCatalogo = msg;
