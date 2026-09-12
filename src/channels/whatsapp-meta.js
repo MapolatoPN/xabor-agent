@@ -131,6 +131,81 @@ registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
   }
 });
 
+// ─── «Si no sé, no invento» ─────────────────────────────────────────────
+//
+// Los momentos en que el bot se queda sin saber qué contestar. Antes cada uno
+// terminaba en una respuesta igualmente: el modelo rellenaba el hueco. Ahora
+// cada uno manda la conversación a una persona.
+//
+// La lista es CERRADA y explícita a propósito. Mandar a revisión tiene un costo
+// real -- el bot deja de atender esa conversación y alguien del equipo tiene
+// que entrar-- así que solo entran señales inequívocas de "no sé", nunca
+// sospechas.
+const MOTIVOS_REVISION = [
+  // El modelo pidió un humano de forma explícita (<ESCALAR_A_HUMANO>).
+  { motivo: 'ESCALADA_MODELO',      cuando: (r) => r?.escalar === true },
+  // El pedido no se pudo verificar contra el menú. El texto lo redacta
+  // brain.js (respuestaSinVerificacion) y dice justamente que no pudo
+  // comprobarlo: es la definición de no saber.
+  { motivo: 'SIN_VERIFICAR_MENU',   cuando: (r) => typeof r?.texto === 'string'
+      && /No pude verificar tu pedido con el men/i.test(r.texto) },
+  // El candado atajó una negativa falsa: el bot iba a decir que no manejamos
+  // algo que sí vendemos. Se le entrega a una persona porque significa que el
+  // sistema no reconoció lo que el cliente pidió, aunque el candado ya haya
+  // evitado la mentira.
+  { motivo: 'NEGATIVA_INTERCEPTADA', cuando: (r) => Array.isArray(r?.negativaInterceptada) && r.negativaInterceptada.length > 0 },
+];
+
+function motivoDeRevision(resultado) {
+  for (const m of MOTIVOS_REVISION) {
+    try { if (m.cuando(resultado)) return m.motivo; } catch { /* una señal rota nunca decide */ }
+  }
+  return null;
+}
+
+// La línea que recibe el cliente cuando su conversación pasa a una persona. NO
+// afirma nada del menú ni del pedido: solo dice la verdad, que alguien la va a
+// atender. Se puede cambiar (o vaciar, para silencio total) desde Config con la
+// clave `bot_mensaje_revision`.
+const MENSAJE_REVISION_POR_DEFECTO =
+  'Déjame confirmarlo con alguien del equipo para no darte un dato equivocado. '
+  + 'En un momento te contestamos por aquí. 🙏';
+
+// Qué tan seguido se le avisa al encargado. Un aviso POR CONVERSACIÓN al
+// entrar en revisión: como una conversación solo entra una vez hasta que
+// alguien la cierra, esto ya está acotado por su propia naturaleza.
+const ETIQUETA_MOTIVO = {
+  ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
+  SIN_VERIFICAR_MENU:   'no pudo verificar el pedido contra el menú',
+  NEGATIVA_INTERCEPTADA:'no reconoció algo que sí vendemos',
+  REENTREGA_LEGADA:     'llegó un mensaje repetido de WhatsApp',
+  EJECUCION_INTERRUMPIDA:'se interrumpió a la mitad de un turno',
+};
+
+async function avisarEquipoRevision(negocioId, telefono, motivo, credencialesCliente) {
+  try {
+    const cfg = await obtenerConfiguracion(negocioId);
+    const admin = cfg.wa_admin_numero;
+    if (!admin) return;
+    const credenciales = credencialesCliente || await obtenerCredencialesWhatsappNegocio(negocioId);
+    if (!credenciales) return;
+    const razon = ETIQUETA_MOTIVO[motivo] || motivo;
+    await enviarMensaje(admin,
+      `🔔 *Xabor*: una conversación necesita a una persona.
+
+`
+      + `Cliente: ${telefono}
+Motivo: ${razon}
+
+`
+      + `El bot ya no le va a contestar a ese cliente. Atiéndanla desde el panel, en Chats, `
+      + `y cuando terminen usen "Revisé y atendí los pendientes" para devolverla al bot.`,
+      credenciales).catch(() => {});
+  } catch (e) {
+    console.error('[Meta WA] aviso de revisión al equipo:', e.message);
+  }
+}
+
 // ─── Debounce de mensajes — la cola de 6 s ──────────────────────────────
 // Vive en utils/colaMensajes.js y es la UNICA fuente de verdad del turno
 // pendiente. Clave compuesta `${negocioId}:${telefono}` (Incidente P0): si
@@ -1321,7 +1396,34 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
 
     // resultado.texto puede quedar vacío a propósito (p. ej. el envío del
     // menú por marcador ya respondió por su cuenta con la verdad del envío).
-    if (resultado.texto && resultado.texto.trim()) {
+    // ── «Si no sé, no invento»: callar y pasarle la conversación a una persona ──
+    //
+    // Antes, cuando el bot se quedaba sin saber, igual contestaba algo: el
+    // modelo rellenaba el hueco y alguien tenía que apagar el bot DESPUÉS de
+    // que el cliente ya había leído la invención. Ahora los momentos de "no sé"
+    // mandan la conversación a revisión humana -- la MISMA puerta que ya usaba
+    // la continuidad (whatsappContinuidad.js) -- y el bot deja de responderla:
+    // el panel la muestra como pendiente y el equipo la atiende a mano.
+    //
+    // Lo que NO se hace es dejar al cliente en el vacío. Se manda una línea
+    // honesta de entrega, que no afirma nada del pedido ni del menú. Si el
+    // negocio prefiere silencio total, deja vacío `bot_mensaje_revision` en
+    // Configuración y no se manda nada.
+    const motivoRevision = motivoDeRevision(resultado);
+    if (motivoRevision) {
+      const marcada = await continuidadWA.enviarARevision(negocioId, telefono, motivoRevision);
+      console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivoRevision} nueva=${marcada}`);
+      if (marcada) {
+        const cfgRev = await obtenerConfiguracion(negocioId).catch(() => ({}));
+        const aviso = cfgRev.bot_mensaje_revision === undefined ? MENSAJE_REVISION_POR_DEFECTO : cfgRev.bot_mensaje_revision;
+        if (aviso && aviso.trim()) {
+          await enviarMensaje(telefono, aviso.trim(), credenciales);
+          const m = await guardarMensaje(telefono, nombreMeta, 'saliente', aviso.trim(), negocioId, 'bot');
+          if (m && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: m });
+        }
+        avisarEquipoRevision(negocioId, telefono, motivoRevision, credenciales).catch(() => {});
+      }
+    } else if (resultado.texto && resultado.texto.trim()) {
       await enviarMensaje(telefono, resultado.texto, credenciales);
       console.log(`[Meta WA] Respuesta enviada a ${telefono}`);
       const msgSaliente = await guardarMensaje(telefono, nombreMeta, 'saliente', resultado.texto, negocioId, 'bot');
