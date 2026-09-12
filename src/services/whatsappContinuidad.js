@@ -2,8 +2,9 @@ import {createHash} from 'node:crypto';
 // El pool de locks debe ser independiente del pool utilizado por los efectos.
 // Nunca se reejecuta un turno interrumpido después de comenzar sus efectos:
 // se conserva para revisión. Pendientes nunca empezados sí se recuperan solos.
-export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesion, alRevision = async () => {}, ventanaMs = 6000 }) {
+export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesion, alRevision = async () => {}, alLiberar = async () => {}, ventanaMs = 6000 }) {
   let timer, escaneando = false;
+  let timerOlvidos = null;
   const activos = new Map();
   const clave = (n, t) => `wa:${n}:${t}`;
 
@@ -143,8 +144,16 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
   async function iniciar() {
     await pool.query('SELECT 1 FROM whatsapp_entradas LIMIT 0');
     if (!timer) { timer = setInterval(() => barrer().catch(e => console.error('[wa-continuidad] scanner:',e.message)),500); timer.unref(); }
+    // Cada minuto: revisiones que nadie atendió. Aparte del barrido de 500 ms
+    // porque es una consulta distinta y mucho menos frecuente.
+    if (!timerOlvidos) {
+      timerOlvidos = setInterval(
+        () => liberarRevisionesOlvidadas().catch(e => console.error('[wa-continuidad] olvidos:',e.message)),
+        60000);
+      timerOlvidos.unref();
+    }
   }
-  async function detener() { clearInterval(timer); timer=null; await Promise.allSettled([...activos.values()]); }
+  async function detener() { clearInterval(timer); timer=null; clearInterval(timerOlvidos); timerOlvidos=null; await Promise.allSettled([...activos.values()]); }
 
   /**
    * Manda una conversación a revisión humana desde FUERA de este módulo.
@@ -185,5 +194,99 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     } finally { db.release(); }
   }
 
-  return { recibir, ejecutar, barrer, iniciar, detener, enviarARevision };
+  // ─── La pausa no puede ser eterna ────────────────────────────────────────
+  //
+  // Una conversación en revisión NO recibe ninguna respuesta del bot: ni un
+  // pedido, ni un saludo. Eso es lo que se pidió, y está bien mientras alguien
+  // entre a atenderla. El 2026-09-11 nadie entró: un cliente escribió tres
+  // veces y no recibió nada durante horas, y encima el botón para devolverla
+  // estaba roto. Un bot que contesta imperfecto es mejor que un cliente
+  // ignorado media noche.
+  //
+  // Se suelta SOLO lo que pausó el sistema. Si una persona tomó la
+  // conversación a mano (`conversaciones_control.updated_by` con usuario), no
+  // se toca jamás: contestarle encima a alguien del equipo que está atendiendo
+  // sería peor que el problema que esto resuelve.
+  const MINUTOS_POR_DEFECTO = 30;
+
+  /** Minutos que el negocio quiere esperar. 0 o menos = nunca soltar. */
+  function minutosDeEspera(valor) {
+    if (valor === null || valor === undefined || String(valor).trim() === '') return MINUTOS_POR_DEFECTO;
+    const n = Number(String(valor).trim());
+    return Number.isFinite(n) ? n : MINUTOS_POR_DEFECTO;
+  }
+
+  async function liberarRevisionesOlvidadas() {
+    let candidatas = [];
+    try {
+      const { rows } = await pool.query(`
+        SELECT c.negocio_id, c.telefono, c.motivo, c.actualizado_at, cc.updated_by,
+               (SELECT valor FROM configuracion
+                 WHERE negocio_id = c.negocio_id AND clave = 'bot_revision_minutos') AS minutos
+          FROM whatsapp_conversaciones c
+          LEFT JOIN conversaciones_control cc
+                 ON cc.negocio_id = c.negocio_id AND cc.telefono = c.telefono
+         WHERE c.requiere_revision = TRUE
+         ORDER BY c.actualizado_at ASC
+         LIMIT 200`);
+      candidatas = rows;
+    } catch (e) {
+      console.error('[wa-continuidad] no se pudieron leer las revisiones pendientes:', e.message);
+      return 0;
+    }
+    const ahora = Date.now();
+    let sueltas = 0;
+    for (const c of candidatas) {
+      if (c.updated_by) continue;                       // la tomó una persona
+      const minutos = minutosDeEspera(c.minutos);
+      if (minutos <= 0) continue;                       // el negocio la quiere permanente
+      const edadMin = (ahora - new Date(c.actualizado_at).getTime()) / 60000;
+      if (edadMin < minutos) continue;
+      if (await soltar(c.negocio_id, c.telefono, c.motivo, Math.round(edadMin))) sueltas++;
+    }
+    return sueltas;
+  }
+
+  /**
+   * Devuelve la conversación al bot, con la MISMA semántica que el botón del
+   * panel: las entradas pendientes quedan como atendidas y NO se reprocesan.
+   *
+   * Eso importa: reprocesar el atasco podría registrar dos veces un pedido. Lo
+   * que se recupera es la conversación hacia adelante, no lo que quedó atrás.
+   */
+  async function soltar(negocioId, telefono, motivo, edadMin) {
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      // Se vuelve a comprobar DENTRO de la transacción: entre la lectura y
+      // ahora alguien pudo tomar la conversación.
+      const { rows:[c] } = await db.query(
+        `SELECT c.requiere_revision, cc.updated_by
+           FROM whatsapp_conversaciones c
+           LEFT JOIN conversaciones_control cc
+                  ON cc.negocio_id = c.negocio_id AND cc.telefono = c.telefono
+          WHERE c.negocio_id = $1 AND c.telefono = $2 FOR UPDATE OF c`, [negocioId, telefono]);
+      if (!c?.requiere_revision || c.updated_by) { await db.query('ROLLBACK'); return false; }
+      await db.query(`UPDATE whatsapp_entradas SET estado='revisado', actualizado_at=now()
+         WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`, [negocioId, telefono]);
+      await db.query(`UPDATE whatsapp_conversaciones
+          SET requiere_revision=false, motivo=NULL, revision=revision+1, actualizado_at=now()
+         WHERE negocio_id=$1 AND telefono=$2`, [negocioId, telefono]);
+      await db.query(`DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2`,
+        [negocioId, `meta-${negocioId}-${telefono}`]);
+      await db.query(`UPDATE conversaciones_control SET bot_pausado=false, updated_at=now()
+         WHERE negocio_id=$1 AND telefono=$2 AND updated_by IS NULL`, [negocioId, telefono]);
+      await db.query('COMMIT');
+    } catch (e) {
+      await db.query('ROLLBACK').catch(() => {});
+      console.error(`[wa-continuidad] no se pudo devolver al bot ${telefono}:`, e.message);
+      return false;
+    } finally { db.release(); }
+    console.warn(`[wa-continuidad] revisión sin atender ${edadMin} min: el bot retoma telefono=${telefono} motivo=${motivo}`);
+    await alLiberar(negocioId, telefono, motivo, edadMin)
+      .catch((e) => console.error('[wa-continuidad] aviso de liberación:', e.message));
+    return true;
+  }
+
+  return { recibir, ejecutar, barrer, iniciar, detener, enviarARevision, liberarRevisionesOlvidadas };
 }

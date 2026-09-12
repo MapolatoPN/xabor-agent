@@ -170,6 +170,115 @@ await t('13. el equipo se entera igual: el silencio es solo hacia el cliente', a
   assert.match(cuerpo, /Motivo:/, 'y por qué');
 });
 
+// ── La pausa no puede ser eterna ─────────────────────────────────────────
+//
+// Incidente 2026-09-11: una conversación entró en revisión, nadie la atendió, y
+// el cliente escribió tres veces sin recibir NADA -- ni un saludo. Encima el
+// botón para devolverla al bot estaba roto, así que no había salida.
+//
+// Un bot que contesta imperfecto es mejor que un cliente ignorado media noche.
+// Pero soltar de más es peor: si una persona del equipo tomó la conversación a
+// mano, el bot NO puede ponerse a contestar encima de ella.
+
+const liberados = [];
+const contLib = crearContinuidad({
+  pool,
+  locks: { connect: () => pool.connect() },
+  procesar: async () => {},
+  cargarSesion: async () => {},
+  leerSesion: async () => ({}),
+  alRevision: async () => {},
+  alLiberar: async (n, tel, motivo, edad) => { liberados.push({ tel, motivo, edad }); },
+});
+
+const TEL_VIEJA = '5219990007001';
+const TEL_FRESCA = '5219990007002';
+const TEL_TOMADA = '5219990007003';
+const enRevisionDesdeHace = async (tel, minutos, quien = null) => {
+  await pool.query(`INSERT INTO whatsapp_conversaciones(negocio_id,telefono,requiere_revision,motivo,actualizado_at)
+    VALUES ($1,$2,TRUE,'ESCALADA_MODELO', now() - ($3 || ' minutes')::interval)
+    ON CONFLICT (negocio_id,telefono) DO UPDATE
+      SET requiere_revision=TRUE, motivo='ESCALADA_MODELO', actualizado_at = now() - ($3 || ' minutes')::interval`,
+    [NEG, tel, String(minutos)]);
+  await pool.query(`INSERT INTO conversaciones_control(negocio_id,telefono,bot_pausado,updated_by)
+    VALUES ($1,$2,TRUE,$3)
+    ON CONFLICT (negocio_id,telefono) DO UPDATE SET bot_pausado=TRUE, updated_by=$3`,
+    [NEG, tel, quien]);
+};
+const sigueEnRevision = async (tel) => (await pool.query(
+  'SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2', [NEG, tel]
+)).rows[0]?.requiere_revision;
+
+await t('14. una revisión vieja que nadie atendió vuelve al bot', async () => {
+  await enRevisionDesdeHace(TEL_VIEJA, 45);
+  await contLib.liberarRevisionesOlvidadas();
+  assert.strictEqual(await sigueEnRevision(TEL_VIEJA), false,
+    'a los 45 minutos sin que nadie entre, el cliente ya esperó demasiado');
+  const ctrl = (await pool.query(
+    'SELECT bot_pausado FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2', [NEG, TEL_VIEJA])).rows[0];
+  assert.strictEqual(ctrl.bot_pausado, false, 'y el bot vuelve a poder contestarle');
+  assert.ok(liberados.some((l) => l.tel === TEL_VIEJA), 'el equipo tiene que enterarse de que pasó');
+});
+
+await t('15. una recién marcada NO se suelta: hay que darle tiempo al equipo', async () => {
+  await enRevisionDesdeHace(TEL_FRESCA, 2);
+  await contLib.liberarRevisionesOlvidadas();
+  assert.strictEqual(await sigueEnRevision(TEL_FRESCA), true,
+    'soltar a los dos minutos le quitaría al equipo la oportunidad de atender');
+});
+
+await t('16. una que TOMÓ una persona no se toca jamás', async () => {
+  // La protección es DOBLE a propósito y hay que dejarlo dicho: un filtro al
+  // leer las candidatas y otro DENTRO de la transacción, por si alguien toma la
+  // conversación entre una cosa y la otra. Quitar uno solo no hace fallar esta
+  // prueba -- lo comprobé-- pero deja la carrera abierta. No es código muerto.
+  //
+  // El riesgo de este mecanismo: que el bot se ponga a contestar encima de
+  // alguien del equipo que está atendiendo a mano. `updated_by` distingue quién
+  // pausó, y es lo único que impide ese desastre.
+  const { rows:[u] } = await pool.query(
+    `INSERT INTO usuarios (negocio_id, email, nombre, password_hash)
+     VALUES ($1,'toma-conv@test.local','Quien Atiende','x')
+     ON CONFLICT (email) DO UPDATE SET nombre='Quien Atiende' RETURNING id`, [NEG]);
+  await enRevisionDesdeHace(TEL_TOMADA, 120, u.id);
+  await contLib.liberarRevisionesOlvidadas();
+  assert.strictEqual(await sigueEnRevision(TEL_TOMADA), true,
+    'una persona la está atendiendo: el bot no puede contestarle encima');
+  assert.ok(!liberados.some((l) => l.tel === TEL_TOMADA), 'ni avisar de algo que no pasó');
+});
+
+await t('17. el negocio puede desactivar el rescate, o cambiarle el tiempo', async () => {
+  const fijar = (v) => pool.query(`INSERT INTO configuracion (negocio_id,clave,valor) VALUES ($1,'bot_revision_minutos',$2)
+    ON CONFLICT (negocio_id,clave) DO UPDATE SET valor=$2`, [NEG, v]);
+  const TEL_CFG = '5219990007004';
+
+  await fijar('0');                       // 0 = que se quede en revisión para siempre
+  await enRevisionDesdeHace(TEL_CFG, 500);
+  await contLib.liberarRevisionesOlvidadas();
+  assert.strictEqual(await sigueEnRevision(TEL_CFG), true, 'con 0 nunca se suelta');
+
+  await fijar('10');                      // y con un tiempo propio, se respeta
+  await contLib.liberarRevisionesOlvidadas();
+  assert.strictEqual(await sigueEnRevision(TEL_CFG), false, 'con 10 minutos, 500 ya es tarde');
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave='bot_revision_minutos'`, [NEG]);
+});
+
+await t('18. al soltar NO se reprocesa el atasco', async () => {
+  // Reprocesar los mensajes atorados podría registrar dos veces un pedido. Lo
+  // que se recupera es la conversación hacia adelante, no lo que quedó atrás:
+  // misma semántica que el botón del panel.
+  const TEL_ENT = '5219990007005';
+  await enRevisionDesdeHace(TEL_ENT, 60);
+  await pool.query(`INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado)
+    VALUES ($1,$2,$3,'{}','revision') ON CONFLICT DO NOTHING`, [NEG, TEL_ENT, 'wamid-atascado-1']);
+  await contLib.liberarRevisionesOlvidadas();
+  const { rows } = await pool.query(
+    `SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2`, [NEG, TEL_ENT]);
+  assert.ok(rows.length && rows.every((r) => r.estado === 'revisado'),
+    `las entradas atascadas quedan como atendidas, no pendientes — ${JSON.stringify(rows)}`);
+});
+
+
 // ═══ S — NO HAY BORRADOR NO ES BORRADOR ROTO ══════════════════════════════
 //
 // Incidente 2026-09-11, 11:11 p.m., con el bot ya desplegado: un cliente

@@ -1888,6 +1888,33 @@ const continuidadWA = crearContinuidad({
     await setBotPausado(t,true,n);
     if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true,motivo});
     if(wsBroadcast) wsBroadcast(n,{tipo:'alerta_transaccional',subtipo:motivo,telefono:t});
+  },
+  // El bot retomó una conversación que nadie atendió. NO es una buena noticia
+  // que se calla: significa que un cliente estuvo sin respuesta todo ese rato.
+  // Se avisa para que se sepa, y el panel se entera en vivo para que la
+  // conversación deje de aparecer como pendiente.
+  alLiberar: async (n,t,motivo,edadMin) => {
+    if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:false,requiereRevision:false,motivo:null});
+    try {
+      const cfg = await obtenerConfiguracion(n);
+      const admin = cfg.wa_admin_numero;
+      if(!admin) return;
+      const credenciales = await obtenerCredencialesWhatsappNegocio(n);
+      if(!credenciales) return;
+      const razon = ETIQUETA_MOTIVO[motivo] || motivo || 'una duda del asistente';
+      await enviarMensaje(admin,
+        `⏱️ *Xabor*: nadie atendió una conversación en ${edadMin} minutos, así que el bot la retomó.
+
+`
+        + `Cliente: ${t}
+Había quedado pendiente porque ${razon}.
+
+`
+        + `Ese cliente estuvo sin respuesta todo ese rato. Vale la pena revisar qué le escribió.`,
+        credenciales).catch(() => {});
+    } catch(e) {
+      console.error('[Meta WA] aviso de liberación:', e.message);
+    }
   }
 });
 export const iniciarContinuidadWA = () => continuidadWA.iniciar();
