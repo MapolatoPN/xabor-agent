@@ -1155,38 +1155,14 @@ await t('G23. dos ingredientes: quita el nombrado y conserva el otro', async () 
   assert.match(mods, /Jitomate/i, `del jitomate no dijo nada — ${mods}`);
 });
 // ── Modo sombra ───────────────────────────────────────────────────────────
-
-await t('G21. en sombra el carrito productivo NO se toca y queda el registro', async () => {
-  const sid = 'audit-g21-' + randomUUID();
-  deleteSession(sid);
-  const antes = process.env.PEDIDO_SHADOW_MODE;
-  const lineas = [];
-  const warn = console.warn;
-  console.warn = (...a) => { lineas.push(a.join(' ')); warn(...a); };
-  try {
-    process.env.PEDIDO_SHADOW_MODE = 'true';
-    encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
-    await procesarMensaje(sid, 'una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000321');
-    encolarTurno({ items: [
-      { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
-      { nombre: 'Coca Cola', cantidad: 3, modificadores: [] },
-    ] });
-    await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000321');
-  } finally {
-    console.warn = warn;
-    if (antes === undefined) delete process.env.PEDIDO_SHADOW_MODE;
-    else process.env.PEDIDO_SHADOW_MODE = antes;
-  }
-  const s = getSession(sid);
-  assert.equal(s.carrito, undefined, `el carrito productivo no se escribe en sombra — ${JSON.stringify(s.carrito)}`);
-  assert.ok(s.carritoSombra, 'pero el paralelo sí existe');
-  const registro = lineas.filter((l) => l.includes('evento=carrito_sombra'));
-  assert.ok(registro.length >= 2, `una línea por turno — ${registro.length}`);
-  const ultima = JSON.parse(registro[registro.length - 1].slice(registro[registro.length - 1].indexOf('{')));
-  assert.ok(ultima.conv && !/\d{10}/.test(ultima.conv), `la conversación va por hash — ${ultima.conv}`);
-  assert.match(JSON.stringify(ultima.rechazado), /Coca Cola/i,
-    `y se ve qué bloqueó y por qué — ${JSON.stringify(ultima)}`);
-});
+//
+// El aislamiento del modo sombra NO se prueba aquí. Vivía en este archivo
+// cuando la bandera se metía en el turno productivo, y esa forma resultó
+// engañosa: apagaba el carrito pero dejaba al bot contestando, registrando
+// pedidos e imprimiendo comandas. La observación se movió a donde el sistema
+// ya está callado, así que lo que hay que demostrar —cero mensajes, cero
+// pedidos, cero impresión, cero cobros— solo se ve entrando por el webhook.
+// Está en `test/fase-sombra-aislamiento.mjs`, S1 a S12.
 
 } finally {
   mock.detener();
