@@ -455,7 +455,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // que el respaldo y que el nombre del producto, y solo si es único.
         const aprox = buscarOpcionPorMencion(e.grupos, span);
         if (aprox.estado === 'resuelto') candidatos.push({ e, mods: [aprox.modificador] });
-        else if (aprox.estado === 'ambiguo') candidatos.push({ e, amb: [{ nombre: span, grupos: aprox.grupos }] });
+        else if (aprox.estado === 'ambiguo') candidatos.push({ e, amb: [{ nombre: span, grupos: aprox.grupos, opciones: aprox.opciones }] });
       }
 
       if (candidatos.length === 1) {
@@ -762,6 +762,12 @@ export function mensajeBorradorParaCliente(resultado) {
   const amb = prods.flatMap((p) => p.ambiguos || []);
   if (amb.length) {
     const a = amb[0];
+    // Se le ofrecen las OPCIONES por su nombre. Preguntarle en que "grupo" la
+    // quiere es hablarle en la estructura interna del catalogo: nadie pide "en
+    // guarniciones", pide "los de chorizo".
+    if (Array.isArray(a.opciones) && a.opciones.length > 1) {
+      return `De "${a.nombre}" tenemos ${listar(a.opciones)}. ¿Cuál prefieres?`;
+    }
     return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${listar(a.grupos)}. ¿En cuál lo quieres?`;
   }
 

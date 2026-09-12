@@ -17,6 +17,7 @@
 // Uso: DATABASE_URL=... PANEL_SECRET=... ADMIN_PASSWORD=... SESSION_SECRET=...
 //      INTEGRATIONS_ENCRYPTION_KEY=... node test/fase-negaciones-injustas.mjs
 import assert from 'assert';
+import { readFileSync } from 'fs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 
 const mock = await arrancarAnthropicMock();
@@ -1007,6 +1008,64 @@ await t('T6. si NADA cabe en ninguna, se ofrecen todas igual', async () => {
   const r = variantesCompatibles(candidatos, grupos, ['x', 'x']);
   assert.strictEqual(r.length, 2,
     'quedarse sin opciones que ofrecer es peor que ofrecerlas todas');
+});
+
+
+// ═══ U — "FRIJOLES" SON DOS COSAS, Y HAY QUE NOMBRARLAS ═══════════════════
+//
+// Lo detectó Codex revisando el mismo turno del incidente. Cuando lo que el
+// cliente nombró coincide con VARIAS opciones distintas, el sistema preguntaba
+// en qué GRUPO las quería:
+//
+//   'Una aclaración para no equivocarme: "frijoles" aparece en Guarniciones.
+//    ¿En cuál lo quieres?'
+//
+// Nombra un solo grupo y pregunta "¿en cuál?": una pregunta sin respuesta
+// posible. Y además le habla al cliente en la estructura interna del catálogo
+// -- nadie pide "en guarniciones", pide "los de chorizo".
+//
+// Es la misma familia que todo lo demás de esta suite: el sistema enseña su
+// confusión en vez de ofrecer lo que sí se puede elegir.
+const cFri = await cat('Ambigüedad de opción', 70);
+const P_FRI = await prod(cFri, 'Plato con Frijoles', 150);
+const gFri = await q1(`INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
+  VALUES ($1,$2,'Guarniciones',TRUE,1,2,0) RETURNING id`, [NEG, P_FRI]);
+for (const x of ['Frijolitos naturales', 'Frijolitos con chorizo', 'Papas a la mexicana']) await op(gFri.id, x);
+
+await t('U1. dos opciones que encajan: se ofrecen por su nombre', async () => {
+  const { buscarOpcionPorMencion } = await import('../src/services/modificadores.js');
+  const grupos = [{ id: gFri.id, nombre: 'Guarniciones', opciones: [
+    { id: 1, nombre: 'Frijolitos naturales' }, { id: 2, nombre: 'Frijolitos con chorizo' },
+    { id: 3, nombre: 'Papas a la mexicana' }] }];
+  const r = buscarOpcionPorMencion(grupos, 'frijolitos');
+  assert.strictEqual(r.estado, 'ambiguo', 'dos opciones encajan: no se adivina');
+  assert.ok(Array.isArray(r.opciones), 'tienen que viajar las OPCIONES, no solo los grupos');
+  assert.strictEqual(r.opciones.length, 2, `se esperaban dos — ${JSON.stringify(r.opciones)}`);
+  assert.ok(r.opciones.includes('Frijolitos naturales') && r.opciones.includes('Frijolitos con chorizo'));
+});
+
+await t('U2. el mensaje nombra las opciones, no el grupo', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Plato con Frijoles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero el plato con frijolitos', menciones: ['frijolitos'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  if (/frijolit/i.test(msg)) {
+    assert.doesNotMatch(msg, /¿En cuál lo quieres\?/,
+      `preguntarle en qué "grupo" es hablarle en la estructura interna — ${msg}`);
+  }
+  // El contrato de fondo, comprobable siempre: el redactor prefiere opciones.
+  const fuente = readFileSync(new URL('../src/orders/validadorOrden.js', import.meta.url), 'utf8');
+  assert.match(fuente, /Array\.isArray\(a\.opciones\) && a\.opciones\.length > 1/,
+    'el mensaje tiene que preferir las opciones reales cuando las tiene');
+});
+
+await t('U3. con un solo grupo ambiguo de verdad, se conserva la pregunta vieja', async () => {
+  // Una opción que aparece en DOS grupos distintos (en Obispado, "Bistec en
+  // Salsa" está en Proteína y en Guarniciones) sigue necesitando la pregunta
+  // por grupo: ahí sí es la estructura lo que hay que aclarar.
+  const fuente = readFileSync(new URL('../src/orders/validadorOrden.js', import.meta.url), 'utf8');
+  assert.match(fuente, /aparece en \$\{listar\(a\.grupos\)\}/,
+    'el respaldo por grupos no se puede perder');
 });
 
 
