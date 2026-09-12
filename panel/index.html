@@ -2617,7 +2617,18 @@ function conectarWS() {
         delete pedidos[msg.id];
         actualizarContador();
       }
-      if (msg.tipo === 'nuevo_mensaje')   recibirMensajeWS(msg.mensaje, msg.documento);
+      if (msg.tipo === 'nuevo_mensaje') {
+        recibirMensajeWS(msg.mensaje, msg.documento);
+        // El botón de devolver al bot manda un acuse de "vi todo hasta el
+        // mensaje N". Ese N se capturaba SOLO al abrir la conversación y nunca
+        // se refrescaba: bastaba que llegara un mensaje con el chat abierto
+        // para que el servidor rechazara con "llegaron mensajes nuevos" -- una
+        // y otra vez, sin salida, porque el operador ya no volvía a abrirla.
+        //
+        // Si el mensaje se está viendo en pantalla, el operador LO VIO, que es
+        // justo lo que el acuse certifica. Se refresca.
+        if (msg.mensaje && msg.mensaje.telefono === chatAbierto) refrescarAcuseRevision(chatAbierto);
+      }
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
@@ -5475,6 +5486,24 @@ function actualizarBotonBot(pausado) {
   }
 }
 
+// Relee el estado de la conversación y actualiza el acuse de revisión. Es lo
+// que mantiene vivo el botón de "devolver al bot" cuando siguen entrando
+// mensajes: sin esto, el acuse se queda viejo y el servidor rechaza para
+// siempre.
+async function refrescarAcuseRevision(telefono) {
+  if (!telefono) return;
+  try {
+    const r = await apiFetch(`/api/conversacion/${telefono}/estado-bot`);
+    if (!r.ok) return;
+    const estado = await r.json();
+    const btn = document.getElementById('btn-toggle-bot');
+    if (!btn) return;
+    btn.dataset.hastaEntrada = estado.hastaEntrada || '';
+    btn.dataset.revision = estado.requiereRevision ? '1' : '0';
+    btn.dataset.motivo = estado.motivoRevision || '';
+  } catch { /* si no se puede releer, el botón sigue como estaba */ }
+}
+
 async function toggleBotPausado() {
   if (!chatAbierto) return;
   const btn = document.getElementById('btn-toggle-bot');
@@ -5487,6 +5516,15 @@ async function toggleBotPausado() {
   btn.disabled = false;
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
+    // Un rechazo por acuse desactualizado se puede resolver solo: se relee el
+    // estado (que trae el número de mensaje al día) y se le dice al operador
+    // que vuelva a intentar. Antes el botón simplemente no hacía nada visible
+    // y la conversación quedaba atrapada.
+    if (data.requiereRevision) {
+      await refrescarAcuseRevision(chatAbierto);
+      mostrarErrorChat('Llegaron mensajes nuevos mientras revisabas. Ya están a la vista: vuelve a pulsar el botón para devolverla al bot.');
+      return;
+    }
     mostrarErrorChat(data.error || 'No se pudo cambiar la atención de esta conversación.');
     return;
   }
