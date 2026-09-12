@@ -27,6 +27,8 @@
 // de la carta. Descartar no es elegir por el cliente: es dejar de ofrecerle lo
 // que no puede pedir.
 
+import { buscarOpcionPorMencion } from '../services/modificadores.js';
+
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-z0-9ñ ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -46,7 +48,8 @@ function topeDe(grupo) {
  * recorrido exhaustivo es instantáneo y no hace falta nada más listo.
  */
 export function cabeEnLaVariante(grupos, pedidas, conocidas = null) {
-  const restantes = grupos.map((g) => ({ opciones: (g.opciones || []).map((o) => norm(o?.nombre)), tope: topeDe(g), usadas: 0 }));
+  const restantes = grupos.map((g) => ({ grupo:g, tope: topeDe(g), usadas: 0 }));
+  const reconoce = (g, s) => buscarOpcionPorMencion([g],s).estado !== 'sin_coincidencia';
   const intentar = (i) => {
     if (i === pedidas.length) return true;
     const buscada = norm(pedidas[i]);
@@ -66,7 +69,7 @@ export function cabeEnLaVariante(grupos, pedidas, conocidas = null) {
     let encaja = false;
     for (const g of restantes) {
       if (g.usadas >= g.tope) continue;
-      if (!g.opciones.includes(buscada)) continue;
+      if (!reconoce(g.grupo,pedidas[i])) continue;
       encaja = true;
       g.usadas++;
       if (intentar(i + 1)) return true;
@@ -76,17 +79,6 @@ export function cabeEnLaVariante(grupos, pedidas, conocidas = null) {
     return esConocida ? false : intentar(i + 1);
   };
   return intentar(0);
-}
-
-/** Todas las opciones que existen en ALGUNA de las variantes candidatas. */
-function opcionesConocidas(candidatos, gruposPorProducto) {
-  const set = new Set();
-  for (const p of candidatos) {
-    for (const g of (gruposPorProducto.get(p.id) || [])) {
-      for (const o of (g.opciones || [])) { const n = norm(o?.nombre); if (n) set.add(n); }
-    }
-  }
-  return set;
 }
 
 /**
@@ -104,7 +96,12 @@ function opcionesConocidas(candidatos, gruposPorProducto) {
 export function variantesCompatibles(candidatos, gruposPorProducto, opcionesPedidas = []) {
   const pedidas = (opcionesPedidas || []).map((x) => String(x || '').trim()).filter(Boolean);
   if (!pedidas.length || candidatos.length < 2) return candidatos;
-  const conocidas = opcionesConocidas(candidatos, gruposPorProducto);
+  // Una entrada arbitrariamente larga no debe causar búsqueda exponencial.
+  if (pedidas.length > 8) return candidatos;
+  // Reconocer las palabras del cliente ("pollo", "frijoles") con el mismo
+  // resolver que usa el pedido, sin elegir entre dos tipos de frijoles.
+  const conocidas = new Set(pedidas.filter(s => candidatos.some(p =>
+    buscarOpcionPorMencion(gruposPorProducto.get(p.id)||[],s).estado !== 'sin_coincidencia')).map(norm));
   const viables = candidatos.filter((p) => cabeEnLaVariante(gruposPorProducto.get(p.id) || [], pedidas, conocidas));
   return viables.length ? viables : candidatos;
 }
@@ -123,7 +120,7 @@ export function opcionesDelItem(item) {
   for (const m of mods) {
     if (typeof m === 'string') { fuera.push(m); continue; }
     if (Array.isArray(m?.opciones)) { for (const o of m.opciones) fuera.push(typeof o === 'string' ? o : o?.nombre); continue; }
-    if (m?.nombre) fuera.push(m.nombre);
+    if (m?.opcion || m?.nombre) fuera.push(m.opcion || m.nombre);
   }
   return fuera.filter(Boolean);
 }

@@ -425,7 +425,7 @@ export function resolverModificadoresLLM(grupos, nombres) {
         if (aprox.estado === 'resuelto') {
           o = disponibles(entrada.g).find((x) => Number(x.id) === Number(aprox.modificador.opcion_id));
         } else if (aprox.estado === 'ambiguo') {
-          ambiguos.push({ nombre: p.nombre, grupos: [entrada.g.nombre] });
+          ambiguos.push({ nombre: p.nombre, grupos: [entrada.g.nombre], opciones: aprox.opciones });
           continue;
         }
       }

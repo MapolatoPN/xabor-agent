@@ -279,6 +279,28 @@ await t('18. al soltar NO se reprocesa el atasco', async () => {
 });
 
 
+await t('19. el tiempo no resuelve un efecto incierto ni una solicitud humana',async()=>{
+  const tel='5219990007006';
+  for(const motivo of ['EJECUCION_INTERRUMPIDA','REENTREGA_LEGADA','SOLICITUD_CLIENTE']){
+    await enRevisionDesdeHace(tel,120);
+    await pool.query('UPDATE whatsapp_conversaciones SET motivo=$3 WHERE negocio_id=$1 AND telefono=$2',[NEG,tel,motivo]);
+    await contLib.liberarRevisionesOlvidadas();
+    assert.equal(await sigueEnRevision(tel),true,motivo);
+  }
+});
+
+await t('20. el rescate no se cruza con un turno que aún sostiene el bloqueo',async()=>{
+  const tel='5219990007007', db=await pool.connect();
+  await enRevisionDesdeHace(tel,120);
+  try{
+    await db.query('SELECT pg_advisory_lock(hashtextextended($1,0))',[`wa:${NEG}:${tel}`]);
+    await contLib.liberarRevisionesOlvidadas();
+    assert.equal(await sigueEnRevision(tel),true);
+  }finally{
+    await db.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[`wa:${NEG}:${tel}`]);db.release();
+  }
+});
+
 // ═══ S — NO HAY BORRADOR NO ES BORRADOR ROTO ══════════════════════════════
 //
 // Incidente 2026-09-11, 11:11 p.m., con el bot ya desplegado: un cliente

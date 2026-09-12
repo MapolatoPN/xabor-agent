@@ -943,7 +943,7 @@ for (const x of ['Frijolitos naturales', 'Papas a la mexicana']) await op(ggP.id
 // estrechar.
 const pedirTazon = (mods) => validarBorradorPedido(
   { items: [{ nombre: 'Tazon', cantidad: 1, modificadores: mods }] },
-  NEG, { textoCiclo: 'quiero un tazon' });
+  NEG, { textoCiclo: 'quiero un tazon con '+mods.flatMap(m=>m.opciones||[]).join(', ') });
 
 await t('T1. sin detalle, se pregunta entre las dos (como antes)', async () => {
   const rc = await validarBorradorPedido(

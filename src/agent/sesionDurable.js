@@ -58,6 +58,7 @@ function aFoto(session) {
     cicloPedido: Math.max(0, (session.cicloPedido || 0) - recorte),
     datosPedido: session.datosPedido ?? null,
     esperandoDato: session.esperandoDato ?? null,
+    aclaracionProducto: session.aclaracionProducto ?? null,
     pedidoPreview: session.pedidoPreview ?? null,
     awaitingConfirmacion: session.awaitingConfirmacion ?? null,
     ordenesConfirmadas: session.ordenesConfirmadas ?? null,

@@ -208,6 +208,9 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
   // se toca jamás: contestarle encima a alguien del equipo que está atendiendo
   // sería peor que el problema que esto resuelve.
   const MINUTOS_POR_DEFECTO = 30;
+  // Una duda de catálogo puede caducar. Un efecto incierto o una petición
+  // explícita de atención humana necesitan revisión, aunque nadie haya entrado.
+  const REVISIONES_RECUPERABLES = new Set(['ESCALADA_MODELO', 'SIN_VERIFICAR_MENU', 'NEGATIVA_INTERCEPTADA']);
 
   /** Minutos que el negocio quiere esperar. 0 o menos = nunca soltar. */
   function minutosDeEspera(valor) {
@@ -237,6 +240,7 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     const ahora = Date.now();
     let sueltas = 0;
     for (const c of candidatas) {
+      if (!REVISIONES_RECUPERABLES.has(c.motivo)) continue;
       if (c.updated_by) continue;                       // la tomó una persona
       const minutos = minutosDeEspera(c.minutos);
       if (minutos <= 0) continue;                       // el negocio la quiere permanente
@@ -258,15 +262,22 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     const db = await pool.connect();
     try {
       await db.query('BEGIN');
+      const lock = await db.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS ok', [clave(negocioId,telefono)]);
+      if (!lock.rows[0].ok) { await db.query('ROLLBACK'); return false; }
       // Se vuelve a comprobar DENTRO de la transacción: entre la lectura y
       // ahora alguien pudo tomar la conversación.
       const { rows:[c] } = await db.query(
-        `SELECT c.requiere_revision, cc.updated_by
+        `SELECT c.requiere_revision, c.motivo, c.actualizado_at, cc.updated_by
            FROM whatsapp_conversaciones c
            LEFT JOIN conversaciones_control cc
                   ON cc.negocio_id = c.negocio_id AND cc.telefono = c.telefono
           WHERE c.negocio_id = $1 AND c.telefono = $2 FOR UPDATE OF c`, [negocioId, telefono]);
-      if (!c?.requiere_revision || c.updated_by) { await db.query('ROLLBACK'); return false; }
+      if (!c?.requiere_revision || c.updated_by || !REVISIONES_RECUPERABLES.has(c.motivo)
+        || c.motivo !== motivo || Date.now() - new Date(c.actualizado_at).getTime() < edadMin * 60000 - 30000) {
+        await db.query('ROLLBACK'); return false;
+      }
+      const control = await db.query('SELECT updated_by FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE', [negocioId,telefono]);
+      if (control.rows[0]?.updated_by) { await db.query('ROLLBACK'); return false; }
       await db.query(`UPDATE whatsapp_entradas SET estado='revisado', actualizado_at=now()
          WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`, [negocioId, telefono]);
       await db.query(`UPDATE whatsapp_conversaciones

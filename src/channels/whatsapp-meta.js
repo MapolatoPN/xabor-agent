@@ -10,6 +10,7 @@ import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagen
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
 import { crearContinuidad } from '../services/whatsappContinuidad.js';
+import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
@@ -186,6 +187,7 @@ const MENSAJE_REVISION_POR_DEFECTO = '';
 // entrar en revisión: como una conversación solo entra una vez hasta que
 // alguien la cierra, esto ya está acotado por su propia naturaleza.
 const ETIQUETA_MOTIVO = {
+  SOLICITUD_CLIENTE:    'el cliente pidió hablar con una persona',
   ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
   SIN_VERIFICAR_MENU:   'no pudo verificar el pedido contra el menú',
   NEGATIVA_INTERCEPTADA:'no reconoció algo que sí vendemos',
@@ -1875,6 +1877,10 @@ const continuidadWA = crearContinuidad({
   cargarSesion: async (n,t,sesion) => restaurarSesion(`meta-${n}-${t}`,sesion),
   leerSesion: async (n,t) => getSession(`meta-${n}-${t}`),
   procesar: async (payloads,n,t) => {
+    if(payloads.some(p=>p.message?.type==='text' && solicitaAtencionHumana(p.message.text?.body))) {
+      await continuidadWA.enviarARevision(n,t,'SOLICITUD_CLIENTE');
+      return;
+    }
     const preparados = [];
     for (const p of payloads) {
       const r = await prepararMensajePersistido(p,n);

@@ -530,7 +530,12 @@ await t('C5. el bloque visual entra por el turno del usuario, jamás por system'
   assert.ok(/procesarConClaude\(telefono, prepararTurnoParaIA\(textoCombinado, contextosVisuales\), nombreMeta, negocioId\)/.test(cola),
     'el contexto visual viaja como texto del turno hacia procesarConClaude (rol user en brain)');
   const BRAIN = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8').replace(/\r\n/g, '\n');
-  assert.ok(!/CONTEXTO VISUAL|vision/.test(BRAIN), 'brain.js no se toca: recibe el contexto como cualquier texto de usuario');
+  // El prompt sí incorpora reglas visuales estáticas desde Vision V2.
+  // "revision" tampoco es evidencia de datos visuales en system.
+  const system = BRAIN.match(/system: await construirSystemPrompt([\s\S]*?),\s*messages: session\.mensajes/);
+  assert.ok(system, 'el modelo recibe el historial de mensajes');
+  assert.doesNotMatch(system[1], /prepararTurnoParaIA|contextosVisuales|textoCombinado/,
+    'el contenido visual del cliente no se concatena a system');
 });
 
 // ═══ Latencia (Fase 27, con mock realista) ══════════════════════════════════
