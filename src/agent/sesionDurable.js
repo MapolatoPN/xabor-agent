@@ -59,6 +59,9 @@ function aFoto(session) {
     datosPedido: session.datosPedido ?? null,
     esperandoDato: session.esperandoDato ?? null,
     aclaracionProducto: session.aclaracionProducto ?? null,
+    // Sin esto, un reinicio entre turnos devolvía el pedido a lo que el
+    // modelo recordara: justo lo que el carrito existe para no depender.
+    carrito: session.carrito ?? null,
     pedidoPreview: session.pedidoPreview ?? null,
     awaitingConfirmacion: session.awaitingConfirmacion ?? null,
     ordenesConfirmadas: session.ordenesConfirmadas ?? null,
@@ -107,7 +110,8 @@ export async function hidratarSesion(sessionId, negocioId) {
     aplicarFoto(session, rows[0].estado);
     session._revision = Number(rows[0].revision);
     console.log(`[Sesion] recuperada tras reinicio session=${sessionId.slice(-18)} `
-      + `items=${session.pedido?.items?.length || 0} mensajes=${session.mensajes?.length || 0}`);
+      + `items=${session.pedido?.items?.length || 0} carrito=${session.carrito?.items?.length || 0} `
+      + `mensajes=${session.mensajes?.length || 0}`);
     return { hidratada: true, revision: session._revision };
   } catch (e) {
     console.error('[Sesion] no se pudo hidratar (se sigue en memoria):', e.message);

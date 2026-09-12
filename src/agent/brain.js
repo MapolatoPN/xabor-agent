@@ -10,6 +10,7 @@ import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespald
 import { revisarNegativas, terminosDelCatalogo, mensajeEnLugarDeLaNegativa, avisarNegativaFalsa } from './negativaVerificada.js';
 import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
+import { reconciliar, carritoABorrador, carritoConItems } from '../orders/carritoDelPedido.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -573,6 +574,32 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // Si responde únicamente a nuestra elección pendiente, el pedido ya
         // existe como datos: no se reconstruye a partir de otra suposición.
         borrador=continuarAclaracionProducto(session.aclaracionProducto,mensajeUsuario)||borrador;
+
+        // ── EL PEDIDO ES DEL CLIENTE, NO DEL ÚLTIMO BORRADOR ───────────────
+        //
+        // Lo que el modelo emite es una PROPUESTA sobre el pedido, no el
+        // pedido. Se reconcilia contra el carrito que ya existía: lo que el
+        // modelo omite se conserva, lo que trae se actualiza, y quitar exige
+        // que el cliente lo haya pedido con sus palabras.
+        //
+        // Falla que cierra (auditoría Codex, 2026-09-12, prioridad alta): el
+        // cliente contestaba "para recoger, efectivo, a nombre de Ana", el
+        // modelo olvidaba el segundo platillo en ese borrador, y el sistema
+        // presentaba media cuenta. El cliente nunca pidió quitar nada.
+        //
+        // La aclaración de presentación sigue viva y va por delante: resuelve
+        // el turno que SOLO contesta esa pregunta, y su resultado entra aquí
+        // como propuesta. No se sustituye lo que ya funcionaba.
+        if (borrador || carritoConItems(session.carrito)) {
+          const recon = reconciliar(session.carrito, borrador || {}, { mensaje: mensajeUsuario });
+          session.carrito = recon.carrito;
+          if (recon.cambios.conservados.length || recon.cambios.quitados.length) {
+            console.warn('[TXN] evento=carrito_reconciliado'
+              + ' conservados=' + JSON.stringify(recon.cambios.conservados.slice(0, 5))
+              + ' quitados=' + JSON.stringify(recon.cambios.quitados.slice(0, 5)));
+          }
+          if (carritoConItems(recon.carrito)) borrador = carritoABorrador(recon.carrito);
+        }
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
         // apagar por completo la extracción independiente: el marcador

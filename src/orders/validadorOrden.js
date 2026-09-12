@@ -25,6 +25,7 @@ import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadG
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
 import { variantesCompatibles, opcionesDelItem } from './variantePorLoPedido.js';
+import { distingueLaEleccion, opcionesDelGrupo } from './evidenciaDeEleccion.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -188,13 +189,38 @@ function resolverProducto(nombreLLM, catalogo, idLLM = null) {
   if (id) {
     const p = catalogo.find((x) => String(x.id) === id);
     if (p) {
-      if (!p.categoria_activa || p.disponible === false) return { estado: 'no_disponible', producto: p };
-      if (p.agotado === true) return { estado: 'agotado', producto: p };
-      return { estado: 'ok', producto: p };
+      // PERTENECER AL CATÁLOGO NO ES HABER SIDO ELEGIDO.
+      //
+      // Auditoría de Codex, 2026-09-12: un borrador con nombre "Chilaquiles
+      // Sencillos" e identificador de "Hotcakes de Sarten" registraba hotcakes.
+      // El id existía en el negocio, así que ganaba en silencio. No cruza la
+      // frontera entre negocios —el catálogo ya viene filtrado— pero sí elige
+      // el producto equivocado DENTRO del negocio, que para el cliente es lo
+      // mismo: le llega otra cosa.
+      //
+      // Señalar es más preciso que escribir, y por eso se introdujo. Pero
+      // cuando las dos señales del modelo se CONTRADICEN, ninguna de las dos
+      // demuestra la intención del cliente, y la respuesta correcta no es
+      // elegir una: es no resolver. El nombre sigue su camino de siempre —con
+      // su ambigüedad, su pregunta y sus candidatos— y se deja rastro.
+      const nombrePedido = normalizarNombreProducto(nombreLLM);
+      const nombreDelId = normalizarNombreProducto(p.nombre);
+      const concuerdan = !nombrePedido
+        || idSenalado(nombreLLM) === id                     // el nombre ERA el id
+        || nombrePedido === nombreDelId
+        || nombreDelId.includes(nombrePedido) || nombrePedido.includes(nombreDelId);
+      if (concuerdan) {
+        if (!p.categoria_activa || p.disponible === false) return { estado: 'no_disponible', producto: p };
+        if (p.agotado === true) return { estado: 'agotado', producto: p };
+        return { estado: 'ok', producto: p };
+      }
+      console.warn(`[Validador] identificador ${id} ("${p.nombre}") contradice el nombre pedido `
+        + `("${String(nombreLLM || '').slice(0, 40)}"): se ignora el id y manda el nombre`);
+    } else {
+      // Señaló algo que no está en ESTE catálogo. No se adivina por el id: se
+      // sigue con el nombre, que es el camino de siempre, y se deja rastro.
+      console.warn(`[Validador] identificador señalado inexistente: ${id}`);
     }
-    // Señaló algo que no está en ESTE catálogo. No se adivina por el id: se
-    // sigue con el nombre, que es el camino de siempre, y se deja rastro.
-    console.warn(`[Validador] identificador señalado inexistente: ${id}`);
   }
   const buscado = normalizarNombreProducto(nombreLLM);
   if (!buscado) return { estado: 'no_existe' };
@@ -408,9 +434,29 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       // trae una opción que nunca expresó en este ciclo, la puso el modelo. No
       // se acepta ni se cambia por otra: se descarta y el grupo queda como
       // estaba, así que el flujo vuelve a preguntar. Fail-closed.
+      // Índice de hermanas por grupo, para poder preguntar si la frase del
+      // cliente NO distingue entre varias del mismo grupo.
+      const hermanasDe = (nombreGrupo) => {
+        const g = grupos.find((x) => String(x?.nombre || '') === String(nombreGrupo || ''));
+        return opcionesDelGrupo(g);
+      };
       const conservarConRespaldo = (valor, grupo, lista) => {
-        if (tieneRespaldo(valor, textoCiclo)) return true;
-        lista.push({ codigo: RECHAZOS.SELECCION_SIN_RESPALDO, grupo, opcion: valor });
+        if (!tieneRespaldo(valor, textoCiclo)) {
+          lista.push({ codigo: RECHAZOS.SELECCION_SIN_RESPALDO, grupo, opcion: valor });
+          return false;
+        }
+        // RESPALDAR NO ES DISTINGUIR.
+        //
+        // "frijoles" respalda tanto "Frijolitos naturales" como "Frijolitos con
+        // chorizo". Con respaldo bastaba, así que el modelo elegía y el
+        // validador lo confirmaba. Aquí se exige que la frase del cliente
+        // sostenga esta opción MEJOR que a sus hermanas; si empata, la
+        // selección queda pendiente y el flujo pregunta, exactamente igual que
+        // cuando el modelo no resuelve.
+        const { distingue, empatan } = distingueLaEleccion(valor, hermanasDe(grupo), textoCiclo);
+        if (distingue) return true;
+        ambiguos.push({ nombre: valor, grupos: [grupo], opciones: [valor, ...empatan] });
+        lista.push({ codigo: RECHAZOS.SELECCION_SIN_RESPALDO, grupo, opcion: valor, empatan });
         return false;
       };
       modificadores = modificadores.filter((m) => conservarConRespaldo(m.opcion, m.grupo, sinRespaldo));

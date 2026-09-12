@@ -117,6 +117,9 @@ export function iniciarCicloPedido(sessionId) {
   // arrastrarse al siguiente sin que el cliente las vuelva a decir.
   session.datosPedido = null;
   session.aclaracionProducto = null;
+  // El carrito pertenece al pedido que se acaba de cerrar. Arrastrarlo al
+  // siguiente le vendería al cliente lo que ya recibió.
+  session.carrito = null;
   session.esperandoDato = null;
   session.actualizado_en = new Date().toISOString();
   return session.cicloPedido;
