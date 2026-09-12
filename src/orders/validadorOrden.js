@@ -517,6 +517,22 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // 5) Ningún artículo la representa ni la resuelve: el negocio no la maneja.
         // Solo las menciones EN POSICIÓN de atributo llegan aquí; una respuesta
         // directa que no casó con nada se descarta en silencio.
+        //
+        // SALVO que no haya NINGÚN artículo resuelto todavía. Entonces no es
+        // que el negocio no lo maneje: es que aún no se sabe contra qué
+        // compararlo, porque falta saber de qué platillo hablamos.
+        //
+        // Incidente 2026-09-12, 00:10: «chilaquiles suizos con huevo estrellado
+        // y frijoles y papas con chorizo». Los chilaquiles son cuatro variantes
+        // y ninguna quedó elegida, así que no había grupos contra los que mirar
+        // las guarniciones -- y el sistema iba a contestar «no manejamos
+        // "frijoles" y "papas con chorizo"», dos cosas que SÍ están en la carta.
+        // Lo atajó el candado de negativaVerificada.js, pero la causa es esta:
+        // otra vez un "no puedo comprobarlo" convertido en un "no lo tenemos".
+        //
+        // Sin artículo resuelto, la pregunta correcta es cuál variante quiere;
+        // las menciones esperan a que se sepa.
+        if (!estados.length) continue;
         mencionesNoResueltas.push({
           codigo: RECHAZOS.MENCION_NO_RESUELTA, texto: span,
           productos: [...new Set(estados.map((e) => e.producto.nombre))],
@@ -788,8 +804,11 @@ export function mensajeBorradorParaCliente(resultado) {
   const amb = prods.flatMap((p) => p.ambiguos || []);
   if (amb.length) {
     const a = amb[0];
-    if (a.grupos?.length === 1 && a.opciones?.length > 1) {
-      return `Para "${a.nombre}" tenemos ${listar(a.opciones)}. ¿Cuál prefieres?`;
+    // Se le ofrecen las OPCIONES por su nombre. Preguntarle en que "grupo" la
+    // quiere es hablarle en la estructura interna del catalogo: nadie pide "en
+    // guarniciones", pide "los de chorizo".
+    if (Array.isArray(a.opciones) && a.opciones.length > 1) {
+      return `De "${a.nombre}" tenemos ${listar(a.opciones)}. ¿Cuál prefieres?`;
     }
     return `Una aclaración para no equivocarme: "${a.nombre}" aparece en ${listar(a.grupos)}. ¿En cuál lo quieres?`;
   }

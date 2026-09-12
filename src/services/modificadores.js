@@ -258,10 +258,15 @@ export function buscarOpcionPorMencion(grupos, mencion) {
   const unicas = new Map(candidatos.map((c) => [`${c.g.id}:${c.o.id}`, c]));
   if (unicas.size === 0) return { estado: 'sin_coincidencia' };
   if (unicas.size > 1) {
+    // Se devuelven las OPCIONES, no solo los grupos. Con solo los grupos, dos
+    // opciones distintas del MISMO grupo ("Frijolitos naturales" y "Frijolitos
+    // con chorizo" ante un "frijoles") producian la frase absurda «aparece en
+    // Guarniciones. ¿En cual lo quieres?»: un solo grupo, y una pregunta sin
+    // respuesta posible. Lo que el cliente necesita elegir son las opciones.
     return {
       estado: 'ambiguo',
-      grupos: [...new Set([...unicas.values()].map(c => c.g.nombre))],
-      opciones: [...new Set([...unicas.values()].map(c => c.o.nombre))],
+      grupos: [...new Set([...unicas.values()].map((c) => c.g.nombre))],
+      opciones: [...new Set([...unicas.values()].map((c) => c.o.nombre))],
     };
   }
   const { g, o } = [...unicas.values()][0];
