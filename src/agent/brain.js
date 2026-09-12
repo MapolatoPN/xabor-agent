@@ -661,6 +661,20 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
               + ' sin_respaldo=' + JSON.stringify(c.sinRespaldo.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`))
               + ' por_confirmar=' + JSON.stringify(c.porConfirmar.slice(0, 5).map((x) => `${x.nombre}:${x.motivo}`)));
           }
+          // Una opción que el cliente nunca expresó se descarta AQUÍ desde que el
+          // carrito filtra campo a campo, así que la traza que el negocio ya
+          // conocía —y que hace rastreable el descarte en producción— se emite
+          // desde aquí con el mismo evento y el mismo código. La garantía no
+          // cambió de contenido, solo de sitio: si la línea se quedara en el
+          // validador, un descarte del carrito sería invisible.
+          const opcionesDescartadas = [...c.sinRespaldo, ...c.congelados]
+            .filter((x) => String(x.campo || '').startsWith('modificador:'))
+            .flatMap((x) => (Array.isArray(x.propuesto) ? x.propuesto : [x.propuesto])
+              .map((o) => `${String(x.campo).slice('modificador:'.length)}:${o}`));
+          if (opcionesDescartadas.length) {
+            console.warn('[TXN] evento=seleccion_sin_respaldo codigo=SELECCION_SIN_RESPALDO'
+              + ` negocio=${negocioId} descartadas=${JSON.stringify(opcionesDescartadas.slice(0, 5))}`);
+          }
           // Lo que no se aplicó no se calla: se le pregunta al cliente en este
           // mismo turno, nombrando el artículo y el dato concreto.
           const pregunta = preguntaPorLoNoAplicado(c);

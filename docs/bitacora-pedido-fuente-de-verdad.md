@@ -62,6 +62,8 @@ evidencia del cliente. Los datos operativos no tocan artículos.
       prosa, borrador vacío, mensajes agrupados, reentregas, dos instancias
 - [x] Regresión de las suites vecinas (43 suites)
 - [x] Segunda auditoría de Codex: tres fallas del carrito, reproducidas y cerradas
+- [x] Tercera ronda: procedencia de la evidencia, términos del catálogo,
+      quitar con identidad y modo sombra
 - [x] Auditoría de producción en solo lectura
 - [x] PR — rama `fix/pedido-fuente-de-verdad` empujada. `gh` no está
       autenticado en esta máquina, así que el PR queda por abrir desde
@@ -190,6 +192,148 @@ elegido.
 | K | el carrito en la ruta forzada | F15 |
 
 
+## Tercera ronda — las tres limitaciones abiertas (2026-09-12)
+
+### 1. La procedencia: lo DICHO no es lo PERCIBIDO
+
+Buscando todas las rutas que crean el primer borrador apareció algo más grande
+que la limitación escrita. Cuando llega una foto, el canal **no** le manda la
+imagen al cerebro: la analiza aparte y sustituye la marca por el bloque
+`[CONTEXTO VISUAL]` **dentro del mensaje del cliente**
+(`utils/turnoImagen.js` → `prepararTurnoParaIA`). El turno que acaba en el
+historial es un string que mezcla las dos cosas:
+
+```
+[CONTEXTO VISUAL]
+- productos que parecen aparecer: Hamburguesa Doble (confianza 0.82)
+[/CONTEXTO VISUAL]
+quiero esto porfa
+```
+
+Así que para todo lo que mira «lo que dijo el cliente» —el carrito, el respaldo
+de selecciones, el de modalidad y forma de pago— la percepción del modelo de
+visión ERA el cliente.
+
+**Antes** (prueba directa contra el módulo, antes de tocar nada):
+
+```
+con carrito previo   -> ["Ramen Chico","Hamburguesa Doble"]   sinRespaldo: []
+primera propuesta    -> [{"nombre":"Hamburguesa Doble","cantidad":3,
+                          "modificadores":[{"grupo":"Queso","opciones":["Doble queso"]}],
+                          "notas":"sin cebolla"}]
+```
+
+**Después**:
+
+```
+con carrito previo   -> ["Ramen Chico"]   porConfirmar: [Hamburguesa Doble · percibido]
+primera propuesta    -> []                porConfirmar: [Hamburguesa Doble · percibido]
+pregunta al cliente  -> «En la foto veo algo parecido a "Hamburguesa Doble". ¿Te lo agrego?»
+```
+
+`procedenciaDeEvidencia.js` separa el turno por la **forma** del bloque
+—etiquetas en mayúsculas con cierre—, no por su contenido: cualquier bloque
+futuro (audio, PDF, ubicación) queda cubierto sin tocar nada. Tres procedencias
+y tres políticas:
+
+| | | |
+|---|---|---|
+| **DICHO** | lo escribió o lo dictó el cliente | autoriza |
+| **PERCIBIDO** | sale de su foto, lo interpretó el modelo | no autoriza: se pregunta |
+| **INVENTADO** | no está en ninguna de las dos | ni entra ni se menciona |
+
+La distinción importa: una foto **sí** es una fuente del cliente, así que
+descartarla en silencio sería tan malo como creerle. Se pregunta.
+
+Y la puerta se aplica **desde el primer borrador**, no solo cuando ya hay
+carrito: aparecer en la primera salida del modelo dejó de dar autoridad, y no
+solo al artículo — cantidad, modificadores y notas de un artículo nuevo también
+necesitan respaldo.
+
+### 2. Términos genéricos: los pone el catálogo, no una lista
+
+«Ponme un refresco» no comparte una letra con «Coca Cola». No hay columna de
+alias en `menu_productos` —se revisó el esquema— pero sí hay algo mejor y ya
+construido: `terminosDelCatalogo`, que el guard de negativas falsas usa desde
+el 11-sep. Devuelve cada nombre de **categoría**, producto y opción con los
+productos que ofrece, que es exactamente la forma que tiene un término genérico
+en la carta de un negocio.
+
+| El término cubre | Qué pasa |
+|---|---|
+| un solo producto | lo identifica |
+| varios | no se escoge: se ofrecen y se pregunta |
+| nada de la carta | no entra |
+
+Si un negocio quiere que «refresco» funcione, su categoría se llama «Refrescos».
+Es configuración suya, no código nuestro, y no hay un solo nombre de producto en
+la lógica. El catálogo se consulta **solo** cuando quedó un artículo sin
+respaldo, así que el turno normal no paga una consulta de más.
+
+### 3. Quitar: más formas de decirlo, la misma exigencia de identidad
+
+Se añadieron los giros naturales que faltaban (`quítale`, `retira`,
+`olvídate de`, `déjalo sin`, `ya no`) sin aflojar nada, porque **lo que decide
+qué se va no es el verbo: es la identificación**. Por eso se puede ser generoso
+con uno y estricto con la otra.
+
+Un pronombre —«ya no quiero ese», «el otro no»— no nombra ningún artículo, así
+que no hay candidatos y no se quita nada. No hizo falta una regla para los
+pronombres: caen solos, que es la señal de que la regla general es la correcta.
+
+Dos cosas más salieron de escribir las pruebas:
+
+- **Quitar un ingrediente no se dice como quitar un platillo.** «Sin cebolla» no
+  lleva verbo. Se mira el mismo tramo y se exige que la opción esté nombrada
+  ahí. Quitar una opción necesita esa evidencia propia, **salvo** en un
+  intercambio 1:1 —una sale, otra entra, el grupo tenía una sola—, que es como
+  se dice «mejor la salsa roja». Sin esa distinción, o el modelo podía comerse
+  una guarnición en silencio, o el cliente no podía cambiar de idea.
+- **La fusión de un grupo era todo o nada**, así que «con cebolla» más un
+  pepinillo inventado por el modelo tiraba también la cebolla que el cliente sí
+  pidió. Ahora es opción por opción.
+
+### 4. Modo sombra
+
+`PEDIDO_SHADOW_MODE=true`. El reconciliador corre igual, sobre un carrito
+**paralelo** (`session.carritoSombra`, que vive el mismo ciclo y sobrevive a los
+reinicios), y no toca nada más: no escribe el carrito productivo, no reinyecta
+borrador, no añade una palabra a la respuesta del cliente.
+
+Cada turno deja una línea `[TXN] evento=carrito_sombra {…}` con: qué dijo el
+cliente, qué había antes, qué propuso el modelo, qué habría quedado, **qué se
+autorizó y con qué evidencia**, qué se rechazó y por qué, la conversación y el
+sello de tiempo.
+
+No se construyó nada nuevo para guardarlo: el repo ya tiene la convención
+`[TXN] evento=…` y los logs de Railway ya se leen todos los días. Cuarenta
+ciclos son cuarenta líneas legibles, y cuando el modo se apague no queda nada
+que limpiar. La conversación se identifica por un **hash corto**, no por el
+teléfono, y al mensaje se le tapan las corridas largas de dígitos.
+
+### Mordidas de la tercera ronda
+
+| Mordida | Qué se desactivó | Falla |
+|---|---|---|
+| L | la separación de procedencia | G3 |
+| M | la depuración de campos del artículo nuevo | G4, G5 |
+| N | «término ambiguo» pasa a autorizar | G8 |
+| O | quitar una opción sin evidencia propia | G22, G23 |
+| P | el guard de contaminación cruzada | G16 |
+| Q | en sombra se escribe el carrito productivo | G21 |
+| R | la segunda pasada con términos del catálogo | G7, G8 |
+
+### Una garantía que cambió de sitio, no de contenido
+
+`fase-fidelidad-borrador` F2/F5 exigen que un descarte de selección quede
+rastreable en producción con su código. Desde que el carrito filtra campo a
+campo, ese descarte ocurre **antes** de que el validador lo vea, así que su
+línea dejaba de emitirse y las pruebas caían. No se tocaron las pruebas: se
+emite el mismo evento con el mismo código desde el carrito. Si la traza se
+hubiera quedado solo en el validador, un descarte del carrito sería invisible
+para el negocio.
+
+
 ## Regresión: 43 suites vecinas
 
 Elegidas por importación real —todo lo que toca `brain.js`, `validadorOrden.js`,
@@ -214,14 +358,16 @@ el cliente haya NOMBRADO lo que se agrega, y un pedido por foto no nombra nada).
 | `fase-vision-whatsapp`, `fase-chat-imagenes` | pedir por foto sigue funcionando | verdes |
 | `fase-whatsapp-continuidad`, `fase-agrupamiento-turnos-whatsapp` | reentregas, mensajes agrupados | 13/13, 14/14 |
 
-**Las 2 que fallan, fallan igual en `c859e72`** —el commit que hoy corre en
+**Las 3 que fallan, fallan igual en `c859e72`** —el commit que hoy corre en
 producción— comprobado en un worktree limpio de ese commit, con la misma base y
 las mismas variables:
 
-- `fase-continuidad-webhook`: 9/1 en las dos, el mismo caso (captura del panel
-  que expira a los 5 s).
-- `fase-hotfix-borrador-recuperable`: 2 de 8 en las dos, los mismos casos. Es
-  del Asistente Comercial, no del pedido del menú.
+- `fase-continuidad-webhook`: 9/1, el mismo caso (captura del panel que expira).
+- `fase-hotfix-borrador-recuperable`: 2 de 8, los mismos casos. Es del Asistente
+  Comercial, no del pedido del menú.
+- `fase-seguridad-transaccional`: 17/1 (T14). Depende del estado acumulado de la
+  base local —pasó 18/18 justo después de resembrar y falla ahora en las dos
+  ramas—, así que es de entorno, no de código.
 
 Ninguna es de este trabajo. Quedan anotadas, no arregladas.
 
@@ -303,27 +449,41 @@ detecta con `JSON.stringify` de la línea.
    se conservaron pese a no venir en la propuesta del modelo. Es la falla que
    esto cierra, vista desde producción.
 
+## Cómo encender el modo sombra
+
+1. En Railway, variable `PEDIDO_SHADOW_MODE=true` (solo el servicio, sin tocar
+   nada más). Con ella puesta, el reconciliador observa y no decide.
+2. Desplegar la rama. El bot puede seguir apagado: la sombra mide los turnos que
+   entren, y si no entra ninguno, no mide nada.
+3. Leer: `railway logs` y filtrar `evento=carrito_sombra`. Una línea por turno,
+   JSON en una sola línea.
+4. Para 30–50 ciclos basta con juntar las líneas de un día y agrupar por `conv`.
+   Cada una responde las cuatro preguntas: `propuso` (qué quiso el modelo),
+   `quedaria` (qué habría permitido), `rechazado` (qué bloqueó y por qué) y
+   `autorizado` (con qué evidencia dejó pasar lo que dejó pasar).
+5. Para apagarlo: quitar la variable. No queda nada que limpiar.
+
+Lo que el modo sombra **no** hace: no escribe el carrito del cliente, no
+reinyecta borrador, no confirma pedidos y no añade una palabra a lo que el
+cliente lee. La prueba `G21` lo comprueba, y la mordida `Q` —hacerle escribir
+el carrito productivo— la tumba.
+
 ## Lo que este trabajo NO resuelve
 
-- **Un nombre sin ninguna palabra en común.** Agregar un producto exige que el
-  cliente lo haya nombrado, con tolerancia a una errata. Quien diga «ponme un
-  refresco» y el modelo lo lea como "Coca Cola" se queda sin refresco: no hay
-  ninguna letra que los una. Lo ve en el resumen y lo pide otra vez. Es el lado
-  seguro del error —perder algo se repara en la conversación, cobrar algo que
-  nadie pidió llega a la puerta— pero es un límite real.
-- **La primera propuesta de un ciclo no pasa por esa puerta.** Si el modelo
-  inventa un artículo en el PRIMER borrador, el carrito no tiene nada que
-  proteger todavía y lo acepta; lo auditan las menciones y el validador, no
-  esto. La puerta existe para el modelo que añade cosas a un pedido que ya
-  estaba, que es lo que Codex reprodujo.
-- **Cambiar de idea sin decirlo en el turno.** Cambiar un grupo ya elegido pide
-  respaldo en el mensaje de ese turno. Un cliente que dice «suiza» en el primer
-  mensaje y luego solo contesta «sí» a una pregunta del bot sobre la salsa no
-  cambia nada: el bot le pregunta otra vez.
-- **La detección de «quitar» es léxica.** Verbo + artículo identificado dentro
-  de su alcance. Una forma de pedirlo sin ninguno de esos verbos no quita nada:
-  se conserva y el cliente lo corrige en el resumen.
-- **Las dos suites que fallan desde antes** (`fase-continuidad-webhook`,
-  `fase-hotfix-borrador-recuperable`).
-- **Nada de esto se ha visto contra un cliente real**, porque el bot de Obispado
-  sigue apagado.
+- **Un producto que el cliente nombra sin ninguna palabra en común y que su
+  carta no agrupa.** «Ponme un refresco» funciona si el negocio tiene una
+  categoría llamada así; «ponme algo de tomar» no, porque eso no es una
+  categoría de nadie. El cliente lo ve en el resumen y lo repite. Es el lado
+  seguro del error, pero es un límite.
+- **Un término genérico que cubre varios productos nunca se resuelve solo**: se
+  pregunta, siempre. Para el cliente son dos turnos en vez de uno.
+- **Una foto no construye el pedido por sí sola**: se pregunta antes de agregar.
+  Si el negocio quisiera que la visión pidiera directo, haría falta una decisión
+  suya, no un cambio aquí.
+- **La detección de «quitar» sigue siendo léxica** (verbo o giro + artículo
+  identificado). Una forma que no use ninguno no quita nada: se conserva.
+- **Cambiar de idea sin decirlo en el turno** no cambia nada: el bot pregunta.
+- **Las 3 suites que fallan desde antes** (`fase-continuidad-webhook`,
+  `fase-hotfix-borrador-recuperable`, `fase-seguridad-transaccional` T14).
+- **El modo sombra no se ha corrido contra tráfico real todavía**, y el bot de
+  Obispado sigue apagado. Nada de esto se ha visto con un cliente.
