@@ -6,6 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const mock=await arrancarAnthropicMock();
 process.env.ANTHROPIC_BASE_URL=mock.baseUrl;
+// El SDK exige una llave aunque la base apunte al mock: sin esto, el único
+// caso de esta suite que llega al modelo muere con "Could not resolve
+// authentication method" en cualquier máquina que no tenga la llave real, y
+// el caso que MÁS importa --que el pedido sobreviva al olvido del modelo--
+// llevaba fallando en silencio desde que se escribió.
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test-chilaquiles-contexto';
 process.env.PORT='4297';
 const { pool }=await import('../src/services/database.js');
 assert(['localhost','127.0.0.1'].includes(new URL(process.env.DATABASE_URL).hostname),'Solo base local de pruebas');

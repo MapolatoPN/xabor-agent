@@ -25,7 +25,7 @@ import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadG
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
 import { variantesCompatibles, opcionesDelItem } from './variantePorLoPedido.js';
-import { distingueLaEleccion, opcionesDelGrupo } from './evidenciaDeEleccion.js';
+import { distingueLaEleccion, opcionesDelGrupo, fuerzaDeEvidencia } from './evidenciaDeEleccion.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -184,7 +184,26 @@ export function idSenalado(valor) {
  * obligatorios y totales se siguen leyendo del catálogo, aquí abajo y en el
  * registro del pedido. El modelo solo dice A CUÁL se refería.
  */
-function resolverProducto(nombreLLM, catalogo, idLLM = null) {
+/**
+ * A qué platillos del catálogo puede referirse un nombre escrito.
+ *
+ * Vacío = a ninguno. Varios = ambiguo de verdad (los tres chilaquiles). Uno =
+ * resuelto. Es la comparación de texto de siempre, extraída para poder
+ * preguntársela también al identificador.
+ */
+function candidatosPorNombre(nombreLLM, catalogo) {
+  const buscado = normalizarNombreProducto(nombreLLM);
+  if (!buscado) return [];
+  const porNombre = catalogo.map((p) => ({ p, norm: normalizarNombreProducto(p.nombre) }));
+  // 1) igualdad exacta normalizada; 2) contención NO ambigua (una sola
+  // coincidencia) en cualquier dirección -- compatibilidad con notas tipo
+  // "Focaccia Bar grande". Ambiguo = no resuelto (fail closed).
+  const exactos = porNombre.filter((x) => x.norm === buscado);
+  if (exactos.length) return exactos;
+  return porNombre.filter((x) => x.norm.includes(buscado) || buscado.includes(x.norm));
+}
+
+function resolverProducto(nombreLLM, catalogo, idLLM = null, textoCliente = '') {
   const id = idSenalado(idLLM) || idSenalado(nombreLLM);
   if (id) {
     const p = catalogo.find((x) => String(x.id) === id);
@@ -198,17 +217,39 @@ function resolverProducto(nombreLLM, catalogo, idLLM = null) {
       // el producto equivocado DENTRO del negocio, que para el cliente es lo
       // mismo: le llega otra cosa.
       //
-      // Señalar es más preciso que escribir, y por eso se introdujo. Pero
-      // cuando las dos señales del modelo se CONTRADICEN, ninguna de las dos
-      // demuestra la intención del cliente, y la respuesta correcta no es
-      // elegir una: es no resolver. El nombre sigue su camino de siempre —con
-      // su ambigüedad, su pregunta y sus candidatos— y se deja rastro.
-      const nombrePedido = normalizarNombreProducto(nombreLLM);
-      const nombreDelId = normalizarNombreProducto(p.nombre);
-      const concuerdan = !nombrePedido
+      // ── SEÑALAR DESEMPATA; NO SUSTITUYE ──────────────────────────────────
+      //
+      // El identificador sigue mandando en todo lo que sabe hacer mejor que el
+      // texto, y solo cede cuando el nombre apunta CLARAMENTE a otro platillo:
+      //
+      //   el nombre no resuelve nada ("chilakiles")  -> manda el id; una errata
+      //                                                 no contradice a nadie
+      //   el nombre es ambiguo y el id es uno de los -> manda el id; para eso
+      //   candidatos ("coloniales")                     se introdujo
+      //   el nombre resuelve a OTRO platillo          -> ninguna de las dos
+      //                                                 señales demuestra la
+      //                                                 intención: no se
+      //                                                 resuelve, y el nombre
+      //                                                 sigue su camino con su
+      //                                                 ambigüedad y su pregunta
+      //
+      // Comparar contra los candidatos del nombre —y no letra a letra— es lo
+      // que separa la errata de la contradicción sin inventar un umbral de
+      // parecido que habría que estar calibrando.
+      const candidatos = candidatosPorNombre(nombreLLM, catalogo);
+      // Cuando el nombre apunta a OTRO platillo, quien desempata es lo que
+      // dijo el cliente, no el modelo consigo mismo. «Quiero los mixtos» + el
+      // id de los mixtos respalda al id aunque el nombre escrito se quede
+      // corto; «quiero chilaquiles sencillos» + el id de los hotcakes no
+      // respalda nada, y ahí no se resuelve.
+      const apoyoDelCliente = (nombre) => fuerzaDeEvidencia(nombre, textoCliente);
+      const apoyoAlId = apoyoDelCliente(p.nombre);
+      const apoyoAlNombre = Math.max(0, ...candidatos.map((x) => apoyoDelCliente(x.p.nombre)));
+      const concuerdan = !normalizarNombreProducto(nombreLLM)
         || idSenalado(nombreLLM) === id                     // el nombre ERA el id
-        || nombrePedido === nombreDelId
-        || nombreDelId.includes(nombrePedido) || nombrePedido.includes(nombreDelId);
+        || candidatos.length === 0                          // el nombre no señala a nadie
+        || candidatos.some((x) => String(x.p.id) === id)     // el id es uno de los suyos
+        || (apoyoAlId > 0 && apoyoAlId >= apoyoAlNombre);    // el cliente respalda el id
       if (concuerdan) {
         if (!p.categoria_activa || p.disponible === false) return { estado: 'no_disponible', producto: p };
         if (p.agotado === true) return { estado: 'agotado', producto: p };
@@ -222,16 +263,8 @@ function resolverProducto(nombreLLM, catalogo, idLLM = null) {
       console.warn(`[Validador] identificador señalado inexistente: ${id}`);
     }
   }
-  const buscado = normalizarNombreProducto(nombreLLM);
-  if (!buscado) return { estado: 'no_existe' };
-  const porNombre = catalogo.map((p) => ({ p, norm: normalizarNombreProducto(p.nombre) }));
-  // 1) igualdad exacta normalizada; 2) contención NO ambigua (una sola
-  // coincidencia) en cualquier dirección -- compatibilidad con notas tipo
-  // "Focaccia Bar grande". Ambiguo = no resuelto (fail closed).
-  let candidatos = porNombre.filter((x) => x.norm === buscado);
-  if (candidatos.length === 0) {
-    candidatos = porNombre.filter((x) => x.norm.includes(buscado) || buscado.includes(x.norm));
-  }
+  if (!normalizarNombreProducto(nombreLLM)) return { estado: 'no_existe' };
+  const candidatos = candidatosPorNombre(nombreLLM, catalogo);
   // NO ENCONTRADO y ENCONTRADO VARIAS VECES son cosas distintas, y confundirlas
   // le miente al cliente.
   //
@@ -357,7 +390,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       console.warn(`[Validador] fragmento descartado, no es un producto: "${String(it?.nombre || '').slice(0, 60)}"`);
       continue;
     }
-    let r = resolverProducto(it?.nombre, catalogo, it?.id);
+    let r = resolverProducto(it?.nombre, catalogo, it?.id, textoCiclo);
     // ── Usar lo que el cliente YA dijo antes de volver a preguntar ──
     //
     // Incidente 2026-09-11, 11:26 p.m.: el cliente contestó a la pregunta con
@@ -915,7 +948,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       eventoTxn('cantidad_invalida', negocioId, { cantidad: it?.cantidad });
       continue;
     }
-    const r = resolverProducto(it?.nombre, catalogo, it?.id);
+    const r = resolverProducto(it?.nombre, catalogo, it?.id, String(opts.textoCiclo || ''));
     // 'ambiguo' se rechaza con la MISMA dureza que 'no_existe', y aquí no se
     // negocia: este es el registro del pedido real. Un nombre que apunta a tres
     // platillos no tiene `producto`, y sin este corte seguiría de largo hasta
