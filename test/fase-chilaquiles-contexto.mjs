@@ -55,6 +55,11 @@ try{
  await t('una respuesta que cambia ingredientes no revive el pedido anterior',()=>{
   assert.equal(continuar(pendiente,'Sencillos sin pollo'),null);assert.equal(continuar(pendiente,'mejor cancela'),null);assert.equal(continuar(pendiente,'Chilaquiles'),null);
  });
+ await t('las menciones del chilaquil pendiente no se niegan contra los hotcakes resueltos',async()=>{
+  const r=await validar(doble,n,{textoCiclo:original,menciones:['pollo','bistec en salsa','queso panela']});
+  assert.deepEqual(r.mencionesNoResueltas||[],[]);
+  assert.doesNotMatch(mensaje(r),/no manejamos|no tenemos/i);
+ });
  await t('el pedido completo se valida con precios de la carta',async()=>{
   const b=structuredClone(borrador);b.items[0].nombre='Chilaquiles Sencillos';b.items[0].modificadores[2]=mod('Guarniciones','Frijolitos naturales','Papas a la mexicana');
   const r=await validar(b,n,{textoCiclo:texto+' Sencillos, frijoles naturales'});assert.equal(r.ok,true,JSON.stringify(r));

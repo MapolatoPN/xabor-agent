@@ -17,6 +17,10 @@ conserva ese filtro y se completa, evitando un segundo camino de pedidos.
 - El filtro reconoce abreviaciones con el mismo resolver del pedido: «pollo»
   y «frijoles» no necesitan coincidir literalmente con el nombre de la carta.
   Solo usa selecciones respaldadas por lo escrito en el ciclo del cliente.
+- Un platillo ya identificado no se usa para negar ingredientes de otro que
+  sigue pendiente de aclaración: las guarniciones del chilaquil no se validan
+  contra los grupos de los hotcakes. La prueba con ambos productos falló antes
+  del ajuste y pasó después.
 - Si quedan varias presentaciones muestra precios base y descripciones de
   ese negocio. No presupone Sencillos frente a Mixtos: ambas admiten esa
   combinación en la configuración actual.
@@ -27,6 +31,9 @@ conserva ese filtro y se completa, evitando un segundo camino de pedidos.
   naturales o con chorizo; no pregunta en cuál grupo van.
 - Pedir explícitamente una persona marca revisión antes de llamar al modelo.
   Conserva el aviso al equipo y la política existente de silencio al cliente.
+- La recuperación automática incorporada en la rama principal se limita a
+  dudas del modelo o de catálogo. Nunca libera por tiempo una solicitud humana
+  ni una ejecución incierta; tampoco se cruza con un turno en curso.
 
 No hay migraciones, cambios de carta ni modificaciones al registro, cobro o
 impresión de órdenes. Los precios finales siguen pasando por el validador.

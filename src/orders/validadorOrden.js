@@ -532,7 +532,9 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         //
         // Sin artículo resuelto, la pregunta correcta es cuál variante quiere;
         // las menciones esperan a que se sepa.
-        if (!estados.length) continue;
+        // También puede haber OTRO producto resuelto: sus grupos no sirven
+        // para negar atributos del pendiente (chilaquiles + hotcakes).
+        if (!estados.length || salida.productosNoExisten.some(p => p.estado === 'ambiguo')) continue;
         mencionesNoResueltas.push({
           codigo: RECHAZOS.MENCION_NO_RESUELTA, texto: span,
           productos: [...new Set(estados.map((e) => e.producto.nombre))],
