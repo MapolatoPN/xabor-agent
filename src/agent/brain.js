@@ -13,7 +13,6 @@ import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado,
          podriaResolverloElCatalogo } from '../orders/carritoDelPedido.js';
 import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
-import { registrarSombra } from '../orders/registroSombra.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -212,6 +211,17 @@ async function mencionaProductoDelMenu(mensaje, negocioId) {
  * Deliberadamente barata: solo el historial reciente, sin menú ni reglas, con
  * un techo bajo de tokens. Devuelve null si el turno era una consulta.
  */
+/**
+ * El MISMO extractor, con nombre propio para el modo sombra.
+ *
+ * Se exporta para que la observación no tenga que inventarse otra forma de
+ * conseguir la propuesta del modelo: es exactamente la que usaría el flujo
+ * real cuando el modelo no emite marcador. Solo lee `mensajes`, así que el
+ * observador le pasa su propio historial y jamás toca una sesión productiva.
+ */
+export const extraerBorradorParaSombra = (mensajes, negocioId) =>
+  extraerBorradorForzado({ mensajes }, negocioId);
+
 async function extraerBorradorForzado(session, negocioId) {
   const historial = (session.mensajes || []).slice(-6);
   if (!historial.length) return null;
@@ -617,14 +627,14 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // extracción forzada de más abajo. Un reconciliador correcto no protege
         // una ruta que lo rodea.
         //
-        // MODO SOMBRA: con `PEDIDO_SHADOW_MODE=true` la reconciliación corre
-        // igual y se registra, pero sobre un carrito PARALELO. No toca el
-        // pedido del cliente, no reinyecta borrador y no escribe una sola
-        // palabra en su respuesta. Sirve para mirar qué habría hecho con
-        // tráfico real antes de dejarle decidir.
-        const enSombra = String(process.env.PEDIDO_SHADOW_MODE || '').trim().toLowerCase() === 'true';
+        // El modo sombra NO vive aquí. Estuvo aquí una versión y era engañoso:
+        // apagaba el carrito pero dejaba al bot contestando, registrando pedidos
+        // e imprimiendo comandas, así que la bandera no hacía seguro el
+        // experimento. La observación se hace donde el sistema ya está callado
+        // (ver `orders/registroSombra.js` y los tres puntos del canal en los que
+        // se decide no responder). Este turno es productivo, sin condicionales.
         const aplicarCarrito = async (propuesta) => {
-          const carritoBase = enSombra ? session.carritoSombra : session.carrito;
+          const carritoBase = session.carrito;
           if (!propuesta && !carritoConItems(carritoBase)) return propuesta;
           const entrada = {
             mensaje: mensajeUsuario,
@@ -645,12 +655,6 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
             }
           }
           const c = recon.cambios;
-          if (enSombra) {
-            session.carritoSombra = recon.carrito;
-            registrarSombra({ sessionId, negocioId, mensaje: mensajeUsuario, previo: carritoBase,
-              propuesta, recon });
-            return propuesta;                      // el turno real sigue sin enterarse
-          }
           session.carrito = recon.carrito;
           if (c.conservados.length || c.quitados.length || c.congelados.length
               || c.sinRespaldo.length || c.porConfirmar.length) {

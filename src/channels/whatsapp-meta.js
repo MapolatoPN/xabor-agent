@@ -4,7 +4,8 @@
 import { Router } from 'express';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
-import { procesarMensaje } from '../agent/brain.js';
+import { procesarMensaje, extraerBorradorParaSombra } from '../agent/brain.js';
+import { sombraActiva, observarTurno } from '../orders/registroSombra.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -1774,14 +1775,40 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     // actualizó arriba (sigue apareciendo en el chat de Xabor para
     // atención manual) -- aquí solo se decide si se invoca a la IA.
     // Nunca se modifica bot_pausado desde aquí.
+    // ── MODO SOMBRA ────────────────────────────────────────────────────
+    //
+    // Los tres `return` que vienen abajo son los puntos en los que el sistema
+    // YA decidió no contestar. El mensaje está guardado y visible en el panel
+    // (comportamiento de siempre); lo único que falta es que nadie responda.
+    //
+    // Ahí, y solo ahí, se observa: se le pregunta al extractor acotado qué
+    // pedido ve, se reconcilia contra un carrito de observación que vive fuera
+    // de la sesión productiva, y se escribe una línea. No hay forma de que
+    // produzca otra cosa: este camino no tiene delante ni `enviarMensaje`, ni
+    // `registrarPedido`, ni impresión, ni cobro.
+    //
+    // Nunca lanza y nunca cambia la decisión de callar: el `return` va después
+    // pase lo que pase.
+    const observarEnSombra = async () => {
+      if (!sombraActiva()) return;
+      await observarTurno({
+        sessionId: `meta-${negocioId}-${telefono}`,
+        negocioId,
+        mensaje: texto,
+        proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
+      });
+    };
+
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
     if (!botGlobalActivo) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
+      await observarEnSombra();
       return;
     }
     const pausado = await getBotPausado(telefono, negocioId);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
+      await observarEnSombra();
       return;
     }
     // Takeover humano temporal (Coexistence): el dueño respondió hace poco
@@ -1791,6 +1818,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     const takeoverVigente = await getTakeoverHumanoActivo(telefono, negocioId);
     if (takeoverVigente) {
       console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
+      await observarEnSombra();
       return;
     }
 
