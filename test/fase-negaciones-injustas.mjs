@@ -1069,6 +1069,69 @@ await t('U3. con un solo grupo ambiguo de verdad, se conserva la pregunta vieja'
 });
 
 
+// ═══ V — SIN PLATILLO ELEGIDO NO SE PUEDE NEGAR UN INGREDIENTE ════════════
+//
+// Incidente 2026-09-12, 00:10, capturado por el candado en producción:
+//
+//   cliente  'Quiero unos chilaquiles suizos con huevo estrellado y frijoles
+//             y papas con chorizo'
+//   log      [NEGATIVA FALSA] negado="papas con chorizo"
+//            existen=["Papas con chorizo","Taco de Papas con Chorizo"]
+//
+// El bot iba a contestar «no manejamos "frijoles" y "papas con chorizo"». Las
+// dos están en la carta. La causa: los chilaquiles son cuatro variantes y
+// ninguna quedó elegida, así que no había grupos contra los que mirar las
+// guarniciones -- y el sistema tomó "no puedo comprobarlo" por "no lo
+// tenemos". La MISMA confusión de toda esta suite, un piso más abajo.
+//
+// Sin artículo resuelto, lo correcto es preguntar cuál variante quiere. Las
+// menciones esperan a que se sepa.
+const cSin = await cat('Sin producto resuelto', 80);
+const SIN_A = await prod(cSin, 'Molletes Clasicos', 120);
+const SIN_B = await prod(cSin, 'Molletes Clasicos Grandes', 160);
+const gSin = await q1(`INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
+  VALUES ($1,$2,'Guarniciones',TRUE,1,2,0) RETURNING id`, [NEG, SIN_A]);
+for (const x of ['Papas con chorizo', 'Frijolitos naturales']) await op(gSin.id, x);
+
+await t('V1. con el platillo sin elegir, NO se niega ningún ingrediente', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Molletes', cantidad: 1, modificadores: [] }] },
+    NEG,
+    { textoCiclo: 'quiero unos molletes con papas con chorizo',
+      menciones: ['papas con chorizo', 'frijolitos naturales'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.doesNotMatch(msg, /no manejamos/i,
+    `no se puede negar un ingrediente sin saber de qué platillo hablamos — ${msg}`);
+  assert.deepStrictEqual(rc.mencionesNoResueltas || [], [],
+    'las menciones esperan a que se elija el platillo');
+});
+
+await t('V2. y en su lugar se pregunta cuál variante', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Molletes', cantidad: 1, modificadores: [] }] },
+    NEG,
+    { textoCiclo: 'quiero unos molletes con papas con chorizo',
+      menciones: ['papas con chorizo'] });
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.match(msg, /Molletes Clasicos/, `hay que ofrecer las variantes reales — ${msg}`);
+  assert.match(msg, /¿Cuál prefieres\?/, `y preguntar — ${msg}`);
+});
+
+await t('V3. con el platillo YA resuelto, lo que no existe se sigue diciendo', async () => {
+  // La red de seguridad: callar las menciones cuando no hay producto no puede
+  // volver mudo el caso legítimo. Con un platillo concreto, un ingrediente
+  // inventado se sigue negando.
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Molletes Clasicos', cantidad: 1, modificadores: [] }] },
+    NEG,
+    { textoCiclo: 'quiero unos molletes clasicos con caviar',
+      menciones: ['caviar'] });
+  const noResueltas = (rc.mencionesNoResueltas || []).map((m) => m.texto);
+  assert.ok(noResueltas.includes('caviar'),
+    `con el platillo elegido, lo que no existe SÍ se detecta — ${JSON.stringify(noResueltas)}`);
+});
+
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
