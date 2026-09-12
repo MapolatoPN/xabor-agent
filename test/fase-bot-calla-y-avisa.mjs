@@ -28,7 +28,9 @@ async function t(nombre, fn) {
 // mueve, esta suite truena en lugar de seguir validando una copia muerta.
 const CANAL = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
 const desde = CANAL.indexOf('const MOTIVOS_REVISION = [');
-const hasta = CANAL.indexOf('// La línea que recibe el cliente');
+// Se ancla a la DECLARACIÓN siguiente, no a un comentario: los comentarios se
+// reescriben (este recorte ya se rompió una vez por eso) y las declaraciones no.
+const hasta = CANAL.indexOf('const MENSAJE_REVISION_POR_DEFECTO');
 assert.ok(desde > 0 && hasta > desde, 'no se encontró la política en whatsapp-meta.js');
 const { motivoDeRevision, MOTIVOS_REVISION } = new Function(
   CANAL.slice(desde, hasta) + '\nreturn { motivoDeRevision, MOTIVOS_REVISION };')();
@@ -141,14 +143,31 @@ await t('11. el equipo puede devolverla al bot', async () => {
 
 // ── El mensaje al cliente ──
 
-await t('12. la línea al cliente no afirma nada del menú ni del pedido', async () => {
+await t('12. SILENCIO TOTAL hacia el cliente por defecto', async () => {
+  // Decisión del dueño: cuando el bot no sabe, el cliente no recibe NADA. Una
+  // línea automática sigue siendo el bot hablando, y contestar sin saber es
+  // justo lo que lo obligaba a apagarlo todos los días.
   const i = CANAL.indexOf('const MENSAJE_REVISION_POR_DEFECTO');
-  const texto = CANAL.slice(i, CANAL.indexOf(';', i));
-  assert.doesNotMatch(texto, /no manejamos|no tenemos|precio|\$/i,
-    'la línea de entrega no puede afirmar nada que haya que verificar');
-  assert.match(texto, /equipo/i, 'tiene que decirle al cliente que alguien lo va a atender');
-  // Y se puede apagar: hay negocios que preferirán silencio absoluto.
-  assert.match(CANAL, /bot_mensaje_revision/, 'la línea tiene que ser configurable');
+  const linea = CANAL.slice(i, CANAL.indexOf(';', i));
+  assert.match(linea, /=\s*''\s*$/, `el valor por defecto tiene que ser vacío — ${linea.trim()}`);
+  // Pero sigue siendo configurable: un negocio puede querer acusar recibo.
+  assert.match(CANAL, /bot_mensaje_revision/, 'la línea tiene que poder configurarse');
+  // Y el envío tiene que estar guardado tras una comprobación de contenido: con
+  // el valor vacío no puede colarse un mensaje en blanco al cliente.
+  assert.match(CANAL, /if\s*\(\s*aviso\s*&&\s*aviso\.trim\(\)\s*\)/,
+    'sin contenido no se manda nada');
+});
+
+await t('13. el equipo se entera igual: el silencio es solo hacia el cliente', async () => {
+  // La contraparte del silencio. Si esto se rompiera, una conversación quedaría
+  // muda para el cliente Y invisible para el negocio: lo peor de los dos mundos.
+  assert.match(CANAL, /avisarEquipoRevision\(negocioId, telefono, motivoRevision/,
+    'el aviso al encargado no puede depender de que haya mensaje al cliente');
+  const i = CANAL.indexOf('async function avisarEquipoRevision');
+  const cuerpo = CANAL.slice(i, i + 1200);
+  assert.match(cuerpo, /wa_admin_numero/, 'va al número del encargado');
+  assert.match(cuerpo, /Cliente:/, 'tiene que decir a QUIÉN hay que atender');
+  assert.match(cuerpo, /Motivo:/, 'y por qué');
 });
 
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);

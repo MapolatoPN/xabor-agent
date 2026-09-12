@@ -163,13 +163,24 @@ function motivoDeRevision(resultado) {
   return null;
 }
 
-// La línea que recibe el cliente cuando su conversación pasa a una persona. NO
-// afirma nada del menú ni del pedido: solo dice la verdad, que alguien la va a
-// atender. Se puede cambiar (o vaciar, para silencio total) desde Config con la
-// clave `bot_mensaje_revision`.
-const MENSAJE_REVISION_POR_DEFECTO =
-  'Déjame confirmarlo con alguien del equipo para no darte un dato equivocado. '
-  + 'En un momento te contestamos por aquí. 🙏';
+// SILENCIO TOTAL por defecto: cuando la conversación pasa a una persona, el
+// cliente no recibe NADA del bot.
+//
+// Decisión del dueño (2026-09-11), tomada sabiendo el riesgo. Yo había puesto
+// una línea de acuse —"déjame confirmarlo con el equipo"— por miedo a que el
+// silencio se leyera como que no hay nadie. Su argumento pesa más: un bot que
+// contesta algo cuando no sabe es exactamente lo que lo obligaba a apagarlo
+// todos los días, y una línea automática sigue siendo el bot hablando. Si nadie
+// va a poder atender bien esa conversación, mejor que se note, y no que un
+// mensaje amable la deje enfriándose.
+//
+// Un negocio que prefiera acusar recibo escribe su propia línea en
+// `configuracion.bot_mensaje_revision`. Vacío o ausente = silencio.
+//
+// El equipo SÍ se entera siempre: aviso por WhatsApp al encargado, la
+// conversación arriba en la lista de chats y marcada en el panel. El silencio
+// es hacia el cliente, nunca hacia adentro.
+const MENSAJE_REVISION_POR_DEFECTO = '';
 
 // Qué tan seguido se le avisa al encargado. Un aviso POR CONVERSACIÓN al
 // entrar en revisión: como una conversación solo entra una vez hasta que
