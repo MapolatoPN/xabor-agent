@@ -62,7 +62,10 @@ evidencia del cliente. Los datos operativos no tocan artículos.
       prosa, borrador vacío, mensajes agrupados, reentregas, dos instancias
 - [x] Regresión de las suites vecinas (38 suites)
 - [x] Auditoría de producción en solo lectura
-- [ ] PR
+- [x] PR — rama `fix/pedido-fuente-de-verdad` empujada. `gh` no está
+      autenticado en esta máquina, así que el PR queda por abrir desde
+      https://github.com/MapolatoPN/xabor-agent/pull/new/fix/pedido-fuente-de-verdad
+      (el texto listo para pegar está en el último mensaje de la sesión).
 
 ## Lo implementado
 
@@ -163,3 +166,31 @@ Trampa de esta máquina, por si vuelve: escribir código con `` dentro de un
 heredoc deja un carácter de retroceso (U+0008) en el archivo en vez de la
 secuencia de escape. El regex compila, no casa nunca y no se ve al leerlo. Se
 detecta con `JSON.stringify` de la línea.
+
+## Para publicar (cuando lo autorices)
+
+1. Abrir y fusionar el PR a `main`.
+2. Mirar qué más entra: `git log HEAD..origin/main` antes de desplegar —
+   `--from-source` saca **todo** lo que haya en el origen, no solo esto.
+3. Desde `C:«or-agent`: `railway redeploy --yes --from-source`.
+   (El push a `main` **no** despliega; el auto-deploy está apagado.)
+4. Verificar que llegó: la confirmación real de un cambio de servidor es una
+   conversación de prueba, no `/health` —que responde 200 con el build viejo
+   igual que con el nuevo.
+5. **Encender el bot de Mapolato Obispado.** Hoy está apagado: mientras siga
+   así, esto no se ejercita y no se puede verificar nada en producción.
+6. En los logs, buscar `[TXN] evento=carrito_reconciliado`: dice qué artículos
+   se conservaron pese a no venir en la propuesta del modelo. Es la falla que
+   esto cierra, vista desde producción.
+
+## Lo que este trabajo NO resuelve
+
+- Que el modelo escriba mal el borrador. Se acota el daño —lo que omite ya no
+  borra, lo que contradice ya no gana— pero un modelo que invente un artículo
+  nuevo sigue metiéndolo, y eso lo ve el cliente en el resumen.
+- Las dos suites que fallan desde antes (`fase-continuidad-webhook`,
+  `fase-whatsapp-invariante-activo`).
+- La detección de "quitar" es léxica: verbo + artículo nombrado dentro de su
+  alcance. Una forma de pedirlo que no use ninguno de esos verbos no quita nada
+  —se conserva y el cliente lo corrige en el resumen—, que es el lado seguro del
+  error, pero es un límite real.
