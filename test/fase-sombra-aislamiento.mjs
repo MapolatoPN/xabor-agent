@@ -42,6 +42,17 @@ const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── Preparación ────────────────────────────────────────────────────────────
 await pool.query(`DELETE FROM mensajes WHERE telefono LIKE $1`, [TEL_BASE + '%']);
 await pool.query(`DELETE FROM clientes WHERE telefono LIKE $1`, [TEL_BASE + '%']);
+// Higiene obligatoria: una corrida anterior --o una prueba de mordida-- pudo
+// dejar estas conversaciones señaladas para revisión, y S6b comprueba justo
+// eso. Sin limpiarlas, la prueba heredaría el resultado de la corrida pasada.
+// El ORDEN importa y el error NO se traga: `whatsapp_entradas` tiene una clave
+// foránea contra `whatsapp_conversaciones`, así que borrar primero la
+// conversación falla. Con el fallo silenciado, una fila vieja con
+// requiere_revision=true sobrevivía y bloqueaba el turno de S6b, que entonces
+// medía el resultado de la corrida anterior en vez del suyo.
+await pool.query(`DELETE FROM whatsapp_entradas WHERE telefono LIKE $1`, [TEL_BASE + '%']);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE telefono LIKE $1`, [TEL_BASE + '%']);
+await pool.query(`DELETE FROM conversacion_estado WHERE session_id LIKE $1`, ['%' + TEL_BASE + '%']).catch(() => {});
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono' LIKE $2`,
   [NEG, TEL_BASE + '%']).catch(() => {});
 await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1 AND nombre LIKE 'SOMBRA %'`, [NEG]);
@@ -180,6 +191,32 @@ await t('S5. no cobra: ni enlace de pago ni método tocado', async () => {
   assert.ok(!/Link creado|crearEnlacePago|pago\.clip\.mx/.test(srv.obtenerSalida()), 'ni un enlace de pago');
 });
 
+await t('S6b. la sombra explota DE VERDAD dentro del canal: no manda la conversación a revisión', async () => {
+  // El fallo es real y alcanzable: el extractor lanza BORRADOR_SIN_ITEMS cuando
+  // el modelo devuelve algo con forma de JSON pero sin `items`.
+  //
+  // Importa porque el catch de `whatsappContinuidad` marca la conversación con
+  // EJECUCION_NO_VERIFICADA ante CUALQUIER excepción de `procesar`: pausa el bot
+  // para ese cliente y levanta una alerta en el panel. Un fallo del experimento
+  // acabaría señalando una conversación real, que es exactamente el efecto
+  // operativo que la sombra promete no tener.
+  const tel = TEL_BASE + '06';
+  const antesComunicaciones = comunicaciones().length;
+  anthropicMock.drenar();
+  anthropicMock.encolarRespuesta('{"esto_no_trae_items": true}');
+  await mensajeEntrante(tel, 'quiero una sombra torta');
+  await esperarTurno();
+
+  const { rows } = await pool.query(
+    `SELECT requiere_revision, motivo FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2`,
+    [NEG, tel]);
+  assert.ok(!rows[0]?.requiere_revision,
+    `la conversación no puede quedar señalada — ${JSON.stringify(rows[0])}`);
+  assert.ok(!/EJECUCION_NO_VERIFICADA/.test(srv.obtenerSalida()),
+    'ni dispararse el camino de revisión de la continuidad');
+  assert.strictEqual(comunicaciones().length, antesComunicaciones, 'y el cliente no se entera de nada');
+});
+
 // ═══ S6-S7 — fail closed ═══════════════════════════════════════════════════
 await t('S6. excepción DENTRO del reconciliador: no lanza y no deja rastro de efecto', async () => {
   process.env.PEDIDO_SHADOW_MODE = 'true';
@@ -293,6 +330,26 @@ await t('S12. el observador no puede crear ni confirmar pedidos (no los conoce)'
     'crearEnlacePago', 'imprimir', 'pool.query', 'database.js']) {
     assert.ok(!sinComentarios.includes(prohibido), `no puede haber "${prohibido}" en el observador`);
   }
+});
+
+await t('S12b. el grafo COMPLETO del observador no alcanza base, canal ni pedidos', async () => {
+  // Mirar solo el archivo del observador no basta: bastaría con que importara
+  // algo que a su vez importe la base. Se recorre el grafo entero.
+  const raiz = join(__dirname, '..');
+  const vistos = new Set(); const cola = ['src/orders/registroSombra.js'];
+  while (cola.length) {
+    const f = cola.shift();
+    if (vistos.has(f)) continue;
+    vistos.add(f);
+    let s; try { s = readFileSync(join(raiz, f), 'utf8'); } catch { continue; }
+    for (const m of s.matchAll(/^import[^']*'([^']+)'/gm)) {
+      if (!m[1].startsWith('.')) continue;
+      cola.push(join(f, '..', m[1]).split('\\').join('/'));
+    }
+  }
+  const conEfectos = [...vistos].filter((f) => /database|server\.js|channels|orderManager|pagos|impres/i.test(f));
+  assert.deepStrictEqual(conEfectos, [],
+    `el observador no puede alcanzar nada con efectos — llega a ${conEfectos.join(', ')}`);
 });
 
 } finally {

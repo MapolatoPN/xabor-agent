@@ -1789,26 +1789,40 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     //
     // Nunca lanza y nunca cambia la decisión de callar: el `return` va después
     // pase lo que pase.
-    const observarEnSombra = async () => {
+    // NI TIEMPO NI EXCEPCIONES. Las dos formas en que la observación podría
+    // tocar el turno, y las dos cerradas aquí:
+    //
+    //   no se espera   la observación llama al modelo, y un modelo lento con
+    //                  reintentos retenía el turno lo bastante como para que el
+    //                  vigilante de `whatsappContinuidad` lo diera por no
+    //                  verificado: eso marca la conversación para revisión y
+    //                  pausa el bot para ese cliente. Se comprobó de verdad en
+    //                  S6b, con el extractor devolviendo un JSON sin `items`.
+    //   no propaga     si algo lanzara, subiría al mismo catch con el mismo
+    //                  resultado. `observarTurno` ya se lo traga por dentro;
+    //                  este `.catch` lo garantiza donde se lee.
+    //
+    // Queda suelta a propósito: es un log, y nadie espera un log.
+    const observarEnSombra = () => {
       if (!sombraActiva()) return;
-      await observarTurno({
+      observarTurno({
         sessionId: `meta-${negocioId}-${telefono}`,
         negocioId,
         mensaje: texto,
         proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
-      });
+      }).catch((e) => console.error('[SOMBRA] contenida en el canal:', e?.message));
     };
 
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
     if (!botGlobalActivo) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
-      await observarEnSombra();
+      observarEnSombra();
       return;
     }
     const pausado = await getBotPausado(telefono, negocioId);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
-      await observarEnSombra();
+      observarEnSombra();
       return;
     }
     // Takeover humano temporal (Coexistence): el dueño respondió hace poco
@@ -1818,7 +1832,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     const takeoverVigente = await getTakeoverHumanoActivo(telefono, negocioId);
     if (takeoverVigente) {
       console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
-      await observarEnSombra();
+      observarEnSombra();
       return;
     }
 

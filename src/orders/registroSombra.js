@@ -44,7 +44,7 @@ import { procedenciaDelCiclo } from './procedenciaDeEvidencia.js';
 const MAX_TEXTO = 240;
 const MAX_TURNOS = 12;            // historial por conversación que se conserva
 const MAX_CONVERSACIONES = 500;   // tope de memoria del experimento
-const TOPE_MS = 15000;            // la sombra jamás retiene un handler
+const TOPE_MS = 8000;             // por debajo de lo que dura un turno
 
 /**
  * ¿Está encendido el modo sombra?
