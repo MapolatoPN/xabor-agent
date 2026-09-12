@@ -10,7 +10,7 @@ import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespald
 import { revisarNegativas, terminosDelCatalogo, mensajeEnLugarDeLaNegativa, avisarNegativaFalsa } from './negativaVerificada.js';
 import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
-import { reconciliar, carritoABorrador, carritoConItems } from '../orders/carritoDelPedido.js';
+import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado } from '../orders/carritoDelPedido.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -559,6 +559,11 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     };
 
     let textoCatalogo = null;
+    // Lo que el carrito NO aplicó porque el cliente no lo respaldaba: una
+    // eliminación que señalaba a dos artículos, un producto que el modelo
+    // añadió sin que nadie lo pidiera. Se le pregunta en este mismo turno en
+    // vez de borrar, inventar o dejarlo escondido en el resumen.
+    let preguntaCarrito = '';
     // `!sesionComercial`: un turno del Asistente Comercial NO está armando un
     // pedido del menú — está capturando los campos de una COTIZACIÓN. Contrastar
     // su texto contra el catálogo no protege nada (ese flujo no vende productos
@@ -575,12 +580,18 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // existe como datos: no se reconstruye a partir de otra suposición.
         borrador=continuarAclaracionProducto(session.aclaracionProducto,mensajeUsuario)||borrador;
 
+        // Qué acaba de preguntar el backend. Se lee ANTES de reconciliar porque
+        // el carrito lo necesita: los números de una respuesta de logística
+        // ("Nogal 900") no son cantidades de comida.
+        const pendiente = esperandoDato(sessionId);
+
         // ── EL PEDIDO ES DEL CLIENTE, NO DEL ÚLTIMO BORRADOR ───────────────
         //
         // Lo que el modelo emite es una PROPUESTA sobre el pedido, no el
         // pedido. Se reconcilia contra el carrito que ya existía: lo que el
-        // modelo omite se conserva, lo que trae se actualiza, y quitar exige
-        // que el cliente lo haya pedido con sus palabras.
+        // modelo omite se conserva, lo que trae se aplica campo a campo y solo
+        // si el cliente lo respalda, y quitar exige que lo haya pedido con sus
+        // palabras señalando UN artículo.
         //
         // Falla que cierra (auditoría Codex, 2026-09-12, prioridad alta): el
         // cliente contestaba "para recoger, efectivo, a nombre de Ana", el
@@ -590,14 +601,31 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // La aclaración de presentación sigue viva y va por delante: resuelve
         // el turno que SOLO contesta esa pregunta, y su resultado entra aquí
         // como propuesta. No se sustituye lo que ya funcionaba.
-        if (borrador || carritoConItems(session.carrito)) {
-          const recon = reconciliar(session.carrito, borrador || {}, { mensaje: mensajeUsuario });
+        //
+        // TODAS las fuentes de borrador pasan por aquí, y por eso esto es una
+        // función y no un bloque: el marcador del modelo, la aclaración y la
+        // extracción forzada de más abajo. Un reconciliador correcto no protege
+        // una ruta que lo rodea.
+        const aplicarCarrito = (propuesta) => {
+          if (!propuesta && !carritoConItems(session.carrito)) return propuesta;
+          const recon = reconciliar(session.carrito, propuesta || {}, {
+            mensaje: mensajeUsuario,
+            textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
+            datoOperativoPendiente: pendiente || false,
+          });
           session.carrito = recon.carrito;
-          if (recon.cambios.conservados.length || recon.cambios.quitados.length) {
+          const c = recon.cambios;
+          if (c.conservados.length || c.quitados.length || c.congelados.length || c.sinRespaldo.length) {
             console.warn('[TXN] evento=carrito_reconciliado'
-              + ' conservados=' + JSON.stringify(recon.cambios.conservados.slice(0, 5))
-              + ' quitados=' + JSON.stringify(recon.cambios.quitados.slice(0, 5)));
+              + ' conservados=' + JSON.stringify(c.conservados.slice(0, 5))
+              + ' quitados=' + JSON.stringify(c.quitados.slice(0, 5))
+              + ' congelados=' + JSON.stringify(c.congelados.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`))
+              + ' sin_respaldo=' + JSON.stringify(c.sinRespaldo.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`)));
           }
+          // Lo que no se aplicó no se calla: se le pregunta al cliente en este
+          // mismo turno, nombrando el artículo y el dato concreto.
+          const pregunta = preguntaPorLoNoAplicado(c);
+          if (pregunta) preguntaCarrito = pregunta;
           // El carrito se mantiene SIEMPRE; entrar al flujo de pedido, no.
           //
           // Reinyectarlo como borrador en cualquier turno haría que, con el
@@ -612,9 +640,11 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           // Tener una aclaración PENDIENTE no basta: con eso, un cliente que
           // pregunta a qué hora cierran mientras elige presentación recibía la
           // pregunta de la presentación otra vez en lugar de su respuesta.
-          const turnoDePedido = !!borrador || !!esperandoDato(sessionId);
-          if (turnoDePedido && carritoConItems(recon.carrito)) borrador = carritoABorrador(recon.carrito);
-        }
+          const turnoDePedido = !!propuesta || !!pendiente;
+          return (turnoDePedido && carritoConItems(recon.carrito))
+            ? carritoABorrador(recon.carrito) : propuesta;
+        };
+        borrador = aplicarCarrito(borrador);
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
         // apagar por completo la extracción independiente: el marcador
@@ -629,7 +659,6 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // cliente contestaba a una pregunta que nadie estaba oyendo.
         // Aquí NO hay modelo ni llamada extra: la pregunta la hizo el backend,
         // así que la respuesta le toca a él.
-        const pendiente = esperandoDato(sessionId);
         if (pendiente) {
           const dicho = String(mensajeUsuario || '').trim();
           if (pendiente === 'modalidad') {
@@ -650,7 +679,10 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           }
         }
         if (!conItems(borrador) && await mencionaProductoDelMenu(mensajeUsuario, negocioId)) {
-          borrador = await extraerBorradorForzado(session, negocioId);
+          // La extracción forzada es OTRA fuente de borrador, así que también
+          // se reconcilia: sin esto el carrito quedaba fuera de la única ruta
+          // que existe justo para cuando el modelo no emitió nada.
+          borrador = aplicarCarrito(await extraerBorradorForzado(session, negocioId)) || borrador;
         }
         if (conItems(borrador)) {
           // La extracción independiente corre SIEMPRE que se esté armando un
@@ -1009,6 +1041,16 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // La consulta de promociones por fecha la responde el backend (fuente
     // estructurada), no la memoria del modelo.
     if (textoConsultaPromos) textoFinal = textoConsultaPromos;
+
+    // La duda del carrito va DELANTE de lo que el backend fuera a decir: es
+    // sobre lo que el cliente acaba de escribir, y detrás del resumen parece
+    // un comentario al margen en vez de una pregunta. Se añade al final del
+    // ensamblado para que ningún reemplazo posterior se la lleve.
+    if (preguntaCarrito) {
+      textoFinal = textoFinal
+        ? `${preguntaCarrito}\n\n${textoFinal}`
+        : preguntaCarrito;
+    }
 
     // ── El historial debe contener lo que el cliente REALMENTE leyó ──
     // Cuando el backend sustituye la redacción del modelo (resumen oficial,

@@ -468,6 +468,324 @@ await t('E11. y si el modelo repite el pedido entero, quitar sigue funcionando',
   assert.doesNotMatch(nombres, /Hotcakes/i, `el cliente pidió quitarlos — ${nombres}`);
 });
 
+
+// ═══ F — el modelo PROPONE cambios; no los autoriza ════════════════════════
+//
+// Segunda auditoría de Codex (12-sep) sobre esta misma rama. El carrito
+// protegía el artículo y nada de lo que lleva dentro, así que una respuesta
+// operativa seguía pudiendo vaciarle la salsa, cambiarle la cantidad o meterle
+// productos que nadie pidió.
+//
+// Las tres reproducciones entran TAL CUAL —F1, F3, F5— y después los recorridos
+// completos, donde se comprueban las tres cosas que ve el negocio: el carrito,
+// el resumen que lee el cliente y la orden que se confirmaría.
+
+const soloChilaquilesA = () => ({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+  mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+  mod('Guarniciones', 'Bistec en salsa', 'Queso panela en salsa')] }] });
+
+// Lo que ve el cliente Y lo que se confirmaría, no solo el nombre de un plato.
+const cuentaDe = (sid) => JSON.stringify(verPreviewConfirmable(sid)?.ordenCanonica || null);
+const nombresDelCarrito = (sid) => (getSession(sid).carrito?.items || []).map((i) => i.nombre);
+const itemDelCarrito = (sid, re) => (getSession(sid).carrito?.items || []).find((i) => re.test(i.nombre));
+
+await t('F1. REPRO Codex 1: una respuesta operativa no cambia cantidad, salsa ni notas', async () => {
+  const sid = 'audit-f1-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 2, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')], notas: 'sin cebolla' }] });
+  await procesarMensaje(sid, 'quiero dos chilaquiles sencillos con salsa suiza y pechuga de pollo, sin cebolla',
+    null, 'whatsapp', A.neg, '5210000000201');
+  // El modelo vuelve con el MISMO plato desnudo: cantidad 1, sin modificadores
+  // y sin la nota. El cliente solo dijo cómo lo recoge.
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1 }], modalidad: 'recoger' });
+  await procesarMensaje(sid, 'Para recoger', null, 'whatsapp', A.neg, '5210000000201');
+  const it = itemDelCarrito(sid, /Chilaquiles/i);
+  assert.equal(it?.cantidad, 2, `la cantidad no se toca — ${JSON.stringify(it)}`);
+  assert.match(JSON.stringify(it?.modificadores), /Suiza/i, `la salsa no se borra — ${JSON.stringify(it)}`);
+  assert.match(JSON.stringify(it?.modificadores), /Pechuga/i, `la proteína tampoco — ${JSON.stringify(it)}`);
+  assert.match(it?.notas || '', /sin cebolla/i, `la nota tampoco — ${JSON.stringify(it)}`);
+});
+
+await t('F2. el modelo cambia la cantidad mientras el cliente da su DIRECCIÓN', async () => {
+  const sid = 'audit-f2-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 2, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Bistec en salsa')] }] });
+  await procesarMensaje(sid, 'dos chilaquiles sencillos suizos con pechuga de pollo y bistec en salsa',
+    null, 'whatsapp', A.neg, '5210000000202');
+  encolarTurno({ ...soloChilaquilesA(), modalidad: 'entrega a domicilio' });
+  await procesarMensaje(sid, 'a domicilio porfa', null, 'whatsapp', A.neg, '5210000000202');
+  // El número de la calle no es una cantidad, y el 1 que propone el modelo no
+  // lo dijo nadie.
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Bistec en salsa')] }], cliente: { direccion: 'Nogal 900 col Acoros' } });
+  await procesarMensaje(sid, 'Nogal 900 acoros ai', null, 'whatsapp', A.neg, '5210000000202');
+  assert.equal(itemDelCarrito(sid, /Chilaquiles/i)?.cantidad, 2,
+    `dar la dirección no cambia cuánta comida hay — ${JSON.stringify(getSession(sid).carrito)}`);
+});
+
+await t('F3. REPRO Codex 2: quitar uno de dos nombres parecidos quita SOLO ese', async () => {
+  const sid = 'audit-f3-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hotcakes Tradicionales', cantidad: 1, modificadores: [mod('Topping', 'Tradicional')] },
+    { nombre: 'Hotcakes de Sarten', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'quiero unos hotcakes tradicionales con topping tradicional y unos hotcakes de sarten',
+    null, 'whatsapp', A.neg, '5210000000203');
+  assert.equal(nombresDelCarrito(sid).length, 2, JSON.stringify(nombresDelCarrito(sid)));
+  // Propuesta VACÍA, como en la reproducción: el carrito decide solo.
+  encolarTurno({ items: [] });
+  await procesarMensaje(sid, 'Quita los hotcakes tradicionales', null, 'whatsapp', A.neg, '5210000000203');
+  const quedan = nombresDelCarrito(sid);
+  assert.equal(quedan.length, 1, `solo se iba uno — ${JSON.stringify(quedan)}`);
+  assert.match(quedan[0], /Sarten/i, `se fue el que no era — ${JSON.stringify(quedan)}`);
+});
+
+await t('F4. quitar de forma AMBIGUA no borra nada y pregunta cuál', async () => {
+  const sid = 'audit-f4-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hotcakes Tradicionales', cantidad: 1, modificadores: [mod('Topping', 'Tradicional')] },
+    { nombre: 'Hotcakes de Sarten', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'unos hotcakes tradicionales con topping tradicional y unos hotcakes de sarten',
+    null, 'whatsapp', A.neg, '5210000000204');
+  encolarTurno({ items: [] });
+  const r = await procesarMensaje(sid, 'quita los hotcakes', null, 'whatsapp', A.neg, '5210000000204');
+  assert.equal(nombresDelCarrito(sid).length, 2,
+    `dos caben igual de bien: no se borra ninguno — ${JSON.stringify(nombresDelCarrito(sid))}`);
+  assert.match(r.texto || '', /cu[aá]l quito/i, `y hay que preguntarlo — ${r.texto}`);
+});
+
+await t('F5. REPRO Codex 3: el modelo inventa tres Coca-Colas y no entran', async () => {
+  const sid = 'audit-f5-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000205');
+  encolarTurno({ items: [...soloChilaquilesA().items, { nombre: 'Coca Cola', cantidad: 3 }],
+    modalidad: 'recoger' });
+  const r = await procesarMensaje(sid, 'Para recoger', null, 'whatsapp', A.neg, '5210000000205');
+  const nombres = nombresDelCarrito(sid).join(' | ');
+  assert.doesNotMatch(nombres, /Coca/i, `nadie pidió refrescos — ${nombres}`);
+  assert.doesNotMatch(r.texto || '', /Coca/i, `y tampoco pueden aparecer en la cuenta — ${r.texto}`);
+  assert.doesNotMatch(cuentaDe(sid), /Coca/i, `ni en la orden que se confirmaría — ${cuentaDe(sid)}`);
+  assert.match(nombres, /Hotcakes/i, `y lo que sí pidió sigue — ${nombres}`);
+});
+
+await t('F6. invención al responder la FORMA DE PAGO, en el negocio B', async () => {
+  const sid = 'audit-f6-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Ramen Grande', cantidad: 1, modificadores: [
+    mod('Caldo', 'Tonkotsu'), mod('Proteína', 'Cerdo chashu')] }] });
+  await procesarMensaje(sid, 'un ramen grande tonkotsu con cerdo chashu', null, 'whatsapp', B.neg, '5210000000206');
+  encolarTurno({ items: [
+    { nombre: 'Ramen Grande', cantidad: 1, modificadores: [mod('Caldo', 'Tonkotsu'), mod('Proteína', 'Cerdo chashu')] },
+    { nombre: 'Gyozas', cantidad: 2, modificadores: [mod('Relleno', 'Cerdo')] },
+  ], forma_pago: 'efectivo' });
+  await procesarMensaje(sid, 'en efectivo', null, 'whatsapp', B.neg, '5210000000206');
+  const nombres = nombresDelCarrito(sid).join(' | ');
+  assert.doesNotMatch(nombres, /Gyozas/i, `la regla no puede depender de la carta de Obispado — ${nombres}`);
+});
+
+await t('F7. agregar otro producto SÍ funciona cuando el cliente lo pide', async () => {
+  const sid = 'audit-f7-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Ramen Chico', cantidad: 1, modificadores: [
+    mod('Caldo', 'Miso'), mod('Proteína', 'Pollo karaage')] }] });
+  await procesarMensaje(sid, 'un ramen chico de miso con pollo karaage', null, 'whatsapp', B.neg, '5210000000207');
+  encolarTurno({ items: [
+    { nombre: 'Ramen Chico', cantidad: 1, modificadores: [mod('Caldo', 'Miso'), mod('Proteína', 'Pollo karaage')] },
+    { nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Verdura')] },
+  ] });
+  await procesarMensaje(sid, 'agregame unas gyozas de verdura', null, 'whatsapp', B.neg, '5210000000207');
+  const nombres = nombresDelCarrito(sid).join(' | ');
+  assert.match(nombres, /Gyozas/i, `pedirlo es evidencia de sobra — ${nombres}`);
+  assert.match(nombres, /Ramen Chico/i, nombres);
+});
+
+await t('F8. sustitución legítima: sale lo sustituido y NADA más', async () => {
+  const sid = 'audit-f8-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Ramen Grande', cantidad: 1, modificadores: [mod('Caldo', 'Tonkotsu'), mod('Proteína', 'Cerdo chashu')] },
+    { nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Cerdo')] },
+  ] });
+  await procesarMensaje(sid, 'un ramen grande tonkotsu con cerdo chashu y unas gyozas de cerdo',
+    null, 'whatsapp', B.neg, '5210000000208');
+  encolarTurno({ items: [
+    { nombre: 'Ramen Grande', cantidad: 1, modificadores: [mod('Caldo', 'Tonkotsu'), mod('Proteína', 'Cerdo chashu')] },
+    { nombre: 'Ramen Chico', cantidad: 1, modificadores: [mod('Caldo', 'Miso'), mod('Proteína', 'Pollo karaage')] },
+  ] });
+  await procesarMensaje(sid, 'quita las gyozas y mejor ponme un ramen chico de miso con pollo karaage',
+    null, 'whatsapp', B.neg, '5210000000208');
+  const nombres = nombresDelCarrito(sid).join(' | ');
+  assert.doesNotMatch(nombres, /Gyozas/i, `lo sustituido se va — ${nombres}`);
+  assert.match(nombres, /Ramen Chico/i, `lo nuevo entra — ${nombres}`);
+  assert.match(nombres, /Ramen Grande/i, `y lo que nadie tocó se queda — ${nombres}`);
+});
+
+await t('F9. cambiar UN ingrediente conserva los demás', async () => {
+  const sid = 'audit-f9-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Frijolitos naturales')] }] });
+  await procesarMensaje(sid, 'chilaquiles sencillos suizos con pechuga de pollo y frijolitos naturales',
+    null, 'whatsapp', A.neg, '5210000000209');
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Roja'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Frijolitos naturales')] }] });
+  await procesarMensaje(sid, 'mejor la salsa roja', null, 'whatsapp', A.neg, '5210000000209');
+  const mods = JSON.stringify(itemDelCarrito(sid, /Chilaquiles/i)?.modificadores);
+  assert.match(mods, /Roja/i, `el ingrediente que cambió, cambia — ${mods}`);
+  assert.doesNotMatch(mods, /Suiza/i, `y el viejo se va — ${mods}`);
+  assert.match(mods, /Pechuga/i, `los demás no se tocan — ${mods}`);
+  assert.match(mods, /Frijolitos/i, mods);
+});
+
+await t('F10. el modelo omite un modificador y una nota: se conservan los dos', async () => {
+  const sid = 'audit-f10-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Papas a la mexicana')], notas: 'bien remojados' }] });
+  await procesarMensaje(sid, 'chilaquiles sencillos suizos con pechuga de pollo y papas a la mexicana, bien remojados',
+    null, 'whatsapp', A.neg, '5210000000210');
+  // Solo la salsa sobrevive en la propuesta; la guarnición y la nota desaparecen.
+  encolarTurno({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo')] }], modalidad: 'recoger' });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', A.neg, '5210000000210');
+  const it = itemDelCarrito(sid, /Chilaquiles/i);
+  assert.match(JSON.stringify(it?.modificadores), /Papas/i, `la guarnición elegida sigue — ${JSON.stringify(it)}`);
+  assert.match(it?.notas || '', /remojados/i, `y la nota también — ${JSON.stringify(it)}`);
+});
+
+await t('F11. dos unidades del mismo producto con preparaciones distintas, de punta a punta', async () => {
+  const sid = 'audit-f11-' + randomUUID();
+  deleteSession(sid);
+  const dos = { items: [
+    { nombre: 'Ramen Chico', cantidad: 1, modificadores: [mod('Caldo', 'Miso'), mod('Proteína', 'Pollo karaage')] },
+    { nombre: 'Ramen Chico', cantidad: 1, modificadores: [mod('Caldo', 'Shoyu'), mod('Proteína', 'Cerdo chashu')] },
+  ] };
+  encolarTurno(dos);
+  await procesarMensaje(sid, 'un ramen chico de miso con pollo karaage y otro de shoyu con cerdo chashu',
+    null, 'whatsapp', B.neg, '5210000000211');
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `son dos renglones, no una cantidad 2 — ${JSON.stringify(getSession(sid).carrito)}`);
+  // Y un turno operativo no los fusiona ni los desnuda.
+  encolarTurno({ ...dos, modalidad: 'recoger' });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', B.neg, '5210000000211');
+  const carrito = JSON.stringify(getSession(sid).carrito);
+  assert.equal(getSession(sid).carrito.items.length, 2, carrito);
+  assert.match(carrito, /karaage/i, carrito);
+  assert.match(carrito, /chashu/i, carrito);
+});
+
+await t('F12. reinicio ENTRE la aclaración y la respuesta', async () => {
+  const sid = 'audit-f12-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000212');
+  desalojarDeMemoria(sid);                      // el proceso se cae con la pregunta en el aire
+  encolarTurno(soloChilaquilesA());
+  await procesarMensaje(sid, 'Los sencillos', null, 'whatsapp', A.neg, '5210000000212');
+  const it = itemDelCarrito(sid, /Chilaquiles/i);
+  assert.match(JSON.stringify(it?.modificadores), /Suiza/i,
+    `la salsa elegida antes del reinicio sigue — ${JSON.stringify(getSession(sid).carrito)}`);
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `y el segundo platillo también — ${JSON.stringify(nombresDelCarrito(sid))}`);
+});
+
+await t('F13. confirmación final: sin pérdidas, sin agregados y sin duplicar', async () => {
+  const sid = 'audit-f13-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000213');
+  encolarTurno(soloChilaquilesA());
+  await procesarMensaje(sid, 'Los sencillos', null, 'whatsapp', A.neg, '5210000000213');
+  // El modelo aprovecha el turno operativo para olvidar un plato Y meter otro.
+  encolarTurno({ items: [...soloChilaquilesA().items, { nombre: 'Coca Cola', cantidad: 2 }],
+    modalidad: 'recoger', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } });
+  const resumen = await procesarMensaje(sid, 'Para recoger, efectivo, a nombre de Ana',
+    null, 'whatsapp', A.neg, '5210000000213');
+  assert.match(resumen.texto || '', /Hotcakes/i, `la cuenta la ve el cliente completa — ${resumen.texto}`);
+  assert.doesNotMatch(resumen.texto || '', /Coca/i, `y sin lo que nadie pidió — ${resumen.texto}`);
+
+  const snap = verPreviewConfirmable(sid);
+  assert.ok(snap, 'debía quedar un preview confirmable');
+  const orden = JSON.stringify(snap.ordenCanonica);
+  assert.match(orden, /Hotcakes/i, `la orden final tampoco pierde nada — ${orden}`);
+  assert.doesNotMatch(orden, /Coca/i, `ni gana nada — ${orden}`);
+
+  // Confirmar dos veces no son dos pedidos. El turno puede resolverse sin
+  // modelo (confirmación determinista desde el snapshot) o con él, así que se
+  // le deja respuesta preparada por si la pide.
+  const encolarTexto = (t) => { mock.drenar(); mock.encolarRespuesta(t); mock.encolarRespuesta('{"menciones":[]}'); };
+  encolarTexto('Listo, tu pedido queda registrado.');
+  const primera = await procesarMensaje(sid, 'si, confirmo', null, 'whatsapp', A.neg, '5210000000213');
+  assert.ok(primera.orden, `la primera confirmación registra — ${primera.texto}`);
+  encolarTexto('Tu pedido ya estaba registrado.');
+  const segunda = await procesarMensaje(sid, 'si, confirmo', null, 'whatsapp', A.neg, '5210000000213');
+  assert.ok(!segunda.orden, `la segunda NO puede registrar otra vez — ${JSON.stringify(segunda).slice(0, 200)}`);
+});
+
+await t('F14. recorrido completo en el negocio B: carrito, resumen y orden', async () => {
+  const sid = 'audit-f14-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Ramen Grande', cantidad: 2, modificadores: [mod('Caldo', 'Tonkotsu'),
+      mod('Proteína', 'Cerdo chashu'), mod('Extras', 'Huevo marinado')], notas: 'poco picante' },
+    { nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Verdura')] },
+  ] });
+  await procesarMensaje(sid, 'dos ramen grande tonkotsu con cerdo chashu y huevo marinado, poco picante, y unas gyozas de verdura',
+    null, 'whatsapp', B.neg, '5210000000214');
+  // Turno operativo con el modelo en su peor día: olvida las gyozas, desnuda el
+  // ramen, le baja la cantidad y añade algo que nadie pidió.
+  encolarTurno({ items: [{ nombre: 'Ramen Grande', cantidad: 1 }, { nombre: 'Gyozas', cantidad: 5, modificadores: [mod('Relleno', 'Cerdo')] }],
+    modalidad: 'recoger', forma_pago: 'efectivo', cliente: { nombre: 'Luis' } });
+  const r = await procesarMensaje(sid, 'para recoger, efectivo, a nombre de Luis', null, 'whatsapp', B.neg, '5210000000214');
+  const ramen = itemDelCarrito(sid, /Ramen Grande/i);
+  assert.equal(ramen?.cantidad, 2, `la cantidad aguanta — ${JSON.stringify(ramen)}`);
+  assert.match(JSON.stringify(ramen?.modificadores), /Huevo marinado/i, JSON.stringify(ramen));
+  assert.match(ramen?.notas || '', /picante/i, JSON.stringify(ramen));
+  const gyozas = itemDelCarrito(sid, /Gyozas/i);
+  assert.equal(gyozas?.cantidad, 1, `nadie dijo cinco — ${JSON.stringify(gyozas)}`);
+  assert.match(JSON.stringify(gyozas?.modificadores), /Verdura/i, `ni cambió el relleno — ${JSON.stringify(gyozas)}`);
+  assert.match(r.texto || '', /Gyozas/i, `el cliente ve su pedido completo — ${r.texto}`);
+});
+
+
+await t('F15. la EXTRACCIÓN FORZADA también pasa por el carrito', async () => {
+  const sid = 'audit-f15-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000215');
+  encolarTurno(soloChilaquilesA());
+  await procesarMensaje(sid, 'Los sencillos', null, 'whatsapp', A.neg, '5210000000215');
+  encolarTurno({ ...soloChilaquilesA(), modalidad: 'recoger', forma_pago: 'efectivo', cliente: { nombre: 'Ana' } });
+  const conCuenta = await procesarMensaje(sid, 'Para recoger, efectivo, a nombre de Ana', null, 'whatsapp', A.neg, '5210000000215');
+  assert.match(conCuenta.texto || '', /Hotcakes/i, `la cuenta debía salir completa — ${conCuenta.texto}`);
+
+  // Ahora el modelo contesta en PROSA —sin marcador— y el cliente nombra un
+  // producto, así que entra la extracción forzada. Es OTRA fuente de borrador,
+  // y durante un rato fue la ruta que rodeaba el carrito: lo que sale de ahí
+  // iba directo a validarse y a cotizarse.
+  mock.drenar();
+  mock.encolarRespuesta('Claro que sí, bien remojados.');
+  mock.encolarRespuesta(JSON.stringify({ items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1,
+    modificadores: [{ grupo: 'Salsa', opciones: ['Suiza'] }], notas: 'bien remojados' }] }));
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(sid, 'los chilaquiles que sean bien remojados', null, 'whatsapp', A.neg, '5210000000215');
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `el carrito no puede perder el segundo platillo — ${JSON.stringify(nombresDelCarrito(sid))}`);
+  assert.match(JSON.stringify(r) + cuentaDe(sid), /Hotcakes/i,
+    `ni la cuenta que se recalcula por esa ruta — ${r.texto} | ${cuentaDe(sid)}`);
+});
+
 } finally {
   mock.detener();
   for (const neg of [A.neg, B.neg]) {

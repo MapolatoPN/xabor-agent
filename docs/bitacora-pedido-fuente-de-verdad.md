@@ -92,6 +92,103 @@ fallar exactamente donde debe. Sin esto, verde no significa nada.
 | E | `turnoDePedido` → `true` | E4 |
 | F | el filtro de renglones ya cambiados | E10 |
 
+## Segunda ronda — Codex audita el carrito (2026-09-12)
+
+Codex revisó esta rama y reprodujo tres fallas más. Las tres tienen la misma
+raíz: **el carrito protegía el ARTÍCULO y nada de lo que lleva dentro**. Se
+reprodujeron tal cual con su script
+(`...\work\auditoria-carrito-claude-pruebas.mjs`, que importa una copia
+byte a byte de mi módulo) antes de tocar nada:
+
+| # | Qué hacía el cliente | Qué hacía el sistema |
+|---|---|---|
+| 1 | decir «Para recoger» | el mismo platillo volvía con cantidad 1 en vez de 2, sin su salsa y sin su «sin cebolla» |
+| 2 | «Quita los hotcakes tradicionales» | borraba TAMBIÉN los hotcakes de sartén, por compartir una palabra |
+| 3 | decir «Para recoger» | el modelo añadía tres Coca-Colas y entraban al pedido |
+
+Antes (salida literal del script de Codex):
+
+```
+1  [{"nombre":"Chilaquiles Sencillos","cantidad":1,"modificadores":[],"notas":""}]
+2  []
+3  [{"nombre":"Chilaquiles Sencillos",...},{"nombre":"Coca Cola","cantidad":3,...}]
+```
+
+Después, el mismo script:
+
+```
+1  [{"nombre":"Chilaquiles Sencillos","cantidad":2,
+    "modificadores":[{"grupo":"Salsa","opciones":["Suiza"]}],"notas":"sin cebolla"}]
+2  [{"nombre":"Hotcakes de Sarten",...}]        ← solo se fue el señalado
+3  [{"nombre":"Chilaquiles Sencillos",...}]     ← la Coca no entra
+```
+
+### La regla, ahora a nivel de campo
+
+**El modelo propone cambios; no los autoriza.**
+
+| Qué | Qué hace falta |
+|---|---|
+| omitir un artículo, su cantidad, un modificador o una nota | nada: se conserva |
+| cambiar un grupo ya elegido | que el cliente lo diga **en este turno** |
+| rellenar un grupo vacío | que lo haya dicho en **cualquier turno del ciclo** |
+| cambiar la cantidad | que **ese número** esté en su mensaje, y que la frase diga de qué artículo |
+| agregar un producto | que lo haya nombrado (con tolerancia a una errata) |
+| quitar | verbo de quitar + que la frase identifique **UN** artículo |
+
+Las dos decisiones que más me costaron, y por qué quedaron así:
+
+**Dónde se busca el respaldo de un cambio.** Rellenar un grupo vacío y cambiar
+uno ya elegido no son lo mismo. Buscar los dos en todo el ciclo dejaba que
+«dos ramen con **cerdo** chashu y unas gyozas de verdura» prestara la palabra
+"cerdo" tres turnos después para cambiarle el relleno a las gyozas. Cambiar de
+idea es un acto de un momento: se respalda con el mensaje de ese momento.
+Excepción explícita: si la opción vieja no la respaldaba el cliente —la puso el
+modelo— no está protegida, o el primer error del modelo quedaría cementado.
+
+**Al cliente no se le pregunta por lo inventado.** La primera versión decía
+«¿Querías agregar Coca Cola?». Es la misma falla con mejores modales: le ofrece
+en su propia voz algo que nunca pidió, y un «sí» de cortesía lo acaba pagando.
+Lo inventado se descarta y queda en el log del negocio. Lo AMBIGUO sí se
+pregunta —«¿cuál quito, este o este?»— porque ahí la duda es sobre lo que él
+dijo y es el único que puede resolverla.
+
+### Identificar no es compartir una palabra
+
+«Quita los hotcakes tradicionales» con dos hotcakes en el carrito se resuelve
+con la MISMA regla que ya separaba «Frijolitos naturales» de «Frijolitos con
+chorizo»: se compara qué palabras sostienen a cada candidato, y si otro explica
+todo lo que explica este, la frase no los separa. Así:
+
+```
+"quita los hotcakes tradicionales"   {hotcakes,tradicionales} vs {hotcakes} -> se va uno
+"quita los hotcakes"                 {hotcakes} vs {hotcakes}               -> se pregunta
+```
+
+No es una regla nueva ni una excepción por producto: es la que ya existía,
+aplicada a los artículos en vez de a las opciones.
+
+### Todas las rutas del borrador pasan por el carrito
+
+La reconciliación era un bloque en medio del flujo, y `extraerBorradorForzado`
+—la segunda llamada que extrae el pedido cuando el modelo no emitió marcador—
+corría **después** y lo rodeaba. Ahora es una función y la usan las tres
+fuentes: el marcador del modelo, `continuarAclaracionProducto` y la extracción
+forzada. La mordida K lo comprueba: al desconectar esa ruta, el cliente pierde
+el segundo platillo y el bot vuelve a preguntarle la proteína que ya había
+elegido.
+
+### Mordidas de la segunda ronda
+
+| Mordida | Qué se desactivó | Falla |
+|---|---|---|
+| G | la fusión campo a campo | F1, F2, F10, F14 |
+| H | el desempate al quitar | F3, F4 |
+| I | `nombradoPorElCliente` → `true` | F5, F6, F13 |
+| J | el respaldo del cambio por turno | F14 |
+| K | el carrito en la ruta forzada | F15 |
+
+
 ## Regresión: 38 suites vecinas
 
 Se eligieron por importación real: todo lo que toca `brain.js`,
@@ -124,21 +221,33 @@ las mismas variables:
 Ninguna es de este trabajo. Quedan anotadas, no arregladas: tocarlas sería
 entrar en Integraciones, que no es el alcance.
 
-### Dos hallazgos del entorno que valen más que su tamaño
+### Corrección: la suite de Codex SÍ se había ejecutado
 
-1. **La suite de Codex para este incidente nunca se había ejecutado.**
-   `fase-chilaquiles-contexto` apunta el SDK al mock pero no exporta
-   `ANTHROPIC_API_KEY`, así que su único caso que llega al modelo —«la
-   conversación conserva el borrador aunque el modelo olvide el segundo
-   plato»— moría con `Could not resolve authentication method` en cualquier
-   máquina sin la llave real. Con la llave puesta pasa 11/11 en las dos ramas:
-   la garantía era real, pero nadie lo sabía. Se añade la línea que faltaba.
+En la primera entrega escribí que `fase-chilaquiles-contexto` «nunca se había
+ejecutado». **Es falso y lo retiro.** Codex la corría con un lanzador propio,
+fuera del repo:
 
-2. **Nueve suites fallaban por datos de prueba caducados, no por código.**
-   `test/.datos-prueba.json` apuntaba a cuatro negocios que ya no existían en
-   la base local, y todo lo que insertaba contra ellos moría en
-   `..._negocio_id_fkey`. Resembrar los arregló las nueve. Es una nota de
-   entorno, pero explica por qué una corrida a ciegas parecía catastrófica.
+    ...workwhatsapp-prueba-live.cjs
+
+que arma el entorno y pasa `ANTHROPIC_API_KEY:'test-audit'` antes de invocar
+cada suite. Verificado leyendo el archivo. Lo que observé es otra cosa, y es la
+que sigue en pie: **la suite no es autocontenida**. Apunta el SDK al mock pero
+no exporta la llave, así que en un checkout limpio con el entorno documentado en
+CLAUDE.md su único caso que llega al modelo muere con `Could not resolve
+authentication method`. Ejecutarse con un lanzador externo y ejecutarse desde el
+repo son cosas distintas; confundí la segunda con la primera.
+
+La línea que añadí (un valor por defecto para la llave) hace la suite
+autocontenida sin quitarle nada. Y el dato que sí importa se mantiene: con la
+llave puesta pasa 11/11 en esta rama y en `c859e72`, así que la garantía que
+defendía era real.
+
+### Nueve suites fallaban por datos de prueba caducados
+
+`test/.datos-prueba.json` apuntaba a cuatro negocios que ya no existían en la
+base local, y todo lo que insertaba contra ellos moría en `..._negocio_id_fkey`.
+Resembrar los arregló las nueve. Es una nota de entorno, pero explica por qué
+una corrida a ciegas parecía catastrófica.
 
 ## Producción, en solo lectura (2026-09-12, 14:10)
 
