@@ -334,14 +334,130 @@ hubiera quedado solo en el validador, un descarte del carrito sería invisible
 para el negocio.
 
 
-## Regresión: 43 suites vecinas
+## Auditoría del modo sombra (2026-09-12)
+
+La afirmación auditada, palabra por palabra:
+
+> Con `PEDIDO_SHADOW_MODE=true` podemos tener habilitada la recepción de tráfico
+> real de WhatsApp en Obispado y ejecutar el nuevo reconciliador, pero el
+> experimento no puede producir ningún cambio ni comunicación observable para el
+> cliente ni ningún side effect operativo.
+
+**Era falsa cuando se escribió.** Ahora es cierta, con una salvedad que se
+nombra abajo.
+
+### El flujo, paso a paso
+
+```
+webhook /webhook/whatsapp
+  └─ guarda el mensaje, lo publica al panel, upsert de cliente   EJECUTA (de siempre)
+  └─ marcarLeido()  → doble palomita azul                        EJECUTA (de siempre)
+  └─ marcarRespuestaCampana()                                    EJECUTA (de siempre)
+  ├─ ¿bot apagado / cliente pausado / takeover humano?
+  │    └─ observarEnSombra()                                     EJECUTA SOBRE COPIA
+  │    └─ return                                                 NO EJECUTA nada más
+  └─ si el bot responde:
+       procesarConClaude → brain → carrito → validador → preview
+       → registrarPedido → comanda → impresión → enlace de pago  EJECUTA (productivo)
+```
+
+Con la bandera puesta y el bot apagado, todo lo de la última rama es **NO
+EJECUTA**: el canal ya hizo `return`.
+
+### Lo que estaba mal
+
+1. **La bandera vivía dentro del turno productivo.** Apagaba el carrito y nada
+   más: con el bot encendido el cliente seguía recibiendo respuestas, se
+   registraban pedidos, se imprimían comandas y se generaban cobros. «Sombra»
+   nombraba algo que no era sombra.
+2. **Con el bot apagado, la sombra no corría.** El canal hace `return` antes de
+   llegar a `brain.js`, que es donde vivía. Así que no existía ningún estado en
+   el que se pudiera observar sin producir.
+3. **El estado del experimento se escribía en la sesión productiva**
+   (`session.carritoSombra`) y viajaba en su fila durable.
+
+### Lo que se hizo
+
+La observación se movió a los **tres puntos del canal donde el sistema ya está
+callado**. El módulo observador no importa —ni directa ni transitivamente— la
+base, el canal, `orderManager`, pagos ni impresión: su grafo completo son cinco
+módulos puros y `node:crypto`, y `S12b` lo comprueba en cada corrida.
+
+| | |
+|---|---|
+| estado | en memoria del observador, con tope; fuera de la sesión y de su fila durable |
+| propuesta | el MISMO extractor acotado de `brain.js`, inyectado por el canal |
+| evaluación | el MISMO `reconciliar` |
+| salida | una línea `[TXN] evento=carrito_sombra` |
+| ejecución | suelta del turno, con tope de 8 s y `.catch` en el sitio de llamada |
+
+### El único efecto observable, y no es del experimento
+
+Con el bot apagado, Xabor **ya marca el mensaje como leído** (la doble palomita
+azul). Ocurre al recibirlo, muchas líneas antes de decidir si contesta, y es de
+siempre: el diff del canal en esta rama solo añade líneas. La suite separa
+COMUNICACIÓN de ACUSE para medir lo que dice medir en vez de bajar el listón, y
+queda dicho aquí porque el cliente sí lo ve.
+
+### Fail closed
+
+`observarTurno` envuelve todo en try/catch y devuelve `{ok:false}`; el sitio de
+llamada añade su `.catch`. Importa porque el catch de `whatsappContinuidad`
+marca la conversación con `EJECUCION_NO_VERIFICADA` ante cualquier excepción de
+`procesar`: eso pausa el bot para ese cliente y levanta una alerta en el panel.
+Un fallo del experimento acabaría señalando una conversación real.
+
+No hay ninguna rama que, ante un fallo de la sombra, ejecute el flujo real: quien
+llama ya decidió callar ANTES, y el observador no devuelve nada que pueda
+cambiar esa decisión.
+
+### La variable
+
+`sombraActiva()` compara explícitamente contra `"true"`, sin truthiness — una
+variable de entorno siempre es un string, y `"false"` y `"0"` son verdaderos en
+JavaScript.
+
+| valor | resultado |
+|---|---|
+| ausente, `""`, `"false"`, `"0"`, `"no"`, `"1"` | apagado |
+| `"true"`, `"TRUE"`, `"  true  "` | **encendido** |
+
+### Pruebas
+
+`test/fase-sombra-aislamiento.mjs` — **15 casos**, por el webhook real contra un
+servidor levantado con la bandera puesta.
+
+| Mordida | Qué se reintrodujo | Falla |
+|---|---|---|
+| S10 | el observador vuelve a escribir en la sesión | S10 |
+| S10b | la foto durable vuelve a cargar con el experimento | S10 |
+| S11 | el observador puede hablarle a Meta | S11 |
+| S12 | el observador importa la base | S12 |
+| F1 | el catch interno relanza | S6 |
+| F2 | el catch interno relanza y se quita el del canal | S6, S9 (el servidor se cae) |
+| F3 | volver a esperar la observación dentro del turno | **ninguna** |
+
+**F3 no tumba nada, y hay que decirlo.** Desenganché la observación del turno
+creyendo que el bloqueo causaba el fallo de S6b, y no era eso: el fallo era mío,
+la limpieza de la suite borraba `whatsapp_conversaciones` antes que
+`whatsapp_entradas` —que tiene una clave foránea contra ella— con el error
+silenciado, así que una fila vieja con `requiere_revision=true` bloqueaba el
+turno y la prueba medía la corrida anterior. El desenganche se queda por lo que
+evita —una llamada de red en la ruta de un turno que ya decidió callar— no por
+lo que arregló.
+
+S6b tampoco tiene hoy una mordida que la tumbe: pasa porque nada propaga. Se
+queda como regresión de punta a punta, no como demostración.
+
+
+## Regresión: 44 suites vecinas
 
 Elegidas por importación real —todo lo que toca `brain.js`, `validadorOrden.js`,
 `session.js` o `sesionDurable.js`— más la recepción compartida de WhatsApp,
 Compras y los caminos de imagen (que importan porque el carrito ahora exige que
 el cliente haya NOMBRADO lo que se agrega, y un pedido por foto no nombra nada).
 
-**41 de 43 en verde.** Entre ellas:
+**41 de 44 en verde.** Entre ellas:
 
 | Suite | Qué defiende | Resultado |
 |---|---|---|
@@ -451,22 +567,32 @@ detecta con `JSON.stringify` de la línea.
 
 ## Cómo encender el modo sombra
 
-1. En Railway, variable `PEDIDO_SHADOW_MODE=true` (solo el servicio, sin tocar
-   nada más). Con ella puesta, el reconciliador observa y no decide.
-2. Desplegar la rama. El bot puede seguir apagado: la sombra mide los turnos que
-   entren, y si no entra ninguno, no mide nada.
-3. Leer: `railway logs` y filtrar `evento=carrito_sombra`. Una línea por turno,
-   JSON en una sola línea.
-4. Para 30–50 ciclos basta con juntar las líneas de un día y agrupar por `conv`.
-   Cada una responde las cuatro preguntas: `propuso` (qué quiso el modelo),
-   `quedaria` (qué habría permitido), `rechazado` (qué bloqueó y por qué) y
-   `autorizado` (con qué evidencia dejó pasar lo que dejó pasar).
-5. Para apagarlo: quitar la variable. No queda nada que limpiar.
+**El bot de Obispado se queda APAGADO.** No es una precaución de más: es donde
+vive la observación. Con el bot encendido, el turno es productivo y la sombra no
+mira nada.
 
-Lo que el modo sombra **no** hace: no escribe el carrito del cliente, no
-reinyecta borrador, no confirma pedidos y no añade una palabra a lo que el
-cliente lee. La prueba `G21` lo comprueba, y la mordida `Q` —hacerle escribir
-el carrito productivo— la tumba.
+1. En Railway, variable `PEDIDO_SHADOW_MODE=true`. El único valor que enciende
+   es `true`; cualquier otro —incluido `"false"`— deja el experimento apagado.
+2. Desplegar la rama con `railway redeploy --yes --from-source` desde
+   `C:«or-agent`. Antes, mirar `git log HEAD..origin/main`: `--from-source`
+   saca todo lo que haya en el origen.
+3. Dejar el bot apagado. Los clientes escriben, el dueño contesta a mano como
+   hoy, y cada uno de esos turnos se observa.
+4. Leer: `railway logs` filtrando `evento=carrito_sombra`. Una línea por turno,
+   JSON en una sola línea. Para 30–50 ciclos: juntar las líneas de un día y
+   agrupar por `conv`.
+5. Cada línea responde las cuatro preguntas: `propuso` (qué quiso el modelo),
+   `quedaria` (qué habría permitido), `rechazado` (qué bloqueó y por qué) y
+   `autorizado` (con qué evidencia dejó pasar lo que dejó pasar). Además trae
+   `evidencia_dicho` y `evidencia_percibido` por separado, y
+   `requeria_aclaracion`.
+6. Para apagarlo: quitar la variable. No queda nada que limpiar; el estado del
+   experimento vive en memoria y se va con el proceso.
+
+Lo que el modo sombra **no** hace: no escribe el carrito del cliente, no toca su
+sesión ni la fila durable, no reinyecta borrador, no confirma pedidos, no
+imprime, no cobra y no añade una palabra a lo que el cliente lee. Lo único que
+el cliente ve —la doble palomita azul— ya la veía antes de que esto existiera.
 
 ## Lo que este trabajo NO resuelve
 
