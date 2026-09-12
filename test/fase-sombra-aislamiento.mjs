@@ -73,6 +73,12 @@ await actualizarConfiguracion({ int_wa_phone_id: PNID, int_wa_token: 'fake-token
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
   VALUES ($1,'whatsapp',$2,'Sombra',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [NEG, PNID]);
 // EL BOT ESTÁ APAGADO. Es el estado en el que se hace el experimento.
+//
+// Se anota cómo estaba para devolverlo al terminar: este negocio es del seed y
+// lo comparten otras suites. Dejarlo apagado hace fallar a la siguiente que dé
+// por hecho que responde, y ese fallo no se parece en nada a su causa.
+const { rows: [estadoBot] } = await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id = $1', [NEG]);
+const BOT_ANTES = estadoBot?.bot_whatsapp_activo !== false;
 await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = $1`, [NEG]);
 
 const metaMock = await arrancarMetaMock();
@@ -353,7 +359,7 @@ await t('S12b. el grafo COMPLETO del observador no alcanza base, canal ni pedido
 });
 
 } finally {
-  await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = $1`, [NEG]).catch(() => {});
+  await pool.query(`UPDATE negocios SET bot_whatsapp_activo = $2 WHERE id = $1`, [NEG, BOT_ANTES]).catch(() => {});
   await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1 AND nombre LIKE 'SOMBRA %'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre LIKE 'SOMBRA %'`, [NEG]).catch(() => {});
   await pool.query(`DELETE FROM integraciones_canal WHERE canal='whatsapp' AND identificador=$1`, [PNID]).catch(() => {});
