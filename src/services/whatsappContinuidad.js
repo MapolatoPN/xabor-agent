@@ -145,5 +145,45 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     if (!timer) { timer = setInterval(() => barrer().catch(e => console.error('[wa-continuidad] scanner:',e.message)),500); timer.unref(); }
   }
   async function detener() { clearInterval(timer); timer=null; await Promise.allSettled([...activos.values()]); }
-  return { recibir, ejecutar, barrer, iniciar, detener };
+
+  /**
+   * Manda una conversación a revisión humana desde FUERA de este módulo.
+   *
+   * Existe para la política «si no sé, no invento»: cuando el bot se queda sin
+   * saber qué contestar —pidió un humano, no pudo verificar el pedido contra el
+   * menú, o estuvo a punto de negar algo que sí vendemos— la conversación se
+   * marca aquí y el bot deja de responderla, en vez de inventar una respuesta y
+   * que alguien tenga que apagarlo después.
+   *
+   * Es la MISMA puerta que ya usaban REENTREGA_LEGADA y EJECUCION_INTERRUMPIDA:
+   * no se duplica la lógica de pausar, avisar al panel y dejar las entradas en
+   * 'revision'. Solo se le abren disparadores nuevos.
+   *
+   * Nunca lanza: dejar de marcar una revisión no puede tumbar el turno.
+   * Devuelve `true` si la conversación quedó marcada por ESTA llamada.
+   */
+  async function enviarARevision(negocioId, telefono, motivo) {
+    if (!negocioId || !telefono || !motivo) return false;
+    const db = await pool.connect();
+    try {
+      // La fila la crea `recibir` en cada mensaje entrante, así que a estas
+      // alturas siempre existe. Se asegura igual: sin fila, el UPDATE de abajo
+      // no afectaría nada y la conversación seguiría contestándose sola -- un
+      // fallo mudo, que es justo lo que esta política existe para evitar.
+      await db.query(`INSERT INTO whatsapp_conversaciones(negocio_id,telefono) VALUES($1,$2)
+        ON CONFLICT DO NOTHING`, [negocioId, telefono]);
+      // Si ya estaba en revisión no se vuelve a avisar: el equipo ya la tiene
+      // en su lista y repetir el aviso solo hace ruido.
+      const { rows:[c] } = await db.query(
+        'SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
+      if (c?.requiere_revision) return false;
+      await marcarRevision(db, negocioId, telefono, motivo);
+      return true;
+    } catch (e) {
+      console.error('[wa-continuidad] enviarARevision:', e.message);
+      return false;
+    } finally { db.release(); }
+  }
+
+  return { recibir, ejecutar, barrer, iniciar, detener, enviarARevision };
 }
