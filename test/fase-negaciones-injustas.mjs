@@ -811,6 +811,102 @@ await t('Q6. una variante apagada no se ofrece entre las opciones', async () => 
 });
 
 
+// ═══ R — SEÑALAR EN VEZ DE ESCRIBIR ═══════════════════════════════════════
+//
+// La raíz de los nueve incidentes de esta familia: el prompt le PROHIBÍA al
+// modelo mapear las palabras del cliente contra la carta ("incluye lo que pidió
+// TAL CUAL, no lo arregles tú") y el código tenía que averiguarlo comparando
+// cadenas de texto. El modelo no podía identificar y el código no sabía.
+//
+// Ahora el menú del prompt lleva "[P78]" delante de cada platillo y el modelo
+// señala el que reconoció. La autoridad no se mueve: precio, disponibilidad,
+// grupos y totales se siguen leyendo del catálogo. Lo único que cambia es quién
+// decide A CUÁL se refería el cliente.
+const cIds = await cat('Señalar (ids)', 50);
+const ID_SENCILLOS = await prod(cIds, 'Chilaquiles Coloniales', 175);
+const ID_MIXTOS = await prod(cIds, 'Chilaquiles Coloniales Mixtos', 195);
+
+await t('R1. con el id señalado se resuelve exacto, sin comparar texto', async () => {
+  // El nombre va deliberadamente MAL escrito: si el id no mandara, esto no
+  // resolvería nada.
+  const rc = await validarBorradorPedido(
+    { items: [{ id: `P${ID_SENCILLOS}`, nombre: 'chilakiles', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero unos chilakiles' });
+  const nombres = (rc.productos || []).map((p) => p.producto);
+  assert.ok(nombres.includes('Chilaquiles Coloniales'),
+    `el id tenía que resolverlo pese al nombre mal escrito — ${JSON.stringify(nombres)}`);
+});
+
+await t('R2. el id desempata lo que el texto no puede', async () => {
+  // "Coloniales" está contenido en los DOS platillos: por nombre hay que
+  // preguntar cuál. Señalando el id, no hay nada que preguntar.
+  //
+  // (Con el nombre COMPLETO no habría duda: la igualdad exacta gana antes de
+  // llegar a la contención. La ambigüedad aparece cuando el cliente nombra de
+  // menos, que es como habla la gente.)
+  const porNombre = await validarBorradorPedido(
+    { items: [{ nombre: 'Coloniales', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero unos coloniales' });
+  const dudoso = (porNombre.productosNoExisten || []).find((x) => /^coloniales$/i.test(x?.nombre || ''));
+  assert.ok(dudoso, 'por nombre solo, tiene que quedar sin resolver');
+  assert.strictEqual(dudoso.estado, 'ambiguo', 'y la razón es la ambigüedad, no la ausencia');
+
+  const porId = await validarBorradorPedido(
+    { items: [{ id: `P${ID_MIXTOS}`, nombre: 'Chilaquiles Coloniales', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero los mixtos' });
+  assert.ok((porId.productos || []).map((p) => p.producto).includes('Chilaquiles Coloniales Mixtos'),
+    'señalando el id no hay nada que preguntar');
+});
+
+await t('R3. un id inventado NO inventa un platillo: se cae al nombre', async () => {
+  // La prueba de que señalar es más seguro que escribir. Un id que no existe no
+  // se parece a nada, así que no puede emparejar con el platillo equivocado.
+  const rc = await validarBorradorPedido(
+    { items: [{ id: 'P99999999', nombre: 'Chilaquiles Coloniales Mixtos', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero los mixtos' });
+  assert.ok((rc.productos || []).map((p) => p.producto).includes('Chilaquiles Coloniales Mixtos'),
+    'con el id muerto tiene que seguir el camino del nombre, como siempre');
+});
+
+await t('R4. un id de OTRO negocio no cruza la frontera', async () => {
+  // El catálogo que se consulta ya está filtrado por negocio, así que un id
+  // ajeno simplemente no está ahí. Se comprueba de frente porque un
+  // identificador que saltara de negocio sería mucho peor que un nombre.
+  const ajeno = (await q1(`INSERT INTO negocios (nombre, slug) VALUES ('Ajeno Ids','ajeno-ids')
+    ON CONFLICT (slug) DO UPDATE SET nombre='Ajeno Ids' RETURNING id`)).id;
+  const catAjena = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'Ajena',1) RETURNING id`, [ajeno])).id;
+  const prodAjeno = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Secreto Ajeno',999) RETURNING id`, [ajeno, catAjena])).id;
+  const rc = await validarBorradorPedido(
+    { items: [{ id: `P${prodAjeno}`, nombre: 'Secreto Ajeno', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero el secreto ajeno' });
+  const nombres = (rc.productos || []).map((p) => p.producto);
+  assert.ok(!nombres.includes('Secreto Ajeno'), 'un id de otro negocio JAMÁS puede resolver');
+});
+
+await t('R5. el menú del prompt trae los identificadores', async () => {
+  const { construirSystemPrompt } = await import('../src/agent/prompts.js');
+  const prompt = await construirSystemPrompt(null, 'whatsapp', NEG);
+  assert.match(prompt, new RegExp(`\\[P${ID_SENCILLOS}\\] Chilaquiles Coloniales`),
+    'sin el id en el menú, el modelo no tiene qué señalar');
+  assert.match(prompt, /EL CAMPO "id" ES EL DEL MENÚ DE ARRIBA/,
+    'y tiene que estar dicho cómo usarlo');
+  assert.match(prompt, /SI NO ESTÁS SEGURO DE CUÁL ES, OMITE EL "id"/,
+    'omitir ante la duda es la mitad que evita que elija por el cliente');
+});
+
+await t('R6. idSenalado acepta lo que el modelo escribe de verdad, y nada más', async () => {
+  const { idSenalado } = await import('../src/orders/validadorOrden.js');
+  for (const [entrada, esperado] of [
+    ['P78', '78'], ['p78', '78'], ['78', '78'], ['[P78]', '78'],
+    ['[P78] Chilaquiles Sencillos', '78'],
+    ['Chilaquiles Sencillos', null], ['', null], [null, null], [undefined, null],
+    ['P', null], ['PABC', null], ['DROP TABLE', null],
+  ]) {
+    assert.strictEqual(idSenalado(entrada), esperado, `idSenalado(${JSON.stringify(entrada)})`);
+  }
+});
+
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);

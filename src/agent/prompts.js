@@ -195,7 +195,10 @@ function formatearMenu(categorias) {
     texto += `\n### ${categoria.nombre}\n`;
     for (const p of categoria.productos) {
       if (!p.disponible || p.agotado) continue;
-      texto += `- ${p.nombre} — $${p.precio} MXN\n`;
+      // El "[P<id>]" es la forma de que el modelo SEÑALE un platillo en vez de
+      // escribir su nombre para que el código lo adivine después. De ese hueco
+      // salieron ocho negativas falsas a clientes (ver negativaVerificada.js).
+      texto += `- [P${p.id}] ${p.nombre} — $${p.precio} MXN\n`;
       if (p.descripcion) texto += `  ${p.descripcion}\n`;
       // Modificadores dinámicos de la DB (grupos + opciones)
       if (p.modificadores && p.modificadores.length > 0) {
@@ -931,7 +934,9 @@ Ese bloque es una PROPUESTA: el sistema valida contra el menú y los precios rea
 
 MODIFICADORES Y EXTRAS — SIEMPRE CON SU GRUPO: cada opción elegida va dentro del grupo del que salió, con el NOMBRE EXACTO del grupo tal como aparece en el menú de arriba. Ejemplo para unos chilaquiles: "modificadores": [{"grupo":"Salsa","opciones":["Verde"]}, {"grupo":"Proteína","opciones":["Huevos Estrellados"]}, {"grupo":"Guarniciones","opciones":["Bistec en Salsa","Queso Panela en Salsa"]}]. Esto es OBLIGATORIO: hay opciones con el MISMO nombre en grupos distintos (p. ej. "Bistec en Salsa" existe como Proteína y como Guarnición), y sin el grupo el sistema no puede saber cuál eligió el cliente — si es ambiguo, tendrá que preguntar y el pedido se detiene. Nunca metas una guarnición en el grupo de la proteína ni al revés: respeta el grupo que el cliente indicó.
 BORRADOR DEL PEDIDO — OBLIGATORIO EN CADA TURNO QUE TOQUE UN PRODUCTO: siempre que el cliente pida, agregue, quite o cambie algo de su pedido, incluye AL FINAL de tu respuesta este bloque con TODO lo que llevas hasta ahora, aunque falten datos:
-<PEDIDO_BORRADOR>{"items":[{"nombre":"...","cantidad":1,"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}],"modalidad":"recoger|entrega a domicilio","forma_pago":"...","cliente":{"nombre":"...","telefono":"...","direccion":"..."}}</PEDIDO_BORRADOR>
+<PEDIDO_BORRADOR>{"items":[{"id":"P00","nombre":"...","cantidad":1,"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}],"modalidad":"recoger|entrega a domicilio","forma_pago":"...","cliente":{"nombre":"...","telefono":"...","direccion":"..."}}</PEDIDO_BORRADOR>
+EL CAMPO "id" ES EL DEL MENÚ DE ARRIBA: cada platillo aparece como "[P78] Nombre — $precio". Cuando SEPAS con certeza a cuál se refiere el cliente, pon ese código en "id" (por ejemplo "P78"). Así el sistema lo identifica exacto, sin adivinar por el nombre. El "nombre" va SIEMPRE, con las palabras del cliente, aunque pongas el id.
+SI NO ESTÁS SEGURO DE CUÁL ES, OMITE EL "id". Es el caso de un platillo con varias versiones: si el cliente dice "unos chilaquiles" y el menú tiene Sencillos, Mixtos y Bowl, NO elijas tú — deja el borrador sin "id" y el sistema le preguntará cuál quiere con las opciones reales. Poner un id al azar le vende algo que no pidió; omitirlo solo provoca una pregunta.
 Los campos "modalidad", "forma_pago" y "cliente" van EN CUANTO el cliente los diga, y se repiten en cada borrador posterior; si todavía no los ha dicho, omítelos. Incluye lo que el cliente pidió TAL CUAL, aunque creas que no existe en el menú: el sistema lo verifica contra el catálogo y te corrige. NO lo omitas, NO lo "arregles" tú, NO sustituyas una opción por otra parecida. Si el cliente solo pregunta algo (precios, horarios, qué manejas) y NO está armando un pedido, NO incluyas el bloque.
 QUÉ LE FALTA AL PEDIDO LO DICE EL SISTEMA, NO TÚ: mientras el cliente arma su pedido, Xabor revisa el borrador contra el catálogo y redacta él mismo lo que haga falta —la opción que no existe, el grupo obligatorio pendiente, el dato operativo que falta o el resumen final con su total—. Tú NO enumeres opciones de un producto ni preguntes qué grupo falta: si te equivocas de grupo o de producto, el cliente queda pidiendo algo que no se puede preparar. Limítate a conversar y a mantener el borrador fiel.
 

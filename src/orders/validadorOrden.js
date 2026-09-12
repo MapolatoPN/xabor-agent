@@ -144,7 +144,57 @@ export function esProductoEnvio(producto) {
   return producto?.opciones?.tipo_item === 'envio';
 }
 
-function resolverProducto(nombreLLM, catalogo) {
+/**
+ * El identificador que el modelo señaló, si señaló uno.
+ *
+ * Se acepta en el campo `id` del artículo o incrustado en su nombre ("[P78]"),
+ * porque el modelo a veces lo copia dentro del texto. Solo dígitos: cualquier
+ * otra cosa se ignora y manda el nombre.
+ */
+export function idSenalado(valor) {
+  const crudo = String(valor == null ? '' : valor).trim();
+  if (!crudo) return null;
+  const m = /^\[?P?(\d{1,12})\]?$/i.exec(crudo) || /\[P(\d{1,12})\]/i.exec(crudo);
+  return m ? m[1] : null;
+}
+
+/**
+ * De qué platillo habla el cliente.
+ *
+ * DOS CAMINOS, en este orden:
+ *
+ * 1. EL IDENTIFICADOR. El menú del prompt lleva "[P78]" delante de cada
+ *    platillo y el modelo señala el que reconoció. Es exacto: no hay
+ *    emparejamiento de texto que pueda fallar, y un identificador inventado no
+ *    existe en el catálogo y muere al instante.
+ *
+ * 2. EL NOMBRE, como respaldo. Si el modelo no señaló nada —o señaló algo que
+ *    no existe— se cae a la comparación de texto de siempre, con su regla de
+ *    ambigüedad. No se relaja NADA: es exactamente el camino que había.
+ *
+ * Por qué señalar es más seguro que escribir, aunque suene al revés: un nombre
+ * inventado se PARECE a algo y se empareja con el platillo equivocado en
+ * silencio, o no se empareja y se convierte en una negativa falsa al cliente.
+ * Un identificador inventado no se parece a nada. Falla ruidosamente, que es
+ * como tienen que fallar las cosas.
+ *
+ * La autoridad no se mueve ni un milímetro: precio, disponibilidad, grupos
+ * obligatorios y totales se siguen leyendo del catálogo, aquí abajo y en el
+ * registro del pedido. El modelo solo dice A CUÁL se refería.
+ */
+function resolverProducto(nombreLLM, catalogo, idLLM = null) {
+  const id = idSenalado(idLLM) || idSenalado(nombreLLM);
+  if (id) {
+    const p = catalogo.find((x) => String(x.id) === id);
+    if (p) {
+      if (!p.categoria_activa || p.disponible === false) return { estado: 'no_disponible', producto: p };
+      if (p.agotado === true) return { estado: 'agotado', producto: p };
+      return { estado: 'ok', producto: p };
+    }
+    // Señaló algo que no está en ESTE catálogo. No se adivina por el id: se
+    // sigue con el nombre, que es el camino de siempre, y se deja rastro.
+    console.warn(`[Validador] identificador señalado inexistente: ${id}`);
+  }
   const buscado = normalizarNombreProducto(nombreLLM);
   if (!buscado) return { estado: 'no_existe' };
   const porNombre = catalogo.map((p) => ({ p, norm: normalizarNombreProducto(p.nombre) }));
@@ -263,7 +313,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       console.warn(`[Validador] fragmento descartado, no es un producto: "${String(it?.nombre || '').slice(0, 60)}"`);
       continue;
     }
-    const r = resolverProducto(it?.nombre, catalogo);
+    const r = resolverProducto(it?.nombre, catalogo, it?.id);
     if (r.estado !== 'ok') {
       salida.ok = false;
       salida.productosNoExisten.push({
@@ -730,7 +780,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       eventoTxn('cantidad_invalida', negocioId, { cantidad: it?.cantidad });
       continue;
     }
-    const r = resolverProducto(it?.nombre, catalogo);
+    const r = resolverProducto(it?.nombre, catalogo, it?.id);
     // 'ambiguo' se rechaza con la MISMA dureza que 'no_existe', y aquí no se
     // negocia: este es el registro del pedido real. Un nombre que apunta a tres
     // platillos no tiene `producto`, y sin este corte seguiría de largo hasta
