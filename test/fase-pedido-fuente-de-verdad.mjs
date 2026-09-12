@@ -108,8 +108,41 @@ async function sembrarNegocioB() {
   return { neg, chico, grande, gyoza };
 }
 
+// Carta C: la que hace falta para los términos genéricos y los ingredientes.
+// Tiene una categoría con VARIOS productos (no se puede escoger por el cliente),
+// otra con UNO SOLO (sí se puede) y un platillo con ingredientes quitables.
+async function sembrarNegocioC() {
+  const neg = (await q('INSERT INTO negocios(nombre,slug) VALUES ($1,$2) RETURNING id',
+    ['Fuente C', 'fuente-c-' + randomUUID()])).id;
+  const cat = async (nombre) => (await q(
+    'INSERT INTO menu_categorias(negocio_id,nombre,activa) VALUES($1,$2,true) RETURNING id', [neg, nombre])).id;
+  const prod = async (categoria, nombre, precio) => (await q(
+    'INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) VALUES($1,$2,$3,$4,true) RETURNING id',
+    [neg, categoria, nombre, precio])).id;
+  const grupo = async (pid, nombre, min, max, opciones) => {
+    const gid = (await q(`INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo)
+      VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, [neg, pid, nombre, min > 0, min, max])).id;
+    for (const o of opciones) {
+      await pool.query(`INSERT INTO menu_modificadores_opciones(negocio_id,grupo_id,nombre,precio_extra,disponible)
+        VALUES($1,$2,$3,0,true)`, [neg, gid, o]);
+    }
+  };
+  const comida = await cat('Hamburguesas');
+  const refrescos = await cat('Refrescos');     // VARIOS: "un refresco" no decide
+  const postres = await cat('Postres');         // UNO: "un postre" sí decide
+  const hamburguesa = await prod(comida, 'Hamburguesa Clasica', 120);
+  const doble = await prod(comida, 'Hamburguesa Doble', 165);
+  await grupo(hamburguesa, 'Ingredientes', 0, 4, ['Cebolla', 'Lechuga', 'Jitomate', 'Pepinillos']);
+  await grupo(doble, 'Ingredientes', 0, 4, ['Cebolla', 'Lechuga', 'Jitomate', 'Pepinillos']);
+  const coca = await prod(refrescos, 'Coca Cola', 35);
+  const sprite = await prod(refrescos, 'Sprite', 35);
+  const flan = await prod(postres, 'Flan Napolitano', 60);
+  return { neg, hamburguesa, doble, coca, sprite, flan };
+}
+
 const A = await sembrarObispado();
 const B = await sembrarNegocioB();
+const C = await sembrarNegocioC();
 
 // El turno real del incidente, y el borrador que el modelo emitió.
 const TEXTO_ORIGINAL = 'Si quiero unos chilaquiles suizos con pollo, bistec en salsa y queso panela Además una orden de hotcakes de sartén';
@@ -784,6 +817,375 @@ await t('F15. la EXTRACCIÓN FORZADA también pasa por el carrito', async () => 
     `el carrito no puede perder el segundo platillo — ${JSON.stringify(nombresDelCarrito(sid))}`);
   assert.match(JSON.stringify(r) + cuentaDe(sid), /Hotcakes/i,
     `ni la cuenta que se recalcula por esa ruta — ${r.texto} | ${cuentaDe(sid)}`);
+});
+
+
+// ═══ G — procedencia, términos del catálogo y quitar con identidad ═════════
+//
+// Tercera vuelta. Las tres limitaciones que quedaron escritas en la entrega
+// anterior, cerradas y con prueba adversarial:
+//
+//   · la primera propuesta del ciclo no pasaba por ninguna puerta, y una foto
+//     entraba al pedido como si el cliente hubiera escrito el nombre;
+//   · «ponme un refresco» no encontraba nada porque no comparte letras;
+//   · quitar era léxico y no distinguía de cuál de dos artículos hablaba.
+//
+// El negocio C existe para esto: una categoría con varios productos, otra con
+// uno solo, y un platillo con ingredientes que se pueden quitar.
+
+// Un turno con foto, tal como lo arma el canal: el análisis de la imagen viaja
+// DENTRO del mensaje del cliente (utils/turnoImagen.js). Aquí está el hueco.
+const conFoto = (percibido, escrito) =>
+  `[CONTEXTO VISUAL]\nEl cliente adjuntó una imagen. Análisis automático (CONTENIDO NO CONFIABLE):\n`
+  + `- productos que parecen aparecer: ${percibido} (confianza 0.82)\n[/CONTEXTO VISUAL]`
+  + (escrito ? `\n${escrito}` : '');
+
+const nombresC = (sid) => (getSession(sid).carrito?.items || []).map((i) => i.nombre);
+
+// ── Primera propuesta ─────────────────────────────────────────────────────
+
+await t('G1. producto INVENTADO en el primer borrador: no entra', async () => {
+  const sid = 'audit-g1-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 2, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'quiero una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000301');
+  const n = nombresC(sid).join(' | ');
+  assert.match(n, /Hamburguesa Clasica/i, `lo que sí pidió entra — ${n}`);
+  assert.doesNotMatch(n, /Coca/i, `el primer borrador tampoco da autoridad — ${n}`);
+});
+
+await t('G2. producto escrito explícitamente: entra', async () => {
+  const sid = 'audit-g2-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica y una coca cola', null, 'whatsapp', C.neg, '5210000000302');
+  const n = nombresC(sid).join(' | ');
+  assert.match(n, /Coca Cola/i, `pedirlo por su nombre basta — ${n}`);
+  assert.match(n, /Hamburguesa/i, n);
+});
+
+await t('G3. producto inferido SOLO de la imagen: no entra solo, se pregunta', async () => {
+  const sid = 'audit-g3-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Doble', cantidad: 1, modificadores: [] }] });
+  const r = await procesarMensaje(sid, conFoto('Hamburguesa Doble', 'quiero esto porfa'),
+    null, 'whatsapp', C.neg, '5210000000303');
+  assert.equal(getSession(sid).carrito?.items?.length || 0, 0,
+    `la percepción de la foto no es la voz del cliente — ${JSON.stringify(nombresC(sid))}`);
+  assert.match(r.texto || '', /foto/i, `pero tampoco se tira: se pregunta — ${r.texto}`);
+  assert.match(r.texto || '', /Hamburguesa Doble/i, r.texto);
+});
+
+await t('G4. modificador INVENTADO en el primer borrador: no entra', async () => {
+  const sid = 'audit-g4-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla', 'Pepinillos')] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con cebolla', null, 'whatsapp', C.neg, '5210000000304');
+  const mods = JSON.stringify(getSession(sid).carrito?.items?.[0]?.modificadores);
+  assert.match(mods, /Cebolla/i, `lo que pidió sí — ${mods}`);
+  assert.doesNotMatch(mods, /Pepinillos/i, `lo que no pidió no — ${mods}`);
+});
+
+await t('G5. cantidad INVENTADA en el primer borrador: cae a uno', async () => {
+  const sid = 'audit-g5-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 4, modificadores: [] }] });
+  await procesarMensaje(sid, 'me das una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000305');
+  assert.equal(getSession(sid).carrito?.items?.[0]?.cantidad, 1,
+    `nadie dijo cuatro — ${JSON.stringify(getSession(sid).carrito)}`);
+});
+
+// ── Términos del catálogo ─────────────────────────────────────────────────
+
+await t('G6. el nombre exacto identifica el producto', async () => {
+  const sid = 'audit-g6-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Coca Cola', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'una coca cola porfa', null, 'whatsapp', C.neg, '5210000000306');
+  assert.match(nombresC(sid).join(' | '), /Coca Cola/i, JSON.stringify(nombresC(sid)));
+});
+
+await t('G7. término genérico con UN solo candidato: se resuelve', async () => {
+  const sid = 'audit-g7-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000307');
+  // "Postres" solo tiene un producto: el término no deja margen para escoger.
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Flan Napolitano', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'agregame un postre', null, 'whatsapp', C.neg, '5210000000307');
+  assert.match(nombresC(sid).join(' | '), /Flan/i,
+    `la categoría con un solo producto lo identifica — ${JSON.stringify(nombresC(sid))}`);
+});
+
+await t('G8. término genérico con VARIOS candidatos: no escoge, pregunta', async () => {
+  const sid = 'audit-g8-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000308');
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  const r = await procesarMensaje(sid, 'y ponme un refresco', null, 'whatsapp', C.neg, '5210000000308');
+  const n = nombresC(sid).join(' | ');
+  assert.doesNotMatch(n, /Coca|Sprite/i, `entre dos refrescos no se escoge — ${n}`);
+  assert.match(r.texto || '', /Coca Cola|Sprite/i, `se le ofrecen los que hay — ${r.texto}`);
+});
+
+await t('G9. una errata razonable sigue funcionando', async () => {
+  const sid = 'audit-g9-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'quiero una hamburgesa clasica', null, 'whatsapp', C.neg, '5210000000309');
+  assert.match(nombresC(sid).join(' | '), /Hamburguesa/i,
+    `una tecla no puede costarle el pedido — ${JSON.stringify(nombresC(sid))}`);
+});
+
+await t('G10. parecido semánticamente pero sin evidencia: no entra', async () => {
+  const sid = 'audit-g10-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000310');
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'y algo de tomar', null, 'whatsapp', C.neg, '5210000000310');
+  assert.doesNotMatch(nombresC(sid).join(' | '), /Coca/i,
+    `"algo de tomar" no es una categoría de esta carta — ${JSON.stringify(nombresC(sid))}`);
+});
+
+// ── Eliminaciones ─────────────────────────────────────────────────────────
+
+await t('G11. «quita la coca» con UNA coca: la quita', async () => {
+  const sid = 'audit-g11-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica y una coca cola', null, 'whatsapp', C.neg, '5210000000311');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'quita la coca', null, 'whatsapp', C.neg, '5210000000311');
+  const n = nombresC(sid).join(' | ');
+  assert.doesNotMatch(n, /Coca/i, `lo pidió con claridad — ${n}`);
+  assert.match(n, /Hamburguesa/i, n);
+});
+
+await t('G12. dos artículos compatibles con la frase: no se quita ninguno', async () => {
+  const sid = 'audit-g12-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Hamburguesa Doble', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica y una hamburguesa doble', null, 'whatsapp', C.neg, '5210000000312');
+  encolarTurno({ items: [] });
+  const r = await procesarMensaje(sid, 'quita la hamburguesa', null, 'whatsapp', C.neg, '5210000000312');
+  assert.equal(nombresC(sid).length, 2, `dos caben igual — ${JSON.stringify(nombresC(sid))}`);
+  assert.match(r.texto || '', /cu[aá]l quito/i, `y hay que preguntarlo — ${r.texto}`);
+});
+
+await t('G13. «ya no quiero ese»: un pronombre no señala nada', async () => {
+  const sid = 'audit-g13-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica y una coca cola', null, 'whatsapp', C.neg, '5210000000313');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'ya no quiero ese', null, 'whatsapp', C.neg, '5210000000313');
+  assert.equal(nombresC(sid).length, 2,
+    `sin saber cuál, no se toca nada — ${JSON.stringify(nombresC(sid))}`);
+});
+
+await t('G14. «sin cebolla» cambia el ingrediente, no borra el platillo', async () => {
+  const sid = 'audit-g14-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla', 'Lechuga')] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con cebolla y lechuga', null, 'whatsapp', C.neg, '5210000000314');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Lechuga')] }] });
+  await procesarMensaje(sid, 'sin cebolla porfa', null, 'whatsapp', C.neg, '5210000000314');
+  const it = getSession(sid).carrito?.items?.[0];
+  assert.ok(it, `el platillo sigue ahí — ${JSON.stringify(getSession(sid).carrito)}`);
+  assert.doesNotMatch(JSON.stringify(it.modificadores), /Cebolla/i, JSON.stringify(it));
+  assert.match(JSON.stringify(it.modificadores), /Lechuga/i, JSON.stringify(it));
+});
+
+await t('G15. lo que dijo hace tres turnos no autoriza quitar hoy', async () => {
+  const sid = 'audit-g15-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Coca Cola', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'quita la coca de mi pedido anterior, hoy quiero una coca cola',
+    null, 'whatsapp', C.neg, '5210000000315');
+  encolarTurno({ items: [{ nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+  await procesarMensaje(sid, 'y una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000315');
+  encolarTurno({ items: [] });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000315');
+  assert.equal(nombresC(sid).length, 2,
+    `el «quita» de tres turnos atrás ya se atendió entonces — ${JSON.stringify(nombresC(sid))}`);
+});
+
+// ── Contaminación cruzada ─────────────────────────────────────────────────
+
+await t('G16. un ingrediente dicho de un platillo no cambia el otro', async () => {
+  const sid = 'audit-g16-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [mod('Ingredientes', 'Cebolla', 'Lechuga')] },
+    { nombre: 'Hamburguesa Doble', cantidad: 1, modificadores: [mod('Ingredientes', 'Cebolla', 'Jitomate')] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con cebolla y lechuga, y una hamburguesa doble con cebolla y jitomate',
+    null, 'whatsapp', C.neg, '5210000000316');
+  // El cliente habla SOLO de la doble; el modelo aprovecha para vaciar la otra.
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [mod('Ingredientes', 'Lechuga')] },
+    { nombre: 'Hamburguesa Doble', cantidad: 1, modificadores: [mod('Ingredientes', 'Jitomate')] },
+  ] });
+  await procesarMensaje(sid, 'la doble sin cebolla', null, 'whatsapp', C.neg, '5210000000316');
+  const items = getSession(sid).carrito?.items || [];
+  const clasica = items.find((i) => /Clasica/i.test(i.nombre));
+  assert.match(JSON.stringify(clasica?.modificadores), /Cebolla/i,
+    `de la clásica no se dijo nada — ${JSON.stringify(items)}`);
+});
+
+await t('G17. un número dicho de un producto no cambia la cantidad del otro', async () => {
+  const sid = 'audit-g17-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'una hamburguesa clasica y una coca cola', null, 'whatsapp', C.neg, '5210000000317');
+  encolarTurno({ items: [
+    { nombre: 'Hamburguesa Clasica', cantidad: 3, modificadores: [] },
+    { nombre: 'Coca Cola', cantidad: 3, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'que sean tres cocas', null, 'whatsapp', C.neg, '5210000000317');
+  const items = getSession(sid).carrito?.items || [];
+  assert.equal(items.find((i) => /Coca/i.test(i.nombre))?.cantidad, 3, JSON.stringify(items));
+  assert.equal(items.find((i) => /Hamburguesa/i.test(i.nombre))?.cantidad, 1,
+    `el tres era de las cocas — ${JSON.stringify(items)}`);
+});
+
+await t('G18. un término dicho en un turno viejo no autoriza un cambio hoy', async () => {
+  const sid = 'audit-g18-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Lechuga')] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con lechuga, sin cebolla ni jitomate',
+    null, 'whatsapp', C.neg, '5210000000318');
+  // "cebolla" y "jitomate" quedaron sueltas en el ciclo. Dos turnos después el
+  // modelo las usa para rellenar el grupo, sin que el cliente diga nada hoy.
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla', 'Jitomate')] }], modalidad: 'recoger' });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000318');
+  const mods = JSON.stringify(getSession(sid).carrito?.items?.[0]?.modificadores);
+  assert.match(mods, /Lechuga/i, `lo elegido se conserva — ${mods}`);
+});
+
+await t('G19. una corrección explícita de HOY sí reemplaza lo de antes', async () => {
+  const sid = 'audit-g19-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla')] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con cebolla', null, 'whatsapp', C.neg, '5210000000319');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Jitomate')] }] });
+  await procesarMensaje(sid, 'mejor con jitomate', null, 'whatsapp', C.neg, '5210000000319');
+  const mods = JSON.stringify(getSession(sid).carrito?.items?.[0]?.modificadores);
+  assert.match(mods, /Jitomate/i, `cambiar de idea se puede — ${mods}`);
+});
+
+await t('G20. omitir un campo conserva el valor anterior', async () => {
+  const sid = 'audit-g20-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Doble', cantidad: 2,
+    modificadores: [mod('Ingredientes', 'Lechuga')], notas: 'bien cocida' }] });
+  await procesarMensaje(sid, 'dos hamburguesas dobles con lechuga, bien cocida', null, 'whatsapp', C.neg, '5210000000320');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Doble' }], modalidad: 'recoger' });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000320');
+  const it = getSession(sid).carrito?.items?.[0];
+  assert.equal(it?.cantidad, 2, JSON.stringify(it));
+  assert.match(JSON.stringify(it?.modificadores), /Lechuga/i, JSON.stringify(it));
+  assert.match(it?.notas || '', /cocida/i, JSON.stringify(it));
+});
+
+await t('G22. el modelo se come un ingrediente en silencio: se conserva', async () => {
+  const sid = 'audit-g22-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla', 'Lechuga')] }] });
+  await procesarMensaje(sid, 'una hamburguesa clasica con cebolla y lechuga', null, 'whatsapp', C.neg, '5210000000322');
+  // La propuesta trae el MISMO grupo con una opción menos, y el cliente no ha
+  // dicho una palabra sobre la cebolla. Quitar necesita que lo pida.
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Lechuga')] }], modalidad: 'recoger' });
+  await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000322');
+  const mods = JSON.stringify(getSession(sid).carrito?.items?.[0]?.modificadores);
+  assert.match(mods, /Cebolla/i, `nadie pidió quitarla — ${mods}`);
+  assert.match(mods, /Lechuga/i, mods);
+});
+
+await t('G23. dos ingredientes: quita el nombrado y conserva el otro', async () => {
+  const sid = 'audit-g23-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Doble', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Cebolla', 'Lechuga', 'Jitomate')] }] });
+  await procesarMensaje(sid, 'una hamburguesa doble con cebolla, lechuga y jitomate', null, 'whatsapp', C.neg, '5210000000323');
+  encolarTurno({ items: [{ nombre: 'Hamburguesa Doble', cantidad: 1,
+    modificadores: [mod('Ingredientes', 'Lechuga')] }] });
+  await procesarMensaje(sid, 'quitale la cebolla', null, 'whatsapp', C.neg, '5210000000323');
+  const mods = JSON.stringify(getSession(sid).carrito?.items?.[0]?.modificadores);
+  assert.doesNotMatch(mods, /Cebolla/i, `esa sí la pidió quitar — ${mods}`);
+  assert.match(mods, /Jitomate/i, `del jitomate no dijo nada — ${mods}`);
+});
+// ── Modo sombra ───────────────────────────────────────────────────────────
+
+await t('G21. en sombra el carrito productivo NO se toca y queda el registro', async () => {
+  const sid = 'audit-g21-' + randomUUID();
+  deleteSession(sid);
+  const antes = process.env.PEDIDO_SHADOW_MODE;
+  const lineas = [];
+  const warn = console.warn;
+  console.warn = (...a) => { lineas.push(a.join(' ')); warn(...a); };
+  try {
+    process.env.PEDIDO_SHADOW_MODE = 'true';
+    encolarTurno({ items: [{ nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] }] });
+    await procesarMensaje(sid, 'una hamburguesa clasica', null, 'whatsapp', C.neg, '5210000000321');
+    encolarTurno({ items: [
+      { nombre: 'Hamburguesa Clasica', cantidad: 1, modificadores: [] },
+      { nombre: 'Coca Cola', cantidad: 3, modificadores: [] },
+    ] });
+    await procesarMensaje(sid, 'para recoger', null, 'whatsapp', C.neg, '5210000000321');
+  } finally {
+    console.warn = warn;
+    if (antes === undefined) delete process.env.PEDIDO_SHADOW_MODE;
+    else process.env.PEDIDO_SHADOW_MODE = antes;
+  }
+  const s = getSession(sid);
+  assert.equal(s.carrito, undefined, `el carrito productivo no se escribe en sombra — ${JSON.stringify(s.carrito)}`);
+  assert.ok(s.carritoSombra, 'pero el paralelo sí existe');
+  const registro = lineas.filter((l) => l.includes('evento=carrito_sombra'));
+  assert.ok(registro.length >= 2, `una línea por turno — ${registro.length}`);
+  const ultima = JSON.parse(registro[registro.length - 1].slice(registro[registro.length - 1].indexOf('{')));
+  assert.ok(ultima.conv && !/\d{10}/.test(ultima.conv), `la conversación va por hash — ${ultima.conv}`);
+  assert.match(JSON.stringify(ultima.rechazado), /Coca Cola/i,
+    `y se ve qué bloqueó y por qué — ${JSON.stringify(ultima)}`);
 });
 
 } finally {

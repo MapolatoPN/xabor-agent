@@ -282,6 +282,24 @@ function elClienteDijoElNumero(n, mensaje) {
   return (NUMERO_EN_LETRA.get(n) || []).some((w) => t.includes(` ${w} `));
 }
 
+// Quitar un INGREDIENTE no se dice como quitar un platillo: «sin cebolla» no
+// lleva verbo. Se mira el mismo tramo —desde la señal hasta donde el cliente
+// empieza a pedir otra cosa— y se exige que la opción esté nombrada ahí.
+const QUITA_OPCION = new RegExp('\\b(' + [
+  'sin', 'quita', 'quitar', 'quitame', 'qu[ií]tame', 'quitale', 'qu[ií]tale',
+  'elimina', 'borra', 'saca', 'retira', 'ya no', 'no le pongas', 'no le ponga',
+  'd[ée]jalo sin', 'dejalo sin', 'd[ée]jala sin', 'dejala sin',
+].join('|') + ')\\b', 'i');
+
+function elClientePidioQuitarLaOpcion(opcion, mensaje) {
+  const bruto = String(mensaje || '');
+  const senal = QUITA_OPCION.exec(bruto);
+  if (!senal) return false;
+  const resto = bruto.slice(senal.index + senal[0].length);
+  const corte = EMPIEZA_A_PEDIR.exec(resto);
+  const tramo = corte ? resto.slice(0, corte.index) : resto;
+  return palabrasQueLaSostienen(opcion, tramo).size > 0;
+}
 /**
  * ¿La frase separa a ESTE artículo de los demás del carrito?
  *
@@ -382,26 +400,52 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     const loViejoEraSuyo = yaElegido
       && viejos.get(grupo).some((o) => fuerzaDeEvidencia(o, ctx.dicho) > 0);
     const donde = (yaElegido && loViejoEraSuyo) ? ctx.mensajeDicho : ctx.dicho;
-    const respaldadas = opciones.every((o) => fuerzaDeEvidencia(o, donde) > 0);
-    // Y con varios artículos en el carrito, un ingrediente cambia el que la
-    // frase señala: lo que el cliente dijo del plato A no vacía el grupo del B.
-    // Solo se exige cuando OTRO artículo compite por esa misma frase; si nadie
-    // compite, no hay nada que desambiguar.
+    // Agregar y quitar dentro de un grupo se autorizan distinto:
+    //
+    //   algo entra   -> basta con que el cliente lo haya dicho («mejor la roja»
+    //                   sustituye la suiza: lo nuevo es la autorización);
+    //   solo se va    -> hace falta que pidiera QUITARLO («sin cebolla»). Si no,
+    //                   una propuesta que se come una guarnición en silencio la
+    //                   borraría, que es justo la falla que esto cierra.
+    const previas = viejos.get(grupo) || [];
+    const agregadas = opciones.filter((o) => !previas.some((v) => norm(v) === norm(o)));
+    const quitadas = previas.filter((v) => !opciones.some((o) => norm(o) === norm(v)));
+    // Con varios artículos en el carrito, un ingrediente cambia el que la frase
+    // señala: lo que el cliente dijo del plato A no vacía el grupo del B. Solo
+    // se exige cuando OTRO artículo compite por esa misma frase.
     const compiteOtro = yaElegido && hermanos.some((h) => palabrasQueLaSostienen(h.nombre, donde).size > 0);
     const esMio = !compiteOtro || laFraseLoSenala(previo, hermanos, donde);
-    if (respaldadas && esMio) {
-      fusionados.set(grupo, opciones);
+    // Opción por opción, no el grupo entero: si el cliente pidió cebolla y el
+    // modelo añadió pepinillos, entra la cebolla y se queda fuera el pepinillo.
+    // Rechazar el grupo completo castigaba lo que el cliente sí había pedido.
+    const agregadasOk = esMio ? agregadas.filter((o) => fuerzaDeEvidencia(o, donde) > 0) : [];
+    // Un intercambio 1:1 —una opción sale, otra entra, y el grupo tenía una
+    // sola— es cambiar de idea: «mejor la salsa roja». Lo nuevo autoriza que lo
+    // viejo salga, sin pedir además un «quita la suiza» que nadie dice.
+    // En cualquier otro caso, quitar necesita su propia evidencia: si no, una
+    // propuesta que se come una guarnición en silencio la borraría.
+    const esIntercambio = previas.length === 1 && opciones.length === 1 && agregadasOk.length === 1;
+    const quitadasOk = esIntercambio ? quitadas
+      : (esMio ? quitadas.filter((o) => elClientePidioQuitarLaOpcion(o, ctx.mensajeDicho)) : []);
+    const resultado = previas
+      .filter((v) => !quitadasOk.some((x) => norm(x) === norm(v)))
+      .concat(agregadasOk);
+    const rechazadas = [
+      ...agregadas.filter((o) => !agregadasOk.some((x) => norm(x) === norm(o))),
+      ...quitadas.filter((o) => !quitadasOk.some((x) => norm(x) === norm(o))),
+    ];
+    if (resultado.length) fusionados.set(grupo, resultado);
+    if (agregadasOk.length || quitadasOk.length) {
       cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
         via: donde === ctx.mensajeDicho ? 'este_turno' : 'ciclo' });
     }
-    else if (yaElegido) {
-      cambios.congelados.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
-        propuesto: opciones, conservado: viejos.get(grupo) });
-    } else {
-      cambios.sinRespaldo.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
-        propuesto: opciones });
+    if (rechazadas.length) {
+      const donde_ = yaElegido ? cambios.congelados : cambios.sinRespaldo;
+      donde_.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
+        propuesto: rechazadas, conservado: previas });
     }
   }
+
   salida.modificadores = desdeGrupos(fusionados);
 
   // NOTAS. Una nota se escribió porque el cliente la pidió; el silencio del
@@ -436,8 +480,10 @@ function depurarNuevo(item, ctx, cambios) {
   const grupos = porGrupo(item.modificadores);
   const limpios = new Map();
   for (const [grupo, opciones] of grupos) {
-    if (opciones.every((o) => fuerzaDeEvidencia(o, ctx.dicho) > 0)) limpios.set(grupo, opciones);
-    else cambios.sinRespaldo.push({ nombre: item.nombre, campo: `modificador:${grupo}`, propuesto: opciones });
+    const respaldadas = opciones.filter((o) => fuerzaDeEvidencia(o, ctx.dicho) > 0);
+    if (respaldadas.length) limpios.set(grupo, respaldadas);
+    const fuera = opciones.filter((o) => !respaldadas.includes(o));
+    if (fuera.length) cambios.sinRespaldo.push({ nombre: item.nombre, campo: `modificador:${grupo}`, propuesto: fuera });
   }
   salida.modificadores = desdeGrupos(limpios);
   if (item.notas && fuerzaDeEvidencia(item.notas, ctx.dicho) === 0) {
