@@ -62,6 +62,9 @@ function aFoto(session) {
     // Sin esto, un reinicio entre turnos devolvía el pedido a lo que el
     // modelo recordara: justo lo que el carrito existe para no depender.
     carrito: session.carrito ?? null,
+    // El carrito de observación también sobrevive al reinicio: un modo sombra
+    // que se reinicia a media conversación mide lo que no es.
+    carritoSombra: session.carritoSombra ?? null,
     pedidoPreview: session.pedidoPreview ?? null,
     awaitingConfirmacion: session.awaitingConfirmacion ?? null,
     ordenesConfirmadas: session.ordenesConfirmadas ?? null,

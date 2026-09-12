@@ -22,36 +22,54 @@
 //
 // EL MODELO PROPONE CAMBIOS; NO LOS AUTORIZA.
 //
-// La primera versión de este módulo protegía el ARTÍCULO y nada más adentro, y
-// la segunda auditoría de Codex (12-sep, sobre esta misma rama) enseñó que eso
-// no alcanza. Tres reproducciones, las tres con el cliente diciendo solo «Para
-// recoger»:
+// La primera versión protegía el ARTÍCULO y nada más adentro, y la segunda
+// auditoría enseñó que eso no alcanza: con el cliente diciendo solo «Para
+// recoger», el platillo volvía con cantidad 1 en vez de 2, sin su salsa y sin
+// su «sin cebolla»; «quita los hotcakes tradicionales» borraba también los de
+// sartén; y el modelo colaba tres Coca-Colas que nadie pidió.
 //
-//   · el mismo platillo volvía con cantidad 1 en vez de 2, sin su salsa y sin
-//     su «sin cebolla» — el artículo se conservaba y su contenido no;
-//   · «Quita los hotcakes tradicionales» borraba TAMBIÉN los hotcakes de
-//     sartén, porque compartían una palabra;
-//   · el modelo añadía tres Coca-Colas que nadie pidió y entraban al carrito.
-//
-// Así que la regla vive ahora a nivel de CAMPO, y cada cambio necesita
-// autorización del cliente:
+// Así que la regla vive a nivel de CAMPO, y cada cambio necesita autorización:
 //
 //   omitir            no borra nada: ni el artículo, ni su cantidad, ni sus
 //                     modificadores, ni sus notas;
 //   cambiar un campo  exige que lo que el cliente dijo lo sostenga;
-//   agregar           exige que el cliente haya nombrado el producto;
+//   agregar           exige que el cliente haya pedido el producto;
 //   quitar            exige un verbo de quitar Y que la frase identifique UN
 //                     artículo: si dos caben igual de bien, no se quita
 //                     ninguno y se pregunta;
 //   datos operativos  —modalidad, pago, nombre, dirección— nunca tocan comida.
 //
-// Lo que no se autoriza no se aplica en silencio: sale en `cambios` para que
-// quien redacta el turno pueda preguntar en vez de adivinar.
+// ── Y de DÓNDE sale el respaldo ──────────────────────────────────────────
+//
+// Tercera vuelta. «Lo que el cliente dijo» no era una sola cosa: cuando llega
+// una foto, el canal sustituye la marca de la imagen por el bloque de análisis
+// DENTRO del mensaje del cliente, así que la percepción del modelo de visión
+// viajaba pegada a sus palabras y autorizaba igual que ellas. Un producto que
+// la visión creyó ver entraba al pedido con su cantidad, su modificador y su
+// nota, sin que nadie lo hubiera nombrado.
+//
+//   DICHO       lo escribió (o lo dictó) el cliente  → autoriza
+//   PERCIBIDO   sale de su foto, pero lo interpretó el modelo → se pregunta
+//   INVENTADO   no está en ninguna de las dos → ni entra ni se menciona
+//
+// La separación la hace `procedenciaDeEvidencia.js`, por la FORMA del bloque.
+//
+// ── Y los términos del catálogo ──────────────────────────────────────────
+//
+// «Ponme un refresco» no comparte una letra con «Coca Cola». Resolverlo dentro
+// del modelo sería devolverle la autoridad; resolverlo con una lista de
+// sinónimos escrita a mano sería una lista que envejece. Se resuelve con el
+// catálogo del propio negocio —los nombres de sus categorías y de sus
+// productos, que ya construye `terminosDelCatalogo`— y con una regla:
+//
+//   el término cubre UN producto     → puede identificarlo
+//   el término cubre VARIOS          → no se escoge: se pregunta
 //
 // Cada artículo lleva un identificador local estable (`lid`) que no sale nunca
 // hacia el modelo: sirve para seguirle la pista entre turnos aunque cambie de
 // nombre al elegir la presentación ("Chilaquiles" -> "Chilaquiles Sencillos").
 import { palabrasQueLaSostienen, fuerzaDeEvidencia } from './evidenciaDeEleccion.js';
+import { procedenciaDelCiclo } from './procedenciaDeEvidencia.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -174,6 +192,57 @@ export function nombradoPorElCliente(nombre, texto) {
   return propias.some((p) => dichas.some((d) => distanciaCorta(p, d) <= 1));
 }
 
+/**
+ * ¿Algún término del catálogo que el cliente dijo cubre este producto?
+ *
+ * `terminos` es lo que ya construye `terminosDelCatalogo`: cada nombre de
+ * categoría, producto y opción, con los productos que ofrece. Los que sirven
+ * aquí son los de categoría, que es la forma que tiene un término genérico en
+ * la carta de cada negocio: «Refrescos», «Bebidas», «Postres».
+ *
+ * No hay lista de sinónimos en el código: si un negocio quiere que «refresco»
+ * funcione, así se llama su categoría. Es configuración suya.
+ *
+ * Devuelve el término MÁS específico que lo cubre (el que ofrece menos), para
+ * que «refrescos» gane sobre «bebidas» cuando existan los dos.
+ */
+function terminoQueLoCubre(nombreProducto, dicho, terminos) {
+  if (!Array.isArray(terminos) || !terminos.length) return null;
+  const objetivo = norm(nombreProducto);
+  let mejor = null;
+  for (const t of terminos) {
+    const ofrece = (t?.ofrece || []).filter(Boolean);
+    if (!ofrece.length) continue;
+    // Un término que es EL PROPIO nombre del producto no aporta nada: si el
+    // cliente lo dijo, la comprobación directa ya lo resolvió.
+    if (ofrece.length === 1 && norm(ofrece[0]) === norm(t?.nombre || '')) continue;
+    if (!ofrece.some((p) => norm(p) === objetivo)) continue;
+    if (!nombradoPorElCliente(t.nombre, dicho)) continue;
+    if (!mejor || ofrece.length < mejor.ofrece.length) mejor = { nombre: t.nombre, ofrece };
+  }
+  return mejor;
+}
+
+/**
+ * De dónde sale el permiso para meter este producto al pedido.
+ *
+ *   dicho             el cliente lo nombró                   → entra
+ *   termino_unico     dijo un término que solo puede ser ese → entra
+ *   termino_ambiguo   dijo un término que cubre varios       → se pregunta cuál
+ *   percibido         solo aparece en el análisis de su foto → se pregunta
+ *   ninguna           nadie lo pidió                         → ni entra ni se menciona
+ */
+function procedenciaDelArticulo(nombre, ctx) {
+  if (nombradoPorElCliente(nombre, ctx.dicho)) return { autoriza: true, via: 'dicho' };
+  const termino = terminoQueLoCubre(nombre, ctx.dicho, ctx.terminos);
+  if (termino) {
+    if (termino.ofrece.length === 1) return { autoriza: true, via: 'termino_unico', termino: termino.nombre };
+    return { autoriza: false, via: 'termino_ambiguo', termino: termino.nombre, candidatos: termino.ofrece };
+  }
+  if (nombradoPorElCliente(nombre, ctx.percibido)) return { autoriza: false, via: 'percibido' };
+  return { autoriza: false, via: 'ninguna' };
+}
+
 // ── ¿AUTORIZÓ EL CLIENTE ESTA CANTIDAD? ──────────────────────────────────
 //
 // Cambiar la cantidad de un platillo es un cambio en la comida, así que necesita
@@ -214,6 +283,26 @@ function elClienteDijoElNumero(n, mensaje) {
 }
 
 /**
+ * ¿La frase separa a ESTE artículo de los demás del carrito?
+ *
+ * Misma regla que desempata las opciones hermanas de un grupo: si otro artículo
+ * explica TODO lo que explica este, la frase no los separa. Sirve para tres
+ * preguntas distintas —de cuál es esta cantidad, de cuál es este ingrediente,
+ * cuál quitar— y por eso vive una sola vez.
+ */
+function laFraseLoSenala(item, hermanos, texto) {
+  const mias = palabrasQueLaSostienen(item.nombre, texto);
+  if (!mias.size) return false;
+  for (const h of hermanos) {
+    const suyas = palabrasQueLaSostienen(h.nombre, texto);
+    let explicaTodoLoMio = true;
+    for (const w of mias) if (!suyas.has(w)) { explicaTodoLoMio = false; break; }
+    if (explicaTodoLoMio) return false;
+  }
+  return true;
+}
+
+/**
  * ¿Puede esta propuesta cambiar la cantidad de ESTE artículo?
  *
  * Hacen falta las dos cosas: que el número esté en lo que el cliente acaba de
@@ -224,17 +313,9 @@ function autorizaCantidad(nueva, previa, ctx, item, hermanos) {
   if (nueva === previa) return true;
   if (!Number.isFinite(nueva) || nueva < 1 || nueva > CANTIDAD_PLAUSIBLE) return false;
   if (respuestaConNumerosAjenos(ctx.datoOperativoPendiente)) return false;
-  if (!elClienteDijoElNumero(nueva, ctx.mensaje)) return false;
+  if (!elClienteDijoElNumero(nueva, ctx.mensajeDicho)) return false;
   if (!hermanos.length) return true;
-  const mias = palabrasQueLaSostienen(item.nombre, ctx.mensaje);
-  if (!mias.size) return false;
-  for (const h of hermanos) {
-    const suyas = palabrasQueLaSostienen(h.nombre, ctx.mensaje);
-    let explicaTodoLoMio = true;
-    for (const w of mias) if (!suyas.has(w)) { explicaTodoLoMio = false; break; }
-    if (explicaTodoLoMio) return false;          // la frase no separa un platillo del otro
-  }
-  return true;
+  return laFraseLoSenala(item, hermanos, ctx.mensajeDicho);
 }
 
 /**
@@ -252,7 +333,7 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
   // queda. Una propuesta que lo generaliza no deshace lo que el cliente concretó.
   if (p.nombre && norm(p.nombre) !== norm(previo.nombre)) {
     const concreta = norm(p.nombre).includes(norm(previo.nombre));
-    if (concreta || nombradoPorElCliente(p.nombre, ctx.textoCiclo)) {
+    if (concreta || procedenciaDelArticulo(p.nombre, ctx).autoriza) {
       salida.nombre = p.nombre;
       if (p.id !== undefined) salida.id = p.id;
     } else {
@@ -264,6 +345,10 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
 
   // CANTIDAD.
   if (autorizaCantidad(p.cantidad, previo.cantidad, ctx, previo, hermanos)) {
+    if (p.cantidad !== previo.cantidad) {
+      cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'cantidad',
+        via: 'numero_en_el_mensaje', valor: p.cantidad });
+    }
     salida.cantidad = p.cantidad;
   } else if (p.cantidad !== previo.cantidad) {
     cambios.congelados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'cantidad',
@@ -295,11 +380,21 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     // y no merece la protección que se le da a lo que el cliente sí dijo. Si no,
     // el primer error del modelo quedaría cementado en el carrito.
     const loViejoEraSuyo = yaElegido
-      && viejos.get(grupo).some((o) => fuerzaDeEvidencia(o, ctx.textoCiclo) > 0);
-    const donde = (yaElegido && loViejoEraSuyo) ? ctx.mensaje : ctx.textoCiclo;
+      && viejos.get(grupo).some((o) => fuerzaDeEvidencia(o, ctx.dicho) > 0);
+    const donde = (yaElegido && loViejoEraSuyo) ? ctx.mensajeDicho : ctx.dicho;
     const respaldadas = opciones.every((o) => fuerzaDeEvidencia(o, donde) > 0);
-    if (respaldadas) fusionados.set(grupo, opciones);
-    else if (viejos.has(grupo)) {
+    // Y con varios artículos en el carrito, un ingrediente cambia el que la
+    // frase señala: lo que el cliente dijo del plato A no vacía el grupo del B.
+    // Solo se exige cuando OTRO artículo compite por esa misma frase; si nadie
+    // compite, no hay nada que desambiguar.
+    const compiteOtro = yaElegido && hermanos.some((h) => palabrasQueLaSostienen(h.nombre, donde).size > 0);
+    const esMio = !compiteOtro || laFraseLoSenala(previo, hermanos, donde);
+    if (respaldadas && esMio) {
+      fusionados.set(grupo, opciones);
+      cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
+        via: donde === ctx.mensajeDicho ? 'este_turno' : 'ciclo' });
+    }
+    else if (yaElegido) {
       cambios.congelados.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
         propuesto: opciones, conservado: viejos.get(grupo) });
     } else {
@@ -312,7 +407,10 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
   // NOTAS. Una nota se escribió porque el cliente la pidió; el silencio del
   // modelo no la retira. Se reemplaza solo por otra que el cliente sostenga.
   if (p.notas && norm(p.notas) !== norm(previo.notas)) {
-    if (fuerzaDeEvidencia(p.notas, ctx.textoCiclo) > 0) salida.notas = p.notas;
+    if (fuerzaDeEvidencia(p.notas, ctx.dicho) > 0) {
+      salida.notas = p.notas;
+      cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'notas', via: 'ciclo' });
+    }
     else cambios.congelados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'notas',
       propuesto: p.notas, conservado: previo.notas });
   }
@@ -320,8 +418,48 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
   return salida;
 }
 
-/** ¿El cliente pidió quitar algo en ESTE mensaje? */
-const PIDE_QUITAR = /\b(quita|quitar|quitame|qu[ií]tame|elimina|eliminar|borra|borrar|cancela|cancelar|saca|sacar|ya no quiero|mejor no|sin el|sin la|sin los|sin las|remueve|remover)\b/i;
+/**
+ * Un artículo NUEVO, con sus campos depurados.
+ *
+ * Que el cliente haya pedido el producto no le da permiso al modelo para
+ * decidir cuántos, con qué y con qué nota. Cada campo se queda solo si algo de
+ * lo que el cliente dijo lo sostiene; si no, cae al valor neutro. Es la misma
+ * regla del artículo ya existente, aplicada desde el primer turno: aparecer en
+ * la primera salida del modelo no da autoridad.
+ */
+function depurarNuevo(item, ctx, cambios) {
+  const salida = { ...item };
+  if (item.cantidad !== 1 && !elClienteDijoElNumero(item.cantidad, ctx.dicho)) {
+    cambios.congelados.push({ nombre: item.nombre, campo: 'cantidad', propuesto: item.cantidad, conservado: 1 });
+    salida.cantidad = 1;
+  }
+  const grupos = porGrupo(item.modificadores);
+  const limpios = new Map();
+  for (const [grupo, opciones] of grupos) {
+    if (opciones.every((o) => fuerzaDeEvidencia(o, ctx.dicho) > 0)) limpios.set(grupo, opciones);
+    else cambios.sinRespaldo.push({ nombre: item.nombre, campo: `modificador:${grupo}`, propuesto: opciones });
+  }
+  salida.modificadores = desdeGrupos(limpios);
+  if (item.notas && fuerzaDeEvidencia(item.notas, ctx.dicho) === 0) {
+    cambios.sinRespaldo.push({ nombre: item.nombre, campo: 'notas', propuesto: item.notas });
+    salida.notas = '';
+  }
+  return salida;
+}
+
+// ── QUITAR ───────────────────────────────────────────────────────────────
+//
+// Formas de pedir que algo salga del pedido. La lista es de VERBOS y giros, no
+// de productos: lo que decide QUÉ se va no es el verbo, es la identificación.
+// Por eso se puede ser generoso aquí y estricto allá.
+const PIDE_QUITAR = new RegExp('\\b(' + [
+  'quita', 'quitar', 'quitame', 'qu[ií]tame', 'quitale', 'qu[ií]tale',
+  'elimina', 'eliminar', 'borra', 'borrar', 'cancela', 'cancelar',
+  'saca', 'sacar', 'remueve', 'remover', 'retira', 'retirar',
+  'ya no quiero', 'ya no', 'mejor no', 'olvida', 'olvidate de', 'olv[ií]date de',
+  'd[ée]jalo sin', 'dejalo sin', 'd[ée]jala sin', 'dejala sin',
+  'sin el', 'sin la', 'sin los', 'sin las',
+].join('|') + ')\\b', 'i');
 
 // Dónde DEJA de alcanzar. Un mensaje puede quitar y pedir a la vez —es la forma
 // normal de sustituir algo— y entonces el verbo de quitar solo manda hasta que
@@ -330,7 +468,11 @@ const PIDE_QUITAR = /\b(quita|quitar|quitame|qu[ií]tame|elimina|eliminar|borra|
 // Sin este límite, «quita los hotcakes y mejor ponme un bowl de chilaquiles»
 // vaciaba el pedido entero: el mensaje traía un verbo de quitar y nombraba
 // todos los artículos, así que todos se iban.
-const EMPIEZA_A_PEDIR = /\b(ponme|p[oó]nme|pon|agrega|ag[rR]égame|agregame|a[ñn]ade|a[ñn][aá]deme|dame|quiero|mejor dame|mandame|m[aá]ndame|traeme|tr[aá]eme|sumale|s[uú]male|en su lugar|cambialo|c[aá]mbialo)\b/i;
+const EMPIEZA_A_PEDIR = new RegExp('\\b(' + [
+  'ponme', 'p[oó]nme', 'pon', 'agrega', 'agregame', 'ag[rR][ée]game', 'a[ñn]ade', 'a[ñn][aá]deme',
+  'dame', 'quiero', 'mejor dame', 'mandame', 'm[aá]ndame', 'traeme', 'tr[aá]eme',
+  'sumale', 's[uú]male', 'en su lugar', 'cambialo', 'c[aá]mbialo',
+].join('|') + ')\\b', 'i');
 
 /**
  * Qué artículos señala el cliente al pedir que se quite algo.
@@ -340,11 +482,14 @@ const EMPIEZA_A_PEDIR = /\b(ponme|p[oó]nme|pon|agrega|ag[rR]égame|agregame|a[�
  *
  * Identificar no es compartir una palabra. «Quita los hotcakes tradicionales»
  * con "Hotcakes Tradicionales" y "Hotcakes de Sartén" en el carrito señala a
- * uno solo, aunque la palabra "hotcakes" esté en los dos: se compara QUÉ
- * palabras sostienen a cada candidato, igual que se hace con las opciones
- * hermanas de un grupo. Si otro candidato explica TODO lo que explica este, la
- * frase no los separa —«quita los hotcakes», a secas— y entonces no se quita
- * ninguno: se pregunta. Borrar de más es el error caro; preguntar, no.
+ * uno solo, aunque la palabra "hotcakes" esté en los dos. Si otro candidato
+ * explica TODO lo que explica este, la frase no los separa —«quita los
+ * hotcakes», a secas— y entonces no se quita ninguno: se pregunta. Borrar de
+ * más es el error caro; preguntar, no.
+ *
+ * Un pronombre —«ya no quiero ese», «el otro no»— no nombra ningún artículo, así
+ * que no hay candidatos y no se quita nada. No hace falta una regla aparte para
+ * los pronombres: caen solos, que es la señal de que la regla es la correcta.
  */
 export function articulosQueElClientePidioQuitar(carrito, mensaje) {
   const bruto = String(mensaje || '');
@@ -376,28 +521,39 @@ export function articulosQueElClientePidioQuitar(carrito, mensaje) {
  * Reconcilia la propuesta del modelo contra el carrito que ya existía.
  *
  * `opciones`:
- *   mensaje                  lo que el cliente dijo en ESTE turno. Un CAMBIO
- *                            —quitar, otra cantidad— es un acto de este turno.
- *   textoCiclo               todo lo que el cliente lleva dicho en el ciclo. Lo
- *                            que el pedido ES se sostiene con toda la conversación,
- *                            no solo con el último mensaje.
+ *   mensaje                  lo que llegó en ESTE turno. Un CAMBIO —quitar, otra
+ *                            cantidad— es un acto de este turno.
+ *   textoCiclo               todo lo que ha llegado en el ciclo. Lo que el pedido
+ *                            ES se sostiene con toda la conversación.
  *   datoOperativoPendiente   QUÉ preguntó el backend ('direccion', 'modalidad'…).
  *                            Si su respuesta lleva números que no son cantidades
  *                            —una dirección, un teléfono— ningún número de ese
  *                            mensaje cambia cuánta comida hay.
+ *   terminos                 el catálogo visto como términos (`terminosDelCatalogo`):
+ *                            permite que «refresco» identifique un producto cuando
+ *                            la categoría del negocio se llama así.
+ *
+ * Los dos textos se parten por procedencia: lo que el cliente escribió autoriza;
+ * lo que el sistema percibió de su foto, no.
  *
  * Devuelve `{ carrito, cambios }`. `cambios` no es solo observabilidad: lleva lo
- * que NO se aplicó (`congelados`, `sinRespaldo`, `ambiguos`) para que el turno
- * pueda preguntar en vez de adivinar.
+ * que NO se aplicó (`congelados`, `sinRespaldo`, `ambiguos`, `porConfirmar`)
+ * para que el turno pueda preguntar en vez de adivinar.
  */
 export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const mensaje = String(opciones.mensaje || '');
+  const textoCiclo = String(opciones.textoCiclo || mensaje);
+  const deEsteTurno = procedenciaDelCiclo([mensaje]);
+  const delCiclo = procedenciaDelCiclo([textoCiclo]);
   const ctx = {
     mensaje,
+    mensajeDicho: deEsteTurno.dicho,
     // Sin ciclo explícito, el mensaje del turno es todo lo que sabemos del
     // cliente. Es el modo en que corren las pruebas de unidad del módulo.
-    textoCiclo: String(opciones.textoCiclo || mensaje),
+    dicho: delCiclo.dicho,
+    percibido: [delCiclo.percibido, deEsteTurno.percibido].filter(Boolean).join(' \n '),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
+    terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
   };
   const previo = (carritoPrevio && Array.isArray(carritoPrevio.items))
     ? { items: carritoPrevio.items.map((i) => normalizarItem(i, i.lid)), datos: { ...(carritoPrevio.datos || {}) } }
@@ -407,8 +563,11 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     ? propuesta.items.filter((i) => String(i?.nombre || '').trim() || i?.id !== undefined)
     : [];
 
+  // `autorizados` es la otra mitad de la contabilidad: no solo qué se bloqueó,
+  // también QUÉ evidencia dejó pasar cada cambio que sí se aplicó. Es lo que
+  // permite auditar un turno real sin volver a razonarlo a mano.
   const cambios = { agregados: [], actualizados: [], conservados: [], quitados: [],
-    congelados: [], sinRespaldo: [], ambiguos: [] };
+    congelados: [], sinRespaldo: [], ambiguos: [], porConfirmar: [], autorizados: [] };
 
   // 1) Emparejar cada artículo propuesto con uno del carrito. Voraz por mejor
   //    parecido, uno a uno: dos renglones del mismo producto no se fusionan.
@@ -442,24 +601,28 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     }
   }
 
-  // 3) Artículos NUEVOS: solo entran los que el cliente nombró.
+  // 3) Artículos NUEVOS: solo entran los que el cliente pidió, y con los campos
+  //    que el cliente sostiene.
   //
   //    El modelo añadía tres Coca-Colas mientras el cliente contestaba «Para
   //    recoger». Decir que el cliente lo vería en el resumen no es una
   //    protección: el resumen confirma una interpretación respaldada, no le
   //    traslada al cliente la tarea de descubrir invenciones.
-  //    La puerta se aplica cuando YA hay pedido que proteger. La primera
-  //    propuesta de un ciclo es la lectura que hace el modelo de lo que el
-  //    cliente acaba de pedir, y puede venir de una foto o de un audio, donde
-  //    el texto del cliente no nombra nada; exigir ahí la palabra escrita
-  //    dejaría sin pedido a quien manda el menú fotografiado. Esa primera
-  //    lectura ya la auditan las menciones y el validador.
-  const hayPedidoQueProteger = previo.items.length > 0;
   for (const p of nuevos) {
     const item = normalizarItem(p);
-    if (!hayPedidoQueProteger || nombradoPorElCliente(item.nombre, ctx.textoCiclo)) {
-      items.push(item);
-      cambios.agregados.push(item.nombre);
+    const proc = procedenciaDelArticulo(item.nombre, ctx);
+    if (proc.autoriza) {
+      const limpio = depurarNuevo(item, ctx, cambios);
+      items.push(limpio);
+      cambios.agregados.push(limpio.nombre);
+      cambios.autorizados.push({ nombre: limpio.nombre, campo: 'articulo', via: proc.via,
+        ...(proc.termino ? { termino: proc.termino } : {}) });
+    } else if (proc.via === 'percibido' || proc.via === 'termino_ambiguo') {
+      // Sale de algo que el cliente mandó, pero lo interpretó el sistema. No
+      // entra solo; se le pregunta, que es lo que él sí puede resolver.
+      cambios.porConfirmar.push({ nombre: item.nombre, motivo: proc.via,
+        ...(proc.termino ? { termino: proc.termino } : {}),
+        ...(proc.candidatos ? { candidatos: proc.candidatos } : {}) });
     } else {
       cambios.sinRespaldo.push({ nombre: item.nombre, campo: 'articulo', cantidad: item.cantidad });
     }
@@ -478,17 +641,21 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   //    modelos que reescriben el pedido entero cada turno— y sigue siendo
   //    quitable: si no, el cliente no podría quitar nada cuando el modelo
   //    insiste en repetirlo.
+  //
+  //    Se mira SOLO lo que el cliente escribió en ESTE turno: una foto no quita
+  //    nada, y lo que dijo hace tres turnos ya se atendió cuando lo dijo.
   const huella = (i) => JSON.stringify([norm(i?.nombre), Number(i?.cantidad) || 1,
     opcionesDe(i).slice().sort(), norm(i?.notas)]);
   const huellaPrevia = new Map(previo.items.map((i) => [i.lid, huella(i)]));
   const intacto = (i) => huellaPrevia.has(i.lid) && huellaPrevia.get(i.lid) === huella(i);
   const quitables = new Set(items.filter(intacto).map((i) => i.lid));
-  const senalados = articulosQueElClientePidioQuitar({ items }, mensaje);
+  const senalados = articulosQueElClientePidioQuitar({ items }, ctx.mensajeDicho);
   cambios.ambiguos.push(...senalados.ambiguos.filter((a) => quitables.has(a.lid)));
   const aQuitar = new Set(senalados.fuera.filter((lid) => quitables.has(lid)));
   const finales = items.filter((i) => {
     if (!aQuitar.has(i.lid)) return true;
     cambios.quitados.push(i.nombre);
+    cambios.autorizados.push({ lid: i.lid, nombre: i.nombre, campo: 'quitar', via: 'la_frase_lo_identifica' });
     return false;
   });
 
@@ -531,11 +698,24 @@ export function carritoABorrador(carrito) {
 export const carritoConItems = (c) => Array.isArray(c?.items) && c.items.length > 0;
 
 /**
+ * ¿Quedó algún artículo sin respaldo directo?
+ *
+ * Cuando esto es cierto vale la pena pagar una consulta al catálogo y volver a
+ * reconciliar con sus términos: puede que el cliente dijera «un refresco» y el
+ * negocio tenga una categoría que se llame así. Mientras sea falso —el caso
+ * normal— no se toca la base.
+ */
+export const podriaResolverloElCatalogo = (cambios) =>
+  (cambios?.sinRespaldo || []).some((s) => s.campo === 'articulo');
+
+/**
  * Lo que el reconciliador NO aplicó, en una frase para el cliente.
  *
- * Solo se pregunta por lo AMBIGUO —dos artículos caben en su «quita»— porque
- * ahí la duda es sobre lo que el cliente dijo y él es el único que puede
- * resolverla.
+ * Se pregunta por lo que el cliente PUEDE resolver y de lo que hay rastro suyo:
+ *
+ *   · dos artículos caben en su «quita» → cuál;
+ *   · dijo un término que cubre varios productos → cuál;
+ *   · mandó una foto y el sistema creyó ver un producto → si lo quiere.
  *
  * Lo INVENTADO por el modelo no se menciona. Preguntarle «¿querías una Coca?»
  * a alguien que nunca la pidió es ofrecerle un producto en su propia voz, y un
@@ -543,7 +723,16 @@ export const carritoConItems = (c) => Array.isArray(c?.items) && c.items.length 
  * que es de quien es el problema.
  */
 export function preguntaPorLoNoAplicado(cambios) {
-  return (cambios?.ambiguos || []).slice(0, 2)
-    .map((a) => `¿Cuál quito, "${a.nombre}" o "${a.empatan[0]}"? Los dejo los dos hasta que me digas.`)
-    .join(' ');
+  const partes = [];
+  for (const a of (cambios?.ambiguos || []).slice(0, 2)) {
+    partes.push(`¿Cuál quito, "${a.nombre}" o "${a.empatan[0]}"? Los dejo los dos hasta que me digas.`);
+  }
+  for (const c of (cambios?.porConfirmar || []).slice(0, 2)) {
+    if (c.motivo === 'termino_ambiguo') {
+      partes.push(`De ${c.termino} tenemos ${c.candidatos.slice(0, 4).join(', ')}. ¿Cuál te sirve?`);
+    } else {
+      partes.push(`En la foto veo algo parecido a "${c.nombre}". ¿Te lo agrego al pedido?`);
+    }
+  }
+  return partes.join(' ');
 }

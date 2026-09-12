@@ -120,6 +120,9 @@ export function iniciarCicloPedido(sessionId) {
   // El carrito pertenece al pedido que se acaba de cerrar. Arrastrarlo al
   // siguiente le vendería al cliente lo que ya recibió.
   session.carrito = null;
+  // El de sombra vive el mismo ciclo: si no, la observación compararía el
+  // pedido nuevo contra el viejo y diría cosas que no pasaron.
+  session.carritoSombra = null;
   session.esperandoDato = null;
   session.actualizado_en = new Date().toISOString();
   return session.cicloPedido;

@@ -10,7 +10,10 @@ import { INSTRUCCION_MENCIONES, parsearMenciones, depurarMenciones, tieneRespald
 import { revisarNegativas, terminosDelCatalogo, mensajeEnLugarDeLaNegativa, avisarNegativaFalsa } from './negativaVerificada.js';
 import { hidratarSesion, persistirSesion } from './sesionDurable.js';
 import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
-import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado } from '../orders/carritoDelPedido.js';
+import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado,
+         podriaResolverloElCatalogo } from '../orders/carritoDelPedido.js';
+import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
+import { registrarSombra } from '../orders/registroSombra.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -585,6 +588,13 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // ("Nogal 900") no son cantidades de comida.
         const pendiente = esperandoDato(sessionId);
 
+        // Lo que el cliente DIJO, separado de lo que el sistema PERCIBIÓ de su
+        // foto. El canal mete el análisis de la imagen dentro del mensaje del
+        // cliente, así que sin esta separación la visión respaldaba productos y
+        // opciones igual que sus palabras. Se usa para todo lo que autoriza:
+        // el carrito, el respaldo de selecciones y el de modalidad y pago.
+        const dichoDelCiclo = () => procedenciaDelCiclo(turnosUsuarioDelCiclo(sessionId)).dicho;
+
         // ── EL PEDIDO ES DEL CLIENTE, NO DEL ÚLTIMO BORRADOR ───────────────
         //
         // Lo que el modelo emite es una PROPUESTA sobre el pedido, no el
@@ -606,21 +616,50 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // función y no un bloque: el marcador del modelo, la aclaración y la
         // extracción forzada de más abajo. Un reconciliador correcto no protege
         // una ruta que lo rodea.
-        const aplicarCarrito = (propuesta) => {
-          if (!propuesta && !carritoConItems(session.carrito)) return propuesta;
-          const recon = reconciliar(session.carrito, propuesta || {}, {
+        //
+        // MODO SOMBRA: con `PEDIDO_SHADOW_MODE=true` la reconciliación corre
+        // igual y se registra, pero sobre un carrito PARALELO. No toca el
+        // pedido del cliente, no reinyecta borrador y no escribe una sola
+        // palabra en su respuesta. Sirve para mirar qué habría hecho con
+        // tráfico real antes de dejarle decidir.
+        const enSombra = String(process.env.PEDIDO_SHADOW_MODE || '').trim().toLowerCase() === 'true';
+        const aplicarCarrito = async (propuesta) => {
+          const carritoBase = enSombra ? session.carritoSombra : session.carrito;
+          if (!propuesta && !carritoConItems(carritoBase)) return propuesta;
+          const entrada = {
             mensaje: mensajeUsuario,
-            textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
+            textoCiclo: dichoDelCiclo(),
             datoOperativoPendiente: pendiente || false,
-          });
-          session.carrito = recon.carrito;
+          };
+          let recon = reconciliar(carritoBase, propuesta || {}, entrada);
+          // Segunda pasada SOLO si quedó un artículo sin respaldo: puede que el
+          // cliente dijera «un refresco» y la carta del negocio tenga una
+          // categoría que se llame así. Mientras no pase —el caso normal— no se
+          // toca la base.
+          if (podriaResolverloElCatalogo(recon.cambios)) {
+            try {
+              const terminos = terminosDelCatalogo(await obtenerMenuCompleto(negocioId));
+              recon = reconciliar(carritoBase, propuesta || {}, { ...entrada, terminos });
+            } catch (e) {
+              console.error('[Carrito] no se pudieron leer los términos del catálogo:', e.message);
+            }
+          }
           const c = recon.cambios;
-          if (c.conservados.length || c.quitados.length || c.congelados.length || c.sinRespaldo.length) {
+          if (enSombra) {
+            session.carritoSombra = recon.carrito;
+            registrarSombra({ sessionId, negocioId, mensaje: mensajeUsuario, previo: carritoBase,
+              propuesta, recon });
+            return propuesta;                      // el turno real sigue sin enterarse
+          }
+          session.carrito = recon.carrito;
+          if (c.conservados.length || c.quitados.length || c.congelados.length
+              || c.sinRespaldo.length || c.porConfirmar.length) {
             console.warn('[TXN] evento=carrito_reconciliado'
               + ' conservados=' + JSON.stringify(c.conservados.slice(0, 5))
               + ' quitados=' + JSON.stringify(c.quitados.slice(0, 5))
               + ' congelados=' + JSON.stringify(c.congelados.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`))
-              + ' sin_respaldo=' + JSON.stringify(c.sinRespaldo.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`)));
+              + ' sin_respaldo=' + JSON.stringify(c.sinRespaldo.slice(0, 5).map((x) => `${x.nombre}:${x.campo}`))
+              + ' por_confirmar=' + JSON.stringify(c.porConfirmar.slice(0, 5).map((x) => `${x.nombre}:${x.motivo}`)));
           }
           // Lo que no se aplicó no se calla: se le pregunta al cliente en este
           // mismo turno, nombrando el artículo y el dato concreto.
@@ -644,7 +683,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           return (turnoDePedido && carritoConItems(recon.carrito))
             ? carritoABorrador(recon.carrito) : propuesta;
         };
-        borrador = aplicarCarrito(borrador);
+        borrador = await aplicarCarrito(borrador);
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
         // apagar por completo la extracción independiente: el marcador
@@ -682,7 +721,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           // La extracción forzada es OTRA fuente de borrador, así que también
           // se reconcilia: sin esto el carrito quedaba fuera de la única ruta
           // que existe justo para cuando el modelo no emitió nada.
-          borrador = aplicarCarrito(await extraerBorradorForzado(session, negocioId)) || borrador;
+          borrador = await aplicarCarrito(await extraerBorradorForzado(session, negocioId)) || borrador;
         }
         if (conItems(borrador)) {
           // La extracción independiente corre SIEMPRE que se esté armando un
@@ -726,7 +765,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
             menciones = [];
           }
           const rc = await validarBorradorPedido(borrador, negocioId, {
-            textoCiclo: turnosUsuarioDelCiclo(sessionId).join(' \n '),
+            textoCiclo: dichoDelCiclo(),
             menciones, respuestas,
           });
           // El código viaja en la propia estructura (lo pone el validador), así
@@ -783,7 +822,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
               // Lo que el cliente YA dijo y el backend capturó por su cuenta:
               // el modelo puede omitirlo en su borrador, pero no puede borrarlo.
               const recordado = datosDelPedido(sessionId);
-              const dichoPorElCliente = turnosUsuarioDelCiclo(sessionId).join(' \n ');
+              const dichoPorElCliente = dichoDelCiclo();
 
               // LA MODALIDAD LA DECIDE EL CLIENTE, NO EL MODELO.
               // XAB-0271: el cliente nunca dijo si pasaba o se lo llevaban, el
