@@ -97,19 +97,34 @@ function normalizarItem(item, lid) {
 export const carritoVacio = () => ({ items: [], datos: {} });
 
 /** ¿El cliente pidió quitar algo en ESTE mensaje? */
-const PIDE_QUITAR = /\b(quita|quitar|quitame|quítame|elimina|eliminar|borra|borrar|cancela|cancelar|saca|sacar|ya no quiero|mejor no|sin el|sin la|sin los|sin las|remueve|remover)\b/i;
+const PIDE_QUITAR = /\b(quita|quitar|quitame|qu[ií]tame|elimina|eliminar|borra|borrar|cancela|cancelar|saca|sacar|ya no quiero|mejor no|sin el|sin la|sin los|sin las|remueve|remover)\b/i;
+
+// Dónde DEJA de alcanzar. Un mensaje puede quitar y pedir a la vez —es la forma
+// normal de sustituir algo— y entonces el verbo de quitar solo manda hasta que
+// el cliente empieza a pedir lo nuevo.
+//
+// Sin este límite, «quita los hotcakes y mejor ponme un bowl de chilaquiles»
+// vaciaba el pedido entero: el mensaje traía un verbo de quitar y nombraba
+// todos los artículos, así que todos se iban.
+const EMPIEZA_A_PEDIR = /\b(ponme|p[oó]nme|pon|agrega|ag[rR]égame|agregame|a[ñn]ade|a[ñn][aá]deme|dame|quiero|mejor dame|mandame|m[aá]ndame|traeme|tr[aá]eme|sumale|s[uú]male|en su lugar|cambialo|c[aá]mbialo)\b/i;
 
 /**
  * Los artículos del carrito que el cliente pidió quitar en este mensaje.
  *
- * Conservador a propósito: hace falta un verbo de quitar Y que el mensaje
- * nombre el artículo. "Mejor no" a secas no quita nada, porque no dice qué.
- * Preferimos preguntar de más a borrar de menos: un artículo que sobra se ve en
- * el resumen y el cliente lo corrige; uno que falta se descubre al recogerlo.
+ * Conservador a propósito: hace falta un verbo de quitar Y que el artículo esté
+ * nombrado DENTRO de su alcance. «Mejor no» a secas no quita nada, porque no
+ * dice qué. Preferimos preguntar de más a borrar de menos: un artículo que sobra
+ * se ve en el resumen y el cliente lo corrige; uno que falta se descubre al
+ * recogerlo.
  */
 export function articulosQueElClientePidioQuitar(carrito, mensaje) {
-  const texto = norm(mensaje);
-  if (!texto || !PIDE_QUITAR.test(String(mensaje || ''))) return [];
+  const bruto = String(mensaje || '');
+  const verbo = PIDE_QUITAR.exec(bruto);
+  if (!verbo) return [];
+  const resto = bruto.slice(verbo.index + verbo[0].length);
+  const corte = EMPIEZA_A_PEDIR.exec(resto);
+  const texto = norm(corte ? resto.slice(0, corte.index) : resto);
+  if (!texto) return [];
   const fuera = [];
   for (const it of (carrito?.items || [])) {
     const palabras = norm(it.nombre).split(' ').filter((w) => w.length >= 4);
@@ -117,7 +132,6 @@ export function articulosQueElClientePidioQuitar(carrito, mensaje) {
   }
   return fuera;
 }
-
 /**
  * Reconcilia la propuesta del modelo contra el carrito que ya existía.
  *
@@ -173,8 +187,26 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   }
   for (const { nuevo } of resultado) { items.push(nuevo); cambios.agregados.push(nuevo.nombre); }
 
-  // 3) Quitar SOLO lo que el cliente pidió quitar con sus palabras.
-  const aQuitar = new Set(articulosQueElClientePidioQuitar({ items }, mensaje));
+  // 3) Quitar SOLO lo que el cliente pidió quitar con sus palabras, y solo
+  //    aquello que este turno no acaba de cambiar.
+  //
+  //    «Quita las gyozas de cerdo y ponme unas de verdura» nombra las gyozas
+  //    DOS veces: una para quitarlas y otra para pedirlas de otra forma. Si el
+  //    renglón se quitara, el cliente se quedaría sin lo que acaba de pedir.
+  //    Que la propuesta traiga ese renglón CAMBIADO es la señal de que el
+  //    «quita» hablaba de la forma vieja, no del artículo.
+  //
+  //    Un renglón que la propuesta repite IGUAL no es señal de nada —hay
+  //    modelos que reescriben el pedido entero cada turno— y sigue siendo
+  //    quitable: si no, el cliente no podría quitar nada cuando el modelo
+  //    insiste en repetirlo.
+  const huella = (i) => JSON.stringify([norm(i?.nombre), Number(i?.cantidad) || 1,
+    opcionesDe(i).slice().sort(), norm(i?.notas)]);
+  const huellaPrevia = new Map(previo.items.map((i) => [i.lid, huella(i)]));
+  const intacto = (i) => huellaPrevia.has(i.lid) && huellaPrevia.get(i.lid) === huella(i);
+  const quitables = new Set(items.filter(intacto).map((i) => i.lid));
+  const aQuitar = new Set(articulosQueElClientePidioQuitar({ items }, mensaje)
+    .filter((lid) => quitables.has(lid)));
   const finales = items.filter((i) => {
     if (!aQuitar.has(i.lid)) return true;
     cambios.quitados.push(i.nombre);

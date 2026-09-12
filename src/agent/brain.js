@@ -598,7 +598,22 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
               + ' conservados=' + JSON.stringify(recon.cambios.conservados.slice(0, 5))
               + ' quitados=' + JSON.stringify(recon.cambios.quitados.slice(0, 5)));
           }
-          if (carritoConItems(recon.carrito)) borrador = carritoABorrador(recon.carrito);
+          // El carrito se mantiene SIEMPRE; entrar al flujo de pedido, no.
+          //
+          // Reinyectarlo como borrador en cualquier turno haría que, con el
+          // carrito lleno, un "¿a qué hora cierran?" se contestara con la
+          // cuenta del pedido: a partir de aquí el backend redacta el turno.
+          // Se reinyecta solo cuando el turno ES del pedido: el modelo trajo
+          // propuesta (o la trajo `continuarAclaracionProducto` al resolver la
+          // presentación), o el backend está esperando un dato que él mismo
+          // pidió, que es el turno del incidente ("para recoger, efectivo, a
+          // nombre de Ana").
+          //
+          // Tener una aclaración PENDIENTE no basta: con eso, un cliente que
+          // pregunta a qué hora cierran mientras elige presentación recibía la
+          // pregunta de la presentación otra vez en lugar de su respuesta.
+          const turnoDePedido = !!borrador || !!esperandoDato(sessionId);
+          if (turnoDePedido && carritoConItems(recon.carrito)) borrador = carritoABorrador(recon.carrito);
         }
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para

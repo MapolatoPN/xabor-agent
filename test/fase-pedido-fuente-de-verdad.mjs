@@ -44,7 +44,7 @@ for (const m of ['076_conversacion_durable', '077_webhook_entrante_durable', '07
 
 const { validarBorradorPedido, mensajeBorradorParaCliente } = await import('../src/orders/validadorOrden.js');
 const { procesarMensaje } = await import('../src/agent/brain.js');
-const { getSession, desalojarDeMemoria, verPreviewConfirmable, deleteSession } = await import('../src/agent/session.js');
+const { getSession, desalojarDeMemoria, verPreviewConfirmable, deleteSession, iniciarCicloPedido } = await import('../src/agent/session.js');
 
 let ok = 0, fail = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -292,6 +292,180 @@ await t('D3. dos unidades del MISMO producto con preparaciones distintas convive
     { textoCiclo: 'un ramen chico de miso con pollo karaage y otro de shoyu con cerdo chashu' });
   assert.equal(r.ok, true, JSON.stringify(r.productosNoExisten));
   assert.equal(r.productos.length, 2, 'son dos artículos distintos, no una cantidad 2');
+});
+
+
+// ═══ E — la conversación completa, no el caso aislado ══════════════════════
+//
+// El mandato es explícito: la garantía tiene que aguantar sustituciones,
+// respuestas de dos palabras, apodos y erratas, respuestas del modelo en prosa
+// o vacías, mensajes agrupados, reentregas y dos instancias. Cada uno de estos
+// casos rompía —o podía romper— de una forma distinta.
+
+await t('E1. sustituir un artículo por otro: sale el viejo, entra el nuevo', async () => {
+  const sid = 'audit-e1-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000106');
+  // El cliente cambia de idea: fuera hotcakes, dentro un bowl.
+  encolarTurno({ items: [
+    { nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+      mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Guarniciones', 'Bistec en salsa', 'Queso panela en salsa')] },
+    { nombre: 'Bowl de Chilaquiles', cantidad: 1, modificadores: [
+      mod('Salsa', 'Roja'), mod('Proteína', 'Huevos Revueltos')] },
+  ] });
+  await procesarMensaje(sid, 'quita los hotcakes y mejor ponme un bowl de chilaquiles con salsa roja y huevos revueltos',
+    null, 'whatsapp', A.neg, '5210000000106');
+  const nombres = (getSession(sid).carrito?.items || []).map((i) => i.nombre).join(' | ');
+  assert.doesNotMatch(nombres, /Hotcakes/i, `los hotcakes se sustituyeron, no pueden seguir — ${nombres}`);
+  assert.match(nombres, /Bowl/i, `el artículo nuevo tiene que entrar — ${nombres}`);
+  assert.match(nombres, /Chilaquiles Sencillos/i, `sustituir uno no arrastra al otro — ${nombres}`);
+});
+
+await t('E2. "ambos" a una aclaración: suma las dos, sin perder lo demás', async () => {
+  const sid = 'audit-e2-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000107');
+  encolarTurno({ items: [
+    { nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+      mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Guarniciones', 'Bistec en salsa', 'Queso panela en salsa')] },
+    { nombre: 'Chilaquiles Mixtos', cantidad: 1, modificadores: [
+      mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Guarniciones', 'Bistec en salsa')] },
+  ] });
+  await procesarMensaje(sid, 'ambos', null, 'whatsapp', A.neg, '5210000000107');
+  const nombres = (getSession(sid).carrito?.items || []).map((i) => i.nombre);
+  assert.equal(nombres.length, 3, `dos chilaquiles y los hotcakes — ${nombres.join(' | ')}`);
+  assert.ok(nombres.some((n) => /Hotcakes/i.test(n)),
+    `"ambos" habla de la aclaración, no del pedido entero — ${nombres.join(' | ')}`);
+});
+
+await t('E3. una errata en el turno siguiente no abre un renglón nuevo', async () => {
+  const sid = 'audit-e3-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Cerdo')] }] });
+  await procesarMensaje(sid, 'unas gyosas de cerdo porfa', null, 'whatsapp', B.neg, '5210000000108');
+  encolarTurno({ items: [{ nombre: 'Gyozas', cantidad: 2, modificadores: [mod('Relleno', 'Cerdo')] }] });
+  await procesarMensaje(sid, 'mejor dos gyosas', null, 'whatsapp', B.neg, '5210000000108');
+  const items = getSession(sid).carrito?.items || [];
+  assert.equal(items.length, 1, `el modelo normalizó el nombre; es el mismo renglón — ${JSON.stringify(items)}`);
+  assert.equal(items[0].cantidad, 2, JSON.stringify(items));
+});
+
+await t('E4. el modelo responde en PROSA: no se pierde el pedido ni se secuestra el turno', async () => {
+  const sid = 'audit-e4-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000109');
+  // Sin bloque <PEDIDO_BORRADOR>: el cliente pregunta otra cosa.
+  mock.drenar();
+  mock.encolarRespuesta('Cerramos a las 11 de la noche.');
+  mock.encolarRespuesta(JSON.stringify({ menciones: [] }));
+  const r = await procesarMensaje(sid, 'oigan a que hora cierran?', null, 'whatsapp', A.neg, '5210000000109');
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `una respuesta en prosa no borra el pedido — ${JSON.stringify(getSession(sid).carrito)}`);
+  assert.match(r.texto || '', /11|noche/i,
+    `el backend no debe secuestrar un turno que no es del pedido — ${r.texto}`);
+});
+
+await t('E5. el modelo emite items vacíos: tampoco borra', async () => {
+  const sid = 'audit-e5-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000110');
+  encolarTurno({ items: [] });
+  await procesarMensaje(sid, 'si', null, 'whatsapp', A.neg, '5210000000110');
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `un borrador vacío no es una orden de vaciar — ${JSON.stringify(getSession(sid).carrito)}`);
+});
+
+await t('E6. mensajes agrupados en un solo turno entran completos', async () => {
+  const sid = 'audit-e6-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid,
+    'Si quiero unos chilaquiles suizos con pollo, bistec en salsa y queso panela\nAdemás una orden de hotcakes de sartén',
+    null, 'whatsapp', A.neg, '5210000000111');
+  assert.equal(getSession(sid).carrito?.items?.length, 2, JSON.stringify(getSession(sid).carrito));
+});
+
+await t('E7. reentrega del MISMO turno: reconciliar no duplica', async () => {
+  const sid = 'audit-e7-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000112');
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000112');
+  assert.equal(getSession(sid).carrito?.items?.length, 2,
+    `el mismo turno dos veces no son cuatro platillos — ${JSON.stringify(getSession(sid).carrito)}`);
+});
+
+await t('E8. dos instancias alternándose sobre la misma conversación', async () => {
+  const sid = 'audit-e8-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000113');
+  // Cada turno lo atiende un proceso distinto: el que llega hidrata de la fila
+  // antes de pensar, que es lo que hace `procesarMensaje` en producción.
+  const sencillos = { items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+    mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+    mod('Guarniciones', 'Bistec en salsa', 'Queso panela en salsa')] }] };
+  desalojarDeMemoria(sid);
+  encolarTurno(sencillos);
+  await procesarMensaje(sid, 'Los sencillos', null, 'whatsapp', A.neg, '5210000000113');
+  desalojarDeMemoria(sid);
+  encolarTurno({ ...sencillos, modalidad: 'recoger' });
+  const r = await procesarMensaje(sid, 'para recoger', null, 'whatsapp', A.neg, '5210000000113');
+  assert.match(JSON.stringify(r) + JSON.stringify(getSession(sid).carrito), /Hotcakes/i,
+    `turnarse de instancia no puede perder un platillo — ${r.texto}`);
+});
+
+await t('E9. el carrito del pedido cerrado no se filtra al siguiente', async () => {
+  const sid = 'audit-e9-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000114');
+  assert.ok(getSession(sid).carrito?.items?.length, 'debía haber carrito');
+  iniciarCicloPedido(sid);                       // es lo que hace registrar
+  assert.equal(getSession(sid).carrito, null,
+    'cerrar el ciclo tiene que vaciar el carrito o el siguiente cliente paga de más');
+});
+
+
+await t('E10. sustituir la preparación del MISMO renglón no lo deja sin nada', async () => {
+  const sid = 'audit-e10-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno({ items: [{ nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Cerdo')] }] });
+  await procesarMensaje(sid, 'unas gyozas de cerdo', null, 'whatsapp', B.neg, '5210000000115');
+  // El mensaje nombra las gyozas dos veces: para quitarlas y para volver a
+  // pedirlas de otra forma. Quitar el renglón dejaría al cliente sin nada.
+  encolarTurno({ items: [{ nombre: 'Gyozas', cantidad: 1, modificadores: [mod('Relleno', 'Verdura')] }] });
+  await procesarMensaje(sid, 'quita las gyozas de cerdo y ponme unas gyozas de verdura',
+    null, 'whatsapp', B.neg, '5210000000115');
+  const items = getSession(sid).carrito?.items || [];
+  assert.equal(items.length, 1, `debe quedar el renglón sustituido — ${JSON.stringify(items)}`);
+  assert.match(JSON.stringify(items[0].modificadores), /Verdura/i, JSON.stringify(items));
+});
+
+await t('E11. y si el modelo repite el pedido entero, quitar sigue funcionando', async () => {
+  const sid = 'audit-e11-' + randomUUID();
+  deleteSession(sid);
+  encolarTurno(DOBLE);
+  await procesarMensaje(sid, TEXTO_ORIGINAL, null, 'whatsapp', A.neg, '5210000000116');
+  // El modelo reescribe el pedido COMPLETO, hotcakes incluidos, ignorando lo
+  // que el cliente acaba de pedir. La voluntad del cliente manda.
+  encolarTurno({ items: [
+    { nombre: 'Chilaquiles Sencillos', cantidad: 1, modificadores: [
+      mod('Salsa', 'Suiza'), mod('Proteína', 'Pechuga de pollo'),
+      mod('Guarniciones', 'Bistec en salsa', 'Queso panela en salsa')] },
+    { nombre: 'Hotcakes de Sarten', cantidad: 1, modificadores: [] },
+  ] });
+  await procesarMensaje(sid, 'quita los hotcakes', null, 'whatsapp', A.neg, '5210000000116');
+  const nombres = (getSession(sid).carrito?.items || []).map((i) => i.nombre).join(' | ');
+  assert.doesNotMatch(nombres, /Hotcakes/i, `el cliente pidió quitarlos — ${nombres}`);
 });
 
 } finally {
