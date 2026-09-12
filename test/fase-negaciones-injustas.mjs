@@ -907,6 +907,109 @@ await t('R6. idSenalado acepta lo que el modelo escribe de verdad, y nada más',
 });
 
 
+// ═══ T — LO QUE EL CLIENTE YA DIJO SIRVE PARA NO VOLVER A PREGUNTAR ═══════
+//
+// Incidente 2026-09-11, 11:26 p.m., con la ambigüedad ya arreglada:
+//
+//   cliente  'Quiero unos chilaquiles'
+//   bot      'De "Chilaquiles" tenemos Bowl, Combito, Sencillos o Mixtos.
+//             ¿Cuál prefieres?'                                          OK
+//   cliente  'Quiero unos chilaquiles en salsa Suiza con huevos estrellados
+//             y le pones frijoles y papas a la mexicana'
+//   bot      (la MISMA pregunta, palabra por palabra)                     MAL
+//
+// El cliente contestó con todo el detalle y recibió la misma pregunta. El
+// sistema tenía razón --nunca dijo "Sencillos"-- pero ignoró que las
+// guarniciones que nombró ya descartaban una variante: un Bowl no tiene grupo
+// de guarniciones y los frijoles no caben ahí.
+//
+// Descartar no es elegir por el cliente: es dejar de ofrecerle lo que no puede
+// pedir.
+const cVar = await cat('Variantes por lo pedido', 60);
+const V_BOWL = await prod(cVar, 'Tazon Sencillo', 140);
+const V_PLATO = await prod(cVar, 'Tazon Sencillo Completo', 195);
+// El Bowl solo tiene Salsa y Proteína. El Completo agrega Guarniciones.
+const gsB = await gr(V_BOWL, 'Salsa', 0); for (const x of ['Suiza', 'Roja']) await op(gsB, x);
+const gpB = await gr(V_BOWL, 'Proteína', 1); for (const x of ['Huevos Estrellados', 'Pechuga de pollo']) await op(gpB, x);
+const gsP = await gr(V_PLATO, 'Salsa', 0); for (const x of ['Suiza', 'Roja']) await op(gsP, x);
+const gpP = await gr(V_PLATO, 'Proteína', 1); for (const x of ['Huevos Estrellados', 'Pechuga de pollo']) await op(gpP, x);
+const ggP = await q1(`INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
+  VALUES ($1,$2,'Guarniciones',TRUE,1,2,2) RETURNING id`, [NEG, V_PLATO]);
+for (const x of ['Frijolitos naturales', 'Papas a la mexicana']) await op(ggP.id, x);
+
+// El nombre CORTO, que es como habla la gente. Con el nombre completo la
+// igualdad exacta gana antes de llegar a la ambiguedad y no habria nada que
+// estrechar.
+const pedirTazon = (mods) => validarBorradorPedido(
+  { items: [{ nombre: 'Tazon', cantidad: 1, modificadores: mods }] },
+  NEG, { textoCiclo: 'quiero un tazon' });
+
+await t('T1. sin detalle, se pregunta entre las dos (como antes)', async () => {
+  const rc = await validarBorradorPedido(
+    { items: [{ nombre: 'Tazon', cantidad: 1, modificadores: [] }] },
+    NEG, { textoCiclo: 'quiero un tazon' });
+  const amb = (rc.productosNoExisten || []).find((x) => /^tazon$/i.test(x?.nombre || ''));
+  assert.ok(amb && amb.estado === 'ambiguo', 'sin nada que lo distinga, hay que preguntar');
+  assert.strictEqual((amb.candidatos || []).length, 2);
+});
+
+await t('T2. las guarniciones descartan la variante que no las tiene', async () => {
+  // Frijoles y papas solo caben en el Completo. Queda UNA: no hay que preguntar.
+  const rc = await pedirTazon([
+    { grupo: 'Salsa', opciones: ['Suiza'] },
+    { grupo: 'Proteína', opciones: ['Huevos Estrellados'] },
+    { grupo: 'Guarniciones', opciones: ['Frijolitos naturales', 'Papas a la mexicana'] },
+  ]);
+  const nombres = (rc.productos || []).map((p) => p.producto);
+  assert.ok(nombres.includes('Tazon Sencillo Completo'),
+    `lo pedido solo cabe en el Completo — ${JSON.stringify(nombres)} / ${JSON.stringify(rc.productosNoExisten)}`);
+});
+
+await t('T3. si sigue habiendo varias, se pregunta SOLO entre las que sirven', async () => {
+  // Solo salsa y proteína: caben en las dos. La pregunta se mantiene, con las dos.
+  const rc = await pedirTazon([
+    { grupo: 'Salsa', opciones: ['Suiza'] },
+    { grupo: 'Proteína', opciones: ['Huevos Estrellados'] },
+  ]);
+  const amb = (rc.productosNoExisten || []).find((x) => /^tazon$/i.test(x?.nombre || ''));
+  assert.ok(amb, 'sigue sin poder resolverse');
+  assert.strictEqual((amb.candidatos || []).length, 2, 'las dos siguen siendo posibles');
+});
+
+await t('T4. el mensaje le devuelve al cliente lo que ya dijo', async () => {
+  // La otra mitad del incidente: recibir DOS VECES la misma pregunta, palabra
+  // por palabra, es lo que hace que el cliente abandone.
+  const rc = await pedirTazon([
+    { grupo: 'Salsa', opciones: ['Suiza'] },
+    { grupo: 'Proteína', opciones: ['Huevos Estrellados'] },
+  ]);
+  const msg = mensajeBorradorParaCliente(rc) || '';
+  assert.match(msg, /Ya anoté/, `tiene que acusar lo que ya dijo — ${msg}`);
+  assert.match(msg, /Suiza/, `y nombrarlo — ${msg}`);
+  assert.match(msg, /¿Cuál prefieres\?/, 'y seguir preguntando lo que falta');
+});
+
+await t('T5. una opción que no es de ninguna variante no descarta ninguna', async () => {
+  // El extractor recoge palabras de más. Si una palabra suelta pudiera dejar
+  // fuera a todas, el cliente se quedaría sin opciones por un ruido del modelo.
+  const rc = await pedirTazon([{ grupo: 'Salsa', opciones: ['Suiza', 'Con mucho amor'] }]);
+  const amb = (rc.productosNoExisten || []).find((x) => /^tazon$/i.test(x?.nombre || ''));
+  assert.ok(amb && (amb.candidatos || []).length === 2,
+    'una palabra que no pertenece a ningún grupo no puede descartar variantes');
+});
+
+await t('T6. si NADA cabe en ninguna, se ofrecen todas igual', async () => {
+  const { variantesCompatibles } = await import('../src/orders/variantePorLoPedido.js');
+  const candidatos = [{ id: 1, nombre: 'A' }, { id: 2, nombre: 'B' }];
+  const grupos = new Map([[1, [{ nombre: 'G', maximo: 1, opciones: [{ nombre: 'x' }] }]],
+                          [2, [{ nombre: 'G', maximo: 1, opciones: [{ nombre: 'x' }] }]]]);
+  // Dos "x" no caben en un grupo de tope 1: ninguna variante sirve.
+  const r = variantesCompatibles(candidatos, grupos, ['x', 'x']);
+  assert.strictEqual(r.length, 2,
+    'quedarse sin opciones que ofrecer es peor que ofrecerlas todas');
+});
+
+
 mock.detener();
 console.log(`\n${fallidas === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${pasadas} pasadas, ${fallidas} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);

@@ -24,6 +24,7 @@ import { calcularPromociones } from '../services/tiendaPromociones.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
+import { variantesCompatibles, opcionesDelItem } from './variantePorLoPedido.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -313,7 +314,38 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       console.warn(`[Validador] fragmento descartado, no es un producto: "${String(it?.nombre || '').slice(0, 60)}"`);
       continue;
     }
-    const r = resolverProducto(it?.nombre, catalogo, it?.id);
+    let r = resolverProducto(it?.nombre, catalogo, it?.id);
+    // ── Usar lo que el cliente YA dijo antes de volver a preguntar ──
+    //
+    // Incidente 2026-09-11, 11:26 p.m.: el cliente contestó a la pregunta con
+    // TODO el detalle --"en salsa Suiza con huevos estrellados y le pones
+    // frijoles y papas a la mexicana"-- y recibió la misma pregunta otra vez,
+    // palabra por palabra, porque seguía sin decir "Sencillos". Técnicamente
+    // correcto; para un cliente frecuente, un trato de desconocido.
+    //
+    // Las guarniciones que nombró ya descartan el Bowl, que no tiene ese grupo.
+    // Eso no es adivinar: es dejar de ofrecerle lo que no puede pedir. Si al
+    // filtrar queda UNA sola variante, no hay nada que preguntar.
+    if (r.estado === 'ambiguo' && Array.isArray(r.candidatos) && r.candidatos.length > 1) {
+      const pedidas = opcionesDelItem(it);
+      if (pedidas.length) {
+        try {
+          const grupos = await cargarGruposDeProductos(negocioId, r.candidatos.map((c) => c.id));
+          const viables = variantesCompatibles(r.candidatos, grupos, pedidas);
+          if (viables.length === 1) {
+            const unica = viables[0];
+            console.log(`[Validador] variante deducida de lo pedido: ${unica.nombre}`);
+            r = { estado: 'ok', producto: unica };
+          } else if (viables.length < r.candidatos.length) {
+            r = { ...r, candidatos: viables };
+          }
+        } catch (e) {
+          // Sin los grupos no se estrecha nada y se pregunta como antes. Nunca
+          // se resuelve a ciegas por no poder leerlos.
+          console.error('[Validador] no se pudo estrechar por modificadores:', e.message);
+        }
+      }
+    }
     if (r.estado !== 'ok') {
       salida.ok = false;
       salida.productosNoExisten.push({
@@ -322,6 +354,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // Los nombres reales entre los que hay que elegir. Solo viajan cuando
         // el estado es 'ambiguo'; quien redacta el mensaje los ofrece.
         ...(r.candidatos ? { candidatos: r.candidatos.map((p) => String(p.nombre || '')) } : {}),
+        ...(r.estado === 'ambiguo' ? { pedidas: opcionesDelItem(it) } : {}),
       });
       continue;
     }
@@ -607,9 +640,15 @@ export function mensajeBorradorParaCliente(resultado) {
       const opciones = x.candidatos;
       // Con una sola variante pedible no hay nada que elegir: se confirma. Con
       // varias, se enumeran y se pregunta. Nunca se elige por el cliente.
-      if (opciones.length === 1) return `De "${x.nombre}" tenemos ${opciones[0]}. ¿Te lo preparo así?`;
+      // Lo que el cliente YA dijo se le devuelve, para que no parezca que no
+      // se le escuchó. La segunda vez que recibe la MISMA pregunta palabra por
+      // palabra --incidente de las 11:26 p.m.-- es cuando abandona.
+      const ya = (x.pedidas || []).length
+        ? ` Ya anoté ${x.pedidas.slice(0, 5).join(', ')}.`
+        : '';
+      if (opciones.length === 1) return `De "${x.nombre}" tenemos ${opciones[0]}.${ya} ¿Te lo preparo así?`;
       const lista = `${opciones.slice(0, -1).join(', ')} o ${opciones[opciones.length - 1]}`;
-      return `De "${x.nombre}" tenemos ${lista}. ¿Cuál prefieres?`;
+      return `De "${x.nombre}" tenemos ${lista}.${ya} ¿Cuál prefieres?`;
     });
     if (!frases.length) return preguntas.join(' ');
     const disculpa = `Una disculpa: ${listar(frases)}. ¿Te comparto lo que sí tenemos?`;
