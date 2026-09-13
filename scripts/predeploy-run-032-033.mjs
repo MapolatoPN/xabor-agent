@@ -90,6 +90,13 @@ const SCRIPTS = [
   // quiere hacer seguro.
   '077-webhook-entrante',
   '078-whatsapp-continuidad',
+  // 079 agrega rewards_config.canal_tienda. Va ANTES del binario nuevo
+  // porque el mapa de canales de rewardsService la LEE en cada venta: sin la
+  // columna, obtenerConfig devuelve una fila sin ese campo y la tienda
+  // seguiria sin acumular -- exactamente el fallo que arregla. No enciende
+  // nada para nadie (DEFAULT FALSE): el comportamiento solo cambia cuando un
+  // negocio marca la casilla en su panel.
+  '079-rewards-canal-tienda',
 ];
 
 for (const nombre of SCRIPTS) {
