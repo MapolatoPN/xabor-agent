@@ -369,6 +369,105 @@ await t('S13. un negocio SIN pedido_shadow no se observa aunque la global esté 
   }
 });
 
+await t('S14. tres negocios intercalados: uno observado, dos atendidos, sin filtraciones', async () => {
+  // El escenario que se quiere desplegar, en el nivel donde de verdad vive la
+  // sombra: el canal. A es el del bot apagado y con la llave; B y C atienden
+  // clientes y no tienen ninguna llave. Los tres, en el MISMO proceso.
+  const { createHash } = await import('node:crypto');
+  const hash = (neg, tel) => createHash('sha256').update(`meta-${neg}-${tel}`).digest('hex').slice(0, 12);
+
+  const otros = [];
+  for (const etiqueta of ['b', 'c']) {
+    const { rows: [n] } = await pool.query(
+      `INSERT INTO negocios(nombre,slug) VALUES ($1,$2) RETURNING id`,
+      [`Legacy ${etiqueta}`, `legacy-${etiqueta}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`]);
+    const pnid = `PNID_LEGACY_${etiqueta.toUpperCase()}`;
+    const tel = TEL_BASE + (etiqueta === 'b' ? '81' : '82');
+    await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
+      ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [n.id]);
+    await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'asistente_comercial_cotizaciones','no_configurado')
+      ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='no_configurado'`, [n.id]);
+    await actualizarConfiguracion({ int_wa_phone_id: pnid, int_wa_token: `fake-${etiqueta}` }, n.id);
+    await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
+      VALUES ($1,'whatsapp',$2,$3,TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [n.id, pnid, `Legacy ${etiqueta}`]);
+    // BOT ENCENDIDO y SIN ninguna llave: es el estado de Acuña y Nonna Maye.
+    await pool.query(`UPDATE negocios SET bot_whatsapp_activo = TRUE WHERE id = $1`, [n.id]);
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave IN ('pedido_shadow','pedido_reconciliador_v2')`, [n.id]);
+    otros.push({ id: n.id, pnid, tel, etiqueta });
+  }
+  const [B, C] = otros;
+  const A = { id: NEG, pnid: PNID, tel: TEL_BASE + '80', etiqueta: 'a' };
+
+  const mandar = async (neg, texto) => {
+    anthropicMock.drenar();
+    // Un respondedor que sirve para los tres: el turno del asistente y las
+    // llamadas auxiliares, sin depender de cuántas haga cada camino.
+    for (let i = 0; i < 6; i++) {
+      anthropicMock.encolarRespuesta((payload) => {
+        const sys = String(payload?.system || '');
+        if (sys.includes('MENCIONES COMERCIALES')) return JSON.stringify({ menciones: [] });
+        if (sys.includes('Extrae el pedido que el cliente')) return JSON.stringify({ items: [] });
+        return 'Con gusto, ¿algo más?';
+      });
+    }
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: neg.pnid },
+        messages: [{ type: 'text', from: neg.tel, id: `wamid.MIX-${neg.etiqueta}-${Date.now()}-${Math.random()}`, text: { body: texto } }],
+        contacts: [{ profile: { name: 'Cliente ' + neg.etiqueta } }],
+      } }] }],
+    };
+    await fetch(srv.base + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    await esperarTurno();
+  };
+
+  try {
+    const antesLineas = lineasSombra().length;
+    const antesPorTel = (tel) => comunicaciones().filter((m) => String(m.to) === tel).length;
+    const comB0 = antesPorTel(B.tel), comC0 = antesPorTel(C.tel), comA0 = antesPorTel(A.tel);
+
+    // A → B → C → A → C → B
+    for (const [neg, texto] of [[A, 'hola, quiero una sombra torta'], [B, 'hola'], [C, 'hola'],
+      [A, 'y para recoger'], [C, 'gracias'], [B, 'gracias']]) {
+      await mandar(neg, texto);
+    }
+
+    const lineas = srv.obtenerSalida().split(String.fromCharCode(10))
+      .filter((l) => l.includes('evento=carrito_sombra')).slice(antesLineas);
+    const convs = lineas.map((l) => JSON.parse(l.slice(l.indexOf('{'))).conv);
+
+    // A: observado las dos veces, sin una palabra al cliente.
+    assert.strictEqual(convs.filter((c) => c === hash(A.id, A.tel)).length, 2,
+      `los dos turnos de A tenían que observarse — ${JSON.stringify(convs)}`);
+    assert.strictEqual(antesPorTel(A.tel), comA0, 'y A no recibe respuesta: su bot está apagado');
+
+    // B y C: atendidos como siempre, y jamás observados.
+    for (const n of [B, C]) {
+      assert.strictEqual(convs.filter((c) => c === hash(n.id, n.tel)).length, 0,
+        `${n.etiqueta} no puede aparecer en el log de sombra — ${JSON.stringify(convs)}`);
+    }
+    assert.ok(antesPorTel(B.tel) > comB0, 'B tiene que seguir contestándole a su cliente');
+    assert.ok(antesPorTel(C.tel) > comC0, 'C tiene que seguir contestándole a su cliente');
+
+    // Y nadie más se coló: las únicas líneas son las de A.
+    assert.strictEqual(convs.length, 2, `solo A se observa — ${JSON.stringify(convs)}`);
+  } finally {
+    for (const n of otros) {
+      for (const tabla of ['whatsapp_entradas', 'whatsapp_conversaciones', 'mensajes', 'clientes']) {
+        await pool.query(`DELETE FROM ${tabla} WHERE telefono = $1`, [n.tel]).catch(() => {});
+      }
+      await pool.query(`DELETE FROM integraciones_canal WHERE identificador = $1`, [n.pnid]).catch(() => {});
+      await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1`, [n.id]).catch(() => {});
+      await pool.query(`DELETE FROM negocio_modulos WHERE negocio_id = $1`, [n.id]).catch(() => {});
+      await pool.query(`DELETE FROM negocios WHERE id = $1`, [n.id]).catch(() => {});
+    }
+    for (const tabla of ['whatsapp_entradas', 'whatsapp_conversaciones', 'mensajes', 'clientes']) {
+      await pool.query(`DELETE FROM ${tabla} WHERE telefono = $1`, [TEL_BASE + '80']).catch(() => {});
+    }
+  }
+});
+
 // ═══ S10-S12 — lo que las mordidas deben tumbar ════════════════════════════
 //
 // Estas tres no se prueban desactivando una condición, sino comprobando que la
