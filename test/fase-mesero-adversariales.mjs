@@ -463,6 +463,21 @@ await t('X30. «quita los dos» no borra dos renglones de golpe: pregunta', asyn
     `no borró pero tampoco preguntó: ${JSON.stringify(ultimo.aclaraciones)}`);
 });
 
+await t('X32. «ponme dos» con DOS renglones sí sube el que está en foco', async () => {
+  // El contrapeso de X31: la atribución tiene que seguir funcionando cuando el
+  // turno de verdad es un cambio de cantidad. Sin esto, endurecer la guarda
+  // habría dejado un no-op silencioso en su lugar.
+  const { carrito } = await conversar([
+    { cliente: 'unos chilaquiles', borrador: { items: [it('Chilaquiles')] } },
+    { cliente: 'y un cafe de olla', borrador: { items: [it('Chilaquiles'), it('Cafe de Olla')] } },
+    { cliente: 'ponme dos', borrador: (c) => ({ items: c.items.map((x) => ({ ...x,
+      cantidad: x.nombre === 'Cafe de Olla' ? 2 : x.cantidad })) }) },
+  ]);
+  assert.equal(linea(carrito, 'Cafe de Olla')[0].cantidad, 2,
+    `no subió el renglón en foco: ${resumen(carrito)}`);
+  assert.equal(linea(carrito, 'Chilaquiles')[0].cantidad, 1, 'se contagió al otro');
+});
+
 await t('X31. «para 3 personas» no sube la cantidad de todas las líneas', async () => {
   // «todo» resuelve la referencia a TODAS las líneas y el «3» del mensaje es un
   // número. Sin el candado de una sola línea, cualquier renglón que el modelo

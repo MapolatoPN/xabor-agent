@@ -29,6 +29,7 @@
 import { separarProcedencia } from '../orders/procedenciaDeEvidencia.js';
 import { hayVerboDeQuitar } from '../orders/carritoDelPedido.js';
 import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
+import { nombradoPorElCliente } from '../orders/carritoDelPedido.js';
 import {
   contextoDeLaConversacion, anotarTurno, sincronizarLineas, tocarLinea,
   anotarReferencia, anotarPendiente, resolverPendiente, resumenDelContexto,
@@ -349,9 +350,22 @@ export async function atenderTurno({
   // chilaquiles autorizaría subir los chilaquiles a dos, porque la referencia
   // elíptica también casa con esa frase. Es el agujero exacto que abre atribuir
   // por contexto sin mirar si el contexto hacía falta.
-  const nombraAlgoDeLaCarta = catalogo.length
-    ? buscarProductos(catalogo, dicho).length > 0
-    : false;
+  // ── LA GUARDA SE MIDE CON LA VARA DEL RECONCILIADOR ────────────────────
+  //
+  // Antes se usaba `buscarProductos`, que es más estricto: una errata
+  // («gyosas») o un producto agotado hacían que la guarda no viera el producto
+  // que el cliente sí había nombrado, y la atribución se activaba igual. Se
+  // mide con `nombradoPorElCliente`, que es exactamente lo que el reconciliador
+  // usará después, y sobre TODOS los productos de la carta, agotados incluidos:
+  // aquí no se decide si se puede vender, se decide si el cliente nombró algo.
+  //
+  // Y sin catálogo NO se atribuye. La versión anterior devolvía `false` —«no
+  // nombró nada»— y entregaba la atribución en todos los turnos de cualquier
+  // negocio cuya carta no se pudiera leer ese día. Un fallo de lectura no puede
+  // abrir una puerta.
+  const todosLosNombres = (catalogo || []).flatMap((c) => (c?.productos || []).map((p) => String(p?.nombre || '')));
+  const nombraAlgoDeLaCarta = !catalogo.length
+    || todosLosNombres.some((n) => n && nombradoPorElCliente(n, autoriza));
   // UNA SOLA LÍNEA, Y NUNCA «TODOS».
   //
   // La atribución por foco existe para «mejor dos», que habla de un renglón.
@@ -360,10 +374,18 @@ export async function atenderTurno({
   // suelto del mensaje habría autorizado subir a tres cualquiera de ellas que
   // el modelo tocara. Con un solo objetivo, el peor caso vuelve a ser el que
   // ya existía antes del mesero para un carrito de un renglón.
+  // Y EL TURNO TIENE QUE SER UN ACTO DE CANTIDAD.
+  //
+  // Atar la atribución al renglón no bastaba: había que atarla también al ACTO.
+  // «Así está bien, somos 3» y «Morelos 12» y «paso a las 2» traen un número y
+  // una palabra que resuelve la referencia, y ninguno pide más comida. Con esta
+  // condición, la atribución solo existe cuando el cliente está cambiando una
+  // cantidad — que es para lo único que se añadió.
   const TIPOS_QUE_SENALAN_UNO = ['eliptica', 'deictico', 'ordinal', 'ultimo', 'otro', 'anterior', 'poseedor'];
   const atribuidos = (referencia.resuelta
     && referencia.lids.length === 1
     && TIPOS_QUE_SENALAN_UNO.includes(referencia.tipo)
+    && intenciones.includes('CAMBIAR_CANTIDAD')
     && !nombraAlgoDeLaCarta)
     ? referencia.lids : [];
 

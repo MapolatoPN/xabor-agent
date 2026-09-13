@@ -150,6 +150,21 @@ const T_CANCELAR = /\b(cancela el pedido|cancelar el pedido|cancela todo|ya no q
 
 const T_INICIAR = /\b(quiero ordenar|quiero pedir|quiero hacer un pedido|voy a ordenar|voy a pedir|para ordenar|para pedir|hacer un pedido|tomar mi orden|puedo ordenar|puedo pedir|me tomas la orden|levantar un pedido)\b/;
 
+// ── DOS FORMAS DE CAMBIAR UNA CANTIDAD, Y NO SON LA MISMA ────────────────
+//
+// ELÍPTICA    «mejor dos», «hazlos tres», «que sean cuatro»
+//             No hay objeto: habla del renglón del que se venía hablando, y por
+//             eso NO es una alta.
+//
+// CON VERBO   «ponme dos», «dame tres»
+//             Puede ser lo uno o lo otro según lo que venga detrás: «ponme dos»
+//             corrige, «dame dos chilaquiles» pide. Cuenta como cambio de
+//             cantidad —de esa etiqueta cuelga la atribución por foco— y NO
+//             excluye la alta, que la decide el nombre que traiga.
+//
+// Meterlas en el mismo patrón se comió la alta de «dame dos chilaquiles verdes
+// con pollo»: lo enseñó F4 en cuanto se hizo.
+const T_CANTIDAD_CON_VERBO = /\b(?:ponme|pon|dame|deme|hazme) (?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d+)\b/;
 const T_CANTIDAD = /\b(mejor (?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|una|uno|un|\d+)|hazlos|hazlas|haz(?:me)? (?:dos|tres|cuatro|cinco|\d+)|que sean|que sea (?:dos|tres|\d+)|ponme (?:otro|otra|uno mas|una mas)|uno mas|una mas|otro mas|otra mas|otra igual|otro igual|dos mas|tres mas|sube(?:le)? a|bajale a|b[aá]jale a|solo (?:uno|una|dos)|nada mas (?:uno|una|dos))\b/;
 
 const T_MODIFICADOR = /\b(sin |con |mejor con|mejor sin|que sea de|que sean de|cambialo a|c[aá]mbialo a|cambiala a|en vez de|en lugar de|pero sin|pero con|extra |sin nada de|bien |poco |mucho )/;
@@ -207,7 +222,8 @@ function intencionesDeClausula(c, { fase = null, conAcentos = null } = {}) {
   if (T_CANCELAR.test(c)) fuera.add('CANCELAR');
   else if (hayVerboDeQuitar(c)) fuera.add('QUITAR');
 
-  if (T_CANTIDAD.test(c)) fuera.add('CAMBIAR_CANTIDAD');
+  const cantidadEliptica = T_CANTIDAD.test(c);
+  if (cantidadEliptica || T_CANTIDAD_CON_VERBO.test(c)) fuera.add('CAMBIAR_CANTIDAD');
   if (T_MODIFICADOR.test(c)) fuera.add('CAMBIAR_MODIFICADOR');
   if (T_NOTA.test(c)) fuera.add('AGREGAR_NOTA');
   if (T_MODALIDAD.test(c)) fuera.add('DEFINIR_MODALIDAD');
@@ -216,7 +232,7 @@ function intencionesDeClausula(c, { fase = null, conAcentos = null } = {}) {
   if (T_DESPEDIDA.test(c)) fuera.add('DESPEDIR');
 
   if (T_INICIAR.test(c)) fuera.add('INICIAR_ORDEN');
-  else if (V_PEDIR.test(c) && !fuera.has('QUITAR') && !fuera.has('CAMBIAR_CANTIDAD')) {
+  else if (V_PEDIR.test(c) && !fuera.has('QUITAR') && !cantidadEliptica) {
     fuera.add('AGREGAR_PRODUCTO');
   } else if (!fuera.size && /\b(\d+|un|una|unos|unas|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(c)
              && !['confirmado', 'escalado_humano'].includes(fase)) {

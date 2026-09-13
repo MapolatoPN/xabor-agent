@@ -92,7 +92,19 @@ for (const neg of [A, B]) {
   const { rows: [r] } = await pool.query(
     "SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'", [neg]);
   const { rows: [b] } = await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id=$1', [neg]);
-  previo[neg] = { reglas: r?.valor ?? null, bot: b?.bot_whatsapp_activo !== false };
+  // Las credenciales de canal también: este negocio es del seed y otras suites
+  // comprueban justamente que NO tenga token propio. Dejarle uno de mentira
+  // hace fallar a `fase-whatsapp-invariante-activo` con un error que no se
+  // parece en nada a su causa. Pasó, y por eso está escrito aquí.
+  const { rows: creds } = await pool.query(
+    "SELECT clave, valor FROM configuracion WHERE negocio_id=$1 AND clave IN ('int_wa_phone_id','int_wa_token')",
+    [neg]);
+  previo[neg] = {
+    reglas: r?.valor ?? null,
+    bot: b?.bot_whatsapp_activo !== false,
+    creds: Object.fromEntries(creds.map((c) => [c.clave, c.valor])),
+    tenia: new Set(creds.map((c) => c.clave)),
+  };
   await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [neg]);
   await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado)
@@ -448,6 +460,13 @@ await t('MS14. el registro no lleva teléfono, correo ni el mensaje entero', asy
     await pool.query("DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre LIKE 'MSH %'", [neg]).catch(() => {});
     await pool.query('DELETE FROM configuracion WHERE negocio_id=$1 AND clave = ANY($2)',
       [neg, ['mesero_whatsapp_shadow', 'mesero_whatsapp_v1']]).catch(() => {});
+    for (const clave of ['int_wa_phone_id', 'int_wa_token']) {
+      if (previo[neg]?.tenia?.has(clave)) {
+        await actualizarConfiguracion({ [clave]: previo[neg].creds[clave] }, neg).catch(() => {});
+      } else {
+        await pool.query('DELETE FROM configuracion WHERE negocio_id=$1 AND clave=$2', [neg, clave]).catch(() => {});
+      }
+    }
     if (previo[neg]?.reglas === null) {
       await pool.query("DELETE FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'", [neg]).catch(() => {});
     } else if (previo[neg]) {
