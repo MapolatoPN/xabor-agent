@@ -1,4 +1,4 @@
-// EL CONTEXTO DE LA ATENCIÃ“N, Y LO QUE EL BOT OFRECIÃ“.
+// EL CONTEXTO DE LA ATENCIÃN, Y LO QUE EL BOT OFRECIÃ.
 //
 // Fases C y E del Mesero Digital. MÃ³dulos puros: esta suite no toca la base ni
 // levanta servidor, asÃ­ que corre en segundos y puede correrse mil veces.
@@ -19,7 +19,8 @@ import assert from 'node:assert/strict';
 const ctxMod = await import('../src/mesero-whatsapp/contextoMesa.js');
 const {
   contextoNuevo, contextoDeLaConversacion, sanearContexto, anotarTurno, sincronizarLineas,
-  tocarLinea, anotarPendiente, resolverPendiente, tienePendiente, preguntadoRecientemente,
+  tocarLinea, sincronizarPendientes, anotarIntentoFallido, marcarPreguntado,
+  tienePendiente, preguntadoRecientemente, clavePendiente,
   turnosDelCliente, ultimoTurnoDelBot, resumenDelContexto, TURNOS_RECORDADOS,
 } = ctxMod;
 
@@ -38,7 +39,7 @@ async function t(nombre, fn) {
 
 const carrito = (...lids) => ({ items: lids.map((lid) => ({ lid, nombre: `p-${lid}`, cantidad: 1 })), datos: {} });
 
-// â”€â”€ FASE C â€” el contexto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â¬â¬ FASE C â¬ el contexto â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬
 
 await t('C1. un contexto nuevo trae todos sus campos y no inventa ninguno', () => {
   const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
@@ -92,7 +93,7 @@ await t('C6. sobrevive el viaje por JSON del snapshot durable', () => {
   anotarTurno(c, 'cliente', 'unos chilaquiles');
   sincronizarLineas(c, carrito('a', 'b'));
   tocarLinea(c, 'b');
-  anotarPendiente(c, 'modalidad', 'Â¿para recoger o a domicilio?');
+  sincronizarPendientes(c, [{ tipo: 'dato', dato: 'modalidad' }]);
   proponer(c, { clase: 'producto', referencia: 'CafÃ© Americano' });
 
   const vuelto = contextoDeLaConversacion(JSON.parse(JSON.stringify(c)),
@@ -100,7 +101,8 @@ await t('C6. sobrevive el viaje por JSON del snapshot durable', () => {
   assert.equal(vuelto.contador, 1);
   assert.equal(vuelto.lineas.length, 2);
   assert.equal(vuelto.foco, 'b');
-  assert(tienePendiente(vuelto, 'modalidad'));
+  assert(tienePendiente(vuelto, 'dato:modalidad'));
+  assert.equal(vuelto.pendientes[0].tipo, 'dato', 'el pendiente perdiÃ³ su forma al viajar');
   assert.equal(vuelto.propuestas.length, 1);
   assert.equal(vuelto.propuestas[0].estado, PROPUESTO);
 });
@@ -138,18 +140,77 @@ await t('C9. el foco se suelta cuando su renglÃ³n desaparece', () => {
   assert.equal(c.foco, null, 'el foco quedÃ³ apuntando a un fantasma');
 });
 
-await t('C10. los pendientes no se duplican, cuentan insistencias y se resuelven', () => {
+await t('C10. un pendiente se guarda por lo que pregunta, no por cÃ³mo se redacta', () => {
   const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
-  anotarTurno(c, 'bot', 'Â¿para recoger o a domicilio?');
-  anotarPendiente(c, 'modalidad', 'Â¿para recoger?');
+  anotarTurno(c, 'cliente', 'unos chilaquiles');
+  const opcion = { tipo: 'opcion_ambigua', lid: 'L1', producto: 'Chilaquiles', grupo: 'Guarnicion',
+    candidatos: ['Frijoles naturales', 'Frijoles con chorizo'] };
+
+  const uno = sincronizarPendientes(c, [opcion], { lidsVivos: ['L1'] });
+  assert.deepEqual(uno, { creados: 1, resueltos: 0, cancelados: 0, obsoletos: 0, vivos: 1 });
+  const p = c.pendientes[0];
+  assert.equal(p.clave, clavePendiente(opcion));
+  assert.deepEqual(p.candidatos, ['Frijoles naturales', 'Frijoles con chorizo']);
+  assert.equal(p.intentos, 0);
+  // NO se guarda ninguna frase: la pregunta se redacta a partir de esto.
+  assert.equal(p.pregunta, undefined, 'el pendiente guardÃ³ la frase redactada');
+
+  // El mismo pendiente otra vez no se duplica ni se recrea.
   anotarTurno(c, 'cliente', 'oye Â¿y quÃ© bebidas tienes?');
-  anotarTurno(c, 'bot', 'Â¿para recoger o a domicilio?');
-  anotarPendiente(c, 'modalidad', 'Â¿para recoger?');
+  const dos = sincronizarPendientes(c, [opcion], { lidsVivos: ['L1'] });
+  assert.deepEqual(dos, { creados: 0, resueltos: 0, cancelados: 0, obsoletos: 0, vivos: 1 });
   assert.equal(c.pendientes.length, 1);
-  assert.equal(c.pendientes[0].veces, 2);
-  assert(preguntadoRecientemente(c, 'modalidad'));
-  resolverPendiente(c, 'modalidad');
-  assert.equal(tienePendiente(c, 'modalidad'), false);
+  assert.equal(c.pendientes[0].turnoCreacion, 1, 'se recreÃ³ un pendiente que no habÃ­a cambiado');
+
+  // Y cuando deja de hacer falta, se resuelve.
+  const tres = sincronizarPendientes(c, [], { lidsVivos: ['L1'] });
+  assert.deepEqual(tres, { creados: 0, resueltos: 1, cancelados: 0, obsoletos: 0, vivos: 0 });
+  assert.equal(tienePendiente(c, 'opcion_ambigua:L1:Guarnicion'), false);
+});
+
+await t('C10b. si su lÃ­nea desaparece, el pendiente se CANCELA, no se resuelve', () => {
+  const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
+  anotarTurno(c, 'cliente', 'unos chilaquiles');
+  sincronizarPendientes(c, [{ tipo: 'grupo_requerido', lid: 'L1', producto: 'Chilaquiles',
+    grupo: 'Salsa', candidatos: ['Verde', 'Roja'] }], { lidsVivos: ['L1'] });
+  anotarTurno(c, 'cliente', 'mejor quita los chilaquiles');
+  const ciclo = sincronizarPendientes(c, [], { lidsVivos: [] });
+  assert.deepEqual(ciclo, { creados: 0, resueltos: 0, cancelados: 1, obsoletos: 0, vivos: 0 },
+    'una pregunta sobre un platillo que ya no existe no se Â«resolviÃ³Â»: se cayÃ³ con Ã©l');
+  assert.deepEqual(c.pendientes, []);
+});
+
+await t('C10c. si cambian los candidatos, la pregunta vieja queda OBSOLETA', () => {
+  const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
+  anotarTurno(c, 'cliente', 'unos chilaquiles');
+  const antes = { tipo: 'opcion_ambigua', lid: 'L1', grupo: 'Guarnicion',
+    candidatos: ['Frijoles naturales', 'Frijoles con chorizo'] };
+  sincronizarPendientes(c, [antes], { lidsVivos: ['L1'] });
+  anotarIntentoFallido(c, c.pendientes[0].clave);
+  assert.equal(c.pendientes[0].intentos, 1);
+
+  anotarTurno(c, 'cliente', 'de papas');
+  const despues = { ...antes, candidatos: ['Papas naturales', 'Papas a la mexicana'] };
+  const ciclo = sincronizarPendientes(c, [despues], { lidsVivos: ['L1'] });
+  assert.deepEqual(ciclo, { creados: 0, resueltos: 0, cancelados: 0, obsoletos: 1, vivos: 1 });
+  assert.deepEqual(c.pendientes[0].candidatos, ['Papas naturales', 'Papas a la mexicana']);
+  assert.equal(c.pendientes[0].intentos, 0, 'los intentos de la pregunta vieja se arrastraron a la nueva');
+  assert.equal(c.pendientes[0].turnoCreacion, 2);
+});
+
+await t('C10d. solo un intento RELACIONADO sube el contador', () => {
+  const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
+  anotarTurno(c, 'cliente', 'unos chilaquiles');
+  sincronizarPendientes(c, [{ tipo: 'dato', dato: 'modalidad' }]);
+  const clave = 'dato::modalidad'.replace('::', '::');
+  const p = c.pendientes[0];
+  assert.equal(p.intentos, 0);
+  // Tres turnos que no contestan a la modalidad: el contador NO se mueve,
+  // porque quien llama solo anota el intento cuando el mensaje va dirigido a Ã©l.
+  for (const _ of [1, 2, 3]) sincronizarPendientes(c, [{ tipo: 'dato', dato: 'modalidad' }]);
+  assert.equal(c.pendientes[0].intentos, 0, 'el mero paso de los turnos subiÃ³ el contador');
+  anotarIntentoFallido(c, c.pendientes[0].clave);
+  assert.equal(c.pendientes[0].intentos, 1);
 });
 
 await t('C11. la memoria de turnos estÃ¡ acotada y no crece sin lÃ­mite', () => {
@@ -163,13 +224,13 @@ await t('C11. la memoria de turnos estÃ¡ acotada y no crece sin lÃ­mite', () => 
 await t('C12. el resumen para el log no lleva una palabra del cliente', () => {
   const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
   anotarTurno(c, 'cliente', 'me llamo Ana y vivo en Hidalgo 123');
-  anotarPendiente(c, 'modalidad');
+  sincronizarPendientes(c, [{ tipo: 'dato', dato: 'modalidad' }]);
   const r = JSON.stringify(resumenDelContexto(c));
   assert(!/Ana|Hidalgo|123/.test(r), `el resumen filtrÃ³ datos del cliente: ${r}`);
   assert(/modalidad/.test(r));
 });
 
-// â”€â”€ FASE E â€” propuesto, confirmado, rechazado â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â¬â¬ FASE E â¬ propuesto, confirmado, rechazado â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬
 
 const conPropuesta = (...refs) => {
   const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
@@ -279,7 +340,7 @@ await t('E10. la evidencia que produce un sÃ­ es SOLO la referencia aceptada', (
 await t('E11. la evidencia sale de la referencia del catÃ¡logo, NO de cÃ³mo lo dijo el bot', () => {
   // La etiqueta es la frase con la que el bot lo ofreciÃ³, y puede nombrar de
   // paso otras cosas: Â«un cafÃ©, que va bien con el Pan DulceÂ». Si la evidencia
-  // se construyera con ella, un Â«sÃ­Â» al cafÃ© acabarÃ­a autorizando el pan â€” el
+  // se construyera con ella, un Â«sÃ­Â» al cafÃ© acabarÃ­a autorizando el pan â¬ el
   // bot se estarÃ­a dando permiso a sÃ­ mismo con su propia redacciÃ³n.
   const c = contextoNuevo({ negocioId: 'n1', conversacionId: 'conv1' });
   anotarTurno(c, 'cliente', 'unos chilaquiles');
@@ -297,7 +358,7 @@ await t('E11. la evidencia sale de la referencia del catÃ¡logo, NO de cÃ³mo lo d
   assert(!/Pan Dulce/.test(ev), `la redacciÃ³n del bot se colÃ³ como evidencia: "${ev}"`);
 });
 
-// â”€â”€ LOS INTERRUPTORES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â¬â¬ LOS INTERRUPTORES â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬â¬
 
 const lector = (cfg) => async () => cfg;
 
@@ -395,6 +456,6 @@ await t('F8. un error leyendo la configuraciÃ³n deja todo apagado', async () => 
   );
 });
 
-console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} â€” ${ok} pasadas, ${fail} fallidas`);
+console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} â¬ ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  Â· ${f}`);
 process.exit(fail ? 1 : 0);

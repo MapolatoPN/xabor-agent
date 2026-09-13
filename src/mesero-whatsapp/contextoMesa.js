@@ -70,13 +70,17 @@ export function contextoNuevo({ negocioId, conversacionId, cliente = null } = {}
     lineas: [],
     foco: null,              // `lid` del renglón del que se está hablando
     referencias: [],         // { turno, lid, texto } — a qué apuntó cada referencia
-    pendientes: [],          // { clave, pregunta, turno } — lo que falta y ya se preguntó
+    pendientes: [],          // preguntas vivas, estructuradas (ver más abajo)
     modalidad: null,
     pago: null,
     propuestas: [],          // Fase E: lo que el bot ofreció y en qué acabó
     aclaraciones: [],        // ambigüedades abiertas, generadas por código
     turnos: [],              // { rol, texto, dicho, percibido }
     contador: 0,             // número de turno; sirve de reloj sin usar Date
+    // Solo en sombra: { turno, motivo } del punto en que, atendiendo de verdad,
+    // esto habría pasado a una persona. En producción es siempre `null` porque
+    // allí el handoff es terminal y no hay «después».
+    habriaEscalado: null,
   };
 }
 
@@ -113,6 +117,14 @@ export function sanearContexto(crudo, { negocioId, conversacionId } = {}) {
     aclaraciones: arreglo(crudo.aclaraciones).filter(esObjeto),
     turnos: arreglo(crudo.turnos).filter(esObjeto).slice(-TURNOS_RECORDADOS),
     contador: Number.isFinite(Number(crudo.contador)) ? Number(crudo.contador) : 0,
+    // SOLO en modo sombra: el turno en que, atendiendo de verdad, esto habría
+    // pasado a una persona. Tiene que sobrevivir al guardado, porque su razón
+    // de ser es marcar todos los turnos POSTERIORES como contrafactuales; si se
+    // pierde al serializar, cada turno vuelve a creer que el escalado es suyo.
+    habriaEscalado: esObjeto(crudo.habriaEscalado)
+      && Number.isFinite(Number(crudo.habriaEscalado.turno))
+      ? { turno: Number(crudo.habriaEscalado.turno), motivo: String(crudo.habriaEscalado.motivo || '') }
+      : null,
   };
 }
 
@@ -207,48 +219,135 @@ export function anotarReferencia(ctx, texto, lid) {
   if (ctx.referencias.length > TURNOS_RECORDADOS) ctx.referencias.shift();
 }
 
-// ── Pendientes ───────────────────────────────────────────────────────────
+// ── PENDIENTES: LO QUE SE PREGUNTA, NO CÓMO SE REDACTA ───────────────────
 //
-// Un pendiente es algo que falta Y que ya se preguntó. Guardarlo evita las dos
-// faltas de educación del bot actual: repetir la misma pregunta tres veces, y
-// preguntar algo que el cliente ya contestó.
+// Un pendiente es una PREGUNTA VIVA. Se guarda por su contenido —qué línea, qué
+// grupo, entre qué candidatos— y NUNCA por la frase con la que se dijo. La
+// frase se vuelve a redactar cada vez a partir del pendiente vigente, así que
+// no puede sobrevivirle.
+//
+// ── Por qué se rehízo esto ───────────────────────────────────────────────
+//
+// En el primer tráfico real, una pregunta sobre la presentación de un platillo
+// apareció idéntica durante cinco turnos mientras el cliente hablaba de su
+// dirección y de un licuado. Y en otra conversación, tres mensajes que no
+// tenían nada que ver —«no tendrá el menú?», «es que no lo encuentro», «😬»—
+// hicieron creer al sistema que llevaba tres intentos fallidos y lo mandaron a
+// un humano.
+//
+// Las dos cosas salían del mismo diseño: el pendiente era una CLAVE y una
+// FRASE, y su contador subía por el mero paso de los turnos.
+//
+// ── El ciclo de vida ─────────────────────────────────────────────────────
+//
+//   creado      aparece algo que hace falta preguntar
+//   vigente     sigue haciendo falta, y sus candidatos son los mismos
+//   obsoleto    sigue haciendo falta pero CAMBIÓ (otros candidatos, otro
+//               grupo): la pregunta anterior ya no lo representa y se rehace
+//   resuelto    dejó de hacer falta porque se llenó
+//   cancelado   dejó de hacer falta porque su línea desapareció
+//
+// Cada turno se recalcula qué hace falta y se reconcilia contra lo guardado.
+// Un pendiente no puede quedarse: o está en la foto de este turno, o se fue.
+
+/** La identidad estable de un pendiente. Dos preguntas iguales tienen la misma. */
+export function clavePendiente(d) {
+  if (!d || !d.tipo) return null;
+  // Las partes vacías no dejan hueco: `dato:modalidad`, no `dato:::modalidad`.
+  // Una clave se lee en los logs y en las pruebas, y una llena de dos puntos
+  // no se lee.
+  return [d.tipo, d.lid, d.grupo, d.dato].filter(Boolean).join(':');
+}
+
+const mismosCandidatos = (a, b) => {
+  const n = (x) => (Array.isArray(x) ? x : []).map((y) => String(typeof y === 'string' ? y : y?.nombre || ''))
+    .filter(Boolean).sort().join('|');
+  return n(a) === n(b);
+};
 
 /**
- * `veces` cuenta INSISTENCIAS, no repeticiones.
+ * Pone los pendientes al día con lo que hace falta AHORA.
  *
- * La diferencia importa porque de `veces` cuelga el escalado a una persona por
- * «demasiadas idas y vueltas». Sin `avanzo`, una conversación perfectamente
- * sana —el cliente elige salsa, luego proteína, luego pide una bebida— sube el
- * contador en cada turno solo porque la modalidad sigue sin preguntarse, y a
- * los tres turnos el bot llama a un humano en medio de un pedido que iba bien.
- * Pasó en el primer E2E, en el turno 8 de doce.
+ * `vigentes` son descriptores `{ tipo, lid, producto, grupo, candidatos, dato,
+ * evidenciaOrigen }` recalculados este turno. `lidsVivos` son los renglones que
+ * existen, para poder distinguir «se resolvió» de «se fue con su línea».
  *
- * Estar atascado es preguntar lo mismo SIN que el pedido se mueva. Cuando el
- * turno movió algo, el contador vuelve a uno.
+ * Devuelve el recuento del ciclo de vida, que es lo que alimenta las métricas.
  */
-export function anotarPendiente(ctx, clave, pregunta = '', { avanzo = false } = {}) {
-  const k = String(clave || '').trim();
-  if (!k) return;
-  const ya = ctx.pendientes.find((p) => p.clave === k);
-  if (ya) {
-    ya.turno = ctx.contador;
-    ya.veces = avanzo ? 1 : (ya.veces || 1) + 1;
-    return;
+export function sincronizarPendientes(ctx, vigentes = [], { lidsVivos = null } = {}) {
+  const turno = ctx.contador || 0;
+  const antes = new Map(arreglo(ctx.pendientes).map((p) => [p.clave, p]));
+  const salida = [];
+  const cuenta = { creados: 0, resueltos: 0, cancelados: 0, obsoletos: 0 };
+
+  for (const d of arreglo(vigentes)) {
+    const clave = clavePendiente(d);
+    if (!clave) continue;
+    const previo = antes.get(clave);
+    antes.delete(clave);
+    const candidatos = arreglo(d.candidatos)
+      .map((c) => String(typeof c === 'string' ? c : c?.nombre || '')).filter(Boolean);
+
+    if (previo && mismosCandidatos(previo.candidatos, candidatos)) {
+      salida.push({ ...previo, producto: d.producto ?? previo.producto, turnoVisto: turno });
+      continue;
+    }
+    // Nuevo, o el mismo con OTROS candidatos: en los dos casos la pregunta
+    // anterior ya no lo representa, así que se rehace desde cero.
+    if (previo) cuenta.obsoletos += 1; else cuenta.creados += 1;
+    salida.push({
+      clave,
+      tipo: String(d.tipo),
+      lid: d.lid || null,
+      producto: d.producto ? String(d.producto) : null,
+      grupo: d.grupo ? String(d.grupo) : null,
+      dato: d.dato ? String(d.dato) : null,
+      candidatos,
+      evidenciaOrigen: String(d.evidenciaOrigen || ''),
+      turnoCreacion: turno,
+      turnoVisto: turno,
+      turnoUltimaPregunta: null,
+      intentos: 0,
+    });
   }
-  ctx.pendientes.push({ clave: k, pregunta: String(pregunta || ''), turno: ctx.contador, veces: 1 });
+
+  // Lo que ya no está en la foto: se resolvió, o se fue con su línea.
+  for (const p of antes.values()) {
+    const seFueLaLinea = p.lid && Array.isArray(lidsVivos) && !lidsVivos.includes(p.lid);
+    if (seFueLaLinea) cuenta.cancelados += 1; else cuenta.resueltos += 1;
+  }
+
+  ctx.pendientes = salida;
+  cuenta.vivos = salida.length;
+  return cuenta;
 }
 
-export function resolverPendiente(ctx, clave) {
-  const k = String(clave || '').trim();
-  ctx.pendientes = ctx.pendientes.filter((p) => p.clave !== k);
+/** Deja anotado que en este turno se preguntó por él. */
+export function marcarPreguntado(ctx, clave) {
+  const p = arreglo(ctx?.pendientes).find((x) => x.clave === clave);
+  if (p) p.turnoUltimaPregunta = ctx.contador || 0;
 }
 
+/**
+ * UN INTENTO FALLIDO: el cliente contestó A ESTO y no se pudo resolver.
+ *
+ * Es lo único que sube el contador. Un mensaje sobre otra cosa —la dirección,
+ * otro producto, un saludo— no cuenta, porque el cliente no está fallando en
+ * contestar: está hablando de otra cosa, que es lo normal en una conversación.
+ */
+export function anotarIntentoFallido(ctx, clave) {
+  const p = arreglo(ctx?.pendientes).find((x) => x.clave === clave);
+  if (p) p.intentos = (p.intentos || 0) + 1;
+  return p?.intentos || 0;
+}
+
+export const pendienteVigente = (ctx, clave) => arreglo(ctx?.pendientes).find((p) => p.clave === clave) || null;
 export const tienePendiente = (ctx, clave) => arreglo(ctx?.pendientes).some((p) => p.clave === String(clave));
 
-/** ¿Ya se preguntó esto en este turno o en el anterior? Para no insistir. */
+/** ¿Se preguntó por él en este turno o en el anterior? Para no insistir. */
 export const preguntadoRecientemente = (ctx, clave, ventana = 2) => {
   const p = arreglo(ctx?.pendientes).find((x) => x.clave === String(clave));
-  return !!p && (ctx.contador - p.turno) < ventana;
+  return !!p && p.turnoUltimaPregunta !== null && ((ctx.contador || 0) - p.turnoUltimaPregunta) < ventana;
 };
 
 /** Instantánea mínima para el log y las métricas: sin texto del cliente. */
@@ -259,6 +358,10 @@ export function resumenDelContexto(ctx) {
     lineas: arreglo(ctx?.lineas).length,
     foco: ctx?.foco || null,
     pendientes: arreglo(ctx?.pendientes).map((p) => p.clave),
+    pendientes_detalle: arreglo(ctx?.pendientes).map((p) => ({
+      clave: p.clave, tipo: p.tipo, grupo: p.grupo || null,
+      candidatos: p.candidatos || [], intentos: p.intentos || 0, desde: p.turnoCreacion,
+    })),
     propuestas_abiertas: arreglo(ctx?.propuestas).filter((p) => p.estado === 'propuesto').length,
     aclaraciones: arreglo(ctx?.aclaraciones).length,
   };

@@ -36,7 +36,16 @@ export const EVENTOS = Object.freeze([
   'whatsapp_mesero_invento_bloqueado',
   'whatsapp_mesero_referencia_ambigua',
   'whatsapp_mesero_handoff',
+  // El handoff que en producción habría ocurrido y en sombra no detiene nada.
+  'whatsapp_mesero_handoff_hipotetico',
+  // Turnos observados DESPUÉS de ese punto: contrafactuales, no comparables.
+  'whatsapp_mesero_post_handoff',
   'whatsapp_mesero_confirmado',
+  // El ciclo de vida de los pendientes. Sin esto no se sabe si una pregunta se
+  // contestó, se quedó colgada o murió con su renglón.
+  'whatsapp_mesero_pendientes',
+  // La misma pregunta, otra vez, después de que el cliente intentó contestarla.
+  'whatsapp_mesero_aclaracion_repetida',
 ]);
 
 /** Identificador corto y estable de la conversación. No reversible a teléfono. */
@@ -67,6 +76,9 @@ export function eventosDelTurno({
   negocioId, conversacion, intenciones = [], aclaraciones = [], recomendaciones = [],
   desenlace = null, decisiones = [], cambios = null, handoff = null, confirmado = false,
   fase = null, modo = 'mesero',
+  // Ciclo de vida de los pendientes de ESTE turno, tal como lo devolvió
+  // `sincronizarPendientes`. Cero es un dato: significa que nada cambió.
+  pendientes = null, aclaracionesRepetidas = [], postHandoff = false,
 } = {}) {
   const conv = idConversacion(conversacion);
   const fuera = [];
@@ -100,6 +112,29 @@ export function eventosDelTurno({
     }
   }
   if (handoff?.escalar) fuera.push(linea('whatsapp_mesero_handoff', negocioId, { conv, motivo: handoff.motivo }));
+  // En sombra el handoff no es terminal: se registra aparte, con el turno en que
+  // habría ocurrido, y los turnos siguientes quedan marcados.
+  if (handoff?.habriaEscalado) {
+    fuera.push(linea('whatsapp_mesero_handoff_hipotetico', negocioId, {
+      conv, motivo: handoff.motivo, turno_del_escalado: handoff.turnoDelEscalado,
+    }));
+  }
+  if (postHandoff) fuera.push(linea('whatsapp_mesero_post_handoff', negocioId, { conv, fase }));
+  if (pendientes) {
+    fuera.push(linea('whatsapp_mesero_pendientes', negocioId, {
+      conv,
+      creados: pendientes.creados ?? 0,
+      resueltos: pendientes.resueltos ?? 0,
+      cancelados: pendientes.cancelados ?? 0,
+      obsoletos: pendientes.obsoletos ?? 0,
+      vivos: pendientes.vivos ?? 0,
+    }));
+  }
+  for (const r of aclaracionesRepetidas) {
+    fuera.push(linea('whatsapp_mesero_aclaracion_repetida', negocioId, {
+      conv, tipo: r.tipo, intentos: r.intentos,
+    }));
+  }
   if (confirmado) fuera.push(linea('whatsapp_mesero_confirmado', negocioId, { conv }));
   return fuera;
 }

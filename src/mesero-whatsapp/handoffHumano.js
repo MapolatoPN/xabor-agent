@@ -66,11 +66,17 @@ export function decidirHandoff({ texto = '', intenciones = [], contexto = null, 
   if (MOLESTO.test(t)) return si('CLIENTE_MOLESTO');
   if (PEDIDO_PREVIO.test(t)) return si('PEDIDO_PREVIO');
 
-  // Demasiadas idas y vueltas: el bot pregunta, el cliente contesta, el bot
-  // vuelve a preguntar lo mismo. Se cuenta por INSISTENCIAS sobre el mismo
-  // pendiente, no por número de turnos: una conversación larga y que avanza no
-  // es un problema.
-  const insistidas = (contexto?.pendientes || []).filter((p) => (p.veces || 1) >= TOPE_ACLARACIONES);
+  // ── DEMASIADAS IDAS Y VUELTAS ──────────────────────────────────────────
+  //
+  // Se cuenta por INTENTOS FALLIDOS sobre un mismo pendiente: el cliente
+  // contestó A ESA pregunta y aun así no se pudo resolver. Ni el paso de los
+  // turnos ni un mensaje sobre otra cosa suman.
+  //
+  // La versión anterior contaba «veces que se anotó el pendiente», y eso subía
+  // en cada turno mientras faltara algo. En el primer día de tráfico real mandó
+  // a un humano el 46% de los turnos, con mensajes tan inocentes como «no
+  // tendrá el menú?» y «😬» — y a partir de ahí la conversación quedaba muerta.
+  const insistidas = (contexto?.pendientes || []).filter((p) => (p.intentos || 0) >= TOPE_ACLARACIONES);
   if (insistidas.length) return si('DEMASIADAS_ACLARACIONES');
 
   return no;
@@ -91,7 +97,9 @@ export function equipajeDelHandoff({ contexto = null, carrito = null, motivo = n
     fase: contexto?.fase || 'inicio',
     // Provisional, y se dice: nada de esto se registró como pedido.
     pedido_provisional: resumen.items.length ? resumen : null,
-    pendientes: (contexto?.pendientes || []).map((p) => ({ que: p.clave, veces: p.veces || 1 })),
+    pendientes: (contexto?.pendientes || []).map((p) => ({
+      que: p.clave, tipo: p.tipo, candidatos: p.candidatos || [], intentos: p.intentos || 0,
+    })),
     aclaraciones_abiertas: (aclaraciones || []).map((a) => a.tipo),
     ultima_pregunta: ultimaPregunta || null,
     ofrecido_y_sin_contestar: (contexto?.propuestas || [])

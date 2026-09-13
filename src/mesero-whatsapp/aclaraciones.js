@@ -70,6 +70,7 @@ export function recolectarAclaraciones({
   for (const a of lista(opcionesAmbiguas)) {
     const candidatos = [a.opcion, ...nombres(a.empatan)];
     fuera.push(aclaracion('opcion_ambigua', {
+      lid: a.lid || null,
       grupo: String(a.grupo || ''), producto: String(a.producto || ''), candidatos,
     }, `¿${enumerar(candidatos)}?`));
   }

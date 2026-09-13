@@ -32,7 +32,8 @@ import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
 import { nombradoPorElCliente } from '../orders/carritoDelPedido.js';
 import {
   contextoDeLaConversacion, anotarTurno, sincronizarLineas, tocarLinea,
-  anotarReferencia, anotarPendiente, resolverPendiente, resumenDelContexto,
+  anotarReferencia, sincronizarPendientes, clavePendiente, anotarIntentoFallido,
+  marcarPreguntado, preguntadoRecientemente, resumenDelContexto,
 } from './contextoMesa.js';
 import {
   caducarViejas, leerRespuesta, aplicarDesenlace, proponer as registrarPropuesta,
@@ -122,6 +123,109 @@ function nombraUnaOpcionDe(catalogo, item, clausula) {
     .some((o) => palabrasQueLaSostienen(o, clausula).size > 0);
 }
 
+// ── DE LO QUE FALTA A UN PENDIENTE ESTRUCTURADO ──────────────────────────
+//
+// Cada aclaración y cada dato que falta se convierte en un descriptor con
+// identidad propia. Lo que NO se guarda nunca es la frase: `aclaraciones.js` la
+// vuelve a redactar a partir de esto, así que una pregunta no puede sobrevivir
+// al estado que la originó.
+function descriptoresPendientes({ aclaraciones = [], falta = [], dicho = '' }) {
+  const fuera = [];
+  for (const a of aclaraciones) {
+    const base = { candidatos: a.candidatos || [], evidenciaOrigen: dicho };
+    switch (a.tipo) {
+      case 'opcion_ambigua':
+        fuera.push({ ...base, tipo: 'opcion_ambigua', lid: a.lid || null, producto: a.producto, grupo: a.grupo });
+        break;
+      case 'grupo_requerido':
+        fuera.push({ ...base, tipo: 'grupo_requerido', lid: a.lid || null, producto: a.producto, grupo: a.grupo });
+        break;
+      case 'termino_ambiguo':
+        fuera.push({ ...base, tipo: 'termino_ambiguo', dato: a.termino });
+        break;
+      case 'referencia_ambigua':
+        fuera.push({ ...base, tipo: 'referencia_ambigua', dato: 'referencia',
+          candidatos: (a.candidatos || []).map((c) => c?.nombre || c) });
+        break;
+      case 'respuesta_ambigua':
+        fuera.push({ ...base, tipo: 'respuesta_ambigua', dato: 'propuesta' });
+        break;
+      case 'quitar_ambiguo':
+        fuera.push({ ...base, tipo: 'quitar_ambiguo', dato: 'quitar' });
+        break;
+      default: break;
+    }
+  }
+  // Los datos operativos que faltan. Los grupos requeridos ya vinieron como
+  // aclaración, así que no se duplican.
+  for (const f of falta) {
+    if (String(f).startsWith('grupo:')) continue;
+    fuera.push({ tipo: 'dato', dato: String(f), candidatos: [], evidenciaOrigen: dicho });
+  }
+  return fuera;
+}
+
+/**
+ * LOS PENDIENTES QUE SIGUEN VIVOS AUNQUE ESTE TURNO NO LOS MENCIONE.
+ *
+ * `opcion_ambigua` nace del TEXTO: se detecta el turno en que el cliente dice
+ * «frijolitos». Si solo existiera mientras el texto lo repite, bastaba con que
+ * el cliente preguntara por los licuados para que la pregunta se diera por
+ * contestada — y al turno siguiente volviera a nacer, con su contador a cero y
+ * su frase recién redactada. Eso es exactamente lo que se vio en el tráfico
+ * real: la misma aclaración, una y otra vez, sin memoria de haberla hecho.
+ *
+ * Un pendiente vive mientras viva su MOTIVO, y el motivo está en el carrito, no
+ * en el mensaje: existe la línea y su grupo sigue sin elegir. Eso es lo que se
+ * comprueba aquí, y es lo que hace genérica la resolución — no hace falta una
+ * regla por tipo de pregunta.
+ */
+function pendientesQueSiguenVivos(ctx, carrito, yaVigentes) {
+  const porLid = new Map((carrito?.items || []).map((i) => [i.lid, i]));
+  const yaEstan = new Set(yaVigentes.map((d) => clavePendiente(d)));
+  const fuera = [];
+  for (const p of (ctx?.pendientes || [])) {
+    if (yaEstan.has(p.clave)) continue;                 // este turno lo rehizo
+    if (p.tipo !== 'opcion_ambigua' && p.tipo !== 'grupo_requerido') continue;
+    const item = p.lid ? porLid.get(p.lid) : null;
+    if (!item) continue;                                // su línea se fue: cancelado
+    const suGrupo = String(p.grupo || '').toLowerCase();
+    const yaElegido = (item.modificadores || []).some((g) => String(g?.grupo ?? '').toLowerCase() === suGrupo
+      && (g?.opciones || []).length > 0);
+    if (yaElegido) continue;                            // resuelto de verdad
+    // Se devuelven los MISMOS candidatos: si cambiaran, el pendiente se daría
+    // por obsoleto y perdería el contador de intentos que justifica el handoff.
+    fuera.push({ tipo: p.tipo, lid: p.lid, producto: p.producto, grupo: p.grupo,
+      candidatos: p.candidatos, evidenciaOrigen: p.evidenciaOrigen });
+  }
+  return fuera;
+}
+
+/** La clave corta con la que `loQueFalta` y `siguientePregunta` hablan. */
+const claveCorta = (p) => (p.tipo === 'dato' ? p.dato
+  : (p.tipo === 'grupo_requerido' ? `grupo:${p.grupo}` : p.clave));
+
+/**
+ * ¿ESTE mensaje contesta a ESTE pendiente?
+ *
+ * Para los que ofrecen candidatos: que el cliente nombre alguno. Para los datos
+ * operativos: que la intención del turno sea la que resuelve ese dato.
+ *
+ * Todo lo demás es cambiar de tema, y cambiar de tema no es fallar.
+ */
+function respondeAlPendiente(p, dicho, intenciones) {
+  if (p.tipo === 'dato') {
+    const porDato = {
+      modalidad: 'DEFINIR_MODALIDAD',
+      pago: 'DEFINIR_PAGO',
+      productos: 'AGREGAR_PRODUCTO',
+    };
+    const esperada = porDato[p.dato];
+    return !!esperada && intenciones.includes(esperada);
+  }
+  return (p.candidatos || []).some((c) => palabrasQueLaSostienen(c, dicho).size > 0);
+}
+
 /** Los grupos requeridos que a un renglón le faltan por elegir. */
 function gruposRequeridosFaltantes(carrito, catalogo) {
   const porNombre = new Map();
@@ -162,6 +266,8 @@ export async function atenderTurno({
   requierePago = true, confirmado = false,
   datoOperativoPendiente = false, terminos = [],
   proponer = null,
+  // SOLO para el modo sombra: no detenerse en un handoff, registrarlo y seguir.
+  observando = false,
 } = {}) {
   const ctx = contextoDeLaConversacion(contextoGuardado, { negocioId, conversacionId });
   let carritoActual = (carrito && Array.isArray(carrito.items)) ? carrito : vacio();
@@ -180,8 +286,30 @@ export async function atenderTurno({
   // 3) ¿Esto es para una persona? Se decide ANTES de tocar el pedido: si la
   //    conversación se escala, el carrito se queda como estaba y quien entre
   //    verá lo que el cliente pidió, no lo que el bot alcanzó a interpretar.
+  // ── EL HANDOFF, Y LO QUE CAMBIA EN SOMBRA ──────────────────────────────
+  //
+  // En producción, escalar es terminal: el bot deja de atender y una persona
+  // toma la conversación. Correcto, y no se toca.
+  //
+  // Observando es distinto. Si la copia también se detiene, se deja de aprender
+  // exactamente cuando la conversación se pone interesante: en el primer día de
+  // tráfico real, 21 de 46 turnos quedaron sin observar por esto, y entre ellos
+  // el turno en que el cliente por fin pidió su omelet.
+  //
+  // Así que se separan dos cosas que hasta ahora eran una:
+  //
+  //   habriaEscalado    en producción, aquí habría pasado a un humano
+  //   dejarDeObservar   la copia se detiene
+  //
+  // Con `observando: true` lo primero se registra y lo segundo no ocurre. El
+  // resultado de los turnos siguientes va marcado (`postHandoff`) para que
+  // nadie lo confunda con lo que habría pasado de verdad.
   const handoff = decidirHandoff({ texto: dicho, intenciones, contexto: ctx });
-  if (handoff.escalar) {
+  if (handoff.escalar && observando && !ctx.habriaEscalado) {
+    ctx.habriaEscalado = { turno, motivo: handoff.motivo };
+  }
+  const yaHabriaEscalado = !!ctx.habriaEscalado;
+  if (handoff.escalar && !observando) {
     ctx.fase = 'escalado_humano';
     const equipaje = equipajeDelHandoff({ contexto: ctx, carrito: carritoActual, motivo: handoff.motivo });
     return {
@@ -332,7 +460,9 @@ export async function atenderTurno({
         hermanasRestringidas: abierta?.candidatos || null,
       });
       if (!ambiguas.length) return true;
-      opcionesQueNoSeparan.push(...ambiguas);
+      // El `lid` viaja con la ambigüedad: sin él, el pendiente no sabría a qué
+      // renglón pertenece y no podría cancelarse cuando ese renglón se va.
+      opcionesQueNoSeparan.push(...ambiguas.map((a) => ({ ...a, lid: p.lid })));
       // Lo que sí se distinguió del mismo grupo sigue adelante; lo ambiguo no.
       if (claras.length) { p.valorNuevo = claras; return true; }
       return false;
@@ -482,14 +612,41 @@ export async function atenderTurno({
   const entradaFase = { intenciones, carrito: carritoActual, datos, aclaraciones, confirmado, requierePago };
   ctx.fase = faseDelTurno(entradaFase);
   const falta = loQueFalta(entradaFase);
-  for (const clave of ['modalidad', 'pago']) if (datos[clave]) resolverPendiente(ctx, clave);
-  const siguiente = siguientePregunta(entradaFase, (ctx.pendientes || []).map((p) => p.clave));
-  // ¿Se movió algo este turno? Es lo que separa «vamos avanzando y todavía
-  // falta la modalidad» de «llevamos tres turnos sin entendernos».
-  const avanzo = (resultado.cambios?.autorizados || []).length > 0
-    || (resultado.cambios?.agregados || []).length > 0
-    || (resultado.cambios?.quitados || []).length > 0;
-  if (siguiente) anotarPendiente(ctx, siguiente, '', { avanzo });
+
+  // ── LOS PENDIENTES, RECALCULADOS DESDE CERO CADA TURNO ─────────────────
+  //
+  // No se «arrastran»: se vuelven a deducir de lo que hace falta AHORA y se
+  // reconcilian contra lo guardado. Un pendiente cuya línea desapareció se
+  // cancela solo; uno cuyos candidatos cambiaron se rehace, porque la pregunta
+  // de antes ya no lo representa. La frase no se guarda en ningún momento.
+  const clavesAntes = new Set((ctx.pendientes || []).map((p) => p.clave));
+  const delTurno = descriptoresPendientes({ aclaraciones, falta, dicho: autoriza });
+  const vigentes = [...delTurno, ...pendientesQueSiguenVivos(ctx, carritoActual, delTurno)];
+  const cicloPendientes = sincronizarPendientes(ctx, vigentes, {
+    lidsVivos: (carritoActual.items || []).map((i) => i.lid),
+  });
+
+  // ── QUÉ CUENTA COMO UN INTENTO FALLIDO ─────────────────────────────────
+  //
+  // Solo esto: el pendiente ya existía, el cliente contestó A ÉL, y sigue sin
+  // poder resolverse. Un mensaje sobre otra cosa —la dirección, otro producto,
+  // un «no encuentro el menú»— no es un fallo del cliente en contestar: es una
+  // conversación normal, y contarlo mandó a un humano el 46% de los turnos del
+  // primer día de tráfico real.
+  const aclaracionesRepetidas = [];
+  for (const p of ctx.pendientes) {
+    if (!clavesAntes.has(p.clave)) continue;           // nació este turno
+    if (!respondeAlPendiente(p, autoriza, intenciones)) continue;
+    anotarIntentoFallido(ctx, p.clave);
+    aclaracionesRepetidas.push({ tipo: p.tipo, intentos: p.intentos });
+  }
+
+  const siguiente = siguientePregunta(entradaFase,
+    (ctx.pendientes || []).filter((p) => preguntadoRecientemente(ctx, p.clave)).map((p) => claveCorta(p)));
+  if (siguiente) {
+    const suyo = (ctx.pendientes || []).find((p) => claveCorta(p) === siguiente);
+    if (suyo) marcarPreguntado(ctx, suyo.clave);
+  }
 
   const resumen = resumenDelPedido(carritoActual, { precios, requierePago });
 
@@ -510,7 +667,21 @@ export async function atenderTurno({
     siguiente,
     resumen,
     listoParaConfirmar: listoParaConfirmar(entradaFase),
-    handoff: { escalar: false, motivo: null },
+    handoff: {
+      escalar: false,
+      // En sombra: aquí habría pasado a un humano, pero la copia siguió.
+      habriaEscalado: yaHabriaEscalado,
+      motivo: ctx.habriaEscalado?.motivo ?? null,
+      turnoDelEscalado: ctx.habriaEscalado?.turno ?? null,
+    },
+    // Todo lo de este turno es CONTRAFACTUAL si el escalado ya había ocurrido:
+    // en producción el bot no habría estado aquí.
+    postHandoff: yaHabriaEscalado && ctx.habriaEscalado.turno < turno,
+    // El ciclo de vida de las preguntas, en crudo. Va aparte de `eventos`
+    // porque quien observa escribe UNA línea JSON por turno y no lee la lista
+    // de eventos: si estos números solo viven ahí, no se pueden medir.
+    cicloPendientes,
+    aclaracionesRepetidas,
     // EL BRIEFING PARA EL MODELO. Hechos, nunca frases hechas: si se le diera
     // la redacción, la copiaría y el bot volvería a sonar a máquina.
     paraElModelo: {
@@ -522,13 +693,25 @@ export async function atenderTurno({
       consulta,
       recomendaciones: recomendaciones.map((r) => ({ nombre: r.nombre, motivo: r.motivo })),
       aclaraciones: paraElModelo(aclaraciones),
-      no_repetir: (ctx.pendientes || []).filter((p) => (p.veces || 1) > 1).map((p) => p.clave),
+      // Lo que ya se preguntó y sigue vivo. Que el modelo lo tenga no autoriza
+      // nada: solo evita que vuelva a soltar la misma frase palabra por palabra.
+      no_repetir: (ctx.pendientes || [])
+        .filter((p) => p.turnoUltimaPregunta !== null && p.turnoUltimaPregunta !== undefined)
+        .map((p) => p.clave),
       contexto: resumenDelContexto(ctx),
     },
     eventos: eventosDelTurno({
       negocioId, conversacion: conversacionId, intenciones, aclaraciones: aPreguntarAhora(aclaraciones),
       recomendaciones, desenlace, decisiones: resultado.decisiones, cambios: resultado.cambios,
-      handoff: null, confirmado, fase: ctx.fase,
+      // El evento del escalado hipotético se emite UNA vez, en su turno. Los
+      // siguientes llevan `post_handoff`, que es otra cosa y se cuenta aparte.
+      handoff: yaHabriaEscalado && ctx.habriaEscalado.turno === turno
+        ? { escalar: false, habriaEscalado: true, motivo: ctx.habriaEscalado.motivo, turnoDelEscalado: turno }
+        : null,
+      confirmado, fase: ctx.fase,
+      pendientes: cicloPendientes,
+      aclaracionesRepetidas,
+      postHandoff: yaHabriaEscalado && ctx.habriaEscalado.turno < turno,
     }),
   };
 }
