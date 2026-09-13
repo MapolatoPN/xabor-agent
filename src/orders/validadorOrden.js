@@ -26,6 +26,7 @@ import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtr
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
 import { variantesCompatibles, opcionesDelItem } from './variantePorLoPedido.js';
 import { distingueLaEleccion, opcionesDelGrupo, fuerzaDeEvidencia } from './evidenciaDeEleccion.js';
+import { modoDelPedido } from './modoDelPedido.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -203,7 +204,7 @@ function candidatosPorNombre(nombreLLM, catalogo) {
   return porNombre.filter((x) => x.norm.includes(buscado) || buscado.includes(x.norm));
 }
 
-function resolverProducto(nombreLLM, catalogo, idLLM = null, textoCliente = '') {
+function resolverProducto(nombreLLM, catalogo, idLLM = null, textoCliente = '', v2 = false) {
   const id = idSenalado(idLLM) || idSenalado(nombreLLM);
   if (id) {
     const p = catalogo.find((x) => String(x.id) === id);
@@ -236,6 +237,18 @@ function resolverProducto(nombreLLM, catalogo, idLLM = null, textoCliente = '') 
       // Comparar contra los candidatos del nombre —y no letra a letra— es lo
       // que separa la errata de la contradicción sin inventar un umbral de
       // parecido que habría que estar calibrando.
+      // EN LEGACY, EL ID MANDA COMO SIEMPRE.
+      //
+      // Toda la comprobación de abajo es de V2. Un negocio que no la pidió
+      // tiene que ver exactamente el comportamiento de `main`: si el id existe
+      // en su catálogo, resuelve. Sin este corte, desplegar la rama le cambiaría
+      // la resolución de productos a todo el mundo aunque el carrito estuviera
+      // apagado, que es la forma silenciosa de romper el aislamiento.
+      if (!v2) {
+        if (!p.categoria_activa || p.disponible === false) return { estado: 'no_disponible', producto: p };
+        if (p.agotado === true) return { estado: 'agotado', producto: p };
+        return { estado: 'ok', producto: p };
+      }
       const candidatos = candidatosPorNombre(nombreLLM, catalogo);
       // Cuando el nombre apunta a OTRO platillo, quien desempata es lo que
       // dijo el cliente, no el modelo consigo mismo. «Quiero los mixtos» + el
@@ -352,6 +365,14 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarBorradorPedido: negocioId obligatorio');
   }
+  // EL MODO DEL NEGOCIO, y de dónde sale.
+  //
+  // Lo normal es que lo traiga quien llama —`brain.js` ya lo resolvió para el
+  // turno y así no se consulta dos veces—. Cuando no viene, se consulta aquí:
+  // el registro del pedido entra por `orderManager` sin pasar por el cerebro, y
+  // resolver distinto en la preconfirmación y en el registro sería peor que
+  // cualquiera de los dos comportamientos por separado.
+  const v2 = opts.v2 !== undefined ? Boolean(opts.v2) : (await modoDelPedido(negocioId)).v2;
   // Fidelidad: el texto REAL del cliente. `textoCiclo` son sus turnos del ciclo
   // activo (respaldo de las selecciones) y `menciones` los atributos verbatim
   // que afirmó en el último turno, ya verificados contra ese texto. Si el
@@ -390,7 +411,7 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
       console.warn(`[Validador] fragmento descartado, no es un producto: "${String(it?.nombre || '').slice(0, 60)}"`);
       continue;
     }
-    let r = resolverProducto(it?.nombre, catalogo, it?.id, textoCiclo);
+    let r = resolverProducto(it?.nombre, catalogo, it?.id, textoCiclo, v2);
     // ── Usar lo que el cliente YA dijo antes de volver a preguntar ──
     //
     // Incidente 2026-09-11, 11:26 p.m.: el cliente contestó a la pregunta con
@@ -486,6 +507,8 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
         // sostenga esta opción MEJOR que a sus hermanas; si empata, la
         // selección queda pendiente y el flujo pregunta, exactamente igual que
         // cuando el modelo no resuelve.
+        // Distinguir es de V2. En legacy, con respaldo basta, como en `main`.
+        if (!v2) return true;
         const { distingue, empatan } = distingueLaEleccion(valor, hermanasDe(grupo), textoCiclo);
         if (distingue) return true;
         ambiguos.push({ nombre: valor, grupos: [grupo], opciones: [valor, ...empatan] });
@@ -911,6 +934,14 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new Error('validarOrdenPropuesta: negocioId obligatorio');
   }
+  // EL MODO DEL NEGOCIO, y de dónde sale.
+  //
+  // Lo normal es que lo traiga quien llama —`brain.js` ya lo resolvió para el
+  // turno y así no se consulta dos veces—. Cuando no viene, se consulta aquí:
+  // el registro del pedido entra por `orderManager` sin pasar por el cerebro, y
+  // resolver distinto en la preconfirmación y en el registro sería peor que
+  // cualquiera de los dos comportamientos por separado.
+  const v2 = opts.v2 !== undefined ? Boolean(opts.v2) : (await modoDelPedido(negocioId)).v2;
   // Canal para el motor de promociones (una promo puede restringirse a canales).
   // Se toma del llamador (registrarPedido) o de la propia orden; default whatsapp.
   const canalPromo = String(opts.canal || orden?.canal || 'whatsapp').toLowerCase().trim() || 'whatsapp';
@@ -948,7 +979,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       eventoTxn('cantidad_invalida', negocioId, { cantidad: it?.cantidad });
       continue;
     }
-    const r = resolverProducto(it?.nombre, catalogo, it?.id, String(opts.textoCiclo || ''));
+    const r = resolverProducto(it?.nombre, catalogo, it?.id, String(opts.textoCiclo || ''), v2);
     // 'ambiguo' se rechaza con la MISMA dureza que 'no_existe', y aquí no se
     // negocia: este es el registro del pedido real. Un nombre que apunta a tres
     // platillos no tiene `producto`, y sin este corte seguiría de largo hasta

@@ -140,9 +140,20 @@ async function sembrarNegocioC() {
   return { neg, hamburguesa, doble, coca, sprite, flan };
 }
 
+// Estas pruebas son del reconciliador V2, así que sus negocios lo encienden
+// EXPLÍCITAMENTE, con la misma llave que usará producción. Que haya que
+// escribirla es la prueba de que el default es legacy: sin esta línea, la
+// suite entera cae, y eso es exactamente lo que debe pasarle a un negocio que
+// no la pidió.
+const encenderV2 = async (neg) => {
+  await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'pedido_reconciliador_v2','true')
+    ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = 'true'`, [neg]);
+};
+
 const A = await sembrarObispado();
 const B = await sembrarNegocioB();
 const C = await sembrarNegocioC();
+for (const n of [A.neg, B.neg, C.neg]) await encenderV2(n);
 
 // El turno real del incidente, y el borrador que el modelo emitió.
 const TEXTO_ORIGINAL = 'Si quiero unos chilaquiles suizos con pollo, bistec en salsa y queso panela Además una orden de hotcakes de sartén';

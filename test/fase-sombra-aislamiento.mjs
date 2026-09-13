@@ -72,6 +72,11 @@ await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUE
 await actualizarConfiguracion({ int_wa_phone_id: PNID, int_wa_token: 'fake-token-sombra', modo_pedidos: 'transaccional' }, NEG);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
   VALUES ($1,'whatsapp',$2,'Sombra',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [NEG, PNID]);
+// La sombra necesita DOS llaves: la global del proceso (PEDIDO_SHADOW_MODE, que
+// se le pasa al servidor) y la de ESTE negocio. Sin la segunda no se observa a
+// nadie, que es la corrección del incidente multiempresa.
+await actualizarConfiguracion({ pedido_shadow: 'true', pedido_reconciliador_v2: 'false' }, NEG);
+
 // EL BOT ESTÁ APAGADO. Es el estado en el que se hace el experimento.
 //
 // Se anota cómo estaba para devolverlo al terminar: este negocio es del seed y

@@ -5,7 +5,8 @@ import { Router } from 'express';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje, extraerBorradorParaSombra } from '../agent/brain.js';
-import { sombraActiva, observarTurno } from '../orders/registroSombra.js';
+import { observarTurno } from '../orders/registroSombra.js';
+import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -1803,13 +1804,25 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     //                  este `.catch` lo garantiza donde se lee.
     //
     // Queda suelta a propósito: es un log, y nadie espera un log.
+    // DOS LLAVES, Y HACEN FALTA LAS DOS.
+    //
+    //   PEDIDO_SHADOW_MODE   del proceso: habilita la capacidad y sirve de
+    //                        interruptor de emergencia para todos a la vez;
+    //   pedido_shadow        del NEGOCIO: dice cuál se observa.
+    //
+    // Con la global sola no se observa a nadie, que es la corrección de fondo
+    // del incidente del 12-sep: una bandera de proceso no puede responder una
+    // pregunta que es de cada negocio. `modoDelPedido` ya combina las dos y
+    // además apaga la sombra si ese negocio está en V2 productivo.
     const observarEnSombra = () => {
-      if (!sombraActiva()) return;
-      observarTurno({
-        sessionId: `meta-${negocioId}-${telefono}`,
-        negocioId,
-        mensaje: texto,
-        proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
+      modoDelPedido(negocioId).then((modo) => {
+        if (!modo.shadow) return null;
+        return observarTurno({
+          sessionId: `meta-${negocioId}-${telefono}`,
+          negocioId,
+          mensaje: texto,
+          proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
+        });
       }).catch((e) => console.error('[SOMBRA] contenida en el canal:', e?.message));
     };
 

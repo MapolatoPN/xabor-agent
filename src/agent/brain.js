@@ -13,6 +13,7 @@ import { clasificarTurnoPostPreview } from './confirmacionVerbal.js';
 import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado,
          podriaResolverloElCatalogo } from '../orders/carritoDelPedido.js';
 import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
+import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -598,12 +599,30 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         // ("Nogal 900") no son cantidades de comida.
         const pendiente = esperandoDato(sessionId);
 
-        // Lo que el cliente DIJO, separado de lo que el sistema PERCIBIÓ de su
-        // foto. El canal mete el análisis de la imagen dentro del mensaje del
-        // cliente, así que sin esta separación la visión respaldaba productos y
-        // opciones igual que sus palabras. Se usa para todo lo que autoriza:
-        // el carrito, el respaldo de selecciones y el de modalidad y pago.
-        const dichoDelCiclo = () => procedenciaDelCiclo(turnosUsuarioDelCiclo(sessionId)).dicho;
+        // ── EN QUÉ MODO ATIENDE ESTE NEGOCIO ───────────────────────────────
+        //
+        // Un solo proceso, muchos negocios. Desplegar no puede cambiarle el
+        // comportamiento a nadie que no lo haya pedido, así que el reconciliador
+        // nuevo se enruta por negocio y el default es LEGACY. Se resuelve aquí,
+        // una vez, y de aquí sale todo lo demás: no hay un `if (flag)` repartido
+        // por veinte funciones, hay un cruce de caminos.
+        const modo = await modoDelPedido(negocioId);
+
+        // EL TEXTO QUE AUTORIZA, según el modo.
+        //
+        // En V2 se separa lo que el cliente DIJO de lo que el sistema PERCIBIÓ
+        // de su foto: el canal mete el análisis de la imagen dentro del mensaje
+        // del cliente, y sin esa separación la visión respalda productos y
+        // opciones igual que sus palabras.
+        //
+        // En LEGACY es el ciclo crudo, carácter por carácter como en `main`.
+        // Esta línea es la que hace que un negocio legacy no note el despliegue:
+        // alimenta el carrito, el respaldo de selecciones y el de modalidad y
+        // pago, así que si aquí se colara la versión nueva, el aislamiento sería
+        // de mentira aunque el carrito estuviera apagado.
+        const evidenciaDelCiclo = () => (modo.v2
+          ? procedenciaDelCiclo(turnosUsuarioDelCiclo(sessionId)).dicho
+          : turnosUsuarioDelCiclo(sessionId).join(' \n '));
 
         // ── EL PEDIDO ES DEL CLIENTE, NO DEL ÚLTIMO BORRADOR ───────────────
         //
@@ -638,7 +657,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           if (!propuesta && !carritoConItems(carritoBase)) return propuesta;
           const entrada = {
             mensaje: mensajeUsuario,
-            textoCiclo: dichoDelCiclo(),
+            textoCiclo: evidenciaDelCiclo(),
             datoOperativoPendiente: pendiente || false,
           };
           let recon = reconciliar(carritoBase, propuesta || {}, entrada);
@@ -701,7 +720,9 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           return (turnoDePedido && carritoConItems(recon.carrito))
             ? carritoABorrador(recon.carrito) : propuesta;
         };
-        borrador = await aplicarCarrito(borrador);
+        // AQUÍ SE BIFURCA. Un negocio legacy no entra al carrito ni de lejos:
+        // su `borrador` sigue siendo lo que el modelo emitió, como en `main`.
+        if (modo.v2) borrador = await aplicarCarrito(borrador);
         // Un borrador VACÍO no es evidencia de nada. Antes bastaba con que el
         // modelo emitiera `{"items":[]}` —JSON válido, marcador presente— para
         // apagar por completo la extracción independiente: el marcador
@@ -739,7 +760,8 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           // La extracción forzada es OTRA fuente de borrador, así que también
           // se reconcilia: sin esto el carrito quedaba fuera de la única ruta
           // que existe justo para cuando el modelo no emitió nada.
-          borrador = await aplicarCarrito(await extraerBorradorForzado(session, negocioId)) || borrador;
+          const forzado = await extraerBorradorForzado(session, negocioId);
+          borrador = modo.v2 ? (await aplicarCarrito(forzado) || borrador) : forzado;
         }
         if (conItems(borrador)) {
           // La extracción independiente corre SIEMPRE que se esté armando un
@@ -783,8 +805,8 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
             menciones = [];
           }
           const rc = await validarBorradorPedido(borrador, negocioId, {
-            textoCiclo: dichoDelCiclo(),
-            menciones, respuestas,
+            textoCiclo: evidenciaDelCiclo(),
+            menciones, respuestas, v2: modo.v2,
           });
           // El código viaja en la propia estructura (lo pone el validador), así
           // que el log lo IMPRIME desde ahí: si algún día cambia, no hay dos
@@ -840,7 +862,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
               // Lo que el cliente YA dijo y el backend capturó por su cuenta:
               // el modelo puede omitirlo en su borrador, pero no puede borrarlo.
               const recordado = datosDelPedido(sessionId);
-              const dichoPorElCliente = dichoDelCiclo();
+              const dichoPorElCliente = evidenciaDelCiclo();
 
               // LA MODALIDAD LA DECIDE EL CLIENTE, NO EL MODELO.
               // XAB-0271: el cliente nunca dijo si pasaba o se lo llevaban, el
