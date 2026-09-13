@@ -9675,12 +9675,27 @@ async function rwAjusteManual(telefono) {
 }
 
 // ─── Configuración ────────────────────────────────────────────────────────────
+// Valores de fábrica del programa. Solo se usan para PINTAR el formulario de
+// un negocio que todavía no tiene configuración: lo que se guarde sale de la
+// base, no de aquí. Deben coincidir con los DEFAULT de rewards_config.
+const RW_CONFIG_FABRICA = {
+  nombre_programa: 'Xabor Rewards', activo: true,
+  monto_por_punto: 10, puntos_por_peso: 0.5, canje_minimo: 100,
+  canal_mostrador: true, canal_whatsapp: true, canal_telefono: true,
+  canal_rappi: false, canal_tienda: false,
+};
+
 async function cargarConfigRewardsForm() {
   const cont = document.getElementById('rw-config-form');
   try {
     const r = await apiFetch('/api/rewards/config');
     if (!r.ok) return;
-    const cfg = await r.json();
+    // Un negocio que nunca guardó su configuración no tiene fila, y la ruta
+    // responde `null`. Antes eso reventaba en `cfg.nombre_programa` dentro
+    // del try y el catch se lo tragaba: el admin abría Rewards → Config y
+    // veía una pantalla VACÍA, sin forma de configurar nada. Ahora se pinta
+    // con los valores de fábrica para que pueda guardar por primera vez.
+    const cfg = (await r.json()) || { ...RW_CONFIG_FABRICA };
     rwConfig = cfg;
     cont.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:14px;">
@@ -9743,16 +9758,31 @@ async function guardarConfigRewards() {
     canal_tienda:    document.getElementById('rw-cfg-canal_tienda').checked,
     canal_rappi:     document.getElementById('rw-cfg-canal_rappi').checked,
   };
+  // «Guardado» solo si el servidor devuelve la FILA PERSISTIDA. Antes bastaba
+  // con un 200, y el backend respondía 200 aunque su UPDATE no hubiera tocado
+  // ninguna fila: el operador configuraba su programa, leía «✓ Guardado» y no
+  // se había guardado nada. Ahora el estado que queda en pantalla es el que
+  // devolvió la base, no el que este formulario creía estar mandando.
   try {
     const r = await apiFetch('/api/rewards/config', { method:'PATCH', body: JSON.stringify(datos) });
-    if (r.ok) {
-      fb.textContent = '✓ Guardado';
-      fb.style.color = '#16a34a';
-      rwConfig = { ...rwConfig, ...datos };
+    const cuerpo = await r.json().catch(() => ({}));
+    if (r.ok && cuerpo.config) {
+      rwConfig = cuerpo.config;
       const el = document.getElementById('rw-nombre-programa');
-      if (el) el.textContent = datos.nombre_programa;
-      setTimeout(() => { fb.textContent = ''; fb.style.color = '#888'; }, 2500);
-    } else { fb.textContent = 'Error al guardar'; fb.style.color = '#ef4444'; }
+      if (el) el.textContent = rwConfig.nombre_programa;
+      // Repintar desde lo persistido ANTES del acuse: si la base normalizó
+      // algo (un decimal, un valor fuera de rango), se ve aquí y no en la
+      // siguiente sesión. Repintar reconstruye el formulario entero, así que
+      // el «Guardado» se escribe después, sobre el elemento nuevo.
+      await cargarConfigRewardsForm();
+      const fb2 = document.getElementById('rw-cfg-fb') || fb;
+      fb2.textContent = '✓ Guardado';
+      fb2.style.color = '#16a34a';
+      setTimeout(() => { fb2.textContent = ''; fb2.style.color = '#888'; }, 2500);
+    } else {
+      fb.textContent = cuerpo.error || 'No se guardó la configuración';
+      fb.style.color = '#ef4444';
+    }
   } catch(e) { fb.textContent = 'Error de conexión'; fb.style.color = '#ef4444'; }
 }
 

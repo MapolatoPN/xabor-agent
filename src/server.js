@@ -7926,11 +7926,22 @@ app.get('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Guardar la configuración devuelve LA FILA PERSISTIDA, no un `ok` de
+// cortesía. Antes esta ruta respondía `{ok:true}` con solo no haber lanzado
+// excepción, y como el servicio hacía un UPDATE sobre una fila inexistente,
+// el panel decía «Guardado» sin que hubiera nada guardado. Ahora la única
+// forma de responder ok es que la base devuelva el registro escrito.
 app.patch('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), async (req, res) => {
   try {
-    await actualizarConfigRewards(req.negocioId, req.body);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const config = await actualizarConfigRewards(req.negocioId, req.body);
+    if (!config) {
+      return res.status(400).json({ error: 'No se recibió ningún campo de configuración válido' });
+    }
+    res.json({ ok: true, config });
+  } catch (e) {
+    console.error(`[Rewards] No se pudo guardar la configuración de ${req.negocioId}: ${e.message}`);
+    res.status(500).json({ error: 'No se pudo guardar la configuración' });
+  }
 });
 
 // Resumen estadístico
