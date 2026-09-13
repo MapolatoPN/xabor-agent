@@ -88,20 +88,65 @@ export async function obtenerConfig(tenantId = DEFAULT_TENANT) {
   return rows[0] || null;
 }
 
+const CAMPOS_CONFIG_PERMITIDOS = [
+  'nombre_programa','activo','monto_por_punto','puntos_por_peso',
+  'canje_minimo','canal_mostrador','canal_whatsapp','canal_telefono',
+  'canal_rappi','canal_tienda','vigencia_dias'
+];
+
+/**
+ * Guarda la configuración de Rewards de un negocio. UPSERT, no UPDATE.
+ *
+ * EL FALLO QUE ESTO ARREGLA (confirmado en producción): esto era un
+ * `UPDATE ... WHERE tenant_id = $1` a secas. El único INSERT de
+ * `rewards_config` en todo el código vive en `initDB` con el slug
+ * 'nonna-maye' escrito a mano, así que CUALQUIER otro negocio nunca tenía
+ * fila. El UPDATE afectaba 0 renglones, nadie miraba `rowCount`, la ruta
+ * respondía `{ok:true}` y el panel pintaba «✓ Guardado». El operador
+ * configuraba su programa, leía que se había guardado, y no se guardaba
+ * nada — ni forma de enterarse. Rewards quedaba inalcanzable para todo
+ * negocio nuevo (Mapolato Obispado, entre otros).
+ *
+ * Por qué `ON CONFLICT (tenant_id)` y no un SELECT previo: dos guardados
+ * simultáneos del mismo negocio (doble clic, dos pestañas) pasarían los dos
+ * el "¿existe?" y los dos intentarían INSERT; el segundo reventaría contra
+ * la UNIQUE. Con el upsert la base resuelve la carrera y quedan una fila y
+ * un solo resultado. La identidad es `tenant_id` -- la UNIQUE real, la misma
+ * en producción y en local -- y no se inventa otra: `negocio_id` existe como
+ * columna nullable pero no es única y nadie la lee.
+ *
+ * Columnas OMITIDAS en un alta toman los DEFAULT de la tabla, que son los de
+ * fábrica del programa. En particular `canal_tienda` nace en FALSE: guardar
+ * la configuración nunca puede encender Rewards en la tienda por accidente.
+ *
+ * Crear la fila NO otorga nada comercialmente: el entitlement vive en
+ * `negocio_modulos` y lo sigue exigiendo `requireModulo('rewards')` en la
+ * ruta y `obtenerEstadoModulo` en acumulación y canje. Configuración y
+ * contratación siguen separadas.
+ *
+ * Devuelve la fila REALMENTE persistida (RETURNING), o null si no había ni
+ * un campo válido que guardar. El llamador no debe dar por bueno un guardado
+ * sin mirar este valor.
+ */
 export async function actualizarConfig(tenantId = DEFAULT_TENANT, datos) {
-  const camposPermitidos = [
-    'nombre_programa','activo','monto_por_punto','puntos_por_peso',
-    'canje_minimo','canal_mostrador','canal_whatsapp','canal_telefono',
-    'canal_rappi','canal_tienda','vigencia_dias'
-  ];
-  const campos = Object.keys(datos).filter(c => camposPermitidos.includes(c));
-  if (!campos.length) return;
+  const campos = Object.keys(datos || {}).filter(c => CAMPOS_CONFIG_PERMITIDOS.includes(c));
+  // Sin ningún campo reconocible no se crea nada: un cuerpo vacío o con
+  // basura no puede dar de alta una configuración por la puerta de atrás.
+  if (!campos.length) return null;
+
   const valores = campos.map(c => datos[c]);
+  const columnas = ['tenant_id', ...campos].join(', ');
+  const marcadores = ['$1', ...campos.map((_, i) => `$${i + 2}`)].join(', ');
   const set = campos.map((c, i) => `${c} = $${i + 2}`).join(', ');
-  await pool.query(
-    `UPDATE rewards_config SET ${set}, updated_at = NOW() WHERE tenant_id = $1`,
+
+  const { rows: [config] } = await pool.query(
+    `INSERT INTO rewards_config (${columnas})
+     VALUES (${marcadores})
+     ON CONFLICT (tenant_id) DO UPDATE SET ${set}, updated_at = NOW()
+     RETURNING *`,
     [tenantId, ...valores]
   );
+  return config || null;
 }
 
 // ─── Cuentas de cliente ───────────────────────────────────────────────────────
