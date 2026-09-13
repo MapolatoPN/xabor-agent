@@ -269,6 +269,55 @@ t('W17. el contexto viajó por JSON los doce turnos sin perder el hilo', () => {
   assert.deepEqual(orden, carrito.items.map((i) => i.lid));
 });
 
+// ── LO QUE CUESTA UN TURNO ──────────────────────────────────────────────────
+//
+// Primero medir. El mesero tiene muchas capas y la pregunta razonable es cuánto
+// pesan; la respuesta es que casi nada, porque ninguna llama al modelo: la
+// única llamada por turno es el extractor, y las consultas de menú, las
+// referencias y las aclaraciones se resuelven contra el catálogo en memoria.
+//
+// Los umbrales son flojos a propósito: esto documenta el orden de magnitud, no
+// vigila el rendimiento. Una prueba de tiempos estricta en CI es una prueba
+// intermitente.
+await (async () => {
+  const medidas = [];
+  let llamadas = 0;
+  for (let vuelta = 0; vuelta < 5; vuelta++) {
+    let ctx = null, car = null;
+    for (const paso of GUION) {
+      const t0 = process.hrtime.bigint();
+      const r = await atenderTurno({
+        negocioId: NEG, conversacionId: `perf-${vuelta}`, mensaje: paso.cliente,
+        contextoGuardado: ctx, carrito: car, catalogo: CATALOGO, precios: PRECIOS,
+        complementos: { Fuertes: ['Bebidas'] },
+        proponer: async () => { llamadas += 1; return paso.borrador; },
+      });
+      medidas.push(Number(process.hrtime.bigint() - t0) / 1e6);
+      ctx = JSON.parse(JSON.stringify(contextoSerializable(r.contexto)));
+      car = r.carrito;
+    }
+  }
+  const media = medidas.reduce((a, b) => a + b, 0) / medidas.length;
+  const peor = Math.max(...medidas);
+  const turnos = 5 * GUION.length;
+
+  t('W18. un turno del mesero cuesta UNA llamada al modelo, y solo cuando la hay', () => {
+    // El guion tiene cuatro turnos sin borrador (el modelo no se llama nunca de
+    // más), y ocho con él. La cuenta tiene que dar exactamente eso.
+    assert.equal(llamadas, turnos, `${llamadas} llamadas en ${turnos} turnos`);
+    // Y las consultas de menú, que son la mitad de lo que hace un mesero, no
+    // añaden ninguna: el turno 7 pregunta por las bebidas y se contesta del
+    // catálogo.
+    assert.equal(turnos / 5, GUION.length);
+  });
+
+  t('W19. el trabajo del mesero, sin el modelo, es de milisegundos', () => {
+    console.log(`      · ${turnos} turnos · media ${media.toFixed(2)} ms · peor ${peor.toFixed(2)} ms`);
+    assert(media < 50, `la media subió a ${media.toFixed(1)} ms por turno`);
+    assert(peor < 400, `el peor turno tardó ${peor.toFixed(1)} ms`);
+  });
+})();
+
 if (TRAZA) {
   console.log('\n─── pedido final ───');
   console.log(resumenEnTexto(ultimo.resumen));

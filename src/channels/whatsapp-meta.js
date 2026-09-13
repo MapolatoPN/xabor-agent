@@ -6,6 +6,7 @@ import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje, extraerBorradorParaSombra } from '../agent/brain.js';
 import { observarTurno } from '../orders/registroSombra.js';
+import { observarTurnoDelMesero } from '../mesero-whatsapp/sombraDelMesero.js';
 import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
@@ -15,7 +16,7 @@ import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -1826,16 +1827,58 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       }).catch((e) => console.error('[SOMBRA] contenida en el canal:', e?.message));
     };
 
+    // ── LA SOMBRA DEL MESERO ───────────────────────────────────────────
+    //
+    // El mismo sitio y la misma disciplina que la sombra del reconciliador:
+    // los tres puntos en los que YA se decidió no contestar, sin esperar el
+    // resultado y con el `return` detrás pase lo que pase.
+    //
+    // POR QUÉ NO CORRE CON EL BOT ENCENDIDO, aunque el negocio tenga la
+    // bandera puesta. Son tres razones, y la tercera es la que decide:
+    //
+    //   · con el bot encendido el turno ya llama al modelo, y observar
+    //     duplicaría esa llamada en el camino caliente de un cliente que está
+    //     esperando respuesta;
+    //   · la comparación no serviría: el turno productivo ya movió la sesión,
+    //     así que la copia divergiría por motivos ajenos al mesero;
+    //   · y porque el 12 de septiembre un experimento pensado para observar a
+    //     un negocio alcanzó a otros dos que tenían el bot encendido. La
+    //     lección no fue «pon otra bandera», fue «que el experimento viva
+    //     donde el sistema ya está callado».
+    //
+    // Si algún día se quiere observar con el bot encendido, será otra decisión
+    // y otro código, no una bandera más sobre este.
+    const observarMeseroEnSombra = () => {
+      modoDelPedido(negocioId).then((modo) => {
+        if (!modo.meseroSombra) return null;
+        return observarTurnoDelMesero({
+          sessionId: `meta-${negocioId}-${telefono}`,
+          negocioId,
+          mensaje: texto,
+          // Solo lectura, y el catálogo EFECTIVO: el mismo que usaría el bot
+          // real. Con una carta sintética la observación no mediría nada.
+          cargarCatalogo: (n) => obtenerMenuCompleto(n),
+          cargarConfiguracion: (n) => obtenerConfiguracion(n),
+          proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
+        });
+      }).then((r) => {
+        if (r?.linea) console.log(r.linea);
+        else if (r && !r.ok) console.log(`[SOMBRA-MESERO] no evaluado negocio=${negocioId} motivo=${r.motivo}`);
+      }).catch((e) => console.error('[SOMBRA-MESERO] contenida en el canal:', e?.message));
+    };
+
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
     if (!botGlobalActivo) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
       observarEnSombra();
+      observarMeseroEnSombra();
       return;
     }
     const pausado = await getBotPausado(telefono, negocioId);
     if (pausado) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
       observarEnSombra();
+      observarMeseroEnSombra();
       return;
     }
     // Takeover humano temporal (Coexistence): el dueño respondió hace poco
@@ -1846,6 +1889,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     if (takeoverVigente) {
       console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
       observarEnSombra();
+      observarMeseroEnSombra();
       return;
     }
 

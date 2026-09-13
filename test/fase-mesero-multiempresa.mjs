@@ -211,6 +211,42 @@ await t('V2. la sombra NO toca el carrito productivo que se le presta', async ()
   assert.equal(JSON.stringify(productivo), copiaAntes, 'la observación modificó el pedido real');
 });
 
+await t('V2b. con el carrito productivo CONGELADO, la observación sigue funcionando', async () => {
+  // ── POR QUÉ ESTA PRUEBA NO ES UNA MORDIDA, Y SE DICE ────────────────────
+  //
+  // Quitar el clon de `sombraDelMesero` no rompe nada hoy, y se comprobó: la
+  // mordida E6 no tumba ni un caso. La razón es que `reconciliar` no muta su
+  // entrada —construye objetos nuevos en cada paso— así que la copia defiende
+  // contra un cambio futuro, no contra uno presente.
+  //
+  // Inventar una prueba que «detectara» el clon obligando a algo a mutar sería
+  // una prueba falsa: mediría el andamio, no la garantía.
+  //
+  // Lo que SÍ se puede probar, y es lo que de verdad importa, es la invariante
+  // estructural: la observación no escribe en el objeto que se le presta. Con
+  // el carrito congelado en profundidad, cualquier escritura lanza —los módulos
+  // son ESM, y en modo estricto asignar sobre un objeto congelado es un error—
+  // así que el día que alguien añada una mutación, esto se pone rojo aunque el
+  // clon siga en su sitio.
+  reiniciarSombraMesero();
+  const congelar = (o) => {
+    if (o && typeof o === 'object') { Object.values(o).forEach(congelar); Object.freeze(o); }
+    return o;
+  };
+  const productivo = congelar({
+    items: [{ lid: 'P1', nombre: 'Tonkotsu', cantidad: 1, modificadores: [], notas: '' }],
+    datos: { modalidad: 'recoger' },
+  });
+  const r = await observarTurnoDelMesero({
+    sessionId: 'meta-x-congelado', negocioId: NEG.B, mensaje: 'ponme dos',
+    carritoProductivo: productivo, cargarCatalogo: async () => CARTAS.B,
+    proponer: async () => ({ items: [{ nombre: 'Tonkotsu', cantidad: 2 }] }),
+  });
+  assert.equal(r.ok, true, `la observación escribió sobre el carrito prestado: ${r.motivo}`);
+  assert.equal(productivo.items[0].cantidad, 1);
+  assert.equal(productivo.datos.modalidad, 'recoger');
+});
+
 await t('V3. dos conversaciones observadas no comparten estado', async () => {
   reiniciarSombraMesero();
   const uno = async (sid, msg, nombre) => observarTurnoDelMesero({
@@ -332,6 +368,80 @@ await t('Y6. NINGÚN módulo del mesero puede tocar la base ni el canal', async 
       assert(!sinComentarios.includes(prohibido), `${f} menciona "${prohibido}"`);
     }
   }
+});
+
+await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', async () => {
+  // Y6 mira un directorio; esto sigue los imports de verdad, de módulo en
+  // módulo, desde el punto de entrada de la observación. Es la diferencia entre
+  // «no importa la base» y «no puede llegar a la base por ningún camino».
+  const { readFileSync } = await import('node:fs');
+  const { dirname, resolve, relative } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const RAIZ = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const entrada = resolve(RAIZ, 'src/mesero-whatsapp/sombraDelMesero.js');
+  const vistos = new Set();
+  const cola = [entrada];
+  while (cola.length) {
+    const archivo = cola.pop();
+    if (vistos.has(archivo)) continue;
+    vistos.add(archivo);
+    const fuente = readFileSync(archivo, 'utf8');
+    for (const m of fuente.matchAll(/(?:^import[^;]*from|await import\()\s*'([^']+)'/gm)) {
+      const spec = m[1];
+      if (spec.startsWith('node:')) continue;
+      if (!spec.startsWith('.')) { throw new Error(`${relative(RAIZ, archivo)} importa el paquete "${spec}"`); }
+      cola.push(resolve(dirname(archivo), spec));
+    }
+  }
+
+  // Lo que NO puede aparecer en el grafo, aunque hoy no se llamara.
+  const prohibidos = ['services/database.js', 'channels/', 'orders/orderManager.js', 'agent/brain.js',
+    'services/clip-api.js', 'services/pagosService.js', 'services/facturapi.js', 'services/impresion',
+    'services/redRepartidores.js', 'server.js'];
+  for (const archivo of vistos) {
+    const rel = relative(RAIZ, archivo).split('\\').join('/');
+    for (const p of prohibidos) {
+      assert.equal(rel.includes(p), false, `la sombra alcanza ${rel} (prohibido: ${p})`);
+    }
+  }
+
+  // Y el grafo entero es pequeño y conocido: si crece, alguien tiene que
+  // mirarlo a propósito en vez de enterarse el día del incidente.
+  const modulos = [...vistos].map((a) => relative(RAIZ, a).split('\\').join('/')).sort();
+  assert.deepEqual(modulos, [
+    'src/mesero-whatsapp/aclaraciones.js',
+    'src/mesero-whatsapp/consultasDelMenu.js',
+    'src/mesero-whatsapp/contextoMesa.js',
+    'src/mesero-whatsapp/faseConversacional.js',
+    'src/mesero-whatsapp/handoffHumano.js',
+    'src/mesero-whatsapp/intencionesDelCliente.js',
+    'src/mesero-whatsapp/meseroDigital.js',
+    'src/mesero-whatsapp/metricasMesero.js',
+    'src/mesero-whatsapp/motorTransaccional.js',
+    'src/mesero-whatsapp/propuestasDelBot.js',
+    'src/mesero-whatsapp/recomendaciones.js',
+    'src/mesero-whatsapp/referenciasDelCliente.js',
+    'src/mesero-whatsapp/resumenDelPedido.js',
+    'src/mesero-whatsapp/sombraDelMesero.js',
+    'src/orders/carritoDelPedido.js',
+    'src/orders/evidenciaDeEleccion.js',
+    'src/orders/procedenciaDeEvidencia.js',
+    'src/agent/mencionesComerciales.js',
+  ].sort(), `el grafo de la sombra cambió:\n${modulos.join('\n')}`);
+});
+
+await t('Y8. y `mencionesComerciales`, que es el único de fuera, tampoco tiene efectos', async () => {
+  // Entra por `evidenciaDeEleccion`. Se mira aparte porque no vive en el
+  // directorio del mesero y una prueba de directorio no lo cubriría.
+  const { readFileSync } = await import('node:fs');
+  const fuente = readFileSync(new URL('../src/agent/mencionesComerciales.js', import.meta.url), 'utf8');
+  const sinComentarios = fuente.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const prohibido of ['pool.query', 'fetch(', 'require(', 'process.env']) {
+    assert.equal(sinComentarios.includes(prohibido), false, `mencionesComerciales usa ${prohibido}`);
+  }
+  const imports = [...fuente.matchAll(/^import[^;]*from '([^']+)';/gm)].map((m) => m[1]);
+  assert.deepEqual(imports, [], `mencionesComerciales importa ${JSON.stringify(imports)}`);
 });
 
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);

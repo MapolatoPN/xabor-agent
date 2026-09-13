@@ -183,6 +183,52 @@ await t('FR10. la ambigüedad bloquea: no se puede confirmar con ella abierta', 
   assert.equal(ultimo.fase, 'completando_producto');
 });
 
+// ── DOS RENGLONES IGUALES CON OPCIONES DISTINTAS ────────────────────────────
+//
+// Lo encontró una auditoría adversarial, y es el mismo error con otra cara:
+// aquí el cliente SÍ dijo cuál, el modelo SÍ acertó, y el sistema aplicó el
+// cambio al renglón equivocado — borrando de paso el platillo del otro.
+
+await t('FR11. con dos renglones iguales, el cambio va al que el cliente señaló', async () => {
+  const CARTA_RAMEN = [{
+    id: 2, nombre: 'Ramen', productos: [{
+      id: 21, nombre: 'Ramen Tonkotsu', precio: 190, disponible: true, agotado: false, descripcion: '',
+      modificadores: [
+        { nombre: 'Proteina', requerido: false, minimo: 0, maximo: 1, opciones:
+          [{ nombre: 'Cerdo chashu', disponible: true }, { nombre: 'Pollo karaage', disponible: true }] },
+        { nombre: 'Extras', requerido: false, minimo: 0, maximo: 2, opciones:
+          [{ nombre: 'Huevo', disponible: true }, { nombre: 'Alga', disponible: true }] },
+      ],
+    }],
+  }];
+  const p = (grupo, ...opciones) => ({ grupo, opciones });
+  let contexto = null, carrito = null;
+  const guion = [
+    { cliente: 'dos ramen tonkotsu, uno con cerdo chashu y otro con pollo karaage',
+      borrador: { items: [
+        { nombre: 'Ramen Tonkotsu', cantidad: 1, modificadores: [p('Proteina', 'Cerdo chashu')] },
+        { nombre: 'Ramen Tonkotsu', cantidad: 1, modificadores: [p('Proteina', 'Pollo karaage')] }] } },
+    // El modelo ACIERTA: describe el tazón de karaage con su huevo.
+    { cliente: 'al de pollo karaage ponle huevo',
+      borrador: { items: [{ nombre: 'Ramen Tonkotsu', cantidad: 1,
+        modificadores: [p('Proteina', 'Pollo karaage'), p('Extras', 'Huevo')] }] } },
+  ];
+  for (const paso of guion) {
+    const r = await atenderTurno({
+      negocioId: 'nR', conversacionId: 'cR', mensaje: paso.cliente,
+      contextoGuardado: contexto, carrito, catalogo: CARTA_RAMEN, proponer: async () => paso.borrador,
+    });
+    contexto = JSON.parse(JSON.stringify(contextoSerializable(r.contexto)));
+    carrito = r.carrito;
+  }
+  const ops = (i) => (i.modificadores || []).flatMap((m) => m.opciones || []).sort();
+  assert.equal(carrito.items.length, 2, `se perdió un tazón: ${JSON.stringify(carrito.items.map((i) => ops(i)))}`);
+  assert.deepEqual(ops(carrito.items[0]), ['Cerdo chashu'],
+    'el ramen de cerdo se convirtió en otro de pollo');
+  assert.deepEqual(ops(carrito.items[1]), ['Huevo', 'Pollo karaage'],
+    'el huevo cayó en el tazón equivocado');
+});
+
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 process.exit(fail ? 1 : 0);

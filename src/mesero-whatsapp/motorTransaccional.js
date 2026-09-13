@@ -37,7 +37,7 @@
 // `referenciasDelCliente` con la misma regla de siempre —uno se resuelve, dos
 // se preguntan— y el reconciliador sigue exigiendo el verbo de quitar por su
 // cuenta. Está documentado allá, en el sitio donde se aplica.
-import { reconciliar, carritoVacio } from '../orders/carritoDelPedido.js';
+import { reconciliar, carritoVacio, parecido } from '../orders/carritoDelPedido.js';
 
 export const ACCIONES = Object.freeze([
   'agregar', 'quitar', 'duplicar',
@@ -224,10 +224,18 @@ export const rechazadas = (decisiones) => (decisiones || []).filter((d) => d.dec
 // convierte «el modelo emitió esto» en «el modelo propone subir la cantidad del
 // renglón L2 de 1 a 3», que es lo que se puede auditar y medir.
 //
-// UN ERROR AQUÍ NO AUTORIZA NADA. Lo que sale de aquí vuelve a pasar por
-// `reconciliar`, que decide con sus reglas de siempre. Si esta comparación
-// se equivoca de renglón, el reconciliador lo empareja bien por su cuenta; lo
-// que se pierde es precisión en el log, no protección.
+// UN ERROR AQUÍ SÍ HACE DAÑO, y el comentario que decía lo contrario estuvo
+// aquí una versión entera. Decía: «si esta comparación se equivoca de renglón,
+// el reconciliador lo empareja bien por su cuenta; lo que se pierde es
+// precisión en el log, no protección». Era cierto antes de que
+// `borradorDesdePropuestas` sellara cada renglón con su `lid` — a partir de ahí
+// el reconciliador obedece esta elección en vez de rehacerla, y equivocarse
+// aquí borra platillos. Lo encontró una auditoría adversarial con dos ramen
+// iguales y proteínas distintas.
+//
+// Por eso `emparejar` usa `parecido`, la misma función que usa el
+// reconciliador: dos capas que deciden lo mismo no pueden discrepar si
+// comparten la regla.
 
 const opcionesPorGrupo = (item) => {
   const mapa = new Map();
@@ -246,28 +254,44 @@ const mismasOpciones = (a = [], b = []) =>
 /**
  * Empareja cada renglón del borrador con uno del carrito.
  *
- * Mismo criterio de nombres que usa el reconciliador —igualdad y después
- * contención, que es lo que reencuentra «Chilaquiles» tras volverse
- * «Chilaquiles Sencillos»— y voraz uno a uno, para que dos renglones del mismo
- * producto no se fusionen en uno.
+ * ── SE USA `parecido`, LA MISMA FUNCIÓN QUE EL RECONCILIADOR ─────────────
+ *
+ * La primera versión comparaba SOLO nombres, y se quedaba con el primer
+ * renglón libre que coincidiera. Con dos renglones del mismo producto eso es
+ * elegir al azar, y el azar borró un platillo:
+ *
+ *   carrito   A · Ramen Tonkotsu con Cerdo chashu
+ *             B · Ramen Tonkotsu con Pollo karaage
+ *   cliente   «al de pollo karaage ponle huevo»
+ *   modelo    ACIERTA: emite el tazón de karaage con su huevo
+ *
+ * El emparejamiento por nombre lo metía en A. Dentro de `fusionar`, cambiar
+ * «Cerdo chashu» por «Pollo karaage» es un intercambio 1:1 —cambiar de idea— y
+ * se aplica sin pedir un verbo de quitar. Resultado: dos tazones de karaage, el
+ * de cerdo desaparecido, el huevo en el que no era, y cero preguntas.
+ *
+ * `parecido` suma tres puntos por cada opción compartida, así que desempata a
+ * favor de B. Que las dos capas usen la MISMA función es lo que garantiza que
+ * no puedan discrepar: cuando discrepaban, la que decidía era esta.
+ *
+ * Y sí, aquello contradecía el comentario de abajo sobre que un error aquí no
+ * autoriza nada. Era cierto antes de que este emparejamiento sellara cada
+ * renglón con su `lid`; dejó de serlo y nadie movió el comentario.
  */
 function emparejar(itemsCarrito, itemsBorrador) {
-  const libres = itemsCarrito.slice();
+  const libres = new Map(itemsCarrito.map((i) => [i.lid, i]));
   const pares = new Map();
   const nuevos = [];
   for (const b of itemsBorrador) {
-    const nb = norm(b?.nombre);
-    let i = libres.findIndex((c) => norm(c.nombre) === nb);
-    if (i < 0) {
-      i = libres.findIndex((c) => {
-        const nc = norm(c.nombre);
-        return nb && nc && (nc.includes(nb) || nb.includes(nc));
-      });
+    let mejor = null, mejorPuntos = 0;
+    for (const [lid, actual] of libres) {
+      const puntos = parecido(actual, b);
+      if (puntos > mejorPuntos) { mejor = lid; mejorPuntos = puntos; }
     }
-    if (i >= 0) { pares.set(libres[i].lid, b); libres.splice(i, 1); }
+    if (mejor) { pares.set(mejor, b); libres.delete(mejor); }
     else nuevos.push(b);
   }
-  return { pares, nuevos, sinMencionar: libres };
+  return { pares, nuevos, sinMencionar: [...libres.values()] };
 }
 
 /**

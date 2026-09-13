@@ -391,6 +391,100 @@ await t('X23. un «sí» pelado a una sugerencia SÍ mete el producto, de punta 
     'el sí autorizó de paso una nota que nadie dijo');
 });
 
+// ── LA VÍA DE BAJA POR REFERENCIA ───────────────────────────────────────────
+//
+// Nueve casos que una auditoría adversarial reprodujo ejecutando el código.
+// Todos tenían la misma raíz: se tomaba el verbo de TODO el turno y la
+// referencia de TODO el turno, y se los juntaba.
+
+const dosLineas = () => ([
+  { cliente: 'unos chilaquiles', borrador: { items: [it('Chilaquiles')] } },
+  { cliente: 'y unos hotcakes', borrador: { items: [it('Chilaquiles'), it('Hotcakes')] } },
+]);
+const sinTocar = (c) => ({ items: (c.items || []).map((x) => ({ ...x })) });
+
+await t('X24. «quítale la cebolla al primero» NO borra el renglón', async () => {
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quitale la cebolla al primero',
+      borrador: (c) => ({ items: c.items.map((x, i) => (i === 0
+        ? { ...x, modificadores: [mod('Salsa', 'Salsa Verde')] } : { ...x })) }) },
+  ]);
+  assert.equal(carrito.items.length, 2,
+    `un «quítale» dirigido a un ingrediente borró un platillo: ${resumen(carrito)}`);
+});
+
+await t('X25. «quítale todo el picante» no vacía el pedido', async () => {
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quitale todo el picante', borrador: sinTocar },
+  ]);
+  assert.equal(carrito.items.length, 2, `se vació el pedido: ${resumen(carrito)}`);
+});
+
+await t('X26. el verbo de una cláusula no se aplica a la referencia de otra', async () => {
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    // «el otro» va con «déjalo igual»; el verbo de quitar es de la otra mitad.
+    { cliente: 'el otro dejalo igual, quita el cafe', borrador: sinTocar },
+  ]);
+  assert.equal(carrito.items.length, 2,
+    `«el otro déjalo igual» borró el otro: ${resumen(carrito)}`);
+});
+
+await t('X27. cuando la frase YA nombra el renglón, la referencia no añade otro', async () => {
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quitalos, los chilaquiles', borrador: sinTocar },
+  ]);
+  assert.equal(carrito.items.length, 1, `se fueron dos renglones: ${resumen(carrito)}`);
+  assert.equal(carrito.items[0].nombre, 'Hotcakes');
+});
+
+await t('X28. «quítale la cebolla a todo» no borra las líneas', async () => {
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quitale la cebolla a todo', borrador: sinTocar },
+  ]);
+  assert.equal(carrito.items.length, 2, `«a todo» vació el pedido: ${resumen(carrito)}`);
+});
+
+await t('X30. «quita los dos» no borra dos renglones de golpe: pregunta', async () => {
+  // Borrar dos líneas con un pronombre es la acción de más daño de todo el
+  // sistema, y «a todo» ya vació un pedido entero en la auditoría. Se pregunta,
+  // que cuesta un turno. Lo que NO puede pasar es quedarse callado sin hacer
+  // nada, que era el comportamiento antes de escribir esto.
+  const { carrito, ultimo } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quita los dos', borrador: sinTocar },
+  ]);
+  assert.equal(carrito.items.length, 2, `borró dos renglones con un pronombre: ${resumen(carrito)}`);
+  assert(ultimo.aclaraciones.some((a) => a.tipo === 'referencia_ambigua'),
+    `no borró pero tampoco preguntó: ${JSON.stringify(ultimo.aclaraciones)}`);
+});
+
+await t('X31. «para 3 personas» no sube la cantidad de todas las líneas', async () => {
+  // «todo» resuelve la referencia a TODAS las líneas y el «3» del mensaje es un
+  // número. Sin el candado de una sola línea, cualquier renglón que el modelo
+  // tocara subiría a tres.
+  const { carrito } = await conversar([
+    ...dosLineas(),
+    { cliente: 'ponme todo para 3 personas',
+      borrador: (c) => ({ items: c.items.map((x) => ({ ...x, cantidad: 3 })) }) },
+  ]);
+  assert.deepEqual(carrito.items.map((i) => i.cantidad), [1, 1],
+    `un número que no era una cantidad subió el pedido: ${resumen(carrito)}`);
+});
+
+await t('X29. y «quita el otro», que es el caso legítimo, sigue funcionando', async () => {
+  const { carrito, ultimo } = await conversar([
+    ...dosLineas(),
+    { cliente: 'quita el otro', borrador: sinTocar },
+  ]);
+  assert.equal(resumen(carrito), '1x Hotcakes', resumen(carrito));
+  assert(ultimo.cambios.autorizados.some((a) => a.via === 'la_referencia_lo_identifica'));
+});
+
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 process.exit(fail ? 1 : 0);

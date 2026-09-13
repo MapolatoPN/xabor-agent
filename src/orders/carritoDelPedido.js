@@ -123,7 +123,7 @@ const desdeGrupos = (mapa) => [...mapa.entries()]
  * con preparaciones distintas ("uno con pollo y otro con cerdo"), que es un
  * caso real y no puede colapsar en uno solo.
  */
-function parecido(a, b) {
+export function parecido(a, b) {
   const na = norm(a?.nombre), nb = norm(b?.nombre);
   let puntos = 0;
   if (na && nb) {
