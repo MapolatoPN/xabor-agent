@@ -41,6 +41,27 @@ export function calcularNivel(puntosAcumuladosTotal) {
   return               { nombre: 'Bronze', emoji: '🥉', color: '#b45309', siguiente: 'Silver', falta: 500  - pts };
 }
 
+// ─── Mapa canal de pedido → interruptor de rewards_config ────────────────────
+// FUENTE ÚNICA. Vivía suelto dentro de acumularPuntos y el canje de la tienda
+// necesita exactamente el mismo criterio: dos copias se desincronizan y el
+// resultado es "gané puntos pero no puedo usarlos" (o al revés).
+//
+// La clave es el `canal` con el que registrarPedido dio de alta el pedido, no
+// una etiqueta de UI. 'tienda_online' es el valor literal que estampa
+// tiendaCheckout.js -- por eso faltaba: el mapa no lo tenía y `undefined` es
+// falsy, así que TODA venta de la tienda salía por "canal no habilitado" sin
+// que nadie lo notara. Un canal que no esté aquí NO acumula (fallo cerrado);
+// es deliberado: agregar un canal debe ser una decisión, no un accidente.
+export function MAPA_CANAL_CONFIG(config) {
+  return {
+    presencial:    config?.canal_mostrador,
+    whatsapp:      config?.canal_whatsapp,
+    voz:           config?.canal_telefono,
+    rappi:         config?.canal_rappi,
+    tienda_online: config?.canal_tienda,
+  };
+}
+
 // ─── Cálculo central de puntos ────────────────────────────────────────────────
 // ÚNICA fuente de verdad para el cálculo de puntos.
 // El frontend solo muestra estimaciones; el backend valida y persiste.
@@ -71,7 +92,7 @@ export async function actualizarConfig(tenantId = DEFAULT_TENANT, datos) {
   const camposPermitidos = [
     'nombre_programa','activo','monto_por_punto','puntos_por_peso',
     'canje_minimo','canal_mostrador','canal_whatsapp','canal_telefono',
-    'canal_rappi','vigencia_dias'
+    'canal_rappi','canal_tienda','vigencia_dias'
   ];
   const campos = Object.keys(datos).filter(c => camposPermitidos.includes(c));
   if (!campos.length) return;
@@ -179,12 +200,7 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
 
   // 2. Canal habilitado
   const canal = pedido.canal || 'presencial';
-  const mapaCanal = {
-    presencial: config.canal_mostrador,
-    whatsapp:   config.canal_whatsapp,
-    voz:        config.canal_telefono,
-    rappi:      config.canal_rappi,
-  };
+  const mapaCanal = MAPA_CANAL_CONFIG(config);
   if (!mapaCanal[canal]) {
     console.log(`[Rewards] Canal '${canal}' no habilitado — sin puntos para ${folio}`);
     return null;
@@ -197,8 +213,25 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     return null;
   }
 
-  // 4. Total elegible: descontar propina y monto canjeado (no se acumulan puntos sobre puntos)
-  // Buscar si hubo canje en este folio para excluir ese monto del eligible
+  // 4. Total elegible: la parte de la venta que el cliente pagó con DINERO.
+  // Fuera la propina (no es venta) y fuera lo que se pagó con puntos (no se
+  // dan puntos sobre puntos).
+  //
+  // El detalle que hacía falta acertar: `pedido.total` NO siempre significa
+  // lo mismo, según por dónde entró la venta.
+  //
+  //   · POS clásico (crear = cobrar): el total se fija ANTES de registrar el
+  //     canje, así que es BRUTO -- todavía incluye lo que se pagará con
+  //     puntos. Aquí sí hay que restarlo.
+  //   · POS por_cobrar y tienda en línea: el cobro (o el checkout) fija el
+  //     total YA rebajado por el canje y deja constancia en
+  //     `datos.rewards_canje`. Restarlo otra vez lo descontaba DOS veces:
+  //     una venta de $200 pagada con $100 de puntos daba 0 puntos en vez de
+  //     los 10 que corresponden a los $100 en efectivo.
+  //
+  // `rewards_canje` es la señal, y es fiable porque lo escribe exactamente
+  // el mismo acto que rebaja el total (cobrarPedidoActivo y
+  // aplicarRewardsAlPedido); nunca aparece sin que el total ya esté neto.
   let montoCanjeado = 0;
   try {
     const { rows: [canjePrev] } = await pool.query(
@@ -213,8 +246,11 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     }
   } catch (_) { /* sin canje previo — continuar */ }
 
+  const totalYaNeto = pedido.rewards_canje != null;
   const totalElegible = Math.max(0,
-    parseFloat(pedido.total || 0) - parseFloat(pedido.propina || 0) - montoCanjeado
+    parseFloat(pedido.total || 0)
+      - parseFloat(pedido.propina || 0)
+      - (totalYaNeto ? 0 : montoCanjeado)
   );
   const puntos = calcularPuntos(totalElegible, config);
   if (puntos <= 0) {

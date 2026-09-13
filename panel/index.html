@@ -9715,7 +9715,7 @@ async function cargarConfigRewardsForm() {
         <div>
           <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:6px;">Canales habilitados</label>
           <div style="display:flex;flex-direction:column;gap:6px;">
-            ${[['canal_mostrador','Mostrador (POS)'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_rappi','Rappi']].map(([k,l]) => `
+            ${[['canal_mostrador','Mostrador (POS)'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_tienda','Tienda en línea (acumular y canjear)'],['canal_rappi','Rappi']].map(([k,l]) => `
               <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
                 <input type="checkbox" id="rw-cfg-${k}" ${cfg[k]?'checked':''}>
                 ${l}
@@ -9740,6 +9740,7 @@ async function guardarConfigRewards() {
     canal_mostrador: document.getElementById('rw-cfg-canal_mostrador').checked,
     canal_whatsapp:  document.getElementById('rw-cfg-canal_whatsapp').checked,
     canal_telefono:  document.getElementById('rw-cfg-canal_telefono').checked,
+    canal_tienda:    document.getElementById('rw-cfg-canal_tienda').checked,
     canal_rappi:     document.getElementById('rw-cfg-canal_rappi').checked,
   };
   try {
