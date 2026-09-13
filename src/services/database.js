@@ -269,6 +269,13 @@ export async function initDB() {
       updated_at      TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(tenant_id)
     );
+    -- Canal tienda en línea (migración 079). Va como ALTER y no dentro del
+    -- CREATE porque las bases que ya existen no vuelven a pasar por el
+    -- CREATE. Default FALSE a propósito: encenderlo es una decisión
+    -- comercial explícita de cada negocio, nunca el efecto lateral de un
+    -- despliegue (ver 079_rewards_canal_tienda.sql).
+    ALTER TABLE rewards_config
+      ADD COLUMN IF NOT EXISTS canal_tienda BOOLEAN NOT NULL DEFAULT FALSE;
     -- Seed de rewards_config: ya NO se siembra aquí con el tenant legado
     -- 'xabor-principal' (incidente P0, seguimiento Rewards en el prompt).
     -- Tras la migración 013 los tenant_id reales son negocio_id (UUID); el

@@ -25,6 +25,7 @@ import {
   listarPromociones, guardarPromocion, eliminarPromocion, listarCampanas,
   guardarCampana, pistaEnvioGratis, PromocionError,
 } from './tiendaPromociones.js';
+import { saldoParaTienda } from './tiendaRewards.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -125,8 +126,8 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   app.post('/api/tienda/:slug/cotizar', limiteCupon, async (req, res) => {
     try {
       const tienda = await resolverTienda(req.params.slug);
-      const { items, modalidad, zona, codigo, telefono } = req.body || {};
-      const cotizacion = await cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono });
+      const { items, modalidad, zona, codigo, telefono, rewardsPuntos } = req.body || {};
+      const cotizacion = await cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos });
       const pista = await pistaEnvioGratis({
         negocioId: tienda.negocioId, subtotal: cotizacion.subtotal, modalidad: cotizacion.modalidad,
       });
@@ -140,6 +141,28 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const r = await crearPedidoTienda({ tienda, ...(req.body || {}) });
       res.json({ ok: true, ...r });
     } catch (e) { responderError(res, e, 'POST checkout'); }
+  });
+
+  // ── Rewards del cliente en ESTA tienda ──
+  // Público por necesidad: en la tienda no hay sesión, la identidad es el
+  // teléfono que el propio cliente escribe en el checkout. Por eso:
+  //
+  //   · va bajo el limitador de checkout (el más estrecho), no el de lectura,
+  //     para que no sirva como oráculo barato de enumeración de teléfonos;
+  //   · devuelve SOLO cifras de puntos -- ni nombre, ni historial, ni fechas;
+  //   · un teléfono sin cuenta devuelve exactamente la misma forma con ceros,
+  //     así que la respuesta no confirma que alguien sea cliente;
+  //   · el negocio sale del slug de la URL, jamás del cuerpo de la petición.
+  //
+  // Riesgo residual asumido y documentado (docs/rewards-tienda-online.md): un
+  // saldo > 0 revela que ese teléfono compró aquí. Cerrarlo del todo exige
+  // verificar el teléfono (OTP), que es otro trabajo.
+  app.get('/api/tienda/:slug/rewards', limiteCheckout, async (req, res) => {
+    try {
+      const tienda = await resolverTienda(req.params.slug);
+      const total = Number(req.query.total) || 0;
+      res.json(await saldoParaTienda(tienda.negocioId, req.query.telefono, total));
+    } catch (e) { responderError(res, e, 'GET rewards tienda'); }
   });
 
   app.get('/api/tienda/seguimiento/:token', limitePublico, async (req, res) => {
