@@ -17,14 +17,14 @@ import assert from 'node:assert/strict';
 const {
   clasificarIntenciones, textoQueAutoriza, puedeTocarElPedido, tiene,
   partirEnClausulas, SON_CONSULTA,
-} = await import('../src/mesero/intencionesDelCliente.js');
+} = await import('../src/mesero-whatsapp/intencionesDelCliente.js');
 
 const {
   resolverReferencia, hayReferencia, renglonesEnOrden, aclaracionDeReferencia,
-} = await import('../src/mesero/referenciasDelCliente.js');
+} = await import('../src/mesero-whatsapp/referenciasDelCliente.js');
 
 const { contextoNuevo, anotarTurno, sincronizarLineas, tocarLinea } =
-  await import('../src/mesero/contextoMesa.js');
+  await import('../src/mesero-whatsapp/contextoMesa.js');
 
 let ok = 0, fail = 0; const fallos = [];
 function t(nombre, fn) {

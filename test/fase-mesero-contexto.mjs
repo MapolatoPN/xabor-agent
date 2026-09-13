@@ -16,7 +16,7 @@
 //   · el mesero no se enciende sin el reconciliador que lo frena.
 import assert from 'node:assert/strict';
 
-const ctxMod = await import('../src/mesero/contextoMesa.js');
+const ctxMod = await import('../src/mesero-whatsapp/contextoMesa.js');
 const {
   contextoNuevo, contextoDeLaConversacion, sanearContexto, anotarTurno, sincronizarLineas,
   tocarLinea, anotarPendiente, resolverPendiente, tienePendiente, preguntadoRecientemente,
@@ -26,7 +26,7 @@ const {
 const {
   proponer, leerRespuesta, aplicarDesenlace, propuestasVivas, fueRechazada, fueConfirmada,
   caducarViejas, evidenciaDeAceptacion, rechazadas, PROPUESTO, CONFIRMADO, RECHAZADO,
-} = await import('../src/mesero/propuestasDelBot.js');
+} = await import('../src/mesero-whatsapp/propuestasDelBot.js');
 
 const { modoDelPedido } = await import('../src/orders/modoDelPedido.js');
 

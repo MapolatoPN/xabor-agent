@@ -15,21 +15,21 @@
 //   · la fase orienta pero no encierra: todo en un mensaje también vale.
 import assert from 'node:assert/strict';
 
-const menu = await import('../src/mesero/consultasDelMenu.js');
+const menu = await import('../src/mesero-whatsapp/consultasDelMenu.js');
 const { responderConsulta, buscarProductos, buscarCategorias, indiceDeLaCarta,
   resolverTermino, fichaDeProducto, productosVendibles } = menu;
 
 const { recomendar, recomendarPorPista, puedeRecomendarAhora, TOPE_POR_CONVERSACION } =
-  await import('../src/mesero/recomendaciones.js');
+  await import('../src/mesero-whatsapp/recomendaciones.js');
 
 const { recolectarAclaraciones, aPreguntarAhora, paraElModelo, preguntaDeRespaldo, bloquean } =
-  await import('../src/mesero/aclaraciones.js');
+  await import('../src/mesero-whatsapp/aclaraciones.js');
 
 const { faseDelTurno, loQueFalta, siguientePregunta, listoParaConfirmar } =
-  await import('../src/mesero/faseConversacional.js');
+  await import('../src/mesero-whatsapp/faseConversacional.js');
 
-const { contextoNuevo, anotarTurno } = await import('../src/mesero/contextoMesa.js');
-const { proponer, leerRespuesta, aplicarDesenlace } = await import('../src/mesero/propuestasDelBot.js');
+const { contextoNuevo, anotarTurno } = await import('../src/mesero-whatsapp/contextoMesa.js');
+const { proponer, leerRespuesta, aplicarDesenlace } = await import('../src/mesero-whatsapp/propuestasDelBot.js');
 
 let ok = 0, fail = 0; const fallos = [];
 function t(nombre, fn) {

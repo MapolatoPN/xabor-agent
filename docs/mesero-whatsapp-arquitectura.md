@@ -50,7 +50,7 @@ un cliente.
 | conversa, interpreta, recomienda | sí | no |
 | propone cambios | sí | no |
 | decide qué entra al pedido | **no** | sí |
-| dónde vive | `src/mesero/` | `src/orders/carritoDelPedido.js` |
+| dónde vive | `src/mesero-whatsapp/` | `src/orders/carritoDelPedido.js` |
 
 Lo que cruza la frontera:
 
@@ -132,7 +132,7 @@ devolver un borrador.
 Si más adelante se hace, la forma segura ya está: las tools serían
 `proponer*`, devolverían propuestas del mismo formato, y el motor no cambiaría
 una línea. Ninguna tool puede crear un pedido, imprimir, cobrar ni confirmar —
-esas rutas no están en `src/mesero/` y el grafo de imports lo comprueba en la
+esas rutas no están en `src/mesero-whatsapp/` y el grafo de imports lo comprueba en la
 prueba V8.
 
 ## Lo que se protege en la confirmación

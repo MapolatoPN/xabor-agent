@@ -19,9 +19,9 @@
 // Cada uno con SU carta, y las cartas no comparten un solo producto.
 import assert from 'node:assert/strict';
 
-const { atenderTurno, contextoSerializable } = await import('../src/mesero/meseroDigital.js');
+const { atenderTurno, contextoSerializable } = await import('../src/mesero-whatsapp/meseroDigital.js');
 const { modoDelPedido } = await import('../src/orders/modoDelPedido.js');
-const sombra = await import('../src/mesero/sombraDelMesero.js');
+const sombra = await import('../src/mesero-whatsapp/sombraDelMesero.js');
 const { observarTurnoDelMesero, reiniciarSombraMesero, conversacionesObservadas,
   textoSeguro, TOPE_TURNOS } = sombra;
 
@@ -273,7 +273,7 @@ await t('V7. la línea de sombra no lleva teléfono ni el mensaje entero', async
 
 await t('V8. el módulo de sombra no importa nada que pueda hablarle a un cliente', async () => {
   const { readFileSync } = await import('node:fs');
-  const fuente = readFileSync(new URL('../src/mesero/sombraDelMesero.js', import.meta.url), 'utf8');
+  const fuente = readFileSync(new URL('../src/mesero-whatsapp/sombraDelMesero.js', import.meta.url), 'utf8');
   const imports = [...fuente.matchAll(/^import[^;]*from '([^']+)';/gm)].map((m) => m[1]);
   assert.deepEqual(imports.sort(),
     ['./contextoMesa.js', './meseroDigital.js', 'node:crypto'],
@@ -289,7 +289,7 @@ await t('Y6. NINGÚN módulo del mesero puede tocar la base ni el canal', async 
   // hoy no lo haga: es que no tiene con qué. Se comprueba sobre el grafo de
   // imports, que es lo único que no depende de acordarse.
   const { readdirSync, readFileSync } = await import('node:fs');
-  const dir = new URL('../src/mesero/', import.meta.url);
+  const dir = new URL('../src/mesero-whatsapp/', import.meta.url);
   const archivos = readdirSync(dir).filter((f) => f.endsWith('.js'));
   assert(archivos.length >= 12, `esperaba el directorio completo, hay ${archivos.length}`);
 

@@ -11,7 +11,7 @@
 // sería el fallo. Preguntar cuesta un turno; equivocarse llega a la mesa.
 import assert from 'node:assert/strict';
 
-const { atenderTurno, contextoSerializable } = await import('../src/mesero/meseroDigital.js');
+const { atenderTurno, contextoSerializable } = await import('../src/mesero-whatsapp/meseroDigital.js');
 
 let ok = 0, fail = 0; const fallos = [];
 async function t(nombre, fn) {

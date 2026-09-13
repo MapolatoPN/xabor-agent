@@ -16,9 +16,9 @@
 // decisión, contexto después.
 import assert from 'node:assert/strict';
 
-const { atenderTurno, contextoSerializable } = await import('../src/mesero/meseroDigital.js');
-const { resumenEnTexto } = await import('../src/mesero/resumenDelPedido.js');
-const { pareceSensible } = await import('../src/mesero/metricasMesero.js');
+const { atenderTurno, contextoSerializable } = await import('../src/mesero-whatsapp/meseroDigital.js');
+const { resumenEnTexto } = await import('../src/mesero-whatsapp/resumenDelPedido.js');
+const { pareceSensible } = await import('../src/mesero-whatsapp/metricasMesero.js');
 
 const TRAZA = process.argv.includes('--traza');
 let ok = 0, fail = 0; const fallos = [];

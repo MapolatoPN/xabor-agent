@@ -10,10 +10,10 @@
 import assert from 'node:assert/strict';
 
 const { perfilDelCliente, nombreParaSaludar, repetirLoDeSiempre, atajosOperativos,
-  perfilParaElModelo, PEDIDOS_QUE_CUENTAN } = await import('../src/mesero/memoriaDelCliente.js');
-const { contextoNuevo, anotarTurno } = await import('../src/mesero/contextoMesa.js');
+  perfilParaElModelo, PEDIDOS_QUE_CUENTAN } = await import('../src/mesero-whatsapp/memoriaDelCliente.js');
+const { contextoNuevo, anotarTurno } = await import('../src/mesero-whatsapp/contextoMesa.js');
 const { proponer, leerRespuesta, aplicarDesenlace, evidenciaDeAceptacion } =
-  await import('../src/mesero/propuestasDelBot.js');
+  await import('../src/mesero-whatsapp/propuestasDelBot.js');
 const { reconciliar, carritoVacio } = await import('../src/orders/carritoDelPedido.js');
 
 let ok = 0, fail = 0; const fallos = [];
