@@ -234,6 +234,10 @@ function terminoQueLoCubre(nombreProducto, dicho, terminos) {
  */
 function procedenciaDelArticulo(nombre, ctx) {
   if (nombradoPorElCliente(nombre, ctx.dicho)) return { autoriza: true, via: 'dicho' };
+  // El cliente aceptó que se le ofreciera ESTE producto, por su nombre exacto.
+  // Alcanza solo a la existencia del renglón: `ctx.aceptado` no aparece en
+  // ninguna otra decisión de esta función ni de `fusionar`.
+  if (ctx.aceptado?.has(norm(nombre))) return { autoriza: true, via: 'acepto_propuesta' };
   const termino = terminoQueLoCubre(nombre, ctx.dicho, ctx.terminos);
   if (termino) {
     if (termino.ofrece.length === 1) return { autoriza: true, via: 'termino_unico', termino: termino.nombre };
@@ -613,11 +617,44 @@ export function articulosQueElClientePidioQuitar(carrito, mensaje) {
  * que NO se aplicó (`congelados`, `sinRespaldo`, `ambiguos`, `porConfirmar`)
  * para que el turno pueda preguntar en vez de adivinar.
  */
+// ── EL ACOTAMIENTO SE COMPRUEBA, NO SE CREE ──────────────────────────────
+//
+// `dichoDelTurno` y `dichoDelCiclo` dejan que una capa de arriba diga qué parte
+// de lo que el cliente escribió cuenta como autorización. Es útil —el mesero
+// quita las cláusulas que son preguntas— y es la opción más peligrosa de todas
+// las que se agregaron, porque sustituye la ENTRADA de la que cuelgan todas las
+// demás reglas. Un llamador que pasara texto de más estaría autorizando en
+// nombre de un cliente que no dijo eso.
+//
+// La promesa era «más pequeño, nunca más grande». Aquí se exige: cada palabra
+// del acotamiento tiene que estar en lo que el cliente escribió de verdad. Si
+// no, se ignora el acotamiento y se usa el texto derivado —el comportamiento
+// anterior al mesero, el que ya defienden 61 pruebas— y queda la traza.
+//
+// No se puede escalar por esta puerta: lo peor que consigue un llamador roto es
+// volver al comportamiento de `main`.
+const palabrasDe = (s) => new Set(norm(s).split(' ').filter(Boolean));
+
+function acotamientoValido(propuesto, derivado) {
+  const base = palabrasDe(derivado);
+  return [...palabrasDe(propuesto)].filter((w) => !base.has(w));
+}
+
 export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const mensaje = String(opciones.mensaje || '');
   const textoCiclo = String(opciones.textoCiclo || mensaje);
   const deEsteTurno = procedenciaDelCiclo([mensaje]);
   const delCiclo = procedenciaDelCiclo([textoCiclo]);
+
+  const acotamientosRechazados = [];
+  const acotar = (propuesto, derivado, campo) => {
+    if (propuesto === undefined) return derivado;
+    const sobran = acotamientoValido(String(propuesto), derivado);
+    if (!sobran.length) return String(propuesto);
+    acotamientosRechazados.push({ campo, sobran: sobran.slice(0, 8) });
+    return derivado;
+  };
+
   const ctx = {
     mensaje,
     // ── QUIÉN DECIDE QUÉ CUENTA COMO «LO QUE DIJO EL CLIENTE» ────────────
@@ -634,9 +671,33 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     // respuesta —«de este turno no autoriza nada»— y con `||` se convertía en
     // «usa el mensaje entero», que es justo lo contrario. Lo encontró X6, con
     // la coca de una pregunta entrando al pedido.
-    mensajeDicho: opciones.dichoDelTurno !== undefined ? String(opciones.dichoDelTurno) : deEsteTurno.dicho,
-    dicho: opciones.dichoDelCiclo !== undefined ? String(opciones.dichoDelCiclo) : delCiclo.dicho,
+    //
+    // Y se COMPRUEBA que sea un recorte (ver `acotar`, arriba): no basta con
+    // que quien llame prometa que lo es.
+    mensajeDicho: acotar(opciones.dichoDelTurno, deEsteTurno.dicho, 'turno'),
+    dicho: acotar(opciones.dichoDelCiclo, delCiclo.dicho, 'ciclo'),
     percibido: [delCiclo.percibido, deEsteTurno.percibido].filter(Boolean).join(' \n '),
+    // ── LO QUE AUTORIZA UN «SÍ» A UNA SUGERENCIA ────────────────────────
+    //
+    // El bot ofrece un café, el cliente dice «sí», y el café no aparece en
+    // ninguna frase suya. La autorización existe, pero no es texto del cliente,
+    // y hasta ahora se colaba MEZCLADA en `dicho` — donde autorizaba de paso
+    // cualquier modificador, cantidad o nota que compartiera una palabra con el
+    // nombre del producto.
+    //
+    // Aquí va por su propio canal y alcanza EXACTAMENTE una cosa: que ese
+    // producto pueda entrar al pedido. Ni sus opciones, ni su cantidad, ni su
+    // nota — esas siguen necesitando que el cliente las haya dicho.
+    // Y se compara EXACTO, no por palabras compartidas.
+    //
+    // `nombradoPorElCliente` es generoso a propósito —una palabra propia basta,
+    // y tolera una errata— porque mide texto libre que escribió una persona.
+    // Esto no es texto libre: es la lista cerrada de nombres del catálogo que
+    // el bot ofreció y el cliente aceptó. Con la medida generosa, aceptar
+    // «Café de Olla» autorizaba también «Café Americano», que comparte la
+    // palabra «café» y que nadie ofreció. Lo encontró A21.
+    aceptado: new Set((Array.isArray(opciones.evidenciaAceptada) ? opciones.evidenciaAceptada : [])
+      .map((x) => norm(x)).filter(Boolean)),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
     terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
     // Renglones que una capa de arriba identificó sin que la frase los nombre
@@ -657,6 +718,15 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   // permite auditar un turno real sin volver a razonarlo a mano.
   const cambios = { agregados: [], actualizados: [], conservados: [], quitados: [],
     congelados: [], sinRespaldo: [], ambiguos: [], porConfirmar: [], autorizados: [] };
+
+  // Un acotamiento que traía palabras que el cliente no escribió no se aplicó.
+  // Se deja visible aquí y en el log: es un fallo de quien llama, y el turno
+  // siguió con el texto de siempre.
+  for (const r of acotamientosRechazados) {
+    cambios.sinRespaldo.push({ nombre: '', campo: `texto_autorizante:${r.campo}`, propuesto: r.sobran });
+    console.warn('[TXN] evento=acotamiento_invalido'
+      + ` campo=${r.campo} palabras_ajenas=${JSON.stringify(r.sobran)}`);
+  }
 
   // 1) Emparejar cada artículo propuesto con uno del carrito. Voraz por mejor
   //    parecido, uno a uno: dos renglones del mismo producto no se fusionan.
@@ -679,9 +749,32 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   //
   // Esto no relaja nada: un `lid` que no existe se ignora y el artículo cae al
   // camino normal. Solo permite señalar mejor, no autorizar más.
+  //
+  // ── Y EL `lid` NO SE CREE SOLO ─────────────────────────────────────────
+  //
+  // UN `lid` IDENTIFICA EL OBJETIVO; NO ES EVIDENCIA PARA MODIFICARLO. La
+  // primera versión emparejaba con solo mirar que el `lid` existiera, y con eso
+  // bastaba para redirigir un cambio autorizado a la línea equivocada:
+  //
+  //   carrito   L1 Chilaquiles · L2 Hotcakes
+  //   cliente   «los chilaquiles sin cebolla»
+  //   propuesta { lid: L2, nombre: 'Chilaquiles', modificadores: [sin cebolla] }
+  //
+  // El emparejamiento forzaba L2, y en `fusionar` el campo NOMBRE veía que el
+  // cliente sí había dicho «chilaquiles» y renombraba los hotcakes. El cliente
+  // se quedaba sin su platillo y con dos del otro, y cada regla de campo había
+  // hecho bien su trabajo: la que falló fue la elección de a QUIÉN aplicarlas.
+  //
+  // Así que el `lid` tiene que ser PLAUSIBLE además de existir: el nombre
+  // propuesto y el del renglón no pueden ser ajenos, que es exactamente lo que
+  // ya mide `parecido` cuando devuelve -1. Con nombres compatibles —el caso
+  // para el que existe esto, dos renglones parecidos— el `lid` sigue mandando.
   for (const p of propuestos) {
     const lid = p?.lid ? String(p.lid) : null;
-    if (lid && libres.has(lid)) { libres.delete(lid); emparejados.set(lid, p); }
+    if (!lid || !libres.has(lid)) continue;
+    if (parecido(porLid.get(lid), p) < 0) continue;
+    libres.delete(lid);
+    emparejados.set(lid, p);
   }
 
   for (const p of propuestos) {

@@ -23,7 +23,7 @@ const { atenderTurno, contextoSerializable } = await import('../src/mesero-whats
 const { modoDelPedido } = await import('../src/orders/modoDelPedido.js');
 const sombra = await import('../src/mesero-whatsapp/sombraDelMesero.js');
 const { observarTurnoDelMesero, reiniciarSombraMesero, conversacionesObservadas,
-  textoSeguro, TOPE_TURNOS } = sombra;
+  textoSeguro, pareceSensibleElRegistro, TOPE_TURNOS } = sombra;
 
 let ok = 0, fail = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -193,7 +193,10 @@ await t('V1. observar NO devuelve respuesta, ni pedido, ni nada que enviar', asy
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.texto, undefined, 'la sombra produjo un texto para enviar');
   assert.equal(r.pedido, undefined, 'la sombra produjo un pedido');
-  assert.equal(r.resumen.renglones, 1, 'la sombra ni siquiera observó');
+  assert.equal(r.registro.pedido_hipotetico.length, 1, 'la sombra ni siquiera observó');
+  // Lo que devuelve NO contiene nada enviable: ni un texto de respuesta, ni un
+  // folio, ni una orden. Solo la observación y su línea de log.
+  assert.deepEqual(Object.keys(r).sort(), ['linea', 'ok', 'registro', 'resumen']);
 });
 
 await t('V2. la sombra NO toca el carrito productivo que se le presta', async () => {
@@ -216,7 +219,8 @@ await t('V3. dos conversaciones observadas no comparten estado', async () => {
   });
   await uno('conv-1', 'quiero un tonkotsu', 'Tonkotsu');
   const b = await uno('conv-2', 'quiero un te verde', 'Te Verde');
-  assert.equal(b.resumen.renglones, 1, 'la segunda conversación heredó el pedido de la primera');
+  assert.equal(b.registro.pedido_hipotetico.length, 1, 'la segunda conversación heredó el pedido de la primera');
+  assert.equal(b.registro.pedido_hipotetico[0].n, 'Te Verde');
   assert.equal(conversacionesObservadas(), 2);
 });
 
@@ -224,26 +228,47 @@ await t('V4. un modelo que falla no rompe nada: la observación se contiene', as
   reiniciarSombraMesero();
   const r = await observarTurnoDelMesero({
     sessionId: 'conv-err', negocioId: NEG.B, mensaje: 'quiero un tonkotsu',
-    cargarCatalogo: async () => { throw new Error('base caida'); },
+    cargarCatalogo: async () => CARTAS.B,
     proponer: async () => { throw new Error('modelo caido'); },
   });
-  // Un fallo del modelo se convierte en handoff DENTRO de la copia; nada sale.
+  // El fallo del modelo se convierte en handoff DENTRO de la copia; nada sale.
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.resumen.fase, 'escalado_humano');
-  assert.equal(r.resumen.renglones, 0);
+  assert.equal(r.registro.handoff, 'ERROR');
+  assert.deepEqual(r.registro.pedido_hipotetico, []);
+});
+
+await t('V4b. si el catálogo no se puede leer, NO se observa (fail closed)', async () => {
+  reiniciarSombraMesero();
+  // Observar con la carta vacía produciría datos falsos: todo saldría "no
+  // identificado" y dentro de dos semanas parecería que el mesero no entiende.
+  for (const carga of [async () => { throw new Error('base caida'); }, async () => [], async () => null]) {
+    const r = await observarTurnoDelMesero({
+      sessionId: 'conv-sin-carta', negocioId: NEG.B, mensaje: 'quiero un tonkotsu',
+      cargarCatalogo: carga, proponer: async () => ({ items: [{ nombre: 'Tonkotsu', cantidad: 1 }] }),
+    });
+    assert.equal(r.ok, false, 'se observó sin carta: los datos de comparación serían mentira');
+    assert(String(r.motivo).startsWith('catalogo:'), r.motivo);
+    assert.equal(r.registro, undefined, 'se escribió un registro con datos falsos');
+  }
 });
 
 await t('V5. un observador lento se abandona; el turno real no lo espera', async () => {
   reiniciarSombraMesero();
-  const inicio = Date.now();
-  const r = await observarTurnoDelMesero({
-    sessionId: 'conv-lenta', negocioId: NEG.B, mensaje: 'hola',
-    cargarCatalogo: () => new Promise((res) => setTimeout(() => res(CARTAS.B), 5000)),
-    proponer: async () => null, tope: 120,
-  });
-  const ms = Date.now() - inicio;
-  assert(ms < 2000, `la observación retuvo ${ms} ms`);
-  assert.equal(r.ok, true, JSON.stringify(r));
+  for (const [que, opts] of [
+    ['catálogo', { cargarCatalogo: () => new Promise((res) => setTimeout(() => res(CARTAS.B), 5000)),
+      proponer: async () => null }],
+    ['modelo', { cargarCatalogo: async () => CARTAS.B,
+      proponer: () => new Promise((res) => setTimeout(() => res(null), 5000)) }],
+  ]) {
+    const inicio = Date.now();
+    const r = await observarTurnoDelMesero({
+      sessionId: `conv-lenta-${que}`, negocioId: NEG.B, mensaje: 'hola', tope: 120, ...opts,
+    });
+    const ms = Date.now() - inicio;
+    assert(ms < 2000, `la observación del ${que} retuvo ${ms} ms`);
+    assert.equal(r.ok, false, `el ${que} lento debió abandonarse`);
+    assert(/tiempo/.test(r.motivo), `${que}: ${r.motivo}`);
+  }
 });
 
 await t('V6. hay tope de turnos por conversación y de conversaciones', async () => {
@@ -267,7 +292,8 @@ await t('V7. la línea de sombra no lleva teléfono ni el mensaje entero', async
   });
   assert.equal(r.ok, true);
   assert(!/8781234567|528781234567|4521/.test(r.linea), `se filtró un número: ${r.linea}`);
-  assert(/conv=[0-9a-f]{10}/.test(r.linea), r.linea);
+  assert(/"conv":"[0-9a-f]{10}"/.test(r.linea), r.linea);
+  assert.equal(pareceSensibleElRegistro(r.registro), false, 'el registro parece llevar PII');
   assert.equal(textoSeguro('llamame al 8781234567'), 'llamame al ###');
 });
 

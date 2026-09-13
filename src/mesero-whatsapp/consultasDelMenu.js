@@ -22,7 +22,7 @@
 // los hechos son de aquí, que es lo que el modelo no puede garantizar. Si esta
 // capa devolviera texto ya hecho, el bot hablaría como un catálogo; si el
 // modelo inventara los hechos, ofrecería lo que no hay.
-import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
+import { palabrasQueLaSostienen, distingueLaEleccion, opcionesDelGrupo } from '../orders/evidenciaDeEleccion.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -158,6 +158,56 @@ export function responderConsulta({ catalogo = [], texto = '', intenciones = [],
 
   if (tiene('CONSULTA_PRODUCTO')) return { tipo: 'no_identificado', candidatos: [] };
   return null;
+}
+
+/** Las opciones de un grupo de un producto, tal como están en la carta. */
+export function opcionesDelGrupoDeProducto(catalogo, nombreProducto, nombreGrupo) {
+  const p = productosVendibles(catalogo).find((x) => norm(x.nombre) === norm(nombreProducto));
+  if (!p) return [];
+  const g = (p.modificadores || []).find((x) => norm(x?.nombre) === norm(nombreGrupo));
+  return g ? opcionesDelGrupo(g).filter((o) => {
+    const op = (g.opciones || []).find((y) => norm(y?.nombre) === norm(o));
+    return op?.disponible !== false;
+  }) : [];
+}
+
+/**
+ * ¿LO QUE DIJO EL CLIENTE SEPARA ESTA OPCIÓN DE SUS HERMANAS?
+ *
+ * El caso que obliga a esto: un grupo «Guarnición» con
+ *
+ *   Frijoles naturales · Frijoles con chorizo · Papas naturales · Papas con chorizo
+ *
+ * y un cliente que escribe «frijoles». El reconciliador exige que la opción
+ * tenga respaldo, y «frijoles» respalda a las dos de frijoles por igual: pasa
+ * la que el modelo haya elegido. Quien desempata es `distingueLaEleccion`, que
+ * hoy solo corre en el validador — y el mesero no ejecuta el validador.
+ *
+ * Aquí se conecta esa misma comprobación, con la misma regla y la misma
+ * función. No es una regla nueva: es la de siempre, en el camino nuevo.
+ *
+ * `hermanasRestringidas` es lo que hace que la conversación avance: cuando el
+ * bot YA preguntó «¿naturales o con chorizo?», la respuesta «con chorizo» se
+ * mide contra ESAS dos y no contra la carta entera — porque el cliente está
+ * contestando la pregunta que se le hizo, no eligiendo entre todo.
+ */
+export function opcionesAmbiguas({ catalogo = [], producto = '', grupo = '', opciones = [],
+  texto = '', hermanasRestringidas = null } = {}) {
+  const todas = Array.isArray(hermanasRestringidas) && hermanasRestringidas.length
+    ? hermanasRestringidas
+    : opcionesDelGrupoDeProducto(catalogo, producto, grupo);
+  const claras = [], ambiguas = [];
+  for (const o of (Array.isArray(opciones) ? opciones : [opciones]).filter(Boolean)) {
+    const nombre = String(typeof o === 'string' ? o : o?.nombre || '');
+    if (!nombre) continue;
+    // Sin hermanas conocidas no hay con qué desempatar, y el reconciliador
+    // sigue exigiendo su respaldo: se deja pasar, como siempre.
+    if (todas.length < 2) { claras.push(nombre); continue; }
+    const { distingue, empatan } = distingueLaEleccion(nombre, todas, texto);
+    if (distingue) claras.push(nombre);
+    else ambiguas.push({ opcion: nombre, empatan, grupo, producto });
+  }
+  return { claras, ambiguas };
 }
 
 /**

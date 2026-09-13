@@ -369,6 +369,28 @@ await t('X22. un renglón duplicado nace con identidad propia', async () => {
   assert.equal(cocas[1].notas, '', `la nota se contagió al otro renglón: "${cocas[1].notas}"`);
 });
 
+// ── 23 ──────────────────────────────────────────────────────────────────────
+await t('X23. un «sí» pelado a una sugerencia SÍ mete el producto, de punta a punta', async () => {
+  // El caso que cierra el circuito: el cliente nunca escribe «café», y el café
+  // tiene que entrar igual — porque se le ofreció y dijo que sí. Y tiene que
+  // entrar SOLO, sin la cantidad ni los extras que el modelo le cuelgue.
+  const { carrito, turnos } = await conversar([
+    { cliente: 'unos chilaquiles', borrador: { items: [it('Chilaquiles')] } },
+    { cliente: 'si', borrador: (c) => ({ items: [...c.items.map((x) => ({ ...x })),
+      it('Cafe de Olla', 4, [], 'bien cargado')] }) },
+  ], { complementos: { Fuertes: ['Bebidas'] } });
+  const ofrecidas = turnos[0].recomendaciones.map((r) => r.nombre);
+  assert.deepEqual(ofrecidas, ['Cafe de Olla'],
+    `la escena necesita UNA sola sugerencia para que el sí no sea ambiguo: ${JSON.stringify(ofrecidas)}`);
+  assert.equal(turnos[1].desenlace.aceptadas.length, 1);
+  assert.equal(linea(carrito, 'Cafe de Olla').length, 1,
+    `el sí no metió lo que se le ofreció: ${resumen(carrito)}`);
+  assert.equal(linea(carrito, 'Cafe de Olla')[0].cantidad, 1,
+    'el sí autorizó de paso una cantidad que nadie dijo');
+  assert.equal(linea(carrito, 'Cafe de Olla')[0].notas, '',
+    'el sí autorizó de paso una nota que nadie dijo');
+});
+
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 process.exit(fail ? 1 : 0);

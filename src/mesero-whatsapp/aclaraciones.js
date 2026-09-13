@@ -55,8 +55,24 @@ const aclaracion = (tipo, campos, pregunta) => ({ tipo, ...campos, pregunta });
  */
 export function recolectarAclaraciones({
   cambios = null, referencia = null, propuestas = null, terminos = [], gruposFaltantes = [],
+  opcionesAmbiguas = [],
 } = {}) {
   const fuera = [];
+
+  // 0) Una opción que la frase no separa de sus hermanas. Va primero porque es
+  //    la que bloquea el renglón que el cliente está armando ahora mismo.
+  //
+  //    «frijoles», con «Frijoles naturales» y «Frijoles con chorizo» en la
+  //    carta, no elige: pregunta. Y la pregunta lleva SOLO las candidatas, para
+  //    que la respuesta del cliente se pueda medir contra ellas y no contra el
+  //    grupo entero — así «con chorizo» resuelve, aunque en la carta completa
+  //    también haya unas papas con chorizo.
+  for (const a of lista(opcionesAmbiguas)) {
+    const candidatos = [a.opcion, ...nombres(a.empatan)];
+    fuera.push(aclaracion('opcion_ambigua', {
+      grupo: String(a.grupo || ''), producto: String(a.producto || ''), candidatos,
+    }, `¿${enumerar(candidatos)}?`));
+  }
 
   // 1) Dos artículos caben en el mismo «quítalo». No se quita ninguno.
   for (const a of lista(cambios?.ambiguos)) {
@@ -118,7 +134,8 @@ export function recolectarAclaraciones({
 
 /** Lo que de verdad impide cerrar el pedido, separado de lo que solo falta. */
 export const bloquean = (aclaraciones) => lista(aclaraciones)
-  .filter((a) => ['grupo_requerido', 'quitar_ambiguo', 'referencia_ambigua', 'termino_ambiguo'].includes(a.tipo));
+  .filter((a) => ['opcion_ambigua', 'grupo_requerido', 'quitar_ambiguo', 'referencia_ambigua', 'termino_ambiguo']
+    .includes(a.tipo));
 
 /**
  * Las que se preguntan en ESTE turno.

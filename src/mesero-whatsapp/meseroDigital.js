@@ -32,12 +32,12 @@ import {
   anotarReferencia, anotarPendiente, resolverPendiente, resumenDelContexto,
 } from './contextoMesa.js';
 import {
-  caducarViejas, leerRespuesta, aplicarDesenlace, evidenciaDeAceptacion, proponer as registrarPropuesta,
+  caducarViejas, leerRespuesta, aplicarDesenlace, proponer as registrarPropuesta,
 } from './propuestasDelBot.js';
 import { clasificarIntenciones, textoQueAutoriza } from './intencionesDelCliente.js';
 import { resolverReferencia } from './referenciasDelCliente.js';
 import { aplicarPropuestas, propuestasDesdeBorrador, propuesta } from './motorTransaccional.js';
-import { responderConsulta, resolverTermino, buscarProductos } from './consultasDelMenu.js';
+import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas } from './consultasDelMenu.js';
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
 import { faseDelTurno, loQueFalta, siguientePregunta, listoParaConfirmar } from './faseConversacional.js';
@@ -124,16 +124,17 @@ export async function atenderTurno({
   //    para la referencia concreta que se le ofreció.
   const desenlace = leerRespuesta(ctx, dicho);
   aplicarDesenlace(ctx, desenlace);
-  const evidenciaDelSi = evidenciaDeAceptacion(desenlace.aceptadas);
 
   // 5) ¿A qué renglón apunta?
   const referencia = resolverReferencia(dicho, { contexto: ctx, carrito: carritoActual });
   if (referencia.tipo) anotarReferencia(ctx, referencia.frase, referencia.lids[0] || null);
 
-  // 6) EL TEXTO QUE AUTORIZA. Lo que el cliente pidió (sin sus preguntas) más
-  //    lo que su «sí» acaba de autorizar. Es lo único que el reconciliador va a
-  //    aceptar como respaldo.
-  const autoriza = [textoQueAutoriza(dicho, { fase: ctx.fase }), evidenciaDelSi].filter(Boolean).join(' ');
+  // 6) LO QUE EL CLIENTE ESCRIBIÓ, sin sus preguntas. Y NADA MÁS: la evidencia que
+  // produce un «sí» viaja por su propio canal (`evidenciaAceptada`), no
+  // concatenada aquí. Mezclarlas hacía que el nombre del producto aceptado
+  // pudiera respaldar de paso un modificador o una nota que compartiera una
+  // palabra con él, y el reconciliador no tenía cómo distinguirlas.
+  const autoriza = textoQueAutoriza(dicho, { fase: ctx.fase });
   const turnosPrevios = ctx.turnos.filter((t) => t.rol === 'cliente' && t.turno < turno);
   const dichoDelCiclo = [
     ...turnosPrevios.map((t) => textoQueAutoriza(t.dicho ?? t.texto)),
@@ -185,6 +186,40 @@ export async function atenderTurno({
     }
   }
 
+  // 8a) ¿LA FRASE SEPARA LA OPCIÓN DE SUS HERMANAS?
+  //
+  // El reconciliador exige que una opción tenga respaldo, y «frijoles» respalda
+  // igual de bien a «Frijoles naturales» y a «Frijoles con chorizo»: pasa la
+  // que el modelo haya escrito. El desempate ya existe —`distingueLaEleccion`—
+  // pero vive en el validador, y el mesero no ejecuta el validador.
+  //
+  // Aquí se ejecuta. Lo que no se distingue NO se propone: se pregunta. Y la
+  // pregunta abierta del turno anterior estrecha las hermanas, para que la
+  // respuesta del cliente se mida contra lo que se le ofreció.
+  const abiertaDelGrupo = (grupo) => (ctx.aclaraciones || [])
+    .find((a) => a.tipo === 'opcion_ambigua' && String(a.grupo || '') === String(grupo || ''));
+  const opcionesQueNoSeparan = [];
+  if (catalogo.length) {
+    propuestas = propuestas.filter((p) => {
+      if (!p || p.accion !== 'cambiar_modificador') return true;
+      const destino = (carritoActual.items || []).find((i) => i.lid === p.lid);
+      const abierta = abiertaDelGrupo(p.campo);
+      const { claras, ambiguas } = opcionesAmbiguas({
+        catalogo,
+        producto: destino?.nombre || '',
+        grupo: p.campo,
+        opciones: p.valorNuevo,
+        texto: autoriza,
+        hermanasRestringidas: abierta?.candidatos || null,
+      });
+      if (!ambiguas.length) return true;
+      opcionesQueNoSeparan.push(...ambiguas);
+      // Lo que sí se distinguió del mismo grupo sigue adelante; lo ambiguo no.
+      if (claras.length) { p.valorNuevo = claras; return true; }
+      return false;
+    });
+  }
+
   // 8b) ¿PUEDE EL FOCO ATRIBUIR ESTE CAMBIO?
   //
   // Solo cuando el cliente NO nombró nada. «Mejor dos» no nombra, y entonces
@@ -199,8 +234,18 @@ export async function atenderTurno({
   const nombraAlgoDeLaCarta = catalogo.length
     ? buscarProductos(catalogo, dicho).length > 0
     : false;
+  // UNA SOLA LÍNEA, Y NUNCA «TODOS».
+  //
+  // La atribución por foco existe para «mejor dos», que habla de un renglón.
+  // Extenderla a varios abría una puerta que no hacía falta: «ponme todo para
+  // 3 personas» resuelve la referencia «todo» a TODAS las líneas, y el «3»
+  // suelto del mensaje habría autorizado subir a tres cualquiera de ellas que
+  // el modelo tocara. Con un solo objetivo, el peor caso vuelve a ser el que
+  // ya existía antes del mesero para un carrito de un renglón.
+  const TIPOS_QUE_SENALAN_UNO = ['eliptica', 'deictico', 'ordinal', 'ultimo', 'otro', 'anterior', 'poseedor'];
   const atribuidos = (referencia.resuelta
-    && ['eliptica', 'deictico', 'ordinal', 'ultimo', 'otro', 'anterior', 'ambos', 'poseedor'].includes(referencia.tipo)
+    && referencia.lids.length === 1
+    && TIPOS_QUE_SENALAN_UNO.includes(referencia.tipo)
     && !nombraAlgoDeLaCarta)
     ? referencia.lids : [];
 
@@ -211,6 +256,9 @@ export async function atenderTurno({
     mensaje, textoCiclo,
     dichoDelTurno: autoriza,
     dichoDelCiclo,
+    // Los productos que el cliente acaba de aceptar de una sugerencia. Solo
+    // habilitan que ESE renglón exista; sus campos siguen necesitando lo suyo.
+    evidenciaAceptada: (desenlace.aceptadas || []).map((p) => p.referencia),
     datoOperativoPendiente, terminos,
     // Lo que la referencia identificó sin que la frase lo nombre. El carrito
     // sigue exigiendo el número por su cuenta; lo único que cambia es de dónde
@@ -277,6 +325,7 @@ export async function atenderTurno({
     }
   }
   const aclaraciones = recolectarAclaraciones({
+    opcionesAmbiguas: opcionesQueNoSeparan,
     cambios: resultado.cambios,
     referencia: referencia.tipo && !referencia.resuelta ? referencia : null,
     propuestas: desenlace,
