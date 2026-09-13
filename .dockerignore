@@ -1,8 +1,83 @@
+# Lo que NO viaja al contexto de build (docker build / railway up).
+#
+# Son dos filtros distintos y hay que mantener los dos: .gitignore protege el
+# REPO, esto protege la IMAGEN. Un archivo puede estar fuera de git y aun asi
+# acabar dentro de produccion, porque `railway up` sube el directorio local
+# como contexto de build. Regla: si un archivo tiene credenciales locales, su
+# lugar es aqui, aunque ya este en .gitignore.
+#
+# Semantica que cuesta tiempo si no se sabe: en .dockerignore un patron SIN
+# barra coincide SOLO en la raiz del contexto. El `.env` que estuvo aqui
+# desde el principio nunca tapo a `edge/.env` ni a `installer/windows/.env`.
+# Por eso los patrones de secretos llevan `**/`.
+#
+# Lo que NO lleva `**/`: los nombres de directorio genericos. `**/storage`
+# borraria `edge/storage/*.js`, que es codigo fuente, no datos.
+#
+# Para auditar que entra realmente, sin adivinar:
+#   docker buildx build --no-cache --progress=plain -f <sonda>.Dockerfile .
+# con una sonda que haga `COPY . /ctx` y `RUN find /ctx -type f`.
+
+# ── Dependencias, metadatos y ruido de build ─────────────────────────────────
 node_modules
+**/node_modules
 .git
-storage
+**/.git
+.claude
+npm-debug.log
+**/*.log
+
+# ── Pruebas, documentacion y datos locales: no se sirven en produccion ───────
+# storage/ guarda los CFDI y documentos generados en la maquina local
+# (storage/cfdi, storage/documentos); en produccion se regeneran solos.
 test
 docs
 *.md
+storage
+
+# ── Variables de entorno, en cualquier formato ────────────────────────────────
+# Incluye dev-local.env.cmd (la receta de CLAUDE.md pide crearlo con la
+# password de Postgres local y INTEGRATIONS_ENCRYPTION_KEY) y sus parientes
+# en .ps1/.sh, mas cualquier .env<algo> (.env.local, .env-produccion, .envrc)
+# y los .example, que dentro de la imagen no sirven para nada y solo
+# documentan que secretos existen.
 .env
-npm-debug.log
+**/.env*
+**/*.env
+**/*.env.cmd
+**/*.env.ps1
+**/*.env.sh
+**/dev-local.env*
+
+# ── e.firma del SAT, certificados y llaves ───────────────────────────────────
+# En Railway estas credenciales llegan por env var (SAT_CERT_BASE64 /
+# SAT_KEY_BASE64) o desde la tabla configuracion cifradas; el directorio
+# certs/ es solo el fallback LOCAL de src/services/satClient.js. Ninguna de
+# estas rutas hace falta dentro de la imagen.
+certs
+**/certs
+**/*.cer
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*_b64.txt
+
+# ── Herramientas locales y salidas de diagnostico (ver .gitignore) ───────────
+export-certs.bat
+export-certs.ps1
+validate-sat.bat
+validate-sat-result.txt
+probe-system-result.txt
+staging-service
+
+# ── Estado local del equipo del restaurante (Xabor Edge) ─────────────────────
+edge/datos
+
+# ── Credenciales de herramientas ─────────────────────────────────────────────
+# Si algun dia el build necesita un .npmrc real (registro privado), NO lo
+# quites de aqui: pasalo con `RUN --mount=type=secret`, nunca por COPY.
+**/.npmrc
+**/.netrc
+**/.pgpass

@@ -1,0 +1,64 @@
+# Lo que NO se sube cuando el deploy sale de esta maquina (`railway up`).
+#
+# Hoy el servicio despliega desde GitHub (rama main) y `railway redeploy
+# --from-source` no mira el disco local, asi que este archivo no cambia nada
+# en el flujo normal. Existe para el dia que alguien corra `railway up`, que
+# empaqueta el DIRECTORIO LOCAL y lo sube: ahi un dev-local.env.cmd con la
+# password de Postgres local y INTEGRATIONS_ENCRYPTION_KEY viajaria a la nube
+# antes de que el builder llegue a mirar .dockerignore.
+#
+# Por que no basta .gitignore: el CLI lo respeta por defecto, pero tiene
+# `railway up --no-gitignore`, que lo desactiva. .railwayignore no se apaga
+# con esa bandera, y no depende de que el archivo este fuera de git. Por eso
+# aqui se repite todo lo esencial en vez de dar por hecho el otro filtro.
+#
+# Sintaxis: la de .gitignore, NO la de .dockerignore. Un patron sin barra
+# coincide a cualquier profundidad (`.env` tapa tambien `edge/.env`), y la
+# barra inicial ancla a la raiz. Eso ultimo importa: `storage/` sin anclar se
+# llevaria `edge/storage/*.js`, que es codigo fuente.
+
+# ── Dependencias, metadatos y ruido ──────────────────────────────────────────
+node_modules/
+.git/
+.claude/
+*.log
+
+# ── Pruebas y documentacion: no se sirven en produccion ──────────────────────
+/storage/
+/test/
+/docs/
+/*.md
+
+# ── Variables de entorno, en cualquier formato ────────────────────────────────
+.env*
+*.env
+*.env.cmd
+*.env.ps1
+*.env.sh
+dev-local.env*
+
+# ── e.firma del SAT, certificados y llaves ───────────────────────────────────
+/certs/
+*.cer
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*_b64.txt
+
+# ── Herramientas locales y salidas de diagnostico (ver .gitignore) ───────────
+/export-certs.bat
+/export-certs.ps1
+/validate-sat.bat
+/validate-sat-result.txt
+/probe-system-result.txt
+/staging-service/
+
+# ── Estado local del equipo del restaurante (Xabor Edge) ─────────────────────
+edge/datos/
+
+# ── Credenciales de herramientas ─────────────────────────────────────────────
+.npmrc
+.netrc
+.pgpass
