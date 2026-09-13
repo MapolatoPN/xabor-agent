@@ -134,10 +134,14 @@ export async function atenderTurno({
   //    lo que su «sí» acaba de autorizar. Es lo único que el reconciliador va a
   //    aceptar como respaldo.
   const autoriza = [textoQueAutoriza(dicho, { fase: ctx.fase }), evidenciaDelSi].filter(Boolean).join(' ');
-  const textoCiclo = [
-    ...ctx.turnos.filter((t) => t.rol === 'cliente' && t.turno < turno).map((t) => t.dicho ?? t.texto),
+  const turnosPrevios = ctx.turnos.filter((t) => t.rol === 'cliente' && t.turno < turno);
+  const dichoDelCiclo = [
+    ...turnosPrevios.map((t) => textoQueAutoriza(t.dicho ?? t.texto)),
     autoriza,
   ].filter(Boolean).join(' \n ');
+  // El ciclo CRUDO viaja aparte: de él sale lo PERCIBIDO, y eso no se filtra —
+  // se sigue queriendo saber qué creyó ver el sistema para poder preguntarlo.
+  const textoCiclo = [...turnosPrevios.map((t) => t.texto), mensaje].filter(Boolean).join(' \n ');
 
   // 7) El modelo propone. Si falla, no se cae el turno: se escala.
   let propuestas = [];
@@ -202,7 +206,12 @@ export async function atenderTurno({
 
   // 9) EL MOTOR DECIDE. Aquí no hay reglas nuevas: se traduce y se reconcilia.
   const resultado = aplicarPropuestas(carritoActual, propuestas.filter(Boolean), {
-    mensaje: dicho, textoCiclo, datoOperativoPendiente, terminos,
+    // Crudo, para que el carrito separe la percepción por su cuenta; y aparte,
+    // acotado, lo que de verdad autoriza.
+    mensaje, textoCiclo,
+    dichoDelTurno: autoriza,
+    dichoDelCiclo,
+    datoOperativoPendiente, terminos,
     // Lo que la referencia identificó sin que la frase lo nombre. El carrito
     // sigue exigiendo el número por su cuenta; lo único que cambia es de dónde
     // sale la atribución.

@@ -511,6 +511,15 @@ function depurarNuevo(item, ctx, cambios) {
 // Por eso se puede ser generoso aquí y estricto allá.
 const PIDE_QUITAR = new RegExp('\\b(' + [
   'quita', 'quitar', 'quitame', 'qu[ií]tame', 'quitale', 'qu[ií]tale',
+  // Pronominales: «quítalo», «sácalos». No nombran nada, así que por sí solos
+  // nunca quitaron ni quitan: la identificación se sigue exigiendo aparte.
+  // Faltaban de todas formas —un «quítalo» ni siquiera se reconocía como un
+  // intento de quitar— y con la capa de referencias ya hay quien sepa a qué
+  // apuntan. Lo encontró X13.
+  'qu[ií]talo', 'qu[ií]tala', 'qu[ií]talos', 'qu[ií]talas',
+  's[aá]calo', 's[aá]cala', 's[aá]calos', 's[aá]calas',
+  'b[oó]rralo', 'b[oó]rrala', 'b[oó]rralos', 'b[oó]rralas',
+  'el[ií]minalo', 'el[ií]minala', 'ret[ií]ralo', 'ret[ií]rala',
   'elimina', 'eliminar', 'borra', 'borrar', 'cancela', 'cancelar',
   'saca', 'sacar', 'remueve', 'remover', 'retira', 'retirar',
   'ya no quiero', 'ya no', 'mejor no', 'olvida', 'olvidate de', 'olv[ií]date de',
@@ -611,10 +620,22 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const delCiclo = procedenciaDelCiclo([textoCiclo]);
   const ctx = {
     mensaje,
-    mensajeDicho: deEsteTurno.dicho,
-    // Sin ciclo explícito, el mensaje del turno es todo lo que sabemos del
-    // cliente. Es el modo en que corren las pruebas de unidad del módulo.
-    dicho: delCiclo.dicho,
+    // ── QUIÉN DECIDE QUÉ CUENTA COMO «LO QUE DIJO EL CLIENTE» ────────────
+    //
+    // Por defecto, todo lo que escribió, separado de lo que el sistema percibió
+    // de su foto. Es el comportamiento de siempre y el de las pruebas de unidad.
+    //
+    // Una capa de arriba puede acotarlo: el mesero quita las cláusulas que son
+    // PREGUNTAS, porque «¿tienes coca?» nombra una coca y no la pide. Lo que
+    // se le entrega aquí es más pequeño que lo que dijo el cliente, nunca más
+    // grande, así que ninguna regla de abajo se relaja.
+    //
+    // Se comprueba contra `undefined` y no con `||`: una cadena vacía es una
+    // respuesta —«de este turno no autoriza nada»— y con `||` se convertía en
+    // «usa el mensaje entero», que es justo lo contrario. Lo encontró X6, con
+    // la coca de una pregunta entrando al pedido.
+    mensajeDicho: opciones.dichoDelTurno !== undefined ? String(opciones.dichoDelTurno) : deEsteTurno.dicho,
+    dicho: opciones.dichoDelCiclo !== undefined ? String(opciones.dichoDelCiclo) : delCiclo.dicho,
     percibido: [delCiclo.percibido, deEsteTurno.percibido].filter(Boolean).join(' \n '),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
     terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
@@ -680,7 +701,24 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   for (const it of previo.items) {
     const p = emparejados.get(it.lid);
     if (p) {
-      const hermanos = previo.items.filter((o) => o.lid !== it.lid);
+      // ── QUIÉN COMPITE POR UNA FRASE ────────────────────────────────────
+      //
+      // No solo los renglones que ya existían: también los que el cliente
+      // acaba de nombrar y todavía no están en el carrito.
+      //
+      // «Ponme dos cocas» con un solo platillo en el pedido subía ese platillo
+      // a dos. La regla decía que sin hermanos cualquier número del mensaje lo
+      // autoriza —con un renglón no hay a qué confundirse— y era cierto
+      // mientras el turno no pudiera traer un producto nuevo. Puede: la coca
+      // es de quien es el «dos». Lo encontró X21.
+      //
+      // Solo cuentan los nuevos que el cliente NOMBRÓ. Si contaran también los
+      // que el modelo se inventa, al modelo le bastaría colar un producto
+      // fantasma para bloquear un cambio de cantidad legítimo.
+      const reciennombrados = nuevos
+        .filter((n) => procedenciaDelArticulo(String(n?.nombre || ''), ctx).autoriza)
+        .map((n) => ({ lid: null, nombre: String(n.nombre), modificadores: n.modificadores || [] }));
+      const hermanos = [...previo.items.filter((o) => o.lid !== it.lid), ...reciennombrados];
       const fusionado = fusionar(it, p, ctx, hermanos, cambios);
       items.push(fusionado);
       cambios.actualizados.push(fusionado.nombre);

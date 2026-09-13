@@ -78,6 +78,9 @@ const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-z0-9ñ¿?¡! ]/g, ' ').replace(/\s+/g, ' ').trim();
 
+/** Lo mismo pero CON acentos: el de «qué» es un dato, no un adorno. */
+const minusculas = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
 // ── Cláusulas ────────────────────────────────────────────────────────────
 //
 // Se corta por puntuación y por las conjunciones que en español separan actos
@@ -109,7 +112,23 @@ const V_CONSULTA = /\b(tienes|tiene|tienen|hay|manejas|manejan|maneja|vendes|ven
 
 const V_PEDIR = /\b(quiero|quisiera|queria|quer[ií]a|me gustaria|dame|dam[eé]|me das|me da|deme|ponme|p[oó]nme|pon|ponle|agrega|agregame|agr[eé]game|agregale|a[nñ]ade|a[nñ]ademe|mandame|m[aá]ndame|manda|traeme|tr[aá]eme|sirveme|s[ií]rveme|echame|[eé]chame|sumale|s[uú]male|me llevo|llevame|ll[eé]vame|encargame|enc[aá]rgame|pideme|p[ií]deme|va|vale|sale|ordeno|ordename|quiero pedir|voy a querer|voy a pedir|se me antoja|antojo)\b/;
 
-const INTERROGATIVO = /(^|\s)(que|qu[eé]|cual|cu[aá]l|cuales|cu[aá]les|cuanto|cu[aá]nto|cuanta|cu[aá]nta|cuantos|cu[aá]ntos|cuantas|cu[aá]ntas|como|c[oó]mo|donde|d[oó]nde|cuando|cu[aá]ndo)(\s|$)/;
+// ── «qué» y «que» no son la misma palabra ────────────────────────────────
+//
+// El acento es lo único que separa el pronombre interrogativo del que
+// introduce una subordinada, y normalizar sin acentos los confunde:
+//
+//   «qué sea roja»   no existe
+//   «que sea roja»   es una orden: que la salsa sea roja
+//   «qué bebidas tienes»  es una pregunta, con acento o sin él
+//
+// Lo encontró X5, donde «ya, que sea roja» se leyó como consulta y la salsa
+// que el cliente acababa de elegir no llegó al pedido.
+//
+// Con acento, es interrogativo y punto. Sin él —y la gente escribe sin
+// acentos— hace falta algo más: un signo de interrogación, o un verbo de
+// existencia. «que bebidas tienes» lo tiene; «que sea roja», no.
+const INTERROGATIVO_CON_ACENTO = /(^|\s)(qué|cuál|cuáles|cuánto|cuánta|cuántos|cuántas|cómo|dónde|cuándo)(\s|$)/;
+const INTERROGATIVO_LLANO = /(^|\s)(que|cual|cuales|cuanto|cuanta|cuantos|cuantas|como|donde|cuando)(\s|$)/;
 
 // ── Familias temáticas. Vocabulario OPERATIVO, no de carta. ──────────────
 
@@ -138,24 +157,30 @@ const T_MODIFICADOR = /\b(sin |con |mejor con|mejor sin|que sea de|que sean de|c
 const T_NOTA = /\b(nota|anota|anotale|an[oó]tale|apunta|diles que|digan que|avisales|av[ií]sales|por favor que|porfa que|si se puede que|es para regalo|va de regalo|sin cubiertos|con cubiertos|aparte por favor|todo aparte|bien caliente|no muy caliente|para nino|para ni[nñ]o|alergia|alergico|al[eé]rgico)\b/;
 
 /** ¿Esta cláusula es una pregunta sobre la carta, y no una petición? */
-function esConsulta(c) {
+function esConsulta(c, conAcentos = c) {
   const pide = V_PEDIR.test(c);
-  const interroga = INTERROGATIVO.test(c) || /\?|^¿/.test(c);
+  const signo = /\?|¿/.test(conAcentos);
   const verboDeConsulta = V_CONSULTA.test(c);
+  // Con acento es interrogativo siempre. Sin acento hace falta un verbo de
+  // existencia que lo acompañe; si no, «que sea roja» pasaría por pregunta.
+  const pronombre = INTERROGATIVO_CON_ACENTO.test(conAcentos)
+    || (INTERROGATIVO_LLANO.test(c) && verboDeConsulta);
+  const interroga = pronombre || signo;
   // «¿me das dos cocas?» lleva signo de interrogación y es una orden: la
   // cortesía mexicana pregunta lo que pide. Lo que la separa de una consulta no
-  // es el signo, es que no hay pronombre interrogativo NI verbo de existencia.
+  // es el signo, es que no hay PRONOMBRE interrogativo — por eso aquí se mira
+  // `pronombre` y no `interroga`.
   //
   // Y al revés: «qué me recomiendas» no lleva signo y es una consulta.
-  if (pide && !INTERROGATIVO.test(c)) return false;
+  if (pide && !pronombre) return false;
   if (T_RECOMENDACION.test(c)) return true;
   if (!interroga && !verboDeConsulta) return false;
   return interroga || verboDeConsulta;
 }
 
-function intencionesDeClausula(c, { fase = null } = {}) {
+function intencionesDeClausula(c, { fase = null, conAcentos = null } = {}) {
   const fuera = new Set();
-  const consulta = esConsulta(c);
+  const consulta = esConsulta(c, conAcentos || c);
 
   if (T_HUMANO.test(c)) fuera.add('PEDIR_HUMANO');
   if (T_SALUDO.test(c)) fuera.add('SALUDO');
@@ -228,7 +253,7 @@ export function clasificarIntenciones(texto, { fase = null } = {}) {
   for (const original of clausulas) {
     const c = norm(original);
     if (!c) continue;
-    const ints = intencionesDeClausula(c, { fase });
+    const ints = intencionesDeClausula(c, { fase, conAcentos: minusculas(original) });
     porClausula.push({
       fragmento: original,
       intenciones: ints,
