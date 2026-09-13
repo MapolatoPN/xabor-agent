@@ -26,6 +26,7 @@ import {
   reservarUsosPromociones, liberarUsosPromociones,
 } from './tiendaPromociones.js';
 import { instanteDesdeEntrada } from './zonaHoraria.js';
+import { saldoParaTienda, planDeCanje, consumirCanjeDeTienda } from './tiendaRewards.js';
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const tokenOpaco = () => randomBytes(24).toString('hex'); // 192 bits: no enumerable
@@ -181,7 +182,7 @@ function direccionParaPedido(direccion, zonaNombre, colonia = null) {
 // La usa la tienda para mostrar totales y promociones en vivo. Calcula
 // exactamente igual que el checkout, así que lo que ve el cliente es lo que
 // se cobra.
-export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono }) {
+export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos = 0 }) {
   const reglas = await reglasDelNegocio(tienda.negocioId);
   const modo = normalizarModalidad(tienda, modalidad);
   const { items: itemsValidados, subtotal } = await validarCarrito(tienda.negocioId, items);
@@ -205,10 +206,27 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
   const minimo = modo === 'domicilio' ? dinero(reglas.pedidoMinimo) : 0;
   const cumpleMinimo = minimo <= 0 || promo.subtotal >= minimo;
 
+  // ── Rewards ──
+  // Va DESPUÉS de las promociones y del envío, sobre el total que el cliente
+  // realmente debe: el punto sirve para pagar, no para descontar mercancía.
+  // Es el mismo orden que el POS (subtotal − descuento − canje) y el mismo
+  // criterio de tope, así que un cliente nunca puede canjear más de lo que
+  // cuesta su pedido ni salir con saldo a favor.
+  //
+  // Esta cotización es INFORMATIVA. El checkout vuelve a calcular el plan
+  // contra el saldo del momento: entre ver el número y pagar, el cliente
+  // pudo gastar sus puntos en otra compra.
+  const rewards = await rewardsDeCotizacion({
+    negocioId: tienda.negocioId, telefono, total: promo.total, puntosSolicitados: rewardsPuntos,
+  });
+
   return {
     modalidad: modo,
     zona: zonaNombre,
     ...promo,
+    rewards,
+    total: dinero(Math.max(0, promo.total - (rewards?.descuentoAplicado || 0))),
+    totalSinRewards: promo.total,
     pedidoMinimo: minimo,
     cumpleMinimo,
     faltaParaMinimo: cumpleMinimo ? 0 : dinero(minimo - promo.subtotal),
@@ -216,6 +234,31 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
       ? `${reglas.entregaMin}-${reglas.entregaMax} min`
       : `${reglas.preparacionMinutos} min`,
   };
+}
+
+// Saldo + plan de canje para la pantalla de checkout, en una sola forma.
+// Nunca revienta la cotización: si Rewards falla (módulo apagado, base
+// lenta, config a medias), el carrito se cotiza igual y la tienda
+// simplemente no ofrece puntos. Un programa de lealtad jamás puede impedir
+// una venta.
+async function rewardsDeCotizacion({ negocioId, telefono, total, puntosSolicitados }) {
+  try {
+    const saldo = await saldoParaTienda(negocioId, telefono, total);
+    if (!saldo.activo) return null;
+    const plan = await planDeCanje({ negocioId, telefono, puntosSolicitados, total });
+    return {
+      ...saldo,
+      // Lo que se aplicaría AHORA con lo que el cliente pidió usar. Es lo
+      // único que mueve el total; `puntosAplicables`/`descuento` son el
+      // máximo ofrecible, no lo elegido.
+      puntosAplicados: plan?.puntos || 0,
+      descuentoAplicado: plan?.monto || 0,
+      recortado: plan?.recortado || false,
+    };
+  } catch (e) {
+    console.error('[Tienda] Rewards no disponible para la cotización:', e.message);
+    return null;
+  }
 }
 
 function normalizarModalidad(tienda, modalidad) {
@@ -509,12 +552,17 @@ async function respuestaDeCheckoutExistente(negocioId, token, fila) {
     `SELECT tracking_token FROM tienda_pedidos WHERE negocio_id = $1 AND checkout_token = $2`,
     [negocioId, token]);
   const datos = fila.datos || {};
+  // El canje se lee de la fila durable, no se recalcula: un reintento del
+  // mismo checkout tiene que devolver el MISMO descuento que la primera vez,
+  // aunque el saldo del cliente ya haya cambiado.
+  const canje = datos.rewards_canje || null;
   return {
     yaExistia: true,
     folio: fila.folio,
     trackingToken: tp?.tracking_token || datos?.tienda?.tracking_token || null,
     total: Number(datos.total) || 0,
-    ahorro: Number(datos?.tienda?.ahorro) || 0,
+    ahorro: dinero((Number(datos?.tienda?.ahorro) || 0) + (Number(canje?.monto) || 0)),
+    rewards: canje,
     programadoPara: datos.programado_para || null,
   };
 }
@@ -528,6 +576,7 @@ async function respuestaDeCheckoutExistente(negocioId, token, fila) {
 export async function crearPedidoTienda({
   tienda, checkoutToken, items, modalidad, cliente = {}, direccion = null, zona = null,
   colonia = null, codigo = null, metodoPago = null, programadoPara = null, notas = null,
+  rewardsPuntos = 0,
 }) {
   const token = limpiarTexto(checkoutToken, 80);
   if (!token || token.length < 16) throw new TiendaError('Sesión de compra inválida', 'CHECKOUT_TOKEN_INVALIDO');
@@ -635,6 +684,19 @@ export async function crearPedidoTienda({
       cuposTomados = reservadas;
     }
 
+    // 5c) Plan de canje Rewards, recalculado en el SERVIDOR contra el total
+    //     que acaba de salir de las promociones. Lo que mandó el navegador es
+    //     una intención ("quiero usar N puntos"), nunca un descuento: si pide
+    //     más de lo que tiene o de lo que cabe en la venta, se recorta hacia
+    //     abajo. Aquí todavía no se gasta nada -- solo se lee.
+    const planRewards = await planDeCanje({
+      negocioId: tienda.negocioId, telefono,
+      puntosSolicitados: rewardsPuntos, total: promo.total,
+    }).catch(e => {
+      console.error('[Tienda] No se pudo evaluar el canje Rewards:', e.message);
+      return null;
+    });
+
     // 6) Método de pago: SOLO los de la allow-list propia de esta tienda
     //    (metodosPagoTienda). Un método manipulado desde el navegador -- o uno
     //    habilitado en el POS pero no en la tienda -- no existe aquí. Si la
@@ -722,6 +784,40 @@ export async function crearPedidoTienda({
     pedidoCreado = pedido;
     fallaInyectada('despues_de_registrar');
 
+    // 8b) REWARDS: primero se gastan los puntos, DESPUÉS se baja el total.
+    //
+    // El orden es deliberado y es la parte importante de todo esto. El pedido
+    // nace con el total SIN descuento de puntos; solo si el débito tiene
+    // éxito -- atómico, con lock de fila sobre la cuenta e idempotente por
+    // folio -- se aplica la rebaja.
+    //
+    // Invertirlo (descontar primero, cobrar puntos después) es justo el fallo
+    // que hay que evitar: dos checkouts simultáneos del mismo cliente pasarían
+    // los dos la validación de saldo, y el segundo se quedaría con un pedido
+    // barato y ningún punto gastado -- dinero regalado. Así, el que pierde la
+    // carrera simplemente paga precio completo.
+    //
+    // Todavía no ha salido NADA al mundo: la comanda, el tablero y el enlace
+    // de pago viven en finalizarCheckout, más abajo. La rebaja llega a tiempo
+    // para todos ellos.
+    let rewardsAplicado = null;
+    if (planRewards) {
+      try {
+        const canje = await consumirCanjeDeTienda({
+          negocioId: tienda.negocioId, folio: pedido.id, plan: planRewards });
+        if (canje) {
+          rewardsAplicado = { puntos: planRewards.puntos, monto: planRewards.monto };
+          await aplicarRewardsAlPedido(tienda.negocioId, pedido, orden, rewardsAplicado);
+        }
+      } catch (e) {
+        // Saldo insuficiente en el último instante (otra compra se le
+        // adelantó), o cualquier fallo del módulo. El pedido es válido y se
+        // queda a precio completo: nunca se regala el descuento sin el
+        // respaldo del movimiento de canje.
+        console.error(`[Tienda] Canje Rewards no aplicado en ${pedido.id}: ${e.message}`);
+      }
+    }
+
     // 9) Derivaciones: vinculo, historial, tablero, comanda y atribucion.
     //    Todas idempotentes, todas repetibles por un reintento.
     await finalizarCheckout({
@@ -733,8 +829,14 @@ export async function crearPedidoTienda({
       yaExistia: false,
       folio: pedido.id,
       trackingToken: reserva[0].tracking_token,
-      total: promo.total,
-      ahorro: promo.ahorro,
+      // El total que se devuelve es el del PEDIDO, no el de la cotización:
+      // si el canje no se pudo aplicar, el cliente tiene que ver el precio
+      // real que va a pagar, no el que esperaba.
+      total: dinero(orden.total),
+      ahorro: dinero(promo.ahorro + (rewardsAplicado?.monto || 0)),
+      rewards: rewardsAplicado,
+      // El canje se pidió y no se pudo: la tienda lo dice en vez de callarlo.
+      rewardsNoAplicado: Boolean(planRewards && !rewardsAplicado),
       programadoPara: prog.para,
       metodoPago: elegido,
     };
@@ -773,6 +875,36 @@ export async function crearPedidoTienda({
     if (e instanceof POSValidacionError) throw new TiendaError(e.message, e.codigo || 'VALIDACION');
     throw e;
   }
+}
+
+/**
+ * Baja el total del pedido por el canje ya cobrado, en los TRES sitios que
+ * tienen que contar la misma historia:
+ *
+ *   1. la fila durable de `pedidos_activos` (corte, historial, pago, tracking),
+ *   2. el objeto en memoria del motor de pedidos (`pedido`, el que emite la
+ *      comanda y viaja por WebSocket al tablero),
+ *   3. el objeto `orden` que finalizarCheckout usa para calcular la versión
+ *      del pedido -- si esta se quedara con el total viejo, el settlement del
+ *      pago compararía contra un hash que ya no corresponde y trataría un
+ *      cobro legítimo como "versión desfasada".
+ *
+ * Se llama SIEMPRE antes de emitir nada. `datos || jsonb` fusiona a nivel
+ * raíz: solo pisa las claves que se mandan.
+ */
+async function aplicarRewardsAlPedido(negocioId, pedido, orden, rewards) {
+  const totalFinal = dinero(Math.max(0, Number(orden.total || 0) - Number(rewards.monto || 0)));
+  const parche = { total: totalFinal, rewards_canje: { puntos: rewards.puntos, monto: rewards.monto } };
+
+  await pool.query(
+    `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
+      WHERE folio = $1 AND negocio_id = $2`,
+    [pedido.id, negocioId, JSON.stringify(parche)]);
+
+  Object.assign(orden, parche);
+  Object.assign(pedido, parche);
+  if (orden.tienda) orden.tienda.rewards = { ...parche.rewards_canje };
+  if (pedido.tienda) pedido.tienda.rewards = { ...parche.rewards_canje };
 }
 
 async function esperarPedidoDeToken(negocioId, token, intentos = 10) {

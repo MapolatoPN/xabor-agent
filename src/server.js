@@ -8812,6 +8812,19 @@ async function arrancar() {
     reconciliarDerivacionesPendientes().catch(e =>
       console.error('[Pagos] Recuperacion de derivaciones fallo:', e.message));
   }, 60 * 1000);
+
+  // Rewards: devolver los puntos de los pedidos que acabaron cancelados y
+  // todavia tienen el canje vivo. Va JUSTO detras de la expiracion de pagos
+  // porque ese job es quien cancela un pedido de la tienda que nadie pago --
+  // y un checkout abandonado no puede costarle los puntos al cliente. Es un
+  // barrido en segundo plano, nunca en el camino sincronico de una venta, y
+  // es idempotente: reejecutarlo no mueve un punto de mas.
+  const barridoRewards = () =>
+    import('./services/tiendaRewards.js')
+      .then(m => m.reconciliarCanjesDePedidosCancelados())
+      .catch(e => console.error('[Rewards] Barrido de canjes cancelados fallo:', e.message));
+  barridoRewards();
+  setInterval(barridoRewards, 5 * 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));

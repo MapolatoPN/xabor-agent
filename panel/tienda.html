@@ -785,7 +785,11 @@ let CK = { modalidad: null, cuando: 'ahora', programadoPara: null, zona: null, c
            codigoAplicado: null, metodoPago: null, notas: '',
            // Día y hora elegidos por separado en el selector de programados.
            // `programadoPara` se deriva de los dos (ver sincronizarProgramado).
-           progDia: null, progHora: null };
+           progDia: null, progHora: null,
+           // Puntos que el cliente PIDE usar. Nunca es el descuento: el
+           // servidor lo recalcula en cada cotización y devuelve el número
+           // que de verdad aplicó, con el que este campo se resincroniza.
+           rewardsPuntos: 0 };
 let METODOS = [];
 
 function irAlCheckout() {
@@ -1053,9 +1057,15 @@ async function cotizar() {
       items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas,
         modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
       modalidad: CK.modalidad, zona: CK.zona, codigo: CK.codigo, telefono: CK.telefono,
+      // Intención, no descuento: el servidor recalcula cuánto se puede usar
+      // de verdad y devuelve ESE número. Si el carrito encogió, recorta.
+      rewardsPuntos: CK.rewardsPuntos || 0,
     }});
     if (seq !== cotizarSeq) return;
     COTIZACION = r;
+    // El servidor manda: si recortó (o no pudo aplicar nada), la casilla
+    // refleja lo que de verdad se está usando, no lo que se pidió.
+    CK.rewardsPuntos = r.rewards?.puntosAplicados || 0;
     CK.codigoAplicado = r.aplicadas?.some(p => p.codigo && p.codigo === (CK.codigo || '').toUpperCase()) ? CK.codigo : null;
     pintarResumen(r);
   } catch (e) {
@@ -1093,11 +1103,15 @@ function pintarResumen(c) {
         ? `<div class="ayuda" style="margin-top:8px">🎁 ${esc(c.pistaEnvioGratis.mensaje)}</div>` : ''}
     </div>
 
+    ${bloqueRewards(c)}
+
     <div class="totales">
       <div class="tot-fila"><span>Subtotal</span><span>${dinero(c.subtotal)}</span></div>
       ${c.descuento > 0 ? `<div class="tot-fila desc"><span>Descuentos</span><span>−${dinero(c.descuento)}</span></div>` : ''}
       ${CK.modalidad === 'domicilio' ? `<div class="tot-fila"><span>Envío${c.zona ? ' · ' + esc(c.zona) : ''}</span>
         <span>${c.envioGratis ? `<s style="opacity:.5">${dinero(c.envioBase)}</s> <strong style="color:var(--exito)">GRATIS</strong>` : dinero(c.envio)}</span></div>` : ''}
+      ${c.rewards?.descuentoAplicado > 0
+        ? `<div class="tot-fila desc"><span>${esc(c.rewards.nombrePrograma || 'Puntos')} (${c.rewards.puntosAplicados} pts)</span><span>−${dinero(c.rewards.descuentoAplicado)}</span></div>` : ''}
       <div class="tot-fila grande"><span>Total</span><span>${dinero(c.total)}</span></div>
     </div>
 
@@ -1145,6 +1159,49 @@ const MESES_LARGOS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'ju
 function aplicarCupon() { CK.codigo = ($('ck-cupon').value || '').trim().toUpperCase() || null; pasoResumen(); }
 function quitarCupon() { CK.codigo = null; pasoResumen(); }
 
+// ── Rewards en el resumen ────────────────────────────────────────────────
+// Se pinta SOLO con lo que devolvió el servidor. El frontend no sabe cuánto
+// vale un punto, ni cuál es el mínimo de canje, ni cuántos puntos caben en
+// esta compra: todo eso llega en `c.rewards`. Si el negocio no tiene Rewards
+// encendido para la tienda, `c.rewards` es null y aquí no se pinta nada --
+// la tienda se ve exactamente igual que antes.
+function bloqueRewards(c) {
+  const w = c.rewards;
+  if (!w || !w.activo) return '';
+  const nombre = esc(w.nombrePrograma || 'Puntos');
+
+  // Cliente sin saldo utilizable: solo se le dice lo que GANA con esta
+  // compra. Nada de "tienes 0 puntos", que suena a reproche.
+  if (!w.puntos || w.puntosAplicables <= 0) {
+    return w.puntosQueGanaria > 0
+      ? `<div class="promo-ok" style="margin:0 16px">⭐ <span>Esta compra te da <strong>${w.puntosQueGanaria} puntos</strong> de ${nombre}</span></div>`
+      : '';
+  }
+
+  const usando = w.puntosAplicados > 0;
+  return `<div class="campo" style="padding-top:4px">
+    <label>${nombre}</label>
+    <div class="promo-ok" style="cursor:pointer" onclick="alternarRewards()">
+      ⭐ <span>${usando
+        ? `Usando <strong>${w.puntosAplicados} pts</strong> de tus ${w.puntos}`
+        : `Tienes <strong>${w.puntos} pts</strong> · usa ${w.puntosAplicables} y ahorra ${dinero(w.descuento)}`}</span>
+      <span class="x" title="${usando ? 'Quitar' : 'Usar'}">${usando ? '✕' : '＋'}</span>
+    </div>
+    ${w.recortado ? `<div class="ayuda" style="margin-top:6px">Se ajustó a ${w.puntosAplicados} pts: es lo máximo que cabe en este pedido.</div>` : ''}
+    ${usando ? '' : `<div class="ayuda" style="margin-top:6px">Se canjean en bloques de ${w.canjeMinimo} pts.</div>`}
+  </div>`;
+}
+
+// Un solo interruptor: o se usa el máximo que el servidor ofrece, o nada.
+// Elegir la cifra exacta no aporta (los bloques ya la redondean) y sí abre
+// la puerta a que el cliente crea que decidió un descuento.
+function alternarRewards() {
+  const w = COTIZACION?.rewards;
+  if (!w) return;
+  CK.rewardsPuntos = w.puntosAplicados > 0 ? 0 : w.puntosAplicables;
+  pasoResumen();
+}
+
 // Idempotencia: el token se genera UNA vez por intento de compra y se guarda.
 // Si el cliente pierde la red y reintenta, el servidor reconoce el token y
 // devuelve el mismo folio en vez de crear un pedido duplicado.
@@ -1177,6 +1234,7 @@ async function confirmarPedido() {
       zona: CK.zona, colonia: CK.colonia, codigo: CK.codigo, metodoPago: CK.metodoPago,
       programadoPara: CK.cuando === 'programado' ? CK.programadoPara : null,
       notas: CK.notas,
+      rewardsPuntos: CK.rewardsPuntos || 0,
     }});
     try { localStorage.removeItem(LS_CARRITO); localStorage.removeItem(LS_TOKEN); } catch (e) {}
     CARRITO = []; refrescarBarra();
@@ -1188,6 +1246,20 @@ async function confirmarPedido() {
       ⚠️ <div><strong>${esc(e.message)}</strong>${e.codigo === 'CHECKOUT_EN_CURSO' ? '<br>No se creó ningún pedido duplicado.' : ''}</div></div>`;
     $('ck-cuerpo').scrollTop = $('ck-cuerpo').scrollHeight;
   }
+}
+
+// Qué pasó con los puntos, dicho en la pantalla de éxito. El caso incómodo
+// -- se pidieron y no se pudieron aplicar -- se dice, no se esconde: el
+// cliente ve un total distinto al que esperaba y merece saber por qué.
+function avisoRewards(r) {
+  if (r.rewardsNoAplicado) {
+    return `<div class="aviso" style="margin:14px 0 0;background:var(--alerta-bg);color:var(--alerta)">
+      ⚠️ <div>No pudimos aplicar tus puntos a este pedido (tu saldo cambió). El total es el precio normal y tus puntos siguen ahí.</div></div>`;
+  }
+  if (r.rewards?.puntos > 0) {
+    return `<div class="aviso exito" style="margin:14px 0 0">⭐ <div>Usaste <strong>${r.rewards.puntos} puntos</strong> y ahorraste ${dinero(r.rewards.monto)}.</div></div>`;
+  }
+  return '';
 }
 
 function mostrarExito(r) {
@@ -1210,6 +1282,7 @@ function mostrarExitoNormal(r) {
     <p style="color:var(--texto-2);font-size:14px;margin:12px 0 0">
       ${TIENDA.negocio} ya recibió tu pedido${r.yaExistia ? ' (ya lo teníamos registrado)' : ''}.
       Guarda esta liga para seguir su avance.</p>
+    ${avisoRewards(r)}
   </div>`;
   $('ck-pie').innerHTML = `<button class="btn" onclick="location.href='/seguimiento/${encodeURIComponent(r.trackingToken)}'">Seguir mi pedido</button>
     <button class="btn sec" style="margin-top:9px" onclick="location.reload()">Hacer otro pedido</button>`;
@@ -1234,6 +1307,7 @@ async function mostrarExitoConPago(r) {
     <p style="color:var(--texto-2);font-size:13.5px;margin:8px 0 0">
       ${TIENDA.negocio} preparará tu pedido en cuanto el pago quede confirmado.<br>
       Puedes regresar a esta página para consultar tu pago.</p>
+    ${avisoRewards(r)}
     <div id="pago-estado" style="margin-top:12px;font-size:13.5px;color:var(--texto-2)"></div>
   </div>`;
   $('ck-pie').innerHTML = `<button class="btn" id="btn-pagar" disabled><span class="spin"></span> Obteniendo tu enlace de pago…</button>
