@@ -195,8 +195,14 @@ await t('V1. observar NO devuelve respuesta, ni pedido, ni nada que enviar', asy
   assert.equal(r.pedido, undefined, 'la sombra produjo un pedido');
   assert.equal(r.registro.pedido_hipotetico.length, 1, 'la sombra ni siquiera observó');
   // Lo que devuelve NO contiene nada enviable: ni un texto de respuesta, ni un
-  // folio, ni una orden. Solo la observación y su línea de log.
-  assert.deepEqual(Object.keys(r).sort(), ['linea', 'ok', 'registro', 'resumen']);
+  // folio, ni una orden. Solo la observación y sus líneas de log.
+  assert.deepEqual(Object.keys(r).sort(), ['eventos', 'linea', 'ok', 'registro', 'resumen']);
+  // Y `eventos` son líneas de métrica, no algo que se le pueda mandar a nadie.
+  assert(Array.isArray(r.eventos) && r.eventos.length > 0, 'sin métricas del turno');
+  for (const e of r.eventos) {
+    assert.equal(typeof e, 'string', `una métrica no es una línea: ${JSON.stringify(e)}`);
+    assert(e.startsWith('[MESERO] evento='), `una métrica no lleva su prefijo: ${e}`);
+  }
 });
 
 await t('V2. la sombra NO toca el carrito productivo que se le presta', async () => {
@@ -319,6 +325,28 @@ await t('V6. hay tope de turnos por conversación y de conversaciones', async ()
   assert.equal(ultima.motivo, 'tope_de_turnos');
 });
 
+await t('V6b. el carrito productivo se CLONA: observarlo no puede moverlo', async () => {
+  // La línea que impide que observar cambie lo observado es un
+  // `JSON.parse(JSON.stringify(...))`. Hasta ahora ninguna prueba la sujetaba:
+  // quitarla no rompía nada, porque ninguna prueba le pasaba un carrito. Se
+  // descubrió con una mordida que no tumbaba ninguna suite.
+  reiniciarSombraMesero();
+  const productivo = {
+    items: [{ lid: 'L1', nombre: CARTAS.B[0].productos[0].nombre, cantidad: 1, modificadores: [], notas: '' }],
+    datos: { modalidad: 'recoger' },
+  };
+  const copiaFiel = JSON.parse(JSON.stringify(productivo));
+  const r = await observarTurnoDelMesero({
+    sessionId: 'conv-clon', negocioId: NEG.B,
+    mensaje: `quita ${CARTAS.B[0].productos[0].nombre} y ponme otra cosa`,
+    carritoProductivo: productivo,
+    cargarCatalogo: async () => CARTAS.B, proponer: async () => ({ items: [] }),
+  });
+  assert.equal(r.ok, true, r.motivo);
+  assert.deepEqual(productivo, copiaFiel,
+    'la sombra movió el carrito productivo que se le pasó como punto de partida');
+});
+
 await t('V7. la línea de sombra no lleva teléfono ni el mensaje entero', async () => {
   reiniciarSombraMesero();
   const r = await observarTurnoDelMesero({
@@ -338,7 +366,7 @@ await t('V8. el módulo de sombra no importa nada que pueda hablarle a un client
   const fuente = readFileSync(new URL('../src/mesero-whatsapp/sombraDelMesero.js', import.meta.url), 'utf8');
   const imports = [...fuente.matchAll(/^import[^;]*from '([^']+)';/gm)].map((m) => m[1]);
   assert.deepEqual(imports.sort(),
-    ['./contextoMesa.js', './meseroDigital.js', 'node:crypto'],
+    ['./contextoMesa.js', './meseroDigital.js', './redaccionPII.js', 'node:crypto'],
     `la sombra importa algo que no debería: ${JSON.stringify(imports)}`);
   for (const prohibido of ['whatsapp', 'enviarMensaje', 'registrarPedido', 'imprimir', 'clip']) {
     assert(!new RegExp(prohibido, 'i').test(fuente.replace(/^\/\/.*$/gm, '')),
@@ -421,6 +449,7 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     'src/mesero-whatsapp/motorTransaccional.js',
     'src/mesero-whatsapp/propuestasDelBot.js',
     'src/mesero-whatsapp/recomendaciones.js',
+    'src/mesero-whatsapp/redaccionPII.js',
     'src/mesero-whatsapp/referenciasDelCliente.js',
     'src/mesero-whatsapp/resumenDelPedido.js',
     'src/mesero-whatsapp/sombraDelMesero.js',

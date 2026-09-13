@@ -1864,6 +1864,10 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       }).then((r) => {
         if (r?.linea) console.log(r.linea);
         else if (r && !r.ok) console.log(`[SOMBRA-MESERO] no evaluado negocio=${negocioId} motivo=${r.motivo}`);
+        // Las métricas del turno, con el prefijo que ya se busca en Railway.
+        // Se construían y se perdían: la línea JSON de arriba es para leer una
+        // conversación entera, y estas son para contar a través de muchas.
+        for (const evento of (r?.eventos || [])) console.log(evento);
       }).catch((e) => console.error('[SOMBRA-MESERO] contenida en el canal:', e?.message));
     };
 

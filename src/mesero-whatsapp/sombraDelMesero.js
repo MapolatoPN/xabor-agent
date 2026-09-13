@@ -33,6 +33,10 @@
 import { createHash } from 'node:crypto';
 import { atenderTurno } from './meseroDigital.js';
 import { resumenDelContexto } from './contextoMesa.js';
+import {
+  redactarDireccion, redactarContacto, palabrasDeLaCarta, pareceDomicilioSinTapar,
+  DICE_DOMICILIO, DICE_RECOGER,
+} from './redaccionPII.js';
 
 /** Cuántas conversaciones se recuerdan a la vez. */
 export const TOPE_CONVERSACIONES = 500;
@@ -65,12 +69,46 @@ export const verEstadoSombra = (negocioId, sessionId) =>
 
 const hash = (s) => createHash('sha256').update(String(s || '')).digest('hex').slice(0, 10);
 
-/** Rachas de dígitos fuera: un teléfono o una dirección no aportan nada al log. */
-export const textoSeguro = (s) => String(s || '')
-  .replace(/\d{3,}/g, '###')
-  .replace(/\s+/g, ' ')
-  .trim()
-  .slice(0, MAX_TEXTO);
+/**
+ * El texto del cliente tal como puede ir a un log.
+ *
+ * Tres capas, y las tres hacen falta, en este orden:
+ *
+ *   1. correo, COORDENADAS y enlaces, que no dependen de ningún contexto —y
+ *      que tienen que irse antes de la máscara de dígitos, porque unas
+ *      coordenadas convertidas en `##.####` siguen siendo coordenadas;
+ *   2. la DIRECCIÓN, tapada por marco (`redaccionPII`), que es la única capa
+ *      que sabe distinguir «Calle Naranja 900» de «jugo de naranja»;
+ *   3. las rachas de dígitos, que siguen cayendo al final — un teléfono suelto
+ *      no lleva marco de dirección y no lo taparía la capa de arriba.
+ *
+ * Lo que NO se toca es la semántica gastronómica. Un log en el que todo dice
+ * `[REDACTADO]` no responde ninguna de las preguntas por las que se observa.
+ */
+export const textoSeguro = (s, opciones = {}) => {
+  const { texto } = redactarDireccion(redactarContacto(s), opciones);
+  return texto
+    .replace(/\d{3,}/g, '###')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TEXTO);
+};
+
+/**
+ * ¿Esta conversación es a domicilio?
+ *
+ * Misma precedencia que `brain.js`: recoger se evalúa PRIMERO y se queda con la
+ * frase, porque «para llevar» en México es que el cliente pasa por su pedido.
+ * Es pegajoso: una vez que la conversación es a domicilio, sigue siéndolo
+ * mientras el cliente no diga lo contrario.
+ */
+export function esEntregaADomicilio(anterior, mensaje, modalidad = null) {
+  const t = String(mensaje || '');
+  if (DICE_RECOGER.test(t)) return false;
+  if (DICE_DOMICILIO.test(t)) return true;
+  if (modalidad && DICE_DOMICILIO.test(String(modalidad))) return true;
+  return !!anterior;
+}
 
 function conLimite(promesa, ms) {
   return new Promise((resolve) => {
@@ -82,12 +120,21 @@ function conLimite(promesa, ms) {
   });
 }
 
-/** Los artículos, en la forma mínima que hace falta para entender la decisión. */
-const resumirItems = (carrito) => (carrito?.items || []).map((i) => ({
+/**
+ * Los artículos, en la forma mínima que hace falta para entender la decisión.
+ *
+ * El nombre y los modificadores salen del CATÁLOGO del negocio: están en su
+ * carta pública y se escriben tal cual. La NOTA no: la escribe el cliente con
+ * sus palabras, y ahí cabe cualquier cosa —«dejarlo con el portero de Nogal
+ * 900», un teléfono de contacto—. Pasa por las mismas capas que el mensaje, o
+ * el registro tendría una puerta trasera por la que se cuela justo lo que las
+ * otras tres tapan.
+ */
+const resumirItems = (carrito, opciones = {}) => (carrito?.items || []).map((i) => ({
   n: i.nombre,
   c: i.cantidad,
   m: (i.modificadores || []).map((g) => `${g?.grupo ?? ''}:${(g?.opciones || []).join('/')}`),
-  ...(i.notas ? { nota: i.notas } : {}),
+  ...(i.notas ? { nota: textoSeguro(i.notas, opciones) } : {}),
 }));
 
 /**
@@ -116,10 +163,55 @@ export async function observarTurnoDelMesero({
         // el proceso que observa, que es la peor forma de fallar.
         estadoMeseroSombra.delete(estadoMeseroSombra.keys().next().value);
       }
-      estadoMeseroSombra.set(clave, { contexto: null, carrito: null, turnos: 0, mensajes: [] });
+      estadoMeseroSombra.set(clave, { contexto: null, carrito: null, turnos: 0, mensajes: [],
+        cola: Promise.resolve(), entrega: false });
     }
     const guardado = estadoMeseroSombra.get(clave);
     if (guardado.turnos >= TOPE_TURNOS) return { ok: false, motivo: 'tope_de_turnos' };
+
+    // ── UNA OBSERVACIÓN A LA VEZ POR CONVERSACIÓN ──────────────────────
+    //
+    // El canal agrupa seis segundos, pero llama a la observación UNA VEZ POR
+    // MENSAJE y sin esperarla. Con dos mensajes seguidos —que es como escribe
+    // la gente— las dos observaciones leían el mismo estado guardado, tardaban
+    // ~800 ms en el modelo, y la segunda en terminar pisaba a la primera.
+    //
+    // Pasó en el primer tráfico real: el cliente escribió «Quiero unos
+    // Chilaquiles…» y «Frijolitos y papas…» con 750 ms de diferencia; el
+    // renglón de chilaquiles y su texto desaparecieron del contexto sombra, y
+    // a partir de ahí el modelo lo re-proponía cada turno sin evidencia. La
+    // «aclaración pegada» que se vio en el log era eso: no una pregunta que se
+    // quedara guardada, sino la MISMA pregunta regenerada cada turno por un
+    // producto que había perdido su respaldo.
+    //
+    // Se encadenan por conversación. Es una cola de uno: la segunda espera a
+    // la primera y arranca del estado que aquella dejó. Sigue sin bloquear al
+    // canal —nadie espera este `await`— y el tope de tiempo sigue aplicando a
+    // cada paso.
+    const miTurno = guardado.cola.then(() => {}, () => {});
+    let liberar;
+    guardado.cola = new Promise((r) => { liberar = r; });
+    await miTurno;
+    try {
+      return await observarEnSerie({
+        guardado, clave, sessionId, negocioId, mensaje, carritoProductivo,
+        cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
+      });
+    } finally {
+      liberar();
+    }
+  } catch (e) {
+    // Contenido. Un fallo de la observación no puede tocar el turno real.
+    return { ok: false, motivo: e?.message || 'error', ms: medir() };
+  }
+}
+
+/** El cuerpo de la observación, ya con la conversación en exclusiva. */
+async function observarEnSerie({
+  guardado, sessionId, negocioId, mensaje, carritoProductivo,
+  cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
+}) {
+  try {
 
     // ── EL CATÁLOGO REAL, Y SI NO, NADA ────────────────────────────────
     let catalogo = [];
@@ -181,7 +273,22 @@ export async function observarTurnoDelMesero({
       }
       : null;
 
-    const antes = { contexto: resumenDelContexto(guardado.contexto), items: resumirItems(partida) };
+    // ── LO QUE HACE FALTA PARA TAPAR UNA DIRECCIÓN Y NADA MÁS ──────────
+    //
+    // Se calcula ANTES de correr el turno y con el mensaje CRUDO: «mándamelo a
+    // casa, Nogal 900 col. Álamos» trae la señal y el dato en la misma línea, y
+    // leer la señal después de haber partido el mensaje llegaría tarde.
+    //
+    // El vocabulario sale del catálogo REAL del negocio. No hay lista de
+    // platillos en el código, igual que en el resto del mesero.
+    guardado.entrega = esEntregaADomicilio(guardado.entrega, mensaje, guardado.contexto?.modalidad);
+    const vocabulario = palabrasDeLaCarta(catalogo);
+
+    const conRedaccion = { entrega: guardado.entrega, vocabulario };
+    const antes = {
+      contexto: resumenDelContexto(guardado.contexto),
+      items: resumirItems(partida, conRedaccion),
+    };
 
     const corrida = await conLimite(atenderTurno({
       negocioId,
@@ -192,6 +299,9 @@ export async function observarTurnoDelMesero({
       catalogo,
       complementos,
       proponer: proponerContado,
+      // La copia no se detiene en un handoff: lo anota y sigue mirando. Es la
+      // única diferencia de comportamiento entre observar y atender.
+      observando: true,
     }), tope);
 
     if (!corrida.ok) return { ok: false, motivo: corrida.motivo, ms: medir() };
@@ -208,8 +318,15 @@ export async function observarTurnoDelMesero({
     const registro = registroDelTurno({
       negocioId, sessionId, mensaje, r, antes, ahora,
       ms: total, msModelo, msLocal: Math.max(0, total - msModelo), llamadasAlModelo,
+      entrega: guardado.entrega, vocabulario,
     });
-    return { ok: true, registro, linea: lineaDeSombra(registro), resumen: registro };
+    // `eventos` viaja aparte de la línea JSON: son las métricas con el prefijo
+    // `[MESERO]` que ya usa el resto del sistema, y sin devolverlas se
+    // construían cada turno para tirarlas a la basura.
+    return {
+      ok: true, registro, linea: lineaDeSombra(registro), resumen: registro,
+      eventos: r?.eventos || [],
+    };
   } catch (e) {
     // Contenido. Un fallo de la observación no puede tocar el turno real.
     return { ok: false, motivo: e?.message || 'error', ms: medir() };
@@ -229,8 +346,10 @@ export async function observarTurnoDelMesero({
  * accionar.
  */
 export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, msModelo = 0,
-  msLocal = null, llamadasAlModelo, ahora }) {
+  msLocal = null, llamadasAlModelo, ahora, entrega = false, vocabulario = null }) {
   const c = r?.cambios || {};
+  const sinContacto = redactarContacto(mensaje);
+  const redaccion = redactarDireccion(sinContacto, { entrega, vocabulario });
   return {
     ts: (ahora || new Date()).toISOString(),
     conv: hash(sessionId),
@@ -240,7 +359,14 @@ export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, 
     ms_local: msLocal === null ? Math.max(0, ms - msModelo) : msLocal,
     llamadas_modelo: llamadasAlModelo,
 
-    dijo: textoSeguro(mensaje),
+    dijo: textoSeguro(mensaje, { entrega, vocabulario }),
+    // Que la redacción ocurrió se dice, aunque lo redactado no se diga. Sin
+    // esto no hay forma de saber si la capa está funcionando o está muerta.
+    direccion_redactada: redaccion.redactado,
+    // Correo, coordenadas, enlaces… o un teléfono, que cae en la máscara de
+    // dígitos y no en `redactarContacto`. Si el campo solo mirase lo primero,
+    // diría «no se redactó nada» en el caso más común de todos.
+    contacto_redactado: sinContacto !== String(mensaje || '') || /\d{3,}/.test(sinContacto),
 
     antes: antes?.contexto || null,
     antes_items: antes?.items || [],
@@ -284,8 +410,29 @@ export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, 
     recomendaciones: (r?.recomendaciones || []).map((x) => x.nombre),
     handoff: r?.handoff?.escalar ? r.handoff.motivo : null,
 
+    // ── LO QUE HABRÍA PASADO, SEPARADO DE LO QUE SE SIGUIÓ MIRANDO ──────
+    //
+    // `habria_escalado` dice que en producción esta conversación habría pasado
+    // a una persona. `post_handoff_shadow` dice que ESTE turno es posterior a
+    // ese punto y por tanto contrafactual: el bot no habría estado aquí, así
+    // que su `pedido_hipotetico` no se puede leer como «lo que habría pedido».
+    habria_escalado: r?.handoff?.habriaEscalado ? r.handoff.motivo : null,
+    turno_del_escalado: r?.handoff?.turnoDelEscalado ?? null,
+    post_handoff_shadow: !!r?.postHandoff,
+
+    // El ciclo de vida de las preguntas abiertas, no su redacción.
+    pendientes: (r?.contexto?.pendientes || []).map((p) => ({
+      clave: p.clave, tipo: p.tipo, intentos: p.intentos || 0,
+      desde: p.turnoCreacion, preguntado: p.turnoUltimaPregunta ?? null,
+    })),
+    // Y el movimiento de ESTE turno, que es lo que permite sumar
+    // «% pendientes resueltos» y «aclaraciones por pedido» con un jq.
+    ciclo_pendientes: r?.cicloPendientes
+      || { creados: 0, resueltos: 0, cancelados: 0, obsoletos: 0, vivos: 0 },
+    aclaraciones_repetidas: (r?.aclaracionesRepetidas || []).length,
+
     despues: resumenDelContexto(r?.contexto),
-    pedido_hipotetico: resumirItems(r?.carrito),
+    pedido_hipotetico: resumirItems(r?.carrito, { entrega, vocabulario }),
     falta: r?.falta || [],
     fase: r?.fase || null,
     listo_para_confirmar: !!r?.listoParaConfirmar,
@@ -298,5 +445,9 @@ export const lineaDeSombra = (registro) => '[SOMBRA-MESERO] ' + JSON.stringify(r
 /** ¿Se coló algo que no debería? Para poder afirmarlo con una prueba. */
 export function pareceSensibleElRegistro(registro) {
   const texto = typeof registro === 'string' ? registro : JSON.stringify(registro);
-  return /\d{7,}/.test(texto) || /[\w.+-]+@[\w-]+\.\w+/.test(texto);
+  if (/\d{7,}/.test(texto) || /[\w.+-]+@[\w-]+\.\w+/.test(texto)) return true;
+  // Un marco de dirección que sobrevivió a la redacción. Se mira en el registro
+  // entero y no solo en `dijo`: una dirección que se colara por otro campo
+  // seguiría siendo una dirección publicada.
+  return pareceDomicilioSinTapar(texto);
 }
