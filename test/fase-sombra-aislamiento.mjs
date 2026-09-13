@@ -306,6 +306,69 @@ await t('S9b. la bandera se compara explícitamente, valor por valor', async () 
   } finally { if (antes === undefined) delete process.env.PEDIDO_SHADOW_MODE; else process.env.PEDIDO_SHADOW_MODE = antes; }
 });
 
+await t('S13. un negocio SIN pedido_shadow no se observa aunque la global esté puesta', async () => {
+  // El segundo negocio es el que faltaba: con uno solo, quitar el gate local no
+  // se nota, porque ese único negocio tenía la llave. Aquí conviven los dos en
+  // el MISMO proceso y solo uno debe aparecer en el log.
+  const { rows: [otro] } = await pool.query(
+    `INSERT INTO negocios(nombre,slug) VALUES ('Sombra Ajena', $1) RETURNING id`,
+    ['sombra-ajena-' + Date.now()]);
+  const PNID2 = 'PNID_SOMBRA_B';
+  const tel2 = TEL_BASE + '77';
+  try {
+    await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
+      ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [otro.id]);
+    await actualizarConfiguracion({ int_wa_phone_id: PNID2, int_wa_token: 'fake-token-ajeno' }, otro.id);
+    await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
+      VALUES ($1,'whatsapp',$2,'Sombra Ajena',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [otro.id, PNID2]);
+    await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = $1`, [otro.id]);
+    // Sin `pedido_shadow`: es un negocio cualquiera que no pidió nada.
+
+    const antesLineas = lineasSombra().length;
+    const antesComunicaciones = comunicaciones().length;
+    // Se le deja al extractor una respuesta VÁLIDA preparada. Sin ella, quitar
+    // el gate no se notaría: la observación arrancaría, se quedaría sin
+    // respuesta del modelo y moriría en su propio catch sin escribir nada. La
+    // prueba pasaría por el motivo equivocado.
+    anthropicMock.drenar();
+    encolarPropuesta([{ nombre: 'SOMBRA Torta', cantidad: 1 }]);
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: PNID2 },
+        messages: [{ type: 'text', from: tel2, id: `wamid.AJENO-${Date.now()}`, text: { body: 'quiero una torta' } }],
+        contacts: [{ profile: { name: 'Cliente Ajeno' } }],
+      } }] }],
+    };
+    await fetch(srv.base + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    await esperarTurno();
+
+    // Que el turno HAYA LLEGADO. Sin esto la prueba pasaría por no haber
+    // ocurrido nada, que es la peor forma de pasar: quitar el gate no la
+    // tumbaría y estaríamos protegidos por una casualidad.
+    const { rows: llego } = await pool.query(
+      'SELECT estado FROM whatsapp_entradas WHERE telefono = $1', [tel2]);
+    assert.ok(llego.length, 'el mensaje del otro negocio tenía que entrar al canal');
+    // Y que el canal haya LLEGADO al punto donde vive el enganche de la sombra:
+    // esa línea la imprime el mismo `if` que decide callar, justo antes.
+    assert.ok(srv.obtenerSalida().includes(`Bot de WhatsApp desactivado para el negocio ${otro.id}`),
+      'el turno tenía que llegar hasta la decisión de callar, que es donde se observa');
+
+    assert.strictEqual(lineasSombra().length, antesLineas,
+      'un negocio sin la llave local no se observa, aunque el proceso tenga la global');
+    assert.strictEqual(comunicaciones().length, antesComunicaciones, 'y desde luego no se le contesta');
+  } finally {
+    await pool.query(`DELETE FROM whatsapp_entradas WHERE telefono = $1`, [tel2]).catch(() => {});
+    await pool.query(`DELETE FROM whatsapp_conversaciones WHERE telefono = $1`, [tel2]).catch(() => {});
+    await pool.query(`DELETE FROM mensajes WHERE telefono = $1`, [tel2]).catch(() => {});
+    await pool.query(`DELETE FROM clientes WHERE telefono = $1`, [tel2]).catch(() => {});
+    await pool.query(`DELETE FROM integraciones_canal WHERE identificador = $1`, [PNID2]).catch(() => {});
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1`, [otro.id]).catch(() => {});
+    await pool.query(`DELETE FROM negocio_modulos WHERE negocio_id = $1`, [otro.id]).catch(() => {});
+    await pool.query(`DELETE FROM negocios WHERE id = $1`, [otro.id]).catch(() => {});
+  }
+});
+
 // ═══ S10-S12 — lo que las mordidas deben tumbar ════════════════════════════
 //
 // Estas tres no se prueban desactivando una condición, sino comprobando que la

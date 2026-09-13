@@ -67,12 +67,17 @@ export const sombraHabilitadaEnElProceso = () => esVerdadero(process.env.PEDIDO_
  *
  * Devuelve siempre un objeto utilizable; nunca lanza.
  */
-export async function modoDelPedido(negocioId) {
+export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConfiguracion } = {}) {
   const apagado = { v2: false, shadow: false, modo: 'legacy' };
   if (typeof negocioId !== 'string' || !negocioId.trim()) return apagado;
   let cfg;
   try {
-    cfg = await obtenerConfiguracion(negocioId);
+    // El lector se puede inyectar SOLO para probar el camino de error. Hoy
+    // `obtenerConfiguracion` se traga sus propios fallos y devuelve `{}`, así
+    // que este catch no se alcanza en producción; existe para que un cambio
+    // futuro en esa función no convierta un error de lectura en un negocio
+    // encendido, y para poder demostrarlo con una prueba en vez de con fe.
+    cfg = await leerConfiguracion(negocioId);
   } catch {
     // `obtenerConfiguracion` ya se traga sus errores, pero si algún día dejara
     // de hacerlo, un fallo de lectura NO puede encender el reconciliador.
