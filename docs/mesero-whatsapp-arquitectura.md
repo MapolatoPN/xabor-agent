@@ -194,6 +194,39 @@ La decisión de escalar se toma **antes** de tocar el pedido: quien entre ve lo
 que el cliente pidió, no lo que el bot alcanzó a interpretar en el turno que
 provocó el escalado.
 
+### Escalar atendiendo y escalar observando no son lo mismo
+
+`atenderTurno` acepta `observando`, y **solo lo pasa el modo sombra**. Con él,
+el escalado se registra (`ctx.habriaEscalado = { turno, motivo }`) pero no
+detiene la copia, y todos los turnos posteriores salen marcados `postHandoff`
+para que nadie lea un pedido contrafactual como si el bot hubiera seguido
+atendiendo. Sin él —es decir, en cualquier camino productivo presente o
+futuro— el handoff sigue siendo terminal, con su equipaje y su fase.
+
+El motivo es de instrumentación, no de producto: en el primer día de tráfico
+real, 21 de 46 turnos quedaron sin observar porque la copia se detenía donde el
+bot se habría detenido, y entre ellos estaban justo los turnos interesantes.
+
+### Los pendientes
+
+Una pregunta abierta se guarda por **lo que pregunta**, nunca por cómo se
+redacta: `{clave, tipo, lid, producto, grupo, dato, candidatos, evidenciaOrigen,
+turnoCreacion, turnoVisto, turnoUltimaPregunta, intentos}`. La frase la vuelve a
+producir `aclaraciones.js` cada vez, así que no puede sobrevivir a su motivo.
+
+Cada turno se reconcilian con `sincronizarPendientes`, que devuelve el ciclo:
+`creados`, `resueltos`, `cancelados` (se fue su línea), `obsoletos` (cambiaron
+los candidatos: la pregunta se rehace desde cero) y `vivos`. Un pendiente vive
+mientras exista su línea y su grupo siga sin elegir — el motivo está en el
+carrito, no en el mensaje.
+
+`intentos` solo sube cuando el mensaje contestaba **a ese** pendiente y aun así
+no lo resolvió. Cambiar de tema no es fallar, y contarlo como fallo fue lo que
+mandó a un humano el 46 % de los turnos del primer día.
+
+Detalle completo del incidente y de la corrección en
+[`mesero-shadow-hallazgos-trafico-real-2026-09-13.md`](mesero-shadow-hallazgos-trafico-real-2026-09-13.md).
+
 ## Lo que NO está hecho
 
 - **No hay integración con el canal.** `whatsapp-meta.js` y `brain.js` no
