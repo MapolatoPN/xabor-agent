@@ -4,5 +4,32 @@ storage
 test
 docs
 *.md
-.env
 npm-debug.log
+
+# ── Nada con secretos entra al contexto de build ──────────────────────────
+#
+# `.env` estaba, pero solo `.env`. El entorno local de esta máquina vive en
+# `dev-local.env.cmd` —contraseña de la base local, clave de cifrado de
+# integraciones— y ese nombre no lo cubría ninguna línea.
+#
+# Hoy no llegaría a la imagen porque Railway construye desde GitHub y el
+# archivo no está versionado. Pero `railway up` sube el DIRECTORIO, y ahí sí
+# entraría. Se cubre por patrón, no por nombre, para que el próximo archivo de
+# credenciales no dependa de que alguien se acuerde de añadirlo aquí.
+.env
+.env.*
+*.env
+*.env.cmd
+!.env.example
+!dev-local.env.example.cmd
+*.key
+*.pem
+*.p12
+*.pfx
+key_b64.txt
+
+# Volcados y respaldos: nunca son parte de la imagen y suelen traer datos de
+# clientes dentro.
+*.sql.gz
+*.dump
+*.bak
