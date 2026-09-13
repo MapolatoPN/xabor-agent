@@ -284,6 +284,30 @@ await t('V8. el módulo de sombra no importa nada que pueda hablarle a un client
   }
 });
 
+await t('Y6. NINGÚN módulo del mesero puede tocar la base ni el canal', async () => {
+  // La garantía de que un error del mesero no le habla a un cliente no es que
+  // hoy no lo haga: es que no tiene con qué. Se comprueba sobre el grafo de
+  // imports, que es lo único que no depende de acordarse.
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const dir = new URL('../src/mesero/', import.meta.url);
+  const archivos = readdirSync(dir).filter((f) => f.endsWith('.js'));
+  assert(archivos.length >= 12, `esperaba el directorio completo, hay ${archivos.length}`);
+
+  const permitidos = /^(\.\/[a-zA-Z]+\.js|\.\.\/orders\/(carritoDelPedido|evidenciaDeEleccion|procedenciaDeEvidencia)\.js|node:[a-z]+)$/;
+  for (const f of archivos) {
+    const fuente = readFileSync(new URL(f, dir), 'utf8');
+    const imports = [...fuente.matchAll(/(?:^import[^;]*from|await import\()\s*'([^']+)'/gm)].map((m) => m[1]);
+    for (const i of imports) {
+      assert(permitidos.test(i), `${f} importa ${i}, que no es un módulo puro`);
+    }
+    // Y por si alguien construye la ruta a mano.
+    const sinComentarios = fuente.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const prohibido of ['services/database', 'channels/', 'pool.query', 'orderManager']) {
+      assert(!sinComentarios.includes(prohibido), `${f} menciona "${prohibido}"`);
+    }
+  }
+});
+
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 process.exit(fail ? 1 : 0);
