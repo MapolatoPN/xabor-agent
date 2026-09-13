@@ -32,3 +32,6 @@ probe-system-result.txt
 # Staging del servicio de Windows: se arma con un comando, no viaja al repo.
 staging-service/
 dev-local.env.cmd
+
+# Trazas de la suite de paridad (se generan al correrla)
+test/.paridad-*.json
