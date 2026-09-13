@@ -59,13 +59,28 @@ const DEICTICO = /\b(ese|esa|eso|este|esta|esto|aquel|aquella|aquello|esos|esas|
 // confundiría con «los» —que señala.
 const CLITICO = /\b(quita|quitame|quitale|haz|hazme|cambia|cambiame|pon|ponme|deja|dejame|saca|sacame|sube|subele|baja|bajale|repite|repiteme|duplica|agrega|quiero)(lo|la|los|las)\b/;
 
+// Referencia ELÍPTICA: no hay pronombre, el objeto está sobreentendido.
+//
+//   «mejor dos»   «que sean tres»   «súbele a cuatro»
+//
+// Es como la gente corrige de verdad, y sin esto el bot tiene que preguntar
+// «¿de cuál?» a alguien que acaba de decir de cuál hablando de ello. Lo que
+// vuelve seguro resolverlo es la RECENCIA: solo apunta a lo que se tocó en los
+// últimos turnos. Un «mejor dos» suelto, sin nada reciente en foco, se
+// pregunta como cualquier otra ambigüedad.
+const NUMERO = '(?:\\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)';
+const ELIPTICA = new RegExp(`\\b(?:mejor|que sean?|que sea|subele a|sube a|bajale a|baja a|ponme|pon|dame|solo|nada mas)\\s+${NUMERO}\\b`);
+
+/** Cuántos turnos atrás sigue contando como «de lo que veníamos hablando». */
+export const RECENCIA_DEL_FOCO = 3;
+
 /** ¿Hay algo que señalar en esta frase? Sin resolverlo todavía. */
 export function hayReferencia(texto) {
   const t = norm(texto);
   if (!t) return false;
   return REPETIR.test(t) || ANTERIOR.test(t) || ULTIMO.test(t) || OTRO.test(t)
     || AMBOS.test(t) || POSEEDOR.test(t) || DEICTICO.test(t) || CLITICO.test(t)
-    || ORDINALES.some(([re]) => re.test(t));
+    || ELIPTICA.test(t) || ORDINALES.some(([re]) => re.test(t));
 }
 
 /** Los renglones vivos, en el orden en que el cliente los pidió. */
@@ -176,6 +191,17 @@ export function resolverReferencia(texto, { contexto, carrito } = {}) {
   if (DEICTICO.test(t) || CLITICO.test(t)) {
     if (foco && lineas.some((l) => l.lid === foco)) return resuelta('deictico', t, [foco]);
     return unicoSiHayUno('deictico', t);
+  }
+
+  // ── «mejor dos» ─────────────────────────────────────────────────────────
+  if (ELIPTICA.test(t)) {
+    const enFoco = lineas.find((l) => l.lid === foco);
+    const turnoAhora = Number(contexto?.contador) || 0;
+    const reciente = enFoco && (turnoAhora - (enFoco.turnoUltimoCambio || 0)) <= RECENCIA_DEL_FOCO;
+    if (reciente) return resuelta('eliptica', t, [enFoco.lid]);
+    // Sin nada reciente en foco, la elipsis no tiene antecedente. Con un solo
+    // renglón no hay confusión posible; con varios, se pregunta.
+    return unicoSiHayUno('eliptica', t);
   }
 
   return nada;

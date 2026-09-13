@@ -333,6 +333,17 @@ function autorizaCantidad(nueva, previa, ctx, item, hermanos) {
   if (respuestaConNumerosAjenos(ctx.datoOperativoPendiente)) return false;
   if (!elClienteDijoElNumero(nueva, ctx.mensajeDicho)) return false;
   if (!hermanos.length) return true;
+  // «Mejor dos» no nombra nada, y sin embargo dice de cuál: del que se venía
+  // hablando. Esa atribución no la puede hacer esta función —no sabe qué
+  // renglón está en foco ni desde cuándo— y la hace `referenciasDelCliente`,
+  // con su regla de siempre: uno se resuelve, varios se preguntan, y el foco
+  // solo cuenta si es reciente.
+  //
+  // Lo que NO se relaja es el número: sigue teniendo que estar en lo que el
+  // cliente acaba de escribir, y seguir siendo plausible, y el turno no puede
+  // ser la respuesta a una pregunta con números ajenos. Se sustituye la
+  // atribución por otra atribución, no se quita la comprobación.
+  if (ctx.atribuidos?.has(item.lid)) return true;
   return laFraseLoSenala(item, hermanos, ctx.mensajeDicho);
 }
 
@@ -607,6 +618,10 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     percibido: [delCiclo.percibido, deEsteTurno.percibido].filter(Boolean).join(' \n '),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
     terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
+    // Renglones que una capa de arriba identificó sin que la frase los nombre
+    // («mejor dos» → el que está en foco). Vacío por defecto: sin esto, el
+    // comportamiento es exactamente el de antes del mesero.
+    atribuidos: new Set(Array.isArray(opciones.atribuidoPorLid) ? opciones.atribuidoPorLid.map(String) : []),
   };
   const previo = (carritoPrevio && Array.isArray(carritoPrevio.items))
     ? { items: carritoPrevio.items.map((i) => normalizarItem(i, i.lid)), datos: { ...(carritoPrevio.datos || {}) } }
@@ -628,7 +643,28 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const porLid = new Map(previo.items.map((i) => [i.lid, i]));
   const nuevos = [];
   const emparejados = new Map();
+
+  // 1a) UN `lid` EXPLÍCITO MANDA SOBRE EL PARECIDO.
+  //
+  // El modelo nunca ve el `lid`, así que un borrador suyo jamás lo trae y esta
+  // vuelta no hace nada — el emparejamiento por parecido sigue siendo el de
+  // siempre para todo lo que existía antes del mesero.
+  //
+  // Quien sí lo trae es el mesero, que resolvió «el primero» o «el otro» con
+  // `referenciasDelCliente` y sabe EXACTAMENTE de qué renglón habla. Dejar que
+  // el parecido reinterprete eso es cómo «quítale la cebolla al segundo» acaba
+  // en el primero cuando los dos platillos son iguales: por parecido empatan, y
+  // el desempate lo decide el orden del bucle.
+  //
+  // Esto no relaja nada: un `lid` que no existe se ignora y el artículo cae al
+  // camino normal. Solo permite señalar mejor, no autorizar más.
   for (const p of propuestos) {
+    const lid = p?.lid ? String(p.lid) : null;
+    if (lid && libres.has(lid)) { libres.delete(lid); emparejados.set(lid, p); }
+  }
+
+  for (const p of propuestos) {
+    if ([...emparejados.values()].includes(p)) continue;
     let mejor = null, mejorPuntos = 0;
     for (const lid of libres) {
       const puntos = parecido(porLid.get(lid), p);
@@ -705,10 +741,35 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const senalados = articulosQueElClientePidioQuitar({ items }, ctx.mensajeDicho);
   cambios.ambiguos.push(...senalados.ambiguos.filter((a) => quitables.has(a.lid)));
   const aQuitar = new Set(senalados.fuera.filter((lid) => quitables.has(lid)));
+
+  // QUITAR LO QUE EL CLIENTE SEÑALÓ SIN NOMBRARLO.
+  //
+  // «Quita el otro» y «ese ya no» son bajas legítimas que esta función no puede
+  // ver: `articulosQueElClientePidioQuitar` necesita que la frase NOMBRE el
+  // artículo, y un pronombre no nombra nada. Hasta el mesero eso estaba bien —
+  // nadie sabía a qué apuntaba el pronombre, así que no quitar era lo correcto.
+  //
+  // Ahora `referenciasDelCliente` sí lo sabe, y con la misma regla de siempre:
+  // un candidato se resuelve, dos se preguntan. Lo que llega aquí es el
+  // resultado de esa resolución, no una excusa para saltarse nada:
+  //
+  //   · el verbo de quitar se sigue exigiendo, y lo comprueba esta función
+  //     sobre lo DICHO en este turno — una foto no quita;
+  //   · el renglón tiene que existir y estar intacto, igual que los demás;
+  //   · si la referencia no resolvió, aquí no llega nada.
+  //
+  // Sin `quitarPorLid` el comportamiento es exactamente el anterior.
+  const porReferencia = Array.isArray(opciones.quitarPorLid) ? opciones.quitarPorLid.map(String) : [];
+  if (porReferencia.length && PIDE_QUITAR.test(ctx.mensajeDicho)) {
+    for (const lid of porReferencia) {
+      if (quitables.has(lid)) aQuitar.add(lid);
+    }
+  }
   const finales = items.filter((i) => {
     if (!aQuitar.has(i.lid)) return true;
     cambios.quitados.push(i.nombre);
-    cambios.autorizados.push({ lid: i.lid, nombre: i.nombre, campo: 'quitar', via: 'la_frase_lo_identifica' });
+    cambios.autorizados.push({ lid: i.lid, nombre: i.nombre, campo: 'quitar',
+      via: porReferencia.includes(i.lid) ? 'la_referencia_lo_identifica' : 'la_frase_lo_identifica' });
     return false;
   });
 

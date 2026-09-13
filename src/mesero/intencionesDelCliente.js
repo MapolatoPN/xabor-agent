@@ -194,10 +194,16 @@ function intencionesDeClausula(c, { fase = null } = {}) {
   else if (V_PEDIR.test(c) && !fuera.has('QUITAR') && !fuera.has('CAMBIAR_CANTIDAD')) {
     fuera.add('AGREGAR_PRODUCTO');
   } else if (!fuera.size && /\b(\d+|un|una|unos|unas|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(c)
-             && ['tomando_orden', 'completando_producto', 'revisando'].includes(fase)) {
-    // «unos chilaquiles», a secas, en medio de una orden. Fuera de esa fase no
-    // se asume: el mismo texto al principio de la conversación puede ser
-    // cualquier cosa, y suponer que es un pedido es adivinar.
+             && !['confirmado', 'escalado_humano'].includes(fase)) {
+    // «unos chilaquiles» o «una coca», a secas, sin verbo. Es como la gente
+    // pide de verdad, y no reconocerlo dejaría la mitad de los turnos en OTRO.
+    //
+    // Se excluyen las dos fases en que un número casi nunca es comida: con la
+    // orden ya cerrada y con la conversación en manos de una persona.
+    //
+    // Equivocarse aquí cuesta poco: la etiqueta orienta la respuesta y las
+    // métricas, no autoriza nada. Lo que decide si «una coca» entra al pedido
+    // sigue siendo el reconciliador con el texto que la nombra.
     fuera.add('AGREGAR_PRODUCTO');
   }
 

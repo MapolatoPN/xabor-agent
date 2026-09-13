@@ -213,11 +213,28 @@ export function anotarReferencia(ctx, texto, lid) {
 // faltas de educación del bot actual: repetir la misma pregunta tres veces, y
 // preguntar algo que el cliente ya contestó.
 
-export function anotarPendiente(ctx, clave, pregunta = '') {
+/**
+ * `veces` cuenta INSISTENCIAS, no repeticiones.
+ *
+ * La diferencia importa porque de `veces` cuelga el escalado a una persona por
+ * «demasiadas idas y vueltas». Sin `avanzo`, una conversación perfectamente
+ * sana —el cliente elige salsa, luego proteína, luego pide una bebida— sube el
+ * contador en cada turno solo porque la modalidad sigue sin preguntarse, y a
+ * los tres turnos el bot llama a un humano en medio de un pedido que iba bien.
+ * Pasó en el primer E2E, en el turno 8 de doce.
+ *
+ * Estar atascado es preguntar lo mismo SIN que el pedido se mueva. Cuando el
+ * turno movió algo, el contador vuelve a uno.
+ */
+export function anotarPendiente(ctx, clave, pregunta = '', { avanzo = false } = {}) {
   const k = String(clave || '').trim();
   if (!k) return;
   const ya = ctx.pendientes.find((p) => p.clave === k);
-  if (ya) { ya.turno = ctx.contador; ya.veces = (ya.veces || 1) + 1; return; }
+  if (ya) {
+    ya.turno = ctx.contador;
+    ya.veces = avanzo ? 1 : (ya.veces || 1) + 1;
+    return;
+  }
   ctx.pendientes.push({ clave: k, pregunta: String(pregunta || ''), turno: ctx.contador, veces: 1 });
 }
 
