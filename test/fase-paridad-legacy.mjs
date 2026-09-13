@@ -89,6 +89,13 @@ await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUE
   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='no_configurado'`, [NEG]);
 await actualizarConfiguracion({ int_wa_phone_id: PNID, int_wa_token: 'fake-token-paridad',
   modo_pedidos: 'transaccional', pedido_requiere_anticipo: 'false' }, NEG);
+// LEGACY DE VERDAD: las cuatro banderas AUSENTES, no puestas a false. Es la
+// configuración de un negocio que nunca se tocó, que es lo que hay que
+// comparar. Borrar filas funciona igual en `c859e72`, donde las dos últimas
+// claves ni siquiera existen — este archivo tiene que correr en las dos.
+await pool.query('DELETE FROM configuracion WHERE negocio_id=$1 AND clave = ANY($2)',
+  [NEG, ['pedido_reconciliador_v2', 'pedido_shadow', 'mesero_whatsapp_v1', 'mesero_whatsapp_shadow']])
+  .catch(() => {});
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
   VALUES ($1,'whatsapp',$2,'Paridad',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [NEG, PNID]);
 for (const [tipo, orden] of [['efectivo', 0], ['terminal', 1]]) {

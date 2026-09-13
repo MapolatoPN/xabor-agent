@@ -88,6 +88,43 @@ renglón, ahora compiten también los productos que el cliente acaba de nombrar 
 todavía no están en el carrito. «Ponme dos cocas» con un solo platillo en el
 pedido lo subía a dos.
 
+## La condición EXACTA para que el Mesero corra en sombra
+
+```
+MESERO_SHADOW_MODE === 'true'              (del PROCESO)
+  AND negocio.mesero_whatsapp_shadow === 'true'
+  AND NOT (mesero_whatsapp_v1 === 'true' AND pedido_reconciliador_v2 === 'true')
+  AND bot_whatsapp_activo === false        ← o cliente pausado, o takeover
+```
+
+Las tres primeras las resuelve `modoDelPedido` y salen en `modo.meseroSombra`.
+**La cuarta no está en ninguna bandera**: es estructural, y viene de DÓNDE se
+llama. `observarMeseroEnSombra()` existe únicamente en los tres puntos en los
+que el canal ya decidió no contestar, así que con el bot encendido no hay
+manera de alcanzarla. Es deliberado que no sea una condición más: una bandera se
+puede poner mal, un sitio de llamada no.
+
+### Qué NO hace falta
+
+**`pedido_reconciliador_v2` NO es necesario para la sombra.** El Mesero usa el
+reconciliador V2 siempre, porque es su motor — pero sobre SU copia del carrito,
+que vive en `estadoMeseroSombra` y no toca la sesión productiva. Obligar a
+encender V2 en el negocio para poder observarlo sería cambiarle el motor del
+pedido real para poder mirarlo: exactamente la contradicción que la sombra
+existe para evitar.
+
+|  | capacidad técnica | autorización productiva |
+|---|---|---|
+| reconciliador V2 sobre la copia de la sombra | siempre disponible | ninguna: no toca nada real |
+| reconciliador V2 sobre el pedido del negocio | — | `pedido_reconciliador_v2` |
+| Mesero decidiendo de verdad | — | `mesero_whatsapp_v1` **Y** `pedido_reconciliador_v2` |
+
+`mesero_whatsapp_v1` sigue exigiendo V2 porque ahí sí decide sobre el pedido
+real, y el reconciliador es lo único que lo frena. Esa exigencia es de
+autorización, no de capacidad, y por eso no aplica a la sombra.
+
+Lo comprueban `Y10` (la sombra no exige V2) y `F2` (el mesero productivo sí).
+
 ## Los interruptores
 
 Todos en `configuracion`, por negocio, y todos apagados por omisión.

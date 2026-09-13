@@ -444,6 +444,76 @@ await t('Y8. y `mencionesComerciales`, que es el único de fuera, tampoco tiene 
   assert.deepEqual(imports, [], `mencionesComerciales importa ${JSON.stringify(imports)}`);
 });
 
+await t('Y9. `mesero_whatsapp_v1` NO tiene ningún call site productivo', async () => {
+  // La bandera existe, `modoDelPedido` la resuelve, y NADIE la lee. El único
+  // consumidor de todo el mesero en `src/` es la sombra, en el canal callado.
+  // Si algún día alguien le da un uso productivo, esta prueba se pone roja
+  // antes de que se despliegue.
+  const { readFileSync, readdirSync, statSync } = await import('node:fs');
+  const { join, relative } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const RAIZ = join(fileURLToPath(new URL('../', import.meta.url)), 'src');
+
+  const archivos = [];
+  (function recorrer(dir) {
+    for (const e of readdirSync(dir)) {
+      const ruta = join(dir, e);
+      if (statSync(ruta).isDirectory()) recorrer(ruta);
+      else if (e.endsWith('.js')) archivos.push(ruta);
+    }
+  }(RAIZ));
+
+  const importan = [];
+  const leenMesero = [];
+  const leenSombra = [];
+  for (const ruta of archivos) {
+    const rel = relative(RAIZ, ruta).split('\\').join('/');
+    if (rel.startsWith('mesero-whatsapp/')) continue;
+    const fuente = readFileSync(ruta, 'utf8');
+    const sinComentarios = fuente.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    if (/from '[^']*mesero-whatsapp\//.test(sinComentarios)) importan.push(rel);
+    // `modo.mesero` — la bandera productiva. `comanda.mesero` del POS no cuenta:
+    // es la estación de meseros, que no tiene nada que ver.
+    if (/\bmodo\s*\.\s*mesero\b(?!Sombra)/.test(sinComentarios)) leenMesero.push(rel);
+    if (/\bmodo\s*\.\s*meseroSombra\b/.test(sinComentarios)) leenSombra.push(rel);
+  }
+
+  assert.deepEqual(importan, ['channels/whatsapp-meta.js'],
+    `el mesero se importa desde sitios inesperados: ${JSON.stringify(importan)}`);
+  assert.deepEqual(leenMesero, [],
+    `alguien lee la bandera PRODUCTIVA del mesero: ${JSON.stringify(leenMesero)}`);
+  assert.deepEqual(leenSombra, ['channels/whatsapp-meta.js'],
+    `la sombra se consulta desde sitios inesperados: ${JSON.stringify(leenSombra)}`);
+
+  // Y el único import está DENTRO de la función de observación, detrás de los
+  // gates: lo comprueba `fase-canal-callado` y `fase-mesero-sombra-canal`.
+  const canal = readFileSync(join(RAIZ, 'channels/whatsapp-meta.js'), 'utf8');
+  assert.equal((canal.match(/observarTurnoDelMesero\(/g) || []).length, 1,
+    'hay más de una llamada a la observación del mesero');
+  assert.equal((canal.match(/observarMeseroEnSombra\(\)/g) || []).length, 3,
+    'la observación debe invocarse en los TRES puntos silenciosos, y solo ahí');
+});
+
+await t('Y10. la sombra del mesero NO exige V2 productivo en el negocio', async () => {
+  // Capacidad técnica y autorización productiva, separadas: el mesero usa el
+  // reconciliador sobre SU copia, y eso no puede obligar a encenderle V2 a un
+  // negocio que solo se quiere observar. Encenderlo sería cambiarle el motor
+  // del pedido real para poder mirarlo, que es la contradicción exacta.
+  const antes = process.env.MESERO_SHADOW_MODE;
+  try {
+    process.env.MESERO_SHADOW_MODE = 'true';
+    const m = await modoDelPedido('neg-solo-sombra', {
+      leerConfiguracion: async () => ({ mesero_whatsapp_shadow: 'true' }),
+    });
+    assert.equal(m.meseroSombra, true, 'la sombra exigió V2 para observar');
+    assert.equal(m.v2, false, 'observar encendió V2 productivo');
+    assert.equal(m.mesero, false);
+    assert.equal(m.modo, 'legacy', 'el pedido real del negocio debe seguir en legacy');
+  } finally {
+    if (antes === undefined) delete process.env.MESERO_SHADOW_MODE; else process.env.MESERO_SHADOW_MODE = antes;
+  }
+});
+
 console.log(`\n${fail === 0 ? 'TODO VERDE' : 'CON FALLOS'} — ${ok} pasadas, ${fail} fallidas`);
 if (fallos.length) for (const f of fallos) console.log(`  · ${f}`);
 process.exit(fail ? 1 : 0);
