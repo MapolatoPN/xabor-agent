@@ -101,25 +101,42 @@ Estos dos son PREVIOS al mesero y valen para cualquier negocio con
   coca» puede entrar como 2 si el número está en cualquier turno anterior.
   `depurarNuevo` usa `ctx.dicho`, no el turno.
 
-### Los del mesero (solo sombra)
+### CERRADO después: la familia del consentimiento
+
+Los cinco que compartían raíz —20, 22, 27, 28 y 29— se corrigieron en una
+segunda pasada. La raíz era una sola línea de `leerRespuesta`:
+
+> «nombrarla y no negarla es aceptarla»
+
+Convertía una coincidencia de palabras en consentimiento. Ahora una propuesta
+solo pasa a aceptada con una **señal afirmativa explícita**; nombrar solo
+desempata entre lo ya ofrecido, y solo después de que esa señal exista. Además
+las cláusulas que son pregunta se apartan antes de mirar nada, la negación se
+reconoce también al final de la frase, y elegir otra cosa rechaza la ofrecida.
+
+Están fijados en `test/fase-mesero-consentimiento.mjs` (22 casos) con cinco
+mordidas que tumban.
+
+### Los que quedan abiertos (solo sombra)
 
 | # | Qué pasa |
 |---|---|
 | 3 | La elección de presentación (nombre + id) no llega a `fusionar` por el camino del mesero |
 | 4 | Un cambio congelado no produce pregunta: `recolectarAclaraciones` no lee `congelados` |
-| 7, 8 | Un renglón que el modelo inventa puede BLOQUEAR un cambio legítimo por compartir una palabra |
+| 7 | Un renglón que el modelo inventa puede BLOQUEAR un cambio de cantidad legítimo |
+| 8 | El mismo renglón fantasma bloquea un «quítale la cebolla» |
 | 13 | Un modificador que el modelo estructura tarde anula un «quítalo», en silencio |
 | 14 | Un renglón nacido en el mismo turno no se puede cancelar en esa frase |
-| 20, 27 | Un rechazo explícito («no, el café no») sigue siendo texto que autoriza |
-| 22, 28 | Preguntar por lo que el bot ofreció cuenta como aceptarlo |
-| 29 | Una palabra suelta del nombre ofrecido cuenta como «sí» |
 | 23 | La cortesía («¿me puedes…?») clasifica la orden como consulta y se descarta callando |
 | 30 | «Ponme uno más de hotcakes» duplica el renglón en foco en vez de agregar hotcakes |
 
-Los cuatro de la familia «rechazar / preguntar cuenta como aceptar»
-(20, 22, 27, 28, 29) son el grupo más denso y comparten raíz: `leerRespuesta`
-mide la mención sobre el mensaje completo y trata «nombrarla y no negarla» como
-aceptación. Es el primer arreglo que haría, y necesita su propia sesión.
+Ocho, más los dos previos de arriba que sí llegan a un negocio en V2 sin mesero
+(la nota sin atribución y la cantidad de un renglón nuevo): **diez en total**.
+
+Tres de ellos —4, 13 y 14— comparten una forma: el sistema decide no aplicar
+algo y **no lo dice**. `recolectarAclaraciones` solo lee `ambiguos`,
+`porConfirmar`, términos y grupos; nunca `congelados` ni `sinRespaldo`. Es el
+siguiente grupo que abordaría, y probablemente con un solo cambio.
 
 ## Las dos mordidas que no muerden
 
