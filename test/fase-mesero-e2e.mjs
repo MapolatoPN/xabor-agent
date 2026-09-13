@@ -269,19 +269,26 @@ t('W17. el contexto viajó por JSON los doce turnos sin perder el hilo', () => {
   assert.deepEqual(orden, carrito.items.map((i) => i.lid));
 });
 
-// ── LO QUE CUESTA UN TURNO ──────────────────────────────────────────────────
+// ── LO QUE CUESTA UN TURNO, Y QUÉ SE ESTÁ MIDIENDO ──────────────────────────
 //
-// Primero medir. El mesero tiene muchas capas y la pregunta razonable es cuánto
-// pesan; la respuesta es que casi nada, porque ninguna llama al modelo: la
-// única llamada por turno es el extractor, y las consultas de menú, las
-// referencias y las aclaraciones se resuelven contra el catálogo en memoria.
+// LEER ESTO ANTES DE CITAR UN NÚMERO DE AQUÍ.
+//
+// El modelo está SIMULADO con un stub que devuelve un borrador ya escrito, sin
+// red. Lo que se mide es el PROCESAMIENTO LOCAL del mesero —procedencia,
+// intenciones, handoff, propuestas, referencias, catálogo, reconciliación,
+// aclaraciones, fase, resumen, métricas— y nada más.
+//
+// La latencia de la llamada real al proveedor NO se mide aquí y no se puede
+// medir aquí sin gastar dinero en cada corrida. Sale del log de sombra, que
+// registra `ms_modelo` y `ms_local` por separado en cuanto haya tráfico real.
 //
 // Los umbrales son flojos a propósito: esto documenta el orden de magnitud, no
-// vigila el rendimiento. Una prueba de tiempos estricta en CI es una prueba
-// intermitente.
+// vigila el rendimiento. Una prueba de tiempos estricta en CI es intermitente.
 await (async () => {
-  const medidas = [];
+  const locales = [];
   let llamadas = 0;
+  const turnosSinBorrador = GUION.filter((p) => p.borrador === null).length;
+
   for (let vuelta = 0; vuelta < 5; vuelta++) {
     let ctx = null, car = null;
     for (const paso of GUION) {
@@ -292,29 +299,54 @@ await (async () => {
         complementos: { Fuertes: ['Bebidas'] },
         proponer: async () => { llamadas += 1; return paso.borrador; },
       });
-      medidas.push(Number(process.hrtime.bigint() - t0) / 1e6);
+      locales.push(Number(process.hrtime.bigint() - t0) / 1e6);
       ctx = JSON.parse(JSON.stringify(contextoSerializable(r.contexto)));
       car = r.carrito;
     }
   }
-  const media = medidas.reduce((a, b) => a + b, 0) / medidas.length;
-  const peor = Math.max(...medidas);
+  const media = locales.reduce((a, b) => a + b, 0) / locales.length;
+  const peor = Math.max(...locales);
   const turnos = 5 * GUION.length;
 
-  t('W18. un turno del mesero cuesta UNA llamada al modelo, y solo cuando la hay', () => {
-    // El guion tiene cuatro turnos sin borrador (el modelo no se llama nunca de
-    // más), y ocho con él. La cuenta tiene que dar exactamente eso.
+  t('W18. el extractor se llama UNA vez por turno, y en TODOS los turnos', () => {
+    // Esto no es una virtud, es un dato de coste. Se llama también cuando el
+    // cliente solo dice «Hola» o pregunta por la carta: el mesero invoca al
+    // extractor antes de saber si tenía algo que extraer.
+    //
+    // En sombra eso es una llamada pagada por cada mensaje entrante de un
+    // negocio observado, no una por cada mensaje que mueva el pedido. Queda
+    // aquí escrito para que el número con el que se presupueste sea el de
+    // verdad; ahorrarla sería otra tarea.
     assert.equal(llamadas, turnos, `${llamadas} llamadas en ${turnos} turnos`);
-    // Y las consultas de menú, que son la mitad de lo que hace un mesero, no
-    // añaden ninguna: el turno 7 pregunta por las bebidas y se contesta del
-    // catálogo.
-    assert.equal(turnos / 5, GUION.length);
+    assert(turnosSinBorrador >= 3,
+      'el guion necesita turnos en los que el modelo no tenga nada que decir');
   });
 
-  t('W19. el trabajo del mesero, sin el modelo, es de milisegundos', () => {
-    console.log(`      · ${turnos} turnos · media ${media.toFixed(2)} ms · peor ${peor.toFixed(2)} ms`);
+  t('W19. el procesamiento LOCAL —sin modelo— es de milisegundos', () => {
+    console.log(`      · SOLO LOCAL (modelo simulado, sin red): ${turnos} turnos`
+      + ` · media ${media.toFixed(2)} ms · peor ${peor.toFixed(2)} ms`);
+    console.log('      · la latencia del proveedor NO se mide aquí: sale de ms_modelo en el log de sombra');
     assert(media < 50, `la media subió a ${media.toFixed(1)} ms por turno`);
     assert(peor < 400, `el peor turno tardó ${peor.toFixed(1)} ms`);
+  });
+
+  t('W20. con un modelo lento, el turno completo es el modelo + lo local', () => {
+    // Comprueba la COMPOSICIÓN, no la latencia: que el mesero espera la
+    // respuesta del extractor y no hace nada raro alrededor. El retardo es
+    // artificial y pequeño para que la prueba no sea lenta ni intermitente.
+    const RETARDO = 120;
+    return (async () => {
+      const t0 = process.hrtime.bigint();
+      await atenderTurno({
+        negocioId: NEG, conversacionId: 'perf-lento', mensaje: 'quiero unos chilaquiles',
+        catalogo: CATALOGO, precios: PRECIOS,
+        proponer: () => new Promise((res) => setTimeout(() => res({ items: [chil()] }), RETARDO)),
+      });
+      const total = Number(process.hrtime.bigint() - t0) / 1e6;
+      console.log(`      · turno completo con modelo de ${RETARDO} ms: ${total.toFixed(0)} ms`);
+      assert(total >= RETARDO, `el turno no esperó al modelo: ${total.toFixed(0)} ms`);
+      assert(total < RETARDO + 200, `el mesero añadió ${(total - RETARDO).toFixed(0)} ms sobre el modelo`);
+    })();
   });
 })();
 

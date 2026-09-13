@@ -43,6 +43,7 @@
 // cosa. Las propuestas viejas caducan solas: siguen en el registro para no
 // repetirlas, pero ya no las despierta un monosílabo.
 import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
+import { clasificarIntenciones } from './intencionesDelCliente.js';
 
 export const PROPUESTO = 'propuesto';
 export const CONFIRMADO = 'confirmado';
@@ -63,6 +64,17 @@ const NIEGA = /^(no|nop|nel|nah|no gracias|gracias no|mejor no|asi esta bien|asi
 
 // Cierres que no empiezan la frase pero la definen: «con eso está bien».
 const CIERRA = /\b(asi esta bien|asi nomas|nada mas|es todo|eso es todo|con eso|ya con eso|ya es todo|seria todo|sería todo|nada mas gracias)\b/;
+
+// La negación NO siempre abre la frase. «El café no» y «ese no lo quiero»
+// niegan igual, y el ancla `^` no los veía: por ahí entraba al pedido justo lo
+// que el cliente acababa de rechazar.
+const NIEGA_AL_FINAL = /\b(no|nel|nop|nunca|tampoco)\s*$/;
+const NIEGA_EXPLICITA = /\b(no lo quiero|no la quiero|no los quiero|no las quiero|ese no|esa no|eso no|no gracias|sin eso|quitalo|quitala)\b/;
+
+// Elegir OTRA cosa es rechazar la ofrecida. «Mejor americano» no acepta el café
+// de olla; y «mejor dos» no es una sustitución, es una cantidad — por eso el
+// número queda fuera.
+const SUSTITUYE = /\b(mejor|prefiero|en vez de|en lugar de|cambialo por|c[aá]mbialo por)\s+(?!dos\b|tres\b|cuatro\b|cinco\b|seis\b|siete\b|ocho\b|nueve\b|diez\b|un\b|uno\b|una\b|\d)/;
 
 let secuencia = 0;
 const nuevoId = () => `pr${(secuencia++).toString(36)}`;
@@ -136,37 +148,66 @@ function laNombra(propuesta, mensaje) {
  * para que quien decida pueda mirar antes de escribir.
  */
 export function leerRespuesta(ctx, mensaje, { turnoDelBot = null } = {}) {
-  const texto = norm(mensaje);
   const vivas = propuestasVivas(ctx, turnoDelBot);
   const vacio = { aceptadas: [], rechazadas: [], ambigua: false, candidatas: [] };
   if (!vivas.length) return vacio;
 
-  const afirma = AFIRMA.test(texto);
-  const niega = NIEGA.test(texto) || CIERRA.test(texto);
+  // ── PREGUNTAR NO ES CONSENTIR ──────────────────────────────────────────
+  //
+  // Las cláusulas que son PREGUNTA se apartan antes de mirar nada más.
+  // «¿Cuánto cuesta el café?» nombra el café y no lo pide; leerlo como una
+  // aceptación era comprarle al cliente lo que estaba averiguando. Es la misma
+  // separación que ya hace `textoQueAutoriza` para el reconciliador, aplicada
+  // al consentimiento, que es donde faltaba.
+  const { porClausula } = clasificarIntenciones(mensaje);
+  const actos = porClausula.filter((c) => !c.esConsulta);
+  if (!actos.length) return vacio;
+  const texto = norm(actos.map((c) => c.fragmento).join(' '));
 
-  // Nombradas: el cliente dijo de qué habla. Esto gana sobre todo lo demás,
-  // incluso con varias abiertas, porque ya no hay nada que adivinar.
-  const nombradas = vivas.filter((p) => laNombra(p, mensaje));
-  if (nombradas.length) {
-    // «no, el café no» nombra y niega: la negación manda sobre la mención.
-    if (niega && !afirma) return { aceptadas: [], rechazadas: nombradas, ambigua: false, candidatas: [] };
-    // Nombrarla y no negarla es aceptarla. «ponme el café», «va el café», «café».
+  const afirma = actos.some((c) => AFIRMA.test(norm(c.fragmento)));
+  const niega = actos.some((c) => {
+    const f = norm(c.fragmento);
+    return NIEGA.test(f) || CIERRA.test(f) || NIEGA_AL_FINAL.test(f) || NIEGA_EXPLICITA.test(f);
+  });
+  const sustituye = SUSTITUYE.test(texto);
+
+  // Las que el cliente NOMBRA. Sirven para saber DE CUÁL habla; nunca para
+  // decidir que dijo que sí.
+  const nombradas = vivas.filter((p) => laNombra(p, texto));
+
+  // ── RECHAZO ────────────────────────────────────────────────────────────
+  //
+  // Va antes que la aceptación: rechazar de más no le agrega nada al pedido de
+  // nadie, y rechazar de menos cobra lo que el cliente dijo que no.
+  if (niega || sustituye) {
+    // Si además hay una afirmación, la frase dice las dos cosas y no se decide
+    // por nosotros: se pregunta. «Sí, pero ese no» no es un sí.
+    if (afirma) return { aceptadas: [], rechazadas: [], ambigua: true, candidatas: nombradas.length ? nombradas : vivas };
+    return { aceptadas: [], rechazadas: nombradas.length ? nombradas : vivas, ambigua: false, candidatas: [] };
+  }
+
+  // ── ACEPTACIÓN ─────────────────────────────────────────────────────────
+  //
+  // AQUÍ ESTABA LA RAÍZ. La regla decía: «nombrarla y no negarla es aceptarla».
+  // De esa línea salieron cinco fallas distintas —preguntar el precio de lo
+  // ofrecido lo compraba, decir «el café no» lo compraba, pedir «un vaso de
+  // agua» compraba el Agua de Horchata por compartir una palabra— porque
+  // convertía una coincidencia de palabras en consentimiento.
+  //
+  // Ahora hace falta una SEÑAL AFIRMATIVA explícita. Nombrar solo desempata
+  // entre lo que ya se ofreció, y solo después de que exista esa señal.
+  if (!afirma) return vacio;
+
+  if (nombradas.length === 1) {
     return { aceptadas: nombradas, rechazadas: [], ambigua: false, candidatas: [] };
   }
-
-  if (!afirma && !niega) return vacio;
-
-  // Sí/no pelados. Solo resuelven si hay UNA sola cosa a la que puedan apuntar.
-  if (vivas.length === 1) {
-    return niega
-      ? { aceptadas: [], rechazadas: [vivas[0]], ambigua: false, candidatas: [] }
-      : { aceptadas: [vivas[0]], rechazadas: [], ambigua: false, candidatas: [] };
+  if (nombradas.length > 1) {
+    return { aceptadas: [], rechazadas: [], ambigua: true, candidatas: nombradas };
   }
-
-  // Un «no» general cierra TODAS las propuestas abiertas, y eso no es ambiguo:
-  // rechazar de más no le agrega nada al pedido de nadie. Un «sí» general, en
-  // cambio, agregaría — y por eso ese sí se pregunta.
-  if (niega) return { aceptadas: [], rechazadas: vivas, ambigua: false, candidatas: [] };
+  // Un «sí» pelado solo vale si hay UNA sola cosa a la que pueda apuntar.
+  if (vivas.length === 1) {
+    return { aceptadas: [vivas[0]], rechazadas: [], ambigua: false, candidatas: [] };
+  }
   return { aceptadas: [], rechazadas: [], ambigua: true, candidatas: vivas };
 }
 

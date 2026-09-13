@@ -155,12 +155,30 @@ export async function observarTurnoDelMesero({
       guardado.mensajes.splice(0, guardado.mensajes.length - TOPE_TURNOS * 2);
     }
 
-    // Cuántas veces se llama al modelo en un turno. Es UNA: las consultas de
-    // menú, las referencias y las aclaraciones se resuelven sin modelo. Se
-    // cuenta en vez de afirmarse.
+    // ── LO QUE CUESTA UN TURNO, MEDIDO EN TRES PARTES ──────────────────
+    //
+    // El extractor llama a un proveedor por red. Todo lo demás —intenciones,
+    // referencias, catálogo, reconciliación, contexto, log— corre en memoria.
+    // Mezclarlos en un solo número no dice nada útil: uno se mide en
+    // milisegundos y el otro en cientos.
+    //
+    //   ms_modelo   la llamada al proveedor, de principio a fin
+    //   ms_local    el resto del turno
+    //   ms          los dos juntos, más la lectura del catálogo
+    //
+    // Se cuenta también CUÁNTAS llamadas hay. Hoy es una por turno SIEMPRE,
+    // incluso en un «hola» o en una pregunta por la carta: el extractor se
+    // invoca antes de saber si tenía algo que extraer. Eso es coste real en
+    // sombra y sale en el log para que se vea, no para suponerlo.
     let llamadasAlModelo = 0;
+    let msModelo = 0;
     const proponerContado = proponer
-      ? async () => { llamadasAlModelo += 1; return proponer(guardado.mensajes.slice()); }
+      ? async (...args) => {
+        llamadasAlModelo += 1;
+        const t0 = Date.now();
+        try { return await proponer(guardado.mensajes.slice(), ...args); }
+        finally { msModelo += Date.now() - t0; }
+      }
       : null;
 
     const antes = { contexto: resumenDelContexto(guardado.contexto), items: resumirItems(partida) };
@@ -186,8 +204,10 @@ export async function observarTurnoDelMesero({
     guardado.carrito = JSON.parse(JSON.stringify(r.carrito));
     guardado.turnos += 1;
 
+    const total = medir();
     const registro = registroDelTurno({
-      negocioId, sessionId, mensaje, r, antes, ms: medir(), llamadasAlModelo, ahora,
+      negocioId, sessionId, mensaje, r, antes, ahora,
+      ms: total, msModelo, msLocal: Math.max(0, total - msModelo), llamadasAlModelo,
     });
     return { ok: true, registro, linea: lineaDeSombra(registro), resumen: registro };
   } catch (e) {
@@ -208,13 +228,16 @@ export async function observarTurnoDelMesero({
  * están en su carta pública, y sin ellos «modificación bloqueada» no se puede
  * accionar.
  */
-export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, llamadasAlModelo, ahora }) {
+export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, msModelo = 0,
+  msLocal = null, llamadasAlModelo, ahora }) {
   const c = r?.cambios || {};
   return {
     ts: (ahora || new Date()).toISOString(),
     conv: hash(sessionId),
     negocio: negocioId,
     ms,
+    ms_modelo: msModelo,
+    ms_local: msLocal === null ? Math.max(0, ms - msModelo) : msLocal,
     llamadas_modelo: llamadasAlModelo,
 
     dijo: textoSeguro(mensaje),

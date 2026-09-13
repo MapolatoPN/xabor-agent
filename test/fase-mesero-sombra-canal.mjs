@@ -437,6 +437,30 @@ await t('MS13. cada registro trae lo que hace falta para comparar después', asy
   assert.equal(r.llamadas_modelo, 1, `el mesero llamó al modelo ${r.llamadas_modelo} veces por turno`);
 });
 
+await t('MS15. el registro separa el tiempo del MODELO del tiempo local', async () => {
+  // Los tres números que hacen falta para presupuestar la sombra, y de dónde
+  // sale cada uno:
+  //
+  //   ms_local    procesamiento del mesero. Se mide aquí y en el E2E.
+  //   ms_modelo   la llamada al extractor. Aquí es al MOCK, por HTTP a
+  //               localhost: da el SUELO —serializar, ida y vuelta, parsear—
+  //               no la latencia de un proveedor real, que solo se sabrá con
+  //               tráfico de verdad y que es la que domina.
+  //   ms          los dos juntos, más la lectura del catálogo.
+  const conModelo = registros().filter((r) => r.llamadas_modelo > 0);
+  assert(conModelo.length >= 3, `hacen falta turnos con modelo: ${conModelo.length}`);
+  for (const r of conModelo) {
+    assert.equal(typeof r.ms_modelo, 'number', 'no se registró el tiempo del modelo');
+    assert.equal(typeof r.ms_local, 'number', 'no se registró el tiempo local');
+    assert(r.ms >= r.ms_modelo, `ms (${r.ms}) menor que ms_modelo (${r.ms_modelo})`);
+    assert.equal(r.ms_local, Math.max(0, r.ms - r.ms_modelo));
+  }
+  const prom = (f) => (conModelo.reduce((a, r) => a + f(r), 0) / conModelo.length).toFixed(1);
+  console.log(`      · ${conModelo.length} turnos con extractor · total ${prom((r) => r.ms)} ms`
+    + ` = modelo(mock HTTP) ${prom((r) => r.ms_modelo)} ms + local ${prom((r) => r.ms_local)} ms`);
+  console.log('      · el modelo REAL no se mide aquí; este es el suelo con un mock en localhost');
+});
+
 await t('MS14. el registro no lleva teléfono, correo ni el mensaje entero', async () => {
   const tel = TEL + '13';
   await mandar({ tel, pnid: PNID_A, textos: ['soy Ana, mi tel es 8781234567, mando a Hidalgo 4521'] });
