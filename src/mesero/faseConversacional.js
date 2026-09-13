@@ -98,8 +98,26 @@ export const listoParaConfirmar = (entrada) => loQueFalta(entrada).length === 0
  */
 export function siguientePregunta(entrada, preguntadoYa = []) {
   const pendientes = loQueFalta(entrada);
+  if (!pendientes.length) return null;
+
+  // LO QUE BLOQUEA NO ENTRA EN LA ROTACIÓN.
+  //
+  // Un grupo requerido sin elegir impide mandar el platillo a cocina, y no
+  // preguntarlo «porque ya se preguntó» no lo resuelve: lo esconde. En la traza
+  // del E2E se veía el efecto — el bot preguntaba la salsa, el cliente
+  // contestaba la proteína, y el bot pasaba a la modalidad dejando el platillo
+  // incompleto hasta el final.
+  //
+  // No es repetir por repetir: es que el cliente contestó OTRA cosa, y esa
+  // sigue faltando. Un mesero dice «va, ¿y la salsa?».
+  const bloquea = (p) => p === 'productos' || p.startsWith('grupo:');
+  const bloqueante = pendientes.find(bloquea);
+  if (bloqueante) return bloqueante;
+
+  // El resto sí rota, para no insistir con lo mismo dos turnos seguidos
+  // mientras el cliente sigue pidiendo.
   const nueva = pendientes.find((p) => !preguntadoYa.includes(p));
-  // Si TODO lo que falta ya se preguntó, se repite lo primero: el cliente no
+  // Si TODO lo que falta ya se preguntó, se vuelve a lo primero: el cliente no
   // contestó y hay que insistir, pero una vez y por lo más importante.
-  return nueva || pendientes[0] || null;
+  return nueva || pendientes[0];
 }

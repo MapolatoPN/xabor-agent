@@ -376,6 +376,23 @@ t('H5. lo que falta se pide en orden y no se repite', () => {
     'si todo se preguntó y nada se contestó, se insiste por lo primero');
 });
 
+t('H5b. lo que BLOQUEA se vuelve a preguntar aunque ya se haya preguntado', () => {
+  // El bot pregunta la salsa; el cliente contesta la proteína. La salsa sigue
+  // faltando, y saltar a la modalidad «porque ya se preguntó» deja el platillo
+  // incompleto hasta el final. Lo enseñó la traza del E2E.
+  const entrada = {
+    carrito: carritoCon('Molletes de Frijol'), datos: {},
+    aclaraciones: [{ tipo: 'grupo_requerido', grupo: 'Salsa' }],
+  };
+  assert.deepEqual(loQueFalta(entrada), ['grupo:Salsa', 'modalidad', 'pago']);
+  assert.equal(siguientePregunta(entrada, ['grupo:Salsa']), 'grupo:Salsa',
+    'se saltó un grupo requerido que el cliente no había contestado');
+  assert.equal(siguientePregunta(entrada, ['grupo:Salsa', 'modalidad', 'pago']), 'grupo:Salsa');
+  // Y en cuanto se elige, la rotación normal vuelve.
+  const yaElegido = { ...entrada, aclaraciones: [] };
+  assert.equal(siguientePregunta(yaElegido, ['modalidad']), 'pago');
+});
+
 t('H6. un negocio que no pide forma de pago no la espera', () => {
   const entrada = { carrito: carritoCon('X'), datos: { modalidad: 'recoger' }, requierePago: false };
   assert.deepEqual(loQueFalta(entrada), []);
