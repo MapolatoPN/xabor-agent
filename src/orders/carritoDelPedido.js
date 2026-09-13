@@ -520,6 +520,13 @@ const EMPIEZA_A_PEDIR = new RegExp('\\b(' + [
   'sumale', 's[uú]male', 'en su lugar', 'cambialo', 'c[aá]mbialo',
 ].join('|') + ')\\b', 'i');
 
+// Las dos preguntas anteriores, sueltas, para quien necesite CLASIFICAR sin
+// resolver. El clasificador de intenciones del mesero las usa: escribir una
+// segunda lista de verbos de quitar sería garantizar que las dos se separen, y
+// que el bot entienda «sácalo» en un módulo y no en el otro.
+export const hayVerboDeQuitar = (texto) => PIDE_QUITAR.test(String(texto || ''));
+export const hayVerboDePedir = (texto) => EMPIEZA_A_PEDIR.test(String(texto || ''));
+
 /**
  * Qué artículos señala el cliente al pedir que se quite algo.
  *
