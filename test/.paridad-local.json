@@ -1,0 +1,92 @@
+{
+ "etiqueta": "local",
+ "pasos": [
+  {
+   "id": "L1",
+   "dijo": "Quiero unos PAR Chilaquiles con salsa roja y pollo",
+   "contesto": [
+    "¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?"
+   ]
+  },
+  {
+   "id": "L2",
+   "dijo": "agregame 2 PAR Hotcakes",
+   "contesto": [
+    "¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?"
+   ]
+  },
+  {
+   "id": "L3",
+   "dijo": "mejor los chilaquiles con salsa verde",
+   "contesto": [
+    "¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?"
+   ]
+  },
+  {
+   "id": "L4",
+   "dijo": "los chilaquiles sin cebolla porfa",
+   "contesto": [
+    "¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?"
+   ]
+  },
+  {
+   "id": "L5",
+   "dijo": "quita los PAR Hotcakes y ponme un PAR Cafe",
+   "contesto": [
+    "¿Tu pedido es para recoger en tienda o prefieres que te lo llevemos a domicilio?"
+   ]
+  },
+  {
+   "id": "L7",
+   "dijo": "para recoger",
+   "contesto": [
+    "¡Tu pedido está casi listo! Solo falta la forma de pago. ¿Cómo deseas pagar? Puedes pagar con: efectivo, terminal (tarjeta presente)."
+   ]
+  },
+  {
+   "id": "L8",
+   "dijo": "en efectivo",
+   "contesto": [
+    "Tu pedido queda así: • PAR Chilaquiles — $150 Salsa: Verde Proteina: Pollo NOTA: sin cebolla • PAR Cafe — $40 Subtotal: $190 Total: $190 ¿Confirmas que todo está correcto?"
+   ]
+  },
+  {
+   "id": "L6",
+   "dijo": "si, confirmo",
+   "contesto": [
+    "✅ Pedido *<folio>* registrado — total *$190 MXN*."
+   ]
+  }
+ ],
+ "pedido": {
+  "estado": "nuevo",
+  "total": 190,
+  "modalidad": "recoger",
+  "forma_pago": "efectivo",
+  "items": [
+   {
+    "n": "PAR Chilaquiles",
+    "c": 1,
+    "nota": "sin cebolla",
+    "m": "Salsa:Verde:0 | Proteina:Pollo:0"
+   },
+   {
+    "n": "PAR Cafe",
+    "c": 1,
+    "nota": "",
+    "m": ""
+   }
+  ]
+ },
+ "impresion_nuevas": 0,
+ "pagos_nuevos": 0,
+ "estado_tiene_carrito": false,
+ "sombra_en_el_log": false,
+ "ruta_operativa": [
+  "txn:forma_pago_faltante",
+  "txn:preview_desde_borrador",
+  "txn:confirmacion_desde_snapshot",
+  "anuncio:nuevo_pedido",
+  "impresion:multiples_sucursales_activas"
+ ]
+}
