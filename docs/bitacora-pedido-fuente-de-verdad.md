@@ -450,14 +450,123 @@ S6b tampoco tiene hoy una mordida que la tumbe: pasa porque nada propaga. Se
 queda como regresión de punta a punta, no como demostración.
 
 
-## Regresión: 44 suites vecinas
+## Aislamiento multiempresa (2026-09-13)
+
+### El incidente
+
+El 12-sep a las 02:34 UTC se apuntó el servicio a esta rama para observar en
+sombra a un negocio con el bot apagado. Al comprobar el interruptor del bot
+—negocio por negocio, contra la base de producción— aparecieron **otros dos con
+el bot encendido**:
+
+```
+apagado    mapolato-obispado
+ENCENDIDO  mapolato-acuna
+ENCENDIDO  nonna-maye
+```
+
+Para esos dos, el despliegue no era una observación: era el reconciliador nuevo
+decidiendo sobre pedidos reales. Se revirtió en tres minutos y la ventana salió
+limpia —cero filas en `whatsapp_entradas`, cero pedidos— pero la garantía nunca
+existió. `PEDIDO_SHADOW_MODE` es una bandera del **proceso** y la pregunta es de
+cada **negocio**.
+
+### Los tres modos, y dónde viven
+
+| Modo | Qué hace | Cómo se pide |
+|---|---|---|
+| **LEGACY** | el comportamiento de `main`, sin una línea nueva en su camino | **el default**: no se pide |
+| **SHADOW** | el bot no responde y el reconciliador observa en copia | `pedido_shadow = 'true'` |
+| **V2** | el reconciliador nuevo decide de verdad | `pedido_reconciliador_v2 = 'true'` |
+
+Los interruptores viven en **`configuracion`**, la tabla clave/valor por negocio
+que el sistema ya usa para `modo_pedidos`, `pedido_requiere_anticipo` y las
+credenciales de canal. Ni tabla nueva ni migración: **una clave ausente ya es la
+respuesta correcta**, y esa respuesta es LEGACY.
+
+No se usó `negocio_modulos` a propósito: esa tabla alimenta la navegación del
+panel y la lista del Superadmin, y estos dos interruptores no son una capacidad
+que se le venda a nadie — son un experimento nuestro.
+
+Sin caché: un cambio vale para el siguiente mensaje, sin reiniciar ni
+redesplegar. Es una consulta indexada a una tabla de una decena de filas por
+negocio, y el turno ya hace varias.
+
+### Los dos a la vez
+
+Manda **V2** y la sombra **no** corre. Observar a un negocio que ya decide con V2
+no mide nada nuevo, y costaría una llamada al modelo por turno para escribir una
+línea sobre un hipotético que no ocurrió. Tampoco se rechaza el turno —el cliente
+no tiene la culpa de una casilla mal puesta—: queda un aviso
+`configuracion_de_pedido_ambigua` en el log para que se corrija.
+
+### Un cruce de caminos, no veinte ifs
+
+`brain.js` resuelve el modo **una vez por turno** y de ahí sale todo:
+
+- el carrito solo corre si `modo.v2`, en **las dos** rutas (marcador del modelo y
+  extracción forzada);
+- **el texto que autoriza** es el ciclo crudo en legacy y el separado por
+  procedencia en V2. Esta línea importa tanto como el carrito: alimenta el
+  respaldo de selecciones y el de modalidad y pago, así que si se colara la
+  versión nueva el aislamiento sería de mentira aunque el carrito estuviera
+  apagado;
+- `validadorOrden` recibe el modo ya resuelto y, en legacy, el id manda como
+  siempre y respaldar vuelve a bastar sin distinguir. Sus **dos** entradas lo
+  resuelven —la conversacional y la del registro— porque resolver distinto en la
+  preconfirmación y en el registro sería peor que cualquiera de los dos
+  comportamientos por separado.
+
+La sombra necesita ahora **dos llaves**: la global del proceso, que sigue siendo
+el interruptor de emergencia, y la del negocio. Con la global sola no se observa
+a nadie.
+
+### Pruebas
+
+`test/fase-multiempresa-modo-pedido.mjs` — **19 casos**. Tres negocios con la
+MISMA carta y modos distintos, en el mismo proceso. La carta es igual a
+propósito: si piden lo mismo y se comportan distinto, la diferencia es del modo.
+
+M1–M15, más M13b, más el ESCENARIO exacto que se quiere desplegar, más los dos
+flags a la vez y la comparación de la bandera valor por valor.
+
+| Mordida | Qué se reintrodujo | Falla |
+|---|---|---|
+| Q1 | sin gate de V2 en el camino productivo | 9 casos, incluido M1 |
+| Q2 | sin gate LOCAL de sombra | S13 |
+| Q3 | la global basta por sí sola | 9 casos, incluido M9 |
+| Q4 | el modo se cachea entre negocios | 10 casos, incluidos M4 y M15 |
+| Q5 | el default pasa a V2 | 11 casos, incluido M7 |
+| Q6 | un error de lectura cae a V2 | M13b |
+
+### Tres cosas que costaron y dejan la prueba mejor
+
+- **S13 pasaba con el gate quitado.** La observación sí arrancaba, pero se
+  quedaba sin respuesta del modelo y moría en su propio catch sin escribir nada:
+  la prueba pasaba por el motivo equivocado. Ahora se le deja una respuesta
+  válida preparada y se exige que el turno haya llegado hasta la decisión de
+  callar. Una prueba que puede pasar porque no ocurrió nada no es una prueba.
+- **M13 no probaba lo que decía.** Pasaba por `obtenerConfiguracion`, que se
+  traga sus propios errores, así que el catch de `modoDelPedido` no se alcanzaba
+  nunca. Se añadió M13b con un lector inyectado que lanza de verdad; el lector
+  inyectable es lo único que se le agregó al módulo por esto.
+- **Q4 y Q6 no mordían** por errores míos al escribirlas, no del código.
+
+### Contexto de build
+
+`.dockerignore` excluía `.env` y nada más. Ahora cubre por patrón `*.env`,
+`.env.*`, `*.env.cmd`, llaves, certificados y volcados, con los dos `*.example*`
+re-incluidos. Comprobado con un build real: en el contexto solo quedan esos dos.
+
+
+## Regresión: 45 suites vecinas
 
 Elegidas por importación real —todo lo que toca `brain.js`, `validadorOrden.js`,
 `session.js` o `sesionDurable.js`— más la recepción compartida de WhatsApp,
 Compras y los caminos de imagen (que importan porque el carrito ahora exige que
 el cliente haya NOMBRADO lo que se agrega, y un pedido por foto no nombra nada).
 
-**41 de 44 en verde.** Entre ellas:
+**41 de 45 en verde.** Entre ellas:
 
 | Suite | Qué defiende | Resultado |
 |---|---|---|
@@ -474,13 +583,16 @@ el cliente haya NOMBRADO lo que se agrega, y un pedido por foto no nombra nada).
 | `fase-vision-whatsapp`, `fase-chat-imagenes` | pedir por foto sigue funcionando | verdes |
 | `fase-whatsapp-continuidad`, `fase-agrupamiento-turnos-whatsapp` | reentregas, mensajes agrupados | 13/13, 14/14 |
 
-**Las 3 que fallan, fallan igual en `c859e72`** —el commit que hoy corre en
+**Las 4 que fallan, fallan igual en `c859e72`** —el commit que hoy corre en
 producción— comprobado en un worktree limpio de ese commit, con la misma base y
 las mismas variables:
 
 - `fase-continuidad-webhook`: 9/1, el mismo caso (captura del panel que expira).
 - `fase-hotfix-borrador-recuperable`: 2 de 8, los mismos casos. Es del Asistente
   Comercial, no del pedido del menú.
+- `fase-compras-whatsapp`: falla con `Un movimiento real no puede tener fecha
+  futura` cuando se corre después de medianoche UTC —la fecha local sigue en el
+  día anterior y la comprobación la lee como futura—. Idéntico en `c859e72`.
 - `fase-seguridad-transaccional`: 17/1 (T14). Depende del estado acumulado de la
   base local —pasó 18/18 justo después de resembrar y falla ahora en las dos
   ramas—, así que es de entorno, no de código.
@@ -567,32 +679,38 @@ detecta con `JSON.stringify` de la línea.
 
 ## Cómo encender el modo sombra
 
-**El bot de Obispado se queda APAGADO.** No es una precaución de más: es donde
-vive la observación. Con el bot encendido, el turno es productivo y la sombra no
-mira nada.
+Hacen falta **dos llaves**, y esa es la corrección del incidente multiempresa: la
+global habilita la capacidad en el proceso, la del negocio dice a quién se
+observa.
 
-1. En Railway, variable `PEDIDO_SHADOW_MODE=true`. El único valor que enciende
-   es `true`; cualquier otro —incluido `"false"`— deja el experimento apagado.
-2. Desplegar la rama con `railway redeploy --yes --from-source` desde
-   `C:«or-agent`. Antes, mirar `git log HEAD..origin/main`: `--from-source`
-   saca todo lo que haya en el origen.
-3. Dejar el bot apagado. Los clientes escriben, el dueño contesta a mano como
-   hoy, y cada uno de esos turnos se observa.
-4. Leer: `railway logs` filtrando `evento=carrito_sombra`. Una línea por turno,
-   JSON en una sola línea. Para 30–50 ciclos: juntar las líneas de un día y
-   agrupar por `conv`.
-5. Cada línea responde las cuatro preguntas: `propuso` (qué quiso el modelo),
-   `quedaria` (qué habría permitido), `rechazado` (qué bloqueó y por qué) y
-   `autorizado` (con qué evidencia dejó pasar lo que dejó pasar). Además trae
-   `evidencia_dicho` y `evidencia_percibido` por separado, y
+1. Railway: `PEDIDO_SHADOW_MODE=true`. El único valor que enciende es `true`.
+   Por CLI, con `--skip-deploys`: sin él, Railway redespliega desde la fuente
+   configurada.
+2. Por cada negocio que se quiera observar, y **solo** por ese:
+   `INSERT INTO configuracion (negocio_id, clave, valor) VALUES (<id>, 'pedido_shadow', 'true')`
+   (o el upsert de `actualizarConfiguracion`). El resto no necesita ninguna fila:
+   sin clave, LEGACY.
+3. El bot de ese negocio se queda **apagado**. No es una precaución de más: es
+   donde vive la observación. Con el bot encendido el turno es productivo y la
+   sombra no mira nada.
+4. Leer: `railway logs` filtrando `evento=carrito_sombra`. Una línea por turno.
+   Para 30–50 ciclos, juntar las de un día y agrupar por `conv`.
+5. Cada línea responde: `propuso` (qué quiso el modelo), `quedaria` (qué habría
+   permitido), `rechazado` (qué bloqueó y por qué), `autorizado` (con qué
+   evidencia), más `evidencia_dicho`, `evidencia_percibido` y
    `requeria_aclaracion`.
-6. Para apagarlo: quitar la variable. No queda nada que limpiar; el estado del
-   experimento vive en memoria y se va con el proceso.
 
-Lo que el modo sombra **no** hace: no escribe el carrito del cliente, no toca su
-sesión ni la fila durable, no reinyecta borrador, no confirma pedidos, no
-imprime, no cobra y no añade una palabra a lo que el cliente lee. Lo único que
-el cliente ve —la doble palomita azul— ya la veía antes de que esto existiera.
+### Apagar
+
+| Qué | Cómo | Hace falta reiniciar |
+|---|---|---|
+| toda la sombra, de golpe | `PEDIDO_SHADOW_MODE=false` en Railway | sí, un restart del servicio |
+| la sombra de UN negocio | `pedido_shadow = 'false'` (o borrar la fila) | **no**: vale para el siguiente mensaje |
+| V2 de UN negocio | `pedido_reconciliador_v2 = 'false'` (o borrar la fila) | **no**: vale para el siguiente mensaje |
+
+La asimetría es real y conviene saberla: la variable de entorno la lee el
+proceso, así que cambiarla pide un restart; los interruptores por negocio se
+consultan en cada turno, así que no.
 
 ## Lo que este trabajo NO resuelve
 
