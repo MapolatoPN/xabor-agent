@@ -46,6 +46,17 @@ import { obtenerConfiguracion } from '../services/database.js';
 export const CLAVE_V2 = 'pedido_reconciliador_v2';
 export const CLAVE_SHADOW = 'pedido_shadow';
 
+// ── El Mesero Digital, dos interruptores más ─────────────────────────────
+//
+// Mismo criterio y misma tabla. Se suman aquí y no en un módulo aparte porque
+// la pregunta es la misma —«¿en qué modo atiende este negocio?»— y tener dos
+// sitios donde se responde es cómo se acaba con un negocio en dos modos.
+//
+//   mesero_whatsapp_v1      = 'true'   el mesero conversa de verdad
+//   mesero_whatsapp_shadow  = 'true'   el mesero observa y no contesta
+export const CLAVE_MESERO = 'mesero_whatsapp_v1';
+export const CLAVE_MESERO_SOMBRA = 'mesero_whatsapp_shadow';
+
 /**
  * Comparación EXPLÍCITA contra "true".
  *
@@ -59,6 +70,15 @@ export const esVerdadero = (v) => String(v ?? '').trim().toLowerCase() === 'true
 export const sombraHabilitadaEnElProceso = () => esVerdadero(process.env.PEDIDO_SHADOW_MODE);
 
 /**
+ * El maestro del mesero en sombra. Aparte del anterior, a propósito.
+ *
+ * Reutilizar `PEDIDO_SHADOW_MODE` habría hecho que encender la observación del
+ * reconciliador encendiera también la del mesero, que es otro experimento, con
+ * otro código y otro riesgo. Un interruptor por experimento.
+ */
+export const meseroSombraHabilitadoEnElProceso = () => esVerdadero(process.env.MESERO_SHADOW_MODE);
+
+/**
  * El modo de ESTE negocio, leído en el momento.
  *
  * Sin caché a propósito: cambiar un interruptor tiene que valer para el
@@ -68,7 +88,7 @@ export const sombraHabilitadaEnElProceso = () => esVerdadero(process.env.PEDIDO_
  * Devuelve siempre un objeto utilizable; nunca lanza.
  */
 export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConfiguracion } = {}) {
-  const apagado = { v2: false, shadow: false, modo: 'legacy' };
+  const apagado = { v2: false, shadow: false, mesero: false, meseroSombra: false, modo: 'legacy' };
   if (typeof negocioId !== 'string' || !negocioId.trim()) return apagado;
   let cfg;
   try {
@@ -98,5 +118,35 @@ export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConf
     console.warn(`[TXN] evento=configuracion_de_pedido_ambigua negocio=${negocioId} `
       + 'shadow y v2 encendidos a la vez: manda v2 y no se observa');
   }
-  return { v2, shadow, modo: v2 ? 'v2' : (shadow ? 'shadow' : 'legacy') };
+
+  // ── EL MESERO NO CORRE SIN SU MOTOR TRANSACCIONAL ──────────────────────
+  //
+  // El mesero conversa, interpreta y PROPONE. Lo que decide qué entra al
+  // pedido es el reconciliador V2: identidad de renglón, protección campo a
+  // campo, evidencia. Encender el mesero sobre LEGACY sería quitarle el freno
+  // justo al componente que más propone — un modelo recomendando y nadie
+  // comprobando qué de eso autorizó el cliente.
+  //
+  // Así que `mesero_whatsapp_v1` sin `pedido_reconciliador_v2` NO enciende
+  // nada. No es una preferencia de diseño: es la única configuración en la que
+  // el mesero sería menos seguro que el bot que reemplaza.
+  const meseroPedido = esVerdadero(cfg?.[CLAVE_MESERO]);
+  const meseroSombraPedido = esVerdadero(cfg?.[CLAVE_MESERO_SOMBRA]);
+  const mesero = meseroPedido && v2;
+  if (meseroPedido && !v2) {
+    console.warn(`[MESERO] evento=mesero_sin_reconciliador negocio=${negocioId} `
+      + 'mesero_whatsapp_v1 encendido sin pedido_reconciliador_v2: no se activa');
+  }
+  // La sombra del mesero solo mira. No necesita V2 productivo —de hecho es lo
+  // que se quiere observar antes de encenderlo— pero sí las dos llaves, como
+  // toda observación: la del proceso y la del negocio.
+  const meseroSombra = meseroSombraPedido && !mesero && meseroSombraHabilitadoEnElProceso();
+
+  return {
+    v2,
+    shadow,
+    mesero,
+    meseroSombra,
+    modo: v2 ? (mesero ? 'mesero' : 'v2') : (shadow ? 'shadow' : 'legacy'),
+  };
 }
