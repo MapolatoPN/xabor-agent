@@ -251,6 +251,10 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - Devoluciones: botón ↩ en historial (admin), monto+motivo, se refleja en corte ✅
 - Control de descuentos: staff ≤ 10%, motivo obligatorio, admin sin límite ✅
 - CFDI con Facturapi: servicio facturapi.js, modal en panel, genera factura timbrada ✅
+- Rewards en la tienda en línea: acumula y canjea en el checkout web. Se
+  enciende por negocio con la casilla «Tienda en línea» (Rewards → Config);
+  nace APAGADA para no cambiarle la configuración a nadie. Ver
+  `docs/rewards-tienda-online.md` ✅
 
 ## Historial de decisiones importantes
 
@@ -259,6 +263,19 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - **Comanda** (🍽️): formato cocina, número de orden grande, sin precios, auto-print al llegar pedido
 - **Ticket de cliente** (🧾): receipt completo, botón manual al cobrar, título "TICKET DE CLIENTE"
 - Impresora: EC Line 80mm
+
+### Rewards — canales
+- El canal de una venta se traduce a un interruptor de `rewards_config` con
+  `MAPA_CANAL_CONFIG` (rewardsService.js). Es FUENTE ÚNICA: la acumulación y
+  el canje de la tienda lo usan los dos. Un canal que no esté en ese mapa NO
+  acumula (fallo cerrado, a propósito).
+- `tienda_online` faltaba en ese mapa desde la 051. `undefined` es falsy, así
+  que la tienda nunca dio un punto — en silencio y para todos los negocios.
+  Corregido con la migración 079 (`canal_tienda`, DEFAULT FALSE).
+- `pedido.total` NO significa lo mismo en todos los flujos: el POS clásico lo
+  fija ANTES del canje (bruto) y el POS `por_cobrar` y la tienda lo fijan ya
+  rebajado (neto). `datos.rewards_canje` es la señal que los distingue en
+  `acumularPuntos`; sin ella se descontaba el canje dos veces.
 
 ### Corte de caja
 - `obtenerVentas` y `obtenerResumenVentas` leen de `pedidos_activos` (JSONB), NO de `pedidos`
