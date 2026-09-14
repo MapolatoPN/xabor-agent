@@ -41,7 +41,7 @@ import {
 import { clasificarIntenciones, textoQueAutoriza, partirEnClausulas } from './intencionesDelCliente.js';
 import { resolverReferencia } from './referenciasDelCliente.js';
 import { aplicarPropuestas, propuestasDesdeBorrador, propuesta } from './motorTransaccional.js';
-import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas } from './consultasDelMenu.js';
+import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas, grupoRealDeLaOpcion } from './consultasDelMenu.js';
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
 import { anclarPropuestas, anclarLinea } from './anclajeAlCatalogo.js';
@@ -494,11 +494,36 @@ export async function atenderTurno({
       // elección hecha. Su prueba de autorización es que está ahí — el
       // reconciliador no la habría puesto sin evidencia en su momento. Lo que
       // tiene que distinguirse en este turno es sólo lo que ENTRA ahora.
-      const yaPuestas = (destino?.modificadores || [])
-        .filter((gr) => norm(gr?.grupo) === norm(p.campo))
-        .flatMap((gr) => (gr.opciones || []).map((o) => String(typeof o === 'string' ? o : o?.nombre || '')))
-        .filter(Boolean);
+      //
+      // Y SE BUSCA EN EL GRUPO DE VERDAD. El renglón guarda los grupos con su
+      // nombre de catálogo; `p.campo` trae el que escribió el modelo, que puede
+      // ser «tipo» o «acompañamiento». Comparando los dos nombres, la Suiza que
+      // sí estaba puesta no se encontraba nunca y volvía a tratarse como una
+      // elección nueva — sin evidencia en este turno, se caía otra vez.
       const propuestas_ = Array.isArray(p.valorNuevo) ? p.valorNuevo : [p.valorNuevo];
+      const yaPuesta = (opcion) => (destino?.modificadores || [])
+        .filter((gr) => norm(gr?.grupo) === norm(
+          grupoRealDeLaOpcion(catalogo, destino?.nombre || '', p.campo, opcion)))
+        .flatMap((gr) => (gr.opciones || []).map((o) => String(typeof o === 'string' ? o : o?.nombre || '')))
+        .some((v) => v && norm(v) === norm(opcion));
+      // ── REPETIR LO QUE YA ESTÁ NO ES CAMBIAR NADA ──────────────────────
+      //
+      // Cuando el cliente habla de OTRA cosa —«con frijolitos»— el modelo
+      // suele reescribir el renglón entero, salsa incluida. Esa reescritura no
+      // propone ningún cambio, pero entraba al filtro como una elección nueva:
+      // el turno no dice «suiza», así que no la distinguía de sus hermanas y
+      // acababa preguntando «¿suiza?», por algo que el cliente ya había
+      // elegido. Una propuesta que deja el grupo exactamente como está no se
+      // discute: se descarta.
+      const gruposReales = new Set(propuestas_
+        .map((o) => norm(grupoRealDeLaOpcion(catalogo, destino?.nombre || '', p.campo, o))));
+      if (gruposReales.size === 1) {
+        const enEseGrupo = (destino?.modificadores || [])
+          .filter((gr) => norm(gr?.grupo) === [...gruposReales][0])
+          .flatMap((gr) => (gr.opciones || []).map((o) => String(typeof o === 'string' ? o : o?.nombre || '')))
+          .filter(Boolean);
+        if (enEseGrupo.length === propuestas_.length && propuestas_.every((o) => yaPuesta(o))) return false;
+      }
       // …PERO SÓLO SI EL CLIENTE PIDIÓ SUMAR.
       //
       // Dejar sobrevivir lo ya elegido es correcto para «también chipotle» y
@@ -513,12 +538,8 @@ export async function atenderTurno({
       // desplaza a lo viejo, y sin ninguna señal se sustituye, como siempre.
       const operacion = operacionSobreElGrupo(autoriza);
       const preserva = operacion === 'agregar' || operacion === 'quitar';
-      const conservadas = preserva
-        ? propuestas_.filter((o) => yaPuestas.some((v) => norm(v) === norm(o)))
-        : [];
-      const entrantes = preserva
-        ? propuestas_.filter((o) => !yaPuestas.some((v) => norm(v) === norm(o)))
-        : propuestas_;
+      const conservadas = preserva ? propuestas_.filter((o) => yaPuesta(o)) : [];
+      const entrantes = preserva ? propuestas_.filter((o) => !yaPuesta(o)) : propuestas_;
 
       const { claras, ambiguas } = opcionesAmbiguas({
         catalogo,
@@ -619,6 +640,41 @@ export async function atenderTurno({
     })
     : { propuestas: propuestas.filter(Boolean), ambiguos: [], rechazados: [], anclas: new Map(), reclasificados: [] };
 
+  // ── 8c) EL RENGLÓN NUEVO SE MIDE CON LA MISMA VARA ─────────────────────
+  //
+  // El filtro de 8a sólo mira `cambiar_modificador`, porque cuando se escribió
+  // un renglón nuevo traía las opciones que el modelo hubiera escrito y el
+  // reconciliador era el único guardia. Con el anclaje eso cambió: ahora lo que
+  // el modelo escribe se CANONIZA contra la carta, y «salsa de cacahuate»
+  // —que no existe— acaba señalando a «Bistec en Salsa» porque comparten la
+  // palabra «salsa». El reconciliador la deja pasar: el cliente dijo «salsa»,
+  // y respaldo tiene. Lo que falta es lo de siempre, que la palabra la SEPARE
+  // de sus hermanas; y eso, en un renglón nuevo, no lo comprobaba nadie.
+  //
+  // Aquí se comprueba, con la misma función y la misma regla que en 8a. Lo que
+  // no se distingue no entra: se pregunta.
+  if (catalogo.length) {
+    for (const p of anclado.propuestas) {
+      if (!p || p.accion !== 'agregar') continue;
+      const grupos = Array.isArray(p.valorNuevo?.modificadores) ? p.valorNuevo.modificadores : [];
+      if (!grupos.length) continue;
+      const quedan = [];
+      for (const gr of grupos) {
+        const { claras, ambiguas } = opcionesAmbiguas({
+          catalogo,
+          producto: String(p.valorNuevo?.nombre || ''),
+          grupo: String(gr?.grupo || ''),
+          opciones: Array.isArray(gr?.opciones) ? gr.opciones : [],
+          texto: autoriza,
+          hermanasRestringidas: abiertaDelGrupo(gr?.grupo)?.candidatos || null,
+        });
+        if (ambiguas.length) opcionesQueNoSeparan.push(...ambiguas.map((a) => ({ ...a, lid: null })));
+        if (claras.length) quedan.push({ ...gr, opciones: claras });
+      }
+      p.valorNuevo = { ...p.valorNuevo, modificadores: quedan };
+    }
+  }
+
   // 9) EL MOTOR DECIDE. Aquí no hay reglas nuevas: se traduce y se reconcilia.
   const resultado = aplicarPropuestas(carritoActual, anclado.propuestas, {
     // Crudo, para que el carrito separe la percepción por su cuenta; y aparte,
@@ -647,9 +703,16 @@ export async function atenderTurno({
   //
   // NO es una mutación nueva ni una invención: no se añade ninguna opción, no
   // cambia la cantidad, no se toca la nota, y el `lid` es el mismo. Lo único
-  // que cambia es el NOMBRE CANÓNICO de lo que el cliente ya pidió. Quien
+  // que cambia es la IDENTIDAD CANÓNICA de lo que el cliente ya pidió. Quien
   // decidió qué opciones entran fue el reconciliador, un paso antes; aquí sólo
   // se le pone a eso el nombre que le da la carta.
+  //
+  // Y LA IDENTIDAD ES EL `id`, NO EL NOMBRE. Cambiar sólo el nombre dejaba el
+  // renglón diciendo «Chilaquiles Mixtos» con el `id` de los Sencillos: quien
+  // cobra por `id` cobra la presentación vieja, quien imprime por nombre manda
+  // a cocinar la nueva, y la cardinalidad se valida contra un producto que ya
+  // no es ese —dos salsas contra un máximo de una— y tumba el pedido. Es el
+  // mismo renglón, pero de otro producto: van los dos campos o no va ninguno.
   //
   // Y si quedan dos presentaciones compatibles, no se elige: se pregunta.
   const reclasificadas = [];
@@ -666,7 +729,11 @@ export async function atenderTurno({
       if (a.estado !== 'resuelto') return it;
       if (norm(a.producto.nombre) === norm(it.nombre)) return it;
       reclasificadas.push({ lid: it.lid, de: String(it.nombre || ''), a: a.producto.nombre, por: suyas });
-      return { ...it, nombre: a.producto.nombre };
+      return {
+        ...it,
+        nombre: a.producto.nombre,
+        ...(a.producto.id === null || a.producto.id === undefined ? {} : { id: a.producto.id }),
+      };
     });
     if (reclasificadas.length) carritoActual = { ...carritoActual, items };
   }

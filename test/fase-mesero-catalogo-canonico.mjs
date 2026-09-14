@@ -388,6 +388,67 @@ await t('C19b. y reclasifica igual en la otra carta: dos sabores → Mitad y Mit
   assert.equal(uno.producto?.nombre, 'Pizza Individual', JSON.stringify(uno.candidatos?.map((c) => c.nombre)));
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// C21–C23 · EL GRUPO INVENTADO NO ES UNA PUERTA
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Canonizar el grupo y preguntar por lo que no se distingue son dos garantías
+// que existían por separado y se anulaban entre sí: el guardia de la ambigüedad
+// buscaba las hermanas de la opción por el nombre de grupo QUE ESCRIBIÓ EL
+// MODELO, y con «tipo» o «acompañamiento» no encontraba ninguna. Sin hermanas
+// no hay empate, y sin empate no hay pregunta: la opción entraba sola. Un paso
+// después, el anclaje le ponía su grupo real y la dejaba en el pedido.
+
+await t('C21. «con frijolitos» con el grupo INVENTADO por el modelo sigue preguntando', async () => {
+  const rs = await conversar([
+    { cliente: 'Quiero unos Chilaquiles Sencillos suizos',
+      borrador: { items: [it('Chilaquiles Sencillos', [{ grupo: 'tipo', opciones: ['suiza'] }])] } },
+    { cliente: 'Con frijolitos',
+      borrador: { items: [it('Chilaquiles Sencillos', [{ grupo: 'tipo', opciones: ['suiza'] },
+        { grupo: 'acompañamiento', opciones: ['Frijolitos naturales'] }])] } },
+  ]);
+  const puestas = (rs[1].carrito.items[0].modificadores || [])
+    .filter((m) => /guarnicion/i.test(m.grupo)).flatMap((m) => m.opciones);
+  assert.deepEqual(puestas, [], `eligió por el cliente: ${JSON.stringify(puestas)}`);
+  const amb = (rs[1].aclaraciones || []).filter((a) => a.tipo === 'opcion_ambigua');
+  assert.equal(amb.length, 1, JSON.stringify(rs[1].aclaraciones));
+  assert.deepEqual(amb[0].candidatos.slice().sort(), ['Frijolitos con chorizo', 'Frijolitos naturales'],
+    JSON.stringify(amb[0].candidatos));
+});
+
+await t('C22. y con el grupo inventado, lo YA elegido tampoco se pierde al sumar', async () => {
+  // La otra mitad del mismo error: «lo que ya está puesto» se buscaba en el
+  // renglón por el nombre de grupo del modelo. Con «tipo», la Suiza que sí
+  // estaba puesta no se encontraba, se trataba como elección nueva, y «también
+  // chipotle» —que no dice «suiza»— la tumbaba.
+  const rs = await conversar([
+    { cliente: 'Quiero unos Chilaquiles Sencillos suizos',
+      borrador: { items: [it('Chilaquiles Sencillos', [{ grupo: 'tipo', opciones: ['suiza'] }])] } },
+    { cliente: 'También chipotle',
+      borrador: { items: [it('Chilaquiles Sencillos', [{ grupo: 'tipo', opciones: ['suiza', 'chipotle'] }])] } },
+  ]);
+  const salsas = (rs[1].carrito.items[0].modificadores || [])
+    .filter((m) => m.grupo === 'Salsa').flatMap((m) => m.opciones).sort();
+  assert.deepEqual(salsas, ['Chipotle', 'Suiza'], `quedó ${JSON.stringify(salsas)}`);
+});
+
+await t('C23. un renglón NUEVO se mide con la misma vara que uno que ya existe', async () => {
+  // El filtro de ambigüedad sólo miraba los cambios sobre líneas existentes.
+  // En un renglón nuevo nadie comprobaba que la palabra separase la opción de
+  // sus hermanas, y la que el modelo hubiera escrito entraba tal cual.
+  const rs = await conversar([
+    { cliente: 'Quiero unos Chilaquiles Sencillos con frijolitos',
+      borrador: { items: [it('Chilaquiles Sencillos', [{ grupo: 'acompañamiento', opciones: ['Frijolitos naturales'] }])] } },
+  ]);
+  const puestas = (rs[0].carrito.items[0]?.modificadores || [])
+    .filter((m) => /guarnicion/i.test(m.grupo)).flatMap((m) => m.opciones);
+  assert.deepEqual(puestas, [], `entró sin que el cliente la distinguiera: ${JSON.stringify(puestas)}`);
+  const amb = (rs[0].aclaraciones || []).filter((a) => a.tipo === 'opcion_ambigua');
+  assert.equal(amb.length, 1, JSON.stringify(rs[0].aclaraciones));
+  assert.deepEqual(amb[0].candidatos.slice().sort(), ['Frijolitos con chorizo', 'Frijolitos naturales'],
+    JSON.stringify(amb[0].candidatos));
+});
+
 // ── El módulo no sabe de ningún restaurante ──────────────────────────────
 await t('C20. el resolver no menciona ningún producto, grupo ni negocio', async () => {
   const { readFileSync } = await import('node:fs');

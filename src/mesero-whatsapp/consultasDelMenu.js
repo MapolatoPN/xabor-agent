@@ -220,15 +220,53 @@ export function opcionesDelGrupoDeProducto(catalogo, nombreProducto, nombreGrupo
  * mide contra ESAS dos y no contra la carta entera — porque el cliente está
  * contestando la pregunta que se le hizo, no eligiendo entre todo.
  */
+/**
+ * EL GRUPO QUE ESCRIBE EL MODELO NO MANDA: MANDA DÓNDE VIVE LA OPCIÓN.
+ *
+ * El modelo se inventa nombres de grupo —«tipo», «acompañamiento», «extras»— y
+ * todo lo que el mesero compara contra la carta usando ESE nombre mira un grupo
+ * que no existe: las hermanas de la opción salen vacías y lo que ya estaba
+ * puesto en el renglón no se encuentra.
+ *
+ * Era inofensivo mientras una opción de un grupo inventado no llegaba a ninguna
+ * parte. Desde que el anclaje la CANONIZA —le pone su grupo real un paso
+ * después— deja de serlo: «con frijolitos» entraba al pedido como «Frijolitos
+ * naturales», elegida por nadie, porque el guardia miró un grupo que no existe.
+ * Las dos piezas son correctas por separado y juntas abren el hueco.
+ *
+ * Se cierra con la MISMA regla con la que el anclaje canoniza: la opción vive
+ * donde está la que más palabras comparte con lo que el modelo escribió. Si el
+ * producto SÍ tiene un grupo con el nombre que dijo el modelo, manda ese — dos
+ * grupos del mismo producto pueden ofrecer una opción homónima (XAB-0230) y
+ * decirlo bien tiene que seguir valiendo más que adivinarlo.
+ */
+export function grupoRealDeLaOpcion(catalogo, nombreProducto, nombreGrupo, nombreOpcion) {
+  const p = productosVendibles(catalogo).find((x) => norm(x.nombre) === norm(nombreProducto));
+  if (!p) return String(nombreGrupo || '');
+  const dicho = (p.modificadores || []).find((x) => norm(x?.nombre) === norm(nombreGrupo));
+  if (dicho) return String(dicho.nombre || '');
+  let mejor = null;
+  for (const g of (p.modificadores || [])) {
+    for (const o of (g?.opciones || [])) {
+      if (o?.disponible === false) continue;
+      const fuerza = palabrasQueLaSostienen(String(o?.nombre || ''), nombreOpcion).size;
+      if (!fuerza) continue;
+      if (!mejor || fuerza > mejor.fuerza) mejor = { grupo: String(g?.nombre || ''), fuerza };
+    }
+  }
+  return mejor ? mejor.grupo : String(nombreGrupo || '');
+}
+
 export function opcionesAmbiguas({ catalogo = [], producto = '', grupo = '', opciones = [],
   texto = '', hermanasRestringidas = null } = {}) {
-  const todas = Array.isArray(hermanasRestringidas) && hermanasRestringidas.length
-    ? hermanasRestringidas
-    : opcionesDelGrupoDeProducto(catalogo, producto, grupo);
+  const restringidas = Array.isArray(hermanasRestringidas) && hermanasRestringidas.length
+    ? hermanasRestringidas : null;
   const claras = [], ambiguas = [];
   for (const o of (Array.isArray(opciones) ? opciones : [opciones]).filter(Boolean)) {
     const nombre = String(typeof o === 'string' ? o : o?.nombre || '');
     if (!nombre) continue;
+    const todas = restringidas || opcionesDelGrupoDeProducto(
+      catalogo, producto, grupoRealDeLaOpcion(catalogo, producto, grupo, nombre));
     // Sin hermanas conocidas no hay con qué desempatar, y el reconciliador
     // sigue exigiendo su respaldo: se deja pasar, como siempre.
     if (todas.length < 2) { claras.push(nombre); continue; }

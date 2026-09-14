@@ -295,6 +295,29 @@ await t('A18. el MISMO motor con una carta que no comparte una palabra', async (
     `no reclasificó en la otra carta: ${linea(rs[1]).nombre}`);
 });
 
+await t('A20. reclasificar cambia el `id` del renglón, no sólo su nombre', async () => {
+  // La identidad de un renglón es su `id`, y la reclasificación sólo tocaba el
+  // nombre. El renglón quedaba diciendo «Chilaquiles Mixtos» con el id de los
+  // Sencillos: quien cobra por id cobra la presentación vieja, quien imprime
+  // por nombre manda a cocinar la nueva, y la cardinalidad se valida contra un
+  // producto que ya no es ése —dos salsas contra un máximo de una— y tumba el
+  // pedido entero.
+  const rs = await conversar([T1,
+    { cliente: 'También chipotle',
+      borrador: { items: [it('Chilaquiles Sencillos', [grupo('Salsa', 'Suiza', 'Chipotle')])] } }]);
+  assert.equal(linea(rs[1]).nombre, 'Chilaquiles Mixtos', 'no reclasificó');
+  assert.equal(linea(rs[1]).id, 12,
+    `el renglón dice «${linea(rs[1]).nombre}» con el id ${linea(rs[1]).id}, que es el de otro producto`);
+  // Y en la otra carta, igual.
+  const ts = await conversar([
+    { cliente: 'Una Orden Sencilla de pastor',
+      borrador: { items: [it('Orden Sencilla', [grupo('Guiso', 'Pastor')])] } },
+    { cliente: 'También suadero',
+      borrador: { items: [it('Orden Sencilla', [grupo('Guiso', 'Pastor', 'Suadero')])] } },
+  ], TACOS);
+  assert.equal(linea(ts[1]).id, 32, `id=${linea(ts[1]).id} para ${linea(ts[1]).nombre}`);
+});
+
 // ── La clasificación, aislada ────────────────────────────────────────────
 
 await t('A19. el texto —no el modelo— dice si suma, sustituye o resta', async () => {
