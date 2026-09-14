@@ -154,7 +154,15 @@ const lineasMesero = () => salida().filter((l) => l.includes('[SOMBRA-MESERO]'))
 const registros = () => lineasMesero()
   .map((l) => { try { return JSON.parse(l.slice(l.indexOf('{'))); } catch { return null; } })
   .filter(Boolean);
-const hashConv = (neg, tel) => createHash('sha256').update(`meta-${neg}-${tel}`).digest('hex').slice(0, 10);
+// EL MISMO hash que la línea de sombra y que los eventos `[MESERO]`.
+//
+// Antes cada familia de log usaba el suyo —la línea hasheaba el `sessionId` y
+// los eventos el `conversacionId` que ve el mesero— y no había forma de cruzar
+// las dos para una misma conversación. Ahora las dos hashean lo que ve el
+// mesero, y esta prueba reproduce ese cálculo: sessionId → `sombra-<hash>` →
+// hash.
+const hash10 = (s) => createHash('sha256').update(String(s || '')).digest('hex').slice(0, 10);
+const hashConv = (neg, tel) => hash10(`sombra-${hash10(`meta-${neg}-${tel}`)}`);
 const respuestasEnviadas = () => salida().filter((l) => l.includes('Respuesta enviada')).length;
 
 let seq = 0;
@@ -437,6 +445,32 @@ await t('MS13. cada registro trae lo que hace falta para comparar después', asy
   assert.equal(r.llamadas_modelo, 1, `el mesero llamó al modelo ${r.llamadas_modelo} veces por turno`);
 });
 
+await t('MS16. la línea del canal NO publica teléfono, nombre ni el texto del cliente', async () => {
+  // La fuga se encontró leyendo el primer smoke real: la sombra tapaba su PII
+  // con tres capas y la línea de al lado imprimía `[Meta WA] <telefono>
+  // (<nombre>): <mensaje>` seis veces seguidas. No era del Mesero —es código
+  // anterior— pero sale por el mismo log.
+  const tel = TEL + '16';
+  await mandar({ tel, pnid: PNID_A, textos: ['MSH Chilaquiles A con mi tarjeta 4111111111111111'],
+    extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
+
+  const entradas = salida().filter((l) => l.includes('[Meta WA] entrada'));
+  assert(entradas.length >= 1, 'el canal dejó de registrar que entró un mensaje');
+  const juntas = entradas.join('\n');
+  assert(!juntas.includes(tel), `la línea del canal lleva el teléfono: ${juntas.slice(0, 200)}`);
+  assert(!/Cliente Sombra/.test(juntas), 'la línea del canal lleva el nombre del contacto');
+  assert(!/Chilaquiles|tarjeta|4111/.test(juntas), `la línea del canal lleva el texto: ${juntas.slice(0, 200)}`);
+
+  // Y lo que hace falta para diagnosticar, sigue estando.
+  const mia = entradas.find((l) => l.includes(`conv=${hashConv(A, tel)}`));
+  assert(mia, `no se puede cruzar con la sombra: ${juntas.slice(0, 300)}`);
+  assert(mia.includes(`negocio=${A}`), mia);
+  assert(/tipo=(texto|imagen)/.test(mia), mia);
+  // El hash es el MISMO que el del registro de sombra: las dos familias se cruzan.
+  const mios = registros().filter((r) => r.conv === hashConv(A, tel));
+  assert(mios.length >= 1, 'el hash del canal no coincide con el de la sombra');
+});
+
 await t('MS15. el registro separa el tiempo del MODELO del tiempo local', async () => {
   // Los tres números que hacen falta para presupuestar la sombra, y de dónde
   // sale cada uno:
@@ -447,17 +481,25 @@ await t('MS15. el registro separa el tiempo del MODELO del tiempo local', async 
   //               no la latencia de un proveedor real, que solo se sabrá con
   //               tráfico de verdad y que es la que domina.
   //   ms          los dos juntos, más la lectura del catálogo.
+  // Y desde el 14-sep son CUATRO, porque esperar no es trabajar: en el primer
+  // smoke real el «tiempo local» pasó de 9 ms a 3180 y lo único que había
+  // crecido era la cola por conversación. `ms_local` ya no la incluye.
   const conModelo = registros().filter((r) => r.llamadas_modelo > 0);
   assert(conModelo.length >= 3, `hacen falta turnos con modelo: ${conModelo.length}`);
   for (const r of conModelo) {
     assert.equal(typeof r.ms_modelo, 'number', 'no se registró el tiempo del modelo');
     assert.equal(typeof r.ms_local, 'number', 'no se registró el tiempo local');
+    assert.equal(typeof r.ms_espera_cola, 'number', 'no se registró la espera en cola');
     assert(r.ms >= r.ms_modelo, `ms (${r.ms}) menor que ms_modelo (${r.ms_modelo})`);
-    assert.equal(r.ms_local, Math.max(0, r.ms - r.ms_modelo));
+    // La descomposición CUADRA: el total es la suma de las tres partes.
+    assert.equal(r.ms_local, Math.max(0, r.ms - r.ms_modelo - r.ms_espera_cola),
+      `no cuadra: ms=${r.ms} modelo=${r.ms_modelo} espera=${r.ms_espera_cola} local=${r.ms_local}`);
+    assert.equal(r.ms_total, r.ms);
   }
   const prom = (f) => (conModelo.reduce((a, r) => a + f(r), 0) / conModelo.length).toFixed(1);
   console.log(`      · ${conModelo.length} turnos con extractor · total ${prom((r) => r.ms)} ms`
-    + ` = modelo(mock HTTP) ${prom((r) => r.ms_modelo)} ms + local ${prom((r) => r.ms_local)} ms`);
+    + ` = modelo(mock HTTP) ${prom((r) => r.ms_modelo)} ms + local ${prom((r) => r.ms_local)} ms`
+    + ` + espera de cola ${prom((r) => r.ms_espera_cola)} ms`);
   console.log('      · el modelo REAL no se mide aquí; este es el suelo con un mock en localhost');
 });
 

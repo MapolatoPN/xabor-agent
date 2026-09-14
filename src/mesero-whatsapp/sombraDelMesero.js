@@ -33,6 +33,7 @@
 import { createHash } from 'node:crypto';
 import { atenderTurno } from './meseroDigital.js';
 import { resumenDelContexto } from './contextoMesa.js';
+import { idConversacion } from './metricasMesero.js';
 import {
   redactarDireccion, redactarContacto, palabrasDeLaCarta, pareceDomicilioSinTapar,
   DICE_DOMICILIO, DICE_RECOGER,
@@ -90,6 +91,15 @@ export const verEstadoSombra = (negocioId, sessionId) =>
   estadoMeseroSombra.get(`${negocioId}::${sessionId}`) || null;
 
 const hash = (s) => createHash('sha256').update(String(s || '')).digest('hex').slice(0, 10);
+
+/**
+ * El identificador de conversacion que ve el MESERO.
+ *
+ * Es el mismo valor que se le pasa a `atenderTurno` como `conversacionId`, y
+ * por eso es el que hay que hashear para que la linea `[SOMBRA-MESERO]` y los
+ * eventos `[MESERO]` hablen de la misma conversacion.
+ */
+const conversacionDeSombra = (sessionId) => `sombra-${hash(sessionId)}`;
 
 /**
  * El texto del cliente tal como puede ir a un log.
@@ -224,10 +234,19 @@ export async function observarTurnoDelMesero({
     guardado.cola = new Promise((r) => { liberar = r; });
     guardado.ocupada = (guardado.ocupada || 0) + 1;
     await miTurno;
+    // LO QUE SE PASÓ ESPERANDO, MEDIDO APARTE.
+    //
+    // En el smoke del 14-sep el «trabajo local» aparentaba haberse multiplicado
+    // por cien —de 9 ms a 3180— y lo único que había crecido era la cola: los
+    // dos turnos que no esperaron dieron 28 y 18 ms. Una métrica que suma
+    // esperar y trabajar no permite decidir nada, y peor: invita a concluir que
+    // hay una regresión de rendimiento donde sólo hay clientes escribiendo
+    // deprisa.
+    const esperaCola = Date.now() - arranque;
     try {
       return await observarEnSerie({
         guardado, clave, sessionId, negocioId, mensaje, carritoProductivo,
-        cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
+        cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir, esperaCola,
       });
     } finally {
       guardado.ocupada -= 1;
@@ -242,7 +261,7 @@ export async function observarTurnoDelMesero({
 /** El cuerpo de la observación, ya con la conversación en exclusiva. */
 async function observarEnSerie({
   guardado, sessionId, negocioId, mensaje, carritoProductivo,
-  cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
+  cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir, esperaCola = 0,
 }) {
   try {
     // EL TOPE DE TURNOS, OTRA VEZ Y AHORA SÍ.
@@ -332,7 +351,7 @@ async function observarEnSerie({
 
     const corrida = await conLimite(atenderTurno({
       negocioId,
-      conversacionId: `sombra-${hash(sessionId)}`,
+      conversacionId: conversacionDeSombra(sessionId),
       mensaje,
       contextoGuardado: guardado.contexto,
       carrito: partida,
@@ -357,7 +376,8 @@ async function observarEnSerie({
     const total = medir();
     const registro = registroDelTurno({
       negocioId, sessionId, mensaje, r, antes, ahora,
-      ms: total, msModelo, msLocal: Math.max(0, total - msModelo), llamadasAlModelo,
+      ms: total, msModelo, esperaCola,
+      msLocal: Math.max(0, total - msModelo - esperaCola), llamadasAlModelo,
       entrega: guardado.entrega, vocabulario,
     });
     // `eventos` viaja aparte de la línea JSON: son las métricas con el prefijo
@@ -386,17 +406,25 @@ async function observarEnSerie({
  * accionar.
  */
 export function registroDelTurno({ negocioId, sessionId, mensaje, r, antes, ms, msModelo = 0,
-  msLocal = null, llamadasAlModelo, ahora, entrega = false, vocabulario = null }) {
+  msLocal = null, llamadasAlModelo, ahora, entrega = false, vocabulario = null, esperaCola = 0 }) {
   const c = r?.cambios || {};
   const sinContacto = redactarContacto(mensaje);
   const redaccion = redactarDireccion(sinContacto, { entrega, vocabulario });
   return {
     ts: (ahora || new Date()).toISOString(),
-    conv: hash(sessionId),
+    // EL MISMO hash que usan los eventos `[MESERO]`, para poder unir las dos
+    // familias de log de una conversacion. Antes cada una usaba el suyo
+    // -`hash(sessionId)` aqui, `idConversacion(conversacionId)` alla- y no
+    // habia forma de cruzarlas.
+    conv: idConversacion(conversacionDeSombra(sessionId)),
     negocio: negocioId,
     ms,
     ms_modelo: msModelo,
-    ms_local: msLocal === null ? Math.max(0, ms - msModelo) : msLocal,
+    // `ms_local` ya NO incluye la espera en cola: son dos cosas distintas y
+    // sumarlas convertia una rafaga de mensajes en una regresion aparente.
+    ms_local: msLocal === null ? Math.max(0, ms - msModelo - esperaCola) : msLocal,
+    ms_espera_cola: esperaCola,
+    ms_total: ms,
     llamadas_modelo: llamadasAlModelo,
 
     dijo: textoSeguro(mensaje, { entrega, vocabulario }),

@@ -128,7 +128,11 @@ const salida = () => srv.obtenerSalida().split(String.fromCharCode(10));
 const registros = () => salida().filter((l) => l.includes('[SOMBRA-MESERO] {'))
   .map((l) => { try { return JSON.parse(l.slice(l.indexOf('{'))); } catch { return null; } })
   .filter(Boolean);
-const hashConv = (neg, tel) => createHash('sha256').update(`meta-${neg}-${tel}`).digest('hex').slice(0, 10);
+// EL MISMO hash que la línea de sombra, los eventos `[MESERO]` y la entrada del
+// canal: sessionId → `sombra-<hash>` → hash. Las cuatro familias de log se
+// cruzan por este valor, y ninguna lleva el teléfono.
+const hash10 = (s) => createHash('sha256').update(String(s || '')).digest('hex').slice(0, 10);
+const hashConv = (neg, tel) => hash10(`sombra-${hash10(`meta-${neg}-${tel}`)}`);
 
 // ── EL MOCK RESPONDE POR CONTENIDO, NO POR TURNO ────────────────────────────
 //

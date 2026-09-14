@@ -2,11 +2,23 @@
 // Twilio se conserva SOLO para llamadas de voz
 
 import { Router } from 'express';
-import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
+import { randomBytes, createHmac, timingSafeEqual, createHash } from 'crypto';
 import twilio from 'twilio';
 import { procesarMensaje, extraerBorradorParaSombra } from '../agent/brain.js';
 import { observarTurno } from '../orders/registroSombra.js';
 import { observarTurnoDelMesero } from '../mesero-whatsapp/sombraDelMesero.js';
+
+/**
+ * El identificador de conversacion que se puede escribir en un log.
+ *
+ * No es reversible a telefono y es EL MISMO que usan `[SOMBRA-MESERO]` y los
+ * eventos `[MESERO]`, para que las tres familias se puedan cruzar sin que
+ * ninguna tenga que llevar el numero.
+ */
+const hash10 = (s) => createHash('sha256').update(String(s || '')).digest('hex').slice(0, 10);
+const hashDeConversacion = (negocioId, telefono) =>
+  hash10(`sombra-${hash10(`meta-${negocioId}-${telefono}`)}`);
+
 import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
@@ -1739,7 +1751,18 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     const messageId  = message.id;
     const nombreMeta = value.contacts?.[0]?.profile?.name || '';
 
-    console.log(`[Meta WA] ${telefono} (${nombreMeta}): ${texto}`);
+    // ── LO QUE ENTRA SE REGISTRA; QUIÉN LO ESCRIBIÓ, NO ───────────────────
+    //
+    // Esta línea imprimía teléfono, nombre y mensaje en claro, y se descubrió
+    // leyendo el primer smoke del Mesero Shadow: la sombra tapa su PII con tres
+    // capas y aquí al lado salía todo sin tapar, seis veces seguidas.
+    //
+    // Lo que hace falta para diagnosticar —cuándo entró, de qué negocio, de qué
+    // conversación, y que ENTRÓ— se conserva entero. El hash de conversación es
+    // el mismo que usa `[SOMBRA-MESERO]`, así que las tres familias de log se
+    // siguen pudiendo cruzar. Lo que ya no se conserva es lo que no hace falta.
+    console.log(`[Meta WA] entrada negocio=${negocioId} conv=${hashDeConversacion(negocioId, telefono)}`
+      + ` tipo=${turnoImagen !== null ? 'imagen' : 'texto'} chars=${String(texto || '').length}`);
 
     // Fase A: credenciales resueltas una vez para todo el manejo de este
     // webhook (repartidores, marcar leído) -- mismo criterio que
