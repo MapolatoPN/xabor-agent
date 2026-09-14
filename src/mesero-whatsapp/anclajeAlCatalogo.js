@@ -332,16 +332,146 @@ export function anclarLinea({
     };
   }
 
+  // Las restricciones dejaron varias. Antes de preguntar, la familia: lo que
+  // hay que pedir por su nombre sale si nadie lo nombró, y si entre lo que
+  // queda el negocio designó una base, es esa. Si ni así, se pregunta.
+  const porVariante = resolverVariante(viables.map((v) => v.ficha), evidencia);
+  if (porVariante.elegidas.length === 1) {
+    const elegida = porVariante.elegidas[0];
+    const v = viables.find((x) => norm(x.ficha.nombre) === norm(elegida.nombre));
+    return {
+      estado: 'resuelto',
+      producto: v.ficha,
+      candidatos: [],
+      grupos: v.menciones,
+      motivo: porVariante.motivo,
+      descartados: [
+        ...evaluados.filter((e) => !e.ok).map((e) => ({ nombre: e.ficha.nombre, motivo: e.motivo })),
+        ...viables.filter((x) => norm(x.ficha.nombre) !== norm(elegida.nombre))
+          .map((x) => ({ nombre: x.ficha.nombre, motivo: porVariante.motivo })),
+      ],
+    };
+  }
+  const sobreviven = viables.filter((v) => porVariante.elegidas
+    .some((f) => norm(f.nombre) === norm(v.ficha.nombre)));
+
   return {
     estado: 'ambiguo',
     producto: null,
-    candidatos: viables.map((v) => v.ficha),
+    candidatos: sobreviven.map((v) => v.ficha),
     // Lo que TODOS los viables comparten sí se puede aplicar ya: si los cuatro
     // candidatos entienden «suiza» como la misma opción del mismo grupo, esa
     // elección no depende de cuál se acabe eligiendo.
-    grupos: mencionesComunes(viables),
-    motivo: 'varios_compatibles',
+    grupos: mencionesComunes(sobreviven),
+    // Si la familia acotó algo —el cliente nombró varias, o se cayeron las que
+    // hay que nombrar—, ese es el motivo real de que queden estas y no otras.
+    motivo: porVariante.motivo || 'varios_compatibles',
     descartados: evaluados.filter((e) => !e.ok).map((e) => ({ nombre: e.ficha.nombre, motivo: e.motivo })),
+  };
+}
+
+// ── FAMILIA Y VARIANTE ───────────────────────────────────────────────────
+//
+// «Chilaquiles» son cuatro cosas en la carta de un negocio y una sola en la de
+// otro. Lo que hace falta no es saber qué es un chilaquil, sino distinguir
+// dentro de un grupo de candidatos cuál es «la normal» y cuáles hay que pedir
+// por su nombre.
+//
+// LA FAMILIA no se declara: es el conjunto de candidatos que una mención
+// genérica ya produce, y su NÚCLEO son las palabras que todos comparten
+// —«chilaquiles»—. Lo que cada variante añade sobre ese núcleo es su
+// DISCRIMINADOR: «sencillos», «mixtos», «bowl», «combito». Todo sale de los
+// nombres que el negocio escribió, sin lista de sinónimos.
+//
+// LO QUE SÍ SE DECLARA, cuando hace falta, son dos cosas que ningún nombre
+// puede decir por sí solo:
+//
+//   base              cuál se sirve si el cliente no precisa
+//   requiereMencion   cuál no se ofrece salvo que la nombren
+//
+// Viajan en el jsonb `opciones` que cada producto ya tiene, así que no hay
+// esquema nuevo. Y si el negocio no declara nada, `orden` hace de base: es el
+// dato que ya usa para decidir qué enseña primero en su carta.
+
+/** El núcleo de la familia: las palabras que TODOS los candidatos comparten. */
+function nucleoDeLaFamilia(fichas) {
+  if (fichas.length < 2) return new Set();
+  const [primera, ...resto] = fichas.map((f) => new Set(propiasDe(f.nombre)));
+  const nucleo = new Set(primera);
+  for (const otras of resto) for (const w of [...nucleo]) if (!otras.has(w)) nucleo.delete(w);
+  return nucleo;
+}
+
+/** Lo que ESTA variante añade sobre el núcleo, y con lo que se la nombra. */
+function discriminadoresDe(ficha, nucleo) {
+  const declarados = ficha?.variante?.discriminadores;
+  if (Array.isArray(declarados) && declarados.length) return declarados.flatMap((d) => propiasDe(d));
+  return propiasDe(ficha.nombre).filter((w) => !nucleo.has(w));
+}
+
+/** ¿El cliente nombró esta variante, y no sólo su familia? */
+const laNombro = (discriminadores, evidencia) => discriminadores.length > 0
+  && discriminadores.some((d) => palabrasQueLaSostienen(d, evidencia).size > 0);
+
+/**
+ * DE VARIOS CANDIDATOS COMPATIBLES A UNO, CUANDO LOS DATOS LO PERMITEN.
+ *
+ * Tres reglas, en este orden, y ninguna elige por gusto:
+ *
+ *   1. LO QUE EL CLIENTE NOMBRA, GANA. Si dijo «bowl» y sólo una variante se
+ *      llama así, es esa — aunque otra sea la base. Nombrarla es más fuerte que
+ *      no precisar, y el orden importa: al revés, pedir un bowl devolvía el
+ *      platillo normal.
+ *
+ *   2. LO QUE HAY QUE PEDIR POR SU NOMBRE, SE PIDE POR SU NOMBRE. Una variante
+ *      marcada `requiereMencion` que el cliente no nombró sale de la lista. No
+ *      es que sea peor: es que «unos chilaquiles» no significa «un combito».
+ *
+ *   3. SI QUEDAN VARIAS Y UNA ES LA BASE, es la base. Es la que el negocio
+ *      sirve cuando nadie precisa — declarada, o en su defecto la primera de su
+ *      carta (`orden`), y sólo si `orden` de verdad distingue: si todas valen
+ *      lo mismo, nadie dijo cuál es la normal y no se inventa.
+ *
+ * Si después de las tres siguen quedando varias, se pregunta. Nunca la primera.
+ */
+export function resolverVariante(fichas, evidencia) {
+  if (fichas.length <= 1) return { elegidas: fichas, motivo: null };
+  const nucleo = nucleoDeLaFamilia(fichas);
+
+  const conMeta = fichas.map((f) => ({
+    ficha: f,
+    discriminadores: discriminadoresDe(f, nucleo),
+    requiereMencion: f?.variante?.requiereMencion === true,
+    declaradaBase: f?.variante?.base === true,
+  }));
+
+  // 1) la que el cliente nombró por su discriminador.
+  const porNombre = conMeta.filter((x) => laNombro(x.discriminadores, evidencia));
+  if (porNombre.length === 1) return { elegidas: [porNombre[0].ficha], motivo: 'variante_nombrada' };
+  if (porNombre.length > 1) {
+    // Nombró varias: no se elige por él. Se pregunta entre las que nombró.
+    return { elegidas: porNombre.map((x) => x.ficha), motivo: 'varias_nombradas' };
+  }
+
+  // 2) fuera las que hay que nombrar y nadie nombró.
+  const nombradas = conMeta.filter((x) => !x.requiereMencion);
+  if (!nombradas.length) return { elegidas: fichas, motivo: null };
+  if (nombradas.length === 1) return { elegidas: [nombradas[0].ficha], motivo: 'unica_sin_mencion' };
+
+  // 3) la base, si alguien dijo cuál es.
+  const declaradas = nombradas.filter((x) => x.declaradaBase);
+  if (declaradas.length === 1) return { elegidas: [declaradas[0].ficha], motivo: 'variante_base_declarada' };
+
+  const ordenes = nombradas.map((x) => x.ficha.orden).filter((o) => Number.isFinite(o));
+  if (ordenes.length === nombradas.length && new Set(ordenes).size > 1) {
+    const min = Math.min(...ordenes);
+    const primeras = nombradas.filter((x) => x.ficha.orden === min);
+    if (primeras.length === 1) return { elegidas: [primeras[0].ficha], motivo: 'variante_base_por_orden' };
+  }
+
+  return {
+    elegidas: nombradas.map((x) => x.ficha),
+    motivo: nombradas.length < fichas.length ? 'sin_mencion' : null,
   };
 }
 
@@ -447,6 +577,7 @@ export function anclarPropuestas({
   const ambiguos = [];       // productos que no se pudieron identificar solos
   const rechazados = [];     // lo que no existe en la carta
   const descartados = [];    // grupos y opciones que el modelo se inventó
+  const llenos = [];         // grupos a los que ya no les cabe lo que se pide
 
   const porLid = new Map((carrito?.items || []).map((i) => [i.lid, i]));
 
@@ -534,6 +665,34 @@ export function anclarPropuestas({
           .filter((x) => norm(x?.grupo) === norm(grupo))
           .flatMap((x) => lista(x.opciones).map((o) => nombreDe(o)))
           .filter(Boolean);
+        // ── NUNCA MÁS DE LAS QUE CABEN… EN NINGUNA VARIANTE ───────────────
+        //
+        // Un grupo que admite dos no puede acabar con tres porque el cliente
+        // siguió sumando. Pero el límite NO es el del producto actual: es el de
+        // la familia. Pedir dos salsas sobre una presentación que admite una es
+        // legítimo cuando existe otra que admite dos — ahí no hay que bloquear,
+        // hay que RECLASIFICAR, y eso lo hace el paso siguiente.
+        //
+        // Mirar sólo el producto de ahora impedía exactamente el caso que este
+        // trabajo venía a resolver.
+        const familia = buscarProductos(catalogo, String(item.nombre || ''))
+          .map((f) => lista(f.grupos).find((x) => norm(x.nombre) === norm(grupo)))
+          .filter(Boolean);
+        const topes = familia
+          .map((x) => Number(x.maximo))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const max = topes.length ? Math.max(...topes) : null;
+        if (max !== null && [...ops].length > max) {
+          llenos.push({
+            lid: p.lid,
+            producto: String(item.nombre || ''),
+            grupo,
+            maximo: max,
+            puestas: yaPuestas,
+            entrantes: [...ops].filter((o) => !yaPuestas.some((v) => norm(v) === norm(o))),
+          });
+          continue;                       // no se aplica nada: se pregunta
+        }
         fuera.push({ ...p, campo: grupo, valorAnterior: yaPuestas, valorNuevo: [...ops] });
       }
       continue;
@@ -542,5 +701,5 @@ export function anclarPropuestas({
     fuera.push(p);   // cantidades, notas, modalidad, pago: no son del catálogo
   }
 
-  return { propuestas: fuera, ambiguos, rechazados, descartados };
+  return { propuestas: fuera, ambiguos, rechazados, descartados, llenos };
 }

@@ -44,6 +44,30 @@ export function productosVendibles(catalogo = []) {
 }
 
 /**
+ * LO QUE EL NEGOCIO DECLARA SOBRE UNA VARIANTE, SI LO DECLARA.
+ *
+ * No hay esquema nuevo: se lee del jsonb `opciones` que cada producto ya tiene
+ * —donde el editor de menú guarda lo que no cabe en una columna— y también de
+ * columnas propias por si algún día existen. Cuando no hay nada declarado
+ * devuelve `{}`, y entonces el resolvedor deduce lo que puede del `orden`.
+ *
+ *   base              esta es «la normal» de su familia
+ *   requiereMencion   sólo se ofrece si el cliente la nombra
+ *   discriminadores   palabras con las que se la nombra, si no bastan las suyas
+ */
+export function leerVariante(producto) {
+  const v = producto?.opciones?.variante || producto?.variante || {};
+  const base = producto?.variante_base ?? v.base ?? v.es_base;
+  const requiere = producto?.requiere_mencion_explicita ?? v.requiere_mencion ?? v.requiereMencion;
+  const alias = v.discriminadores ?? v.aliases ?? producto?.discriminadores;
+  return {
+    ...(base === true || base === false ? { base: base === true } : {}),
+    ...(requiere === true || requiere === false ? { requiereMencion: requiere === true } : {}),
+    ...(Array.isArray(alias) && alias.length ? { discriminadores: alias.map((x) => String(x)) } : {}),
+  };
+}
+
+/**
  * La ficha de un producto, con lo que hace falta para contestar cualquiera de
  * las preguntas de la fase J sobre él.
  */
@@ -53,6 +77,11 @@ export function fichaDeProducto(producto, categoria = '') {
     id: producto.id,
     nombre: String(producto.nombre || ''),
     categoria: String(categoria || producto.categoria || ''),
+    // El orden que el negocio le dio en su carta. Llega gratis —`SELECT p.*`—
+    // y es el único dato existente que dice cuál de varias presentaciones se
+    // enseña primero, que es lo más parecido a «la normal» que hay hoy.
+    orden: Number.isFinite(Number(producto.orden)) ? Number(producto.orden) : null,
+    variante: leerVariante(producto),
     precio: producto.precio === null || producto.precio === undefined ? null : Number(producto.precio),
     descripcion: String(producto.descripcion || '').trim() || null,
     destacado: producto.destacado === true,
