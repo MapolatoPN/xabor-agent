@@ -45,6 +45,7 @@ import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas }
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
 import { anclarPropuestas, anclarLinea } from './anclajeAlCatalogo.js';
+import { operacionSobreElGrupo } from './mutacionDeOpciones.js';
 import { faseDelTurno, loQueFalta, siguientePregunta, listoParaConfirmar } from './faseConversacional.js';
 import { resumenDelPedido } from './resumenDelPedido.js';
 import { decidirHandoff, equipajeDelHandoff } from './handoffHumano.js';
@@ -479,11 +480,51 @@ export async function atenderTurno({
       if (!p || p.accion !== 'cambiar_modificador') return true;
       const destino = (carritoActual.items || []).find((i) => i.lid === p.lid);
       const abierta = abiertaDelGrupo(p.campo);
+
+      // ── LO QUE YA ESTABA NO SE VUELVE A ELEGIR ─────────────────────────
+      //
+      // Este filtro medía TODAS las opciones propuestas contra el texto de
+      // ESTE turno. «También chipotle» no contiene la palabra «suiza», así que
+      // la Suiza que el cliente había pedido un turno antes —y que el
+      // reconciliador ya había autorizado con su evidencia de entonces— se
+      // declaraba ambigua y se caía aquí, antes de llegar a nadie. El grupo
+      // quedaba en [Chipotle] y era imposible pedir dos salsas en dos turnos.
+      //
+      // Una opción que YA está en el renglón no es una elección nueva: es una
+      // elección hecha. Su prueba de autorización es que está ahí — el
+      // reconciliador no la habría puesto sin evidencia en su momento. Lo que
+      // tiene que distinguirse en este turno es sólo lo que ENTRA ahora.
+      const yaPuestas = (destino?.modificadores || [])
+        .filter((gr) => norm(gr?.grupo) === norm(p.campo))
+        .flatMap((gr) => (gr.opciones || []).map((o) => String(typeof o === 'string' ? o : o?.nombre || '')))
+        .filter(Boolean);
+      const propuestas_ = Array.isArray(p.valorNuevo) ? p.valorNuevo : [p.valorNuevo];
+      // …PERO SÓLO SI EL CLIENTE PIDIÓ SUMAR.
+      //
+      // Dejar sobrevivir lo ya elegido es correcto para «también chipotle» y
+      // peligroso para «mejor chipotle»: si el modelo propone las dos salsas y
+      // el cliente pidió cambiar, conservar la suiza le sirve algo que quiso
+      // quitar. Sin señal explícita de suma, el grupo se sustituye — que es el
+      // comportamiento de siempre. La operación la dice el TEXTO, no el modelo.
+      // Sobrevive lo ya elegido cuando el cliente SUMA («también chipotle») y
+      // cuando RESTA («quítale el chipotle»): en los dos casos lo que no se
+      // menciona se queda donde estaba, y el reconciliador decide la baja con
+      // su propia evidencia. Sólo al REEMPLAZAR —«mejor chipotle»— lo nuevo
+      // desplaza a lo viejo, y sin ninguna señal se sustituye, como siempre.
+      const operacion = operacionSobreElGrupo(autoriza);
+      const preserva = operacion === 'agregar' || operacion === 'quitar';
+      const conservadas = preserva
+        ? propuestas_.filter((o) => yaPuestas.some((v) => norm(v) === norm(o)))
+        : [];
+      const entrantes = preserva
+        ? propuestas_.filter((o) => !yaPuestas.some((v) => norm(v) === norm(o)))
+        : propuestas_;
+
       const { claras, ambiguas } = opcionesAmbiguas({
         catalogo,
         producto: destino?.nombre || '',
         grupo: p.campo,
-        opciones: p.valorNuevo,
+        opciones: entrantes,
         texto: autoriza,
         hermanasRestringidas: abierta?.candidatos || null,
       });
@@ -491,8 +532,10 @@ export async function atenderTurno({
       // El `lid` viaja con la ambigüedad: sin él, el pendiente no sabría a qué
       // renglón pertenece y no podría cancelarse cuando ese renglón se va.
       opcionesQueNoSeparan.push(...ambiguas.map((a) => ({ ...a, lid: p.lid })));
-      // Lo que sí se distinguió del mismo grupo sigue adelante; lo ambiguo no.
-      if (claras.length) { p.valorNuevo = claras; return true; }
+      // Lo que sí se distinguió del mismo grupo sigue adelante —junto con lo
+      // que ya estaba—; lo ambiguo no.
+      const sobreviven = [...conservadas, ...claras];
+      if (sobreviven.length) { p.valorNuevo = sobreviven; return true; }
       return false;
     });
   }
