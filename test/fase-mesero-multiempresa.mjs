@@ -447,6 +447,7 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     'src/mesero-whatsapp/intencionesDelCliente.js',
     'src/mesero-whatsapp/meseroDigital.js',
     'src/mesero-whatsapp/metricasMesero.js',
+    'src/mesero-whatsapp/mutacionDeOpciones.js',
     'src/mesero-whatsapp/motorTransaccional.js',
     'src/mesero-whatsapp/propuestasDelBot.js',
     'src/mesero-whatsapp/recomendaciones.js',
