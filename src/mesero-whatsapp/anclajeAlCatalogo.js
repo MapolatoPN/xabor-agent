@@ -40,7 +40,7 @@
 // motor resuelve unas pizzas que unos chilaquiles. Si algún día aparece aquí
 // la palabra «chilaquiles», el módulo está roto.
 import { productosVendibles, fichaDeProducto, buscarProductos, buscarCategorias } from './consultasDelMenu.js';
-import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
+import { palabrasQueLaSostienen, palabrasSinExplicar } from '../orders/evidenciaDeEleccion.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
@@ -49,6 +49,31 @@ const lista = (xs) => (Array.isArray(xs) ? xs : []);
 
 /** El nombre de una opción, venga como string o como objeto. */
 const nombreDe = (o) => String(typeof o === 'string' ? o : (o?.nombre ?? '')).trim();
+
+/**
+ * TODO LO QUE SOSTIENE LEGÍTIMAMENTE A ESTE PRODUCTO.
+ *
+ * Es la lista contra la que se comprueba que un candidato explique lo que se le
+ * pidió. No es sólo su nombre, porque el cliente no habla sólo con nombres:
+ *
+ *   su CATEGORÍA          «una bebida fría» — «bebida» lo explica la categoría
+ *   sus OPCIONES          «chilaquiles suizos» — «suizos» lo explica la Suiza
+ *                         que ese producto ofrece, no su nombre
+ *   sus DISCRIMINADORES   lo que el negocio declaró que también se llama así.
+ *                         Un alias declarado es evidencia FUERTE: si el negocio
+ *                         dice que a su «Combito» se le pide «combo», «combo»
+ *                         está explicado aunque no se parezca al nombre.
+ *
+ * Todo sale de la carta. Aquí no se escribe ni una palabra de ningún menú.
+ */
+function explicadoresDe(ficha) {
+  return [
+    String(ficha?.nombre || ''),
+    String(ficha?.categoria || ''),
+    ...lista(ficha?.variante?.discriminadores).map((d) => String(d || '')),
+    ...lista(ficha?.grupos).flatMap((g) => [String(g?.nombre || ''), ...lista(g?.opciones).map(nombreDe)]),
+  ].filter(Boolean);
+}
 
 /**
  * QUÉ OPCIONES DE ESTE PRODUCTO SOSTIENE LO QUE DIJO EL CLIENTE.
@@ -286,6 +311,7 @@ function candidatosDePartida(catalogo, pistas, { ampliarFamilia = false } = {}) 
  */
 export function anclarLinea({
   catalogo = [], nombrePropuesto = '', evidencia = '', restringirA = null, ampliarFamilia = false,
+  dichoDelCliente = null,
 } = {}) {
   // `ampliarFamilia` desactiva los desempates por nombre y deja que decidan las
   // RESTRICCIONES. Se usa al reclasificar: ahí la identidad ya se conoce y la
@@ -305,8 +331,66 @@ export function anclarLinea({
     return { estado: 'sin_candidatos', producto: null, candidatos: [], grupos: [], motivo: 'no_esta_en_la_carta' };
   }
 
-  const sueltas = opcionesSostenidas(base, evidencia);
-  const evaluados = base.map((f) => ({ ficha: f, ...compatible(f, evidencia, { opcionesSueltas: sueltas }) }));
+  // ── ¿MERECE ESTE CANDIDATO EL NOMBRE QUE LE DIERON? ────────────────────
+  //
+  // Hasta aquí todo el filtrado ha respondido «¿hay otro tan bueno?». Falta
+  // «¿es éste bastante bueno?». Compartir una palabra con lo que se pidió no
+  // es lo mismo que explicarlo: «torta de salmón» comparte «torta» con todas
+  // las tortas de la carta, y ninguna es de salmón. Sin esta comprobación,
+  // ganaba la primera —o la base de la familia—, y el cliente recibía como
+  // confirmada una torta que no pidió.
+  //
+  // Se mide contra el NOMBRE PROPUESTO, que es la afirmación de identidad, y
+  // no contra la evidencia del ciclo: exigirle a un producto que explique
+  // «quiero», «porfa» y «para llevar» no dejaría vivo ninguno.
+  //
+  // Con `ampliarFamilia` NO se aplica, y por la misma razón por la que ahí se
+  // apagan los desempates por nombre: en la reclasificación la identidad ya se
+  // conoce y lo que se pregunta es cuál de la familia admite estas opciones.
+  // Medir el nombre viejo contra el nuevo —«sencillos» contra «Mixtos»—
+  // impediría precisamente el cambio que se está evaluando.
+  // ── Y SÓLO DESCALIFICA LO QUE DIJO EL CLIENTE ──────────────────────────
+  //
+  // El nombre propuesto lo escribe el MODELO, y el modelo adivina variantes: si
+  // propone «Chilaquiles Mixtos» sobre un «quiero chilaquiles suizos», la
+  // palabra «mixtos» es suya, no del cliente. Medirla haría vinculante la
+  // suposición del modelo y dejaría fuera a la presentación que sí encaja —lo
+  // contrario exacto de las tres capas: el modelo propone, el catálogo
+  // identifica, el TEXTO DEL CLIENTE autoriza.
+  //
+  // Así que de las palabras del nombre sólo cuentan las que el cliente sostiene
+  // de verdad. «Azul» la dijo él; «mixtos» no.
+  const dichaPorElCliente = (w) => palabrasQueLaSostienen(w, dichoDelCliente || evidencia).size > 0;
+  const noExplican = new Map();
+  if (!ampliarFamilia && String(nombrePropuesto || '').trim()) {
+    for (const f of base) {
+      const falta = palabrasSinExplicar(nombrePropuesto, explicadoresDe(f)).filter(dichaPorElCliente);
+      if (falta.length) noExplican.set(norm(f.nombre), falta);
+    }
+  }
+  const sostenidos = base.filter((f) => !noExplican.has(norm(f.nombre)));
+
+  if (!sostenidos.length) {
+    // NI UNO LO EXPLICA. No es «no existe nada parecido»: es que la familia se
+    // reconoce y el atributo no. Las dos mitades viajan, porque la pregunta
+    // útil las necesita — «tenemos éstas, pero no de eso» — y ninguna de las
+    // dos se puede reconstruir después.
+    const todas = [...noExplican.values()];
+    const comunes = todas.reduce((acc, ws) => acc.filter((w) => ws.includes(w)), todas[0] || []);
+    return {
+      estado: 'sin_candidatos',
+      producto: null,
+      candidatos: [],
+      grupos: [],
+      motivo: 'no_reconocido',
+      familia: base.map((f) => f.nombre),
+      noReconocidas: comunes.length ? comunes : [...new Set(todas.flat())],
+      descartados: base.map((f) => ({ nombre: f.nombre, motivo: 'no_explica' })),
+    };
+  }
+
+  const sueltas = opcionesSostenidas(sostenidos, evidencia);
+  const evaluados = sostenidos.map((f) => ({ ficha: f, ...compatible(f, evidencia, { opcionesSueltas: sueltas }) }));
   const viables = evaluados.filter((e) => e.ok);
 
   if (!viables.length) {
@@ -544,18 +628,52 @@ export function ambiguedadesDelAnclaje(anclaje, producto = null) {
  * Se mide contra el texto del propio modelo, que es quien hizo la propuesta.
  * Devuelve `{grupo, opcion}` reales, o `null` si no corresponde a nada — y
  * entonces la propuesta se cae, que es el punto.
+ *
+ * ── Y GANAR NO BASTA: HAY QUE MERECERLO ─────────────────────────────────
+ *
+ * Quedarse con la de más fuerza responde «¿hay otra tan buena?». Faltaba
+ * «¿es ésta bastante buena?». «Queso azul» encontraba «Queso Panela en Salsa»
+ * con una sola palabra, nadie empataba, y entraba al pedido un queso que el
+ * cliente no pidió. La ausencia de empate no convierte una coincidencia débil
+ * en válida.
+ *
+ * Así que la ganadora tiene que EXPLICAR lo que se le pidió. Y quien explica no
+ * es sólo su nombre: el GRUPO explica la parte genérica —«salsa suiza» contra
+ * la opción «Suiza»—, que es exactamente como habla la gente.
+ *
+ * ── Y SE FILTRA ANTES DE DESEMPATAR, NO DESPUÉS ─────────────────────────
+ *
+ * Aplicar la cobertura sólo sobre la ganadora dejaba que una candidata fuerte
+ * pero incompleta envenenara a una más débil que sí lo explicaba todo: el grupo
+ * se quedaba sin nada aunque hubiera respuesta. Primero se descarta lo que no
+ * explica, y el desempate por fuerza se hace entre las que quedan — que es el
+ * mismo orden que sigue el nivel producto.
  */
 function opcionRealDe(ficha, textoDelModelo) {
   let mejor = null;
   let empate = false;
+  const rechazadas = new Map();
   for (const gr of lista(ficha?.grupos)) {
     for (const op of lista(gr.opciones)) {
       const nombre = nombreDe(op);
       const fuerza = palabrasQueLaSostienen(nombre, textoDelModelo).size;
       if (!fuerza) continue;
+      const falta = palabrasSinExplicar(textoDelModelo, [nombre, gr.nombre]);
+      if (falta.length) { rechazadas.set(nombre, { grupo: gr.nombre, falta }); continue; }
       if (!mejor || fuerza > mejor.fuerza) { mejor = { grupo: gr.nombre, opcion: nombre, fuerza }; empate = false; }
       else if (fuerza === mejor.fuerza && norm(mejor.opcion) !== norm(nombre)) empate = true;
     }
+  }
+  if (!mejor && rechazadas.size) {
+    // NADIE EXPLICA LO QUE SE PIDIÓ. No se descarta en silencio: se devuelve el
+    // porqué y las alternativas reales de su grupo, para que el canal pueda
+    // decir «eso no lo manejo; de esto tengo A, B o C» en vez de servir un
+    // platillo al que le falta justo lo que el cliente pidió.
+    const [primera, info] = [...rechazadas.entries()][0];
+    const hermanas = lista(ficha?.grupos)
+      .filter((gr) => norm(gr?.nombre) === norm(info.grupo))
+      .flatMap((gr) => lista(gr.opciones).map(nombreDe)).filter(Boolean);
+    return { noReconocida: info.falta, grupo: info.grupo, alternativas: hermanas, masParecida: primera };
   }
   if (!mejor) return null;
   // Un empate lo resuelve la capa de ambigüedad de opciones, que ya existe y
@@ -605,9 +723,22 @@ export function anclarPropuestas({
       // deshacía sola: en el tráfico real el turno 6 volvía a ofrecer las
       // cuatro, porque el borrador de ese turno ya no mencionaba la guarnición.
       const previos = candidatosPrevios?.get?.(norm(propuesto)) || null;
-      const a = anclarLinea({ catalogo, nombrePropuesto: propuesto, evidencia: suyo, restringirA: previos });
+      const a = anclarLinea({
+        catalogo, nombrePropuesto: propuesto, evidencia: suyo, restringirA: previos,
+        // Lo que dijo el CLIENTE en el ciclo, aparte de lo que propuso el
+        // modelo: es lo único que puede descalificar a un candidato.
+        dichoDelCliente: evidencia,
+      });
       if (a.estado === 'sin_candidatos') {
-        rechazados.push({ propuesto, motivo: a.motivo });
+        // La familia reconocida y el atributo que no lo está viajan juntos: sin
+        // los dos, «no encuentro torta de salmón» se convierte en «no tenemos
+        // tortas», que es falso y pierde la venta.
+        rechazados.push({
+          propuesto,
+          motivo: a.motivo,
+          ...(a.familia?.length ? { familia: a.familia } : {}),
+          ...(a.noReconocidas?.length ? { noReconocidas: a.noReconocidas } : {}),
+        });
         continue;                                    // no nace una línea libre
       }
       if (a.estado === 'ambiguo') {
@@ -621,7 +752,14 @@ export function anclarPropuestas({
       for (const g of lista(p.valorNuevo?.modificadores)) {
         for (const o of lista(g?.opciones)) {
           const real = opcionRealDe(a.producto, nombreDe(o));
-          if (!real) { descartados.push({ grupo: String(g?.grupo ?? ''), opcion: nombreDe(o), motivo: 'no_existe' }); continue; }
+          if (!real || real.noReconocida) {
+            descartados.push({
+              grupo: String(real?.grupo || g?.grupo || ''), opcion: nombreDe(o),
+              motivo: real?.noReconocida ? 'no_reconocida' : 'no_existe',
+              ...(real?.noReconocida ? { noReconocidas: real.noReconocida, alternativas: real.alternativas || [] } : {}),
+            });
+            continue;
+          }
           if (!porGrupo.has(real.grupo)) porGrupo.set(real.grupo, new Set());
           porGrupo.get(real.grupo).add(real.opcion);
         }
@@ -653,7 +791,14 @@ export function anclarPropuestas({
         const texto = nombreDe(o);
         if (!texto) continue;
         const real = opcionRealDe(ficha, texto);
-        if (!real) { descartados.push({ grupo: String(p.campo ?? ''), opcion: texto, motivo: 'no_existe' }); continue; }
+        if (!real || real.noReconocida) {
+          descartados.push({
+            grupo: String(real?.grupo || p.campo || ''), opcion: texto,
+            motivo: real?.noReconocida ? 'no_reconocida' : 'no_existe',
+            ...(real?.noReconocida ? { noReconocidas: real.noReconocida, alternativas: real.alternativas || [] } : {}),
+          });
+          continue;
+        }
         if (!porGrupo.has(real.grupo)) porGrupo.set(real.grupo, new Set());
         porGrupo.get(real.grupo).add(real.opcion);
       }

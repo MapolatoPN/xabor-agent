@@ -56,6 +56,7 @@ const aclaracion = (tipo, campos, pregunta) => ({ tipo, ...campos, pregunta });
 export function recolectarAclaraciones({
   cambios = null, referencia = null, propuestas = null, terminos = [], gruposFaltantes = [],
   opcionesAmbiguas = [], productosAmbiguos = [], productosInexistentes = [],
+  opcionesNoReconocidas = [],
 } = {}) {
   const fuera = [];
 
@@ -65,10 +66,24 @@ export function recolectarAclaraciones({
   // guarnición de un platillo que no existe. Y se dice, en vez de callar: un
   // «eso no lo tenemos» a tiempo vale más que una conversación entera armando
   // un pedido imposible.
+  // Y «no lo tenemos» tiene dos formas muy distintas. Una es no reconocer nada.
+  // La otra —«torta de salmón» en una carta con tortas de pierna y de pollo— es
+  // reconocer la FAMILIA y no el atributo, y ahí decir «no encuentro torta» es
+  // falso: tortas hay, y perder esa venta es gratuito. Cuando el anclaje
+  // reconoció la familia, la pregunta se la lleva consigo.
   for (const p of lista(productosInexistentes)) {
+    const familia = nombres(p?.familia);
+    const noReconocidas = lista(p?.noReconocidas).map((w) => String(w || '')).filter(Boolean);
+    const pregunta = familia.length
+      ? (noReconocidas.length
+        ? `No manejo "${enumerar(noReconocidas, 'ni')}". Tengo ${enumerar(familia)}, ¿te va alguna?`
+        : `Tengo ${enumerar(familia)}, ¿cuál te pongo?`)
+      : `No encuentro "${p?.propuesto}" en la carta. ¿Me lo dices de otra forma?`;
     fuera.push(aclaracion('producto_inexistente', {
-      termino: String(p?.propuesto || ''), candidatos: [],
-    }, `No encuentro "${p?.propuesto}" en la carta. ¿Me lo dices de otra forma?`));
+      termino: String(p?.propuesto || ''),
+      candidatos: familia,
+      ...(noReconocidas.length ? { noReconocidas } : {}),
+    }, pregunta));
   }
 
   // 0-) UN PLATILLO QUE PUEDE SER VARIOS DE LA CARTA.
@@ -99,6 +114,29 @@ export function recolectarAclaraciones({
       lid: a.lid || null,
       grupo: String(a.grupo || ''), producto: String(a.producto || ''), candidatos,
     }, `¿${enumerar(candidatos)}?`));
+  }
+
+  // 0b) UNA OPCIÓN QUE NO EXISTE NO SE TIRA AL SUELO.
+  //
+  // «Con queso azul», en una carta sin queso azul. Antes se elegía el queso más
+  // parecido —que es servir lo que nadie pidió—; ahora no se elige, y callarlo
+  // sería la otra mitad del mismo error: el cliente pediría su queso y recibiría
+  // un platillo sin queso y sin explicación, con el grupo requerido vacío y el
+  // bot preguntando lo mismo turno tras turno.
+  //
+  // Así que se dice, y se dice con las dos mitades: lo que no hay, y lo que sí
+  // hay en ESE grupo. Los nombres salen del catálogo; aquí no se escribe ninguno.
+  for (const a of lista(opcionesNoReconocidas)) {
+    const noHay = lista(a?.noReconocidas).map((w) => String(w || '')).filter(Boolean);
+    const alternativas = nombres(a?.alternativas);
+    if (!noHay.length && !alternativas.length) continue;
+    fuera.push(aclaracion('opcion_inexistente', {
+      lid: a?.lid || null,
+      grupo: String(a?.grupo || ''), producto: String(a?.producto || ''),
+      termino: String(a?.opcion || ''), candidatos: alternativas, noReconocidas: noHay,
+    }, alternativas.length
+      ? `No manejo "${enumerar(noHay, 'ni') || a?.opcion}". De ${String(a?.grupo || '').toLowerCase()} tengo ${enumerar(alternativas)}, ¿cuál te pongo?`
+      : `No manejo "${enumerar(noHay, 'ni') || a?.opcion}".`));
   }
 
   // 1) Dos artículos caben en el mismo «quítalo». No se quita ninguno.
@@ -161,7 +199,7 @@ export function recolectarAclaraciones({
 
 /** Lo que de verdad impide cerrar el pedido, separado de lo que solo falta. */
 export const bloquean = (aclaraciones) => lista(aclaraciones)
-  .filter((a) => ['producto_ambiguo', 'producto_inexistente', 'opcion_ambigua', 'grupo_requerido',
+  .filter((a) => ['producto_ambiguo', 'producto_inexistente', 'opcion_ambigua', 'opcion_inexistente', 'grupo_requerido',
     'quitar_ambiguo', 'referencia_ambigua', 'termino_ambiguo'].includes(a.tipo));
 
 /**

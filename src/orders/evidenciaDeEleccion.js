@@ -47,7 +47,21 @@ const palabrasDe = (s) => String(s || '')
 
 // Palabras que no distinguen nada por sí solas: aparecen en media carta o son
 // de relleno. Si fueran las únicas que casan, la opción no está respaldada.
-const VACIAS = new Set(['de', 'con', 'sin', 'en', 'la', 'el', 'los', 'las', 'y', 'a', 'al', 'del', 'para']);
+//
+// Es GRAMÁTICA, no carta: preposiciones, artículos, determinantes y
+// demostrativos del español. Ni un solo nombre de platillo entra aquí — si
+// entrara, este archivo dejaría de servir para el negocio que se dé de alta
+// mañana. Y se amplía con cuidado: cada palabra que se añade deja de contar
+// como evidencia también para una opción que se llame así de verdad.
+const VACIAS = new Set([
+  'de', 'con', 'sin', 'en', 'la', 'el', 'los', 'las', 'y', 'a', 'al', 'del', 'para',
+  // determinantes y cuantificadores: «unos chilaquiles» nombra chilaquiles.
+  'un', 'una', 'uno', 'unos', 'unas',
+  // posesivos y demostrativos: «mi torta», «esa agua».
+  'mi', 'mis', 'tu', 'tus', 'su', 'sus',
+  'ese', 'esa', 'esos', 'esas', 'este', 'esta', 'estos', 'estas',
+  'que', 'por', 'lo',
+]);
 
 /** QUÉ palabras propias de `opcion` aparecen en lo que dijo el cliente. */
 export function palabrasQueLaSostienen(opcion, texto) {
@@ -66,6 +80,118 @@ export function palabrasQueLaSostienen(opcion, texto) {
 
 /** Cuántas. Se conserva por comodidad de las pruebas y del diagnóstico. */
 export const fuerzaDeEvidencia = (opcion, texto) => palabrasQueLaSostienen(opcion, texto).size;
+
+/**
+ * ─── LO QUE EL CANDIDATO NO EXPLICA DE LO QUE SE LE PIDIÓ ────────────────
+ *
+ * Todo lo de arriba responde a «¿hay otro tan bueno como éste?». Nada responde
+ * a «¿es éste bastante bueno?», y son preguntas distintas:
+ *
+ *   «queso azul» contra un grupo donde la única opción con la palabra «queso»
+ *   es «Queso Panela en Salsa». Nadie empata, así que `distingueLaEleccion`
+ *   dice que sí distingue y la opción entra al pedido. Pero el cliente no pidió
+ *   panela: pidió AZUL, y «azul» no lo explica nadie.
+ *
+ * La ausencia de empate no convierte una coincidencia débil en válida. Una
+ * única coincidencia débil sigue siendo débil.
+ *
+ * LA REGLA, y es una sola: un candidato tiene que EXPLICAR las palabras
+ * distintivas de la mención. La que no explique lo descarta.
+ *
+ *   «queso azul»           →  «Queso Panela en Salsa» deja «azul»     → fuera
+ *   «panela»               →  «Queso Panela en Salsa» no deja nada    → vale
+ *   «huevo estrellado»     →  «Huevos Estrellados» no deja nada       → vale
+ *   «frijoles con chorizo» →  «Frijolitos con chorizo», nada          → vale
+ *
+ * QUIÉN EXPLICA no es sólo el nombre del candidato. «salsa suiza» contra la
+ * opción «Suiza» dejaría «salsa» colgando, y sin embargo el cliente habló
+ * perfecto: quien explica «salsa» es el GRUPO. Por eso quien llama pasa TODOS
+ * los textos que sostienen legítimamente a ese candidato —su nombre, su grupo o
+ * su categoría, las opciones que ofrece, los alias que el negocio declaró—.
+ * Un alias declarado explica tanto como el nombre: si el negocio dice que a su
+ * «Combito» se le llama «combo», «combo» está explicado.
+ *
+ * Se mide con la MISMA `palabrasQueLaSostienen` de arriba, así que hereda la
+ * tolerancia de género, número y diminutivo. No hay un segundo motor, ni un
+ * umbral: o la palabra la explica alguien, o no.
+ *
+ * Y se mide contra la MENCIÓN —como llamó el cliente o el modelo a la cosa—,
+ * nunca contra el mensaje entero: pedir que un producto explique «quiero»,
+ * «porfa» y «para llevar» no dejaría vivo ni un platillo.
+ */
+export function palabrasSinExplicar(mencion, explicadores = []) {
+  const propias = palabrasQuePidenAlgo(mencion);
+  const textos = (Array.isArray(explicadores) ? explicadores : [explicadores])
+    .map((e) => String(e || '')).filter(Boolean);
+  const explicada = (w) => textos.some((t) => palabrasQueLaSostienen(t, w).size > 0);
+  // ── LO QUE VA DELANTE ES EL GÉNERO; LO QUE VA DETRÁS, LA ESPECIE ───────
+  //
+  // El español pone primero el núcleo y después lo que lo distingue: «CHILE
+  // jalapeño», «SALSA suiza», «AGUA de horchata». Esa primera palabra es el
+  // género —lo que la cosa es— y el negocio no tiene por qué haberla escrito en
+  // el nombre de la opción ni en el del grupo: «Jalapeño» a secas, en un grupo
+  // llamado «Complemento», es una opción perfectamente normal, y exigirle que
+  // explicara «chile» negaba un chile que sí existe.
+  //
+  // Lo que va DETRÁS de lo que el candidato sí explica es otra cosa: es la
+  // especie, lo que separa este de sus hermanos. «Queso AZUL» y «torta de
+  // SALMÓN» piden una variedad concreta, y ahí es donde no se puede improvisar.
+  //
+  // Por eso sólo descalifica lo que aparece después de la primera palabra que el
+  // candidato explica. Es gramática del idioma, no de ninguna carta, y no añade
+  // ningún umbral: sigue siendo «o alguien la explica, o no».
+  const desde = propias.findIndex(explicada);
+  if (desde < 0) return propias.filter((w) => !explicada(w));
+  return propias.slice(desde + 1).filter((w) => !explicada(w));
+}
+
+// ── LO QUE SE PIDE, LO QUE SE QUITA Y LO QUE NO ES COMIDA ────────────────
+//
+// «Una torta de pierna SIN CHILE» no pide chile: lo quita. «Una torta PARA
+// LLEVAR» no pide un platillo llamado «llevar». Si esas palabras contaran como
+// petición, exigirle al producto que las explique invertiría el sentido de lo
+// que dijo el cliente y le negaríamos la torta POR el chile que pidió no
+// ponerle — el peor resultado posible, porque convierte una frase perfectamente
+// clara en un rechazo.
+//
+// El repo ya distingue estas dos clases y en el mismo sitio: `MARCAS_DE_NOTA`
+// marca la preparación y el comentario de `CONECTORES_DE_ATRIBUTO` explica por
+// qué `para` y `a` quedan deliberadamente fuera de los atributos («ese es el
+// filtro determinista que impide tratar "llevar" como un atributo del menú»).
+// Aquí se aplica la misma frontera: lo que va detrás de una de esas marcas NO
+// es una afirmación sobre la identidad de lo pedido, así que no puede
+// descalificar a nadie.
+//
+// Se añaden los intensificadores —«bien frío», «muy picoso»— por la misma
+// razón: encabezan una preparación, no un platillo. Sigue siendo gramática:
+// ni una palabra de ninguna carta.
+const ABREN_NOTA = new Set([
+  'sin', 'nada', 'poco', 'poca', 'poquito', 'poquita', 'menos', 'aparte', 'extra',
+  'bien', 'muy', 'medio', 'media',
+  'para', 'a',
+]);
+
+/** Las palabras de la mención que de verdad AFIRMAN qué se quiere. */
+function palabrasQuePidenAlgo(mencion) {
+  const todas = palabrasDe(mencion);
+  const fuera = [];
+  for (let i = 0; i < todas.length; i += 1) {
+    const w = todas[i];
+    if (w.length < 3 || VACIAS.has(w) || ABREN_NOTA.has(w)) continue;
+    // La palabra anterior manda, saltando las vacías —«sin mucho chile» sigue
+    // siendo una nota sobre el chile—, pero una marca de nota NUNCA se salta
+    // aunque además sea vacía: «sin» está en las dos listas, y saltarla dejaba
+    // «chile» como si lo hubiera pedido, que es el error al revés.
+    let j = i - 1;
+    while (j >= 0 && VACIAS.has(todas[j]) && !ABREN_NOTA.has(todas[j])) j -= 1;
+    if (j >= 0 && ABREN_NOTA.has(todas[j])) continue;
+    fuera.push(w);
+  }
+  return fuera;
+}
+
+/** ¿Este candidato explica todo lo que se le pidió? */
+export const explicaLaMencion = (mencion, explicadores = []) => palabrasSinExplicar(mencion, explicadores).length === 0;
 
 /**
  * ¿El texto del cliente distingue `elegida` de las demás opciones del grupo?

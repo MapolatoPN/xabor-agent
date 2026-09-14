@@ -154,8 +154,15 @@ function descriptoresPendientes({ aclaraciones = [], falta = [], dicho = '' }) {
       case 'producto_ambiguo':
         fuera.push({ ...base, tipo: 'producto_ambiguo', lid: a.lid || null, dato: a.termino });
         break;
+      case 'opcion_inexistente':
+        fuera.push({ ...base, tipo: 'opcion_inexistente', lid: a.lid || null,
+          producto: a.producto, grupo: a.grupo, dato: a.termino, candidatos: a.candidatos || [] });
+        break;
       case 'producto_inexistente':
-        fuera.push({ ...base, tipo: 'producto_inexistente', dato: a.termino, candidatos: [] });
+        // Los candidatos son la FAMILIA que sí se reconoció, cuando la hubo:
+        // sin ellos el pendiente no puede volver a ofrecer nada y la
+        // conversación se queda sin salida.
+        fuera.push({ ...base, tipo: 'producto_inexistente', dato: a.termino, candidatos: a.candidatos || [] });
         break;
       case 'referencia_ambigua':
         fuera.push({ ...base, tipo: 'referencia_ambigua', dato: 'referencia',
@@ -800,6 +807,9 @@ export async function atenderTurno({
     // producto no hay grupos que preguntar ni línea que confirmar.
     productosAmbiguos: anclado.ambiguos,
     productosInexistentes: anclado.rechazados,
+    // Una opcion que el catalogo no reconoce no puede caerse en silencio: el
+    // renglon se quedaria sin lo que el cliente pidio y sin nadie que lo diga.
+    opcionesNoReconocidas: (anclado.descartados || []).filter((d) => d?.motivo === 'no_reconocida'),
     opcionesAmbiguas: opcionesQueNoSeparan,
     cambios: resultado.cambios,
     referencia: referenciaBajaMultiple
