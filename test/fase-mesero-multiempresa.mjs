@@ -366,7 +366,7 @@ await t('V8. el módulo de sombra no importa nada que pueda hablarle a un client
   const fuente = readFileSync(new URL('../src/mesero-whatsapp/sombraDelMesero.js', import.meta.url), 'utf8');
   const imports = [...fuente.matchAll(/^import[^;]*from '([^']+)';/gm)].map((m) => m[1]);
   assert.deepEqual(imports.sort(),
-    ['./contextoMesa.js', './meseroDigital.js', './redaccionPII.js', 'node:crypto'],
+    ['./contextoMesa.js', './meseroDigital.js', './metricasMesero.js', './redaccionPII.js', 'node:crypto'],
     `la sombra importa algo que no debería: ${JSON.stringify(imports)}`);
   for (const prohibido of ['whatsapp', 'enviarMensaje', 'registrarPedido', 'imprimir', 'clip']) {
     assert(!new RegExp(prohibido, 'i').test(fuente.replace(/^\/\/.*$/gm, '')),
@@ -439,6 +439,7 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
   const modulos = [...vistos].map((a) => relative(RAIZ, a).split('\\').join('/')).sort();
   assert.deepEqual(modulos, [
     'src/mesero-whatsapp/aclaraciones.js',
+    'src/mesero-whatsapp/anclajeAlCatalogo.js',
     'src/mesero-whatsapp/consultasDelMenu.js',
     'src/mesero-whatsapp/contextoMesa.js',
     'src/mesero-whatsapp/faseConversacional.js',
