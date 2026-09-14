@@ -362,6 +362,76 @@ try {
     assert.strictEqual(meseroFinal.modo.mesero, false, '7) se encendió el Mesero productivo');
   });
 
+  // ── 12. EL CANDADO DEL MESERO NO PUEDE FRENAR UNA COMPRA ─────────────────
+  //
+  // El Mesero serializa los turnos de UNA conversación para no perder estado:
+  // es la corrección del primer día de tráfico real. Vale exactamente hasta
+  // donde llega, y aquí se comprueba dónde NO llega. Si ese candado alcanzara
+  // al checkout de la tienda, un cliente escribiendo por WhatsApp dejaría a
+  // otro sin poder pagar — y sería una regresión mucho peor que la carrera que
+  // el candado arregla.
+  //
+  // Se sostiene el candado ABIERTO —un turno atrapado dentro del modelo— y se
+  // comprueba que Rewards sigue trabajando debajo.
+  await t('I11', 'con un turno del Mesero atrapado, la tienda cobra y acredita igual', async () => {
+    await limpiar();
+    await ponerCfg(OBISPADO, CLAVE_MESERO_SOMBRA, 'true');
+    await actualizarConfig(OBISPADO, {
+      nombre_programa: 'Mapolato Rewards', activo: true, canal_tienda: true,
+      monto_por_punto: 10, puntos_por_peso: 1, canje_minimo: 10,
+    });
+
+    // Un turno que entra al modelo y no sale hasta que se le diga.
+    let soltar;
+    const atrapado = new Promise((r) => { soltar = r; });
+    let entro = false;
+    const enVuelo = observarTurnoDelMesero({
+      sessionId: 'conv-candado', negocioId: OBISPADO, mensaje: 'unos chilaquiles',
+      cargarCatalogo: async () => CATALOGO,
+      proponer: async () => { entro = true; await atrapado; return { items: [] }; },
+    });
+    for (let i = 0; i < 300 && !entro; i++) await new Promise((r) => setImmediate(r));
+    assert.ok(entro, 'el turno no llegó a entrar al modelo');
+
+    // Con el candado sostenido, la tienda hace su trabajo completo.
+    const t0 = Date.now();
+    const rw = await rewardsDeTienda(OBISPADO);
+    assert.strictEqual(rw.activo, true, 'Rewards de tienda dejó de responder');
+    const acred = await acumularPuntos(`INT-${suf}-candado`, {
+      total: 500, canal: 'tienda_online', cliente: { telefono: TEL, nombre: 'Cliente Candado' },
+    }, OBISPADO);
+    assert.ok(acred && acred.puntos > 0, `no se acreditaron puntos: ${JSON.stringify(acred)}`);
+    const saldo = await saldoParaTienda(OBISPADO, TEL);
+    assert.ok(saldo.puntos > 0, `el saldo no reflejó la compra: ${JSON.stringify(saldo)}`);
+    assert.ok(
+      await planDeCanje({ negocioId: OBISPADO, telefono: TEL, puntosSolicitados: 10, total: 300 }),
+      'el canje no se pudo calcular',
+    );
+    const ms = Date.now() - t0;
+    assert.ok(ms < 5000, `la tienda tardó ${ms} ms: parece estar esperando al Mesero`);
+
+    // Y otra conversación del Mesero tampoco está detrás de la primera.
+    const otra = await observarTurnoDelMesero({
+      sessionId: 'conv-candado-otra', negocioId: OBISPADO, mensaje: 'unos chilaquiles',
+      cargarCatalogo: async () => CATALOGO,
+      proponer: async () => ({ items: [{ nombre: 'INT Chilaquiles', cantidad: 1 }] }),
+    });
+    assert.strictEqual(otra.ok, true, 'una conversación distinta quedó atrapada tras la primera');
+
+    soltar();
+    await enVuelo;
+
+    // Lo que hizo la tienda no dejó rastro en el estado del Mesero…
+    const est = verEstadoSombra(OBISPADO, 'conv-candado');
+    assert.ok(est, 'se perdió el estado sombra del turno atrapado');
+    assert.strictEqual(JSON.stringify(est).includes('compra-durante-candado'), false,
+      'una referencia de compra acabó dentro del estado del Mesero');
+    // …ni el Mesero en las cuentas de Rewards.
+    const { rows: mov } = await pool.query(
+      'SELECT count(*)::int n FROM rewards_movements WHERE tenant_id = $1', [OBISPADO]);
+    assert.strictEqual(mov[0].n, 1, `Rewards registró ${mov[0].n} movimientos: esperaba solo la compra`);
+  });
+
 } catch (e) {
   console.error('ERROR FATAL EN LA SUITE:', e);
   fallidas++; fallos.push(`fatal: ${e.message}`);
