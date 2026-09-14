@@ -63,6 +63,28 @@ export const reiniciarSombraMesero = () => estadoMeseroSombra.clear();
 /** Cuántas conversaciones se están observando. */
 export const conversacionesObservadas = () => estadoMeseroSombra.size;
 
+/**
+ * Desaloja la conversación más vieja QUE NO ESTÉ OCUPADA.
+ *
+ * Un `Map` de JavaScript conserva el orden de inserción, así que la primera
+ * clave es la más vieja. Lo que no se puede hacer es desalojar a ciegas: si la
+ * elegida tiene un turno dentro, su candado desaparece del mapa sin que el
+ * turno en vuelo se entere, y el siguiente mensaje de esa misma conversación
+ * crea una entrada nueva —con la cola vacía— que corre EN PARALELO con él.
+ *
+ * Devuelve si consiguió hacer sitio. `false` significa que las 500 están
+ * ocupadas a la vez, y entonces se prefiere no observar: crecer sin límite
+ * tira el proceso, y desalojar una ocupada corrompe justo lo que se protege.
+ */
+function hacerSitio() {
+  for (const [clave, estado] of estadoMeseroSombra) {
+    if ((estado?.ocupada || 0) > 0) continue;
+    estadoMeseroSombra.delete(clave);
+    return true;
+  }
+  return false;
+}
+
 /** Solo para pruebas: mirar el estado sombra de una conversación. */
 export const verEstadoSombra = (negocioId, sessionId) =>
   estadoMeseroSombra.get(`${negocioId}::${sessionId}`) || null;
@@ -158,15 +180,21 @@ export async function observarTurnoDelMesero({
   try {
     const clave = `${negocioId}::${sessionId}`;
     if (!estadoMeseroSombra.has(clave)) {
-      if (estadoMeseroSombra.size >= TOPE_CONVERSACIONES) {
-        // La más vieja se va. Un observador que crece sin límite acaba tirando
-        // el proceso que observa, que es la peor forma de fallar.
-        estadoMeseroSombra.delete(estadoMeseroSombra.keys().next().value);
+      if (estadoMeseroSombra.size >= TOPE_CONVERSACIONES && !hacerSitio()) {
+        // Todas ocupadas. Antes de desalojar una conversación que tiene un
+        // turno dentro, se prefiere no observar esta: desalojarla soltaría su
+        // candado sin que nadie lo sepa, y el siguiente mensaje de la
+        // desalojada arrancaría de cero EN PARALELO con el turno en vuelo —
+        // que es exactamente la carrera que este módulo existe para evitar.
+        return { ok: false, motivo: 'sin_sitio', ms: medir() };
       }
       estadoMeseroSombra.set(clave, { contexto: null, carrito: null, turnos: 0, mensajes: [],
-        cola: Promise.resolve(), entrega: false });
+        cola: Promise.resolve(), entrega: false, ocupada: 0 });
     }
     const guardado = estadoMeseroSombra.get(clave);
+    // Rechazo barato, para no encolar lo que ya no cabe. La comprobación que
+    // MANDA es la de dentro del candado: sin ella, una ráfaga de mensajes pasa
+    // entera por aquí antes de que ninguno haya llegado a incrementar.
     if (guardado.turnos >= TOPE_TURNOS) return { ok: false, motivo: 'tope_de_turnos' };
 
     // ── UNA OBSERVACIÓN A LA VEZ POR CONVERSACIÓN ──────────────────────
@@ -188,9 +216,13 @@ export async function observarTurnoDelMesero({
     // la primera y arranca del estado que aquella dejó. Sigue sin bloquear al
     // canal —nadie espera este `await`— y el tope de tiempo sigue aplicando a
     // cada paso.
+    //
+    // `ocupada` es lo que impide que el desalojo por tope de conversaciones
+    // suelte un candado por la espalda. Se sube ANTES del primer `await`.
     const miTurno = guardado.cola.then(() => {}, () => {});
     let liberar;
     guardado.cola = new Promise((r) => { liberar = r; });
+    guardado.ocupada = (guardado.ocupada || 0) + 1;
     await miTurno;
     try {
       return await observarEnSerie({
@@ -198,6 +230,7 @@ export async function observarTurnoDelMesero({
         cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
       });
     } finally {
+      guardado.ocupada -= 1;
       liberar();
     }
   } catch (e) {
@@ -212,6 +245,13 @@ async function observarEnSerie({
   cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir,
 }) {
   try {
+    // EL TOPE DE TURNOS, OTRA VEZ Y AHORA SÍ.
+    //
+    // La comprobación de fuera corre antes del candado, así que una ráfaga de
+    // mensajes la pasa entera antes de que ninguno haya incrementado el
+    // contador. Esta corre con la conversación en exclusiva, que es donde el
+    // número significa algo.
+    if (guardado.turnos >= TOPE_TURNOS) return { ok: false, motivo: 'tope_de_turnos', ms: medir() };
 
     // ── EL CATÁLOGO REAL, Y SI NO, NADA ────────────────────────────────
     let catalogo = [];
