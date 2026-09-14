@@ -441,7 +441,7 @@ function fichaDeLaLinea(catalogo, nombre) {
 }
 
 export function anclarPropuestas({
-  catalogo = [], propuestas = [], carrito = null, evidencia = '',
+  catalogo = [], propuestas = [], carrito = null, evidencia = '', candidatosPrevios = null,
 } = {}) {
   const fuera = [];
   const ambiguos = [];       // productos que no se pudieron identificar solos
@@ -466,7 +466,15 @@ export function anclarPropuestas({
       // de una línea no puede incluir lo que el cliente dijo de otra.
       const suyo = [propuesto, ...lista(p.valorNuevo?.modificadores)
         .flatMap((g) => lista(g?.opciones).map((o) => nombreDe(o)))].filter(Boolean).join(' ');
-      const a = anclarLinea({ catalogo, nombrePropuesto: propuesto, evidencia: suyo });
+      // LO QUE YA SE HABÍA DESCARTADO SIGUE DESCARTADO.
+      //
+      // Si en un turno anterior «chilaquiles» quedó reducido a dos
+      // presentaciones porque el cliente pidió una guarnición, este turno
+      // arranca de esas dos y no de la carta entera. Sin esto la reducción se
+      // deshacía sola: en el tráfico real el turno 6 volvía a ofrecer las
+      // cuatro, porque el borrador de ese turno ya no mencionaba la guarnición.
+      const previos = candidatosPrevios?.get?.(norm(propuesto)) || null;
+      const a = anclarLinea({ catalogo, nombrePropuesto: propuesto, evidencia: suyo, restringirA: previos });
       if (a.estado === 'sin_candidatos') {
         rechazados.push({ propuesto, motivo: a.motivo });
         continue;                                    // no nace una línea libre

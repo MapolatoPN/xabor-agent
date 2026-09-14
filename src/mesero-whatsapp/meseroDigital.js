@@ -199,6 +199,21 @@ function pendientesQueSiguenVivos(ctx, carrito, yaVigentes) {
   const fuera = [];
   for (const p of (ctx?.pendientes || [])) {
     if (yaEstan.has(p.clave)) continue;                 // este turno lo rehizo
+    // LA IDENTIDAD PENDIENTE NO CADUCA PORQUE EL CLIENTE PREGUNTE OTRA COSA.
+    //
+    // Nace del TEXTO, como la opción ambigua, así que un turno de consulta
+    // —«¿qué licuados tienen?»— no vuelve a generarla y se daba por resuelta.
+    // Vive mientras ninguna línea del carrito sea uno de sus candidatos: ahí es
+    // cuando el cliente por fin eligió.
+    if (p.tipo === 'producto_ambiguo') {
+      const resuelto = (carrito?.items || []).some((i) => (p.candidatos || [])
+        .some((c) => String(c).toLowerCase() === String(i.nombre || '').toLowerCase()));
+      if (!resuelto) {
+        fuera.push({ tipo: p.tipo, dato: p.dato, lid: p.lid || null,
+          candidatos: p.candidatos, evidenciaOrigen: p.evidenciaOrigen });
+      }
+      continue;
+    }
     if (p.tipo !== 'opcion_ambigua' && p.tipo !== 'grupo_requerido') continue;
     const item = p.lid ? porLid.get(p.lid) : null;
     if (!item) continue;                                // su línea se fue: cancelado
@@ -547,10 +562,17 @@ export async function atenderTurno({
   const anclasPorLid = new Map(
     (ctx.lineas || []).filter((l) => l.ancla).map((l) => [l.lid, l.ancla]),
   );
+  // Lo que ya se había descartado en turnos anteriores sigue descartado: los
+  // candidatos que quedaron vivos viajan en el pendiente de identidad.
+  const candidatosPrevios = new Map(
+    (ctx.pendientes || [])
+      .filter((p) => p.tipo === 'producto_ambiguo' && (p.candidatos || []).length)
+      .map((p) => [norm(p.dato || ''), p.candidatos]),
+  );
   const anclado = catalogo.length
     ? anclarPropuestas({
       catalogo, propuestas: propuestas.filter(Boolean), carrito: carritoActual,
-      evidencia: dichoDelCiclo, anclasPorLid,
+      evidencia: dichoDelCiclo, candidatosPrevios,
     })
     : { propuestas: propuestas.filter(Boolean), ambiguos: [], rechazados: [], anclas: new Map(), reclasificados: [] };
 
