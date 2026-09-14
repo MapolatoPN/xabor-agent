@@ -77,8 +77,28 @@ export function faseDelTurno({
 export function loQueFalta({ carrito = null, datos = {}, aclaraciones = [], requierePago = true } = {}) {
   const falta = [];
   const hayPedido = Array.isArray(carrito?.items) && carrito.items.length > 0;
-  if (!hayPedido) { falta.push('productos'); return falta; }
+
+  // ── LA IDENTIDAD DEL PLATILLO VA ANTES QUE LA LOGÍSTICA ────────────────
+  //
+  // Un renglón del que todavía no se sabe cuál de la carta es no está listo
+  // para nada, y preguntar «¿para recoger o a domicilio?» encima de él es
+  // empezar la casa por el tejado. En el tráfico real del 13-sep el Mesero pasó
+  // a `esperando_modalidad` en el turno 1, con un artículo que no existía en el
+  // menú, y ahí se quedó los seis turnos.
+  //
+  // Va incluso antes que `productos`: si el cliente ya nombró algo pero no se
+  // sabe cuál es, lo que falta no es que pida, es que se aclare.
+  const sinIdentidad = (aclaraciones || []).filter((a) => a.tipo === 'producto_ambiguo'
+    || a.tipo === 'producto_inexistente');
+  for (const a of sinIdentidad) falta.push(`producto:${a.termino || ''}`);
+
+  if (!hayPedido) {
+    if (!falta.length) falta.push('productos');
+    return falta;
+  }
   for (const a of aclaraciones) if (a.tipo === 'grupo_requerido') falta.push(`grupo:${a.grupo}`);
+  // Con la identidad en el aire no se pregunta logística: se resuelve el plato.
+  if (sinIdentidad.length) return falta;
   if (!datos?.modalidad) falta.push('modalidad');
   if (requierePago && !datos?.pago) falta.push('pago');
   return falta;
@@ -110,7 +130,7 @@ export function siguientePregunta(entrada, preguntadoYa = []) {
   //
   // No es repetir por repetir: es que el cliente contestó OTRA cosa, y esa
   // sigue faltando. Un mesero dice «va, ¿y la salsa?».
-  const bloquea = (p) => p === 'productos' || p.startsWith('grupo:');
+  const bloquea = (p) => p === 'productos' || p.startsWith('grupo:') || p.startsWith('producto:');
   const bloqueante = pendientes.find(bloquea);
   if (bloqueante) return bloqueante;
 

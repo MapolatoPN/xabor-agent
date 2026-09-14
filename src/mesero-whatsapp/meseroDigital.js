@@ -44,12 +44,16 @@ import { aplicarPropuestas, propuestasDesdeBorrador, propuesta } from './motorTr
 import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas } from './consultasDelMenu.js';
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
+import { anclarPropuestas, anclarLinea } from './anclajeAlCatalogo.js';
 import { faseDelTurno, loQueFalta, siguientePregunta, listoParaConfirmar } from './faseConversacional.js';
 import { resumenDelPedido } from './resumenDelPedido.js';
 import { decidirHandoff, equipajeDelHandoff } from './handoffHumano.js';
 import { eventosDelTurno } from './metricasMesero.js';
 
 const vacio = () => ({ items: [], datos: {} });
+
+const norm = (s) => String(s || '')
+  .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 
 /**
  * La cláusula donde está el verbo de quitar, y solo esa.
@@ -142,6 +146,15 @@ function descriptoresPendientes({ aclaraciones = [], falta = [], dicho = '' }) {
         break;
       case 'termino_ambiguo':
         fuera.push({ ...base, tipo: 'termino_ambiguo', dato: a.termino });
+        break;
+      // La identidad del renglón. Su clave es el término que dijo el cliente,
+      // porque todavía no hay `lid` al que colgarla: la línea no nace hasta que
+      // se sabe cuál de la carta es.
+      case 'producto_ambiguo':
+        fuera.push({ ...base, tipo: 'producto_ambiguo', lid: a.lid || null, dato: a.termino });
+        break;
+      case 'producto_inexistente':
+        fuera.push({ ...base, tipo: 'producto_inexistente', dato: a.termino, candidatos: [] });
         break;
       case 'referencia_ambigua':
         fuera.push({ ...base, tipo: 'referencia_ambigua', dato: 'referencia',
@@ -519,8 +532,30 @@ export async function atenderTurno({
     && !nombraAlgoDeLaCarta)
     ? referencia.lids : [];
 
+  // ── 8b) EL CATÁLOGO IDENTIFICA, ANTES DE QUE NADIE AUTORICE ────────────
+  //
+  // Aquí se corta el problema del 13-sep. El modelo propone significado; este
+  // paso lo convierte en identidad REAL o lo tira. Después de esta línea, una
+  // propuesta sólo puede nombrar productos, grupos y opciones que existen en la
+  // carta de ESTE negocio.
+  //
+  // No autoriza nada: lo que sale sigue pasando por el reconciliador con sus
+  // mismas reglas de evidencia. Identificar y autorizar son dos preguntas
+  // distintas, y confundirlas fue exactamente el error anterior —«¿lo dijo el
+  // cliente?» respondía que sí para «chilaquiles», una palabra que el cliente
+  // había dicho y que no era ningún producto—.
+  const anclasPorLid = new Map(
+    (ctx.lineas || []).filter((l) => l.ancla).map((l) => [l.lid, l.ancla]),
+  );
+  const anclado = catalogo.length
+    ? anclarPropuestas({
+      catalogo, propuestas: propuestas.filter(Boolean), carrito: carritoActual,
+      evidencia: dichoDelCiclo, anclasPorLid,
+    })
+    : { propuestas: propuestas.filter(Boolean), ambiguos: [], rechazados: [], anclas: new Map(), reclasificados: [] };
+
   // 9) EL MOTOR DECIDE. Aquí no hay reglas nuevas: se traduce y se reconcilia.
-  const resultado = aplicarPropuestas(carritoActual, propuestas.filter(Boolean), {
+  const resultado = aplicarPropuestas(carritoActual, anclado.propuestas, {
     // Crudo, para que el carrito separe la percepción por su cuenta; y aparte,
     // acotado, lo que de verdad autoriza.
     mensaje, textoCiclo,
@@ -537,6 +572,40 @@ export async function atenderTurno({
   });
   const lidsAntes = new Set((carritoActual.items || []).map((i) => i.lid));
   carritoActual = resultado.carrito;
+
+  // ── 9b) LA PRESENTACIÓN SIGUE A LAS OPCIONES QUE YA SE AUTORIZARON ─────
+  //
+  // «Quiero chilaquiles suizos» y después «también chipotle»: el reconciliador
+  // acaba de autorizar la segunda salsa —el cliente la dijo— y con dos salsas
+  // la presentación de antes ya no es compatible. Si el catálogo deja
+  // exactamente una que sí lo sea, el renglón pasa a ser esa.
+  //
+  // NO es una mutación nueva ni una invención: no se añade ninguna opción, no
+  // cambia la cantidad, no se toca la nota, y el `lid` es el mismo. Lo único
+  // que cambia es el NOMBRE CANÓNICO de lo que el cliente ya pidió. Quien
+  // decidió qué opciones entran fue el reconciliador, un paso antes; aquí sólo
+  // se le pone a eso el nombre que le da la carta.
+  //
+  // Y si quedan dos presentaciones compatibles, no se elige: se pregunta.
+  const reclasificadas = [];
+  if (catalogo.length) {
+    const items = (carritoActual.items || []).map((it) => {
+      const suyas = (it.modificadores || [])
+        .flatMap((g) => (g.opciones || []).map((o) => (typeof o === 'string' ? o : o?.nombre)))
+        .filter(Boolean).join(' ');
+      if (!suyas) return it;
+      const a = anclarLinea({
+        catalogo, nombrePropuesto: String(it.nombre || ''), evidencia: `${it.nombre} ${suyas}`,
+        ampliarFamilia: true,
+      });
+      if (a.estado !== 'resuelto') return it;
+      if (norm(a.producto.nombre) === norm(it.nombre)) return it;
+      reclasificadas.push({ lid: it.lid, de: String(it.nombre || ''), a: a.producto.nombre, por: suyas });
+      return { ...it, nombre: a.producto.nombre };
+    });
+    if (reclasificadas.length) carritoActual = { ...carritoActual, items };
+  }
+
   sincronizarLineas(ctx, carritoActual);
   for (const a of resultado.cambios?.autorizados || []) if (a.lid) tocarLinea(ctx, a.lid, { foco: false });
 
@@ -595,6 +664,10 @@ export async function atenderTurno({
     }
   }
   const aclaraciones = recolectarAclaraciones({
+    // Lo que el catálogo no pudo identificar solo. Va primero: sin identidad de
+    // producto no hay grupos que preguntar ni línea que confirmar.
+    productosAmbiguos: anclado.ambiguos,
+    productosInexistentes: anclado.rechazados,
     opcionesAmbiguas: opcionesQueNoSeparan,
     cambios: resultado.cambios,
     referencia: referenciaBajaMultiple
@@ -709,6 +782,9 @@ export async function atenderTurno({
         ? { escalar: false, habriaEscalado: true, motivo: ctx.habriaEscalado.motivo, turnoDelEscalado: turno }
         : null,
       confirmado, fase: ctx.fase,
+      // Que esto es una COPIA tiene que verse en la metrica: `modo=mesero` en
+      // una linea de sombra invita a contar turnos productivos que no existen.
+      modo: observando ? 'shadow' : 'mesero',
       pendientes: cicloPendientes,
       aclaracionesRepetidas,
       postHandoff: yaHabriaEscalado && ctx.habriaEscalado.turno < turno,

@@ -55,9 +55,35 @@ const aclaracion = (tipo, campos, pregunta) => ({ tipo, ...campos, pregunta });
  */
 export function recolectarAclaraciones({
   cambios = null, referencia = null, propuestas = null, terminos = [], gruposFaltantes = [],
-  opcionesAmbiguas = [],
+  opcionesAmbiguas = [], productosAmbiguos = [], productosInexistentes = [],
 } = {}) {
   const fuera = [];
+
+  // -1) EL CLIENTE NOMBRÓ ALGO QUE NO ESTÁ EN LA CARTA.
+  //
+  // Va antes que nada porque no hay renglón: no se puede preguntar por la
+  // guarnición de un platillo que no existe. Y se dice, en vez de callar: un
+  // «eso no lo tenemos» a tiempo vale más que una conversación entera armando
+  // un pedido imposible.
+  for (const p of lista(productosInexistentes)) {
+    fuera.push(aclaracion('producto_inexistente', {
+      termino: String(p?.propuesto || ''), candidatos: [],
+    }, `No encuentro "${p?.propuesto}" en la carta. ¿Me lo dices de otra forma?`));
+  }
+
+  // 0-) UN PLATILLO QUE PUEDE SER VARIOS DE LA CARTA.
+  //
+  // «Unos chilaquiles», con cuatro presentaciones en el menú. No es lo mismo
+  // que una opción ambigua: aquí lo que falta es la IDENTIDAD del renglón, y
+  // sin ella no hay grupos que preguntar ni línea que confirmar. Por eso
+  // bloquea antes que ninguna otra cosa, incluida la modalidad.
+  for (const p of lista(productosAmbiguos)) {
+    const candidatos = nombres(p?.candidatos);
+    if (candidatos.length < 2) continue;
+    fuera.push(aclaracion('producto_ambiguo', {
+      termino: String(p?.propuesto || ''), lid: p?.lid || null, candidatos,
+    }, `¿${enumerar(candidatos)}?`));
+  }
 
   // 0) Una opción que la frase no separa de sus hermanas. Va primero porque es
   //    la que bloquea el renglón que el cliente está armando ahora mismo.
@@ -135,8 +161,8 @@ export function recolectarAclaraciones({
 
 /** Lo que de verdad impide cerrar el pedido, separado de lo que solo falta. */
 export const bloquean = (aclaraciones) => lista(aclaraciones)
-  .filter((a) => ['opcion_ambigua', 'grupo_requerido', 'quitar_ambiguo', 'referencia_ambigua', 'termino_ambiguo']
-    .includes(a.tipo));
+  .filter((a) => ['producto_ambiguo', 'producto_inexistente', 'opcion_ambigua', 'grupo_requerido',
+    'quitar_ambiguo', 'referencia_ambigua', 'termino_ambiguo'].includes(a.tipo));
 
 /**
  * Las que se preguntan en ESTE turno.
