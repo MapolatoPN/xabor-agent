@@ -699,7 +699,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #pos-envio-row input { width: 74px; text-align: right; padding: 6px 8px; }
 #pos-pago-row { margin-top: 10px; }
 #pos-pago-row label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--color-text-secondary); display: block; margin-bottom: 4px; }
-#pos-error { display: none; color: var(--color-danger); font-size: 0.8rem; margin-top: 8px; text-align: center; font-weight: 600; }
+#pos-error { display: none; font-size: 0.8rem; margin-top: 8px; text-align: center; font-weight: 600; }
+#pos-error.pos-msg-error { color: var(--color-danger); }
+#pos-error.pos-msg-aviso { color: var(--color-warning); }
 #btn-confirmar-presencial {
   width: 100%; padding: 14px; border-radius: var(--radius-md);
   background: var(--color-brand); color: #fff; font-size: 1rem;
@@ -4988,6 +4990,7 @@ XaborCaptura.catalogo.onCambio(() => pintarMenuPOS(XaborCaptura.catalogo.categor
 // No cambia el catálogo, ni el carrito, ni la pantalla. Es la diferencia
 // entera entre Para llevar, Recoger y Domicilio.
 function posModalidad(m) {
+  const salioDeLlevar = MODALIDAD === 'llevar' && m !== 'llevar';
   MODALIDAD = m;
   const ver = (id, on) => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
   ver('pos-campos-contacto', esEnvio());
@@ -5004,6 +5007,14 @@ function posModalidad(m) {
   if (t) t.textContent = m === 'domicilio' ? 'Cliente y entrega' : (m === 'recoger' ? 'Datos del cliente' : 'Datos del pedido');
   pintarChipsModalidad(m);
   posAvisoDatos();
+  // Salir de Para llevar retira el canje y lo DICE. La alternativa -dejarlo
+  // aplicado sin widget que lo muestre- es justo la que no se puede permitir.
+  if (salioDeLlevar && rwCanjeAplicado) {
+    rwQuitarCanje();
+    posAviso('Se retiró el canje de Rewards: solo aplica en Para llevar.');
+  } else {
+    posMensaje('', '');
+  }
   renderCarrito();
 }
 
@@ -5158,10 +5169,17 @@ function ajustarCantidad(idx, delta) {
   _cPOS.cambiarCantidad(idx, delta);
 }
 
-function posError(msg) {
+function posError(msg) { posMensaje(msg, 'error'); }
+
+// Un aviso NO es un error: el operador tiene que enterarse de que se le
+// retiró el canje, pero no es un fallo suyo ni bloquea nada.
+function posAviso(msg) { posMensaje(msg, 'aviso'); }
+
+function posMensaje(msg, tipo) {
   const e = document.getElementById('pos-error');
   if (!e) return;
   e.textContent = msg || '';
+  e.className = msg ? ('pos-msg-' + tipo) : '';
   e.style.display = msg ? '' : 'none';
 }
 

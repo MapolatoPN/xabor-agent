@@ -240,9 +240,19 @@ async function crearCatalogo(negocioId) {
      VALUES ($1,$2,$3,$4,'',$5,$6,$7,0) RETURNING id, nombre`,
     [negocioId, cat.id, 'U' + Math.floor(Math.random() * 1e9).toString(36), nombre, precio,
      extra.disponible !== false, extra.agotado === true])).rows[0];
+  // Un producto CONFIGURABLE hace falta para comprobar que los modificadores
+  // sobreviven al cambio de modalidad, no solo el número de líneas.
+  const configurable = await prod('Unificada configurable', 120);
+  const { rows: [gT] } = await pool.query(
+    `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+     VALUES ($1,$2,'Término',TRUE,1,1,0) RETURNING id`, [negocioId, configurable.id]);
+  await pool.query(
+    `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
+     VALUES ($1,$2,'Suave',0,TRUE,0),($1,$2,'Cocido',0,TRUE,1)`, [negocioId, gT.id]);
   return {
     normal: await prod('Unificada normal', 90),
     agotado: await prod('Unificada agotado', 70, { agotado: true }),
+    configurable,
   };
 }
 
@@ -364,6 +374,225 @@ await t('PANTALLA', '17. la pantalla no lanzó errores de JavaScript', async () 
 });
 
 await pagina.close();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PARTE 4 — CAMBIAR DE MODALIDAD
+//
+//  Antes cambiar de modalidad era cambiar de pantalla, así que no había nada
+//  que conservar: el operador recapturaba. Ahora es el MISMO pedido decidiendo
+//  cómo se entrega, y eso abre preguntas que antes no existían — qué sobrevive,
+//  qué se limpia, y sobre todo qué NO puede viajar al servidor.
+//
+//  Se prueba en los tres anchos, porque el layout cambia (dos pantallas hasta
+//  1024px) pero el estado del pedido no debe cambiar con él.
+// ═══════════════════════════════════════════════════════════════════════════
+const ANCHOS = [['desktop', 1280, 900], ['tablet', 768, 1024], ['movil', 375, 812]];
+
+// Lo que se manda al servidor sin llegar a mandarlo: se intercepta fetch.
+async function cuerpoEnviado(pag, fn) {
+  await pag.evaluate(() => {
+    window.__cap = null;
+    if (!window.__origFetch) window.__origFetch = window.fetch;
+    window.fetch = function (u, o) {
+      const s = String(u);
+      if (/pedido-presencial|pos\/pedidos/.test(s)) {
+        window.__cap = { url: s.replace(location.origin, ''), body: JSON.parse(o.body) };
+        // No se crea el pedido: lo que importa es QUÉ viajaba.
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'interceptado' }), { status: 400 }));
+      }
+      return window.__origFetch.apply(this, arguments);
+    };
+  });
+  await fn();
+  const cap = await pag.evaluate(() => window.__cap);
+  await pag.evaluate(() => { if (window.__origFetch) window.fetch = window.__origFetch; });
+  return cap;
+}
+
+for (const [etiqueta, ancho, alto] of ANCHOS) {
+  const pag = await navegador.newPage();
+  const errs = [];
+  pag.on('pageerror', e => errs.push(e.message));
+  pag.on('dialog', d => d.accept().catch(() => {}));
+  await pag.setViewport({ width: ancho, height: alto });
+  await pag.setCookie({ name: 'xabor_sesion', value: encodeURIComponent(token), domain: 'localhost', path: '/' });
+  await pag.goto(base + '/app', { waitUntil: 'networkidle0' });
+
+  const modo = async (m) => {
+    await pag.evaluate(x => nuevoPedidoModalidad(x), m);
+    await pag.waitForFunction(() => document.querySelectorAll('.pos-producto').length > 0, { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 250));
+  };
+  const tocar = (nombre) => pag.evaluate((n) => {
+    const b = [...document.querySelectorAll('.pos-producto')].find(x => x.textContent.includes(n));
+    if (!b) throw new Error('no está el producto ' + n);
+    b.click();
+  }, nombre);
+  const carrito = () => pag.evaluate(() => JSON.parse(JSON.stringify(posCarrito)));
+  const total = () => pag.evaluate(() => document.getElementById('pos-total-monto').textContent);
+  const campos = () => pag.evaluate(() => ({
+    contacto: document.getElementById('pos-campos-contacto').style.display !== 'none',
+    domicilio: document.getElementById('pos-campos-domicilio').style.display !== 'none',
+    envio: document.getElementById('pos-envio-row').style.display !== 'none',
+    pago: document.getElementById('pos-pago-row').style.display !== 'none',
+    rewards: document.getElementById('rw-pos-widget').style.display !== 'none',
+    enLaCaptura: document.getElementById('vista-presencial').style.display !== 'none',
+    cuadricula: document.querySelectorAll('.pos-producto').length > 0,
+  }));
+
+  // Carrito de partida: un producto simple y uno CONFIGURADO, para que la
+  // comprobación no se limite a "hay dos líneas".
+  await modo('llevar');
+  await tocar(fx.normal.nombre);
+  await tocar(fx.configurable.nombre);
+  await pag.waitForFunction(() => !!document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
+  await pag.evaluate(() => {
+    const l = [...document.querySelectorAll('#xb-mods-body .xb-op')].find(x => x.textContent.includes('Suave'));
+    const i = l.querySelector('input'); i.checked = true; i.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await pag.evaluate(() => document.getElementById('xb-mods-agregar').click());
+  await pag.waitForFunction(() => posCarrito.length === 2, { timeout: 5000 });
+  const base0 = await carrito();
+
+  await t('TRANSICION', `${etiqueta}: para llevar → recoger conserva productos y modificadores`, async () => {
+    await modo('recoger');
+    assert.deepStrictEqual(await carrito(), base0, 'el carrito debe sobrevivir intacto');
+    const c = await campos();
+    assert.ok(c.enLaCaptura && c.cuadricula, 'no puede sacar al operador de la captura');
+    assert.ok(c.contacto && c.pago, 'recoger pide contacto y forma de pago');
+    assert.ok(!c.domicilio && !c.envio, 'recoger no pide dirección ni envío');
+    assert.ok(!c.rewards, 'Rewards se oculta fuera de Para llevar');
+  });
+
+  await t('TRANSICION', `${etiqueta}: recoger → para llevar vuelve sin pedir contacto ni pago`, async () => {
+    await modo('llevar');
+    assert.deepStrictEqual(await carrito(), base0);
+    const c = await campos();
+    assert.ok(!c.contacto && !c.pago && !c.domicilio && !c.envio, 'para llevar solo pide nombre opcional');
+    assert.ok(c.rewards, 'Rewards vuelve');
+  });
+
+  await t('TRANSICION', `${etiqueta}: para llevar → domicilio conserva el carrito y suma el envío`, async () => {
+    const antesTotal = await total();
+    await modo('domicilio');
+    assert.deepStrictEqual(await carrito(), base0);
+    const c = await campos();
+    assert.ok(c.contacto && c.domicilio && c.envio && c.pago, 'domicilio pide todo lo suyo');
+    assert.strictEqual(await total(), antesTotal, 'sin costo de envío el total no cambia');
+    await pag.evaluate(() => { const e = document.getElementById('env-costo-envio'); e.value = '35'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await new Promise(r => setTimeout(r, 200));
+    const conEnvio = Number((await total()).replace('$', ''));
+    assert.strictEqual(conEnvio, Number(antesTotal.replace('$', '')) + 35, 'el envío ENTRA al total');
+  });
+
+  await t('TRANSICION', `${etiqueta}: domicilio → recoger saca el envío del total`, async () => {
+    await modo('recoger');
+    const c = await campos();
+    assert.ok(!c.envio, 'la fila de envío desaparece');
+    assert.strictEqual(Number((await total()).replace('$', '')), base0.reduce((s, l) => s + l.precio_unitario * l.cantidad, 0),
+      'el envío SALE del total al dejar domicilio');
+    assert.deepStrictEqual(await carrito(), base0);
+  });
+
+  await t('TRANSICION', `${etiqueta}: domicilio → para llevar → domicilio, ida y vuelta`, async () => {
+    await modo('domicilio');
+    await pag.evaluate(() => { const e = document.getElementById('env-costo-envio'); e.value = '20'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await new Promise(r => setTimeout(r, 150));
+    const subtotal = base0.reduce((s, l) => s + l.precio_unitario * l.cantidad, 0);
+    assert.strictEqual(Number((await total()).replace('$', '')), subtotal + 20);
+    await modo('llevar');
+    assert.strictEqual(Number((await total()).replace('$', '')), subtotal, 'en para llevar no hay envío');
+    await modo('domicilio');
+    assert.strictEqual(Number((await total()).replace('$', '')), subtotal + 20, 'al volver, el envío vuelve al total');
+    assert.deepStrictEqual(await carrito(), base0, 'y el carrito nunca se tocó');
+  });
+
+  await t('TRANSICION', `${etiqueta}: dirección y envío NO viajan si la modalidad final no es domicilio`, async () => {
+    // Se llenan los datos de domicilio a propósito y luego se cambia a recoger.
+    await modo('domicilio');
+    await pag.evaluate(() => {
+      const v = (id, x) => { document.getElementById(id).value = x; };
+      v('env-nombre', 'Transicion'); v('env-telefono', '8781110001');
+      v('env-calle', 'Av Prueba'); v('env-numext', '742'); v('env-colonia', 'Centro');
+      v('env-entrecalles', 'A y B'); v('env-referencia', 'Portón azul');
+      v('env-notas-entrega', 'Tocar el timbre');
+      const e = document.getElementById('env-costo-envio'); e.value = '35'; e.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await modo('recoger');
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.ok(cap, 'debió intentar crear el pedido');
+    assert.strictEqual(cap.url, '/api/pos/pedidos');
+    assert.strictEqual(cap.body.tipo, 'recoger');
+    assert.strictEqual(cap.body.direccion, undefined, 'la dirección NO puede viajar en recoger');
+    assert.strictEqual(cap.body.costoEnvio, 0, 'el costo de envío NO puede viajar en recoger');
+    assert.ok(!JSON.stringify(cap.body).includes('Tocar el timbre'), 'las notas de entrega tampoco');
+    assert.ok(!JSON.stringify(cap.body).includes('Portón azul'), 'ni la referencia');
+  });
+
+  await t('TRANSICION', `${etiqueta}: la forma de pago de recoger/domicilio no altera para llevar`, async () => {
+    await modo('domicilio');
+    await pag.evaluate(() => { document.getElementById('env-metodo-pago').value = 'tarjeta'; });
+    await modo('llevar');
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.ok(cap, 'debió intentar crear el pedido');
+    assert.strictEqual(cap.url, '/api/pedido-presencial');
+    assert.strictEqual(cap.body.forma_pago, undefined,
+      'para llevar no manda forma de pago: nace por_cobrar y se cobra en el modal Cobrar');
+    assert.strictEqual(cap.body.formaPago, undefined, 'tampoco con el nombre del otro endpoint');
+    assert.strictEqual(cap.body.costoEnvio, undefined, 'ni costo de envío');
+    assert.strictEqual(cap.body.direccion, undefined, 'ni dirección');
+  });
+
+  await t('TRANSICION', `${etiqueta}: salir de para llevar RETIRA el canje Rewards y lo avisa`, async () => {
+    await modo('llevar');
+    await pag.evaluate(() => { const e = document.getElementById('env-costo-envio'); e.value = '0'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    // Canje aplicado a mano: lo que importa es qué pasa al cambiar de
+    // modalidad, no cómo se aplicó.
+    await pag.evaluate(() => { rwCanjeAplicado = { puntos: 100, monto: 20 }; renderCarrito(); });
+    const subtotal = base0.reduce((s, l) => s + l.precio_unitario * l.cantidad, 0);
+    assert.strictEqual(Number((await total()).replace('$', '')), subtotal - 20, 'el canje descuenta en para llevar');
+
+    await modo('domicilio');
+    const estado = await pag.evaluate(() => ({
+      canje: rwCanjeAplicado,
+      aviso: document.getElementById('pos-error').textContent,
+      visible: document.getElementById('pos-error').style.display !== 'none',
+    }));
+    assert.strictEqual(estado.canje, null, 'el canje se retira al salir de para llevar');
+    assert.ok(/canje/i.test(estado.aviso) && estado.visible, 'y el operador se entera: ' + JSON.stringify(estado.aviso));
+    assert.strictEqual(Number((await total()).replace('$', '')), subtotal, 'el total deja de tener el descuento');
+
+    // Y no puede viajar al pedido de domicilio.
+    await pag.evaluate(() => {
+      const v = (id, x) => { document.getElementById(id).value = x; };
+      v('env-nombre', 'Transicion'); v('env-telefono', '8781110001');
+      v('env-calle', 'Av Prueba'); v('env-colonia', 'Centro');
+    });
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.ok(!JSON.stringify(cap.body).toLowerCase().includes('rewards'), 'ningún rastro del canje en el pedido');
+  });
+
+  await t('TRANSICION', `${etiqueta}: al volver a para llevar, Rewards recalcula sobre el carrito conservado`, async () => {
+    await modo('llevar');
+    const est = await pag.evaluate(() => ({
+      canje: rwCanjeAplicado,
+      rewardsVisible: document.getElementById('rw-pos-widget').style.display !== 'none',
+      base: posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0),
+    }));
+    assert.strictEqual(est.canje, null, 'el canje no reaparece solo');
+    assert.ok(est.rewardsVisible, 'el widget vuelve para poder canjear de nuevo');
+    assert.strictEqual(est.base, base0.reduce((s, l) => s + l.precio_unitario * l.cantidad, 0),
+      'Rewards recalcula sobre el carrito conservado');
+    assert.strictEqual(Number((await total()).replace('$', '')), est.base);
+  });
+
+  await t('TRANSICION', `${etiqueta}: sin errores de JavaScript en todo el recorrido`, async () => {
+    assert.deepStrictEqual(errs, []);
+  });
+
+  await pag.close();
+}
+
 await navegador.close();
 // ═══════════════════════════════════════════════════════════════════════════
 //  PARTE 3 — QUE EL MOTOR LLEGUE ENTERO AL NAVEGADOR
