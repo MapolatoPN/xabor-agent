@@ -172,7 +172,7 @@ const botonAgregarDeshabilitado = (pagina) =>
   const irADomicilio = async () => {
     await pagina.evaluate(() => nuevoPedidoModalidad('domicilio'));
     await pagina.waitForFunction(
-      () => document.querySelectorAll('#env-lista-productos button').length > 0, { timeout: 10000 });
+      () => document.querySelectorAll('.pos-producto').length > 0, { timeout: 10000 });
   };
   const carrito = () => pagina.evaluate(() => JSON.parse(JSON.stringify(ENV_CARRITO)));
 
@@ -189,7 +189,7 @@ const botonAgregarDeshabilitado = (pagina) =>
 
   await t('DOMICILIO', '2. tipo de pedido = domicilio y producto SIN modificadores → se agrega directo', async () => {
     assert.strictEqual(await pagina.evaluate(() => ENV_TIPO), 'domicilio');
-    await clicPorTexto(pagina, '#env-lista-productos button', fx.simple.nombre);
+    await clicPorTexto(pagina, '.pos-producto', fx.simple.nombre);
     assert.strictEqual(await modalAbierto(pagina), false, 'un producto sin grupos no abre nada');
     const c = await carrito();
     assert.strictEqual(c.length, 1);
@@ -199,7 +199,7 @@ const botonAgregarDeshabilitado = (pagina) =>
   });
 
   await t('DOMICILIO', '3. producto CON modificadores → abre el configurador y NO agrega nada todavía', async () => {
-    await clicPorTexto(pagina, '#env-lista-productos button', fx.configurable.nombre);
+    await clicPorTexto(pagina, '.pos-producto', fx.configurable.nombre);
     await pagina.waitForFunction(() => !!document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
     assert.strictEqual(await modalAbierto(pagina), true, 'ESTE es el bug reportado: en domicilio no se abría');
     const c = await carrito();
@@ -234,13 +234,13 @@ const botonAgregarDeshabilitado = (pagina) =>
   });
 
   await t('DOMICILIO', '6. el resumen muestra las opciones elegidas, no solo el nombre', async () => {
-    const texto = await pagina.$eval('#env-carrito', el => el.textContent);
+    const texto = await pagina.$eval('#pos-order-items', el => el.textContent);
     assert.match(texto, /Término: Suave/, 'el operador ve lo que va a cocinar');
     assert.match(texto, /Extras: Queso/);
   });
 
   await t('DOMICILIO', '7. el MISMO producto con otra configuración es OTRA línea (no se fusiona)', async () => {
-    await clicPorTexto(pagina, '#env-lista-productos button', fx.configurable.nombre);
+    await clicPorTexto(pagina, '.pos-producto', fx.configurable.nombre);
     await pagina.waitForFunction(() => !!document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
     await elegirOpcionModal(pagina, 'Bien cocido');
     await pagina.evaluate(() => document.getElementById('xb-mods-agregar').click());
@@ -252,7 +252,7 @@ const botonAgregarDeshabilitado = (pagina) =>
   });
 
   await t('DOMICILIO', '8. cancelar el configurador no agrega nada', async () => {
-    await clicPorTexto(pagina, '#env-lista-productos button', fx.configurable.nombre);
+    await clicPorTexto(pagina, '.pos-producto', fx.configurable.nombre);
     await pagina.waitForFunction(() => !!document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
     await pagina.evaluate(() => document.getElementById('xb-mods-cancelar').click());
     await pagina.waitForFunction(() => !document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
@@ -261,7 +261,7 @@ const botonAgregarDeshabilitado = (pagina) =>
 
   await t('DOMICILIO', '8b. además de las opciones, la línea admite una nota libre', async () => {
     const escrito = await pagina.evaluate(() => {
-      const inputs = [...document.querySelectorAll('#env-carrito input[type="text"]')];
+      const inputs = [...document.querySelectorAll('#pos-order-items input[type="text"]')];
       if (inputs.length < 2) return null;
       inputs[1].value = 'sin cebolla';
       inputs[1].dispatchEvent(new Event('change', { bubbles: true }));
@@ -328,9 +328,9 @@ const botonAgregarDeshabilitado = (pagina) =>
   await t('RECOGER', '12. recoger usa la misma pantalla y también abre el configurador', async () => {
     await pagina.evaluate(() => nuevoPedidoModalidad('recoger'));
     await pagina.waitForFunction(
-      () => document.querySelectorAll('#env-lista-productos button').length > 0, { timeout: 10000 });
+      () => document.querySelectorAll('.pos-producto').length > 0, { timeout: 10000 });
     assert.strictEqual(await pagina.evaluate(() => ENV_TIPO), 'recoger');
-    await clicPorTexto(pagina, '#env-lista-productos button', fx.configurable.nombre);
+    await clicPorTexto(pagina, '.pos-producto', fx.configurable.nombre);
     await pagina.waitForFunction(() => !!document.getElementById('xb-mods-dlg')?.open, { timeout: 5000 });
     assert.strictEqual(await modalAbierto(pagina), true);
     assert.strictEqual(await botonAgregarDeshabilitado(pagina), true, 'el obligatorio también manda aquí');
@@ -472,8 +472,8 @@ await t('PUNTO-COMUN', '18. un solo motor de captura y un solo punto donde se de
 
   // Las dos capturas del panel agregan producto POR el motor, no a mano.
   for (const [pantalla, fn, carrito] of [
-    ['mostrador', 'async function elegirProductoPOS(', '_cMostrador'],
-    ['envíos (domicilio y recoger)', 'async function envAgregar(', '_cEnvios'],
+    ['mostrador', 'async function elegirProductoPOS(', '_cPOS'],
+    ['envíos (domicilio y recoger)', 'async function envAgregar(', '_cPOS'],
   ]) {
     assert.ok(ventana(panel, fn).includes(`${carrito}.agregar(`),
       `${pantalla}: debe agregar por el motor común, no con su propia copia`);
@@ -495,15 +495,14 @@ await t('PUNTO-COMUN', '18. un solo motor de captura y un solo punto donde se de
   // Una sola implementación de carrito para todo el panel...
   assert.strictEqual((motor.match(/class Carrito/g) || []).length, 1,
     'el carrito se implementa una sola vez');
-  // ...pero un motor único NO es un carrito compartido: cada modalidad tiene
-  // su instancia. Lo que se captura para llevar no puede aparecer en el
-  // domicilio que empieza después.
-  assert.strictEqual((panel.match(/new XaborCaptura\.Carrito\(/g) || []).length, 2,
-    'mostrador y envíos tienen cada uno su carrito');
-  assert.match(panel, /let posCarrito = _cMostrador\.lineas/,
+  // ...y la captura del panel es UNA, con UN carrito: para llevar, recoger y
+  // domicilio son el mismo pedido capturándose, solo cambia cómo se entrega.
+  assert.strictEqual((panel.match(/new XaborCaptura\.Carrito\(/g) || []).length, 1,
+    'la captura del panel tiene un solo carrito');
+  assert.match(panel, /let posCarrito = _cPOS\.lineas/,
     'posCarrito son las líneas del motor, no una segunda estructura');
-  assert.match(panel, /let ENV_CARRITO = _cEnvios\.lineas/,
-    'ENV_CARRITO son las líneas del motor, no una segunda estructura');
+  assert.match(panel, /let ENV_CARRITO = _cPOS\.lineas/,
+    'ENV_CARRITO son las mismas líneas: los dos nombres legados apuntan al mismo carrito');
 });
 
 await t('PUNTO-COMUN', '19. un solo constructor de payload lleva la selección al servidor', async () => {
@@ -519,8 +518,8 @@ await t('PUNTO-COMUN', '19. un solo constructor de payload lleva la selección a
   // items (envíos mandaba solo producto_id y cantidad, y mostrador mandaba el
   // carrito entero con precios que el servidor ignora).
   for (const [pantalla, fn, carrito] of [
-    ['mostrador', 'async function confirmarPresencial(', '_cMostrador'],
-    ['envíos', 'async function envCrearPedido(', '_cEnvios'],
+    ['mostrador', 'async function confirmarPresencial(', '_cPOS'],
+    ['envíos', 'async function envCrearPedido(', '_cPOS'],
   ]) {
     assert.ok(ventana(panel, fn, 1400).includes(`${carrito}.itemsParaServidor()`),
       `${pantalla}: debe mandar los items por el constructor común`);
@@ -572,21 +571,36 @@ await t('CACHE', '21. toda función del módulo que una pantalla invoca EXISTE e
   // La comprobación de fondo: aunque alguien olvidara el ?v=, esto caza el
   // momento exacto en que una pantalla empieza a depender de algo que el
   // módulo no ofrece. Es la forma de la caída de producción, en estático.
+  //
+  // El panel ya NO llama al configurador directamente: entra por el motor
+  // (captura.js), que es quien lo invoca. Mesas sí lo llama, porque no tiene
+  // carrito propio. Se comprueban las dos cadenas.
   const js = await traer('/modificadores.js');
   const expuestas = new Set(
     (js.match(/global\.XaborModificadores\s*=\s*\{([^}]*)\}/)?.[1] || '')
       .split(',').map(s => s.split(':')[0].trim()).filter(Boolean));
   assert.ok(expuestas.size >= 4, 'se debe poder leer lo que el módulo expone: ' + [...expuestas]);
-  for (const ruta of ['/index.html', '/mesas.html']) {
-    const html = await traer(ruta);
-    const usadas = new Set([...html.matchAll(/XaborModificadores\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
-    assert.ok(usadas.size > 0, `${ruta} debe usar el módulo`);
+
+  const consumidores = [['motor', '/captura.js'], ['mesas', '/mesas.html']];
+  let vistas = 0;
+  for (const [quien, ruta] of consumidores) {
+    const fuente = await traer(ruta);
+    const usadas = new Set([...fuente.matchAll(/XaborModificadores\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+    if (!usadas.size) continue;
+    vistas++;
     for (const fn of usadas) {
       assert.ok(expuestas.has(fn),
-        `${ruta} llama a XaborModificadores.${fn}, que el módulo NO expone ` +
+        `${quien} (${ruta}) llama a XaborModificadores.${fn}, que el módulo NO expone ` +
         `(expone: ${[...expuestas].join(', ')}). Así se cayó producción el 2026-09-15.`);
     }
   }
+  assert.strictEqual(vistas, consumidores.length, 'el motor y mesas deben seguir consumiendo el configurador');
+
+  // Y el panel llega al configurador por el motor, no por su cuenta.
+  const panel = await traer('/index.html');
+  assert.strictEqual((panel.match(/XaborModificadores\./g) || []).length, 0,
+    'el panel no puede volver a llamar al configurador salteándose el motor');
+  assert.ok(/XaborCaptura\./.test(panel), 'el panel usa el motor');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

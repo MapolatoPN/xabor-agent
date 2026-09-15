@@ -45,25 +45,46 @@ t('las capturas NO son destinos del sidebar (sin tab-presencial/tab-envios)', ()
 t('el bottom-nav ya no tiene botón POS separado', () => {
   assert.ok(!html.includes('id="bnav-presencial"'));
 });
-t('mostrador y envíos llevan el encabezado de modalidad con regreso a Pedidos', () => {
+t('la captura es UNA sola pantalla para llevar, recoger y domicilio', () => {
+  // Antes eran dos vistas: #vista-presencial (cuadrícula) y #vista-envios
+  // (lista plana + formulario). El operador aprendía dos interfaces para el
+  // mismo trabajo. Ahora la captura vive solo en #vista-presencial; la vista
+  // de envíos conserva únicamente el SEGUIMIENTO.
   const presencial = html.indexOf('<div id="vista-presencial"');
-  const envios = html.indexOf('<div id="vista-envios"');
-  assert.ok(presencial > 0 && envios > 0);
-  // cada vista abre con el mod-header (aparece antes de 600 chars de su inicio)
-  for (const inicio of [presencial, envios]) {
-    const tramo = html.slice(inicio, inicio + 700);
-    assert.ok(tramo.includes('class="mod-header"'), 'falta mod-header');
-    assert.ok(tramo.includes("mostrarTab('comandas')"), 'falta regreso a Pedidos');
+  assert.ok(presencial > 0, 'debe existir la captura');
+  const tramo = html.slice(presencial, presencial + 700);
+  assert.ok(tramo.includes('class="mod-header"'), 'falta mod-header');
+  assert.ok(tramo.includes("mostrarTab('comandas')"), 'falta regreso a Pedidos');
+  assert.ok(!html.includes('id="env-vista-nuevo"'), 'la captura duplicada de Envíos no puede volver');
+  for (const id of ['env-lista-productos', 'env-carrito', 'env-buscar-prod', 'env-tipo-recoger', 'env-tipo-domicilio']) {
+    assert.ok(!html.includes(`id="${id}"`), `${id} pertenecía a la captura duplicada y debe estar fuera`);
   }
 });
-t('los chips cubren las 4 modalidades en ambas capturas', () => {
+t('la vista de envíos conserva el seguimiento, no la captura', () => {
+  assert.ok(html.includes('id="env-vista-activos"'), 'envíos activos se conserva');
+  assert.ok(html.includes('id="env-vista-historial"'), 'historial se conserva');
+});
+t('los chips cubren las 4 modalidades y existen una vez por pantalla', () => {
+  // Dos apariciones: la captura y la vista de seguimiento de envíos, que
+  // conserva su encabezado para poder volver a capturar.
   for (const m of ['llevar', 'recoger', 'domicilio', 'restaurante']) {
     const n = html.split(`data-mod="${m}"`).length - 1;
-    assert.strictEqual(n, 2, `chip ${m}: esperaba 2 (uno por captura), hay ${n}`);
+    assert.strictEqual(n, 2, `chip ${m}: esperaba 2, hay ${n}`);
   }
 });
-t('envTipo sincroniza los chips del encabezado', () => {
-  assert.match(html, /function envTipo\(t\)\{[\s\S]{0,600}pintarChipsModalidad\(t\)/);
+t('cambiar de modalidad NO cambia de pantalla, solo los campos', () => {
+  // nuevoPedidoModalidad manda las tres a la misma captura...
+  assert.match(html, /function nuevoPedidoModalidad\(m\)[\s\S]{0,400}bnavTab\('presencial'\)[\s\S]{0,200}posModalidad\(/);
+  assert.ok(!/function nuevoPedidoModalidad\(m\)[\s\S]{0,400}bnavTab\('envios'\)/.test(html),
+    'ninguna modalidad puede volver a sacar al operador a otra vista');
+  // ...y posModalidad solo toca campos del pedido y los chips.
+  assert.match(html, /function posModalidad\(m\)[\s\S]{0,900}pintarChipsModalidad\(m\)/);
+  for (const campo of ['pos-campos-contacto', 'pos-campos-domicilio', 'pos-envio-row', 'pos-pago-row']) {
+    assert.ok(html.includes(`id="${campo}"`), `falta el bloque de campos ${campo}`);
+  }
+});
+t('envTipo sigue existiendo y sincroniza los chips por la vía común', () => {
+  assert.match(html, /function envTipo\(t\)\{[\s\S]{0,200}posModalidad\(/);
 });
 
 // ─── Config → Pagos sin duplicación ─────────────────────────────────────────

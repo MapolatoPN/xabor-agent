@@ -134,8 +134,6 @@ header {
 .env-card { background:#fff; border:1px solid #eee; border-radius:12px; padding:14px; }
 .env-lbl { font-size:.75rem; font-weight:800; text-transform:uppercase; letter-spacing:.5px; color:#999; margin-bottom:8px; }
 .env-inp { width:100%; padding:9px 10px; border:1px solid #e5e2da; border-radius:8px; font-size:.95rem; box-sizing:border-box; }
-.env-tipo-btn { flex:1; padding:12px; border:1px solid #e5e2da; border-radius:10px; background:#fff; cursor:pointer; font-weight:700; font-size:.95rem; }
-.env-tipo-btn.activo { border-color:#16a34a; background:#f0fdf4; color:#15803d; }
 .env-qty { width:26px; height:26px; border:1px solid #e5e2da; border-radius:6px; background:#fff; cursor:pointer; font-weight:800; }
 .env-accion { padding:4px 8px; border:1px solid #e5e2da; border-radius:6px; background:#fff; cursor:pointer; font-size:.8rem; margin-left:4px; }
 @media (max-width:900px){ #env-vista-nuevo > div { grid-template-columns:1fr !important; } }
@@ -670,6 +668,38 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #pos-total-row { display: flex; justify-content: space-between; align-items: baseline; margin: 10px 0; }
 #pos-total-label { font-size: 0.85rem; color: var(--color-text-secondary); }
 #pos-total-monto { font-size: 1.6rem; font-weight: 800; color: var(--color-text-primary); letter-spacing: -0.02em; }
+
+/* ── XaborPOS: lo que las tres modalidades comparten ──────────────────────
+   Para llevar, Recoger y Domicilio usan ESTA pantalla. Lo único que cambia
+   entre ellas son los campos del pedido (abajo), nunca el catálogo: antes
+   Recoger y Domicilio vivían en otra vista, con lista en vez de cuadrícula y
+   sin barra móvil, y el operador tenía que aprender dos interfaces. */
+#pos-buscar-wrap { position: sticky; top: 0; z-index: 3; background: var(--color-bg); padding-bottom: 10px; }
+#pos-buscar { width: 100%; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 0.9rem; font-family: inherit; color: var(--color-text-primary); transition: all .15s; }
+#pos-buscar:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
+#pos-sin-resultados { text-align: center; color: var(--color-text-muted); font-size: 0.85rem; padding: 28px 0; }
+
+/* Datos del pedido: compacto y plegable dentro del panel lateral. Nunca
+   sustituye ni desplaza la cuadrícula de productos. */
+#pos-datos { border: 1px solid var(--color-border); border-radius: var(--radius-md); margin-bottom: 12px; overflow: hidden; }
+#pos-datos-toggle { width: 100%; display: flex; align-items: center; gap: 6px; background: var(--color-surface-2); border: none; padding: 9px 12px; font-family: inherit; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--color-text-secondary); cursor: pointer; }
+#pos-datos-toggle .pd-chevron { margin-left: auto; transition: transform .15s; font-size: 0.8rem; }
+#pos-datos.plegado .pd-chevron { transform: rotate(-90deg); }
+#pos-datos.plegado #pos-datos-cuerpo { display: none; }
+#pos-datos-aviso { color: var(--color-warning); font-weight: 700; font-size: 0.68rem; }
+#pos-datos-cuerpo { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.pd-fila { display: grid; gap: 8px; }
+.pd-2 { grid-template-columns: 1fr 1fr; }
+.pd-3 { grid-template-columns: 2fr 1fr 1fr; }
+.pos-inp { width: 100%; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 9px 10px; font-size: 0.85rem; font-family: inherit; color: var(--color-text-primary); transition: all .15s; }
+.pos-inp:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
+#pos-cliente-hint { font-size: 0.75rem; color: var(--color-success); display: none; }
+#pos-envio-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 6px; }
+#pos-envio-row span.pe-campo { display: flex; align-items: center; gap: 4px; }
+#pos-envio-row input { width: 74px; text-align: right; padding: 6px 8px; }
+#pos-pago-row { margin-top: 10px; }
+#pos-pago-row label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--color-text-secondary); display: block; margin-bottom: 4px; }
+#pos-error { display: none; color: var(--color-danger); font-size: 0.8rem; margin-top: 8px; text-align: center; font-weight: 600; }
 #btn-confirmar-presencial {
   width: 100%; padding: 14px; border-radius: var(--radius-md);
   background: var(--color-brand); color: #fff; font-size: 1rem;
@@ -1302,6 +1332,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     <div id="pos-layout">
       <!-- Menú -->
       <div id="pos-menu">
+        <!-- Buscador del catálogo: lo tenían Envíos y Mesas, y mostrador no.
+             Ahora es el mismo para las tres modalidades. -->
+        <div id="pos-buscar-wrap">
+          <input id="pos-buscar" type="text" placeholder="Buscar producto… (ej. chila)" autocomplete="off"
+                 oninput="posBuscar()" onkeydown="if(event.key==='Escape'){this.value='';posBuscar();}">
+        </div>
         <div id="pos-menu-cats"></div>
       </div>
 
@@ -1315,10 +1351,36 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div class="pos-order-empty">Selecciona productos del menú</div>
         </div>
         <div id="pos-order-footer">
-          <div id="pos-fields">
-            <div>
-              <label>Nombre del cliente</label>
+          <!-- Datos del pedido. La modalidad decide QUE campos se ven aquí; la
+               cuadrícula de productos no se entera. Compacto y plegable a
+               propósito: en Domicilio son nueve campos y no pueden empujar ni
+               sustituir el catálogo, que es lo que pasaba en la vista Envíos. -->
+          <div id="pos-datos">
+            <button type="button" id="pos-datos-toggle" onclick="posPlegarDatos()">
+              <span id="pos-datos-titulo">Datos del pedido</span>
+              <span id="pos-datos-aviso"></span>
+              <span class="pd-chevron">▾</span>
+            </button>
+            <div id="pos-datos-cuerpo">
               <input id="pos-nombre-input" type="text" placeholder="Nombre (opcional)" autocomplete="off" />
+              <div class="pd-fila pd-2" id="pos-campos-contacto" style="display:none;">
+                <input id="env-nombre" class="pos-inp" placeholder="Nombre *" autocomplete="off">
+                <input id="env-telefono" class="pos-inp" placeholder="Teléfono *" inputmode="tel" onblur="envBuscarCliente()">
+              </div>
+              <div id="pos-cliente-hint"></div>
+              <div id="pos-campos-domicilio" style="display:none;">
+                <div class="pd-fila pd-3">
+                  <input id="env-calle" class="pos-inp" placeholder="Calle *">
+                  <input id="env-numext" class="pos-inp" placeholder="No. ext">
+                  <input id="env-numint" class="pos-inp" placeholder="No. int">
+                </div>
+                <div class="pd-fila pd-2" style="margin-top:8px;">
+                  <input id="env-colonia" class="pos-inp" placeholder="Colonia *">
+                  <input id="env-entrecalles" class="pos-inp" placeholder="Entre calles">
+                </div>
+                <input id="env-referencia" class="pos-inp" placeholder="Referencia (portón, color…)" style="margin-top:8px;">
+                <input id="env-notas-entrega" class="pos-inp" placeholder="Notas de entrega" style="margin-top:8px;">
+              </div>
             </div>
           </div>
           <div id="pos-subtotal-row" style="display:none;justify-content:space-between;align-items:baseline;margin-top:8px;">
@@ -1332,11 +1394,29 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <!-- Subtotal discreto: ayuda al operador durante la captura, pero el
                cobro (forma de pago, descuento, billete/mixto) vive en el modal
                Cobrar y NO domina esta pantalla. -->
+          <!-- Solo Domicilio: el envío suma al total en la MISMA fila donde el
+               operador ya mira el dinero. -->
+          <div id="pos-envio-row" style="display:none;">
+            <span>Envío</span>
+            <span class="pe-campo">$<input id="env-costo-envio" class="pos-inp" type="number" min="0" step="1" value="0"></span>
+          </div>
           <div id="pos-total-row">
             <span id="pos-total-label">Subtotal</span>
             <span id="pos-total-monto">$0</span>
           </div>
-          <div style="font-size:0.72rem;color:#999;margin-top:2px;">Se cobra al cerrar el pedido</div>
+          <div id="pos-nota-cobro" style="font-size:0.72rem;color:#999;margin-top:2px;">Se cobra al cerrar el pedido</div>
+          <!-- Para llevar NO lleva selector de pago: nace por_cobrar y se cobra
+               en el modal Cobrar (captura != cobro). Recoger y Domicilio sí,
+               porque su endpoint registra la forma de pago al crear. -->
+          <div id="pos-pago-row" style="display:none;">
+            <label>Método de pago</label>
+            <select id="env-metodo-pago" class="pos-inp">
+              <option value="efectivo">Efectivo</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="enlace_pago">Enlace de pago</option>
+            </select>
+          </div>
           <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
           <div id="rw-pos-widget" data-modulo="rewards">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
@@ -1372,7 +1452,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <div id="rw-pos-resultados" style="margin-top:6px;max-height:140px;overflow-y:auto;"></div>
           </div>
 
-          <button id="btn-confirmar-presencial" onclick="confirmarPresencial()" disabled>Crear pedido</button>
+          <button id="btn-confirmar-presencial" onclick="crearPedidoPOS()" disabled>Crear pedido</button>
+          <div id="pos-error"></div>
         </div>
       </div>
     </div>
@@ -2004,81 +2085,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
         <div style="font-size:1.1rem;font-weight:800;">Envíos</div>
         <div style="display:flex;background:#f1f0ed;border-radius:8px;padding:3px;gap:2px;margin-left:auto;">
-          <button id="env-sub-nuevo"    onclick="envSub('nuevo')"    class="env-sub-btn activo-fil">Nuevo pedido</button>
-          <button id="env-sub-activos"  onclick="envSub('activos')"  class="env-sub-btn">Envíos activos</button>
+          <button id="env-sub-nuevo"    onclick="nuevoPedidoModalidad(MODALIDAD === 'domicilio' ? 'domicilio' : 'recoger')" class="env-sub-btn">Nuevo pedido</button>
+          <button id="env-sub-activos"  onclick="envSub('activos')"  class="env-sub-btn activo-fil">Envíos activos</button>
           <button id="env-sub-historial" onclick="envSub('historial')" class="env-sub-btn">Historial</button>
         </div>
       </div>
 
-      <!-- NUEVO PEDIDO -->
-      <div id="env-vista-nuevo">
-        <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start;">
-          <div style="display:flex;flex-direction:column;gap:14px;">
-            <!-- Tipo -->
-            <div class="env-card">
-              <div class="env-lbl">Tipo de pedido</div>
-              <div style="display:flex;gap:8px;">
-                <button id="env-tipo-recoger"  onclick="envTipo('recoger')"  class="env-tipo-btn">🏪 Recoger</button>
-                <button id="env-tipo-domicilio" onclick="envTipo('domicilio')" class="env-tipo-btn activo">🛵 A domicilio</button>
-              </div>
-            </div>
-            <!-- Cliente -->
-            <div class="env-card">
-              <div class="env-lbl">Cliente</div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                <input id="env-nombre" placeholder="Nombre *" class="env-inp">
-                <input id="env-telefono" placeholder="Teléfono *" inputmode="tel" class="env-inp" onblur="envBuscarCliente()">
-              </div>
-              <div id="env-cliente-hint" style="font-size:.8rem;color:#15803d;margin-top:4px;display:none;"></div>
-            </div>
-            <!-- Domicilio -->
-            <div class="env-card" id="env-domicilio-card">
-              <div class="env-lbl">Domicilio</div>
-              <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
-                <input id="env-calle" placeholder="Calle *" class="env-inp">
-                <input id="env-numext" placeholder="No. ext" class="env-inp">
-                <input id="env-numint" placeholder="No. int" class="env-inp">
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                <input id="env-colonia" placeholder="Colonia *" class="env-inp">
-                <input id="env-entrecalles" placeholder="Entre calles" class="env-inp">
-              </div>
-              <input id="env-referencia" placeholder="Referencia (portón, color…)" class="env-inp" style="margin-top:8px;">
-              <input id="env-notas-entrega" placeholder="Notas de entrega" class="env-inp" style="margin-top:8px;">
-            </div>
-            <!-- Productos -->
-            <div class="env-card">
-              <div class="env-lbl">Productos</div>
-              <input id="env-buscar-prod" placeholder="Buscar producto… (ej. chila)" class="env-inp" oninput="envFiltrarProductos()" onkeydown="if(event.key==='Escape'){this.value='';envFiltrarProductos();}">
-              <div id="env-lista-productos" style="max-height:260px;overflow:auto;margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
-            </div>
-          </div>
-          <!-- Resumen lateral -->
-          <div class="env-card" style="position:sticky;top:10px;">
-            <div class="env-lbl">Resumen</div>
-            <div id="env-carrito" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;"></div>
-            <div id="env-carrito-vacio" style="color:#aaa;text-align:center;padding:20px;font-size:.9rem;">Agrega productos</div>
-            <hr style="border:none;border-top:1px solid #eee;margin:10px 0;">
-            <div id="env-fila-envio" style="display:flex;justify-content:space-between;align-items:center;font-size:.9rem;margin-bottom:6px;">
-              <span>Envío</span>
-              <span style="display:flex;align-items:center;gap:4px;">$<input id="env-costo-envio" type="number" min="0" step="1" value="0" style="width:64px;padding:4px;border:1px solid #e5e2da;border-radius:6px;text-align:right;"></span>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-weight:800;font-size:1.05rem;margin:6px 0;">
-              <span>Total</span><span id="env-total">$0.00</span>
-            </div>
-            <div class="env-lbl" style="margin-top:8px;">Método de pago</div>
-            <select id="env-metodo-pago" class="env-inp">
-              <option value="efectivo">Efectivo</option>
-              <option value="tarjeta">Tarjeta</option>
-              <option value="transferencia">Transferencia</option>
-              <option value="enlace_pago">Enlace de pago</option>
-            </select>
-            <button onclick="envCrearPedido()" id="env-btn-crear" style="width:100%;margin-top:12px;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:14px;font-weight:800;font-size:1.05rem;cursor:pointer;">Crear pedido</button>
-            <div id="env-error" style="color:#b91c1c;font-size:.85rem;margin-top:8px;text-align:center;display:none;"></div>
-          </div>
-        </div>
-      </div>
-
+      <!-- La captura de Recoger y Domicilio ya NO vive aqui: es la misma
+           pantalla que Para llevar (XaborPOS). Esta vista conserva solo el
+           SEGUIMIENTO de envios, que no es captura. -->
       <!-- ENVÍOS ACTIVOS -->
       <div id="env-vista-activos" style="display:none;">
         <div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><button onclick="cargarEnviosActivos()" style="padding:6px 10px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;">↻</button></div>
@@ -3527,7 +3542,7 @@ function mostrarTab(tab) {
   abrirGrupoDelTab(tab);
   // Acciones al abrir cada sección
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
-  if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad('llevar'); }
+  if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad(MODALIDAD); }
   if (tab === 'corte')     cargarCorte();
   if (tab === 'ajustes')   cargarAjustes();
   if (tab === 'historial') cargarHistorial();
@@ -3671,10 +3686,10 @@ function cerrarNuevoPedido() {
 function nuevoPedidoModalidad(m) {
   cerrarNuevoPedido();
   if (m === 'restaurante') { location.href = '/restaurante'; return; }
-  if (m === 'llevar') { bnavTab('presencial'); pintarChipsModalidad('llevar'); return; }
-  // recoger / domicilio: la captura de Envíos con el tipo ya preseleccionado
-  bnavTab('envios');
-  envTipo(m === 'domicilio' ? 'domicilio' : 'recoger');
+  // Las tres modalidades de mostrador comparten pantalla: cambiar de chip NO
+  // saca al operador de la captura, solo cambia los campos del pedido.
+  bnavTab('presencial');
+  posModalidad(m === 'domicilio' ? 'domicilio' : (m === 'recoger' ? 'recoger' : 'llevar'));
 }
 
 // Los chips de modalidad (encabezado compartido de mostrador/envíos) siempre
@@ -4885,24 +4900,30 @@ document.getElementById('modal-factura-overlay').addEventListener('click', e => 
   if (e.target === document.getElementById('modal-factura-overlay')) cerrarModalFactura();
 });
 
-// ─── POS Presencial ──────────────────────────────────────────────────────────
-// La captura vive en el motor común (panel/captura.js): catálogo, carrito,
-// agrupación de líneas, selección de producto y construcción del payload son
-// los MISMOS que usa Envíos. Aquí queda solo lo propio de mostrador: su
-// cuadrícula por categorías, su carrito a la derecha, Rewards y la barra móvil.
+// ─── XaborPOS — captura única de Para llevar / Recoger / Domicilio ──────────
 //
-// Un motor único no es un carrito compartido: mostrador y Envíos tienen cada
-// uno su instancia, porque lo que se está capturando para llevar no tiene por
-// qué aparecer en el pedido a domicilio que empieza después.
-let _cMostrador = new XaborCaptura.Carrito({
+// Antes esto eran DOS pantallas: mostrador (cuadrícula por categorías, carrito
+// lateral, barra móvil) y Envíos (lista plana, formulario largo, sin barra
+// móvil). El operador tenía que aprender dos interfaces para el mismo trabajo,
+// y cambiar de modalidad lo sacaba de una pantalla y lo metía en otra.
+//
+// Ahora la pantalla es UNA. La modalidad decide qué METADATOS pide el pedido
+// —nombre, teléfono, dirección, envío, forma de pago— y a qué endpoint se
+// manda; el catálogo, las tarjetas, el buscador, el configurador, el carrito y
+// la barra móvil son los mismos siempre.
+//
+// El motor sigue siendo XaborCaptura: aquí no se decide nada de negocio.
+let MODALIDAD = 'llevar';                 // llevar | recoger | domicilio
+let _cPOS = new XaborCaptura.Carrito({
   onCambio: () => { renderCarrito(); actualizarMobileCartBar(); },
 });
-// `posCarrito` es la MISMA referencia que las líneas del motor —el carrito se
-// muta en el sitio y nunca se reasigna—, así que todo lo que ya hablaba de
-// `posCarrito` (Rewards, la barra móvil) sigue leyendo el carrito de verdad.
-let posCarrito = _cMostrador.lineas;
-// El descuento y la forma de pago ya NO viven en la captura: van en el modal
-// Cobrar (reingeniería UX — captura ≠ cobro).
+// Un solo carrito: cambiar de modalidad NO es empezar otro pedido, es decir
+// cómo se entrega el que ya se está capturando. Los dos nombres legados
+// apuntan a las MISMAS líneas (el carrito se muta en el sitio).
+let posCarrito = _cPOS.lineas;
+let ENV_CARRITO = _cPOS.lineas;
+
+const esEnvio = () => MODALIDAD === 'recoger' || MODALIDAD === 'domicilio';
 
 async function renderMenuPOS() {
   if (!document.getElementById('pos-menu-cats')) return;
@@ -4911,30 +4932,94 @@ async function renderMenuPOS() {
 
 // Pintado puro: se puede llamar tantas veces como haga falta sin volver a
 // pedir el menú. La cuadrícula NUNCA se vacía para actualizarse — si la
-// revalidación falla, el motor conserva el catálogo anterior y aquí no llega
-// nada que pintar.
+// revalidación falla, el motor conserva el catálogo anterior.
 function pintarMenuPOS(cats) {
   const cont = document.getElementById('pos-menu-cats');
   if (!cont) return;
+  const q = (document.getElementById('pos-buscar')?.value || '').toLowerCase().trim();
+  const tarjeta = (cat, p) => `
+        <button class="pos-producto" onclick="elegirProductoPOS('${cat.id}','${p.id}')">
+          ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy" onerror="this.remove()">` : ''}
+          <div class="pos-prod-nombre">${p.nombre}${(p.modificadores && p.modificadores.length) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</div>
+          <div class="pos-prod-precio">$${parseFloat(p.precio).toFixed(0)}</div>
+        </button>`;
+  // Buscando se pierde la categoría a propósito: lo que el operador quiere ver
+  // son las coincidencias, no dónde viven.
+  if (q) {
+    const hits = XaborCaptura.catalogo.buscar(q);
+    cont.innerHTML = hits.length
+      ? `<div class="pos-cat-header" style="cursor:default;"><span>${hits.length} resultado${hits.length === 1 ? '' : 's'}</span><span></span></div>
+         <div class="pos-productos-grid">${hits.map(p => tarjeta({ id: p.categoria_id }, p)).join('')}</div>`
+      : '<div id="pos-sin-resultados">Sin resultados para «' + q.replace(/[<>&]/g, '') + '»</div>';
+    return;
+  }
   cont.innerHTML = (cats || []).map(cat => `
     <div class="pos-cat-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
       <span>${cat.nombre}</span><span>▾</span>
     </div>
     <div class="pos-productos-grid">
-      ${(cat.productos || []).filter(p => XaborCaptura.catalogo.vendible(p)).map(p => `
-        <button class="pos-producto" onclick="elegirProductoPOS('${cat.id}','${p.id}')">
-          ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy" onerror="this.remove()">` : ''}
-          <div class="pos-prod-nombre">${p.nombre}${(p.modificadores && p.modificadores.length) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</div>
-          <div class="pos-prod-precio">$${parseFloat(p.precio).toFixed(0)}</div>
-        </button>`).join('')}
+      ${(cat.productos || []).filter(p => XaborCaptura.catalogo.vendible(p)).map(p => tarjeta(cat, p)).join('')}
     </div>`).join('');
 }
 
+function posBuscar() { pintarMenuPOS(XaborCaptura.catalogo.categorias()); }
+
 // Cuando el motor revalida el menú por detrás y el catálogo efectivo cambió,
-// la cuadrícula se repinta sola. El carrito NO se toca: si un producto se
-// agota con un pedido a medias, lo ya capturado es del operador y solo se
-// bloquean las adiciones nuevas.
+// la cuadrícula se repinta sola. El carrito no se toca.
 XaborCaptura.catalogo.onCambio(() => pintarMenuPOS(XaborCaptura.catalogo.categorias()));
+
+// ─── Modalidad: solo cambia los campos del pedido ───────────────────────────
+// No cambia el catálogo, ni el carrito, ni la pantalla. Es la diferencia
+// entera entre Para llevar, Recoger y Domicilio.
+function posModalidad(m) {
+  MODALIDAD = m;
+  const ver = (id, on) => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
+  ver('pos-campos-contacto', esEnvio());
+  ver('pos-campos-domicilio', m === 'domicilio');
+  ver('pos-envio-row', m === 'domicilio');
+  ver('pos-pago-row', esEnvio());
+  // Para llevar nace por_cobrar y por eso no pide forma de pago aquí.
+  ver('pos-nota-cobro', m === 'llevar');
+  // Rewards solo donde el backend lo acepta: /api/pos/pedidos no recibe
+  // rewards_*, así que en Recoger y Domicilio el widget engañaría al operador.
+  ver('rw-pos-widget', m === 'llevar');
+  ver('pos-nombre-input', m === 'llevar');
+  const t = document.getElementById('pos-datos-titulo');
+  if (t) t.textContent = m === 'domicilio' ? 'Cliente y entrega' : (m === 'recoger' ? 'Datos del cliente' : 'Datos del pedido');
+  pintarChipsModalidad(m);
+  posAvisoDatos();
+  renderCarrito();
+}
+
+function posPlegarDatos() {
+  document.getElementById('pos-datos')?.classList.toggle('plegado');
+}
+
+// El encabezado del bloque avisa si falta algo obligatorio, para que plegarlo
+// no esconda un error.
+function posAvisoDatos() {
+  const av = document.getElementById('pos-datos-aviso');
+  if (!av) return;
+  const faltan = camposFaltantes();
+  av.textContent = faltan.length ? '· falta ' + faltan[0] : '';
+}
+
+function camposFaltantes() {
+  if (!esEnvio()) return [];
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  const faltan = [];
+  if (!v('env-nombre')) faltan.push('nombre');
+  if (!v('env-telefono')) faltan.push('teléfono');
+  if (MODALIDAD === 'domicilio') {
+    if (!v('env-calle')) faltan.push('calle');
+    if (!v('env-colonia')) faltan.push('colonia');
+  }
+  return faltan;
+}
+document.addEventListener('input', (e) => {
+  if (e.target && /^env-(nombre|telefono|calle|colonia)$/.test(e.target.id)) posAvisoDatos();
+  if (e.target && e.target.id === 'env-costo-envio') renderCarrito();
+});
 
 // Mobile: navegar al carrito
 function abrirCarritoPOS() {
@@ -4952,26 +5037,24 @@ function volverMenuPOS() {
 
 // Dos veces el mismo producto con modificadores distintos son DOS lineas: la
 // firma incluye los ids de opcion elegidos, en orden estable. La regla vive en
-// el motor comun para que los tres carritos (mostrador, envios, mesa) agrupen
-// igual.
+// el motor comun para que todos los canales agrupen igual.
 function firmaCarrito(item) {
   return XaborCaptura.firmaLinea(item);
 }
 
 // Selección de producto: SIEMPRE por el motor común. Él decide si el producto
 // hay que configurarlo, impone la regla de vendibilidad (un agotado no entra
-// por ninguna modalidad) y agrupa la línea. Mostrador, Envíos y Mesa comparten
-// esa decisión; ninguna pantalla la vuelve a tomar por su cuenta.
+// por ninguna modalidad) y agrupa la línea.
 //
 // `catId` ya no hace falta para encontrar el producto (los ids de
 // menu_productos son únicos), pero se conserva en la firma porque es lo que
 // pasa el onclick de la cuadrícula.
 async function elegirProductoPOS(catId, prodId) {
-  await _cMostrador.agregar(XaborCaptura.catalogo.producto(prodId));
+  await _cPOS.agregar(XaborCaptura.catalogo.producto(prodId));
 }
 
 function agregarAlCarrito(prod) {
-  return _cMostrador.agregarLinea(prod);
+  return _cPOS.agregarLinea(prod);
 }
 
 // La captura ya no aplica descuentos: se definen al cobrar (modal Cobrar) y
@@ -4982,23 +5065,28 @@ function calcDescuento() { return 0; }
 // Nota libre de una línea. Va por el motor (nadie escribe en el array a mano)
 // y a propósito NO repinta: el operador está escribiendo dentro del input.
 function notaCarrito(idx, texto) {
-  _cMostrador.nota(idx, texto);
+  _cPOS.nota(idx, texto);
 }
+
+const costoEnvioPOS = () => MODALIDAD === 'domicilio'
+  ? (parseFloat(document.getElementById('env-costo-envio')?.value) || 0) : 0;
 
 function renderCarrito() {
   const cont = document.getElementById('pos-order-items');
+  if (!cont) return;
+  const envio = costoEnvioPOS();
   if (!posCarrito.length) {
-    cont.innerHTML = '<div class="pos-order-empty">Selecciona productos del menú →</div>';
+    cont.innerHTML = '<div class="pos-order-empty">Selecciona productos del menú</div>';
     document.getElementById('pos-total-monto').textContent = '$0';
     document.getElementById('pos-subtotal-row').style.display = 'none';
     document.getElementById('pos-desc-row').style.display = 'none';
     document.getElementById('btn-confirmar-presencial').disabled = true;
     return;
   }
-  const subtotal  = _cMostrador.subtotal();
+  const subtotal  = _cPOS.subtotal();
   const descuento = calcDescuento(subtotal);
-  const montoCanje = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
-  const total     = Math.max(0, subtotal - descuento - montoCanje);
+  const montoCanje = (MODALIDAD === 'llevar' && rwCanjeAplicado) ? rwCanjeAplicado.monto : 0;
+  const total     = Math.max(0, subtotal - descuento - montoCanje) + envio;
   const tieneDesc = descuento > 0;
   document.getElementById('pos-subtotal-row').style.display = tieneDesc ? 'flex' : 'none';
   document.getElementById('pos-desc-row').style.display     = tieneDesc ? 'flex' : 'none';
@@ -5012,7 +5100,7 @@ function renderCarrito() {
       <div style="flex:1;">
         <div class="poi-nombre">${item.nombre}</div>
         ${item.texto ? `<div style="font-size:0.7rem;color:#6b7280;line-height:1.35;">${item.texto}</div>` : ''}
-        <input type="text" value="${item.notas}" placeholder="Nota (opcional)"
+        <input type="text" value="${escaparAtributo(item.notas)}" placeholder="Nota (opcional)"
           onchange="notaCarrito(${idx}, this.value)"
           style="font-size:0.72rem;background:#f8f7f4;border:1px solid #e5e2da;border-radius:5px;padding:2px 6px;width:100%;margin-top:2px;color:#555;font-family:inherit;">
       </div>
@@ -5024,22 +5112,22 @@ function renderCarrito() {
         </div>
       </div>
     </div>`).join('');
-  document.getElementById('pos-total-monto').textContent = `$${total}`;
-  document.getElementById('btn-confirmar-presencial').disabled = false;
-  // El cálculo de cambio / pago mixto vive en el modal Cobrar: la captura
-  // ya no muestra formulario de pago (reingeniería UX).
-
   // Rewards — actualizar estimación de puntos cuando cambia el carrito
-  if (rwClienteAsignado && rwConfig) rwActualizarEstimacion();
+  if (MODALIDAD === 'llevar' && rwClienteAsignado && rwConfig) rwActualizarEstimacion();
+}
+
+// Una comilla en una nota partía la fila entera del carrito.
+function escaparAtributo(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function actualizarMobileCartBar() {
   const bar = document.getElementById('mobile-cart-bar');
   if (!bar) return;
-  const totalItems = _cMostrador.conteo();
-  const subtotal   = _cMostrador.subtotal();
+  const totalItems = _cPOS.conteo();
+  const subtotal   = _cPOS.subtotal();
   const descuento  = calcDescuento(subtotal);
-  const total      = subtotal - descuento;
+  const total      = subtotal - descuento + costoEnvioPOS();
   document.getElementById('mobile-cart-count').textContent = totalItems;
   document.getElementById('mobile-cart-total').textContent = `$${total}`;
   bar.style.opacity = totalItems > 0 ? '1' : '0.5';
@@ -5048,7 +5136,20 @@ function actualizarMobileCartBar() {
 function scrollToOrder() { abrirCarritoPOS(); }
 
 function ajustarCantidad(idx, delta) {
-  _cMostrador.cambiarCantidad(idx, delta);
+  _cPOS.cambiarCantidad(idx, delta);
+}
+
+function posError(msg) {
+  const e = document.getElementById('pos-error');
+  if (!e) return;
+  e.textContent = msg || '';
+  e.style.display = msg ? '' : 'none';
+}
+
+// El botón enruta por modalidad: cada una tiene su endpoint y sus reglas, pero
+// el operador toca el MISMO botón en la MISMA pantalla.
+function crearPedidoPOS() {
+  return MODALIDAD === 'llevar' ? confirmarPresencial() : envCrearPedido();
 }
 
 // Crear el pedido SIN cobrarlo: nace abierto (el backend lo marca
@@ -5057,15 +5158,15 @@ function ajustarCantidad(idx, delta) {
 // viaja como INTENCIÓN: el backend lo reserva y solo consume puntos al cobrar.
 async function confirmarPresencial() {
   if (!posCarrito.length) return;
+  posError('');
   const nombre = document.getElementById('pos-nombre-input').value.trim() || 'Cliente presencial';
   const btn    = document.getElementById('btn-confirmar-presencial');
   btn.disabled = true; btn.textContent = 'Creando...';
   try {
     const body = {
       // Solo ids de opción y notas: nombre, precio base y precios extra los
-      // resuelve el servidor contra el menú del propio negocio. Es el mismo
-      // constructor de payload que usa Envíos.
-      items: _cMostrador.itemsParaServidor(), nombre,
+      // resuelve el servidor contra el menú del propio negocio.
+      items: _cPOS.itemsParaServidor(), nombre,
       // Sin forma_pago: el pedido nace por cobrar (captura ≠ cobro).
       rewards_telefono:     rwClienteAsignado?.telefono || null,
       rewards_nombre:       rwClienteAsignado?.nombre   || null,
@@ -5073,9 +5174,9 @@ async function confirmarPresencial() {
     };
     const r = await apiFetch('/api/pedido-presencial', { method: 'POST', body: JSON.stringify(body) });
     const data = await r.json();
-    if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
+    if (!r.ok || !data.ok) { posError(data.error || 'No se pudo crear el pedido'); }
     else {
-      _cMostrador.limpiar();
+      _cPOS.limpiar();
       document.getElementById('pos-nombre-input').value = '';
       rwPosLimpiar(); // Limpiar cliente Rewards asignado
       volverMenuPOS();
@@ -5084,7 +5185,7 @@ async function confirmarPresencial() {
       // seguirse y cobrarse cuando toque.
       mostrarTab('comandas');
     }
-  } catch(e) { alert('Error de conexión.'); }
+  } catch(e) { posError('Error de conexión.'); }
   btn.disabled = false; btn.textContent = 'Crear pedido';
 }
 
@@ -10643,23 +10744,28 @@ function setRepFiltro(f) {
   cargarRepartidores();
 }
 
-// ─── Envíos (POS pedidos a domicilio) ───────────────────────────────────────
-// Misma captura que mostrador: el catálogo, el carrito, la agrupación de
-// líneas, la selección de producto y el payload salen del motor común
-// (panel/captura.js). Lo propio de esta pantalla es su modalidad (recoger /
-// domicilio), los datos del cliente, la dirección, el costo de envío y el
-// método de pago — nada más.
-let ENV_TIPO = 'domicilio';
-let _cEnvios = new XaborCaptura.Carrito({ onCambio: () => envRenderCarrito() });
-// Misma referencia que las líneas del motor: el carrito se muta en el sitio.
-let ENV_CARRITO = _cEnvios.lineas;
-// Vista PLANA del mismo catálogo que pinta mostrador (que lo lee en árbol).
-// Ya no es un segundo catálogo: es la misma lectura de /api/menu.
-let ENV_PRODUCTOS = [];
+// ─── Envíos — seguimiento, y los metadatos de Recoger / Domicilio ───────────
+// La CAPTURA de estas dos modalidades ya no vive aquí: es XaborPOS, la misma
+// pantalla que Para llevar. De este archivo solo queda lo que de verdad es
+// propio de un envío: los datos del cliente y la dirección (que se pintan en
+// el panel lateral del POS), el endpoint que los recibe, y las vistas de
+// seguimiento (activos e historial), que nunca fueron captura.
 const ENV_ESTADOS_LBL = { sin_repartidor:'Esperando repartidor', asignado:'Repartidor asignado', recogido:'Recogido', en_camino:'En camino', entregado:'Entregado', cancelado:'Cancelado' };
 function envEsc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-async function abrirEnvios(){ envSub('nuevo'); await envCargarMenu(); }
+// Compat: el tipo de envío es la modalidad del POS, no un estado aparte.
+Object.defineProperty(window, 'ENV_TIPO', {
+  configurable: true,
+  get() { return MODALIDAD === 'domicilio' ? 'domicilio' : 'recoger'; },
+  set(v) { posModalidad(v === 'domicilio' ? 'domicilio' : 'recoger'); },
+});
+// Vista plana del mismo catálogo que pinta la cuadrícula.
+Object.defineProperty(window, 'ENV_PRODUCTOS', {
+  configurable: true,
+  get() { return XaborCaptura.catalogo.productos(); },
+});
+
+async function abrirEnvios(){ envSub('activos'); }
 
 function envSub(sub){
   ['nuevo','activos','historial'].forEach(s => {
@@ -10669,95 +10775,30 @@ function envSub(sub){
   if (sub === 'activos') cargarEnviosActivos();
 }
 
-function envTipo(t){
-  ENV_TIPO = t;
-  document.getElementById('env-tipo-recoger').classList.toggle('activo', t==='recoger');
-  document.getElementById('env-tipo-domicilio').classList.toggle('activo', t==='domicilio');
-  document.getElementById('env-domicilio-card').style.display = (t==='domicilio')?'':'none';
-  document.getElementById('env-fila-envio').style.display = (t==='domicilio')?'flex':'none';
-  pintarChipsModalidad(t); // el encabezado de modalidad sigue al tipo
-  envRecalcular();
-}
+// Cambiar de modalidad NO cambia de pantalla: solo los campos del pedido.
+function envTipo(t){ posModalidad(t === 'domicilio' ? 'domicilio' : 'recoger'); }
 
-// Una sola lectura de /api/menu para todo el panel, cache-first: si ya hay
-// catálogo se pinta al instante y la revalidación corre por detrás.
-//
-// `modificadores` viaja INTACTO en el motor: es lo que decide si el producto
-// abre configurador, y recortarlo aquí fue la raíz del bug de domicilio. Da
-// igual el producto y da igual el negocio: sin eso, ninguno pregunta.
+// El catálogo es uno solo y lo carga el POS; se conserva el nombre porque el
+// arranque y las pruebas lo invocan.
 async function envCargarMenu(){
   await XaborCaptura.catalogo.cargar();
-  ENV_PRODUCTOS = XaborCaptura.catalogo.productos();
-  envFiltrarProductos();
+  pintarMenuPOS(XaborCaptura.catalogo.categorias());
 }
+function envFiltrarProductos(){ posBuscar(); }
 
-// Cuando el motor revalida y el catálogo efectivo cambió, la lista se repinta
-// sola. El carrito en curso no se toca.
-XaborCaptura.catalogo.onCambio(() => {
-  ENV_PRODUCTOS = XaborCaptura.catalogo.productos();
-  envFiltrarProductos();
-});
-
-// El filtro y la regla de vendibilidad son del motor: `agotado` se respeta
-// aquí exactamente igual que en mostrador.
-function envFiltrarProductos(){
-  const input = document.getElementById('env-buscar-prod');
-  const cont  = document.getElementById('env-lista-productos');
-  if (!input || !cont) return;
-  const lista = XaborCaptura.catalogo.buscar(input.value);
-  cont.innerHTML = lista.length ? lista.map(p => `
-    <button onclick="envAgregar(${p.id})" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fff;cursor:pointer;text-align:left;">
-      <span>${envEsc(p.nombre)}${XaborModificadores.tieneModificadores(p) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</span><span style="font-weight:700;">$${p.precio.toFixed(2)}</span>
-    </button>`).join('') : '<div style="color:#aaa;text-align:center;padding:14px;font-size:.85rem;">Sin productos</div>';
-}
-
-// Mismo motor que mostrador y mesa: con grupos abre el configurador y nada
-// entra al carrito hasta que la selección es válida; sin grupos entra directo;
-// agotado no entra nunca. La modalidad (recoger / domicilio) no cambia nada de
-// esta decisión.
+// Mismo motor y misma cuadrícula que Para llevar.
 async function envAgregar(id){
-  await _cEnvios.agregar(XaborCaptura.catalogo.producto(id));
+  await _cPOS.agregar(XaborCaptura.catalogo.producto(id));
 }
-// Por índice, no por producto_id: el mismo producto puede estar dos veces con
-// configuraciones distintas y son líneas independientes.
-function envCambiarCant(idx, d){
-  _cEnvios.cambiarCantidad(idx, d);
-}
-// Igual que en mostrador: la nota va por el motor y no repinta mientras se
-// escribe.
-function envNota(idx, texto){
-  _cEnvios.nota(idx, texto);
-}
-function envRenderCarrito(){
-  const cont = document.getElementById('env-carrito');
-  if (!cont) return;
-  document.getElementById('env-carrito-vacio').style.display = ENV_CARRITO.length ? 'none' : '';
-  // Nota por línea, igual que en mostrador: lo que no es una opción del menú
-  // ("sin cebolla", "bien tostado") también tiene que llegar a la cocina.
-  cont.innerHTML = ENV_CARRITO.map((it, idx) => `
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;font-size:.9rem;">
-      <span style="flex:1;">${envEsc(it.nombre)}${it.texto ? `<div style="font-size:.72rem;color:#6b7280;line-height:1.35;">${envEsc(it.texto)}</div>` : ''}
-        <input type="text" value="${envEsc(it.notas || '')}" placeholder="Nota (opcional)"
-          onchange="envNota(${idx}, this.value)"
-          style="font-size:.72rem;background:#f8f7f4;border:1px solid #e5e2da;border-radius:5px;padding:2px 6px;width:100%;margin-top:2px;color:#555;font-family:inherit;">
-      </span>
-      <button onclick="envCambiarCant(${idx},-1)" class="env-qty">−</button>
-      <span style="min-width:18px;text-align:center;">${it.cantidad}</span>
-      <button onclick="envCambiarCant(${idx},1)" class="env-qty">+</button>
-      <span style="min-width:56px;text-align:right;font-weight:700;">$${(it.precio_unitario*it.cantidad).toFixed(2)}</span>
-    </div>`).join('');
-  envRecalcular();
-}
-function envRecalcular(){
-  const subtotal = _cEnvios.subtotal();
-  const envio = ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0;
-  document.getElementById('env-total').textContent = '$' + (subtotal + envio).toFixed(2);
-}
-document.addEventListener('input', e => { if (e.target && e.target.id === 'env-costo-envio') envRecalcular(); });
+function envCambiarCant(idx, d){ _cPOS.cambiarCantidad(idx, d); }
+function envNota(idx, texto){ _cPOS.nota(idx, texto); }
+function envRenderCarrito(){ renderCarrito(); }
+function envRecalcular(){ renderCarrito(); actualizarMobileCartBar(); }
 
 async function envBuscarCliente(){
   const tel = (document.getElementById('env-telefono').value || '').replace(/\D/g,'').slice(-10);
-  const hint = document.getElementById('env-cliente-hint');
+  const hint = document.getElementById('pos-cliente-hint');
+  if (!hint) return;
   if (tel.length !== 10) { hint.style.display = 'none'; return; }
   try {
     const r = await apiFetch('/api/clientes/' + tel); if (!r.ok) { hint.style.display='none'; return; }
@@ -10765,26 +10806,32 @@ async function envBuscarCliente(){
     if (c && c.nombre) {
       if (!document.getElementById('env-nombre').value) document.getElementById('env-nombre').value = c.nombre;
       hint.textContent = '✓ Cliente encontrado: ' + c.nombre; hint.style.display = '';
+      posAvisoDatos();
     } else hint.style.display = 'none';
   } catch { hint.style.display = 'none'; }
 }
 
+// Recoger y Domicilio: mismo carrito, otro endpoint y otros metadatos.
 async function envCrearPedido(){
-  const btn = document.getElementById('env-btn-crear');
-  const err = document.getElementById('env-error');
-  err.style.display = 'none';
-  if (!ENV_CARRITO.length) { err.textContent = 'Agrega al menos un producto'; err.style.display=''; return; }
+  const btn = document.getElementById('btn-confirmar-presencial');
+  posError('');
+  if (!posCarrito.length) { posError('Agrega al menos un producto'); return; }
+  const faltan = camposFaltantes();
+  if (faltan.length) {
+    document.getElementById('pos-datos')?.classList.remove('plegado'); // no esconder el error
+    posError('Falta ' + faltan.join(', '));
+    return;
+  }
   const body = {
     tipo: ENV_TIPO,
     cliente: { nombre: document.getElementById('env-nombre').value, telefono: document.getElementById('env-telefono').value },
     // Solo ids de opción y notas: nombres, precios extra y reglas los resuelve
     // el servidor contra el menú del propio negocio (recalcularItemsDesdeMenu).
-    // Es el MISMO constructor de payload que usa mostrador.
-    items: _cEnvios.itemsParaServidor(),
+    items: _cPOS.itemsParaServidor(),
     formaPago: document.getElementById('env-metodo-pago').value,
-    costoEnvio: ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0,
+    costoEnvio: costoEnvioPOS(),
   };
-  if (ENV_TIPO === 'domicilio') body.direccion = {
+  if (MODALIDAD === 'domicilio') body.direccion = {
     calle: document.getElementById('env-calle').value, numero_exterior: document.getElementById('env-numext').value,
     numero_interior: document.getElementById('env-numint').value, colonia: document.getElementById('env-colonia').value,
     entre_calles: document.getElementById('env-entrecalles').value, referencia: document.getElementById('env-referencia').value,
@@ -10794,15 +10841,18 @@ async function envCrearPedido(){
     // Idempotency-Key por intento: doble clic = mismo folio.
     const r = await apiFetch('/api/pos/pedidos', { method:'POST', headers: { 'Content-Type':'application/json', 'Idempotency-Key': 'pos-' + Date.now() + '-' + Math.random().toString(36).slice(2,8) }, body: JSON.stringify(body) });
     const j = await r.json().catch(()=>({}));
-    if (!r.ok) { err.textContent = j.error || 'No se pudo crear el pedido'; err.style.display=''; return; }
+    if (!r.ok) { posError(j.error || 'No se pudo crear el pedido'); return; }
     alert('Pedido creado: ' + j.pedido.id + (j.idempotente ? ' (ya existía, no se duplicó)' : ''));
-    ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega'].forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
-    // El costo de envío se pone a cero ANTES de vaciar: limpiar el carrito
-    // dispara el repintado, y con él el recálculo del total.
+    ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega']
+      .forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
+    // El envío se pone a cero ANTES de vaciar: limpiar dispara el repintado.
     document.getElementById('env-costo-envio').value = '0';
-    _cEnvios.limpiar();
-    envSub('activos');
-  } catch (e) { err.textContent = 'Error de red'; err.style.display=''; }
+    _cPOS.limpiar();
+    document.getElementById('pos-cliente-hint').style.display = 'none';
+    posAvisoDatos();
+    volverMenuPOS();
+    bnavTab('envios');
+  } catch (e) { posError('Error de red'); }
   finally { btn.disabled = false; btn.textContent = 'Crear pedido'; }
 }
 

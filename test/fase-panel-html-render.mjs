@@ -145,8 +145,12 @@ await t('CONTRATO', 'la funcionalidad de la microfase sigue en el HTML servido',
   // nombre suelto no basta, lo que se protege es que deleguen.
   assert.ok(texto.includes('elegirProductoPOS'), 'POS captura productos del menú');
   assert.ok(texto.includes('firmaCarrito'), 'el carrito separa líneas por selección');
-  assert.strictEqual((texto.match(/new XaborCaptura\.Carrito\(/g) || []).length, 2,
-    'mostrador y envíos usan el mismo motor, con un carrito cada uno');
+  // Una sola captura para llevar/recoger/domicilio: un motor y UN carrito.
+  // Cambiar de modalidad no empieza otro pedido, solo cambia sus metadatos.
+  assert.strictEqual((texto.match(/new XaborCaptura\.Carrito\(/g) || []).length, 1,
+    'la captura del panel es una sola, con un solo carrito');
+  assert.ok(texto.includes('id="pos-buscar"'), 'la cuadrícula lleva buscador en las tres modalidades');
+  assert.ok(!texto.includes('id="env-lista-productos"'), 'la lista plana de Envíos ya no existe');
   const mesas = await traer('/mesas.html');
   assert.ok(mesas.texto.includes('modificadores.js'), 'mesas usa el mismo modal');
   assert.ok(mesas.texto.includes('elegirProducto'), 'mesas agrega desde el menú con un toque');

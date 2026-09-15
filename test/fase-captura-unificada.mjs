@@ -277,8 +277,8 @@ await t('PANTALLA', '11. mostrador NO ofrece un producto agotado (antes sí, y e
 
 await t('PANTALLA', '12. envíos aplica exactamente la misma regla', async () => {
   await pagina.evaluate(() => nuevoPedidoModalidad('domicilio'));
-  await pagina.waitForFunction(() => document.querySelectorAll('#env-lista-productos button').length > 0, { timeout: 10000 });
-  const vistos = await textos('#env-lista-productos button');
+  await pagina.waitForFunction(() => document.querySelectorAll('.pos-producto').length > 0, { timeout: 10000 });
+  const vistos = await textos('.pos-producto');
   assert.ok(vistos.some(x => x.includes(fx.normal.nombre)));
   assert.ok(!vistos.some(x => x.includes(fx.agotado.nombre)), 'la regla es una sola para las dos modalidades');
 });
@@ -293,22 +293,52 @@ await t('PANTALLA', '13. las dos capturas comparten el MISMO catálogo (una sola
   assert.ok(igual, 'mostrador (árbol) y envíos (plano) son dos vistas de la misma lectura, no dos catálogos');
 });
 
-await t('PANTALLA', '14. mostrador y envíos NO comparten carrito', async () => {
+await t('PANTALLA', '14. cambiar de modalidad conserva el carrito y solo cambia los campos', async () => {
+  // Antes eran dos pantallas con dos carritos y cambiar de modalidad obligaba
+  // a recapturar. Ahora es el MISMO pedido: cambia cómo se entrega, no lo que
+  // el operador ya capturó.
   await pagina.evaluate(() => nuevoPedidoModalidad('llevar'));
   await pagina.waitForFunction(() => document.querySelectorAll('.pos-producto').length > 0, { timeout: 10000 });
   await pagina.evaluate((nombre) => {
-    const b = [...document.querySelectorAll('.pos-producto')].find(x => x.textContent.includes(nombre));
-    b.click();
+    [...document.querySelectorAll('.pos-producto')].find(x => x.textContent.includes(nombre)).click();
   }, fx.normal.nombre);
   await pagina.waitForFunction(() => posCarrito.length === 1, { timeout: 5000 });
-  const env = await pagina.evaluate(() => ENV_CARRITO.length);
-  assert.strictEqual(env, 0, 'capturar para llevar no puede aparecer en el domicilio de al lado');
-  const mismos = await pagina.evaluate(() => posCarrito === ENV_CARRITO);
-  assert.strictEqual(mismos, false, 'son dos instancias del mismo motor, no un carrito compartido');
+
+  const antes = await pagina.evaluate(() => JSON.parse(JSON.stringify(posCarrito)));
+  await pagina.evaluate(() => nuevoPedidoModalidad('domicilio'));
+  await new Promise(r => setTimeout(r, 400));
+  const despues = await pagina.evaluate(() => JSON.parse(JSON.stringify(posCarrito)));
+  assert.deepStrictEqual(despues, antes, 'lo capturado sobrevive al cambio de modalidad');
+
+  // Y lo que sí cambia son los campos del pedido, no la pantalla.
+  const ui = await pagina.evaluate(() => ({
+    sigueEnLaCaptura: document.getElementById('vista-presencial').style.display !== 'none',
+    hayCuadricula: document.querySelectorAll('.pos-producto').length > 0,
+    contacto: document.getElementById('pos-campos-contacto').style.display !== 'none',
+    domicilio: document.getElementById('pos-campos-domicilio').style.display !== 'none',
+    envio: document.getElementById('pos-envio-row').style.display !== 'none',
+    pago: document.getElementById('pos-pago-row').style.display !== 'none',
+    rewards: document.getElementById('rw-pos-widget').style.display !== 'none',
+  }));
+  assert.ok(ui.sigueEnLaCaptura && ui.hayCuadricula, 'domicilio NO saca al operador a otra pantalla');
+  assert.ok(ui.contacto && ui.domicilio && ui.envio && ui.pago, 'domicilio pide sus campos');
+  assert.ok(!ui.rewards, 'Rewards se oculta donde el backend no lo acepta (/api/pos/pedidos)');
+
+  await pagina.evaluate(() => nuevoPedidoModalidad('llevar'));
+  await new Promise(r => setTimeout(r, 300));
+  const vuelta = await pagina.evaluate(() => ({
+    contacto: document.getElementById('pos-campos-contacto').style.display !== 'none',
+    pago: document.getElementById('pos-pago-row').style.display !== 'none',
+    rewards: document.getElementById('rw-pos-widget').style.display !== 'none',
+    carrito: posCarrito.length,
+  }));
+  assert.ok(!vuelta.contacto && !vuelta.pago, 'para llevar no pide contacto ni forma de pago');
+  assert.ok(vuelta.rewards, 'Rewards vuelve en para llevar');
+  assert.strictEqual(vuelta.carrito, 1, 'el carrito sigue intacto');
 });
 
 await t('PANTALLA', '15. los globales legados SON las líneas del motor, no una copia', async () => {
-  const ok = await pagina.evaluate(() => posCarrito === _cMostrador.lineas && ENV_CARRITO === _cEnvios.lineas);
+  const ok = await pagina.evaluate(() => posCarrito === _cPOS.lineas && ENV_CARRITO === _cPOS.lineas);
   assert.ok(ok, 'si fueran copias, Rewards y la barra móvil leerían un carrito fantasma');
   // Rewards y la barra móvil leen `precio_unitario` de estas mismas líneas.
   const suma = await pagina.evaluate(() => posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0));
