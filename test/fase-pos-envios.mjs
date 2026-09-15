@@ -371,6 +371,174 @@ await t('E2E', 'las notas del POS llegan al portal del repartidor que entrega', 
 
 await pool.query(`DELETE FROM repartidores WHERE telefono = $1`, [TEL_REP]).catch(()=>{});
 
+// ═══════════ 44-55) Las notas de entrega, VISIBLES en el panel ═══════════
+// Guardarlas y enseñárselas al repartidor no alcanzaba: quien atiende el
+// mostrador —el que decide qué se despacha, y el que tiene que dictárselas por
+// teléfono a quien ya salió— no tenía dónde leerlas. Su único destino visible
+// era panel/repartidor.html.
+//
+// Se cubren otra vez LOS DOS lados: que el SERVIDOR las exponga (listado y
+// detalle) y que el PANEL las PINTE. Y se vigila el límite explícito: la
+// comanda de cocina imprime las notas del ITEM (preparación) y JAMÁS la del
+// PEDIDO (entrega) — que no se imprima es la decisión, no un descuido.
+
+// Código REAL del listado y del detalle, ejecutado con document y apiFetch
+// inyectados. Mismo criterio que el bloque FRONTEND de arriba: se afirma el
+// HTML que el operador acaba viendo, no la forma del código fuente.
+const ENV_HELPERS = PANEL.slice(
+  PANEL.indexOf('const ENV_ESTADOS_LBL'),
+  PANEL.indexOf('async function abrirEnvios()'));
+const ENV_VISTA = PANEL.slice(
+  PANEL.indexOf('async function cargarEnviosActivos()'),
+  PANEL.indexOf('async function envSolicitarRep(folio)'));
+
+function montarEnvios({ envios = [], pedido = null, detalleOk = true } = {}) {
+  const nodos = {}, rutas = [];
+  const doc = { getElementById: (id) => (nodos[id] = nodos[id] || { innerHTML:'', textContent:'', style:{} }) };
+  const apiFetchFalso = async (ruta) => {
+    rutas.push(ruta);
+    if (ruta === '/api/pos/envios') return { ok: true, json: async () => ({ envios }) };
+    if (!detalleOk) return { ok: false, json: async () => ({ error: 'no' }) };
+    return { ok: true, json: async () => ({ pedido }) };
+  };
+  const vista = new Function('document', 'apiFetch',
+    ENV_HELPERS + ENV_VISTA +
+    '; return { cargarEnviosActivos, envAbrirDetalle, envDetalleHTML, envChipNotas };'
+  )(doc, apiFetchFalso);
+  return { ...vista, nodos, rutas };
+}
+
+const NOTA_PANEL = 'Dejar en el portón, no tocar timbre (perro)';
+const PEDIDO_FIXTURE = {
+  id: 'XAB-9001', estado: 'en_preparacion', modalidad: 'entrega a domicilio', canal: 'pos',
+  cliente: { nombre: 'Ana Ruiz', telefono: '8781234500', calle: 'Av. Reforma', numero_exterior: '123',
+             colonia: 'Centro', entre_calles: 'A y B', referencia: 'Portón azul' },
+  items: [{ nombre: 'Orden de tacos', cantidad: 2, precio_unitario: 100, notas: 'sin cebolla' }],
+  subtotal: 200, costo_envio: 40, descuento: 0, total: 240, forma_pago: 'efectivo',
+  notas: NOTA_PANEL,
+};
+
+await t('VISTA', 'el LISTADO trae las notas (vistaEnvioPOS las omitía: la tabla no podía marcarlas)', async () => {
+  const lista = await api(base, '/api/pos/envios', { cookie: cookieAdminA });
+  assert.strictEqual(lista.status, 200);
+  const fila = lista.body.envios.find(e => e.folio === folioNotas);
+  assert.ok(fila, 'el pedido con notas debe seguir en el listado');
+  assert.strictEqual(fila.notas, NOTA, 'sin esto la tabla no sabe qué filas traen indicaciones');
+});
+
+await t('VISTA', 'un envío SIN notas trae notas:null en el listado (no undefined ni "")', async () => {
+  const r = await api(base, '/api/pos/pedidos', { cookie: cookieAdminA, method:'POST', body: {
+    tipo:'domicilio', cliente: CLIENTE, direccion: DIRECCION, items: itemsA(), costoEnvio: 15, formaPago:'efectivo' } });
+  assert.strictEqual(r.status, 200);
+  const lista = await api(base, '/api/pos/envios', { cookie: cookieAdminA });
+  const fila = lista.body.envios.find(e => e.folio === r.body.pedido.id);
+  assert.strictEqual(fila.notas, null, 'un null explícito es lo que distingue "sin nota" de "no vino el campo"');
+});
+
+await t('VISTA', 'el DETALLE devuelve las notas completas (fuente del modal)', async () => {
+  const r = await api(base, `/api/pos/envios/${folioNotas}`, { cookie: cookieAdminA });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.pedido.notas, NOTA);
+});
+
+await t('PANEL', 'el detalle muestra la nota ROTULADA y ARRIBA de los demás campos', async () => {
+  const vista = montarEnvios();
+  const html = vista.envDetalleHTML(PEDIDO_FIXTURE);
+  assert.ok(html.includes('Notas de entrega'), 'la nota va rotulada, no suelta entre campos');
+  const iBloque = html.indexOf('env-detalle-notas');
+  const iNota = html.indexOf('Dejar en el portón');
+  const iCliente = html.indexOf('Ana Ruiz');
+  assert.ok(iBloque >= 0, 'debe existir el bloque destacado');
+  assert.ok(iNota > iBloque, 'la nota va DENTRO de ese bloque');
+  assert.ok(iCliente > iNota, 'destacada = antes que cliente/dirección/items, no una fila más del montón');
+});
+
+await t('PANEL', 'sin notas lo DICE; no deja un hueco mudo', async () => {
+  const vista = montarEnvios();
+  for (const vacia of [null, undefined, '', '     ']) {
+    const html = vista.envDetalleHTML({ ...PEDIDO_FIXTURE, notas: vacia });
+    assert.ok(html.includes('Sin notas de entrega'), `con notas=${JSON.stringify(vacia)} hay que decirlo`);
+    assert.ok(!html.includes('Notas de entrega<'), 'no debe quedar el rótulo con nada debajo');
+  }
+});
+
+await t('PANEL', 'una nota tecleada por el operador no puede inyectar HTML', async () => {
+  const vista = montarEnvios();
+  const html = vista.envDetalleHTML({ ...PEDIDO_FIXTURE, notas: '<img src=x onerror="alert(1)">' });
+  assert.ok(!html.includes('<img'), 'el texto del operador entra escapado, no como etiqueta');
+  assert.ok(html.includes('&lt;img'), 'y se ve como el texto que es');
+});
+
+await t('PANEL', 'ENTREGA y PREPARACIÓN se ven las dos, rotuladas distinto, sin suplantarse', async () => {
+  const vista = montarEnvios();
+  const html = vista.envDetalleHTML(PEDIDO_FIXTURE);
+  assert.ok(html.includes('Preparación: sin cebolla'), 'la nota del item es de cocina y se rotula así');
+  assert.ok(!html.includes('Preparación: Dejar en el portón'), 'la de entrega jamás se rotula como preparación');
+  assert.ok(html.indexOf('Dejar en el portón') < html.indexOf('sin cebolla'), 'entrega arriba; cocina, dentro de su item');
+});
+
+await t('PANEL', 'el LISTADO marca con 📝 sólo las filas que traen notas', async () => {
+  const fila = (folio, notas) => ({ folio, cliente:'Ana', telefono:'8781234500', colonia:'Centro', total:240,
+    formaPago:'efectivo', pagoConfirmado:false, entregaEstado:'sin_repartidor',
+    modalidad:'entrega a domicilio', repartidorNombre:null, notas });
+  const vista = montarEnvios({ envios: [fila('XAB-9001', 'Dejar en el portón'), fila('XAB-9002', null)] });
+  await vista.cargarEnviosActivos();
+  const tabla = vista.nodos['env-tabla-activos'].innerHTML;
+  const conNotas = tabla.slice(tabla.indexOf('XAB-9001'), tabla.indexOf('XAB-9002'));
+  const sinNotas = tabla.slice(tabla.indexOf('XAB-9002'));
+  assert.ok(conNotas.includes('📝'), 'sin marca en la tabla nadie abre el detalle y la nota sigue invisible');
+  assert.ok(conNotas.includes('title="Dejar en el portón"'), 'el texto asoma al pasar el mouse, sin abrir nada');
+  assert.ok(!sinNotas.includes('📝'), 'una fila sin notas no debe marcar nada (marcar todo es no marcar)');
+  assert.ok(conNotas.includes('envAbrirDetalle('), 'y debe haber por dónde abrir el detalle');
+});
+
+await t('PANEL', 'el detalle se RELEE del servidor, no de la fila que lleva minutos en pantalla', async () => {
+  const vista = montarEnvios({ pedido: PEDIDO_FIXTURE });
+  await vista.envAbrirDetalle('XAB-9001');
+  assert.ok(vista.rutas.includes('/api/pos/envios/XAB-9001'), 'lo que se va a ejecutar en la calle se pide fresco');
+  assert.strictEqual(vista.nodos['env-detalle-overlay'].style.display, 'flex', 'el modal debe quedar abierto');
+  assert.strictEqual(vista.nodos['env-detalle-folio'].textContent, 'XAB-9001');
+  assert.ok(vista.nodos['env-detalle-cuerpo'].innerHTML.includes('Dejar en el portón'));
+});
+
+await t('PANEL', 'si el detalle no carga se dice; no se pinta un modal en blanco', async () => {
+  const vista = montarEnvios({ detalleOk: false });
+  await vista.envAbrirDetalle('XAB-9001');
+  const cuerpo = vista.nodos['env-detalle-cuerpo'].innerHTML;
+  assert.ok(/No se pudo cargar|Error de red/.test(cuerpo), 'un modal vacío se lee como "no traía notas"');
+  assert.ok(!cuerpo.includes('Sin notas de entrega'), 'y jamás debe AFIRMAR que no había notas cuando no pudo saberlo');
+});
+
+// ═══════════ 56-57) La impresión NO se toca ═══════════
+// Notas del ITEM = preparación (las imprime la comanda). Notas del PEDIDO =
+// entrega (no se imprimen: se leen en pantalla y en el portal del repartidor).
+// Esta prueba EJECUTA las funciones de impresión reales con un pedido que trae
+// las dos, para que si alguna vez alguien "mejora" la comanda agregándole
+// p.notas, se entere aquí y no en la cocina.
+const IMPRESION = PANEL.slice(
+  PANEL.indexOf('function comandaHTML(p) {'),
+  PANEL.indexOf('function pedidoPrueba()'));
+function montarImpresion() {
+  return new Function('esc','modsAgrupados','getNombre','horaCST','getTelefono','etiquetaFormaPago','getPrecioItem','totalEnLetras','negocio',
+    IMPRESION + '; return { comandaHTML, ticketHTML };')(
+      s => String(s ?? ''), () => [], p => p.cliente?.nombre || '', () => '12:00',
+      p => p.cliente?.telefono || '', () => 'Efectivo', it => Number(it.precio_unitario || 0),
+      () => 'doscientos cuarenta pesos 00/100 M.N.',
+      { nombre:'Xabor', nombre_corto:'XABOR', rfc:'XAXX010101000', direccion:'Calle 1', ciudad:'Matamoros', telefono:'8781234567', whatsapp:'8781234567' });
+}
+
+await t('IMPRESIÓN', 'la COMANDA de cocina imprime la nota del ITEM y NO la de ENTREGA', async () => {
+  const comanda = montarImpresion().comandaHTML(PEDIDO_FIXTURE);
+  assert.ok(comanda.includes('sin cebolla'), 'la preparación del item sí va a la cocina');
+  assert.ok(!comanda.includes('Dejar en el portón'),
+    'la nota de ENTREGA no es para la cocina: si aparece aquí, alguien cruzó los dos campos');
+});
+
+await t('IMPRESIÓN', 'el TICKET del cliente tampoco lleva la nota de entrega', async () => {
+  const ticket = montarImpresion().ticketHTML(PEDIDO_FIXTURE);
+  assert.ok(!ticket.includes('Dejar en el portón'), 'el recibo del cliente no es el lugar de una instrucción interna');
+});
+
 // Limpieza de los pedidos POS de prueba (no tocar XAB-0108/0109 reales).
 await pool.query(`DELETE FROM pagos WHERE negocio_id = ANY($1) AND pedido_folio LIKE 'XAB-%' AND created_at > NOW() - INTERVAL '5 minutes'`, [[A, B]]).catch(()=>{});
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND datos->>'canal' = 'pos'`, [[A, B]]);

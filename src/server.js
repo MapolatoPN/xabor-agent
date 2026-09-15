@@ -6591,6 +6591,17 @@ function vistaEnvioPOS(pedido) {
     formaPago: pedido.forma_pago || pedido.datos?.forma_pago || null,
     pagoConfirmado: pedido.pago_confirmado === true || pedido.datos?.pago_confirmado === true,
     repartidorNombre: pedido.datos?.repartidor_nombre || pedido.repartidor_nombre || null,
+    // Notas de ENTREGA del PEDIDO ("dejar en el portón", "timbre descompuesto").
+    // No son las notas por LÍNEA del item, que son de PREPARACIÓN y viajan
+    // dentro de cada item — la comanda de cocina imprime aquéllas y nunca ésta.
+    //
+    // Viajan en el LISTADO, no sólo en el detalle, porque el listado es lo
+    // único que el operador mira de corrido: sin una marca visible ahí nadie
+    // abre el detalle, y una instrucción que nadie abre es una instrucción
+    // perdida — exactamente el modo en que estas notas ya se perdieron una vez.
+    // El detalle las vuelve a leer de GET /api/pos/envios/:folio, que sigue
+    // siendo la fuente completa (items, dirección, totales).
+    notas: pedido.notas || pedido.datos?.notas || null,
   };
 }
 

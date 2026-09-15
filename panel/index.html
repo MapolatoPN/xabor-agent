@@ -2070,6 +2070,23 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <p style="color:#888;font-size:.9rem;">El historial de entregas usa la sección <b>Historial</b> del panel (mismo motor, filtrado por negocio). Aquí verás un resumen próximamente.</p>
         <div id="env-tabla-historial"></div>
       </div>
+
+      <!-- Detalle de un envío. Su razón de existir son las NOTAS DE ENTREGA:
+           instrucciones operativas para quien entrega ("dejar en el portón",
+           "timbre descompuesto"), que hasta ahora sólo se veían en el portal
+           del repartidor. Por eso abren el detalle, arriba de todo y con su
+           propio color — no como una fila más perdida entre los campos. -->
+      <div id="env-detalle-overlay" onclick="if(event.target===this) envCerrarDetalle();"
+           style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;padding:16px;">
+        <div style="background:#fff;border-radius:14px;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+          <div style="display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid #f0ede8;">
+            <h3 style="flex:1;margin:0;font-size:1rem;">Envío <span id="env-detalle-folio" style="font-weight:800;"></span></h3>
+            <button onclick="envCerrarDetalle()" aria-label="Cerrar"
+              style="border:1px solid #e5e2da;border-radius:8px;background:#fafaf8;cursor:pointer;padding:4px 10px;font-size:1rem;line-height:1.2;">✕</button>
+          </div>
+          <div id="env-detalle-cuerpo" style="padding:16px 18px;overflow-y:auto;"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Tab Clientes -->
@@ -10726,7 +10743,7 @@ async function cargarEnviosActivos(){
     if (!envios.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Sin envíos activos</div>'; return; }
     cont.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:.9rem;"><thead><tr style="text-align:left;color:#888;"><th>Folio</th><th>Cliente</th><th>Colonia</th><th>Total</th><th>Pago</th><th>Entrega</th><th>Repartidor</th><th></th></tr></thead><tbody>' +
       envios.map(e => `<tr style="border-top:1px solid #eee;">
-        <td style="padding:8px 4px;font-weight:700;">${envEsc(e.folio)}</td>
+        <td style="padding:8px 4px;font-weight:700;">${envEsc(e.folio)}${e.notas ? envChipNotas(e.notas) : ''}</td>
         <td>${envEsc(e.cliente||'—')}<br><span style="color:#999;font-size:.8rem;">${envEsc(e.telefono||'')}</span></td>
         <td>${envEsc(e.colonia||'—')}</td>
         <td>$${e.total.toFixed(2)}</td>
@@ -10734,11 +10751,115 @@ async function cargarEnviosActivos(){
         <td><span style="background:#f1f0ed;border-radius:8px;padding:2px 8px;font-size:.8rem;">${envEsc(ENV_ESTADOS_LBL[e.entregaEstado]||e.entregaEstado)}</span></td>
         <td>${envEsc(e.repartidorNombre||'—')}</td>
         <td style="white-space:nowrap;">
+          <button class="env-accion" onclick="envAbrirDetalle('${envEsc(e.folio)}')">👁 Ver</button>
           ${e.telefono?`<button class="env-accion" onclick="navigator.clipboard.writeText('${envEsc(e.telefono)}')">📋 Tel</button>`:''}
           ${e.modalidad&&e.modalidad.includes('domicilio')&&e.entregaEstado==='sin_repartidor'?`<button class="env-accion" onclick="envSolicitarRep('${envEsc(e.folio)}')">🛵 Repartidor</button>`:''}
           <button class="env-accion" onclick="envEnlacePago('${envEsc(e.folio)}')">💳 Enlace</button>
         </td></tr>`).join('') + '</tbody></table>';
   } catch { cont.innerHTML = '<p style="color:#b91c1c;">Error de red</p>'; }
+}
+
+// ─── Detalle de un envío ────────────────────────────────────────────────────
+// Existe por las NOTAS DE ENTREGA. Hasta ahora su único destino visible era el
+// portal del repartidor (panel/repartidor.html): quien atiende el mostrador no
+// tenía dónde leerlas — ni para revisarlas antes de despachar, ni para
+// dictárselas por teléfono a quien ya salió. Aquí abren el detalle, arriba de
+// todo y con su propio color.
+//
+// NO confundir con las notas por LÍNEA del item (item.notas), que son de
+// PREPARACIÓN: ésas las imprime la comanda de cocina y la nota del PEDIDO no
+// se imprime nunca — decisión explícita, no un olvido. Las dos se muestran en
+// esta misma pantalla, etiquetadas, justo para que la diferencia se vea.
+
+// Marca en el listado. Sin ella nadie abre el detalle, y una instrucción que
+// nadie abre está tan perdida como cuando no se guardaba: el listado es lo
+// único que el operador mira de corrido.
+function envChipNotas(notas){
+  return `<span title="${envEsc(notas)}" style="margin-left:6px;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:6px;padding:1px 5px;font-size:.72rem;font-weight:700;vertical-align:middle;">📝</span>`;
+}
+
+// PURA a propósito (pedido → HTML): la regresión ejecuta ESTA función, la misma
+// que se despacha, sin necesitar un navegador. Acepta el pedido tal cual lo
+// devuelve GET /api/pos/envios/:folio, que según de dónde se haya rehidratado
+// trae los campos planos o dentro de `datos` (mismo criterio que vistaEnvioPOS).
+function envDetalleHTML(p){
+  const d = (p && p.datos) || {};
+  const c = (p && p.cliente) || d.cliente || {};
+  const dinero = n => '$' + (Number(n) || 0).toFixed(2);
+  const notas = String(p?.notas ?? d.notas ?? '').trim();
+  const esDomicilio = String(p?.modalidad || d.modalidad || '').includes('domicilio');
+
+  // Cuando NO hay notas se dice con todas sus letras. Un hueco en blanco
+  // dejaría al operador sin saber si el pedido venía sin indicaciones o si
+  // algo no cargó, y ante la duda se despacha igual.
+  const bloqueNotas = notas
+    ? `<div id="env-detalle-notas" style="background:#fef3c7;border:2px solid #f59e0b;border-radius:12px;padding:14px 16px;margin-bottom:16px;">
+         <div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:#92400e;margin-bottom:6px;">📝 Notas de entrega</div>
+         <div style="font-size:1.05rem;font-weight:700;line-height:1.45;color:#1c1c1c;white-space:pre-wrap;overflow-wrap:anywhere;">${envEsc(notas)}</div>
+       </div>`
+    : `<div id="env-detalle-notas" style="border:1px dashed #e5e2da;border-radius:12px;padding:12px 16px;margin-bottom:16px;color:#aaa;font-size:.85rem;">Sin notas de entrega</div>`;
+
+  const linea = (k, v) => `<div style="display:flex;gap:10px;padding:4px 0;font-size:.9rem;">
+    <span style="min-width:120px;color:#888;flex-shrink:0;">${k}</span>
+    <span style="flex:1;overflow-wrap:anywhere;">${envEsc(v)}</span></div>`;
+
+  const dir = [[c.calle, c.numero_exterior].filter(Boolean).join(' '), c.numero_interior ? 'int. ' + c.numero_interior : '', c.colonia]
+    .filter(Boolean).join(', ');
+  let datos = linea('Estado del pedido', p?.estado || '—')
+    + linea('Cliente', c.nombre || '—')
+    + linea('Teléfono', c.telefono || '—');
+  if (esDomicilio) {
+    datos += linea('Dirección', dir || '—');
+    if (c.entre_calles) datos += linea('Entre calles', c.entre_calles);
+    if (c.referencia) datos += linea('Referencia', c.referencia);
+  }
+  datos += linea('Forma de pago', (p?.forma_pago || d.forma_pago || '—') + ((p?.pago_confirmado ?? d.pago_confirmado) === true ? ' ✓ pagado' : ''));
+  const repartidor = d.repartidor_nombre || p?.repartidor_nombre;
+  if (repartidor) datos += linea('Repartidor', repartidor);
+
+  const items = p?.items || d.items || [];
+  const bloqueItems = items.length ? `
+    <div style="border-top:1px solid #f0ede8;margin-top:12px;padding-top:10px;">
+      ${items.map(it => `<div style="display:flex;gap:8px;font-size:.9rem;padding:3px 0;">
+        <span style="font-weight:700;flex-shrink:0;">${Number(it.cantidad) || 1}×</span>
+        <span style="flex:1;overflow-wrap:anywhere;">${envEsc(it.nombre || '')}${
+          it.notas ? `<div style="color:#888;font-size:.78rem;margin-top:2px;">Preparación: ${envEsc(it.notas)}</div>` : ''}</span>
+        <span style="font-weight:700;flex-shrink:0;">${dinero(Number(it.precio_unitario || 0) * (Number(it.cantidad) || 1))}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+  const envio = Number(p?.costo_envio ?? d.costo_envio ?? 0);
+  const desc = Number(p?.descuento ?? d.descuento ?? 0);
+  const totales = `<div style="border-top:1px solid #f0ede8;margin-top:10px;padding-top:10px;">
+      ${linea('Subtotal', dinero(p?.subtotal ?? d.subtotal ?? 0))}
+      ${desc ? linea('Descuento', '−' + dinero(desc)) : ''}
+      ${envio ? linea('Envío', dinero(envio)) : ''}
+      <div style="display:flex;justify-content:space-between;font-weight:800;font-size:1.05rem;margin-top:6px;">
+        <span>Total</span><span>${dinero(p?.total ?? d.total ?? 0)}</span></div>
+    </div>`;
+
+  return bloqueNotas + datos + bloqueItems + totales;
+}
+
+async function envAbrirDetalle(folio){
+  const ov = document.getElementById('env-detalle-overlay');
+  const cuerpo = document.getElementById('env-detalle-cuerpo');
+  document.getElementById('env-detalle-folio').textContent = folio;
+  cuerpo.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando…</div>';
+  ov.style.display = 'flex';
+  try {
+    // El detalle SIEMPRE se relee del servidor (no se reusa la fila del
+    // listado): las notas son lo que se va a ejecutar en la calle y no pueden
+    // salir de una copia que lleva minutos en pantalla.
+    const r = await apiFetch(`/api/pos/envios/${encodeURIComponent(folio)}`);
+    if (!r.ok) { cuerpo.innerHTML = '<p style="color:#b91c1c;">No se pudo cargar el pedido</p>'; return; }
+    const { pedido } = await r.json();
+    cuerpo.innerHTML = envDetalleHTML(pedido);
+  } catch { cuerpo.innerHTML = '<p style="color:#b91c1c;">Error de red</p>'; }
+}
+function envCerrarDetalle(){
+  const ov = document.getElementById('env-detalle-overlay');
+  if (ov) ov.style.display = 'none';
 }
 
 async function envSolicitarRep(folio){
