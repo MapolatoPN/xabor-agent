@@ -113,8 +113,13 @@ for (const ruta of PAGINAS.filter(r => r.endsWith('.html') || r === '/app')) {
 await t('CONTRATO', 'el panel carga el modal compartido desde el <head> real, antes de <body>', async () => {
   const { texto: crudo } = await traer('/app');
   const texto = crudo.replace(/<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
-  const iScript = texto.indexOf('<script src="/modificadores.js">');
-  assert.ok(iScript > 0, 'el panel debe cargar /modificadores.js');
+  // La etiqueta lleva la huella del módulo (?v=…) desde el incidente de caché
+  // del 2026-09-15, así que se busca insensible a la versión — pero se exige
+  // que la versión esté: sin ella, Cloudflare puede servir el módulo viejo.
+  const mScript = /<script src="\/modificadores\.js(\?v=[0-9a-f]{8})?"><\/script>/.exec(texto);
+  assert.ok(mScript, 'el panel debe cargar /modificadores.js');
+  assert.ok(mScript[1], 'la etiqueta debe llevar ?v=<huella> (ver fase-modificadores-todos-los-canales, caso 20)');
+  const iScript = mScript.index;
   const iBody = texto.toLowerCase().indexOf('<body');
   assert.ok(iScript < iBody, 'debe ir en el <head>, no dentro de un literal de plantilla más abajo');
   // El único </head> que existe antes de <body> es el real de la página.

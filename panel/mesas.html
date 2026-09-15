@@ -158,7 +158,22 @@
     header.xb .negocio { display:none; }
   }
 </style>
-<script src="/modificadores.js"></script>
+<!-- El ?v= NO es decorativo y NO se inventa a mano: es la huella del contenido
+     de modificadores.js (sha256, 8 hex) y la sujeta una prueba.
+     Por que existe: Cloudflare sirve los .js con max-age=14400, asi que durante
+     CUATRO HORAS el navegador ni siquiera pregunta si cambiaron, mientras que
+     esta pagina se revalida en cada carga. El 2026-09-15 eso tumbo la captura
+     de pedidos en produccion: el panel nuevo llamaba a una funcion nueva del
+     modulo y al navegador le llego el modulo VIEJO de su cache
+     (elegirLinea is not a function), asi que el primer clic sobre cualquier
+     producto no hacia nada -- en mostrador, recoger, domicilio y mesa. Ninguna
+     suite lo vio: el navegador de pruebas arranca sin cache y siempre recibe
+     los dos archivos del mismo commit.
+     Con la huella en la URL, un modulo distinto es una URL distinta y no puede
+     venir de la cache. Al editar modificadores.js hay que actualizarla aqui y
+     en mesas.html; fase-modificadores-todos-los-canales lo exige y dice el
+     valor correcto si no coincide. -->
+<script src="/modificadores.js?v=61c67b52"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -524,15 +539,15 @@ function productoDelMenu(id) {
 // Un toque agrega el producto simple. Si tiene modificadores, se abre el
 // wizard secuencial compartido (panel/modificadores.js): un grupo por
 // pantalla, con avance automático cuando ya no queda nada que decidir.
+//
+// La decisión de abrirlo o no NO se toma aquí: es la misma de POS y Envíos
+// (XaborModificadores.elegirLinea). Mesas solo pide el modo wizard.
 async function elegirProducto(id) {
   const p = productoDelMenu(id);
   if (!p || !CUENTA) return;
-  let cuerpo = { producto_id: p.id, cantidad: 1 };
-  if (window.XaborModificadores && XaborModificadores.tieneModificadores(p)) {
-    const r = await XaborModificadores.abrirWizard(p, { oscuro: true });
-    if (!r) return;
-    cuerpo = { producto_id: p.id, cantidad: r.cantidad, modificadores: r.modificadores };
-  }
+  const linea = await XaborModificadores.elegirLinea(p, { modo: 'wizard', oscuro: true });
+  if (!linea) return; // el mesero canceló el wizard
+  const cuerpo = { producto_id: linea.producto_id, cantidad: linea.cantidad, modificadores: linea.modificadores };
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [cuerpo] }) });
   await refrescarCuenta();
   msg(`${p.nombre} agregado`);
