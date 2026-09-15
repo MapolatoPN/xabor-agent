@@ -108,8 +108,23 @@ export function recolectarAclaraciones({
   //    que la respuesta del cliente se pueda medir contra ellas y no contra el
   //    grupo entero — así «con chorizo» resuelve, aunque en la carta completa
   //    también haya unas papas con chorizo.
+  //    UNA DUDA, UNA PREGUNTA. `opcionesAmbiguas` devuelve una entrada por
+  //    OPCIÓN, así que una competencia entre dos hermanas llega dos veces —la
+  //    misma duda contada desde cada lado, con los candidatos en orden
+  //    inverso—. Mientras la propuesta traía sólo la que el modelo había
+  //    escrito no se notaba; en cuanto viajan las dos competidoras, el cliente
+  //    recibía la pregunta repetida y el contexto guardaba dos pendientes con
+  //    la misma clave.
+  //
+  //    Se colapsan aquí, que es donde vive el dueño de la pregunta: mismo
+  //    renglón, mismo grupo y mismo CONJUNTO de candidatos son una sola duda.
+  const yaPreguntado = new Set();
   for (const a of lista(opcionesAmbiguas)) {
     const candidatos = [a.opcion, ...nombres(a.empatan)];
+    const huella = [a.lid || '', String(a.grupo || '').toLowerCase(),
+      candidatos.map((c) => String(c).toLowerCase()).sort().join('|')].join('::');
+    if (yaPreguntado.has(huella)) continue;
+    yaPreguntado.add(huella);
     fuera.push(aclaracion('opcion_ambigua', {
       lid: a.lid || null,
       grupo: String(a.grupo || ''), producto: String(a.producto || ''), candidatos,
