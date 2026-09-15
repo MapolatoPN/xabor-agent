@@ -760,6 +760,22 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 #rw-pos-widget { border:1px solid #e5e2da; border-radius:10px; padding:12px 14px; margin-bottom:12px; background:#fafaf8; }
 #rw-pos-widget.asignado { border-color:#22c55e; background:#f0fdf4; }
 
+/* ─── Responsive — tablet (641–1024px) ───────────────────────────────────
+   Solo la captura. A 768px el panel lateral fijo de 340px, con la barra de
+   navegación al lado, dejaba la cuadrícula en 113px: una tarjeta por fila y
+   el nombre partido en cuatro líneas. En ese ancho el POS usa el mismo patrón
+   de dos pantallas que en móvil —catálogo a todo lo ancho y el pedido tras la
+   barra— que es el que ya está probado. El resto del panel no se toca. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  #pos-layout { grid-template-columns: 1fr; height: auto; gap: 0; }
+  #pos-menu { padding-right: 0; }
+  .pos-productos-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  #mobile-cart-bar { display: flex; }
+  #pos-order { display: none; }
+  #pos-order.mobile-visible { display: flex; flex-direction: column; }
+  #btn-volver-menu { display: inline-block !important; }
+}
+
 /* ─── Responsive — mobile (≤640px) ─────────────────────────────────────── */
 @media (max-width: 640px) {
   main { padding: 10px 10px 90px; }
@@ -5022,8 +5038,11 @@ document.addEventListener('input', (e) => {
 });
 
 // Mobile: navegar al carrito
+// Hasta 1024px la captura son dos pantallas (catálogo / pedido): el mismo
+// patrón en móvil y en tablet.
+const POS_COMPACTO = 1024;
 function abrirCarritoPOS() {
-  if (window.innerWidth > 640) return;
+  if (window.innerWidth > POS_COMPACTO) return;
   document.getElementById('pos-order').classList.add('mobile-visible');
   document.getElementById('pos-menu').style.display = 'none';
   document.getElementById('mobile-cart-bar').style.display = 'none';
@@ -5032,7 +5051,7 @@ function abrirCarritoPOS() {
 function volverMenuPOS() {
   document.getElementById('pos-order').classList.remove('mobile-visible');
   document.getElementById('pos-menu').style.display = '';
-  if (window.innerWidth <= 640) document.getElementById('mobile-cart-bar').style.display = 'flex';
+  if (window.innerWidth <= POS_COMPACTO) document.getElementById('mobile-cart-bar').style.display = 'flex';
 }
 
 // Dos veces el mismo producto con modificadores distintos son DOS lineas: la
