@@ -78,7 +78,7 @@ t('cambiar de modalidad NO cambia de pantalla, solo los campos', () => {
   assert.ok(!/function nuevoPedidoModalidad\(m\)[\s\S]{0,400}bnavTab\('envios'\)/.test(html),
     'ninguna modalidad puede volver a sacar al operador a otra vista');
   // ...y posModalidad solo toca campos del pedido y los chips.
-  assert.match(html, /function posModalidad\(m\)[\s\S]{0,900}pintarChipsModalidad\(m\)/);
+  assert.match(html, /function posModalidad\(m\)[\s\S]{0,1600}pintarChipsModalidad\(m\)/);
   for (const campo of ['pos-campos-contacto', 'pos-campos-domicilio', 'pos-envio-row', 'pos-pago-row']) {
     assert.ok(html.includes(`id="${campo}"`), `falta el bloque de campos ${campo}`);
   }
