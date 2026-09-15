@@ -925,6 +925,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      en mesas.html; fase-modificadores-todos-los-canales lo exige y dice el
      valor correcto si no coincide. -->
 <script src="/modificadores.js?v=61c67b52"></script>
+<!-- captura.js corre el mismo riesgo y por eso lleva la suya: el panel lo
+     llama en cada alta de producto, depende de modificadores.js y por tanto
+     se carga DESPUES. Si se edita, actualizar esta huella aqui;
+     fase-captura-unificada lo exige y dice el valor correcto. -->
+<script src="/captura.js?v=78ce777f"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
@@ -4881,23 +4886,42 @@ document.getElementById('modal-factura-overlay').addEventListener('click', e => 
 });
 
 // ─── POS Presencial ──────────────────────────────────────────────────────────
-let posCarrito   = [];
-let menuPOSData  = null; // cache del menú desde DB
+// La captura vive en el motor común (panel/captura.js): catálogo, carrito,
+// agrupación de líneas, selección de producto y construcción del payload son
+// los MISMOS que usa Envíos. Aquí queda solo lo propio de mostrador: su
+// cuadrícula por categorías, su carrito a la derecha, Rewards y la barra móvil.
+//
+// Un motor único no es un carrito compartido: mostrador y Envíos tienen cada
+// uno su instancia, porque lo que se está capturando para llevar no tiene por
+// qué aparecer en el pedido a domicilio que empieza después.
+let _cMostrador = new XaborCaptura.Carrito({
+  onCambio: () => { renderCarrito(); actualizarMobileCartBar(); },
+});
+// `posCarrito` es la MISMA referencia que las líneas del motor —el carrito se
+// muta en el sitio y nunca se reasigna—, así que todo lo que ya hablaba de
+// `posCarrito` (Rewards, la barra móvil) sigue leyendo el carrito de verdad.
+let posCarrito = _cMostrador.lineas;
 // El descuento y la forma de pago ya NO viven en la captura: van en el modal
 // Cobrar (reingeniería UX — captura ≠ cobro).
 
 async function renderMenuPOS() {
+  if (!document.getElementById('pos-menu-cats')) return;
+  pintarMenuPOS(await XaborCaptura.catalogo.cargar());
+}
+
+// Pintado puro: se puede llamar tantas veces como haga falta sin volver a
+// pedir el menú. La cuadrícula NUNCA se vacía para actualizarse — si la
+// revalidación falla, el motor conserva el catálogo anterior y aquí no llega
+// nada que pintar.
+function pintarMenuPOS(cats) {
   const cont = document.getElementById('pos-menu-cats');
   if (!cont) return;
-  if (!menuPOSData) {
-    menuPOSData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
-  }
-  cont.innerHTML = menuPOSData.map(cat => `
+  cont.innerHTML = (cats || []).map(cat => `
     <div class="pos-cat-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
       <span>${cat.nombre}</span><span>▾</span>
     </div>
     <div class="pos-productos-grid">
-      ${cat.productos.filter(p => p.disponible).map(p => `
+      ${(cat.productos || []).filter(p => XaborCaptura.catalogo.vendible(p)).map(p => `
         <button class="pos-producto" onclick="elegirProductoPOS('${cat.id}','${p.id}')">
           ${p.imagen ? `<img class="pos-prod-img" src="${p.imagen}" alt="" loading="lazy" onerror="this.remove()">` : ''}
           <div class="pos-prod-nombre">${p.nombre}${(p.modificadores && p.modificadores.length) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</div>
@@ -4905,6 +4929,12 @@ async function renderMenuPOS() {
         </button>`).join('')}
     </div>`).join('');
 }
+
+// Cuando el motor revalida el menú por detrás y el catálogo efectivo cambió,
+// la cuadrícula se repinta sola. El carrito NO se toca: si un producto se
+// agota con un pedido a medias, lo ya capturado es del operador y solo se
+// bloquean las adiciones nuevas.
+XaborCaptura.catalogo.onCambio(() => pintarMenuPOS(XaborCaptura.catalogo.categorias()));
 
 // Mobile: navegar al carrito
 function abrirCarritoPOS() {
@@ -4920,52 +4950,40 @@ function volverMenuPOS() {
   if (window.innerWidth <= 640) document.getElementById('mobile-cart-bar').style.display = 'flex';
 }
 
-// Dos veces el mismo producto con modificadores distintos son DOS lineas:
-// la firma incluye los ids de opcion elegidos, en orden estable. La calcula
-// el modulo compartido para que los tres carritos (mostrador, envios, mesa)
-// agrupen igual.
+// Dos veces el mismo producto con modificadores distintos son DOS lineas: la
+// firma incluye los ids de opcion elegidos, en orden estable. La regla vive en
+// el motor comun para que los tres carritos (mostrador, envios, mesa) agrupen
+// igual.
 function firmaCarrito(item) {
-  return XaborModificadores.firmaLinea(item);
+  return XaborCaptura.firmaLinea(item);
 }
 
-// Selección de producto: SIEMPRE por el punto común (XaborModificadores.
-// elegirLinea). Si el producto tiene grupos abre el configurador y no se
-// agrega nada hasta cumplir las reglas del menú; si no los tiene, entra
-// directo. Mostrador, Envíos y Mesa comparten esta misma decisión.
+// Selección de producto: SIEMPRE por el motor común. Él decide si el producto
+// hay que configurarlo, impone la regla de vendibilidad (un agotado no entra
+// por ninguna modalidad) y agrupa la línea. Mostrador, Envíos y Mesa comparten
+// esa decisión; ninguna pantalla la vuelve a tomar por su cuenta.
+//
+// `catId` ya no hace falta para encontrar el producto (los ids de
+// menu_productos son únicos), pero se conserva en la firma porque es lo que
+// pasa el onclick de la cuadrícula.
 async function elegirProductoPOS(catId, prodId) {
-  const cat = (menuPOSData || []).find(c => String(c.id) === String(catId));
-  const p = cat && cat.productos.find(x => String(x.id) === String(prodId));
-  if (!p) return;
-  const linea = await XaborModificadores.elegirLinea(p);
-  if (!linea) return; // el operador canceló el configurador
-  agregarAlCarrito({
-    producto_id: linea.producto_id, nombre: linea.nombre,
-    precio_unitario: linea.precio_unitario, cantidad: linea.cantidad,
-    notas: '', modificadores: linea.modificadores, textoModificadores: linea.texto,
-  });
+  await _cMostrador.agregar(XaborCaptura.catalogo.producto(prodId));
 }
 
 function agregarAlCarrito(prod) {
-  const nuevo = {
-    producto_id: prod.producto_id ?? null,
-    nombre: prod.nombre,
-    precio_unitario: prod.precio_unitario ?? prod.precio,
-    cantidad: prod.cantidad || 1,
-    notas: prod.notas || '',
-    modificadores: prod.modificadores || [],
-    textoModificadores: prod.textoModificadores || '',
-  };
-  const existing = posCarrito.find(i => firmaCarrito(i) === firmaCarrito(nuevo));
-  if (existing) existing.cantidad += nuevo.cantidad;
-  else posCarrito.push(nuevo);
-  renderCarrito();
-  actualizarMobileCartBar();
+  return _cMostrador.agregarLinea(prod);
 }
 
 // La captura ya no aplica descuentos: se definen al cobrar (modal Cobrar) y
 // el servidor los recalcula y autoriza. Se conserva la función porque el
 // carrito y la barra móvil la consultan para mostrar el subtotal.
 function calcDescuento() { return 0; }
+
+// Nota libre de una línea. Va por el motor (nadie escribe en el array a mano)
+// y a propósito NO repinta: el operador está escribiendo dentro del input.
+function notaCarrito(idx, texto) {
+  _cMostrador.nota(idx, texto);
+}
 
 function renderCarrito() {
   const cont = document.getElementById('pos-order-items');
@@ -4977,7 +4995,7 @@ function renderCarrito() {
     document.getElementById('btn-confirmar-presencial').disabled = true;
     return;
   }
-  const subtotal  = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const subtotal  = _cMostrador.subtotal();
   const descuento = calcDescuento(subtotal);
   const montoCanje = rwCanjeAplicado ? rwCanjeAplicado.monto : 0;
   const total     = Math.max(0, subtotal - descuento - montoCanje);
@@ -4993,9 +5011,9 @@ function renderCarrito() {
       <div class="poi-qty">${item.cantidad}</div>
       <div style="flex:1;">
         <div class="poi-nombre">${item.nombre}</div>
-        ${item.textoModificadores ? `<div style="font-size:0.7rem;color:#6b7280;line-height:1.35;">${item.textoModificadores}</div>` : ''}
+        ${item.texto ? `<div style="font-size:0.7rem;color:#6b7280;line-height:1.35;">${item.texto}</div>` : ''}
         <input type="text" value="${item.notas}" placeholder="Nota (opcional)"
-          onchange="posCarrito[${idx}].notas=this.value"
+          onchange="notaCarrito(${idx}, this.value)"
           style="font-size:0.72rem;background:#f8f7f4;border:1px solid #e5e2da;border-radius:5px;padding:2px 6px;width:100%;margin-top:2px;color:#555;font-family:inherit;">
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0;">
@@ -5018,8 +5036,8 @@ function renderCarrito() {
 function actualizarMobileCartBar() {
   const bar = document.getElementById('mobile-cart-bar');
   if (!bar) return;
-  const totalItems = posCarrito.reduce((s, i) => s + i.cantidad, 0);
-  const subtotal   = posCarrito.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
+  const totalItems = _cMostrador.conteo();
+  const subtotal   = _cMostrador.subtotal();
   const descuento  = calcDescuento(subtotal);
   const total      = subtotal - descuento;
   document.getElementById('mobile-cart-count').textContent = totalItems;
@@ -5030,10 +5048,7 @@ function actualizarMobileCartBar() {
 function scrollToOrder() { abrirCarritoPOS(); }
 
 function ajustarCantidad(idx, delta) {
-  posCarrito[idx].cantidad += delta;
-  if (posCarrito[idx].cantidad <= 0) posCarrito.splice(idx, 1);
-  renderCarrito();
-  actualizarMobileCartBar();
+  _cMostrador.cambiarCantidad(idx, delta);
 }
 
 // Crear el pedido SIN cobrarlo: nace abierto (el backend lo marca
@@ -5047,7 +5062,10 @@ async function confirmarPresencial() {
   btn.disabled = true; btn.textContent = 'Creando...';
   try {
     const body = {
-      items: posCarrito, nombre,
+      // Solo ids de opción y notas: nombre, precio base y precios extra los
+      // resuelve el servidor contra el menú del propio negocio. Es el mismo
+      // constructor de payload que usa Envíos.
+      items: _cMostrador.itemsParaServidor(), nombre,
       // Sin forma_pago: el pedido nace por cobrar (captura ≠ cobro).
       rewards_telefono:     rwClienteAsignado?.telefono || null,
       rewards_nombre:       rwClienteAsignado?.nombre   || null,
@@ -5057,11 +5075,9 @@ async function confirmarPresencial() {
     const data = await r.json();
     if (!r.ok || !data.ok) { alert('Error: ' + (data.error || 'desconocido')); }
     else {
-      posCarrito = [];
+      _cMostrador.limpiar();
       document.getElementById('pos-nombre-input').value = '';
       rwPosLimpiar(); // Limpiar cliente Rewards asignado
-      renderCarrito();
-      actualizarMobileCartBar();
       volverMenuPOS();
       cargarProgramados();
       // El operador queda en el tablero, donde el pedido ya está listo para
@@ -10628,9 +10644,18 @@ function setRepFiltro(f) {
 }
 
 // ─── Envíos (POS pedidos a domicilio) ───────────────────────────────────────
+// Misma captura que mostrador: el catálogo, el carrito, la agrupación de
+// líneas, la selección de producto y el payload salen del motor común
+// (panel/captura.js). Lo propio de esta pantalla es su modalidad (recoger /
+// domicilio), los datos del cliente, la dirección, el costo de envío y el
+// método de pago — nada más.
 let ENV_TIPO = 'domicilio';
-let ENV_CARRITO = [];          // { producto_id, nombre, precio, cantidad, modificadores, texto, notas }
-let ENV_PRODUCTOS = [];        // catálogo del menú (del propio negocio)
+let _cEnvios = new XaborCaptura.Carrito({ onCambio: () => envRenderCarrito() });
+// Misma referencia que las líneas del motor: el carrito se muta en el sitio.
+let ENV_CARRITO = _cEnvios.lineas;
+// Vista PLANA del mismo catálogo que pinta mostrador (que lo lee en árbol).
+// Ya no es un segundo catálogo: es la misma lectura de /api/menu.
+let ENV_PRODUCTOS = [];
 const ENV_ESTADOS_LBL = { sin_repartidor:'Esperando repartidor', asignado:'Repartidor asignado', recogido:'Recogido', en_camino:'En camino', entregado:'Entregado', cancelado:'Cancelado' };
 function envEsc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -10654,62 +10679,58 @@ function envTipo(t){
   envRecalcular();
 }
 
+// Una sola lectura de /api/menu para todo el panel, cache-first: si ya hay
+// catálogo se pinta al instante y la revalidación corre por detrás.
+//
+// `modificadores` viaja INTACTO en el motor: es lo que decide si el producto
+// abre configurador, y recortarlo aquí fue la raíz del bug de domicilio. Da
+// igual el producto y da igual el negocio: sin eso, ninguno pregunta.
 async function envCargarMenu(){
-  try {
-    const r = await apiFetch('/api/menu'); if (!r.ok) return;
-    const menu = await r.json();
-    // `modificadores` viaja INTACTO desde /api/menu: es lo que decide si el
-    // producto abre configurador. Recortarlo aquí era la raíz del bug de
-    // domicilio — el catálogo de Envíos se quedaba sin grupos y ya no había
-    // forma de saber que un producto tenía algo que preguntar. Da igual el
-    // producto y da igual el negocio: sin esta línea, ninguno pregunta.
-    const normalizar = p => ({
-      id: p.id, nombre: p.nombre, precio: Number(p.precio),
-      disponible: p.disponible !== false && !p.agotado,
-      modificadores: p.modificadores || [],
-    });
-    ENV_PRODUCTOS = (menu.categorias || menu || []).flatMap(c => (c.productos || []).map(normalizar));
-    if (!ENV_PRODUCTOS.length && Array.isArray(menu.productos)) ENV_PRODUCTOS = menu.productos.map(normalizar);
-    envFiltrarProductos();
-  } catch {}
+  await XaborCaptura.catalogo.cargar();
+  ENV_PRODUCTOS = XaborCaptura.catalogo.productos();
+  envFiltrarProductos();
 }
 
+// Cuando el motor revalida y el catálogo efectivo cambió, la lista se repinta
+// sola. El carrito en curso no se toca.
+XaborCaptura.catalogo.onCambio(() => {
+  ENV_PRODUCTOS = XaborCaptura.catalogo.productos();
+  envFiltrarProductos();
+});
+
+// El filtro y la regla de vendibilidad son del motor: `agotado` se respeta
+// aquí exactamente igual que en mostrador.
 function envFiltrarProductos(){
-  const q = (document.getElementById('env-buscar-prod').value || '').toLowerCase().trim();
-  const cont = document.getElementById('env-lista-productos');
-  const lista = ENV_PRODUCTOS.filter(p => p.disponible && (!q || p.nombre.toLowerCase().includes(q)));
+  const input = document.getElementById('env-buscar-prod');
+  const cont  = document.getElementById('env-lista-productos');
+  if (!input || !cont) return;
+  const lista = XaborCaptura.catalogo.buscar(input.value);
   cont.innerHTML = lista.length ? lista.map(p => `
     <button onclick="envAgregar(${p.id})" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fff;cursor:pointer;text-align:left;">
       <span>${envEsc(p.nombre)}${XaborModificadores.tieneModificadores(p) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</span><span style="font-weight:700;">$${p.precio.toFixed(2)}</span>
     </button>`).join('') : '<div style="color:#aaa;text-align:center;padding:14px;font-size:.85rem;">Sin productos</div>';
 }
 
-// Mismo punto común que mostrador y mesa: con grupos abre el configurador y
-// nada entra al carrito hasta que la selección es válida; sin grupos entra
-// directo. La modalidad (recoger / domicilio) no cambia esta decisión.
+// Mismo motor que mostrador y mesa: con grupos abre el configurador y nada
+// entra al carrito hasta que la selección es válida; sin grupos entra directo;
+// agotado no entra nunca. La modalidad (recoger / domicilio) no cambia nada de
+// esta decisión.
 async function envAgregar(id){
-  const p = ENV_PRODUCTOS.find(x => x.id === id); if (!p) return;
-  const linea = await XaborModificadores.elegirLinea(p);
-  if (!linea) return; // cancelado: no se agrega nada
-  const nueva = {
-    producto_id: linea.producto_id, nombre: linea.nombre,
-    precio: linea.precio_unitario, cantidad: linea.cantidad,
-    modificadores: linea.modificadores, texto: linea.texto, notas: '',
-  };
-  const firma = XaborModificadores.firmaLinea(nueva);
-  const ex = ENV_CARRITO.find(x => XaborModificadores.firmaLinea(x) === firma);
-  if (ex) ex.cantidad += nueva.cantidad; else ENV_CARRITO.push(nueva);
-  envRenderCarrito();
+  await _cEnvios.agregar(XaborCaptura.catalogo.producto(id));
 }
 // Por índice, no por producto_id: el mismo producto puede estar dos veces con
 // configuraciones distintas y son líneas independientes.
 function envCambiarCant(idx, d){
-  const it = ENV_CARRITO[idx]; if (!it) return;
-  it.cantidad += d; if (it.cantidad <= 0) ENV_CARRITO.splice(idx, 1);
-  envRenderCarrito();
+  _cEnvios.cambiarCantidad(idx, d);
+}
+// Igual que en mostrador: la nota va por el motor y no repinta mientras se
+// escribe.
+function envNota(idx, texto){
+  _cEnvios.nota(idx, texto);
 }
 function envRenderCarrito(){
   const cont = document.getElementById('env-carrito');
+  if (!cont) return;
   document.getElementById('env-carrito-vacio').style.display = ENV_CARRITO.length ? 'none' : '';
   // Nota por línea, igual que en mostrador: lo que no es una opción del menú
   // ("sin cebolla", "bien tostado") también tiene que llegar a la cocina.
@@ -10717,18 +10738,18 @@ function envRenderCarrito(){
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;font-size:.9rem;">
       <span style="flex:1;">${envEsc(it.nombre)}${it.texto ? `<div style="font-size:.72rem;color:#6b7280;line-height:1.35;">${envEsc(it.texto)}</div>` : ''}
         <input type="text" value="${envEsc(it.notas || '')}" placeholder="Nota (opcional)"
-          onchange="ENV_CARRITO[${idx}].notas=this.value"
+          onchange="envNota(${idx}, this.value)"
           style="font-size:.72rem;background:#f8f7f4;border:1px solid #e5e2da;border-radius:5px;padding:2px 6px;width:100%;margin-top:2px;color:#555;font-family:inherit;">
       </span>
       <button onclick="envCambiarCant(${idx},-1)" class="env-qty">−</button>
       <span style="min-width:18px;text-align:center;">${it.cantidad}</span>
       <button onclick="envCambiarCant(${idx},1)" class="env-qty">+</button>
-      <span style="min-width:56px;text-align:right;font-weight:700;">$${(it.precio*it.cantidad).toFixed(2)}</span>
+      <span style="min-width:56px;text-align:right;font-weight:700;">$${(it.precio_unitario*it.cantidad).toFixed(2)}</span>
     </div>`).join('');
   envRecalcular();
 }
 function envRecalcular(){
-  const subtotal = ENV_CARRITO.reduce((s,it) => s + it.precio*it.cantidad, 0);
+  const subtotal = _cEnvios.subtotal();
   const envio = ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0;
   document.getElementById('env-total').textContent = '$' + (subtotal + envio).toFixed(2);
 }
@@ -10756,12 +10777,10 @@ async function envCrearPedido(){
   const body = {
     tipo: ENV_TIPO,
     cliente: { nombre: document.getElementById('env-nombre').value, telefono: document.getElementById('env-telefono').value },
-    // Solo ids de opción: nombres, precios extra y reglas los resuelve el
-    // servidor contra el menú del propio negocio (recalcularItemsDesdeMenu).
-    items: ENV_CARRITO.map(it => ({
-      producto_id: it.producto_id, cantidad: it.cantidad,
-      modificadores: it.modificadores || [], notas: it.notas || '',
-    })),
+    // Solo ids de opción y notas: nombres, precios extra y reglas los resuelve
+    // el servidor contra el menú del propio negocio (recalcularItemsDesdeMenu).
+    // Es el MISMO constructor de payload que usa mostrador.
+    items: _cEnvios.itemsParaServidor(),
     formaPago: document.getElementById('env-metodo-pago').value,
     costoEnvio: ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0,
   };
@@ -10777,9 +10796,12 @@ async function envCrearPedido(){
     const j = await r.json().catch(()=>({}));
     if (!r.ok) { err.textContent = j.error || 'No se pudo crear el pedido'; err.style.display=''; return; }
     alert('Pedido creado: ' + j.pedido.id + (j.idempotente ? ' (ya existía, no se duplicó)' : ''));
-    ENV_CARRITO = []; ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega'].forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
+    ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega'].forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
+    // El costo de envío se pone a cero ANTES de vaciar: limpiar el carrito
+    // dispara el repintado, y con él el recálculo del total.
     document.getElementById('env-costo-envio').value = '0';
-    envRenderCarrito(); envSub('activos');
+    _cEnvios.limpiar();
+    envSub('activos');
   } catch (e) { err.textContent = 'Error de red'; err.style.display=''; }
   finally { btn.disabled = false; btn.textContent = 'Crear pedido'; }
 }

@@ -55,7 +55,7 @@ function textoFueraDeScripts(html) {
     .replace(/<[^>]+>/g, ' ');
 }
 
-const PAGINAS = ['/app', '/index.html', '/superadmin.html', '/mesas.html', '/restaurante', '/mesero/x', '/repartidor.html', '/modificadores.js'];
+const PAGINAS = ['/app', '/index.html', '/superadmin.html', '/mesas.html', '/restaurante', '/mesero/x', '/repartidor.html', '/modificadores.js', '/captura.js'];
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 const base = srv.base;
 const traer = async (ruta) => {
@@ -113,25 +113,40 @@ for (const ruta of PAGINAS.filter(r => r.endsWith('.html') || r === '/app')) {
 await t('CONTRATO', 'el panel carga el modal compartido desde el <head> real, antes de <body>', async () => {
   const { texto: crudo } = await traer('/app');
   const texto = crudo.replace(/<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
-  // La etiqueta lleva la huella del módulo (?v=…) desde el incidente de caché
-  // del 2026-09-15, así que se busca insensible a la versión — pero se exige
-  // que la versión esté: sin ella, Cloudflare puede servir el módulo viejo.
-  const mScript = /<script src="\/modificadores\.js(\?v=[0-9a-f]{8})?"><\/script>/.exec(texto);
-  assert.ok(mScript, 'el panel debe cargar /modificadores.js');
-  assert.ok(mScript[1], 'la etiqueta debe llevar ?v=<huella> (ver fase-modificadores-todos-los-canales, caso 20)');
-  const iScript = mScript.index;
+  // Las dos etiquetas llevan la huella del módulo (?v=…) desde el incidente de
+  // caché del 2026-09-15: Cloudflare sirve los .js con max-age=14400, así que
+  // durante cuatro horas el navegador ni pregunta si cambiaron, mientras el
+  // HTML se revalida siempre. Se busca insensible a la versión — pero se EXIGE
+  // que la versión esté: sin ella, el navegador puede recibir el HTML nuevo
+  // con el módulo viejo y la captura muere al primer clic.
+  const etiqueta = (archivo) =>
+    new RegExp(`<script src="/${archivo}\\.js(\\?v=([0-9a-f]{8}))?"></script>`).exec(texto);
   const iBody = texto.toLowerCase().indexOf('<body');
-  assert.ok(iScript < iBody, 'debe ir en el <head>, no dentro de un literal de plantilla más abajo');
-  // El único </head> que existe antes de <body> es el real de la página.
   const iHead = texto.toLowerCase().indexOf('</head>');
-  assert.ok(iScript < iHead, 'el script va antes de cerrar el head');
+  const pos = {};
+  for (const archivo of ['modificadores', 'captura']) {
+    const m = etiqueta(archivo);
+    assert.ok(m, `el panel debe cargar /${archivo}.js`);
+    assert.ok(m[2], `/${archivo}.js debe llevar ?v=<huella> (ver fase-captura-unificada, caso CACHE)`);
+    assert.ok(m.index < iBody, `/${archivo}.js debe ir en el <head>, no dentro de un literal de plantilla más abajo`);
+    // El único </head> que existe antes de <body> es el real de la página.
+    assert.ok(m.index < iHead, `/${archivo}.js va antes de cerrar el head`);
+    pos[archivo] = m.index;
+  }
+  // El motor usa el configurador, así que tiene que cargarse después.
+  assert.ok(pos.modificadores < pos.captura,
+    'el motor de captura se carga después del configurador que invoca');
 });
 await t('CONTRATO', 'la funcionalidad de la microfase sigue en el HTML servido', async () => {
   const { texto } = await traer('/app');
   assert.match(texto, /id="tab-restaurante"[^>]*data-modulo="restaurante"/, 'pestaña Restaurante gateada por módulo');
   assert.ok(texto.includes("location.href='/restaurante'"), 'abre el espacio de trabajo de Restaurante');
-  assert.ok(texto.includes('elegirProductoPOS'), 'POS abre el modal de modificadores');
+  // Las dos capturas del panel existen y ambas pasan por el motor común: el
+  // nombre suelto no basta, lo que se protege es que deleguen.
+  assert.ok(texto.includes('elegirProductoPOS'), 'POS captura productos del menú');
   assert.ok(texto.includes('firmaCarrito'), 'el carrito separa líneas por selección');
+  assert.strictEqual((texto.match(/new XaborCaptura\.Carrito\(/g) || []).length, 2,
+    'mostrador y envíos usan el mismo motor, con un carrito cada uno');
   const mesas = await traer('/mesas.html');
   assert.ok(mesas.texto.includes('modificadores.js'), 'mesas usa el mismo modal');
   assert.ok(mesas.texto.includes('elegirProducto'), 'mesas agrega desde el menú con un toque');
@@ -141,6 +156,14 @@ await t('CONTRATO', '/modificadores.js es JavaScript válido y expone la API que
   new vm.Script(texto, { filename: 'modificadores.js' });
   assert.ok(texto.includes('XaborModificadores'), 'expone el objeto global');
   assert.ok(texto.includes('tieneModificadores') && texto.includes('abrirModal'), 'expone las funciones usadas');
+});
+await t('CONTRATO', '/captura.js es JavaScript válido y expone el motor único de captura', async () => {
+  const { texto } = await traer('/captura.js');
+  new vm.Script(texto, { filename: 'captura.js' });
+  assert.ok(texto.includes('XaborCaptura'), 'expone el objeto global');
+  for (const pieza of ['catalogo', 'class Carrito', 'itemsParaServidor', 'firmaLinea', 'vendible']) {
+    assert.ok(texto.includes(pieza), `el motor debe exponer ${pieza}`);
+  }
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
