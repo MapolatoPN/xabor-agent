@@ -4906,28 +4906,27 @@ function volverMenuPOS() {
 }
 
 // Dos veces el mismo producto con modificadores distintos son DOS lineas:
-// la firma incluye los ids de opcion elegidos, en orden estable.
+// la firma incluye los ids de opcion elegidos, en orden estable. La calcula
+// el modulo compartido para que los tres carritos (mostrador, envios, mesa)
+// agrupen igual.
 function firmaCarrito(item) {
-  const mods = (item.modificadores || []).slice().sort((a, b) => a - b).join(',');
-  return `${item.producto_id || item.nombre}|${mods}`;
+  return XaborModificadores.firmaLinea(item);
 }
 
-// Producto sin modificadores: entra directo (comportamiento de siempre).
-// Con modificadores: abre el modal y no se agrega nada hasta cumplir las
-// reglas del menu.
+// Selección de producto: SIEMPRE por el punto común (XaborModificadores.
+// elegirLinea). Si el producto tiene grupos abre el configurador y no se
+// agrega nada hasta cumplir las reglas del menú; si no los tiene, entra
+// directo. Mostrador, Envíos y Mesa comparten esta misma decisión.
 async function elegirProductoPOS(catId, prodId) {
   const cat = (menuPOSData || []).find(c => String(c.id) === String(catId));
   const p = cat && cat.productos.find(x => String(x.id) === String(prodId));
   if (!p) return;
-  if (!window.XaborModificadores || !XaborModificadores.tieneModificadores(p)) {
-    agregarAlCarrito({ producto_id: p.id, nombre: p.nombre, precio_unitario: Number(p.precio), cantidad: 1, notas: '' });
-    return;
-  }
-  const r = await XaborModificadores.abrirModal(p);
-  if (!r) return;
+  const linea = await XaborModificadores.elegirLinea(p);
+  if (!linea) return; // el operador canceló el configurador
   agregarAlCarrito({
-    producto_id: p.id, nombre: p.nombre, precio_unitario: r.precioUnitario, cantidad: r.cantidad,
-    notas: '', modificadores: r.modificadores, textoModificadores: r.texto,
+    producto_id: linea.producto_id, nombre: linea.nombre,
+    precio_unitario: linea.precio_unitario, cantidad: linea.cantidad,
+    notas: '', modificadores: linea.modificadores, textoModificadores: linea.texto,
   });
 }
 
@@ -10584,7 +10583,7 @@ function setRepFiltro(f) {
 
 // ─── Envíos (POS pedidos a domicilio) ───────────────────────────────────────
 let ENV_TIPO = 'domicilio';
-let ENV_CARRITO = [];          // { producto_id, nombre, precio, cantidad }
+let ENV_CARRITO = [];          // { producto_id, nombre, precio, cantidad, modificadores, texto, notas }
 let ENV_PRODUCTOS = [];        // catálogo del menú (del propio negocio)
 const ENV_ESTADOS_LBL = { sin_repartidor:'Esperando repartidor', asignado:'Repartidor asignado', recogido:'Recogido', en_camino:'En camino', entregado:'Entregado', cancelado:'Cancelado' };
 function envEsc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -10613,8 +10612,18 @@ async function envCargarMenu(){
   try {
     const r = await apiFetch('/api/menu'); if (!r.ok) return;
     const menu = await r.json();
-    ENV_PRODUCTOS = (menu.categorias || menu || []).flatMap(c => (c.productos || []).map(p => ({ id: p.id, nombre: p.nombre, precio: Number(p.precio), disponible: p.disponible !== false && !p.agotado })));
-    if (!ENV_PRODUCTOS.length && Array.isArray(menu.productos)) ENV_PRODUCTOS = menu.productos.map(p => ({ id:p.id, nombre:p.nombre, precio:Number(p.precio), disponible:p.disponible!==false && !p.agotado }));
+    // `modificadores` viaja INTACTO desde /api/menu: es lo que decide si el
+    // producto abre configurador. Recortarlo aquí era la raíz del bug de
+    // domicilio — el catálogo de Envíos se quedaba sin grupos y ya no había
+    // forma de saber que un producto tenía algo que preguntar. Da igual el
+    // producto y da igual el negocio: sin esta línea, ninguno pregunta.
+    const normalizar = p => ({
+      id: p.id, nombre: p.nombre, precio: Number(p.precio),
+      disponible: p.disponible !== false && !p.agotado,
+      modificadores: p.modificadores || [],
+    });
+    ENV_PRODUCTOS = (menu.categorias || menu || []).flatMap(c => (c.productos || []).map(normalizar));
+    if (!ENV_PRODUCTOS.length && Array.isArray(menu.productos)) ENV_PRODUCTOS = menu.productos.map(normalizar);
     envFiltrarProductos();
   } catch {}
 }
@@ -10625,30 +10634,49 @@ function envFiltrarProductos(){
   const lista = ENV_PRODUCTOS.filter(p => p.disponible && (!q || p.nombre.toLowerCase().includes(q)));
   cont.innerHTML = lista.length ? lista.map(p => `
     <button onclick="envAgregar(${p.id})" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fff;cursor:pointer;text-align:left;">
-      <span>${envEsc(p.nombre)}</span><span style="font-weight:700;">$${p.precio.toFixed(2)}</span>
+      <span>${envEsc(p.nombre)}${XaborModificadores.tieneModificadores(p) ? ' <span style="font-size:.7rem;opacity:.6;">· opciones</span>' : ''}</span><span style="font-weight:700;">$${p.precio.toFixed(2)}</span>
     </button>`).join('') : '<div style="color:#aaa;text-align:center;padding:14px;font-size:.85rem;">Sin productos</div>';
 }
 
-function envAgregar(id){
+// Mismo punto común que mostrador y mesa: con grupos abre el configurador y
+// nada entra al carrito hasta que la selección es válida; sin grupos entra
+// directo. La modalidad (recoger / domicilio) no cambia esta decisión.
+async function envAgregar(id){
   const p = ENV_PRODUCTOS.find(x => x.id === id); if (!p) return;
-  const ex = ENV_CARRITO.find(x => x.producto_id === id);
-  if (ex) ex.cantidad++; else ENV_CARRITO.push({ producto_id: id, nombre: p.nombre, precio: p.precio, cantidad: 1 });
+  const linea = await XaborModificadores.elegirLinea(p);
+  if (!linea) return; // cancelado: no se agrega nada
+  const nueva = {
+    producto_id: linea.producto_id, nombre: linea.nombre,
+    precio: linea.precio_unitario, cantidad: linea.cantidad,
+    modificadores: linea.modificadores, texto: linea.texto, notas: '',
+  };
+  const firma = XaborModificadores.firmaLinea(nueva);
+  const ex = ENV_CARRITO.find(x => XaborModificadores.firmaLinea(x) === firma);
+  if (ex) ex.cantidad += nueva.cantidad; else ENV_CARRITO.push(nueva);
   envRenderCarrito();
 }
-function envCambiarCant(id, d){
-  const it = ENV_CARRITO.find(x => x.producto_id === id); if (!it) return;
-  it.cantidad += d; if (it.cantidad <= 0) ENV_CARRITO = ENV_CARRITO.filter(x => x.producto_id !== id);
+// Por índice, no por producto_id: el mismo producto puede estar dos veces con
+// configuraciones distintas y son líneas independientes.
+function envCambiarCant(idx, d){
+  const it = ENV_CARRITO[idx]; if (!it) return;
+  it.cantidad += d; if (it.cantidad <= 0) ENV_CARRITO.splice(idx, 1);
   envRenderCarrito();
 }
 function envRenderCarrito(){
   const cont = document.getElementById('env-carrito');
   document.getElementById('env-carrito-vacio').style.display = ENV_CARRITO.length ? 'none' : '';
-  cont.innerHTML = ENV_CARRITO.map(it => `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:.9rem;">
-      <span style="flex:1;">${envEsc(it.nombre)}</span>
-      <button onclick="envCambiarCant(${it.producto_id},-1)" class="env-qty">−</button>
+  // Nota por línea, igual que en mostrador: lo que no es una opción del menú
+  // ("sin cebolla", "bien tostado") también tiene que llegar a la cocina.
+  cont.innerHTML = ENV_CARRITO.map((it, idx) => `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;font-size:.9rem;">
+      <span style="flex:1;">${envEsc(it.nombre)}${it.texto ? `<div style="font-size:.72rem;color:#6b7280;line-height:1.35;">${envEsc(it.texto)}</div>` : ''}
+        <input type="text" value="${envEsc(it.notas || '')}" placeholder="Nota (opcional)"
+          onchange="ENV_CARRITO[${idx}].notas=this.value"
+          style="font-size:.72rem;background:#f8f7f4;border:1px solid #e5e2da;border-radius:5px;padding:2px 6px;width:100%;margin-top:2px;color:#555;font-family:inherit;">
+      </span>
+      <button onclick="envCambiarCant(${idx},-1)" class="env-qty">−</button>
       <span style="min-width:18px;text-align:center;">${it.cantidad}</span>
-      <button onclick="envCambiarCant(${it.producto_id},1)" class="env-qty">+</button>
+      <button onclick="envCambiarCant(${idx},1)" class="env-qty">+</button>
       <span style="min-width:56px;text-align:right;font-weight:700;">$${(it.precio*it.cantidad).toFixed(2)}</span>
     </div>`).join('');
   envRecalcular();
@@ -10682,7 +10710,12 @@ async function envCrearPedido(){
   const body = {
     tipo: ENV_TIPO,
     cliente: { nombre: document.getElementById('env-nombre').value, telefono: document.getElementById('env-telefono').value },
-    items: ENV_CARRITO.map(it => ({ producto_id: it.producto_id, cantidad: it.cantidad })),
+    // Solo ids de opción: nombres, precios extra y reglas los resuelve el
+    // servidor contra el menú del propio negocio (recalcularItemsDesdeMenu).
+    items: ENV_CARRITO.map(it => ({
+      producto_id: it.producto_id, cantidad: it.cantidad,
+      modificadores: it.modificadores || [], notas: it.notas || '',
+    })),
     formaPago: document.getElementById('env-metodo-pago').value,
     costoEnvio: ENV_TIPO === 'domicilio' ? (parseFloat(document.getElementById('env-costo-envio').value) || 0) : 0,
   };

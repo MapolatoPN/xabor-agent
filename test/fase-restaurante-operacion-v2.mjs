@@ -237,7 +237,12 @@ await t('WIZARD', '9. el producto con opciones trae sus grupos en orden, con sus
 
 await t('WIZARD', '10. la pantalla usa el wizard secuencial compartido, no un formulario largo', async () => {
   const { texto } = await traer('/restaurante');
-  assert.ok(texto.includes('XaborModificadores.abrirWizard'), 'Restaurante abre el wizard');
+  // Restaurante entra por el MISMO punto común que POS y Envíos
+  // (elegirLinea) y solo pide el modo wizard: así la decisión de abrir o no
+  // el configurador no se reimplementa por canal — que fue justo el origen
+  // del bug de domicilio.
+  assert.match(texto, /XaborModificadores\.elegirLinea\([^)]*modo:\s*'wizard'/,
+    'Restaurante abre el wizard por el punto común de selección');
   const { texto: js } = await traer('/modificadores.js');
   new vm.Script(js, { filename: 'modificadores.js' });
   assert.ok(js.includes('abrirWizard') && js.includes('abrirModal'), 'el módulo expone las dos formas, sin duplicar reglas');
