@@ -9,7 +9,7 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
 - **WebSocket**: `ws` nativo
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
-- **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
+- **Deploy**: Railway, **manual**, y desde una rama `deploy/*`, NO desde `main` (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
 - **Timezone**: `America/Matamoros` (CST, UTC-6)
 
 ## Estructura de archivos
@@ -190,8 +190,54 @@ Detalles que cuestan tiempo si no se saben:
 - El comando escupe un *warning* de deprecación de `railway.json` que tapa su
   propia salida. Con `--json` responde limpio: `{"success":true}`.
 - `--from-source` toma **el último commit del origen configurado**, no el
-  checkout local. Si alguien más mergeó a `main` antes, ese trabajo también sale
-  a producción — conviene mirar `git log HEAD..origin/main` antes de desplegar.
+  checkout local. Si alguien más empujó a esa rama antes, ese trabajo también
+  sale a producción — conviene mirar qué commits van a salir antes de desplegar.
+
+### La rama que despliega NO es `main`
+
+Esta sección decía «mergea a `main` y despliega», y eso es falso desde hace
+tiempo. El servicio `xabor-agent` de Railway está enganchado a una rama de
+despliegue, no a `main`. **Al 2026-09-15 es:**
+
+```
+deploy/mesero-shadow-v3-rewards-obispado-20260914
+```
+
+Se comprobó por las malas: un fix se mergeó a `main`, se corrió
+`railway redeploy --yes --from-source`, el comando respondió `{"success":true}`,
+el build terminó y el healthcheck pasó — y producción siguió sirviendo el código
+viejo, porque el redeploy reconstruyó el último commit de *esa* rama, que no
+había cambiado. `main` no interviene en el despliegue.
+
+**Antes de desplegar, leer la rama configurada de la propia Railway**, nunca
+suponerla (el nombre cambia con cada ronda de piloto):
+
+```powershell
+$f = "$env:TEMP\rw.json"
+railway status --json 2>$null | Set-Content $f -Encoding utf8   # el warning de
+# deprecacion va a stderr y rompe ConvertFrom-Json si se mezcla con 2>&1
+$j = Get-Content $f -Raw | ConvertFrom-Json
+$d = ($j.environments.edges.node.serviceInstances.edges |
+      Where-Object { $_.node.serviceName -eq 'xabor-agent' }).node.latestDeployment
+"$($d.meta.branch)  $($d.meta.commitHash)  $($d.status)"
+```
+
+Ese `meta.commitHash` es además la única prueba de qué se desplegó, y
+`$d.id` es el Deployment ID para rastrearlo.
+
+**Para llevar un cambio a producción** hay que ponerlo en esa rama, no en
+`main`. La rama de despliegue suele ir por delante de `main` con trabajo de
+piloto en vuelo (Mesero Shadow, Rewards), así que **jamás** apuntar el servicio
+a `main` «para ordenar»: eso revierte en producción todo lo que esa rama lleva
+de más. El camino seguro es cherry-pick del commit aprobado encima de la rama
+de despliegue, verificando antes que `git log <rama>..<candidato>` trae SOLO ese
+commit y que `git log <candidato>..<rama>` está vacío.
+
+Un aviso sobre el diff: al comparar el cherry-pick contra lo que corre en
+producción, el diff textual **no** sale byte-idéntico al del commit original
+aunque el cambio sea el mismo — las cabeceras `@@` traen otros números de línea
+si la rama de despliegue tocó el archivo más arriba. Lo que hay que comparar son
+las líneas `+`/`-` de contenido, no el diff entero.
 
 **Verificar que llegó, no suponerlo.** `/health` responde 200 con el build
 viejo igual que con el nuevo, así que no prueba nada por sí solo. Lo que sí
