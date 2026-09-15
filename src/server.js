@@ -104,7 +104,7 @@ import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
-  listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem,
+  listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem, actualizarNotasItem,
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
   revertirVentaCuenta,
 } from './services/restauranteService.js';
@@ -2760,7 +2760,7 @@ function manejarErrorRestaurante(res, e) {
     SIN_ITEMS_PENDIENTES: 409, SALDO_PENDIENTE: 409, PAGO_EXCEDE_SALDO: 409,
     METODO_NO_HABILITADO: 400, MONTO_INVALIDO: 400, MESA_INVALIDA: 400,
     MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
-    MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, PARTES_INVALIDAS: 400,
+    MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, ITEM_NO_COMENTABLE: 409, PARTES_INVALIDAS: 400,
     VENTA_CONTABILIZADA: 409, SIN_VENTA_QUE_REVERTIR: 409,
   };
   const status = mapa[e.code];
@@ -2955,6 +2955,16 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
 // Cancelar un item exige rol admin y motivo -- queda auditado quién agregó,
 // quién canceló y por qué. Si el item ya había salido a cocina, se emite la
 // comanda de cancelación (solo ese item).
+// Comentario del mesero sobre un platillo pendiente ("sin cebolla", "bien
+// cocido"). Lo escribe quien opera la mesa -mismo permiso que agregar items-,
+// no solo el admin: cancelar sí es de admin porque destruye, comentar no.
+app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/notas', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const item = await actualizarNotasItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.notas, req.usuarioId);
+    res.json({ ok: true, item });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
 app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
     const item = await cancelarItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId, req.body?.motivo);

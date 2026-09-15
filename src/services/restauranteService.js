@@ -241,6 +241,32 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
   return rows[0]; // ya_enviado=true => el llamador imprime la comanda de cancelación
 }
 
+// Comentario del mesero sobre un platillo, para la cocina.
+//
+// Solo sobre lo que AÚN NO salió: `comanda_num IS NULL`. Cambiar la nota de
+// algo que la cocina ya tiene impreso sería mentirle al ticket — el papel diría
+// una cosa y la pantalla otra, y nadie se enteraría. Para eso está cancelar.
+//
+// La cuenta tiene que estar abierta y el item vivo; el tope de 300 es el mismo
+// que aplica `agregarItems` al crearlo, para que una nota no cambie de largo
+// según por dónde entró.
+export async function actualizarNotasItem(itemId, cuentaId, negocioId, notas, usuarioId) {
+  const nid = validarNegocioId(negocioId);
+  const texto = String(notas ?? '').trim().slice(0, 300);
+  const { rows } = await pool.query(
+    `UPDATE restaurante_cuenta_items i SET notas = $4
+     FROM restaurante_cuentas c
+     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
+       AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
+     RETURNING i.id, i.producto, i.notas`,
+    [itemId, cuentaId, nid, texto || null]
+  );
+  if (!rows.length) {
+    throw errorCodigo('El platillo ya salió a cocina o no admite comentario', 'ITEM_NO_COMENTABLE');
+  }
+  return rows[0];
+}
+
 // ─── Pagos y división (C5/C6) ───────────────────────────────────────────────
 export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null }, usuarioId) {
   const nid = validarNegocioId(negocioId);

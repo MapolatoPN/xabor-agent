@@ -125,6 +125,9 @@
   .linea .imp { margin-left:auto; font-weight:700; white-space:nowrap; }
   .linea.cancelada { text-decoration:line-through; color:var(--sub); }
   .linea .quitar { background:none; border:none; color:var(--rojo); font-size:12px; cursor:pointer; padding:0 2px; }
+  .linea .comentar { background:none; border:none; color:var(--sub); font-size:13px; cursor:pointer; padding:0 2px; line-height:1; }
+  .linea .comentar:hover { color:var(--accent); }
+  #dlg-comentario .co-prod { font-size:15px; font-weight:800; margin-bottom:2px; }
   .totales { border-top:1px solid var(--line); margin-top:10px; padding-top:10px; font-size:13px; color:var(--sub); }
   .totales .gran { display:flex; justify-content:space-between; font-size:20px; font-weight:900; color:var(--texto); margin-top:4px; }
   .accion-principal { width:100%; background:var(--accent); color:#fff; border:none; border-radius:12px;
@@ -322,6 +325,17 @@
   <div class="acciones">
     <button class="sec" onclick="document.getElementById('dlg-libre').close()">Cancelar</button>
     <button onclick="agregarLibre()">Agregar</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-comentario">
+  <h2>Comentario para la cocina</h2>
+  <div class="co-prod" id="co-producto"></div>
+  <label for="co-texto">Sale impreso en la comanda, junto a las opciones</label>
+  <input id="co-texto" maxlength="300" placeholder="sin cebolla, término tres cuartos, aparte…">
+  <div class="acciones">
+    <button class="sec" onclick="document.getElementById('dlg-comentario').close()">Cancelar</button>
+    <button onclick="guardarComentario()">Guardar</button>
   </div>
 </dialog>
 
@@ -623,12 +637,52 @@ function lineaHTML(i) {
   const mods = resumirModificadores(i.modificadores);
   const extra = [mods, i.notas].filter(Boolean).join(' · ');
   const cancelable = puedeCancelar() && i.estado !== 'cancelado';
+  // Comentar solo lo que AÚN no salió a cocina: el papel ya impreso no se
+  // puede corregir, y dejar editarlo haría que pantalla y ticket dijeran
+  // cosas distintas sin que nadie se entere.
+  const comentable = i.estado === 'pendiente' && !i.comanda_num;
   return `<div class="linea ${i.estado === 'cancelado' ? 'cancelada' : ''}">
     <span class="cant">${i.cantidad}×</span>
     <span class="nom">${esc(i.producto)}${extra ? `<small>${esc(extra)}</small>` : ''}</span>
     <span class="imp">${money(i.cantidad * Number(i.precio_unitario))}</span>
+    ${comentable ? `<button class="comentar" onclick="abrirComentario('${i.id}')" title="${i.notas ? 'Editar comentario' : 'Agregar comentario'}" aria-label="Comentario para la cocina">${i.notas ? '✎' : '✎'}</button>` : ''}
     ${cancelable ? `<button class="quitar" onclick="cancelarItem('${i.id}')" title="Cancelar">✕</button>` : ''}
   </div>`;
+}
+
+// ─── Comentario del mesero para la cocina ───────────────────────────────────
+// El comentario viaja en `notas` del item y sale impreso en la comanda junto a
+// los modificadores (enviarComanda los une). No es la nota de entrega del
+// repartidor: esto es preparación, va por platillo y lo lee la plancha.
+let COMENTANDO = null;
+
+function abrirComentario(itemId) {
+  const it = (CUENTA?.items || []).find(x => String(x.id) === String(itemId));
+  if (!it) return;
+  COMENTANDO = itemId;
+  $('co-producto').textContent = it.producto;
+  $('co-texto').value = it.notas || '';
+  $('dlg-comentario').showModal();
+  $('co-texto').focus();
+}
+
+async function guardarComentario() {
+  if (!COMENTANDO) return;
+  const notas = $('co-texto').value.trim().slice(0, 300);
+  try {
+    await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${COMENTANDO}/notas`,
+      { method: 'PATCH', body: JSON.stringify({ notas }) });
+    $('dlg-comentario').close();
+    COMENTANDO = null;
+    await refrescarCuenta();
+    msg(notas ? 'Comentario guardado' : 'Comentario quitado');
+  } catch (e) {
+    // El caso real: otro mesero mandó la ronda mientras este escribía.
+    msg('Ese platillo ya salió a cocina');
+    $('dlg-comentario').close();
+    COMENTANDO = null;
+    await refrescarCuenta();
+  }
 }
 
 function pintarCuenta() {
