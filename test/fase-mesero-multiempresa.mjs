@@ -386,7 +386,7 @@ await t('Y6. NINGÚN módulo del mesero puede tocar la base ni el canal', async 
   const permitidos = /^(\.\/[a-zA-Z]+\.js|\.\.\/orders\/(carritoDelPedido|evidenciaDeEleccion|procedenciaDeEvidencia)\.js|node:[a-z]+)$/;
   for (const f of archivos) {
     const fuente = readFileSync(new URL(f, dir), 'utf8');
-    const imports = [...fuente.matchAll(/(?:^import[^;]*from|await import\()\s*'([^']+)'/gm)].map((m) => m[1]);
+    const imports = [...fuente.matchAll(/(?:^import[^;]*from|^import|await import\()\s*'([^']+)'/gm)].map((m) => m[1]);
     for (const i of imports) {
       assert(permitidos.test(i), `${f} importa ${i}, que no es un módulo puro`);
     }
@@ -415,7 +415,7 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     if (vistos.has(archivo)) continue;
     vistos.add(archivo);
     const fuente = readFileSync(archivo, 'utf8');
-    for (const m of fuente.matchAll(/(?:^import[^;]*from|await import\()\s*'([^']+)'/gm)) {
+    for (const m of fuente.matchAll(/(?:^import[^;]*from|^import|await import\()\s*'([^']+)'/gm)) {
       const spec = m[1];
       if (spec.startsWith('node:')) continue;
       if (!spec.startsWith('.')) { throw new Error(`${relative(RAIZ, archivo)} importa el paquete "${spec}"`); }
@@ -440,6 +440,7 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
   assert.deepEqual(modulos, [
     'src/mesero-whatsapp/aclaraciones.js',
     'src/mesero-whatsapp/anclajeAlCatalogo.js',
+    'src/mesero-whatsapp/compilarTurno.js',
     'src/mesero-whatsapp/consultasDelMenu.js',
     'src/mesero-whatsapp/contextoMesa.js',
     'src/mesero-whatsapp/faseConversacional.js',
@@ -460,6 +461,54 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     'src/orders/procedenciaDeEvidencia.js',
     'src/agent/mencionesComerciales.js',
   ].sort(), `el grafo de la sombra cambió:\n${modulos.join('\n')}`);
+});
+
+await t('Y7b. el grafo propio de `compilarTurno` tampoco alcanza nada con efecto', async () => {
+  // Y7 declara el grafo ENTERO de la sombra, y una lista que se amplía cada vez
+  // que algo falla deja de ser una barrera. Esta mira el módulo nuevo por su
+  // cuenta: da igual quién lo importe, no puede llegar a persistencia,
+  // impresión, pagos, Rewards, tienda ni red.
+  //
+  // El patrón de imports incluye la forma SIN `from` —`import './x.js';`, la
+  // que sólo se hace por el efecto de cargar el módulo—. Sin ella, la mordida
+  // Q16 pasaba por debajo de los tres caminantes: la cazaba Y6, y sólo porque
+  // el nombre del archivo prohibido aparecía literal en el texto. Un import de
+  // efecto a dos saltos no lo habría visto nadie.
+  const { readFileSync } = await import('node:fs');
+  const { dirname, resolve, relative } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const RAIZ = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const vistos = new Set();
+  const cola = [resolve(RAIZ, 'src/mesero-whatsapp/compilarTurno.js')];
+  while (cola.length) {
+    const archivo = cola.pop();
+    if (vistos.has(archivo)) continue;
+    vistos.add(archivo);
+    const fuente = readFileSync(archivo, 'utf8');
+    for (const m of fuente.matchAll(/(?:^import[^;]*from|^import|await import\()\s*'([^']+)'/gm)) {
+      const spec = m[1];
+      if (spec.startsWith('node:')) continue;
+      assert(spec.startsWith('.'), `compilarTurno alcanza el paquete "${spec}" vía ${relative(RAIZ, archivo)}`);
+      cola.push(resolve(dirname(archivo), spec));
+    }
+  }
+  const PROHIBIDOS = ['services/database', 'channels/', 'orders/orderManager', 'agent/brain',
+    'services/clip-api', 'services/pagos', 'services/facturapi', 'services/impresion',
+    'services/tienda', 'services/rewards', 'server.js'];
+  for (const archivo of vistos) {
+    const rel = relative(RAIZ, archivo).replace(/\\/g, '/');
+    for (const p of PROHIBIDOS) {
+      assert.equal(rel.includes(p), false, `compilarTurno alcanza ${rel} (prohibido: ${p})`);
+    }
+  }
+  // Y ninguno de los que alcanza abre una puerta por su cuenta.
+  for (const archivo of vistos) {
+    const src = readFileSync(archivo, 'utf8').replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const veneno of ['pool.query', 'fetch(', 'setInterval(', 'writeFileSync']) {
+      assert(!src.includes(veneno),
+        `${relative(RAIZ, archivo)} usa ${veneno} y está en el grafo de compilarTurno`);
+    }
+  }
 });
 
 await t('Y8. y `mencionesComerciales`, que es el único de fuera, tampoco tiene efectos', async () => {
