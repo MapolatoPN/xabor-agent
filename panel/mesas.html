@@ -5,9 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Restaurante · Xabor</title>
 <style>
+  /* Restaurante usa el MISMO sistema de diseño que el resto de Xabor.
+     Hasta aquí tenía paleta propia (slate-900 sobre gris-800) y parecía otro
+     producto: el operador salía del panel claro y entraba a una aplicación
+     oscura para hacer el mismo trabajo. Los valores son los de
+     panel/index.html; los nombres cortos se conservan para no tocar las ~200
+     reglas que ya los usan.
+
+     `--line` hacía DOS trabajos —borde y fondo de botón secundario— y en
+     claro no pueden ser el mismo valor: un botón con fondo #E9ECEF es
+     invisible. Por eso ahora `--line` es solo borde y `--neutro` es la
+     superficie de los botones secundarios. */
   :root {
-    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
-    --ok:#10b981; --aviso:#f59e0b; --accent:#f97316; --rojo:#ef4444; --azul:#38bdf8;
+    --bg:#F8F9FA;        /* fondo general           (era #0f172a) */
+    --sup:#FFFFFF;       /* superficies elevadas    (era #1e293b) */
+    --card:#FFFFFF;      /* tarjetas                (era #1f2937) */
+    --line:#E9ECEF;      /* SOLO bordes             (era #374151) */
+    --linea-fuerte:#DEE2E6;
+    --neutro:#F1F3F5;    /* fondo de botón secundario (antes --line) */
+    --texto:#1A1D23;     /* texto principal         (era #f9fafb) */
+    --sub:#6B7280;       /* texto secundario        (era #94a3b8) */
+    --ok:#10B981; --aviso:#F59E0B; --rojo:#EF4444; --azul:#3B82F6;
+    --accent:#FF6B35;    /* el naranja de Xabor     (era #f97316) */
+    --accent-suave:#FFF4EF;
+    --radio:12px; --radio-lg:16px;
+    --sombra:0 1px 2px rgba(0,0,0,0.05);
+    --sombra-md:0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
   }
   * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
   html, body { overflow-x:hidden; }
@@ -16,7 +39,7 @@
   /* ── Barra Xabor: la misma marca del panel. Restaurante es un espacio de
         trabajo de Xabor, no otra aplicación. ───────────────────────────── */
   header.xb { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--sup);
-              border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
+              border-bottom:1px solid var(--line); box-shadow:var(--sombra); position:sticky; top:0; z-index:20; }
   header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
   header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
   header.xb .negocio { color:var(--sub); font-size:13px; border-left:1px solid var(--line); padding-left:12px; }
@@ -24,21 +47,24 @@
   header.xb .quien { font-size:13px; font-weight:700; }
   header.xb .quien small { display:block; font-weight:500; color:var(--sub); font-size:11px; }
   header.xb a, header.xb button.enlace { color:var(--sub); text-decoration:none; font-size:13px; background:none; border:none; cursor:pointer; }
-  header.xb button.salir { background:var(--line); color:var(--texto); border:none; border-radius:9px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; min-height:40px; }
+  header.xb button.salir { background:var(--neutro); border:1px solid var(--linea-fuerte); color:var(--texto); border:none; border-radius:9px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; min-height:40px; }
 
   main { flex:1; padding:14px; width:100%; max-width:1400px; margin:0 auto; }
   .oculto { display:none !important; }
 
   /* ── Tablero de mesas ─────────────────────────────────────────────────── */
   .filtros { display:flex; gap:8px; margin-bottom:12px; align-items:center; flex-wrap:wrap; }
-  .chip { background:var(--sup); color:var(--sub); border:1px solid var(--line); border-radius:99px;
+  .chip { background:var(--sup); color:var(--sub); border:1px solid var(--linea-fuerte); border-radius:99px;
           padding:9px 16px; font-size:14px; font-weight:700; cursor:pointer; min-height:42px; }
   .chip.activo { background:var(--accent); border-color:var(--accent); color:#fff; }
   .filtros .cuenta-libres { margin-left:auto; color:var(--sub); font-size:13px; }
 
   .mesas { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:12px; }
-  .mesa { background:var(--card); border:2px solid var(--line); border-radius:14px; padding:14px 12px;
-          cursor:pointer; text-align:left; color:inherit; min-height:118px; display:flex; flex-direction:column; gap:4px; }
+  .mesa { background:var(--card); border:2px solid var(--line); border-radius:var(--radio-lg); padding:14px 12px;
+          cursor:pointer; text-align:left; color:inherit; min-height:118px; display:flex; flex-direction:column; gap:4px;
+          box-shadow:var(--sombra); transition:border-color .15s, box-shadow .15s; }
+  .mesa:hover { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-suave); }
+  .mesa:active { transform:scale(.99); }
   .mesa .num { font-size:20px; font-weight:900; }
   .mesa .quien { font-size:14px; font-weight:700; color:var(--texto); }
   .mesa .dato { font-size:13px; color:var(--sub); }
@@ -46,8 +72,9 @@
   .mesa .estado { font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; }
   .mesa.libre { border-style:dashed; }
   .mesa.libre .estado { color:var(--ok); }
-  .mesa.ocupada { border-color:var(--line); }
-  .mesa.ocupada .estado { color:var(--sub); }
+  .mesa.ocupada { background:var(--accent-suave); border-color:rgba(255,107,53,.35); }
+  .mesa.ocupada .estado { color:var(--accent); }
+  .mesa.ocupada .importe { color:var(--texto); }
   .mesa.porenviar { border-color:var(--aviso); }
   .mesa.porenviar .estado { color:var(--aviso); }
   .mesa.cobrando { border-color:var(--azul); }
@@ -56,24 +83,27 @@
 
   /* ── Toma de orden: categorías · productos · cuenta ───────────────────── */
   .orden-barra { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
-  .orden-barra .volver { background:var(--sup); border:1px solid var(--line); color:var(--texto);
+  .orden-barra .volver { background:var(--sup); border:1px solid var(--linea-fuerte); color:var(--texto);
                          border-radius:10px; padding:10px 14px; font-size:14px; font-weight:700; cursor:pointer; min-height:44px; }
   .orden-barra .titulo { font-size:18px; font-weight:800; }
   .orden-barra .meta { font-size:13px; color:var(--sub); }
 
   .cols { display:grid; grid-template-columns:190px 1fr 340px; gap:12px; align-items:start; }
-  .panelito { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:10px; }
+  .panelito { background:var(--sup); border:1px solid var(--line); border-radius:var(--radio-lg); padding:10px; box-shadow:var(--sombra); }
   #cats { display:grid; gap:6px; max-height:calc(100dvh - 190px); overflow-y:auto; }
   #cats button { width:100%; text-align:left; background:transparent; border:1px solid transparent; color:var(--texto);
                  border-radius:10px; padding:12px 12px; font-size:15px; font-weight:700; cursor:pointer; min-height:48px; }
   #cats button.activo { background:var(--accent); color:#fff; }
 
-  .buscador { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+  .buscador { width:100%; background:var(--card); color:var(--texto); border:1px solid var(--line);
               border-radius:10px; padding:11px 12px; font-size:15px; margin-bottom:10px; }
   #prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;
            max-height:calc(100dvh - 240px); overflow-y:auto; }
-  .prod { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 12px; min-height:92px;
-          display:flex; flex-direction:column; gap:6px; text-align:left; color:inherit; cursor:pointer; }
+  .prod { background:var(--card); border:1px solid var(--line); border-radius:var(--radio); padding:14px 12px; min-height:92px;
+          display:flex; flex-direction:column; gap:6px; text-align:left; color:inherit; cursor:pointer;
+          box-shadow:var(--sombra); transition:border-color .15s, box-shadow .15s; }
+  .prod:hover { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-suave); }
+  .prod:active { transform:scale(.97); }
   .prod .nom { font-size:15px; font-weight:700; line-height:1.25; }
   .prod .pre { margin-top:auto; font-size:16px; font-weight:800; color:var(--accent); }
   .prod .ops { font-size:11px; color:var(--sub); text-transform:uppercase; letter-spacing:.4px; }
@@ -101,37 +131,37 @@
                       padding:16px; font-size:17px; font-weight:900; cursor:pointer; margin-top:10px; min-height:58px; }
   .accion-principal:disabled { opacity:.4; cursor:not-allowed; }
   .secundarias { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
-  .secundarias button { flex:1; min-width:120px; background:var(--line); color:var(--texto); border:none;
+  .secundarias button { flex:1; min-width:120px; background:var(--neutro); color:var(--texto); border:1px solid var(--linea-fuerte);
                         border-radius:10px; padding:12px; font-size:13px; font-weight:700; cursor:pointer; min-height:46px; }
 
   /* Barra inferior: en celular la cuenta no cabe al lado, así que el total y
      la acción principal viven siempre a la vista. */
-  .barra-inf { display:none; position:sticky; bottom:0; background:var(--sup); border-top:1px solid var(--line);
+  .barra-inf { display:none; position:sticky; bottom:0; background:var(--sup); border-top:1px solid var(--line); box-shadow:0 -1px 3px rgba(0,0,0,.06);
                padding:10px 14px; gap:10px; align-items:center; z-index:15; }
   .barra-inf .tot { font-size:18px; font-weight:900; }
   .barra-inf .tot small { display:block; font-size:11px; color:var(--sub); font-weight:600; }
   .barra-inf button { min-height:52px; border:none; border-radius:11px; font-weight:800; font-size:15px; cursor:pointer; }
-  .barra-inf .ver { background:var(--line); color:var(--texto); padding:0 14px; }
+  .barra-inf .ver { background:var(--neutro); color:var(--texto); border:1px solid var(--linea-fuerte); padding:0 14px; }
   .barra-inf .enviar { background:var(--accent); color:#fff; flex:1; }
   .barra-inf .enviar:disabled { opacity:.4; }
 
-  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:16px;
+  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:var(--radio-lg); box-shadow:var(--sombra-md);
            padding:18px; width:min(460px,94vw); }
-  dialog::backdrop { background:rgba(0,0,0,.65); }
+  dialog::backdrop { background:rgba(0,0,0,.55); }
   dialog h2 { font-size:17px; margin-bottom:12px; }
   label { display:block; font-size:12px; color:var(--sub); margin:12px 0 5px; }
-  input, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+  input, select { width:100%; background:var(--card); color:var(--texto); border:1px solid var(--line);
                   border-radius:10px; padding:12px; font-size:16px; }
   .numeros { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
-  .numeros button { min-height:54px; background:var(--sup); border:2px solid var(--line); color:var(--texto);
+  .numeros button { min-height:54px; background:var(--sup); border:2px solid var(--linea-fuerte); color:var(--texto);
                     border-radius:12px; font-size:18px; font-weight:800; cursor:pointer; }
   .numeros button.activo { border-color:var(--accent); background:rgba(249,115,22,.16); }
   .acciones { display:flex; gap:8px; margin-top:16px; }
   .acciones button { flex:1; min-height:52px; background:var(--accent); color:#fff; border:none;
                      border-radius:11px; font-size:16px; font-weight:800; cursor:pointer; }
-  .acciones button.sec { background:var(--line); }
-  #msg { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#111827; color:#fff;
-         border:1px solid var(--line); padding:12px 18px; border-radius:12px; display:none; z-index:99;
+  .acciones button.sec { background:var(--neutro); color:var(--texto); border:1px solid var(--linea-fuerte); }
+  #msg { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:var(--sup); color:var(--texto);
+         border:1px solid var(--line); box-shadow:var(--sombra-md); padding:12px 18px; border-radius:12px; display:none; z-index:99;
          font-size:15px; font-weight:700; max-width:92vw; text-align:center; }
 
   /* Tablet horizontal (1024×768): sigue cabiendo la cuenta al lado, solo se
@@ -545,7 +575,7 @@ function productoDelMenu(id) {
 async function elegirProducto(id) {
   const p = productoDelMenu(id);
   if (!p || !CUENTA) return;
-  const linea = await XaborModificadores.elegirLinea(p, { modo: 'wizard', oscuro: true });
+  const linea = await XaborModificadores.elegirLinea(p, { modo: 'wizard' });
   if (!linea) return; // el mesero canceló el wizard
   const cuerpo = { producto_id: linea.producto_id, cantidad: linea.cantidad, modificadores: linea.modificadores };
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST', body: JSON.stringify({ items: [cuerpo] }) });
