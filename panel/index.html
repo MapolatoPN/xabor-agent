@@ -2024,7 +2024,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
                 <input id="env-entrecalles" placeholder="Entre calles" class="env-inp">
               </div>
               <input id="env-referencia" placeholder="Referencia (portón, color…)" class="env-inp" style="margin-top:8px;">
-              <input id="env-notas-entrega" placeholder="Notas de entrega" class="env-inp" style="margin-top:8px;">
+              <input id="env-notas-entrega" placeholder="Notas de entrega" maxlength="500" class="env-inp" style="margin-top:8px;">
             </div>
             <!-- Productos -->
             <div class="env-card">
@@ -10691,6 +10691,18 @@ async function envCrearPedido(){
     numero_interior: document.getElementById('env-numint').value, colonia: document.getElementById('env-colonia').value,
     entre_calles: document.getElementById('env-entrecalles').value, referencia: document.getElementById('env-referencia').value,
   };
+  // Notas de ENTREGA a nivel PEDIDO — no confundir con las notas por línea
+  // del carrito (ENV_CARRITO[i].notas). El campo nunca se mandaba, pero sí se
+  // limpiaba al terminar: el operador tecleaba "dejar en portón", veía el
+  // campo vacío y daba por hecho que se había guardado. Se perdía en silencio.
+  // Viaja solo en domicilio porque #env-notas-entrega vive dentro de
+  // #env-domicilio-card y queda OCULTO en "recoger" (mismo criterio que
+  // `direccion` y `costoEnvio`): un campo invisible no debe llegar al pedido.
+  // Destino real: GET /api/repartidor/pedido-actual → panel/repartidor.html.
+  if (ENV_TIPO === 'domicilio') {
+    const notasEntrega = document.getElementById('env-notas-entrega').value.trim();
+    if (notasEntrega) body.notas = notasEntrega;
+  }
   btn.disabled = true; btn.textContent = 'Creando…';
   try {
     // Idempotency-Key por intento: doble clic = mismo folio.

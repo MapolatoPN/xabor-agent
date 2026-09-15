@@ -117,6 +117,10 @@ await t('ACTUAL', 'sin pedido asignado: lista vacía; tras aceptar aparece con d
   assert.strictEqual(p.calle, 'Calle Prueba 123', 'dirección completa para el asignado');
   assert.strictEqual(p.entreCalles, 'A y B');
   assert.strictEqual(p.referencia, 'Portón negro');
+  // Las NOTAS del pedido (indicaciones de entrega) son para QUIEN ENTREGA: la
+  // comanda de cocina no las imprime, así que este portal es su único destino
+  // visible. El fixture ya las traía, pero nada afirmaba que llegaran.
+  assert.strictEqual(p.notas, 'sin picante', 'las notas de entrega deben llegar al repartidor');
   assert.ok(p.telefono, 'teléfono visible durante el pedido activo');
   assert.ok(r.body.negocio?.nombre, 'nombre del negocio de recogida presente');
 });

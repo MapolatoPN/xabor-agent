@@ -218,6 +218,159 @@ await t('PERMISOS', 'un staff (no admin) NO puede solicitar repartidor ni cancel
   assert.ok([401,403].includes(can.status));
 });
 
+// ═══════════ 38-42) Notas de ENTREGA a nivel PEDIDO ═══════════
+// Regresión de un bug SILENCIOSO: el backend siempre soportó `notas` (se
+// desestructura en POST /api/pos/pedidos y construirOrdenPOS la persiste),
+// pero envCrearPedido armaba el body SIN ella — y aun así limpiaba
+// #env-notas-entrega al terminar. El operador tecleaba "dejar en portón",
+// veía el campo vacío y daba por hecho que se había guardado. Nunca llegaba
+// al repartidor. Por eso aquí se cubren LOS DOS lados: que el backend las
+// persista (contrato) y que el panel realmente las MANDE (la causa raíz —
+// un test solo de backend habría pasado también con el bug presente).
+//
+// OJO: son las notas del PEDIDO/entrega, no las notas POR LÍNEA del carrito
+// (ENV_CARRITO[i].notas → item.notas), que viajan dentro de cada item.
+const PANEL = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
+const ENV_CREAR = PANEL.slice(
+  PANEL.indexOf('async function envCrearPedido()'),
+  PANEL.indexOf('async function cargarEnviosActivos()'));
+
+await t('FRONTEND', 'el campo no puede exceder los 500 que guarda construirOrdenPOS', async () => {
+  assert.match(PANEL, /<input id="env-notas-entrega"[^>]*maxlength="500"/,
+    'sin maxlength el backend recorta a 500 en silencio');
+});
+
+// Ejecuta el envCrearPedido REAL —el mismo texto que se despacha en el panel—
+// con los globales inyectados. No es un regex sobre la fuente: es la función
+// corriendo, y lo que se afirma es el BODY que sale hacia la red. Así queda
+// demostrado (no supuesto) que en domicilio las notas viajan y en recoger no.
+function ejecutarEnvCrear({ tipo, notasTecleadas }) {
+  const campos = {
+    'env-nombre': 'Ana Domicilio', 'env-telefono': '8781234500',
+    'env-calle': 'Av. Reforma', 'env-numext': '123', 'env-numint': '',
+    'env-colonia': 'Centro', 'env-entrecalles': 'A y B', 'env-referencia': 'Portón azul',
+    'env-notas-entrega': notasTecleadas,
+    'env-metodo-pago': 'efectivo', 'env-costo-envio': '35',
+  };
+  const doc = { getElementById: (id) => ({
+    get value() { return campos[id] ?? ''; },
+    set value(v) { campos[id] = v; },
+    style: {}, textContent: '', disabled: false,
+  }) };
+  let enviado = null;
+  const apiFetchFalso = async (_ruta, opciones) => {
+    enviado = JSON.parse(opciones.body);
+    return { ok: true, json: async () => ({ pedido: { id: 'XAB-0001' } }) };
+  };
+  const nada = () => {};
+  const crear = new Function('document', 'apiFetch', 'alert', 'envRenderCarrito', 'envSub', 'TIPO',
+    'let ENV_TIPO = TIPO;' +
+    'let ENV_CARRITO = [{ producto_id: 1, nombre: "P", precio: 100, cantidad: 1 }];' +
+    ENV_CREAR + ' ; return envCrearPedido;'
+  )(doc, apiFetchFalso, nada, nada, nada, tipo);
+  return crear().then(() => enviado);
+}
+
+await t('FRONTEND', 'DOMICILIO: lo tecleado en #env-notas-entrega sale en body.notas', async () => {
+  const body = await ejecutarEnvCrear({ tipo: 'domicilio', notasTecleadas: 'Dejar en portón, no tocar timbre' });
+  assert.strictEqual(body.notas, 'Dejar en portón, no tocar timbre');
+  assert.strictEqual(body.tipo, 'domicilio');
+});
+
+await t('FRONTEND', 'RECOGER: el campo está OCULTO, así que su texto NO se cuela en el pedido', async () => {
+  // El operador pudo teclear notas en domicilio y luego cambiar a recoger: el
+  // input sigue poblado pero invisible. Un campo que no se ve no debe viajar.
+  const body = await ejecutarEnvCrear({ tipo: 'recoger', notasTecleadas: 'Dejar en portón, no tocar timbre' });
+  assert.ok(!('notas' in body), 'recoger no debe mandar notas de entrega; mandó: ' + JSON.stringify(body.notas));
+  assert.ok(!('direccion' in body), 'mismo criterio que direccion, que ya era así');
+});
+
+await t('FRONTEND', 'sólo espacios: no se manda una nota en blanco', async () => {
+  const body = await ejecutarEnvCrear({ tipo: 'domicilio', notasTecleadas: '     ' });
+  assert.ok(!('notas' in body), 'una nota de puros espacios no aporta nada al repartidor');
+});
+
+await t('FRONTEND', 'la nota del PEDIDO no se copia dentro de los items', async () => {
+  const body = await ejecutarEnvCrear({ tipo: 'domicilio', notasTecleadas: 'Portón azul' });
+  for (const it of body.items || []) {
+    assert.notStrictEqual(it.notas, 'Portón azul', 'entrega != preparación: son campos distintos');
+  }
+});
+
+let folioNotas = null;
+const NOTA = 'Dejar en portón azul, no tocar timbre (perro)';
+await t('NOTAS', 'domicilio con notas: sobreviven hasta pedidos_activos.datos', async () => {
+  const r = await api(base, '/api/pos/pedidos', { cookie: cookieAdminA, method:'POST', body: {
+    tipo:'domicilio', cliente: CLIENTE, direccion: DIRECCION, items: itemsA(), costoEnvio: 20,
+    formaPago:'efectivo', notas: NOTA } });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.strictEqual(r.body.pedido.notas, NOTA, 'la respuesta ya debe traerlas');
+  folioNotas = r.body.pedido.id;
+  const { rows } = await pool.query(`SELECT datos->>'notas' AS notas FROM pedidos_activos WHERE folio=$1`, [folioNotas]);
+  assert.strictEqual(rows[0].notas, NOTA, 'deben quedar persistidas en pedidos_activos.datos');
+});
+
+await t('NOTAS', 'las notas del PEDIDO no se mezclan con las notas por LÍNEA del item', async () => {
+  const { rows } = await pool.query(`SELECT datos FROM pedidos_activos WHERE folio=$1`, [folioNotas]);
+  const d = rows[0].datos;
+  assert.strictEqual(d.notas, NOTA);
+  for (const it of d.items || []) {
+    assert.notStrictEqual(it.notas, NOTA, 'la nota de entrega jamás debe copiarse a un item');
+  }
+});
+
+await t('NOTAS', 'sin notas: queda null (no cadena vacía ni "undefined")', async () => {
+  const r = await api(base, '/api/pos/pedidos', { cookie: cookieAdminA, method:'POST', body: {
+    tipo:'domicilio', cliente: CLIENTE, direccion: DIRECCION, items: itemsA(), costoEnvio: 20, formaPago:'efectivo' } });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.pedido.notas, null);
+  const { rows } = await pool.query(`SELECT datos->>'notas' AS notas FROM pedidos_activos WHERE folio=$1`, [r.body.pedido.id]);
+  assert.strictEqual(rows[0].notas, null);
+});
+
+await t('NOTAS', 'un texto larguísimo se recorta a 500 (no revienta el insert)', async () => {
+  const r = await api(base, '/api/pos/pedidos', { cookie: cookieAdminA, method:'POST', body: {
+    tipo:'domicilio', cliente: CLIENTE, direccion: DIRECCION, items: itemsA(), costoEnvio: 20,
+    formaPago:'efectivo', notas: 'x'.repeat(900) } });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.pedido.notas.length, 500);
+});
+
+// ═══════════ 43) La cadena COMPLETA: del POS al repartidor ═══════════
+// El único destino donde estas notas se VEN es el portal del repartidor
+// (panel/repartidor.html). La comanda de cocina imprime item.notas, no las
+// del pedido — a propósito: son indicaciones de ENTREGA. Esta prueba recorre
+// el camino real de punta a punta (POS crea → repartidor acepta → las lee)
+// con folio de la secuencia durable, así que es re-ejecutable.
+const TEL_REP = '5218782200077';
+await pool.query(`DELETE FROM notificaciones_repartidor WHERE repartidor_id IN (SELECT id FROM repartidores WHERE telefono = $1)`, [TEL_REP]).catch(()=>{});
+await pool.query(`DELETE FROM repartidores WHERE telefono = $1`, [TEL_REP]);
+
+await t('E2E', 'las notas del POS llegan al portal del repartidor que entrega', async () => {
+  const { rows: [neg] } = await pool.query(`SELECT slug FROM negocios WHERE id = $1`, [A]);
+  const alta = await api(base, '/api/repartidor/registro', { method:'POST', body: { nombre:'Rep Notas POS', telefono: TEL_REP, negocioSlug: neg.slug } });
+  assert.strictEqual(alta.status, 200, JSON.stringify(alta.body));
+  const tok = { 'x-rep-token': alta.body.token };
+
+  const NOTA_E2E = 'Edificio B, timbre descompuesto: marcar al llegar';
+  const crear = await api(base, '/api/pos/pedidos', { cookie: cookieAdminA, method:'POST', body: {
+    tipo:'domicilio', cliente: CLIENTE, direccion: DIRECCION, items: itemsA(), costoEnvio: 35,
+    formaPago:'efectivo', notas: NOTA_E2E } });
+  assert.strictEqual(crear.status, 200, JSON.stringify(crear.body));
+  const folio = crear.body.pedido.id;
+
+  const acc = await api(base, `/api/repartidor/pedido/${folio}/aceptar`, { method:'POST', headers: tok });
+  assert.strictEqual(acc.status, 200, JSON.stringify(acc.body));
+
+  const actual = await api(base, '/api/repartidor/pedido-actual', { headers: tok });
+  assert.strictEqual(actual.status, 200);
+  const mio = (actual.body.pedidos || []).find(p => p.folio === folio);
+  assert.ok(mio, 'el pedido aceptado debe aparecer en el portal del repartidor');
+  assert.strictEqual(mio.notas, NOTA_E2E, 'quien entrega tiene que poder LEER las notas de entrega');
+});
+
+await pool.query(`DELETE FROM repartidores WHERE telefono = $1`, [TEL_REP]).catch(()=>{});
+
 // Limpieza de los pedidos POS de prueba (no tocar XAB-0108/0109 reales).
 await pool.query(`DELETE FROM pagos WHERE negocio_id = ANY($1) AND pedido_folio LIKE 'XAB-%' AND created_at > NOW() - INTERVAL '5 minutes'`, [[A, B]]).catch(()=>{});
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND datos->>'canal' = 'pos'`, [[A, B]]);
