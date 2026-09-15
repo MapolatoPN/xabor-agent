@@ -143,9 +143,9 @@ await t('PANTALLA', '8. la cuenta ofrece comentar solo lo pendiente', async () =
   const html = await (await fetch(srv.base + '/mesas.html')).text();
   assert.ok(html.includes('abrirComentario('), 'la línea debe poder abrir el comentario');
   assert.ok(html.includes('id="dlg-comentario"'), 'existe el diálogo');
-  assert.match(html, /const comentable = i\.estado === 'pendiente' && !i\.comanda_num;/,
+  assert.match(html, /const editable = i\.estado === 'pendiente' && !i\.comanda_num;/,
     'la pantalla solo ofrece comentar lo que no salió a cocina');
-  assert.match(html, /comentable \?[\s\S]{0,200}abrirComentario/, 'el botón depende de esa condición');
+  assert.match(html, /editable \?[\s\S]{0,300}abrirComentario/, 'el botón depende de esa condición');
   // Y el mismo tope que el servidor, para no dejar escribir lo que se recorta.
   assert.ok(html.includes('id="co-texto" maxlength="300"'), 'el campo lleva el tope de 300');
 });

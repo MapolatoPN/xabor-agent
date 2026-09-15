@@ -104,7 +104,7 @@ import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
-  listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem, actualizarNotasItem,
+  listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem, actualizarNotasItem, cambiarCantidadItem, quitarItemPendiente,
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
   revertirVentaCuenta,
 } from './services/restauranteService.js';
@@ -2760,7 +2760,7 @@ function manejarErrorRestaurante(res, e) {
     SIN_ITEMS_PENDIENTES: 409, SALDO_PENDIENTE: 409, PAGO_EXCEDE_SALDO: 409,
     METODO_NO_HABILITADO: 400, MONTO_INVALIDO: 400, MESA_INVALIDA: 400,
     MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
-    MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, ITEM_NO_COMENTABLE: 409, PARTES_INVALIDAS: 400,
+    MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, ITEM_NO_COMENTABLE: 409, ITEM_NO_EDITABLE: 409, CANTIDAD_INVALIDA: 400, PARTES_INVALIDAS: 400,
     VENTA_CONTABILIZADA: 409, SIN_VENTA_QUE_REVERTIR: 409,
   };
   const status = mapa[e.code];
@@ -2961,6 +2961,24 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
 app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/notas', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
     const item = await actualizarNotasItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.notas, req.usuarioId);
+    res.json({ ok: true, item });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Corregir la ronda ANTES de mandarla: cantidad y quitar. Lo hace quien
+// atiende la mesa, no solo el admin -- deshacer un toque no destruye nada
+// porque la cocina todavía no tiene nada. Cancelar (abajo) sigue siendo admin
+// porque ahí sí hay comida hecha.
+app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad);
+    res.json({ ok: true, item });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.delete('/api/restaurante/cuentas/:cuentaId/items/:itemId', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId);
     res.json({ ok: true, item });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });

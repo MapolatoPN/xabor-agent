@@ -125,6 +125,12 @@
   .linea .imp { margin-left:auto; font-weight:700; white-space:nowrap; }
   .linea.cancelada { text-decoration:line-through; color:var(--sub); }
   .linea .quitar { background:none; border:none; color:var(--rojo); font-size:12px; cursor:pointer; padding:0 2px; }
+  .linea .cant-edit { display:flex; align-items:center; gap:2px; flex:none; }
+  .linea .cant-edit .num { min-width:18px; text-align:center; font-weight:800; font-size:14px; }
+  .linea .cant-edit .paso { width:34px; height:34px; border:1px solid var(--linea-fuerte); background:var(--sup);
+                            color:var(--texto); border-radius:8px; font-size:16px; font-weight:800; line-height:1;
+                            cursor:pointer; padding:0; }
+  .linea .cant-edit .paso:hover { border-color:var(--accent); color:var(--accent); }
   .linea .comentar { background:none; border:none; color:var(--sub); font-size:13px; cursor:pointer; padding:0 2px; line-height:1; }
   .linea .comentar:hover { color:var(--accent); }
   #dlg-comentario .co-prod { font-size:15px; font-weight:800; margin-bottom:2px; }
@@ -183,6 +189,10 @@
   }
   @media (max-width:720px) {
     main { padding:10px; }
+    /* Area tactil de pulgar: el mesero corrige la ronda de pie y con prisa. */
+    .linea .cant-edit .paso { width:44px; height:44px; font-size:19px; }
+    .linea .cant-edit .num { min-width:26px; font-size:16px; }
+    .linea .comentar, .linea .quitar { font-size:17px; padding:8px 6px; }
     .cols { grid-template-columns:1fr; }
     #cats { display:flex; overflow-x:auto; max-height:none; padding-bottom:4px; }
     #cats button { width:auto; white-space:nowrap; border:1px solid var(--line); }
@@ -259,7 +269,7 @@
         <div class="sub" id="cu-sub"></div>
         <div class="lineas" id="cu-lineas"></div>
         <div class="totales" id="cu-totales"></div>
-        <button class="accion-principal" id="btn-comanda" onclick="enviarComanda()">Enviar comanda</button>
+        <button class="accion-principal" id="btn-comanda" onclick="enviarComanda()">Enviar a cocina</button>
         <div class="secundarias" id="cu-secundarias"></div>
       </aside>
     </div>
@@ -269,7 +279,7 @@
 <div class="barra-inf oculto" id="barra-inf">
   <div class="tot"><span id="bi-total">$0.00</span><small id="bi-sub">Sin productos</small></div>
   <button class="ver" onclick="alternarCuenta()">Ver cuenta</button>
-  <button class="enviar" id="bi-comanda" onclick="enviarComanda()">Enviar comanda</button>
+  <button class="enviar" id="bi-comanda" onclick="enviarComanda()">Enviar a cocina</button>
 </div>
 
 <!-- Abrir mesa: cuántas personas y, solo fuera de la estación, quién la abre -->
@@ -636,18 +646,52 @@ function resumirModificadores(lista) {
 function lineaHTML(i) {
   const mods = resumirModificadores(i.modificadores);
   const extra = [mods, i.notas].filter(Boolean).join(' · ');
-  const cancelable = puedeCancelar() && i.estado !== 'cancelado';
-  // Comentar solo lo que AÚN no salió a cocina: el papel ya impreso no se
-  // puede corregir, y dejar editarlo haría que pantalla y ticket dijeran
-  // cosas distintas sin que nadie se entere.
-  const comentable = i.estado === 'pendiente' && !i.comanda_num;
+  // Lo PENDIENTE se comporta como el carrito del POS: se corrige la cantidad
+  // y se quita sin pedirle permiso a nadie, porque la cocina todavía no tiene
+  // nada. Lo YA ENVIADO solo se cancela, que es de admin y pide motivo.
+  const editable = i.estado === 'pendiente' && !i.comanda_num;
+  const cancelable = puedeCancelar() && i.estado !== 'cancelado' && !editable;
   return `<div class="linea ${i.estado === 'cancelado' ? 'cancelada' : ''}">
-    <span class="cant">${i.cantidad}×</span>
+    ${editable
+      ? `<span class="cant-edit">
+           <button class="paso" onclick="cambiarCantidad('${i.id}', ${i.cantidad - 1})" aria-label="Quitar uno">−</button>
+           <span class="num">${i.cantidad}</span>
+           <button class="paso" onclick="cambiarCantidad('${i.id}', ${i.cantidad + 1})" aria-label="Agregar uno">+</button>
+         </span>`
+      : `<span class="cant">${i.cantidad}×</span>`}
     <span class="nom">${esc(i.producto)}${extra ? `<small>${esc(extra)}</small>` : ''}</span>
     <span class="imp">${money(i.cantidad * Number(i.precio_unitario))}</span>
-    ${comentable ? `<button class="comentar" onclick="abrirComentario('${i.id}')" title="${i.notas ? 'Editar comentario' : 'Agregar comentario'}" aria-label="Comentario para la cocina">${i.notas ? '✎' : '✎'}</button>` : ''}
+    ${editable ? `<button class="comentar" onclick="abrirComentario('${i.id}')" title="${i.notas ? 'Editar comentario' : 'Agregar comentario'}" aria-label="Comentario para la cocina">✎</button>` : ''}
+    ${editable ? `<button class="quitar" onclick="quitarItem('${i.id}')" title="Quitar" aria-label="Quitar del pedido">✕</button>` : ''}
     ${cancelable ? `<button class="quitar" onclick="cancelarItem('${i.id}')" title="Cancelar">✕</button>` : ''}
   </div>`;
+}
+
+// ─── Corregir la ronda antes de mandarla ────────────────────────────────────
+// Bajar de 1 es quitar: es lo que el operador espera del "−" de un carrito, y
+// evita dejar una línea de cantidad cero que no significa nada.
+async function cambiarCantidad(itemId, cantidad) {
+  if (cantidad < 1) return quitarItem(itemId);
+  if (cantidad > 99) return;
+  try {
+    await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}/cantidad`,
+      { method: 'PATCH', body: JSON.stringify({ cantidad }) });
+    await refrescarCuenta();
+  } catch (e) {
+    // El caso real: otro dispositivo mandó la ronda mientras este tocaba.
+    msg('Ese platillo ya salió a cocina');
+    await refrescarCuenta();
+  }
+}
+
+async function quitarItem(itemId) {
+  try {
+    await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}`, { method: 'DELETE' });
+    await refrescarCuenta();
+  } catch (e) {
+    msg('Ese platillo ya salió a cocina');
+    await refrescarCuenta();
+  }
 }
 
 // ─── Comentario del mesero para la cocina ───────────────────────────────────
@@ -727,9 +771,9 @@ function pintarCuenta() {
 
   const hayPendientes = pendientes.length > 0;
   $('btn-comanda').disabled = !hayPendientes;
-  $('btn-comanda').textContent = hayPendientes ? `Enviar comanda (${pendientes.length})` : 'Sin nada por enviar';
+  $('btn-comanda').textContent = hayPendientes ? `Enviar a cocina (${pendientes.length})` : 'Sin nada por enviar';
   $('bi-comanda').disabled = !hayPendientes;
-  $('bi-comanda').textContent = hayPendientes ? `Enviar comanda (${pendientes.length})` : 'Sin nada por enviar';
+  $('bi-comanda').textContent = hayPendientes ? `Enviar a cocina (${pendientes.length})` : 'Sin nada por enviar';
   $('bi-total').textContent = money(c.total);
   $('bi-sub').textContent = hayPendientes ? `${pendientes.length} por enviar` : `${c.items.filter(i => i.estado === 'enviado').length} en cocina`;
 

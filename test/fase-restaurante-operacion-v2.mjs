@@ -303,7 +303,8 @@ await t('RONDAS', '16. lo capturado queda pendiente y el tablero lo avisa', asyn
 
 await t('RONDAS', '17. enviar comanda es la acción principal y manda SOLO lo pendiente', async () => {
   const { texto } = await traer('/restaurante');
-  assert.ok(texto.includes('class="accion-principal"') && texto.includes('Enviar comanda'), 'botón principal de la cuenta');
+  assert.ok(texto.includes('class="accion-principal"') && texto.includes('Enviar a cocina'),
+    'botón principal de la cuenta: dice lo que hace, no la jerga del sistema');
   const r = await estacion.pedir(`/api/restaurante/cuentas/${cuentaMesa1}/comanda`, { method: 'POST' });
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.body.comanda, 1);

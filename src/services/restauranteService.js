@@ -267,6 +267,53 @@ export async function actualizarNotasItem(itemId, cuentaId, negocioId, notas, us
   return rows[0];
 }
 
+// ─── La ronda pendiente se comporta como un carrito ─────────────────────────
+//
+// Hasta aquí, tocar el producto equivocado dejaba al mesero atrapado: quitarlo
+// exigía `cancelarItem`, que es de ADMIN y pide motivo. En hora pico eso
+// significa llamar a alguien para deshacer un toque.
+//
+// Son dos cosas distintas y conviene no mezclarlas:
+//   quitar    lo que NUNCA salió a cocina. No dejó rastro en ningún lado, así
+//             que se borra y ya; lo puede hacer quien atiende la mesa.
+//   cancelar  lo que la cocina YA tiene impreso. Eso sí es admin, pide motivo
+//             y emite comanda de cancelación, porque hay comida en juego.
+//
+// Las dos funciones de abajo solo tocan lo pendiente (`comanda_num IS NULL`),
+// igual que el comentario del mesero.
+
+export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad) {
+  const nid = validarNegocioId(negocioId);
+  const n = parseInt(cantidad, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 99) {
+    throw errorCodigo('La cantidad debe estar entre 1 y 99', 'CANTIDAD_INVALIDA');
+  }
+  const { rows } = await pool.query(
+    `UPDATE restaurante_cuenta_items i SET cantidad = $4
+     FROM restaurante_cuentas c
+     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
+       AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
+     RETURNING i.id, i.producto, i.cantidad`,
+    [itemId, cuentaId, nid, n]
+  );
+  if (!rows.length) throw errorCodigo('El platillo ya salió a cocina o no admite cambios', 'ITEM_NO_EDITABLE');
+  return rows[0];
+}
+
+export async function quitarItemPendiente(itemId, cuentaId, negocioId) {
+  const nid = validarNegocioId(negocioId);
+  const { rows } = await pool.query(
+    `DELETE FROM restaurante_cuenta_items i
+     USING restaurante_cuentas c
+     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
+       AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
+     RETURNING i.id, i.producto`,
+    [itemId, cuentaId, nid]
+  );
+  if (!rows.length) throw errorCodigo('El platillo ya salió a cocina: usa cancelar', 'ITEM_NO_EDITABLE');
+  return rows[0];
+}
+
 // ─── Pagos y división (C5/C6) ───────────────────────────────────────────────
 export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null }, usuarioId) {
   const nid = validarNegocioId(negocioId);
