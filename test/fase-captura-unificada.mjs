@@ -335,6 +335,78 @@ await t('PANTALLA', '17. la pantalla no lanzó errores de JavaScript', async () 
 
 await pagina.close();
 await navegador.close();
+// ═══════════════════════════════════════════════════════════════════════════
+//  PARTE 3 — QUE EL MOTOR LLEGUE ENTERO AL NAVEGADOR
+//
+//  El 2026-09-15 la captura de pedidos se cayó en producción sin que fallara
+//  una sola prueba. La causa no fue la lógica: el cambio se repartía entre dos
+//  archivos servidos con políticas de caché DISTINTAS —
+//
+//    /app              Cache-Control: public, max-age=0      (revalida siempre)
+//    /modificadores.js Cache-Control: public, max-age=14400  (Cloudflare: 4 h)
+//
+//  — y al navegador le llegó el index.html NUEVO con el módulo VIEJO de su
+//  caché: «elegirLinea is not a function» al primer clic, y ningún producto se
+//  podía agregar en NINGUNA modalidad. Ninguna suite lo vio porque el
+//  navegador de pruebas arranca sin caché y siempre recibe los dos archivos
+//  del mismo commit.
+//
+//  captura.js corre exactamente el mismo riesgo, y peor: el panel lo invoca en
+//  cada alta de producto y encima depende de modificadores.js. Por eso lleva
+//  su propia huella y estos guardianes.
+// ═══════════════════════════════════════════════════════════════════════════
+const { createHash } = await import('crypto');
+const traerTexto = async (ruta) => (await fetch(base + ruta)).text();
+
+await t('CACHE', '18. la etiqueta de captura.js lleva la huella de su contenido', async () => {
+  const modulo = readFileSync(join(__dirname, '..', 'panel', 'captura.js'));
+  const huella = createHash('sha256').update(modulo).digest('hex').slice(0, 8);
+  const html = await traerTexto('/index.html');
+  const refs = [...html.matchAll(/src="\/captura\.js(\?v=([0-9a-f]{8}))?"/g)];
+  assert.ok(refs.length >= 1, 'el panel debe cargar el motor de captura');
+  for (const r of refs) {
+    assert.ok(r[2],
+      'hay un <script src="/captura.js"> SIN ?v= — la caché de 4 h lo puede servir viejo ' +
+      'y el panel se queda llamando a un motor que no existe');
+    assert.strictEqual(r[2], huella,
+      `el ?v= dice "${r[2]}" pero el módulo tiene huella "${huella}". ` +
+      `Si acabas de editar captura.js, pon "${huella}" en el ?v= de index.html.`);
+  }
+});
+
+await t('CACHE', '19. toda API de XaborCaptura que el panel invoca EXISTE en el módulo', async () => {
+  // La comprobación de fondo: aunque alguien olvidara el ?v=, esto caza el
+  // momento exacto en que el panel empieza a depender de algo que el motor no
+  // ofrece. Es la forma de la caída de producción, en estático.
+  const js = await traerTexto('/captura.js');
+  const expuestas = new Set(
+    (js.match(/global\.XaborCaptura\s*=\s*\{([^}]*)\}/)?.[1] || '')
+      .split(',').map(s => s.split(':')[0].trim()).filter(Boolean));
+  assert.ok(expuestas.size >= 4, 'se debe poder leer lo que el módulo expone: ' + [...expuestas]);
+
+  const html = await traerTexto('/index.html');
+  const usadas = new Set([...html.matchAll(/XaborCaptura\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  assert.ok(usadas.size > 0, 'el panel debe usar el motor');
+  for (const fn of usadas) {
+    assert.ok(expuestas.has(fn),
+      `el panel llama a XaborCaptura.${fn}, que el módulo NO expone ` +
+      `(expone: ${[...expuestas].join(', ')}). Así se cayó producción el 2026-09-15.`);
+  }
+  // El catálogo se usa por método desde todo el panel: también tienen que existir.
+  const metodos = new Set([...html.matchAll(/XaborCaptura\.catalogo\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  assert.ok(metodos.size > 0, 'el panel usa el catálogo del motor');
+  for (const m of metodos) {
+    assert.ok(new RegExp(`(^|[^\w.])${m}\s*[(:,]`, 'm').test(js),
+      `el panel llama a XaborCaptura.catalogo.${m}, que el módulo no define`);
+  }
+});
+
+await t('CACHE', '20. el motor se sirve y es JavaScript válido', async () => {
+  const r = await fetch(base + '/captura.js');
+  assert.strictEqual(r.status, 200, '/captura.js debe servirse');
+  new vm.Script(await r.text(), { filename: 'captura.js' });
+});
+
 await limpiar();
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
