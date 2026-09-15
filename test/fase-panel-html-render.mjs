@@ -55,7 +55,7 @@ function textoFueraDeScripts(html) {
     .replace(/<[^>]+>/g, ' ');
 }
 
-const PAGINAS = ['/app', '/index.html', '/superadmin.html', '/mesas.html', '/restaurante', '/mesero/x', '/repartidor.html', '/modificadores.js'];
+const PAGINAS = ['/app', '/index.html', '/superadmin.html', '/mesas.html', '/restaurante', '/mesero/x', '/repartidor.html', '/modificadores.js', '/captura.js'];
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 const base = srv.base;
 const traer = async (ruta) => {
@@ -113,20 +113,31 @@ for (const ruta of PAGINAS.filter(r => r.endsWith('.html') || r === '/app')) {
 await t('CONTRATO', 'el panel carga el modal compartido desde el <head> real, antes de <body>', async () => {
   const { texto: crudo } = await traer('/app');
   const texto = crudo.replace(/<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
-  const iScript = texto.indexOf('<script src="/modificadores.js">');
-  assert.ok(iScript > 0, 'el panel debe cargar /modificadores.js');
   const iBody = texto.toLowerCase().indexOf('<body');
-  assert.ok(iScript < iBody, 'debe ir en el <head>, no dentro de un literal de plantilla más abajo');
-  // El único </head> que existe antes de <body> es el real de la página.
   const iHead = texto.toLowerCase().indexOf('</head>');
-  assert.ok(iScript < iHead, 'el script va antes de cerrar el head');
+  // Los dos módulos compartidos van en el <head> real: el configurador y el
+  // motor de captura que lo llama.
+  for (const src of ['<script src="/modificadores.js">', '<script src="/captura.js">']) {
+    const i = texto.indexOf(src);
+    assert.ok(i > 0, `el panel debe cargar ${src}`);
+    assert.ok(i < iBody, `${src} debe ir en el <head>, no dentro de un literal de plantilla más abajo`);
+    // El único </head> que existe antes de <body> es el real de la página.
+    assert.ok(i < iHead, `${src} va antes de cerrar el head`);
+  }
+  // El motor usa el configurador, así que tiene que cargarse después.
+  assert.ok(texto.indexOf('<script src="/modificadores.js">') < texto.indexOf('<script src="/captura.js">'),
+    'el motor de captura se carga después del configurador que invoca');
 });
 await t('CONTRATO', 'la funcionalidad de la microfase sigue en el HTML servido', async () => {
   const { texto } = await traer('/app');
   assert.match(texto, /id="tab-restaurante"[^>]*data-modulo="restaurante"/, 'pestaña Restaurante gateada por módulo');
   assert.ok(texto.includes("location.href='/restaurante'"), 'abre el espacio de trabajo de Restaurante');
-  assert.ok(texto.includes('elegirProductoPOS'), 'POS abre el modal de modificadores');
+  // Las dos capturas del panel existen y ambas pasan por el motor común: el
+  // nombre suelto no basta, lo que se protege es que deleguen.
+  assert.ok(texto.includes('elegirProductoPOS'), 'POS captura productos del menú');
   assert.ok(texto.includes('firmaCarrito'), 'el carrito separa líneas por selección');
+  assert.strictEqual((texto.match(/new XaborCaptura\.Carrito\(/g) || []).length, 2,
+    'mostrador y envíos usan el mismo motor, con un carrito cada uno');
   const mesas = await traer('/mesas.html');
   assert.ok(mesas.texto.includes('modificadores.js'), 'mesas usa el mismo modal');
   assert.ok(mesas.texto.includes('elegirProducto'), 'mesas agrega desde el menú con un toque');
@@ -136,6 +147,14 @@ await t('CONTRATO', '/modificadores.js es JavaScript válido y expone la API que
   new vm.Script(texto, { filename: 'modificadores.js' });
   assert.ok(texto.includes('XaborModificadores'), 'expone el objeto global');
   assert.ok(texto.includes('tieneModificadores') && texto.includes('abrirModal'), 'expone las funciones usadas');
+});
+await t('CONTRATO', '/captura.js es JavaScript válido y expone el motor único de captura', async () => {
+  const { texto } = await traer('/captura.js');
+  new vm.Script(texto, { filename: 'captura.js' });
+  assert.ok(texto.includes('XaborCaptura'), 'expone el objeto global');
+  for (const pieza of ['catalogo', 'class Carrito', 'itemsParaServidor', 'firmaLinea', 'vendible']) {
+    assert.ok(texto.includes(pieza), `el motor debe exponer ${pieza}`);
+  }
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

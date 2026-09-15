@@ -449,32 +449,89 @@ await t('PUNTO-COMUN', '17. el módulo compartido expone el punto único de sele
   assert.match(js, /elegirLinea,\s*firmaLinea/, 'y ambas se exportan');
 });
 
-await t('PUNTO-COMUN', '18. las tres capturas del panel entran por elegirLinea, ninguna decide por su cuenta', async () => {
+// Ventana de texto a partir de una marca: suficiente para leer el cuerpo de
+// una función sin depender de dónde cierra exactamente.
+const ventana = (fuente, marca, n = 900) => {
+  const i = fuente.indexOf(marca);
+  assert.ok(i >= 0, `no se encontró "${marca}" en la fuente`);
+  return fuente.slice(i, i + n);
+};
+
+await t('PUNTO-COMUN', '18. un solo motor de captura y un solo punto donde se decide/configura una línea', async () => {
   const panel = await traer('/index.html');
   const mesas = await traer('/mesas.html');
-  for (const [pantalla, fuente, fn] of [
-    ['mostrador', panel, 'elegirProductoPOS'],
-    ['envíos (domicilio y recoger)', panel, 'envAgregar'],
-    ['mesa', mesas, 'elegirProducto'],
+  const motor = await traer('/captura.js');
+
+  // La pregunta "¿este producto hay que configurarlo?" se responde en UN
+  // lugar. Antes vivía duplicada en cada captura y por eso una de ellas
+  // (domicilio) podía olvidarse de hacerla.
+  const veces = (s) => (s.match(/XaborModificadores\.elegirLinea\(/g) || []).length;
+  assert.strictEqual(veces(motor), 1, 'el motor llama al punto común exactamente una vez');
+  assert.strictEqual(veces(panel), 0,
+    'ninguna captura del panel decide por su cuenta: todas entran por el motor');
+
+  // Las dos capturas del panel agregan producto POR el motor, no a mano.
+  for (const [pantalla, fn, carrito] of [
+    ['mostrador', 'async function elegirProductoPOS(', '_cMostrador'],
+    ['envíos (domicilio y recoger)', 'async function envAgregar(', '_cEnvios'],
   ]) {
-    const cuerpo = fuente.slice(fuente.indexOf(`function ${fn}(`));
-    assert.ok(cuerpo.includes('XaborModificadores.elegirLinea'),
-      `${pantalla}: ${fn} debe seleccionar por el punto común`);
+    assert.ok(ventana(panel, fn).includes(`${carrito}.agregar(`),
+      `${pantalla}: debe agregar por el motor común, no con su propia copia`);
   }
-  // Nadie vuelve a llamar al configurador por su cuenta desde una captura:
-  // el modo (modal o wizard) se pide, no se elige llamando a otra función.
+  // Mesa no tiene carrito propio (manda cada línea al servidor en cuanto se
+  // elige), así que sigue entrando por el punto común directamente.
+  assert.ok(ventana(mesas, 'async function elegirProducto(').includes('XaborModificadores.elegirLinea'),
+    'mesa: elegirProducto debe seleccionar por el punto común');
+
+  // Nadie abre el configurador salteándose el punto común: el modo (modal o
+  // wizard) se pide, no se elige llamando a otra función.
   assert.ok(!panel.includes('XaborModificadores.abrirModal('),
     'el panel ya no abre el modal salteándose el punto común');
   assert.ok(!mesas.includes('XaborModificadores.abrirWizard('),
     'mesas ya no abre el wizard salteándose el punto común');
+  assert.ok(!motor.includes('abrirModal(') && !motor.includes('abrirWizard('),
+    'el motor tampoco elige configurador: se lo pide al punto común');
+
+  // Una sola implementación de carrito para todo el panel...
+  assert.strictEqual((motor.match(/class Carrito/g) || []).length, 1,
+    'el carrito se implementa una sola vez');
+  // ...pero un motor único NO es un carrito compartido: cada modalidad tiene
+  // su instancia. Lo que se captura para llevar no puede aparecer en el
+  // domicilio que empieza después.
+  assert.strictEqual((panel.match(/new XaborCaptura\.Carrito\(/g) || []).length, 2,
+    'mostrador y envíos tienen cada uno su carrito');
+  assert.match(panel, /let posCarrito = _cMostrador\.lineas/,
+    'posCarrito son las líneas del motor, no una segunda estructura');
+  assert.match(panel, /let ENV_CARRITO = _cEnvios\.lineas/,
+    'ENV_CARRITO son las líneas del motor, no una segunda estructura');
 });
 
-await t('PUNTO-COMUN', '19. envíos manda los modificadores al servidor (antes solo producto_id y cantidad)', async () => {
+await t('PUNTO-COMUN', '19. un solo constructor de payload lleva la selección al servidor', async () => {
   const panel = await traer('/index.html');
-  const cuerpo = panel.slice(panel.indexOf('async function envCrearPedido('), panel.indexOf('async function cargarEnviosActivos('));
-  assert.match(cuerpo, /modificadores:\s*it\.modificadores/, 'la selección viaja en el pedido');
-  const carga = panel.slice(panel.indexOf('async function envCargarMenu('), panel.indexOf('function envFiltrarProductos('));
-  assert.match(carga, /modificadores:\s*p\.modificadores/, 'y el catálogo la conserva al cargarse');
+  const motor = await traer('/captura.js');
+
+  // El payload se arma en UN lugar y lleva los ids elegidos y la nota libre.
+  const armado = ventana(motor, 'itemsParaServidor()', 1200);
+  assert.match(armado, /modificadores:\s*l\.modificadores/, 'la selección viaja en el pedido');
+  assert.match(armado, /notas:\s*l\.notas/, 'la nota libre también');
+
+  // Y los DOS canales del panel lo usan: ninguno arma su propia lista de
+  // items (envíos mandaba solo producto_id y cantidad, y mostrador mandaba el
+  // carrito entero con precios que el servidor ignora).
+  for (const [pantalla, fn, carrito] of [
+    ['mostrador', 'async function confirmarPresencial(', '_cMostrador'],
+    ['envíos', 'async function envCrearPedido(', '_cEnvios'],
+  ]) {
+    assert.ok(ventana(panel, fn, 1400).includes(`${carrito}.itemsParaServidor()`),
+      `${pantalla}: debe mandar los items por el constructor común`);
+  }
+
+  // El catálogo conserva los grupos al cargarse: sin ellos la pantalla ya no
+  // puede saber que hay algo que preguntar (raíz del bug de domicilio).
+  assert.match(motor, /modificadores:\s*p\.modificadores/, 'el catálogo la conserva al cargarse');
+  // Y es UNA sola lectura del menú para las dos capturas.
+  assert.strictEqual((motor.match(/'\/api\/menu'/g) || []).length, 1,
+    'una sola lectura de /api/menu para todas las modalidades');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
