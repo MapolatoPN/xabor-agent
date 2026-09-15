@@ -118,9 +118,30 @@ export function recolectarAclaraciones({
   //
   //    Se colapsan aquí, que es donde vive el dueño de la pregunta: mismo
   //    renglón, mismo grupo y mismo CONJUNTO de candidatos son una sola duda.
+  //
+  //    El grupo con el que se calcula la huella es el CANÓNICO, que es el que
+  //    `opcionesAmbiguas` entrega ya anclado a la carta. Con el nombre libre
+  //    del modelo esto no servía de nada: «acompañamientos» y «complementos»
+  //    son la misma duda sobre las mismas dos guarniciones, pero daban dos
+  //    huellas distintas y se escapaban dos pendientes. Primero anclar,
+  //    después deduplicar — en ese orden.
   const yaPreguntado = new Set();
   for (const a of lista(opcionesAmbiguas)) {
-    const candidatos = [a.opcion, ...nombres(a.empatan)];
+    // `candidatos` viene ya depurado contra la carta. El par opción+empatan se
+    // conserva de respaldo para cualquier otro productor de ambigüedades.
+    const candidatos = a.candidatos !== undefined
+      ? nombres(a.candidatos)
+      : [a.opcion, ...nombres(a.empatan)];
+    // DOS COSAS SE MEZCLABAN EN LA MISMA LISTA, Y UNA NO ES UNA PREGUNTA.
+    //
+    // `opcionesAmbiguas` retira de la propuesta todo lo que el texto no
+    // sostiene, y eso incluye opciones que no compiten con nada: «Suiza»
+    // cuando el cliente dijo «mejor chipotle» sale con cero hermanas. Retirarla
+    // es correcto; preguntarle al cliente «¿Suiza?» no. En el smoke real del
+    // 15-sep esas entradas de un solo candidato fueron las preguntas de una
+    // palabra —«¿chorizo?», «¿frijolitos?»—: una duda necesita AL MENOS DOS
+    // entidades entre las que dudar.
+    if (candidatos.length < 2) continue;
     const huella = [a.lid || '', String(a.grupo || '').toLowerCase(),
       candidatos.map((c) => String(c).toLowerCase()).sort().join('|')].join('::');
     if (yaPreguntado.has(huella)) continue;

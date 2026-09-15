@@ -265,14 +265,48 @@ export function opcionesAmbiguas({ catalogo = [], producto = '', grupo = '', opc
   for (const o of (Array.isArray(opciones) ? opciones : [opciones]).filter(Boolean)) {
     const nombre = String(typeof o === 'string' ? o : o?.nombre || '');
     if (!nombre) continue;
-    const todas = restringidas || opcionesDelGrupoDeProducto(
-      catalogo, producto, grupoRealDeLaOpcion(catalogo, producto, grupo, nombre));
+    // ── EL GRUPO QUE SALE DE AQUÍ ES EL DE LA CARTA, NO EL DEL MODELO ────
+    //
+    // El canónico ya se calculaba —hacía falta para encontrar las hermanas—
+    // y luego se tiraba: lo que viajaba en la ambigüedad era el nombre libre
+    // que hubiera escrito el modelo. En el smoke real del 15-sep eso llegó
+    // hasta el cliente: pendientes con grupo «acompañamientos», «complementos»
+    // y «proteína», y preguntas de una sola palabra suelta —«¿chorizo?»,
+    // «¿frijoles?»— porque la duda se guardaba con la palabra del modelo en
+    // vez de con las entidades de la carta.
+    //
+    // El modelo PROPONE una interpretación; la ontología del menú la pone el
+    // catálogo. Un grupo que no está en la carta no puede existir aguas abajo,
+    // así que se ancla aquí, que es donde nace la duda, y no se corrige
+    // después: lo que no se puede anclar no sale como ambigüedad.
+    const canonico = grupoRealDeLaOpcion(catalogo, producto, grupo, nombre);
+    const delGrupo = opcionesDelGrupoDeProducto(catalogo, producto, canonico);
+    const todas = restringidas || delGrupo;
     // Sin hermanas conocidas no hay con qué desempatar, y el reconciliador
     // sigue exigiendo su respaldo: se deja pasar, como siempre.
     if (todas.length < 2) { claras.push(nombre); continue; }
+    // Y sin grupo real al que anclarla tampoco: preguntar por un grupo que no
+    // existe no es una pregunta, es una invención con forma de pregunta.
+    if (!delGrupo.length) { claras.push(nombre); continue; }
     const { distingue, empatan } = distingueLaEleccion(nombre, todas, texto);
-    if (distingue) claras.push(nombre);
-    else ambiguas.push({ opcion: nombre, empatan, grupo, producto });
+    if (distingue) { claras.push(nombre); continue; }
+    // Los candidatos son ENTIDADES de la carta. La palabra del modelo entra
+    // sólo si además es una opción real del grupo —puede serlo, cuando el
+    // modelo acierta el nombre—; si es una mención suelta, las candidatas son
+    // las hermanas que la disputan, que sí existen.
+    //
+    // OJO con el doble papel de esta lista: lo que sale por `ambiguas` no sólo
+    // genera preguntas, también es lo que el llamador RETIRA de la propuesta.
+    // Una opción sin respaldo en el texto —«Suiza» cuando el cliente dijo
+    // «mejor chipotle»— llega aquí con `empatan` vacío: no hay nada que
+    // preguntar, pero tiene que seguir saliendo de la propuesta. Por eso se
+    // empuja siempre, y es `candidatos` quien decide si además hay pregunta.
+    const esOpcionReal = delGrupo.some((x) => norm(x) === norm(nombre));
+    const candidatos = esOpcionReal ? [nombre, ...empatan] : [...empatan];
+    ambiguas.push({
+      opcion: nombre, empatan, grupo: canonico, producto,
+      candidatos: candidatos.length >= 2 ? candidatos : [],
+    });
   }
   return { claras, ambiguas };
 }
