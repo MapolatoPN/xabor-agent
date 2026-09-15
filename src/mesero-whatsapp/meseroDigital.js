@@ -41,6 +41,7 @@ import {
 import { clasificarIntenciones, textoQueAutoriza, partirEnClausulas } from './intencionesDelCliente.js';
 import { resolverReferencia } from './referenciasDelCliente.js';
 import { aplicarPropuestas, propuestasDesdeBorrador, propuesta } from './motorTransaccional.js';
+import { compilarTurno } from './compilarTurno.js';
 import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas, grupoRealDeLaOpcion } from './consultasDelMenu.js';
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
@@ -386,12 +387,34 @@ export async function atenderTurno({
   // 7) El modelo propone. Si falla, no se cae el turno: se escala.
   let propuestas = [];
   let errorDelModelo = null;
+  let lineasAmbiguas = [];
   if (typeof proponer === 'function') {
     try {
       const salida = await proponer({ texto: mensaje, dicho, contexto: ctx, carrito: carritoActual, intenciones });
       if (Array.isArray(salida)) propuestas = salida.filter(Boolean);
       else if (salida && typeof salida === 'object') {
-        propuestas = propuestasDesdeBorrador(carritoActual, salida, { evidencia: autoriza });
+        // ── EL BORRADOR ES UNA HIPÓTESIS, NO UNA ESTRUCTURA ──────────────
+        //
+        // `propuestasDesdeBorrador` empareja por NOMBRE, y el anclaje renombra
+        // el renglón a su forma canónica: desde el turno siguiente el modelo
+        // dice «chilaquiles suizos», el carrito dice «Chilaquiles Sencillos»,
+        // y `parecido` los declara ajenos (-1). El smoke real del 15-sep hizo
+        // seis renglones con seis mensajes por exactamente eso.
+        //
+        // `compilarTurno` decide con el CONTEXTO a qué renglón habla el turno,
+        // encuentra en el texto del cliente las entidades que el modelo omitió,
+        // resuelve las respuestas contra la pregunta abierta, y deja inerte a
+        // una consulta pura. Lo que sale sigue pasando por el reconciliador.
+        // El motor de siempre sigue leyendo el borrador —modalidad, pago,
+        // cliente, cantidades—; el compilador sólo REESCRIBE lo que habla de un
+        // renglón, que es lo único que el modelo no sabe atribuir.
+        const compilado = compilarTurno({
+          catalogo, carrito: carritoActual, contexto: ctx, borrador: salida,
+          intenciones, dicho: autoriza, referencia, pendientes: ctx.pendientes || [],
+          propuestasBase: propuestasDesdeBorrador(carritoActual, salida, { evidencia: autoriza }),
+        });
+        propuestas = compilado.propuestas;
+        lineasAmbiguas = compilado.preguntas;
       }
     } catch (e) {
       errorDelModelo = e?.message || 'fallo del modelo';
@@ -482,6 +505,15 @@ export async function atenderTurno({
   const abiertaDelGrupo = (grupo) => (ctx.aclaraciones || [])
     .find((a) => a.tipo === 'opcion_ambigua' && String(a.grupo || '') === String(grupo || ''));
   const opcionesQueNoSeparan = [];
+  // Lo que el compilador del turno no pudo decidir sin adivinar entra por el
+  // mismo canal que ya sabe preguntar: no hay una segunda vía de preguntas.
+  for (const q of lineasAmbiguas) {
+    if (q?.tipo !== 'opcion_ambigua' || !(q.candidatos || []).length) continue;
+    opcionesQueNoSeparan.push({
+      opcion: q.candidatos[0], empatan: q.candidatos.slice(1),
+      grupo: q.grupo || '', producto: q.producto || '', lid: q.lid || null,
+    });
+  }
   if (catalogo.length) {
     propuestas = propuestas.filter((p) => {
       if (!p || p.accion !== 'cambiar_modificador') return true;
