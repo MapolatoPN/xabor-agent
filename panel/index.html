@@ -1397,7 +1397,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
                   <input id="env-entrecalles" class="pos-inp" placeholder="Entre calles">
                 </div>
                 <input id="env-referencia" class="pos-inp" placeholder="Referencia (portón, color…)" style="margin-top:8px;">
-                <input id="env-notas-entrega" class="pos-inp" placeholder="Notas de entrega" style="margin-top:8px;">
+                <input id="env-notas-entrega" class="pos-inp" maxlength="500" placeholder="Notas de entrega (para el repartidor)" style="margin-top:8px;">
               </div>
             </div>
           </div>
@@ -10868,6 +10868,10 @@ async function envCrearPedido(){
     formaPago: document.getElementById('env-metodo-pago').value,
     costoEnvio: costoEnvioPOS(),
   };
+  if (MODALIDAD === 'domicilio') {
+    const notas = (document.getElementById('env-notas-entrega').value || '').trim().slice(0, 500);
+    if (notas) body.notas = notas;   // vacio se omite: no se manda basura
+  }
   if (MODALIDAD === 'domicilio') body.direccion = {
     calle: document.getElementById('env-calle').value, numero_exterior: document.getElementById('env-numext').value,
     numero_interior: document.getElementById('env-numint').value, colonia: document.getElementById('env-colonia').value,

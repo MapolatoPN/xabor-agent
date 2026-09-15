@@ -375,6 +375,38 @@ await t('PANTALLA', '17. la pantalla no lanzó errores de JavaScript', async () 
 
 await pagina.close();
 
+await t('COCINA', '21. las notas de ENTREGA no se cruzan con las de cocina ni con la impresión', async () => {
+  // Dos cosas distintas que se llaman igual:
+  //   item.notas   → preparación, viaja por línea dentro de items, la imprime
+  //                  la comanda de cocina;
+  //   pedido.notas → entrega, viaja a nivel pedido, la lee el repartidor.
+  // Cruzarlas mandaría «dejar en portón» a la plancha.
+  const leer = async (r) => (await fetch(base + r)).text();
+  const panel = await leer('/index.html');
+
+  // El campo de entrega solo lo toca la creación del pedido y la limpieza del
+  // formulario: nunca el carrito, nunca la comanda.
+  const usos = [...panel.matchAll(/env-notas-entrega/g)].length;
+  assert.ok(usos >= 2 && usos <= 3, 'usos inesperados del campo de entrega: ' + usos);
+
+  const cuerpo = (firma, n = 2500) => {
+    const i = panel.indexOf(firma);
+    assert.ok(i >= 0, 'no se encontró ' + firma);
+    return panel.slice(i, i + n);
+  };
+  // La comanda de cocina no sabe que existen las notas de entrega.
+  for (const fn of ['function comandaHTML(', 'function imprimirComanda(', 'function abrirPopupImpresion(']) {
+    assert.ok(!cuerpo(fn).includes('env-notas-entrega'),
+      `${fn} no puede leer el campo de entrega`);
+  }
+  // Y la nota por línea sigue entrando solo por el motor.
+  assert.match(panel, /function notaCarrito\(idx, texto\) \{\s*_cPOS\.nota\(idx, texto\);/,
+    'la nota de cocina se escribe por el motor, no a mano');
+  // El payload de items no lleva la nota de entrega: la arma el motor.
+  const motor = await leer('/captura.js');
+  assert.ok(!motor.includes('env-notas-entrega'), 'el motor no conoce el campo de entrega');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PARTE 4 — CAMBIAR DE MODALIDAD
 //
@@ -584,6 +616,76 @@ for (const [etiqueta, ancho, alto] of ANCHOS) {
     assert.strictEqual(est.base, base0.reduce((s, l) => s + l.precio_unitario * l.cantidad, 0),
       'Rewards recalcula sobre el carrito conservado');
     assert.strictEqual(Number((await total()).replace('$', '')), est.base);
+  });
+
+
+  // ─── Notas de ENTREGA (pedido.notas) ──────────────────────────────────────
+  // Son del repartidor, no de la cocina. `item.notas` es preparación y viaja
+  // por línea dentro de items; esto es `pedido.notas`, lo guarda
+  // construirOrdenPOS y lo pinta el portal del repartidor. No se mezclan.
+  //
+  // El campo llevaba en la interfaz desde la vista Envíos y NUNCA se mandaba:
+  // el operador escribía «dejar en portón» y no llegaba a ningún lado.
+  await t('NOTAS', `${etiqueta}: domicilio manda las notas de entrega en pedido.notas`, async () => {
+    await modo('domicilio');
+    await pag.evaluate(() => {
+      const v = (id, x) => { document.getElementById(id).value = x; };
+      v('env-nombre', 'Notas'); v('env-telefono', '8781110002');
+      v('env-calle', 'Av Prueba'); v('env-colonia', 'Centro');
+      v('env-notas-entrega', 'Dejar en portón');
+    });
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.strictEqual(cap.body.notas, 'Dejar en portón', 'la nota de entrega viaja tal cual');
+    // Y no se cuela en la cocina: los items llevan SU propia nota, vacía aquí.
+    assert.ok(cap.body.items.every(i => !String(i.notas || '').includes('portón')),
+      'la nota de entrega no puede aparecer en las notas de cocina de los items');
+  });
+
+  await t('NOTAS', `${etiqueta}: recoger NO manda notas aunque el campo siga poblado`, async () => {
+    await modo('recoger');
+    const sigue = await pag.evaluate(() => document.getElementById('env-notas-entrega').value);
+    assert.strictEqual(sigue, 'Dejar en portón', 'el texto se conserva: no se le tira el trabajo al operador');
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.strictEqual(cap.body.tipo, 'recoger');
+    assert.ok(!('notas' in cap.body), 'en recoger la propiedad notas debe estar AUSENTE');
+  });
+
+  await t('NOTAS', `${etiqueta}: para llevar NO manda notas aunque el campo siga poblado`, async () => {
+    await modo('llevar');
+    assert.strictEqual(await pag.evaluate(() => document.getElementById('env-notas-entrega').value), 'Dejar en portón');
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.strictEqual(cap.url, '/api/pedido-presencial');
+    assert.ok(!('notas' in cap.body), 'para llevar no tiene entrega: la propiedad notas debe estar AUSENTE');
+  });
+
+  await t('NOTAS', `${etiqueta}: domicilio con el campo vacío no manda basura`, async () => {
+    await modo('domicilio');
+    await pag.evaluate(() => { document.getElementById('env-notas-entrega').value = '   '; });
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.ok(!('notas' in cap.body), 'solo espacios se omite, no se manda una cadena en blanco');
+  });
+
+  await t('NOTAS', `${etiqueta}: el texto sobrevive a domicilio → otra modalidad → domicilio`, async () => {
+    await modo('domicilio');
+    await pag.evaluate(() => { document.getElementById('env-notas-entrega').value = 'Timbre descompuesto, tocar fuerte'; });
+    await modo('llevar');
+    await modo('recoger');
+    await modo('domicilio');
+    assert.strictEqual(await pag.evaluate(() => document.getElementById('env-notas-entrega').value),
+      'Timbre descompuesto, tocar fuerte', 'el texto se conserva en la interfaz');
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.strictEqual(cap.body.notas, 'Timbre descompuesto, tocar fuerte',
+      'y se serializa porque la modalidad FINAL es domicilio');
+  });
+
+  await t('NOTAS', `${etiqueta}: el límite del campo es el mismo que el del servidor`, async () => {
+    const max = await pag.evaluate(() => document.getElementById('env-notas-entrega').getAttribute('maxlength'));
+    assert.strictEqual(max, '500', 'construirOrdenPOS hace slice(0,500): el campo no debe dejar escribir lo que se va a perder');
+    await modo('domicilio');
+    await pag.evaluate(() => { document.getElementById('env-notas-entrega').value = 'x'.repeat(900); });
+    const cap = await cuerpoEnviado(pag, () => pag.evaluate(() => crearPedidoPOS()));
+    assert.strictEqual(cap.body.notas.length, 500, 'si alguien la puebla por script, se recorta igual');
+    await pag.evaluate(() => { document.getElementById('env-notas-entrega').value = ''; });
   });
 
   await t('TRANSICION', `${etiqueta}: sin errores de JavaScript en todo el recorrido`, async () => {
