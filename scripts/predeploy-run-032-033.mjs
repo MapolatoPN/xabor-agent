@@ -97,6 +97,14 @@ const SCRIPTS = [
   // nada para nadie (DEFAULT FALSE): el comportamiento solo cambia cuando un
   // negocio marca la casilla en su panel.
   '079-rewards-canal-tienda',
+  // 080 crea el cliente canónico de la tienda (clientes_negocio y sus
+  // satélites), agrega punteros NULLABLES a rewards_accounts y
+  // pedidos_activos y el interruptor tienda_config.cuentas_clientes
+  // (DEFAULT FALSE). Aditiva e idempotente; su backfill solo crea clientes y
+  // pone punteros -- jamás mueve puntos (el predeploy lo verifica y aborta
+  // si un saldo cambió). Va ANTES del binario nuevo porque el checkout con
+  // sesión escribe pedidos_activos.cliente_id.
+  '080-clientes-tienda',
 ];
 
 for (const nombre of SCRIPTS) {
