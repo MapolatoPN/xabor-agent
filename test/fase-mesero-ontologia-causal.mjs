@@ -320,17 +320,21 @@ await t('G8. INVARIANTE: ningún pendiente lleva un grupo fuera del catálogo', 
 // «complementos», «proteína»—, no versiones amables. El pedido tiene que salir
 // bien A PESAR de ellos, y ningún pendiente puede quedarse con uno.
 
+// Los seis mensajes EXACTOS del smoke real del 16-sep, con borradores del
+// mismo corte que devolvió GPT: grupos libres en unos turnos y, en el del
+// chipotle, el grupo con SÓLO la opción nueva — que es la forma que hizo
+// desaparecer la Suiza en producción.
 const GUION_SMOKE = [
   ['Quiero chilaquiles suizos', { items: [{ nombre: 'chilaquiles suizos', cantidad: 1, modificadores: [], notas: '' }] }],
   ['Con frijolitos', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
     modificadores: [{ grupo: 'acompañamientos', opciones: ['frijolitos'] }] }] }],
-  ['Con chorizo', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
+  ['Con chorizo por favor', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
     modificadores: [{ grupo: 'acompañamientos', opciones: ['chorizo'] }] }] }],
-  ['Y huevos estrellados', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
+  ['Tambien chipotle', { items: [{ nombre: 'Chilaquiles Sencillos', cantidad: 1, notas: '',
+    modificadores: [{ grupo: 'Salsa', opciones: ['Chipotle'] }] }] }],
+  ['Con huevo estrellado', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
     modificadores: [{ grupo: 'proteína', opciones: ['huevo estrellado'] }] }] }],
-  ['También chipotle porfa', { items: [{ nombre: 'chilaquiles', cantidad: 1, notas: '',
-    modificadores: [{ grupo: 'complementos', opciones: ['chipotle'] }] }] }],
-  ['Que licuados tienes?', { items: [{ nombre: 'chilaquiles suizos', cantidad: 1, modificadores: [], notas: '' }] }],
+  ['Que licuados tienen?', { items: [{ nombre: 'chilaquiles suizos', cantidad: 1, modificadores: [], notas: '' }] }],
 ];
 
 const modeloDelSmoke = () => {
@@ -373,7 +377,9 @@ await t('M. el smoke entero SECUENCIAL: un renglón, un lid, sin grupos inventad
   reiniciarSombraMesero();
   const modelo = modeloDelSmoke();
   let lid = null;
-  for (const [texto] of GUION_SMOKE) {
+  let antesDeT6 = null;
+  for (const [i, [texto]] of GUION_SMOKE.entries()) {
+    if (i === 5) antesDeT6 = JSON.stringify(verEstadoSombra('n-causal', 's-sec')?.carrito?.items || []);
     await observarTurnoDelMesero({
       sessionId: 's-sec', negocioId: 'n-causal', mensaje: texto, cargarCatalogo, proponer: modelo,
     });
@@ -387,6 +393,16 @@ await t('M. el smoke entero SECUENCIAL: un renglón, un lid, sin grupos inventad
       assert(gruposReales.includes(g), `tras «${texto}» quedó un pendiente con grupo «${g}»`);
     }
   }
+  // T6 es una consulta: el pedido tiene que salir igual que entró.
+  assert.equal(JSON.stringify(verEstadoSombra('n-causal', 's-sec')?.carrito?.items || []), antesDeT6,
+    'la consulta de licuados movió el pedido');
+
+  // El pedido del enunciado, entero.
+  const fin = (verEstadoSombra('n-causal', 's-sec')?.carrito?.items || [])[0];
+  assert.equal(fin.nombre, 'Chilaquiles Mixtos', `producto=${fin.nombre}`);
+  assert.equal(fin.id, 107, `id=${fin.id}`);
+  assert.deepEqual(opcionesDe('s-sec', 'Salsa'), ['Chipotle', 'Suiza'],
+    `Salsa=${JSON.stringify(opcionesDe('s-sec', 'Salsa'))}`);
   // Y LO QUE EL GRUPO INVENTADO ESTABA ROBANDO: la resolución del pendiente.
   //
   // Sin canonizar, «Con frijolitos» abría DOS dudas —una con grupo
@@ -401,22 +417,17 @@ await t('M. el smoke entero SECUENCIAL: un renglón, un lid, sin grupos inventad
     `Proteína=${JSON.stringify(opcionesDe('s-sec', 'Proteína'))}`);
 });
 
-await t('M2. DEUDA CONOCIDA (fuera de alcance): «también» con grupo parcial REEMPLAZA', async () => {
-  // Esto NO es una garantía: es un defecto conocido, anclado aquí para que se
-  // sepa que sigue vivo y para que esta prueba AVISE el día que se arregle.
+await t('M2. «también» con grupo parcial SUMA: la salsa anterior sobrevive', async () => {
+  // Esta prueba nació como acta de una deuda —documentaba que el grupo se
+  // reemplazaba— y el smoke real del 16-sep la confirmó en producción: el
+  // cliente dijo «Tambien chipotle», GPT mandó `Salsa: [Chipotle]` a secas y
+  // la Suiza del primer turno desapareció del pedido.
   //
-  // Cuando el borrador nombra el producto de forma que empareja con el renglón
-  // y manda el grupo con SÓLO la opción nueva, el camino de siempre emite un
-  // `cambiar_modificador` que sustituye el grupo entero: «También chipotle
-  // porfa» se lleva por delante la Suiza que el cliente pidió en el primer
-  // turno. Es del reconciliador, es anterior a este trabajo —medido con y sin
-  // el arreglo de grupos, idéntico en los dos— y el mandato lo deja fuera.
-  //
-  // En el tráfico real del 15-sep no se vio porque GPT repitió los tres grupos
-  // en su borrador; con un borrador parcial, se ve.
-  assert.deepEqual(opcionesDe('s-sec', 'Salsa'), ['Chipotle'],
-    `si esto falla, la deuda del reconciliador ya se arregló: actualiza esta prueba `
-    + `(Salsa=${JSON.stringify(opcionesDe('s-sec', 'Salsa'))})`);
+  // Ahora es un contrato. Un grupo parcial del modelo es una propuesta de
+  // mutación, no una foto del estado: cuando el texto suma, lo que el modelo
+  // omite se queda donde estaba.
+  assert.deepEqual(opcionesDe('s-sec', 'Salsa'), ['Chipotle', 'Suiza'],
+    `la suma volvió a reemplazar: ${JSON.stringify(opcionesDe('s-sec', 'Salsa'))}`);
 });
 
 console.log(fallos.length

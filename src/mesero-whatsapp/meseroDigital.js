@@ -556,13 +556,17 @@ export async function atenderTurno({
       // discute: se descarta.
       const gruposReales = new Set(propuestas_
         .map((o) => norm(grupoRealDeLaOpcion(catalogo, destino?.nombre || '', p.campo, o))));
-      if (gruposReales.size === 1) {
-        const enEseGrupo = (destino?.modificadores || [])
+      // Lo que el renglón tiene HOY en ese grupo, con su nombre de catálogo.
+      // Se calcula una vez: sirve para descartar una reescritura idéntica y,
+      // más abajo, para que sumar no borre lo que el modelo no repitió.
+      const enEseGrupo = gruposReales.size === 1
+        ? (destino?.modificadores || [])
           .filter((gr) => norm(gr?.grupo) === [...gruposReales][0])
           .flatMap((gr) => (gr.opciones || []).map((o) => String(typeof o === 'string' ? o : o?.nombre || '')))
-          .filter(Boolean);
-        if (enEseGrupo.length === propuestas_.length && propuestas_.every((o) => yaPuesta(o))) return false;
-      }
+          .filter(Boolean)
+        : [];
+      if (gruposReales.size === 1
+        && enEseGrupo.length === propuestas_.length && propuestas_.every((o) => yaPuesta(o))) return false;
       // …PERO SÓLO SI EL CLIENTE PIDIÓ SUMAR.
       //
       // Dejar sobrevivir lo ya elegido es correcto para «también chipotle» y
@@ -580,6 +584,35 @@ export async function atenderTurno({
       const conservadas = preserva ? propuestas_.filter((o) => yaPuesta(o)) : [];
       const entrantes = preserva ? propuestas_.filter((o) => !yaPuesta(o)) : propuestas_;
 
+      // ── UN GRUPO PARCIAL NO ES UNA FOTO DEL GRUPO ──────────────────────
+      //
+      // Lo de arriba rescata lo ya elegido SÓLO si el modelo se acordó de
+      // repetirlo. En el smoke real del 16-sep no se acordó: el cliente dijo
+      // «también chipotle», el borrador mandó `Salsa: [Chipotle]` a secas, y
+      // como no había nada ambiguo el filtro devolvía la propuesta intacta.
+      // El reconciliador escribe `valorNuevo` como el grupo entero, así que la
+      // Suiza del primer turno desaparecía del pedido.
+      //
+      // Cuando el texto dice SUMAR, lo que el modelo omite no es una baja: es
+      // una omisión. La foto del grupo la tiene el renglón —`enEseGrupo`—, no
+      // el borrador, y el valor final es la unión de las dos. Sin señal de
+      // suma no se toca nada: «mejor chipotle» sigue sustituyendo, y «sin
+      // suiza» sigue restando por su propio camino.
+      const heredadas = operacion === 'agregar' ? enEseGrupo : [];
+      const unir = (...listas) => {
+        const vistas = new Set();
+        const fuera = [];
+        for (const lista of listas) {
+          for (const o of lista) {
+            const clave = norm(o);
+            if (!clave || vistas.has(clave)) continue;
+            vistas.add(clave);
+            fuera.push(o);
+          }
+        }
+        return fuera;
+      };
+
       const { claras, ambiguas } = opcionesAmbiguas({
         catalogo,
         producto: destino?.nombre || '',
@@ -588,13 +621,16 @@ export async function atenderTurno({
         texto: autoriza,
         hermanasRestringidas: abierta?.candidatos || null,
       });
-      if (!ambiguas.length) return true;
+      if (!ambiguas.length) {
+        if (heredadas.length) p.valorNuevo = unir(heredadas, propuestas_);
+        return true;
+      }
       // El `lid` viaja con la ambigüedad: sin él, el pendiente no sabría a qué
       // renglón pertenece y no podría cancelarse cuando ese renglón se va.
       opcionesQueNoSeparan.push(...ambiguas.map((a) => ({ ...a, lid: p.lid })));
       // Lo que sí se distinguió del mismo grupo sigue adelante —junto con lo
       // que ya estaba—; lo ambiguo no.
-      const sobreviven = [...conservadas, ...claras];
+      const sobreviven = unir(heredadas, conservadas, claras);
       if (sobreviven.length) { p.valorNuevo = sobreviven; return true; }
       return false;
     });
