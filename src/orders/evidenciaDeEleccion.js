@@ -194,6 +194,38 @@ function palabrasQuePidenAlgo(mencion) {
 export const explicaLaMencion = (mencion, explicadores = []) => palabrasSinExplicar(mencion, explicadores).length === 0;
 
 /**
+ * ─── LO QUE EL VALOR AFIRMA Y EL TEXTO DEL CLIENTE NO SOSTIENE ──────────
+ *
+ * La de arriba perdona lo que va DELANTE de la primera palabra explicada,
+ * porque en «chile jalapeño» el negocio no tiene por qué haber escrito el
+ * género. Esa indulgencia es correcta para una mención de carta y es un
+ * agujero para un dato del cliente. Medido:
+ *
+ *   palabrasSinExplicar('Depto 5B Reforma 200', ['Reforma 200'])  →  []
+ *
+ * El departamento entra porque va delante. En una dirección no hay género
+ * que perdonar: toda palabra que el cliente no dijo es una invención, vaya
+ * donde vaya.
+ *
+ * Es la MISMA función sin ese salto —mismo tokenizador, mismas vacías, las
+ * mismas marcas de nota—, y por eso normalizar la forma sigue saliendo
+ * gratis mientras añadir contenido no:
+ *
+ *   «av reforma #200»  →  «Av. Reforma 200»   nada nuevo      → []
+ *   «Reforma 200»      →  «Reforma 200, Col. Centro»          → [colonia, centro]
+ *
+ * Cuidado al usarla como única puerta: un valor sin ninguna palabra
+ * significativa —«Av 5 #3», todo de menos de tres letras— devuelve la lista
+ * vacía porque no afirma nada que comprobar. Quien decida con esto tiene que
+ * exigir además que algo SÍ esté sostenido.
+ */
+export function palabrasSinRespaldo(valor, textos = []) {
+  const propias = palabrasQuePidenAlgo(valor);
+  const lista = (Array.isArray(textos) ? textos : [textos]).map((t) => String(t || '')).filter(Boolean);
+  return propias.filter((w) => !lista.some((t) => palabrasQueLaSostienen(w, t).size > 0));
+}
+
+/**
  * ¿El texto del cliente distingue `elegida` de las demás opciones del grupo?
  *
  * `hermanas` son TODAS las opciones del mismo grupo (incluida la elegida; se
