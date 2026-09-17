@@ -680,6 +680,40 @@ try {
     assert.strictEqual(r.body.direcciones.find(d => d.alias === 'Trabajo').resumen, 'Persistencia 2 20 Lejos');
   });
 
+  await t('CHECKOUT', '46. con pago EN LÍNEA (el único método de Mapolato) el pedido con sesión nace pendiente_pago y ligado al cliente', async () => {
+    // Pasarela de forma válida (testConnection de Clip no toca red ni cobra) y
+    // la allow-list real del piloto: solo enlace de pago.
+    const { guardarIntegracionPago, marcarProveedorPrincipal } = await import('../src/services/integracionesService.js');
+    await guardarIntegracionPago(NEG_A, 'clip', { apiKey: 'test-api-key-no-real', apiSecret: 'test-api-secret-no-real' }, { actualizadoPor: SEED.superadminUsuarioId });
+    await marcarProveedorPrincipal(NEG_A, 'clip', SEED.superadminUsuarioId);
+    await pool.query(`UPDATE configuracion SET valor='["enlace_pago"]' WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG_A]);
+    try {
+      const nav = navegador();
+      await entrar(nav, SLUG_A, TEL_PERSIST);
+      const pagos = await nav.pedir(`/api/tienda/${SLUG_A}/pagos?modalidad=domicilio`);
+      assert.deepStrictEqual(pagos.body.metodos.map(m => m.id), ['enlace_pago'], 'solo pago en línea, como Mapolato');
+      const dirs = await nav.pedir(`/api/tienda/${SLUG_A}/cuenta/direcciones`);
+      const casa = dirs.body.direcciones.find(d => d.alias === 'Casa');
+      const r = await nav.pedir(`/api/tienda/${SLUG_A}/checkout`, { method: 'POST', body: checkoutBody({
+        modalidad: 'domicilio', direccionId: casa.id, metodoPago: 'enlace_pago', cliente: { nombre: 'Persistente', telefono: TEL_PERSIST },
+      })});
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(r.body.metodoPago.pagaDespues, false);
+      const p = await pedidoDe(r.body.folio);
+      assert.strictEqual(p.datos.cliente.calle, 'Persistencia 1');
+      const { rows: [estado] } = await pool.query('SELECT estado FROM pedidos_activos WHERE folio=$1', [r.body.folio]);
+      assert.strictEqual(estado.estado, 'pendiente_pago', 'sin dinero confirmado no entra a cocina');
+      const { rows: [c] } = await pool.query('SELECT id FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2', [NEG_A, TEL_PERSIST]);
+      assert.strictEqual(p.cliente_id, c.id);
+      // Y un método que la tienda NO ofrece se rechaza aunque venga con sesión.
+      const malo = await nav.pedir(`/api/tienda/${SLUG_A}/checkout`, { method: 'POST', body: checkoutBody({ modalidad: 'recoger', metodoPago: 'efectivo' }) });
+      assert.strictEqual(malo.status, 400);
+      assert.strictEqual(malo.body.codigo, 'METODO_PAGO_INVALIDO');
+    } finally {
+      await pool.query(`UPDATE configuracion SET valor='["efectivo"]' WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG_A]);
+    }
+  });
+
   // ═══════════════ INTERRUPTOR ═══════════════
   await t('INTERRUPTOR', '42. con cuentas APAGADAS la tienda es la de siempre: sin login (404), invitado igual, canje por teléfono como antes', async () => {
     await pool.query('UPDATE tienda_config SET cuentas_clientes = FALSE WHERE negocio_id = $1', [NEG_A]);
