@@ -17,19 +17,34 @@
 //
 // Un repartidor subiendo a un departamento que nadie pidió.
 //
-// ── POR QUÉ NO SIRVE `palabrasSinExplicar` TAL CUAL ─────────────────────
+// ── LO QUE EL MÓDULO DE EVIDENCIA YA TENÍA, Y POR QUÉ NO SERVÍA ─────────
 //
-// Existe y hace casi exactamente esto, pero tiene la regla del género: sólo
-// descalifica lo que va DESPUÉS de la primera palabra explicada, porque en
-// «chile jalapeño» el negocio no tiene por qué haber escrito «chile». Medido
-// contra los casos de este mandato acierta ocho de nueve y falla el que
-// importa:
+// `palabrasSinExplicar` hace casi exactamente esto, pero arrastra dos reglas
+// pensadas para menciones de CARTA que en un dato de cliente son agujeros. Las
+// dos se midieron, no se supusieron:
 //
-//   propuesta «Depto 5B Reforma 200» · cliente «Reforma 200» → [] , aceptado
+//   la regla del género — sólo descalifica lo que va DESPUÉS de la primera
+//   palabra explicada, porque en «chile jalapeño» el negocio no tiene por qué
+//   haber escrito «chile»:
 //
-// En una dirección no hay género que perdonar: toda palabra que el cliente no
-// dijo es una invención, vaya delante o detrás. De ahí `palabrasSinRespaldo`,
-// que es la misma función sin ese salto.
+//     palabrasSinExplicar('Depto 5B Reforma 200', ['Reforma 200']) → []
+//
+//   las marcas de nota — salta la palabra que sigue a «sin», «para», «a»,
+//   «poco», porque «sin chile» no pide chile y no puede tumbar el platillo.
+//   Esta la destapó una revisión adversarial del primer arreglo, y era la
+//   peor: se bloqueaba «Reforma 200, Depto 5B» y pasaba «Reforma 200 PARA
+//   Depto 5B». Al modelo le bastaba una preposición.
+//
+// En un dato de cliente no hay género que perdonar ni nota que saltar: lo que
+// va detrás de «para» es justo lo que más importa —el destinatario, el
+// interior, la instrucción de entrega—. De ahí `elTextoRespaldaElValor`, que
+// comparte tokenizador y vacías con sus hermanas y no hereda ninguna de esas
+// dos indulgencias.
+//
+// Y un número escrito con espacios es el mismo número: «878 123 4567» y
+// «8781234567» son un teléfono, no dos. Se comparan las tiradas de dígitos
+// enteras, que no es un parser y evita que el «123» de un teléfono respalde
+// un número de casa.
 import assert from 'node:assert/strict';
 import { atenderTurno } from '../src/mesero-whatsapp/meseroDigital.js';
 import { resumenDelPedido, huellaDelResumen, resumenSigueVigente } from '../src/mesero-whatsapp/resumenDelPedido.js';
@@ -241,18 +256,28 @@ await t('A12b. y el campo inventado que SÍ comparte una palabra tampoco pasa', 
     `«portón» se coló a hombros de «Reforma»: ${JSON.stringify(cli)}`);
 });
 
-await t('A13. el pendiente sigue abriendo la puerta (A6b no se rompe)', async () => {
+await t('A13. el pendiente carga peso: un nombre que el texto no puede sostener', async () => {
+  // El caso tiene que ser uno que SOLO el pendiente pueda sostener, o la
+  // prueba no prueba la puerta. «Av 5 #3» ya no sirve para eso: desde que los
+  // tokens con dígito cuentan, se sostiene sola.
+  //
+  // Un nombre de dos letras sí: no tiene ninguna palabra significativa —ni
+  // larga ni con dígitos—, así que no afirma nada comprobable y sin la
+  // pregunta se cae. De los 315 nombres reales de producción, 5 son así.
   const c = conversacion('a13');
-  const r = await c.turno('Av 5 #3', { items: [], cliente: { direccion: 'Av 5 #3' } },
-    { datoOperativoPendiente: 'direccion' });
-  assert.equal(r.carrito.datos.cliente?.direccion, 'Av 5 #3', JSON.stringify(r.carrito.datos.cliente));
+  const r = await c.turno('Jo', { items: [], cliente: { nombre: 'Jo' } },
+    { datoOperativoPendiente: 'nombre' });
+  assert.equal(r.carrito.datos.cliente?.nombre, 'Jo',
+    `se preguntó el nombre, lo contestó, y se descartó: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
-await t('A13b. y con el nombre de campo real que usa el sistema', async () => {
+await t('A13b. sin esa pregunta, el mismo nombre corto no entra solo', async () => {
   const c = conversacion('a13b');
-  const r = await c.turno('Av 5 #3', { items: [], cliente: { calle: 'Av 5 #3' } },
-    { datoOperativoPendiente: 'calle' });
-  assert.equal(r.carrito.datos.cliente?.calle, 'Av 5 #3', JSON.stringify(r.carrito.datos.cliente));
+  const r = await c.turno('vivo en Reforma 200',
+    { items: [], cliente: { calle: 'Reforma 200', nombre: 'Jo' } });
+  assert.equal(r.carrito.datos.cliente?.calle, 'Reforma 200');
+  assert.equal(r.carrito.datos.cliente?.nombre, undefined,
+    `un nombre que nadie dijo entró por corto: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
 await t('A13c. pero el pendiente abre SU campo, no los demás', async () => {
@@ -279,6 +304,115 @@ await t('A14. nombre, teléfono y dirección enteramente inventados → ninguno 
   for (const f of ['cliente:nombre', 'cliente:telefono', 'cliente:calle', 'cliente:colonia', 'cliente:referencia']) {
     assert.ok(campos.includes(f), `${f} se descartó sin dejar traza: ${JSON.stringify(campos)}`);
   }
+});
+
+await t('A15. una preposición delante no vuelve invisible a la invención', async () => {
+  // Lo destapó una revisión adversarial del primer arreglo, y era serio: se
+  // bloqueaba «Reforma 200, Depto 5B» y pasaba «Reforma 200 PARA Depto 5B».
+  // Al modelo le bastaba meter una preposición.
+  //
+  // La causa era reutilizar `palabrasQuePidenAlgo`, que salta la palabra que
+  // va detrás de una marca de nota —«sin», «para», «a», «poco»—. En la carta
+  // eso es correcto: «sin chile» no pide chile y no puede descalificar al
+  // platillo. En un dato de cliente, lo que va detrás de «para» es contenido
+  // que afirma: el destinatario, el interior, la instrucción de entrega.
+  const c = conversacion('a15');
+  const r = await c.turno('vivo en Reforma 200',
+    { items: [], cliente: { calle: 'Reforma 200 para Depto 5B' } });
+  assert.equal(r.carrito.datos.cliente, undefined,
+    `el departamento se coló a la sombra de «para»: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A15b. y tampoco un destinatario que nadie nombró', async () => {
+  const c = conversacion('a15b');
+  const r = await c.turno('déjalo en la casa azul',
+    { items: [], cliente: { referencia: 'Casa azul para Juan' } });
+  assert.equal(r.carrito.datos.cliente, undefined,
+    `apareció un Juan: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A15c. con «a» pasa lo mismo', async () => {
+  const c = conversacion('a15c');
+  const r = await c.turno('vivo en Reforma 200',
+    { items: [], cliente: { calle: 'Reforma 200 a Marisol' } });
+  assert.equal(r.carrito.datos.cliente, undefined, JSON.stringify(r.carrito.datos.cliente));
+});
+
+await t('A15d. pero si el cliente SÍ lo dijo, entra con preposición y todo', async () => {
+  const c = conversacion('a15d');
+  const r = await c.turno('vivo en Reforma 200, para Marisol',
+    { items: [], cliente: { calle: 'Reforma 200 para Marisol' } });
+  assert.equal(r.carrito.datos.cliente?.calle, 'Reforma 200 para Marisol',
+    `se rechazó lo que el cliente dijo entero: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A17. un interior de dos caracteres NO es decoración', async () => {
+  // Medido contra las 148 calles reales de produccion: «{calle}, Depto 5B» se
+  // bloqueaba en las 148, y «{calle} para el 5B» se colaba en las 148. La
+  // diferencia era la palabra «Depto», de cinco letras. Sin ella, «5b» mide
+  // dos caracteres y el tokenizador —que descarta lo de menos de tres— no lo
+  // veia. Un numero de departamento no es ruido de formato: es a que puerta
+  // llama el repartidor.
+  const c = conversacion('a17');
+  const r = await c.turno('vivo en Reforma 200',
+    { items: [], cliente: { calle: 'Reforma 200 para el 5B' } });
+  assert.equal(r.carrito.datos.cliente, undefined,
+    `un interior de dos caracteres se coló: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A17b. pero si el cliente lo dijo, entra', async () => {
+  const c = conversacion('a17b');
+  const r = await c.turno('vivo en Reforma 200, el 5B',
+    { items: [], cliente: { calle: 'Reforma 200 5B' } });
+  assert.equal(r.carrito.datos.cliente?.calle, 'Reforma 200 5B',
+    `se rechazó lo que el cliente dictó: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A17c. y una abreviatura sin dígitos sigue siendo formato', async () => {
+  // La linea es el DIGITO, no el largo: «av» no afirma nada que el
+  // repartidor pueda equivocar; «5B» sí. Endurecer todo lo corto habria
+  // tirado «S/N», «C.P.» y media libreta de direcciones reales.
+  const c = conversacion('a17c');
+  const r = await c.turno('vivo en av reforma 200',
+    { items: [], cliente: { calle: 'Av. Reforma 200' } });
+  assert.equal(r.carrito.datos.cliente?.calle, 'Av. Reforma 200', JSON.stringify(r.carrito.datos.cliente));
+});
+
+await t('A16. un número escrito con espacios es el mismo número', async () => {
+  // El dato que más se escribe con separadores en WhatsApp. Quitar espacios es
+  // normalizar la FORMA, que es justo lo que el modelo sí puede hacer.
+  const c = conversacion('a16');
+  const r = await c.turno('apunta mi numero 878 123 4567',
+    { items: [], cliente: { telefono: '8781234567' } });
+  assert.equal(r.carrito.datos.cliente?.telefono, '8781234567',
+    `el cliente dictó su teléfono y se descartó: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A16b. y al revés: el cliente lo pega y el modelo lo separa', async () => {
+  const c = conversacion('a16b');
+  const r = await c.turno('apunta mi numero 8781234567',
+    { items: [], cliente: { telefono: '878 123 4567' } });
+  assert.equal(r.carrito.datos.cliente?.telefono, '878 123 4567', JSON.stringify(r.carrito.datos.cliente));
+});
+
+await t('A16c. un teléfono que nadie dictó sigue sin entrar', async () => {
+  const c = conversacion('a16c');
+  const r = await c.turno('vivo en Reforma 200',
+    { items: [], cliente: { calle: 'Reforma 200', telefono: '8781234567' } });
+  assert.equal(r.carrito.datos.cliente?.calle, 'Reforma 200');
+  assert.equal(r.carrito.datos.cliente?.telefono, undefined,
+    `se inventó un teléfono: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A16d. y un trozo del teléfono no respalda un número de casa', async () => {
+  // La tirada de dígitos se compara ENTERA. Si bastara con que apareciera
+  // dentro, el «123» de un teléfono respaldaría cualquier número exterior.
+  const c = conversacion('a16d');
+  const r = await c.turno('apunta mi numero 878 123 4567',
+    { items: [], cliente: { telefono: '8781234567', numero_exterior: '123' } });
+  assert.equal(r.carrito.datos.cliente?.telefono, '8781234567');
+  assert.equal(r.carrito.datos.cliente?.numero_exterior, undefined,
+    `un trozo del teléfono se volvió número de casa: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
 console.log('\n══ §13-§15. NO BORRAR, ACTUALIZAR, Y CONFIRMAR LO VIGENTE ══');

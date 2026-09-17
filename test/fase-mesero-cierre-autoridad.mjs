@@ -164,24 +164,28 @@ await t('A6. un pendiente de dirección lo resuelve la respuesta; el nombre de m
     `se coló un nombre que nadie dijo: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
-await t('A6b. y el pendiente carga peso: una dirección que el texto no sostiene', async () => {
+await t('A6b. y el pendiente carga peso: un valor que el texto no puede sostener', async () => {
   // A6 lo resolvía la evidencia textual —«Reforma 200» tiene palabras—, así
-  // que la puerta del pendiente quedaba sin probar. Ésta sólo la puede
-  // sostener el pendiente: `palabrasQueLaSostienen` descarta las palabras de
-  // menos de tres letras, y en «Av 5 #3» no queda ninguna. Sin la puerta, una
-  // dirección corta perfectamente dicha se caería por corta.
+  // que la puerta del pendiente quedaba sin probar.
+  //
+  // Esta prueba nació con «Av 5 #3» y hubo que rehacerla: al endurecer la
+  // autoridad de los datos de cliente, los tokens con dígito pasaron a contar
+  // y ese valor pasó a sostenerse solo. Volvía a ser una prueba que no
+  // probaba. Un nombre de dos letras no tiene ninguna palabra significativa
+  // —ni larga ni con dígitos—, así que sin la pregunta se cae; de los 315
+  // nombres reales de producción, 5 son así.
   const c = conversacion('a6b');
-  const r = await c.turno('Av 5 #3', { items: [], cliente: { direccion: 'Av 5 #3' } },
-    { datoOperativoPendiente: 'direccion' });
-  assert.equal(r.carrito.datos.cliente?.direccion, 'Av 5 #3',
-    `se preguntó la dirección, la contestó, y se descartó: ${JSON.stringify(r.carrito.datos.cliente)}`);
+  const r = await c.turno('Jo', { items: [], cliente: { nombre: 'Jo' } },
+    { datoOperativoPendiente: 'nombre' });
+  assert.equal(r.carrito.datos.cliente?.nombre, 'Jo',
+    `se preguntó el nombre, lo contestó, y se descartó: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
-await t('A6c. sin ese pendiente, la misma dirección corta NO entra sola', async () => {
+await t('A6c. sin ese pendiente, el mismo valor NO entra solo', async () => {
   // El reverso: lo que abre la puerta es que el sistema lo hubiera preguntado,
   // no la forma del valor.
   const c = conversacion('a6c');
-  const r = await c.turno('con salsa suiza porfa', { items: ITEMS(), cliente: { direccion: 'Av 5 #3' } });
+  const r = await c.turno('con salsa suiza porfa', { items: ITEMS(), cliente: { nombre: 'Jo' } });
   assert.equal(r.carrito.datos.cliente, undefined, JSON.stringify(r.carrito.datos.cliente));
 });
 
