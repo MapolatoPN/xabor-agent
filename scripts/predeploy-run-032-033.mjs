@@ -105,6 +105,12 @@ const SCRIPTS = [
   // si un saldo cambió). Va ANTES del binario nuevo porque el checkout con
   // sesión escribe pedidos_activos.cliente_id.
   '080-clientes-tienda',
+  // 081 pone el índice (negocio, teléfono a 10 dígitos) sobre pedidos_activos
+  // y hace el backfill de clientes_negocio desde los pedidos: solo INSERTA
+  // clientes (DO NOTHING sobre los existentes); el predeploy aborta si
+  // pedidos o Rewards cambian. Va ANTES del binario nuevo porque el tab
+  // Clientes v2 lo consulta.
+  '081-crm-clientes-negocio',
 ];
 
 for (const nombre of SCRIPTS) {
