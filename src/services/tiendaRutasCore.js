@@ -26,6 +26,8 @@ import {
   guardarCampana, pistaEnvioGratis, PromocionError,
 } from './tiendaPromociones.js';
 import { saldoParaTienda } from './tiendaRewards.js';
+import { clienteDeRequest } from './clienteAuth.js';
+import { registrarRutasCuentasCliente } from './tiendaCuentasRutas.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -103,9 +105,17 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
           tiempo: `${reglas.entregaMin}-${reglas.entregaMax} min`,
         },
         preparacionMinutos: reglas.preparacionMinutos,
+        // ¿Esta tienda ofrece cuenta de cliente? Si no, la página no pinta
+        // "Iniciar sesión" y se ve exactamente como antes.
+        cuentas: tienda.cuentasClientes,
       });
     } catch (e) { responderError(res, e, 'GET /api/tienda/:slug'); }
   });
+
+  // La sesión del cliente, SOLO cuando la tienda tiene cuentas encendidas y
+  // SOLO para este negocio. Sin cuentas, la cookie -- exista o no -- no
+  // cambia nada: el flujo de invitado es idéntico al de siempre.
+  const sesionCliente = (req, tienda) => tienda.cuentasClientes ? clienteDeRequest(req, tienda.negocioId) : null;
 
   app.get('/api/tienda/:slug/catalogo', limitePublico, async (req, res) => {
     try {
@@ -127,7 +137,8 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     try {
       const tienda = await resolverTienda(req.params.slug);
       const { items, modalidad, zona, codigo, telefono, rewardsPuntos } = req.body || {};
-      const cotizacion = await cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos });
+      const sesion = await sesionCliente(req, tienda);
+      const cotizacion = await cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos, sesionCliente: sesion });
       const pista = await pistaEnvioGratis({
         negocioId: tienda.negocioId, subtotal: cotizacion.subtotal, modalidad: cotizacion.modalidad,
       });
@@ -138,7 +149,11 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   app.post('/api/tienda/:slug/checkout', limiteCheckout, async (req, res) => {
     try {
       const tienda = await resolverTienda(req.params.slug);
-      const r = await crearPedidoTienda({ tienda, ...(req.body || {}) });
+      // La sesión se resuelve AQUÍ, del lado del servidor, y se le pasa al
+      // checkout ya verificada. El cuerpo de la petición no puede
+      // suplantarla: `sesionCliente` se asigna después del spread.
+      const sesion = await sesionCliente(req, tienda);
+      const r = await crearPedidoTienda({ tienda, ...(req.body || {}), sesionCliente: sesion });
       res.json({ ok: true, ...r });
     } catch (e) { responderError(res, e, 'POST checkout'); }
   });
@@ -157,13 +172,26 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   // Riesgo residual asumido y documentado (docs/rewards-tienda-online.md): un
   // saldo > 0 revela que ese teléfono compró aquí. Cerrarlo del todo exige
   // verificar el teléfono (OTP), que es otro trabajo.
+  //
+  // Ese "otro trabajo" ya existe: con cuentas de cliente ENCENDIDAS
+  // (tienda_config.cuentas_clientes) el saldo se responde únicamente para el
+  // teléfono de la sesión verificada; el `telefono` del query se ignora. Sin
+  // cuentas, el comportamiento es el de siempre.
   app.get('/api/tienda/:slug/rewards', limiteCheckout, async (req, res) => {
     try {
       const tienda = await resolverTienda(req.params.slug);
       const total = Number(req.query.total) || 0;
-      res.json(await saldoParaTienda(tienda.negocioId, req.query.telefono, total));
+      let telefono = req.query.telefono;
+      if (tienda.cuentasClientes) {
+        const sesion = await sesionCliente(req, tienda);
+        telefono = sesion ? sesion.cliente.telefono : null;
+      }
+      res.json(await saldoParaTienda(tienda.negocioId, telefono, total));
     } catch (e) { responderError(res, e, 'GET rewards tienda'); }
   });
+
+  // ── Cuenta del cliente (OTP, perfil, direcciones, Rewards, pedidos) ──
+  registrarRutasCuentasCliente(app, { limitePublico, limiteCheckout, responderError });
 
   app.get('/api/tienda/seguimiento/:token', limitePublico, async (req, res) => {
     try {

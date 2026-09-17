@@ -27,6 +27,7 @@ import {
 } from './tiendaPromociones.js';
 import { instanteDesdeEntrada } from './zonaHoraria.js';
 import { saldoParaTienda, planDeCanje, consumirCanjeDeTienda } from './tiendaRewards.js';
+import { obtenerDireccion, direccionParaCheckout, marcarCompra } from './clientesNegocio.js';
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const tokenOpaco = () => randomBytes(24).toString('hex'); // 192 bits: no enumerable
@@ -182,10 +183,17 @@ function direccionParaPedido(direccion, zonaNombre, colonia = null) {
 // La usa la tienda para mostrar totales y promociones en vivo. Calcula
 // exactamente igual que el checkout, así que lo que ve el cliente es lo que
 // se cobra.
-export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos = 0 }) {
+export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, telefono, rewardsPuntos = 0, sesionCliente = null }) {
   const reglas = await reglasDelNegocio(tienda.negocioId);
   const modo = normalizarModalidad(tienda, modalidad);
   const { items: itemsValidados, subtotal } = await validarCarrito(tienda.negocioId, items);
+
+  // Identidad para promociones y Rewards. Con sesión es el teléfono
+  // VERIFICADO por OTP y el del cuerpo se ignora. Sin sesión en una tienda
+  // con cuentas encendidas, el canje no se ofrece: nadie gasta los puntos de
+  // un número que no demostró que es suyo (requiereSesion).
+  const telefonoIdentidad = sesionCliente ? sesionCliente.cliente.telefono : telefono;
+  const canjeRequiereSesion = tienda.cuentasClientes === true && !sesionCliente;
 
   let envioBase = 0, zonaNombre = null;
   if (modo === 'domicilio') {
@@ -196,7 +204,7 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
   const promo = await calcularPromociones({
     negocioId: tienda.negocioId, subtotal, items: itemsValidados,
     costoEnvio: envioBase, modalidad: modo, codigo,
-    telefono: telefono || null, timezone: reglas.timezone,
+    telefono: telefonoIdentidad || null, timezone: reglas.timezone,
   });
 
   // Pedido mínimo: se evalúa sobre el valor de los productos ANTES de
@@ -217,7 +225,8 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
   // contra el saldo del momento: entre ver el número y pagar, el cliente
   // pudo gastar sus puntos en otra compra.
   const rewards = await rewardsDeCotizacion({
-    negocioId: tienda.negocioId, telefono, total: promo.total, puntosSolicitados: rewardsPuntos,
+    negocioId: tienda.negocioId, telefono: telefonoIdentidad, total: promo.total,
+    puntosSolicitados: rewardsPuntos, requiereSesion: canjeRequiereSesion,
   });
 
   return {
@@ -241,8 +250,15 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
 // lenta, config a medias), el carrito se cotiza igual y la tienda
 // simplemente no ofrece puntos. Un programa de lealtad jamás puede impedir
 // una venta.
-async function rewardsDeCotizacion({ negocioId, telefono, total, puntosSolicitados }) {
+async function rewardsDeCotizacion({ negocioId, telefono, total, puntosSolicitados, requiereSesion = false }) {
   try {
+    // Sin sesión en una tienda con cuentas: se informa el programa (cuántos
+    // puntos daría esta compra) pero sin saldo ni canje de ningún teléfono.
+    if (requiereSesion) {
+      const base = await saldoParaTienda(negocioId, null, total);
+      if (!base.activo) return null;
+      return { ...base, puntosAplicados: 0, descuentoAplicado: 0, recortado: false, requiereSesion: true };
+    }
     const saldo = await saldoParaTienda(negocioId, telefono, total);
     if (!saldo.activo) return null;
     const plan = await planDeCanje({ negocioId, telefono, puntosSolicitados, total });
@@ -577,6 +593,10 @@ export async function crearPedidoTienda({
   tienda, checkoutToken, items, modalidad, cliente = {}, direccion = null, zona = null,
   colonia = null, codigo = null, metodoPago = null, programadoPara = null, notas = null,
   rewardsPuntos = 0,
+  // Solo los pone la ruta, nunca el navegador: `sesionCliente` es la sesión
+  // verificada (o null = invitado) y `direccionId` una dirección guardada
+  // que se lee de la base comprobando que sea de ESE cliente.
+  sesionCliente = null, direccionId = null,
 }) {
   const token = limpiarTexto(checkoutToken, 80);
   if (!token || token.length < 16) throw new TiendaError('Sesión de compra inválida', 'CHECKOUT_TOKEN_INVALIDO');
@@ -646,10 +666,27 @@ export async function crearPedidoTienda({
     // 3) Precios y modificadores: recalculados contra el catálogo del negocio.
     const { items: itemsValidados, subtotal } = await validarCarrito(tienda.negocioId, items);
 
+    // 3b) Cliente con sesión y dirección guardada. La sesión la resolvió la
+    //     ruta desde la cookie (verificada por OTP); el navegador no puede
+    //     fabricarla. La dirección se lee de la base comprobando que sea de
+    //     ESTE cliente: un id ajeno o inventado simplemente no existe. Entra
+    //     al pedido por el MISMO camino que una dirección escrita a mano y
+    //     queda copiada en datos->'cliente' como snapshot.
+    const clienteSesion = sesionCliente?.cliente || null;
+    let direccionFinal = direccion, coloniaFinal = colonia, zonaFinal = zona, direccionGuardada = null;
+    if (modo === 'domicilio' && direccionId) {
+      if (!clienteSesion) throw new TiendaError('Inicia sesión para usar una dirección guardada', 'DIRECCION_REQUIERE_SESION', 401);
+      direccionGuardada = await obtenerDireccion(tienda.negocioId, clienteSesion.id, direccionId);
+      if (!direccionGuardada) throw new TiendaError('Esa dirección no existe', 'DIRECCION_INVALIDA', 400);
+      direccionFinal = direccionParaCheckout(direccionGuardada);
+      coloniaFinal = direccionGuardada.colonia;
+      zonaFinal = direccionGuardada.zona || zona;
+    }
+
     // 4) Envío por zona y pedido mínimo.
     let envioBase = 0, zonaNombre = null;
     if (modo === 'domicilio') {
-      const e = resolverEnvio(reglas, zona);
+      const e = resolverEnvio(reglas, zonaFinal);
       envioBase = e.costo; zonaNombre = e.zona;
       if (reglas.pedidoMinimo > 0 && subtotal < reglas.pedidoMinimo) {
         throw new TiendaError(`El pedido mínimo a domicilio es $${dinero(reglas.pedidoMinimo)}`, 'PEDIDO_MINIMO');
@@ -657,7 +694,10 @@ export async function crearPedidoTienda({
     }
 
     // 5) Promociones: el servidor decide el descuento final.
-    const telefono = limpiarTexto(cliente?.telefono, 20);
+    //    Con sesión, la identidad es el teléfono VERIFICADO por OTP y el que
+    //    venga en `cliente.telefono` se ignora: es lo que impide que alguien
+    //    gaste los puntos de otro número tecleándolo.
+    const telefono = clienteSesion ? clienteSesion.telefono : limpiarTexto(cliente?.telefono, 20);
     const promo = await calcularPromociones({
       negocioId: tienda.negocioId, subtotal, items: itemsValidados,
       costoEnvio: envioBase, modalidad: modo, codigo, telefono, timezone: reglas.timezone,
@@ -689,7 +729,11 @@ export async function crearPedidoTienda({
     //     una intención ("quiero usar N puntos"), nunca un descuento: si pide
     //     más de lo que tiene o de lo que cabe en la venta, se recorta hacia
     //     abajo. Aquí todavía no se gasta nada -- solo se lee.
-    const planRewards = await planDeCanje({
+    //
+    //     En una tienda con cuentas encendidas el canje exige sesión: sin
+    //     ella no hay plan, y `rewardsPuntos` se ignora aunque venga.
+    const canjeRequiereSesion = tienda.cuentasClientes === true && !clienteSesion;
+    const planRewards = canjeRequiereSesion ? null : await planDeCanje({
       negocioId: tienda.negocioId, telefono,
       puntosSolicitados: rewardsPuntos, total: promo.total,
     }).catch(e => {
@@ -724,6 +768,13 @@ export async function crearPedidoTienda({
     if (!elegido) throw new TiendaError('Esa forma de pago no está disponible', 'METODO_PAGO_INVALIDO');
 
     // 7) Orden con la MISMA forma que usa el POS.
+    //    Las instrucciones de entrega de una dirección guardada viajan en las
+    //    notas del pedido (lo que lee el repartidor), detrás de lo que el
+    //    cliente escribió para este pedido en particular.
+    const notasPedido = limpiarTexto([
+      limpiarTexto(notas, 500),
+      direccionGuardada?.instrucciones_entrega ? `Entrega: ${direccionGuardada.instrucciones_entrega}` : '',
+    ].filter(Boolean).join(' · '), 500);
     const orden = construirOrdenPOS({
       negocioId: tienda.negocioId,
       tipo: modo,
@@ -731,10 +782,10 @@ export async function crearPedidoTienda({
       subtotal: promo.subtotal,
       costoEnvio: promo.envio,
       descuento: promo.descuento,
-      cliente: { nombre: limpiarTexto(cliente?.nombre, 80), telefono },
-      direccion: modo === 'domicilio' ? direccionParaPedido(direccion, zonaNombre, colonia) : null,
+      cliente: { nombre: limpiarTexto(cliente?.nombre, 80) || clienteSesion?.nombre || '', telefono },
+      direccion: modo === 'domicilio' ? direccionParaPedido(direccionFinal, zonaNombre, coloniaFinal) : null,
       formaPago: elegido.pagaDespues ? `${elegido.id} (al ${modo === 'domicilio' ? 'recibir' : 'recoger'})` : elegido.id,
-      notas: limpiarTexto(notas, 500),
+      notas: notasPedido || null,
     });
 
     // Marca de canal y contexto de tienda. El tablero, el corte y los
@@ -758,6 +809,13 @@ export async function crearPedidoTienda({
       envio_gratis: promo.envioGratis,
       envio_base: promo.envioBase,
     };
+    // El pedido recuerda a qué cliente pertenece (solo con sesión). Va dentro
+    // de `datos` desde que nace; la columna indexada se estampa tras el alta.
+    if (clienteSesion) {
+      orden.cliente_id = clienteSesion.id;
+      orden.tienda.cliente_id = clienteSesion.id;
+      orden.tienda.direccion_id = direccionGuardada?.id || null;
+    }
     if (prog.programado) {
       orden.programado_para = prog.para;
       orden.tienda.programado = true;
@@ -783,6 +841,11 @@ export async function crearPedidoTienda({
     const pedido = await registrarPedido(orden, 'tienda_online');
     pedidoCreado = pedido;
     fallaInyectada('despues_de_registrar');
+
+    // 8a) Vínculo pedido → cliente (columna indexada) y fecha de última
+    //     compra. No condiciona el pedido: si fallara, datos.cliente_id ya lo
+    //     identifica y el pedido sigue su camino.
+    if (clienteSesion) await vincularPedidoACliente(tienda.negocioId, pedido.id, clienteSesion.id);
 
     // 8b) REWARDS: primero se gastan los puntos, DESPUÉS se baja el total.
     //
@@ -905,6 +968,17 @@ async function aplicarRewardsAlPedido(negocioId, pedido, orden, rewards) {
   Object.assign(pedido, parche);
   if (orden.tienda) orden.tienda.rewards = { ...parche.rewards_canje };
   if (pedido.tienda) pedido.tienda.rewards = { ...parche.rewards_canje };
+}
+
+async function vincularPedidoACliente(negocioId, folio, clienteId) {
+  try {
+    await pool.query(
+      'UPDATE pedidos_activos SET cliente_id = $3 WHERE folio = $1 AND negocio_id = $2 AND cliente_id IS NULL',
+      [folio, negocioId, clienteId]);
+    await marcarCompra(negocioId, clienteId);
+  } catch (e) {
+    console.error(`[Tienda] No se pudo vincular ${folio} al cliente: ${e.message}`);
+  }
 }
 
 async function esperarPedidoDeToken(negocioId, token, intentos = 10) {

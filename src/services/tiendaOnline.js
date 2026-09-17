@@ -56,7 +56,8 @@ export async function resolverTienda(identificador, { exigirPublicada = true } =
     `SELECT n.id, n.nombre, n.slug, n.activo, n.estado,
             t.estado AS tienda_estado, t.slug_publico, t.titular, t.descripcion,
             t.color_primario, t.logo_url, t.portada_url, t.modalidades,
-            t.acepta_programados, t.anticipacion_minutos, t.mensaje_bienvenida
+            t.acepta_programados, t.anticipacion_minutos, t.mensaje_bienvenida,
+            t.cuentas_clientes
        FROM negocios n
        LEFT JOIN tienda_config t ON t.negocio_id = n.id
       WHERE lower(t.slug_publico) = $1 OR lower(n.slug) = $1
@@ -103,6 +104,9 @@ export async function resolverTienda(identificador, { exigirPublicada = true } =
     modalidades: normalizarModalidades(row.modalidades),
     aceptaProgramados: row.acepta_programados === true,
     anticipacionMinutos: Number(row.anticipacion_minutos) || 30,
+    // Cuenta de cliente (OTP, direcciones, Rewards en Mi cuenta). Apagada
+    // por omisión: la enciende cada negocio (migración 080).
+    cuentasClientes: row.cuentas_clientes === true,
   };
 }
 
@@ -415,6 +419,7 @@ export async function obtenerConfigTienda(negocioId) {
     anticipacionMinutos: Number(r.anticipacion_minutos) || 30,
     mensajeBienvenida: r.mensaje_bienvenida || '',
     publicadaAt: r.publicada_at || null,
+    cuentasClientes: r.cuentas_clientes === true,
   };
 }
 
@@ -430,6 +435,9 @@ export async function guardarConfigTienda(negocioId, cambios = {}) {
   }
   if (cambios.modalidades !== undefined) set.modalidades = JSON.stringify(normalizarModalidades(cambios.modalidades));
   if (cambios.aceptaProgramados !== undefined) set.acepta_programados = !!cambios.aceptaProgramados;
+  // Cuenta de cliente en la tienda (migración 080). Interruptor explícito
+  // del negocio: PUT /api/admin/tienda { cuentasClientes: true }.
+  if (cambios.cuentasClientes !== undefined) set.cuentas_clientes = !!cambios.cuentasClientes;
   if (cambios.anticipacionMinutos !== undefined) {
     const n = parseInt(cambios.anticipacionMinutos, 10);
     if (!Number.isFinite(n) || n < 0 || n > 1440) throw new TiendaError('Anticipación inválida', 'ANTICIPACION_INVALIDA');
