@@ -225,7 +225,8 @@ que desvía a la libreta y regresa, y "Cambiar" en el resumen. Probado en 375,
 | Variable | Omisión | Para qué |
 |---|---|---|
 | `OTP_PROVEEDOR` | (ninguno → sin OTP en producción; `dev` fuera) | `sms` \| `whatsapp` \| `dev` |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_SMS_NUMBER` | ya existen en Railway | Proveedor `sms` |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | ya existen en Railway | Proveedor `sms` (obligatorios) |
+| `OTP_SMS_MESSAGING_SERVICE` · `OTP_SMS_DESDE` | (ninguno) | Remitente del OTP, en ese orden de precedencia; si faltan, `TWILIO_PHONE_NUMBER` y por último `TWILIO_SMS_NUMBER` |
 | `OTP_SMS_PREFIJO` | `52` | Prefijo E.164 del SMS |
 | `OTP_WA_PLANTILLA` | (ninguna → canal no disponible) | Nombre de la plantilla de AUTENTICACIÓN aprobada en Meta |
 | `OTP_WA_IDIOMA` | `es_MX` | Idioma de la plantilla |
@@ -306,9 +307,19 @@ botón, sin rutas de cuenta, checkout idéntico.
 
 ### Activación (después de desplegar el candidato)
 
-1. Railway → servicio `xabor-agent` → Variables: `OTP_PROVEEDOR = sms`
-   (Twilio ya está configurado). Railway redepliega el mismo código al
-   cambiar variables; esperar `SUCCESS`.
+1. Railway → servicio `xabor-agent` → Variables: `OTP_PROVEEDOR = sms`.
+   Railway redepliega el mismo código al cambiar variables; esperar `SUCCESS`.
+
+   **Sobre el remitente** (comprobado el 2026-09-17 contra la cuenta real de
+   Twilio, activa y con saldo): la cuenta posee **un solo número**, el de
+   `TWILIO_PHONE_NUMBER` (+52…, SMS y voz). `TWILIO_SMS_NUMBER` (+1…) **no
+   es un número de la cuenta**: Twilio lo rechaza con el error 21659, y así
+   han fallado todos los SMS de escalación a soporte desde el 12-sep
+   (hallazgo preexistente, fuera de esta entrega). Por eso el OTP usa
+   `TWILIO_PHONE_NUMBER` cuando no hay `OTP_SMS_DESDE`; un SMS de prueba
+   desde ese número al teléfono del dueño llegó `delivered`. No hace falta
+   ninguna variable más; si se quiere fijar explícito: `OTP_SMS_DESDE` con
+   el mismo valor que `TWILIO_PHONE_NUMBER`.
 2. Encender solo Mapolato, desde el panel de Mapolato Obispado con sesión de
    administrador (consola del navegador en `xabor.mx/app`):
 

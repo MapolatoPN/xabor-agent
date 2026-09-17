@@ -33,16 +33,32 @@ const dev = {
   },
 };
 
+// El remitente del OTP. Precedencia:
+//   1. OTP_SMS_MESSAGING_SERVICE  un Messaging Service de Twilio (lo que
+//      Twilio recomienda para tráfico internacional);
+//   2. OTP_SMS_DESDE              un número concreto de la cuenta;
+//   3. TWILIO_PHONE_NUMBER        el número principal de la cuenta;
+//   4. TWILIO_SMS_NUMBER          el del SMS de escalación, como último recurso.
+// El orden 3 antes de 4 no es capricho: el 2026-09-17 se comprobó contra la
+// cuenta real que TWILIO_SMS_NUMBER (+1…) NO es un número de la cuenta (Twilio
+// 21659, también en cada SMS de escalación desde el 12-sep) y que el único
+// número que posee, con SMS y voz, es TWILIO_PHONE_NUMBER (+52…): desde él
+// un SMS al dueño llegó "delivered". Solo cuenta y token son obligatorios.
+const remitenteSms = () => {
+  if (process.env.OTP_SMS_MESSAGING_SERVICE) return { messagingServiceSid: process.env.OTP_SMS_MESSAGING_SERVICE };
+  const from = process.env.OTP_SMS_DESDE || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_SMS_NUMBER;
+  return from ? { from } : null;
+};
 const sms = {
   nombre: 'sms',
-  disponible: () => Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_NUMBER),
+  disponible: () => Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && remitenteSms()),
   async enviar({ telefono, codigo, nombreNegocio }) {
     const { default: twilio } = await import('twilio');
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     // E.164 para un móvil mexicano: +52 + 10 dígitos.
     const to = `+${process.env.OTP_SMS_PREFIJO || '52'}${telefono}`;
     const r = await client.messages.create({
-      from: process.env.TWILIO_SMS_NUMBER, to,
+      ...remitenteSms(), to,
       body: `${nombreNegocio || 'Xabor'}: tu código de acceso es ${codigo}. Vence en 5 minutos. No lo compartas.`,
     });
     if (!r?.sid) throw new Error('Twilio no confirmó el envío');
