@@ -164,6 +164,27 @@ await t('A6. un pendiente de dirección lo resuelve la respuesta; el nombre de m
     `se coló un nombre que nadie dijo: ${JSON.stringify(r.carrito.datos.cliente)}`);
 });
 
+await t('A6b. y el pendiente carga peso: una dirección que el texto no sostiene', async () => {
+  // A6 lo resolvía la evidencia textual —«Reforma 200» tiene palabras—, así
+  // que la puerta del pendiente quedaba sin probar. Ésta sólo la puede
+  // sostener el pendiente: `palabrasQueLaSostienen` descarta las palabras de
+  // menos de tres letras, y en «Av 5 #3» no queda ninguna. Sin la puerta, una
+  // dirección corta perfectamente dicha se caería por corta.
+  const c = conversacion('a6b');
+  const r = await c.turno('Av 5 #3', { items: [], cliente: { direccion: 'Av 5 #3' } },
+    { datoOperativoPendiente: 'direccion' });
+  assert.equal(r.carrito.datos.cliente?.direccion, 'Av 5 #3',
+    `se preguntó la dirección, la contestó, y se descartó: ${JSON.stringify(r.carrito.datos.cliente)}`);
+});
+
+await t('A6c. sin ese pendiente, la misma dirección corta NO entra sola', async () => {
+  // El reverso: lo que abre la puerta es que el sistema lo hubiera preguntado,
+  // no la forma del valor.
+  const c = conversacion('a6c');
+  const r = await c.turno('con salsa suiza porfa', { items: ITEMS(), cliente: { direccion: 'Av 5 #3' } });
+  assert.equal(r.carrito.datos.cliente, undefined, JSON.stringify(r.carrito.datos.cliente));
+});
+
 console.log('\n══ F. LA FASE NO SUGIERE CERRAR LO QUE NO ESTÁ ══');
 
 await t('F1. CONFIRMAR con la modalidad en el aire → esperando_modalidad', async () => {
