@@ -43,6 +43,14 @@ async function fijarModulo(modulo, estado) {
   await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = $3`, [NEG, modulo, estado]);
 }
+// Estado previo de lo que se pisa en la base compartida; se restaura al final.
+const { rows: [cfgPrevia] } = await pool.query(`SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG]);
+const metodosPrevios = cfgPrevia?.valor ?? null;
+async function restaurarEstado() {
+  if (metodosPrevios === null) await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG]);
+  else await pool.query(`UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG, metodosPrevios]);
+  await pool.query('UPDATE tienda_config SET cuentas_clientes = FALSE WHERE negocio_id = $1', [NEG]).catch(() => {});
+}
 for (const m of ['tienda_online', 'pos', 'menu', 'rewards']) await fijarModulo(m, 'activo');
 await pool.query('DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre = $2', [NEG, MARCA]);
 const { rows: [cat] } = await pool.query(
@@ -292,6 +300,7 @@ try {
     if (salida) console.log('\nErrores del servidor:\n' + salida);
   }
   console.log(`Capturas en: ${CAPTURAS}`);
+  await restaurarEstado().catch(e => console.error('No se pudo restaurar el estado:', e.message));
   await srv.detener();
   await pool.end();
   process.exitCode = fallidas > 0 ? 1 : 0;

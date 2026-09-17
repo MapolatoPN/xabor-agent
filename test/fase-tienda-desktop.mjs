@@ -116,9 +116,12 @@ t('5. el carrito lateral es el MISMO botón, no un carrito nuevo', () => {
 });
 
 t('6. el checkout de escritorio es más legible, no otro checkout', () => {
-  assert.match(layout, /#hoja-checkout,#hoja-carrito\{max-width:620px\}/);
+  // La hoja de Mi cuenta comparte el mismo ancho de escritorio que carrito y
+  // checkout: es otra hoja de la misma tienda, no otra pantalla.
+  assert.match(layout, /#hoja-checkout,#hoja-carrito,#hoja-cuenta\{max-width:620px\}/);
   assert.strictEqual([...HTML.matchAll(/id="hoja-checkout"/g)].length, 1);
   assert.strictEqual([...HTML.matchAll(/id="hoja-carrito"/g)].length, 1);
+  assert.strictEqual([...HTML.matchAll(/id="hoja-cuenta"/g)].length, 1);
 });
 
 // ─── b) La compra no cambió ────────────────────────────────────────────────

@@ -180,6 +180,22 @@ function checkoutBody(extra = {}) {
 }
 const pedidoDe = async (folio) => (await pool.query('SELECT cliente_id, datos FROM pedidos_activos WHERE folio = $1', [folio])).rows[0];
 
+// Lo que esta suite pisa en la base COMPARTIDA se deja al final como estaba:
+// la allow-list de pago de la tienda y el interruptor de cuentas. Otras
+// suites (pagos en línea) dependen de que no quede una allow-list ajena.
+const previo = {};
+for (const n of [NEG_A, NEG_B]) {
+  const { rows } = await pool.query(`SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [n]);
+  previo[n] = rows[0]?.valor ?? null;
+}
+async function restaurarEstado() {
+  for (const n of [NEG_A, NEG_B]) {
+    if (previo[n] === null) await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [n]);
+    else await pool.query(`UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [n, previo[n]]);
+    await pool.query('UPDATE tienda_config SET cuentas_clientes = FALSE WHERE negocio_id = $1', [n]).catch(() => {});
+  }
+}
+
 await limpiar();
 await prepararNegocio(NEG_A, 'A', SLUG_A);
 await prepararNegocio(NEG_B, 'B', SLUG_B);
@@ -713,6 +729,7 @@ try {
     const salida = srv.obtenerSalida().split('\n').filter(l => /error|\[Tienda\]|\[OTP\]|FALLO/i.test(l)).slice(-15).join('\n');
     if (salida) console.log('\nErrores del servidor:\n' + salida);
   }
+  await restaurarEstado().catch(e => console.error('No se pudo restaurar el estado:', e.message));
   await srv.detener();
   await pool.end();
   process.exitCode = fallidas > 0 ? 1 : 0;
