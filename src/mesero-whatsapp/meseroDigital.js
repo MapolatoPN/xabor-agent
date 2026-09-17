@@ -28,7 +28,7 @@
 // integración, y es pequeño a propósito.
 import { separarProcedencia } from '../orders/procedenciaDeEvidencia.js';
 import { hayVerboDeQuitar } from '../orders/carritoDelPedido.js';
-import { palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
+import { palabrasQueLaSostienen, palabrasSinRespaldo } from '../orders/evidenciaDeEleccion.js';
 import { nombradoPorElCliente } from '../orders/carritoDelPedido.js';
 import {
   contextoDeLaConversacion, anotarTurno, sincronizarLineas, tocarLinea,
@@ -783,6 +783,28 @@ export async function atenderTurno({
   // deja pasar, porque repetirlo no es proponerlo de nuevo.
   const sinRespaldoOperativo = [];
   const loDijoElCliente = (valor) => palabrasQueLaSostienen(String(valor ?? ''), autoriza).size > 0;
+
+  // ── Y PARA EL CLIENTE, TODAS LAS PALABRAS, NO UNA ──────────────────────
+  //
+  // Con «basta una» —que es lo que vale para la modalidad y el pago, donde el
+  // catálogo del negocio pone el nombre final— una dirección se colaba a
+  // medias:
+  //
+  //   cliente  «Reforma 200»
+  //   modelo   «Reforma 200, Depto 5B»     «reforma» respalda → entraba entero
+  //
+  // Un repartidor subiendo a un departamento que nadie pidió. Un nombre, una
+  // calle o una colonia no los canoniza ninguna carta: lo que el modelo
+  // escribe ahí sólo puede venir de la boca del cliente.
+  //
+  // Las dos condiciones hacen falta. `palabrasSinRespaldo` vacío dice que no
+  // se añadió nada, pero también sale vacío cuando el valor no afirma nada
+  // comprobable —«Av 5 #3», todo de menos de tres letras—, y entonces una
+  // dirección corta inventada pasaría sola. Exigir además que algo esté
+  // sostenido cierra eso y deja la respuesta a un pendiente donde estaba: la
+  // abre la pregunta, no la forma del valor.
+  const loRespaldaEntero = (valor) => palabrasSinRespaldo(valor, autoriza).length === 0
+    && palabrasQueLaSostienen(String(valor ?? ''), autoriza).size > 0;
   const preguntado = norm(datoOperativoPendiente || '');
   const clientePrevio = carritoActual.datos?.cliente || {};
   anclado.propuestas = (anclado.propuestas || []).filter((p) => {
@@ -801,7 +823,7 @@ export async function atenderTurno({
     if (p?.accion !== 'definir_cliente') return true;
     const quedan = {};
     for (const [campo, valor] of Object.entries(p.valorNuevo || {})) {
-      if (clientePrevio[campo] === valor || preguntado === norm(campo) || loDijoElCliente(valor)) {
+      if (clientePrevio[campo] === valor || preguntado === norm(campo) || loRespaldaEntero(valor)) {
         quedan[campo] = valor;
         continue;
       }
