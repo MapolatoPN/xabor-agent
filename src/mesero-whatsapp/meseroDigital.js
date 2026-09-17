@@ -28,7 +28,7 @@
 // integración, y es pequeño a propósito.
 import { separarProcedencia } from '../orders/procedenciaDeEvidencia.js';
 import { hayVerboDeQuitar } from '../orders/carritoDelPedido.js';
-import { palabrasQueLaSostienen, palabrasSinRespaldo } from '../orders/evidenciaDeEleccion.js';
+import { palabrasQueLaSostienen, elTextoRespaldaElValor } from '../orders/evidenciaDeEleccion.js';
 import { nombradoPorElCliente } from '../orders/carritoDelPedido.js';
 import {
   contextoDeLaConversacion, anotarTurno, sincronizarLineas, tocarLinea,
@@ -797,14 +797,12 @@ export async function atenderTurno({
   // calle o una colonia no los canoniza ninguna carta: lo que el modelo
   // escribe ahí sólo puede venir de la boca del cliente.
   //
-  // Las dos condiciones hacen falta. `palabrasSinRespaldo` vacío dice que no
-  // se añadió nada, pero también sale vacío cuando el valor no afirma nada
-  // comprobable —«Av 5 #3», todo de menos de tres letras—, y entonces una
-  // dirección corta inventada pasaría sola. Exigir además que algo esté
-  // sostenido cierra eso y deja la respuesta a un pendiente donde estaba: la
-  // abre la pregunta, no la forma del valor.
-  const loRespaldaEntero = (valor) => palabrasSinRespaldo(valor, autoriza).length === 0
-    && palabrasQueLaSostienen(String(valor ?? ''), autoriza).size > 0;
+  // `elTextoRespaldaElValor` hace las dos preguntas juntas —que no sobre nada
+  // y que el valor afirme algo comprobable— porque separadas se pisan: un
+  // teléfono dictado con espacios pasa la primera y lo tira la segunda. Un
+  // valor que no afirma nada —«Av 5 #3»— no entra por aquí, y sigue entrando
+  // por el pendiente: lo abre la pregunta, no la forma del valor.
+  const loRespaldaEntero = (valor) => elTextoRespaldaElValor(valor, autoriza);
   const preguntado = norm(datoOperativoPendiente || '');
   const clientePrevio = carritoActual.datos?.cliente || {};
   anclado.propuestas = (anclado.propuestas || []).filter((p) => {
