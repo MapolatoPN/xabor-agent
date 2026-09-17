@@ -52,7 +52,50 @@ async function t(nombre, fn) {
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Montaje ────────────────────────────────────────────────────────────────
+//
+// EL FIXTURE NO ES UN TELÉFONO: ES UN NEGOCIO.
+//
+// Esta suite limpiaba `whatsapp_entradas` por su propio prefijo de teléfono, y
+// eso deja fuera todo lo que otras suites dejaron para el MISMO negocio. El
+// barrido de `whatsappContinuidad` no comparte esa idea: corre cada 500 ms,
+// mira todos los negocios y todos los teléfonos, y con una entrada en
+// 'pendiente' o 'procesando' cuya conversación no requiera revisión, se pone a
+// procesarla. Si eso cae dentro de los 10 s que esta suite espera, el Mesero
+// en sombra observa una conversación que no es la suya y D1 falla.
+//
+// Medido el 17-sep en la base de pruebas, para el negocio que hace de SOMBRA:
+// 254 filas ajenas —239 completado, 14 pendiente, 1 revision—. La prueba falló
+// una vez en una regresión completa y pasó las cinco siguientes; la diferencia
+// es que el barrido pille o no una fila elegible en su ventana.
+//
+// No se toca el predicado productivo ni se filtra la observación: se limpia el
+// universo que la suite dice controlar. Son residuos, no fixtures compartidos
+// —el seed no crea ninguna de estas filas, ninguna otra suite lee filas que no
+// haya creado ella, y `fase-bot-calla-y-avisa` y `fase-whatsapp-continuidad`
+// ya borran por negocio—. Y nadie referencia `whatsapp_entradas` con una FK,
+// así que borrarla no arrastra nada; sus propias FK apuntan a
+// `whatsapp_conversaciones`, por eso va ANTES que ella.
+const NEGOCIOS = ROLES.map((r) => r.neg);
+
+// El predicado EXACTO del barrido, para poder afirmar que queda en cero en vez
+// de suponerlo. Si `whatsappContinuidad` cambia el suyo, este deja de
+// representarlo y hay que venir a mirarlo.
+const SQL_ACTIVABLES = `SELECT count(*)::int AS n
+    FROM whatsapp_entradas e
+    JOIN whatsapp_conversaciones c USING(negocio_id, telefono)
+   WHERE e.estado IN ('pendiente','procesando') AND NOT c.requiere_revision
+     AND e.negocio_id = ANY($1)`;
+const activables = async () => (await pool.query(SQL_ACTIVABLES, [NEGOCIOS])).rows[0].n;
+const ajenas = async () => (await pool.query(
+  'SELECT count(*)::int AS n FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono NOT LIKE $2',
+  [NEGOCIOS, TEL + '%'])).rows[0].n;
+
+const antes = { activables: await activables(), ajenas: await ajenas() };
+await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1)', [NEGOCIOS]);
 await pool.query('DELETE FROM whatsapp_entradas WHERE telefono LIKE $1', [TEL + '%']);
+const despues = { activables: await activables(), ajenas: await ajenas() };
+console.log(`  [fixture] entradas ajenas ${antes.ajenas} -> ${despues.ajenas}`
+  + `   activables por el barrido ${antes.activables} -> ${despues.activables}`);
 await pool.query('DELETE FROM whatsapp_conversaciones WHERE telefono LIKE $1', [TEL + '%']);
 await pool.query('DELETE FROM conversacion_estado WHERE session_id LIKE $1', ['%' + TEL + '%']);
 await pool.query('DELETE FROM mensajes WHERE telefono LIKE $1', [TEL + '%']);
@@ -195,6 +238,16 @@ await esperar(10000);   // la cola de 6 s del canal, con margen para los tres
 const deSombra = ROLES.find((r) => r.rol === 'SOMBRA');
 const mensajesA = (t) => comunicaciones().filter((m) => m?.to === t);
 
+await t('D0. el escenario arrancó sin una sola entrada ajena que el barrido pudiera drenar', async () => {
+  // La condición que hace determinista a D1. Se comprueba con el predicado del
+  // barrido, no con una aproximación: lo que este `0` garantiza es que durante
+  // los 10 s de espera no había nada que procesar salvo lo que manda la suite.
+  assert.equal(despues.activables, 0,
+    `quedaron ${despues.activables} entradas activables de otras suites: el barrido puede drenarlas encima`);
+  assert.equal(despues.ajenas, 0,
+    `quedaron ${despues.ajenas} entradas ajenas para los negocios del fixture`);
+});
+
 await t('D1. SOLO el negocio en sombra ejecuta el Mesero', async () => {
   const todos = registros();
   assert(todos.length >= 2, `el negocio en sombra no observó nada (${todos.length} registros)`);
@@ -331,6 +384,9 @@ await t('D9. los modos resueltos son los tres que se pidieron', async () => {
     await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono' LIKE $2`,
       [r.neg, TEL + '%']).catch(() => {});
   }
+  // Se va como llegó: por negocio, no por teléfono. Dejar residuo aquí es
+  // sembrarle la misma carrera a la suite siguiente.
+  await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1)', [NEGOCIOS]).catch(() => {});
   await pool.query('DELETE FROM whatsapp_entradas WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM whatsapp_conversaciones WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM conversacion_estado WHERE session_id LIKE $1', ['%' + TEL + '%']).catch(() => {});
