@@ -171,10 +171,41 @@ const T_MODIFICADOR = /\b(sin |con |mejor con|mejor sin|que sea de|que sean de|c
 
 const T_NOTA = /\b(nota|anota|anotale|an[oó]tale|apunta|diles que|digan que|avisales|av[ií]sales|por favor que|porfa que|si se puede que|es para regalo|va de regalo|sin cubiertos|con cubiertos|aparte por favor|todo aparte|bien caliente|no muy caliente|para nino|para ni[nñ]o|alergia|alergico|al[eé]rgico)\b/;
 
+// ── LA FORMA DE UNA ATRIBUCIÓN ───────────────────────────────────────────
+//
+//   <determinante> <sustantivo> (es|son) <valor>
+//
+// «mi calle es Reforma», «la referencia es portón negro», «mi número exterior
+// es 200». Es GRAMÁTICA, no vocabulario: no hay ni un nombre de campo ni un
+// nombre de platillo en estas líneas, así que sirve igual para lo que el
+// negocio dé de alta mañana. Se admiten hasta dos palabras entre el
+// determinante y la cópula porque «número exterior» y «código postal» son dos.
+//
+// El determinante es lo que separa una atribución de una pregunta sin signo:
+// «cuál es mi calle» no lo tiene delante de la cópula, «tienes coca» no tiene
+// cópula, y «mi calle es Reforma» tiene las dos cosas.
+const DECLARA_ATRIBUTO = /(^|\s)(mi|mis|tu|tus|su|sus|el|la|los|las|nuestro|nuestra)\s+[a-z0-9ñ]+(\s+[a-z0-9ñ]+)?\s+(es|son)\s+\S/;
+
+// Negar no es atribuir. «mi calle no es Reforma» no declara que la calle sea
+// Reforma, y hasta que alguien enseñe a leer la corrección entera, lo correcto
+// es no asignar nada.
+const NIEGA_LA_COPULA = /\bno\s+(es|son|fue|fueron|era|eran)\b/;
+
 /** ¿Esta cláusula es una pregunta sobre la carta, y no una petición? */
-function esConsulta(c, conAcentos = c) {
+function esConsulta(c, conAcentos = c, { marcada = false } = {}) {
   const pide = V_PEDIR.test(c);
-  const signo = /\?|¿/.test(conAcentos);
+  // ── EL SIGNO VIVE FUERA DE LA CLÁUSULA ─────────────────────────────────
+  //
+  // `partirEnClausulas` corta por `[,;.!?¿¡]`, así que para cuando el texto
+  // llega aquí los signos YA se los llevó el separador: este `test` no podía
+  // dar verdadero nunca y llevaba siendo código muerto desde que existe. No se
+  // notaba porque el pronombre acentuado cubría casi todas las preguntas.
+  //
+  // Ahora sí importa: «¿mi calle es Reforma?» pierde sus signos y queda
+  // exactamente igual que la declaración «mi calle es Reforma». `marcada` es
+  // lo que las separa — quien parte el texto mira si ESA cláusula venía entre
+  // signos, y se lo dice.
+  const signo = /\?|¿/.test(conAcentos) || marcada;
   const verboDeConsulta = V_CONSULTA.test(c);
   // Con acento es interrogativo siempre. Sin acento hace falta un verbo de
   // existencia que lo acompañe; si no, «que sea roja» pasaría por pregunta.
@@ -188,14 +219,35 @@ function esConsulta(c, conAcentos = c) {
   //
   // Y al revés: «qué me recomiendas» no lleva signo y es una consulta.
   if (pide && !pronombre) return false;
+
+  // ── UNA ATRIBUCIÓN NO PREGUNTA NADA ────────────────────────────────────
+  //
+  // `V_CONSULTA` incluye `es` —está ahí por «¿cuánto es?», «¿de qué es?»— y
+  // eso bastaba, sin signo y sin pronombre, para mandar por la rama de
+  // consulta una declaración de dato perfectamente normal:
+  //
+  //   «mi calle es Reforma»  ->  esConsulta  ->  textoQueAutoriza = ''
+  //
+  // El cliente perdía su dirección por usar el verbo ser, mientras que «vivo
+  // en Reforma» —la misma información— entraba sin problema. Lo encontraron
+  // dos rondas de pruebas seguidas, las dos veces disfrazado de defecto del
+  // código que se estaba arreglando.
+  //
+  // No se le quita el trabajo a `verboDeConsulta`: «tienes coca» y «hay agua»
+  // son consultas de verdad y tampoco llevan signo ni pronombre. Lo que se
+  // reconoce es la forma de la atribución, y sólo cuando no hay marca de
+  // interrogación: con ella manda la marca, porque «¿mi calle es Reforma?» es
+  // una pregunta con exactamente la misma forma.
+  if (!interroga && DECLARA_ATRIBUTO.test(c) && !NIEGA_LA_COPULA.test(c)) return false;
+
   if (T_RECOMENDACION.test(c)) return true;
   if (!interroga && !verboDeConsulta) return false;
   return interroga || verboDeConsulta;
 }
 
-function intencionesDeClausula(c, { fase = null, conAcentos = null } = {}) {
+function intencionesDeClausula(c, { fase = null, conAcentos = null, marcada = false } = {}) {
   const fuera = new Set();
-  const consulta = esConsulta(c, conAcentos || c);
+  const consulta = esConsulta(c, conAcentos || c, { marcada });
 
   if (T_HUMANO.test(c)) fuera.add('PEDIR_HUMANO');
   if (T_SALUDO.test(c)) fuera.add('SALUDO');
@@ -262,14 +314,36 @@ function intencionesDeClausula(c, { fase = null, conAcentos = null } = {}) {
  *   soloConsulta  el turno NO puede tocar el pedido. Es la señal que usa el
  *                 orquestador para no pasarle el turno al reconciliador.
  */
+/**
+ * ¿ESTA cláusula venía entre signos de interrogación?
+ *
+ * Se busca el fragmento en el texto original a partir de donde acabó el
+ * anterior —así dos cláusulas iguales no se confunden— y se miran los signos
+ * pegados a sus bordes. Es por cláusula y no por mensaje a propósito: en «mi
+ * calle es Reforma. ¿tienes coca?» la primera declara y la segunda pregunta, y
+ * un flag global convertiría las dos en preguntas.
+ */
+function veniaEntreSignos(texto, fragmento, desde) {
+  const i = String(texto).indexOf(fragmento, desde);
+  if (i < 0) return { marcada: false, fin: desde };
+  let a = i - 1;
+  while (a >= 0 && /\s/.test(texto[a])) a -= 1;
+  let b = i + fragmento.length;
+  while (b < texto.length && /\s/.test(texto[b])) b += 1;
+  return { marcada: texto[a] === '¿' || texto[b] === '?', fin: i + fragmento.length };
+}
+
 export function clasificarIntenciones(texto, { fase = null } = {}) {
   const clausulas = partirEnClausulas(texto);
   const porClausula = [];
   const vistas = [];
+  let cursor = 0;
   for (const original of clausulas) {
     const c = norm(original);
+    const { marcada, fin } = veniaEntreSignos(texto, original, cursor);
+    cursor = fin;
     if (!c) continue;
-    const ints = intencionesDeClausula(c, { fase, conAcentos: minusculas(original) });
+    const ints = intencionesDeClausula(c, { fase, conAcentos: minusculas(original), marcada });
     porClausula.push({
       fragmento: original,
       intenciones: ints,
