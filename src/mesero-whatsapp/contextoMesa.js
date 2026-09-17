@@ -81,6 +81,11 @@ export function contextoNuevo({ negocioId, conversacionId, cliente = null } = {}
     // esto habría pasado a una persona. En producción es siempre `null` porque
     // allí el handoff es terminal y no hay «después».
     habriaEscalado: null,
+    // { huella, turno } del resumen que se le enseñó al cliente la última vez
+    // que el pedido estuvo completo, y del que ya confirmó. Un «sí» sólo vale
+    // contra el primero, y sólo una vez.
+    resumenMostrado: null,
+    resumenConfirmado: null,
   };
 }
 
@@ -125,7 +130,24 @@ export function sanearContexto(crudo, { negocioId, conversacionId } = {}) {
       && Number.isFinite(Number(crudo.habriaEscalado.turno))
       ? { turno: Number(crudo.habriaEscalado.turno), motivo: String(crudo.habriaEscalado.motivo || '') }
       : null,
+    // ── LA HUELLA DEL RESUMEN QUE SE LE ENSEÑÓ, Y LA DEL YA CONFIRMADO ───
+    //
+    // Tienen que sobrevivir al guardado o la protección no existe: el «sí»
+    // llega SIEMPRE en el turno siguiente al que enseñó el resumen, así que
+    // una huella que no cruce la serialización nunca llegaría a comprobarse
+    // y todo «sí» pasaría por vigente. Son dos cadenas, no el resumen: lo que
+    // se compara es la huella, y guardar el contenido invitaría a leerlo como
+    // si fuera el pedido.
+    resumenMostrado: huella(crudo.resumenMostrado),
+    resumenConfirmado: huella(crudo.resumenConfirmado),
   };
+}
+
+/** Una huella guardada, o nada. Se valida la forma, no el contenido. */
+function huella(x) {
+  return esObjeto(x) && typeof x.huella === 'string' && Number.isFinite(Number(x.turno))
+    ? { huella: x.huella, turno: Number(x.turno) }
+    : null;
 }
 
 /**
