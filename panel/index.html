@@ -2125,15 +2125,39 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
     </div>
 
-    <!-- Tab Clientes -->
+    <!-- Tab Clientes: el CRM del negocio. Lee clientes_negocio (una persona
+         por negocio + teléfono) con métricas calculadas por negocio; la
+         búsqueda, los filtros y la paginación viven en el servidor. -->
     <div id="vista-clientes" style="display:none;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
-        <div style="font-size:1.1rem;font-weight:800;">Clientes</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-size:1.1rem;font-weight:800;">Clientes</div>
+          <div id="cli-sub" style="font-size:0.78rem;color:#888;margin-top:2px;"></div>
+        </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <input id="cli-buscar" type="search" placeholder="Buscar nombre o teléfono…"
-            style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;width:200px;"
-            oninput="filtrarClientes()">
-          <select id="cli-segmento" onchange="filtrarClientes()"
+          <input id="cli-buscar" type="search" placeholder="Nombre, teléfono o correo…"
+            style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;width:220px;"
+            oninput="cliBuscarDebounce()">
+          <select id="cli-origen" onchange="cliRecargar()"
+            style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
+            <option value="">Todos los orígenes</option>
+            <option value="tienda">Tienda</option>
+            <option value="rewards">Rewards</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="checkout">Checkout</option>
+            <option value="mostrador">Mostrador</option>
+          </select>
+          <select id="cli-filtro" onchange="cliRecargar()"
+            style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
+            <option value="">Todos</option>
+            <option value="registrados">Con cuenta en la tienda</option>
+            <option value="compraron">Han comprado</option>
+            <option value="sin_compras">Nunca han comprado</option>
+            <option value="rewards">Con Rewards</option>
+            <option value="consent_wa">Aceptan promos por WhatsApp</option>
+            <option value="consent_email">Aceptan promos por correo</option>
+          </select>
+          <select id="cli-segmento" onchange="cliRecargar()"
             style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
             <option value="">Todos los segmentos</option>
             <option value="nuevo">Nuevos</option>
@@ -2142,29 +2166,41 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="en_riesgo">En riesgo</option>
             <option value="dormido">Dormidos</option>
           </select>
+          <select id="cli-orden" onchange="cliRecargar()"
+            style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
+            <option value="total">Más gastado</option>
+            <option value="ultima">Última compra</option>
+            <option value="alta">Más recientes</option>
+            <option value="pedidos">Más pedidos</option>
+            <option value="puntos">Más puntos</option>
+            <option value="nombre">Nombre</option>
+          </select>
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
           <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#FF6B35;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
         </div>
       </div>
 
-      <!-- Métricas de conversión (últimos 30 días) -->
-      <div id="cli-conversion" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;"></div>
+      <!-- Tarjetas del CRM (mismo conjunto que la lista) -->
+      <div id="cli-tarjetas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px;"></div>
 
-      <!-- Resumen de segmentos -->
-      <div id="cli-resumen" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;"></div>
-
-      <!-- Oportunidades pendientes -->
-      <div id="cli-oportunidades-wrap" style="display:none;margin-bottom:16px;">
-        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;color:#b45309;">⚡ Conversaciones sin cerrar</div>
-        <div id="cli-oportunidades" style="display:flex;flex-direction:column;gap:6px;"></div>
-      </div>
-
-      <!-- Lista de clientes -->
+      <!-- Lista de clientes (paginada en servidor) -->
       <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
-        <div id="cli-lista">
+        <div id="cli-lista" style="overflow-x:auto;">
           <div style="color:#aaa;text-align:center;padding:40px;">Cargando clientes...</div>
         </div>
+        <div id="cli-paginacion" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid #f0ede8;font-size:0.8rem;color:#888;flex-wrap:wrap;"></div>
       </div>
+
+      <!-- Actividad de WhatsApp: conversión y conversaciones sin cerrar. Es
+           actividad de chats, no la definición de cliente: va plegada. -->
+      <details id="cli-whatsapp" style="margin-top:18px;">
+        <summary style="cursor:pointer;font-weight:700;font-size:0.85rem;color:#555;">Actividad de WhatsApp · últimos 30 días</summary>
+        <div id="cli-conversion" style="display:flex;gap:10px;margin:12px 0 14px;flex-wrap:wrap;"></div>
+        <div id="cli-oportunidades-wrap" style="display:none;margin-bottom:16px;">
+          <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;color:#b45309;">⚡ Conversaciones sin cerrar</div>
+          <div id="cli-oportunidades" style="display:flex;flex-direction:column;gap:6px;"></div>
+        </div>
+      </details>
 
       <!-- Historial de campañas -->
       <div style="margin-top:24px;">
@@ -2174,7 +2210,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
       <!-- Modal ficha de cliente -->
       <div id="cli-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center;">
-        <div style="background:#fff;border-radius:16px;padding:24px;max-width:440px;width:90%;max-height:85vh;overflow-y:auto;position:relative;">
+        <div style="background:#fff;border-radius:16px;padding:24px;max-width:600px;width:92%;max-height:88vh;overflow-y:auto;position:relative;">
           <button onclick="cerrarFicha()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
           <div id="cli-ficha-contenido"></div>
         </div>
@@ -10442,30 +10478,82 @@ setInterval(actualizarTimers, 30000);
 setTimeout(actualizarTimers, 1000);
 
 // ─── Tab Clientes ─────────────────────────────────────────────────────────────
-let _clientes = [];
-
+// El CRM del negocio. La fuente de verdad es clientes_negocio (una persona
+// por negocio + teléfono) y las métricas llegan calculadas POR NEGOCIO desde
+// /api/admin/clientes/v2; la lista se busca, filtra y pagina en el servidor.
+// `clientes`/`perfiles_clientes` (WhatsApp) ya no definen quién es cliente.
 const SEGMENTO_LABEL = { nuevo:'Nuevo', frecuente:'Frecuente', vip:'VIP', en_riesgo:'En riesgo', dormido:'Dormido', todos:'Todos' };
 const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#374151', vip:'#FF6B35', en_riesgo:'#ef4444', dormido:'#9ca3af' };
+const ORIGEN_LABEL = { tienda:'Tienda', rewards:'Rewards', whatsapp:'WhatsApp', checkout:'Checkout', mostrador:'Mostrador', voz:'Llamada' };
+const ORIGEN_COLOR = { tienda:'#FF6B35', rewards:'#7c3aed', whatsapp:'#16a34a', checkout:'#0ea5e9', mostrador:'#6b7280', voz:'#b45309' };
+let cliPagina = 1, cliTimer = null, cliUltimo = null;
+const cliEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const cliDinero = n => '$' + Math.round(Number(n) || 0).toLocaleString('es-MX');
+const cliFecha = v => v ? new Date(v).toLocaleDateString('es-MX', { day:'numeric', month:'short', year:'numeric' }) : '—';
+const cliTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.length === 10 ? `${d.slice(0,3)} ${d.slice(3,6)} ${d.slice(6)}` : d; };
+
+function cliFiltros() {
+  const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa=si', consent_email:'consent_email=si',
+    compraron:'compro=si', sin_compras:'compro=no' }[document.getElementById('cli-filtro').value] || '';
+  const p = new URLSearchParams();
+  const q = document.getElementById('cli-buscar').value.trim(); if (q) p.set('q', q);
+  const origen = document.getElementById('cli-origen').value; if (origen) p.set('origen', origen);
+  const seg = document.getElementById('cli-segmento').value; if (seg) p.set('segmento', seg);
+  p.set('orden', document.getElementById('cli-orden').value || 'total');
+  p.set('page', cliPagina); p.set('limit', 50);
+  return p.toString() + (extra ? '&' + extra : '');
+}
 
 async function cargarClientes() {
+  cliPagina = 1;
+  await Promise.all([cliCargarLista(), cliCargarResumen(), cliCargarWhatsapp()]);
+  cargarCampanas();
+}
+function cliRecargar() { cliPagina = 1; cliCargarLista(); }
+function cliBuscarDebounce() { clearTimeout(cliTimer); cliTimer = setTimeout(cliRecargar, 250); }
+function cliIrPagina(n) { cliPagina = Math.max(1, n); cliCargarLista(); }
+
+async function cliCargarLista() {
   const cont = document.getElementById('cli-lista');
-  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;grid-column:1/-1;">Cargando...</div>';
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Cargando...</div>';
   try {
-    const [rClientes, rConv, rOp] = await Promise.all([
-      apiFetch('/api/admin/clientes'),
-      apiFetch('/api/admin/clientes/conversion').catch(() => null),
-      apiFetch('/api/admin/clientes/oportunidades').catch(() => null)
-    ]);
-    if (!rClientes.ok) throw new Error('Error al cargar');
-    _clientes = await rClientes.json();
-    if (rConv?.ok) renderConversion(await rConv.json());
-    if (rOp?.ok) renderOportunidades(await rOp.json());
-    renderResumen();
-    filtrarClientes();
-    cargarCampanas();
+    const r = await apiFetch('/api/admin/clientes/v2?' + cliFiltros());
+    if (!r.ok) throw new Error('Error al cargar');
+    cliUltimo = await r.json();
+    renderClientes(cliUltimo);
   } catch(e) {
-    cont.innerHTML = `<div style="color:#ef4444;text-align:center;padding:40px;grid-column:1/-1;">Error: ${e.message}</div>`;
+    cont.innerHTML = `<div style="color:#ef4444;text-align:center;padding:40px;">Error: ${cliEsc(e.message)}</div>`;
   }
+}
+
+async function cliCargarResumen() {
+  try {
+    const r = await apiFetch('/api/admin/clientes/v2/resumen');
+    if (!r.ok) return;
+    const d = await r.json();
+    const tarjeta = (v, l, c) => `<div style="background:#fff;border:1px solid #e5e2da;border-radius:10px;padding:10px 14px;">
+      <div style="font-size:1.3rem;font-weight:800;color:${c};">${Number(v || 0).toLocaleString('es-MX')}</div>
+      <div style="font-size:0.7rem;color:#888;margin-top:2px;">${l}</div></div>`;
+    document.getElementById('cli-tarjetas').innerHTML = [
+      tarjeta(d.total, 'Clientes', '#1c1c1c'),
+      tarjeta(d.registrados, 'Con cuenta en la tienda', '#FF6B35'),
+      tarjeta(d.compraron_30d, 'Compraron · 30 días', '#22c55e'),
+      tarjeta(d.nuevos_30d, 'Nuevos · 30 días', '#6366f1'),
+      tarjeta(d.con_rewards, 'Con Rewards', '#7c3aed'),
+      tarjeta(d.consent_whatsapp, 'Aceptan promos por WhatsApp', '#16a34a'),
+    ].join('');
+    document.getElementById('cli-sub').textContent =
+      `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts vivos`;
+  } catch(e) {}
+}
+
+async function cliCargarWhatsapp() {
+  const [rConv, rOp] = await Promise.all([
+    apiFetch('/api/admin/clientes/conversion').catch(() => null),
+    apiFetch('/api/admin/clientes/oportunidades').catch(() => null),
+  ]);
+  if (rConv?.ok) renderConversion(await rConv.json());
+  if (rOp?.ok) renderOportunidades(await rOp.json());
 }
 
 // ─── Campañas ────────────────────────────────────────────────────────────────
@@ -10613,159 +10701,176 @@ function renderOportunidades(ops) {
   }).join('');
 }
 
-function renderResumen() {
-  const cont = document.getElementById('cli-resumen');
-  const conteos = {};
-  _clientes.forEach(c => { conteos[c.segmento] = (conteos[c.segmento] || 0) + 1; });
-  cont.innerHTML = Object.entries(conteos)
-    .filter(([seg]) => seg && seg !== 'null')
-    .map(([seg, n]) => `
-    <div onclick="document.getElementById('cli-segmento').value='${seg}';filtrarClientes()"
-      style="padding:5px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;cursor:pointer;
-             background:${SEGMENTO_COLOR[seg]}18;color:${SEGMENTO_COLOR[seg]};border:1px solid ${SEGMENTO_COLOR[seg]}44;">
-      ${SEGMENTO_LABEL[seg] || seg} · ${n}
-    </div>
-  `).join('') + `
-    <div onclick="document.getElementById('cli-segmento').value='';filtrarClientes()"
-      style="padding:5px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;cursor:pointer;
-             background:#f1f0ed;color:#555;border:1px solid #e5e2da;">
-      Todos · ${_clientes.length}
-    </div>`;
+function chipOrigen(o) {
+  const c = ORIGEN_COLOR[o] || '#6b7280';
+  return `<span style="font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:10px;background:${c}18;color:${c};white-space:nowrap;">${cliEsc(ORIGEN_LABEL[o] || o || '—')}</span>`;
+}
+function chipSegmento(s) {
+  const c = SEGMENTO_COLOR[s] || '#6b7280';
+  return `<span style="font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:10px;background:${c}15;color:${c};">${cliEsc(SEGMENTO_LABEL[s] || s || '—')}</span>`;
+}
+function chipEstadoPedido(s) {
+  const m = { nuevo:['Recibido','#6b7280'], en_preparacion:['En preparación','#c2410c'], listo:['Listo','#0f766e'], entregado:['Entregado','#16a34a'],
+    cancelado:['Cancelado','#9ca3af'], pendiente_pago:['Pendiente de pago','#b45309'] }[s] || [s || '—', '#6b7280'];
+  return `<span style="font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:10px;background:${m[1]}15;color:${m[1]};white-space:nowrap;">${cliEsc(m[0])}</span>`;
 }
 
-function filtrarClientes() {
-  const buscar = document.getElementById('cli-buscar').value.toLowerCase();
-  const seg = document.getElementById('cli-segmento').value;
-  const lista = _clientes.filter(c => {
-    const matchSeg = !seg || c.segmento === seg;
-    const matchBuscar = !buscar ||
-      (c.nombre || '').toLowerCase().includes(buscar) ||
-      (c.telefono || '').includes(buscar);
-    return matchSeg && matchBuscar;
-  });
-  renderClientes(lista);
-}
-
-function renderClientes(lista) {
+// Persona → actividad → valor → Rewards → contacto: ese es el orden de las
+// columnas. Lo que se pinta viene del servidor y se escapa siempre.
+function renderClientes(d) {
   const cont = document.getElementById('cli-lista');
-  if (!lista.length) {
+  const pag = document.getElementById('cli-paginacion');
+  if (!d.clientes.length) {
     cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Sin resultados</div>';
+    pag.innerHTML = d.total ? '' : '';
     return;
   }
+  const btn = (txt, n, off) => `<button ${off ? 'disabled' : ''} onclick="cliIrPagina(${n})" style="padding:5px 10px;border:1px solid #e5e2da;border-radius:6px;background:#fff;cursor:${off ? 'default' : 'pointer'};color:${off ? '#ccc' : '#333'};font-size:0.8rem;">${txt}</button>`;
   cont.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.83rem;min-width:960px;">
       <thead>
-        <tr style="background:#f8f7f4;color:#888;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">
-          <th style="text-align:left;padding:10px 16px;">Cliente</th>
-          <th style="text-align:center;padding:10px 12px;">Segmento</th>
-          <th style="text-align:right;padding:10px 12px;">Pedidos</th>
-          <th style="text-align:right;padding:10px 12px;">Ticket prom.</th>
-          <th style="text-align:right;padding:10px 12px;">Total</th>
-          <th style="text-align:right;padding:10px 16px;">Último pedido</th>
-          <th style="padding:10px 12px;"></th>
+        <tr style="background:#f8f7f4;color:#888;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">
+          <th style="text-align:left;padding:10px 14px;">Cliente</th>
+          <th style="text-align:left;padding:10px 10px;">Contacto</th>
+          <th style="text-align:center;padding:10px 10px;">Origen</th>
+          <th style="text-align:right;padding:10px 10px;">Alta</th>
+          <th style="text-align:right;padding:10px 10px;">Última compra</th>
+          <th style="text-align:right;padding:10px 10px;">Pedidos</th>
+          <th style="text-align:right;padding:10px 10px;">Ticket</th>
+          <th style="text-align:right;padding:10px 10px;">Total</th>
+          <th style="text-align:right;padding:10px 10px;">Puntos</th>
+          <th style="text-align:center;padding:10px 14px;">Promos</th>
         </tr>
       </thead>
       <tbody>
-        ${lista.map((c, i) => {
-          const seg = c.segmento || null;
-          const color = seg ? (SEGMENTO_COLOR[seg] || '#6b7280') : '#d1d5db';
-          const label = seg ? (SEGMENTO_LABEL[seg] || seg) : '—';
-          const diasStr = c.ultimo_pedido_hace_dias != null
-            ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : `hace ${c.ultimo_pedido_hace_dias}d`)
-            : '—';
-          const ticket = c.ticket_promedio ? `$${Math.round(c.ticket_promedio)}` : '—';
-          const total = c.total_gastado ? `$${Math.round(c.total_gastado)}` : '—';
-          const pedidos = c.pedidos_total || 0;
+        ${d.clientes.map((c, i) => {
           const bg = i % 2 === 0 ? '#fff' : '#fafaf8';
-          return `<tr onclick="verFicha('${c.telefono}')" style="background:${bg};cursor:pointer;border-top:1px solid #f0ede8;"
+          const compro = c.pedidos > 0;
+          return `<tr onclick="verFicha('${cliEsc(c.id)}')" style="background:${bg};cursor:pointer;border-top:1px solid #f0ede8;"
             onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='${bg}'">
-            <td style="padding:11px 16px;">
-              <div style="font-weight:600;">${c.nombre || '<span style="color:#bbb">Sin nombre</span>'}</div>
-              <div style="font-size:0.75rem;color:#aaa;">${c.telefono}</div>
+            <td style="padding:10px 14px;">
+              <div style="font-weight:600;">${c.nombre ? cliEsc(c.nombre) : '<span style="color:#bbb">Sin nombre</span>'}</div>
+              <div style="margin-top:3px;display:flex;gap:6px;align-items:center;">${chipSegmento(c.segmento)}${c.registrado ? '<span title="Tiene cuenta en la tienda" style="font-size:0.68rem;color:#FF6B35;font-weight:700;">● cuenta</span>' : ''}</div>
             </td>
-            <td style="text-align:center;padding:11px 12px;">
-              ${seg ? `<span style="font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:20px;background:${color}15;color:${color};">${label}</span>` : '<span style="color:#ccc;font-size:0.8rem;">—</span>'}
+            <td style="padding:10px;white-space:nowrap;">
+              <div>${cliTel(c.telefono)}</div>
+              <div style="font-size:0.72rem;color:#888;">${c.email ? cliEsc(c.email) : '—'}</div>
             </td>
-            <td style="text-align:right;padding:11px 12px;font-weight:${pedidos ? '700' : '400'};color:${pedidos ? '#111' : '#ccc'};">${pedidos || '—'}</td>
-            <td style="text-align:right;padding:11px 12px;color:${ticket === '—' ? '#ccc' : '#111'};">${ticket}</td>
-            <td style="text-align:right;padding:11px 12px;font-weight:${total !== '—' ? '700' : '400'};color:${total !== '—' ? '#111' : '#ccc'};">${total}</td>
-            <td style="text-align:right;padding:11px 16px;color:${diasStr === '—' ? '#ccc' : '#555'};">${diasStr}</td>
-            <td style="padding:11px 12px;text-align:center;" onclick="event.stopPropagation()">
-              <button onclick="marcarInterno('${c.telefono}')" title="Marcar como interno (ocultar)" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:4px 7px;line-height:0;cursor:pointer;color:#9ca3af;">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-              </button>
+            <td style="text-align:center;padding:10px;">${chipOrigen(c.origen)}</td>
+            <td style="text-align:right;padding:10px;color:#555;white-space:nowrap;">${cliFecha(c.alta)}</td>
+            <td style="text-align:right;padding:10px;color:${c.ultimaCompra ? '#555' : '#ccc'};white-space:nowrap;">${cliFecha(c.ultimaCompra)}</td>
+            <td style="text-align:right;padding:10px;font-weight:${compro ? '700' : '400'};color:${compro ? '#111' : '#ccc'};">${compro ? c.pedidos : '—'}</td>
+            <td style="text-align:right;padding:10px;color:${compro ? '#111' : '#ccc'};">${compro ? cliDinero(c.ticketPromedio) : '—'}</td>
+            <td style="text-align:right;padding:10px;font-weight:${compro ? '700' : '400'};color:${compro ? '#111' : '#ccc'};">${compro ? cliDinero(c.totalGastado) : '—'}</td>
+            <td style="text-align:right;padding:10px;font-weight:${c.puntos ? '700' : '400'};color:${c.puntos ? '#16a34a' : '#ccc'};">${c.conRewards ? Number(c.puntos || 0).toLocaleString('es-MX') : '—'}</td>
+            <td style="text-align:center;padding:10px 14px;font-size:0.74rem;white-space:nowrap;">
+              <span title="Promociones por WhatsApp" style="color:${c.consentWhatsapp ? '#16a34a' : '#ccc'};">WA${c.consentWhatsapp ? ' ✓' : ''}</span>
+              <span title="Promociones por correo" style="margin-left:6px;color:${c.consentEmail ? '#16a34a' : '#ccc'};">✉${c.consentEmail ? ' ✓' : ''}</span>
             </td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>`;
+  const desde = (d.page - 1) * d.limit + 1, hasta = Math.min(d.total, d.page * d.limit);
+  pag.innerHTML = `<span>${desde}–${hasta} de ${Number(d.total).toLocaleString('es-MX')}</span>
+    <span style="display:flex;gap:6px;align-items:center;">${btn('‹ Anterior', d.page - 1, d.page <= 1)}
+      <span style="padding:0 4px;">Página ${d.page} de ${d.paginas}</span>${btn('Siguiente ›', d.page + 1, d.page >= d.paginas)}</span>`;
 }
 
-async function marcarInterno(telefono) {
-  if (!confirm(`¿Marcar ${telefono} como número interno?\n\nDesaparecerá de la lista de clientes, estadísticas y campañas.`)) return;
-  await apiFetch(`/api/admin/clientes/${telefono}/interno`, {
-    method: 'PATCH', body: JSON.stringify({ es_interno: true })
-  });
-  clientesData = clientesData.filter(c => c.telefono !== telefono);
-  filtrarClientes();
-}
-
-function verFicha(telefono) {
-  const c = _clientes.find(x => x.telefono === telefono);
-  if (!c) return;
-  const seg = c.segmento || 'nuevo';
-  const color = SEGMENTO_COLOR[seg] || '#6b7280';
-  const label = SEGMENTO_LABEL[seg] || seg;
-  const favoritos = (c.productos_favoritos || []).join(', ') || '—';
-  const dias = c.dias_entre_compras_prom ? `cada ${Math.round(c.dias_entre_compras_prom)} días` : '—';
-  const score = c.score_abandono != null ? `${Math.round(c.score_abandono)}%` : '—';
-
-  document.getElementById('cli-ficha-contenido').innerHTML = `
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
-      <div style="width:48px;height:48px;border-radius:50%;background:${color}22;display:flex;align-items:center;
-                  justify-content:center;font-size:1.3rem;font-weight:800;color:${color};">
-        ${(c.nombre||'?')[0].toUpperCase()}
-      </div>
-      <div>
-        <div style="font-size:1.1rem;font-weight:800;">${c.nombre || 'Sin nombre'}</div>
-        <div style="font-size:0.82rem;color:#888;">${c.telefono}</div>
-      </div>
-      <span style="margin-left:auto;font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:20px;
-                   background:${color}18;color:${color};">${label}</span>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
-      ${fichaMetrica('Pedidos', c.pedidos_total || 0)}
-      ${fichaMetrica('Ticket prom.', c.ticket_promedio ? '$' + Math.round(c.ticket_promedio) : '—')}
-      ${fichaMetrica('Total gastado', c.total_gastado ? '$' + Math.round(c.total_gastado) : '—')}
-      ${fichaMetrica('Último pedido', c.ultimo_pedido_hace_dias != null ? (c.ultimo_pedido_hace_dias === 0 ? 'hoy' : 'hace ' + c.ultimo_pedido_hace_dias + ' días') : '—')}
-      ${fichaMetrica('Frecuencia', dias)}
-      ${fichaMetrica('Riesgo abandono', score)}
-    </div>
-    <div style="background:#f8f7f4;border-radius:10px;padding:12px 14px;margin-bottom:12px;">
-      <div style="font-size:0.72rem;font-weight:700;color:#888;text-transform:uppercase;margin-bottom:6px;">Preferencias</div>
-      <div style="font-size:0.85rem;display:grid;gap:4px;">
-        <div><strong>Favoritos:</strong> ${favoritos}</div>
-        <div><strong>Modalidad:</strong> ${c.modalidad_favorita || '—'}</div>
-        <div><strong>Pago:</strong> ${c.pago_favorito || '—'}</div>
-        <div><strong>Día favorito:</strong> ${c.dia_favorito ? c.dia_favorito.charAt(0).toUpperCase() + c.dia_favorito.slice(1) : '—'}</div>
-      </div>
-    </div>
-    <a href="https://wa.me/${c.telefono}" target="_blank"
-      style="display:block;text-align:center;padding:11px;background:#25d366;color:#fff;border-radius:10px;
-             font-weight:700;font-size:0.9rem;text-decoration:none;">
-      Escribir por WhatsApp
-    </a>`;
-
+async function verFicha(id) {
   const modal = document.getElementById('cli-modal');
+  const cont = document.getElementById('cli-ficha-contenido');
   modal.style.display = 'flex';
   modal.onclick = e => { if (e.target === modal) cerrarFicha(); };
+  cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando...</div>';
+  try {
+    const r = await apiFetch('/api/admin/clientes/v2/' + encodeURIComponent(id));
+    if (!r.ok) throw new Error(r.status === 404 ? 'Cliente no encontrado' : 'Error al cargar la ficha');
+    renderFicha(await r.json());
+  } catch(e) {
+    cont.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">${cliEsc(e.message)}</div>`;
+  }
 }
 
-function fichaMetrica(label, valor) {
-  return `<div style="background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:10px 12px;">
-    <div style="font-size:0.7rem;color:#888;margin-bottom:3px;">${label}</div>
-    <div style="font-size:1rem;font-weight:700;">${valor}</div>
-  </div>`;
+function renderFicha(f) {
+  const c = f.cliente, rw = f.rewards || {}, color = ORIGEN_COLOR[c.origen] || '#6b7280';
+  const seccion = (tit, cuerpo) => `<div style="margin-top:16px;">
+    <div style="font-size:0.72rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">${tit}</div>${cuerpo}</div>`;
+  const metricas = [
+    ['Pedidos', c.pedidos || 0], ['Total', c.pedidos ? cliDinero(c.totalGastado) : '—'], ['Ticket prom.', c.pedidos ? cliDinero(c.ticketPromedio) : '—'],
+    ['Cliente desde', cliFecha(c.alta)], ['Primera compra', cliFecha(c.primeraCompra)], ['Última compra', cliFecha(c.ultimaCompra)],
+  ];
+  const pedidos = f.pedidos.length ? `<table style="width:100%;border-collapse:collapse;font-size:0.8rem;">${f.pedidos.map(p => `
+      <tr style="border-top:1px solid #f0ede8;">
+        <td style="padding:7px 0;font-weight:700;white-space:nowrap;">#${cliEsc(p.folio)}</td>
+        <td style="padding:7px 4px;color:#888;white-space:nowrap;">${cliFecha(p.fecha)}</td>
+        <td style="padding:7px 4px;white-space:nowrap;">${p.modalidad === 'domicilio' ? '🛵' : p.modalidad === 'mesa' ? '🍽' : '🏪'} <span style="color:#888;font-size:0.72rem;">${cliEsc(p.canal || '')}</span></td>
+        <td style="padding:7px 4px;">${chipEstadoPedido(p.estado)}</td>
+        <td style="padding:7px 0;text-align:right;font-weight:700;white-space:nowrap;">${cliDinero(p.total)}</td>
+        <td style="padding:7px 0 7px 8px;text-align:right;">${p.seguimiento ? `<a href="${cliEsc(p.seguimiento)}" target="_blank" style="color:#FF6B35;font-weight:700;text-decoration:none;font-size:0.75rem;">Seguimiento</a>` : ''}</td>
+      </tr>`).join('')}</table>`
+    : '<div style="color:#aaa;font-size:0.82rem;">Sin pedidos todavía</div>';
+  const direcciones = f.direcciones.length ? f.direcciones.map(d => `
+      <div style="font-size:0.82rem;padding:6px 0;border-top:1px solid #f0ede8;">
+        <strong>${cliEsc(d.alias)}</strong>${d.predeterminada ? ' <span style="font-size:0.66rem;background:#FF6B35;color:#fff;border-radius:5px;padding:1px 5px;">Predeterminada</span>' : ''}
+        <div style="color:#555;">${cliEsc(d.resumen)}${d.zona ? ' · zona ' + cliEsc(d.zona) : ''}</div>
+        ${d.referencia ? `<div style="color:#999;font-size:0.75rem;">${cliEsc(d.referencia)}</div>` : ''}
+      </div>`).join('')
+    : '<div style="color:#aaa;font-size:0.82rem;">Sin direcciones guardadas</div>';
+  const consent = (k, et) => {
+    const x = (f.consentimientos || {})[k];
+    return `<div style="font-size:0.82rem;padding:3px 0;">${x?.otorgado ? '✅' : '⛔'} ${et}: <strong>${x?.otorgado ? 'sí' : 'no'}</strong>${x?.fecha ? ` <span style="color:#999;">· ${cliFecha(x.fecha)} · ${cliEsc(x.fuente || '')}</span>` : ''}</div>`;
+  };
+  // Rewards se LEE del motor existente; el ajuste administrativo es el que ya
+  // vive en el tab Rewards (rwAjusteManual), aquí solo se enlaza.
+  const rewards = rw.activo ? `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <div style="font-size:1.4rem;font-weight:800;color:#16a34a;">${Number(rw.puntos || 0).toLocaleString('es-MX')} <span style="font-size:0.8rem;color:#888;font-weight:600;">pts</span></div>
+        ${rw.nivel ? `<span style="font-size:0.75rem;font-weight:700;color:${cliEsc(rw.nivel.color || '#888')};">${cliEsc(rw.nivel.emoji || '')} ${cliEsc(rw.nivel.nombre)}</span>` : ''}
+        <span style="font-size:0.75rem;color:#888;">ganados ${Number(rw.acumuladoTotal || 0)} · canjeados ${Number(rw.canjeadoTotal || 0)}</span>
+        ${typeof ROL !== 'undefined' && ROL === 'admin' && typeof rwAjusteManual === 'function'
+          ? `<button onclick="rwAjusteManual('${cliEsc(c.telefono)}')" style="margin-left:auto;padding:4px 10px;border:1px solid #7c3aed;border-radius:6px;background:#fff;color:#7c3aed;font-size:0.72rem;font-weight:700;cursor:pointer;">± Ajustar puntos</button>` : ''}
+      </div>
+      ${(rw.movimientos || []).length ? `<div style="margin-top:8px;max-height:170px;overflow-y:auto;">${rw.movimientos.slice(0, 20).map(m => `
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:0.78rem;padding:4px 0;border-top:1px solid #f0ede8;">
+          <span>${cliEsc(m.tipo)}${m.folio ? ' · #' + cliEsc(m.folio) : ''} <span style="color:#999;">${cliFecha(m.fecha)}</span></span>
+          <span style="font-weight:700;color:${m.puntos >= 0 ? '#16a34a' : '#ef4444'};">${m.puntos >= 0 ? '+' : ''}${m.puntos}</span>
+        </div>`).join('')}</div>` : ''}`
+    : '<div style="color:#aaa;font-size:0.82rem;">Sin cuenta de Rewards en este negocio</div>';
+  const sesiones = f.sesiones?.registradoDesde
+    ? `<div style="font-size:0.82rem;">Registrado desde ${cliFecha(f.sesiones.registradoDesde)} · sesiones activas: <strong>${f.sesiones.activas}</strong>${f.sesiones.ultimoUso ? ` · último uso ${cliFecha(f.sesiones.ultimoUso)}` : ''}
+        ${f.sesiones.activas ? ` <button onclick="cliCerrarSesiones('${cliEsc(c.id)}')" style="margin-left:8px;padding:3px 9px;border:1px solid #e5e2da;border-radius:6px;background:#fff;font-size:0.72rem;cursor:pointer;">Cerrar sesiones</button>` : ''}</div>`
+    : '<div style="color:#aaa;font-size:0.82rem;">No ha iniciado sesión en la tienda</div>';
+
+  document.getElementById('cli-ficha-contenido').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;padding-right:28px;">
+      <div style="width:48px;height:48px;border-radius:50%;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:800;color:${color};flex-shrink:0;">
+        ${cliEsc((c.nombre || '?').trim().charAt(0).toUpperCase() || '?')}
+      </div>
+      <div style="min-width:0;">
+        <div style="font-size:1.1rem;font-weight:800;">${c.nombre ? cliEsc(c.nombre) : 'Sin nombre'}</div>
+        <div style="font-size:0.82rem;color:#888;">${cliTel(c.telefono)}${c.email ? ' · ' + cliEsc(c.email) : ''}</div>
+      </div>
+      <div style="margin-left:auto;display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">${chipOrigen(c.origen)}${chipSegmento(c.segmento)}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
+      ${metricas.map(([l, v]) => `<div style="background:#f8f7f4;border-radius:8px;padding:8px 10px;"><div style="font-size:0.68rem;color:#888;">${l}</div><div style="font-size:0.95rem;font-weight:700;">${v}</div></div>`).join('')}
+    </div>
+    ${seccion('Rewards', rewards)}
+    ${seccion('Direcciones', direcciones)}
+    ${seccion('Pedidos', pedidos)}
+    ${seccion('Marketing', consent('whatsapp', 'Promociones por WhatsApp') + consent('email', 'Promociones por correo'))}
+    ${seccion('Cuenta en la tienda', sesiones)}
+    <a href="https://wa.me/52${cliEsc(c.telefono)}" target="_blank"
+      style="display:block;text-align:center;padding:11px;background:#25d366;color:#fff;border-radius:10px;font-weight:700;font-size:0.9rem;text-decoration:none;margin-top:18px;">
+      Escribir por WhatsApp
+    </a>`;
+}
+
+async function cliCerrarSesiones(id) {
+  if (!confirm('¿Cerrar todas las sesiones de este cliente en la tienda? Tendrá que volver a entrar con un código.')) return;
+  const r = await apiFetch('/api/admin/clientes/v2/' + encodeURIComponent(id) + '/cerrar-sesiones', { method: 'POST' });
+  if (r.ok) verFicha(id);
 }
 
 function cerrarFicha() {
