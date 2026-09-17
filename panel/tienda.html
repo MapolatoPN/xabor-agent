@@ -252,6 +252,52 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
   display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 18px}
 .exito-folio{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:10px 0 4px}
 .pie-legal{padding:24px 16px calc(90px + var(--safe-b));text-align:center;font-size:11.5px;color:var(--texto-3)}
+
+/* ── Cuenta del cliente ──────────────────────────────────────────────────
+   Solo se pinta si la tienda tiene cuentas encendidas (TIENDA.cuentas). Usa
+   las mismas piezas que el resto (hoja, campo, btn, badge): la cuenta se
+   siente parte de la tienda, no un panel administrativo disfrazado. */
+.cab-acciones{display:flex;align-items:center;flex-shrink:0;margin-top:2px}
+.btn-cuenta{font-size:13px;font-weight:700;padding:0 12px;min-height:36px;border-radius:999px;background:var(--superficie-2);
+  border:1px solid var(--borde);color:var(--texto);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.btn-cuenta.on{background:var(--marca-suave);border-color:transparent;color:var(--marca)}
+.menu-cuenta{padding:8px 16px 16px}
+.item-menu{display:flex;align-items:center;gap:12px;width:100%;padding:14px 12px;border:1px solid var(--borde);
+  border-radius:var(--r);background:var(--superficie);margin-bottom:8px;text-align:left;transition:.12s}
+.item-menu:active{background:var(--superficie-2)}
+.im-ico{font-size:20px;width:28px;text-align:center;flex-shrink:0}
+.im-tit{font-size:15px;font-weight:700;display:block}
+.im-sub{font-size:12.5px;color:var(--texto-2);display:block;margin-top:1px}
+.im-flecha{margin-left:auto;color:var(--texto-3);font-size:20px}
+.dir-card{border:1.5px solid var(--borde);border-radius:var(--r);padding:12px 14px;margin:0 16px 10px;background:var(--superficie)}
+.dir-card[role=button]{cursor:pointer}
+.dir-card.on{border-color:var(--marca);background:var(--marca-suave)}
+.dir-alias{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--texto-2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dir-alias .pred{background:var(--marca);color:#fff;border-radius:5px;padding:1px 6px;font-size:10.5px;text-transform:none;letter-spacing:0}
+.dir-txt{font-size:14.5px;font-weight:600;margin-top:4px}
+.dir-sub{font-size:12.5px;color:var(--texto-2);margin-top:2px}
+.dir-acc{display:flex;gap:14px;margin-top:8px;font-size:12.5px;font-weight:700;flex-wrap:wrap}
+.dir-acc button{color:var(--texto-2)}
+.dir-acc .quitar{color:var(--error)}
+.otp-input{letter-spacing:.35em;text-align:center;font-size:22px !important;font-weight:800}
+.saldo-caja{margin:0 16px 14px;padding:18px 16px;border-radius:var(--r);background:var(--marca);color:#fff}
+.saldo-num{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin-top:4px}
+.saldo-sub{font-size:13px;opacity:.92;margin-top:6px}
+.mov{display:flex;justify-content:space-between;gap:10px;padding:11px 16px;border-bottom:1px solid var(--borde);font-size:13.5px;align-items:center}
+.mov-pts{font-weight:800;white-space:nowrap}
+.mov-pts.mas{color:var(--exito)} .mov-pts.menos{color:var(--error)}
+.mov-sub{font-size:12px;color:var(--texto-3)}
+.fila-2{display:flex;gap:10px;padding:0 16px}
+.fila-2>.campo{flex:1;min-width:0;padding-left:0;padding-right:0}
+.alias-chips{display:flex;gap:8px}
+.alias-chip{flex:1;padding:10px 4px;border:1.5px solid var(--borde);border-radius:var(--r-s);font-weight:700;font-size:13.5px;background:var(--superficie);white-space:nowrap}
+.alias-chip.on{border-color:var(--marca);background:var(--marca-suave)}
+.check{display:flex;gap:10px;align-items:flex-start;padding:9px 0;font-size:14px;font-weight:500;color:var(--texto);text-transform:none;letter-spacing:0;margin:0}
+.check input{width:20px;height:20px;margin:1px 0 0;accent-color:var(--marca);flex-shrink:0}
+.enlace{color:var(--marca);font-weight:700;background:none;padding:0;font-size:inherit;text-decoration:underline;text-underline-offset:2px}
+.pedido-card{border:1px solid var(--borde);border-radius:var(--r);padding:12px 14px;margin:0 16px 10px;background:var(--superficie)}
+.tel-fijo{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 13px;border:1px solid var(--borde);
+  border-radius:var(--r-s);background:var(--superficie-2);font-size:15px}
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
    La tienda nació móvil. Este bloque la convierte en una tienda de
    escritorio SIN tocar el DOM de compra ni una línea de la lógica: mismo
@@ -307,7 +353,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 
   /* Hojas de producto/carrito/checkout: contenidas y legibles, no una hoja
      de teléfono flotando en medio del monitor. */
-  #hoja-checkout,#hoja-carrito{max-width:620px}
+  #hoja-checkout,#hoja-carrito,#hoja-cuenta{max-width:620px}
   .hoja-cab{padding:18px 24px 12px}
   .hoja-cuerpo{padding:0 24px}
   .hoja-pie{padding:14px 24px calc(14px + var(--safe-b))}
@@ -361,6 +407,9 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
         <div class="cab-sub" id="desc-negocio"></div>
         <div class="badges" id="badges"></div>
       </div>
+      <!-- Cuenta del cliente: oculto hasta que la API diga que esta tienda
+           la tiene encendida. Un solo botón: "Iniciar sesión" o "Hola, X". -->
+      <div class="cab-acciones"><button class="btn-cuenta oculto" id="btn-cuenta" onclick="abrirCuenta()">Iniciar sesión</button></div>
     </div>
     <div id="avisos"></div>
     <div class="cats oculto" id="cats"><div class="cats-in" id="cats-in"></div></div>
@@ -428,6 +477,17 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
   <div class="hoja-pie" id="ck-pie"></div>
 </div>
 
+<!-- Mi cuenta: login por código, perfil, direcciones, Rewards, pedidos -->
+<div class="hoja" id="hoja-cuenta">
+  <div class="hoja-cab">
+    <button class="cerrar" id="cta-atras" onclick="cuentaAtras()" aria-label="Atrás">←</button>
+    <h2 class="hoja-tit" id="cta-titulo"></h2>
+    <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="hoja-cuerpo" id="cta-cuerpo"></div>
+  <div class="hoja-pie" id="cta-pie"></div>
+</div>
+
 <script>
 'use strict';
 // ═══════════════════════════════════════════════════════════════════════════
@@ -472,6 +532,8 @@ async function api(ruta, opciones) {
     aplicarMarca(); pintarCabecera(); pintarCatalogo(); restaurarCarrito();
     $('cargando').classList.add('oculto');
     $('contenido').classList.remove('oculto');
+    // Después de mostrar la tienda, no antes: la cuenta nunca retrasa el menú.
+    cargarCuenta();
   } catch (e) {
     $('cargando').outerHTML = `<div class="vacio"><div class="ico">🔍</div>
       <h3>${esc(e.status === 404 ? 'Tienda no disponible' : 'No pudimos cargar la tienda')}</h3>
@@ -965,9 +1027,14 @@ function elegirCuando(v) {
 }
 
 function pasoDatos() {
+  // Con sesión, el paso cambia de forma: nombre y teléfono ya se conocen y la
+  // dirección se ELIGE en vez de escribirse. El invitado ve el formulario de
+  // siempre (más una invitación a entrar si la tienda tiene cuentas).
+  if (CUENTA) return pasoDatosCliente();
   $('ck-titulo').textContent = CK.modalidad === 'domicilio' ? 'Tus datos y dirección' : 'Tus datos';
   const zonas = TIENDA.entrega.zonas || [];
   $('ck-cuerpo').innerHTML = `<div style="padding:16px 0">
+    ${TIENDA.cuentas ? `<div class="aviso info" style="margin:0 16px 14px">👤 <div>¿Ya tienes cuenta? <button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> y usa tus direcciones guardadas.</div></div>` : ''}
     <div class="campo"><label for="ck-nombre">Nombre *</label>
       <input id="ck-nombre" value="${esc(CK.nombre || '')}" maxlength="80" autocomplete="name" placeholder="Tu nombre"></div>
     <div class="campo"><label for="ck-tel">Teléfono (WhatsApp) *</label>
@@ -1015,7 +1082,7 @@ function validarDatos() {
     $('ck-error-datos-txt').textContent = errores.join(' · ');
     return;
   }
-  Object.assign(CK, { nombre, telefono: tel, direccion: dir, zona, colonia, notas: $('ck-notas').value.trim() });
+  Object.assign(CK, { nombre, telefono: tel, direccion: dir, zona, colonia, direccionId: null, otraDireccion: false, notas: $('ck-notas').value.trim() });
   try { localStorage.setItem(LS_CLIENTE, JSON.stringify({ nombre, telefono: tel, direccion: dir, zona, colonia })); } catch (e) {}
   pasoAdelante();
 }
@@ -1120,8 +1187,7 @@ function pintarResumen(c) {
         <div><strong style="color:var(--texto)">${CK.modalidad === 'domicilio' ? '🛵 Entrega a domicilio' : '🏪 Recoger en tienda'}</strong></div>
         <div>${CK.cuando === 'programado' ? '📅 Programado: ' + esc(formatoFecha(CK.programadoPara)) : '⚡ Lo antes posible · ' + esc(c.tiempoEstimado)}</div>
         <div>👤 ${esc(CK.nombre)} · ${esc(CK.telefono)}</div>
-        ${CK.modalidad === 'domicilio'
-          ? `<div>📍 ${esc(CK.direccion)}${CK.colonia ? ', ' + esc(CK.colonia) : ''}</div>` : ''}
+        ${CK.modalidad === 'domicilio' ? lineaDireccionResumen() : ''}
         <div>💳 ${esc(metodo?.etiqueta || CK.metodoPago)}</div>
         ${CK.notas ? `<div>📝 ${esc(CK.notas)}</div>` : ''}
       </div>
@@ -1169,6 +1235,14 @@ function bloqueRewards(c) {
   const w = c.rewards;
   if (!w || !w.activo) return '';
   const nombre = esc(w.nombrePrograma || 'Puntos');
+
+  // Tienda con cuentas y cliente sin sesión: el saldo de un teléfono solo se
+  // muestra (y se gasta) a quien demostró que es suyo. Se le dice lo que gana
+  // y se le invita a entrar.
+  if (w.requiereSesion) {
+    return `<div class="promo-ok" style="margin:0 16px;display:block">⭐ ${w.puntosQueGanaria > 0
+      ? `Esta compra te da <strong>${w.puntosQueGanaria} puntos</strong> de ${nombre}. ` : ''}<button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> para usar tus puntos.</div>`;
+  }
 
   // Cliente sin saldo utilizable: solo se le dice lo que GANA con esta
   // compra. Nada de "tienes 0 puntos", que suena a reproche.
@@ -1230,8 +1304,11 @@ async function confirmarPedido() {
         modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
       modalidad: CK.modalidad,
       cliente: { nombre: CK.nombre, telefono: CK.telefono },
-      direccion: CK.modalidad === 'domicilio' ? CK.direccion : null,
-      zona: CK.zona, colonia: CK.colonia, codigo: CK.codigo, metodoPago: CK.metodoPago,
+      // Con dirección guardada viaja solo su id: el servidor la lee de la
+      // libreta del cliente (comprobando que sea suya) y hace la copia.
+      direccion: CK.modalidad === 'domicilio' && !CK.direccionId ? CK.direccion : null,
+      direccionId: CK.modalidad === 'domicilio' ? (CK.direccionId || null) : null,
+      zona: CK.zona, colonia: CK.direccionId ? null : CK.colonia, codigo: CK.codigo, metodoPago: CK.metodoPago,
       programadoPara: CK.cuando === 'programado' ? CK.programadoPara : null,
       notas: CK.notas,
       rewardsPuntos: CK.rewardsPuntos || 0,
@@ -1371,6 +1448,410 @@ function cerrarTodo() {
   refrescarBarra();
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarTodo(); });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ─── Cuenta del cliente ─────────────────────────────────────────────────────
+// Solo existe si la tienda la tiene encendida (TIENDA.cuentas). Sin eso ni el
+// botón se pinta: la tienda se ve exactamente igual que antes. La sesión vive
+// en una cookie httpOnly que el servidor pone y quita; aquí no se guarda
+// ningún token. Todo lo que se pinta viene del servidor y se escapa.
+// ═══════════════════════════════════════════════════════════════════════════
+let CUENTA = null;            // { cliente, direcciones, consentimientos, rewards } o null
+let vistaCuenta = 'menu';
+let ctx = {};                 // estado de la vista: teléfono en curso, dirección en edición, a dónde volver
+const LS_TEL = 'xabor_tel_' + SLUG;
+
+const primerNombre = n => String(n || '').trim().split(/\s+/)[0] || '';
+const formatoTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.length === 10 ? `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}` : d; };
+const fechaCorta = v => { const d = new Date(v); return isNaN(d) ? '' : d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }); };
+const etiquetaMov = t => ({ acumulacion: 'Puntos ganados', canje: 'Canje', reverso: 'Devolución', ajuste_positivo: 'Ajuste a favor', ajuste_negativo: 'Ajuste', expiracion: 'Expiración' }[t] || t);
+const etiquetaEstado = s => ({ nuevo: 'Recibido', en_preparacion: 'En preparación', listo: 'Listo', entregado: 'Entregado', cancelado: 'Cancelado', pendiente_pago: 'Pendiente de pago' }[s] || s);
+
+async function cargarCuenta() {
+  if (!TIENDA?.cuentas) { CUENTA = null; pintarBotonCuenta(); return; }
+  try { CUENTA = await api(API + '/cuenta'); } catch (e) { CUENTA = null; }
+  pintarBotonCuenta();
+}
+function pintarBotonCuenta() {
+  const b = $('btn-cuenta');
+  if (!TIENDA?.cuentas) { b.classList.add('oculto'); return; }
+  b.classList.remove('oculto');
+  b.classList.toggle('on', !!CUENTA);
+  b.textContent = CUENTA ? `👤 Hola, ${primerNombre(CUENTA.cliente.nombre) || 'cliente'}` : 'Iniciar sesión';
+}
+
+// Abre la hoja de cuenta. `volverAlCheckout` la convierte en un desvío: al
+// terminar (entrar, o guardar una dirección) regresa al paso de datos.
+function abrirCuenta(opts = {}) {
+  ctx = { volverAlCheckout: !!opts.volverAlCheckout, despues: null };
+  vistaCuenta = opts.vista || (CUENTA ? 'menu' : 'login');
+  if (!CUENTA && vistaCuenta !== 'login') { ctx.despues = vistaCuenta; vistaCuenta = 'login'; }
+  cerrarTodo();
+  setTimeout(() => { pintarCuenta(); abrirHoja('hoja-cuenta'); }, 220);
+}
+function irVista(v, extra = {}) { vistaCuenta = v; Object.assign(ctx, extra); pintarCuenta(); }
+function cuentaAtras() {
+  const volver = { codigo: 'login', nombre: 'menu', perfil: 'menu', direcciones: 'menu', direccion: 'direcciones', rewards: 'menu', pedidos: 'menu' }[vistaCuenta];
+  if (!volver || (volver !== 'login' && !CUENTA)) return cerrarTodo();
+  if (vistaCuenta === 'direccion' && ctx.volverAlCheckout) return volverAlCheckout();
+  irVista(volver);
+}
+function pintarCuenta() {
+  const vistas = { login: vistaLogin, codigo: vistaCodigo, nombre: vistaNombre, menu: vistaMenu, perfil: vistaPerfil,
+    direcciones: vistaDirecciones, direccion: vistaDireccion, rewards: vistaRewards, pedidos: vistaPedidos };
+  if (!CUENTA && !['login', 'codigo', 'nombre'].includes(vistaCuenta)) vistaCuenta = 'login';
+  $('cta-atras').style.visibility = ['login', 'menu'].includes(vistaCuenta) ? 'hidden' : 'visible';
+  (vistas[vistaCuenta] || vistaLogin)();
+}
+const cajaError = () => `<div class="campo oculto" id="cta-error-caja"><div class="malo" id="cta-error"></div></div>`;
+function errorCuenta(msg) { const c = $('cta-error-caja'); if (c) { $('cta-error').textContent = msg; c.classList.remove('oculto'); } }
+
+// ── Entrar: teléfono → código ──
+function vistaLogin() {
+  $('cta-titulo').textContent = 'Iniciar sesión';
+  let tel = ctx.telefono || CK.telefono || '';
+  try { tel = tel || localStorage.getItem(LS_TEL) || ''; } catch (e) {}
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <p style="padding:0 16px 14px;margin:0;font-size:14px;color:var(--texto-2)">Con tu número te mandamos un código de 6 dígitos. Sin contraseñas.</p>
+    <div class="campo"><label for="cta-tel">Teléfono celular</label>
+      <input id="cta-tel" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="10 dígitos" value="${esc(tel)}"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();pedirCodigo()}"></div>
+    ${cajaError()}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="pedirCodigo()">Enviarme un código</button>`;
+  setTimeout(() => $('cta-tel')?.focus(), 260);
+}
+async function pedirCodigo() {
+  const tel = ($('cta-tel')?.value || ctx.telefono || '').replace(/\D/g, '');
+  if (tel.length < 10) return errorCuenta('Escribe tu teléfono a 10 dígitos');
+  const btn = $('cta-btn'); if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Enviando…'; }
+  try {
+    const r = await api(API + '/cuenta/otp', { method: 'POST', cuerpo: { telefono: tel } });
+    ctx.telefono = r.telefono || tel.slice(-10); ctx.canal = r.canal; ctx.codigoDev = r.codigoDev || null;
+    try { localStorage.setItem(LS_TEL, ctx.telefono); } catch (e) {}
+    irVista('codigo');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Enviarme un código'; }
+    errorCuenta(e.message);
+  }
+}
+function vistaCodigo() {
+  $('cta-titulo').textContent = 'Tu código';
+  const canal = { sms: 'por SMS', whatsapp: 'por WhatsApp', dev: '(modo de prueba)' }[ctx.canal] || '';
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <p style="padding:0 16px 14px;margin:0;font-size:14px;color:var(--texto-2)">Te enviamos un código ${esc(canal)} al <strong>${esc(formatoTel(ctx.telefono))}</strong>. Vence en 5 minutos.</p>
+    <div class="campo"><label for="cta-codigo">Código de 6 dígitos</label>
+      <input id="cta-codigo" class="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();verificarCodigo()}"></div>
+    ${cajaError()}
+    <div style="padding:0 16px;font-size:13.5px;color:var(--texto-2)">¿No llegó? <button class="enlace" onclick="pedirCodigo()">Reenviar código</button> · <button class="enlace" onclick="irVista('login')">Cambiar número</button></div>
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="verificarCodigo()">Entrar</button>`;
+  setTimeout(() => $('cta-codigo')?.focus(), 260);
+}
+async function verificarCodigo() {
+  const codigo = ($('cta-codigo')?.value || '').replace(/\D/g, '');
+  if (codigo.length !== 6) return errorCuenta('El código tiene 6 dígitos');
+  const btn = $('cta-btn'); if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+  try {
+    await api(API + '/cuenta/otp/verificar', { method: 'POST', cuerpo: { telefono: ctx.telefono, codigo, nombre: CK.nombre || undefined } });
+    await cargarCuenta();
+    if (!CUENTA) throw new Error('No pudimos abrir tu sesión. Intenta de nuevo.');
+    if (!CUENTA.cliente.nombre) return irVista('nombre');
+    despuesDeEntrar();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Entrar'; }
+    errorCuenta(e.message);
+  }
+}
+function despuesDeEntrar() {
+  if (ctx.volverAlCheckout) return volverAlCheckout();
+  if (ctx.despues) { const v = ctx.despues; ctx.despues = null; return irVista(v); }
+  irVista('menu');
+}
+function volverAlCheckout() {
+  ctx.volverAlCheckout = false;
+  cerrarTodo();
+  setTimeout(() => { paso = PASOS.indexOf('datos'); pintarPaso(); abrirHoja('hoja-checkout'); }, 220);
+}
+function vistaNombre() {
+  $('cta-titulo').textContent = '¿Cómo te llamas?';
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <p style="padding:0 16px 14px;margin:0;font-size:14px;color:var(--texto-2)">Para saludarte y para que el repartidor sepa a quién busca.</p>
+    <div class="campo"><label for="cta-nombre">Nombre</label>
+      <input id="cta-nombre" maxlength="80" autocomplete="name" placeholder="Tu nombre" value="${esc(CK.nombre || '')}"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();guardarNombre()}"></div>
+    ${cajaError()}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="guardarNombre()">Continuar</button>`;
+  setTimeout(() => $('cta-nombre')?.focus(), 260);
+}
+async function guardarNombre() {
+  const nombre = ($('cta-nombre')?.value || '').trim();
+  if (nombre.length < 2) return errorCuenta('Escribe tu nombre');
+  try {
+    await api(API + '/cuenta', { method: 'PATCH', cuerpo: { nombre } });
+    await cargarCuenta();
+    despuesDeEntrar();
+  } catch (e) { errorCuenta(e.message); }
+}
+
+// ── Mi cuenta ──
+function vistaMenu() {
+  const c = CUENTA.cliente, rw = CUENTA.rewards, nd = (CUENTA.direcciones || []).length;
+  $('cta-titulo').textContent = 'Mi cuenta';
+  const item = (ico, tit, sub, accion) => `<button class="item-menu" onclick="${accion}"><span class="im-ico">${ico}</span>
+    <span style="min-width:0"><span class="im-tit">${tit}</span>${sub ? `<span class="im-sub">${sub}</span>` : ''}</span><span class="im-flecha">›</span></button>`;
+  $('cta-cuerpo').innerHTML = `<div class="menu-cuenta">
+    <div style="padding:8px 4px 16px"><div style="font-size:20px;font-weight:800">Hola, ${esc(primerNombre(c.nombre) || 'cliente')}</div>
+      <div style="font-size:13.5px;color:var(--texto-2)">${esc(formatoTel(c.telefono))}${c.email ? ' · ' + esc(c.email) : ''}</div></div>
+    ${item('👤', 'Perfil', 'Nombre, correo y avisos', "irVista('perfil')")}
+    ${item('📍', 'Mis direcciones', nd ? `${nd} guardada${nd === 1 ? '' : 's'}` : 'Aún no tienes direcciones', "irVista('direcciones')")}
+    ${rw?.activo ? item('⭐', esc(rw.nombrePrograma || 'Rewards'), `${rw.puntos} puntos · nivel ${esc(rw.nivel?.nombre || '')}`, "irVista('rewards')") : ''}
+    ${item('🧾', 'Mis pedidos', 'Historial y seguimiento', "irVista('pedidos')")}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn sec" onclick="cerrarSesionCliente()">Cerrar sesión</button>`;
+}
+async function cerrarSesionCliente() {
+  try { await api(API + '/cuenta/logout', { method: 'POST' }); } catch (e) {}
+  CUENTA = null; CK.direccionId = null; CK.otraDireccion = false;
+  pintarBotonCuenta(); cerrarTodo();
+}
+
+// ── Perfil y consentimientos ──
+function vistaPerfil() {
+  const c = CUENTA.cliente, cs = CUENTA.consentimientos || {};
+  $('cta-titulo').textContent = 'Perfil';
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <div class="campo"><label for="pf-nombre">Nombre</label><input id="pf-nombre" maxlength="80" autocomplete="name" value="${esc(c.nombre || '')}"></div>
+    <div class="campo"><label>Teléfono</label><div class="tel-fijo"><span>${esc(formatoTel(c.telefono))}</span><span class="badge abierto" style="font-size:11px">✓ verificado</span></div>
+      <div class="ayuda">Es tu identidad verificada. Para cambiarlo, inicia sesión con el número nuevo.</div></div>
+    <div class="campo"><label for="pf-email">Correo (opcional)</label><input id="pf-email" type="email" inputmode="email" autocomplete="email" maxlength="160" value="${esc(c.email || '')}" placeholder="tu@correo.com"></div>
+    <div class="campo" style="padding-top:6px"><label>Avisos y promociones</label>
+      <div class="ayuda" style="margin:0 0 6px">Tus datos de contacto solo se usan para entregar tus pedidos. Si quieres recibir promociones, márcalo aquí; puedes quitarlo cuando quieras.</div>
+      <label class="check"><input type="checkbox" id="pf-c-wa" ${cs.whatsapp?.otorgado ? 'checked' : ''}><span>Acepto recibir promociones por <strong>WhatsApp</strong></span></label>
+      <label class="check"><input type="checkbox" id="pf-c-email" ${cs.email?.otorgado ? 'checked' : ''}><span>Acepto recibir promociones por <strong>correo</strong></span></label>
+    </div>
+    ${cajaError()}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="guardarPerfil()">Guardar</button>`;
+}
+async function guardarPerfil() {
+  const nombre = $('pf-nombre').value.trim(), email = $('pf-email').value.trim();
+  const btn = $('cta-btn'); btn.disabled = true;
+  try {
+    await api(API + '/cuenta', { method: 'PATCH', cuerpo: { nombre, email } });
+    await api(API + '/cuenta/consentimientos', { method: 'PUT', cuerpo: { whatsapp: $('pf-c-wa').checked, email: $('pf-c-email').checked } });
+    await cargarCuenta();
+    irVista('menu');
+  } catch (e) { btn.disabled = false; errorCuenta(e.message); }
+}
+
+// ── Direcciones ──
+function tarjetaDireccion(d, { seleccionable = false, activa = false } = {}) {
+  const sub = [d.zona ? 'Zona ' + esc(d.zona) : '', esc(d.referencia || '')].filter(Boolean).join(' · ');
+  return `<div class="dir-card${activa ? ' on' : ''}" data-dir="${esc(d.id)}" ${seleccionable ? `onclick="elegirDireccion('${esc(d.id)}')" role="button"` : ''}>
+    <div class="dir-alias">${esc(d.alias)} ${d.predeterminada ? '<span class="pred">Predeterminada</span>' : ''}</div>
+    <div class="dir-txt">${esc(d.resumen || d.calle)}</div>
+    ${sub ? `<div class="dir-sub">${sub}</div>` : ''}
+    ${seleccionable ? '' : `<div class="dir-acc">
+      <button onclick="editarDireccion('${esc(d.id)}')">Editar</button>
+      ${d.predeterminada ? '' : `<button onclick="predeterminarDireccion('${esc(d.id)}')">Usar por defecto</button>`}
+      <button class="quitar" onclick="quitarDireccion('${esc(d.id)}')">Quitar</button></div>`}
+  </div>`;
+}
+function vistaDirecciones() {
+  $('cta-titulo').textContent = 'Mis direcciones';
+  const ds = CUENTA.direcciones || [];
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0 6px">
+    ${ds.length ? ds.map(d => tarjetaDireccion(d)).join('')
+      : `<div class="vacio" style="padding:36px 24px"><div class="ico">📍</div><h3>Sin direcciones guardadas</h3><p>Guarda tu casa o tu trabajo y no vuelvas a escribirla.</p></div>`}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" onclick="nuevaDireccion()">+ Agregar dirección</button>`;
+}
+function nuevaDireccion() { irVista('direccion', { direccion: null }); }
+function editarDireccion(id) { irVista('direccion', { direccion: (CUENTA.direcciones || []).find(d => d.id === id) || null }); }
+async function predeterminarDireccion(id) {
+  try { await api(`${API}/cuenta/direcciones/${encodeURIComponent(id)}/predeterminada`, { method: 'POST' }); await cargarCuenta(); pintarCuenta(); }
+  catch (e) { alert(e.message); }
+}
+async function quitarDireccion(id) {
+  if (!confirm('¿Quitar esta dirección?')) return;
+  try {
+    await api(`${API}/cuenta/direcciones/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (CK.direccionId === id) CK.direccionId = null;
+    await cargarCuenta(); pintarCuenta();
+  } catch (e) { alert(e.message); }
+}
+function vistaDireccion() {
+  const d = ctx.direccion || {};
+  const zonas = TIENDA.entrega?.zonas || [];
+  $('cta-titulo').textContent = d.id ? 'Editar dirección' : 'Nueva dirección';
+  const chips = ['Casa', 'Trabajo', 'Otro'].map(a => `<button type="button" class="alias-chip${(d.alias || 'Casa') === a ? ' on' : ''}" data-alias="${a}" onclick="elegirAlias(this)">${a === 'Casa' ? '🏠' : a === 'Trabajo' ? '💼' : '📌'} ${a}</button>`).join('');
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <div class="campo"><label>Guardar como</label><div class="alias-chips" id="df-alias">${chips}</div></div>
+    <div class="campo"><label for="df-calle">Calle *</label><input id="df-calle" maxlength="160" autocomplete="address-line1" value="${esc(d.calle || '')}" placeholder="Nombre de la calle"></div>
+    <div class="fila-2">
+      <div class="campo"><label for="df-ext">Número exterior</label><input id="df-ext" maxlength="20" value="${esc(d.numeroExterior || '')}" placeholder="742"></div>
+      <div class="campo"><label for="df-int">Interior</label><input id="df-int" maxlength="20" value="${esc(d.numeroInterior || '')}" placeholder="Depto, piso…"></div>
+    </div>
+    ${zonas.length ? `<div class="campo"><label for="df-zona">Zona de entrega *</label><select id="df-zona"><option value="">Elige tu zona…</option>
+        ${zonas.map(z => `<option value="${esc(z.nombre)}"${d.zona === z.nombre ? ' selected' : ''}>${esc(z.nombre)} — ${dinero(z.costo)}</option>`).join('')}</select></div>
+      <div class="campo"><label for="df-colonia">Colonia</label><input id="df-colonia" maxlength="120" value="${esc(d.colonia || '')}" placeholder="Opcional si ya elegiste zona"></div>`
+    : `<div class="campo"><label for="df-colonia">Colonia *</label><input id="df-colonia" maxlength="120" value="${esc(d.colonia || '')}" placeholder="Tu colonia"></div>`}
+    <div class="fila-2">
+      <div class="campo"><label for="df-cp">Código postal</label><input id="df-cp" inputmode="numeric" maxlength="10" autocomplete="postal-code" value="${esc(d.codigoPostal || '')}"></div>
+      <div class="campo"><label for="df-entre">Entre calles</label><input id="df-entre" maxlength="160" value="${esc(d.entreCalles || '')}"></div>
+    </div>
+    <div class="campo"><label for="df-ref">Referencia</label><input id="df-ref" maxlength="200" value="${esc(d.referencia || '')}" placeholder="Portón azul, frente al parque…"></div>
+    <div class="campo"><label for="df-inst">Instrucciones de entrega</label><textarea id="df-inst" maxlength="240" placeholder="Tocar el timbre, llamar al llegar…">${esc(d.instruccionesEntrega || '')}</textarea></div>
+    ${(CUENTA.direcciones || []).length && !d.predeterminada ? `<div class="campo"><label class="check"><input type="checkbox" id="df-pred"><span>Usar esta dirección por defecto</span></label></div>` : ''}
+    ${cajaError()}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="guardarDireccion()">Guardar dirección</button>`;
+}
+function elegirAlias(btn) { document.querySelectorAll('#df-alias .alias-chip').forEach(b => b.classList.toggle('on', b === btn)); }
+function leerFormularioDireccion() {
+  return {
+    alias: document.querySelector('#df-alias .alias-chip.on')?.dataset.alias || 'Casa',
+    calle: $('df-calle').value.trim(), numeroExterior: $('df-ext').value.trim(), numeroInterior: $('df-int').value.trim(),
+    zona: $('df-zona')?.value || null, colonia: $('df-colonia').value.trim(), codigoPostal: $('df-cp').value.trim(),
+    entreCalles: $('df-entre').value.trim(), referencia: $('df-ref').value.trim(), instruccionesEntrega: $('df-inst').value.trim(),
+    predeterminada: $('df-pred')?.checked || false,
+  };
+}
+async function guardarDireccion() {
+  const datos = leerFormularioDireccion();
+  if (datos.calle.length < 3) return errorCuenta('Escribe la calle');
+  if ($('df-zona') && !datos.zona) return errorCuenta('Elige tu zona de entrega');
+  if (!$('df-zona') && !datos.colonia) return errorCuenta('Escribe tu colonia');
+  const btn = $('cta-btn'); btn.disabled = true;
+  try {
+    const id = ctx.direccion?.id;
+    const r = await api(id ? `${API}/cuenta/direcciones/${encodeURIComponent(id)}` : `${API}/cuenta/direcciones`, { method: id ? 'PUT' : 'POST', cuerpo: datos });
+    await cargarCuenta();
+    if (ctx.volverAlCheckout) { CK.direccionId = r.direccion?.id || null; CK.otraDireccion = false; return volverAlCheckout(); }
+    irVista('direcciones');
+  } catch (e) { btn.disabled = false; errorCuenta(e.message); }
+}
+
+// ── Rewards ──
+function vistaRewards() {
+  const rw = CUENTA.rewards || {};
+  $('cta-titulo').textContent = rw.nombrePrograma || 'Rewards';
+  $('cta-cuerpo').innerHTML = `<div class="cargando">Cargando tus puntos…</div>`; $('cta-pie').innerHTML = '';
+  api(API + '/cuenta/rewards').then(w => {
+    if (vistaCuenta !== 'rewards') return;
+    if (!w.activo) { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⭐</div><h3>Programa no disponible</h3></div>`; return; }
+    const bloque = Math.max(1, w.canjeMinimo || 1);
+    const canjeables = Math.floor((w.puntosCanjeables || 0) / bloque) * bloque;
+    const movs = (w.movimientos || []).map(m => `<div class="mov"><div><div>${esc(etiquetaMov(m.tipo))}${m.folio ? ` · #${esc(m.folio)}` : ''}</div>
+      <div class="mov-sub">${esc(fechaCorta(m.fecha))}</div></div><div class="mov-pts ${m.puntos >= 0 ? 'mas' : 'menos'}">${m.puntos >= 0 ? '+' : ''}${m.puntos} pts</div></div>`).join('');
+    $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+      <div class="saldo-caja"><div style="font-size:12.5px;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.05em">Tu saldo</div>
+        <div class="saldo-num">${w.puntos} <span style="font-size:16px;font-weight:700">pts</span></div>
+        <div class="saldo-sub">${esc(w.nivel?.emoji || '')} Nivel ${esc(w.nivel?.nombre || '')}${w.nivel?.siguiente ? ` · te faltan ${w.nivel.falta} pts para ${esc(w.nivel.siguiente)}` : ''}</div></div>
+      <div style="padding:0 16px 12px;font-size:13.5px;color:var(--texto-2);line-height:1.6">
+        <div>💳 Se canjean en bloques de <strong>${w.canjeMinimo} pts</strong> (${dinero(w.canjeMinimo * w.valorPunto)} cada uno).</div>
+        <div>${w.canjeEnTienda
+          ? (canjeables > 0 ? `✅ Hoy puedes usar <strong>${canjeables} pts</strong> en esta tienda: <strong>${dinero(w.valorCanjeable)}</strong> de descuento en tu próximo pedido.`
+                            : `Te faltan ${bloque - (w.puntosCanjeables || 0)} pts para tu primer canje en línea.`)
+          : 'ℹ️ El canje en la tienda en línea no está habilitado; tus puntos siguen contando y los puedes usar en el negocio.'}</div>
+        ${w.cuentas > 1 ? `<div>ℹ️ ${w.puntos - w.puntosCanjeables} pts de tu saldo están registrados con otro formato de tu número; esos se canjean directamente en el negocio.</div>` : ''}
+        <div>Ganados en total: ${w.acumuladoTotal} · canjeados: ${w.canjeadoTotal}</div>
+      </div>
+      <div style="padding:14px 16px 6px;font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em">Movimientos</div>
+      ${movs || '<div class="vacio" style="padding:24px"><p>Aún no hay movimientos.</p></div>'}
+    </div>`;
+  }).catch(e => { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⚠️</div><h3>No pudimos cargar tus puntos</h3><p>${esc(e.message)}</p></div>`; });
+}
+
+// ── Mis pedidos ──
+function vistaPedidos() {
+  $('cta-titulo').textContent = 'Mis pedidos';
+  $('cta-cuerpo').innerHTML = `<div class="cargando">Cargando…</div>`; $('cta-pie').innerHTML = '';
+  api(API + '/cuenta/pedidos').then(r => {
+    if (vistaCuenta !== 'pedidos') return;
+    const ps = r.pedidos || [];
+    $('cta-cuerpo').innerHTML = ps.length ? `<div style="padding:16px 0 6px">${ps.map(p => `<div class="pedido-card">
+      <div style="display:flex;justify-content:space-between;gap:10px;font-weight:800"><span>#${esc(p.folio)}</span><span>${dinero(p.total)}</span></div>
+      <div style="font-size:12.5px;color:var(--texto-2);margin-top:2px">${esc(fechaCorta(p.fecha))} · ${p.modalidad === 'domicilio' ? '🛵 Domicilio' : '🏪 Recoger'} · ${esc(etiquetaEstado(p.estado))}</div>
+      <div style="font-size:13px;margin-top:6px">${esc(p.items.map(i => `${i.cantidad}× ${i.nombre}`).join(', '))}</div>
+      ${p.seguimiento ? `<div class="dir-acc"><button onclick="location.href='${esc(p.seguimiento)}'">Seguir pedido</button></div>` : ''}
+    </div>`).join('')}</div>`
+      : `<div class="vacio"><div class="ico">🧾</div><h3>Aún no tienes pedidos</h3><p>Cuando hagas uno, aquí lo verás.</p></div>`;
+  }).catch(e => { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⚠️</div><h3>No pudimos cargar tus pedidos</h3><p>${esc(e.message)}</p></div>`; });
+}
+
+// ── Checkout con sesión ──
+// Nombre y teléfono ya se conocen (el teléfono es el verificado y no se
+// edita aquí); la dirección se ELIGE de la libreta o se escribe solo para
+// este pedido. "Agregar nueva" desvía a la hoja de cuenta y regresa.
+function elegirDireccion(id) { CK.direccionId = id; CK.otraDireccion = false; pintarPaso(); }
+function escribirOtraDireccion() { CK.direccionId = null; CK.otraDireccion = true; pintarPaso(); }
+function cambiarDireccionCheckout() { paso = PASOS.indexOf('datos'); pintarPaso(); }
+
+function pasoDatosCliente() {
+  const c = CUENTA.cliente, ds = CUENTA.direcciones || [];
+  $('ck-titulo').textContent = CK.modalidad === 'domicilio' ? 'Entrega' : 'Tus datos';
+  if (CK.modalidad === 'domicilio' && !CK.otraDireccion && !ds.some(d => d.id === CK.direccionId)) {
+    CK.direccionId = (ds.find(d => d.predeterminada) || ds[0])?.id || null;
+    if (!CK.direccionId) CK.otraDireccion = true;
+  }
+  const zonas = TIENDA.entrega.zonas || [];
+  const otra = CK.modalidad === 'domicilio' && CK.otraDireccion;
+  $('ck-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <div class="campo"><label for="ck-nombre">Nombre *</label>
+      <input id="ck-nombre" value="${esc(CK.nombre || c.nombre || '')}" maxlength="80" autocomplete="name" placeholder="Tu nombre"></div>
+    <div class="campo"><label>Teléfono</label>
+      <div class="tel-fijo"><span>${esc(formatoTel(c.telefono))}</span><span class="badge abierto" style="font-size:11px">✓ verificado</span></div></div>
+    ${CK.modalidad === 'domicilio' ? `
+      <div class="campo" style="padding-bottom:6px"><label>Enviar a</label></div>
+      ${ds.map(d => tarjetaDireccion(d, { seleccionable: true, activa: !otra && CK.direccionId === d.id })).join('')}
+      <div class="dir-card${otra ? ' on' : ''}" role="button" id="ck-otra-dir" onclick="escribirOtraDireccion()">
+        <div class="dir-alias">✏️ Escribir otra dirección</div>${otra ? '' : '<div class="dir-sub">Solo para este pedido</div>'}</div>
+      <div style="padding:2px 16px 12px"><button class="enlace" id="ck-nueva-dir" onclick="abrirCuenta({vista:'direccion', volverAlCheckout:true})">+ Agregar nueva dirección</button></div>
+      ${otra ? `<div class="campo"><label for="ck-dir">Dirección de entrega *</label>
+          <textarea id="ck-dir" maxlength="240" autocomplete="street-address" placeholder="Calle, número, colonia y referencias">${esc(CK.direccion || '')}</textarea></div>
+        ${zonas.length ? `<div class="campo"><label for="ck-zona">Zona *</label><select id="ck-zona"><option value="">Elige tu zona…</option>
+            ${zonas.map(z => `<option value="${esc(z.nombre)}"${CK.zona === z.nombre ? ' selected' : ''}>${esc(z.nombre)} — ${dinero(z.costo)}</option>`).join('')}</select></div>`
+          : `<div class="campo"><label for="ck-colonia">Colonia *</label><input id="ck-colonia" maxlength="120" value="${esc(CK.colonia || '')}" placeholder="Tu colonia"></div>`}` : ''}
+    ` : ''}
+    <div class="campo"><label for="ck-notas">Indicaciones para el negocio (opcional)</label>
+      <textarea id="ck-notas" maxlength="240" placeholder="Timbre descompuesto, llamar al llegar…">${esc(CK.notas || '')}</textarea></div>
+    <div id="ck-error-datos" class="campo oculto"><div class="malo" id="ck-error-datos-txt"></div></div>
+  </div>`;
+  $('ck-pie').innerHTML = `<button class="btn" onclick="validarDatosCliente()">Continuar</button>`;
+}
+function validarDatosCliente() {
+  const c = CUENTA.cliente;
+  const nombre = $('ck-nombre').value.trim();
+  const errores = [];
+  const marcar = (id, mal) => $(id)?.classList.toggle('error', mal);
+  marcar('ck-nombre', nombre.length < 2); if (nombre.length < 2) errores.push('Escribe tu nombre');
+  let direccion = '', zona = null, colonia = null, direccionId = null;
+  if (CK.modalidad === 'domicilio') {
+    if (CK.otraDireccion) {
+      direccion = $('ck-dir')?.value.trim() || ''; zona = $('ck-zona')?.value || null; colonia = $('ck-colonia')?.value.trim() || null;
+      marcar('ck-dir', direccion.length < 8); if (direccion.length < 8) errores.push('Necesitamos una dirección completa');
+      if ($('ck-zona')) { marcar('ck-zona', !zona); if (!zona) errores.push('Elige tu zona de entrega'); }
+      if ($('ck-colonia')) { marcar('ck-colonia', !colonia); if (!colonia) errores.push('Escribe tu colonia'); }
+    } else {
+      const d = (CUENTA.direcciones || []).find(x => x.id === CK.direccionId);
+      if (!d) errores.push('Elige a qué dirección enviamos tu pedido');
+      else { direccionId = d.id; zona = d.zona || null; colonia = d.colonia || null; direccion = d.resumen || d.calle; }
+    }
+  }
+  if (errores.length) { $('ck-error-datos').classList.remove('oculto'); $('ck-error-datos-txt').textContent = errores.join(' · '); return; }
+  Object.assign(CK, { nombre, telefono: c.telefono, direccion, zona, colonia, direccionId, notas: $('ck-notas').value.trim() });
+  pasoAdelante();
+}
+function lineaDireccionResumen() {
+  const guardada = CK.direccionId ? (CUENTA?.direcciones || []).find(d => d.id === CK.direccionId) : null;
+  const texto = guardada ? `${esc(guardada.alias)} · ${esc(guardada.resumen || guardada.calle)}` : `${esc(CK.direccion)}${CK.colonia ? ', ' + esc(CK.colonia) : ''}`;
+  const cambiar = CUENTA ? ` <button class="enlace" style="font-size:12.5px;margin-left:6px" onclick="cambiarDireccionCheckout()">Cambiar</button>` : '';
+  return `<div>📍 ${texto}${cambiar}</div>`;
+}
 </script>
 </body>
 </html>
