@@ -7919,6 +7919,45 @@ app.get('/api/admin/clientes/conversion', requireAdminSeguro, async (req, res) =
   }
 });
 
+// ─── Clientes v2: el CRM del negocio sobre clientes_negocio ─────────────────
+// La fuente de verdad es clientes_negocio (una persona por negocio +
+// teléfono) y las métricas se calculan por negocio desde pedidos_activos.
+// El endpoint viejo de arriba (/api/admin/clientes, sobre `clientes` +
+// perfiles_clientes) sigue intacto mientras el panel migra. Solo admin; el
+// negocio sale de la sesión; un id se busca siempre junto con el negocio.
+import { listarClientesCrm, resumenClientesCrm, fichaClienteCrm, cerrarSesionesClienteCrm } from './services/clientesCrm.js';
+const esUuidCrm = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ''));
+
+app.get('/api/admin/clientes/v2', requireAdminSeguro, async (req, res) => {
+  try { res.json(await listarClientesCrm(req.negocioId, req.query || {})); }
+  catch (e) { console.error('[CRM] listar:', e.message); res.status(500).json({ error: 'No se pudo cargar la lista de clientes' }); }
+});
+
+// Antes de /:id para que "resumen" no se tome como un id.
+app.get('/api/admin/clientes/v2/resumen', requireAdminSeguro, async (req, res) => {
+  try { res.json(await resumenClientesCrm(req.negocioId)); }
+  catch (e) { console.error('[CRM] resumen:', e.message); res.status(500).json({ error: 'No se pudo calcular el resumen' }); }
+});
+
+app.get('/api/admin/clientes/v2/:id', requireAdminSeguro, async (req, res) => {
+  try {
+    if (!esUuidCrm(req.params.id)) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const ficha = await fichaClienteCrm(req.negocioId, req.params.id);
+    if (!ficha) return res.status(404).json({ error: 'Cliente no encontrado' });
+    res.json(ficha);
+  } catch (e) { console.error('[CRM] ficha:', e.message); res.status(500).json({ error: 'No se pudo cargar la ficha' }); }
+});
+
+app.post('/api/admin/clientes/v2/:id/cerrar-sesiones', requireAdminSeguro, async (req, res) => {
+  try {
+    if (!esUuidCrm(req.params.id)) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const ok = await cerrarSesionesClienteCrm(req.negocioId, req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Cliente no encontrado' });
+    console.log(`[CRM] sesiones cerradas cliente=${req.params.id} negocio=${req.negocioId} por usuario=${req.usuarioId}`);
+    res.json({ ok: true });
+  } catch (e) { console.error('[CRM] cerrar sesiones:', e.message); res.status(500).json({ error: 'No se pudieron cerrar las sesiones' }); }
+});
+
 // ─── Rewards ──────────────────────────────────────────────────────────────────
 import {
   obtenerConfig as obtenerConfigRewards,
@@ -8864,6 +8903,16 @@ async function arrancar() {
       .catch(e => console.error('[Rewards] Barrido de canjes cancelados fallo:', e.message));
   barridoRewards();
   setInterval(barridoRewards, 5 * 60 * 1000);
+  // CRM: cada teléfono real que pide en un negocio es cliente de ese negocio.
+  // El reconciliador crea las fichas que falten a partir de los pedidos
+  // recientes (de cualquier canal), en segundo plano e idempotente -- nunca
+  // en el camino síncrono de un pedido ni tocando orderManager.
+  const reconciliarCrm = () =>
+    import('./services/clientesCrm.js')
+      .then(m => m.reconciliarClientesDesdePedidos())
+      .catch(e => console.error('[CRM] Reconciliacion de clientes fallo:', e.message));
+  reconciliarCrm();
+  setInterval(reconciliarCrm, 5 * 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));
