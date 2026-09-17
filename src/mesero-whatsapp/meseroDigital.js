@@ -48,7 +48,7 @@ import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclarac
 import { anclarPropuestas, anclarLinea } from './anclajeAlCatalogo.js';
 import { operacionSobreElGrupo } from './mutacionDeOpciones.js';
 import { faseDelTurno, loQueFalta, siguientePregunta, listoParaConfirmar } from './faseConversacional.js';
-import { resumenDelPedido } from './resumenDelPedido.js';
+import { resumenDelPedido, huellaDelResumen } from './resumenDelPedido.js';
 import { decidirHandoff, equipajeDelHandoff } from './handoffHumano.js';
 import { eventosDelTurno } from './metricasMesero.js';
 
@@ -750,6 +750,68 @@ export async function atenderTurno({
     }
   }
 
+  // ── 8d) LA MODALIDAD, EL PAGO Y LA DIRECCIÓN TAMBIÉN LOS AUTORIZA EL CLIENTE ──
+  //
+  // El reconciliador acumula los datos operativos sin pedirles respaldo: el
+  // comentario del paso 5 de `carritoDelPedido` explica que «nunca tocan
+  // comida», y es verdad, pero eso garantiza que no corrompen el platillo, no
+  // que el cliente los haya pedido. La auditoría del cierre lo midió:
+  //
+  //   cliente   «con salsa suiza porfa»
+  //   borrador  modalidad="entrega a domicilio", pago="terminal",
+  //             cliente={Quien Sea, Calle Falsa 123}
+  //   carrito   los tres, con `autorizados: []` — ni rastro de autorización
+  //   resultado listoParaConfirmar: true
+  //
+  // Una dirección inventada por el modelo llegaba a la puerta del cierre. Y la
+  // comida llevaba meses protegida contra exactamente esto.
+  //
+  // Aquí se aplica la MISMA regla, con las MISMAS herramientas. No hay ni un
+  // regex nuevo: quien dice que el cliente habló de modalidad o de pago es
+  // `clasificarIntenciones`, que ya lo hacía para `respondeAlPendiente`; y
+  // quien dice que un valor concreto está en su texto es
+  // `palabrasQueLaSostienen`, la misma que sostiene las opciones del menú.
+  //
+  // Tres puertas, y basta una:
+  //
+  //   · el cliente habló de eso           «para recoger», «con tarjeta»
+  //   · el valor está en su texto         «Reforma 200» → direccion
+  //   · se le acababa de preguntar        `datoOperativoPendiente`
+  //
+  // El dato de cliente se mira CAMPO A CAMPO: que el modelo acierte el nombre
+  // no le da la dirección de propina. Y lo que ya estaba autorizado antes se
+  // deja pasar, porque repetirlo no es proponerlo de nuevo.
+  const sinRespaldoOperativo = [];
+  const loDijoElCliente = (valor) => palabrasQueLaSostienen(String(valor ?? ''), autoriza).size > 0;
+  const preguntado = norm(datoOperativoPendiente || '');
+  const clientePrevio = carritoActual.datos?.cliente || {};
+  anclado.propuestas = (anclado.propuestas || []).filter((p) => {
+    if (p?.accion === 'definir_modalidad') {
+      if (intenciones.includes('DEFINIR_MODALIDAD') || preguntado === 'modalidad'
+        || loDijoElCliente(p.valorNuevo)) return true;
+      sinRespaldoOperativo.push({ nombre: '', campo: 'modalidad', propuesto: p.valorNuevo });
+      return false;
+    }
+    if (p?.accion === 'definir_pago') {
+      if (intenciones.includes('DEFINIR_PAGO') || preguntado === 'pago'
+        || loDijoElCliente(p.valorNuevo)) return true;
+      sinRespaldoOperativo.push({ nombre: '', campo: 'forma_pago', propuesto: p.valorNuevo });
+      return false;
+    }
+    if (p?.accion !== 'definir_cliente') return true;
+    const quedan = {};
+    for (const [campo, valor] of Object.entries(p.valorNuevo || {})) {
+      if (clientePrevio[campo] === valor || preguntado === norm(campo) || loDijoElCliente(valor)) {
+        quedan[campo] = valor;
+        continue;
+      }
+      sinRespaldoOperativo.push({ nombre: '', campo: `cliente:${campo}`, propuesto: valor });
+    }
+    if (!Object.keys(quedan).length) return false;
+    p.valorNuevo = quedan;
+    return true;
+  });
+
   // 9) EL MOTOR DECIDE. Aquí no hay reglas nuevas: se traduce y se reconcilia.
   const resultado = aplicarPropuestas(carritoActual, anclado.propuestas, {
     // Crudo, para que el carrito separe la percepción por su cuenta; y aparte,
@@ -766,6 +828,14 @@ export async function atenderTurno({
     // sale la atribución.
     atribuidoPorLid: atribuidos,
   });
+  // Lo que 8d tiró viaja por el canal de siempre. Un dato operativo que el
+  // modelo se inventó y nadie registra es indistinguible de uno que nunca
+  // propuso, y la diferencia importa: la primera es una invención que el
+  // negocio querrá ver contada.
+  if (sinRespaldoOperativo.length) {
+    (resultado.cambios.sinRespaldo || (resultado.cambios.sinRespaldo = []))
+      .push(...sinRespaldoOperativo);
+  }
   const lidsAntes = new Set((carritoActual.items || []).map((i) => i.lid));
   carritoActual = resultado.carrito;
 
@@ -892,7 +962,37 @@ export async function atenderTurno({
   ctx.modalidad = datos.modalidad;
   ctx.pago = datos.pago;
   ctx.aclaraciones = aclaraciones;
-  const entradaFase = { intenciones, carrito: carritoActual, datos, aclaraciones, confirmado, requierePago };
+
+  // ── UN «SÍ» CONFIRMA LO QUE EL CLIENTE ACABA DE LEER, NO OTRA COSA ──────
+  //
+  // `huellaDelResumen` y `resumenSigueVigente` llevaban escritas desde que se
+  // escribió el resumen, con su comentario explicando para qué servían, y no
+  // las llamaba nadie: una protección construida y desconectada. Se conectan
+  // aquí, que es el único sitio donde hay las dos cosas a la vez —el resumen
+  // que se enseñó y el pedido de ahora—.
+  //
+  // El resumen de ESTE turno se calcula ya, antes de la fase, porque de él
+  // depende si el «sí» de este turno vale. Y se compara contra la huella del
+  // que se enseñó al terminar el turno anterior:
+  //
+  //   turno n-1   pedido completo → se le enseña el resumen, se guarda su huella
+  //   turno n     «sí, confirmo» y nada cambió  → las huellas coinciden → vale
+  //   turno n     «mejor roja, sí confirmo»     → la huella ya es otra → no vale
+  //
+  // El segundo caso es el que importa: el cambio y la confirmación llegan en
+  // el MISMO mensaje, el resumen que el cliente leyó describe el pedido de
+  // antes, y su «sí» habla de ese. No se rechaza al cliente: se le vuelve a
+  // enseñar el pedido con el cambio puesto, y el «sí» siguiente sí vale.
+  //
+  // Y una huella se consume UNA vez. Sin eso, cuatro «sí, confirmo» seguidos
+  // daban cuatro confirmaciones del mismo pedido.
+  const resumen = resumenDelPedido(carritoActual, { precios, requierePago });
+  const huellaAhora = huellaDelResumen(resumen);
+  const confirmacionVigente = ctx.resumenMostrado?.huella === huellaAhora
+    && ctx.resumenConfirmado?.huella !== huellaAhora;
+
+  const entradaFase = { intenciones, carrito: carritoActual, datos, aclaraciones, confirmado,
+    requierePago, confirmacionVigente };
   ctx.fase = faseDelTurno(entradaFase);
   const falta = loQueFalta(entradaFase);
 
@@ -931,7 +1031,11 @@ export async function atenderTurno({
     if (suyo) marcarPreguntado(ctx, suyo.clave);
   }
 
-  const resumen = resumenDelPedido(carritoActual, { precios, requierePago });
+  // EL RESUMEN QUE SE LE ACABA DE ENSEÑAR. Sólo cuenta cuando no falta nada:
+  // un resumen incompleto no es una oferta que confirmar, es un avance. Y si
+  // este turno confirmó, la huella queda marcada como consumida.
+  ctx.resumenMostrado = listoParaConfirmar(entradaFase) ? { huella: huellaAhora, turno } : null;
+  if (ctx.fase === 'confirmando') ctx.resumenConfirmado = { huella: huellaAhora, turno };
 
   return {
     contexto: ctx,
@@ -950,6 +1054,9 @@ export async function atenderTurno({
     siguiente,
     resumen,
     listoParaConfirmar: listoParaConfirmar(entradaFase),
+    // ¿Es SEGURO pedirle confirmación a este resumen? Completo no basta:
+    // tiene que ser el que el cliente leyó y no haber sido ya confirmado.
+    confirmacionVigente,
     handoff: {
       escalar: false,
       // En sombra: aquí habría pasado a un humano, pero la copia siguió.

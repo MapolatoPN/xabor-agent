@@ -40,6 +40,7 @@ export const FASE_INICIAL = 'inicio';
 export function faseDelTurno({
   intenciones = [], carrito = null, datos = {}, aclaraciones = [],
   confirmado = false, escalado = false, requierePago = true,
+  confirmacionVigente = false,
 } = {}) {
   const tiene = (i) => intenciones.includes(i);
   const hayPedido = Array.isArray(carrito?.items) && carrito.items.length > 0;
@@ -62,9 +63,31 @@ export function faseDelTurno({
     return 'inicio';
   }
 
-  if (tiene('CONFIRMAR') && !aclaraciones.length) return 'confirmando';
+  // ── QUERER CERRAR NO ES PODER CERRAR ───────────────────────────────────
+  //
+  // Hasta la auditoría del 16-sep esta línea iba PRIMERO, y bastaba con que el
+  // cliente dijera «sí, confirmo» para que la fase contestara `confirmando`
+  // con `falta: ["modalidad","pago"]`. La fase y lo que falta se contradecían
+  // en la misma respuesta, y quien leyera sólo la fase —que es para lo que la
+  // fase existe: ORIENTAR al que redacta— cerraría un pedido sin modalidad ni
+  // forma de pago.
+  //
+  // La intención del cliente no ha cambiado de sitio: sigue decidiendo. Lo que
+  // cambia es que ahora decide DESPUÉS de que se compruebe que no falta nada,
+  // y no antes. El orden es el mismo que el de `loQueFalta`, a propósito: si
+  // los dos no coinciden, uno de los dos miente.
   if (!datos?.modalidad) return 'esperando_modalidad';
   if (requierePago && !datos?.pago) return 'esperando_pago';
+
+  // Y CONFIRMAR QUÉ. `confirmacionVigente` dice que el resumen que el cliente
+  // acaba de leer sigue describiendo este pedido —es la huella de
+  // `resumenDelPedido`, comprobada por quien llama—. Sin eso, un «sí» es un
+  // monosílabo suelto: puede estar contestando a cualquier otra cosa, o a un
+  // resumen que el propio turno acaba de invalidar.
+  //
+  // Va en `false` por defecto a propósito. Quien no sepa contestar a «¿vigente
+  // respecto de qué?» no tiene por qué poder confirmar.
+  if (tiene('CONFIRMAR') && !aclaraciones.length && confirmacionVigente) return 'confirmando';
   return 'revisando';
 }
 
