@@ -201,7 +201,16 @@ await t('D1. SOLO el negocio en sombra ejecuta el Mesero', async () => {
   assert(todos.every((r) => r.negocio === deSombra.neg),
     `observó a un negocio que no lo pidió: ${JSON.stringify([...new Set(todos.map((r) => r.negocio))])}`);
   const conv = hashConv(deSombra.neg, tel.SOMBRA);
-  assert(todos.every((r) => r.conv === conv), 'se observó otra conversación');
+  // El mensaje dice QUÉ se coló, no sólo que algo se coló. La primera versión
+  // decía «se observó otra conversación» a secas, y el 17-sep esta prueba
+  // falló una vez en una regresión completa, pasó las cinco veces siguientes
+  // —sola, con su predecesora y en dos regresiones enteras— y no hubo forma de
+  // saber qué conversación había sido: los registros se capturan en proceso y
+  // no quedan en el log. Una intermitencia sin rastro no se puede diagnosticar.
+  const ajenas = [...new Set(todos.map((r) => r.conv))].filter((c) => c !== conv);
+  assert(ajenas.length === 0,
+    `se observó otra conversación: esperada ${conv}, aparecieron ${JSON.stringify(ajenas)}`
+    + ` en ${todos.length} registros`);
 });
 
 await t('D2. el negocio en sombra NO le contesta nada al cliente', async () => {
