@@ -92,11 +92,43 @@ export function resumenEnTexto(resumen) {
  * traída al resumen del mesero: si entre el resumen y el «sí» cambió algo, ese
  * sí no vale para lo que hay ahora.
  */
+/**
+ * ─── LOS CAMPOS DEL CLIENTE QUE SON PARTE DEL PEDIDO ────────────────────
+ *
+ * La huella nació mirando items, modalidad y pago. El cliente se quedó fuera,
+ * y con él la dirección: se le enseñaba el resumen, cambiaba de calle, decía
+ * «sí», y la huella seguía coincidiendo. Confirmaba un pedido que ya no iba
+ * a donde él creía.
+ *
+ * La lista es CERRADA y sale de contar lo que produccion guarda de verdad, no
+ * de imaginar qué podría llevar una dirección:
+ *
+ *   nombre 319 · telefono 295 · calle 167 · colonia 167 · entre_calles 167
+ *   numero_interior 49 · referencia 49 · numero_exterior 49 · direccion 1
+ *
+ * Los nueve son operativos —los lee la comanda o el repartidor—, así que los
+ * nueve invalidan. Y es una lista y no el objeto entero a propósito: con un
+ * `JSON.stringify(cliente)`, el día que alguien cuelgue ahí un identificador
+ * interno o una marca de origen, se caerían todas las confirmaciones en vuelo
+ * sin que nada del pedido hubiera cambiado. La huella representa el pedido,
+ * no el objeto que lo transporta.
+ */
+const CAMPOS_DEL_CLIENTE = ['nombre', 'telefono', 'calle', 'numero_exterior',
+  'numero_interior', 'colonia', 'entre_calles', 'referencia', 'direccion'];
+
+// Para comparar, no para guardar: mayúsculas, acentos y puntuación no son un
+// cambio de pedido. «Av. Reforma 200» y «av reforma #200» son la misma
+// esquina; «Reforma 200» y «Reforma 2000» no lo son, y por eso los dígitos se
+// conservan enteros en vez de tocarlos.
+const enForma = (v) => String(v ?? '').toLowerCase().normalize('NFD')
+  .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
 export const huellaDelResumen = (resumen) => JSON.stringify({
   items: (resumen?.items || []).map((i) => [i.nombre, i.cantidad,
     i.opciones.map((o) => `${o.grupo}:${o.opcion}`).sort(), i.notas || '']),
   modalidad: resumen?.modalidad ?? null,
   pago: resumen?.pago ?? null,
+  cliente: CAMPOS_DEL_CLIENTE.map((c) => enForma(resumen?.cliente?.[c])),
 });
 
 export const resumenSigueVigente = (mostrado, ahora) =>
