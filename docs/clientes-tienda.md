@@ -270,27 +270,81 @@ tienen varias cuentas por formato.
 
 ## Bloqueos y pendientes
 
-- **OTP real**: hay que fijar `OTP_PROVEEDOR=sms` (usa el Twilio ya
-  configurado; cada código es un SMS) o preparar WhatsApp: crear y aprobar
-  en Meta una plantilla de categoría *Authentication* con botón "copiar
-  código" para el número de cada negocio y fijar `OTP_WA_PLANTILLA`. Sin una
-  de las dos, el login no está disponible en producción (a propósito).
+- **OTP real**: decisión del piloto: **SMS por Twilio** (`OTP_PROVEEDOR=sms`,
+  las credenciales ya están en Railway; cada código es un SMS). WhatsApp
+  queda preparado para después: crear y aprobar en Meta una plantilla de
+  categoría *Authentication* con botón "copiar código" y fijar
+  `OTP_WA_PLANTILLA`. Sin proveedor fijado, el login no está disponible en
+  producción (a propósito).
 - **Interruptor desde el panel**: hoy se enciende con `PUT /api/admin/tienda
   { cuentasClientes: true }` (o SQL). La casilla en la pantalla de Tienda del
   panel toca `panel/index.html` (componente protegido) y queda para después.
-- **Dominios propios** (`mapolato.com` → `/t/<slug>`): no existen todavía;
-  `resolverTienda` está preparado para recibir un host resuelto a slug.
+- **Dominio propio**: fuera del alcance por decisión de producto. El flujo es
+  `mapolato.com → Ordenar → xabor.mx/t/mapolato-obispado → Iniciar sesión`;
+  la cuenta, las direcciones, Rewards y el checkout viven en la tienda Xabor,
+  brandeados como «Mi cuenta Mapolato».
 - **Fusión de cuentas duplicadas por formato**: decisión con datos reales
   (el predeploy los reporta); mueve puntos, así que no se hace en automático.
 - **Sesiones y rate limit en memoria**: el rate limit es por proceso (como
   todo el proyecto); las sesiones sí son durables (base).
 
+## Piloto: Mapolato Obispado
+
+Datos reales (copia de producción del 2026-09-17):
+
+| | |
+|---|---|
+| Negocio | `Mapolato Obispado` · `negocio_id 5de544d8-9a0a-4972-9c92-fd48ff22de66` |
+| Tienda | `https://xabor.mx/t/mapolato-obispado` (publicada; `tienda_online` activo) |
+| Rewards | módulo activo · programa **Mapolato Rewards** · `canal_tienda = true` · canje mínimo 100 pts · $0.50/pt |
+| Cuentas Rewards | 9 (8 con teléfono real → 8 clientes al aplicar la 080; 1 es un cliente de mostrador `pos-…` sin teléfono, no vinculable por diseño) · 508 pts |
+| Pago | solo **enlace de pago** (`tienda_metodos_pago = ["enlace_pago"]`): el checkout con sesión nace `pendiente_pago`, probado (caso 46) |
+| Marca | la hoja se titula «Mi cuenta Mapolato Obispado» (`Mi cuenta ${titular}`) |
+
+Las demás tiendas (Nonna Maye) siguen con `cuentas_clientes = FALSE`: sin
+botón, sin rutas de cuenta, checkout idéntico.
+
+### Activación (después de desplegar el candidato)
+
+1. Railway → servicio `xabor-agent` → Variables: `OTP_PROVEEDOR = sms`
+   (Twilio ya está configurado). Railway redepliega el mismo código al
+   cambiar variables; esperar `SUCCESS`.
+2. Encender solo Mapolato, desde el panel de Mapolato Obispado con sesión de
+   administrador (consola del navegador en `xabor.mx/app`):
+
+   ```js
+   fetch('/api/admin/tienda', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ cuentasClientes: true }) }).then(r => r.json()).then(console.log)
+   ```
+
+   Debe responder `config.cuentasClientes: true`. Equivalente en SQL:
+   `UPDATE tienda_config SET cuentas_clientes = TRUE WHERE negocio_id = '5de544d8-9a0a-4972-9c92-fd48ff22de66';`
+3. Verificar: `GET https://xabor.mx/api/tienda/mapolato-obispado` → `"cuentas": true`;
+   `GET https://xabor.mx/api/tienda/nonna-maye` → `"cuentas": false`.
+4. Recorrido real en un teléfono: Iniciar sesión → código por SMS → nombre →
+   Mi cuenta Mapolato Obispado → dos direcciones → Rewards (saldo previo) →
+   pedido a domicilio con "Enviar a: Casa" (llega hasta el enlace de pago;
+   no hace falta pagar para comprobar el pedido en el tablero con su
+   dirección).
+
+### Apagado del piloto
+
+`PUT /api/admin/tienda { "cuentasClientes": false }` (o el `UPDATE` inverso).
+Al instante: sin botón, rutas de cuenta en 404, checkout de invitado. Las
+sesiones, direcciones y punteros quedan guardados para cuando se vuelva a
+encender. Quitar `OTP_PROVEEDOR` cierra además el envío de códigos.
+
 ## Pruebas
 
 | Suite | Casos | Qué responde |
 |---|---|---|
-| `test/fase-cliente-tienda.mjs` | 44 | Nuevo, OTP (incorrecto, quemado, vencido, reutilizado, revocado, hash, rate limit), tres formatos = un cliente, perfil, direcciones (Casa, Trabajo, predeterminada única), checkout con dirección guardada, snapshot inmune a ediciones, Mis pedidos, propiedad de dirección, invitado intacto, consentimiento, aislamiento entre negocios (también en el esquema), Rewards correcto e intacto, canje requiere sesión, logout, tokens falsos, interruptor apagado, backfill de la 080 |
-| `test/fase-cliente-tienda-ui.mjs` | 33 | Puppeteer en 375, 390, 768 y escritorio: login, dirección, Rewards, compra con "Enviar a: Casa", sesión tras recarga, logout, invitado; sin scroll horizontal, cero errores de JS; capturas en `test/.capturas-cuenta/` |
+| `test/fase-cliente-tienda.mjs` | 46 | Nuevo, OTP (incorrecto, quemado, vencido, reutilizado, revocado, hash, rate limit), tres formatos = un cliente, perfil, direcciones (Casa, Trabajo, predeterminada única), checkout con dirección guardada, snapshot inmune a ediciones, Mis pedidos, propiedad de dirección, invitado intacto, consentimiento, aislamiento entre negocios (también en el esquema), Rewards correcto e intacto, canje requiere sesión, logout, tokens falsos, interruptor apagado, backfill de la 080 |
+| `test/fase-cliente-tienda-ui.mjs` | 34 | Puppeteer en 375, 390, 768 y escritorio: login, dirección, Rewards, compra con "Enviar a: Casa", sesión tras recarga, logout, invitado, y con cuentas apagadas la tienda de siempre; sin scroll horizontal, cero errores de JS; capturas en `test/.capturas-cuenta/` |
+
+Dependencia de orden preexistente en la batería de tienda: `fase-rewards-tienda`
+deja `tienda_metodos_pago = ["efectivo"]` en el negocio A y
+`fase-pagos-online-tienda` falla si corre justo después (sola pasa 18/18). Las
+suites de la cuenta restauran ese estado; las viejas no.
 
 Mordidas (cada garantía apagada pone en rojo exactamente sus pruebas):
 sesión sin filtro de negocio → 31; cualquier código aceptado → 7 y 8; código
