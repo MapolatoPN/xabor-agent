@@ -12,7 +12,8 @@
    Nada aquí se edita al dar de alta un negocio nuevo.
    ───────────────────────────────────────────────────────────────────────── */
 :root{
-  --marca:#111827; --marca-suave:#f3f4f6;
+  --marca:#111827; --marca-suave:#f3f4f6; --marca-borde:#cbd5e1;
+  --info:#1d4ed8; --info-bg:#e8f1fb; --naranja:#c2410c; --naranja-bg:#fff4e8;
   --fondo:#ffffff; --superficie:#ffffff; --superficie-2:#f9fafb;
   --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af;
   --borde:#e5e7eb; --borde-fuerte:#d1d5db;
@@ -29,6 +30,7 @@
     --texto:#f3f4f6; --texto-2:#9ca3af; --texto-3:#6b7280;
     --borde:#252d3d; --borde-fuerte:#374151; --marca-suave:#1c2333;
     --exito-bg:#052e23; --alerta-bg:#2b2008; --error-bg:#2d1214;
+    --info-bg:#0f1f3d; --naranja-bg:#2b1607;
     --sombra-alta:0 -8px 32px rgba(0,0,0,.5);
   }
 }
@@ -257,7 +259,11 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
    Solo se pinta si la tienda tiene cuentas encendidas (TIENDA.cuentas). Usa
    las mismas piezas que el resto (hoja, campo, btn, badge): la cuenta se
    siente parte de la tienda, no un panel administrativo disfrazado. */
-.cab-acciones{display:flex;align-items:center;flex-shrink:0;margin-top:2px}
+.cab-acciones{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;margin-top:2px}
+/* Acceso rápido a la libreta ("Enviar a: Casa ▾"). Solo abre Mi cuenta:
+   nunca cambia una dirección por sí solo. */
+.btn-envio{font-size:12px;font-weight:700;color:var(--texto-2);padding:0 10px;min-height:28px;border-radius:999px;
+  background:var(--superficie-2);border:1px solid var(--borde);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 .btn-cuenta{font-size:13px;font-weight:700;padding:0 12px;min-height:36px;border-radius:999px;background:var(--superficie-2);
   border:1px solid var(--borde);color:var(--texto);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 .btn-cuenta.on{background:var(--marca-suave);border-color:transparent;color:var(--marca)}
@@ -265,13 +271,17 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .item-menu{display:flex;align-items:center;gap:12px;width:100%;padding:14px 12px;border:1px solid var(--borde);
   border-radius:var(--r);background:var(--superficie);margin-bottom:8px;text-align:left;transition:.12s}
 .item-menu:active{background:var(--superficie-2)}
-.im-ico{font-size:20px;width:28px;text-align:center;flex-shrink:0}
+.im-ico{font-size:18px;width:38px;height:38px;border-radius:12px;background:var(--superficie-2);display:flex;
+  align-items:center;justify-content:center;flex-shrink:0}
 .im-tit{font-size:15px;font-weight:700;display:block}
 .im-sub{font-size:12.5px;color:var(--texto-2);display:block;margin-top:1px}
 .im-flecha{margin-left:auto;color:var(--texto-3);font-size:20px}
 .dir-card{border:1.5px solid var(--borde);border-radius:var(--r);padding:12px 14px;margin:0 16px 10px;background:var(--superficie)}
 .dir-card[role=button]{cursor:pointer}
-.dir-card.on{border-color:var(--marca);background:var(--marca-suave)}
+/* Seleccionada: fondo de marca muy suave, borde a media intensidad y una
+   palomita: el estado se lee sin que la tarjeta grite. */
+.dir-card.on{border-color:var(--marca-borde);background:var(--marca-suave)}
+.dir-check{margin-left:auto;color:var(--marca);font-size:14px;font-weight:800}
 .dir-alias{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--texto-2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .dir-alias .pred{background:var(--marca);color:#fff;border-radius:5px;padding:1px 6px;font-size:10.5px;text-transform:none;letter-spacing:0}
 .dir-txt{font-size:14.5px;font-weight:600;margin-top:4px}
@@ -292,12 +302,48 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .alias-chips{display:flex;gap:8px}
 .alias-chip{flex:1;padding:10px 4px;border:1.5px solid var(--borde);border-radius:var(--r-s);font-weight:700;font-size:13.5px;background:var(--superficie);white-space:nowrap}
 .alias-chip.on{border-color:var(--marca);background:var(--marca-suave)}
-.check{display:flex;gap:10px;align-items:flex-start;padding:9px 0;font-size:14px;font-weight:500;color:var(--texto);text-transform:none;letter-spacing:0;margin:0}
-.check input{width:20px;height:20px;margin:1px 0 0;accent-color:var(--marca);flex-shrink:0}
+.check{display:flex;gap:10px;align-items:center;padding:7px 0;font-size:13.5px;font-weight:500;color:var(--texto-2);text-transform:none;letter-spacing:0;margin:0;line-height:1.35}
+.check input{width:16px;height:16px;margin:0;accent-color:var(--marca);flex-shrink:0}
+.consentimientos{border:1px solid var(--borde);border-radius:var(--r-s);padding:4px 12px;background:var(--superficie-2)}
+.consentimientos .check+.check{border-top:1px solid var(--borde)}
 .enlace{color:var(--marca);font-weight:700;background:none;padding:0;font-size:inherit;text-decoration:underline;text-underline-offset:2px}
 .pedido-card{border:1px solid var(--borde);border-radius:var(--r);padding:12px 14px;margin:0 16px 10px;background:var(--superficie)}
 .tel-fijo{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 13px;border:1px solid var(--borde);
   border-radius:var(--r-s);background:var(--superficie-2);font-size:15px}
+/* Cabecera de la hoja: título corto y el negocio como subtítulo discreto. */
+.hoja-tit-caja{flex:1;min-width:0}
+.hoja-tit-caja .hoja-tit{flex:none}
+.hoja-sub{font-size:12.5px;font-weight:600;color:var(--texto-3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seccion-tit{padding:14px 16px 6px;font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em}
+/* Rewards: saldo grande, nivel y progreso; las reglas en una tarjeta suave. */
+.saldo-eti{font-size:12px;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.06em}
+.saldo-uni{font-size:16px;font-weight:700;opacity:.9}
+.nivel-fila{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:14px;font-size:14px;font-weight:800}
+.nivel-sig{font-size:12px;font-weight:700;opacity:.8}
+.barra-nivel{height:8px;border-radius:999px;background:rgba(255,255,255,.28);overflow:hidden;margin-top:8px}
+.barra-nivel>span{display:block;height:100%;background:#fff;border-radius:999px;min-width:0;transition:width .4s}
+.nivel-txt{font-size:12.5px;opacity:.92;margin-top:8px}
+.rw-reglas{margin:0 16px 12px;padding:14px;border:1px solid var(--borde);border-radius:var(--r);background:var(--superficie);box-shadow:var(--sombra)}
+.rw-linea{font-size:14.5px;font-weight:800}
+.rw-sub{font-size:13px;color:var(--texto-2);margin-top:5px;line-height:1.5}
+.rw-tot{display:flex;gap:10px;margin:0 16px 4px}
+.rw-stat{flex:1;padding:10px 12px;border-radius:var(--r-s);background:var(--superficie-2);font-size:12px;color:var(--texto-2)}
+.rw-stat b{display:block;font-size:17px;color:var(--texto);line-height:1.2;margin-bottom:2px}
+.mov-tit{font-size:13.5px;font-weight:600}
+.mov-folio{font-weight:500;color:var(--texto-3)}
+/* Pedidos: el estado como chip para escanear la lista de un vistazo. */
+.pedido-card{box-shadow:var(--sombra)}
+.pedido-cab{display:flex;align-items:center;gap:8px}
+.pedido-folio{font-weight:800;font-size:15px}
+.pedido-total{margin-left:auto;font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+.pedido-meta{font-size:12.5px;color:var(--texto-2);margin-top:4px}
+.pedido-items{font-size:13px;margin-top:6px;color:var(--texto)}
+.chip{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--superficie-2);color:var(--texto-2);white-space:nowrap;line-height:1.3}
+.chip.entregado,.chip.listo{background:var(--exito-bg);color:var(--exito)}
+.chip.cancelado{background:var(--superficie-2);color:var(--texto-3);text-decoration:line-through}
+.chip.en_preparacion{background:var(--naranja-bg);color:var(--naranja)}
+.chip.en_camino{background:var(--info-bg);color:var(--info)}
+.chip.pendiente_pago{background:var(--alerta-bg);color:var(--alerta)}
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
    La tienda nació móvil. Este bloque la convierte en una tienda de
    escritorio SIN tocar el DOM de compra ni una línea de la lógica: mismo
@@ -409,7 +455,10 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
       </div>
       <!-- Cuenta del cliente: oculto hasta que la API diga que esta tienda
            la tiene encendida. Un solo botón: "Iniciar sesión" o "Hola, X". -->
-      <div class="cab-acciones"><button class="btn-cuenta oculto" id="btn-cuenta" onclick="abrirCuenta()">Iniciar sesión</button></div>
+      <div class="cab-acciones">
+        <button class="btn-cuenta oculto" id="btn-cuenta" onclick="abrirCuenta()">Iniciar sesión</button>
+        <button class="btn-envio oculto" id="btn-envio" onclick="accesoRapidoDireccion()"></button>
+      </div>
     </div>
     <div id="avisos"></div>
     <div class="cats oculto" id="cats"><div class="cats-in" id="cats-in"></div></div>
@@ -481,7 +530,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 <div class="hoja" id="hoja-cuenta">
   <div class="hoja-cab">
     <button class="cerrar" id="cta-atras" onclick="cuentaAtras()" aria-label="Atrás">←</button>
-    <h2 class="hoja-tit" id="cta-titulo"></h2>
+    <div class="hoja-tit-caja"><h2 class="hoja-tit" id="cta-titulo"></h2><div class="hoja-sub oculto" id="cta-sub"></div></div>
     <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
   </div>
   <div class="hoja-cuerpo" id="cta-cuerpo"></div>
@@ -545,6 +594,7 @@ function aplicarMarca() {
   const c = TIENDA.color || '#111827';
   document.documentElement.style.setProperty('--marca', c);
   document.documentElement.style.setProperty('--marca-suave', c + '1a');
+  document.documentElement.style.setProperty('--marca-borde', c + '66');
   document.title = TIENDA.negocio + ' — Pedidos en línea';
   const meta = document.querySelector('meta[name=theme-color]');
   if (meta) meta.content = c;
@@ -1473,12 +1523,25 @@ async function cargarCuenta() {
   pintarBotonCuenta();
 }
 function pintarBotonCuenta() {
-  const b = $('btn-cuenta');
-  if (!TIENDA?.cuentas) { b.classList.add('oculto'); return; }
+  const b = $('btn-cuenta'), e = $('btn-envio');
+  if (!TIENDA?.cuentas) { b.classList.add('oculto'); e.classList.add('oculto'); return; }
   b.classList.remove('oculto');
   b.classList.toggle('on', !!CUENTA);
   b.textContent = CUENTA ? `👤 Hola, ${primerNombre(CUENTA.cliente.nombre) || 'cliente'}` : 'Iniciar sesión';
+  // Acceso rápido a la libreta, solo informativo: muestra la predeterminada y
+  // abre Mi cuenta. Elegir o cambiar una dirección sigue siendo un acto
+  // explícito ahí o en el checkout; aquí no se cambia nada.
+  if (!CUENTA) { e.classList.add('oculto'); return; }
+  const ds = CUENTA.direcciones || [];
+  const pred = ds.find(d => d.predeterminada) || ds[0];
+  e.textContent = pred ? `Enviar a: ${pred.alias} ▾` : '+ Agregar dirección';
+  e.classList.remove('oculto');
 }
+function accesoRapidoDireccion() {
+  abrirCuenta({ vista: (CUENTA?.direcciones || []).length ? 'direcciones' : 'direccion' });
+}
+const dineroCorto = n => { const v = Math.round((Number(n) || 0) * 100) / 100; return Number.isInteger(v) ? '$' + v.toLocaleString('es-MX') : dinero(v); };
+const claseEstado = s => ['entregado', 'cancelado', 'en_preparacion', 'en_camino', 'listo', 'pendiente_pago'].includes(s) ? s : 'nuevo';
 
 // Abre la hoja de cuenta. `volverAlCheckout` la convierte en un desvío: al
 // terminar (entrar, o guardar una dirección) regresa al paso de datos.
@@ -1501,17 +1564,21 @@ function pintarCuenta() {
     direcciones: vistaDirecciones, direccion: vistaDireccion, rewards: vistaRewards, pedidos: vistaPedidos };
   if (!CUENTA && !['login', 'codigo', 'nombre'].includes(vistaCuenta)) vistaCuenta = 'login';
   $('cta-atras').style.visibility = ['login', 'menu'].includes(vistaCuenta) ? 'hidden' : 'visible';
+  // El negocio va como subtítulo discreto en la entrada y en el menú.
+  const sub = $('cta-sub');
+  sub.textContent = ['login', 'menu'].includes(vistaCuenta) ? (TIENDA?.negocio || '') : '';
+  sub.classList.toggle('oculto', !sub.textContent);
   (vistas[vistaCuenta] || vistaLogin)();
 }
 const cajaError = () => `<div class="campo oculto" id="cta-error-caja"><div class="malo" id="cta-error"></div></div>`;
 function errorCuenta(msg) { const c = $('cta-error-caja'); if (c) { $('cta-error').textContent = msg; c.classList.remove('oculto'); } }
 
 // ── Entrar: teléfono → código ──
-// La cuenta se presenta con la marca del negocio ("Mi cuenta Mapolato"):
-// es infraestructura de Xabor, pero para el cliente es SU cuenta en ESTE
-// negocio -- y de hecho lo es: no existe una identidad compartida entre
-// comercios.
-const tituloCuenta = () => `Mi cuenta ${TIENDA?.negocio || ''}`.trim();
+// La cuenta se presenta como "Mi cuenta" con el negocio de subtítulo
+// (pintarCuenta): es infraestructura de Xabor, pero para el cliente es SU
+// cuenta en ESTE negocio -- y de hecho lo es: no existe una identidad
+// compartida entre comercios.
+const tituloCuenta = () => 'Mi cuenta';
 
 function vistaLogin() {
   $('cta-titulo').textContent = tituloCuenta();
@@ -1634,9 +1701,11 @@ function vistaPerfil() {
       <div class="ayuda">Es tu identidad verificada. Para cambiarlo, inicia sesión con el número nuevo.</div></div>
     <div class="campo"><label for="pf-email">Correo (opcional)</label><input id="pf-email" type="email" inputmode="email" autocomplete="email" maxlength="160" value="${esc(c.email || '')}" placeholder="tu@correo.com"></div>
     <div class="campo" style="padding-top:6px"><label>Avisos y promociones</label>
-      <div class="ayuda" style="margin:0 0 6px">Tus datos de contacto solo se usan para entregar tus pedidos. Si quieres recibir promociones, márcalo aquí; puedes quitarlo cuando quieras.</div>
-      <label class="check"><input type="checkbox" id="pf-c-wa" ${cs.whatsapp?.otorgado ? 'checked' : ''}><span>Acepto recibir promociones por <strong>WhatsApp</strong></span></label>
-      <label class="check"><input type="checkbox" id="pf-c-email" ${cs.email?.otorgado ? 'checked' : ''}><span>Acepto recibir promociones por <strong>correo</strong></span></label>
+      <div class="ayuda" style="margin:0 0 8px">Tus datos de contacto solo se usan para entregar tus pedidos. Si quieres recibir promociones, márcalo aquí; puedes quitarlo cuando quieras.</div>
+      <div class="consentimientos">
+        <label class="check"><input type="checkbox" id="pf-c-wa" ${cs.whatsapp?.otorgado ? 'checked' : ''}><span>Promociones por <strong>WhatsApp</strong></span></label>
+        <label class="check"><input type="checkbox" id="pf-c-email" ${cs.email?.otorgado ? 'checked' : ''}><span>Promociones por <strong>correo</strong></span></label>
+      </div>
     </div>
     ${cajaError()}
   </div>`;
@@ -1657,7 +1726,7 @@ async function guardarPerfil() {
 function tarjetaDireccion(d, { seleccionable = false, activa = false } = {}) {
   const sub = [d.zona ? 'Zona ' + esc(d.zona) : '', esc(d.referencia || '')].filter(Boolean).join(' · ');
   return `<div class="dir-card${activa ? ' on' : ''}" data-dir="${esc(d.id)}" ${seleccionable ? `onclick="elegirDireccion('${esc(d.id)}')" role="button"` : ''}>
-    <div class="dir-alias">${esc(d.alias)} ${d.predeterminada ? '<span class="pred">Predeterminada</span>' : ''}</div>
+    <div class="dir-alias">${esc(d.alias)} ${d.predeterminada ? '<span class="pred">Predeterminada</span>' : ''}${activa ? '<span class="dir-check" aria-label="Seleccionada">✓</span>' : ''}</div>
     <div class="dir-txt">${esc(d.resumen || d.calle)}</div>
     ${sub ? `<div class="dir-sub">${sub}</div>` : ''}
     ${seleccionable ? '' : `<div class="dir-acc">
@@ -1751,22 +1820,36 @@ function vistaRewards() {
     if (!w.activo) { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⭐</div><h3>Programa no disponible</h3></div>`; return; }
     const bloque = Math.max(1, w.canjeMinimo || 1);
     const canjeables = Math.floor((w.puntosCanjeables || 0) / bloque) * bloque;
-    const movs = (w.movimientos || []).map(m => `<div class="mov"><div><div>${esc(etiquetaMov(m.tipo))}${m.folio ? ` · #${esc(m.folio)}` : ''}</div>
+    // Progreso hacia el siguiente nivel con las cifras que YA manda el
+    // servidor (acumulado histórico y cuánto falta): aquí no se calcula
+    // ninguna regla. Con 0 puntos la barra empieza vacía.
+    const acumulado = Number(w.acumuladoTotal) || 0;
+    const falta = Number(w.nivel?.falta) || 0;
+    const siguiente = w.nivel?.siguiente || null;
+    const progreso = siguiente ? Math.max(0, Math.min(100, Math.round(acumulado / ((acumulado + falta) || 1) * 100))) : 100;
+    const movs = (w.movimientos || []).map(m => `<div class="mov"><div><div class="mov-tit">${esc(etiquetaMov(m.tipo))}${m.folio ? ` <span class="mov-folio">#${esc(m.folio)}</span>` : ''}</div>
       <div class="mov-sub">${esc(fechaCorta(m.fecha))}</div></div><div class="mov-pts ${m.puntos >= 0 ? 'mas' : 'menos'}">${m.puntos >= 0 ? '+' : ''}${m.puntos} pts</div></div>`).join('');
     $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
-      <div class="saldo-caja"><div style="font-size:12.5px;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.05em">Tu saldo</div>
-        <div class="saldo-num">${w.puntos} <span style="font-size:16px;font-weight:700">pts</span></div>
-        <div class="saldo-sub">${esc(w.nivel?.emoji || '')} Nivel ${esc(w.nivel?.nombre || '')}${w.nivel?.siguiente ? ` · te faltan ${w.nivel.falta} pts para ${esc(w.nivel.siguiente)}` : ''}</div></div>
-      <div style="padding:0 16px 12px;font-size:13.5px;color:var(--texto-2);line-height:1.6">
-        <div>💳 Se canjean en bloques de <strong>${w.canjeMinimo} pts</strong> (${dinero(w.canjeMinimo * w.valorPunto)} cada uno).</div>
-        <div>${w.canjeEnTienda
-          ? (canjeables > 0 ? `✅ Hoy puedes usar <strong>${canjeables} pts</strong> en esta tienda: <strong>${dinero(w.valorCanjeable)}</strong> de descuento en tu próximo pedido.`
-                            : `Te faltan ${bloque - (w.puntosCanjeables || 0)} pts para tu primer canje en línea.`)
-          : 'ℹ️ El canje en la tienda en línea no está habilitado; tus puntos siguen contando y los puedes usar en el negocio.'}</div>
-        ${w.cuentas > 1 ? `<div>ℹ️ ${w.puntos - w.puntosCanjeables} pts de tu saldo están registrados con otro formato de tu número; esos se canjean directamente en el negocio.</div>` : ''}
-        <div>Ganados en total: ${w.acumuladoTotal} · canjeados: ${w.canjeadoTotal}</div>
+      <div class="saldo-caja">
+        <div class="saldo-eti">Tu saldo</div>
+        <div class="saldo-num">${w.puntos} <span class="saldo-uni">pts</span></div>
+        <div class="nivel-fila"><span>${esc(w.nivel?.emoji || '')} ${esc(w.nivel?.nombre || '')}</span>${siguiente ? `<span class="nivel-sig">${esc(siguiente)}</span>` : ''}</div>
+        <div class="barra-nivel" role="progressbar" aria-valuenow="${progreso}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progreso}%"></span></div>
+        <div class="nivel-txt">${siguiente ? `${falta} pts para llegar a ${esc(siguiente)}` : 'Nivel máximo alcanzado'}</div>
       </div>
-      <div style="padding:14px 16px 6px;font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em">Movimientos</div>
+      <div class="rw-reglas">
+        <div class="rw-linea">Cada ${w.canjeMinimo} puntos valen ${dineroCorto(w.canjeMinimo * w.valorPunto)}</div>
+        <div class="rw-sub">${w.canjeEnTienda
+          ? (canjeables > 0 ? `Hoy puedes usar <strong>${canjeables} pts</strong> en esta tienda: <strong>${dineroCorto(w.valorCanjeable)}</strong> de descuento.`
+                            : `Te faltan <strong>${bloque - (w.puntosCanjeables || 0)} puntos</strong> para tu primer canje.`)
+          : 'El canje en la tienda en línea no está habilitado; tus puntos siguen contando y los puedes usar en el negocio.'}</div>
+        ${w.cuentas > 1 ? `<div class="rw-sub">${w.puntos - w.puntosCanjeables} pts de tu saldo están registrados con otro formato de tu número; esos se canjean directamente en el negocio.</div>` : ''}
+      </div>
+      <div class="rw-tot">
+        <div class="rw-stat"><b>${w.acumuladoTotal}</b>ganados en total</div>
+        <div class="rw-stat"><b>${w.canjeadoTotal}</b>canjeados</div>
+      </div>
+      <div class="seccion-tit">Movimientos</div>
       ${movs || '<div class="vacio" style="padding:24px"><p>Aún no hay movimientos.</p></div>'}
     </div>`;
   }).catch(e => { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⚠️</div><h3>No pudimos cargar tus puntos</h3><p>${esc(e.message)}</p></div>`; });
@@ -1780,9 +1863,9 @@ function vistaPedidos() {
     if (vistaCuenta !== 'pedidos') return;
     const ps = r.pedidos || [];
     $('cta-cuerpo').innerHTML = ps.length ? `<div style="padding:16px 0 6px">${ps.map(p => `<div class="pedido-card">
-      <div style="display:flex;justify-content:space-between;gap:10px;font-weight:800"><span>#${esc(p.folio)}</span><span>${dinero(p.total)}</span></div>
-      <div style="font-size:12.5px;color:var(--texto-2);margin-top:2px">${esc(fechaCorta(p.fecha))} · ${p.modalidad === 'domicilio' ? '🛵 Domicilio' : '🏪 Recoger'} · ${esc(etiquetaEstado(p.estado))}</div>
-      <div style="font-size:13px;margin-top:6px">${esc(p.items.map(i => `${i.cantidad}× ${i.nombre}`).join(', '))}</div>
+      <div class="pedido-cab"><span class="pedido-folio">#${esc(p.folio)}</span><span class="chip ${claseEstado(p.estado)}">${esc(etiquetaEstado(p.estado))}</span><span class="pedido-total">${dinero(p.total)}</span></div>
+      <div class="pedido-meta">${esc(fechaCorta(p.fecha))} · ${p.modalidad === 'domicilio' ? '🛵 Domicilio' : '🏪 Recoger'}</div>
+      <div class="pedido-items">${esc(p.items.map(i => `${i.cantidad}× ${i.nombre}`).join(', '))}</div>
       ${p.seguimiento ? `<div class="dir-acc"><button onclick="location.href='${esc(p.seguimiento)}'">Seguir pedido</button></div>` : ''}
     </div>`).join('')}</div>`
       : `<div class="vacio"><div class="ico">🧾</div><h3>Aún no tienes pedidos</h3><p>Cuando hagas uno, aquí lo verás.</p></div>`;

@@ -148,11 +148,24 @@ try {
       await pag.click('#cta-btn');
       await pag.waitForSelector('.item-menu', { visible: true });
       assert.ok((await pag.$$('.item-menu')).length >= 4, 'Perfil, direcciones, Rewards y pedidos');
-      // La cuenta lleva la marca del negocio, no la de Xabor.
-      assert.strictEqual(await texto(pag, '#cta-titulo'), 'Mi cuenta Tienda Cuenta UI');
+      // Título corto y el negocio como subtítulo discreto (marca del negocio, no de Xabor).
+      assert.strictEqual(await texto(pag, '#cta-titulo'), 'Mi cuenta');
+      assert.strictEqual(await texto(pag, '#cta-sub'), 'Tienda Cuenta UI');
+      // Acceso rápido en la cabecera: sin direcciones invita a agregar una.
+      assert.strictEqual(await texto(pag, '#btn-envio'), '+ Agregar dirección');
       assert.ok((await texto(pag, '#btn-cuenta')).includes('Hola, Persona'));
       assert.ok(await sinScrollH(pag));
       await captura(pag, `${etiqueta}-4-mi-cuenta`);
+      // Perfil: consentimientos compactos y, por omisión, APAGADOS.
+      await pag.evaluate(() => irVista('perfil'));
+      await pag.waitForSelector('#pf-c-wa', { visible: true });
+      assert.strictEqual(await pag.$eval('#pf-c-wa', c => c.checked), false);
+      assert.strictEqual(await pag.$eval('#pf-c-email', c => c.checked), false);
+      assert.ok(await pag.$('.consentimientos'), 'los avisos van en su tarjeta compacta');
+      assert.ok(await sinScrollH(pag));
+      await captura(pag, `${etiqueta}-4b-perfil`);
+      await pag.evaluate(() => irVista('menu'));
+      await pag.waitForSelector('.item-menu', { visible: true });
     });
 
     await t(etiqueta, 'guardar la dirección "Casa" desde Mi cuenta', async () => {
@@ -172,12 +185,28 @@ try {
       const tarjeta = await texto(pag, '.dir-card');
       assert.ok(tarjeta.includes('Av. Siempre Viva 742') && tarjeta.includes('Predeterminada'), tarjeta);
       await captura(pag, `${etiqueta}-6-direcciones`);
+      // El acceso rápido de la cabecera ahora muestra la predeterminada y solo ABRE la libreta.
+      assert.strictEqual(await texto(pag, '#btn-envio'), 'Enviar a: Casa ▾');
+      await pag.evaluate(() => cerrarTodo());
+      await espera(350);
+      await pag.click('#btn-envio');
+      await pag.waitForSelector('#hoja-cuenta.on .dir-card', { visible: true });
+      assert.strictEqual(await texto(pag, '#cta-titulo'), 'Mis direcciones');
+      assert.strictEqual((await pag.$$('.dir-card')).length, 1, 'abrir el acceso rápido no crea ni cambia nada');
     });
 
     await t(etiqueta, 'ver Rewards: el saldo previo (300 pts) y sus movimientos', async () => {
       await pag.evaluate(() => irVista('rewards'));
       await pag.waitForSelector('.saldo-num', { visible: true });
       assert.ok((await texto(pag, '.saldo-num')).startsWith('300'));
+      // Nivel con barra de progreso y textos simples, con las cifras del servidor.
+      assert.ok((await texto(pag, '.nivel-fila')).includes('Bronze'));
+      const barra = await pag.$eval('.barra-nivel>span', s => s.style.width);
+      assert.strictEqual(barra, '60%', '300 de 500 acumulados hacia Silver');
+      assert.strictEqual(await texto(pag, '.nivel-txt'), '200 pts para llegar a Silver');
+      assert.strictEqual(await texto(pag, '.rw-linea'), 'Cada 100 puntos valen $50');
+      assert.ok((await texto(pag, '.rw-sub')).includes('Hoy puedes usar 300 pts'));
+      assert.ok((await texto(pag, '.rw-tot')).includes('ganados en total'));
       await captura(pag, `${etiqueta}-7-rewards`);
       await pag.evaluate(() => cerrarTodo());
       await espera(350);
@@ -234,6 +263,24 @@ try {
       assert.strictEqual(p.datos.cliente.numero_exterior, '742');
       assert.strictEqual(Number(p.datos.costo_envio), 30);
       assert.ok(String(p.datos.notas).includes('Tocar dos veces'));
+    });
+
+    await t(etiqueta, 'Mis pedidos muestra el pedido con folio, chip de estado, importe y seguimiento', async () => {
+      // Página limpia (la pantalla de éxito se queda hasta que el cliente decide).
+      await pag.goto(URL_TIENDA, { waitUntil: 'networkidle0' });
+      await pag.waitForFunction(() => typeof CUENTA === 'object' && CUENTA && CUENTA.cliente, { timeout: 8000 });
+      await pag.evaluate(() => abrirCuenta({ vista: 'pedidos' }));
+      await pag.waitForSelector('#hoja-cuenta.on .pedido-card', { visible: true });
+      const tarjeta = await texto(pag, '.pedido-card');
+      assert.ok(tarjeta.includes('#' + folio), 'folio');
+      assert.ok(tarjeta.includes('Domicilio') && tarjeta.includes('Seguir pedido'));
+      const chip = await pag.$eval('.pedido-card .chip', c => ({ texto: c.textContent.trim(), clase: c.className }));
+      assert.strictEqual(chip.texto, 'Recibido');
+      assert.ok(chip.clase.includes('nuevo'), chip.clase);
+      assert.ok(await sinScrollH(pag));
+      await captura(pag, `${etiqueta}-11-pedidos`);
+      await pag.evaluate(() => cerrarTodo());
+      await espera(350);
     });
 
     await t(etiqueta, 'la sesión sobrevive a recargar la página, y cerrar sesión la termina', async () => {
