@@ -148,6 +148,8 @@ try {
       await pag.click('#cta-btn');
       await pag.waitForSelector('.item-menu', { visible: true });
       assert.ok((await pag.$$('.item-menu')).length >= 4, 'Perfil, direcciones, Rewards y pedidos');
+      // La cuenta lleva la marca del negocio, no la de Xabor.
+      assert.strictEqual(await texto(pag, '#cta-titulo'), 'Mi cuenta Tienda Cuenta UI');
       assert.ok((await texto(pag, '#btn-cuenta')).includes('Hola, Persona'));
       assert.ok(await sinScrollH(pag));
       await captura(pag, `${etiqueta}-4-mi-cuenta`);
@@ -290,6 +292,53 @@ try {
     assert.strictEqual(p.datos.cliente.telefono, tel(9));
     await captura(pag, 'invitado-exito');
     await contexto.close();
+  });
+
+  // ── Con la función APAGADA la tienda es la de siempre ──
+  await t('apagada', 'con cuentas apagadas no hay botón, ni invitación, y el invitado compra igual', async () => {
+    await pool.query('UPDATE tienda_config SET cuentas_clientes = FALSE WHERE negocio_id = $1', [NEG]);
+    try {
+      const contexto = await nav.createBrowserContext();
+      const pag = await contexto.newPage();
+      const errs = [];
+      pag.on('pageerror', e => errs.push(e.message));
+      pag.on('dialog', d => d.accept().catch(() => {}));
+      await pag.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+      await pag.goto(URL_TIENDA, { waitUntil: 'networkidle0' });
+      await pag.waitForSelector('.prod');
+      await espera(600);
+      assert.strictEqual(await pag.evaluate(() => TIENDA.cuentas), false);
+      assert.ok(await pag.$eval('#btn-cuenta', b => b.classList.contains('oculto')), 'el botón de cuenta debe seguir oculto');
+      assert.ok(!(await pag.$('#hoja-cuenta.on')), 'ninguna hoja de cuenta abierta');
+      await captura(pag, 'apagada-tienda');
+      await pag.click('.prod');
+      await pag.waitForSelector('#hoja-prod.on #btn-agregar', { visible: true }); await espera(300);
+      await pag.click('#btn-agregar');
+      await pag.waitForSelector('#barra:not(.oculto)'); await espera(300);
+      await pag.click('#btn-carrito');
+      await pag.waitForSelector('#hoja-carrito.on #btn-ir-checkout', { visible: true }); await espera(300);
+      await pag.click('#btn-ir-checkout');
+      await pag.waitForSelector('#hoja-checkout.on .opcion-grande', { visible: true }); await espera(300);
+      await pag.evaluate(() => elegirModalidad('recoger'));
+      await pag.click('#ck-pie .btn');
+      await pag.waitForSelector('#ck-tel', { visible: true });
+      const datos = await texto(pag, '#ck-cuerpo');
+      assert.ok(!datos.includes('Inicia sesión') && !datos.includes('cuenta'), 'sin invitación a entrar: ' + datos.slice(0, 120));
+      await pag.type('#ck-nombre', 'Invitado Apagada');
+      await pag.type('#ck-tel', tel(8));
+      await pag.click('#ck-pie .btn');
+      await pag.waitForSelector('#hoja-checkout.on .opcion-grande', { visible: true });
+      await pag.click('#ck-pie .btn');
+      await pag.waitForSelector('#btn-confirmar', { visible: true, timeout: 15000 });
+      const resumen = await texto(pag, '#ck-cuerpo');
+      assert.ok(!resumen.includes('Inicia sesión'), 'el bloque de puntos tampoco invita a entrar');
+      await pag.click('#btn-confirmar');
+      await pag.waitForSelector('.exito-folio', { visible: true, timeout: 20000 });
+      assert.deepStrictEqual(errs, []);
+      await contexto.close();
+    } finally {
+      await pool.query('UPDATE tienda_config SET cuentas_clientes = TRUE WHERE negocio_id = $1', [NEG]);
+    }
   });
 } finally {
   await nav.close();

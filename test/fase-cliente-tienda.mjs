@@ -60,6 +60,7 @@ const TEL_QUEMA = tel(9);
 // cada prueba que pide códigos usa un número propio.
 const TEL_REUSO = tel(11);
 const TEL_OTRO = tel(12);
+const TEL_PERSIST = tel(13);
 
 let base;
 const url = r => `${base}${r}`;
@@ -166,7 +167,7 @@ async function prepararNegocio(negocioId, etiqueta, slug) {
 }
 
 async function limpiar() {
-  const tels = [TEL_NUEVA, TEL_RW, TEL_B, TEL_FORMATOS, TEL_VICTIMA, TEL_INVITADO, TEL_RATE, TEL_MIG1, TEL_QUEMA, TEL_REUSO, TEL_OTRO];
+  const tels = [TEL_NUEVA, TEL_RW, TEL_B, TEL_FORMATOS, TEL_VICTIMA, TEL_INVITADO, TEL_RATE, TEL_MIG1, TEL_QUEMA, TEL_REUSO, TEL_OTRO, TEL_PERSIST];
   await pool.query(`DELETE FROM clientes_negocio WHERE telefono = ANY($1)`, [tels]);
   await pool.query(`DELETE FROM cliente_otp WHERE telefono = ANY($1)`, [tels]);
 }
@@ -657,6 +658,26 @@ try {
       const r = await nav.pedir(`/api/tienda/${SLUG_A}/cuenta`, { cookie: falso });
       assert.strictEqual(r.status, 401, falso.slice(0, 30));
     }
+  });
+
+  await t('SESION', '45. dos direcciones sobreviven a cerrar sesión y volver a entrar', async () => {
+    const nav = navegador();
+    await entrar(nav, SLUG_A, TEL_PERSIST, 'Persistente');
+    for (const d of [{ alias: 'Casa', calle: 'Persistencia 1', numeroExterior: '10', zona: 'Centro' },
+                     { alias: 'Trabajo', calle: 'Persistencia 2', numeroExterior: '20', zona: 'Lejos' }]) {
+      const r = await nav.pedir(`/api/tienda/${SLUG_A}/cuenta/direcciones`, { method: 'POST', body: d });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    }
+    await nav.pedir(`/api/tienda/${SLUG_A}/cuenta/logout`, { method: 'POST' });
+    assert.strictEqual((await nav.pedir(`/api/tienda/${SLUG_A}/cuenta/direcciones`)).status, 401, 'cerrada de verdad');
+    const otra = navegador();   // otro navegador, sesión nueva
+    const r0 = await entrar(otra, SLUG_A, TEL_PERSIST);
+    assert.strictEqual(r0.nuevo, false);
+    const r = await otra.pedir(`/api/tienda/${SLUG_A}/cuenta/direcciones`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.direcciones.map(d => d.alias).sort(), ['Casa', 'Trabajo']);
+    assert.strictEqual(r.body.direcciones.find(d => d.alias === 'Casa').predeterminada, true, 'la primera sigue siendo la predeterminada');
+    assert.strictEqual(r.body.direcciones.find(d => d.alias === 'Trabajo').resumen, 'Persistencia 2 20 Lejos');
   });
 
   // ═══════════════ INTERRUPTOR ═══════════════

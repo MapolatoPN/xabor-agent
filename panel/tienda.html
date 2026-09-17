@@ -1034,7 +1034,7 @@ function pasoDatos() {
   $('ck-titulo').textContent = CK.modalidad === 'domicilio' ? 'Tus datos y dirección' : 'Tus datos';
   const zonas = TIENDA.entrega.zonas || [];
   $('ck-cuerpo').innerHTML = `<div style="padding:16px 0">
-    ${TIENDA.cuentas ? `<div class="aviso info" style="margin:0 16px 14px">👤 <div>¿Ya tienes cuenta? <button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> y usa tus direcciones guardadas.</div></div>` : ''}
+    ${TIENDA.cuentas ? `<div class="aviso info" style="margin:0 16px 14px">👤 <div>¿Ya tienes tu cuenta ${esc(TIENDA.negocio)}? <button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> y usa tus direcciones guardadas.</div></div>` : ''}
     <div class="campo"><label for="ck-nombre">Nombre *</label>
       <input id="ck-nombre" value="${esc(CK.nombre || '')}" maxlength="80" autocomplete="name" placeholder="Tu nombre"></div>
     <div class="campo"><label for="ck-tel">Teléfono (WhatsApp) *</label>
@@ -1507,8 +1507,14 @@ const cajaError = () => `<div class="campo oculto" id="cta-error-caja"><div clas
 function errorCuenta(msg) { const c = $('cta-error-caja'); if (c) { $('cta-error').textContent = msg; c.classList.remove('oculto'); } }
 
 // ── Entrar: teléfono → código ──
+// La cuenta se presenta con la marca del negocio ("Mi cuenta Mapolato"):
+// es infraestructura de Xabor, pero para el cliente es SU cuenta en ESTE
+// negocio -- y de hecho lo es: no existe una identidad compartida entre
+// comercios.
+const tituloCuenta = () => `Mi cuenta ${TIENDA?.negocio || ''}`.trim();
+
 function vistaLogin() {
-  $('cta-titulo').textContent = 'Iniciar sesión';
+  $('cta-titulo').textContent = tituloCuenta();
   let tel = ctx.telefono || CK.telefono || '';
   try { tel = tel || localStorage.getItem(LS_TEL) || ''; } catch (e) {}
   $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
@@ -1599,7 +1605,7 @@ async function guardarNombre() {
 // ── Mi cuenta ──
 function vistaMenu() {
   const c = CUENTA.cliente, rw = CUENTA.rewards, nd = (CUENTA.direcciones || []).length;
-  $('cta-titulo').textContent = 'Mi cuenta';
+  $('cta-titulo').textContent = tituloCuenta();
   const item = (ico, tit, sub, accion) => `<button class="item-menu" onclick="${accion}"><span class="im-ico">${ico}</span>
     <span style="min-width:0"><span class="im-tit">${tit}</span>${sub ? `<span class="im-sub">${sub}</span>` : ''}</span><span class="im-flecha">›</span></button>`;
   $('cta-cuerpo').innerHTML = `<div class="menu-cuenta">
