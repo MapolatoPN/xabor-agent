@@ -207,9 +207,8 @@ export const explicaLaMencion = (mencion, explicadores = []) => palabrasSinExpli
  * que perdonar: toda palabra que el cliente no dijo es una invención, vaya
  * donde vaya.
  *
- * Es la MISMA función sin ese salto —mismo tokenizador, mismas vacías, las
- * mismas marcas de nota—, y por eso normalizar la forma sigue saliendo
- * gratis mientras añadir contenido no:
+ * Comparte el tokenizador y la lista de vacías, y por eso normalizar la forma
+ * sigue saliendo gratis mientras añadir contenido no:
  *
  *   «av reforma #200»  →  «Av. Reforma 200»   nada nuevo      → []
  *   «Reforma 200»      →  «Reforma 200, Col. Centro»          → [colonia, centro]
@@ -218,11 +217,92 @@ export const explicaLaMencion = (mencion, explicadores = []) => palabrasSinExpli
  * significativa —«Av 5 #3», todo de menos de tres letras— devuelve la lista
  * vacía porque no afirma nada que comprobar. Quien decida con esto tiene que
  * exigir además que algo SÍ esté sostenido.
+ *
+ * ── Y AQUÍ NO HAY MARCAS DE NOTA QUE VALGAN ────────────────────────────
+ *
+ * Tampoco usa `palabrasQuePidenAlgo`, y esto lo destapó una revisión
+ * adversarial: aquella salta la palabra que va detrás de una marca de nota
+ * —«sin», «para», «a», «poco»—, porque en la carta «sin chile» no pide chile
+ * y no puede descalificar al platillo. Con eso puesto, el filtro bloqueaba
+ * «Reforma 200, Depto 5B» y dejaba pasar «Reforma 200 PARA Depto 5B»: al
+ * modelo le bastaba una preposición para volver invisible lo que inventaba.
+ *
+ * En un dato de cliente, lo que va detrás de «para» o de «a» es justo lo que
+ * más importa —el destinatario, el interior, la instrucción de entrega—, así
+ * que cuentan todas las palabras significativas y ninguna se salta.
+ *
+ * ── UN NÚMERO CON ESPACIOS ES EL MISMO NÚMERO ──────────────────────────
+ *
+ * «878 123 4567» y «8781234567» son el mismo teléfono, y el tokenizador los
+ * ve como tres palabras y una. Es el dato que más se escribe con separadores,
+ * así que un valor que sea SÓLO un número se compara aparte: se le quitan los
+ * separadores a los dos lados y se exige que la tirada coincida ENTERA. No es
+ * normalización postal ni un parser; y al pedir la tirada completa, el «123»
+ * de un teléfono no puede respaldar un número de casa.
  */
+const soloDigitos = (s) => String(s ?? '').replace(/\D/g, '');
+const esUnNumeroEscrito = (s) => /^[\d\s.()+-]+$/.test(String(s ?? '').trim())
+  && soloDigitos(s).length >= 3;
+const tiradasDeDigitos = (t) => (String(t ?? '').match(/\d[\d\s.()+-]*\d|\d+/g) || [])
+  .map(soloDigitos).filter(Boolean);
+
+const textosDe = (textos) => (Array.isArray(textos) ? textos : [textos])
+  .map((t) => String(t || '')).filter(Boolean);
+
+// ── LO CORTO CON UN DÍGITO DENTRO NO ES DECORACIÓN ──────────────────────
+//
+// El tokenizador descarta lo de menos de tres letras, y para la carta está
+// bien. Aquí abría un hueco medido contra las 148 calles reales: «{calle},
+// Depto 5B» se bloqueaba en las 148 y «{calle} para el 5B» se colaba en las
+// 148. La diferencia era la palabra «Depto»; sin ella, «5b» mide dos y era
+// invisible. Un interior no es ruido: es a qué puerta llama el repartidor.
+//
+// La línea es el DÍGITO, no el largo. «av», «s», «n» o «cp» no afirman nada
+// que se pueda equivocar; «5B», «2A» o «#3» sí. Endurecer todo lo corto habría
+// tirado «S/N» y «C.P.», que están en media libreta de direcciones reales.
+const llevaDigito = (w) => /\d/.test(w);
+const significativasDe = (valor) => palabrasDe(valor)
+  .filter((w) => !VACIAS.has(w) && (w.length >= 3 || llevaDigito(w)));
+
+// Lo corto se busca como token exacto: `palabrasQueLaSostienen` filtra por su
+// cuenta lo de menos de tres letras y contestaría que no lo sostiene nadie.
+const laSostiene = (w, t) => (w.length >= 3
+  ? palabrasQueLaSostienen(w, t).size > 0
+  : palabrasDe(t).includes(w));
+
 export function palabrasSinRespaldo(valor, textos = []) {
-  const propias = palabrasQuePidenAlgo(valor);
-  const lista = (Array.isArray(textos) ? textos : [textos]).map((t) => String(t || '')).filter(Boolean);
-  return propias.filter((w) => !lista.some((t) => palabrasQueLaSostienen(w, t).size > 0));
+  const lista = textosDe(textos);
+  if (esUnNumeroEscrito(valor)) {
+    const mio = soloDigitos(valor);
+    return lista.some((t) => tiradasDeDigitos(t).includes(mio)) ? [] : [mio];
+  }
+  const propias = significativasDe(valor);
+  return propias.filter((w) => !lista.some((t) => laSostiene(w, t)));
+}
+
+/**
+ * ¿El texto del cliente respalda este valor ENTERO?
+ *
+ * Dos preguntas que hay que hacer juntas, y por eso viven en una sola función
+ * en vez de en el sitio que llama: que no sobre nada —lo de arriba— y que el
+ * valor AFIRME algo comprobable. Sin lo segundo, «Av 5 #3» pasa sola: no
+ * tiene ni una palabra de tres letras, así que no le sobra ninguna.
+ *
+ * Separadas se pisan. Con un teléfono dictado —«878 123 4567» contra
+ * «8781234567»— la primera dice que no sobra nada y la segunda, que mira
+ * palabras, no encuentra el token pegado y lo tira igual. La comprobación de
+ * la tirada de dígitos tiene que valer para las dos, o no vale para ninguna.
+ */
+export function elTextoRespaldaElValor(valor, textos = []) {
+  const lista = textosDe(textos);
+  if (!lista.length) return false;
+  if (esUnNumeroEscrito(valor)) {
+    const mio = soloDigitos(valor);
+    return lista.some((t) => tiradasDeDigitos(t).includes(mio));
+  }
+  const propias = significativasDe(valor);
+  if (!propias.length) return false;
+  return propias.every((w) => lista.some((t) => laSostiene(w, t)));
 }
 
 /**
