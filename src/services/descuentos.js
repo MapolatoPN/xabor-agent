@@ -34,12 +34,14 @@ export function autorizarDescuento({ rol, subtotal, descuento, motivo }) {
   return { ok: true, descuento: desc, motivo: desc > 0 ? String(motivo).trim() : null };
 }
 
-// De porcentaje o importe al monto en pesos, redondeado a centavos y acotado
-// al subtotal. El porcentaje se guarda como se capturó (15 = 15 %).
+// De porcentaje o importe al monto en pesos, redondeado a centavos. No se
+// acota al subtotal a propósito: un importe mayor que el subtotal debe
+// rechazarse en autorizarDescuento (DESCUENTO_INVALIDO), no convertirse en
+// silencio en un 100 %. El porcentaje se guarda como se capturó (15 = 15 %).
 export function calcularMontoDescuento({ tipo, valor, subtotal }) {
   const sub = redondear(subtotal);
   const v = redondear(valor);
-  if (tipo === 'porcentaje') return Math.min(sub, redondear(sub * v / 100));
-  if (tipo === 'importe') return Math.min(sub, v);
+  if (tipo === 'porcentaje') return redondear(sub * v / 100);
+  if (tipo === 'importe') return v;
   return 0;
 }

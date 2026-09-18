@@ -27,15 +27,20 @@ function validarNegocioId(negocioId) {
 }
 
 // Totales de una cuenta a partir de sus filas -- items cancelados nunca
-// suman; el saldo es consumo - pagos (la propina va aparte, no reduce saldo).
-// Fragmento de COLUMNAS (se interpola dentro de un SELECT existente que
-// alias la cuenta como "c") -- nunca lleva su propio SELECT.
+// suman; subtotal = consumo; total = subtotal - descuento de la cuenta
+// (migración 082); el saldo es total - pagos (la propina va aparte, no
+// reduce saldo). Fragmento de COLUMNAS (se interpola dentro de un SELECT
+// existente que alias la cuenta como "c") -- nunca lleva su propio SELECT.
+const SQL_SUBTOTAL = `COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
+              WHERE i.cuenta_id = c.id AND i.estado != 'cancelado'), 0)`;
 const SQL_TOTALES = `
-    COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
-              WHERE i.cuenta_id = c.id AND i.estado != 'cancelado'), 0) AS total,
+    ${SQL_SUBTOTAL} AS subtotal,
+    c.descuento_monto AS descuento,
+    ${SQL_SUBTOTAL} - c.descuento_monto AS total,
     COALESCE((SELECT SUM(p.monto) FROM restaurante_cuenta_pagos p WHERE p.cuenta_id = c.id), 0) AS pagado,
     COALESCE((SELECT SUM(p.propina) FROM restaurante_cuenta_pagos p WHERE p.cuenta_id = c.id), 0) AS propinas
 `;
+const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // ─── Mesas ──────────────────────────────────────────────────────────────────
 // El número de mesas del negocio vive en configuracion
@@ -107,8 +112,9 @@ export async function abrirMesa(negocioId, { mesaNumero, personas, meseroUsuario
 export async function obtenerCuenta(cuentaId, negocioId) {
   const nid = validarNegocioId(negocioId);
   const { rows } = await pool.query(`
-    SELECT c.*, u.nombre AS mesero_nombre, ${SQL_TOTALES}
+    SELECT c.*, u.nombre AS mesero_nombre, ud.nombre AS descuento_por_nombre, ${SQL_TOTALES}
     FROM restaurante_cuentas c JOIN usuarios u ON u.id = c.mesero_usuario_id
+    LEFT JOIN usuarios ud ON ud.id = c.descuento_por
     WHERE c.id = $1 AND c.negocio_id = $2
   `, [cuentaId, nid]);
   if (!rows.length) return null;
@@ -124,17 +130,27 @@ export async function obtenerCuenta(cuentaId, negocioId) {
       WHERE i.cuenta_id = $1 ORDER BY i.created_at
     `, [cuentaId]),
     pool.query(`
-      SELECT p.id, p.metodo, p.monto, p.propina, p.cubre, p.referencia, p.created_at, u.nombre AS registrado_por_nombre
+      SELECT p.id, p.metodo, p.monto, p.propina, p.cubre, p.referencia, p.recibido, p.cambio, p.created_at,
+             u.nombre AS registrado_por_nombre
       FROM restaurante_cuenta_pagos p JOIN usuarios u ON u.id = p.registrado_por
       WHERE p.cuenta_id = $1 ORDER BY p.created_at
     `, [cuentaId]),
   ]);
-  const total = Number(cuenta.total), pagado = Number(cuenta.pagado);
+  const subtotal = Number(cuenta.subtotal), total = Number(cuenta.total), pagado = Number(cuenta.pagado);
   return {
     id: cuenta.id, mesa: cuenta.mesa_numero, personas: cuenta.personas, estado: cuenta.estado,
     mesero: { id: cuenta.mesero_usuario_id, nombre: cuenta.mesero_nombre },
     abiertaAt: cuenta.abierta_at, cerradaAt: cuenta.cerrada_at, comandasEmitidas: cuenta.comandas_emitidas,
-    notas: cuenta.notas, total, pagado, propinas: Number(cuenta.propinas), saldo: total - pagado,
+    notas: cuenta.notas, subtotal, total, pagado, propinas: Number(cuenta.propinas), saldo: redondear(total - pagado),
+    // Descuento de la cuenta (migración 082): monto ya calculado en pesos,
+    // cómo se capturó (porcentaje o importe), motivo y quién/cuándo. null
+    // cuando no hay descuento.
+    descuento: Number(cuenta.descuento_monto) > 0 ? {
+      tipo: cuenta.descuento_tipo, valor: Number(cuenta.descuento_valor), monto: Number(cuenta.descuento_monto),
+      motivo: cuenta.descuento_motivo, por: cuenta.descuento_por, porNombre: cuenta.descuento_por_nombre || null,
+      at: cuenta.descuento_at,
+    } : null,
+    ticketImpresiones: Number(cuenta.ticket_impresiones) || 0,
     // Contabilización (migración 040): folio de la venta consolidada en
     // reportes y su timestamp -- null mientras la cuenta no cierre.
     ventaFolio: cuenta.venta_folio || null, contabilizadaAt: cuenta.contabilizada_at || null,
@@ -315,12 +331,33 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId) {
 }
 
 // ─── Pagos y división (C5/C6) ───────────────────────────────────────────────
-export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null }, usuarioId) {
+//
+// Tres cantidades distintas, y solo una es venta:
+//   monto     lo que se ABONA a la cuenta (la venta; nunca rebasa el saldo);
+//   recibido  el efectivo que entregó el cliente (informativo);
+//   cambio    recibido - monto - propina, lo que se le devuelve.
+// La propina va aparte: no reduce el saldo ni entra a la venta, y con
+// efectivo sale del billete recibido (por eso el recibido debe cubrirla).
+// Un pago parcial es un abono menor al saldo; cada uno lleva su propio
+// recibido y su propio cambio.
+export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null, recibido = null }, usuarioId) {
   const nid = validarNegocioId(negocioId);
-  const montoNum = Number(monto);
-  const propinaNum = Number(propina) || 0;
+  const montoNum = redondear(Number(monto));
+  const propinaNum = redondear(Number(propina) || 0);
   if (!Number.isFinite(montoNum) || montoNum <= 0) throw errorCodigo('El monto debe ser mayor a cero', 'MONTO_INVALIDO');
   if (propinaNum < 0) throw errorCodigo('La propina no puede ser negativa', 'MONTO_INVALIDO');
+  let recibidoNum = null, cambioNum = null;
+  if (recibido !== null && recibido !== undefined && recibido !== '') {
+    recibidoNum = redondear(Number(recibido));
+    if (!Number.isFinite(recibidoNum) || recibidoNum < 0) throw errorCodigo('El efectivo recibido no es válido', 'MONTO_INVALIDO');
+    if (metodo !== 'efectivo') throw errorCodigo('El efectivo recibido solo aplica a pagos en efectivo', 'MONTO_INVALIDO');
+    if (recibidoNum + 0.005 < montoNum + propinaNum) {
+      throw errorCodigo(
+        `El efectivo recibido ($${recibidoNum.toFixed(2)}) no cubre el abono ($${montoNum.toFixed(2)})${propinaNum > 0 ? ` más la propina ($${propinaNum.toFixed(2)})` : ''}`,
+        'EFECTIVO_INSUFICIENTE');
+    }
+    cambioNum = redondear(recibidoNum - montoNum - propinaNum);
+  }
   // Solo métodos HABILITADOS por el negocio (metodos_pago, migración 025).
   const met = await pool.query(
     `SELECT 1 FROM metodos_pago WHERE negocio_id = $1 AND tipo = $2 AND habilitado = true`,
@@ -356,13 +393,13 @@ export async function registrarPago(cuentaId, negocioId, { metodo, monto, propin
       throw errorCodigo(`El pago ($${montoNum}) excede el saldo pendiente ($${saldo.toFixed(2)})`, 'PAGO_EXCEDE_SALDO');
     }
     const { rows: [pago] } = await client.query(
-      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, metodo, monto, propina, created_at`,
-      [cuentaId, nid, metodo, montoNum, propinaNum, cubre, referencia, usuarioId]
+      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por, recibido, cambio)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, metodo, monto, propina, recibido, cambio, created_at`,
+      [cuentaId, nid, metodo, montoNum, propinaNum, cubre, referencia, usuarioId, recibidoNum, cambioNum]
     );
     await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
     await client.query('COMMIT');
-    return { pago, saldoRestante: Math.round((saldo - montoNum) * 100) / 100 };
+    return { pago, saldoRestante: redondear(saldo - montoNum), cambio: cambioNum, recibido: recibidoNum };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -381,6 +418,146 @@ export function dividirEnPartesIguales(saldo, partes) {
   const basePorParte = Math.floor(centavos / n);
   const sobrantes = centavos - basePorParte * n;
   return Array.from({ length: n }, (_, i) => (basePorParte + (i < sobrantes ? 1 : 0)) / 100);
+}
+
+// ─── Descuento de la cuenta (migración 082) ─────────────────────────────────
+//
+// Un solo descuento por cuenta, sobre el consumo completo, con motivo
+// obligatorio y auditoría (quién, cuándo, cuánto y cómo se capturó). La
+// autorización es la MISMA del POS (services/descuentos.js): staff hasta el
+// 10 % del subtotal, admin sin límite. Se aplica bajo FOR UPDATE, así que
+// dos cajas no lo pisan a la vez y el saldo que ve el pago siguiente ya lo
+// incluye. Nunca deja el total por debajo de lo ya cobrado: con pagos
+// registrados, el descuento que los rebasaría se rechaza.
+export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor, motivo }, { usuarioId, rol }) {
+  const nid = validarNegocioId(negocioId);
+  const t = String(tipo || '').trim();
+  if (!['porcentaje', 'importe'].includes(t)) throw errorCodigo('El descuento es por porcentaje o por importe', 'DESCUENTO_INVALIDO');
+  const v = redondear(Number(valor));
+  if (!Number.isFinite(v) || v <= 0) throw errorCodigo('El descuento debe ser mayor a cero', 'DESCUENTO_INVALIDO');
+  if (t === 'porcentaje' && v > 100) throw errorCodigo('El porcentaje no puede pasar de 100', 'DESCUENTO_INVALIDO');
+  const { autorizarDescuento, calcularMontoDescuento } = await import('./descuentos.js');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT c.id, c.estado FROM restaurante_cuentas c WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE`, [cuentaId, nid]);
+    if (!rows.length) throw errorCodigo('Cuenta no encontrada', 'CUENTA_NO_ENCONTRADA');
+    if (rows[0].estado !== 'abierta') throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    const { rows: [tot] } = await client.query(`SELECT ${SQL_TOTALES} FROM restaurante_cuentas c WHERE c.id = $1`, [cuentaId]);
+    const subtotal = Number(tot.subtotal), pagado = Number(tot.pagado);
+    if (subtotal <= 0) throw errorCodigo('La cuenta no tiene consumo que descontar', 'DESCUENTO_INVALIDO');
+    const monto = calcularMontoDescuento({ tipo: t, valor: v, subtotal });
+    if (monto <= 0) throw errorCodigo('El descuento debe ser mayor a cero', 'DESCUENTO_INVALIDO');
+    const autorizacion = autorizarDescuento({ rol, subtotal, descuento: monto, motivo });
+    if (!autorizacion.ok) throw errorCodigo(autorizacion.mensaje, autorizacion.codigo);
+    const total = redondear(subtotal - monto);
+    if (total + 0.005 < pagado) {
+      throw errorCodigo(
+        `Ya hay pagos por $${pagado.toFixed(2)}: con este descuento el total quedaría en $${total.toFixed(2)}, por debajo de lo cobrado`,
+        'DESCUENTO_INCOMPATIBLE');
+    }
+    await client.query(
+      `UPDATE restaurante_cuentas
+          SET descuento_tipo = $2, descuento_valor = $3, descuento_monto = $4, descuento_motivo = $5,
+              descuento_por = $6, descuento_at = NOW(), updated_at = NOW()
+        WHERE id = $1`,
+      [cuentaId, t, v, monto, autorizacion.motivo, usuarioId]);
+    await client.query('COMMIT');
+    return {
+      descuento: { tipo: t, valor: v, monto, motivo: autorizacion.motivo, por: usuarioId },
+      subtotal, total, pagado, saldo: redondear(total - pagado),
+    };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Quitar el descuento deja la cuenta como estaba: el total vuelve al
+// consumo completo. Solo sobre cuentas abiertas; con pagos registrados el
+// saldo simplemente sube, nunca queda negativo.
+export async function quitarDescuentoCuenta(cuentaId, negocioId) {
+  const nid = validarNegocioId(negocioId);
+  const { rows } = await pool.query(
+    `UPDATE restaurante_cuentas
+        SET descuento_tipo = NULL, descuento_valor = NULL, descuento_monto = 0, descuento_motivo = NULL,
+            descuento_por = NULL, descuento_at = NULL, updated_at = NOW()
+      WHERE id = $1 AND negocio_id = $2 AND estado = 'abierta'
+      RETURNING id`, [cuentaId, nid]);
+  if (!rows.length) throw errorCodigo('Cuenta no encontrada o no abierta', 'CUENTA_NO_ABIERTA');
+  return { ok: true };
+}
+
+// ─── Ticket de cuenta pagada ────────────────────────────────────────────────
+//
+// El snapshot que se imprime al cerrar y en cada reimpresión: dice PAGADO,
+// folio de la venta, productos, subtotal, descuento (con motivo), propina,
+// total, pagos por método, efectivo recibido y cambio. Es una función pura
+// sobre la cuenta ya leída: quien la imprime (Edge o navegador) recibe
+// exactamente lo mismo.
+export function construirTicketCuenta(cuenta, { negocio = null, reimpresion = false, numero = null } = {}) {
+  const pagos = (cuenta.pagos || []).map(p => ({
+    metodo: p.metodo,
+    monto: Number(p.monto) || 0,
+    propina: Number(p.propina) || 0,
+    recibido: p.recibido == null ? null : Number(p.recibido),
+    cambio: p.cambio == null ? null : Number(p.cambio),
+  }));
+  const efectivoRecibido = redondear(pagos.reduce((s, p) => s + (p.recibido || 0), 0));
+  const cambio = redondear(pagos.reduce((s, p) => s + (p.cambio || 0), 0));
+  const descuento = cuenta.descuento && Number(cuenta.descuento.monto) > 0 ? cuenta.descuento : null;
+  return {
+    ticketPagado: true,
+    leyenda: 'PAGADO',
+    negocio: negocio || null,
+    mesa: cuenta.mesa,
+    personas: cuenta.personas,
+    mesero: cuenta.mesero?.nombre || null,
+    folio: cuenta.ventaFolio || null,
+    fecha: cuenta.cerradaAt || null,
+    items: (cuenta.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+      producto: i.producto,
+      cantidad: i.cantidad,
+      precioUnitario: Number(i.precio_unitario),
+      modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+      notas: i.notas || null,
+    })),
+    subtotal: redondear(cuenta.subtotal),
+    descuento: descuento ? descuento.monto : 0,
+    descuentoMotivo: descuento ? descuento.motivo : null,
+    descuentoTipo: descuento ? descuento.tipo : null,
+    descuentoValor: descuento ? descuento.valor : null,
+    // `promocion` es el rótulo que el renderer del Edge ya sabía imprimir
+    // junto al descuento; llevar ahí el motivo hace que un Edge anterior a
+    // esta versión también lo muestre.
+    promocion: descuento ? descuento.motivo : null,
+    propina: redondear(cuenta.propinas),
+    total: redondear(cuenta.total),
+    pagado: redondear(cuenta.pagado),
+    pagos,
+    efectivoRecibido: efectivoRecibido > 0 ? efectivoRecibido : null,
+    cambio: cambio > 0 ? cambio : null,
+    reimpresion: reimpresion === true,
+    reimpresionNumero: numero,
+  };
+}
+
+// Reimprimir el ticket es una intención nueva cada vez: se numera para que
+// cada reimpresión tenga su propia clave de idempotencia en Edge y quede
+// contada. Solo cuentas cerradas con venta contabilizada; nunca vuelve a
+// cerrar, cobrar ni registrar nada más.
+export async function registrarImpresionTicket(cuentaId, negocioId) {
+  const nid = validarNegocioId(negocioId);
+  const { rows } = await pool.query(
+    `UPDATE restaurante_cuentas SET ticket_impresiones = ticket_impresiones + 1
+      WHERE id = $1 AND negocio_id = $2 AND estado = 'cerrada' AND venta_folio IS NOT NULL
+      RETURNING ticket_impresiones, venta_folio`, [cuentaId, nid]);
+  if (!rows.length) throw errorCodigo('La cuenta no tiene un ticket pagado que reimprimir', 'TICKET_NO_DISPONIBLE');
+  return { numero: Number(rows[0].ticket_impresiones), ventaFolio: rows[0].venta_folio };
 }
 
 // ─── Cierre y movimiento ────────────────────────────────────────────────────
@@ -413,7 +590,8 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
     await client.query('BEGIN');
     const { rows } = await client.query(
       `SELECT c.id, c.estado, c.mesa_numero, c.personas, c.mesero_usuario_id, c.abierta_at,
-              c.venta_folio, c.reversos
+              c.venta_folio, c.reversos,
+              c.descuento_tipo, c.descuento_valor, c.descuento_monto, c.descuento_motivo, c.descuento_por
        FROM restaurante_cuentas c WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE`,
       [cuentaId, nid]
     );
@@ -441,7 +619,8 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
       [cuentaId]
     );
     const pagosQ = await client.query(
-      `SELECT metodo, SUM(monto)::numeric(12,2) AS monto, SUM(propina)::numeric(12,2) AS propina
+      `SELECT metodo, SUM(monto)::numeric(12,2) AS monto, SUM(propina)::numeric(12,2) AS propina,
+              SUM(recibido)::numeric(12,2) AS recibido, SUM(cambio)::numeric(12,2) AS cambio
        FROM restaurante_cuenta_pagos WHERE cuenta_id = $1 GROUP BY metodo ORDER BY metodo`,
       [cuentaId]
     );
@@ -450,6 +629,12 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
     const metodos = pagos.map(pg => pg.metodo);
     const formaPago = metodos.length === 0 ? 'sin pago' : (metodos.length === 1 ? metodos[0] : 'mixto');
     const ventaFolio = `RM-${String(cta.id).replace(/-/g, '').slice(0, 8).toUpperCase()}-${cta.reversos}`;
+    const descuentoMonto = Number(cta.descuento_monto) || 0;
+    const efectivoRecibido = redondear(pagos.reduce((s, pg) => s + (Number(pg.recibido) || 0), 0));
+    const cambio = redondear(pagos.reduce((s, pg) => s + (Number(pg.cambio) || 0), 0));
+    // `subtotal`, `descuento` y `motivo_descuento` llevan los MISMOS nombres
+    // que una venta del POS: el historial, ventas y el corte los leen igual.
+    // `total` es el neto (subtotal - descuento), que es lo que se cobró.
     const datosVenta = {
       id: ventaFolio,
       origen: 'restaurante',
@@ -465,11 +650,21 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
         nombre: i.nombre, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
         notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') || undefined,
       })),
+      subtotal: Number(tot.subtotal),
+      descuento: descuentoMonto,
+      motivo_descuento: descuentoMonto > 0 ? cta.descuento_motivo : null,
+      ...(descuentoMonto > 0 ? {
+        descuento_tipo: cta.descuento_tipo, descuento_valor: Number(cta.descuento_valor), descuento_por: cta.descuento_por,
+      } : {}),
       total: Number(tot.total),
       propinas: Number(tot.propinas),
       costo_envio: 0,
       forma_pago: formaPago,
-      pagos: pagos.map(pg => ({ metodo: pg.metodo, monto: Number(pg.monto), propina: Number(pg.propina) })),
+      pagos: pagos.map(pg => ({
+        metodo: pg.metodo, monto: Number(pg.monto), propina: Number(pg.propina),
+        ...(pg.recibido != null ? { recibido: Number(pg.recibido), cambio: Number(pg.cambio) || 0 } : {}),
+      })),
+      ...(efectivoRecibido > 0 ? { efectivo_recibido: efectivoRecibido, cambio } : {}),
       estado: 'entregado',
     };
     await client.query(
@@ -486,7 +681,11 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
       [cuentaId, usuarioId, ventaFolio]
     );
     await client.query('COMMIT');
-    return { ok: true, total: Number(tot.total), propinas: Number(tot.propinas), ventaFolio, pagos: datosVenta.pagos };
+    return {
+      ok: true, total: Number(tot.total), subtotal: Number(tot.subtotal), descuento: descuentoMonto,
+      propinas: Number(tot.propinas), ventaFolio, pagos: datosVenta.pagos,
+      ...(efectivoRecibido > 0 ? { efectivoRecibido, cambio } : {}),
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;

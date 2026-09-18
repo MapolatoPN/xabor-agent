@@ -108,6 +108,7 @@ import {
   listarMesas, abrirMesa, obtenerCuenta, agregarItems, enviarComanda, cancelarItem, actualizarNotasItem, cambiarCantidadItem, quitarItemPendiente,
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
   revertirVentaCuenta,
+  aplicarDescuentoCuenta, quitarDescuentoCuenta, construirTicketCuenta, registrarImpresionTicket,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
@@ -2767,6 +2768,9 @@ function manejarErrorRestaurante(res, e) {
     MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
     MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, ITEM_NO_COMENTABLE: 409, ITEM_NO_EDITABLE: 409, CANTIDAD_INVALIDA: 400, PARTES_INVALIDAS: 400,
     VENTA_CONTABILIZADA: 409, SIN_VENTA_QUE_REVERTIR: 409,
+    // Cobro (082): descuento de cuenta, efectivo recibido y ticket pagado.
+    DESCUENTO_INVALIDO: 400, DESCUENTO_NO_AUTORIZADO: 403, DESCUENTO_INCOMPATIBLE: 409,
+    EFECTIVO_INSUFICIENTE: 400, TICKET_NO_DISPONIBLE: 409,
   };
   const status = mapa[e.code];
   if (status) return res.status(status).json({ error: e.message, code: e.code });
@@ -3057,7 +3061,13 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
         modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
         notas: i.notas || null,
       })),
-      subtotal: cuenta.total,
+      // Subtotal = consumo; total = subtotal - descuento de la cuenta (082).
+      // El motivo viaja también como `promocion`, que es el rótulo que el
+      // renderer del Edge ya imprimía junto al descuento.
+      subtotal: cuenta.subtotal,
+      descuento: cuenta.descuento?.monto || 0,
+      descuentoMotivo: cuenta.descuento?.motivo || null,
+      promocion: cuenta.descuento?.motivo || null,
       pagado: cuenta.pagado,
       saldo: cuenta.saldo,
       propina: cuenta.propinas,
@@ -3100,65 +3110,78 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
+// Ticket PAGADO de una cuenta cerrada. Por Edge si el negocio tiene una
+// impresora de Caja/Ticket (documento 'cuenta': destinosDeDocumento nunca
+// hereda las reglas de categoría, así que jamás llega a cocina) y, si no,
+// devuelve el snapshot para que el navegador de la caja lo imprima por
+// Windows. Nunca los dos. Nunca lanza: si el papel falla, el cobro ya quedó
+// hecho y se reimprime desde /ticket sin volver a cerrar.
+//
+// Antes el ticket iba por el camino legado (`emitirTrabajoImpresion`,
+// tipo 'cuenta_final'): un aviso al panel de comandas que solo imprimía si ESE
+// panel estaba abierto en un navegador. La caja cierra desde Restaurante, y
+// ahí nunca salía nada.
+async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId, reimpresion = false, numero = null }) {
+  try {
+    const cuenta = await obtenerCuenta(cuentaId, negocioId);
+    if (!cuenta || !cuenta.ventaFolio) return { destino: 'ninguno', avisos: ['la cuenta no tiene venta contabilizada'] };
+    const negocioNombre = await obtenerNombreNegocio(negocioId).catch(() => null);
+    const ticket = construirTicketCuenta(cuenta, { negocio: negocioNombre, reimpresion, numero });
+    const impresion = await crearTrabajosDeDocumento({
+      negocioId, documento: 'cuenta', origenTipo, origenId, payload: ticket,
+    });
+    await entregarTrabajos(impresion.creados);
+    if (impresion.creados.length + impresion.duplicados.length > 0) {
+      return { destino: 'edge', creados: impresion.creados.length, duplicados: impresion.duplicados.length, avisos: impresion.avisos };
+    }
+    return { destino: 'navegador', ticket, avisos: impresion.avisos };
+  } catch (e) {
+    console.error(`[Restaurante] no se pudo imprimir el ticket de la cuenta ${cuentaId}: ${e.message}`);
+    return { destino: 'ninguno', avisos: [e.message] };
+  }
+}
+
 app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
     const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId);
-    // Ticket final de cuenta (tipo 'cuenta_final'): UNA sola vez, solo cuando
-    // este request fue el que cerró (un reintento idempotente responde
-    // yaCerrada y NO reimprime). Nunca reimprime comandas de cocina, y usa
-    // el contrato C8 (printRouter no lanza; sin impresora => 'omitido').
+    // Ticket PAGADO: UNA sola vez, solo cuando este request fue el que cerró
+    // (un reintento idempotente responde yaCerrada y NO reimprime: para eso
+    // está /ticket). Nunca reimprime comandas de cocina.
+    let impresion = null;
     if (!r.yaCerrada) {
-      const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
-
-      // Xabor Edge: la cuenta va SOLO a las impresoras declaradas para el
-      // documento 'cuenta' (normalmente la de tickets, junto a la caja).
-      // Nunca hereda las reglas de categoría, así que jamás aparece en
-      // cocina -- eso está garantizado por destinosDeDocumento().
-      const impresionCuenta = await crearTrabajosDeDocumento({
-        negocioId: req.negocioId,
-        documento: 'cuenta',
-        origenTipo: 'restaurante_cuenta',
-        origenId: String(r.ventaFolio),
-        payload: {
-          negocio: cuenta?.negocioNombre || null,
-          mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
-          folio: r.ventaFolio,
-          items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
-            producto: i.producto, cantidad: i.cantidad, precioUnitario: Number(i.precio_unitario),
-            modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
-          })),
-          subtotal: r.total, propina: r.propinas, total: r.total, pagos: r.pagos,
-        },
-      });
-      await entregarTrabajos(impresionCuenta.creados);
-      const edgeSeHizoCargoDeLaCuenta =
-        impresionCuenta.creados.length + impresionCuenta.duplicados.length > 0;
-
-      // El ticket por el camino anterior SOLO si Edge no lo tomó. Los dos
-      // caminos corrían siempre en la misma petición: en cuanto alguien
-      // asignara una impresora al destino "Caja", el cliente recibía dos
-      // tickets del mismo cierre.
-      if (!edgeSeHizoCargoDeLaCuenta) await emitirTrabajoImpresion({
-        id: r.ventaFolio,
-        negocioId: req.negocioId,
-        canal: 'restaurante',
-        tipo_comanda: 'cuenta_final',
-        mesa: cuenta?.mesa, personas: cuenta?.personas, mesero: cuenta?.mesero?.nombre,
-        items: (cuenta?.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
-          nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
-          notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', '),
-        })),
-        total: r.total,
-        propina: r.propinas,
-        pagos: r.pagos,
-        folio_venta: r.ventaFolio,
-        cliente: { nombre: `Mesa ${cuenta?.mesa ?? ''}`.trim() },
-        modalidad: 'mesa',
-        estado: 'entregado',
+      impresion = await imprimirTicketPagado(req.negocioId, req.params.cuentaId, {
+        origenTipo: 'restaurante_cuenta', origenId: String(r.ventaFolio),
       });
     }
-    res.json(r);
+    res.json({ ...r, impresion });
   } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Reimprimir el ticket pagado: no cierra, no cobra ni registra nada más que
+// el número de reimpresión. Cada reimpresión es un trabajo NUEVO en Edge
+// (clave folio#n, marcado REIMPRESION) o un nuevo diálogo en el navegador.
+app.post('/api/restaurante/cuentas/:cuentaId/ticket', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const { numero, ventaFolio } = await registrarImpresionTicket(req.params.cuentaId, req.negocioId);
+    const impresion = await imprimirTicketPagado(req.negocioId, req.params.cuentaId, {
+      origenTipo: 'restaurante_cuenta_reimpresion', origenId: `${ventaFolio}#${numero}`, reimpresion: true, numero,
+    });
+    res.json({ ok: true, ventaFolio, numero, impresion });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Descuento de la cuenta: caja o admin (el mesero no cobra: requireAuthSeguro
+// rechaza la sesión de estación). Misma autorización que el POS; el motivo,
+// quién y cuándo quedan en la cuenta y viajan a la venta.
+app.post('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const r = await aplicarDescuentoCuenta(req.params.cuentaId, req.negocioId, req.body || {}, { usuarioId: req.usuarioId, rol: req.rol });
+    res.json({ ok: true, ...r });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+app.delete('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await quitarDescuentoCuenta(req.params.cuentaId, req.negocioId)); }
+  catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/mover', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {

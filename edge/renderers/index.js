@@ -66,6 +66,9 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
       SIZE_NORMAL, texto(String(payload.leyenda || 'NO ES COMPROBANTE DE PAGO')),
       BOLD_OFF, ALIGN_LEFT, lf(1)
     );
+  } else if (payload.ticketPagado) {
+    // El ticket de la cuenta ya cobrada: lo primero que se lee es PAGADO.
+    partes.push(ALIGN_CENTER, SIZE_2H, BOLD_ON, texto('PAGADO'), SIZE_NORMAL, BOLD_OFF, ALIGN_LEFT, lf(1));
   }
 
   if (payload.mesa != null) partes.push(texto(`Mesa ${payload.mesa}`));
@@ -89,7 +92,10 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
   // Descuento por promoción (si el pedido trae uno). El nombre de la promo,
   // cuando viene, ayuda a que el cliente vea qué se aplicó.
   if (Number(payload.descuento) > 0) {
-    const etiqueta = payload.promocion ? `Descuento (${String(payload.promocion).slice(0, ancho - 14)})` : 'Descuento';
+    // El motivo del descuento (o el nombre de la promoción) va junto al
+    // importe, para que el cliente vea qué se aplicó.
+    const motivo = payload.descuentoMotivo || payload.promocion;
+    const etiqueta = motivo ? `Descuento (${String(motivo).slice(0, ancho - 14)})` : 'Descuento';
     partes.push(columnas(etiqueta, `-${dinero(payload.descuento)}`, ancho));
   }
   if (payload.propina) partes.push(columnas('Propina', dinero(payload.propina), ancho));
@@ -101,6 +107,11 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
 
   for (const pago of payload.pagos || []) {
     partes.push(columnas(`  ${pago.metodo}`, dinero(pago.monto), ancho));
+  }
+  // Efectivo recibido y cambio: informativos, nunca parte de la venta.
+  if (Number(payload.efectivoRecibido) > 0) {
+    partes.push(columnas('Efectivo recibido', dinero(payload.efectivoRecibido), ancho));
+    partes.push(columnas('Cambio', dinero(payload.cambio || 0), ancho));
   }
 
   if (payload.reimpresion) {
