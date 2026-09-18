@@ -90,6 +90,7 @@ const SCRIPTS = [
   // quiere hacer seguro.
   '077-webhook-entrante',
   '078-whatsapp-continuidad',
+  '080-pedidos-externos',
 ];
 
 for (const nombre of SCRIPTS) {

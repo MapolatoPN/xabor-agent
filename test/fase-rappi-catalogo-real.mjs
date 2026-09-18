@@ -244,8 +244,12 @@ try {
     const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
     assert.ok(/subir-menu', requireAdminSeguro, requireModulo\('rappi'\)/.test(SERVER),
       'la ruta admin dejó de exigir admin de negocio + módulo');
-    assert.ok(/await construirCatalogoRappi\(req\.negocioId\)/.test(SERVER),
-      'la ruta admin ya no construye con el negocio autenticado');
+    // Multitienda: el catálogo se construye con el negocio de la sesión Y
+    // dirigido al store de SU integración (nunca al del entorno).
+    assert.ok(/await construirCatalogoRappi\(req\.negocioId, \{ storeId: integracion\.storeId \}\)/.test(SERVER),
+      'la ruta admin ya no construye con el negocio autenticado y el store de su integración');
+    assert.ok(/await cliente\.subirCatalogo\(catalogo\)/.test(SERVER),
+      'la ruta admin ya no publica por el cliente de la integración del negocio');
     assert.ok(!/construirCatalogoRappi\(\)/.test(SERVER), 'quedó una llamada sin negocio');
   });
 
@@ -259,8 +263,8 @@ try {
   });
 
   await t('17. el client_id de Rappi ya no se loguea completo', async () => {
-    assert.ok(!/client_id: \$\{CLIENT_ID\}/.test(FUENTE), 'el client_id sigue imprimiéndose completo');
-    assert.ok(/client_id: …\$\{String\(CLIENT_ID/.test(FUENTE), 'el log dejó de existir o no está enmascarado');
+    assert.ok(!/client_id: \$\{CLIENT_ID\}/.test(FUENTE) && !/client_id: \$\{clientId\}/.test(FUENTE), 'el client_id sigue imprimiéndose completo');
+    assert.ok(/client_id: …\$\{clientId\.slice\(-4\)\}/.test(FUENTE), 'el log dejó de existir o no está enmascarado');
     assert.ok(!/console\.log\([^)]*CLIENT_SECRET/.test(FUENTE), 'el secret aparece en un log');
   });
 

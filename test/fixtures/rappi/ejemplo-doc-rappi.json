@@ -1,0 +1,35 @@
+{
+  "_nota": "Ejemplo de la documentacion publica de Rappi (dev-portal, Orders). NO es una orden real. Fija la FORMA del contrato; no prueba precios ni SKUs de Mapolato.",
+  "order_detail": {
+    "order_id": "392625",
+    "delivery_method": "delivery",
+    "payment_method": "cc",
+    "cooking_time": 10,
+    "created_at": "2019-04-10T11:12:57.000Z",
+    "delivery_information": {
+      "city": "Ciudad de México",
+      "complete_address": "Calle Ficticia 5050",
+      "street_name": "Calle Ficticia",
+      "street_number": "5050",
+      "neighborhood": "Barrio",
+      "postal_code": "12345",
+      "complement": "Portón verde"
+    },
+    "items": [
+      {
+        "id": "2089918083",
+        "sku": "1234",
+        "name": "Chicken and Apple Salad",
+        "price": 289,
+        "quantity": 3,
+        "comments": "No vinegar",
+        "subitems": [
+          { "id": "10005260", "sku": "11", "name": "Burrata Cheese", "price": 135, "quantity": 1 }
+        ]
+      }
+    ],
+    "totals": { "total_products": 1272, "total_discounts": 0, "total_order": 1272 }
+  },
+  "customer": { "first_name": "John", "last_name": "Doe", "phone_number": "0000000000" },
+  "store": { "internal_id": "30000011", "external_id": "123445", "name": "Store 1" }
+}

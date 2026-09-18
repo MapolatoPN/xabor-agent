@@ -1,186 +1,249 @@
 /**
- * Cliente Rappi API v2
+ * Cliente Rappi API v2 (Restaurants Integrations Public API)
  * Sandbox: microservices.dev.rappi.com
- * Producción: microservices.rappi.com
+ * Producción: services.mxgrability.rappi.com (órdenes, webhooks, menú) y
+ *             api.rappi.com.mx (auth)
  *
  * Flujo de orden:
  *   Rappi → NEW_ORDER webhook → nosotros → PUT /orders/{id}/take → listo
+ *
+ * MULTITIENDA
+ *
+ * Este módulo ya no gira alrededor de UNA tienda. `crearClienteRappi()`
+ * construye un cliente atado a un store y a unas credenciales concretas; todo
+ * lo saliente (tomar/rechazar orden, ready-for-pickup, disponibilidad,
+ * abrir/cerrar tienda, catálogo, webhooks) pasa por un cliente. Quién decide
+ * qué cliente usar es `rappiIntegracion.js`, a partir de `integraciones_canal`:
+ * el store de Obispado nunca se resuelve desde una variable global.
+ *
+ * Las funciones sueltas exportadas al final (`tomarOrden`, `subirCatalogo`,
+ * ...) son el CAMINO LEGADO: delegan en un cliente construido desde las
+ * variables de entorno (RAPPI_CLIENT_ID / RAPPI_CLIENT_SECRET /
+ * RAPPI_STORE_ID, es decir, Nonna Maye). Se conservan para las rutas
+ * `/api/rappi/*` y el job de horario, que siguen siendo de una sola tienda a
+ * propósito -- ver docs/rappi-mapolato-obispado-auditoria.md, sección G.
  */
 
 const BASE_URL  = process.env.RAPPI_BASE_URL  || 'https://services.mxgrability.rappi.com'; // Órdenes, webhooks, menú (API vieja)
 const NEW_BASE_URL = process.env.RAPPI_NEW_BASE_URL || 'https://api.rappi.com.mx';           // Auth nueva
 const AUTH_URL  = process.env.RAPPI_AUTH_URL  || `${NEW_BASE_URL}/restaurants/auth/v1/token/login/integrations`;
-const CLIENT_ID = process.env.RAPPI_CLIENT_ID;
-const CLIENT_SECRET = process.env.RAPPI_CLIENT_SECRET;
-const STORE_ID  = process.env.RAPPI_STORE_ID || null; // PROD: 1930419809 — null = Rappi desactivado
+const STORE_ID  = process.env.RAPPI_STORE_ID || null; // PROD: 1930419809 (Nonna Maye) — null = camino legado apagado
 
 const API_BASE = `${BASE_URL}/api/v2/restaurants-integrations-public-api`;
 
-// ─── Token cache ─────────────────────────────────────────────────────────────
-let _token = null;
-let _tokenExpires = 0;
+// ─── Token cache: uno por client_id ──────────────────────────────────────────
+// Dos negocios con credenciales propias no comparten token; dos stores bajo
+// el mismo client_id sí (el token es del integrador, no de la tienda).
+const _tokens = new Map(); // clientId -> { token, expira }
 
-export async function obtenerToken() {
-  if (_token && Date.now() < _tokenExpires - 60_000) return _token;
+function errorRappi(mensaje, codigo, extra = {}) {
+  const e = new Error(mensaje);
+  e.codigo = codigo;
+  Object.assign(e, extra);
+  return e;
+}
 
-  console.log(`[Rappi Auth] POST ${AUTH_URL} | client_id: …${String(CLIENT_ID || '').slice(-4)}`);
-  const resp = await fetch(AUTH_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET
-    })
-  });
+/**
+ * Cliente atado a UN store y UNAS credenciales.
+ *
+ * @param {{ storeId: string|null, clientId: string, clientSecret: string, etiqueta?: string }} ctx
+ */
+export function crearClienteRappi(ctx) {
+  if (!ctx || typeof ctx !== 'object') throw errorRappi('crearClienteRappi: contexto requerido', 'RAPPI_CONTEXTO_REQUERIDO');
+  const clientId = typeof ctx.clientId === 'string' ? ctx.clientId.trim() : '';
+  const clientSecret = typeof ctx.clientSecret === 'string' ? ctx.clientSecret.trim() : '';
+  if (!clientId || !clientSecret) throw errorRappi('crearClienteRappi: credenciales requeridas', 'RAPPI_NO_CONFIGURADO');
+  const storeId = ctx.storeId != null && String(ctx.storeId).trim() ? String(ctx.storeId).trim() : null;
+  const etiqueta = ctx.etiqueta || (storeId ? `store …${storeId.slice(-4)}` : 'sin store');
 
-  const authText = await resp.text();
+  async function obtenerToken() {
+    const cache = _tokens.get(clientId);
+    if (cache && Date.now() < cache.expira - 60_000) return cache.token;
 
-  if (!resp.ok) {
-    // Nunca se loguea ni se propaga el cuerpo crudo de la respuesta -- puede
-    // contener detalles de depuración de Rappi. El código HTTP alcanza para
-    // diagnosticar (credenciales inválidas, servicio caído, etc.).
-    console.error(`[Rappi Auth] HTTP ${resp.status} — fallo de autenticación`);
-    throw new Error(`[Rappi Auth] Fallo de autenticación (HTTP ${resp.status})`);
+    console.log(`[Rappi Auth] POST ${AUTH_URL} | client_id: …${clientId.slice(-4)} | ${etiqueta}`);
+    const resp = await fetch(AUTH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret })
+    });
+    const authText = await resp.text();
+    if (!resp.ok) {
+      // Nunca se loguea ni se propaga el cuerpo crudo de la respuesta -- puede
+      // contener detalles de depuración de Rappi. El código HTTP alcanza.
+      console.error(`[Rappi Auth] HTTP ${resp.status} — fallo de autenticación (${etiqueta})`);
+      throw errorRappi(`[Rappi Auth] Fallo de autenticación (HTTP ${resp.status})`, 'RAPPI_AUTH', { status: resp.status });
+    }
+    const data = JSON.parse(authText);
+    const expira = Date.now() + (data.expires_in || 3600) * 1000;
+    _tokens.set(clientId, { token: data.access_token, expira });
+    console.log(`[Rappi Auth] token obtenido, expira en ${data.expires_in || 3600} seg (${etiqueta})`);
+    return data.access_token;
   }
 
-  console.log(`[Rappi Auth] HTTP ${resp.status} — token obtenido correctamente`);
-  const data = JSON.parse(authText);
-  _token = data.access_token;
-  // expires_in viene en segundos, por defecto 1 hora
-  _tokenExpires = Date.now() + (data.expires_in || 3600) * 1000;
-  console.log('[Rappi] Token obtenido, expira en', data.expires_in, 'seg');
-  return _token;
-}
-
-async function rappiRequest(method, path, body = null) {
-  const token = await obtenerToken();
-  const opts = {
-    method,
-    headers: {
-      'x-authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
-  };
-  if (body) opts.body = JSON.stringify(body);
-
-  const fullUrl = `${API_BASE}${path}`;
-  console.log(`[Rappi] ${method} ${fullUrl}`);
-  const resp = await fetch(fullUrl, opts);
-  const text = await resp.text();
-  console.log(`[Rappi] HTTP ${resp.status}:`, text.slice(0, 300));
-
-  if (!resp.ok) {
-    throw new Error(`[Rappi] ${method} ${path} → ${resp.status}: ${text}`);
+  async function request(method, path, body = null) {
+    const token = await obtenerToken();
+    const opts = { method, headers: { 'x-authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const fullUrl = `${API_BASE}${path}`;
+    console.log(`[Rappi] ${method} ${fullUrl} (${etiqueta})`);
+    const resp = await fetch(fullUrl, opts);
+    const text = await resp.text();
+    console.log(`[Rappi] HTTP ${resp.status}:`, text.slice(0, 300));
+    if (!resp.ok) throw errorRappi(`[Rappi] ${method} ${path} → ${resp.status}: ${text.slice(0, 300)}`, 'RAPPI_HTTP', { status: resp.status });
+    try { return JSON.parse(text); } catch { return text; }
   }
 
-  try { return JSON.parse(text); } catch { return text; }
-}
+  function exigirStore() {
+    if (!storeId) throw errorRappi('Esta operación necesita un store de Rappi y el cliente no tiene ninguno', 'RAPPI_STORE_REQUERIDO');
+    return storeId;
+  }
 
-// ─── Órdenes ─────────────────────────────────────────────────────────────────
+  return {
+    storeId,
+    clientId,
+    etiqueta,
+    obtenerToken,
 
-/**
- * Tomar una orden (SENT → TAKEN)
- * cookingTime: minutos estimados de preparación (default 20)
- */
-export async function tomarOrden(orderId, cookingTime = 20) {
-  return rappiRequest('PUT', `/orders/${orderId}/take/${cookingTime}`);
-}
+    // ── Órdenes ──
+    /** SENT → TAKEN. cookingTime en minutos. */
+    tomarOrden: (orderId, cookingTime = 20) => request('PUT', `/orders/${orderId}/take/${cookingTime}`),
 
-/**
- * Rechazar una orden (SENT → REJECTED)
- * motivo: string explicando la razón
- * itemsSku: array de SKUs a desactivar (opcional)
- */
-export async function rechazarOrden(orderId, motivo = 'Producto no disponible', itemsSku = []) {
-  const body = { reason: motivo };
-  if (itemsSku.length > 0) body.items_sku = itemsSku;
-  return rappiRequest('PUT', `/orders/${orderId}/reject`, body);
-}
-
-/**
- * Notificar que la orden está lista para recoger (si se configuró como Manual)
- */
-export async function ordenListaParaRecoger(orderId) {
-  return rappiRequest('POST', `/orders/${orderId}/ready-for-pickup`);
-}
-
-/**
- * Obtener órdenes nuevas (status READY) — solo si no se usa webhook
- */
-export async function obtenerOrdenesNuevas() {
-  return rappiRequest('GET', `/orders?storeId=${STORE_ID}`);
-}
-
-// ─── Disponibilidad de productos ─────────────────────────────────────────────
-
-/**
- * Activar o desactivar productos por SKU
- * turnOn: array de SKUs a activar
- * turnOff: array de SKUs a desactivar
- */
-export async function actualizarDisponibilidad(turnOn = [], turnOff = []) {
-  const body = [
-    {
-      store_integration_id: STORE_ID,
-      items: {}
-    }
-  ];
-  if (turnOn.length > 0)  body[0].items.turn_on  = turnOn.map(String);
-  if (turnOff.length > 0) body[0].items.turn_off = turnOff.map(String);
-
-  return rappiRequest('PUT', '/availability/stores/items', body);
-}
-
-/**
- * Consultar disponibilidad de productos por SKU
- */
-export async function consultarAprobacionMenu(storeId = STORE_ID) {
-  return rappiRequest('GET', `/menu/approved/${storeId}`);
-}
-
-export async function consultarDisponibilidad(skus) {
-  return rappiRequest('POST', '/availability/items/status', {
-    store_id: STORE_ID,
-    item_ids: skus.map(String)
-  });
-}
-
-/**
- * Activar / desactivar la tienda completa
- */
-export async function actualizarEstadoTienda(activa) {
-  return rappiRequest('PUT', '/availability/stores/enable', {
-    stores: [{ store_id: STORE_ID, is_enabled: activa }]
-  });
-}
-
-// ─── Catálogo / Menú ──────────────────────────────────────────────────────────
-// Schema aprobado por Rappi: estructura plana con items/children + camelCase
-
-/**
- * Sube o reemplaza el catálogo completo de la tienda en Rappi.
- * Endpoint documentado: POST /api/v2/restaurants-integrations-public-api/menu
- */
-export async function subirCatalogo(catalogoRappi) {
-  const token = await obtenerToken();
-  const menuUrl = `${API_BASE}/menu`;
-  console.log(`[Rappi Menu] POST ${menuUrl}`);
-  const resp = await fetch(menuUrl, {
-    method: 'POST',
-    headers: {
-      'x-authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
+    /**
+     * SENT → REJECTED. La doc pide `reason` y `cancel_type`; cuando el tipo es
+     * de item (`ITEM_NOT_FOUND`, `ITEM_OUT_OF_STOCK`, `ITEM_WRONG_PRICE`)
+     * también `items_skus`. NUNCA se invoca automáticamente por un error de
+     * Xabor -- ver rappi.js.
+     */
+    rechazarOrden: (orderId, motivo = 'Producto no disponible', { cancelType = 'OTHER', itemsSkus = [] } = {}) => {
+      const body = { reason: motivo, cancel_type: cancelType };
+      if (itemsSkus.length > 0) body.items_skus = itemsSkus.map(String);
+      return request('PUT', `/orders/${orderId}/reject`, body);
     },
-    body: JSON.stringify(catalogoRappi)
-  });
-  const text = await resp.text();
-  console.log(`[Rappi Menu] HTTP ${resp.status}:`, text.slice(0, 300));
-  if (!resp.ok) throw new Error(`[Rappi] POST /menu → ${resp.status}: ${text}`);
-  try { return JSON.parse(text); } catch { return text; }
+
+    /** Orden lista para que la recoja el repartidor. Rappi corta a la tercera llamada por orden. */
+    ordenListaParaRecoger: (orderId) => request('POST', `/orders/${orderId}/ready-for-pickup`),
+
+    /** Órdenes nuevas del store (solo si no se usa webhook). */
+    // Todas `async`: un cliente sin store RECHAZA la promesa (nunca lanza en
+    // seco), para que cualquier llamador con try/await lo capture igual.
+    obtenerOrdenesNuevas: async () => request('GET', `/orders?storeId=${exigirStore()}`),
+
+    // ── Disponibilidad ──
+    actualizarDisponibilidad: async (turnOn = [], turnOff = []) => {
+      const body = [{ store_integration_id: exigirStore(), items: {} }];
+      if (turnOn.length > 0)  body[0].items.turn_on  = turnOn.map(String);
+      if (turnOff.length > 0) body[0].items.turn_off = turnOff.map(String);
+      return request('PUT', '/availability/stores/items', body);
+    },
+    consultarAprobacionMenu: async () => request('GET', `/menu/approved/${exigirStore()}`),
+    consultarDisponibilidad: async (skus) => request('POST', '/availability/items/status', { store_id: exigirStore(), item_ids: skus.map(String) }),
+    actualizarEstadoTienda: async (activa) => request('PUT', '/availability/stores/enable', { stores: [{ store_id: exigirStore(), is_enabled: activa }] }),
+
+    // ── Catálogo ──
+    /**
+     * Sube o reemplaza el catálogo completo del store. El catálogo DEBE
+     * venir construido para este mismo store: publicar el menú de un negocio
+     * en la tienda de otro es exactamente el accidente que este cliente
+     * existe para impedir.
+     */
+    subirCatalogo: async (catalogoRappi) => {
+      const sid = exigirStore();
+      if (!catalogoRappi || String(catalogoRappi.storeId) !== sid) {
+        throw errorRappi(`El catálogo va dirigido al store ${catalogoRappi?.storeId ?? '(ninguno)'} y este cliente es del store ${sid}`, 'RAPPI_STORE_NO_COINCIDE');
+      }
+      const token = await obtenerToken();
+      const menuUrl = `${API_BASE}/menu`;
+      console.log(`[Rappi Menu] POST ${menuUrl} (${etiqueta}, ${catalogoRappi.items?.length ?? 0} items)`);
+      const resp = await fetch(menuUrl, {
+        method: 'POST',
+        headers: { 'x-authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(catalogoRappi)
+      });
+      const text = await resp.text();
+      console.log(`[Rappi Menu] HTTP ${resp.status}:`, text.slice(0, 300));
+      if (!resp.ok) throw errorRappi(`[Rappi] POST /menu → ${resp.status}: ${text.slice(0, 300)}`, 'RAPPI_HTTP', { status: resp.status });
+      try { return JSON.parse(text); } catch { return text; }
+    },
+
+    // ── Webhooks ──
+    obtenerWebhook: async (event) => {
+      try {
+        return await request('GET', `/webhook/${event}`);
+      } catch (e) {
+        if (e.status === 404 || /not found/i.test(e.message)) return null;
+        throw e;
+      }
+    },
+    /** Registrar o actualizar la URL del webhook para un evento, SOLO para este store. */
+    registrarWebhook: async (event, url) => {
+      const sid = exigirStore();
+      console.log(`[Rappi Webhook] ${event} → ${url} | ${etiqueta}`);
+      try {
+        const r = await request('PUT', `/webhook/${event}/change-url`, { url, stores: [sid] });
+        console.log(`[Rappi Webhook] PUT OK — ${event} actualizado`);
+        return r;
+      } catch (putErr) {
+        console.warn(`[Rappi Webhook] PUT ${event}: ${putErr.message.slice(0, 80)} — intentando POST`);
+      }
+      return request('POST', '/webhook', { event, data: [{ url, stores: [sid] }] });
+    },
+    configurarWebhooks: async function (baseUrl) {
+      const webhookUrl = `${baseUrl}/webhook/rappi`;
+      console.log(`[Rappi] Configurando webhooks → ${webhookUrl} | ${etiqueta}`);
+      const results = {};
+      for (const event of ['NEW_ORDER', 'ORDER_EVENT_CANCEL', 'PING', 'MENU_APPROVED', 'MENU_REJECTED']) {
+        try {
+          const antes = await this.obtenerWebhook(event).catch(() => null);
+          console.log(`[Rappi] ${event} antes:`, antes ? JSON.stringify(antes).slice(0, 120) : 'no existe');
+          const registro = await this.registrarWebhook(event, webhookUrl);
+          const despues  = await this.obtenerWebhook(event).catch(() => null);
+          console.log(`[Rappi] ✅ ${event} despues:`, JSON.stringify(despues).slice(0, 120));
+          results[event] = { registro, verificacion: despues };
+        } catch (e) {
+          results[event] = { error: e.message };
+          console.error(`[Rappi] ❌ Error ${event}:`, e.message);
+        }
+      }
+      return results;
+    },
+  };
 }
 
+// ─── Camino legado: cliente desde variables de entorno ──────────────────────
+// Devuelve null cuando Rappi no está configurado por entorno. Los llamadores
+// legados lo tratan como "Rappi apagado", igual que antes con STORE_ID null.
+let _clienteEntorno = null;
+export function clienteRappiDesdeEntorno() {
+  const clientId = process.env.RAPPI_CLIENT_ID;
+  const clientSecret = process.env.RAPPI_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  if (!_clienteEntorno || _clienteEntorno.clientId !== clientId || _clienteEntorno.storeId !== (STORE_ID || null)) {
+    _clienteEntorno = crearClienteRappi({ clientId, clientSecret, storeId: STORE_ID, etiqueta: 'entorno' });
+  }
+  return _clienteEntorno;
+}
+function legado() {
+  const c = clienteRappiDesdeEntorno();
+  if (!c) throw errorRappi('Rappi no está configurado por entorno (RAPPI_CLIENT_ID / RAPPI_CLIENT_SECRET)', 'RAPPI_NO_CONFIGURADO');
+  return c;
+}
+export async function obtenerToken() { return legado().obtenerToken(); }
+export async function tomarOrden(orderId, cookingTime = 20) { return legado().tomarOrden(orderId, cookingTime); }
+export async function rechazarOrden(orderId, motivo, opciones) { return legado().rechazarOrden(orderId, motivo, opciones); }
+export async function ordenListaParaRecoger(orderId) { return legado().ordenListaParaRecoger(orderId); }
+export async function obtenerOrdenesNuevas() { return legado().obtenerOrdenesNuevas(); }
+export async function actualizarDisponibilidad(turnOn = [], turnOff = []) { return legado().actualizarDisponibilidad(turnOn, turnOff); }
+export async function consultarAprobacionMenu() { return legado().consultarAprobacionMenu(); }
+export async function consultarDisponibilidad(skus) { return legado().consultarDisponibilidad(skus); }
+export async function actualizarEstadoTienda(activa) { return legado().actualizarEstadoTienda(activa); }
+export async function subirCatalogo(catalogoRappi) { return legado().subirCatalogo(catalogoRappi); }
+export async function obtenerWebhook(event) { return legado().obtenerWebhook(event); }
+export async function registrarWebhook(event, url) { return legado().registrarWebhook(event, url); }
+export async function configurarWebhooks(baseUrl) { return legado().configurarWebhooks(baseUrl); }
+
 /**
- * Sube el catálogo completo (alias para re-subir desde el panel).
+ * Sube el catálogo completo (alias para re-subir desde el panel). Camino
+ * legado: el store es el del entorno.
  */
 export async function actualizarSchedule(negocioId) {
   return subirCatalogo(await construirCatalogoRappi(negocioId));
@@ -218,12 +281,20 @@ function topping({ sku, name, description, categoryId, categoryName, categoryMin
 //   2) `XB-<id>` para el resto: la PK es inmutable y única, y el prefijo
 //      reservado no puede chocar con un código escrito a mano (si alguien
 //      escribiera uno así, se ignora y se usa la PK igual).
-const PREFIJO_SKU = 'XB-';
+//
+// El camino de VUELTA (SKU de una orden entrante → producto_id / opcion_id)
+// vive en src/channels/rappiMapeo.js y usa exactamente estas mismas reglas:
+// si esto cambia, aquello cambia con ello (la suite de mapeo lo detecta).
+export const PREFIJO_SKU = 'XB-';
+export const PREFIJO_SKU_OPCION = `${PREFIJO_SKU}op-`;
+export const PREFIJO_SKU_GRUPO = `${PREFIJO_SKU}grp-`;
+export const PREFIJO_SKU_CATEGORIA = `${PREFIJO_SKU}cat-`;
 export function skuDeProducto(p) {
   const codigo = typeof p.codigo === 'string' ? p.codigo.trim() : '';
   if (codigo && !codigo.toUpperCase().startsWith(PREFIJO_SKU)) return codigo;
   return `${PREFIJO_SKU}${p.id}`;
 }
+export function skuDeOpcion(o) { return `${PREFIJO_SKU_OPCION}${o.id}`; }
 
 /**
  * ¿Este producto se publica en Rappi?
@@ -261,6 +332,10 @@ export function esPublicableEnRappi(p) {
  * nunca se toca, y POS / WhatsApp / tienda / pagos siguen operando con el
  * precio base. Una configuración ausente o inválida cae a precio base sin
  * lanzar -- publicar caro de menos es recuperable; no poder publicar, no.
+ *
+ * `storeId`: el store al que va dirigido. Por defecto el del entorno (camino
+ * legado); el camino multitienda pasa SIEMPRE el de la integración del
+ * negocio, y el cliente se niega a publicarlo en otro store.
  */
 export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pricing = undefined } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
@@ -333,10 +408,10 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
       let posOpcion = 0;
       for (const o of (opcionesPorGrupo.get(g.id) || [])) {
         children.push(topping({
-          sku: `${PREFIJO_SKU}op-${o.id}`,
+          sku: skuDeOpcion(o),
           name: o.nombre,
           description: o.nombre,
-          categoryId: `${PREFIJO_SKU}grp-${g.id}`,
+          categoryId: `${PREFIJO_SKU_GRUPO}${g.id}`,
           categoryName: g.nombre,
           categoryMinQty: Number(g.minimo) || 0,
           categoryMaxQty: Number(g.maximo) || 1,
@@ -358,7 +433,7 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
       // configurado, es exactamente Number(p.precio) redondeado al peso).
       price: calcularPrecioRappi(p.precio, configPrecios),
       category: {
-        id: `${PREFIJO_SKU}cat-${p.categoria_id}`,
+        id: `${PREFIJO_SKU_CATEGORIA}${p.categoria_id}`,
         name: p.categoria_nombre,
         maxQty: 0,
         minQty: 0,
@@ -376,76 +451,4 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
   }
 
   return { storeId, items };
-}
-
-// ─── Registro de webhooks ─────────────────────────────────────────────────────
-
-/**
- * Registrar o actualizar la URL del webhook para un evento
- * event: 'NEW_ORDER' | 'ORDER_EVENT_CANCEL' | 'PING'
- */
-/**
- * Consultar estado actual de un webhook en Rappi.
- * Devuelve null si no existe (404).
- */
-export async function obtenerWebhook(event) {
-  try {
-    return await rappiRequest('GET', `/webhook/${event}`);
-  } catch (e) {
-    if (e.message && (e.message.includes('404') || e.message.includes('not found'))) return null;
-    throw e;
-  }
-}
-
-/**
- * Registrar o actualizar la URL del webhook para un evento.
- * Formato oficial Rappi: POST body = { event, data: [{ url, stores: [storeId] }] }
- */
-export async function registrarWebhook(event, url) {
-  if (!STORE_ID) throw new Error('RAPPI_STORE_ID no configurado en Railway');
-  console.log(`[Rappi Webhook] ${event} → ${url} | store: ${STORE_ID}`);
-
-  // 1. Intentar actualizar URL si ya existe
-  try {
-    const r = await rappiRequest('PUT', `/webhook/${event}/change-url`, { url });
-    console.log(`[Rappi Webhook] PUT OK — ${event} actualizado`);
-    return r;
-  } catch (putErr) {
-    console.warn(`[Rappi Webhook] PUT ${event}: ${putErr.message.slice(0, 80)} — intentando POST`);
-  }
-
-  // 2. Crear nuevo — formato oficial de la API de Rappi
-  return rappiRequest('POST', '/webhook', {
-    event,
-    data: [{ url, stores: [STORE_ID] }]
-  });
-}
-
-/**
- * Configurar todos los webhooks necesarios.
- * Verifica estado antes y después de registrar.
- * baseUrl: dominio público de Railway
- */
-export async function configurarWebhooks(baseUrl) {
-  if (!STORE_ID) throw new Error('RAPPI_STORE_ID no configurado en Railway');
-  const webhookUrl = `${baseUrl}/webhook/rappi`;
-  console.log(`[Rappi] Configurando webhooks → ${webhookUrl} | store: ${STORE_ID}`);
-
-  const results = {};
-  for (const event of ['NEW_ORDER', 'ORDER_EVENT_CANCEL', 'PING', 'MENU_APPROVED', 'MENU_REJECTED']) {
-    try {
-      const antes = await obtenerWebhook(event).catch(() => null);
-      console.log(`[Rappi] ${event} antes:`, antes ? JSON.stringify(antes).slice(0, 120) : 'no existe');
-
-      const registro = await registrarWebhook(event, webhookUrl);
-      const despues  = await obtenerWebhook(event).catch(() => null);
-      console.log(`[Rappi] ✅ ${event} despues:`, JSON.stringify(despues).slice(0, 120));
-
-      results[event] = { registro, verificacion: despues };
-    } catch (e) {
-      results[event] = { error: e.message };
-      console.error(`[Rappi] ❌ Error ${event}:`, e.message);
-    }
-  }
-  return results;
 }

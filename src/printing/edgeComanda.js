@@ -29,6 +29,24 @@ export function setEntregaEdge(fn) {
 export function _resetEntregaEdgeParaPruebas() { _entregarTrabajos = null; }
 
 /**
+ * Entrega al Edge conectado trabajos que OTRO módulo ya creó (p. ej. el aviso
+ * de cancelación de un pedido de Rappi). Misma vía que la comanda: si nadie
+ * inyectó la entrega, el trabajo queda 'pendiente' en la nube y el Edge lo
+ * recupera al reconectar. Nunca lanza.
+ */
+export async function entregarTrabajosPorEdge(trabajos) {
+  const lista = Array.isArray(trabajos) ? trabajos : [];
+  if (!lista.length || typeof _entregarTrabajos !== 'function') return 0;
+  try {
+    await _entregarTrabajos(lista);
+    return lista.length;
+  } catch (e) {
+    console.error(`[Impresion] Edge no pudo recibir ${lista.length} trabajo(s): ${e.message}`);
+    return 0;
+  }
+}
+
+/**
  * Crea los trabajos Edge de un pedido y los entrega si hay alguien escuchando.
  *
  * Nunca lanza: un fallo de impresión no puede tumbar la creación de un

@@ -115,7 +115,11 @@ import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, tra
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
-import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
+import rappiRouter, { setWsBroadcastRappi, manejarStockout, notificarListoARappi, reconciliarPedidosExternosRappi } from './channels/rappi.js';
+import {
+  obtenerIntegracionRappi, clienteRappiDeNegocio, vincularTiendaRappi, guardarCredencialesRappi,
+  eliminarCredencialesRappi, integracionRappiParaRespuesta,
+} from './services/rappiIntegracion.js';
 import finanzasRouter from './routes/finanzas.js';
 import { jobDiarioSAT } from './services/satSync.js';
 import { guardarCredencialesSAT, obtenerInfoCertSAT, eliminarCredencialesSAT } from './services/satCredentials.js';
@@ -1624,7 +1628,7 @@ wss.on('connection', (ws) => {
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
-    if (req.originalUrl && req.originalUrl.startsWith('/webhook/whatsapp')) req.rawBody = buf;
+    if (req.originalUrl && (req.originalUrl.startsWith('/webhook/whatsapp') || req.originalUrl.startsWith('/webhook/rappi'))) req.rawBody = buf;
   },
 }));
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded
@@ -2699,8 +2703,15 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   }
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
 
+  // Pedido de Rappi: el "listo" va a Rappi (ready-for-pickup), no por
+  // WhatsApp -- su teléfono es sintético (rappi-<id>) y el cliente se entera
+  // por la app de Rappi. Best-effort: nunca bloquea el cambio de estado.
+  if (estado === 'listo' && pedido.canal === 'rappi') {
+    notificarListoARappi(pedido).catch(e => console.error('[Panel] ready-for-pickup Rappi:', e.message));
+  }
+
   // Notificar al cliente por WhatsApp cuando el pedido está listo
-  if (estado === 'listo') {
+  if (estado === 'listo' && pedido.canal !== 'rappi') {
     const tel = pedido.cliente?.telefono;
     const esPresencial = !tel || tel === '—' || tel.length < 7;
     if (!esPresencial) {
@@ -8125,11 +8136,109 @@ app.post('/api/admin/campanas', requireAdminSeguro, requireModulo('whatsapp'), a
   }
 });
 
+// ─── Rappi por negocio (sesión) ─────────────────────────────────────────────
+// Todo lo que sale hacia Rappi desde el panel usa la integración del negocio
+// de la sesión (store + credenciales resueltos en rappiIntegracion.js). Sin
+// integración → 409, nunca el store del entorno.
+app.get('/api/admin/rappi/integracion', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
+  try {
+    const integracion = await obtenerIntegracionRappi(req.negocioId, { soloActiva: false });
+    res.json({ ok: true, integracion: integracionRappiParaRespuesta(integracion) });
+  } catch (e) {
+    console.error('[Rappi integracion] GET:', e.message);
+    res.status(500).json({ error: 'No pudimos leer la integración de Rappi' });
+  }
+});
+
 app.get('/api/admin/rappi/menu-status', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
   try {
-    const result = await consultarAprobacionMenu();
+    const { cliente } = await clienteRappiDeNegocio(req.negocioId);
+    if (!cliente) return res.status(409).json({ error: 'Este negocio no tiene la integración de Rappi configurada' });
+    const result = await cliente.consultarAprobacionMenu();
     res.json({ ok: true, result });
   } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/admin/rappi/stockout', requireAdminSeguro, requireModulo('rappi'), manejarStockout);
+
+// ─── Superadmin: vincular store y credenciales de Rappi de un negocio ───────
+// Alta explícita (nunca un efecto colateral): el store de Rappi de Obispado
+// se registra aquí y desde ese momento el webhook lo enruta a su negocio.
+app.get('/api/superadmin/negocios/:negocioId/integraciones/rappi', requireSuperadmin, async (req, res) => {
+  if (!(await negocioExisteSuperadmin(req.params.negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const integracion = await obtenerIntegracionRappi(req.params.negocioId, { soloActiva: false });
+    res.json({ ok: true, integracion: integracionRappiParaRespuesta(integracion) });
+  } catch (e) {
+    console.error('[GET superadmin rappi] Error:', e.message);
+    res.status(500).json({ error: 'Error al obtener la integración' });
+  }
+});
+
+app.put('/api/superadmin/negocios/:negocioId/integraciones/rappi', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const { storeId, nombre, sucursalId, configuracion } = req.body || {};
+  try {
+    const integracion = await vincularTiendaRappi(negocioId, { storeId, nombre, sucursalId, configuracion }, req.usuarioId);
+    res.json({ ok: true, integracion: integracionRappiParaRespuesta(integracion) });
+  } catch (e) {
+    if (e.codigo === 'STORE_OCUPADO') return res.status(409).json({ error: e.message });
+    if (e.codigo) return res.status(400).json({ error: e.message, codigo: e.codigo });
+    console.error('[PUT superadmin rappi] Error:', e.message);
+    res.status(500).json({ error: 'No se pudo vincular la tienda de Rappi' });
+  }
+});
+
+// Escenario B: credenciales propias del negocio (client_secret cifrado).
+app.put('/api/superadmin/negocios/:negocioId/integraciones/rappi/credenciales', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const { clientId, clientSecret } = req.body || {};
+  try {
+    await guardarCredencialesRappi(negocioId, { clientId, clientSecret }, req.usuarioId);
+    const integracion = await obtenerIntegracionRappi(negocioId, { soloActiva: false });
+    res.json({ ok: true, integracion: integracionRappiParaRespuesta(integracion) });
+  } catch (e) {
+    if (e.codigo) return res.status(e.codigo === 'SIN_INTEGRACION' ? 409 : 400).json({ error: e.message, codigo: e.codigo });
+    console.error('[PUT superadmin rappi credenciales] Error:', e.message);
+    res.status(500).json({ error: 'No se pudieron guardar las credenciales' });
+  }
+});
+
+app.delete('/api/superadmin/negocios/:negocioId/integraciones/rappi/credenciales', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  try {
+    const ok = await eliminarCredencialesRappi(negocioId, req.usuarioId);
+    res.json({ ok });
+  } catch (e) {
+    console.error('[DELETE superadmin rappi credenciales] Error:', e.message);
+    res.status(500).json({ error: 'No se pudieron eliminar las credenciales' });
+  }
+});
+
+// Registrar los webhooks de Rappi PARA EL STORE de este negocio (no para
+// todos los stores del integrador). Acción explícita del superadmin.
+app.post('/api/superadmin/negocios/:negocioId/integraciones/rappi/setup-webhooks', requireSuperadmin, async (req, res) => {
+  const negocioId = req.params.negocioId;
+  if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+  const baseUrl = process.env.PUBLIC_URL || req.body?.baseUrl || 'https://xabor-agent-production.up.railway.app';
+  try {
+    const { integracion, cliente, razon } = await clienteRappiDeNegocio(negocioId);
+    if (!cliente) return res.status(409).json({ error: `Rappi no operable para este negocio (${razon})` });
+    const results = await cliente.configurarWebhooks(baseUrl);
+    const secret = results['NEW_ORDER']?.registro?.secret || results['NEW_ORDER']?.registro?.data?.[0]?.secret;
+    const resp = { ok: true, storeId: integracion.storeId, webhookUrl: `${baseUrl}/webhook/rappi`, secretDevuelto: !!secret, eventos: {} };
+    for (const [ev, r] of Object.entries(results)) {
+      resp.eventos[ev] = r.error ? { error: r.error } : { registrado: true, verificacion: r.verificacion ? { event: r.verificacion.event, stores: r.verificacion.stores || r.verificacion.data } : null };
+    }
+    if (secret) console.log(`[Rappi] secreto de webhook devuelto para ${integracion.negocioSlug} — últimos 4: …${secret.slice(-4)} (guardarlo en RAPPI_WEBHOOK_SECRET o en configuracion.rappi_webhook_secret)`);
+    res.json(resp);
+  } catch (e) {
+    console.error('[POST superadmin rappi setup-webhooks] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -8172,9 +8281,13 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
   try {
     const { obtenerConfiguracionCanal } = await import('./services/database.js');
     const { describirPricingRappi } = await import('./services/rappiPricing.js');
+    // Store y credenciales del NEGOCIO DE LA SESIÓN. El cliente se niega a
+    // publicar un catálogo dirigido a otro store (RAPPI_STORE_NO_COINCIDE).
+    const { integracion, cliente, razon } = await clienteRappiDeNegocio(req.negocioId);
+    if (!cliente) return res.status(409).json({ error: `Este negocio no tiene la integración de Rappi operable (${razon})` });
     const cfgCanal = await obtenerConfiguracionCanal(req.negocioId, 'rappi');
-    const catalogo = await construirCatalogoRappi(req.negocioId);
-    const result = await subirCatalogo(catalogo);
+    const catalogo = await construirCatalogoRappi(req.negocioId, { storeId: integracion.storeId });
+    const result = await cliente.subirCatalogo(catalogo);
     // Queda asentado CON QUÉ REGLA se publicó: si un precio en la app se ve
     // raro, el log dice si fue el ajuste de canal o el menú.
     console.log(`[Rappi] Menú subido manualmente (${catalogo.items.length} items, ${describirPricingRappi(cfgCanal?.rappi_pricing)}):`, JSON.stringify(result).slice(0, 200));
@@ -8833,6 +8946,15 @@ async function arrancar() {
   // Sincronizar horario de Rappi al arrancar y cada 5 minutos
   sincronizarRappi();
   setInterval(sincronizarRappi, 5 * 60 * 1000);
+  // Órdenes de Rappi que un crash o un fallo interno dejaron sin pedido
+  // (pedidos_externos en 'reclamado' caducado o 'fallido'): se reprocesan por
+  // el MISMO camino que el webhook. Al arrancar y cada 2 minutos.
+  reconciliarPedidosExternosRappi().catch(e =>
+    console.error('[Rappi] Reconciliacion inicial de pedidos externos fallo:', e.message));
+  setInterval(() => {
+    reconciliarPedidosExternosRappi().catch(e =>
+      console.error('[Rappi] Reconciliacion de pedidos externos fallo:', e.message));
+  }, 2 * 60 * 1000);
   // Reconciliar pagos Clip pendientes al arrancar y cada 5 minutos
   reconciliarPagosPendientes();
   // Intervalo del reconciliador de pagos: 5 min en produccion, SIEMPRE.

@@ -155,8 +155,11 @@ cerrado.
 **4. Esquema — son TRES fuentes, no una.** Aplicar en este orden:
 - `node test/aplicar-migraciones.mjs` — pero su lista `ORDEN_MIGRACIONES` está
   escrita a mano y **termina en `050`**. No recorre `migrations/`.
-- `node scripts/predeploy-0NN-*.mjs` de la **051 a la 068**, en orden. Ahí vive
-  el esquema posterior (`tienda_promociones`, pagos, folios, cortes).
+- `node scripts/predeploy-0NN-*.mjs` de la **051 a la 068**, en orden, y
+  después **070, 076, 077, 078 y 080** (la lista `SCRIPTS` de
+  `scripts/predeploy-run-032-033.mjs` es la fuente de verdad). Ahí vive el
+  esquema posterior (`tienda_promociones`, pagos, folios, cortes,
+  `webhook_entrante`, `pedidos_externos`).
 - La **065** y la **066** no tienen script `predeploy`: se aplican a mano con
   `psql -f migrations/065_ajustes_cierre.sql` y `066_conversaciones_control.sql`
   (`facturas_pedido`, `ajustes_cierre`, `conversaciones_control`).
@@ -345,6 +348,25 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - Contador en memoria en `whatsapp-meta.js`: array `errores[]` con timestamps
 - Si 3+ errores en 5 minutos → envía WA de alerta al admin
 - `alertaEnviada` flag evita spam; se resetea tras 15 minutos
+
+### Rappi por negocio (2026-09-18)
+- El webhook resuelve el negocio por `store.internal_id` → `integraciones_canal`
+  (canal `rappi`); todo lo saliente usa `crearClienteRappi()` con el store y las
+  credenciales de ESA integración (`src/services/rappiIntegracion.js`). Las
+  variables `RAPPI_CLIENT_ID/SECRET` son el fallback de credenciales (escenario
+  «un integrador, varios stores»); `RAPPI_STORE_ID` solo sobrevive en las rutas
+  legadas `/api/rappi/*` y en el job de horario.
+- Idempotencia durable en `pedidos_externos` (migración 080): una fila por
+  (negocio, canal, id_externo), reclamada ANTES de acusar recibo. La memoria
+  del tablero ya no deduplica.
+- Un error interno de Xabor NUNCA rechaza la orden en Rappi: queda `fallido` y
+  el reconciliador (cada 2 min) la reintenta por el mismo camino.
+- Cancelación de Rappi → `cancelarPedidoActivo` + papel a las mismas estaciones
+  de la comanda; «listo» en el panel → `ready-for-pickup` una sola vez.
+- Suites: `fase-rappi-mapeo`, `fase-rappi-pos-obispado` (servidor real + doble
+  de la API en `test/lib-rappi-mock.mjs`), y `test/mordidas-rappi.mjs` para la
+  prueba de mordida. Fixtures reales en `test/fixtures/rappi/`.
+- Auditoría y diseño: `docs/rappi-mapolato-obispado-auditoria.md`.
 
 ### Git — regla crítica
 - **NUNCA hacer commits desde el sandbox de Claude** — corrompe archivos (trunca el contenido)

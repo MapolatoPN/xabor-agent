@@ -426,6 +426,10 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
         folio,
         canal: pedido.canal ?? null,
         modalidad: pedido.modalidad ?? null,
+        // Un pedido de plataforma se canta por el número de la plataforma
+        // (es lo que trae el repartidor en su app), no por "PARA LLEVAR".
+        // Solo se fija para ese canal: el resto imprime exactamente igual.
+        ...(pedido.canal === 'rappi' && pedido.rappi_order_id ? { destino: `RAPPI #${pedido.rappi_order_id}` } : {}),
         // El nombre del cliente sí va al papel de cocina: es como se canta el
         // pedido cuando se recoge. El teléfono y la dirección no: en la
         // estación no sirven para nada y son datos personales de más.
@@ -453,6 +457,82 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
     // Igual que la comanda de mesa: se registra y se sigue. El pedido manda.
     resumen.error = e.code || 'ERROR_IMPRESION';
     console.error(`[Impresion] no se pudieron crear los trabajos del pedido (negocio=${negocioId}): ${e.message}`);
+  }
+  return resumen;
+}
+
+// ─── Cancelación de un PEDIDO ya en cocina ──────────────────────────────────
+//
+// Cuando una plataforma (Rappi) cancela una orden que ya salió impresa, la
+// estación que la está preparando tiene que enterarse EN PAPEL, en el mismo
+// sitio donde recibió la comanda. Destinos, en este orden:
+//   1. las impresoras declaradas para el documento 'cancelacion' (si el
+//      negocio configuró ese destino);
+//   2. si no hay ninguna, LAS MISMAS impresoras a las que salió la comanda
+//      de ese folio (se leen de impresion_trabajos, no se adivinan);
+//   3. si tampoco hubo comanda (no llegó a imprimirse), no hay papel que
+//      contradecir: se devuelve sinRuta y quien llama lo registra.
+//
+// Idempotente por (folio, impresora): dos avisos de la misma cancelación
+// producen un solo papel.
+export async function crearTrabajosDeCancelacionDePedido({ negocioId, sucursalId = null, pedido, motivo = null }) {
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  try {
+    const nid = exigirNegocio(negocioId);
+    const folio = typeof pedido?.id === 'string' ? pedido.id : null;
+    if (!folio) { resumen.avisos.push('el pedido no tiene folio: no se generaron trabajos'); return resumen; }
+    const sid = await resolverSucursal(nid, sucursalId);
+    if (!sid) { resumen.avisos.push('el negocio no tiene sucursal activa: no se generaron trabajos'); return resumen; }
+
+    const reglas = await cargarReglas(nid, sid);
+    let destinos = destinosDeDocumento('cancelacion', reglas).map(d => d.impresoraId);
+    let origenDestinos = 'documento_cancelacion';
+    if (!destinos.length) {
+      const { rows } = await pool.query(
+        `SELECT DISTINCT impresora_id FROM impresion_trabajos
+          WHERE negocio_id = $1 AND origen_tipo = 'pedido' AND origen_id = $2 AND documento = 'comanda'`,
+        [nid, folio]);
+      destinos = rows.map(r => r.impresora_id);
+      origenDestinos = 'impresoras_de_la_comanda';
+    }
+    if (!destinos.length) {
+      resumen.sinRuta.push('cancelacion');
+      resumen.avisos.push('la comanda de este pedido no salió por Edge: no hay estación a la que avisar');
+      return resumen;
+    }
+
+    const impresoras = await datosDeImpresoras(nid, destinos);
+    const etiqueta = pedido.canal === 'rappi' && pedido.rappi_order_id ? `RAPPI #${pedido.rappi_order_id}` : null;
+    for (const impresoraId of destinos) {
+      const imp = impresoras.get(impresoraId);
+      if (!imp) { resumen.avisos.push(`impresora ${impresoraId} ya no existe`); continue; }
+      const payload = {
+        documento: 'cancelacion',
+        negocioId: nid,
+        folio,
+        canal: pedido.canal ?? null,
+        destino: etiqueta,
+        origenDestinos,
+        emitidoAt: new Date().toISOString(),
+        impresora: imp.nombre,
+        items: (Array.isArray(pedido.items) ? pedido.items : []).map(i => ({
+          producto: i.producto ?? i.nombre,
+          cantidad: i.cantidad,
+        })),
+        motivo: [etiqueta, `folio ${folio}`, motivo].filter(Boolean).join(' · '),
+      };
+      const { trabajo, duplicado } = await insertarTrabajo(pool, {
+        negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
+        impresoraId: imp.id, impresoraNombre: imp.nombre,
+        documento: 'cancelacion', origenTipo: 'pedido_cancelacion', origenId: folio,
+        idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'pedido_cancelacion', origenId: folio, impresoraId: imp.id }),
+        payload,
+      });
+      (duplicado ? resumen.duplicados : resumen.creados).push(trabajo);
+    }
+  } catch (e) {
+    resumen.error = e.code || 'ERROR_IMPRESION';
+    console.error(`[Impresion] no se pudieron crear los trabajos de cancelación del pedido (negocio=${negocioId}): ${e.message}`);
   }
   return resumen;
 }
