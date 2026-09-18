@@ -805,3 +805,119 @@ export async function negocioTieneImpresorasActivas(negocioId) {
         WHERE i.negocio_id = $1 AND i.activa AND t.activo) AS hay`, [nid]);
   return r?.hay === true;
 }
+
+// ─── «Reenviar a cocina»: la comanda de un pedido vuelve a salir por Edge ───
+//
+// Es PAPEL, no una compra: no registra el pedido otra vez, no toca su pago ni
+// su compra real, no pasa por emitirPedido. Rutea el pedido con las reglas
+// VIGENTES -- la misma tubería que crearTrabajosDePedido -- y crea trabajos
+// nuevos de origen 'pedido_reimpresion' con clave `folio#n`, uno por
+// impresora, que apuntan al trabajo original de esa impresora si existe.
+// Queda quién lo pidió, cuándo y por qué.
+//
+// Dos clics seguidos no son dos comandas: bajo un advisory lock por pedido,
+// un reenvío dentro de la ventana devuelve el anterior sin imprimir nada.
+const VENTANA_REENVIO_MS = 15000;
+
+export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = null, motivo = null }) {
+  const nid = exigirNegocio(negocioId);
+  if (typeof folio !== 'string' || !folio.trim()) throw errorCodigo('folio requerido', 'FOLIO_REQUERIDO');
+  const f = folio.trim();
+
+  const { rows: [fila] } = await pool.query(
+    `SELECT estado, datos FROM pedidos_activos WHERE negocio_id = $1 AND folio = $2`, [nid, f]);
+  if (!fila) throw errorCodigo('Pedido no encontrado', 'PEDIDO_NO_ENCONTRADO');
+  if (fila.estado === 'pendiente_pago') throw errorCodigo('El pedido aún no está pagado: no se manda a cocina', 'PAGO_PENDIENTE');
+  if (fila.estado === 'cancelado') throw errorCodigo('El pedido está cancelado: no se manda a cocina', 'PEDIDO_CANCELADO');
+  const pedido = { ...fila.datos, id: f, negocioId: nid, estado: fila.estado };
+
+  const sid = await resolverSucursal(nid, null);
+  if (!sid) throw errorCodigo('El negocio no tiene sucursal activa', 'SUCURSAL_NO_ENCONTRADA');
+  const reglas = await cargarReglas(nid, sid);
+  const items = await adjuntarCategorias(nid, Array.isArray(pedido.items) ? pedido.items : []);
+  const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
+  const impresoras = await datosDeImpresoras(nid, grupos.map((g) => g.impresoraId));
+
+  const cliente = await pool.connect();
+  try {
+    await cliente.query('BEGIN');
+    await cliente.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, ['reenvio_cocina', `${nid}:${f}`]);
+    const { rows: [previo] } = await cliente.query(
+      `SELECT count(DISTINCT origen_id)::int AS n, max(created_at) AS ultimo
+         FROM impresion_trabajos
+        WHERE negocio_id = $1 AND origen_tipo = 'pedido_reimpresion' AND origen_id LIKE $2`,
+      [nid, `${f}#%`]);
+    if (previo.ultimo && Date.now() - new Date(previo.ultimo).getTime() < VENTANA_REENVIO_MS) {
+      const { rows: recientes } = await cliente.query(
+        `SELECT * FROM impresion_trabajos WHERE negocio_id = $1 AND origen_tipo = 'pedido_reimpresion' AND origen_id = $2`,
+        [nid, `${f}#${previo.n}`]);
+      await cliente.query('COMMIT');
+      return {
+        reenvio: previo.n, repetido: true, creados: [], duplicados: recientes, sinRuta,
+        avisos: [...avisos, 'ya se reenvió hace un momento: no se imprime otra vez'],
+      };
+    }
+
+    const n = previo.n + 1;
+    // (reenvío: solo papel, nunca un pedido nuevo)
+    const origenId = `${f}#${n}`;
+    const creados = [], duplicados = [];
+    for (const grupo of grupos) {
+      const imp = impresoras.get(grupo.impresoraId);
+      if (!imp) { avisos.push(`impresora ${grupo.impresoraId} ya no existe`); continue; }
+      const { rows: [original] } = await cliente.query(
+        `SELECT id FROM impresion_trabajos
+          WHERE negocio_id = $1 AND origen_tipo = 'pedido' AND origen_id = $2 AND impresora_id = $3
+          ORDER BY created_at LIMIT 1`, [nid, f, imp.id]);
+      const payload = {
+        documento: 'comanda',
+        negocioId: nid,
+        folio: f,
+        canal: pedido.canal ?? null,
+        modalidad: pedido.modalidad ?? null,
+        cliente: pedido.cliente?.nombre ?? null,
+        emitidoAt: new Date().toISOString(),
+        impresora: imp.nombre,
+        reimpresion: true,
+        reenvio: n,
+        items: grupo.items.map((i) => ({
+          producto: i.producto ?? i.nombre,
+          cantidad: i.cantidad,
+          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+          notas: i.notas ?? null,
+        })),
+      };
+      const { trabajo, duplicado } = await insertarTrabajo(cliente, {
+        negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
+        impresoraId: imp.id, impresoraNombre: imp.nombre,
+        documento: 'comanda', origenTipo: 'pedido_reimpresion', origenId,
+        idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'pedido_reimpresion', origenId, impresoraId: imp.id }),
+        payload,
+        trabajoOriginalId: original?.id ?? null,
+        reimpresoPor: usuarioId,
+        motivo,
+      });
+      (duplicado ? duplicados : creados).push(trabajo);
+    }
+
+    // El rastro del pedido recuerda el reenvío sin perder el resumen original.
+    const rastro = {
+      reenvios: n,
+      ultimo_reenvio: {
+        n, at: new Date().toISOString(), por: usuarioId, motivo,
+        trabajos: creados.length, impresoras: [...new Set(creados.map((t) => t.impresora_nombre))], sin_ruta: sinRuta,
+      },
+    };
+    await cliente.query(
+      `UPDATE pedidos_activos
+          SET datos = jsonb_set(datos, '{impresion_edge}', COALESCE(datos->'impresion_edge', '{}'::jsonb) || $3::jsonb, true)
+        WHERE negocio_id = $1 AND folio = $2`, [nid, f, JSON.stringify(rastro)]);
+    await cliente.query('COMMIT');
+    return { reenvio: n, repetido: false, creados, duplicados, sinRuta, avisos };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}

@@ -39,7 +39,7 @@ import {
 import {
   listarImpresoras, crearImpresora, actualizarImpresora,
   listarRutas, crearRuta, eliminarRuta,
-  crearTrabajosDeComanda, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo,
+  crearTrabajosDeComanda, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo, reenviarComandaDePedido,
   trabajosPendientesDeTerminal, cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
   registrarInstalacion,
   estadoImpresion, listarTrabajos,
@@ -3183,6 +3183,10 @@ function manejarErrorImpresion(res, e) {
     IMPRESORA_NO_ENCONTRADA: 404,
     RUTA_NO_ENCONTRADA: 404,
     TRABAJO_NO_ENCONTRADO: 404,
+    PEDIDO_NO_ENCONTRADO: 404,
+    PAGO_PENDIENTE: 409,
+    PEDIDO_CANCELADO: 409,
+    SUCURSAL_NO_ENCONTRADA: 409,
     NOMBRE_DUPLICADO: 409,
     RUTA_DUPLICADA: 409,
     IMPRESORA_INACTIVA: 409,
@@ -3386,6 +3390,25 @@ app.post('/api/impresion/trabajos/:id/reimprimir', requireAdminSeguro, async (re
     });
     await entregarTrabajos([trabajo]);
     res.status(201).json({ ok: true, trabajo: { id: trabajo.id, estado: trabajo.estado, original: trabajo.trabajo_original_id } });
+  } catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// «Reenviar a cocina»: la comanda del pedido vuelve a salir por Edge con las
+// reglas de destino vigentes. Crea trabajos NUEVOS de reimpresión (con quién,
+// cuándo y por qué); jamás registra el pedido otra vez ni toca su pago o su
+// compra: es papel, no una venta. Un pedido sin pagar no se manda a cocina
+// (409) y dos clics seguidos son un solo reenvío.
+app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, async (req, res) => {
+  try {
+    const motivo = typeof req.body?.motivo === 'string' ? (req.body.motivo.trim().slice(0, 200) || null) : null;
+    const r = await reenviarComandaDePedido({
+      negocioId: req.negocioId, folio: String(req.params.folio || ''), usuarioId: req.usuarioId, motivo,
+    });
+    if (r.creados.length) await entregarTrabajos(r.creados);
+    res.status(r.repetido ? 200 : 201).json({
+      ok: true, reenvio: r.reenvio, repetido: r.repetido, trabajos: r.creados.length,
+      impresoras: [...new Set(r.creados.map(t => t.impresora_nombre))], sinRuta: r.sinRuta, avisos: r.avisos,
+    });
   } catch (e) { manejarErrorImpresion(res, e); }
 });
 

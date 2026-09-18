@@ -3181,6 +3181,7 @@ function renderComanda(p) {
       ${esPorCobrar(p) ? `<button class="btn-cobrar" onclick="abrirCobro('${p.id}')" style="background:#22c55e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:0.82rem;font-weight:800;cursor:pointer;font-family:inherit;">💵 Cobrar</button>` : ''}
       <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🍽️ Comanda</button>
       <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#374151;">🧾 Ticket</button>
+      ${ROL==='admin'?`<button class="btn-imprimir" onclick="reenviarACocina('${p.id}')" style="background:#6d28d9;" title="Vuelve a imprimir la comanda por Xabor Edge: crea trabajos nuevos; el pedido y su pago no se tocan">🔁 Reenviar a cocina</button>`:''}
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
@@ -3345,6 +3346,28 @@ function avisarImpresionSinTrabajo(msg) {
     ? 'sin impresora para: ' + msg.sinRuta.join(', ')
     : ((msg.avisos || []).join(' · ') || 'revisa Configuración → Impresoras');
   avisoPanel(`⚠ ${msg.folio}: no salió comanda por Edge (${detalle}). Corrige las impresoras y usa «Reenviar a cocina».`, { error: true, ms: 30000 });
+}
+
+// «Reenviar a cocina»: papel nuevo por Edge con las reglas vigentes. El
+// servidor crea los trabajos de reimpresión y deja quién y cuándo; aquí solo
+// se pide y se cuenta el resultado. Nunca imprime desde el navegador.
+function reenviarACocina(folio) {
+  if (!confirm(`¿Reenviar la comanda de ${folio} a cocina por Xabor Edge?`)) return;
+  apiFetch(`/api/pedidos/${encodeURIComponent(folio)}/reenviar-cocina`, { method: 'POST', body: JSON.stringify({}) })
+    .then(async r => {
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { avisoPanel(`No se pudo reenviar ${folio}: ${d.error || ('error ' + r.status)}`, { error: true }); return; }
+      if (d.repetido) { avisoPanel(`${folio}: ya se reenvió hace un momento; no se imprime otra vez.`); return; }
+      if (!d.trabajos) {
+        const porque = (d.sinRuta || []).length ? 'sin impresora para: ' + d.sinRuta.join(', ') : ((d.avisos || []).join(' · ') || 'sin impresoras activas');
+        avisoPanel(`${folio}: no se generó ninguna comanda (${porque}). Revisa Configuración → Impresoras.`, { error: true });
+        return;
+      }
+      const p = pedidos[folio];
+      if (p) p.impresion_edge = { ...(p.impresion_edge || {}), reenvios: d.reenvio };
+      avisoPanel(`${folio}: comanda reenviada a ${d.impresoras.join(', ')}${(d.sinRuta || []).length ? ' (sin impresora para: ' + d.sinRuta.join(', ') + ')' : ''}.`);
+    })
+    .catch(e => avisoPanel(`No se pudo reenviar ${folio}: ${e.message}`, { error: true }));
 }
 
 function comandaHTML(p) {
@@ -7016,7 +7039,10 @@ async function cargarHistorial() {
     const adminBtns = isAdmin && !cancelado ? `
       <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
       ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
-      <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>` : '';
+      <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>
+      <button onclick="reenviarACocina('${folio}')" title="Vuelve a imprimir la comanda por Xabor Edge; el pedido y su pago no se tocan" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;cursor:pointer;">🔁 Reenviar a cocina</button>` : '';
+    const rastroEdge = p.impresion_edge && p.impresion_edge.estado
+      ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : (p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';
     return `
       <div style="border-bottom:1px solid #f1f0ed;${cancelado?'opacity:0.65;':''}">
         <div onclick="toggleHistorial('hdet-${i}')"
@@ -7042,6 +7068,7 @@ async function cargarHistorial() {
             ${adminBtns}
           </div>
           ${cancelHtml}
+          ${rastroEdge}
           ${dir}
           ${esEntrega && p.repartidor_nombre ? `<div style="margin-top:4px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:6px;font-weight:700;display:inline-block;">🛵 ${p.repartidor_nombre}</div>` : ''}
           <div style="margin-top:8px;">${itemsHTML}</div>
