@@ -12,6 +12,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
+import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,7 @@ const {
 } = await import('../src/services/restauranteService.js');
 const { obtenerResumenVentas } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
-const { crearEdge } = await import('../src/services/edgeService.js');
+const { crearEdge, generarEmparejamiento, canjearEmparejamiento } = await import('../src/services/edgeService.js');
 const { crearImpresora, crearRuta, actualizarImpresora } = await import('../src/services/impresionService.js');
 const { renderCuenta } = await import('../edge/renderers/index.js');
 
@@ -61,6 +62,7 @@ await pool.query(`DELETE FROM edge_instalaciones WHERE terminal_id IN (SELECT t.
 await pool.query(`DELETE FROM terminales WHERE sucursal_id IN (SELECT id FROM sucursales WHERE negocio_id = $1)`, [A]);
 await pool.query(`INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal') ON CONFLICT (negocio_id, nombre) DO UPDATE SET activo = true`, [A]);
 const EDGE = await crearEdge(A, { nombre: 'PC Caja Cobro' });
+const CRED = await canjearEmparejamiento((await generarEmparejamiento(A, EDGE.id)).codigo);
 const IMP_COCINA = await crearImpresora(A, { terminalId: EDGE.id, nombre: 'COCINA', transporte: 'mock' });
 const IMP_CAJA = await crearImpresora(A, { terminalId: EDGE.id, nombre: 'CAJA', transporte: 'mock' });
 await crearRuta(A, { impresoraId: IMP_COCINA.id, ambito: 'documento', clave: 'comanda' });
@@ -99,6 +101,31 @@ async function ventaDe(folio) {
   return rows[0] || null;
 }
 const hoy = () => { const d = new Date(); return [new Date(d.getTime() - 86400000).toISOString(), new Date(d.getTime() + 86400000).toISOString()]; };
+async function hasta(condicion, que = 'la condición', limiteMs = 8000) {
+  const fin = Date.now() + limiteMs;
+  while (Date.now() < fin) { if (await condicion()) return true; await esperar(60); }
+  throw new Error(`se agotó la espera de ${que}`);
+}
+// Un Edge falso: se autentica como la terminal real, recibe trabajos y los
+// confirma como 'enviado'. Es el protocolo exacto de edge/connection.js.
+function conectarEdgeFalso({ instalacionId }) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace('http://', 'ws://') + '/ws/print-agent');
+    const recibidos = [];
+    const to = setTimeout(() => reject(new Error('timeout autenticando el Edge falso')), 8000);
+    ws.on('open', () => ws.send(JSON.stringify({ tipo: 'autenticar_terminal', terminalId: CRED.terminalId, token: CRED.token, instalacionId })));
+    ws.on('message', (raw) => {
+      let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+      if (m.tipo === 'terminal_autenticada') { clearTimeout(to); resolve({ ws, recibidos }); }
+      if (m.tipo === 'trabajo_impresion' && m.trabajo?.id) {
+        recibidos.push(m.trabajo);
+        ws.send(JSON.stringify({ tipo: 'ack_impresion', trabajoId: m.trabajo.id, resultado: 'enviado' }));
+      }
+      if (m.tipo === 'error') { clearTimeout(to); reject(new Error('el servidor rechazó al Edge falso')); }
+    });
+    ws.on('error', (e) => { clearTimeout(to); reject(e); });
+  });
+}
 
 try {
   // ═══════════ Migración ═══════════
@@ -223,6 +250,53 @@ try {
     } finally {
       await actualizarImpresora(A, IMP_CAJA.id, { activa: true });
     }
+  });
+
+  // ═══════════ Windows o Edge, nunca ambos ═══════════
+  await t('EDGE', 'ticket a Edge con el Edge DESCONECTADO: el navegador no recibe nada y, al reconectar, sale exactamente un papel', async () => {
+    // Ruta Caja activa y ningún Edge conectado (ninguno lo ha estado en toda la suite).
+    const cuenta = await nuevaCuenta([TACOS(1)]);
+    await registrarPago(cuenta, A, { metodo: 'efectivo', monto: 25, recibido: 25 }, ADMIN_A);
+    const r = await api(`/api/restaurante/cuentas/${cuenta}/cerrar`, { method: 'POST' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const folio = r.body.ventaFolio;
+    assert.strictEqual(r.body.impresion.destino, 'edge');
+    assert.strictEqual(r.body.impresion.ticket, undefined, 'con trabajo Edge el navegador no tiene nada que imprimir');
+    const antes = await trabajos('restaurante_cuenta', folio);
+    assert.strictEqual(antes.length, 1);
+    assert.strictEqual(antes[0].estado, 'pendiente', 'sin Edge conectado, el trabajo espera en la nube');
+    const edge = await conectarEdgeFalso({ instalacionId: 'cobro-caja-edge-1' });
+    try {
+      await hasta(() => edge.recibidos.some(x => x.payload?.folio === folio), 'la entrega al reconectar');
+      await esperar(500);
+      assert.strictEqual(edge.recibidos.filter(x => x.payload?.folio === folio).length, 1, 'exactamente un papel de ese folio');
+      await hasta(async () => (await trabajos('restaurante_cuenta', folio))[0].estado === 'enviado', 'el ACK');
+    } finally { edge.ws.close(); await esperar(300); }
+  });
+
+  await t('EDGE', 'ticket por el navegador (Caja no disponible): no queda NINGÚN trabajo de ese folio que pueda imprimirse después, ni al reconectar', async () => {
+    let folio = null;
+    await actualizarImpresora(A, IMP_CAJA.id, { activa: false });
+    try {
+      const cuenta = await nuevaCuenta([TACOS(1)]);
+      await registrarPago(cuenta, A, { metodo: 'efectivo', monto: 25, recibido: 25 }, ADMIN_A);
+      const r = await api(`/api/restaurante/cuentas/${cuenta}/cerrar`, { method: 'POST' });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      folio = r.body.ventaFolio;
+      assert.strictEqual(r.body.impresion.destino, 'navegador');
+      assert.ok(r.body.impresion.ticket?.ticketPagado, 'el navegador recibe el ticket');
+    } finally {
+      await actualizarImpresora(A, IMP_CAJA.id, { activa: true });
+    }
+    const cuenta = async () => (await pool.query(`SELECT count(*)::int AS n FROM impresion_trabajos WHERE negocio_id = $1 AND origen_id LIKE $2`, [A, folio + '%'])).rows[0].n;
+    assert.strictEqual(await cuenta(), 0, 'cero trabajos Edge de ese folio');
+    // La impresora vuelve a estar activa y el Edge reconecta: nada de ese folio llega.
+    const edge = await conectarEdgeFalso({ instalacionId: 'cobro-caja-edge-1' });
+    try {
+      await esperar(1500);
+      assert.strictEqual(edge.recibidos.filter(x => x.payload?.folio === folio).length, 0, 'nada de ese folio llega al Edge');
+      assert.strictEqual(await cuenta(), 0, 'sigue sin haber trabajos de ese folio');
+    } finally { edge.ws.close(); await esperar(300); }
   });
 
   // ═══════════ 2. Efectivo recibido y cambio ═══════════
