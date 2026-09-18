@@ -861,7 +861,7 @@ function imprimirPrecuentaEnNavegador(p) {
     ? `<div class="fila"><span>Pagado</span><span>${money(p.pagado)}</span></div><div class="fila"><span>Saldo</span><span>${money(p.saldo)}</span></div>`
     : '';
   const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuenta · Mesa ${esc(p?.mesa)}</title>
-    <style>@page{margin:8mm}*{box-sizing:border-box}body{font:14px/1.35 system-ui,sans-serif;color:#111;max-width:78mm;margin:0 auto}h1,p{text-align:center;margin:0}.leyenda{font-weight:700;margin:4px 0 14px}.meta{margin-bottom:10px}.item,.fila{display:flex;justify-content:space-between;gap:12px;margin:5px 0}.detalle{padding-left:18px;font-size:12px}.total{font-size:19px;font-weight:800;border-top:1px dashed #111;padding-top:8px;margin-top:8px}.pie{border-top:1px dashed #111;margin-top:12px;padding-top:8px;font-size:11px}</style>
+    <style>@page{margin:3mm}*{box-sizing:border-box}html{margin:0;padding:0}body{display:flow-root;font:14px/1.35 system-ui,sans-serif;color:#111;width:74mm;margin:0;padding:0;overflow-wrap:anywhere}h1,p{text-align:center;margin:0}.leyenda{font-weight:700;margin:4px 0 14px}.meta{margin-bottom:10px}.item,.fila{display:flex;justify-content:space-between;gap:12px;margin:5px 0}.item b,.fila>span:last-child{white-space:nowrap}.detalle{padding-left:18px;font-size:12px}.total{font-size:19px;font-weight:800;border-top:1px dashed #111;padding-top:8px;margin-top:8px}.pie{border-top:1px dashed #111;margin-top:12px;padding-top:8px;font-size:11px}</style>
     </head><body><h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
     <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}</div>
     ${items}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
@@ -871,8 +871,16 @@ function imprimirPrecuentaEnNavegador(p) {
   // de Edge/Chrome y Windows sin depender del permiso de ventanas emergentes.
   const marco = document.createElement('iframe');
   marco.setAttribute('aria-hidden', 'true');
-  marco.style.cssText = 'position:fixed;width:1px;height:1px;right:0;bottom:0;border:0;opacity:0;pointer-events:none';
-  marco.onload = () => {
+  marco.style.cssText = 'position:fixed;width:80mm;height:1px;right:0;bottom:0;border:0;opacity:0;pointer-events:none';
+  marco.onload = async () => {
+    // El largo por defecto del driver puede ser 2 metros. Medir a ancho
+    // térmico real y fijar AMBAS dimensiones; height:auto no define @page.
+    const doc = marco.contentDocument;
+    await doc.fonts.ready;
+    const altoMm = Math.ceil(doc.body.getBoundingClientRect().height * 25.4 / 96) + 8;
+    const pagina = doc.createElement('style');
+    pagina.textContent = `@page{size:80mm ${altoMm}mm;margin:3mm}`;
+    doc.head.appendChild(pagina);
     const limpiar = () => setTimeout(() => marco.remove(), 500);
     marco.contentWindow.addEventListener('afterprint', limpiar, { once:true });
     setTimeout(() => { marco.contentWindow.focus(); marco.contentWindow.print(); }, 150);
