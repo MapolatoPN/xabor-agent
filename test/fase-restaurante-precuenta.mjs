@@ -62,6 +62,9 @@ t('5. el endpoint de precuenta no cierra ni registra pago', () => {
   assert.ok(bloque.includes("origenTipo: 'restaurante_precuenta'"));
   assert.ok(!bloque.includes('cerrarCuenta('));
   assert.ok(!bloque.includes('registrarPago('));
+  assert.ok(bloque.includes("destino: 'edge'"));
+  assert.ok(bloque.includes("destino: 'navegador'"));
+  assert.ok(!bloque.includes('SIN_IMPRESORA_TICKET'));
 });
 
 const mesas = readFileSync(join(root, 'panel/mesas.html'), 'utf8');
@@ -69,6 +72,10 @@ t('6. la UI ofrece Imprimir precuenta y usa el endpoint dedicado', () => {
   assert.ok(mesas.includes('Imprimir precuenta'));
   assert.ok(mesas.includes('/precuenta'));
   assert.ok(mesas.includes('imprimirPrecuenta'));
+  assert.ok(mesas.includes("r.destino === 'navegador'"));
+  assert.ok(mesas.includes('imprimirPrecuentaEnNavegador'));
+  assert.ok(mesas.includes("document.createElement('iframe')"));
+  assert.ok(mesas.includes('marco.contentWindow.print()'));
 });
 
 if (!process.exitCode) console.log('\nPRECUENTA OK ' + ok + '/6');

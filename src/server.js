@@ -3038,54 +3038,56 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
       : randomUUID();
     const negocioNombre = await obtenerNombreNegocio(req.negocioId).catch(() => null);
 
+    const payloadPrecuenta = {
+      precuenta: true,
+      leyenda: 'NO ES COMPROBANTE DE PAGO',
+      negocio: negocioNombre || null,
+      mesa: cuenta.mesa,
+      personas: cuenta.personas,
+      mesero: cuenta.mesero?.nombre || null,
+      items: (cuenta.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+        producto: i.producto,
+        cantidad: i.cantidad,
+        precioUnitario: Number(i.precio_unitario),
+        modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+        notas: i.notas || null,
+      })),
+      subtotal: cuenta.total,
+      pagado: cuenta.pagado,
+      saldo: cuenta.saldo,
+      propina: cuenta.propinas,
+      total: cuenta.total,
+      pagos: (cuenta.pagos || []).map(p => ({
+        metodo: p.metodo,
+        monto: Number(p.monto),
+        propina: Number(p.propina || 0),
+      })),
+    };
     const impresion = await crearTrabajosDeDocumento({
       negocioId: req.negocioId,
       documento: 'cuenta',
       origenTipo: 'restaurante_precuenta',
       origenId: `${cuenta.id}:${solicitudId}`,
-      payload: {
-        precuenta: true,
-        leyenda: 'NO ES COMPROBANTE DE PAGO',
-        negocio: negocioNombre || null,
-        mesa: cuenta.mesa,
-        personas: cuenta.personas,
-        mesero: cuenta.mesero?.nombre || null,
-        items: (cuenta.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
-          producto: i.producto,
-          cantidad: i.cantidad,
-          precioUnitario: Number(i.precio_unitario),
-          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
-          notas: i.notas || null,
-        })),
-        subtotal: cuenta.total,
-        pagado: cuenta.pagado,
-        saldo: cuenta.saldo,
-        propina: cuenta.propinas,
-        total: cuenta.total,
-        pagos: (cuenta.pagos || []).map(p => ({
-          metodo: p.metodo,
-          monto: Number(p.monto),
-          propina: Number(p.propina || 0),
-        })),
-      },
+      payload: payloadPrecuenta,
     });
     await entregarTrabajos(impresion.creados);
 
     const totalTrabajos = impresion.creados.length + impresion.duplicados.length;
     if (!totalTrabajos) {
-      return res.status(409).json({
-        error: 'No hay impresora de Caja / Ticket configurada para imprimir la precuenta',
-        code: 'SIN_IMPRESORA_TICKET',
-        impresion: {
-          sinRuta: impresion.sinRuta,
-          avisos: impresion.avisos,
-          error: impresion.error,
-        },
+      // Sin Caja/Ticket no se pierde la acción: el panel abre el diálogo de
+      // impresión del navegador/Windows con exactamente el mismo snapshot.
+      // No se elige otra impresora Edge (en especial, nunca Cocina).
+      return res.json({
+        ok: true,
+        destino: 'navegador',
+        precuenta: payloadPrecuenta,
+        avisos: impresion.avisos,
       });
     }
 
     res.json({
       ok: true,
+      destino: 'edge',
       creados: impresion.creados.length,
       duplicados: impresion.duplicados.length,
       avisos: impresion.avisos,

@@ -833,12 +833,53 @@ async function imprimirPrecuenta(btn) {
       method: 'POST',
       body: JSON.stringify({ solicitudId }),
     });
+    if (r.destino === 'navegador') {
+      imprimirPrecuentaEnNavegador(r.precuenta);
+      msg('Elige una impresora de Windows para la precuenta');
+      return;
+    }
     msg(r.duplicados > 0 && r.creados === 0
       ? 'La precuenta ya estaba enviada a Caja'
       : 'Precuenta enviada a Caja');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
+}
+
+function imprimirPrecuentaEnNavegador(p) {
+  const items = (p?.items || []).map(i => {
+    const detalles = [
+      ...(Array.isArray(i.modificadores) ? i.modificadores : []),
+      i.notas ? `NOTA: ${i.notas}` : null,
+    ].filter(Boolean).map(x => `<div class="detalle">${esc(x)}</div>`).join('');
+    return `<div class="item"><span>${esc(i.cantidad)} × ${esc(i.producto)}</span><b>${money(Number(i.cantidad) * Number(i.precioUnitario))}</b></div>${detalles}`;
+  }).join('');
+  const pagos = (p?.pagos || []).map(x =>
+    `<div class="fila"><span>${esc(x.metodo || 'Pago')}</span><span>${money(x.monto)}</span></div>`
+  ).join('');
+  const parcial = Number(p?.pagado) > 0
+    ? `<div class="fila"><span>Pagado</span><span>${money(p.pagado)}</span></div><div class="fila"><span>Saldo</span><span>${money(p.saldo)}</span></div>`
+    : '';
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuenta · Mesa ${esc(p?.mesa)}</title>
+    <style>@page{margin:8mm}*{box-sizing:border-box}body{font:14px/1.35 system-ui,sans-serif;color:#111;max-width:78mm;margin:0 auto}h1,p{text-align:center;margin:0}.leyenda{font-weight:700;margin:4px 0 14px}.meta{margin-bottom:10px}.item,.fila{display:flex;justify-content:space-between;gap:12px;margin:5px 0}.detalle{padding-left:18px;font-size:12px}.total{font-size:19px;font-weight:800;border-top:1px dashed #111;padding-top:8px;margin-top:8px}.pie{border-top:1px dashed #111;margin-top:12px;padding-top:8px;font-size:11px}</style>
+    </head><body><h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
+    <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}</div>
+    ${items}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
+    <p class="pie">Impreso desde Xabor Restaurante</p></body></html>`;
+  // Un popup abierto después del fetch puede ser bloqueado aunque el usuario
+  // haya tocado el botón. Un iframe de impresión conserva el mismo diálogo
+  // de Edge/Chrome y Windows sin depender del permiso de ventanas emergentes.
+  const marco = document.createElement('iframe');
+  marco.setAttribute('aria-hidden', 'true');
+  marco.style.cssText = 'position:fixed;width:1px;height:1px;right:0;bottom:0;border:0;opacity:0;pointer-events:none';
+  marco.onload = () => {
+    const limpiar = () => setTimeout(() => marco.remove(), 500);
+    marco.contentWindow.addEventListener('afterprint', limpiar, { once:true });
+    setTimeout(() => { marco.contentWindow.focus(); marco.contentWindow.print(); }, 150);
+    setTimeout(limpiar, 60000);
+  };
+  marco.srcdoc = html;
+  document.body.appendChild(marco);
 }
 
 async function dividirIguales() {
