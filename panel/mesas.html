@@ -780,7 +780,8 @@ function pintarCuenta() {
   // Acciones secundarias: lo que el rol de esta sesión puede hacer de verdad.
   // Un mesero no ve cobrar, cerrar ni captura libre (el backend igual los
   // rechaza con 403; esto evita ofrecerle lo que no le toca).
-  const botones = [`<button onclick="dividirIguales()">Dividir cuenta</button>`,
+  const botones = [`<button onclick="imprimirPrecuenta(this)">Imprimir precuenta</button>`,
+                   `<button onclick="dividirIguales()">Dividir cuenta</button>`,
                    `<button onclick="abrirMover()">Mover de mesa</button>`];
   if (puedeCobrar()) {
     botones.unshift(`<button onclick="abrirPago()">Registrar pago</button>`);
@@ -818,6 +819,26 @@ async function registrarPago() {
   $('dlg-pago').close();
   msg(`Pago registrado. Saldo: ${money(r.saldoRestante)}`);
   await refrescarCuenta();
+}
+
+async function imprimirPrecuenta(btn) {
+  if (!CUENTA) return;
+  const textoOriginal = btn?.textContent || 'Imprimir precuenta';
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+  try {
+    const solicitudId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/precuenta`, {
+      method: 'POST',
+      body: JSON.stringify({ solicitudId }),
+    });
+    msg(r.duplicados > 0 && r.creados === 0
+      ? 'La precuenta ya estaba enviada a Caja'
+      : 'Precuenta enviada a Caja');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
+  }
 }
 
 async function dividirIguales() {
