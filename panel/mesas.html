@@ -301,23 +301,63 @@
   </div>
 </dialog>
 
-<!-- Caja: registrar pago. Nunca se muestra en sesión de mesero. -->
+<!-- Caja: registrar pago. Nunca se muestra en sesión de mesero.
+     Tres cantidades distintas: el ABONO es lo que se registra como venta; el
+     efectivo recibido y el cambio se muestran antes de confirmar. -->
 <dialog id="dlg-pago">
   <h2>Registrar pago</h2>
+  <div class="sub" id="pg-saldo" style="font-size:13px;color:var(--sub);"></div>
   <label for="pg-metodo">Método</label>
-  <select id="pg-metodo">
+  <select id="pg-metodo" onchange="actualizarCambio()">
     <option value="efectivo">Efectivo</option><option value="terminal">Terminal</option>
     <option value="transferencia">Transferencia</option><option value="enlace_pago">Enlace de pago</option>
   </select>
-  <label for="pg-monto">Monto</label>
-  <input id="pg-monto" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00">
-  <label for="pg-propina">Propina (opcional)</label>
-  <input id="pg-propina" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+  <label for="pg-monto">Monto a abonar</label>
+  <input id="pg-monto" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
+  <div id="pg-recibido-bloque">
+    <label for="pg-recibido">Efectivo recibido</label>
+    <input id="pg-recibido" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
+  </div>
+  <label for="pg-propina">Propina (opcional, aparte de la venta)</label>
+  <input id="pg-propina" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
   <label for="pg-cubre">Qué cubre (opcional)</label>
   <input id="pg-cubre" placeholder="ej. persona 1, los refrescos">
+  <div id="pg-cambio" style="margin-top:12px;font-size:18px;font-weight:900;min-height:24px;"></div>
   <div class="acciones">
     <button class="sec" onclick="document.getElementById('dlg-pago').close()">Cancelar</button>
-    <button onclick="registrarPago()">Registrar</button>
+    <button id="pg-registrar" onclick="registrarPago()">Registrar</button>
+  </div>
+</dialog>
+
+<!-- Caja/admin: descuento de la cuenta, con motivo obligatorio. Staff hasta el
+     10 % del subtotal; el servidor lo impone igual que en el POS. -->
+<dialog id="dlg-descuento">
+  <h2>Descuento a la cuenta</h2>
+  <div class="sub" id="ds-actual" style="font-size:13px;color:var(--sub);"></div>
+  <label for="ds-tipo">Tipo</label>
+  <select id="ds-tipo">
+    <option value="porcentaje">Porcentaje (%)</option>
+    <option value="importe">Importe ($)</option>
+  </select>
+  <label for="ds-valor">Valor</label>
+  <input id="ds-valor" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="10">
+  <label for="ds-motivo">Motivo (obligatorio)</label>
+  <input id="ds-motivo" maxlength="200" placeholder="cortesía, promoción, queja atendida…">
+  <div class="acciones">
+    <button class="sec" onclick="document.getElementById('dlg-descuento').close()">Cancelar</button>
+    <button class="sec oculto" id="ds-quitar" onclick="quitarDescuento()">Quitar descuento</button>
+    <button onclick="aplicarDescuento()">Aplicar</button>
+  </div>
+</dialog>
+
+<!-- Tras cerrar: la venta quedó registrada y el ticket salió (o se puede
+     reimprimir sin volver a cerrar ni cobrar). -->
+<dialog id="dlg-cerrada">
+  <h2 id="ce-titulo">Cuenta cerrada · PAGADO</h2>
+  <div id="ce-detalle" style="font-size:15px;line-height:1.5;"></div>
+  <div class="acciones">
+    <button class="sec" onclick="reimprimirTicket(this)">Reimprimir ticket</button>
+    <button onclick="document.getElementById('dlg-cerrada').close()">Volver a mesas</button>
   </div>
 </dialog>
 
@@ -761,11 +801,15 @@ function pintarCuenta() {
   }
   $('cu-lineas').innerHTML = bloques.join('') || '<p class="vacio">Toca un producto para empezar la orden.</p>';
 
-  const pagos = c.pagos.map(p => `${p.metodo} ${money(p.monto)}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
+  const pagos = c.pagos.map(p => `${p.metodo} ${money(p.monto)}${p.recibido != null ? ` (recibido ${money(p.recibido)}, cambio ${money(p.cambio || 0)})` : ''}${p.cubre ? ` (${esc(p.cubre)})` : ''}`).join(' · ');
+  const d = c.descuento;
+  const subtotal = c.subtotal ?? c.total;
   $('cu-totales').innerHTML = `
     ${pagos ? `<div>Pagos: ${pagos}</div>` : ''}
     ${c.propinas > 0 ? `<div>Propinas: ${money(c.propinas)} (aparte de la venta)</div>` : ''}
     ${c.ventaFolio ? `<div style="color:var(--ok)">Venta registrada: ${esc(c.ventaFolio)}</div>` : ''}
+    ${d ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${money(subtotal)}</span></div>
+           <div style="display:flex;justify-content:space-between;color:var(--accent)" id="cu-descuento"><span>Descuento ${d.tipo === 'porcentaje' ? `${d.valor}%` : ''}${d.motivo ? ` · ${esc(d.motivo)}` : ''}</span><span>-${money(d.monto)}</span></div>` : ''}
     <div class="gran"><span>Total</span><span>${money(c.total)}</span></div>
     ${c.pagado > 0 ? `<div class="gran" style="font-size:15px"><span>Saldo</span><span>${money(c.saldo)}</span></div>` : ''}`;
 
@@ -785,6 +829,7 @@ function pintarCuenta() {
                    `<button onclick="abrirMover()">Mover de mesa</button>`];
   if (puedeCobrar()) {
     botones.unshift(`<button onclick="abrirPago()">Registrar pago</button>`);
+    botones.push(`<button onclick="abrirDescuento()">${c.descuento ? 'Descuento ✓' : 'Descuento'}</button>`);
     botones.push(`<button onclick="document.getElementById('dlg-libre').showModal()">Captura libre</button>`);
     botones.push(`<button onclick="cerrarCuenta()">Cerrar cuenta</button>`);
   }
@@ -805,19 +850,81 @@ async function cancelarItem(itemId) {
   await refrescarCuenta();
 }
 
+// ─── Cobro: abono, efectivo recibido y cambio ───────────────────────────────
+// El ABONO es lo único que se registra como venta y nunca rebasa el saldo.
+// El efectivo recibido y el cambio se ven antes de confirmar, para que la
+// caja devuelva bien; el servidor vuelve a validar los tres importes.
 function abrirPago() {
-  $('pg-monto').value = CUENTA ? CUENTA.saldo.toFixed(2) : '';
+  if (!CUENTA) return;
+  $('pg-monto').value = CUENTA.saldo.toFixed(2);
+  ['pg-recibido', 'pg-propina', 'pg-cubre'].forEach(i => $(i).value = '');
+  $('pg-saldo').textContent = `Saldo pendiente: ${money(CUENTA.saldo)}`;
+  actualizarCambio();
   $('dlg-pago').showModal();
+}
+function actualizarCambio() {
+  const efectivo = $('pg-metodo').value === 'efectivo';
+  $('pg-recibido-bloque').classList.toggle('oculto', !efectivo);
+  const linea = $('pg-cambio'), btn = $('pg-registrar');
+  if (!efectivo || $('pg-recibido').value === '') {
+    linea.textContent = efectivo ? 'Cambio: —' : '';
+    linea.style.color = '';
+    btn.disabled = false;
+    return;
+  }
+  const abono = Number($('pg-monto').value) || 0;
+  const propina = Number($('pg-propina').value) || 0;
+  const recibido = Number($('pg-recibido').value) || 0;
+  const cambio = Math.round((recibido - abono - propina) * 100) / 100;
+  if (cambio < 0) {
+    linea.textContent = `Faltan ${money(-cambio)}`;
+    linea.style.color = 'var(--rojo)';
+    btn.disabled = true;
+  } else {
+    linea.textContent = `Cambio: ${money(cambio)}`;
+    linea.style.color = 'var(--ok)';
+    btn.disabled = false;
+  }
 }
 async function registrarPago() {
   const monto = $('pg-monto').value;
-  if (!monto) { msg('Indica el monto'); return; }
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify({
-    metodo: $('pg-metodo').value, monto, propina: $('pg-propina').value || 0, cubre: $('pg-cubre').value.trim() || null,
-  }) });
-  ['pg-monto','pg-propina','pg-cubre'].forEach(i => $(i).value = '');
+  if (!monto) { msg('Indica el monto a abonar'); return; }
+  const metodo = $('pg-metodo').value;
+  const cuerpo = { metodo, monto, propina: $('pg-propina').value || 0, cubre: $('pg-cubre').value.trim() || null };
+  if (metodo === 'efectivo' && $('pg-recibido').value !== '') cuerpo.recibido = $('pg-recibido').value;
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify(cuerpo) });
+  ['pg-monto','pg-recibido','pg-propina','pg-cubre'].forEach(i => $(i).value = '');
   $('dlg-pago').close();
-  msg(`Pago registrado. Saldo: ${money(r.saldoRestante)}`);
+  msg(`Abono de ${money(r.pago?.monto ?? monto)} registrado${r.cambio != null ? ` · Cambio: ${money(r.cambio)}` : ''} · Saldo: ${money(r.saldoRestante)}`);
+  await refrescarCuenta();
+}
+
+// ─── Descuento de la cuenta ─────────────────────────────────────────────────
+function abrirDescuento() {
+  if (!CUENTA) return;
+  const d = CUENTA.descuento;
+  $('ds-tipo').value = d ? d.tipo : 'porcentaje';
+  $('ds-valor').value = d ? d.valor : '';
+  $('ds-motivo').value = d ? (d.motivo || '') : '';
+  $('ds-actual').textContent = d
+    ? `Descuento actual: ${money(d.monto)}${d.motivo ? ` · ${d.motivo}` : ''}${d.porNombre ? ` · ${d.porNombre}` : ''}`
+    : `Subtotal: ${money(CUENTA.subtotal ?? CUENTA.total)}`;
+  $('ds-quitar').classList.toggle('oculto', !d);
+  $('dlg-descuento').showModal();
+}
+async function aplicarDescuento() {
+  const tipo = $('ds-tipo').value, valor = $('ds-valor').value, motivo = $('ds-motivo').value.trim();
+  if (!valor) { msg('Indica el descuento'); return; }
+  if (!motivo) { msg('El motivo es obligatorio'); return; }
+  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/descuento`, { method: 'POST', body: JSON.stringify({ tipo, valor, motivo }) });
+  $('dlg-descuento').close();
+  msg(`Descuento de ${money(r.descuento.monto)} aplicado · Total: ${money(r.total)}`);
+  await refrescarCuenta();
+}
+async function quitarDescuento() {
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/descuento`, { method: 'DELETE' });
+  $('dlg-descuento').close();
+  msg('Descuento quitado');
   await refrescarCuenta();
 }
 
@@ -860,15 +967,27 @@ function imprimirPrecuentaEnNavegador(p) {
   const parcial = Number(p?.pagado) > 0
     ? `<div class="fila"><span>Pagado</span><span>${money(p.pagado)}</span></div><div class="fila"><span>Saldo</span><span>${money(p.saldo)}</span></div>`
     : '';
+  const descuento = Number(p?.descuento) > 0
+    ? `<div class="fila"><span>Subtotal</span><span>${money(p.subtotal)}</span></div><div class="fila"><span>Descuento${p.descuentoMotivo ? ` (${esc(p.descuentoMotivo)})` : ''}</span><span>-${money(p.descuento)}</span></div>`
+    : '';
   const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuenta · Mesa ${esc(p?.mesa)}</title>
-    <style>@page{margin:3mm}*{box-sizing:border-box}html{margin:0;padding:0}body{display:flow-root;font:14px/1.35 system-ui,sans-serif;color:#111;width:74mm;margin:0;padding:0;overflow-wrap:anywhere}h1,p{text-align:center;margin:0}.leyenda{font-weight:700;margin:4px 0 14px}.meta{margin-bottom:10px}.item,.fila{display:flex;justify-content:space-between;gap:12px;margin:5px 0}.item b,.fila>span:last-child{white-space:nowrap}.detalle{padding-left:18px;font-size:12px}.total{font-size:19px;font-weight:800;border-top:1px dashed #111;padding-top:8px;margin-top:8px}.pie{border-top:1px dashed #111;margin-top:12px;padding-top:8px;font-size:11px}</style>
+    <style>${CSS_TERMICO}</style>
     </head><body><h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
     <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}</div>
-    ${items}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
+    ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
     <p class="pie">Impreso desde Xabor Restaurante</p></body></html>`;
-  // Un popup abierto después del fetch puede ser bloqueado aunque el usuario
-  // haya tocado el botón. Un iframe de impresión conserva el mismo diálogo
-  // de Edge/Chrome y Windows sin depender del permiso de ventanas emergentes.
+  imprimirDocumentoTermico(html);
+}
+
+// Estilo térmico compartido por precuenta y ticket pagado: 80 mm de rollo, el
+// largo se fija al contenido (ver imprimirDocumentoTermico).
+const CSS_TERMICO = '@page{margin:3mm}*{box-sizing:border-box}html{margin:0;padding:0}body{display:flow-root;font:14px/1.35 system-ui,sans-serif;color:#111;width:74mm;margin:0;padding:0;overflow-wrap:anywhere}h1,p{text-align:center;margin:0}.leyenda{font-weight:700;margin:4px 0 14px}.meta{margin-bottom:10px}.item,.fila{display:flex;justify-content:space-between;gap:12px;margin:5px 0}.item b,.fila>span:last-child{white-space:nowrap}.detalle{padding-left:18px;font-size:12px}.total{font-size:19px;font-weight:800;border-top:1px dashed #111;padding-top:8px;margin-top:8px}.pie{border-top:1px dashed #111;margin-top:12px;padding-top:8px;font-size:11px}';
+
+// Imprime un documento térmico por el navegador/Windows. Un popup abierto
+// después del fetch puede ser bloqueado aunque el usuario haya tocado el
+// botón; un iframe de impresión conserva el mismo diálogo de Edge/Chrome y
+// Windows sin depender del permiso de ventanas emergentes.
+function imprimirDocumentoTermico(html) {
   const marco = document.createElement('iframe');
   marco.setAttribute('aria-hidden', 'true');
   marco.style.cssText = 'position:fixed;width:80mm;height:1px;right:0;bottom:0;border:0;opacity:0;pointer-events:none';
@@ -890,6 +1009,36 @@ function imprimirPrecuentaEnNavegador(p) {
   document.body.appendChild(marco);
 }
 
+// Ticket de la cuenta PAGADA (cierre y reimpresión), con el MISMO snapshot
+// que recibiría la impresora de Caja por Edge: folio, productos, subtotal,
+// descuento con motivo, total, pagos, efectivo recibido y cambio.
+function imprimirTicketEnNavegador(t) {
+  const items = (t?.items || []).map(i => {
+    const detalles = [
+      ...(Array.isArray(i.modificadores) ? i.modificadores : []),
+      i.notas ? `NOTA: ${i.notas}` : null,
+    ].filter(Boolean).map(x => `<div class="detalle">${esc(x)}</div>`).join('');
+    return `<div class="item"><span>${esc(i.cantidad)} × ${esc(i.producto)}</span><b>${money(Number(i.cantidad) * Number(i.precioUnitario))}</b></div>${detalles}`;
+  }).join('');
+  const descuento = Number(t?.descuento) > 0
+    ? `<div class="fila"><span>Subtotal</span><span>${money(t.subtotal)}</span></div><div class="fila"><span>Descuento${t.descuentoMotivo ? ` (${esc(t.descuentoMotivo)})` : ''}</span><span>-${money(t.descuento)}</span></div>`
+    : '';
+  const pagos = (t?.pagos || []).map(x => `<div class="fila"><span>${esc(x.metodo || 'Pago')}</span><span>${money(x.monto)}</span></div>`).join('');
+  const efectivo = Number(t?.efectivoRecibido) > 0
+    ? `<div class="fila"><span>Efectivo recibido</span><span>${money(t.efectivoRecibido)}</span></div><div class="fila"><span>Cambio</span><span>${money(t.cambio || 0)}</span></div>`
+    : '';
+  const propina = Number(t?.propina) > 0 ? `<div class="fila"><span>Propina</span><span>${money(t.propina)}</span></div>` : '';
+  const fecha = t?.fecha ? new Date(t.fecha).toLocaleString('es-MX', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Ticket · ${esc(t?.folio || '')}</title>
+    <style>${CSS_TERMICO}</style>
+    </head><body><h1>PAGADO</h1>
+    <div class="meta"><b>${esc(t?.negocio || 'XABOR')}</b><br>Mesa ${esc(t?.mesa)}${t?.mesero ? ` · ${esc(t.mesero)}` : ''}<br>Folio ${esc(t?.folio || '')}${fecha ? ` · ${esc(fecha)}` : ''}</div>
+    ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(t?.total)}</span></div>${pagos}${efectivo}${propina}
+    ${t?.reimpresion ? '<p class="leyenda">*** REIMPRESIÓN ***</p>' : ''}
+    <p class="pie">Gracias por su visita · Xabor Restaurante</p></body></html>`;
+  imprimirDocumentoTermico(html);
+}
+
 async function dividirIguales() {
   const partes = prompt('¿Entre cuántas personas?', CUENTA.personas);
   if (!partes) return;
@@ -897,15 +1046,45 @@ async function dividirIguales() {
   msg(`${money(r.saldo)} → ${r.partes.map(money).join(' + ')}`);
 }
 
+// ─── Cierre y ticket pagado ─────────────────────────────────────────────────
+// El servidor cierra y contabiliza en una transacción; el ticket es una
+// consecuencia: sale por Edge si hay impresora de Caja/Ticket y, si no, por
+// el navegador/Windows -- nunca por los dos. Si el papel falla, el cobro ya
+// quedó hecho y se reimprime desde aquí sin volver a cerrar ni cobrar.
+let ULTIMA_CERRADA = null;
 async function cerrarCuenta() {
   if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero. Se registrará una venta consolidada.')) return;
   // Reintento SEGURO: si el primer request cerró pero la respuesta se perdió,
   // volver a pulsar responde yaCerrada con el MISMO folio -- no duplica venta.
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/cerrar`, { method: 'POST' });
-  msg(r.yaCerrada
-    ? `La cuenta ya estaba cerrada. Venta: ${r.ventaFolio}`
-    : `Cuenta cerrada. Venta ${r.ventaFolio} — ${money(r.total)}`);
+  const cuentaId = CUENTA.id;
+  const r = await api(`/api/restaurante/cuentas/${cuentaId}/cerrar`, { method: 'POST' });
+  ULTIMA_CERRADA = { cuentaId, folio: r.ventaFolio };
+  if (r.impresion?.destino === 'navegador' && r.impresion.ticket) imprimirTicketEnNavegador(r.impresion.ticket);
+  mostrarCerrada(r);
   verTablero();
+}
+function mostrarCerrada(r) {
+  $('ce-titulo').textContent = r.yaCerrada ? 'La cuenta ya estaba cerrada' : 'Cuenta cerrada · PAGADO';
+  const destino = r.impresion?.destino === 'edge' ? 'Ticket enviado a la impresora de Caja.'
+    : r.impresion?.destino === 'navegador' ? 'Ticket enviado a la impresora de Windows.'
+    : 'Puedes reimprimir el ticket cuando haga falta.';
+  $('ce-detalle').innerHTML = `Venta <b>${esc(r.ventaFolio || '')}</b>${r.total != null ? ` · ${money(r.total)}` : ''}`
+    + (Number(r.cambio) > 0 ? `<br>Cambio entregado: ${money(r.cambio)}` : '')
+    + `<br><small style="color:var(--sub)">${destino}</small>`;
+  $('dlg-cerrada').showModal();
+}
+async function reimprimirTicket(btn) {
+  if (!ULTIMA_CERRADA) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/restaurante/cuentas/${ULTIMA_CERRADA.cuentaId}/ticket`, { method: 'POST' });
+    if (r.impresion?.destino === 'navegador' && r.impresion.ticket) {
+      imprimirTicketEnNavegador(r.impresion.ticket);
+      msg(`Ticket ${r.ventaFolio} reimpreso (${r.numero})`);
+    } else {
+      msg(`Ticket ${r.ventaFolio} reenviado a Caja (${r.numero})`);
+    }
+  } finally { if (btn) btn.disabled = false; }
 }
 
 function abrirMover() { $('mv-mesa').value = ''; $('dlg-mover').showModal(); }
