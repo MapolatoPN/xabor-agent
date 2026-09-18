@@ -33,6 +33,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          expirarPagosVencidos, procesarExpiracionProveedorClip,
          reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
 import { setEntregaEdge, setAvisoImpresionEdge } from './printing/edgeComanda.js';
+import { autorizarDescuento } from './services/descuentos.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -3606,17 +3607,12 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   const subtotal = Math.round(items.reduce((s, i) =>
     s + (parseFloat(i.precio_unitario) || 0) * (Math.max(1, parseInt(i.cantidad, 10) || 1)), 0) * 100) / 100;
 
-  // Descuento autorizado en servidor: mismas reglas que el POS (motivo
-  // obligatorio; staff máximo 10% del subtotal — antes solo se validaba en
-  // frontend, ahora el servidor la impone).
+  // Descuento autorizado en servidor: motivo obligatorio y staff máximo 10 %
+  // del subtotal. La regla vive en services/descuentos.js y es la MISMA que
+  // aplica Restaurante: un solo sitio donde cambiar el límite.
   const desc = Math.round((parseFloat(descuento) || 0) * 100) / 100;
-  if (desc < 0 || desc > subtotal) return res.status(400).json({ error: 'Descuento inválido' });
-  if (desc > 0 && !String(motivo_descuento || '').trim()) {
-    return res.status(400).json({ error: 'El motivo del descuento es obligatorio' });
-  }
-  if (desc > 0 && req.rol !== 'admin' && desc > subtotal * 0.10 + 0.005) {
-    return res.status(403).json({ error: 'El descuento máximo para staff es 10% del subtotal' });
-  }
+  const autorizacion = autorizarDescuento({ rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento });
+  if (!autorizacion.ok) return res.status(autorizacion.status).json({ error: autorizacion.mensaje });
 
   // Canje Rewards reservado en la captura: se consume AQUÍ (registrarCanje es
   // idempotente por folio — un reintento no vuelve a mover puntos; el monto

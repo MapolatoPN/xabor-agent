@@ -111,6 +111,12 @@ const SCRIPTS = [
   // pedidos o Rewards cambian. Va ANTES del binario nuevo porque el tab
   // Clientes v2 lo consulta.
   '081-crm-clientes-negocio',
+  // 082 añade a Restaurante el descuento de cuenta (con motivo y auditoría),
+  // el efectivo recibido y el cambio por pago, y el contador de reimpresiones
+  // del ticket. Solo columnas con default: el predeploy aborta si cambia el
+  // número o el importe de cuentas, pagos o ventas de mesa. Va ANTES del
+  // binario nuevo porque los totales de la cuenta leen descuento_monto.
+  '082-restaurante-cobro',
 ];
 
 for (const nombre of SCRIPTS) {
