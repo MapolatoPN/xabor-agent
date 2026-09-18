@@ -3018,6 +3018,81 @@ app.get('/api/restaurante/cuentas/:cuentaId/dividir', requireOperacionRestaurant
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
+// Precuenta: imprime la cuenta ABIERTA sin cobrar ni cerrar. Usa el mismo
+// documento 'cuenta' del ticket final, por lo que solo puede ir a una
+// impresora configurada como Caja / Ticket. Nunca hereda rutas de cocina.
+app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
+    if (!cuenta) return res.status(404).json({ error: 'Cuenta no encontrada', code: 'CUENTA_NO_ENCONTRADA' });
+    if (cuenta.estado !== 'abierta') {
+      return res.status(409).json({ error: 'La cuenta ya no está abierta', code: 'CUENTA_NO_ABIERTA' });
+    }
+
+    // El cliente manda una identidad por intención para que un retry HTTP no
+    // saque dos papeles. Cada toque deliberado genera otra solicitudId y sí
+    // puede imprimir otra precuenta.
+    const solicitudCruda = String(req.body?.solicitudId || '').trim();
+    const solicitudId = /^[A-Za-z0-9._:-]{8,120}$/.test(solicitudCruda)
+      ? solicitudCruda
+      : randomUUID();
+    const negocioNombre = await obtenerNombreNegocio(req.negocioId).catch(() => null);
+
+    const impresion = await crearTrabajosDeDocumento({
+      negocioId: req.negocioId,
+      documento: 'cuenta',
+      origenTipo: 'restaurante_precuenta',
+      origenId: `${cuenta.id}:${solicitudId}`,
+      payload: {
+        precuenta: true,
+        leyenda: 'NO ES COMPROBANTE DE PAGO',
+        negocio: negocioNombre || null,
+        mesa: cuenta.mesa,
+        personas: cuenta.personas,
+        mesero: cuenta.mesero?.nombre || null,
+        items: (cuenta.items || []).filter(i => i.estado !== 'cancelado').map(i => ({
+          producto: i.producto,
+          cantidad: i.cantidad,
+          precioUnitario: Number(i.precio_unitario),
+          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
+          notas: i.notas || null,
+        })),
+        subtotal: cuenta.total,
+        pagado: cuenta.pagado,
+        saldo: cuenta.saldo,
+        propina: cuenta.propinas,
+        total: cuenta.total,
+        pagos: (cuenta.pagos || []).map(p => ({
+          metodo: p.metodo,
+          monto: Number(p.monto),
+          propina: Number(p.propina || 0),
+        })),
+      },
+    });
+    await entregarTrabajos(impresion.creados);
+
+    const totalTrabajos = impresion.creados.length + impresion.duplicados.length;
+    if (!totalTrabajos) {
+      return res.status(409).json({
+        error: 'No hay impresora de Caja / Ticket configurada para imprimir la precuenta',
+        code: 'SIN_IMPRESORA_TICKET',
+        impresion: {
+          sinRuta: impresion.sinRuta,
+          avisos: impresion.avisos,
+          error: impresion.error,
+        },
+      });
+    }
+
+    res.json({
+      ok: true,
+      creados: impresion.creados.length,
+      duplicados: impresion.duplicados.length,
+      avisos: impresion.avisos,
+    });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
 app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
     const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId);
