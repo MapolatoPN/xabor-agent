@@ -196,7 +196,23 @@ await t('V1. observar NO devuelve respuesta, ni pedido, ni nada que enviar', asy
   assert.equal(r.registro.pedido_hipotetico.length, 1, 'la sombra ni siquiera observó');
   // Lo que devuelve NO contiene nada enviable: ni un texto de respuesta, ni un
   // folio, ni una orden. Solo la observación y sus líneas de log.
-  assert.deepEqual(Object.keys(r).sort(), ['eventos', 'linea', 'ok', 'registro', 'resumen']);
+  //
+  // Desde el handoff de sombra devuelve además la PROPUESTA que habría cruzado
+  // el borde. Se añade a esta lista a propósito —para eso está la lista— y con
+  // la garantía reforzada abajo: una propuesta no es un pedido.
+  assert.deepEqual(Object.keys(r).sort(),
+    ['eventos', 'handoff', 'lineaHandoff', 'linea', 'ok', 'registro', 'registroHandoff', 'resumen'].sort());
+  // Una PROPUESTA no es un PEDIDO: no lleva folio, ni id, ni importes. Lo que
+  // sale de aquí no se puede confundir con algo ya creado.
+  const p = r.handoff?.propuesta;
+  if (p) {
+    for (const campo of ['id', 'folio', 'total', 'subtotal', 'estado', 'timestamp']) {
+      assert.equal(p[campo], undefined, `la propuesta trae ${campo}: parece un pedido creado`);
+    }
+  }
+  // Y sin confirmación no hay handoff listo, aunque haya propuesta que mirar.
+  assert.equal(r.handoff?.listo, false, 'un turno suelto produjo un handoff listo');
+  assert.equal(r.lineaHandoff, null, 'se emitió línea de handoff sin handoff');
   // Y `eventos` son líneas de métrica, no algo que se le pueda mandar a nadie.
   assert(Array.isArray(r.eventos) && r.eventos.length > 0, 'sin métricas del turno');
   for (const e of r.eventos) {
@@ -366,7 +382,8 @@ await t('V8. el módulo de sombra no importa nada que pueda hablarle a un client
   const fuente = readFileSync(new URL('../src/mesero-whatsapp/sombraDelMesero.js', import.meta.url), 'utf8');
   const imports = [...fuente.matchAll(/^import[^;]*from '([^']+)';/gm)].map((m) => m[1]);
   assert.deepEqual(imports.sort(),
-    ['./contextoMesa.js', './meseroDigital.js', './metricasMesero.js', './redaccionPII.js', 'node:crypto'],
+    ['./contextoMesa.js', './handoffDeSombra.js', './meseroDigital.js', './metricasMesero.js',
+      './redaccionPII.js', 'node:crypto'],
     `la sombra importa algo que no debería: ${JSON.stringify(imports)}`);
   for (const prohibido of ['whatsapp', 'enviarMensaje', 'registrarPedido', 'imprimir', 'clip']) {
     assert(!new RegExp(prohibido, 'i').test(fuente.replace(/^\/\/.*$/gm, '')),
@@ -444,11 +461,13 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     'src/mesero-whatsapp/consultasDelMenu.js',
     'src/mesero-whatsapp/contextoMesa.js',
     'src/mesero-whatsapp/faseConversacional.js',
+    'src/mesero-whatsapp/handoffDeSombra.js',
     'src/mesero-whatsapp/handoffHumano.js',
     'src/mesero-whatsapp/intencionesDelCliente.js',
     'src/mesero-whatsapp/meseroDigital.js',
     'src/mesero-whatsapp/metricasMesero.js',
     'src/mesero-whatsapp/mutacionDeOpciones.js',
+    'src/mesero-whatsapp/pedidoHipotetico.js',
     'src/mesero-whatsapp/motorTransaccional.js',
     'src/mesero-whatsapp/propuestasDelBot.js',
     'src/mesero-whatsapp/recomendaciones.js',
