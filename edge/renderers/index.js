@@ -60,6 +60,14 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
   const partes = [INIT];
   partes.push(encabezado(String(payload.negocio || 'XABOR').toUpperCase(), ancho));
 
+  if (payload.precuenta) {
+    partes.push(
+      ALIGN_CENTER, SIZE_2H, BOLD_ON, texto('PRECUENTA'),
+      SIZE_NORMAL, texto(String(payload.leyenda || 'NO ES COMPROBANTE DE PAGO')),
+      BOLD_OFF, ALIGN_LEFT, lf(1)
+    );
+  }
+
   if (payload.mesa != null) partes.push(texto(`Mesa ${payload.mesa}`));
   if (payload.mesero) partes.push(texto(`Le atendió: ${payload.mesero}`));
   if (payload.folio) partes.push(texto(`Folio: ${payload.folio}`));
@@ -73,6 +81,7 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
       const t = typeof m === 'string' ? m : [m.grupo, m.opcion].filter(Boolean).join(': ');
       if (t) partes.push(bloque(t, ancho, '    '));
     }
+    if (item.notas) partes.push(bloque(`NOTA: ${item.notas}`, ancho, '    '));
   }
 
   partes.push(linea('-', ancho));
@@ -84,6 +93,10 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
     partes.push(columnas(etiqueta, `-${dinero(payload.descuento)}`, ancho));
   }
   if (payload.propina) partes.push(columnas('Propina', dinero(payload.propina), ancho));
+  if (payload.precuenta && Number(payload.pagado) > 0) {
+    partes.push(columnas('Pagado', dinero(payload.pagado), ancho));
+    partes.push(columnas('Saldo', dinero(payload.saldo), ancho));
+  }
   partes.push(BOLD_ON, SIZE_2H, columnas('TOTAL', dinero(payload.total), Math.floor(ancho / 2)), SIZE_NORMAL, BOLD_OFF);
 
   for (const pago of payload.pagos || []) {
