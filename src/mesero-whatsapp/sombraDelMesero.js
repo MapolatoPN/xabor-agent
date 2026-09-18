@@ -33,6 +33,7 @@
 import { createHash } from 'node:crypto';
 import { atenderTurno } from './meseroDigital.js';
 import { resumenDelContexto } from './contextoMesa.js';
+import { handoffDeSombra, registroDeHandoff, lineaDeHandoff } from './handoffDeSombra.js';
 import { idConversacion } from './metricasMesero.js';
 import {
   redactarDireccion, redactarContacto, palabrasDeLaCarta, pareceDomicilioSinTapar,
@@ -184,6 +185,28 @@ export async function observarTurnoDelMesero({
   sessionId, negocioId, mensaje, carritoProductivo = null,
   cargarCatalogo = null, cargarConfiguracion = null, proponer = null,
   tope = TOPE_MS, ahora = null,
+  // ── EL REMITENTE, SÓLO PARA LA PROPUESTA DE HANDOFF ────────────────────
+  //
+  // El canal lo tiene y la sombra no lo tenía: hasta ahora nada aquí
+  // necesitaba saber QUIÉN escribió. La propuesta sí, porque el canal sella
+  // `telefono_conversacion` con el remitente del webhook y una propuesta que
+  // no lo lleve no es la que habría cruzado.
+  //
+  // Vive en memoria y en el retorno; al log sale HASHEADO
+  // (`registroDeHandoff`). Sin él la observación sigue funcionando: la
+  // propuesta queda sin ese campo y se dice en los bloqueos.
+  telefonoConversacion = null,
+  // NI SIQUIERA EL NOMBRE DEL CANAL SE ESCRIBE AQUI.
+  //
+  // Es identidad, como el negocio y el remitente, y la identidad la inyecta
+  // quien llama. Ademas, una prueba certificada prohibe que este modulo
+  // mencione el canal fuera de los comentarios — es como se demuestra que la
+  // sombra no tiene con que hablarle a nadie— y tenia razon: si el observador
+  // supiera de que canal es, seria un paso hacia poder usarlo.
+  canal = null,
+  // Lo mismo que usa `atenderTurno` por omisión, para que lo que falta en el
+  // turno y lo que bloquea el handoff no puedan discrepar.
+  requierePago = true,
 } = {}) {
   const arranque = Date.now();
   const medir = () => Date.now() - arranque;
@@ -247,6 +270,7 @@ export async function observarTurnoDelMesero({
       return await observarEnSerie({
         guardado, clave, sessionId, negocioId, mensaje, carritoProductivo,
         cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir, esperaCola,
+        telefonoConversacion, requierePago, canal,
       });
     } finally {
       guardado.ocupada -= 1;
@@ -262,6 +286,7 @@ export async function observarTurnoDelMesero({
 async function observarEnSerie({
   guardado, sessionId, negocioId, mensaje, carritoProductivo,
   cargarCatalogo, cargarConfiguracion, proponer, tope, ahora, medir, esperaCola = 0,
+  telefonoConversacion = null, requierePago = true, canal = null,
 }) {
   try {
     // EL TOPE DE TURNOS, OTRA VEZ Y AHORA SÍ.
@@ -357,6 +382,7 @@ async function observarEnSerie({
       carrito: partida,
       catalogo,
       complementos,
+      requierePago,
       proponer: proponerContado,
       // La copia no se detiene en un handoff: lo anota y sigue mirando. Es la
       // única diferencia de comportamiento entre observar y atender.
@@ -373,6 +399,19 @@ async function observarEnSerie({
     guardado.carrito = JSON.parse(JSON.stringify(r.carrito));
     guardado.turnos += 1;
 
+    // ── LA PROPUESTA QUE HABRÍA CRUZADO ────────────────────────────────────
+    //
+    // Se calcula DESPUÉS del turno y con lo que el turno dejó. No ejecuta
+    // nada: `handoffDeSombra` es puro y su grafo entero son dos archivos.
+    // `handoffPrevio` es la huella del último handoff que ESTA conversación ya
+    // produjo, y es lo que distingue «otro pedido» de «el mismo, mirado otra
+    // vez». Vive en el estado de sombra, que un despliegue borra.
+    const handoff = handoffDeSombra(r, {
+      negocioId, canal, telefonoConversacion,
+      catalogo, requierePago, handoffPrevio: guardado.handoff || null,
+    });
+    if (handoff.nuevo) guardado.handoff = handoff.huella;
+
     const total = medir();
     const registro = registroDelTurno({
       negocioId, sessionId, mensaje, r, antes, ahora,
@@ -383,8 +422,16 @@ async function observarEnSerie({
     // `eventos` viaja aparte de la línea JSON: son las métricas con el prefijo
     // `[MESERO]` que ya usa el resto del sistema, y sin devolverlas se
     // construían cada turno para tirarlas a la basura.
+    // La línea de handoff sale APARTE y sólo cuando hay algo que decir: una
+    // por handoff, no una por turno. La del turno no cambia de forma, así que
+    // lo que ya parsea `[SOMBRA-MESERO]` sigue parseando igual.
+    const registroHandoff = registroDeHandoff(handoff, {
+      turno: guardado.turnos, negocioId, conversacion: registro.conv,
+    });
     return {
       ok: true, registro, linea: lineaDeSombra(registro), resumen: registro,
+      handoff, registroHandoff,
+      lineaHandoff: handoff.nuevo ? lineaDeHandoff(registroHandoff) : null,
       eventos: r?.eventos || [],
     };
   } catch (e) {

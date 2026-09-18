@@ -1877,6 +1877,8 @@ async function prepararMensajePersistido({value,message}, negocioId) {
         return observarTurnoDelMesero({
           sessionId: `meta-${negocioId}-${telefono}`,
           negocioId,
+          canal: 'whatsapp',
+          telefonoConversacion: telefono,
           mensaje: texto,
           // Solo lectura, y el catálogo EFECTIVO: el mismo que usaría el bot
           // real. Con una carta sintética la observación no mediría nada.
@@ -1887,6 +1889,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       }).then((r) => {
         if (r?.linea) console.log(r.linea);
         else if (r && !r.ok) console.log(`[SOMBRA-MESERO] no evaluado negocio=${negocioId} motivo=${r.motivo}`);
+        if (r?.lineaHandoff) console.log(r.lineaHandoff);
         // Las métricas del turno, con el prefijo que ya se busca en Railway.
         // Se construían y se perdían: la línea JSON de arriba es para leer una
         // conversación entera, y estas son para contar a través de muchas.

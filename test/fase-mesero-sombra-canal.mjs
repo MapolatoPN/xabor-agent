@@ -255,6 +255,33 @@ await t('MS2. un pedido completo NO crea pedido productivo, ni preview, ni sesi�
 });
 
 // ── MS3 ─────────────────────────────────────────────────────────────────────
+await t('MS17. confirmación por webhook genera un handoff seguro, sin pedido ni respuesta', async () => {
+  const tel = TEL + '17';
+  await mandar({tel, pnid:PNID_A,
+    textos:['quiero un MSH Chilaquiles A para recoger y pago en efectivo'],
+    extraer:()=>({items:[{nombre:'MSH Chilaquiles A',cantidad:1}],
+      modalidad:'recoger en tienda',forma_pago:'efectivo'})});
+  await mandar({tel, pnid:PNID_A, textos:['sí, confirmo']});
+  await mandar({tel, pnid:PNID_A, textos:['sí, confirmo']});
+  const handoffs = salida().filter(l=>l.includes('[SOMBRA-MESERO-HANDOFF]'))
+    .map(l=>JSON.parse(l.slice(l.indexOf('{')))).filter(r=>r.conv===hashConv(A,tel));
+  assert.equal(handoffs.length, 1, 'el canal debe publicar exactamente un handoff');
+  const h = handoffs[0];
+  assert.equal(h.negocio, A);
+  assert.equal(h.handoff_ready, true);
+  assert.equal(h.handoff_nuevo, true);
+  assert.equal(h.confirmacion_vigente, true);
+  assert.equal(h.items_count, 1);
+  assert.equal(h.tel_conv.replace('-',''), hash10(tel), 'remitente sellado por el canal');
+  assert.equal(JSON.stringify(h).includes(tel), false, 'el log expone el teléfono');
+  assert.equal(comunicaciones().filter(m=>m?.to===tel).length, 0);
+  const {rows: pedidos} = await pool.query(
+    `SELECT folio FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2`, [A,tel]);
+  const {rows: historial} = await pool.query('SELECT id FROM pedidos WHERE telefono=$1', [tel]);
+  assert.deepEqual(pedidos, []);
+  assert.deepEqual(historial, []);
+});
+
 await t('MS3. una consulta de menú se observa y no se contesta', async () => {
   const tel = TEL + '03';
   const com0 = comunicaciones().length;

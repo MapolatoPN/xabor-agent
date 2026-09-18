@@ -447,7 +447,11 @@ const grafoDeSombra = async () => {
   const lista = [...vistos];
   return {
     modulos: lista.map((a) => relative(RAIZ, a).replace(/\\/g, '/')),
-    fuentes: lista.map((a) => readFileSync(a, 'utf8')),
+    // La documentación del borde nombra las operaciones prohibidas para
+    // explicar por qué no se llaman. Se inspecciona código; el recorrido de
+    // imports anterior sigue rechazando las dependencias con efectos.
+    fuentes: lista.map((a) => readFileSync(a, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '')),
   };
 };
 
