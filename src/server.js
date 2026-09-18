@@ -32,7 +32,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          verificarYAsentarClip, reconciliarCandidatosClip,
          expirarPagosVencidos, procesarExpiracionProveedorClip,
          reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
-import { setEntregaEdge } from './printing/edgeComanda.js';
+import { setEntregaEdge, setAvisoImpresionEdge } from './printing/edgeComanda.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -1354,6 +1354,10 @@ setBroadcastsImpresion({ legacy: broadcastPrintAgentLegacy, autenticado: broadca
 // orderManager pueda decidir si Edge se hace cargo de un pedido sin tener que
 // importar server.js -- eso sería un ciclo.
 setEntregaEdge(entregarTrabajos);
+// Y el aviso de "comanda sin papel": cuando un negocio con impresoras activas
+// recibe un pedido pagado que no produce ni un trabajo, el panel se entera por
+// el mismo canal por el que le llegan los pedidos.
+setAvisoImpresionEdge(broadcastNegocio);
 
 // Activar WebSocket de voz (Conversation Relay)
 setupVoiceWebSocket(wssVoice);

@@ -750,3 +750,58 @@ export async function registrarInstalacion(terminalId, instalacionId) {
 
   return { conocida: true, amnesia: true, trabajosMarcados: rowCount };
 }
+
+// ─── Rastro durable de la impresión de un PEDIDO ────────────────────────────
+//
+// `datos.impresion_edge` resume qué pasó cuando el pedido intentó salir por
+// Edge: cuántos trabajos se crearon, para qué impresoras, qué ítems no
+// tenían ruta, qué avisos dio el motor y un estado general:
+//   creado        se creó al menos un trabajo nuevo
+//   ya_existia    no se creó ninguno porque ya existían (reemisión)
+//   sin_trabajos  cero trabajos: nada de este pedido tenía destino
+//   error         no se pudo ni intentar (base, sucursal, motor)
+// `alerta` = true cuando el negocio SÍ tiene impresoras activas y aun así
+// no salió nada: eso es un fallo que hay que ver, no un "enviado".
+export function resumirImpresionDePedido(r) {
+  const creados = Array.isArray(r?.creados) ? r.creados : [];
+  const duplicados = Array.isArray(r?.duplicados) ? r.duplicados : [];
+  const impresoras = [...new Set([...creados, ...duplicados].map((t) => t.impresora_nombre).filter(Boolean))];
+  let estado = 'sin_trabajos';
+  if (r?.error) estado = 'error';
+  else if (creados.length) estado = 'creado';
+  else if (duplicados.length) estado = 'ya_existia';
+  return {
+    estado,
+    trabajos: creados.length,
+    duplicados: duplicados.length,
+    impresoras,
+    sin_ruta: [...new Set(Array.isArray(r?.sinRuta) ? r.sinRuta : [])],
+    avisos: Array.isArray(r?.avisos) ? [...r.avisos] : [],
+    error: r?.error || null,
+    alerta: false,
+    at: new Date().toISOString(),
+  };
+}
+
+// Se FUSIONA sobre lo que ya hubiera (reenvíos, por ejemplo): una reemisión
+// no borra el historial de reenvíos ni un reenvío borra el resumen original.
+// No toca `updated_at`: esa marca la usa el historial como hora de cierre.
+export async function guardarEstadoImpresionPedido(negocioId, folio, resumen) {
+  const nid = exigirNegocio(negocioId);
+  if (typeof folio !== 'string' || !folio.trim()) throw errorCodigo('folio requerido', 'FOLIO_REQUERIDO');
+  const { rowCount } = await pool.query(
+    `UPDATE pedidos_activos
+        SET datos = jsonb_set(datos, '{impresion_edge}', COALESCE(datos->'impresion_edge', '{}'::jsonb) || $3::jsonb, true)
+      WHERE negocio_id = $1 AND folio = $2`,
+    [nid, folio.trim(), JSON.stringify(resumen)]);
+  return rowCount > 0;
+}
+
+export async function negocioTieneImpresorasActivas(negocioId) {
+  const nid = exigirNegocio(negocioId);
+  const { rows: [r] } = await pool.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM impresoras i JOIN terminales t ON t.id = i.terminal_id
+        WHERE i.negocio_id = $1 AND i.activa AND t.activo) AS hay`, [nid]);
+  return r?.hay === true;
+}

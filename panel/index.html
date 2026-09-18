@@ -2720,6 +2720,7 @@ function conectarWS() {
       }
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
+      if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
         document.getElementById('btn-toggle-bot').dataset.revision = msg.requiereRevision ? '1' : '0';
         if (msg.motivo !== undefined) document.getElementById('btn-toggle-bot').dataset.motivo = msg.motivo || '';
@@ -3159,6 +3160,7 @@ function renderComanda(p) {
         <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
         ${esPorCobrar(p) ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : ''}
         ${pagoStatus}
+        ${badgeImpresionEdge(p)}
       </div>
       <div class="comanda-items">
         <div class="ticket-items-header">
@@ -3288,6 +3290,61 @@ function imprimirTicketCliente(id) {
   const p = pedidos[id];
   if (!p) return;
   abrirPopupImpresion(ticketHTML(p));
+}
+
+// ─── Impresión por Edge: rastro visible y aviso de "comanda sin papel" ──────
+//
+// `p.impresion_edge` lo escribe el servidor cuando el pedido intenta salir por
+// Edge (ver src/printing/edgeComanda.js). Este código solo lo muestra: nunca
+// decide si se imprime ni dónde.
+const escAtributo = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function badgeImpresionEdge(p) {
+  const ie = p && p.impresion_edge;
+  if (!ie || !ie.estado) return '';
+  const base = 'font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;';
+  if (ie.estado === 'sin_trabajos' || ie.estado === 'error') {
+    if (!ie.alerta) return '';
+    const detalle = (ie.sin_ruta || []).length ? 'Sin impresora para: ' + ie.sin_ruta.join(', ') : ((ie.avisos || []).join(' · ') || 'Revisa Configuración → Impresoras');
+    return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="${escAtributo(detalle)}" style="${base}background:#fef2f2;color:#b91c1c;">⚠ Sin comanda en Edge</span>`;
+  }
+  const impresoras = (ie.impresoras || []).join(', ');
+  return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="Comanda enviada a Edge: ${escAtributo(impresoras)}" style="${base}background:#eef2ff;color:#3730a3;">🖨 Edge · ${escAtributo(impresoras) || (ie.trabajos + ' trabajo(s)')}</span>`;
+}
+
+// Aviso no bloqueante arriba del tablero (el panel no tenía uno genérico).
+function avisoPanel(texto, { error = false, ms = 14000 } = {}) {
+  let cont = document.getElementById('avisos-panel');
+  if (!cont) {
+    cont = document.createElement('div');
+    cont.id = 'avisos-panel';
+    cont.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:min(92vw,560px);';
+    document.body.appendChild(cont);
+  }
+  const el = document.createElement('div');
+  el.setAttribute('role', 'alert');
+  el.style.cssText = `padding:10px 14px;border-radius:10px;font-size:0.86rem;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.15);cursor:pointer;${error ? 'background:#fef2f2;color:#991b1b;border:1px solid #fecaca;' : 'background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;'}`;
+  el.textContent = texto;
+  el.onclick = () => el.remove();
+  cont.appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+function avisarImpresionSinTrabajo(msg) {
+  if (!msg || !msg.folio) return;
+  const p = pedidos[msg.folio];
+  if (p) {
+    p.impresion_edge = { ...(p.impresion_edge || {}), estado: msg.estado || 'sin_trabajos', sin_ruta: msg.sinRuta || [], avisos: msg.avisos || [], alerta: true };
+    const card = document.getElementById(`comanda-${msg.folio}`);
+    const zona = card && card.querySelector('.comanda-cliente');
+    if (zona) {
+      card.querySelectorAll('.badge-impresion-edge').forEach(b => b.remove());
+      zona.insertAdjacentHTML('beforeend', badgeImpresionEdge(p));
+    }
+  }
+  const detalle = (msg.sinRuta || []).length
+    ? 'sin impresora para: ' + msg.sinRuta.join(', ')
+    : ((msg.avisos || []).join(' · ') || 'revisa Configuración → Impresoras');
+  avisoPanel(`⚠ ${msg.folio}: no salió comanda por Edge (${detalle}). Corrige las impresoras y usa «Reenviar a cocina».`, { error: true, ms: 30000 });
 }
 
 function comandaHTML(p) {
