@@ -212,29 +212,69 @@ async function mencionaProductoDelMenu(mensaje, negocioId) {
  * Deliberadamente barata: solo el historial reciente, sin menú ni reglas, con
  * un techo bajo de tokens. Devuelve null si el turno era una consulta.
  */
+// El contrato del extractor acotado del flujo productivo. Se exporta para
+// poder afirmar en una prueba que sigue siendo el mismo: el camino productivo
+// no cambia con la variante de sombra de abajo.
+export const INSTRUCCION_BORRADOR_FORZADO =
+  'Extrae el pedido que el cliente está armando en esta conversación, TAL CUAL lo pidió, '
+  + 'incluso si algo parece no existir en el menú (no lo corrijas ni lo sustituyas). '
+  + 'Responde SOLO con JSON: {"items":[{"nombre":"...","cantidad":1,'
+  + '"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}]}. '
+  + 'Usa el nombre del grupo que corresponda a cada opción (sabor, tamaño, leche, etc.). '
+  + 'Si el cliente solo pregunta algo y NO está armando un pedido, responde {"items":[]}.';
+
+// ── EL CONTRATO DE LA SOMBRA LLEVA LOS DATOS OPERATIVOS ─────────────────
+//
+// Smoke del 19-sep, T4: el cliente escribió «A domicilio», el clasificador dio
+// DEFINIR_MODALIDAD, y la modalidad acabó como NOTA DE COCINA del platillo.
+// La causa no era el modelo ni el clasificador: el esquema de arriba no tiene
+// dónde poner una modalidad, y `propuestasDesdeBorrador` sólo produce
+// `definir_modalidad` si el borrador la trae en la raíz. La única ranura libre
+// era `notas`, y ahí la puso. Lo mismo para el pago y para la dirección.
+//
+// En el flujo productivo el hueco no se nota porque la modalidad se deriva
+// aparte, del texto del cliente (`DICE_DOMICILIO`, más abajo). El mesero no
+// tiene ese paso: lo que el borrador no trae, no existe. Así que la sombra pide
+// los mismos tres campos raíz que el prompt principal (`<PEDIDO_BORRADOR>`).
+// Sigue sin ser autoridad: la sección 8d de `meseroDigital` los tira si el
+// cliente no habló de eso.
+export const INSTRUCCION_BORRADOR_SOMBRA =
+  'Extrae el pedido que el cliente está armando en esta conversación, TAL CUAL lo pidió, '
+  + 'incluso si algo parece no existir en el menú (no lo corrijas ni lo sustituyas). '
+  + 'Responde SOLO con JSON: {"items":[{"nombre":"...","cantidad":1,'
+  + '"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}],'
+  + '"modalidad":"recoger|entrega a domicilio","forma_pago":"...",'
+  + '"cliente":{"nombre":"...","telefono":"...","direccion":"..."}}. '
+  + 'Usa el nombre del grupo que corresponda a cada opción (sabor, tamaño, leche, etc.). '
+  + 'Los campos "modalidad", "forma_pago" y "cliente" van SOLO si el cliente los dijo con sus '
+  + 'palabras; si no los ha dicho, omítelos. NO son notas del platillo: "a domicilio", '
+  + '"para recoger", "con tarjeta" o una dirección van en su campo, nunca en "notas". '
+  + 'Si el cliente solo pregunta algo y NO está armando un pedido, responde {"items":[]}.';
+
 /**
- * El MISMO extractor, con nombre propio para el modo sombra.
+ * El extractor del modo sombra: el mismo de abajo, con el contrato completo.
  *
  * Se exporta para que la observación no tenga que inventarse otra forma de
- * conseguir la propuesta del modelo: es exactamente la que usaría el flujo
- * real cuando el modelo no emite marcador. Solo lee `mensajes`, así que el
+ * conseguir la propuesta del modelo. Solo lee `mensajes`, así que el
  * observador le pasa su propio historial y jamás toca una sesión productiva.
+ *
+ * `llamar` se puede inyectar SOLO para probarlo sin modelo: qué instrucción
+ * recibe y qué devuelve con una respuesta controlada.
  */
-export const extraerBorradorParaSombra = (mensajes, negocioId) =>
-  extraerBorradorForzado({ mensajes }, negocioId);
+export const extraerBorradorParaSombra = (mensajes, negocioId, { llamar = llamarModeloConReintento } = {}) =>
+  extraerBorradorForzado({ mensajes }, negocioId, {
+    instruccion: INSTRUCCION_BORRADOR_SOMBRA, conDatosOperativos: true, llamar,
+  });
 
-async function extraerBorradorForzado(session, negocioId) {
+async function extraerBorradorForzado(session, negocioId, {
+  instruccion = INSTRUCCION_BORRADOR_FORZADO, conDatosOperativos = false, llamar = llamarModeloConReintento,
+} = {}) {
   const historial = (session.mensajes || []).slice(-6);
   if (!historial.length) return null;
-  const r = await llamarModeloConReintento({
+  const r = await llamar({
     model: MODELO,
     max_tokens: 400,
-    system: 'Extrae el pedido que el cliente está armando en esta conversación, TAL CUAL lo pidió, '
-      + 'incluso si algo parece no existir en el menú (no lo corrijas ni lo sustituyas). '
-      + 'Responde SOLO con JSON: {"items":[{"nombre":"...","cantidad":1,'
-      + '"modificadores":[{"grupo":"...","opciones":["..."]}],"notas":"..."}]}. '
-      + 'Usa el nombre del grupo que corresponda a cada opción (sabor, tamaño, leche, etc.). '
-      + 'Si el cliente solo pregunta algo y NO está armando un pedido, responde {"items":[]}.',
+    system: instruccion,
     messages: historial,
   }, { etiqueta: 'borrador' });
   const txt = r?.content?.[0]?.text || '';
@@ -257,7 +297,12 @@ async function extraerBorradorForzado(session, negocioId) {
   if (!m) return null;
   const draft = JSON.parse(m[0]);
   if (!Array.isArray(draft?.items)) throw new Error('BORRADOR_SIN_ITEMS');
-  return draft.items.length ? draft : null;
+  if (draft.items.length) return draft;
+  // En sombra, un turno que sólo aporta un dato operativo —«a domicilio»,
+  // «con tarjeta», la dirección— trae `items: []` y NO es un turno vacío.
+  // Devolverlo como null lo dejaría exactamente donde estaba: sin modalidad.
+  if (conDatosOperativos && (draft.modalidad || draft.forma_pago || draft.formaPago || draft.cliente)) return draft;
+  return null;
 }
 
 /**
