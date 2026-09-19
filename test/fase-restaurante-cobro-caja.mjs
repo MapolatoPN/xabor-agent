@@ -391,15 +391,21 @@ try {
     assert.strictEqual(c2.total, 200);
   });
 
-  await t('DESCUENTO', 'con pagos registrados: nunca por debajo de lo cobrado; se refleja en precuenta, ticket, venta y resumen de ventas', async () => {
+  await t('DESCUENTO', 'con pagos registrados el descuento queda CONGELADO (083); aplicado antes, se refleja en precuenta, ticket, venta y resumen', async () => {
     const cuenta = await nuevaCuenta([{ producto: 'Filete', cantidad: 2, precio_unitario: 100 }]);   // 200
-    await registrarPago(cuenta, A, { metodo: 'efectivo', monto: 180, recibido: 180 }, ADMIN_A);
-    const incompatible = await api(`/api/restaurante/cuentas/${cuenta}/descuento`, { method: 'POST', body: { tipo: 'importe', valor: 50, motivo: 'promo' } });
-    assert.strictEqual(incompatible.status, 409, JSON.stringify(incompatible.body));
-    assert.strictEqual(incompatible.body.code, 'DESCUENTO_INCOMPATIBLE');
+    // El descuento se aplica ANTES del primer pago: $20 -> total 180.
     const ok = await api(`/api/restaurante/cuentas/${cuenta}/descuento`, { method: 'POST', body: { tipo: 'importe', valor: 20, motivo: 'promo del día' } });
     assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
-    assert.strictEqual(ok.body.saldo, 0);
+    await registrarPago(cuenta, A, { metodo: 'efectivo', monto: 180, recibido: 180 }, ADMIN_A);
+    // Con un pago vigente ya no se agrega, cambia ni quita: primero se
+    // revierte el cobro (regla 1 de la división por consumo).
+    const congelado = await api(`/api/restaurante/cuentas/${cuenta}/descuento`, { method: 'POST', body: { tipo: 'importe', valor: 50, motivo: 'promo' } });
+    assert.strictEqual(congelado.status, 409, JSON.stringify(congelado.body));
+    assert.strictEqual(congelado.body.code, 'DESCUENTO_CONGELADO');
+    const quitar = await api(`/api/restaurante/cuentas/${cuenta}/descuento`, { method: 'DELETE' });
+    assert.strictEqual(quitar.status, 409);
+    assert.strictEqual(quitar.body.code, 'DESCUENTO_CONGELADO');
+    assert.strictEqual((await obtenerCuenta(cuenta, A)).saldo, 0);
     // Precuenta con descuento, por Edge (la ruta Caja existe): subtotal, descuento y total.
     const pre = await api(`/api/restaurante/cuentas/${cuenta}/precuenta`, { method: 'POST', body: { solicitudId: `pre-${Date.now()}-descuento` } });
     assert.strictEqual(pre.status, 200, JSON.stringify(pre.body));
@@ -446,16 +452,17 @@ try {
     const c = await obtenerCuenta(cuenta, A);
     assert.ok(c.total + 0.005 >= c.pagado, `total ${c.total} por debajo de pagado ${c.pagado}`);
     const codigo = res.find(x => x.status === 'rejected').reason.code;
-    assert.ok(['DESCUENTO_INCOMPATIBLE', 'PAGO_EXCEDE_SALDO'].includes(codigo), codigo);
-    // Dos descuentos a la vez se serializan: queda uno, consistente.
+    assert.ok(['DESCUENTO_CONGELADO', 'DESCUENTO_INCOMPATIBLE', 'PAGO_EXCEDE_SALDO'].includes(codigo), codigo);
+    // Dos descuentos a la vez sobre una cuenta SIN pagos se serializan: queda uno, consistente.
+    const limpia = await nuevaCuenta([{ producto: 'Filete', cantidad: 2, precio_unitario: 100 }]);
     const dos = await Promise.allSettled([
-      aplicarDescuentoCuenta(cuenta, A, { tipo: 'porcentaje', valor: 5, motivo: 'a' }, { usuarioId: ADMIN_A, rol: 'admin' }),
-      aplicarDescuentoCuenta(cuenta, A, { tipo: 'porcentaje', valor: 8, motivo: 'b' }, { usuarioId: ADMIN_A, rol: 'admin' }),
+      aplicarDescuentoCuenta(limpia, A, { tipo: 'porcentaje', valor: 5, motivo: 'a' }, { usuarioId: ADMIN_A, rol: 'admin' }),
+      aplicarDescuentoCuenta(limpia, A, { tipo: 'porcentaje', valor: 8, motivo: 'b' }, { usuarioId: ADMIN_A, rol: 'admin' }),
     ]);
-    const c2 = await obtenerCuenta(cuenta, A);
-    assert.ok(c2.total + 0.005 >= c2.pagado);
-    if (c2.descuento) assert.ok([10, 16].includes(c2.descuento.monto), JSON.stringify(c2.descuento));
-    assert.ok(dos.every(x => x.status === 'fulfilled' || ['DESCUENTO_INCOMPATIBLE'].includes(x.reason.code)));
+    assert.ok(dos.every(x => x.status === 'fulfilled'), JSON.stringify(dos.map(x => x.status === 'rejected' ? x.reason.code : 'ok')));
+    const c2 = await obtenerCuenta(limpia, A);
+    assert.ok([10, 16].includes(c2.descuento.monto), JSON.stringify(c2.descuento));
+    assert.strictEqual(c2.total, 200 - c2.descuento.monto);
   });
 
   await t('TICKET', 'construirTicketCuenta es fiel a la cuenta: mismo snapshot para Edge y navegador', async () => {

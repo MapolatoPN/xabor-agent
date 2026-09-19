@@ -6,7 +6,7 @@ import puppeteer from 'puppeteer';
 
 const html = readFileSync(new URL('../panel/mesas.html', import.meta.url), 'utf8');
 const inicio = html.indexOf('function imprimirPrecuentaEnNavegador(');
-const funcion = html.slice(inicio, html.indexOf('async function dividirIguales', inicio));
+const funcion = html.slice(inicio, html.indexOf('// ─── Dividir cuenta', inicio));
 const chrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const browser = await puppeteer.launch({ headless:true, ...(existsSync(chrome) ? { executablePath:chrome } : {}) });
 try {
