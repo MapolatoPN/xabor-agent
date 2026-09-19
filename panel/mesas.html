@@ -200,6 +200,51 @@
     .mesas { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
     header.xb .negocio { display:none; }
   }
+
+  /* ── Dividir cuenta: partes iguales y por consumo ─────────────────────── */
+  #dlg-dividir { width:min(760px,96vw); max-height:92dvh; overflow:auto; }
+  .dv-tabs { display:flex; gap:8px; margin-bottom:12px; }
+  .dv-tabs button { flex:1; min-height:46px; border-radius:10px; border:1px solid var(--linea-fuerte); background:var(--neutro);
+                    color:var(--texto); font-weight:800; font-size:14px; cursor:pointer; }
+  .dv-tabs button.activo { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .dv-tabs button:disabled { opacity:.45; cursor:not-allowed; }
+  .dv-aviso { font-size:13px; color:var(--sub); margin:6px 0 10px; line-height:1.4; }
+  .dv-renglon { display:flex; gap:10px; align-items:flex-start; padding:10px 10px; border:2px solid var(--line); border-radius:12px;
+                margin-bottom:8px; cursor:pointer; background:var(--card); }
+  .dv-renglon.sel { border-color:var(--accent); background:var(--accent-suave); }
+  .dv-renglon.pagado { opacity:.55; cursor:default; background:var(--neutro); }
+  .dv-renglon .cant { font-weight:900; min-width:34px; font-size:15px; padding-top:2px; }
+  .dv-renglon .nom { flex:1; font-size:15px; font-weight:700; min-width:0; }
+  .dv-renglon .nom small { display:block; font-weight:500; color:var(--sub); font-size:12px; line-height:1.35; }
+  .dv-renglon .imp { text-align:right; white-space:nowrap; font-weight:800; }
+  .dv-renglon .imp small { display:block; font-weight:600; color:var(--sub); font-size:12px; }
+  .dv-renglon .estado-pago { display:block; font-size:12px; font-weight:800; margin-top:2px; }
+  .dv-renglon.parcial .estado-pago { color:var(--aviso); }
+  .dv-renglon.pagado .estado-pago { color:var(--ok); }
+  .dv-ctrl { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  .dv-ctrl .paso { width:40px; height:40px; border:1px solid var(--linea-fuerte); background:var(--sup); color:var(--texto);
+                   border-radius:8px; font-size:18px; font-weight:800; cursor:pointer; padding:0; }
+  .dv-ctrl .num { min-width:22px; text-align:center; font-weight:900; font-size:15px; }
+  .dv-ctrl .frac { min-height:36px; padding:0 12px; border-radius:99px; border:1px solid var(--linea-fuerte); background:var(--sup);
+                   color:var(--texto); font-weight:800; font-size:13px; cursor:pointer; }
+  .dv-ctrl .frac.activo { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .dv-pie { position:sticky; bottom:0; background:var(--card); border-top:1px solid var(--line); padding-top:10px; margin-top:8px; }
+  .dv-pie .sel-total { display:flex; justify-content:space-between; font-size:18px; font-weight:900; margin-bottom:8px; }
+  .dv-partes { display:grid; gap:8px; }
+  .dv-parte { display:flex; align-items:center; gap:10px; padding:10px 10px; border:1px solid var(--line); border-radius:12px; }
+  .dv-parte .quien { flex:1; font-weight:700; }
+  .dv-parte .monto { font-weight:900; font-size:16px; }
+  .dv-parte button { min-height:42px; padding:0 16px; border-radius:10px; border:none; background:var(--accent); color:#fff; font-weight:800; cursor:pointer; }
+  .dv-parte.pagada { opacity:.6; }
+  .dv-cobros { margin-top:14px; border-top:1px dashed var(--line); padding-top:10px; }
+  .dv-cobro { display:flex; gap:8px; align-items:center; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
+  .dv-cobro .det { flex:1; min-width:0; }
+  .dv-cobro .det small { display:block; color:var(--sub); }
+  .dv-cobro button { background:none; border:1px solid var(--linea-fuerte); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; color:var(--rojo); }
+  @media (max-width:720px) {
+    .dv-ctrl .paso { width:44px; height:44px; }
+    .dv-ctrl .frac { min-height:40px; }
+  }
 </style>
 <!-- El ?v= NO es decorativo y NO se inventa a mano: es la huella del contenido
      de modificadores.js (sha256, 8 hex) y la sujeta una prueba.
@@ -305,7 +350,7 @@
      Tres cantidades distintas: el ABONO es lo que se registra como venta; el
      efectivo recibido y el cambio se muestran antes de confirmar. -->
 <dialog id="dlg-pago">
-  <h2>Registrar pago</h2>
+  <h2 id="pg-titulo">Registrar pago</h2>
   <div class="sub" id="pg-saldo" style="font-size:13px;color:var(--sub);"></div>
   <label for="pg-metodo">Método</label>
   <select id="pg-metodo" onchange="actualizarCambio()">
@@ -314,6 +359,21 @@
   </select>
   <label for="pg-monto">Monto a abonar</label>
   <input id="pg-monto" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
+  <!-- Solo con importe fijado por el servidor (consumo o parte): una persona
+       puede pagar su consumo con dos métodos, y los dos son UN cobro. -->
+  <div id="pg-mixto-wrap" class="oculto">
+    <label style="display:flex;gap:8px;align-items:center;cursor:pointer;"><input type="checkbox" id="pg-mixto" onchange="actualizarCambio()" style="width:auto;"> Pago mixto (dos métodos)</label>
+    <div id="pg-mixto-bloque" class="oculto">
+      <label for="pg-metodo2">Segundo método</label>
+      <select id="pg-metodo2" onchange="actualizarCambio()">
+        <option value="terminal">Terminal</option><option value="efectivo">Efectivo</option>
+        <option value="transferencia">Transferencia</option><option value="enlace_pago">Enlace de pago</option>
+      </select>
+      <label for="pg-monto2">Monto del segundo método</label>
+      <input id="pg-monto2" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
+      <div id="pg-mixto-resumen" style="font-size:13px;color:var(--sub);margin-top:6px;"></div>
+    </div>
+  </div>
   <div id="pg-recibido-bloque">
     <label for="pg-recibido">Efectivo recibido</label>
     <input id="pg-recibido" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
@@ -358,6 +418,32 @@
   <div class="acciones">
     <button class="sec" onclick="reimprimirTicket(this)">Reimprimir ticket</button>
     <button onclick="document.getElementById('dlg-cerrada').close()">Volver a mesas</button>
+  </div>
+</dialog>
+
+<!-- Dividir cuenta: partes iguales (con UI real) o por consumo (cada persona
+     paga los productos y porciones que consumió). Nada de prompt(). -->
+<dialog id="dlg-dividir">
+  <h2>Dividir cuenta</h2>
+  <div class="dv-tabs">
+    <button id="dv-tab-iguales" onclick="dvTab('iguales')">Partes iguales</button>
+    <button id="dv-tab-consumo" onclick="dvTab('consumo')">Por consumo</button>
+  </div>
+  <div id="dv-cuerpo"></div>
+  <div class="acciones">
+    <button class="sec" onclick="document.getElementById('dlg-dividir').close()">Cerrar</button>
+  </div>
+</dialog>
+
+<!-- Admin: reverso de un cobro con motivo. Libera sus productos; nada se borra. -->
+<dialog id="dlg-reverso">
+  <h2>Revertir cobro</h2>
+  <div class="sub" id="rv-detalle" style="font-size:13px;color:var(--sub);"></div>
+  <label for="rv-motivo">Motivo (obligatorio)</label>
+  <input id="rv-motivo" maxlength="200" placeholder="se cobró de más, cambio de comensal…">
+  <div class="acciones">
+    <button class="sec" onclick="document.getElementById('dlg-reverso').close()">Cancelar</button>
+    <button onclick="confirmarReverso()">Revertir</button>
   </div>
 </dialog>
 
@@ -825,7 +911,7 @@ function pintarCuenta() {
   // Un mesero no ve cobrar, cerrar ni captura libre (el backend igual los
   // rechaza con 403; esto evita ofrecerle lo que no le toca).
   const botones = [`<button onclick="imprimirPrecuenta(this)">Imprimir precuenta</button>`,
-                   `<button onclick="dividirIguales()">Dividir cuenta</button>`,
+                   `<button onclick="abrirDividir()">Dividir cuenta</button>`,
                    `<button onclick="abrirMover()">Mover de mesa</button>`];
   if (puedeCobrar()) {
     botones.unshift(`<button onclick="abrirPago()">Registrar pago</button>`);
@@ -854,28 +940,79 @@ async function cancelarItem(itemId) {
 // El ABONO es lo único que se registra como venta y nunca rebasa el saldo.
 // El efectivo recibido y el cambio se ven antes de confirmar, para que la
 // caja devuelva bien; el servidor vuelve a validar los tres importes.
+// PAGO_CTX: null = abono suelto (monto libre, /pagos). Con contexto de
+// división ({tipo:'consumo'|'parte'}) el importe lo fija el servidor y el
+// diálogo lo muestra bloqueado: no se puede pagar de más por accidente.
+let PAGO_CTX = null;
 function abrirPago() {
   if (!CUENTA) return;
+  PAGO_CTX = null;
+  $('pg-titulo').textContent = 'Registrar pago';
   $('pg-monto').value = CUENTA.saldo.toFixed(2);
-  ['pg-recibido', 'pg-propina', 'pg-cubre'].forEach(i => $(i).value = '');
+  $('pg-monto').readOnly = false;
+  ['pg-recibido', 'pg-propina', 'pg-cubre', 'pg-monto2'].forEach(i => $(i).value = '');
+  $('pg-mixto').checked = false;
+  $('pg-mixto-wrap').classList.add('oculto');
   $('pg-saldo').textContent = `Saldo pendiente: ${money(CUENTA.saldo)}`;
   actualizarCambio();
   $('dlg-pago').showModal();
 }
+function abrirPagoFijo(ctx) {
+  PAGO_CTX = { ...ctx, cobroId: (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : null };
+  $('pg-titulo').textContent = ctx.titulo;
+  $('pg-monto').value = Number(ctx.importe).toFixed(2);
+  $('pg-monto').readOnly = true;
+  ['pg-recibido', 'pg-propina', 'pg-cubre', 'pg-monto2'].forEach(i => $(i).value = '');
+  $('pg-mixto').checked = false;
+  $('pg-mixto-wrap').classList.remove('oculto');
+  $('pg-saldo').textContent = `Importe calculado por el servidor · saldo de la cuenta: ${money(DV ? DV.saldo : CUENTA.saldo)}`;
+  actualizarCambio();
+  $('dlg-pago').showModal();
+}
+// Las líneas de pago que se mandarán: una, o dos si es mixto. El efectivo
+// recibido acompaña a la línea de efectivo (la que puede dar cambio).
+function lineasDePago() {
+  const importe = Number($('pg-monto').value) || 0;
+  const metodo = $('pg-metodo').value;
+  const propina = $('pg-propina').value || 0;
+  const recibido = $('pg-recibido').value;
+  const mixto = PAGO_CTX && $('pg-mixto').checked;
+  if (!mixto) {
+    const l = { metodo, monto: importe, propina };
+    if (metodo === 'efectivo' && recibido !== '') l.recibido = recibido;
+    return { lineas: [l], efectivo: metodo === 'efectivo' ? importe : 0 };
+  }
+  const metodo2 = $('pg-metodo2').value;
+  const monto2 = Math.round((Number($('pg-monto2').value) || 0) * 100) / 100;
+  const monto1 = Math.round((importe - monto2) * 100) / 100;
+  const l1 = { metodo, monto: monto1, propina }, l2 = { metodo: metodo2, monto: monto2 };
+  let efectivo = 0;
+  if (metodo === 'efectivo') { efectivo = monto1; if (recibido !== '') l1.recibido = recibido; }
+  else if (metodo2 === 'efectivo') { efectivo = monto2; if (recibido !== '') l2.recibido = recibido; }
+  return { lineas: [l1, l2], efectivo, monto1, monto2, metodo2, invalido: monto1 <= 0 || monto2 <= 0 || metodo === metodo2 };
+}
 function actualizarCambio() {
-  const efectivo = $('pg-metodo').value === 'efectivo';
-  $('pg-recibido-bloque').classList.toggle('oculto', !efectivo);
+  const mixto = PAGO_CTX && $('pg-mixto').checked;
+  $('pg-mixto-bloque').classList.toggle('oculto', !mixto);
+  const { lineas, efectivo, invalido, monto1, monto2, metodo2 } = lineasDePago();
+  const hayEfectivo = lineas.some(l => l.metodo === 'efectivo');
+  $('pg-recibido-bloque').classList.toggle('oculto', !hayEfectivo);
   const linea = $('pg-cambio'), btn = $('pg-registrar');
-  if (!efectivo || $('pg-recibido').value === '') {
-    linea.textContent = efectivo ? 'Cambio: —' : '';
+  if (mixto) {
+    $('pg-mixto-resumen').textContent = invalido
+      ? (lineas[0].metodo === metodo2 ? 'Elige dos métodos distintos' : 'Reparte el importe entre los dos métodos')
+      : `${lineas[0].metodo} ${money(monto1)} + ${metodo2} ${money(monto2)}`;
+    if (invalido) { linea.textContent = ''; btn.disabled = true; return; }
+  }
+  if (!hayEfectivo || $('pg-recibido').value === '') {
+    linea.textContent = hayEfectivo ? 'Cambio: —' : '';
     linea.style.color = '';
     btn.disabled = false;
     return;
   }
-  const abono = Number($('pg-monto').value) || 0;
   const propina = Number($('pg-propina').value) || 0;
   const recibido = Number($('pg-recibido').value) || 0;
-  const cambio = Math.round((recibido - abono - propina) * 100) / 100;
+  const cambio = Math.round((recibido - efectivo - propina) * 100) / 100;
   if (cambio < 0) {
     linea.textContent = `Faltan ${money(-cambio)}`;
     linea.style.color = 'var(--rojo)';
@@ -887,15 +1024,45 @@ function actualizarCambio() {
   }
 }
 async function registrarPago() {
-  const monto = $('pg-monto').value;
-  if (!monto) { msg('Indica el monto a abonar'); return; }
-  const metodo = $('pg-metodo').value;
-  const cuerpo = { metodo, monto, propina: $('pg-propina').value || 0, cubre: $('pg-cubre').value.trim() || null };
-  if (metodo === 'efectivo' && $('pg-recibido').value !== '') cuerpo.recibido = $('pg-recibido').value;
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify(cuerpo) });
-  ['pg-monto','pg-recibido','pg-propina','pg-cubre'].forEach(i => $(i).value = '');
+  const ctx = PAGO_CTX;
+  if (!ctx) {
+    const monto = $('pg-monto').value;
+    if (!monto) { msg('Indica el monto a abonar'); return; }
+    const metodo = $('pg-metodo').value;
+    const cuerpo = { metodo, monto, propina: $('pg-propina').value || 0, cubre: $('pg-cubre').value.trim() || null };
+    if (metodo === 'efectivo' && $('pg-recibido').value !== '') cuerpo.recibido = $('pg-recibido').value;
+    const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify(cuerpo) });
+    ['pg-monto','pg-recibido','pg-propina','pg-cubre'].forEach(i => $(i).value = '');
+    $('dlg-pago').close();
+    msg(`Abono de ${money(r.pago?.monto ?? monto)} registrado${r.cambio != null ? ` · Cambio: ${money(r.cambio)}` : ''} · Saldo: ${money(r.saldoRestante)}`);
+    await refrescarCuenta();
+    return;
+  }
+  const { lineas, invalido } = lineasDePago();
+  if (invalido) { msg('Revisa el pago mixto'); return; }
+  const nota = $('pg-cubre').value.trim() || null;
+  const cuerpo = ctx.tipo === 'consumo'
+    ? { seleccion: ctx.seleccion, pagos: lineas, cobroId: ctx.cobroId, nota }
+    : { partes: ctx.partes, pagos: lineas, cobroId: ctx.cobroId };
+  const ruta = ctx.tipo === 'consumo' ? 'cobros-consumo' : 'cobros-partes';
+  let r;
+  try {
+    r = await api(`/api/restaurante/cuentas/${CUENTA.id}/${ruta}`, { method: 'POST', body: JSON.stringify(cuerpo) });
+  } catch (e) {
+    // api() ya mostró el motivo (p. ej. otra caja cobró ese producto). La
+    // pantalla se reconstruye desde el servidor, no desde lo que creía.
+    $('dlg-pago').close();
+    PAGO_CTX = null;
+    DV_SEL = new Map();
+    await refrescarDivision();
+    await refrescarCuenta();
+    return;
+  }
   $('dlg-pago').close();
-  msg(`Abono de ${money(r.pago?.monto ?? monto)} registrado${r.cambio != null ? ` · Cambio: ${money(r.cambio)}` : ''} · Saldo: ${money(r.saldoRestante)}`);
+  PAGO_CTX = null;
+  DV_SEL = new Map();
+  msg(`${ctx.tipo === 'consumo' ? 'Consumo cobrado' : `Parte ${r.parte} de ${r.partes} cobrada`}: ${money(r.importe ?? r.monto)}${r.cambio != null ? ` · Cambio: ${money(r.cambio)}` : ''} · Saldo: ${money(r.saldoRestante)}`);
+  await refrescarDivision();
   await refrescarCuenta();
 }
 
@@ -1039,11 +1206,213 @@ function imprimirTicketEnNavegador(t) {
   imprimirDocumentoTermico(html);
 }
 
-async function dividirIguales() {
-  const partes = prompt('¿Entre cuántas personas?', CUENTA.personas);
-  if (!partes) return;
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/dividir?partes=${encodeURIComponent(partes)}`);
-  msg(`${money(r.saldo)} → ${r.partes.map(money).join(' + ')}`);
+// ─── Dividir cuenta ─────────────────────────────────────────────────────────
+// Dos pestañas sobre el MISMO estado del servidor (GET /division):
+//   Partes iguales: saldo pendiente entre N personas, cada una con [Cobrar].
+//   Por consumo: cada persona paga los renglones que consumió (completos,
+//   por unidades o por fracción de un renglón compartido). El importe de la
+//   selección lo calcula el servidor; aquí solo se estima para mostrarlo.
+// Reglas que la pantalla refleja y el servidor impone: con un pago suelto o
+// una parte igual ya cobrada, la selección por producto se cierra; con
+// cualquier pago, el descuento queda congelado.
+let DV = null;             // último estado del servidor
+let DV_TAB = 'consumo';
+let DV_SEL = new Map();    // itemId → {num, den}: fracción del renglón elegida
+let DV_PARTES = null;      // N elegido en partes iguales (mientras no esté fijo)
+
+const mcdJs = (a, b) => { a = Math.abs(a); b = Math.abs(b); while (b) { const t = a % b; a = b; b = t; } return a || 1; };
+const frac = (n, d) => { if (!n) return { num: 0, den: 1 }; const g = mcdJs(n, d); return { num: n / g, den: d / g }; };
+const cmpFrac = (a, b) => Math.sign(a.num * b.den - b.num * a.den);
+const pendienteDe = (r) => ({ num: r.pendienteNum, den: r.pendienteDen });
+// Misma regla que el servidor: la porción que completa el renglón se lleva
+// exactamente lo que falta; si no, la parte entera de neto × fracción.
+function importeSel(r, f) {
+  if (cmpFrac(f, pendienteDe(r)) === 0) return r.netoCentavos - r.cobradoCentavos;
+  return Math.floor(r.netoCentavos * f.num / f.den);
+}
+function totalSeleccion() {
+  let t = 0;
+  for (const [id, f] of DV_SEL) { const r = DV.renglones.find(x => x.id === id); if (r) t += importeSel(r, f); }
+  return t;
+}
+
+async function cargarDivision() {
+  const fijas = DV?.partesIguales?.fijas;
+  const q = (!fijas && DV_PARTES) ? `?partes=${DV_PARTES}` : '';
+  DV = await api(`/api/restaurante/cuentas/${CUENTA.id}/division${q}`);
+  if (!DV_PARTES) DV_PARTES = DV.partesIguales.partes;
+  // Lo que ya no está pendiente sale de la selección.
+  for (const [id, f] of [...DV_SEL]) {
+    const r = DV.renglones.find(x => x.id === id);
+    if (!r || r.estado === 'pagado' || cmpFrac(f, pendienteDe(r)) > 0) DV_SEL.delete(id);
+  }
+}
+async function abrirDividir() {
+  if (!CUENTA) return;
+  DV = null; DV_SEL = new Map(); DV_PARTES = null;
+  await cargarDivision();
+  DV_TAB = DV.consumoBloqueado ? 'iguales' : 'consumo';
+  renderDividir();
+  $('dlg-dividir').showModal();
+}
+async function refrescarDivision() {
+  if (!$('dlg-dividir').open || !CUENTA) return;
+  await cargarDivision();
+  renderDividir();
+}
+function dvTab(t) {
+  if (t === 'consumo' && DV.consumoBloqueado) return;
+  DV_TAB = t;
+  renderDividir();
+}
+function renderDividir() {
+  if (!DV) return;
+  $('dv-tab-iguales').classList.toggle('activo', DV_TAB === 'iguales');
+  $('dv-tab-consumo').classList.toggle('activo', DV_TAB === 'consumo');
+  $('dv-tab-consumo').disabled = DV.consumoBloqueado;
+  $('dv-tab-consumo').title = DV.consumoBloqueado ? (DV.motivoBloqueo || '') : '';
+  $('dv-cuerpo').innerHTML = DV_TAB === 'consumo' ? renderConsumo() : renderIguales();
+}
+
+// Pestaña "Por consumo".
+function renderConsumo() {
+  const filas = DV.renglones.map(r => {
+    const sel = DV_SEL.get(r.id) || null;
+    const pend = pendienteDe(r);
+    const pagado = r.estado === 'pagado';
+    const extra = [resumirModificadores(r.modificadores), r.notas].filter(Boolean).join(' · ');
+    const estadoTxt = pagado ? '✓ PAGADO' : (r.estado === 'parcial' ? `Pagado ${money(r.cobrado)} · Pendiente ${money(r.pendiente)}` : '');
+    let ctrl = '';
+    if (!pagado) {
+      let unidades = '';
+      if (r.cantidad > 1) {
+        const n = sel ? unidadesDe(sel, r.cantidad) : 0;
+        const max = unidadesDe(pend, r.cantidad);
+        unidades = `<button class="paso" onclick="event.stopPropagation(); dvUnidades('${r.id}', -1)" aria-label="Una unidad menos">−</button><span class="num">${n === null ? '·' : n}</span><button class="paso" onclick="event.stopPropagation(); dvUnidades('${r.id}', 1)" aria-label="Una unidad más">+</button><span style="font-size:12px;color:var(--sub)">de ${max === null ? r.cantidad : max}</span>`;
+      }
+      const chips = [[1, 2, '½'], [1, 3, '⅓'], [2, 3, '⅔'], [1, 4, '¼']]
+        .filter(([a, b]) => cmpFrac(frac(a, b), pend) <= 0)
+        .map(([a, b, t]) => `<button class="frac ${sel && sel.num === a && sel.den === b ? 'activo' : ''}" onclick="event.stopPropagation(); dvFraccion('${r.id}', ${a}, ${b})" title="Compartido: ${t} del renglón">${t}</button>`).join('');
+      const todo = `<button class="frac ${sel && cmpFrac(sel, pend) === 0 ? 'activo' : ''}" onclick="event.stopPropagation(); dvFraccion('${r.id}', ${pend.num}, ${pend.den})">Todo${r.estado === 'parcial' ? ` (${r.fraccionPendiente})` : ''}</button>`;
+      ctrl = `<span class="dv-ctrl">${unidades}${chips}${todo}</span>`;
+    }
+    return `<div class="dv-renglon ${r.estado} ${sel ? 'sel' : ''}" data-item="${esc(r.id)}" onclick="dvToggle('${r.id}')">
+      <span class="cant">${r.cantidad}×</span>
+      <span class="nom">${esc(r.producto)}${extra ? `<small>${esc(extra)}</small>` : ''}${estadoTxt ? `<span class="estado-pago">${estadoTxt}</span>` : ''}${ctrl}</span>
+      <span class="imp">${money(r.bruto)}${r.descuento > 0 ? `<small>neto ${money(r.neto)}</small>` : ''}${sel ? `<small style="color:var(--accent);font-weight:800">sel. ${money(importeSel(r, sel) / 100)}</small>` : ''}</span>
+    </div>`;
+  }).join('');
+  const total = totalSeleccion();
+  const hayPendiente = DV.renglones.some(r => r.estado !== 'pagado');
+  return `${DV.descuento ? `<div class="dv-aviso">Descuento ${money(DV.descuento.monto)} prorrateado entre los productos: cada renglón muestra su neto.</div>` : ''}
+    ${filas || '<p class="vacio">La cuenta no tiene productos.</p>'}
+    <div class="dv-pie">
+      <div class="sel-total"><span>Selección actual</span><span id="dv-sel-total">${money(total / 100)}</span></div>
+      ${puedeCobrar() ? `<div class="acciones" style="margin-top:0">
+        <button class="sec" onclick="dvLimpiar()">Limpiar</button>
+        <button id="dv-cobrar-sel" onclick="dvCobrarSeleccion()" ${total > 0 ? '' : 'disabled'}>Cobrar selección</button>
+        <button class="sec" id="dv-cobrar-resto" onclick="dvCobrarResto()" ${hayPendiente && DV.saldo > 0 ? '' : 'disabled'}>Cobrar resto ${money(DV.saldo)}</button>
+      </div>` : '<div class="dv-aviso">Cobra la caja.</div>'}
+    </div>
+    ${renderCobros()}`;
+}
+// Unidades enteras que representa una fracción del renglón, o null si no es
+// un número entero de unidades (renglón compartido por fracción).
+function unidadesDe(f, cantidad) {
+  const n = f.num * cantidad;
+  return n % f.den === 0 ? n / f.den : null;
+}
+function dvToggle(itemId) {
+  const r = DV.renglones.find(x => x.id === itemId);
+  if (!r || r.estado === 'pagado') return;
+  if (DV_SEL.has(itemId)) DV_SEL.delete(itemId);
+  else DV_SEL.set(itemId, pendienteDe(r));
+  renderDividir();
+}
+function dvUnidades(itemId, delta) {
+  const r = DV.renglones.find(x => x.id === itemId);
+  if (!r || r.estado === 'pagado') return;
+  const sel = DV_SEL.get(itemId);
+  const actual = sel ? (unidadesDe(sel, r.cantidad) ?? 0) : 0;
+  const max = unidadesDe(pendienteDe(r), r.cantidad) ?? 0;
+  const n = Math.max(0, Math.min(max, actual + delta));
+  if (n === 0) DV_SEL.delete(itemId); else DV_SEL.set(itemId, frac(n, r.cantidad));
+  renderDividir();
+}
+function dvFraccion(itemId, num, den) {
+  const r = DV.renglones.find(x => x.id === itemId);
+  if (!r || r.estado === 'pagado') return;
+  const f = frac(num, den);
+  if (cmpFrac(f, pendienteDe(r)) > 0) { msg(`De ${r.producto} solo queda ${r.fraccionPendiente}`); return; }
+  const sel = DV_SEL.get(itemId);
+  if (sel && sel.num === f.num && sel.den === f.den) DV_SEL.delete(itemId); else DV_SEL.set(itemId, f);
+  renderDividir();
+}
+function dvLimpiar() { DV_SEL = new Map(); renderDividir(); }
+function dvCobrarSeleccion() {
+  const seleccion = [...DV_SEL].map(([itemId, f]) => ({ itemId, numerador: f.num, denominador: f.den }));
+  const total = totalSeleccion();
+  if (!seleccion.length || total <= 0) return;
+  abrirPagoFijo({ tipo: 'consumo', seleccion, importe: total / 100, titulo: `Cobrar selección · ${money(total / 100)}` });
+}
+function dvCobrarResto() {
+  abrirPagoFijo({ tipo: 'consumo', seleccion: 'resto', importe: DV.saldo, titulo: `Cobrar el resto · ${money(DV.saldo)}` });
+}
+
+// Pestaña "Partes iguales".
+function renderIguales() {
+  const pi = DV.partesIguales;
+  const N = pi.fijas ? pi.partes : DV_PARTES;
+  const lista = [];
+  for (let k = 1; k <= pi.pagadas; k++) lista.push(`<div class="dv-parte pagada"><span class="quien">Persona ${k}</span><span class="monto">✓ pagada</span></div>`);
+  pi.montos.forEach((m, i) => lista.push(`<div class="dv-parte"><span class="quien">Persona ${pi.pagadas + i + 1}</span><span class="monto">${money(m)}</span>${puedeCobrar() ? `<button onclick="dvCobrarParte(${m})">Cobrar</button>` : ''}</div>`));
+  return `<div class="dv-aviso">Saldo pendiente: <b>${money(DV.saldo)}</b>${pi.fijas ? ` · dividido en ${N} partes (fijas)` : ''}${DV.motivoBloqueo ? `<br>${esc(DV.motivoBloqueo)}` : ''}</div>
+    <div class="dv-ctrl" style="margin-bottom:12px"><span style="font-weight:700">Número de personas</span>
+      <button class="paso" onclick="dvPartes(-1)" ${pi.fijas ? 'disabled' : ''} aria-label="Una persona menos">−</button>
+      <span class="num" id="dv-partes-n" style="font-size:18px;min-width:30px">${N}</span>
+      <button class="paso" onclick="dvPartes(1)" ${pi.fijas ? 'disabled' : ''} aria-label="Una persona más">+</button>
+    </div>
+    <div class="dv-partes">${lista.join('') || '<p class="vacio">Nada pendiente por cobrar.</p>'}</div>
+    ${renderCobros()}`;
+}
+async function dvPartes(delta) {
+  if (DV.partesIguales.fijas) return;
+  DV_PARTES = Math.max(1, Math.min(100, (DV_PARTES || 1) + delta));
+  await cargarDivision();
+  renderDividir();
+}
+function dvCobrarParte(monto) {
+  const partes = DV.partesIguales.fijas ? DV.partesIguales.partes : DV_PARTES;
+  abrirPagoFijo({ tipo: 'parte', partes, importe: monto, titulo: `Cobrar parte · ${money(monto)}` });
+}
+
+// Cobros vigentes de la cuenta (con reverso para admin).
+function renderCobros() {
+  if (!DV.cobros.length) return '';
+  return `<div class="dv-cobros"><b>Cobros registrados</b>${DV.cobros.map(c => `
+    <div class="dv-cobro">
+      <span class="det">${money(c.total)} · ${c.pagos.map(p => `${p.metodo} ${money(p.monto)}${p.cambio != null ? ` (cambio ${money(p.cambio)})` : ''}`).join(' + ')}${c.propina > 0 ? ` · propina ${money(c.propina)}` : ''}
+        <small>${c.tipo === 'consumo' ? c.porciones.map(p => `${p.fraccion} ${esc(p.producto)}`).join(', ') : esc(c.pagos[0]?.cubre || (c.tipo === 'parte' ? 'parte igual' : 'abono'))}${c.registradoPor ? ` · ${esc(c.registradoPor)}` : ''}</small>
+      </span>
+      ${ROL === 'admin' && c.cobroId ? `<button onclick="abrirReverso('${c.cobroId}', ${Number(c.total)})">Revertir</button>` : ''}
+    </div>`).join('')}</div>`;
+}
+let REVERSO = null;
+function abrirReverso(cobroId, total) {
+  REVERSO = cobroId;
+  $('rv-detalle').textContent = `Cobro de ${money(total)}. Sus productos volverán a estar pendientes; queda registrado quién lo revirtió y por qué.`;
+  $('rv-motivo').value = '';
+  $('dlg-reverso').showModal();
+}
+async function confirmarReverso() {
+  const motivo = $('rv-motivo').value.trim();
+  if (!motivo) { msg('El motivo es obligatorio'); return; }
+  await api(`/api/restaurante/cuentas/${CUENTA.id}/cobros/${REVERSO}/revertir`, { method: 'POST', body: JSON.stringify({ motivo }) });
+  $('dlg-reverso').close();
+  REVERSO = null;
+  msg('Cobro revertido');
+  await refrescarDivision();
+  await refrescarCuenta();
 }
 
 // ─── Cierre y ticket pagado ─────────────────────────────────────────────────
