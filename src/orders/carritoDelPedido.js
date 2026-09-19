@@ -232,8 +232,69 @@ function terminoQueLoCubre(nombreProducto, dicho, terminos) {
  *   percibido         solo aparece en el análisis de su foto → se pregunta
  *   ninguna           nadie lo pidió                         → ni entra ni se menciona
  */
+/**
+ * ─── LAS PALABRAS DEL CICLO QUE YA ESTÁN OCUPADAS ────────────────────────
+ *
+ * Un artículo NUEVO se autoriza con lo que el cliente escribió en ESTE turno.
+ * El ciclo sigue valiendo —el modelo puede tardar un turno en estructurar lo
+ * que ya se pidió— pero sólo con palabras que no estén sosteniendo ya otra
+ * cosa del carrito.
+ *
+ * Lo que arregla, medido dos veces en tráfico real:
+ *
+ *   18-sep  «También chipotle» (una SALSA, turno 4) autorizó cinco turnos
+ *           después un platillo entero de chipotle, con la dirección del
+ *           cliente de nota de cocina.
+ *   19-sep  con el cliente escribiendo sólo «Confirmo» sobre un pedido ya
+ *           completo, «huevos» (turno 2, una proteína) y «chorizo» (turno 3,
+ *           una guarnición) autorizaron un segundo platillo que nadie pidió —
+ *           y al hacerlo tiraron la confirmación.
+ *
+ * La discriminación es la que hace falta y ninguna más: si el cliente nombró
+ * el platillo de verdad, alguna palabra suya queda libre —«revueltos» en
+ * «huevos revueltos con chorizo»— y entra igual. Si el platillo se arma
+ * juntando palabras que ya están puestas en otro renglón, no entra.
+ *
+ * Es la MISMA asimetría que los modificadores llevan desde el 12-sep (ver
+ * `fusionar`): el turno manda cuando el cliente ya eligió, el ciclo sólo
+ * rellena lo que sigue vacío.
+ */
+// «Otra igual», «uno más»: el cliente pide OTRA UNIDAD de algo que ya está en
+// el pedido, y por eso mismo la palabra que lo nombra está ocupada. Es la
+// autorización específica que salva el caso legítimo sin abrir el general: el
+// marcador va en ESTE turno, así que un «Confirmo» pelado nunca lo trae.
+//
+// El mismo criterio vive en `compilarTurno.pideOtraUnidad`, una capa más
+// arriba, y se copia PALABRA POR PALABRA. No se importa de allá porque
+// `orders/` es la capa de abajo y no puede depender de `mesero-whatsapp/`.
+//
+// Fuera quedan «también» e «igual» a propósito, aunque parezcan encajar:
+// «También chipotle» fue justo la frase que el 18-sep dejó suelta la palabra
+// que cinco turnos después metió un platillo fantasma. «También» no pide otra
+// unidad de lo mismo, introduce algo nuevo — y si es nuevo, el cliente lo
+// nombra en el turno y la primera puerta ya lo autoriza.
+const PIDE_OTRA_UNIDAD = /\b(otro|otra|otros|otras|mas|agregame)\b/;
+
+function elCicloLoSostieneConPalabraLibre(nombre, ctx) {
+  const sostienen = palabrasQueLaSostienen(nombre, ctx.dicho);
+  // Sin una palabra propia en el ciclo no hay respaldo que medir. Se excluye a
+  // propósito la segunda pasada tolerante a erratas de `nombradoPorElCliente`:
+  // no dice QUÉ palabra casó, así que no se puede saber si estaba libre, y una
+  // errata de hace tres turnos es la evidencia más débil que hay para meter un
+  // platillo nuevo. Si el cliente lo escribió ahora, el turno ya lo autorizó.
+  if (!sostienen.size) return false;
+  const ocupadas = ctx.palabrasComprometidas || new Set();
+  for (const p of sostienen) if (!ocupadas.has(p)) return true;
+  // Todas sus palabras están puestas en otro renglón. Sólo pasa si el cliente
+  // pidió otra unidad EN ESTE TURNO: «una coca» … «otra igual».
+  return PIDE_OTRA_UNIDAD.test(norm(ctx.mensajeDicho));
+}
+
 function procedenciaDelArticulo(nombre, ctx) {
-  if (nombradoPorElCliente(nombre, ctx.dicho)) return { autoriza: true, via: 'dicho' };
+  // 1) ESTE TURNO. Lo que el cliente acaba de escribir autoriza sin condiciones.
+  if (nombradoPorElCliente(nombre, ctx.mensajeDicho)) return { autoriza: true, via: 'dicho' };
+  // 2) EL CICLO, con una palabra que no esté ya puesta en otro renglón.
+  if (elCicloLoSostieneConPalabraLibre(nombre, ctx)) return { autoriza: true, via: 'ciclo' };
   // El cliente aceptó que se le ofreciera ESTE producto, por su nombre exacto.
   // Alcanza solo a la existencia del renglón: `ctx.aceptado` no aparece en
   // ninguna otra decisión de esta función ni de `fusionar`.
@@ -708,6 +769,24 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   const previo = (carritoPrevio && Array.isArray(carritoPrevio.items))
     ? { items: carritoPrevio.items.map((i) => normalizarItem(i, i.lid)), datos: { ...(carritoPrevio.datos || {}) } }
     : carritoVacio();
+
+  // Las palabras del ciclo que YA sostienen algo del carrito: el nombre de un
+  // renglón y cada opción puesta en él. Un artículo nuevo no puede autorizarse
+  // sólo con éstas (ver `elCicloLoSostieneConPalabraLibre`).
+  //
+  // Se calcula sobre el carrito PREVIO, que es el estado contra el que este
+  // turno propone. Hacerlo sobre el resultado sería circular: el propio
+  // artículo que se está juzgando acabaría ocupando sus palabras.
+  ctx.palabrasComprometidas = new Set();
+  for (const it of previo.items) {
+    for (const w of palabrasQueLaSostienen(it.nombre, ctx.dicho)) ctx.palabrasComprometidas.add(w);
+    for (const g of (Array.isArray(it.modificadores) ? it.modificadores : [])) {
+      for (const o of (Array.isArray(g?.opciones) ? g.opciones : [])) {
+        const n = typeof o === 'string' ? o : String(o?.nombre || '');
+        for (const w of palabrasQueLaSostienen(n, ctx.dicho)) ctx.palabrasComprometidas.add(w);
+      }
+    }
+  }
 
   const propuestos = Array.isArray(propuesta?.items)
     ? propuesta.items.filter((i) => String(i?.nombre || '').trim() || i?.id !== undefined)

@@ -123,9 +123,41 @@ export function loQueFalta({ carrito = null, datos = {}, aclaraciones = [], requ
   // Con la identidad en el aire no se pregunta logística: se resuelve el plato.
   if (sinIdentidad.length) return falta;
   if (!datos?.modalidad) falta.push('modalidad');
+  // ── UN PEDIDO A DOMICILIO NO ESTÁ LISTO SIN DIRECCIÓN ──────────────────
+  //
+  // Qué significa que un pedido esté «listo» aquí: que cruzaría el borde y se
+  // convertiría en un pedido real. Bajo esa definición, un domicilio sin
+  // dirección no lo está — nadie sabría a dónde llevarlo — y marcarlo como
+  // listo es peor que bloquearlo, porque el handoff sale sin bloqueos y nada
+  // avisa de que falta el dato.
+  //
+  // Se vio en el primer handoff real del proyecto (19-sep-2026): `listo`,
+  // `bloqueos: []`, modalidad «entrega a domicilio» y `cliente_con_direccion:
+  // false`. El bot legacy de `brain.js` sí la pide; el que lo reemplaza no.
+  //
+  // No es un bloqueo mudo: al entrar en `falta` el mesero la PREGUNTA, igual
+  // que pregunta la modalidad o el pago, y el pedido se completa solo.
+  else if (esADomicilio(datos.modalidad) && !hayDireccion(carrito)) falta.push('direccion');
   if (requierePago && !datos?.pago) falta.push('pago');
   return falta;
 }
+
+// La modalidad la escribe cada negocio en su configuración, así que no se
+// compara contra una constante: se mira si habla de llevarlo y no de recogerlo.
+const LLEVARLO = /domicilio|entrega|env[ií]o|reparto/i;
+const RECOGERLO = /recoger|recojo|tienda|mostrador|local|sucursal|pasa|mesa/i;
+const esADomicilio = (modalidad) => {
+  const m = String(modalidad || '');
+  return LLEVARLO.test(m) && !RECOGERLO.test(m);
+};
+
+// Basta con una de las dos formas en que llega una dirección: entera en
+// `direccion`, o por piezas empezando por `calle`. Exigir las nueve sería
+// pedirle al cliente un formulario.
+const hayDireccion = (carrito) => {
+  const c = carrito?.datos?.cliente || {};
+  return String(c.direccion || '').trim() !== '' || String(c.calle || '').trim() !== '';
+};
 
 /** ¿Se puede pasar a confirmar? Solo si no hay nada abierto. */
 export const listoParaConfirmar = (entrada) => loQueFalta(entrada).length === 0

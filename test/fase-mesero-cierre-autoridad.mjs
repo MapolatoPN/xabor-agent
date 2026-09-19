@@ -22,7 +22,7 @@
 // resumen que el cliente acaba de leer.
 import assert from 'node:assert/strict';
 import { atenderTurno } from '../src/mesero-whatsapp/meseroDigital.js';
-import { faseDelTurno, loQueFalta } from '../src/mesero-whatsapp/faseConversacional.js';
+import { faseDelTurno, loQueFalta, listoParaConfirmar } from '../src/mesero-whatsapp/faseConversacional.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -302,8 +302,13 @@ await t('H5. sin resumen previo, un «sí» no confirma nada', async () => {
 await t('H6. tras el cambio, el resumen nuevo SÍ se confirma al turno siguiente', async () => {
   // La huella no es un candado: es una relectura. Enseñado el resumen nuevo,
   // el «sí» del turno siguiente vale.
+  //
+  // El cambio de modalidad trae la dirección desde que existe la regla de C3:
+  // pasar a domicilio sin dirección deja el pedido INCOMPLETO, y entonces esta
+  // prueba mediría eso en vez de la relectura de la huella, que es lo suyo.
   const c = await hastaListo('h6');
-  await c.turno('mejor a domicilio', { items: [], modalidad: 'entrega a domicilio' });
+  await c.turno('mejor a domicilio, en Reforma 200',
+    { items: [], modalidad: 'entrega a domicilio', cliente: { calle: 'Reforma 200' } });
   const r = await c.turno('sí, así está bien', null);
   assert.equal(r.fase, 'confirmando', `fase=${r.fase}`);
 });
@@ -328,20 +333,37 @@ await t('C2. no se confirma sin pago', async () => {
   assert.ok(r.falta.includes('pago'), JSON.stringify(r.falta));
 });
 
-await t('C3. hoy NO existe metadata que diga qué modalidad exige dirección', async () => {
-  // Esta prueba no certifica C3: declara que hoy no se puede certificar.
-  // `loQueFalta` conoce cuatro clases de hueco —producto, grupo, modalidad y
-  // pago— y ninguna depende de QUÉ modalidad se eligió. Exigir la dirección
-  // pediría inventar la regla, y eso no es de esta ronda. El día que alguien
-  // la escriba, esta prueba falla y obliga a certificar C3 de verdad.
-  const aDomicilio = { carrito: CARRITO({ modalidad: 'entrega a domicilio', forma_pago: 'efectivo' }),
-    datos: { modalidad: 'entrega a domicilio', pago: 'efectivo' }, aclaraciones: [], requierePago: true };
-  const enTienda = { ...aDomicilio, carrito: CARRITO({ modalidad: 'recoger en tienda', forma_pago: 'efectivo' }),
-    datos: { modalidad: 'recoger en tienda', pago: 'efectivo' } };
-  assert.deepEqual(loQueFalta(aDomicilio), [],
-    'ya hay una regla de dirección por modalidad: certifica C3 de verdad');
-  assert.deepEqual(loQueFalta(aDomicilio), loQueFalta(enTienda),
-    'la modalidad ya cambia lo que falta: C3 es certificable y hay que escribirla');
+await t('C3. no se cierra un domicilio sin dirección, y recoger no la pide', async () => {
+  // Esta prueba DECÍA que C3 no era certificable: `loQueFalta` conocía cuatro
+  // clases de hueco —producto, grupo, modalidad y pago— y ninguna miraba QUÉ
+  // modalidad se eligió. La regla se escribió el 19-sep, después de ver el
+  // primer handoff real del proyecto salir `listo`, sin bloqueos, con
+  // «entrega a domicilio» y sin una dirección a la que llevarlo.
+  //
+  // La define así: «listo» significa que el pedido cruzaría el borde y se
+  // volvería real. Un domicilio sin dirección no cruza; y como entra por
+  // `falta`, el mesero la PREGUNTA en vez de callársela.
+  const base = { aclaraciones: [], requierePago: true };
+  const conDatos = (datos, cliente) => ({ ...base,
+    carrito: { items: [LINEA()], datos: { ...datos, ...(cliente ? { cliente } : {}) } },
+    datos: { modalidad: datos.modalidad, pago: datos.forma_pago } });
+
+  const domicilioSinDireccion = conDatos({ modalidad: 'entrega a domicilio', forma_pago: 'efectivo' });
+  assert.deepEqual(loQueFalta(domicilioSinDireccion), ['direccion'],
+    JSON.stringify(loQueFalta(domicilioSinDireccion)));
+  assert.equal(listoParaConfirmar(domicilioSinDireccion), false);
+
+  // Recoger no la pide: exigirla ahí sería un interrogatorio sin motivo.
+  const enTienda = conDatos({ modalidad: 'recoger en tienda', forma_pago: 'efectivo' });
+  assert.deepEqual(loQueFalta(enTienda), []);
+  assert.equal(listoParaConfirmar(enTienda), true);
+
+  // Y con dirección, el domicilio cierra. Las dos formas en que llega valen.
+  for (const cliente of [{ direccion: 'Reforma 200, Centro' }, { calle: 'Reforma', numero_exterior: '200' }]) {
+    const conDireccion = conDatos({ modalidad: 'entrega a domicilio', forma_pago: 'efectivo' }, cliente);
+    assert.deepEqual(loQueFalta(conDireccion), [], JSON.stringify(cliente));
+    assert.equal(listoParaConfirmar(conDireccion), true, JSON.stringify(cliente));
+  }
 });
 
 await t('C4. cambiar de modalidad no duplica el renglón', async () => {
