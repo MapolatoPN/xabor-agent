@@ -274,9 +274,22 @@ try {
     assert(/Forma de pago:[\s\S]{0,120}?Terminal/i.test(papel[0]), 'sigue saliendo la forma de pago vieja');
     assert(!/Forma de pago:[\s\S]{0,120}?Efectivo/i.test(papel[0]), 'imprimio Efectivo, que es la vieja');
   });
+  // textContent y no innerText: la forma de pago vive en el detalle de la
+  // tarjeta, que nace plegado, y innerText no devuelve lo que esta oculto.
   await t('B3. la comanda del tablero queda con la forma de pago nueva', async () =>
-    assert(await page.evaluate(() => /Terminal/i.test(document.getElementById('comanda-XAB-0402').innerText)),
+    assert(await page.evaluate(() => /Terminal/i.test(document.getElementById('comanda-XAB-0402').textContent)),
       'la tarjeta no refleja el cambio'));
+
+  // Registrar el pago REPINTA la tarjeta, y desde que el detalle se pliega ese
+  // repintado puede cerrarsela al operador que la tenia abierta leyendo.
+  const expandida = () => page.evaluate(() =>
+    document.querySelector('#comanda-XAB-0402 .comanda-resumen')?.getAttribute('aria-expanded'));
+  await t('B3b. una tarjeta abierta sigue abierta tras registrar el pago', async () => {
+    await page.evaluate(() => toggleComanda('XAB-0402'));
+    assert(await expandida() === 'true', 'no se pudo abrir la tarjeta para medir');
+    await registrarPago('XAB-0402', 'efectivo');
+    assert(await expandida() === 'true', 'el repintado cerro la tarjeta');
+  });
 
   // El mismo modal se abre desde el Historial, donde el pedido ya esta cerrado
   // y no vive en memoria: ahi corregir una captura vieja no debe escupir papel.
