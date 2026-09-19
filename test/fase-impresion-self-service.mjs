@@ -336,6 +336,79 @@ await t('ANCHO', '21. 80 mm sigue funcionando igual que antes', () => {
     'el separador de 80 mm sigue midiendo 42 columnas');
 });
 
+// ─── El nombre del cliente en el papel de cocina ────────────────────────────
+//
+// El servidor manda `cliente` (y SOLO el nombre) desde que existe el payload
+// de pedidos; el renderer lo ignoraba, así que el dato llegaba a la PC del
+// negocio y se tiraba. Lo que estos casos sostienen es que ahora sale, que
+// sale completo, y que no arrastró nada más al papel.
+const PEDIDO_BASE = {
+  negocio: 'Nonna Maye', emitidoAt: '2026-09-19T18:00:00.000Z', impresora: 'Cocina',
+  items: [{ cantidad: 1, producto: 'Lasagna', modificadores: [], notas: null }],
+};
+// Los casos de ANCHO miden solo las líneas de texto puro y descartan las que
+// llevan comandos intercalados. Aquí no sirve: la del nombre SIEMPRE los lleva
+// (va centrada, en negritas y en doble alto), así que el filtro la tiraría y
+// las aserciones pasarían midiendo un papel que no es. Se quitan los comandos
+// que usa este renderer y se mide el texto que queda, que es lo que se ve.
+const COMANDOS = /\x1b@|\x1b[aE][\s\S]|\x1d![\s\S]|\x1dV[\s\S][\s\S]/g;
+const lineasVisibles = (s) => s.replace(COMANDOS, '').split('\n')
+  .map((l) => l.replace(/[\x00-\x09\x0b-\x1f]/g, '')).filter(Boolean);
+const papel = (extra, ancho = 42) => renderComanda({ ...PEDIDO_BASE, ...extra }, { ancho }).toString('latin1');
+
+await t('CLIENTE', '22. el nombre del cliente sale en el papel de cocina', () => {
+  assert.ok(papel({ cliente: 'Alma Torres' }).includes('ALMA TORRES'),
+    'el papel de cocina no trae el nombre del cliente');
+});
+
+await t('CLIENTE', '23. agregar el nombre añade UNA línea y no toca el resto', () => {
+  const sin = lineasVisibles(papel({}));
+  const con = lineasVisibles(papel({ cliente: 'Alma Torres' }));
+  assert.strictEqual(con.length, sin.length + 1, `el papel pasó de ${sin.length} a ${con.length} líneas`);
+  const soloElNombre = con.filter((l) => !sin.includes(l));
+  assert.deepStrictEqual(soloElNombre, ['ALMA TORRES'], 'entró al papel algo más que el nombre');
+});
+
+await t('CLIENTE', '24. un pedido sin nombre sale exactamente como antes', () => {
+  const sin = papel({});
+  for (const basura of ['null', 'undefined', 'NULL', 'UNDEFINED']) {
+    assert.ok(!sin.includes(basura), `el papel imprime "${basura}" cuando no hay nombre`);
+  }
+  // Un pedido de mesa nunca trae `cliente`: su papel no puede haber cambiado.
+  assert.strictEqual(papel({ mesa: '5', mesero: 'ANGEL' }), papel({ mesa: '5', mesero: 'ANGEL', cliente: null }),
+    'el papel de mesa cambió con el nombre ausente');
+});
+
+await t('CLIENTE', '25. un nombre largo se envuelve, no se corta ni desborda', () => {
+  // En doble alto caben la mitad de columnas: el corte real son 21 en 80 mm.
+  const largo = 'MARIA DE LOS ANGELES HERNANDEZ CANTU DE LA GARZA';
+  const lineas = lineasVisibles(papel({ cliente: largo })).filter((l) => /HERNANDEZ|MARIA|ANGELES|GARZA/.test(l));
+  assert.ok(lineas.length >= 2, 'un nombre de 48 caracteres tiene que envolverse');
+  assert.strictEqual(lineas.join(' ').replace(/\s+/g, ' ').trim(), largo, 'el nombre se perdió al envolverlo');
+  for (const l of lineas) assert.ok(l.length <= 21, `linea de ${l.length} columnas en doble alto (máx 21)`);
+});
+
+await t('CLIENTE', '26. en 58 mm el nombre tampoco desborda', () => {
+  const lineas = lineasVisibles(papel({ cliente: 'Alma Torres Villarreal' }, 32));
+  for (const l of lineas) assert.ok(l.length <= 32, `linea de ${l.length} columnas en 58 mm: "${l}"`);
+  // El nombre va en doble alto: su límite real es la mitad del papel.
+  for (const l of lineas.filter((x) => /ALMA|TORRES|VILLARREAL/.test(x))) {
+    assert.ok(l.length <= 16, `nombre de ${l.length} columnas en doble alto de 58 mm (máx 16): "${l}"`);
+  }
+});
+
+await t('CLIENTE', '27. solo el nombre: ni teléfono ni dirección llegan al papel', () => {
+  // Aunque alguien meta datos de más en el payload, este papel no los imprime.
+  const texto = papel({
+    cliente: 'Alma Torres', telefono: '8787709470',
+    cliente_telefono: '8787709470', direccion: 'Av. Siempre Viva 123, Col. Centro',
+  });
+  assert.ok(texto.includes('ALMA TORRES'), 'el nombre sí tiene que salir');
+  for (const dato of ['8787709470', 'Siempre Viva', 'SIEMPRE VIVA', 'Col. Centro', 'COL. CENTRO']) {
+    assert.ok(!texto.includes(dato), `el papel de cocina imprimió "${dato}"`);
+  }
+});
+
 // ═══════════ 4. Backend self-service, con servidor real ═══════════
 
 const NEG_A = SEED.negocioA;

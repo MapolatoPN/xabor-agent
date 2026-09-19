@@ -24,6 +24,23 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
   const mesa = payload.mesa != null ? `MESA ${payload.mesa}` : (payload.destino || 'PARA LLEVAR');
   partes.push(ALIGN_CENTER, SIZE_2H, BOLD_ON, texto(mesa), BOLD_OFF, SIZE_NORMAL, ALIGN_LEFT);
 
+  // El nombre del cliente: es como se canta el pedido cuando alguien lo
+  // recoge, y este papel era el único sitio donde no salía. El servidor lo
+  // manda desde siempre (`cliente` en el payload de impresionService) y este
+  // renderer no lo usaba: el dato llegaba y se tiraba.
+  //
+  // SOLO el nombre. Ni teléfono ni dirección: en la estación no sirven de
+  // nada y son datos personales de más — el servidor ya se encarga de no
+  // mandarlos, y aquí no se inventa ninguno.
+  //
+  // En doble alto el ancho útil se parte a la mitad, como en los productos,
+  // para que un nombre largo se envuelva en vez de salir cortado.
+  if (payload.cliente) {
+    partes.push(ALIGN_CENTER, SIZE_2H, BOLD_ON);
+    partes.push(bloque(String(payload.cliente).toUpperCase(), Math.floor(ancho / 2)));
+    partes.push(BOLD_OFF, SIZE_NORMAL, ALIGN_LEFT);
+  }
+
   if (payload.mesero) partes.push(texto(String(payload.mesero).toUpperCase()));
   partes.push(columnas(horaLocal(payload.emitidoAt), payload.ronda != null ? `RONDA ${payload.ronda}` : '', ancho));
   if (payload.impresora) partes.push(texto(String(payload.impresora).toUpperCase()));
