@@ -41,7 +41,7 @@ import {
 import { clasificarIntenciones, textoQueAutoriza, partirEnClausulas } from './intencionesDelCliente.js';
 import { resolverReferencia } from './referenciasDelCliente.js';
 import { aplicarPropuestas, propuestasDesdeBorrador, propuesta } from './motorTransaccional.js';
-import { compilarTurno } from './compilarTurno.js';
+import { compilarTurno, pideOtraUnidad } from './compilarTurno.js';
 import { responderConsulta, resolverTermino, buscarProductos, opcionesAmbiguas, grupoRealDeLaOpcion } from './consultasDelMenu.js';
 import { recomendar, recomendarPorPista, puedeRecomendarAhora } from './recomendaciones.js';
 import { recolectarAclaraciones, aPreguntarAhora, paraElModelo } from './aclaraciones.js';
@@ -750,6 +750,84 @@ export async function atenderTurno({
     }
   }
 
+  // ── 8c) UN ARTÍCULO NUEVO NO SE AUTORIZA CON PALABRAS DE OTROS TURNOS ──
+  //
+  // El 19-sep, con el cliente escribiendo sólo «Confirmo» sobre un pedido ya
+  // completo, entró un segundo platillo que nadie pidió: «Huevos revueltos con
+  // chorizo». Lo autorizó `articulo|dicho`, y esa vía mide contra el texto del
+  // CICLO: en el ciclo estaban «huevos» (turno 2, una PROTEÍNA) y «chorizo»
+  // (turno 3, una GUARNICIÓN), las dos ya puestas en el renglón que existía. La
+  // fase retrocedió de `confirmando` a `completando_producto` y la confirmación
+  // quedó invalidada: un pedido ya confirmado dejó de poder cruzar.
+  //
+  // ── POR QUÉ AQUÍ Y NO EN EL RECONCILIADOR ────────────────────────────
+  //
+  // `procedenciaDelArticulo` vive en `carritoDelPedido.js`, y ese módulo NO es
+  // sólo del Mesero: `brain.js` lo llama en cada turno del bot legacy, que está
+  // encendido en Mapolato Acuña. Cambiar la autoridad allí toca pedidos reales
+  // hoy mismo.
+  //
+  // Y hay una razón de fondo, no sólo de riesgo: la regla que hace falta
+  // necesita saber QUÉ pretende el turno, y las intenciones sólo existen a esta
+  // altura. El reconciliador no puede distinguir un turno que confirma de uno
+  // que pide, y sin esa distinción la regla se queda corta — medido: con sólo
+  // la de «palabra libre», un producto RETIRADO y uno NEGADO volvían a entrar
+  // durante el «Confirmo», porque al no estar en el carrito sus palabras
+  // estaban libres.
+  //
+  // Es el mismo sitio y la misma disciplina que 8d, justo abajo: se filtra lo
+  // que el cliente no sostiene ANTES de que el motor lo vea, y lo tirado se
+  // cuenta por el canal de siempre.
+  //
+  // ── LAS PUERTAS, EN ORDEN ────────────────────────────────────────────
+  //
+  //   1. se le ofreció y dijo que sí        → entra (su canal, intacto)
+  //   2. lo nombró en ESTE turno            → entra
+  //   3. el turno SÓLO confirma             → no entra nada nuevo
+  //   4. pidió otra unidad en este turno    → entra («otra igual»)
+  //   5. el ciclo no lo sostiene por nombre → no es esta vía; decide el motor
+  //                                           (un término de categoría —«un
+  //                                           refresco»— entra por ahí)
+  //   6. lo sostiene sólo con palabras ya puestas en otro renglón → no entra
+  //
+  // La discriminación de la 6 es la que hace falta y ninguna más: si el cliente
+  // nombró el platillo, alguna palabra suya queda libre —«revueltos» en «huevos
+  // revueltos con chorizo»— y entra igual.
+  const sinRespaldoDeArticulo = [];
+  {
+    const puestas = new Set();
+    for (const i of (carritoActual.items || [])) {
+      for (const w of palabrasQueLaSostienen(i.nombre, dichoDelCiclo)) puestas.add(w);
+      for (const g of (Array.isArray(i.modificadores) ? i.modificadores : [])) {
+        for (const o of (Array.isArray(g?.opciones) ? g.opciones : [])) {
+          const nom = typeof o === 'string' ? o : String(o?.nombre || '');
+          for (const w of palabrasQueLaSostienen(nom, dichoDelCiclo)) puestas.add(w);
+        }
+      }
+    }
+    // «Sólo confirma» es literal: si el turno además pide algo, no es este caso
+    // y manda lo que pide. «Confirmo y ponme una coca» sigue metiendo la coca.
+    const soloConfirma = intenciones.includes('CONFIRMAR') && !intenciones.includes('AGREGAR_PRODUCTO');
+    const aceptadas = new Set((desenlace.aceptadas || []).map((p) => norm(p.referencia)));
+    anclado.propuestas = (anclado.propuestas || []).filter((p) => {
+      if (p?.accion !== 'agregar') return true;
+      const nombre = String(p?.valorNuevo?.nombre || '');
+      if (!nombre) return true;
+      if (aceptadas.has(norm(nombre))) return true;
+      if (nombradoPorElCliente(nombre, autoriza)) return true;
+      const tirar = (motivo) => {
+        sinRespaldoDeArticulo.push({ nombre, campo: 'articulo', motivo });
+        return false;
+      };
+      if (soloConfirma) return tirar('solo_confirmaba');
+      if (pideOtraUnidad(autoriza)) return true;
+      const sostienen = palabrasQueLaSostienen(nombre, dichoDelCiclo);
+      if (!sostienen.size) return true;
+      if ([...sostienen].some((w) => !puestas.has(w))) return true;
+      return tirar('palabras_ya_puestas_en_otro_renglon');
+    });
+  }
+
   // ── 8d) LA MODALIDAD, EL PAGO Y LA DIRECCIÓN TAMBIÉN LOS AUTORIZA EL CLIENTE ──
   //
   // El reconciliador acumula los datos operativos sin pedirles respaldo: el
@@ -855,6 +933,13 @@ export async function atenderTurno({
   if (sinRespaldoOperativo.length) {
     (resultado.cambios.sinRespaldo || (resultado.cambios.sinRespaldo = []))
       .push(...sinRespaldoOperativo);
+  }
+  // Y lo que tiró 8c, por el mismo canal y por el mismo motivo: un platillo
+  // que el modelo coló y nadie registra es indistinguible de uno que nunca
+  // propuso, y aquí la diferencia es justo lo que se quiere contar.
+  if (sinRespaldoDeArticulo.length) {
+    (resultado.cambios.sinRespaldo || (resultado.cambios.sinRespaldo = []))
+      .push(...sinRespaldoDeArticulo);
   }
   const lidsAntes = new Set((carritoActual.items || []).map((i) => i.lid));
   carritoActual = resultado.carrito;

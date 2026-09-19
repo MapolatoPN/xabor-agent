@@ -214,6 +214,79 @@ await t('A7. y sin esa aceptación, el mismo café NO entra', async () => {
     JSON.stringify(r.carrito.items.map((i) => i.nombre)));
 });
 
+// ── De dónde más puede venir una palabra histórica ──────────────────────
+//
+// «Palabra libre» no basta por sí sola, y esto lo midió una sonda: la palabra
+// de un producto RETIRADO y la de uno NEGADO quedan libres justamente porque
+// no están en el carrito, así que la regla de la palabra las dejaba pasar. Lo
+// que las para es la puerta 3: un turno que sólo confirma no da de alta nada.
+const COCA = { nombre: 'Coca Cola', cantidad: 1, modificadores: [] };
+const CAFE = { nombre: 'Café Americano', cantidad: 1, modificadores: [] };
+const ENCH = { nombre: 'Enchiladas de chipotle', cantidad: 1, modificadores: [] };
+
+/** Completa el pedido desde donde esté y lo deja a un «Confirmo» de cruzar. */
+async function hastaListo(c) {
+  await c.turno('Con huevos estrellados', { items: [ITEM(MODS.slice(0, 2))] });
+  await c.turno('Con frijolitos con chorizo', { items: [ITEM(MODS)] });
+  await c.turno('Paso a recogerlo', { items: [ITEM(MODS)], modalidad: 'recoger en tienda' });
+  const r = await c.turno('Pago con tarjeta',
+    { items: [ITEM(MODS)], modalidad: 'recoger en tienda', forma_pago: 'tarjeta' });
+  assert.equal(r.listoParaConfirmar, true, `no llegó a listo: ${JSON.stringify(r.falta)}`);
+  return c;
+}
+
+await t('A8. un producto RETIRADO no vuelve durante «Confirmo»', async () => {
+  const c = conversacion('a8');
+  await c.turno('Quiero chilaquiles suizos', { items: [ITEM([MODS[0]])] });
+  await c.turno('Y una coca', { items: [ITEM([MODS[0]]), COCA] });
+  const q = await c.turno('Quita la coca', { items: [ITEM([MODS[0]])] });
+  assert.deepEqual(nombres(q.carrito), ['Chilaquiles Sencillos'], JSON.stringify(nombres(q.carrito)));
+  await hastaListo(c);
+  const f = await c.turno('Confirmo', { items: [ITEM(MODS), COCA] });
+  assert.deepEqual(nombres(f.carrito), ['Chilaquiles Sencillos'],
+    `resucitó un producto retirado: ${JSON.stringify(nombres(f.carrito))}`);
+  assert.equal(f.fase, 'confirmando', `y además tiró la confirmación: fase=${f.fase}`);
+});
+
+await t('A9. una petición NEGADA no entra durante «Confirmo»', async () => {
+  const c = conversacion('a9');
+  await c.turno('Quiero chilaquiles suizos', { items: [ITEM([MODS[0]])] });
+  // El cliente pide algo que la carta no tiene con ese nombre; queda «enchiladas»
+  // suelto en el ciclo, y la carta SÍ tiene unas de chipotle.
+  const neg = await c.turno('Y unas enchiladas de pollo',
+    { items: [ITEM([MODS[0]]), { nombre: 'Enchiladas de pollo', cantidad: 1, modificadores: [] }] });
+  assert.deepEqual(nombres(neg.carrito), ['Chilaquiles Sencillos'], JSON.stringify(nombres(neg.carrito)));
+  await hastaListo(c);
+  const f = await c.turno('Confirmo', { items: [ITEM(MODS), ENCH] });
+  assert.deepEqual(nombres(f.carrito), ['Chilaquiles Sencillos'],
+    `entró lo que se le había negado: ${JSON.stringify(nombres(f.carrito))}`);
+  assert.equal(f.fase, 'confirmando', `fase=${f.fase}`);
+});
+
+await t('A10. una CONSULTA no entra durante «Confirmo»', async () => {
+  const c = conversacion('a10');
+  await c.turno('Quiero chilaquiles suizos', { items: [ITEM([MODS[0]])] });
+  const q = await c.turno('¿Tienen café americano?', { items: [ITEM([MODS[0]])] });
+  assert.deepEqual(nombres(q.carrito), ['Chilaquiles Sencillos'], JSON.stringify(nombres(q.carrito)));
+  await hastaListo(c);
+  const f = await c.turno('Confirmo', { items: [ITEM(MODS), CAFE] });
+  assert.deepEqual(nombres(f.carrito), ['Chilaquiles Sencillos'],
+    `preguntar por algo acabó pidiéndolo: ${JSON.stringify(nombres(f.carrito))}`);
+  assert.equal(f.fase, 'confirmando', `fase=${f.fase}`);
+});
+
+await t('A11. MORDIDA: un turno que confirma Y PIDE sí da de alta lo que pide', async () => {
+  // La puerta 3 dice «sólo confirma», y es literal: si el turno además pide
+  // algo, manda lo que pide. Sin esta prueba, la regla podría endurecerse
+  // hasta negarle al cliente un «confirmo y ponme una coca».
+  const c = conversacion('a11');
+  await c.turno('Quiero chilaquiles suizos', { items: [ITEM([MODS[0]])] });
+  await hastaListo(c);
+  const f = await c.turno('Confirmo, y ponme una coca', { items: [ITEM(MODS), COCA] });
+  assert.ok(nombres(f.carrito).includes('Coca Cola'),
+    `le negó lo que pidió en el mismo turno: ${JSON.stringify(nombres(f.carrito))}`);
+});
+
 console.log('\n══ B. LA DIRECCIÓN DE UN DOMICILIO ══');
 
 await t('B1. a domicilio sin dirección: no está listo y el handoff se bloquea', async () => {
