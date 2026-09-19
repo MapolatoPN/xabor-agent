@@ -93,7 +93,7 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 
 ## Impresión térmica (EC Line 80mm)
 - **Comanda cocina** (`imprimirComanda`): número de orden grande, cliente, modalidad, items sin precios — auto-print al llegar pedido
-- **Ticket cliente** (`imprimirTicketCliente`): receipt completo con RFC, Gran Total, monto en letras — botón manual al cobrar
+- **Ticket cliente** (`imprimirTicketCliente`): receipt completo con RFC, Gran Total, monto en letras — auto-print al registrar el pago (Confirmar cobro y ✏️ Pago de la comanda); el botón 🧾 queda para reimprimir
 - Ambos usan popup aislado (`window.open`) para evitar que el UI del panel interfiera con la impresión
 
 ## Jobs automáticos en server.js
@@ -261,7 +261,13 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 ### Impresión
 - Se usa popup aislado (`window.open`) para imprimir — evita que el UI del panel aparezca en la impresión
 - **Comanda** (🍽️): formato cocina, número de orden grande, sin precios, auto-print al llegar pedido
-- **Ticket de cliente** (🧾): receipt completo, botón manual al cobrar, título "TICKET DE CLIENTE"
+- **Ticket de cliente** (🧾): receipt completo, título "TICKET DE CLIENTE"
+- El ticket de cliente sale SOLO al registrar el pago (`imprimirTicketDePago`): al
+  confirmar el cobro de un pedido abierto y al fijar la forma de pago desde la
+  comanda. No sale desde el Historial (ahí el modal es una corrección de un pedido
+  ya cerrado), ni en un reintento sobre un pedido ya cobrado, ni si el servidor
+  rechaza. Si el navegador bloquea la ventana emergente, el panel avisa: el
+  silencio dejaría al operador entregando un pedido sin comprobante
 - Impresora: EC Line 80mm
 
 ### Rewards — canales
