@@ -38,3 +38,4 @@ test/.paridad-*.json
 
 # Capturas de la suite de UI de la cuenta del cliente (se generan al correrla)
 test/.capturas-cuenta/
+test/.capturas-comanda/
