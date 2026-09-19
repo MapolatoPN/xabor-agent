@@ -8,6 +8,7 @@ import {
   INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_NORMAL,
   lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal,
 } from './escpos.js';
+import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
 
 // ─── Comanda de cocina ──────────────────────────────────────────────────────
 //
@@ -33,13 +34,24 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
     partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, Math.floor(ancho / 2)));
     partes.push(SIZE_NORMAL, BOLD_OFF);
 
-    for (const m of item.modificadores || []) {
-      // Un modificador puede llegar como texto plano o como {grupo, opcion}.
-      const linea1 = typeof m === 'string' ? m : [m.grupo, m.opcion].filter(Boolean).join(': ');
-      if (linea1) partes.push(bloque(linea1, ancho, '   '));
+    // Modificadores: una línea por opción, con viñeta y en DOBLE ALTO.
+    // Antes salían en tamaño normal -- la mitad de alto que el producto -- y
+    // los que llegaban pegados en un solo texto se leían como párrafo. La
+    // cocina los lee de pie y a un metro: tienen que ser una lista.
+    const mods = lineasDeModificadores(item.modificadores);
+    if (mods.length) {
+      partes.push(SIZE_2H);
+      // Sangría de dos, no de tres: el doble alto ya ocupa más papel y la
+      // viñeta marca el nivel mejor que el espacio.
+      for (const m of mods) partes.push(bloque(`> ${m}`, ancho, '  '));
+      partes.push(SIZE_NORMAL);
     }
-    if (item.notas) {
-      partes.push(BOLD_ON, bloque(`NOTA: ${item.notas}`, ancho, '   '), BOLD_OFF);
+    // La nota, sin la repetición de los modificadores que algunos flujos le
+    // pegan (ver modificadores.js). Doble alto y negritas: es lo que cambia
+    // el platillo respecto de como viene en la carta.
+    const nota = notaSinModificadores(item.notas, item.modificadores);
+    if (nota) {
+      partes.push(BOLD_ON, SIZE_2H, bloque(`NOTA: ${nota}`, ancho, '  '), SIZE_NORMAL, BOLD_OFF);
     }
     partes.push(lf(1));
   }
