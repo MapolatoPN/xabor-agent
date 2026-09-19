@@ -32,7 +32,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const { pool } = await import('../src/services/database.js');
 const { crearEdge: altaEdge } = await import('../src/services/edgeService.js');
 const { crearImpresora, crearRuta, crearTrabajosDeComanda, crearTrabajosDePedido,
-        crearTrabajosDeDocumento, listarTrabajos } = await import('../src/services/impresionService.js');
+        crearTrabajosDeDocumento, listarTrabajos, reenviarComandaDePedido } = await import('../src/services/impresionService.js');
+const { guardarPedidoActivo } = await import('../src/services/database.js');
 const { indexarReglas, resolverDestinosDeItem, agruparItemsPorImpresora,
         destinosDeDocumento, CLAVE_COMANDA } = await import('../src/printing/routingEngine.js');
 const { DESTINOS } = await import('../src/services/impresionSelfService.js');
@@ -283,6 +284,26 @@ await t('E2E', '16. el papel de cocina no lleva teléfono ni dirección del clie
   const texto = JSON.stringify(r.creados[0].payload);
   assert.ok(texto.includes('Doña Rosa'), 'el nombre sí: es como se canta el pedido');
   assert.ok(!texto.includes('8781234567'), 'el teléfono no sirve en la estación y es dato personal de más');
+  assert.ok(!texto.includes('Calle 5'), 'la dirección tampoco');
+});
+
+// «Reenviar a cocina» arma su propio payload, en otra función y a partir de lo
+// que hay en pedidos_activos — no reutiliza el del papel original. Que el
+// nombre esté en uno no dice nada del otro, y hasta aquí nadie lo sostenía.
+await t('E2E', '16b. la reimpresión lleva el mismo nombre, y tampoco teléfono ni dirección', async () => {
+  const pedido = { ...PEDIDO_BASE, id: `XAB-R${Date.now()}`, estado: 'nuevo' };
+  // El reenvío lee de la base, no de la memoria del tablero.
+  const guardado = await guardarPedidoActivo(pedido, A.negocioId);
+  assert.ok(guardado.insertado, 'no se pudo dejar el pedido en pedidos_activos para la prueba');
+  await crearTrabajosDePedido({ negocioId: A.negocioId, pedido });
+
+  const r = await reenviarComandaDePedido({ negocioId: A.negocioId, folio: pedido.id, motivo: 'prueba' });
+  assert.strictEqual(r.creados.length, 1, `se esperaba 1 papel de reimpresión y hubo ${r.creados.length}`);
+  const payload = r.creados[0].payload;
+  assert.strictEqual(payload.cliente, 'Doña Rosa', 'la reimpresión se quedó sin el nombre del cliente');
+  assert.ok(payload.reimpresion, 'el papel reimpreso tiene que decir que lo es');
+  const texto = JSON.stringify(payload);
+  assert.ok(!texto.includes('8781234567'), 'el teléfono no puede colarse por la reimpresión');
   assert.ok(!texto.includes('Calle 5'), 'la dirección tampoco');
 });
 
