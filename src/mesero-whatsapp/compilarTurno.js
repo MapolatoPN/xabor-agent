@@ -203,6 +203,50 @@ export function resolverObjetivo({
  * de ese producto, y sólo si la palabra del cliente la SEPARA de sus hermanas.
  * Si no la separa, no se elige: eso ya es una pregunta, y la hace quien sabe.
  */
+/**
+ * ─── DECIR EL NOMBRE DE UN GRUPO NO ES ELEGIR EN OTRO ─────────────────────
+ *
+ * Smoke del 19-sep, turno 9. El cliente escribió «Mejor salsa roja» sobre un
+ * pedido ya confirmado. La salsa cambió bien, pero además se le preguntó
+ * «¿Bistec en Salsa, Queso Panela en Salsa o Chicharron Cuerito en Salsa?»
+ * —tres opciones del grupo PROTEÍNA— y con esa pregunta abierta el pedido ya
+ * no se podía volver a confirmar.
+ *
+ * La carta de Obispado tiene tres proteínas y tres guarniciones que se llaman
+ * «… en Salsa». La palabra «salsa» las sostiene a todas por igual, ninguna
+ * separa, y eso es exactamente la forma de una ambigüedad legítima. Pero no lo
+ * es: el cliente estaba NOMBRANDO EL GRUPO, no eligiendo una proteína.
+ *
+ * La regla, mínima: la palabra que es el nombre de OTRO grupo del mismo
+ * producto no sostiene a las opciones de éste. Se quita del texto antes de
+ * medir, así que la quitan por igual `palabrasQueLaSostienen` y
+ * `distingueLaEleccion`, que es lo que evita que una mida una cosa y la otra
+ * otra.
+ *
+ * Lo que NO hace, y es lo que la mantiene honesta:
+ *
+ *   «Mejor bistec en salsa»   «bistec» no es nombre de grupo → sigue eligiendo
+ *   «Con frijolitos»          no hay grupo llamado así → la duda sigue viva
+ *   «salsa roja y pechuga»    cada grupo se resuelve por su palabra propia
+ *
+ * Una opción que sólo se sostenía con el nombre de otro grupo se queda sin
+ * respaldo, que es justo lo que debía pasar desde el principio.
+ */
+function textoParaElGrupo(texto, ficha, grupo) {
+  const otros = lista(ficha?.grupos)
+    .map((g) => norm(g?.nombre))
+    .filter((n) => n && n !== norm(grupo));
+  if (!otros.length) return texto;
+  // Se quitan PALABRA A PALABRA y con frontera, no como subcadena: un grupo
+  // llamado «Salsa» no puede borrar «Salsas» de un nombre de opción ni partir
+  // una palabra por la mitad.
+  const palabras = new Set(otros.flatMap((n) => n.split(/\s+/)).filter((w) => w.length >= 4));
+  if (!palabras.size) return texto;
+  return String(texto || '').split(/(\s+)/)
+    .map((tramo) => (palabras.has(norm(tramo).replace(/[^a-z0-9ñ]+/g, '')) ? ' ' : tramo))
+    .join('');
+}
+
 export function opcionesDelTexto({
   ficha = null, texto = '', soloGrupos = null, conAmbiguas = false, conCompetidoras = false,
 } = {}) {
@@ -212,6 +256,8 @@ export function opcionesDelTexto({
   for (const g of lista(ficha.grupos)) {
     if (soloGrupos && !soloGrupos.some((x) => norm(x) === norm(g.nombre))) continue;
     const hermanas = lista(g.opciones).map(nombreDe).filter(Boolean);
+    // Para ESTE grupo, el texto sin los nombres de los demás.
+    const texto_ = textoParaElGrupo(texto, ficha, g.nombre);
     // ── LO QUE LA FRASE SOSTIENE PERO NO SEPARA ES UNA PREGUNTA ─────────
     //
     // «Con frijolitos» sostiene a las dos de frijolitos por igual. No entra
@@ -219,9 +265,9 @@ export function opcionesDelTexto({
     // silencio: sin la pregunta, el turno siguiente («con chorizo») no tiene
     // contra qué resolverse y acaba compitiendo con las papas de la carta
     // entera. Fue exactamente lo que pasó en el smoke real.
-    const sostenidas = hermanas.filter((n) => palabrasQueLaSostienen(n, texto).size > 0);
+    const sostenidas = hermanas.filter((n) => palabrasQueLaSostienen(n, texto_).size > 0);
     if (sostenidas.length > 1) {
-      const ningunaSepara = sostenidas.every((n) => !distingueLaEleccion(n, hermanas, texto).distingue);
+      const ningunaSepara = sostenidas.every((n) => !distingueLaEleccion(n, hermanas, texto_).distingue);
       if (ningunaSepara) {
         ambiguas.push({ grupo: String(g.nombre || ''), candidatos: sostenidas });
         // ── LA COMPETENCIA VIAJA, LA DECISIÓN NO ─────────────────────────
@@ -234,7 +280,7 @@ export function opcionesDelTexto({
       }
     }
     for (const nombre of hermanas) {
-      const suyas = palabrasQueLaSostienen(nombre, texto);
+      const suyas = palabrasQueLaSostienen(nombre, texto_);
       if (!suyas.size) continue;
       // ── AQUÍ SE ENTRA POR LA PUERTA DE ATRÁS, ASÍ QUE SE ENTRA ENTERO ──
       //
@@ -253,9 +299,15 @@ export function opcionesDelTexto({
       // «Huevos Estrellados», y «suizos» entero a «Suiza». Lo que se nombra a
       // medias —«con chorizo»— no entra por aquí: eso es una respuesta a una
       // pregunta abierta, y la resuelve `resolverContraPendiente`.
-      const propias = palabrasQueLaSostienen(nombre, nombre);
+      // Las palabras PROPIAS se cuentan con la misma vara que las dichas: si
+      // «salsa» no puede ser evidencia para este grupo, tampoco cuenta como
+      // palabra que el cliente tenga que decir. Sin esta simetría, «Mejor
+      // bistec en salsa» dejaba de elegir «Bistec en Salsa» —se le exigía una
+      // palabra que acabábamos de declarar inservible— y el arreglo de la
+      // pregunta espuria se llevaba por delante una elección legítima.
+      const propias = palabrasQueLaSostienen(nombre, textoParaElGrupo(nombre, ficha, g.nombre));
       if (suyas.size < propias.size) continue;
-      const { distingue } = distingueLaEleccion(nombre, hermanas, texto);
+      const { distingue } = distingueLaEleccion(nombre, hermanas, texto_);
       if (distingue) fuera.push({ grupo: String(g.nombre || ''), opcion: nombre });
     }
   }
