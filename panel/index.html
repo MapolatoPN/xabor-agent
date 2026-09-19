@@ -3064,6 +3064,60 @@ function modsAgrupados(item) {
   }
   return [...porGrupo.entries()];
 }
+// ── Modificadores para el PAPEL de cocina ───────────────────────────────────
+// En pantalla siguen agrupados (`modsPorGrupoHTML`) porque ahí sobra espacio
+// y falta alto. En el papel no: la cocina lo lee de pie, a un metro y con las
+// manos ocupadas, así que va una línea por opción y en letra grande.
+//
+// Estas dos funciones son el mismo criterio que edge/renderers/modificadores.js
+// (el papel que sale por Edge). Están copiadas a propósito: este panel es un
+// HTML suelto que no puede importar módulos del servidor. La suite
+// fase-comanda-modificadores compara las dos implementaciones con los mismos
+// casos para que no se separen.
+function modsLineas(item) {
+  const mods = Array.isArray(item?.modificadores) ? item.modificadores : [];
+  return mods.map(m => {
+    if (m && typeof m === 'object') {
+      const opcion = String(m.opcion || m.nombre || '').trim();
+      const grupo = String(m.grupo || '').trim();
+      if (!opcion) return grupo;
+      return grupo ? `${grupo}: ${opcion}` : opcion;
+    }
+    return String(m == null ? '' : m).trim();
+  }).filter(Boolean);
+}
+// La nota sin la repetición de los modificadores: POS, tienda y envíos la
+// arman pegándolos ahí, y en una comanda que ya los lista salían otra vez
+// como párrafo. Solo se recorta lo que es repetición literal; una nota
+// escrita a mano nunca se pierde.
+function notaSinMods(notas, lineas) {
+  let resto = String(notas == null ? '' : notas).trim();
+  if (!resto || !lineas.length) return resto || null;
+  const porGrupo = new Map();
+  for (const l of lineas) {
+    const i = l.indexOf(': ');
+    const grupo = i > 0 ? l.slice(0, i) : '';
+    const opcion = i > 0 ? l.slice(i + 2) : l;
+    if (!porGrupo.has(grupo)) porGrupo.set(grupo, []);
+    porGrupo.get(grupo).push(opcion);
+  }
+  const agrupadas = [...porGrupo.entries()].map(([g, ops]) => (g ? `${g}: ${ops.join(', ')}` : ops.join(', ')));
+  const formas = [...new Set([...lineas, ...agrupadas, agrupadas.join(' · '), agrupadas.join(', '), lineas.join(' · '), lineas.join(', ')])]
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  let cambio = true;
+  while (cambio && resto) {
+    cambio = false;
+    for (const forma of formas) {
+      if (resto === forma) { resto = ''; cambio = true; break; }
+      for (const sep of [' · ', ', ']) {
+        if (resto.startsWith(forma + sep)) { resto = resto.slice(forma.length + sep.length).trim(); cambio = true; }
+        if (resto.endsWith(sep + forma)) { resto = resto.slice(0, resto.length - forma.length - sep.length).trim(); cambio = true; }
+      }
+      if (cambio) break;
+    }
+  }
+  return resto || null;
+}
 function modsPorGrupoHTML(item) {
   const grupos = modsAgrupados(item);
   if (!grupos.length) return '';
@@ -3379,15 +3433,21 @@ function comandaHTML(p) {
   const horaCompleta = horaCST(p.timestamp);
   const totalArt     = (p.items || []).reduce((s, i) => s + (i.cantidad || 1), 0);
 
-  const itemsRows = (p.items || []).map(item => `
+  // Una línea por opción y en grande: antes iban agrupadas en un renglón de
+  // 12px (y la nota en 11px cursiva), que en papel térmico se lee como un
+  // párrafo apretado justo donde está lo que cambia el platillo.
+  const itemsRows = (p.items || []).map(item => {
+    const mods = modsLineas(item);
+    const nota = notaSinMods(item.notas, mods);
+    return `
     <tr>
-      <td style="width:28px;font-weight:900;font-size:16px;vertical-align:top;">${item.cantidad||1}x</td>
-      <td style="vertical-align:top;font-size:14px;font-weight:700;">${item.nombre||item.name||'Producto'}
-        ${modsAgrupados(item).map(([grupo, opciones]) =>
-          `<div style="font-size:12px;font-weight:700;padding-left:6px;">${grupo ? esc(grupo) + ': ' : ''}${opciones.map(esc).join(', ')}</div>`).join('')}
-        ${item.notas ? `<div style="font-size:11px;font-style:italic;font-weight:400;padding-left:4px;">${item.notas}</div>` : ''}
+      <td style="width:30px;font-weight:900;font-size:18px;vertical-align:top;">${item.cantidad||1}x</td>
+      <td style="vertical-align:top;font-size:16px;font-weight:800;">${esc(item.nombre||item.name||'Producto')}
+        ${mods.map(m => `<div style="font-size:15px;font-weight:700;padding-left:10px;line-height:1.4;">&gt; ${esc(m)}</div>`).join('')}
+        ${nota ? `<div style="font-size:15px;font-weight:800;padding-left:10px;line-height:1.4;">NOTA: ${esc(nota)}</div>` : ''}
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const dirEntrega = esEntrega && p.cliente ? `
     <div style="border-left:3px solid #000;padding:3px 6px;margin:4px 0;font-size:11px;">
