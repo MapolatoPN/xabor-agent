@@ -225,9 +225,18 @@ await t('F. el card y la comanda impresa renderizan los modificadores por grupo'
   assert.match(PANEL, /function modsAgrupados\(item\)/, 'falta el agrupador de modificadores');
   // Card de comandas (renderComanda).
   assert.match(PANEL, /item-nombre-wrap[^`]*\$\{modsPorGrupoHTML\(item\)\}/, 'el card no pinta los modificadores');
-  // Comanda IMPRESA (comandaHTML): debe recorrer los mismos grupos.
+  // Comanda IMPRESA (comandaHTML): una línea por opción, desde la MISMA
+  // estructura canónica. Antes recorría `modsAgrupados`, que junta las
+  // opciones de un grupo en un solo renglón; en papel térmico eso se lee
+  // como párrafo, así que ahora usa `modsLineas` (una opción por línea, en
+  // letra grande). La garantía que protege este caso no cambia: la comanda
+  // impresa pinta los modificadores y los toma de `item.modificadores`, no
+  // de un texto reinterpretado. Ver docs/comanda-cocina-modificadores.md.
   const comanda = PANEL.slice(PANEL.indexOf('function comandaHTML'));
-  assert.match(comanda.slice(0, 2000), /modsAgrupados\(item\)/, 'la comanda impresa no pinta los modificadores');
+  assert.match(comanda.slice(0, 2000), /modsLineas\(item\)/, 'la comanda impresa no pinta los modificadores');
+  const fuenteLineas = PANEL.slice(PANEL.indexOf('function modsLineas('), PANEL.indexOf('function notaSinMods('));
+  assert.match(fuenteLineas, /item\?\.modificadores/, 'modsLineas debe leer la estructura canónica');
+  assert.ok(!/fetch|menu|buscar|parse/i.test(fuenteLineas), 'no debe volver a consultar el menú ni parsear texto');
 });
 await t('F2. el agrupador consume la estructura canónica (no reinterpreta texto)', () => {
   const src = PANEL.slice(PANEL.indexOf('function modsAgrupados'), PANEL.indexOf('function modsPorGrupoHTML'));

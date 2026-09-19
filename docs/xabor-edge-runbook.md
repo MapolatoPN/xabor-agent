@@ -113,6 +113,29 @@ Para respaldar de todos modos, con el Edge detenido, copiar `edge/datos/`.
 Si un `edge-cola.json` se corrompe, el Edge lo respalda como
 `.corrupto-<fecha>.bak` y sigue. Con SQLite en WAL eso no debería ocurrir.
 
+## Actualizar un Edge
+
+El Edge **no se actualiza solo**: es una copia de `edge/` en la PC del
+negocio. Cuando cambia cómo se dibuja el papel (por ejemplo, la comanda de
+cocina: ver `docs/comanda-cocina-modificadores.md`), el despliegue del
+servidor NO basta.
+
+1. Traer la versión nueva del repo a la PC (`git pull` donde esté el
+   checkout, o copiar la carpeta `edge/` por USB).
+2. Detener el servicio (`XaborEdgeService`) o el `node edge/index.js` que
+   esté corriendo. Espera a terminar el envío en curso; no corta una
+   impresión a la mitad.
+3. Reemplazar la carpeta `edge/` de la instalación
+   (`…\XaborEdge\app\edge`). **No tocar `edge/.env`**: ahí viven la URL y la
+   credencial de esa terminal.
+4. Arrancar. Al conectar retoma lo pendiente de la cola local, así que lo que
+   no se imprimió durante el cambio sale ahora.
+5. Comprobar con **Configuración → Impresión → Probar impresora**: el papel
+   de prueba dice a qué impresora salió.
+
+Si la instalación se hizo con el instalador, la alternativa es reinstalar con
+un `AppVersion` nuevo; conserva `.env` y la cola.
+
 ## Detener y arrancar
 
 `Ctrl+C` (o detener el servicio) espera a que termine el envío en curso; no
