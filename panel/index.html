@@ -3434,14 +3434,19 @@ function marcarEntregado(id) {
     });
 }
 
+// Devuelve `true` solo si la ventana llegó a abrirse. Quien aprieta un botón
+// de imprimir ve el popup y se entera solo; quien imprime de rebote (el ticket
+// que ahora sale al cobrar) no mira nada, así que necesita el dato para avisar
+// en vez de dejar al operador creyendo que salió papel.
 function abrirPopupImpresion(html) {
   const win = window.open('', '_blank', 'width=390,height=700,toolbar=0,location=0,menubar=0,status=0,scrollbars=1');
-  if (!win) return;
+  if (!win) return false;
   win.document.write(html);
   win.document.close();
   let printed = false;
   win.onload = () => { if (!printed) { printed = true; setTimeout(() => { win.print(); win.close(); }, 250); } };
   setTimeout(() => { if (!printed) { printed = true; try { win.print(); win.close(); } catch(e) {} } }, 1200);
+  return true;
 }
 
 // Auto-print al llegar pedido — formato cocina (sin precios)
@@ -3454,8 +3459,29 @@ function imprimirComanda(id) {
 // Botón manual — ticket completo para el cliente
 function imprimirTicketCliente(id) {
   const p = pedidos[id];
-  if (!p) return;
-  abrirPopupImpresion(ticketHTML(p));
+  if (!p) return false;
+  return abrirPopupImpresion(ticketHTML(p));
+}
+
+// Ticket automático al registrar el pago.
+//
+// Cerrar un pedido es «cobrar → ticket → entregar», y el ticket era el único
+// paso que dependía de que alguien se acordara de apretar 🧾. Aquí sale solo,
+// con lo que el servidor acaba de confirmar; el botón manual sigue donde
+// estaba para reimprimir.
+//
+// Imprime SOLO pedidos del tablero: en el historial el mismo modal de pago es
+// una corrección de un pedido ya cerrado (y que ya no está en memoria), y
+// corregir una captura vieja no es cobrar, así que ahí no sale papel.
+function imprimirTicketDePago(folio) {
+  if (!pedidos[folio]) return false;
+  if (imprimirTicketCliente(folio)) return true;
+  // Popup bloqueado: el ticket NO salió. Callarlo sería lo peor de los dos
+  // mundos —el operador da por entregado un pedido sin comprobante.
+  const aviso = `${folio}: el navegador bloqueó la ventana del ticket. Permite las ventanas emergentes de este sitio y vuelve a imprimirlo con 🧾 Ticket.`;
+  if (typeof avisoPanel === 'function') avisoPanel(aviso, { error: true, ms: 30000 });
+  else alert(aviso);
+  return false;
 }
 
 // ─── Impresión por Edge: rastro visible y aviso de "comanda sin papel" ──────
@@ -5097,7 +5123,17 @@ async function confirmarPago(formaPago) {
   const folio = document.getElementById('pago-folio').value;
   cerrarModalPago();
   const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH', body: JSON.stringify({ forma_pago: formaPago }) });
-  if (!r.ok) { alert('Error al actualizar el pago'); }
+  if (!r.ok) { alert('Error al actualizar el pago'); return; }
+  // El ticket se arma con la memoria del tablero, y el 'actualizar_pago' del
+  // WebSocket puede llegar DESPUÉS que esta respuesta. Sin esta línea el papel
+  // saldría con la forma de pago vieja — justo la que se acaba de cambiar.
+  const p = pedidos[folio];
+  if (p) {
+    p.forma_pago = formaPago;
+    const card = document.getElementById(`comanda-${folio}`);
+    if (card) card.innerHTML = renderComanda(p);
+  }
+  imprimirTicketDePago(folio);
 }
 document.getElementById('modal-pago-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-pago-overlay')) cerrarModalPago();
@@ -5654,7 +5690,10 @@ async function confirmarCobro() {
     if (data.yaCobrado) {
       document.getElementById('cobro-fb').innerHTML = '<span style="color:#f59e0b;">Este pedido ya estaba cobrado.</span>';
     }
-    marcarCobrado(folio, data);
+    marcarCobrado(folio, data, body);
+    // Cobro registrado = ticket en la mano del cliente. En un reintento
+    // ('yaCobrado') no se reimprime: el papel ya salió en el intento bueno.
+    if (!data.yaCobrado) imprimirTicketDePago(folio);
     setTimeout(cerrarCobro, data.yaCobrado ? 1200 : 250);
   } catch (e) {
     document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
@@ -5663,13 +5702,33 @@ async function confirmarCobro() {
     cobroEnVuelo = false;
   }
 }
-// Refleja el cobro en la card sin re-render completo ni impresión nueva.
-function marcarCobrado(folio, data) {
+// Refleja el cobro en la card sin re-render completo y sin comanda nueva (la
+// de cocina ya salió al capturar; aquí solo cambia el dinero).
+//
+// `enviado` es el cuerpo que se mandó a /cobro. Hace falta porque el servidor
+// devuelve el total, el descuento y el cambio, pero NO el billete ni el
+// desglose del mixto — y el ticket se arma desde esta misma memoria: sin ellos
+// saldría con el total nuevo y el cambio del pedido antes de cobrarlo.
+function marcarCobrado(folio, data, enviado = {}) {
   const p = pedidos[folio];
   if (p) {
     p.forma_pago = data.forma_pago || p.forma_pago;
     p.pago_confirmado = true;
     if (typeof data.total === 'number') p.total = data.total;
+    // 'yaCobrado' es un reintento: el servidor no manda desglose y lo que se
+    // envió no describe el cobro que de verdad quedó registrado. No se toca.
+    if (!data.yaCobrado) {
+      if (typeof data.subtotal  === 'number') p.subtotal  = data.subtotal;
+      if (typeof data.descuento === 'number') p.descuento = data.descuento;
+      if (typeof data.cambio    === 'number') p.cambio    = data.cambio;
+      p.motivo_descuento = data.descuento > 0 ? (enviado.motivo_descuento || null) : null;
+      const esMixto = enviado.forma_pago === 'mixto';
+      p.mixto_efectivo = esMixto ? (enviado.mixto_efectivo || 0) : null;
+      p.mixto_terminal = esMixto ? (enviado.mixto_terminal || 0) : null;
+      // El servidor guarda el efectivo del mixto en el mismo campo `billete`.
+      p.billete = esMixto ? (enviado.mixto_efectivo || 0)
+                : (enviado.forma_pago === 'efectivo' ? (enviado.billete || 0) : 0);
+    }
   }
   const card = document.getElementById(`comanda-${folio}`);
   if (card) {
