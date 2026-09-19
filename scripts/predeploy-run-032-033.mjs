@@ -117,6 +117,13 @@ const SCRIPTS = [
   // número o el importe de cuentas, pagos o ventas de mesa. Va ANTES del
   // binario nuevo porque los totales de la cuenta leen descuento_monto.
   '082-restaurante-cobro',
+  // 083 añade a Restaurante la división por consumo real: cobro_id y tipo de
+  // cobro en los pagos, reverso auditado, la tabla de porciones por renglón
+  // y la división del remanente. Solo columnas con default y una tabla
+  // vacía; el predeploy aborta si cambia el número o el importe de cuentas,
+  // pagos o ventas de mesa. Va ANTES del binario nuevo porque los totales
+  // de la cuenta leen revertido_at.
+  '083-restaurante-division-consumo',
 ];
 
 for (const nombre of SCRIPTS) {
