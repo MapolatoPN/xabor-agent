@@ -59,6 +59,12 @@ const CARTA = [
   { id: 30, nombre: 'DESAYUNOS', orden: 2, productos: [
     { id: 90, nombre: 'Huevos revueltos con chorizo', orden: 0, precio: 130, disponible: true },
     { id: 91, nombre: 'Enchiladas de chipotle', orden: 1, precio: 160, disponible: true },
+    // Los dos de abajo reproducen la carta real de Obispado en lo que importa:
+    // «Frijol» existe como producto suelto —por eso el modelo pudo anclarlo— y
+    // hay VARIOS huevos, que es lo que convierte «huevos estrellados» en una
+    // familia reconocida con un atributo que no lo es.
+    { id: 92, nombre: 'Huevos revueltos con jamón', orden: 2, precio: 130, disponible: true },
+    { id: 93, nombre: 'Frijol', orden: 3, precio: 45, disponible: true },
   ] },
   { id: 40, nombre: 'BEBIDAS', orden: 3, productos: [
     { id: 95, nombre: 'Coca Cola', orden: 0, precio: 35, disponible: true },
@@ -368,6 +374,120 @@ await t('C4. y el resumen nuevo SÍ se confirma al turno siguiente', async () =>
   assert.equal(f.fase, 'confirmando', `fase=${f.fase}`);
   assert.equal(f.handoff.listo, true, JSON.stringify(f.handoff.bloqueos));
   assert.equal(f.handoff.nuevo, true, 'el handoff del pedido CAMBIADO se dio por ya visto');
+});
+
+console.log('\n══ D. EL TURNO 7 DEL SMOKE: NI CARRITO NI ACLARACIÓN ══');
+
+// Lo que el modelo devolvió de verdad el 19-sep sobre un «Confirmo»: el pedido
+// tal cual, más DOS artículos sacados del texto del ciclo. «Frijol» ancla a un
+// producto real de la carta; «Con huevos estrellados» es la frase del turno 2
+// del cliente y no ancla a nada — el anclaje reconoce la familia «huevos» y
+// rechaza el atributo «estrellados».
+const LO_QUE_DIJO_EL_MODELO_EN_T7 = {
+  items: [ITEM(MODS),
+    { nombre: 'Frijol', cantidad: 1, modificadores: [] },
+    { nombre: 'Con huevos estrellados', cantidad: 1, modificadores: [] }],
+};
+const bloqueados = (r) => (r.cambios?.sinRespaldo || [])
+  .filter((x) => x.campo === 'articulo').map((x) => x.nombre);
+
+await t('D1. REPRODUCCIÓN: el turno 7 real no toca el carrito NI levanta aclaración', async () => {
+  const { c, r } = await elPedidoDelSmoke('d1', { conDireccion: true });
+  assert.equal(r.listoParaConfirmar, true, JSON.stringify(r.falta));
+  const huellaAntes = r.handoff.huella;
+
+  const f = await c.turno('Confirmo', LO_QUE_DIJO_EL_MODELO_EN_T7);
+
+  // El carrito, intacto.
+  assert.deepEqual(nombres(f.carrito), ['Chilaquiles Sencillos'], JSON.stringify(nombres(f.carrito)));
+  assert.equal(String(f.carrito.items[0].notas || ''), '');
+  // La aclaración que tumbaba la fase, ausente.
+  assert.deepEqual(f.falta, [], `algo quedó bloqueando el cierre: ${JSON.stringify(f.falta)}`);
+  assert.deepEqual((f.aclaraciones || []).map((a) => a.tipo), [],
+    `se preguntó por un artículo que el cliente no puso: ${JSON.stringify(f.aclaraciones)}`);
+  // La huella, la misma: el pedido no se movió.
+  assert.equal(f.handoff.huella, huellaAntes, 'la huella cambió sin que cambiara el pedido');
+  // Y el handoff ocurre.
+  assert.equal(f.fase, 'confirmando', `fase=${f.fase}`);
+  assert.equal(f.handoff.listo, true, JSON.stringify(f.handoff.bloqueos));
+  assert.equal(f.handoff.nuevo, true);
+  // El rechazo QUEDA REGISTRADO, los dos.
+  const b = bloqueados(f);
+  assert.ok(b.includes('Frijol'), `no se registró el rechazo de Frijol: ${JSON.stringify(b)}`);
+  assert.ok(b.some((x) => /huevos estrellados/i.test(x)),
+    `no se registró el rechazo de «Con huevos estrellados»: ${JSON.stringify(b)}`);
+});
+
+await t('D2. y repetir el «Confirmo» con la misma basura no duplica el handoff', async () => {
+  const { c } = await elPedidoDelSmoke('d2', { conDireccion: true });
+  const primero = await c.turno('Confirmo', LO_QUE_DIJO_EL_MODELO_EN_T7);
+  assert.equal(primero.handoff.nuevo, true, JSON.stringify(primero.handoff.bloqueos));
+  const segundo = await c.turno('Confirmo', LO_QUE_DIJO_EL_MODELO_EN_T7);
+  assert.deepEqual(nombres(segundo.carrito), ['Chilaquiles Sencillos']);
+  assert.equal(segundo.handoff.huella, primero.handoff.huella);
+  assert.equal(segundo.handoff.nuevo, false, 'segundo handoff para la misma confirmación');
+});
+
+await t('D3. un cambio autorizado sigue invalidando la confirmación anterior', async () => {
+  const { c } = await elPedidoDelSmoke('d3', { conDireccion: true });
+  await c.turno('Confirmo', LO_QUE_DIJO_EL_MODELO_EN_T7);
+  const cambio = await c.turno('Mejor salsa roja, confirmo', {
+    items: [ITEM([{ grupo: 'Salsa', opciones: ['Roja'] }, ...MODS.slice(1)])] });
+  const salsa = (cambio.carrito.items[0].modificadores || []).find((m) => m.grupo === 'Salsa');
+  assert.deepEqual(salsa.opciones, ['Roja'], JSON.stringify(salsa));
+  assert.notEqual(cambio.fase, 'confirmando');
+  assert.equal(cambio.confirmacionVigente, false);
+  assert.equal(cambio.handoff.listo, false, JSON.stringify(cambio.handoff.bloqueos));
+});
+
+console.log('\n══ E. LO QUE NO SE PUEDE SILENCIAR ══');
+
+await t('E1. si el cliente PIDE en el turno algo que no existe, se le pregunta', async () => {
+  // La contraprueba de D1, y la que marca el límite: no se callan las
+  // aclaraciones de un turno de confirmación, se callan las de un artículo que
+  // el cliente no puso. Aquí sí lo puso, en el mismo turno.
+  const { c } = await elPedidoDelSmoke('e1', { conDireccion: true });
+  const f = await c.turno('Confirmo, y agrégame unas enchiladas de pollo',
+    { items: [ITEM(MODS), { nombre: 'Enchiladas de pollo', cantidad: 1, modificadores: [] }] });
+  assert.ok((f.aclaraciones || []).some((a) => /producto_(inexistente|ambiguo)/.test(a.tipo)),
+    `se calló un producto que el cliente pidió: ${JSON.stringify(f.aclaraciones)}`);
+  assert.ok(f.falta.some((x) => String(x).startsWith('producto:')), JSON.stringify(f.falta));
+  assert.notEqual(f.fase, 'confirmando', 'confirmó con un producto sin resolver');
+  assert.equal(f.handoff.listo, false);
+});
+
+await t('E2. «Confirmo y agrega una coca»: la coca entra y la confirmación NO vale', async () => {
+  const { c } = await elPedidoDelSmoke('e2', { conDireccion: true });
+  const f = await c.turno('Confirmo, y agrega una coca', { items: [ITEM(MODS), COCA] });
+  assert.ok(nombres(f.carrito).includes('Coca Cola'),
+    `le negó lo que pidió en el mismo turno: ${JSON.stringify(nombres(f.carrito))}`);
+  // El pedido cambió en el mismo turno del «confirmo»: ese «confirmo» ya no
+  // habla del pedido que el cliente leyó.
+  assert.notEqual(f.fase, 'confirmando', 'confirmó un pedido que acababa de cambiar');
+  assert.equal(f.handoff.listo, false, JSON.stringify(f.handoff.bloqueos));
+});
+
+await t('E3. y al turno siguiente, el pedido con la coca sí se confirma', async () => {
+  const { c } = await elPedidoDelSmoke('e3', { conDireccion: true });
+  await c.turno('Confirmo, y agrega una coca', { items: [ITEM(MODS), COCA] });
+  const f = await c.turno('Confirmo', { items: [ITEM(MODS), COCA] });
+  assert.equal(f.fase, 'confirmando', `fase=${f.fase}`);
+  assert.equal(f.handoff.listo, true, JSON.stringify(f.handoff.bloqueos));
+  assert.equal(f.handoff.items_count ?? f.handoff.propuesta?.items?.length, 2,
+    'el handoff no llevó los dos renglones');
+});
+
+await t('E4. una aclaración de línea existente NO se calla (no es un alta)', async () => {
+  // `rechazados` también recibe la rama de `cambiar_modificador`, con `lid` y
+  // motivo `linea_sin_ancla`. Ésa habla de un renglón que YA está en el
+  // carrito: callarla escondería un renglón roto. El filtro sólo mira las
+  // entradas de alta, y esta prueba fija esa frontera.
+  const c = conversacion('e4');
+  const r = await c.turno('Quiero algo rico', { items: [{ nombre: 'Platillo Fantasma', cantidad: 1, modificadores: [] }] });
+  // No entra (nadie lo nombró), pero tampoco se pierde la constancia.
+  assert.deepEqual(nombres(r.carrito), [], JSON.stringify(nombres(r.carrito)));
+  assert.ok((r.cambios?.sinRespaldo || []).length > 0 || (r.aclaraciones || []).length > 0,
+    'el rechazo no dejó rastro por ningún canal');
 });
 
 console.log(`\n${fallos.length ? 'HAY FALLOS' : 'TODO VERDE'} — ${pasadas} pasadas, ${fallos.length} fallidas`);
