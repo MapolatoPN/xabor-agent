@@ -13,6 +13,7 @@
 //     comprobar a quién pertenece.
 import { pool } from './database.js';
 import { indexarReglas, agruparItemsPorImpresora, destinosDeDocumento, normalizarClave } from '../printing/routingEngine.js';
+import { notaSinModificadores } from '../../edge/renderers/modificadores.js';
 
 function errorCodigo(mensaje, code) {
   const e = new Error(mensaje);
@@ -361,12 +362,7 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
         tipoRonda: comanda.tipo,
         emitidoAt: new Date().toISOString(),
         impresora: imp.nombre,
-        items: grupo.items.map(i => ({
-          producto: i.producto ?? i.nombre,
-          cantidad: i.cantidad,
-          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
-          notas: i.notas ?? null,
-        })),
+        items: itemsParaComanda(grupo.items),
       };
 
       const origenId = `${cuentaId}:${comanda.comanda}`;
@@ -397,6 +393,32 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
 // Idempotencia: el origen es el FOLIO, que es único y estable por pedido. Un
 // pedido reenviado (reconexión, replay del scheduler, doble webhook) produce
 // la misma clave y por tanto el mismo trabajo, nunca dos papeles.
+// Los items tal como los necesita el papel de cocina.
+//
+// Los modificadores viajan como lista (el renderer imprime uno por línea) y
+// la nota va SIN la repetición de esos mismos modificadores: POS, tienda y
+// envíos los pegan dentro de `notas` para papeles antiguos que no sabían de
+// modificadores, y en la comanda eso salía otra vez como párrafo envuelto.
+// La lógica vive en edge/renderers/modificadores.js -- una sola
+// implementación para el servidor y para el Edge -- y solo recorta
+// repeticiones literales: una nota escrita a mano nunca se pierde.
+//
+// Hacerlo aquí, en el payload, y no solo en el renderer, tiene una razón
+// práctica: el Edge ya instalado en el negocio no se actualiza solo. Con
+// esto, la repetición desaparece del papel en cuanto se despliega el
+// servidor, aunque esa terminal siga con el renderer anterior.
+function itemsParaComanda(items) {
+  return (Array.isArray(items) ? items : []).map((i) => {
+    const modificadores = Array.isArray(i.modificadores) ? i.modificadores : [];
+    return {
+      producto: i.producto ?? i.nombre,
+      cantidad: i.cantidad,
+      modificadores,
+      notas: notaSinModificadores(i.notas, modificadores),
+    };
+  });
+}
+
 export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedido }) {
   const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
   try {
@@ -432,12 +454,7 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
         cliente: pedido.cliente?.nombre ?? null,
         emitidoAt: new Date().toISOString(),
         impresora: imp.nombre,
-        items: grupo.items.map(i => ({
-          producto: i.producto ?? i.nombre,
-          cantidad: i.cantidad,
-          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
-          notas: i.notas ?? null,
-        })),
+        items: itemsParaComanda(grupo.items),
       };
 
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
@@ -880,12 +897,7 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
         impresora: imp.nombre,
         reimpresion: true,
         reenvio: n,
-        items: grupo.items.map((i) => ({
-          producto: i.producto ?? i.nombre,
-          cantidad: i.cantidad,
-          modificadores: Array.isArray(i.modificadores) ? i.modificadores : [],
-          notas: i.notas ?? null,
-        })),
+        items: itemsParaComanda(grupo.items),
       };
       const { trabajo, duplicado } = await insertarTrabajo(cliente, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,

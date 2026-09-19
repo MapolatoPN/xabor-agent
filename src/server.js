@@ -2945,7 +2945,12 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
         canal: 'restaurante',
         tipo_comanda: comanda.tipo,
         mesa: comanda.mesa, personas: comanda.personas, mesero: comanda.mesero,
-        items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
+        // `modificadores` va aparte para que la comanda los imprima como
+        // lista; `notas` conserva la mezcla de siempre porque un print-agent
+        // viejo solo sabe leer ese campo y quedarse sin modificadores en el
+        // papel sería peor. El panel, que recibe los dos, quita la
+        // repetición al imprimir (notaSinMods).
+        items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), modificadores: Array.isArray(i.modificadores) ? i.modificadores : [], notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
         total: comanda.items.reduce((s, i) => s + i.cantidad * Number(i.precio_unitario), 0),
         cliente: { nombre: `Mesa ${comanda.mesa}` },
         modalidad: 'mesa',
