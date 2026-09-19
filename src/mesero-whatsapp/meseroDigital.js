@@ -750,7 +750,7 @@ export async function atenderTurno({
     }
   }
 
-  // ── 8c) UN ARTÍCULO NUEVO NO SE AUTORIZA CON PALABRAS DE OTROS TURNOS ──
+  // ── 8c-bis) UN ARTÍCULO NUEVO NO SE AUTORIZA CON PALABRAS DE OTROS TURNOS ──
   //
   // El 19-sep, con el cliente escribiendo sólo «Confirmo» sobre un pedido ya
   // completo, entró un segundo platillo que nadie pidió: «Huevos revueltos con
@@ -793,6 +793,31 @@ export async function atenderTurno({
   // La discriminación de la 6 es la que hace falta y ninguna más: si el cliente
   // nombró el platillo, alguna palabra suya queda libre —«revueltos» en «huevos
   // revueltos con chorizo»— y entra igual.
+  // ── Y TAMBIÉN SU ACLARACIÓN ────────────────────────────────────────────
+  //
+  // Smoke del 19-sep, turno 7, con el filtro de arriba ya desplegado: el
+  // carrito aguantó —una línea, `invenciones_bloqueadas: ["Frijol"]`— pero la
+  // confirmación se cayó igual. El modelo había propuesto además «Con huevos
+  // estrellados», que es literalmente la frase del turno 2 del cliente y no es
+  // ningún producto. El anclaje no la reconoce, la saca de `propuestas` y la
+  // manda a `rechazados` (`anclajeAlCatalogo.js`, rama `sin_candidatos`), así
+  // que el filtro de arriba NO LA VE. `recolectarAclaraciones` la convierte en
+  // `producto_inexistente`, `loQueFalta` en `producto:…`, y la fase cae de
+  // `revisando` a `completando_producto`.
+  //
+  // Son DOS caminos para el mismo daño: mutar el carrito y levantar una
+  // aclaración. El primero manda comida que nadie pidió —es el peligroso— y ya
+  // estaba cerrado; el segundo sólo impide cerrar, y es el que falta.
+  //
+  // Se cierra con EL MISMO PREDICADO, no con uno nuevo. Tener dos reglas para
+  // la misma pregunta es cómo se acaba con una que dice que sí y otra que dice
+  // que no: aquí la pregunta es una —«¿autorizó el cliente que este artículo
+  // entre en juego este turno?»— y la respuesta se calcula una vez.
+  //
+  // NO se silencian las aclaraciones de una confirmación: se silencian las de
+  // un artículo QUE EL CLIENTE NO PUSO. «Confirmo, y unas enchiladas de pollo»
+  // nombra el platillo en el turno, pasa la puerta 2, y si no existe se
+  // pregunta igual — que es lo que hay que hacer.
   const sinRespaldoDeArticulo = [];
   {
     const puestas = new Set();
@@ -809,23 +834,59 @@ export async function atenderTurno({
     // y manda lo que pide. «Confirmo y ponme una coca» sigue metiendo la coca.
     const soloConfirma = intenciones.includes('CONFIRMAR') && !intenciones.includes('AGREGAR_PRODUCTO');
     const aceptadas = new Set((desenlace.aceptadas || []).map((p) => norm(p.referencia)));
+
+    /**
+     * ¿Autorizó el cliente que ESTE artículo entre en juego en ESTE turno?
+     *
+     * El nombre que se le pasa es el que haya: el canónico si el anclaje lo
+     * resolvió, o el crudo del modelo si no lo reconoció. Las dos formas valen
+     * porque las puertas miden contra el TEXTO DEL CLIENTE, no contra la carta.
+     *
+     * Devuelve `null` cuando sí, o el motivo del rechazo cuando no.
+     */
+    const porQueNoEntra = (nombre) => {
+      if (!nombre) return null;
+      if (aceptadas.has(norm(nombre))) return null;
+      if (nombradoPorElCliente(nombre, autoriza)) return null;
+      if (soloConfirma) return 'solo_confirmaba';
+      if (pideOtraUnidad(autoriza)) return null;
+      const sostienen = palabrasQueLaSostienen(nombre, dichoDelCiclo);
+      if (!sostienen.size) return null;
+      if ([...sostienen].some((w) => !puestas.has(w))) return null;
+      return 'palabras_ya_puestas_en_otro_renglon';
+    };
+
+    // 1) Lo que SÍ llegó a ser propuesta: no muta el carrito.
     anclado.propuestas = (anclado.propuestas || []).filter((p) => {
       if (p?.accion !== 'agregar') return true;
       const nombre = String(p?.valorNuevo?.nombre || '');
-      if (!nombre) return true;
-      if (aceptadas.has(norm(nombre))) return true;
-      if (nombradoPorElCliente(nombre, autoriza)) return true;
-      const tirar = (motivo) => {
-        sinRespaldoDeArticulo.push({ nombre, campo: 'articulo', motivo });
-        return false;
-      };
-      if (soloConfirma) return tirar('solo_confirmaba');
-      if (pideOtraUnidad(autoriza)) return true;
-      const sostienen = palabrasQueLaSostienen(nombre, dichoDelCiclo);
-      if (!sostienen.size) return true;
-      if ([...sostienen].some((w) => !puestas.has(w))) return true;
-      return tirar('palabras_ya_puestas_en_otro_renglon');
+      const motivo = porQueNoEntra(nombre);
+      if (!motivo) return true;
+      sinRespaldoDeArticulo.push({ nombre, campo: 'articulo', motivo, noPreguntar: true });
+      return false;
     });
+
+    // 2) Lo que el anclaje apartó antes de que fuera propuesta: no pregunta.
+    //
+    // Se filtran SOLO las entradas del alta de artículo. La rama de
+    // `cambiar_modificador` también empuja a `rechazados`, con `lid` y motivo
+    // `linea_sin_ancla`, y ésa habla de una línea que YA está en el carrito:
+    // callarla escondería un renglón roto.
+    const deAlta = (x) => x && x.lid === undefined;
+    const cribar = (lista, tipo) => (lista || []).filter((x) => {
+      if (!deAlta(x)) return true;
+      const nombre = String(x.propuesto || '');
+      const motivo = porQueNoEntra(nombre);
+      if (!motivo) return true;
+      // El rechazo se CONSERVA, sólo que como invención bloqueada y no como
+      // pregunta al cliente: si esto no se contara, una invención que nadie
+      // registra sería indistinguible de un turno en el que el modelo no
+      // propuso nada, y es justo lo que el negocio querrá medir.
+      sinRespaldoDeArticulo.push({ nombre, campo: 'articulo', motivo: `${motivo}:${tipo}`, noPreguntar: true });
+      return false;
+    });
+    anclado.rechazados = cribar(anclado.rechazados, 'inexistente');
+    anclado.ambiguos = cribar(anclado.ambiguos, 'ambiguo');
   }
 
   // ── 8d) LA MODALIDAD, EL PAGO Y LA DIRECCIÓN TAMBIÉN LOS AUTORIZA EL CLIENTE ──
@@ -1039,7 +1100,21 @@ export async function atenderTurno({
   // 12) Lo que quedó sin decidir.
   const terminosAmbiguos = [];
   for (const s of resultado.cambios?.sinRespaldo || []) {
-    if (s.campo !== 'articulo' || !catalogo.length) continue;
+    // ── EL TERCER CAMINO ────────────────────────────────────────────────
+    //
+    // Este bucle existe para rescatar lo que el RECONCILIADOR tiró: si el
+    // cliente dijo «un refresco» y la carta tiene una categoría que se llama
+    // así, se le pregunta cuál. Es útil y se queda.
+    //
+    // Pero lee `sinRespaldo` entero, y ahí también está lo que tiró 8c-bis —
+    // que se anota a propósito, para que una invención quede contada—. El
+    // resultado era que conservar el registro volvía a levantar la pregunta
+    // por la puerta de atrás: en la suite, «Con huevos estrellados» reaparecía
+    // como `termino_ambiguo` con los dos huevos de la carta de candidatos.
+    //
+    // Lo que 8c-bis tira ya tiene su motivo —el cliente no lo puso— y no hay
+    // nada que preguntarle. Se salta, y el registro se conserva igual.
+    if (s.campo !== 'articulo' || s.noPreguntar || !catalogo.length) continue;
     const r = resolverTermino(catalogo, s.nombre);
     if (!r.resuelto && r.candidatos.length > 1) {
       terminosAmbiguos.push({ termino: s.nombre, candidatos: r.candidatos.map((c) => c.nombre) });
