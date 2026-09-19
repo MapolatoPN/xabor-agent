@@ -109,6 +109,7 @@ import {
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
   revertirVentaCuenta,
   aplicarDescuentoCuenta, quitarDescuentoCuenta, construirTicketCuenta, registrarImpresionTicket,
+  estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
 import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
@@ -2771,9 +2772,15 @@ function manejarErrorRestaurante(res, e) {
     // Cobro (082): descuento de cuenta, efectivo recibido y ticket pagado.
     DESCUENTO_INVALIDO: 400, DESCUENTO_NO_AUTORIZADO: 403, DESCUENTO_INCOMPATIBLE: 409,
     EFECTIVO_INSUFICIENTE: 400, TICKET_NO_DISPONIBLE: 409,
+    // División por consumo (083).
+    ITEM_TIENE_COBRO: 409, DESCUENTO_CONGELADO: 409, REMANENTE_DIVIDIDO: 409, CONSUMO_YA_PAGADO: 409,
+    MONTO_NO_COINCIDE: 409, PARTES_YA_FIJADAS: 409, PARTES_AGOTADAS: 409, NADA_QUE_COBRAR: 409,
+    SELECCION_VACIA: 400, FRACCION_INVALIDA: 400, COBRO_INVALIDO: 400, COBRO_NO_ENCONTRADO: 404,
   };
   const status = mapa[e.code];
-  if (status) return res.status(status).json({ error: e.message, code: e.code });
+  // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
+  // su pantalla: qué renglón ya se cobró, cuánto queda, qué importe esperaba.
+  if (status) return res.status(status).json({ error: e.message, code: e.code, ...(e.detalle ? { detalle: e.detalle } : {}) });
   // Modificadores de menu: mismas reglas que en POS (una sola implementacion).
   if (e instanceof ModificadoresError) return res.status(400).json({ error: e.message, code: e.codigo });
   console.error('[Restaurante] Error:', e.message);
@@ -3013,6 +3020,44 @@ app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireAuthSeguro, requireM
   try {
     const r = await registrarPago(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
     res.json({ ok: true, ...r });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// ─── División de cuenta por consumo real (083) ──────────────────────────────
+// Estado para la pantalla: renglones con lo cobrado y lo pendiente, cobros,
+// si la selección por producto sigue abierta y las partes iguales del
+// remanente. Solo lectura: el mesero también puede verlo.
+app.get('/api/restaurante/cuentas/:cuentaId/division', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const partes = req.query.partes ? parseInt(req.query.partes, 10) : null;
+    res.json(await estadoDivision(req.params.cuentaId, req.negocioId, { partes }));
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Cobrar el consumo de UNA persona: la selección de renglones (o 'resto') la
+// valora el servidor en centavos con el descuento prorrateado y bajo el lock
+// de la cuenta; los pagos deben sumar exactamente eso. Caja o admin.
+app.post('/api/restaurante/cuentas/:cuentaId/cobros-consumo', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const r = await cobrarConsumo(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    res.status(r.repetido ? 200 : 201).json({ ok: true, ...r });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Cobrar una parte igual del remanente. La primera formaliza la división y
+// cierra la selección por producto.
+app.post('/api/restaurante/cuentas/:cuentaId/cobros-partes', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const r = await cobrarParteIgual(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    res.status(r.repetido ? 200 : 201).json({ ok: true, ...r });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Reverso de un cobro (admin, motivo obligatorio): libera sus porciones sin
+// borrar nada; queda quién revirtió, cuándo y por qué.
+app.post('/api/restaurante/cuentas/:cuentaId/cobros/:cobroId/revertir', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    res.json(await revertirCobro(req.params.cuentaId, req.negocioId, req.params.cobroId, { usuarioId: req.usuarioId, motivo: req.body?.motivo }));
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
