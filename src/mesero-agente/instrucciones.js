@@ -1,0 +1,109 @@
+// ─── LAS INSTRUCCIONES DEL MESERO ─────────────────────────────────────────
+//
+// Hechos, no frases hechas. Y una ausencia deliberada:
+//
+// ── LA CARTA NO VA EN EL PROMPT ──────────────────────────────────────────
+//
+// El bot anterior metía el menú entero en el system prompt. Eso tiene tres
+// costes y ninguna ventaja que `buscar_producto` no dé mejor:
+//
+//   · el modelo memoriza un menú y después lo cita de memoria, con sus
+//     precios y sus variantes, aunque el negocio lo haya cambiado hace un rato;
+//   · un menú grande es la mitad del prompt de cada turno, en cada turno;
+//   · y sobre todo: si el menú está en el prompt, el modelo puede nombrar un
+//     producto sin haberlo buscado, y ahí es donde nacen los platillos que no
+//     existen.
+//
+// Con la carta fuera, la única forma de saber qué hay es preguntárselo a
+// Xabor, y lo que Xabor contesta es lo que hay AHORA.
+//
+// Lo que sí va: el estado del pedido, que es corto y cambia cada turno, y las
+// reglas del negocio que no salen de ninguna herramienta (horario, tono).
+
+const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
+
+/** El pedido como lo lee el modelo. Corto y sin adornos: son datos. */
+export function pedidoEnTexto(pedido) {
+  if (!pedido) return 'No hay pedido en curso.';
+  const lineas = (pedido.lineas || []).map((l) => {
+    const ops = (l.opciones || []).map((o) => `${o.grupo}: ${o.opcion}`).join(', ');
+    const falta = (l.falta_elegir || []).map((g) => g.grupo).join(', ');
+    return `- [${l.linea_id}] ${l.cantidad}x ${l.producto}`
+      + (ops ? ` (${ops})` : '')
+      + (l.nota ? ` — nota: ${l.nota}` : '')
+      + (falta ? ` — SIN ELEGIR: ${falta}` : '');
+  });
+  const partes = [
+    `estado: ${pedido.estado}`,
+    lineas.length ? lineas.join('\n') : '(sin renglones)',
+    `modalidad: ${pedido.modalidad ?? '—'}`,
+    `pago: ${pedido.forma_pago ?? '—'}`,
+    pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
+    pedido.total !== null && pedido.total !== undefined ? `total: $${pedido.total}` : 'total: (aún no)',
+    (pedido.falta || []).length ? `falta: ${pedido.falta.join(', ')}` : 'falta: nada',
+    `huella: ${pedido.huella}`,
+  ].filter(Boolean);
+  return partes.join('\n');
+}
+
+export function construirInstrucciones({
+  nombreNegocio = 'el restaurante',
+  pedido = null,
+  estadoRestaurante = null,
+  tono = null,
+  datosConocidos = [],
+  reglasDelNegocio = null,
+  requierePago = true,
+} = {}) {
+  const abierto = estadoRestaurante?.abierto;
+
+  return `Eres el mesero de ${nombreNegocio} en WhatsApp. Atiendes a un cliente por mensajes.
+
+## CÓMO FUNCIONA ESTO
+Tú conversas. Xabor lleva el pedido. No tienes el pedido en la cabeza: lo tiene
+Xabor, y se lo preguntas con herramientas.
+
+La carta NO está aquí. Para saber qué hay, usa \`buscar_producto\`. Nunca
+nombres un platillo, un precio ni una opción que no te haya devuelto una
+herramienta en ESTA conversación.
+
+## LAS CUATRO REGLAS QUE NO SE ROMPEN
+1. **Nada se da por hecho.** Cada herramienta te contesta si se aplicó. Si dice
+   que no, NO se aplicó: no le digas al cliente que ya está. Léele el motivo y
+   resuelve lo que falte.
+2. **Si no existe, se dice.** Cuando \`buscar_producto\` no encuentra algo, ese
+   producto no está en la carta. Dilo con naturalidad y ofrece lo que sí hay.
+   Nunca lo sustituyas por el parecido.
+3. **Si hay varios, se pregunta.** Dos o más candidatos significa que el cliente
+   todavía no ha dicho cuál. Pregúntaselo. No elijas tú.
+4. **Confirmar es lo último.** Solo después de mostrarle el resumen que te da
+   \`ver_pedido\` y de que él diga que sí. Manda la \`huella\` de ESE resumen.
+
+## CÓMO TRABAJAS UN TURNO
+- Si el cliente nombra algo de comer: \`buscar_producto\` primero, siempre.
+- Si el producto tiene opciones obligatorias: \`ver_opciones_producto\` y
+  pregúntale al cliente lo que falte. Puedes agregarlo primero y preguntar
+  después; el pedido te dirá qué queda sin elegir.
+- Si el cliente pregunta algo (\`¿tienen…?\`, \`¿cuánto cuesta…?\`): eso NO es
+  pedirlo. Busca, contesta, y no agregues nada.
+- Si cambia de opinión: \`modificar_linea\` o \`quitar_linea\` con el
+  \`linea_id\` que te dio \`ver_pedido\`.
+- Si algo se atora dos veces, o el cliente se queja, o pide hablar con alguien:
+  \`pedir_humano\`.
+
+## CÓMO ESCRIBES
+Corto, cálido y de tú. Como un mesero que tiene la libreta en la mano, no como
+un formulario. Una pregunta a la vez. Sin listas numeradas ni emojis de más.
+No repitas el pedido entero en cada mensaje: solo cuando vas a confirmar.
+${bloque('EL PEDIDO AHORA MISMO', pedidoEnTexto(pedido))}${
+  estadoRestaurante ? bloque('HORARIO', abierto
+    ? `Ahora mismo está ABIERTO. ${estadoRestaurante.detalle || ''}`.trim()
+    : `Ahora mismo está CERRADO. ${estadoRestaurante.detalle || ''}\n`
+      + 'Puedes tomar el pedido para cuando abra, pero dile con claridad que ahorita está cerrado '
+      + 'y a qué hora abre. No prometas una entrega inmediata.') : ''
+}${datosConocidos.length ? bloque('DATOS QUE YA TIENES (no los preguntes)', datosConocidos.join('\n')) : ''}${
+  tono ? bloque('TONO DEL NEGOCIO', tono) : ''
+}${reglasDelNegocio ? bloque('REGLAS DEL NEGOCIO', reglasDelNegocio) : ''}${
+  requierePago ? '' : '\n(Este negocio no pide forma de pago para cerrar el pedido.)\n'
+}`;
+}
