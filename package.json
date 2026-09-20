@@ -26,7 +26,8 @@
     "sharp": "^0.35.3",
     "twilio": "^5.13.1",
     "web-push": "^3.6.7",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
   },
   "allowScripts": {
     "puppeteer@23.11.1": true
