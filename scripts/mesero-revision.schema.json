@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "ready_for_activation": { "type": "boolean" },
+    "needs_external_action": { "type": "boolean" },
+    "summary": { "type": "string" },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "next_safe_task": { "type": "string" }
+  },
+  "required": ["ready_for_activation", "needs_external_action", "summary", "blockers", "next_safe_task"],
+  "additionalProperties": false
+}
