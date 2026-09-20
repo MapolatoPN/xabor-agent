@@ -42,16 +42,12 @@ const claveDeSesion = (telefono, { sombra = false } = {}) =>
 
 export async function leerEstado(negocioId, telefono, { sombra = false } = {}) {
   const sessionId = claveDeSesion(telefono, { sombra });
-  try {
-    const { rows } = await pool.query(
-      'SELECT estado FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2',
-      [negocioId, sessionId]);
-    if (rows[0]?.estado) return rows[0].estado;
-  } catch (e) {
-    // Sin estado previo no se inventa uno a medias: se arranca limpio y se
-    // dice. Un carrito reconstruido a ojo es peor que uno vacío.
-    console.error('[AGENTE] no se pudo leer el estado, se arranca limpio:', e.message);
-  }
+  // Solo una lectura exitosa sin filas significa conversación nueva. Si la
+  // base falla, atender con un carrito vacío podría duplicar un pedido previo.
+  const { rows } = await pool.query(
+    'SELECT estado FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2',
+    [negocioId, sessionId]);
+  if (rows[0]?.estado) return rows[0].estado;
   return estadoNuevo({ negocioId, conversacionId: sessionId });
 }
 
@@ -260,16 +256,16 @@ export async function observarConAgente({
   }
 }
 
-// ── CONFIRMAR: el pedido y su outbox, en la MISMA transacción ────────────
+// ── CONFIRMAR: integración operacional aún incompleta ────────────────────
 //
 // `registrarPedido` es la única puerta de creación de pedidos y tiene su
 // propio gate (revalida contra el catálogo real y rechaza lo que el modelo
 // invente). No se rodea: se usa. Lo que se añade es que los efectos
 // posteriores queden escritos como hechos, no lanzados al aire.
 //
-// El orden importa: primero el pedido —que es quien puede rechazar— y después,
-// con su folio, los eventos. Si el pedido no se registra no hay eventos que
-// encolar, y ese es justo el caso en que no debe haberlos.
+// El pedido se registra antes de encolar eventos. Hoy son transacciones
+// separadas y no hay consumidor del outbox: esta ruta NO está lista para canario.
+// Ver docs/mesero-rescue-status.md antes de habilitarla.
 async function confirmarYEncolar({ negocioId, telefono, nombre, canal, estado, pedido, registrar }) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
   let resultado;

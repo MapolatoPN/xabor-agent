@@ -14,11 +14,10 @@
 //   · llama al modelo REAL, con las herramientas reales;
 //   · ejecuta contra el reconciliador REAL;
 //   · y NO registra el pedido, NO escala, NO imprime y NO cobra: los efectos
-//     son grabadoras, igual que en la sombra. Con `--registrar` sí registra,
-//     y entonces avisa de que va a crear un pedido de verdad.
+//     son grabadoras, igual que en la sombra. Este script nunca registra.
 //
-// El libro de operaciones es de MEMORIA salvo con `--registrar`: un humo no
-// tiene por qué dejar filas en la auditoría del agente productivo.
+// El libro de operaciones es de MEMORIA: un humo no deja filas en la auditoría
+// del agente productivo.
 import pg from 'pg';
 import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
@@ -28,7 +27,10 @@ import { recolectorDeTraza } from '../src/mesero-agente/trazas.js';
 const args = process.argv.slice(2);
 const opt = (n, d = null) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
 const negocioId = opt('--negocio');
-const registrar = args.includes('--registrar');
+if (args.includes('--registrar')) {
+  console.error('--registrar no está disponible en el humo. Usa el flujo de canario autorizado para crear pedidos reales.');
+  process.exit(2);
+}
 const guion = String(opt('--guion',
   'hola, qué tienen?|quiero unos chilaquiles|el bowl|salsa verde y pollo|para recoger|efectivo|sí, confirmo'))
   .split('|').map((s) => s.trim()).filter(Boolean);
@@ -41,11 +43,6 @@ if (!process.env.ANTHROPIC_API_KEY) {
 if (!negocioId) { console.error('Falta --negocio <uuid>.'); process.exit(2); }
 const cadena = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 if (!cadena) { console.error('Falta DATABASE_URL (o DATABASE_PUBLIC_URL para producción).'); process.exit(2); }
-
-if (registrar) {
-  console.warn('\n>>> --registrar: este humo VA A CREAR UN PEDIDO REAL en ese negocio.\n'
-    + '>>> Se usa con un negocio de prueba, o cuando alguien lo ha decidido a propósito.\n');
-}
 
 const db = new pg.Client({ connectionString: cadena, ssl: { rejectUnauthorized: false } });
 await db.connect();
@@ -73,15 +70,14 @@ if (!catalogo.length) { console.error('Ese negocio no tiene carta activa: no hay
 console.log(`Carta: ${catalogo.length} categorías, ${prods.length} productos.\n`);
 
 const { llamarModeloDelAgente, MODELO } = await import('../src/mesero-agente/modeloDelAgente.js');
+const llamarModeloLocal = (params) => llamarModeloDelAgente(params, { clave: process.env.ANTHROPIC_API_KEY });
 const estado = estadoNuevo({ negocioId, conversacionId: `humo-${Date.now()}` });
 const libro = libroDeOperaciones(almacenEnMemoria());
 const grabadas = [];
-const efectos = registrar
-  ? (await import('../src/mesero-agente/canalDelAgente.js'))
-  : {
+const efectos = {
     confirmar: async ({ pedido }) => { grabadas.push({ tipo: 'confirmar', pedido }); return { ok: true, folio: 'HUMO-0001', simulado: true }; },
     escalar: async ({ motivo }) => { grabadas.push({ tipo: 'escalar', motivo }); return { ok: true, simulado: true }; },
-  };
+};
 
 const historial = [];
 let fallos = 0;
@@ -95,7 +91,7 @@ for (const [i, mensaje] of guion.entries()) {
     mensaje, historial: historial.slice(-12),
     catalogo, precios,
     requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
-    estado, libro, llamarModelo: llamarModeloDelAgente, efectos,
+    estado, libro, llamarModelo: llamarModeloLocal, efectos,
     contexto: { nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
       textoCiclo: [...historial.filter((h) => h.rol === 'user').map((h) => h.texto), mensaje].join('\n') },
     modo: 'humo', traza,
@@ -127,7 +123,7 @@ for (const l of (estado.carrito.items || [])) {
 }
 console.log(`  modalidad=${estado.carrito.datos?.modalidad ?? '—'} pago=${estado.carrito.datos?.forma_pago ?? '—'}`);
 console.log(`  confirmado=${estado.hechos.confirmado} escalado=${estado.hechos.escalado} folio=${estado.folio ?? '—'}`);
-console.log(`  efectos ${registrar ? 'REALES' : 'simulados'}: ${JSON.stringify(grabadas.map((g) => g.tipo))}`);
+console.log(`  efectos simulados: ${JSON.stringify(grabadas.map((g) => g.tipo))}`);
 console.log(`\n  llamadas ilegales del modelo: ${fallos}`);
 
 // Un humo NO falla por una llamada ilegal —el sistema la frenó, que es lo que

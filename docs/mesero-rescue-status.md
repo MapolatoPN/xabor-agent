@@ -4,6 +4,12 @@
 **Fecha:** 20 de septiembre de 2026
 **Auditoría de partida:** [`mesero-auditoria-2026-09-20.md`](mesero-auditoria-2026-09-20.md)
 
+**Estado de salida:** NO APTO PARA CANARIO. La revisión posterior encontró que
+el camino nuevo registra el pedido, pero todavía no llama a `emitirPedido`.
+Los eventos de `agente_outbox` no tienen consumidor conectado. Por tanto, el
+pedido podría quedar guardado sin llegar al panel ni a la impresora. El replay
+y el humo simulado no ejercitan ese tramo operacional.
+
 ---
 
 ## 1. La arquitectura anterior, y por qué no se podía encender
@@ -140,9 +146,10 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 ## 6. Resultados
 
 ```
-test/fase-agente-tools.mjs        43 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
+test/fase-agente-tools.mjs        44 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
 test/fase-agente-canario.mjs      14 pasadas, 0 fallidas    (alcance, kill switch, sombra)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
+test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 npm run mesero:eval               invariantes críticas: 0/7   PUERTA: ABIERTA
 24 suites del Mesero anterior     todas verdes (línea base intacta)
 ```
@@ -203,7 +210,10 @@ listo:
 ANTHROPIC_API_KEY=... DATABASE_URL=... node scripts/mesero-humo.mjs --negocio <uuid>
 ```
 
-Sin efectos (no registra, no escala, no imprime) salvo con `--registrar`.
+Sin efectos (no registra, no escala, no imprime). `--registrar` se rechaza:
+los pedidos reales solo se prueban mediante el canario autorizado.
+La clave del humo se pasa directamente al cliente del modelo para evitar
+importar `server.js` y arrancar los jobs de la aplicación durante la prueba.
 
 Segunda medición con modelo real, sobre los 26 fixtures:
 
@@ -237,7 +247,9 @@ su libro en memoria. Funciona con el bot productivo apagado.
 
 No se activa sin autorización explícita. Preparado, no activado.
 
-1. **Gate previo:** el humo con modelo real (§7) en verde, y
+1. **Gate previo:** cerrar el bloqueo operacional señalado al inicio,
+   comprobar con una prueba de integración que el pedido llega al panel y a la
+   impresión, correr el humo con modelo real (§7) y obtener
    `npm run mesero:eval -- --modelo` sin críticas.
 2. Variable del servicio:
    ```
@@ -336,6 +348,11 @@ commit base, misma base, mismo puerto):
 
 Riesgos que quedan abiertos:
 
+- **Emisión operacional sin conectar.** `confirmarYEncolar` registra el pedido
+  y escribe eventos en `agente_outbox`, pero no llama a `emitirPedido` y no hay
+  consumidor de ese outbox. Además, la escritura del pedido y la del outbox
+  ocurren en transacciones distintas. Antes de canario hay que integrar con
+  la ruta operacional durable existente o completar y probar el consumidor.
 - **El prompt no está afinado con tráfico real.** El sistema frena lo que el
   modelo se invente, pero cada freno cuesta una iteración y un turno peor. Es
   lo que mide `npm run mesero:eval -- --modelo`.

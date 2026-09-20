@@ -348,6 +348,16 @@ await t('E7 · si el registro falla, el pedido NO queda confirmado', async () =>
   assert.equal(estado.hechos.confirmado, false, 'se dio por confirmado un pedido que no se registró');
 });
 
+await t('E8 · si el handoff falla, el pedido NO queda escalado', async () => {
+  const estado = nuevo();
+  const e = ejecutorDe(estado, 'quiero hablar con una persona', { efectos: {
+    escalar: async () => ({ ok: false, motivo: 'la cola no contesta' }) } });
+  const r = await e.ejecutar('pedir_humano', { motivo: 'cliente lo pidió' });
+  assert.equal(r.aplicado, false);
+  assert.match(r.motivo, /no_se_pudo_escalar/);
+  assert.equal(estado.hechos.escalado, false, 'marcó escalado sin avisar a un humano');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── F. El libro de operaciones: una vez y solo una ──');
 

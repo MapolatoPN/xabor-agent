@@ -39,8 +39,10 @@ export const MODELO = process.env.MESERO_AGENTE_MODELO || 'claude-sonnet-5';
 let _cliente = null;
 let _clave = null;
 
-export async function clienteDelAgente() {
-  const clave = await claveDelProveedor();
+export async function clienteDelAgente({ clave: claveExplicita = null } = {}) {
+  // El humo local trae una clave explícita: no debe importar server.js, que
+  // arranca la aplicación y sus jobs solo para resolver una credencial.
+  const clave = claveExplicita || await claveDelProveedor();
   if (!_cliente || _clave !== clave) {
     _cliente = new Anthropic({ apiKey: clave, timeout: 15000, maxRetries: 0 });
     _clave = clave;
@@ -58,9 +60,9 @@ const esSobrecarga = (e) => e?.status === 529 || e?.status === 429
  * llamadas y tiene su propio tope de tiempo. Dos reintentos largos por llamada
  * convertirían un pico del proveedor en un turno que se escala por reloj.
  */
-export async function llamarModeloDelAgente(params) {
+export async function llamarModeloDelAgente(params, { clave = null } = {}) {
   const conModelo = { ...params, model: params.model || MODELO };
-  const cliente = await clienteDelAgente();
+  const cliente = await clienteDelAgente({ clave });
   try {
     return await cliente.messages.create(conModelo);
   } catch (e) {

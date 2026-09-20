@@ -367,6 +367,7 @@ export function crearEjecutor({
       const r = efectos?.escalar
         ? await efectos.escalar({ estado, motivo, pedido: vista() })
         : { ok: true, simulado: true };
+      if (!r?.ok) return noAplicado(`no_se_pudo_escalar: ${r?.motivo || 'desconocido'}`, { pedido: vista() });
       estado.hechos.escalado = true;
       estado.motivoEscalado = String(motivo || '').slice(0, 200);
       return ok({ pedido: vista(), escalado: true, simulado: !!r?.simulado });
