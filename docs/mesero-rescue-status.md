@@ -148,13 +148,16 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 ## 6. Resultados
 
 ```
-test/fase-agente-tools.mjs        44 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
+test/fase-agente-tools.mjs        47 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
 test/fase-agente-canario.mjs      14 pasadas, 0 fallidas    (alcance, kill switch, sombra)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 test/fase-agente-emision.mjs       registro enlazado a emitirPedido; rechazo no emite
+test/fase-agente-ciclos.mjs        un pedido nuevo rota la identidad del libro
+test/fase-agente-indice-local.mjs  índice único y libro probados en Postgres local; ROLLBACK
 npm run mesero:eval               invariantes críticas: 0/7   PUERTA: ABIERTA
-24 suites del Mesero anterior     todas verdes (línea base intacta)
+27 suites del Mesero anterior     verdes sin base de datos
+2 suites con base de datos        requieren fixture dedicado; no se corrieron sobre datos locales compartidos
 ```
 
 **Pruebas de mordida** — cada garantía desactivada por separado, y dónde cae:
@@ -359,9 +362,16 @@ Riesgos que quedan abiertos:
   bot viejo; aún falta ejercitar ese caso en una prueba de integración.
 - **Resultado incierto del registro.** Si la conexión cae justo después del
   COMMIT de `registrarPedido`, el agente puede recibir un error sin saber si el
-  pedido quedó creado. Antes de canario hay que dar una clave idempotente al
-  registro o verificar el resultado durable y escalar a una persona si no se
-  puede resolver. No se debe pedir al modelo que reintente a ciegas.
+  pedido quedó creado. El libro ya bloquea un segundo intento en esa
+  conversación y solicita intervención humana; la 084 tiene una restricción
+  única para cerrar también la carrera entre dos turnos concurrentes. El
+  índice y el libro pasaron una prueba transaccional en Postgres local. Falta
+  comprobar con base de prueba el flujo de error posterior al COMMIT. No se
+  debe pedir al modelo que reintente a ciegas.
+- **Pedidos posteriores.** Un pedido nuevo explícito tras un estado terminal
+  abre otro ciclo y otra identidad en el libro. Las consultas sobre el pedido
+  anterior conservan el ciclo previo. Faltan pruebas con lenguaje real para
+  medir si los clientes formulan el nuevo pedido de manera reconocible.
 - **Outbox experimental.** La migración 085 y `outbox.js` siguen en la rama,
   pero no hay consumidor y el agente no escribe allí. No se deben usar como
   evidencia de entrega operacional ni habilitar sus efectos sin una revisión

@@ -39,10 +39,14 @@ await new Promise((resolve) => setImmediate(resolve));
 assert.equal(emisionFallida.ok, true, 'un pedido ya registrado no puede volver al bot viejo por una falla de emisión');
 
 const rechazado = await confirmarYEmitir({ ...args,
-  registrar: async () => { throw new Error('pedido rechazado'); } });
+  registrar: async () => { const e = new Error('pedido rechazado'); e.codigo = 'ORDEN_INVALIDA'; throw e; } });
 await new Promise((resolve) => setImmediate(resolve));
 assert.equal(rechazado.ok, false);
 assert.equal(emisiones, 1, 'se emitió un pedido que nunca se registró');
 assert.equal(historicos, 2, 'se historizó un pedido que nunca se registró');
+
+await assert.rejects(() => confirmarYEmitir({ ...args,
+  registrar: async () => { throw new Error('respuesta perdida tras el COMMIT'); } }),
+  /respuesta perdida/, 'un resultado incierto no debe degradarse a rechazo seguro');
 
 console.log('Emisión del agente: pedido registrado llega una vez a la ruta operacional; rechazo no emite.');

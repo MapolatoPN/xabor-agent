@@ -20,6 +20,7 @@ import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
+import { cicloParaTurno } from './cicloDelAgente.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -112,6 +113,7 @@ export async function atenderConAgente({
   const t0 = Date.now();
   let estado = null;
   let salida = null;
+  let confirmacionIntentada = false;
   try {
     const [catalogo, cfg] = await Promise.all([
       obtenerMenuCompleto(negocioId),
@@ -122,13 +124,16 @@ export async function atenderConAgente({
       return { ok: false, motivo: 'sin_catalogo' };
     }
 
-    estado = await leerEstado(negocioId, telefono);
+    estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
 
     const efectos = {
-      confirmar: async ({ pedido }) => confirmarYEmitir({
-        negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar,
-      }),
+      confirmar: async ({ pedido }) => {
+        confirmacionIntentada = true;
+        return confirmarYEmitir({
+          negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar,
+        });
+      },
       escalar: async ({ motivo }) => {
         try {
           if (!escalarAHumano) return { ok: false, motivo: 'handoff_sin_destino' };
@@ -143,7 +148,7 @@ export async function atenderConAgente({
 
     salida = await atenderTurnoConHerramientas({
       negocioId,
-      conversacionId: claveDeSesion(telefono),
+      conversacionId: estado.conversacionId,
       turnoId: turnoId || `t${Date.now()}`,
       mensaje,
       historial,
@@ -165,6 +170,17 @@ export async function atenderConAgente({
       traza,
     });
 
+    if (salida.operaciones?.some((o) => o.resultado?.estado === 'incierta')) {
+      estado.confirmacionIncierta = true;
+      if (escalarAHumano) {
+        try {
+          await escalarAHumano(negocioId, telefono, 'AGENTE_CONFIRMACION_INCIERTA');
+          estado.hechos.escalado = true;
+        } catch (e) { console.error('[AGENTE] handoff de confirmación incierta falló:', e?.message); }
+      }
+      salida.texto = 'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.';
+    }
+
     await guardarEstado(negocioId, telefono, estado);
 
     console.log(`[AGENTE] evento=turno negocio=${negocioId} cierre=${salida.motivoCierre} `
@@ -177,18 +193,18 @@ export async function atenderConAgente({
     // Un efecto irreversible pudo ocurrir antes del error (por ejemplo,
     // registrarPedido hizo COMMIT y luego falló guardarEstado). En ese caso
     // el bot viejo NO debe volver a procesar este mismo mensaje.
-    if (estado?.hechos?.confirmado || estado?.hechos?.escalado) {
-      if (estado.hechos.confirmado && escalarAHumano) {
+    if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
+      if (confirmacionIntentada && escalarAHumano) {
         try { await escalarAHumano(negocioId, telefono, 'AGENTE_ESTADO_INCIERTO'); }
         catch (handoffError) { console.error('[AGENTE] handoff tras estado incierto falló:', handoffError?.message); }
       }
       return {
         ok: true,
-        texto: salida?.texto || (estado.folio
-          ? `Tu pedido ${estado.folio} quedó registrado. El equipo lo revisará.`
-          : 'El equipo revisará tu solicitud y te responderá.'),
-        folio: estado.folio ?? null,
-        escalado: !!estado.hechos.escalado,
+        texto: estado?.hechos?.confirmado && estado.folio
+          ? (salida?.texto || `Tu pedido ${estado.folio} quedó registrado. El equipo lo revisará.`)
+          : 'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.',
+        folio: estado?.folio ?? null,
+        escalado: !!estado?.hechos?.escalado,
         estadoIncierto: true,
       };
     }
@@ -220,11 +236,11 @@ export async function observarConAgente({
     ]);
     if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
 
-    const estado = await leerEstado(negocioId, telefono, { sombra: true });
+    const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
     const grabadas = [];
     const salida = await atenderTurnoConHerramientas({
       negocioId,
-      conversacionId: claveDeSesion(telefono, { sombra: true }),
+      conversacionId: estado.conversacionId,
       turnoId: turnoId || `t${Date.now()}`,
       mensaje,
       historial,
@@ -294,7 +310,13 @@ export async function confirmarYEmitir({ negocioId, telefono, nombre, canal, est
     resultado = await registrar(orden, canal);
   } catch (e) {
     console.error('[AGENTE] registrarPedido lanzó:', e.message);
-    return { ok: false, motivo: e.message };
+    // Solo estos rechazos ocurren antes de intentar el INSERT. Para cualquier
+    // otro error el COMMIT pudo suceder aunque se perdiera la respuesta.
+    if (['ORDEN_INVALIDA', 'MODO_SOLICITUD', 'TENANT_CONTEXT_REQUIRED'].includes(e?.codigo)
+        || /^TENANT_CONTEXT_REQUIRED:/.test(String(e?.message || ''))) {
+      return { ok: false, motivo: e.message };
+    }
+    throw e;
   }
   if (!resultado || resultado.ok === false) {
     const motivo = (resultado?.rechazos || []).map((r) => r.codigo || r.motivo).join(', ') || 'rechazado';

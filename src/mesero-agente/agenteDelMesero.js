@@ -159,7 +159,7 @@ export async function atenderTurnoConHerramientas({
       const resultados = [];
       for (const llamada of llamadas) {
         const r = await ejecutarLlamada({
-          llamada, ejecutor, libro, negocioId, conversacionId, turnoId, modo,
+          llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
           permitirMutacion: () => mutaciones < topeMutaciones,
           // El ordinal de ESTA acción dentro del turno. Ver la cabecera del
           // libro de operaciones: es lo que separa «el cliente pidió dos» de
@@ -218,7 +218,7 @@ export async function atenderTurnoConHerramientas({
  * el mismo turno y contestar distinto si algo cambió en medio — que es
  * exactamente lo que hace falta después de una mutación.
  */
-async function ejecutarLlamada({ llamada, ejecutor, libro, negocioId, conversacionId, turnoId, modo,
+async function ejecutarLlamada({ llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
   permitirMutacion, ocurrenciaDe }) {
   const v = validarArgumentos(llamada.name, llamada.input);
   if (!v.ok) {
@@ -252,6 +252,11 @@ async function ejecutarLlamada({ llamada, ejecutor, libro, negocioId, conversaci
   });
 
   if (r.repetida) {
+    if (llamada.name === 'confirmar_pedido' && r.aplicada && r.resultado?.folio) {
+      // El pedido durable sobrevivió pero guardarEstado pudo haber fallado.
+      estado.hechos.confirmado = true;
+      estado.folio = r.resultado.folio;
+    }
     return {
       resultado: { ...(r.resultado || { aplicado: r.aplicada, estado: r.estado }),
         repetida: true,

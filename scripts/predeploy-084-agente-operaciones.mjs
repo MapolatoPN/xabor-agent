@@ -7,7 +7,9 @@ import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL requerida');
-const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const host = new URL(process.env.DATABASE_URL).hostname;
+const ssl = ['localhost', '127.0.0.1', '::1'].includes(host) ? false : { rejectUnauthorized: false };
+const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl });
 
 const aplicada = async () => (await db.query(
   `SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'agente_operaciones')::int
@@ -40,6 +42,12 @@ try {
     `SELECT count(*)::int AS n FROM pg_indexes
       WHERE tablename = 'agente_operaciones' AND indexdef ILIKE '%UNIQUE%operacion_clave%'`);
   if (u.n < 1) throw new Error('falta el índice UNIQUE sobre operacion_clave -- sin él no hay idempotencia');
+  const { rows: [cu] } = await db.query(
+    `SELECT count(*)::int AS n FROM pg_indexes
+      WHERE tablename = 'agente_operaciones'
+        AND indexname = 'uq_agente_confirmacion_conversacion'
+        AND indexdef ILIKE '%UNIQUE%confirmar_pedido%'`);
+  if (cu.n !== 1) throw new Error('falta la UNIQUE de confirmación por conversación -- podría duplicar pedidos');
   const { rows: [c] } = await db.query('SELECT count(*)::int AS n FROM agente_operaciones');
   await db.query('COMMIT');
   console.log(`[predeploy-084] ${yaEstaba ? 'Ya aplicada' : 'Aplicada'}. `

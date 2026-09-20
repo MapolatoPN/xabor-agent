@@ -61,6 +61,13 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_agente_operaciones_turno
   ON agente_operaciones (negocio_id, conversacion_id, turno_id, created_at);
 
+-- Solo un intento de confirmación con resultado posible por conversación.
+-- Un rechazo conocido libera el ciclo; un intento pendiente o de resultado
+-- incierto bloquea otro INSERT incluso si dos turnos corren concurrentes.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agente_confirmacion_conversacion
+  ON agente_operaciones (negocio_id, conversacion_id)
+  WHERE herramienta = 'confirmar_pedido' AND estado IN ('pendiente','ok','error');
+
 -- Contar por herramienta y por día para el scorecard.
 CREATE INDEX IF NOT EXISTS idx_agente_operaciones_herramienta
   ON agente_operaciones (negocio_id, herramienta, created_at DESC);

@@ -423,6 +423,53 @@ await t('F6 · un rechazo del reconciliador SÍ es un desenlace cerrado', async 
   assert.equal(b.aplicada, false);
 });
 
+await t('F7 · una confirmación incierta NO se reintenta a ciegas', async () => {
+  const libro = libroDeOperaciones(almacenEnMemoria());
+  const llamada = { negocioId: 'n1', conversacionId: 'c1', turnoId: 't1',
+    herramienta: 'confirmar_pedido', argumentos: { huella_resumen: 'h' } };
+  await assert.rejects(() => libro.ejecutarUnaVez(llamada, async () => {
+    throw new Error('se perdió la respuesta tras registrar');
+  }));
+  let segundoRegistro = false;
+  const r = await libro.ejecutarUnaVez(llamada, async () => {
+    segundoRegistro = true;
+    return { aplicada: true, resultado: {} };
+  });
+  assert.equal(segundoRegistro, false, 'volvió a registrar un pedido de resultado incierto');
+  assert.equal(r.estado, 'incierta');
+  assert.match(r.resultado.motivo, /confirmacion_incierta/);
+});
+
+await t('F8 · otro turno de la misma conversación NO crea un segundo pedido', async () => {
+  const libro = libroDeOperaciones(almacenEnMemoria());
+  const primera = { negocioId: 'n1', conversacionId: 'c1', turnoId: 't1',
+    herramienta: 'confirmar_pedido', argumentos: { huella_resumen: 'h' } };
+  await libro.ejecutarUnaVez(primera, async () => ({ aplicada: true,
+    resultado: { aplicado: true, folio: 'XAB-9001' } }));
+  let segunda = false;
+  const r = await libro.ejecutarUnaVez({ ...primera, turnoId: 't2' }, async () => {
+    segunda = true; return { aplicada: true, resultado: { folio: 'XAB-9002' } };
+  });
+  assert.equal(segunda, false);
+  assert.equal(r.repetida, true);
+  assert.equal(r.resultado.folio, 'XAB-9001');
+});
+
+await t('F9 · un resultado incierto bloquea la confirmación del turno siguiente', async () => {
+  const libro = libroDeOperaciones(almacenEnMemoria());
+  const primera = { negocioId: 'n1', conversacionId: 'c1', turnoId: 't1',
+    herramienta: 'confirmar_pedido', argumentos: { huella_resumen: 'h' } };
+  await assert.rejects(() => libro.ejecutarUnaVez(primera, async () => {
+    throw new Error('respuesta perdida');
+  }));
+  let intento = false;
+  const r = await libro.ejecutarUnaVez({ ...primera, turnoId: 't2' }, async () => {
+    intento = true; return { aplicada: true };
+  });
+  assert.equal(intento, false);
+  assert.equal(r.estado, 'incierta');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── G. El «sí» a lo que el bot enseñó ──');
 
