@@ -353,6 +353,11 @@ Riesgos que quedan abiertos:
   consumidor de ese outbox. Además, la escritura del pedido y la del outbox
   ocurren en transacciones distintas. Antes de canario hay que integrar con
   la ruta operacional durable existente o completar y probar el consumidor.
+  El camino legacy de WhatsApp llama a `emitirPedido(pedido)` tras
+  `registrarPedido`; esa ruta ya tiene deuda durable y recuperación. Si se
+  reutiliza, hay que probar que una falla después del registro no ejecute el
+  bot viejo ni registre un segundo pedido. También hay que comprobar que el
+  mensaje al cliente, el panel y la impresión reciban el mismo folio.
 - **El prompt no está afinado con tráfico real.** El sistema frena lo que el
   modelo se invente, pero cada freno cuesta una iteración y un turno peor. Es
   lo que mide `npm run mesero:eval -- --modelo`.
