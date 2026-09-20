@@ -105,7 +105,22 @@ function porGrupo(modificadores) {
   for (const m of (Array.isArray(modificadores) ? modificadores : [])) {
     if (typeof m === 'string') { mete('', m); continue; }
     const g = m?.grupo ?? '';
-    if (Array.isArray(m?.opciones)) { for (const o of m.opciones) mete(g, typeof o === 'string' ? o : o?.nombre); continue; }
+    if (Array.isArray(m?.opciones)) {
+      // ── UN GRUPO EXPLÍCITAMENTE VACÍO SÍ EXISTE ──────────────────────
+      //
+      // `{grupo:'Proteína', opciones:[]}` es una propuesta de VACIAR el grupo
+      // —«sin huevo»—, y sin esta línea no llegaba nunca a `fusionar`: la
+      // entrada del mapa no se creaba, el grupo no se recorría, y quitar era
+      // imposible de expresar. Lo de siempre —omitir el grupo— sigue
+      // significando «no lo toques», porque eso no crea ninguna entrada.
+      //
+      // Vaciar no se autoriza aquí: llega a `fusionar` como cualquier otra
+      // propuesta y sigue necesitando que el cliente pidiera quitarlo
+      // (`elClientePidioQuitarLaOpcion`). Esto solo lo hace EXPRESABLE.
+      if (!m.opciones.length && !mapa.has(String(g))) mapa.set(String(g), []);
+      for (const o of m.opciones) mete(g, typeof o === 'string' ? o : o?.nombre);
+      continue;
+    }
     if (m?.opcion || m?.nombre) mete(g, m.opcion || m.nombre);
   }
   return mapa;
@@ -450,6 +465,17 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
       ...quitadas.filter((o) => !quitadasOk.some((x) => norm(x) === norm(o))),
     ];
     if (resultado.length) fusionados.set(grupo, resultado);
+    // ── VACIAR UN GRUPO, CUANDO EL CLIENTE LO PIDIÓ ────────────────────
+    //
+    // `fusionados` arranca como copia de lo viejo para que un grupo que el
+    // borrador no menciona se conserve. Por eso un resultado vacío no bastaba:
+    // el `set` se saltaba y el valor viejo seguía ahí. «Sin huevo» quedaba
+    // autorizado en `cambios.autorizados` y el huevo seguía en el plato.
+    //
+    // Se borra SOLO si el quitar venía autorizado (`quitadasOk`), que es la
+    // misma evidencia que hace falta para quitar cualquier opción. Un grupo
+    // que se queda vacío sin autorización sigue conservándose.
+    else if (quitadasOk.length) fusionados.delete(grupo);
     if (agregadasOk.length || quitadasOk.length) {
       cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: `modificador:${grupo}`,
         via: donde === ctx.mensajeDicho ? 'este_turno' : 'ciclo' });
@@ -568,13 +594,43 @@ export const hayVerboDePedir = (texto) => EMPIEZA_A_PEDIR.test(String(texto || '
  * que no hay candidatos y no se quita nada. No hace falta una regla aparte para
  * los pronombres: caen solos, que es la señal de que la regla es la correcta.
  */
+// ── DÓNDE ACABA DE VERDAD EL ALCANCE DE «QUITA» ──────────────────────────
+//
+// El corte por verbo de pedir asume que el objeto va DESPUÉS del verbo —«quita
+// el waffle y ponme un café»— y para eso funciona. Pero el español antepone el
+// objeto con un clítico: «quita el waffle, el café sí LO quiero». Ahí el
+// objeto está ANTES del verbo, y cortar en el verbo deja «el café» dentro del
+// alcance de quitar. El cliente pedía quitar uno y se le quitaban los dos.
+//
+// Lo encontró el replay con el fixture `cancelacion-parcial`, y es un defecto
+// de siempre: no lo introdujo el agente de herramientas, lo descubrió.
+//
+// La regla es general y es de gramática, no de platillos: **cuando el verbo de
+// pedir viene precedido por un clítico (lo/la/los/las/le/les) dentro de su
+// misma cláusula, lo que empieza esa cláusula ya es el objeto de ESE verbo, no
+// del verbo de quitar.** Así que el alcance se corta en el límite de cláusula
+// anterior —coma, punto y coma, punto— y no en el verbo.
+//
+// Sin clítico no cambia nada: «quita el waffle, el café y el licuado» no trae
+// ninguno, sigue sin cortarse, y los tres siguen dentro del alcance, que es lo
+// correcto (una lista de objetos sin verbo propio continúa la del verbo de
+// quitar).
+const CLITICO = /\b(lo|la|los|las|le|les)\b/i;
+
+function recorteDelAlcance(resto, indiceDelVerbo) {
+  const antes = resto.slice(0, indiceDelVerbo);
+  if (!CLITICO.test(antes)) return indiceDelVerbo;
+  const limite = Math.max(antes.lastIndexOf(','), antes.lastIndexOf(';'), antes.lastIndexOf('.'));
+  return limite >= 0 ? limite : indiceDelVerbo;
+}
+
 export function articulosQueElClientePidioQuitar(carrito, mensaje) {
   const bruto = String(mensaje || '');
   const verbo = PIDE_QUITAR.exec(bruto);
   if (!verbo) return { fuera: [], ambiguos: [] };
   const resto = bruto.slice(verbo.index + verbo[0].length);
   const corte = EMPIEZA_A_PEDIR.exec(resto);
-  const tramo = corte ? resto.slice(0, corte.index) : resto;
+  const tramo = corte ? resto.slice(0, recorteDelAlcance(resto, corte.index)) : resto;
   if (!norm(tramo)) return { fuera: [], ambiguos: [] };
 
   const candidatos = [];

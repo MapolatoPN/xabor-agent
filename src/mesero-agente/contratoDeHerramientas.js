@@ -155,6 +155,9 @@ export const HERRAMIENTAS = Object.freeze([
       cantidad: cantidad.optional(),
       opciones: z.array(OpcionElegida).optional()
         .describe('Sustituye las opciones de los grupos que menciones. Los demás grupos no se tocan.'),
+      sin_opciones: z.array(z.string().min(1)).optional()
+        .describe('Nombres de grupos que el cliente quiere QUITAR ("sin fruta", "sin huevo"). '
+          + 'Si el grupo era obligatorio, el renglón quedará pendiente de elegir otra cosa y habrá que preguntársela.'),
       nota: z.string().max(200).optional(),
     }).strict(),
   },

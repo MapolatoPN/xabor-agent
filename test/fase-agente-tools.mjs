@@ -20,6 +20,7 @@ import {
 import {
   libroDeOperaciones, almacenEnMemoria, hashDeArgumentos, claveDeOperacion,
 } from '../src/mesero-agente/libroDeOperaciones.js';
+import { articulosQueElClientePidioQuitar } from '../src/orders/carritoDelPedido.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -444,6 +445,80 @@ await t('G3 · lo enseñado caduca al turno siguiente', async () => {
   e2.cerrarTurno();                                    // pasa un turno sin enseñar nada
   const r = await ejecutorDe(estado, 'sí').ejecutar('agregar_producto', { producto_id: '21' });
   assert.equal(r.aplicado, false, 'un «sí» de hace dos turnos siguió autorizando');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── H. Los tres defectos que encontró el replay ──');
+
+await t('H1 · «quita X, Y sí lo quiero» quita UNO, no los dos', async () => {
+  const estado = nuevo();
+  await ejecutorDe(estado, 'una coca y unos hotcakes')
+    .ejecutar('agregar_producto', { producto_id: '21' });
+  await ejecutorDe(estado, 'una coca y unos hotcakes')
+    .ejecutar('agregar_producto', { producto_id: '90' });
+  assert.equal(estado.carrito.items.length, 2);
+  const lidHotcakes = estado.carrito.items.find((i) => i.nombre === 'Hotcakes').lid;
+  const r = await ejecutorDe(estado, 'quita los hotcakes, la coca sí la quiero')
+    .ejecutar('quitar_linea', { linea_id: lidHotcakes });
+  assert.equal(r.aplicado, true, `no quitó: ${r.motivo}`);
+  assert.deepEqual(estado.carrito.items.map((i) => i.nombre), ['Coca Cola'],
+    'se llevó por delante el renglón que el cliente dijo que SÍ quería');
+});
+
+await t('H2 · una enumeración sin verbo propio SÍ sigue dentro del alcance de quitar', async () => {
+  const carrito = { items: [{ lid: 'a', nombre: 'Hotcakes' }, { lid: 'b', nombre: 'Coca Cola' }] };
+  const r = articulosQueElClientePidioQuitar(carrito, 'quita los hotcakes, la coca y ya');
+  assert.deepEqual(r.fuera.sort(), ['a', 'b'],
+    'una enumeración sin verbo propio dejó de quitar: el recorte se pasó de listo');
+});
+
+await t('H3 · «sin X» vacía el grupo, y solo si el cliente lo dijo', async () => {
+  const estado = nuevo();
+  const r0 = await ejecutorDe(estado, 'unos chilaquiles sencillos con salsa roja y huevos revueltos')
+    .ejecutar('agregar_producto', { producto_id: '85',
+      opciones: [{ grupo: 'Salsa', opcion: 'Roja' }, { grupo: 'Proteína', opcion: 'Huevos Revueltos' }] });
+  assert.equal(r0.aplicado, true);
+  const lid = estado.carrito.items[0].lid;
+
+  // Sin que el cliente lo pida: no se vacía.
+  const mudo = await ejecutorDe(estado, 'gracias')
+    .ejecutar('modificar_linea', { linea_id: lid, sin_opciones: ['Proteína'] });
+  assert.equal(mudo.aplicado, false, 'vació un grupo que nadie pidió vaciar');
+  assert.ok(estado.carrito.items[0].modificadores.some((g) => g.grupo === 'Proteína'));
+
+  // Diciéndolo: sí.
+  const r = await ejecutorDe(estado, 'mejor sin huevo')
+    .ejecutar('modificar_linea', { linea_id: lid, sin_opciones: ['Proteína'] });
+  assert.equal(r.aplicado, true, `no vació: ${r.motivo}`);
+  assert.ok(!estado.carrito.items[0].modificadores.some((g) => g.grupo === 'Proteína'),
+    'el grupo siguió puesto después de autorizar el quitar');
+  // Y al ser obligatorio, el renglón queda pendiente en vez de pasar por bueno.
+  assert.equal(r.pedido.estado, ACLARANDO);
+});
+
+await t('H4 · quitar un grupo que el producto NO tiene se rechaza', async () => {
+  const estado = nuevo();
+  await ejecutorDe(estado, 'unos hotcakes').ejecutar('agregar_producto', { producto_id: '90' });
+  const r = await ejecutorDe(estado, 'sin salsa')
+    .ejecutar('modificar_linea', { linea_id: estado.carrito.items[0].lid, sin_opciones: ['Salsa'] });
+  assert.equal(r.aplicado, false);
+  assert.match(r.motivo, /grupo_inexistente/);
+});
+
+await t('H5 · dos acciones IDÉNTICAS en el mismo turno se aplican las dos', async () => {
+  const libro = libroDeOperaciones(almacenEnMemoria());
+  let veces = 0;
+  const ejecutar = async () => { veces += 1; return { aplicada: true, resultado: { n: veces } }; };
+  const base = { negocioId: 'n1', conversacionId: 'c1', turnoId: 't1',
+    herramienta: 'agregar_producto', argumentos: { producto_id: '85' } };
+  // «dos bowls iguales»: el modelo llama dos veces, ordinales 1 y 2.
+  await libro.ejecutarUnaVez({ ...base, ocurrencia: 1 }, ejecutar);
+  await libro.ejecutarUnaVez({ ...base, ocurrencia: 2 }, ejecutar);
+  assert.equal(veces, 2, 'el segundo bowl se tragó como duplicado');
+  // Y un reintento del turno entero reproduce los mismos ordinales: nada nuevo.
+  await libro.ejecutarUnaVez({ ...base, ocurrencia: 1 }, ejecutar);
+  await libro.ejecutarUnaVez({ ...base, ocurrencia: 2 }, ejecutar);
+  assert.equal(veces, 2, 'el reintento del turno volvió a aplicar');
 });
 
 console.log(fallos.length

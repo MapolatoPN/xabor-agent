@@ -227,32 +227,67 @@ export function crearEjecutor({
       return ok({ pedido: r.pedido });
     },
 
-    modificar_linea({ linea_id, cantidad, opciones, nota }) {
+    modificar_linea({ linea_id, cantidad, opciones, sin_opciones, nota }) {
       const item = (estado.carrito.items || []).find((i) => i.lid === linea_id);
       if (!item) return invalido(`linea_inexistente: ${linea_id}. Llama a ver_pedido para ver los linea_id vigentes.`);
+      const ficha = fichaPorNombre(catalogo, item.nombre);
+      if ((opciones !== undefined || sin_opciones !== undefined) && !ficha) {
+        return invalido(`renglon_fuera_de_carta: "${item.nombre}" ya no está en la carta.`);
+      }
 
       const props = [];
       if (cantidad !== undefined) {
         props.push(propuesta({ accion: 'cambiar_cantidad', lid: linea_id, valorNuevo: cantidad, evidencia: mensaje }));
       }
       if (opciones !== undefined) {
-        const f = fichaPorNombre(catalogo, item.nombre);
-        if (!f) return invalido(`renglon_fuera_de_carta: "${item.nombre}" ya no está en la carta.`);
-        const val = validarOpciones(f, opciones);
+        const val = validarOpciones(ficha, opciones);
         if (!val.ok) return invalido(val.motivo, { grupos: val.grupos });
         for (const g of val.modificadores) {
           props.push(propuesta({ accion: 'cambiar_modificador', lid: linea_id,
             campo: g.grupo, valorNuevo: g.opciones, evidencia: mensaje }));
         }
       }
+      // ── QUITAR UNA OPCIÓN NO ES SUSTITUIRLA ─────────────────────────────
+      //
+      // «sin huevo», «sin fruta». Se expresa como un grupo con la lista vacía,
+      // que es como `conGrupo` lo borra. El grupo tiene que EXISTIR en el
+      // producto: quitar de un grupo que no tiene es la misma clase de invento
+      // que agregarle una opción que no ofrece.
+      const quitarGrupos = [];
+      for (const nombreGrupo of (sin_opciones || [])) {
+        const g = (ficha.grupos || []).find((x) => norm(x.nombre) === norm(nombreGrupo));
+        if (!g) {
+          return invalido(`grupo_inexistente: "${nombreGrupo}" no es un grupo de "${item.nombre}". `
+            + `Los grupos reales son: ${(ficha.grupos || []).map((x) => x.nombre).join(', ') || '(ninguno)'}.`);
+        }
+        quitarGrupos.push(g.nombre);
+        props.push(propuesta({ accion: 'cambiar_modificador', lid: linea_id,
+          campo: g.nombre, valorNuevo: [], evidencia: mensaje }));
+      }
+
       if (nota !== undefined) {
         props.push(propuesta({ accion: 'agregar_nota', lid: linea_id, valorNuevo: nota, evidencia: mensaje }));
       }
-      if (!props.length) return invalido('nada_que_cambiar: manda al menos cantidad, opciones o nota.');
+      if (!props.length) return invalido('nada_que_cambiar: manda al menos cantidad, opciones, sin_opciones o nota.');
 
       const r = aplicar(props);
-      if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
-      return ok({ pedido: r.pedido, parcial: r.decisiones.some((d) => d.decision === 'rechazada') || undefined });
+
+      // ── EL RESULTADO SE LEE DEL PEDIDO, NO DE LAS DECISIONES ───────────
+      //
+      // Para quitar un grupo hay que proponer la lista vacía, y la contabilidad
+      // de `aplicarPropuestas` da por no aplicada toda propuesta de modificador
+      // cuyo valor esperado esté vacío — mide «¿quedaron puestas las que pedí?»
+      // y no hay ninguna que comprobar. Antes que tocar esa contabilidad, que
+      // es compartida con el mesero, se comprueba aquí contra la RELECTURA, que
+      // además es la fuente de verdad de todas formas.
+      const despues = (r.pedido.lineas || []).find((l) => l.linea_id === linea_id);
+      const quitados = quitarGrupos.filter((g) => !(despues?.opciones || [])
+        .some((o) => norm(o.grupo) === norm(g)));
+      const seQuito = quitarGrupos.length > 0 && quitados.length === quitarGrupos.length;
+
+      if (!r.aplicado && !seQuito) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
+      return ok({ pedido: r.pedido,
+        parcial: r.decisiones.some((d) => d.decision === 'rechazada') && !seQuito ? true : undefined });
     },
 
     quitar_linea({ linea_id }) {

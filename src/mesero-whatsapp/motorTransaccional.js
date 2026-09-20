@@ -71,7 +71,22 @@ function conGrupo(modificadores, grupo, opciones) {
   const otros = (Array.isArray(modificadores) ? modificadores : [])
     .filter((m) => norm(m?.grupo ?? '') !== norm(grupo));
   const lista = (Array.isArray(opciones) ? opciones : [opciones]).filter(Boolean);
-  return lista.length ? [...otros, { grupo: String(grupo ?? ''), opciones: lista.map(String) }] : otros;
+  if (lista.length) return [...otros, { grupo: String(grupo ?? ''), opciones: lista.map(String) }];
+  // ── VACIAR UN GRUPO NO ES OMITIRLO ─────────────────────────────────────
+  //
+  // Una lista vacía EXPLÍCITA —`valorNuevo: []`— dice «este grupo se queda sin
+  // nada»: es «sin huevo», «sin fruta». Si el grupo se cayera del borrador, el
+  // reconciliador haría lo correcto para el otro caso —conservar lo que el
+  // borrador no menciona, que es lo que arregló `fase-mesero-suma-grupos`— y
+  // «sin huevo» no quitaría nada.
+  //
+  // Los dos casos se distinguen por el tipo, no por el contenido: un array
+  // vacío es una decisión, `undefined` o `null` es una omisión. Hoy ningún
+  // productor del mesero emite el array vacío (lo comprueba V-vacío en
+  // `fase-agente-tools`), así que esta rama nace inerte y solo la usa
+  // `sin_opciones` del agente de herramientas.
+  if (Array.isArray(opciones)) return [...otros, { grupo: String(grupo ?? ''), opciones: [] }];
+  return otros;
 }
 
 /**
