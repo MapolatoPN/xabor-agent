@@ -42,3 +42,4 @@ test/.capturas-cuenta/
 test/.capturas-comanda/
 corpus/
 informes/
+!informes/baseline-guion.json
