@@ -1,0 +1,42 @@
+{
+  "generado": "2026-09-20T13:01:46.018Z",
+  "modo": "guion",
+  "commit": "09a227d",
+  "fixtures": 26,
+  "criticas": {
+    "producto_inventado": 0,
+    "mutacion_no_autorizada": 0,
+    "cruce_multiempresa": 0,
+    "confirmacion_distinta": 0,
+    "precio_incorrecto": 0,
+    "efecto_repetido": 0,
+    "pedido_duplicado": 0
+  },
+  "criticasTotal": 0,
+  "calidad": {
+    "pedido_correcto": 26,
+    "tasa_pedido_correcto": 1,
+    "conversaciones_completadas": 2,
+    "handoff": 2,
+    "tasa_handoff": 0.0769,
+    "aclaraciones_por_conversacion": 0.115,
+    "rechazos_de_herramienta": 2,
+    "llamadas_al_modelo": 147,
+    "ms_por_conversacion": 1
+  },
+  "uso_de_herramienta": {
+    "buscar_producto": 34,
+    "agregar_producto": 31,
+    "definir_entrega": 8,
+    "definir_pago": 6,
+    "ver_pedido": 16,
+    "quitar_linea": 3,
+    "confirmar_pedido": 2,
+    "pedir_humano": 2,
+    "cancelar_pedido": 1,
+    "ver_opciones_producto": 2,
+    "modificar_linea": 1
+  },
+  "fallidos": [],
+  "nota": "Linea base del modo guion. Se compara con: npm run mesero:eval -- --base informes/baseline-guion.json"
+}
