@@ -14,8 +14,8 @@
 //
 //   MODELO  el mismo fixture con el modelo de verdad. Mide comprensión: si el
 //           modelo llama a las herramientas correctas ante lo que escribe una
-//           persona. Cuesta dinero y varía entre corridas, así que informa,
-//           no cierra la puerta.
+//           persona. Cuesta dinero y varía entre corridas; su scorecard es
+//           requisito previo al canario.
 //
 // Que los dos pasen por el MISMO runner es lo que hace que el guion signifique
 // algo: no es una simulación del sistema, es el sistema con otro modelo.
@@ -155,11 +155,14 @@ export async function correrFixture(fixture, { modo = 'guion', llamarModeloReal 
         topeIteraciones: fixture.tope_iteraciones ?? 8,
       });
       if (registro.length) salida.avisos = registro;
+      // Una reentrega es otra ejecución del mismo turno. Conservar solo la
+      // última hacía que una mutación válida de la primera pareciera ocurrir
+      // sin herramienta cuando la segunda no cambiaba nada.
+      turnos.push({ n, repeticion: r + 1, cliente: turno.cliente, ...salida });
     }
 
     historial.push({ rol: 'user', texto: turno.cliente });
     if (salida.texto) historial.push({ rol: 'assistant', texto: salida.texto });
-    turnos.push({ n, cliente: turno.cliente, ...salida });
 
     if (estado.hechos.escalado || estado.hechos.cancelado || estado.hechos.fallido) break;
   }
@@ -211,7 +214,7 @@ function revisarInvariantes({ fixture, negocio, estado, turnos, eventos, operaci
       .map((l) => [l.producto, l.cantidad, l.opciones, l.nota]));
     const hubo = (t.operaciones || []).some((o) => o.resultado?.aplicado === true);
     if (ahora !== anterior && !hubo) {
-      anotar('mutacion_no_autorizada', `turno ${t.n}: el pedido cambió sin ninguna herramienta aplicada`);
+      anotar('mutacion_no_autorizada', `turno ${t.n}, ejecución ${t.repeticion}: el pedido cambió sin ninguna herramienta aplicada`);
     }
     anterior = ahora;
   }
@@ -256,6 +259,24 @@ function revisarInvariantes({ fixture, negocio, estado, turnos, eventos, operaci
 
 const opcionesDe = (l) => (l.opciones || []).map((o) => `${norm(o.grupo)}=${norm(o.opcion)}`).sort();
 
+// La carta usa texto libre para la modalidad. El contrato operativo distingue
+// recoger y domicilio; esas variantes expresan la misma entrega al cliente.
+function modalidadComparable(valor) {
+  const v = norm(valor);
+  if (v === 'domicilio' || v === 'a domicilio' || v === 'entrega a domicilio') return 'domicilio';
+  if (v === 'recoger' || v === 'para recoger' || v === 'recoger en tienda') return 'recoger';
+  return v;
+}
+
+function cantidadesPorProductoYOpciones(lineas) {
+  const cantidades = new Map();
+  for (const linea of lineas) {
+    const clave = JSON.stringify([norm(linea.producto), opcionesDe(linea)]);
+    cantidades.set(clave, (cantidades.get(clave) || 0) + (linea.cantidad ?? 1));
+  }
+  return [...cantidades.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
 export function comparar(corrida) {
   const esperado = corrida.fixture.esperado || {};
   const pedido = corrida.pedidoFinal;
@@ -273,7 +294,8 @@ export function comparar(corrida) {
   if (esperado.cancelado !== undefined && !!corrida.estado.hechos.cancelado !== esperado.cancelado) {
     fallos.push(`cancelado: esperaba ${esperado.cancelado}, fue ${!!corrida.estado.hechos.cancelado}`);
   }
-  if (esperado.modalidad !== undefined && (pedido?.modalidad ?? null) !== esperado.modalidad) {
+  if (esperado.modalidad !== undefined
+    && modalidadComparable(pedido?.modalidad) !== modalidadComparable(esperado.modalidad)) {
     fallos.push(`modalidad: esperaba ${JSON.stringify(esperado.modalidad)}, fue ${JSON.stringify(pedido?.modalidad ?? null)}`);
   }
   if (esperado.pago !== undefined && (pedido?.forma_pago ?? null) !== esperado.pago) {
@@ -284,22 +306,10 @@ export function comparar(corrida) {
   }
 
   if (esperado.lineas !== undefined) {
-    const real = (pedido?.lineas || []).map((l) => ({ producto: l.producto, cantidad: l.cantidad, ops: opcionesDe(l) }));
-    const quiere = esperado.lineas.map((l) => ({ producto: l.producto, cantidad: l.cantidad ?? 1,
-      ops: (l.opciones || []).map((o) => `${norm(o.grupo)}=${norm(o.opcion)}`).sort() }));
-    if (real.length !== quiere.length) {
-      fallos.push(`renglones: esperaba ${quiere.length} (${quiere.map((x) => x.producto).join(', ') || '—'}), `
-        + `hubo ${real.length} (${real.map((x) => x.producto).join(', ') || '—'})`);
-    } else {
-      for (let i = 0; i < quiere.length; i += 1) {
-        if (norm(real[i].producto) !== norm(quiere[i].producto)) {
-          fallos.push(`renglón ${i + 1}: esperaba "${quiere[i].producto}", hubo "${real[i].producto}"`);
-        } else if (real[i].cantidad !== quiere[i].cantidad) {
-          fallos.push(`renglón ${i + 1} (${quiere[i].producto}): esperaba ${quiere[i].cantidad}, hubo ${real[i].cantidad}`);
-        } else if (JSON.stringify(real[i].ops) !== JSON.stringify(quiere[i].ops)) {
-          fallos.push(`renglón ${i + 1} (${quiere[i].producto}): opciones ${JSON.stringify(real[i].ops)} != ${JSON.stringify(quiere[i].ops)}`);
-        }
-      }
+    const real = cantidadesPorProductoYOpciones(pedido?.lineas || []);
+    const quiere = cantidadesPorProductoYOpciones(esperado.lineas);
+    if (JSON.stringify(real) !== JSON.stringify(quiere)) {
+      fallos.push(`renglones: esperaba ${JSON.stringify(quiere)}, hubo ${JSON.stringify(real)}`);
     }
   }
 

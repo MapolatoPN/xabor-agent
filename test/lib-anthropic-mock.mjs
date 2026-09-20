@@ -38,7 +38,19 @@ export function arrancarAnthropicMock() {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ type: 'error', error: { type: 'mock_sin_respuestas_encoladas' } }));
       }
-      const texto = typeof responder === 'function' ? responder(payload) : responder;
+      const r = typeof responder === 'function' ? responder(payload) : responder;
+
+      // ── TEXTO O LLAMADAS A HERRAMIENTAS ──────────────────────────────
+      //
+      // Un string sigue significando lo de siempre: un turno de texto. Un
+      // OBJETO permite además devolver `tool_use`, que es como habla el
+      // agente del Mesero —el modelo no redacta un pedido, pide operaciones—
+      // y sin esto no hay forma de ejercitar ese camino con el servidor real.
+      // Se añade sin tocar el contrato anterior: las suites que devuelven
+      // strings no notan la diferencia.
+      const cuerpoRespuesta = (r !== null && typeof r === 'object')
+        ? { content: r.content || [], stop_reason: r.stop_reason || 'tool_use' }
+        : { content: [{ type: 'text', text: r }], stop_reason: 'end_turn' };
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -46,8 +58,7 @@ export function arrancarAnthropicMock() {
         type: 'message',
         role: 'assistant',
         model: payload.model || 'claude-haiku-4-5-20251001',
-        content: [{ type: 'text', text: texto }],
-        stop_reason: 'end_turn',
+        ...cuerpoRespuesta,
         stop_sequence: null,
         usage: { input_tokens: 1, output_tokens: 1 },
       }));

@@ -4,13 +4,19 @@
 **Fecha:** 20 de septiembre de 2026
 **Auditoría de partida:** [`mesero-auditoria-2026-09-20.md`](mesero-auditoria-2026-09-20.md)
 
-**Estado de salida:** NO APTO PARA CANARIO. La revisión posterior encontró que
-el camino nuevo registraba el pedido sin llamar a `emitirPedido`. Ya se conectó
-con esa ruta operacional durable y se añadió una prueba con un emisor inyectado.
-Falta comprobar con una base y un canal de prueba que el pedido llegue de verdad
-al panel y a la impresora. El replay y el humo simulado no ejercitan ese tramo.
-Los eventos de `agente_outbox` siguen sin consumidor y no forman parte del
-camino productivo actual.
+**Estado de salida:** el bloqueo operacional está CERRADO. El recorrido
+completo —webhook → agente → `registrarPedido` → `emitirPedido` → panel →
+impresión— se demuestra ahora con el servidor real, Postgres real y el
+WebSocket del panel real en `test/fase-agente-recorrido-operacional.mjs`, y
+los cuatro observadores (registro, panel, impresión y compra durable) miran
+el MISMO folio. La caída posterior al COMMIT también se prueba contra la
+base: no nace un segundo pedido y el handoff humano sí sale.
+
+La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
+real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
+El canario aún requiere autorización explícita para atender clientes reales,
+desplegar o hacer merge (§13). Los eventos de `agente_outbox` siguen sin
+consumidor y no forman parte del camino productivo actual.
 
 ---
 
@@ -148,16 +154,25 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 ## 6. Resultados
 
 ```
-test/fase-agente-tools.mjs        47 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
+test/fase-agente-tools.mjs        48 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
 test/fase-agente-canario.mjs      14 pasadas, 0 fallidas    (alcance, kill switch, sombra)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 test/fase-agente-emision.mjs       registro enlazado a emitirPedido; rechazo no emite
 test/fase-agente-ciclos.mjs        un pedido nuevo rota la identidad del libro
+test/fase-agente-confirmacion-perdida.mjs  COMMIT con respuesta perdida: no nace
+                                   otro pedido Y alguien se entera (18 casos, 5 mordidas)
 test/fase-agente-indice-local.mjs  índice único y libro probados en Postgres local; ROLLBACK
+test/fase-agente-recorrido-operacional.mjs  13 pasadas, 0 fallidas
+                                   EL RECORRIDO COMPLETO con servidor real:
+                                   webhook → agente → registro → emisión →
+                                   panel (WS real) → impresión (Edge real)
+                                   + caída tras COMMIT y revisión humana en Postgres
 npm run mesero:eval               invariantes críticas: 0/7   PUERTA: ABIERTA
-27 suites del Mesero anterior     verdes sin base de datos
-2 suites con base de datos        requieren fixture dedicado; no se corrieron sobre datos locales compartidos
+mesero:eval -- --modelo            última corrida: 0 críticas, 26/26
+                                   correctos; PUERTA: ABIERTA
+30 suites del Mesero anterior     verdes sin base de datos
+4 suites con base de datos        verdes sobre una base DEDICADA (ver §11)
 ```
 
 **Pruebas de mordida** — cada garantía desactivada por separado, y dónde cae:
@@ -180,6 +195,15 @@ npm run mesero:eval               invariantes críticas: 0/7   PUERTA: ABIERTA
 | «true» deja de ser la palabra exacta | B3 |
 | el agente se observa a sí mismo | C2 |
 | un error de lectura ya no cae apagado | B4 |
+| la guardia del libro solo bloquea confirmaciones con éxito | P10 |
+| un error sin clasificar se degrada a rechazo seguro | P11 |
+| escalar deja de ser legal desde un estado terminal | P12 P13 P15 |
+| un handoff que no se entrega se da por hecho | P14 |
+| el adaptador interpreta `false` del canal como aviso entregado | P14b |
+| el adaptador solo mira la señal del libro, no el turno roto | P15 P16 |
+| la conversación no se congela tras una confirmación rota | P16 |
+| el agente registra el pedido pero no lo emite | R3 R4 R6 |
+| las tres capas del handoff, apagadas a la vez | R9 |
 
 ### Tres defectos REALES que encontró el replay
 
@@ -232,6 +256,29 @@ Segunda medición con modelo real, sobre los 26 fixtures:
 ANTHROPIC_API_KEY=... npm run mesero:eval -- --modelo
 ```
 
+**Última corrida completa, 20-sep**
+(`informes/mesero-eval-modelo-6d77443.json`): **0 críticas, 26/26 fixtures
+correctos; puerta abierta**. Hizo 121 llamadas al modelo, con 664 663 tokens
+de entrada, 11 558 de salida y 8,9 s por conversación en promedio. La clave
+`ANTHROPIC_API_KEY` ya existía en el entorno de usuario de Windows; el proceso
+de prueba tuvo que cargarla porque no la había heredado. No se guardó en el repo.
+
+La medición anterior al ajuste del prompt fue 14/26, con 0 críticas
+(`informes/mesero-eval-modelo-6d77443-pre-ajustes.json`, local). Se corrigieron
+la búsqueda de un nombre exacto, el agregado inmediato de productos pedidos,
+el manejo de opciones pendientes, los cambios de modalidad y el cierre tras
+un resumen confirmado. El medidor ahora compara por significado las variantes
+equivalentes de recoger/domicilio y suma cantidades de renglones idénticos:
+tres renglones de una unidad equivalen a uno de una y otro de dos. Sigue
+distinguiendo productos y opciones diferentes.
+
+La primera corrida había informado una crítica `mutacion_no_autorizada` en
+`mensaje-duplicado-de-meta`. El replay guardaba solo la segunda ejecución de
+un mensaje duplicado y podía atribuir a ella la mutación válida de la primera.
+Se reprodujo sin API; el medidor ahora conserva ambas ejecuciones y una
+regresión con respuestas distintas pasa. El informe previo se conservó como
+`informes/mesero-eval-modelo-6d77443-pre-medidor.json` (local, ignorado por Git).
+
 ## 8. Pasos exactos para la SOMBRA
 
 La sombra no responde, no registra, no imprime, no cobra, no escala y escribe
@@ -258,10 +305,11 @@ su libro en memoria. Funciona con el bot productivo apagado.
 
 No se activa sin autorización explícita. Preparado, no activado.
 
-1. **Gate previo:** cerrar el bloqueo operacional señalado al inicio,
-   comprobar con una prueba de integración que el pedido llega al panel y a la
-   impresión, revisar el humo con modelo real (§7) y obtener
-   `npm run mesero:eval -- --modelo` sin críticas.
+1. **Gate previo.** El bloqueo operacional está cerrado: el pedido llega al
+   panel y a la impresión con el mismo folio, y está probado
+   (`test/fase-agente-recorrido-operacional.mjs`, §6). La evaluación con modelo
+   real del 20-sep **pasó 26/26 con 0 críticas** (§7). Falta autorización
+   explícita para activar este canario.
 2. Variable del servicio:
    ```
    MESERO_AGENTE_MODE=true
@@ -322,6 +370,47 @@ productivo actual: no aplicarla por inercia.
 **No hace falta migración para el estado del agente**: vive en
 `conversacion_estado` (076) con su propio `session_id`.
 
+### La base local estaba atrasada — cómo se levantó
+
+Cuatro suites caían con `ECONNREFUSED ::1:5432`, y el síntoma engañaba: no
+faltaba Postgres —`pg-restv2` llevaba días arriba en el 55453— sino las
+variables. Sin `DATABASE_URL` el pool se va al 5432 por omisión y el error
+no menciona jamás el archivo que falta cargar (`dev-local.env.cmd`).
+
+Cargadas las variables, apareció el problema de verdad: **`edged1` tenía la
+084 aplicada pero le faltaban la 080, 081, 082 y 083.** El síntoma tampoco
+se parecía a su causa — `fase-estacion-meseros` devolvía siete 500 con
+«Error interno del módulo de restaurante», que es el mensaje genérico; el
+de verdad (`column c.descuento_monto does not exist`, de la 082) solo se ve
+llamando a `listarMesas()` a mano, porque la suite se traga la salida del
+servidor hijo.
+
+Las suites NO se corren sobre `edged1`, que es una base compartida con otras
+sesiones. Se usa una **dedicada**, que es lo que ya hacían las ramas
+anteriores (`edged1_msh_rama`, `edged1_ais_base`…):
+
+```powershell
+# 1. copia de la base local, sin tocar la compartida
+docker exec pg-restv2 psql -U postgres -c "CREATE DATABASE edged1_agrescate TEMPLATE edged1"
+# 2. DATABASE_URL apuntando a la copia, y las migraciones que faltaban
+node scripts/predeploy-079-rewards-canal-tienda.mjs
+node scripts/predeploy-080-clientes-tienda.mjs
+node scripts/predeploy-081-crm-clientes-negocio.mjs
+node scripts/predeploy-082-restaurante-cobro.mjs
+node scripts/predeploy-083-restaurante-division-consumo.mjs
+node scripts/predeploy-084-agente-operaciones.mjs
+```
+
+Al terminar: **108 tablas** en `public`, y las cuatro suites en verde. Los
+predeploy son idempotentes; volver a correr la 084 ya aplicada no hace nada.
+
+`fase-agente-recorrido-operacional.mjs` crea su propio negocio de prueba
+(carta, sucursal, terminal Edge, canario) marcado con el prefijo `AGR ` y lo
+retira al terminar. El negocio tiene un slug único por ejecución; la limpieza
+solo usa ese `negocio_id`. Se comprobó con 13 casos en `edged1_agrescate` y
+cero negocios `agr-recorrido-%` residuales. La prueba **se niega a correr
+contra un Postgres que no sea local**: escribe pedidos y compras reales.
+
 ## 12. Rollback
 
 | Qué | Cómo | Deja algo atrás |
@@ -357,20 +446,105 @@ commit base, misma base, mismo puerto):
 
 Riesgos que quedan abiertos:
 
-- **Emisión operacional sin prueba de integración.** El agente ya llama a
-  `emitirPedido` después de `registrarPedido`, igual que el bot legacy, y una
-  prueba con funciones inyectadas verifica el enlace. Falta demostrar con base
-  y canal de prueba que el mensaje al cliente, el panel y la impresión reciban
-  el mismo folio. Una falla después del registro ya no devuelve el turno al
-  bot viejo; aún falta ejercitar ese caso en una prueba de integración.
+- **Emisión operacional: PROBADA de punta a punta.** Era el bloqueo principal
+  y ya no lo es. `test/fase-agente-recorrido-operacional.mjs` corre el
+  recorrido entero con el servidor real, Postgres real y el WebSocket del
+  panel real: un webhook de WhatsApp entra por el sitio de llamada de verdad
+  (`whatsapp-meta.js`), el agente arma y confirma, `registrarPedido` crea el
+  folio, `emitirPedido` reclama la deuda de la 063 y de ahí salen las tres
+  patas. La afirmación que cierra el riesgo es una sola: **registro, panel,
+  impresión y compra durable miran el MISMO folio** (R6).
+
+  De mentira hay exactamente tres cosas, y ninguna del lado de Xabor: el
+  MODELO (un mock HTTP que devuelve `tool_use`), META (el mock de siempre) y
+  el PAPEL (una terminal Edge falsa que habla el protocolo real de
+  `edge/connection.js` y confirma el trabajo). Quien valida, reconcilia,
+  registra y emite es el código de producción.
+
+  La mordida: desconectar `emitir` del registro tumba R3, R4 y R6 — el pedido
+  nace y no llega a nadie, que es justo el defecto que esta prueba existe
+  para detectar.
+
+  **Lo que sigue sin demostrar**, dicho para que nadie lo dé por hecho: que
+  una EC Line 80mm escupa papel y que el navegador del panel dibuje la
+  comanda. Eso pide hardware y un navegador delante. Lo que sí queda probado
+  es que los dos reciben el folio correcto, que es la parte que un despliegue
+  no arregla si está mal.
 - **Resultado incierto del registro.** Si la conexión cae justo después del
   COMMIT de `registrarPedido`, el agente puede recibir un error sin saber si el
   pedido quedó creado. El libro ya bloquea un segundo intento en esa
   conversación y solicita intervención humana; la 084 tiene una restricción
   única para cerrar también la carrera entre dos turnos concurrentes. El
-  índice y el libro pasaron una prueba transaccional en Postgres local. Falta
-  comprobar con base de prueba el flujo de error posterior al COMMIT. No se
-  debe pedir al modelo que reintente a ciegas.
+  índice y el libro pasaron una prueba transaccional en Postgres local.
+  `test/fase-agente-confirmacion-perdida.mjs` corre ahora el caso entero sin
+  base: turno que confirma, COMMIT hecho, respuesta perdida y estado SIN
+  guardar; el turno siguiente rehidrata el estado anterior, el modelo vuelve a
+  confirmar y no nace un segundo pedido —ni con la fila en `error` ni con la
+  fila en `pendiente`, ni con la reentrega del mismo webhook—. Dos mordidas
+  apagan las garantías (la guardia que solo bloqueara éxitos; el error
+  degradado a rechazo seguro) y exigen que con ellas el duplicado aparezca.
+  Y ese mismo caso corre ahora **contra Postgres** en
+  `fase-agente-recorrido-operacional.mjs` (R8–R12): `registrarPedido` escribe
+  de verdad y es la RESPUESTA la que se pierde, así que el COMMIT es real y
+  quien bloquea el segundo intento es el índice único REAL de la 084, no su
+  equivalente en memoria. R12 deja escrita la consecuencia operativa que
+  obliga a llamar a una persona: el pedido existe en Postgres y NO llegó ni
+  al panel ni al papel. No se debe pedir al modelo que reintente a ciegas.
+- **La caída después del COMMIT ya avisa a una persona. CORREGIDO.** El defecto
+  era de tres capas y se cerró en las tres. `pedir_humano` era **ilegal desde
+  `fallido`**, así que el `catch` de `atenderTurnoConHerramientas` —que marca
+  `fallido` y *luego* escala— escalaba al vacío: `efectos.escalar` no llegaba a
+  correr, el cliente leía «te paso con alguien del equipo» y el pedido que sí
+  quedó en Postgres no aparecía por ningún lado. Ahora:
+  1. `pedir_humano` es legal en **todos** los estados (`LEGALIDAD` en
+     `maquinaDeEstados.js`). Escalar no muta el pedido, cambia de manos la
+     conversación, así que no le toca la regla de «ninguna mutación en un
+     terminal» — y un terminal es justo cuando más falta hace una persona.
+  2. `escalarYSalir` **comprueba** que el handoff se aplicara. Si no, lo grita
+     (`[AGENTE] ALERTA handoff_no_entregado`) y lo devuelve como
+     `handoffPendiente`, para que el adaptador —que es quien sabe a quién
+     avisar— tenga un último intento. El texto prometía una persona sin
+     comprobar que la hubiera; ya no.
+  3. El adaptador mira el desenlace también en el camino **normal**, no solo
+     en su `catch`: `atenderTurnoConHerramientas` no relanza, devuelve con
+     `error`, y por eso ese `catch` jamás veía este caso. La decisión vive en
+     `desenlaceDelTurno()`, separada del efecto para poder probarse sin base.
+     Un turno que intentó confirmar y reventó pide `AGENTE_ESTADO_INCIERTO`,
+     que es el aviso que le sirve a la operación: «puede haber un pedido sin
+     dueño, revisa el panel».
+
+  El aviso sale **antes** de `guardarEstado`: si la misma caída se lleva el
+  guardado, lo que no se puede perder es la llamada a la persona. Si el agente
+  ya había escalado dentro del turno, el operador recibe dos avisos sobre el
+  mismo incidente; es deliberado, porque el segundo dice algo que el primero
+  no, y suprimirlo pedía un mecanismo de cuenta que también puede fallar
+  callado.
+
+  Cubierto por P12–P15 y P17 de `test/fase-agente-confirmacion-perdida.mjs`, con
+  mordidas: revertir la legalidad tumba P12, P13 y P15; revertir la lectura
+  del adaptador tumba P15 y P16. Y comprobado también **contra la base**, en
+  R9: tras la caída salen dos avisos, `AGENTE_PIDE_HUMANO` y
+  `AGENTE_ESTADO_INCIERTO`. R13 comprueba además que la continuidad de WhatsApp
+  actualiza una conversación ya marcada para revisión con el motivo preciso.
+  P14b comprueba que un `false` de `enviarARevision` no se anuncia como entrega.
+  Apagar las tres capas a la vez tumba R9 — pero
+  deja ver la defensa en profundidad funcionando: con la legalidad y la
+  lectura del adaptador rotas, la capa que comprueba el handoff todavía
+  llamó a una persona (`AGENTE_HANDOFF_PENDIENTE`). Lo que R9 exige es el
+  aviso PRECISO, el que dice que puede haber un pedido sin dueño.
+- **Un ciclo nuevo tras esa caída ya no puede duplicar. CORREGIDO por lo
+  anterior.** El agujero era que, con el estado guardado como `fallido`,
+  «quiero hacer otro pedido» abría otro ciclo (`cicloDelAgente.js`) y la
+  guardia del libro es por `conversacion_id`: en el ciclo nuevo no encuentra la
+  confirmación anterior. Ahora el adaptador marca `estado.confirmacionIncierta`
+  en cuanto la confirmación revienta —no solo cuando un turno posterior llega a
+  ver la señal `incierta`—, y esa marca congela la conversación: `cicloParaTurno`
+  no abre ciclo nuevo mientras esté puesta. P16 lo prueba y su mordida enseña el
+  duplicado naciendo sin ella.
+
+  Queda el límite de siempre: la marca vive en el estado, y el estado puede no
+  guardarse. En ese reparto lo que bloquea es el libro, que es lo que prueban
+  P3, P6 y P7.
 - **Pedidos posteriores.** Un pedido nuevo explícito tras un estado terminal
   abre otro ciclo y otra identidad en el libro. Las consultas sobre el pedido
   anterior conservan el ciclo previo. Faltan pruebas con lenguaje real para
@@ -379,12 +553,12 @@ Riesgos que quedan abiertos:
   pero no hay consumidor y el agente no escribe allí. No se deben usar como
   evidencia de entrega operacional ni habilitar sus efectos sin una revisión
   separada.
-- **El prompt no está afinado con tráfico real.** El sistema frena lo que el
-  modelo se invente, pero cada freno cuesta una iteración y un turno peor. Es
-  lo que mide `npm run mesero:eval -- --modelo`.
-- **Coste por turno sin medir.** El agente hace varias llamadas por turno
-  (mediana 2–3 en los fixtures). El scorecard ya cuenta llamadas y tokens;
-  falta el dato con modelo real.
+- **Calidad del modelo fuera de los fixtures.** La última corrida pasó 26/26
+  casos (§7), pero son conversaciones diseñadas para la prueba; el lenguaje de
+  clientes reales todavía no se ha observado en sombra o canario.
+- **Coste por turno sin cuantificar en dinero.** La última corrida real hizo
+  121 llamadas, consumió 664 663 tokens de entrada y 11 558 de salida, y tardó
+  en promedio 8,9 s por conversación. Falta traducirlo a coste monetario.
 - **`registrarPedido` revalida con `validarOrdenPropuesta`**, que sigue siendo
   un segundo juego de reglas junto al reconciliador. No se tocó a propósito —es
   el gate P0 y la única puerta de creación de pedidos—, pero es la duplicación

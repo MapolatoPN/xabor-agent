@@ -12,7 +12,9 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
 import { correrFixture, comparar, CRITICAS } from './replay/motor.mjs';
+import { NEGOCIOS, idDe } from './replay/cartas.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const DIR = join(AQUI, 'replay', 'fixtures');
@@ -23,6 +25,57 @@ const fixtures = readdirSync(DIR).filter((f) => f.endsWith('.json')).sort()
 let pasadas = 0;
 const fallos = [];
 const criticas = [];
+
+try {
+  const corrida = (modalidad, esperada) => ({
+    fixture: { esperado: { modalidad: esperada } },
+    pedidoFinal: { modalidad }, estado: { hechos: {} }, turnos: [],
+  });
+  assert.deepEqual(comparar(corrida('domicilio', 'entrega a domicilio')), []);
+  assert.deepEqual(comparar(corrida('a domicilio', 'entrega a domicilio')), []);
+  assert.deepEqual(comparar(corrida('para recoger', 'recoger en tienda')), []);
+  assert.equal(comparar(corrida('domicilio', 'recoger en tienda')).length, 1);
+  const filas = (lineas, esperado) => ({
+    fixture: { esperado: { lineas: esperado } },
+    pedidoFinal: { lineas }, estado: { hechos: {} }, turnos: [],
+  });
+  const bowl = { producto: 'Bowl', opciones: [{ grupo: 'Salsa', opcion: 'Roja' }] };
+  assert.deepEqual(comparar(filas([{ ...bowl, cantidad: 1 }, { ...bowl, cantidad: 1 }],
+    [{ ...bowl, cantidad: 2 }])), []);
+  assert.equal(comparar(filas([{ ...bowl, cantidad: 2 }],
+    [{ ...bowl, cantidad: 1 }, { producto: 'Bowl', cantidad: 1,
+      opciones: [{ grupo: 'Salsa', opcion: 'Verde' }] }])).length, 1);
+  console.log('    OK  modalidades equivalentes en el medidor');
+} catch (e) {
+  fallos.push(`modalidades en el medidor: ${e.message}`);
+  console.log(`> FALLO modalidades en el medidor: ${e.message}`);
+}
+
+// La primera entrega aplica el producto y la segunda solo responde. El
+// medidor debe ver ambas ejecuciones antes de acusar una mutación sin permiso.
+try {
+  const fixture = fixtures.find((f) => f.id === 'mensaje-duplicado-de-meta');
+  const productoId = idDe(NEGOCIOS.obispado.catalogo, 'Café Americano');
+  const respuestas = [
+    { content: [{ type: 'tool_use', id: 'primera', name: 'agregar_producto',
+      input: { producto_id: productoId, cantidad: 1 } }] },
+    { content: [{ type: 'text', text: 'Va un café.' }] },
+    { content: [{ type: 'text', text: 'Va un café.' }] },
+  ];
+  let llamada = 0;
+  const corrida = await correrFixture(fixture, {
+    modo: 'modelo', llamarModeloReal: async () => respuestas[llamada++],
+  });
+  assert.equal(llamada, 3);
+  assert.equal(corrida.turnos.length, 2);
+  assert.equal(corrida.turnos[0].operaciones.some((o) => o.resultado?.aplicado), true);
+  assert.equal(corrida.turnos[1].operaciones.length, 0);
+  assert.deepEqual(corrida.hallazgos.filter((h) => h.critica), []);
+  console.log('    OK  medidor de reentrega con modelo variable');
+} catch (e) {
+  fallos.push(`medidor de reentrega: ${e.message}`);
+  console.log(`> FALLO medidor de reentrega: ${e.message}`);
+}
 
 for (const fixture of fixtures) {
   let corrida;

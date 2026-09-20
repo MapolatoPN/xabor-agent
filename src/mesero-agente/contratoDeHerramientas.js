@@ -93,7 +93,7 @@ const OpcionElegida = z.object({
 }).strict();
 
 const cantidad = z.number().int().min(1).max(99)
-  .describe('Cuántas unidades. El cliente tiene que haber dicho el número.');
+  .describe('Cuántas unidades. Usa 1 para "un", "una", "unos" o una orden singular; una cantidad mayor necesita respaldo explícito del cliente.');
 
 // ── LAS HERRAMIENTAS ─────────────────────────────────────────────────────
 //
@@ -136,7 +136,9 @@ export const HERRAMIENTAS = Object.freeze([
     efecto: true,
     descripcion: 'Agrega un renglón al pedido. El producto_id TIENE que venir de buscar_producto; '
       + 'no lo inventes ni lo deduzcas. Las opciones tienen que existir en ese producto. '
-      + 'El resultado dice si se aplicó de verdad: si dice que no, NO le digas al cliente que ya está.',
+      + 'Si el cliente pidió el producto, agrégalo sin pedirle otro permiso. Puedes dejar opciones '
+      + 'obligatorias pendientes y preguntarlas después. El resultado dice si se aplicó de verdad: '
+      + 'si dice que no, NO le digas al cliente que ya está.',
     esquema: z.object({
       producto_id: z.string().min(1).describe('El producto_id que devolvió buscar_producto.'),
       cantidad: cantidad.default(1),
@@ -174,6 +176,7 @@ export const HERRAMIENTAS = Object.freeze([
     efecto: true,
     descripcion: 'Registra cómo se entrega el pedido y, si es a domicilio, dónde. '
       + 'Un pedido a domicilio no queda listo para confirmar sin dirección. '
+      + 'Si el cliente cambia la modalidad, llama a esta herramienta antes de decir que cambió. '
       + 'Manda modalidad, dirección, o las dos.',
     esquema: z.object({
       modalidad: z.string().min(1).optional()
@@ -204,7 +207,8 @@ export const HERRAMIENTAS = Object.freeze([
     nombre: 'cancelar_pedido',
     efecto: true,
     descripcion: 'Vacía el pedido en curso porque el cliente ya no lo quiere. No se usa para quitar '
-      + 'un renglón —para eso está quitar_linea— ni para un pedido ya confirmado.',
+      + 'un renglón —para eso está quitar_linea— ni para un pedido ya confirmado. '
+      + 'Úsala también si cancela antes de haber agregado un renglón.',
     esquema: z.object({
       motivo: z.string().min(1).max(200).describe('Qué dijo el cliente para cancelar.'),
     }).strict(),
@@ -225,7 +229,8 @@ export const HERRAMIENTAS = Object.freeze([
     nombre: 'pedir_humano',
     efecto: true,
     descripcion: 'Pasa la conversación a una persona del negocio. Úsala si el cliente lo pide, si se queja, '
-      + 'si hay un problema con un pedido anterior, o si llevas dos intentos sin poder resolver lo mismo.',
+      + 'si quiere cambiar un pedido ya confirmado, si hay un problema con un pedido anterior, '
+      + 'o si llevas dos intentos sin poder resolver lo mismo.',
     esquema: z.object({
       motivo: z.string().min(1).max(200).describe('Por qué hace falta una persona.'),
     }).strict(),

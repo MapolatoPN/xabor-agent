@@ -94,17 +94,38 @@ export async function atenderTurnoConHerramientas({
 
   const anotar = (evento) => { try { traza?.(evento); } catch { /* la traza nunca tumba un turno */ } };
 
-  /** Una salida de emergencia que SIEMPRE deja al cliente atendido. */
+  /**
+   * Una salida de emergencia que SIEMPRE deja al cliente atendido.
+   *
+   * ── Y QUE COMPRUEBA LO QUE PROMETE ────────────────────────────────────
+   *
+   * El texto que sale de aquí dice «te paso con alguien del equipo». Si el
+   * handoff no se aplicó, ese texto es una mentira, y la peor posible: el
+   * cliente deja de insistir justo cuando nadie ha sido avisado. Pasó de
+   * verdad —`pedir_humano` era ilegal desde FALLIDO, así que el `catch` de
+   * abajo escalaba al vacío—, de modo que ya no se da por hecho: se mira si
+   * el efecto ocurrió, se grita en el log si no, y se devuelve
+   * `handoffPendiente` para que el adaptador, que es quien sabe a quién
+   * avisar, tenga un último intento.
+   */
   const escalarYSalir = async (motivoCierre, motivo) => {
     let r = null;
-    try { r = await ejecutor.ejecutar('pedir_humano', { motivo }); } catch { /* ya vamos de salida */ }
+    try { r = await ejecutor.ejecutar('pedir_humano', { motivo }); }
+    catch (e) { r = { aplicado: false, estado: 'error', motivo: String(e?.message || e) }; }
     operaciones.push({ herramienta: 'pedir_humano', argumentos: { motivo }, resultado: r, forzada: true });
-    anotar({ tipo: 'escalado_forzado', motivo, motivoCierre });
+
+    const entregado = !!r?.aplicado && !!estado.hechos.escalado;
+    if (!entregado) {
+      console.error(`[AGENTE] ALERTA handoff_no_entregado cierre=${motivoCierre} `
+        + `estado=${ejecutor.vista().estado} porque=${String(r?.motivo || 'desconocido').slice(0, 120)}`);
+    }
+    anotar({ tipo: 'escalado_forzado', motivo, motivoCierre, entregado });
     return cerrar(motivoCierre, contexto.textoDeEscalado
-      || 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.');
+      || 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.',
+    { handoffPendiente: !entregado });
   };
 
-  const cerrar = (motivoCierre, texto) => {
+  const cerrar = (motivoCierre, texto, extra = null) => {
     ejecutor.cerrarTurno();
     const pedido = ejecutor.vista();
     return {
@@ -120,6 +141,9 @@ export async function atenderTurnoConHerramientas({
       confirmado: !!estado.hechos.confirmado,
       escalado: !!estado.hechos.escalado,
       folio: estado.folio ?? null,
+      // Por omisión el turno no debe nada: solo `escalarYSalir` lo levanta.
+      handoffPendiente: false,
+      ...(extra || {}),
     };
   };
 

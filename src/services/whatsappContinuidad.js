@@ -183,10 +183,15 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
         ON CONFLICT DO NOTHING`, [negocioId, telefono]);
       // Si ya estaba en revisión no se vuelve a avisar: el equipo ya la tiene
       // en su lista y repetir el aviso solo hace ruido.
-      const { rows:[c] } = await db.query(
-        'SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
-      if (c?.requiere_revision) return false;
-      await marcarRevision(db, negocioId, telefono, motivo);
+        const { rows:[c] } = await db.query(
+          'SELECT requiere_revision, motivo FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
+        if (c?.requiere_revision) {
+          // Tras un COMMIT con respuesta perdida, el agente primero pide ayuda
+          // genérica y después conoce el motivo exacto. Ese segundo aviso sí
+          // debe actualizar el panel, aunque la conversación ya esté pausada.
+          if (motivo !== 'AGENTE_ESTADO_INCIERTO' || c.motivo === motivo) return false;
+        }
+        await marcarRevision(db, negocioId, telefono, motivo);
       return true;
     } catch (e) {
       console.error('[wa-continuidad] enviarARevision:', e.message);

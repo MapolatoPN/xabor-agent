@@ -134,16 +134,13 @@ export async function atenderConAgente({
           negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar,
         });
       },
-      escalar: async ({ motivo }) => {
-        try {
-          if (!escalarAHumano) return { ok: false, motivo: 'handoff_sin_destino' };
-          await escalarAHumano(negocioId, telefono, 'AGENTE_PIDE_HUMANO');
-          return { ok: true };
-        } catch (e) {
-          console.error('[AGENTE] no se pudo escalar:', e.message);
-          return { ok: false, motivo: e.message };
-        }
-      },
+      // El `ok` que sale de aquí es lo que hace que `pedir_humano` cuente como
+      // aplicado. Si se diera por bueno sin comprobarlo, el agente creería
+      // haber pasado la conversación a una persona que nunca fue llamada.
+      escalar: async () => (
+        await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_PIDE_HUMANO')
+          ? { ok: true }
+          : { ok: false, motivo: escalarAHumano ? 'handoff_no_entregado' : 'handoff_sin_destino' }),
     };
 
     salida = await atenderTurnoConHerramientas({
@@ -170,15 +167,28 @@ export async function atenderConAgente({
       traza,
     });
 
-    if (salida.operaciones?.some((o) => o.resultado?.estado === 'incierta')) {
-      estado.confirmacionIncierta = true;
-      if (escalarAHumano) {
-        try {
-          await escalarAHumano(negocioId, telefono, 'AGENTE_CONFIRMACION_INCIERTA');
-          estado.hechos.escalado = true;
-        } catch (e) { console.error('[AGENTE] handoff de confirmación incierta falló:', e?.message); }
+    // ── EL TURNO VOLVIÓ BIEN; FALTA VER SI PROMETIÓ DE MÁS ───────────────
+    //
+    // El aviso va ANTES de `guardarEstado` a propósito: si la misma caída que
+    // rompió el turno se lleva también el guardado, lo único que no se puede
+    // perder es la llamada a la persona.
+    const desenlace = desenlaceDelTurno({ salida, confirmacionIntentada });
+
+    // Si el agente YA escaló dentro del turno, este aviso es el segundo sobre
+    // el mismo incidente, y se manda igual: dice algo que el primero no —«hay
+    // un pedido que quizá exista y no está en el panel»— y suprimirlo pedía
+    // llevar cuenta de lo enviado, que es un mecanismo más que puede fallar
+    // callado. Fallar callado es justamente el defecto que se está cerrando.
+    if (desenlace.motivoHandoff) {
+      // `confirmacionIncierta` congela la conversación: `cicloDelAgente` no
+      // abre un ciclo nuevo mientras esté puesta. Sin ella, un «quiero hacer
+      // otro pedido» estrenaría `conversacion_id` y esquivaría la guardia del
+      // libro, que es por conversación.
+      if (desenlace.incierta) estado.confirmacionIncierta = true;
+      if (await avisarAHumano(escalarAHumano, negocioId, telefono, desenlace.motivoHandoff)) {
+        estado.hechos.escalado = true;
       }
-      salida.texto = 'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.';
+      if (desenlace.texto) salida.texto = desenlace.texto;
     }
 
     await guardarEstado(negocioId, telefono, estado);
@@ -194,9 +204,8 @@ export async function atenderConAgente({
     // registrarPedido hizo COMMIT y luego falló guardarEstado). En ese caso
     // el bot viejo NO debe volver a procesar este mismo mensaje.
     if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
-      if (confirmacionIntentada && escalarAHumano) {
-        try { await escalarAHumano(negocioId, telefono, 'AGENTE_ESTADO_INCIERTO'); }
-        catch (handoffError) { console.error('[AGENTE] handoff tras estado incierto falló:', handoffError?.message); }
+      if (confirmacionIntentada) {
+        await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
       }
       return {
         ok: true,
@@ -289,6 +298,88 @@ export async function observarConAgente({
   } catch (e) {
     console.error('[SOMBRA-AGENTE] contenida:', e?.message);
     return { ok: false, motivo: e?.message || 'error', ms: Date.now() - t0 };
+  }
+}
+
+// ── QUÉ PASÓ DE VERDAD EN ESTE TURNO ─────────────────────────────────────
+//
+// Tres desenlaces distintos piden lo mismo —una persona— y solo uno de los
+// tres estaba cubierto:
+//
+//   · el libro devolvió `incierta`: un turno ANTERIOR confirmó y su desenlace
+//     no se conoce. Este ya se miraba.
+//
+//   · ESTE turno intentó confirmar y reventó. `confirmarYEmitir` solo relanza
+//     cuando el COMMIT pudo haber ocurrido —los rechazos previos al INSERT
+//     vuelven como `ok: false`—, así que una excepción aquí significa «puede
+//     haber un pedido y nadie sabe su folio». Este es el que se escapaba:
+//     `atenderTurnoConHerramientas` NO relanza, devuelve con `error`, de modo
+//     que el `catch` del adaptador jamás lo veía y el turno se cerraba como
+//     si nada, con el pedido ya escrito en Postgres y fuera del panel.
+//
+//   · el agente quiso escalar y su `pedir_humano` no se aplicó
+//     (`handoffPendiente`). El adaptador es el único que sabe a quién avisar,
+//     así que es su último intento.
+//
+// Se separa del adaptador porque es una DECISIÓN, no un efecto: así se puede
+// probar sin base, sin red y sin modelo, que es como se prueba una decisión.
+export function desenlaceDelTurno({ salida = null, confirmacionIntentada = false } = {}) {
+  // Un folio conocido no tiene nada de incierto. Si el turno reventó DESPUÉS
+  // de una confirmación que sí devolvió folio, el accidente es otro —y ya lo
+  // escaló el propio agente—: decirle al cliente «reviso para no registrarlo
+  // dos veces» sería sembrar una duda que no existe sobre un pedido que está.
+  const confirmacionConocida = !!salida?.confirmado && !!salida?.folio;
+  const confirmacionRota = !!salida?.error && !!confirmacionIntentada && !confirmacionConocida;
+  const inciertaPrevia = !!salida?.operaciones?.some((o) => o.resultado?.estado === 'incierta');
+  const incierta = confirmacionRota || inciertaPrevia;
+  const handoffPendiente = !!salida?.handoffPendiente;
+
+  const motivoHandoff = confirmacionRota ? 'AGENTE_ESTADO_INCIERTO'
+    : inciertaPrevia ? 'AGENTE_CONFIRMACION_INCIERTA'
+      : handoffPendiente ? 'AGENTE_HANDOFF_PENDIENTE'
+        : null;
+
+  return {
+    incierta,
+    confirmacionRota,
+    handoffPendiente,
+    motivoHandoff,
+    // Un pedido que quizá exista no se anuncia como registrado NI como
+    // fallido: las dos cosas serían afirmar algo que nadie comprobó.
+    texto: incierta
+      ? 'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.'
+      : null,
+  };
+}
+
+/**
+ * AVISAR A UNA PERSONA, y decir si se logró.
+ *
+ * Devuelve un booleano en vez de lanzar porque quien llama ya viene de un
+ * fallo: lo que necesita es saber si el aviso salió, no otra excepción que
+ * atender. Un aviso que no sale se grita con la palabra que se busca en los
+ * logs de Railway, porque un handoff perdido no lo nota nadie hasta que un
+ * cliente reclama.
+ */
+export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo) {
+  const quien = `negocio=${negocioId} tel=${telefonoCorto(telefono)} motivo=${motivo}`;
+  if (typeof escalarAHumano !== 'function') {
+    console.error(`[AGENTE] ALERTA handoff_sin_destino ${quien}`);
+    return false;
+  }
+  try {
+    const entregado = await escalarAHumano(negocioId, telefono, motivo);
+    // `enviarARevision` devuelve false tanto si ya estaba en revisión como si
+    // falló al marcarla. En ningún caso podemos afirmar que ESTE aviso salió.
+    if (entregado !== true) {
+      console.error(`[AGENTE] ALERTA handoff_no_confirmado ${quien} resultado=${String(entregado).slice(0, 40)}`);
+      return false;
+    }
+    console.log(`[AGENTE] evento=handoff ${quien}`);
+    return true;
+  } catch (e) {
+    console.error(`[AGENTE] ALERTA handoff_no_entregado ${quien} error=${String(e?.message || e).slice(0, 120)}`);
+    return false;
   }
 }
 

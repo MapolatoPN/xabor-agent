@@ -103,9 +103,25 @@ export const LEGALIDAD = Object.freeze({
   // un pedido incompleto», y no hay una segunda copia de ella en ningún sitio.
   confirmar_pedido: Object.freeze([LISTO]),
 
-  // Una persona tiene que poder entrar también después de confirmar: las
-  // quejas sobre un pedido ya mandado son exactamente el caso.
-  pedir_humano: Object.freeze([...EN_CURSO, CONFIRMADO]),
+  // ── LA SALIDA DE EMERGENCIA NO SE CIERRA NUNCA ─────────────────────────
+  //
+  // Legal en TODOS los estados, terminales incluidos. Una persona tiene que
+  // poder entrar después de confirmar —las quejas sobre un pedido ya mandado
+  // son exactamente el caso— y también después de un fallo.
+  //
+  // «También después de un fallo» es la corrección de un defecto real: el
+  // `catch` de `atenderTurnoConHerramientas` marca FALLIDO y LUEGO llama a
+  // `pedir_humano` para que alguien recoja lo que quedó a medias. Mientras
+  // FALLIDO no estuvo en esta lista, esa llamada volvía «ilegal», `efectos.
+  // escalar` no llegaba a correr, y el cliente leía «te paso con alguien del
+  // equipo» sin que nadie fuera convocado — con un pedido ya escrito en
+  // Postgres, en el peor reparto.
+  //
+  // No contradice «ninguna mutación es legal en un terminal»: escalar no muta
+  // el pedido, cambia de manos la conversación. Y un terminal es justo cuando
+  // más falta hace una persona, porque el motivo de haber llegado ahí —fallo,
+  // confirmación, cancelación— es el motivo por el que hay algo que revisar.
+  pedir_humano: SIEMPRE,
 });
 
 /**

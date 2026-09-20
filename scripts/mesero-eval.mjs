@@ -22,6 +22,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { correrFixture, comparar, CRITICAS } from '../test/replay/motor.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,9 @@ const args = process.argv.slice(2);
 const conModelo = args.includes('--modelo');
 const base = args.includes('--base') ? args[args.indexOf('--base') + 1] : null;
 const silencioso = args.includes('--silencioso');
+const solo = args.includes('--solo')
+  ? (args[args.indexOf('--solo') + 1] || '').split(',').map((s) => s.trim()).filter(Boolean)
+  : null;
 
 // ── El modelo de verdad, solo si se pide y solo si hay llave ─────────────
 let llamarModeloReal = null;
@@ -48,15 +52,24 @@ if (conModelo) {
   llamarModeloReal = (params) => cliente.messages.create(params);
 }
 
-const fixtures = readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort()
+const todosLosFixtures = readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort()
   .map((f) => JSON.parse(readFileSync(join(FIXTURES, f), 'utf8')));
+const fixtures = solo ? todosLosFixtures.filter((f) => solo.includes(f.id)) : todosLosFixtures;
+if (solo && (fixtures.length !== new Set(solo).size || !fixtures.length)) {
+  console.error(`[mesero-eval] --solo contiene IDs desconocidos o repetidos: ${solo.join(', ')}`);
+  process.exit(2);
+}
 
 const filas = [];
 for (const fixture of fixtures) {
   const t0 = Date.now();
   let corrida = null; let error = null;
+  const usos = [];
   try {
-    corrida = await correrFixture(fixture, { modo: conModelo ? 'modelo' : 'guion', llamarModeloReal });
+    corrida = await correrFixture(fixture, {
+      modo: conModelo ? 'modelo' : 'guion', llamarModeloReal,
+      traza: (evento) => { if (evento.tipo === 'modelo' && evento.uso) usos.push(evento.uso); },
+    });
   } catch (e) { error = String(e?.message || e); }
 
   const diferencias = corrida ? comparar(corrida) : [`reventó: ${error}`];
@@ -78,7 +91,28 @@ for (const fixture of fixtures) {
     rechazos: turnos.flatMap((t) => (t.operaciones || []))
       .filter((o) => o.resultado?.aplicado === false).length,
     llamadasAlModelo: turnos.reduce((s, t) => s + (t.llamadasAlModelo || 0), 0),
-    tokens: turnos.reduce((s, t) => s + 0, 0),
+    tokensEntrada: usos.reduce((s, u) => s + (u.input_tokens || 0), 0),
+    tokensSalida: usos.reduce((s, u) => s + (u.output_tokens || 0), 0),
+    detalleTurnos: conModelo ? turnos.map((t) => ({
+      cliente: t.cliente,
+      repeticion: t.repeticion,
+      cierre: t.motivoCierre,
+      respuesta: t.texto,
+      pedido: {
+        estado: t.pedido?.estado,
+        modalidad: t.pedido?.modalidad,
+        lineas: (t.pedido?.lineas || []).map((l) => ({
+          producto: l.producto, cantidad: l.cantidad, opciones: l.opciones,
+        })),
+      },
+      operaciones: (t.operaciones || []).map((o) => ({
+        herramienta: o.herramienta,
+        argumentos: o.argumentos,
+        aplicado: o.resultado?.aplicado,
+        estado: o.resultado?.estado,
+        motivo: o.resultado?.motivo,
+      })),
+    })) : [],
     ms: Date.now() - t0,
   });
 }
@@ -95,6 +129,7 @@ const informe = {
   generado: new Date().toISOString(),
   modo: conModelo ? 'modelo' : 'guion',
   commit: gitSha(),
+  ...(solo ? { seleccion: solo } : {}),
   fixtures: n,
   criticas: criticasPorTipo,
   criticasTotal: Object.values(criticasPorTipo).reduce((a, b) => a + b, 0),
@@ -108,10 +143,15 @@ const informe = {
       ? +(filas.reduce((s, f) => s + f.aclaraciones, 0) / n).toFixed(3) : 0,
     rechazos_de_herramienta: filas.reduce((s, f) => s + f.rechazos, 0),
     llamadas_al_modelo: filas.reduce((s, f) => s + f.llamadasAlModelo, 0),
+    tokens_entrada: filas.reduce((s, f) => s + f.tokensEntrada, 0),
+    tokens_salida: filas.reduce((s, f) => s + f.tokensSalida, 0),
     ms_por_conversacion: n ? Math.round(filas.reduce((s, f) => s + f.ms, 0) / n) : 0,
   },
   uso_de_herramienta: usoDeHerramienta,
-  fallidos: filas.filter((f) => !f.ok).map((f) => ({ id: f.id, criticas: f.criticas, diferencias: f.diferencias })),
+  fallidos: filas.filter((f) => !f.ok).map((f) => ({
+    id: f.id, criticas: f.criticas, diferencias: f.diferencias,
+    ...(conModelo ? { turnos: f.detalleTurnos } : {}),
+  })),
 };
 
 function gitSha() {
@@ -139,7 +179,8 @@ if (!silencioso) {
 }
 
 mkdirSync(INFORMES, { recursive: true });
-const salida = join(INFORMES, `mesero-eval-${informe.modo}-${informe.commit || 'local'}.json`);
+const sufijo = solo ? `-solo-${createHash('sha256').update(solo.join(',')).digest('hex').slice(0, 8)}` : '';
+const salida = join(INFORMES, `mesero-eval-${informe.modo}-${informe.commit || 'local'}${sufijo}.json`);
 writeFileSync(salida, `${JSON.stringify(informe, null, 2)}\n`, 'utf8');
 console.log(`\ninforme: ${salida}`);
 

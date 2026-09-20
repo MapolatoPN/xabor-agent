@@ -154,6 +154,11 @@ export function crearEjecutor({
         const c = norm(categoria);
         fichas = fichas.filter((f) => norm(f.categoria) === c);
       }
+      // La búsqueda por palabras también devuelve hermanos (por ejemplo,
+      // «Licuado de fresa» junto a «Licuado de plátano»). Si el texto coincide
+      // con UN nombre exacto de la carta, ese producto ya está elegido.
+      const exactas = fichas.filter((f) => norm(f.nombre) === norm(t));
+      if (exactas.length === 1) fichas = exactas;
       if (!fichas.length) {
         // NO EXISTE. Se dice así, con la carta a mano, y no se sustituye por
         // el más parecido: sustituir es cómo un cliente recibe una torta de

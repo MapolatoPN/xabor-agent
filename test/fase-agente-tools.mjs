@@ -126,6 +126,13 @@ await t('B2 · con varios candidatos se avisa de que el cliente no ha elegido', 
   assert.match(r.nota || '', /pregúntaselo|no ha dicho/i);
 });
 
+await t('B2a · un nombre exacto no se vuelve ambiguo por hermanos parecidos', async () => {
+  const e = ejecutorDe(nuevo(), 'quiero chilaquiles sencillos');
+  const r = await e.ejecutar('buscar_producto', { texto: 'Chilaquiles Sencillos' });
+  assert.deepEqual(r.encontrados.map((p) => p.nombre), ['Chilaquiles Sencillos']);
+  assert.equal(r.nota, undefined);
+});
+
 await t('B3 · un producto_id inventado no agrega nada', async () => {
   const estado = nuevo();
   const e = ejecutorDe(estado, 'quiero unos chilaquiles sencillos');

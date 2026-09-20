@@ -49,7 +49,8 @@ if ($LASTEXITCODE -ne 0) { throw "Claude Code terminó con error. Revisa $buildL
 
 $tests = @('test/fase-agente-tools.mjs', 'test/fase-agente-canario.mjs',
   'test/replay-mesero.mjs', 'test/fase-agente-estado.mjs',
-  'test/fase-agente-emision.mjs', 'test/fase-agente-ciclos.mjs')
+  'test/fase-agente-emision.mjs', 'test/fase-agente-ciclos.mjs',
+  'test/fase-agente-confirmacion-perdida.mjs')
 $testFailed = $false
 foreach ($test in $tests) {
   "== $test ==" | Tee-Object -FilePath $testLog -Append
