@@ -31,8 +31,11 @@ if (args.includes('--registrar')) {
   console.error('--registrar no está disponible en el humo. Usa el flujo de canario autorizado para crear pedidos reales.');
   process.exit(2);
 }
-const guion = String(opt('--guion',
-  'hola, qué tienen?|quiero unos chilaquiles|el bowl|salsa verde y pollo|para recoger|efectivo|sí, confirmo'))
+if (!opt('--guion')) {
+  console.error('Falta --guion. Usa productos y opciones existentes del negocio elegido.');
+  process.exit(2);
+}
+const guion = String(opt('--guion'))
   .split('|').map((s) => s.trim()).filter(Boolean);
 
 if (!process.env.ANTHROPIC_API_KEY) {
@@ -44,7 +47,9 @@ if (!negocioId) { console.error('Falta --negocio <uuid>.'); process.exit(2); }
 const cadena = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 if (!cadena) { console.error('Falta DATABASE_URL (o DATABASE_PUBLIC_URL para producción).'); process.exit(2); }
 
-const db = new pg.Client({ connectionString: cadena, ssl: { rejectUnauthorized: false } });
+const host = new URL(cadena).hostname;
+const ssl = ['localhost', '127.0.0.1', '::1'].includes(host) ? false : { rejectUnauthorized: false };
+const db = new pg.Client({ connectionString: cadena, ssl });
 await db.connect();
 
 const { rows: cats } = await db.query(

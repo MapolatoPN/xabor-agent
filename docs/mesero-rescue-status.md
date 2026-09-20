@@ -199,21 +199,26 @@ No los introdujo el código nuevo: los descubrió, y llevaban tiempo ahí.
    turno son dos peticiones, no un reintento: la clave de operación lleva el
    ordinal por contenido.
 
-## 7. Lo que NO está probado (y es el bloqueo)
+## 7. Humo con el modelo real
 
-> **El agente nunca ha hablado con el modelo de verdad.** No hay
-> `ANTHROPIC_API_KEY` en esta máquina.
+El 20-sep se ejecutó con `claude-sonnet-5`, clave de prueba del usuario y
+Postgres local. El catálogo de prueba contenía 24 categorías y 26 productos.
+Con PAR Hotcakes y PAR Cafe, el modelo agregó dos líneas, fijó recogida y pago
+en efectivo, mostró el resumen de $120 y confirmó tras el «sí» explícito.
+Resultado: un efecto **simulado** de confirmación, cero llamadas ilegales y
+ningún pedido registrado. Una primera conversación sobre chilaquiles encontró
+grupos obligatorios sin opciones en el catálogo local: el agente rechazó la
+opción inexistente y escaló. Ese fixture no sirve para demostrar una compra.
 
 El replay corre el sistema entero con un **modelo de guion**. Eso prueba que
 Xabor decide bien —rechaza lo no autorizado, no inventa productos, no confirma
 de más, no aplica dos veces— y **no prueba nada** sobre si el modelo entiende a
 una persona ni sobre si llama a las herramientas correctas.
 
-Lo que falta es una corrida de `scripts/mesero-humo.mjs`, que está escrito y
-listo:
+El humo exige un guion explícito para que coincida con la carta elegida:
 
 ```bash
-ANTHROPIC_API_KEY=... DATABASE_URL=... node scripts/mesero-humo.mjs --negocio <uuid>
+node scripts/mesero-humo.mjs --negocio <uuid> --guion "producto real|entrega|pago|sí, confirmo"
 ```
 
 Sin efectos (no registra, no escala, no imprime). `--registrar` se rechaza:
@@ -255,7 +260,7 @@ No se activa sin autorización explícita. Preparado, no activado.
 
 1. **Gate previo:** cerrar el bloqueo operacional señalado al inicio,
    comprobar con una prueba de integración que el pedido llega al panel y a la
-   impresión, correr el humo con modelo real (§7) y obtener
+   impresión, revisar el humo con modelo real (§7) y obtener
    `npm run mesero:eval -- --modelo` sin críticas.
 2. Variable del servicio:
    ```
@@ -332,14 +337,12 @@ aparta y deja seguir el flujo de siempre línea por línea.
 
 ## 13. Qué necesita aprobación humana
 
-1. **Correr el humo con modelo real** — necesita `ANTHROPIC_API_KEY`, que no
-   está en esta máquina.
-2. **Activar el canario** — atiende clientes reales.
-3. **Desplegar** — CLAUDE.md: el despliegue es un acto explícito
+1. **Activar el canario** — atiende clientes reales.
+2. **Desplegar** — CLAUDE.md: el despliegue es un acto explícito
    (`railway redeploy --yes --from-source`) y sobre la rama configurada en
    Railway, **no `main`**.
-4. **Merge a `main`** o a la rama de despliegue.
-5. **Correr el corpus contra producción** — lectura de conversaciones reales,
+3. **Merge a `main`** o a la rama de despliegue.
+4. **Correr el corpus contra producción** — lectura de conversaciones reales,
    aunque salgan anonimizadas.
 
 ## 14. Fallos restantes y riesgos
