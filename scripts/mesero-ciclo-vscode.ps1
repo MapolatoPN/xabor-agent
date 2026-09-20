@@ -64,7 +64,7 @@ No uses credenciales de producción ni modifiques producción. No despliegues,
 no actives flags, no hagas merge, commit ni push. No debilites pruebas.
 Deja los cambios visibles en Source Control de VS Code. Resume lo logrado.
 "@
-    & $claude -p $buildPrompt --permission-mode acceptEdits --output-format stream-json |
+    & $claude -p $buildPrompt --permission-mode acceptEdits --output-format stream-json --verbose |
       ForEach-Object {
         Add-Content -LiteralPath $buildLog -Value $_ -Encoding UTF8
         try {
