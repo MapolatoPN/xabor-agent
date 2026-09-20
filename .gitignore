@@ -43,3 +43,4 @@ test/.capturas-comanda/
 corpus/
 informes/*
 !informes/baseline-guion.json
+.local-agent-runs/
