@@ -1,0 +1,32 @@
+{
+  "id": "pregunta-no-muta",
+  "descripcion": "Preguntar no es pedir. El caso que más pedidos fantasma generaba.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "¿tienen licuado de fresa? ¿de cuánto es?",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "licuado de fresa"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Sí, el licuado de fresa está en $60. ¿Te pongo uno?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "navegando",
+    "lineas": []
+  },
+  "no_debe": [
+    "agregar_producto"
+  ]
+}

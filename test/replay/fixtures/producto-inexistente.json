@@ -1,0 +1,43 @@
+{
+  "id": "producto-inexistente",
+  "descripcion": "Lo que no está en la carta se dice. NUNCA se sustituye por el parecido.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "me das una torta de salmón",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "torta de salmón"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": ""
+              }
+            }
+          ]
+        },
+        {
+          "texto": "No manejamos tortas. Tenemos chilaquiles, hotcakes, waffles y bebidas. ¿Te late algo de ahí?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "navegando",
+    "lineas": [],
+    "confirmado": false
+  },
+  "no_debe": [
+    "agregar_producto"
+  ]
+}

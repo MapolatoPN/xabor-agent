@@ -1,0 +1,72 @@
+{
+  "id": "con-fruta",
+  "descripcion": "Un grupo OPCIONAL que el cliente nombra. No es una aclaración pendiente: es una elección.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "buenas, me das unos hotcakes con fruta, de fresa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "hotcakes"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_opciones_producto",
+              "input": {
+                "producto_id": "$id:Hotcakes"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Hotcakes",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Fruta",
+                    "opcion": "Fresa"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Listo, unos hotcakes con fresa. ¿Algo más?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Hotcakes",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Fruta",
+            "opcion": "Fresa"
+          }
+        ]
+      }
+    ],
+    "confirmado": false
+  },
+  "herramientas_esperadas": [
+    "buscar_producto",
+    "agregar_producto"
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "id": "cancelacion-parcial",
+  "descripcion": "Quitar un renglón no cancela el pedido. Son dos herramientas distintas a propósito.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un café americano y un waffle",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "waffle"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Waffle",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Un café y un waffle."
+        }
+      ]
+    },
+    {
+      "cliente": "quita el waffle, el café sí lo quiero",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "quitar_linea",
+              "input": {
+                "linea_id": "$linea:2"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Listo, solo el café."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "cancelado": false,
+    "lineas": [
+      {
+        "producto": "Café Americano",
+        "cantidad": 1
+      }
+    ]
+  },
+  "no_debe": [
+    "cancelar_pedido"
+  ]
+}

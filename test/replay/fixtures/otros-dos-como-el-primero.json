@@ -1,0 +1,116 @@
+{
+  "id": "otros-dos-como-el-primero",
+  "descripcion": "Una cantidad que el cliente SÍ dijo, sobre un artículo que señala por referencia.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un bowl de chilaquiles con salsa verde y pollo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "bowl de chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Verde"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Pechuga de pollo"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Anotado."
+        }
+      ]
+    },
+    {
+      "cliente": "y otros dos como el primero",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 2,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Verde"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Pechuga de pollo"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Van tres bowls en total."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Verde"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Pechuga de pollo"
+          }
+        ]
+      },
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 2,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Verde"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Pechuga de pollo"
+          }
+        ]
+      }
+    ]
+  }
+}

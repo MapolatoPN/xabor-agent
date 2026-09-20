@@ -1,0 +1,125 @@
+{
+  "id": "la-segunda-sin-huevo",
+  "descripcion": "Quitar una opción de UN renglón concreto. El grupo era obligatorio, así que el renglón queda pendiente.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "dos bowls de chilaquiles con salsa roja y huevos revueltos",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "bowl de chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Roja"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Huevos Revueltos"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Roja"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Huevos Revueltos"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Dos bowls con salsa roja y huevos revueltos."
+        }
+      ]
+    },
+    {
+      "cliente": "la segunda sin huevo mejor",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "modificar_linea",
+              "input": {
+                "linea_id": "$linea:2",
+                "sin_opciones": [
+                  "Proteína"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Quité el huevo del segundo. ¿Qué proteína le pongo?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "aclarando",
+    "lineas": [
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Roja"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Huevos Revueltos"
+          }
+        ]
+      },
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Roja"
+          }
+        ]
+      }
+    ]
+  }
+}

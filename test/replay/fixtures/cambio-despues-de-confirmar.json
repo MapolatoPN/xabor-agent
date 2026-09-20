@@ -1,0 +1,139 @@
+{
+  "id": "cambio-despues-de-confirmar",
+  "descripcion": "Con el pedido confirmado no hay mutación legal. La salida es una persona, no un cambio silencioso.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un café americano para recoger, efectivo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "recoger en tienda"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "efectivo"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Un café americano, $45, para recoger, efectivo. ¿Lo confirmo?"
+        }
+      ]
+    },
+    {
+      "cliente": "sí",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "confirmar_pedido",
+              "input": {
+                "huella_resumen": "$huella"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Confirmado."
+        }
+      ]
+    },
+    {
+      "cliente": "ay espérame, agrégame un licuado de fresa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "licuado de fresa"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Licuado de fresa",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "pedir_humano",
+              "input": {
+                "motivo": "quiere cambiar un pedido ya confirmado"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Tu pedido ya entró a cocina. Te paso con alguien del equipo para ver si alcanza a agregarse."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "confirmado": true,
+    "escalado": true,
+    "lineas": [
+      {
+        "producto": "Café Americano",
+        "cantidad": 1
+      }
+    ]
+  }
+}

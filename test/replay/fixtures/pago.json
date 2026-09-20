@@ -1,0 +1,78 @@
+{
+  "id": "pago",
+  "descripcion": "La forma de pago entra por su herramienta y con lo que el cliente dijo.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un licuado de platano para recoger",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "licuado de platano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Licuado de platano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "recoger en tienda"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "¿Cómo vas a pagar?"
+        }
+      ]
+    },
+    {
+      "cliente": "con transferencia",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "transferencia"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Un licuado de plátano, $60, para recoger, transferencia. ¿Lo confirmo?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "listo",
+    "pago": "transferencia",
+    "modalidad": "recoger en tienda",
+    "total": 60
+  }
+}

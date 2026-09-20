@@ -1,0 +1,46 @@
+{
+  "id": "restaurante-cerrado",
+  "descripcion": "Cerrado no es callado: se toma el pedido para después y se dice que está cerrado.",
+  "negocio": "obispado",
+  "cerrado": true,
+  "turnos": [
+    {
+      "cliente": "buenas, me apartas unos hotcakes?",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "hotcakes"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Hotcakes",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Ahorita estamos cerrados, abrimos mañana a las 8. Te dejo apuntados unos hotcakes para entonces."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Hotcakes",
+        "cantidad": 1
+      }
+    ]
+  }
+}

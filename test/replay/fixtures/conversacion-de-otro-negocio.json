@@ -1,0 +1,102 @@
+{
+  "id": "conversacion-de-otro-negocio",
+  "descripcion": "La misma conversación, en la pizzería. El pedido tiene que salir de SU carta y de ninguna otra.",
+  "negocio": "pizzeria",
+  "turnos": [
+    {
+      "cliente": "una pizza mitad y mitad, pepperoni y hawaiana, para recoger",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "pizza mitad y mitad"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Pizza Mitad y Mitad",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Sabor",
+                    "opcion": "Pepperoni"
+                  },
+                  {
+                    "grupo": "Sabor",
+                    "opcion": "Hawaiana"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "recoger en tienda"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "¿Cómo pagas?"
+        }
+      ]
+    },
+    {
+      "cliente": "efectivo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "efectivo"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Una pizza mitad y mitad, $160, para recoger, efectivo. ¿La confirmo?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "listo",
+    "total": 160,
+    "lineas": [
+      {
+        "producto": "Pizza Mitad y Mitad",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Sabor",
+            "opcion": "Pepperoni"
+          },
+          {
+            "grupo": "Sabor",
+            "opcion": "Hawaiana"
+          }
+        ]
+      }
+    ]
+  }
+}

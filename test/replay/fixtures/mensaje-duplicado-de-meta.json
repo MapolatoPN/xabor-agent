@@ -1,0 +1,46 @@
+{
+  "id": "mensaje-duplicado-de-meta",
+  "descripcion": "El MISMO turno entra dos veces. El libro de operaciones tiene que atajar las mutaciones.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un café americano porfa",
+      "duplicado": true,
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Va un café americano."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Café Americano",
+        "cantidad": 1
+      }
+    ]
+  }
+}

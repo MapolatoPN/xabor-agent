@@ -1,0 +1,71 @@
+{
+  "id": "producto-ambiguo",
+  "descripcion": "Cuatro chilaquiles en la carta y el cliente dijo «chilaquiles». Eso es una pregunta, no un desempate.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "quiero chilaquiles",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Tenemos sencillos ($195), mixtos ($205) y el bowl ($140). ¿Cuál te sirvo?"
+        }
+      ]
+    },
+    {
+      "cliente": "el bowl",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "bowl de chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Va el bowl. ¿De qué salsa y qué proteína?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "aclarando",
+    "lineas": [
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "id": "otra-igual",
+  "descripcion": "El artículo lo autoriza el CICLO, no solo el turno: «otra igual» no nombra nada y aun así es legítimo.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "quiero un licuado de fresa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "licuado de fresa"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Licuado de fresa",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Va un licuado de fresa."
+        }
+      ]
+    },
+    {
+      "cliente": "otra igual porfa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Licuado de fresa",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Listo, van dos licuados de fresa."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Licuado de fresa",
+        "cantidad": 1
+      },
+      {
+        "producto": "Licuado de fresa",
+        "cantidad": 1
+      }
+    ]
+  }
+}

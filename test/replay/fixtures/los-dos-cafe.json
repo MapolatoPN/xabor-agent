@@ -1,0 +1,78 @@
+{
+  "id": "los-dos-cafe",
+  "descripcion": "«Los dos» señala dos renglones existentes y «dos» es el número que autoriza la cantidad.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "dos hotcakes porfa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "hotcakes"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Hotcakes",
+                "cantidad": 2
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Van dos hotcakes."
+        }
+      ]
+    },
+    {
+      "cliente": "los dos café americano",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 2
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Y dos cafés americanos."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Hotcakes",
+        "cantidad": 2
+      },
+      {
+        "producto": "Café Americano",
+        "cantidad": 2
+      }
+    ]
+  }
+}

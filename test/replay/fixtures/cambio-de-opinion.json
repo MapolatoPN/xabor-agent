@@ -1,0 +1,92 @@
+{
+  "id": "cambio-de-opinion",
+  "descripcion": "«Mejor» sustituye; el renglón viejo se va y el nuevo entra.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un waffle porfa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "waffle"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Waffle",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Va un waffle."
+        }
+      ]
+    },
+    {
+      "cliente": "no, mejor quítame el waffle y ponme unos hotcakes",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "quitar_linea",
+              "input": {
+                "linea_id": "$linea:1"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "hotcakes"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Hotcakes",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Cambiado: unos hotcakes."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Hotcakes",
+        "cantidad": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "menu",
+  "descripcion": "Pedir la carta no pide comida.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "qué tienen de comer?",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": ""
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Tenemos chilaquiles, dulces (hotcakes y waffles) y bebidas. ¿Qué se te antoja?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "navegando",
+    "lineas": []
+  },
+  "no_debe": [
+    "agregar_producto"
+  ]
+}

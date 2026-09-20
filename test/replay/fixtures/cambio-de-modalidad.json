@@ -1,0 +1,87 @@
+{
+  "id": "cambio-de-modalidad",
+  "descripcion": "De recoger a domicilio. Al cambiar, la dirección pasa a faltar y el pedido deja de estar listo.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un café americano para recoger, pago en efectivo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "recoger en tienda"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "efectivo"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Listo, para recoger, efectivo."
+        }
+      ]
+    },
+    {
+      "cliente": "oye mejor a domicilio",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "entrega a domicilio"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Va a domicilio. ¿Me pasas la dirección?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "modalidad": "entrega a domicilio",
+    "pago": "efectivo"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "id": "mejor-quitame-esa",
+  "descripcion": "Quitar por referencia. El verbo de quitar lo dijo el cliente; el renglón lo resuelve el linea_id.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un café americano y un licuado de fresa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "licuado de fresa"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Licuado de fresa",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Un café y un licuado."
+        }
+      ]
+    },
+    {
+      "cliente": "mejor quítame esa, la del licuado",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "quitar_linea",
+              "input": {
+                "linea_id": "$linea:2"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Listo, quité el licuado."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Café Americano",
+        "cantidad": 1
+      }
+    ]
+  },
+  "herramientas_esperadas": [
+    "quitar_linea"
+  ]
+}

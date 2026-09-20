@@ -1,0 +1,59 @@
+{
+  "id": "cancelacion-total",
+  "descripcion": "Cancelar es un desenlace de la conversación, no una edición del carrito.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un waffle porfa",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "waffle"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Waffle",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Va un waffle."
+        }
+      ]
+    },
+    {
+      "cliente": "mejor ya no, cancélalo todo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "cancelar_pedido",
+              "input": {
+                "motivo": "el cliente ya no lo quiere"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Sin problema, lo cancelo. Aquí andamos cuando se te antoje."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "cancelado",
+    "cancelado": true,
+    "lineas": []
+  }
+}

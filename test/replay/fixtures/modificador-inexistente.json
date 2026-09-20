@@ -1,0 +1,56 @@
+{
+  "id": "modificador-inexistente",
+  "descripcion": "Una opción que ese producto no ofrece se rechaza CON la lista real, y el renglón no nace a medias.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un bowl de chilaquiles con salsa de mango",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "bowl de chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Mango"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_opciones_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "De salsa tenemos roja, suiza, verde, mole y chipotle. ¿Cuál le ponemos?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "navegando",
+    "lineas": []
+  }
+}

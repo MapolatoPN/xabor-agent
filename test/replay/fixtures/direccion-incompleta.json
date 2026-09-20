@@ -1,0 +1,72 @@
+{
+  "id": "direccion-incompleta",
+  "descripcion": "Un domicilio sin dirección NO está listo. El primer handoff real del proyecto salió así.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un waffle a domicilio, pago con tarjeta",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "waffle"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Waffle",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "entrega a domicilio"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "tarjeta"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "¿A qué dirección te lo mandamos?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "modalidad": "entrega a domicilio",
+    "confirmado": false
+  },
+  "no_debe": [
+    "confirmar_pedido"
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "id": "pedido-confirmado",
+  "descripcion": "El camino completo: pedir, modalidad, dirección, pago, resumen y confirmar con su huella.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "un waffle con fresa a domicilio",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "waffle"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Waffle",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Fruta",
+                    "opcion": "Fresa"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "modalidad": "entrega a domicilio"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "¿A qué dirección?"
+        }
+      ]
+    },
+    {
+      "cliente": "Hidalgo 340, colonia Centro. Pago en efectivo.",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "definir_entrega",
+              "input": {
+                "direccion": "Hidalgo 340, colonia Centro"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "definir_pago",
+              "input": {
+                "forma_pago": "efectivo"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Te resumo: 1 waffle con fresa, $105, a domicilio en Hidalgo 340, efectivo. ¿Lo confirmo?"
+        }
+      ]
+    },
+    {
+      "cliente": "sí, confírmalo",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "confirmar_pedido",
+              "input": {
+                "huella_resumen": "$huella"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "¡Listo! Tu pedido quedó confirmado."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "confirmado",
+    "confirmado": true,
+    "total": 105,
+    "modalidad": "entrega a domicilio",
+    "pago": "efectivo",
+    "lineas": [
+      {
+        "producto": "Waffle",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Fruta",
+            "opcion": "Fresa"
+          }
+        ]
+      }
+    ]
+  },
+  "herramientas_esperadas": [
+    "confirmar_pedido"
+  ]
+}

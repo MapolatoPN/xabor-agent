@@ -1,0 +1,114 @@
+{
+  "id": "dos-mensajes-seguidos",
+  "descripcion": "Como escribe la gente: dos mensajes en menos de un segundo. El segundo NO puede perder el primero.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "Quiero unos chilaquiles sencillos con salsa roja, pollo y frijolitos naturales",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "chilaquiles sencillos"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Chilaquiles Sencillos",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Roja"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Pechuga de pollo"
+                  },
+                  {
+                    "grupo": "Guarniciones",
+                    "opcion": "Frijolitos naturales"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Anotado."
+        }
+      ]
+    },
+    {
+      "cliente": "y un café americano",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "café americano"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Café Americano",
+                "cantidad": 1
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "ver_pedido",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "texto": "Unos chilaquiles y un café."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Chilaquiles Sencillos",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Roja"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Pechuga de pollo"
+          },
+          {
+            "grupo": "Guarniciones",
+            "opcion": "Frijolitos naturales"
+          }
+        ]
+      },
+      {
+        "producto": "Café Americano",
+        "cantidad": 1
+      }
+    ]
+  }
+}

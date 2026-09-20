@@ -1,0 +1,100 @@
+{
+  "id": "uno-revuelto-y-otro-estrellado",
+  "descripcion": "Dos renglones del mismo producto con opciones distintas. Sin identidad de renglón, el segundo pisa al primero.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "dos bowls de chilaquiles con salsa verde, uno revuelto y otro estrellado",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "bowl de chilaquiles"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Verde"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Huevos Revueltos"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agregar_producto",
+              "input": {
+                "producto_id": "$id:Bowl de Chilaquiles",
+                "cantidad": 1,
+                "opciones": [
+                  {
+                    "grupo": "Salsa",
+                    "opcion": "Verde"
+                  },
+                  {
+                    "grupo": "Proteína",
+                    "opcion": "Huevos Estrellados"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Uno revuelto y uno estrellado."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "armando",
+    "lineas": [
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Verde"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Huevos Revueltos"
+          }
+        ]
+      },
+      {
+        "producto": "Bowl de Chilaquiles",
+        "cantidad": 1,
+        "opciones": [
+          {
+            "grupo": "Salsa",
+            "opcion": "Verde"
+          },
+          {
+            "grupo": "Proteína",
+            "opcion": "Huevos Estrellados"
+          }
+        ]
+      }
+    ]
+  }
+}

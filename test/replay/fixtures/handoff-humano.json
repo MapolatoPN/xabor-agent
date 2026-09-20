@@ -1,0 +1,33 @@
+{
+  "id": "handoff-humano",
+  "descripcion": "Una queja pasa a una persona ANTES de tocar el pedido: quien entre ve lo que el cliente pidió.",
+  "negocio": "obispado",
+  "turnos": [
+    {
+      "cliente": "el pedido de ayer llegó frío y quiero hablar con el encargado",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "pedir_humano",
+              "input": {
+                "motivo": "queja por un pedido anterior"
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Lo siento mucho. Te paso ahora mismo con el encargado."
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "escalado",
+    "escalado": true,
+    "lineas": []
+  },
+  "herramientas_esperadas": [
+    "pedir_humano"
+  ]
+}

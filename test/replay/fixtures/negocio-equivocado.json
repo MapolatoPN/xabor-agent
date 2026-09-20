@@ -1,0 +1,42 @@
+{
+  "id": "negocio-equivocado",
+  "descripcion": "Le piden a la pizzería algo de la carta de Obispado. No existe AQUÍ, y eso es todo lo que hay que saber.",
+  "negocio": "pizzeria",
+  "turnos": [
+    {
+      "cliente": "me das unos chilaquiles sencillos con salsa roja",
+      "guion": [
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": "chilaquiles sencillos"
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "buscar_producto",
+              "input": {
+                "texto": ""
+              }
+            }
+          ]
+        },
+        {
+          "texto": "Aquí somos pizzería: tenemos pizzas y pan de ajo. ¿Te late una pizza?"
+        }
+      ]
+    }
+  ],
+  "esperado": {
+    "estado": "navegando",
+    "lineas": []
+  },
+  "no_debe": [
+    "agregar_producto"
+  ]
+}
