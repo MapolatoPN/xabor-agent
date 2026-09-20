@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "chat": "node src/agent/chat-test.js"
+    "chat": "node src/agent/chat-test.js",
+    "mesero:eval": "node scripts/mesero-eval.mjs",
+    "mesero:replay": "node test/replay-mesero.mjs",
+    "mesero:tools": "node test/fase-agente-tools.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

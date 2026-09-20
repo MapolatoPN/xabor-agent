@@ -57,6 +57,68 @@ export const CLAVE_SHADOW = 'pedido_shadow';
 export const CLAVE_MESERO = 'mesero_whatsapp_v1';
 export const CLAVE_MESERO_SOMBRA = 'mesero_whatsapp_shadow';
 
+// ── El AGENTE de herramientas, y su canario ──────────────────────────────
+//
+// Es el camino nuevo: el modelo pide herramientas, Xabor decide. Sustituye a
+// `brain.js` para la conversación en la que está encendido, así que no depende
+// de `pedido_reconciliador_v2` — no comparte carrito con el bot viejo, usa el
+// reconciliador siempre y por su cuenta. Exigir V2 aquí no añadiría ninguna
+// garantía y sí una configuración más que se puede poner mal.
+//
+//   mesero_agente_v1         = 'true'       el agente atiende de verdad
+//   mesero_agente_shadow     = 'true'       el agente observa y no contesta
+//   mesero_agente_telefonos  = '52…,52…'    SOLO estos números (el canario)
+//   mesero_agente_porcentaje = '0'..'100'   o este porcentaje del tráfico
+//
+// Y dos llaves del PROCESO, que son el interruptor de apagado inmediato:
+//
+//   MESERO_AGENTE_MODE=true      habilita el productivo
+//   MESERO_AGENTE_SHADOW=true    habilita la sombra
+//
+// El canario es fail-closed de una forma concreta: **sin lista y sin
+// porcentaje no atiende a nadie.** Encender `mesero_agente_v1` y olvidarse del
+// alcance no despliega el agente a todo el negocio; lo deja sin alcance. El
+// 12 de septiembre un experimento pensado para un negocio alcanzó a otros dos,
+// y la lección fue que el alcance tiene que ser explícito, no el default.
+export const CLAVE_AGENTE = 'mesero_agente_v1';
+export const CLAVE_AGENTE_SOMBRA = 'mesero_agente_shadow';
+export const CLAVE_AGENTE_TELEFONOS = 'mesero_agente_telefonos';
+export const CLAVE_AGENTE_PORCENTAJE = 'mesero_agente_porcentaje';
+
+export const agenteHabilitadoEnElProceso = () => esVerdadero(process.env.MESERO_AGENTE_MODE);
+export const agenteSombraHabilitadoEnElProceso = () => esVerdadero(process.env.MESERO_AGENTE_SHADOW);
+
+/** Los dígitos de un teléfono, para comparar sin depender de cómo se escriba. */
+const soloDigitos = (t) => String(t ?? '').replace(/\D+/g, '');
+
+/**
+ * ¿ESTE teléfono entra en el canario?
+ *
+ * La lista manda sobre el porcentaje: con lista, solo la lista. Así una prueba
+ * con dos números no se contamina con tráfico real por un porcentaje que quedó
+ * puesto de antes.
+ *
+ * El porcentaje se decide por el HASH del teléfono, no al azar: el mismo
+ * cliente cae siempre del mismo lado. Un cliente que salta entre el bot viejo
+ * y el nuevo a mitad de pedido es la peor forma posible de hacer un canario.
+ */
+export function enElCanario(telefono, { lista = '', porcentaje = '' } = {}) {
+  // Se separa SOLO por coma, punto y coma o salto de línea: un número se
+  // escribe «52 878 123 4567» tanto como «528781234567», y partir por espacios
+  // convertía un teléfono en cuatro números que no son ninguno.
+  const numeros = String(lista || '').split(/[,;\n]+/).map(soloDigitos).filter(Boolean);
+  const t = soloDigitos(telefono);
+  if (numeros.length) return { dentro: !!t && numeros.includes(t), via: 'lista' };
+
+  const pct = Number(String(porcentaje || '').trim());
+  if (!Number.isFinite(pct) || pct <= 0) return { dentro: false, via: 'sin_alcance' };
+  if (pct >= 100) return { dentro: true, via: 'porcentaje' };
+  if (!t) return { dentro: false, via: 'sin_telefono' };
+  let h = 0;
+  for (let i = 0; i < t.length; i += 1) h = (h * 31 + t.charCodeAt(i)) % 100000;
+  return { dentro: (h % 100) < pct, via: 'porcentaje' };
+}
+
 /**
  * Comparación EXPLÍCITA contra "true".
  *
@@ -87,8 +149,9 @@ export const meseroSombraHabilitadoEnElProceso = () => esVerdadero(process.env.M
  *
  * Devuelve siempre un objeto utilizable; nunca lanza.
  */
-export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConfiguracion } = {}) {
-  const apagado = { v2: false, shadow: false, mesero: false, meseroSombra: false, modo: 'legacy' };
+export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConfiguracion, telefono = null } = {}) {
+  const apagado = { v2: false, shadow: false, mesero: false, meseroSombra: false,
+    agente: false, agenteSombra: false, canario: null, modo: 'legacy' };
   if (typeof negocioId !== 'string' || !negocioId.trim()) return apagado;
   let cfg;
   try {
@@ -142,11 +205,34 @@ export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConf
   // toda observación: la del proceso y la del negocio.
   const meseroSombra = meseroSombraPedido && !mesero && meseroSombraHabilitadoEnElProceso();
 
+  // ── EL AGENTE DE HERRAMIENTAS ──────────────────────────────────────────
+  //
+  // Tres condiciones para atender de verdad, y las tres tienen que darse:
+  // la llave del proceso, la bandera del negocio y que ESTE teléfono esté en
+  // el canario. La tercera es la que hace que encender la bandera no sea
+  // desplegar a todo el negocio.
+  const canario = enElCanario(telefono, {
+    lista: cfg?.[CLAVE_AGENTE_TELEFONOS],
+    porcentaje: cfg?.[CLAVE_AGENTE_PORCENTAJE],
+  });
+  const agentePedido = esVerdadero(cfg?.[CLAVE_AGENTE]);
+  const agente = agentePedido && agenteHabilitadoEnElProceso() && canario.dentro;
+  if (agentePedido && agenteHabilitadoEnElProceso() && !canario.dentro) {
+    console.log(`[AGENTE] evento=fuera_del_canario negocio=${negocioId} via=${canario.via}`);
+  }
+  // La sombra no necesita canario: no contesta, no toca nada y lo que se
+  // quiere es verla con el tráfico que haya. Pero sí las dos llaves.
+  const agenteSombra = esVerdadero(cfg?.[CLAVE_AGENTE_SOMBRA]) && !agente
+    && agenteSombraHabilitadoEnElProceso();
+
   return {
     v2,
     shadow,
     mesero,
     meseroSombra,
-    modo: v2 ? (mesero ? 'mesero' : 'v2') : (shadow ? 'shadow' : 'legacy'),
+    agente,
+    agenteSombra,
+    canario,
+    modo: agente ? 'agente' : (v2 ? (mesero ? 'mesero' : 'v2') : (shadow ? 'shadow' : 'legacy')),
   };
 }

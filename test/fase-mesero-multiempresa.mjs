@@ -562,7 +562,24 @@ await t('Y9. `mesero_whatsapp_v1` NO tiene ningún call site productivo', async 
     }
   }(RAIZ));
 
-  const importan = [];
+  // ── QUÉ MIDE ESTA GUARDA, EXACTAMENTE (revisada 2026-09-20) ───────────
+  //
+  // Medía «nadie fuera de `mesero-whatsapp/` importa nada de esa carpeta», como
+  // proxy de «el Mesero no tiene camino productivo». El proxy dejó de servir
+  // cuando el agente de herramientas (`src/mesero-agente/`) reutiliza de ahí
+  // piezas PURAS —el catálogo, el resumen, el motor transaccional, la fase—
+  // que no dan ninguna autoridad ni abren ningún camino.
+  //
+  // Se sustituye por la afirmación de verdad, que es más estrecha y más fuerte:
+  //
+  //   · nadie fuera de la carpeta importa `meseroDigital.js`, que es la puerta
+  //     del Mesero viejo (`atenderTurno`);
+  //   · ni `sombraDelMesero.js`, salvo el canal;
+  //   · y `modo.mesero` —la bandera productiva— sigue sin leerla nadie.
+  //
+  // Relajar el proxy habría sido dejar de medir; esto mide lo que importaba.
+  const importanLaPuerta = [];
+  const importanLaSombra = [];
   const leenMesero = [];
   const leenSombra = [];
   for (const ruta of archivos) {
@@ -570,15 +587,18 @@ await t('Y9. `mesero_whatsapp_v1` NO tiene ningún call site productivo', async 
     if (rel.startsWith('mesero-whatsapp/')) continue;
     const fuente = readFileSync(ruta, 'utf8');
     const sinComentarios = fuente.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-    if (/from '[^']*mesero-whatsapp\//.test(sinComentarios)) importan.push(rel);
+    if (/from '[^']*mesero-whatsapp\/meseroDigital\.js'/.test(sinComentarios)) importanLaPuerta.push(rel);
+    if (/from '[^']*mesero-whatsapp\/sombraDelMesero\.js'/.test(sinComentarios)) importanLaSombra.push(rel);
     // `modo.mesero` — la bandera productiva. `comanda.mesero` del POS no cuenta:
     // es la estación de meseros, que no tiene nada que ver.
     if (/\bmodo\s*\.\s*mesero\b(?!Sombra)/.test(sinComentarios)) leenMesero.push(rel);
     if (/\bmodo\s*\.\s*meseroSombra\b/.test(sinComentarios)) leenSombra.push(rel);
   }
 
-  assert.deepEqual(importan, ['channels/whatsapp-meta.js'],
-    `el mesero se importa desde sitios inesperados: ${JSON.stringify(importan)}`);
+  assert.deepEqual(importanLaPuerta, [],
+    `alguien abrió un camino al Mesero viejo: ${JSON.stringify(importanLaPuerta)}`);
+  assert.deepEqual(importanLaSombra, ['channels/whatsapp-meta.js'],
+    `la sombra del mesero se importa desde sitios inesperados: ${JSON.stringify(importanLaSombra)}`);
   assert.deepEqual(leenMesero, [],
     `alguien lee la bandera PRODUCTIVA del mesero: ${JSON.stringify(leenMesero)}`);
   assert.deepEqual(leenSombra, ['channels/whatsapp-meta.js'],
@@ -589,6 +609,26 @@ await t('Y9. `mesero_whatsapp_v1` NO tiene ningún call site productivo', async 
   const canal = readFileSync(join(RAIZ, 'channels/whatsapp-meta.js'), 'utf8');
   assert.equal((canal.match(/observarTurnoDelMesero\(/g) || []).length, 1,
     'hay más de una llamada a la observación del mesero');
+
+  // ── Y LA MISMA GUARDA PARA EL AGENTE NUEVO ────────────────────────────
+  //
+  // El agente SÍ tiene camino productivo —ese es el encargo— y justo por eso
+  // hay que fijar cuál es: UNO, en el canal, y detrás de `modo.agente`. Que un
+  // segundo sitio de llamada aparezca sin que nadie se entere es la forma en
+  // que un canario deja de ser un canario.
+  const leenAgente = [];
+  for (const ruta of archivos) {
+    const rel = relative(RAIZ, ruta).split('\\').join('/');
+    const sinComentarios = readFileSync(ruta, 'utf8')
+      .replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    if (/\bmodo(Agente)?\s*\.\s*agente\b(?!Sombra)/.test(sinComentarios)) leenAgente.push(rel);
+  }
+  assert.deepEqual(leenAgente, ['channels/whatsapp-meta.js'],
+    `la bandera productiva del agente se lee desde sitios inesperados: ${JSON.stringify(leenAgente)}`);
+  assert.equal((canal.match(/atenderConAgente\(/g) || []).length, 1,
+    'hay más de un sitio donde el agente atiende de verdad');
+  assert.equal((canal.match(/observarConAgente\(/g) || []).length, 1,
+    'hay más de un sitio donde el agente observa');
   assert.equal((canal.match(/observarMeseroEnSombra\(\)/g) || []).length, 3,
     'la observación debe invocarse en los TRES puntos silenciosos, y solo ahí');
 });

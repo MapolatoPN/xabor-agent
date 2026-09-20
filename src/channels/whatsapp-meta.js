@@ -1114,6 +1114,46 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // teléfono le escribía a ambos.
     const sessionId = `meta-${negocioId}-${telefono}`;
 
+    // ── EL AGENTE DE HERRAMIENTAS ───────────────────────────────────────────
+    //
+    // Este es el sitio de llamada que al Mesero anterior le faltó durante un
+    // mes: su capa estaba completa y probada y NADIE la llamaba, así que no
+    // había interruptor que pudiera encenderla. Aquí sí lo hay.
+    //
+    // Tres condiciones y las tres las resuelve `modoDelPedido`: la llave del
+    // PROCESO (`MESERO_AGENTE_MODE`), la bandera del NEGOCIO
+    // (`mesero_agente_v1`) y que ESTE teléfono esté en el canario. Sin alcance
+    // explícito no atiende a nadie.
+    //
+    // Y si el agente no puede —sin carta, sin llave, una excepción— **no deja
+    // al cliente sin respuesta**: no contesta él, y sigue el bot de siempre,
+    // línea por línea igual que antes de que esto existiera. El camino viejo
+    // no se toca; se le antepone uno nuevo que sabe apartarse.
+    try {
+      const modoAgente = await modoDelPedido(negocioId, { telefono });
+      if (modoAgente.agente) {
+        const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
+        const { llamarModeloDelAgente } = await import('../mesero-agente/modeloDelAgente.js');
+        const r = await atenderConAgente({
+          negocioId, telefono, mensaje: texto, nombre: clienteDB?.nombre || nombreMeta,
+          canal: 'whatsapp',
+          llamarModelo: llamarModeloDelAgente,
+          escalarAHumano: (n, t, m) => continuidadWA.enviarARevision(n, t, m),
+          turnoId: `wa-${Date.now()}`,
+        });
+        if (r.ok && r.texto) {
+          await enviarMensaje(telefono, r.texto, credenciales);
+          await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot');
+          console.log(`[AGENTE] evento=atendido negocio=${negocioId} via=${modoAgente.canario?.via} `
+            + `folio=${r.folio || '-'} escalado=${!!r.escalado}`);
+          return;
+        }
+        console.warn(`[AGENTE] no atendió (motivo=${r.motivo || 'sin_texto'}) — sigue el bot de siempre`);
+      }
+    } catch (e) {
+      console.error('[AGENTE] contenido en el canal, sigue el bot de siempre:', e?.message);
+    }
+
     // Si Claude tarda más de 8s, avisamos al cliente para que no piense que el bot falló
     let waitMessageSent = false;
     const waitTimer = setTimeout(async () => {
@@ -1897,11 +1937,34 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       }).catch((e) => console.error('[SOMBRA-MESERO] contenida en el canal:', e?.message));
     };
 
+    // ── LA SOMBRA DEL AGENTE DE HERRAMIENTAS ──────────────────────────────
+    //
+    // Vive exactamente donde vive la del Mesero y por la misma razón: en los
+    // tres puntos en los que el canal YA decidió callarse. Que no haya una
+    // bandera «observar con el bot encendido» es deliberado — una bandera se
+    // puede poner mal, un sitio de llamada no.
+    //
+    // No se espera (`.then`, sin `await`): el canal no se retrasa por observar,
+    // y un fallo aquí no puede alcanzar a ningún cliente.
+    const observarAgenteEnSombra = () => {
+      modoDelPedido(negocioId, { telefono }).then(async (modo) => {
+        if (!modo.agenteSombra) return null;
+        const { observarConAgente } = await import('../mesero-agente/canalDelAgente.js');
+        const { llamarModeloDelAgente } = await import('../mesero-agente/modeloDelAgente.js');
+        return observarConAgente({
+          negocioId, telefono, mensaje: texto,
+          llamarModelo: llamarModeloDelAgente,
+          turnoId: `sombra-${Date.now()}`,
+        });
+      }).catch((e) => console.error('[SOMBRA-AGENTE] contenida en el canal:', e?.message));
+    };
+
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
     if (!botGlobalActivo) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
       observarEnSombra();
       observarMeseroEnSombra();
+      observarAgenteEnSombra();
       return;
     }
     const pausado = await getBotPausado(telefono, negocioId);
@@ -1909,6 +1972,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       console.log(`[Meta WA] Bot pausado para ${telefono}`);
       observarEnSombra();
       observarMeseroEnSombra();
+      observarAgenteEnSombra();
       return;
     }
     // Takeover humano temporal (Coexistence): el dueño respondió hace poco
@@ -1920,6 +1984,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       console.log(`[Meta WA] Takeover humano vigente para ${telefono} — el dueño atiende, el bot no responde`);
       observarEnSombra();
       observarMeseroEnSombra();
+      observarAgenteEnSombra();
       return;
     }
 
