@@ -1141,9 +1141,19 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           escalarAHumano: (n, t, m) => continuidadWA.enviarARevision(n, t, m),
           turnoId: `wa-${Date.now()}`,
         });
-        if (r.ok && r.texto) {
-          await enviarMensaje(telefono, r.texto, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot');
+        if (r.ok) {
+          // Si el pedido ya se registró, un fallo de envío no puede devolver
+          // este mismo turno al bot viejo: podría crear un segundo pedido.
+          if (r.texto) {
+            try {
+              await enviarMensaje(telefono, r.texto, credenciales);
+              await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot');
+            } catch (e) {
+              console.error('[AGENTE] respuesta no enviada o no guardada; no se reintenta con el bot viejo:', e?.message);
+            }
+          } else {
+            console.error('[AGENTE] turno sin texto; no se reintenta con el bot viejo');
+          }
           console.log(`[AGENTE] evento=atendido negocio=${negocioId} via=${modoAgente.canario?.via} `
             + `folio=${r.folio || '-'} escalado=${!!r.escalado}`);
           return;

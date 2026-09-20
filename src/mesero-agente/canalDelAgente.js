@@ -14,12 +14,11 @@
 //
 // Las dos comparten TODO menos los efectos y dónde guardan el estado. Que no
 // haya dos implementaciones es lo que hace que observar signifique algo.
-import { pool, obtenerMenuCompleto, obtenerConfiguracion } from '../services/database.js';
-import { registrarPedido } from '../orders/orderManager.js';
+import { pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido } from '../services/database.js';
+import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
-import { encolarEnTransaccion, TIPOS } from './outbox.js';
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
@@ -77,6 +76,7 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
   const cli = datos.cliente || {};
   return {
     negocioId,
+    telefono_conversacion: telefono,
     items: (carrito?.items || []).map((i) => ({
       nombre: i.nombre,
       cantidad: Number(i.cantidad) || 1,
@@ -106,9 +106,12 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
 export async function atenderConAgente({
   negocioId, telefono, mensaje, nombre = null, canal = 'whatsapp',
   llamarModelo, historial = [], textoCiclo = '', turnoId = null,
-  escalarAHumano = null, registrar = registrarPedido, traza = null,
+  escalarAHumano = null, registrar = registrarPedido, emitir = emitirPedido,
+  guardar = guardarPedido, traza = null,
 } = {}) {
   const t0 = Date.now();
+  let estado = null;
+  let salida = null;
   try {
     const [catalogo, cfg] = await Promise.all([
       obtenerMenuCompleto(negocioId),
@@ -119,18 +122,17 @@ export async function atenderConAgente({
       return { ok: false, motivo: 'sin_catalogo' };
     }
 
-    const estado = await leerEstado(negocioId, telefono);
+    estado = await leerEstado(negocioId, telefono);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
 
     const efectos = {
-      confirmar: async ({ pedido }) => confirmarYEncolar({
-        negocioId, telefono, nombre, canal, estado, pedido, registrar,
+      confirmar: async ({ pedido }) => confirmarYEmitir({
+        negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar,
       }),
       escalar: async ({ motivo }) => {
         try {
-          if (escalarAHumano) await escalarAHumano(negocioId, telefono, 'AGENTE_PIDE_HUMANO');
-          await encolar(negocioId, [{ tipo: TIPOS.HANDOFF,
-            carga: { telefono: telefonoCorto(telefono), motivo, canal } }]);
+          if (!escalarAHumano) return { ok: false, motivo: 'handoff_sin_destino' };
+          await escalarAHumano(negocioId, telefono, 'AGENTE_PIDE_HUMANO');
           return { ok: true };
         } catch (e) {
           console.error('[AGENTE] no se pudo escalar:', e.message);
@@ -139,7 +141,7 @@ export async function atenderConAgente({
       },
     };
 
-    const salida = await atenderTurnoConHerramientas({
+    salida = await atenderTurnoConHerramientas({
       negocioId,
       conversacionId: claveDeSesion(telefono),
       turnoId: turnoId || `t${Date.now()}`,
@@ -172,6 +174,24 @@ export async function atenderConAgente({
     return { ok: true, ...salida };
   } catch (e) {
     console.error('[AGENTE] contenido en el adaptador:', e?.message);
+    // Un efecto irreversible pudo ocurrir antes del error (por ejemplo,
+    // registrarPedido hizo COMMIT y luego falló guardarEstado). En ese caso
+    // el bot viejo NO debe volver a procesar este mismo mensaje.
+    if (estado?.hechos?.confirmado || estado?.hechos?.escalado) {
+      if (estado.hechos.confirmado && escalarAHumano) {
+        try { await escalarAHumano(negocioId, telefono, 'AGENTE_ESTADO_INCIERTO'); }
+        catch (handoffError) { console.error('[AGENTE] handoff tras estado incierto falló:', handoffError?.message); }
+      }
+      return {
+        ok: true,
+        texto: salida?.texto || (estado.folio
+          ? `Tu pedido ${estado.folio} quedó registrado. El equipo lo revisará.`
+          : 'El equipo revisará tu solicitud y te responderá.'),
+        folio: estado.folio ?? null,
+        escalado: !!estado.hechos.escalado,
+        estadoIncierto: true,
+      };
+    }
     return { ok: false, motivo: e?.message || 'error', ms: Date.now() - t0 };
   }
 }
@@ -256,17 +276,18 @@ export async function observarConAgente({
   }
 }
 
-// ── CONFIRMAR: integración operacional aún incompleta ────────────────────
+// ── CONFIRMAR: usar la misma ruta operacional durable que el bot legacy ──
 //
 // `registrarPedido` es la única puerta de creación de pedidos y tiene su
 // propio gate (revalida contra el catálogo real y rechaza lo que el modelo
 // invente). No se rodea: se usa. Lo que se añade es que los efectos
 // posteriores queden escritos como hechos, no lanzados al aire.
 //
-// El pedido se registra antes de encolar eventos. Hoy son transacciones
-// separadas y no hay consumidor del outbox: esta ruta NO está lista para canario.
-// Ver docs/mesero-rescue-status.md antes de habilitarla.
-async function confirmarYEncolar({ negocioId, telefono, nombre, canal, estado, pedido, registrar }) {
+// registrarPedido persiste el pedido y crea la deuda de emisión (trigger 063).
+// emitirPedido reclama esa deuda y envía panel/impresión por la ruta existente.
+// Igual que el bot legacy, la emisión se lanza después del registro; un fallo
+// de emisión no convierte un pedido ya guardado en un pedido rechazado.
+export async function confirmarYEmitir({ negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar = guardarPedido }) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
   let resultado;
   try {
@@ -280,33 +301,12 @@ async function confirmarYEncolar({ negocioId, telefono, nombre, canal, estado, p
     return { ok: false, motivo };
   }
   const folio = resultado.folio || resultado.pedido?.id || resultado.id || null;
-
-  await encolar(negocioId, [
-    { tipo: TIPOS.PEDIDO_CONFIRMADO, carga: { folio, canal, total: pedido?.total ?? null } },
-    { tipo: TIPOS.ENVIAR_CONFIRMACION_WHATSAPP, carga: { folio, telefono } },
-    { tipo: TIPOS.IMPRIMIR, carga: { folio } },
-    { tipo: TIPOS.REWARDS, carga: { folio, telefono: telefonoCorto(telefono) } },
-    { tipo: TIPOS.ANALYTICS, carga: { folio, canal, renglones: pedido?.lineas?.length ?? 0 } },
-  ]);
+  Promise.resolve().then(() => emitir(resultado)).catch((e) =>
+    console.error(`[AGENTE] emitirPedido(${folio || '-'}) falló:`, e?.message));
+  try { await guardar(telefono, resultado, negocioId); }
+  catch (e) { console.error(`[AGENTE] guardarPedido(${folio || '-'}) falló:`, e?.message); }
 
   return { ok: true, folio };
-}
-
-/** Encola fuera de transacción cuando no hay una abierta. Ver `outbox.js`. */
-async function encolar(negocioId, eventos) {
-  const cliente = await pool.connect();
-  try {
-    await cliente.query('BEGIN');
-    await encolarEnTransaccion(cliente, negocioId, eventos);
-    await cliente.query('COMMIT');
-  } catch (e) {
-    await cliente.query('ROLLBACK').catch(() => {});
-    // Un outbox que no se pudo escribir NO tumba el pedido: el pedido ya
-    // existe y el cliente ya lo pidió. Se deja dicho para que se vea.
-    console.error('[AGENTE] no se pudo encolar el outbox:', e.message);
-  } finally {
-    cliente.release();
-  }
 }
 
 export { CIERRE };

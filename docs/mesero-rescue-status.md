@@ -5,10 +5,12 @@
 **Auditoría de partida:** [`mesero-auditoria-2026-09-20.md`](mesero-auditoria-2026-09-20.md)
 
 **Estado de salida:** NO APTO PARA CANARIO. La revisión posterior encontró que
-el camino nuevo registra el pedido, pero todavía no llama a `emitirPedido`.
-Los eventos de `agente_outbox` no tienen consumidor conectado. Por tanto, el
-pedido podría quedar guardado sin llegar al panel ni a la impresora. El replay
-y el humo simulado no ejercitan ese tramo operacional.
+el camino nuevo registraba el pedido sin llamar a `emitirPedido`. Ya se conectó
+con esa ruta operacional durable y se añadió una prueba con un emisor inyectado.
+Falta comprobar con una base y un canal de prueba que el pedido llegue de verdad
+al panel y a la impresora. El replay y el humo simulado no ejercitan ese tramo.
+Los eventos de `agente_outbox` siguen sin consumidor y no forman parte del
+camino productivo actual.
 
 ---
 
@@ -55,7 +57,7 @@ WhatsApp
        ejecutor -> reconciliar()  <- LA ÚNICA AUTORIDAD
        RELECTURA del pedido -> tool_result -> el modelo sigue
   -> el modelo redacta DESPUÉS de todas las herramientas
-  -> registrarPedido() (la puerta de siempre) + outbox en la misma transacción
+  -> registrarPedido() (la puerta de siempre) -> emitirPedido() (ruta operacional durable)
   -> WhatsApp
 ```
 
@@ -150,6 +152,7 @@ test/fase-agente-tools.mjs        44 pasadas, 0 fallidas    (contrato, ejecutor,
 test/fase-agente-canario.mjs      14 pasadas, 0 fallidas    (alcance, kill switch, sombra)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
+test/fase-agente-emision.mjs       registro enlazado a emitirPedido; rechazo no emite
 npm run mesero:eval               invariantes críticas: 0/7   PUERTA: ABIERTA
 24 suites del Mesero anterior     todas verdes (línea base intacta)
 ```
@@ -296,17 +299,17 @@ Claves de `configuracion` por negocio: `mesero_agente_v1`,
 
 ## 11. Migraciones
 
-Las dos son **aditivas**, crean tablas nuevas y vacías, y verifican que el
-camino crítico (pedidos, mensajes, configuración, negocios) no cambió. Abortan
-si algo difiere.
+La 084 crea el libro de operaciones y es requisito del agente productivo.
+El script verifica que el camino crítico (pedidos, mensajes, configuración,
+negocios) no cambió y aborta si algo difiere.
 
 ```bash
 node scripts/predeploy-084-agente-operaciones.mjs   # libro de operaciones
-node scripts/predeploy-085-agente-outbox.mjs        # outbox transaccional
 ```
 
-Reverso: `migrations/084_agente_operaciones_down.sql`,
-`migrations/085_agente_outbox_down.sql`. Nadie más referencia esas tablas.
+Reverso: `migrations/084_agente_operaciones_down.sql`.
+La 085 crea una tabla experimental sin consumidor y no es requisito del camino
+productivo actual: no aplicarla por inercia.
 
 **No hace falta migración para el estado del agente**: vive en
 `conversacion_estado` (076) con su propio `session_id`.
@@ -317,8 +320,8 @@ Reverso: `migrations/084_agente_operaciones_down.sql`,
 |---|---|---|
 | Apagar el agente | quitar `MESERO_AGENTE_MODE` | no |
 | Apagar un negocio | `mesero_agente_v1='false'` | no |
-| Volver al build anterior | redeploy del commit previo de la rama de despliegue | las dos tablas nuevas, vacías e inertes |
-| Deshacer las migraciones | los `_down.sql` | no |
+| Volver al build anterior | redeploy del commit previo de la rama de despliegue | la tabla 084, vacía e inerte |
+| Deshacer la migración | `084_agente_operaciones_down.sql` | no |
 
 El camino viejo (`brain.js`) no se modificó. La única edición en
 `whatsapp-meta.js` es un bloque que, si el agente no puede o está apagado, se
@@ -348,16 +351,21 @@ commit base, misma base, mismo puerto):
 
 Riesgos que quedan abiertos:
 
-- **Emisión operacional sin conectar.** `confirmarYEncolar` registra el pedido
-  y escribe eventos en `agente_outbox`, pero no llama a `emitirPedido` y no hay
-  consumidor de ese outbox. Además, la escritura del pedido y la del outbox
-  ocurren en transacciones distintas. Antes de canario hay que integrar con
-  la ruta operacional durable existente o completar y probar el consumidor.
-  El camino legacy de WhatsApp llama a `emitirPedido(pedido)` tras
-  `registrarPedido`; esa ruta ya tiene deuda durable y recuperación. Si se
-  reutiliza, hay que probar que una falla después del registro no ejecute el
-  bot viejo ni registre un segundo pedido. También hay que comprobar que el
-  mensaje al cliente, el panel y la impresión reciban el mismo folio.
+- **Emisión operacional sin prueba de integración.** El agente ya llama a
+  `emitirPedido` después de `registrarPedido`, igual que el bot legacy, y una
+  prueba con funciones inyectadas verifica el enlace. Falta demostrar con base
+  y canal de prueba que el mensaje al cliente, el panel y la impresión reciban
+  el mismo folio. Una falla después del registro ya no devuelve el turno al
+  bot viejo; aún falta ejercitar ese caso en una prueba de integración.
+- **Resultado incierto del registro.** Si la conexión cae justo después del
+  COMMIT de `registrarPedido`, el agente puede recibir un error sin saber si el
+  pedido quedó creado. Antes de canario hay que dar una clave idempotente al
+  registro o verificar el resultado durable y escalar a una persona si no se
+  puede resolver. No se debe pedir al modelo que reintente a ciegas.
+- **Outbox experimental.** La migración 085 y `outbox.js` siguen en la rama,
+  pero no hay consumidor y el agente no escribe allí. No se deben usar como
+  evidencia de entrega operacional ni habilitar sus efectos sin una revisión
+  separada.
 - **El prompt no está afinado con tráfico real.** El sistema frena lo que el
   modelo se invente, pero cada freno cuesta una iteración y un turno peor. Es
   lo que mide `npm run mesero:eval -- --modelo`.
