@@ -10,7 +10,8 @@
     "chat": "node src/agent/chat-test.js",
     "mesero:eval": "node scripts/mesero-eval.mjs",
     "mesero:replay": "node test/replay-mesero.mjs",
-    "mesero:tools": "node test/fase-agente-tools.mjs"
+    "mesero:tools": "node test/fase-agente-tools.mjs",
+    "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

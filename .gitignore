@@ -44,3 +44,6 @@ corpus/
 informes/*
 !informes/baseline-guion.json
 .local-agent-runs/
+.ai-loop/runs/
+.ai-loop/active.lock
+.ai-loop/stop.requested
