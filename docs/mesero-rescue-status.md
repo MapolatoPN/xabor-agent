@@ -14,8 +14,9 @@ base: no nace un segundo pedido y el handoff humano sí sale.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
-El commit `39e6b84` está desplegado en Railway desde
-`prod/mesero-shadow-v3`; la migración 084 está aplicada. La sombra y el canario
+El commit `9ff2d0c` está desplegado en Railway desde
+`prod/mesero-shadow-v3` (deployment `bbc1bcf0-c8d9-40f5-b429-38d8f85e9c13`);
+la migración 084 está aplicada. La sombra y el canario
 están activos solo para Mapolato Obispado, con porcentaje `0` y un único
 teléfono autorizado. El canario real quedó validado: armó un Café Americano
 para recoger y pagar en efectivo, mostró el resumen de $39 y, tras el «Sí» del
