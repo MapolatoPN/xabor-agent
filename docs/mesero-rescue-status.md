@@ -14,8 +14,8 @@ base: no nace un segundo pedido y el handoff humano sí sale.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
-El commit `9ff2d0c` está desplegado en Railway desde
-`prod/mesero-shadow-v3` (deployment `bbc1bcf0-c8d9-40f5-b429-38d8f85e9c13`);
+El commit `79f7052` está desplegado en Railway desde
+`prod/mesero-shadow-v3` (deployment `804bd494-c64c-4a79-af5e-fc91ef40f236`);
 la migración 084 está aplicada. La sombra y el canario
 están activos solo para Mapolato Obispado, con porcentaje `0` y un único
 teléfono autorizado. El canario real quedó validado: armó un Café Americano
@@ -64,6 +64,9 @@ sitio se limpia antes de continuar.
 La validación final vuelve a comprobar la modalidad para pedidos de WhatsApp,
 de modo que una llamada incorrecta del modelo tampoco puede registrar consumo
 en sitio. Los flujos presenciales de POS y restaurante conservan sus mesas.
+El humo con Claude real y la carta/configuración productiva respondió a
+«quiero comer aquí» con el rechazo correcto, ofreció recoger o domicilio y
+dejó la modalidad vacía; no registró, imprimió ni cobró nada.
 
 ---
 
