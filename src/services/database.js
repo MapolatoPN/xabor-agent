@@ -3472,9 +3472,66 @@ export async function pagosConEsperaVencida(limite = 25) {
   const { rows } = await pool.query(
     `SELECT * FROM pagos
       WHERE xabor_espera_hasta IS NOT NULL AND xabor_espera_hasta < NOW()
-        AND estado IN ('creando','pendiente','requiere_revision')
+        AND estado IN ('creando','pendiente')
       ORDER BY xabor_espera_hasta ASC LIMIT $1`, [limite]);
   return rows;
+}
+
+/**
+ * Un comprobante recibido por WhatsApp no demuestra por si solo que Clip
+ * haya cobrado. Lo que si demuestra es que una persona esta atendiendo el
+ * pago: el intento queda en revision, se congela la expiracion de Xabor y el
+ * equipo puede verificarlo. El webhook de Clip sigue siendo la unica fuente
+ * automatica que puede llevarlo a pagado.
+ */
+export async function marcarPagoConComprobanteEnRevision(negocioId, folio, documentoId = null) {
+  if (typeof negocioId !== 'string' || !negocioId.trim() || !folio) return null;
+  const nid = negocioId.trim();
+  const cliente = await poolDeClaims().connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [pago] } = await cliente.query(
+      `SELECT * FROM pagos
+         WHERE negocio_id = $1 AND pedido_folio = $2
+           AND estado IN ('creando','pendiente')
+         ORDER BY created_at DESC LIMIT 1
+         FOR UPDATE`, [nid, String(folio)]);
+    if (!pago) {
+      await cliente.query('ROLLBACK');
+      return null;
+    }
+    const metadata = {
+      comprobante_recibido: true,
+      comprobante_recibido_at: new Date().toISOString(),
+      comprobante_documento_id: documentoId || null,
+      comprobante_revision_motivo: 'imagen_recibida_por_whatsapp',
+    };
+    const { rows: [actualizado] } = await cliente.query(
+      `UPDATE pagos
+          SET estado = 'requiere_revision',
+              metadata_sanitizada = metadata_sanitizada || $3::jsonb
+        WHERE id = $1 AND negocio_id = $2 AND estado IN ('creando','pendiente')
+        RETURNING *`, [pago.id, nid, JSON.stringify(metadata)]);
+    if (!actualizado) {
+      await cliente.query('ROLLBACK');
+      return null;
+    }
+    await cliente.query(
+      `UPDATE pedidos_activos
+          SET datos = datos || $3::jsonb, updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2 AND estado = 'pendiente_pago'`,
+      [String(folio), nid, JSON.stringify({
+        pago_comprobante_en_revision: true,
+        pago_comprobante_documento_id: documentoId || null,
+      })]);
+    await cliente.query('COMMIT');
+    return actualizado;
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
 /**

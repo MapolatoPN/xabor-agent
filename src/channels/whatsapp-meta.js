@@ -28,7 +28,7 @@ import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -728,7 +728,7 @@ async function manejarImagenEntrante(message, negocioId, nombreMeta) {
 
   if (nombreMeta) await upsertCliente(telefono, nombreMeta, negocioId);
 
-  const documento = await crearRegistroImagenEntrante({ negocioId, telefono, filename, caption, wamid, mediaId });
+  const documento = await crearRegistroImagenEntrante({ negocioId, telefono, filename, caption, wamid, mediaId, mimeType });
   const msg = await guardarMensaje(telefono, nombreMeta, 'entrante', caption ? `📷 ${caption}` : '📷 Imagen', negocioId, 'cliente', wamid, 'imagen', documento.id);
   if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg, documento });
 
@@ -2155,6 +2155,32 @@ async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, neg
       // (caso C) o vision fallida sin ningun texto del cliente (caso D).
       // Con texto del cliente y vision fallida, el agente recibe la nota
       // de siempre. Una decision, una respuesta: jamas doble envio.
+      const idsDocumentos = documentosDelTurno(textoCombinado);
+      const esFotoMuda = soloImagenes(textoCombinado);
+
+      // Un comprobante por foto no se interpreta como una confirmacion del
+      // proveedor. Si hay exactamente un pedido pendiente de pago, se congela
+      // su expiracion y se entrega la conversacion a una persona. Asi el
+      // cliente recibe acuse y el equipo puede verificar el deposito antes de
+      // liberar cocina; el webhook de Clip sigue siendo la autoridad para
+      // marcar pagado automaticamente.
+      if (esFotoMuda && idsDocumentos.length) {
+        const activos = (await obtenerPedidosActivosPorTelefono(telefono, negocioId)) || [];
+        const pendientes = activos.filter(p => p.estado === 'pendiente_pago'
+          && !(p.datos?.pago_confirmado === true || p.datos?.pago_confirmado === 'true'));
+        if (pendientes.length === 1) {
+          const pedido = pendientes[0];
+          const pago = await marcarPagoConComprobanteEnRevision(negocioId, pedido.folio, idsDocumentos[0]);
+          if (pago) {
+            const mensaje = `Recibimos tu comprobante del pedido ${pedido.folio}. Una persona de nuestro equipo lo verificará; te confirmaremos en cuanto quede aplicado. El pedido no se libera hasta validar el pago.`;
+            await enviarMensaje(telefono, mensaje, credenciales);
+            await guardarMensaje(telefono, nombreMeta, 'saliente', mensaje, negocioId, 'bot');
+            await continuidadWA.enviarARevision(negocioId, telefono, 'COMPROBANTE_PAGO');
+            return;
+          }
+        }
+      }
+
       let contextosVisuales = null;
       try {
         const docIds = documentosDelTurno(textoCombinado);
@@ -2164,7 +2190,6 @@ async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, neg
       } catch (e) {
         console.error(`[VISION] fallback negocio=${negocioId} :: ${e.message}`);
       }
-      const esFotoMuda = soloImagenes(textoCombinado);
       if (esFotoMuda && !(contextosVisuales && contextosVisuales.size)) {
         // Foto sola SIN analisis disponible: el modelo no tiene nada que
         // interpretar (no ve imagenes) -- texto determinista, como siempre.
@@ -2659,8 +2684,10 @@ export async function consultarOfertaRepartidor(token) {
     if (fila.pedido_estado === 'entregado') return { estado: 'completado' };
     const pedido = await obtenerPedidoActivoPorFolio(fila.pedido_folio, fila.negocio_id);
     const direccion = pedido ? [
+      pedido.cliente?.direccion || null,
       pedido.cliente?.calle, pedido.cliente?.colonia,
       pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null,
+      pedido.cliente?.referencias ? `referencias: ${pedido.cliente.referencias}` : null,
     ].filter(Boolean).join(', ') : null;
     return {
       estado: 'asignado_a_mi',
@@ -2766,7 +2793,7 @@ export async function procesarAceptacionTokenRepartidor(token) {
   if (!detalleWaActivo) {
     console.log(`[Repartidor Token] Detalle por WhatsApp desactivado (el portal es la fuente de datos del ganador) — negocio ${fila.negocio_id}`);
   } else if (credenciales) {
-    const direccion = [pedido.cliente?.calle, pedido.cliente?.colonia, pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null]
+    const direccion = [pedido.cliente?.direccion || null, pedido.cliente?.calle, pedido.cliente?.colonia, pedido.cliente?.entre_calles ? `entre ${pedido.cliente.entre_calles}` : null, pedido.cliente?.referencias ? `referencias: ${pedido.cliente.referencias}` : null]
       .filter(Boolean).join(', ');
     try {
       await enviarPlantillaXaborDetalleServicioReparto(rep.telefono, {

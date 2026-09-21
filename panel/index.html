@@ -2871,6 +2871,24 @@ function getFormaPago(p) {
   if (p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true) return '';
   return p.forma_pago || p.cliente?.forma_pago || p.pago || '';
 }
+// WhatsApp suele entregar la dirección como texto libre (`direccion`) y la
+// tienda en línea como campos estructurados. Ambos formatos deben llegar al
+// operador, a la comanda y al ticket; antes solo se pintaban calle/colonia y
+// una dirección válida parecía estar vacía.
+function lineasDireccionCliente(c) {
+  if (!c) return [];
+  if (c.direccion) return [c.direccion, c.referencias ? `Referencias: ${c.referencias}` : null].filter(Boolean);
+  return [
+    c.calle,
+    c.numero_exterior ? `#${c.numero_exterior}` : null,
+    c.colonia ? `Col. ${c.colonia}` : null,
+    c.entre_calles ? `Entre: ${c.entre_calles}` : null,
+    c.referencia ? `Referencias: ${c.referencia}` : null,
+  ].filter(Boolean);
+}
+function direccionClienteHTML(c) {
+  return lineasDireccionCliente(c).map(x => esc(x)).join('<br>');
+}
 // PRESENTACIÓN de la forma de pago: el valor interno no cambia (los reportes
 // y la API siguen viendo 'enlace_pago'); solo lo que lee el operador. Un
 // pedido de tienda en línea visible en el tablero YA está pagado (el tablero
@@ -3268,8 +3286,7 @@ function renderComanda(p) {
     <div class="ticket-seccion-titulo">DATOS DEL CLIENTE</div>
     <div class="ticket-cliente-data">
       <div class="ticket-direccion">
-        ${p.cliente.calle || ''}${p.cliente.colonia ? '<br>Col. '+p.cliente.colonia : ''}
-        ${p.cliente.entre_calles ? '<br>Entre: '+p.cliente.entre_calles : ''}
+        ${direccionClienteHTML(p.cliente)}
       </div>
       ${telefono !== '—' ? `<div class="ticket-meta">Cel: ${telefono}</div>` : ''}
     </div>` : (telefono !== '—' ? `<div class="ticket-meta">Tel: ${telefono}</div>` : '');
@@ -3588,8 +3605,7 @@ function comandaHTML(p) {
 
   const dirEntrega = esEntrega && p.cliente ? `
     <div style="border-left:3px solid #000;padding:3px 6px;margin:4px 0;font-size:11px;">
-      ${p.cliente.calle || ''}${p.cliente.colonia ? '<br>Col. '+p.cliente.colonia : ''}
-      ${p.cliente.entre_calles ? '<br>Entre: '+p.cliente.entre_calles : ''}
+      ${direccionClienteHTML(p.cliente)}
     </div>` : '';
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
@@ -3669,9 +3685,7 @@ function ticketHTML(p) {
     <div class="seccion">DATOS DEL CLIENTE</div>
     <table class="info">
       <tr><td>Nombre</td><td class="r"><b>${nombre}</b></td></tr>
-      ${p.cliente.calle       ? `<tr><td>Calle</td><td class="r">${p.cliente.calle}</td></tr>`              : ''}
-      ${p.cliente.colonia     ? `<tr><td>Colonia</td><td class="r">${p.cliente.colonia}</td></tr>`          : ''}
-      ${p.cliente.entre_calles? `<tr><td>Entre calles</td><td class="r">${p.cliente.entre_calles}</td></tr>`: ''}
+      ${lineasDireccionCliente(p.cliente).map((linea, i) => `<tr><td>${i === 0 ? 'Dirección' : ''}</td><td class="r">${esc(linea)}</td></tr>`).join('')}
       <tr><td>Teléfono</td><td class="r">${telefono}</td></tr>
     </table>` : (telefono !== '—' ? `<table class="info"><tr><td>Teléfono</td><td class="r">${telefono}</td></tr></table>` : '');
 
@@ -7260,8 +7274,8 @@ async function cargarHistorial() {
         <span>${item.cantidad||1}x ${item.nombre||''}</span>
         <span style="color:#666;">$${((item.precio_unitario||0)*(item.cantidad||1)).toFixed(0)}</span>
       </div>${item.notas?`<div style="font-size:0.75rem;color:#aaa;padding-left:14px;">${item.notas}</div>`:''}`).join('');
-    const dir = esEntrega && p.cliente?.calle
-      ? `<div style="font-size:0.8rem;color:#888;margin-top:4px;">📍 ${p.cliente.calle}${p.cliente.colonia?', Col. '+p.cliente.colonia:''}</div>` : '';
+    const dir = esEntrega && lineasDireccionCliente(p.cliente).length
+      ? `<div style="font-size:0.8rem;color:#888;margin-top:4px;">📍 ${direccionClienteHTML(p.cliente)}</div>` : '';
     const devHtml = devolucion
       ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+devolucion.motivo+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
     const cancelHtml = cancelado && p.cancelacion?.motivo

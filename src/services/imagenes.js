@@ -211,11 +211,11 @@ export async function procesarImagenSaliente({ negocioId, telefono, buffer, file
   };
 }
 
-export async function crearRegistroImagenEntrante({ negocioId, telefono, filename, caption, wamid, mediaId }) {
+export async function crearRegistroImagenEntrante({ negocioId, telefono, filename, caption, wamid, mediaId, mimeType }) {
   return crearDocumentoPendiente({
     negocioId, telefono, direccion: 'entrante', origen: 'cliente',
     filename: filename || 'imagen', caption: caption || null, wamid: wamid || null,
-    categoria: 'imagen', mediaId: mediaId || null,
+    categoria: 'imagen', mediaId: mediaId || null, mimeType: mimeType || 'image/jpeg',
   });
 }
 

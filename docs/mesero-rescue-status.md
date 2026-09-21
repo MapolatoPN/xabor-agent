@@ -29,6 +29,30 @@ ese recorrido de prueba. Después de la validación se activó
 100% de sus teléfonos. Los eventos de `agente_outbox` siguen sin
 consumidor y no forman parte del camino productivo actual.
 
+### Incidente real revisado: Ariana y XAB-0458
+
+El pedido de Ariana quedó como `XAB-0460`. La dirección sí quedó guardada en
+`pedidos_activos.datos.cliente.direccion`; el panel solo buscaba los campos
+estructurados `calle` y `colonia`, por eso la mostraba vacía. Se corrigió el
+panel, la comanda, el ticket y las vistas del repartidor para aceptar ambos
+formatos.
+
+El comprobante enviado por Ariana fue una imagen, no una confirmación de Clip.
+La pasarela reportó el checkout como `CHECKOUT_EXPIRED`, sin `paid_at`, y el
+pedido fue cancelado por la ventana de pago. El sistema no debe marcar un
+enlace como pagado a partir de una captura. Desde este cambio, una imagen
+recibida mientras existe un pedido pendiente de pago congela la expiración,
+marca el pago como `requiere_revision`, acusa recibo al cliente y pausa el chat
+para revisión humana; Clip sigue siendo la autoridad automática para `pagado`.
+También se corrigió el MIME de imágenes entrantes, que se estaba guardando
+como PDF.
+
+El pedido de tienda `XAB-0458` sí tuvo pago confirmado, compra durable y dos
+trabajos de impresión enviados (Chilaquil y Cocina). Permanecía en estado
+`nuevo`, por lo que no aparecía en historial mientras esperaba la transición a
+`entregado`. Como ya fue recogido, se reconcilió a `entregado` y ahora queda
+visible en historial.
+
 ### Corrección de formas de pago del canario
 
 Mapolato Obispado tiene disponibles para el bot `efectivo`, `terminal` y

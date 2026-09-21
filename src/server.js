@@ -7558,7 +7558,8 @@ app.get('/api/repartidor/pedidos', requireRepartidor, async (req, res) => {
     calle: p.datos?.cliente?.calle,
     colonia: p.datos?.cliente?.colonia,
     entre_calles: p.datos?.cliente?.entre_calles,
-    direccion: [p.datos?.cliente?.calle, p.datos?.cliente?.colonia].filter(Boolean).join(', '),
+    direccion: [p.datos?.cliente?.direccion || null, p.datos?.cliente?.calle, p.datos?.cliente?.colonia,
+      p.datos?.cliente?.referencias ? `Referencias: ${p.datos.cliente.referencias}` : null].filter(Boolean).join(', '),
     total: p.datos?.total,
     items: p.datos?.items?.length
   });
@@ -7847,6 +7848,8 @@ app.get('/api/admin/repartidores/estado', requireAdminSeguro, requireModulo('pos
         calle: p.datos?.cliente?.calle,
         colonia: p.datos?.cliente?.colonia,
         entre_calles: p.datos?.cliente?.entre_calles,
+        direccion: [p.datos?.cliente?.direccion || null, p.datos?.cliente?.calle, p.datos?.cliente?.colonia,
+          p.datos?.cliente?.referencias ? `Referencias: ${p.datos.cliente.referencias}` : null].filter(Boolean).join(', '),
         total: p.datos?.total,
         hora: new Date(p.created_at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', timeZone: tz })
       });
