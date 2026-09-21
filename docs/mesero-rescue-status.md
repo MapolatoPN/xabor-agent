@@ -863,3 +863,49 @@ La consulta de solo lectura a producción confirmó para Mapolato Obispado:
 Validación local: 9/9 casos específicos de horario, 65/65 herramientas,
 17/17 canario, 18/18 confirmación perdida, 5/5 handoff, 26/26 replay y gate
 obligatorio de incidentes en verde.
+
+## 16. Reglas del módulo Asistente conectadas al agente nuevo — 21 de septiembre de 2026
+
+La auditoría encontró que el panel sí guardaba las reglas en
+`configuracion.reglas_atencion.bot`, pero solo el bot anterior las agregaba a
+su prompt. El agente nuevo cargaba el mismo objeto para cálculos operativos y
+omitía la sección completa al conversar. El simulador de la pantalla también
+probaba el bot anterior, por lo que no representaba el camino de WhatsApp.
+
+La corrección local conecta al agente productivo, la sombra y el simulador con
+las mismas reglas guardadas:
+
+- saludo inicial, solo en el primer turno;
+- tono y personalidad;
+- información importante;
+- preguntas frecuentes;
+- respuestas prohibidas;
+- condiciones para transferir a una persona;
+- palabras o escenarios críticos;
+- notas operativas, instrucciones de pago, zonas de entrega y políticas.
+
+Las zonas de entrega ya se pueden aplicar al pedido desde
+`definir_entrega(zona_entrega)`. La zona debe existir en la configuración y su
+nombre debe aparecer en el mensaje o dirección del cliente; el agente no puede
+inventarla ni mandar un costo arbitrario. Cambiar a recoger limpia una tarifa
+de zona anterior. Las menciones de tarifas que solo estén escritas como texto
+libre siguen sin modificar el total: deben configurarse en el campo estructurado
+"Zonas de entrega".
+
+El nombre se toma ahora de `configuracion.nombre`, que es la clave real usada
+por Mapolato Obispado. Antes buscaba `nombre_negocio` y el prompt terminaba
+presentándose como "el restaurante".
+
+Las respuestas prohibidas tienen una barrera posterior al modelo: se comparan
+sin depender de mayúsculas, acentos o puntuación. Si una aparece, ese texto no
+sale al cliente y la conversación se entrega a una persona. La misma barrera
+revisa las respuestas automáticas de pago, modalidad y confirmación.
+
+Las reglas de texto no pueden sustituir resultados estructurados. Catálogo,
+disponibilidad, modalidades, métodos de pago, promociones y totales siguen
+siendo autoridad de las herramientas de Xabor. Esto evita que una nota libre
+diga un costo de envío y el pedido registre otro.
+
+Validación local específica: 9/9 casos. La puerta obligatoria de incidentes
+también comprueba que las tres rutas reciban las reglas y que el simulador use
+el agente nuevo. El bot de producción continuó apagado durante el cambio.

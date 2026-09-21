@@ -21,6 +21,9 @@ import { camposObligatoriosCompletos } from '../src/agent/comercialMarkers.js';
 import { construirBloqueModoComercial, obtenerEstadoRestaurante } from '../src/agent/prompts.js';
 import { mensajePideMenu } from '../src/services/menuAutomatico.js';
 import { construirAvisoFueraDeHorario } from '../src/mesero-agente/horarioDelAgente.js';
+import {
+  reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada,
+} from '../src/mesero-agente/reglasDelAsistente.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -79,6 +82,58 @@ const posicionProgramado = fuenteCanalAgente.indexOf('esSolicitudDePedidoProgram
 const posicionModelo = fuenteCanalAgente.indexOf('salida = await atenderTurnoConHerramientas({', posicionAvisoCierre);
 assert.ok(posicionAvisoCierre >= 0 && posicionProgramado > posicionAvisoCierre && posicionModelo > posicionProgramado,
   'el agente puede llegar al modelo antes de responder que el negocio está cerrado');
+
+// Módulo Asistente: sus opciones deben alimentar al agente nuevo y su
+// simulador, no quedarse conectadas únicamente al prompt del bot anterior.
+const reglasAsistente = {
+  pedidos: { costo_envio: 60, zonas_entrega: [{ nombre: 'UTNC', costo: 150 }] },
+  politicas: ['Los cambios posteriores requieren revisión.'],
+  bot: {
+    saludo: 'Hola desde Mapolato', tono: 'cálido', personalidad: 'servicial',
+    informacion_importante: 'Información propia del negocio.',
+    faqs: [{ pregunta: '¿Facturan?', respuesta: 'Sí.' }],
+    respuestas_prohibidas: ['El sistema lo ajustará después'],
+    transferir_a_humano: 'Si el cliente se queja.',
+    palabras_criticas: ['alergia'],
+  },
+};
+const textoReglasAsistente = reglasDelAsistenteEnTexto(reglasAsistente, { esPrimerTurno: true });
+for (const dato of ['Hola desde Mapolato', 'cálido', 'servicial', 'Información propia',
+  '¿Facturan?', 'El sistema lo ajustará después', 'Si el cliente se queja',
+  'alergia', '$60 MXN', '$150 MXN', 'Los cambios posteriores']) {
+  assert.ok(textoReglasAsistente.includes(dato), `el agente nuevo perdió la regla de Asistente: ${dato}`);
+}
+assert.equal(respuestaProhibidaEncontrada('El sistema lo ajustara después.', reglasAsistente),
+  'El sistema lo ajustará después', 'una respuesta prohibida volvió a poder salir por cambio de acentos');
+assert.ok((fuenteCanalAgente.match(/reglasDelAsistenteEnTexto\(reglas/g) || []).length >= 3,
+  'productivo, sombra o simulador volvió a ignorar las reglas del módulo Asistente');
+assert.match(fuenteCanalAgente, /cfg\?\.nombre \|\| cfg\?\.nombre_negocio/,
+  'el agente volvió a llamar “el restaurante” a un negocio con configuracion.nombre');
+const fuenteServidor = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8');
+assert.match(fuenteServidor, /simularConAgente\(\{/,
+  'el simulador del módulo Asistente volvió a usar un motor distinto al agente nuevo');
+const NEGOCIO_REGLAS = '11111111-1111-4111-8111-111111111111';
+const estadoZona = estadoNuevo({ negocioId: NEGOCIO_REGLAS, conversacionId: 'gate-zona-entrega' });
+const entregaZona = await crearEjecutor({
+  estado: estadoZona,
+  reglas: reglasAsistente,
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  mensaje: 'Es entrega a domicilio en UTNC, edificio principal.',
+}).ejecutar('definir_entrega', {
+  modalidad: 'entrega a domicilio', direccion: 'UTNC, edificio principal', zona_entrega: 'UTNC',
+});
+assert.equal(entregaZona.aplicado, true, 'una zona configurada y dicha por el cliente fue rechazada');
+assert.equal(estadoZona.carrito.datos.costo_envio, 150,
+  'la tarifa de la zona no llegó al carrito canónico');
+const estadoZonaInventada = estadoNuevo({ negocioId: NEGOCIO_REGLAS, conversacionId: 'gate-zona-inventada' });
+estadoZonaInventada.carrito.datos.modalidad = 'entrega a domicilio';
+const zonaInventada = await crearEjecutor({
+  estado: estadoZonaInventada,
+  reglas: reglasAsistente,
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  mensaje: 'Es entrega a domicilio en Zona Inventada.',
+}).ejecutar('definir_entrega', { zona_entrega: 'Zona Inventada' });
+assert.equal(zonaInventada.aplicado, false, 'el agente aceptó una tarifa de zona que el negocio no configuró');
 
 // Flujos secundarios que deben seguir vivos cuando se vuelva a habilitar el
 // bot: folio originado por llamada, catering y menú de imágenes.
@@ -287,4 +342,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: corte maestro, horario cerrado, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: corte maestro, horario cerrado, reglas del Asistente, zonas de envío, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

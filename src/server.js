@@ -6,7 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHmac, createHash, timingSafeEqual, randomUUID } from 'crypto';
 
-import { procesarMensaje, simularMensaje } from './agent/brain.js';
+import { procesarMensaje } from './agent/brain.js';
 import { validarEstructuraReglas } from './agent/prompts.js';
 import {
   registrarPedido,
@@ -7354,8 +7354,9 @@ app.post('/api/admin/pagos/:pagoId/rechazar-manual', requireAdminSeguro, async (
 // ─── Simulador del bot (Fase 4 -- centro de entrenamiento) ───────────────────
 // Admin-only, nunca WhatsApp/voz real: usa exactamente la configuración real
 // del negocio (menú, reglas_atencion, entrenamiento) a través de
-// simularMensaje(), pero esa función nunca registra pedidos, envía mensajes
-// ni persiste nada en `mensajes`. El sessionId siempre lo genera el
+// simularConAgente(), con el mismo prompt, herramientas y reglas que el agente
+// nuevo de WhatsApp. Nunca registra pedidos, envía mensajes ni persiste nada.
+// El sessionId siempre lo genera el
 // servidor con el negocioId embebido y cada request re-valida que el
 // sessionId pertenezca al negocio de la sesión -- un admin de otro negocio
 // nunca puede leer ni limpiar la conversación de prueba de otro.
@@ -7377,7 +7378,16 @@ app.post('/api/admin/bot-simulador/mensaje', requireAdminSeguro, async (req, res
   if (!mensaje || typeof mensaje !== 'string' || !mensaje.trim()) return res.status(400).json({ error: 'Se requiere mensaje' });
   if (!sessionIdPerteneceANegocio(sessionId, req.negocioId)) return res.status(400).json({ error: 'sessionId inválido para este negocio' });
   try {
-    const resultado = await simularMensaje(sessionId, mensaje.trim(), req.negocioId);
+    // Carga tardía: el adaptador del agente ya es un componente del canal y
+    // no debe ampliar el grafo de imports del arranque completo del servidor.
+    const [{ simularConAgente }, { llamarModeloDelAgente }] = await Promise.all([
+      import('./mesero-agente/canalDelAgente.js'),
+      import('./mesero-agente/modeloDelAgente.js'),
+    ]);
+    const resultado = await simularConAgente({
+      sessionId, mensaje: mensaje.trim(), negocioId: req.negocioId,
+      llamarModelo: llamarModeloDelAgente,
+    });
     res.json(resultado);
   } catch (e) {
     console.error('[POST /api/admin/bot-simulador/mensaje] Error:', e.message);
@@ -7385,9 +7395,10 @@ app.post('/api/admin/bot-simulador/mensaje', requireAdminSeguro, async (req, res
   }
 });
 
-app.delete('/api/admin/bot-simulador/:sessionId', requireAdminSeguro, (req, res) => {
+app.delete('/api/admin/bot-simulador/:sessionId', requireAdminSeguro, async (req, res) => {
   if (!sessionIdPerteneceANegocio(req.params.sessionId, req.negocioId)) return res.status(400).json({ error: 'sessionId inválido para este negocio' });
-  deleteSession(req.params.sessionId);
+  const { limpiarSimulacionDelAgente } = await import('./mesero-agente/canalDelAgente.js');
+  limpiarSimulacionDelAgente(req.params.sessionId);
   res.json({ ok: true });
 });
 

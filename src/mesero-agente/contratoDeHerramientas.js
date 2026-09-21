@@ -184,8 +184,10 @@ export const HERRAMIENTAS = Object.freeze([
         .describe('Tal como el negocio la llama, usando solo una modalidad disponible.'),
       direccion: z.string().min(1).optional().describe('La dirección completa que dio el cliente.'),
       referencias: z.string().max(200).optional().describe('Entre qué calles, color de la casa…'),
-    }).strict().refine((v) => v.modalidad || v.direccion || v.referencias,
-      { message: 'definir_entrega necesita al menos modalidad, direccion o referencias' }),
+      zona_entrega: z.string().min(1).optional()
+        .describe('Nombre EXACTO de una zona configurada, solo si el cliente la mencionó en su mensaje o dirección.'),
+    }).strict().refine((v) => v.modalidad || v.direccion || v.referencias || v.zona_entrega,
+      { message: 'definir_entrega necesita al menos modalidad, direccion, referencias o zona_entrega' }),
   },
   {
     nombre: 'definir_pago',

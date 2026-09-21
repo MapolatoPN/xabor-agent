@@ -381,9 +381,11 @@ export function crearEjecutor({
       return ok({ pedido: r.pedido });
     },
 
-    definir_entrega({ modalidad, direccion, referencias }) {
+    definir_entrega({ modalidad, direccion, referencias, zona_entrega }) {
       const props = [];
       let rechazoModalidad = null;
+      let modalidadEvaluada = null;
+      let costoPorModalidad = null;
       if (modalidad) {
         const evaluacion = evaluarModalidad({ modalidad, modalidades, mensaje });
         if (!evaluacion.ok) {
@@ -394,9 +396,15 @@ export function crearEjecutor({
             modalidades_disponibles: evaluacion.disponibles.map((m) => etiquetaTipoModalidad(m.tipo)),
           };
         } else {
+          modalidadEvaluada = evaluacion;
           props.push(propuesta({
             accion: 'definir_modalidad', valorNuevo: evaluacion.valor, evidencia: mensaje,
           }));
+          // Cambiar de modalidad invalida cualquier tarifa anterior. En
+          // domicilio se recupera la base; recoger/sitio guardan cero, que al
+          // volver a domicilio tampoco puede confundirse con una zona.
+          const costoBase = Number(reglas?.pedidos?.costo_envio) || 0;
+          costoPorModalidad = evaluacion.tipo === 'domicilio' ? costoBase : 0;
         }
       }
       if (direccion || referencias) {
@@ -404,6 +412,42 @@ export function crearEjecutor({
           valorNuevo: { ...(direccion ? { direccion } : {}), ...(referencias ? { referencias } : {}) },
           evidencia: mensaje }));
       }
+
+      let zonaAplicada = null;
+      let rechazoZona = null;
+      if (zona_entrega) {
+        const zonas = Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [];
+        const zona = zonas.find((z) => norm(z?.nombre) === norm(zona_entrega)
+          && Number.isFinite(Number(z?.costo)));
+        if (!zona) {
+          rechazoZona = {
+            codigo: 'zona_no_configurada', zona_solicitada: String(zona_entrega),
+            zonas_disponibles: zonas.map((z) => z?.nombre).filter(Boolean),
+            motivo: `zona_no_configurada: "${zona_entrega}". Zonas disponibles: `
+              + `${zonas.map((z) => z?.nombre).filter(Boolean).join(', ') || 'ninguna'}.`,
+          };
+        } else if (!norm(mensaje).includes(norm(zona.nombre))) {
+          rechazoZona = {
+            codigo: 'zona_sin_respaldo', zona_solicitada: String(zona.nombre),
+            motivo: `zona_sin_respaldo: el cliente no mencionó "${zona.nombre}" en este mensaje.`,
+          };
+        } else {
+          const modalidadFinal = rechazoModalidad ? null : (modalidadEvaluada?.tipo
+            || evaluarModalidad({ modalidad: estado.carrito?.datos?.modalidad,
+              modalidades, mensaje, exigirEvidencia: false }).tipo);
+          if (modalidadFinal !== 'domicilio') {
+            rechazoZona = {
+              codigo: 'zona_sin_domicilio', zona_solicitada: String(zona.nombre),
+              motivo: `zona_sin_domicilio: ${zona.nombre} solo aplica a entrega a domicilio.`,
+            };
+          } else {
+            zonaAplicada = { nombre: String(zona.nombre), costo: Number(zona.costo) };
+            costoPorModalidad = zonaAplicada.costo;
+          }
+        }
+      }
+      if (costoPorModalidad !== null) props.push(propuesta({ accion: 'definir_costo_envio',
+        valorNuevo: costoPorModalidad, evidencia: mensaje }));
       const r = aplicar(props);
       if (rechazoModalidad && r.aplicado) {
         return ok({ ...rechazoModalidad, pedido: r.pedido, parcial: true });
@@ -411,8 +455,14 @@ export function crearEjecutor({
       if (rechazoModalidad) {
         return noAplicado(rechazoModalidad.motivo, { ...rechazoModalidad, pedido: r.pedido });
       }
+      if (rechazoZona && r.aplicado) {
+        return ok({ ...rechazoZona, pedido: r.pedido, parcial: true });
+      }
+      if (rechazoZona) {
+        return noAplicado(rechazoZona.motivo, { ...rechazoZona, pedido: r.pedido });
+      }
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
-      return ok({ pedido: r.pedido });
+      return ok({ pedido: r.pedido, ...(zonaAplicada ? { zona_entrega: zonaAplicada } : {}) });
     },
 
     definir_pago({ forma_pago, paga_con }) {

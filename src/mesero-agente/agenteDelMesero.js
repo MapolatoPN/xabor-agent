@@ -30,6 +30,7 @@ import { definicionesParaElModelo, validarArgumentos, tieneEfecto } from './cont
 import { crearEjecutor } from './ejecutorDeHerramientas.js';
 import { hashDeArgumentos } from './libroDeOperaciones.js';
 import { construirInstrucciones } from './instrucciones.js';
+import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -174,6 +175,12 @@ export async function atenderTurnoConHerramientas({
           // Ni herramientas ni texto. No hay nada que mandarle al cliente y
           // reintentar sería girar en el vacío.
           return await escalarYSalir(CIERRE.ERROR, 'el modelo no produjo respuesta');
+        }
+        const prohibida = respuestaProhibidaEncontrada(texto, reglas);
+        if (prohibida) {
+          anotar({ tipo: 'respuesta_prohibida', frase: prohibida });
+          return await escalarYSalir(CIERRE.ESCALADO,
+            `la respuesta del modelo contiene una frase prohibida por el negocio: ${prohibida}`);
         }
         return cerrar(CIERRE.RESPONDIO, texto);
       }

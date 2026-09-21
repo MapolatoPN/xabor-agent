@@ -35,6 +35,7 @@ import {
   TEXTO_CAMBIO_NO_GUARDADO, TEXTO_PEDIDO_PROGRAMADO,
 } from './seguridadConversacional.js';
 import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
+import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -241,11 +242,12 @@ export async function atenderConAgente({
       llamarModelo,
       efectos,
       contexto: {
-        nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
+        nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,
         datosConocidos: [telefono && telefono !== '—' ? `Teléfono: ${telefono}` : null,
           nombre ? `Nombre: ${nombre}` : null].filter(Boolean),
-        tono: cfg?.tono_bot || null,
+        tono: reglas?.bot?.tono || cfg?.tono_bot || null,
+        reglasDelNegocio: reglasDelAsistenteEnTexto(reglas, { esPrimerTurno: Number(estado.turno || 0) === 0 }),
         metodosPago,
         pagoDescartado,
         modalidades,
@@ -259,6 +261,23 @@ export async function atenderConAgente({
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     salida = aplicarRespuestaDeConfirmacion({ salida, estado });
     salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+
+    // Las respuestas automáticas posteriores al modelo (pago, modalidad y
+    // confirmación) pasan por la misma barrera. La opción del panel dice
+    // "nunca debe decir", así que no puede depender de quién armó el texto.
+    const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
+    if (prohibidaFinal) {
+      const entregado = await avisarAHumano(
+        escalarAHumano, negocioId, telefono, 'AGENTE_RESPUESTA_PROHIBIDA');
+      if (entregado) {
+        estado.hechos.escalado = true;
+        salida.escalado = true;
+      } else {
+        salida.handoffPendiente = true;
+      }
+      salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
+      salida.motivoCierre = CIERRE.ESCALADO;
+    }
 
     // El prompt exige usar herramientas, pero la conversación de Tania
     // demostró que el modelo puede decir «apunto» o «anotamos» sin hacerlo.
@@ -418,9 +437,10 @@ export async function observarConAgente({
         },
       },
       contexto: {
-        nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
+        nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,
-        tono: cfg?.tono_bot || null,
+        tono: reglas?.bot?.tono || cfg?.tono_bot || null,
+        reglasDelNegocio: reglasDelAsistenteEnTexto(reglas, { esPrimerTurno: Number(estado.turno || 0) === 0 }),
         metodosPago,
         pagoDescartado,
         modalidades,
@@ -433,6 +453,14 @@ export async function observarConAgente({
 
     aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+    const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
+    if (prohibidaFinal) {
+      estado.hechos.escalado = true;
+      salida.escalado = true;
+      salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
+      salida.motivoCierre = CIERRE.ESCALADO;
+      grabadas.push({ tipo: 'handoff_hipotetico', motivo: 'AGENTE_RESPUESTA_PROHIBIDA' });
+    }
 
     await guardarEstado(negocioId, telefono, estado, { sombra: true });
 
@@ -454,6 +482,138 @@ export async function observarConAgente({
     console.error('[SOMBRA-AGENTE] contenida:', e?.message);
     return { ok: false, motivo: e?.message || 'error', ms: Date.now() - t0 };
   }
+}
+
+// ── SIMULADOR DEL MÓDULO ASISTENTE ──────────────────────────────────────
+// Usa el mismo bucle, herramientas, prompt y reglas que WhatsApp. El estado y
+// el libro viven solo en memoria; confirmar y escalar son efectos simulados.
+const sesionesSimuladas = new Map();
+
+export function limpiarSimulacionDelAgente(sessionId) {
+  return sesionesSimuladas.delete(sessionId);
+}
+
+export async function simularConAgente({
+  sessionId, negocioId, mensaje, llamarModelo,
+} = {}) {
+  if (!String(sessionId || '').startsWith('sim-')) throw new Error('sessionId de simulador inválido');
+  if (!String(negocioId || '').trim()) throw new Error('negocioId de simulador inválido');
+  if (!String(mensaje || '').trim()) throw new Error('mensaje de simulador vacío');
+
+  let sesion = sesionesSimuladas.get(sessionId);
+  if (!sesion) {
+    sesion = {
+      estado: estadoNuevo({ negocioId, conversacionId: sessionId }),
+      historial: [],
+      almacen: almacenEnMemoria(),
+    };
+    sesionesSimuladas.set(sessionId, sesion);
+  }
+
+  const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
+    obtenerMenuCompleto(negocioId),
+    obtenerConfiguracion(negocioId).catch(() => ({})),
+    obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
+    cargarReglas(negocioId),
+  ]);
+  const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+  let salida;
+
+  if (!estadoRestaurante.abierto) {
+    const configTienda = await obtenerConfigTienda(negocioId).catch(() => null);
+    salida = {
+      texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda }),
+      confirmado: false, escalado: false, operaciones: [], fueraHorario: true,
+    };
+  } else {
+    if (!Array.isArray(catalogo) || !catalogo.length) throw new Error('El negocio no tiene catálogo disponible');
+    sesion.estado = cicloParaTurno(sesion.estado, mensaje);
+    const estado = sesion.estado;
+
+    if (esSolicitudDePedidoProgramado(mensaje, {
+      hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
+    })) {
+      estado.hechos.escalado = true;
+      salida = {
+        texto: TEXTO_PEDIDO_PROGRAMADO, confirmado: false, escalado: true,
+        operaciones: [{ herramienta: 'pedir_humano', simulado: true }],
+      };
+    } else {
+      const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+        ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+      const promocionesActivas = estadoRestaurante.promocionesActivas || [];
+      const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
+      const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
+
+      salida = await atenderTurnoConHerramientas({
+        negocioId,
+        conversacionId: estado.conversacionId,
+        turnoId: `sim-${Date.now()}`,
+        mensaje,
+        historial: sesion.historial,
+        catalogo,
+        precios: preciosDelCatalogo(catalogo),
+        requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
+        metodosPago,
+        modalidades,
+        reglas,
+        promocionesActivas,
+        estado,
+        libro: libroDeOperaciones(sesion.almacen),
+        llamarModelo,
+        efectos: {
+          confirmar: async ({ pedido }) => ({
+            ok: true, folio: 'SIMULADO', simulado: true,
+            total: pedido?.total, subtotal: pedido?.subtotal, costo_envio: pedido?.costo_envio,
+          }),
+          escalar: async () => ({ ok: true, simulado: true }),
+        },
+        contexto: {
+          nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
+          textoCiclo: mensaje,
+          tono: reglas?.bot?.tono || cfg?.tono_bot || null,
+          reglasDelNegocio: reglasDelAsistenteEnTexto(reglas, { esPrimerTurno: Number(estado.turno || 0) === 0 }),
+          metodosPago,
+          pagoDescartado,
+          modalidades,
+          modalidadDescartada,
+          estadoRestaurante,
+        },
+        modo: 'simulacion',
+      });
+
+      aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
+      aplicarRespuestaDeConfirmacion({ salida, estado });
+      aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+      const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
+      if (prohibidaFinal) {
+        estado.hechos.escalado = true;
+        salida.escalado = true;
+        salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
+        salida.motivoCierre = CIERRE.ESCALADO;
+      }
+      if (respuestaAfirmaCambioSinAplicar(salida)) {
+        estado.hechos.escalado = true;
+        salida.escalado = true;
+        salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
+        salida.motivoCierre = CIERRE.ESCALADO;
+      }
+    }
+  }
+
+  sesion.historial.push(
+    { rol: 'user', texto: String(mensaje) },
+    { rol: 'assistant', texto: String(salida.texto || '') },
+  );
+  // Mantiene contexto suficiente sin dejar crecer el proceso por cada prueba.
+  sesion.historial = sesion.historial.slice(-20);
+  return {
+    texto: String(salida.texto || ''),
+    ordenDetectada: !!salida.confirmado,
+    escalar: !!salida.escalado,
+    fueraHorario: !!salida.fueraHorario,
+    sessionId,
+  };
 }
 
 /** El resultado durable de `confirmar_pedido`, si ocurrió en este turno. */

@@ -42,7 +42,7 @@ import { reconciliar, carritoVacio, parecido } from '../orders/carritoDelPedido.
 export const ACCIONES = Object.freeze([
   'agregar', 'quitar', 'duplicar',
   'cambiar_cantidad', 'cambiar_modificador', 'agregar_nota',
-  'definir_modalidad', 'definir_pago', 'definir_cliente',
+  'definir_modalidad', 'definir_pago', 'definir_cliente', 'definir_costo_envio',
 ]);
 
 const norm = (s) => String(s || '')
@@ -151,6 +151,7 @@ export function borradorDesdePropuestas(carrito, propuestas = []) {
       case 'definir_modalidad': datos.modalidad = p.valorNuevo; break;
       case 'definir_pago': datos.forma_pago = p.valorNuevo; break;
       case 'definir_cliente': datos.cliente = { ...(datos.cliente || {}), ...(p.valorNuevo || {}) }; break;
+      case 'definir_costo_envio': datos.costo_envio = Number(p.valorNuevo); break;
       default: break;
     }
   }
@@ -158,6 +159,7 @@ export function borradorDesdePropuestas(carrito, propuestas = []) {
   const borrador = { items };
   if (datos.modalidad !== undefined) borrador.modalidad = datos.modalidad;
   if (datos.forma_pago !== undefined) borrador.forma_pago = datos.forma_pago;
+  if (datos.costo_envio !== undefined) borrador.costo_envio = datos.costo_envio;
   if (datos.cliente) borrador.cliente = datos.cliente;
   return { borrador, quitarPorLid, noAplicables };
 }
@@ -220,6 +222,7 @@ export function aplicarPropuestas(carritoPrevio, propuestas = [], opciones = {})
       case 'definir_modalidad': aplicada = carrito.datos?.modalidad === p.valorNuevo; break;
       case 'definir_pago': aplicada = carrito.datos?.forma_pago === p.valorNuevo; break;
       case 'definir_cliente': aplicada = !!carrito.datos?.cliente; break;
+      case 'definir_costo_envio': aplicada = Number(carrito.datos?.costo_envio) === Number(p.valorNuevo); break;
       default: aplicada = false;
     }
     decisiones.push({ propuesta: p, decision: aplicada ? 'aceptada' : 'rechazada',
