@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   confirmarYEmitir, ordenDesdeElCarrito, aplicarRespuestaDePago,
-  aplicarRespuestaDeEntrega,
+  aplicarRespuestaDeEntrega, aplicarRespuestaDeConfirmacion,
 } from '../src/mesero-agente/canalDelAgente.js';
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 
@@ -131,6 +131,48 @@ const respuestaModalidadDomicilio = aplicarRespuestaDeEntrega({
   } }] },
 });
 assert.match(respuestaModalidadDomicilio.texto, /El costo de envío es \$60 MXN/);
+
+// XAB-0481: el modelo redactó $470 desde el borrador, pero registrarPedido
+// devolvió el total canónico de $500. La salida al cliente debe usar siempre
+// el resultado canónico, también cuando paga con terminal y no hay enlace.
+const estado481 = estadoNuevo({ negocioId: 'negocio-prueba', conversacionId: 'respuesta-481' });
+estado481.carrito.datos = {
+  modalidad: 'entrega a domicilio', forma_pago: 'terminal',
+  cliente: { direccion: 'Libramiento 1384' },
+};
+const respuesta481 = aplicarRespuestaDeConfirmacion({
+  estado: estado481,
+  salida: { texto: 'Pedido confirmado por $470.', operaciones: [{ herramienta: 'confirmar_pedido',
+    resultado: { aplicado: true, folio: 'XAB-0481', total: 500, subtotal: 440, costo_envio: 60 } }] },
+});
+assert.match(respuesta481.texto, /XAB-0481/);
+assert.match(respuesta481.texto, /\$500 MXN/);
+assert.match(respuesta481.texto, /incluye \$60 MXN de envío/);
+assert.match(respuesta481.texto, /Libramiento 1384/);
+assert.doesNotMatch(respuesta481.texto, /\$470/);
+
+let registrosConTotalDistinto = 0;
+const totalDistinto = await confirmarYEmitir({
+  ...args,
+  pedido: { total: 470 },
+  previsualizar: async () => ({ ok: true, preview: { total: 500 } }),
+  registrar: async () => { registrosConTotalDistinto += 1; return { id: 'NO-DEBE-EXISTIR' }; },
+});
+assert.equal(totalDistinto.ok, false);
+assert.match(totalDistinto.motivo, /total_cambio/);
+assert.equal(registrosConTotalDistinto, 0, 'registró antes de reconciliar el precio confirmado');
+
+let registrosConDescuento = 0;
+const totalConDescuento = await confirmarYEmitir({
+  ...args,
+  pedido: { total: 500 },
+  previsualizar: async () => ({ ok: true, preview: { total: 450 } }),
+  registrar: async () => { registrosConDescuento += 1; return { id: 'XAB-PROMO', total: 450 }; },
+  emitir: async () => {},
+  guardar: async () => {},
+});
+assert.equal(totalConDescuento.ok, true, 'una promoción que baja el total no debe bloquear el pedido');
+assert.equal(registrosConDescuento, 1);
 
 const emisionFallida = await confirmarYEmitir({ ...args,
   emitir: async () => { throw new Error('impresora no disponible'); } });

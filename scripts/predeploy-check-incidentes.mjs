@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { libroDeOperaciones, almacenEnMemoria } from '../src/mesero-agente/libroDeOperaciones.js';
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
 import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
+import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
+import { aplicarRespuestaDeConfirmacion, confirmarYEmitir } from '../src/mesero-agente/canalDelAgente.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -125,4 +128,80 @@ assert.match(migracion086, /BEFORE INSERT OR UPDATE OF estado, datos ON pedidos_
 assert.ok(runner.indexOf("'086-estado-pedidos'") > runner.indexOf("'085-agente-outbox'"),
   'el runner productivo debe aplicar la 086 después de la 085');
 
-console.log('OK: doble confirmación, sesión, menú, Restaurante, replay y XAB-0458 protegidos.');
+// XAB-0481: el borrador omitió el extra de bistec, confundió una guarnición
+// con tacos y descartó una dirección al rechazar una modalidad inferida.
+const opcion = (nombre, precio_extra = 0) => ({ nombre, precio_extra, disponible: true });
+const catalogo481 = [{ id: 48, nombre: 'Desayunos', productos: [
+  { id: 107, nombre: 'Chilaquiles Mixtos', precio: 205, disponible: true, modificadores: [
+    { nombre: 'Salsa', requerido: true, minimo: 1, maximo: 2, opciones: [opcion('Verde')] },
+    { nombre: 'Proteína', requerido: true, minimo: 1, maximo: 2,
+      opciones: [opcion('Huevos Estrellados'), opcion('Bistec en Salsa', 30)] },
+    { nombre: 'Guarniciones', requerido: true, minimo: 1, maximo: 2,
+      opciones: [opcion('Frijolitos con chorizo'), opcion('Papas a la mexicana')] },
+  ] },
+  { id: 501, nombre: 'Taco de papa a la mexicana', precio: 35, disponible: true, modificadores: [] },
+] }];
+const estado481 = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'agente:5218721242184' });
+estado481.carrito.items = [
+  { lid: 'linea-1', nombre: 'Chilaquiles Mixtos', cantidad: 1, notas: 'sin cebolla arriba',
+    modificadores: [
+      { grupo: 'Salsa', opciones: ['Verde'] },
+      { grupo: 'Proteína', opciones: ['Huevos Estrellados'] },
+      { grupo: 'Guarniciones', opciones: ['Frijolitos con chorizo'] },
+    ] },
+  { lid: 'linea-2', nombre: 'Chilaquiles Mixtos', cantidad: 1, notas: 'sin cebolla arriba',
+    modificadores: [
+      { grupo: 'Salsa', opciones: ['Verde'] },
+      { grupo: 'Proteína', opciones: ['Huevos Estrellados', 'Bistec en Salsa'] },
+      { grupo: 'Guarniciones', opciones: ['Frijolitos con chorizo'] },
+    ] },
+];
+estado481.carrito.datos = { modalidad: 'entrega a domicilio', forma_pago: 'terminal',
+  cliente: { nombre: 'Aide', direccion: 'Libramiento 1384' } };
+const vista481 = vistaDelPedido({ carrito: estado481.carrito, catalogo: catalogo481,
+  precios: { 'Chilaquiles Mixtos': 205, 'Taco de papa a la mexicana': 35 },
+  reglas: { pedidos: { costo_envio: 60 } } });
+assert.equal(vista481.subtotal, 440, 'el resumen omitió los $30 del bistec');
+assert.equal(vista481.total, 500, 'el total no sumó extra y envío antes de confirmar');
+
+const ejecutor481 = crearEjecutor({ estado: estado481, catalogo: catalogo481,
+  precios: { 'Chilaquiles Mixtos': 205, 'Taco de papa a la mexicana': 35 },
+  mensaje: 'Y papas a la mexicana', textoCiclo: 'Y papas a la mexicana' });
+const busqueda481 = await ejecutor481.ejecutar('buscar_producto', { texto: 'papas a la mexicana' });
+assert.equal(busqueda481.es_opcion_del_pedido, true,
+  'Papas a la mexicana volvió a tratarse como taco en vez de guarnición');
+assert.deepEqual(busqueda481.encontrados, []);
+assert.equal(busqueda481.coincidencias_opcion.length, 2);
+
+const estadoDireccion481 = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'direccion-481' });
+const entrega481 = await crearEjecutor({ estado: estadoDireccion481, catalogo: catalogo481,
+  precios: { 'Chilaquiles Mixtos': 205 },
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  mensaje: 'Dirección: Guardia Nacional frente al Banco Bienestar',
+  textoCiclo: 'Dirección: Guardia Nacional frente al Banco Bienestar' })
+  .ejecutar('definir_entrega', {
+    modalidad: 'domicilio', direccion: 'Guardia Nacional frente al Banco Bienestar',
+  });
+assert.equal(entrega481.aplicado, true, 'la dirección se perdió junto con la modalidad inferida');
+assert.equal(entrega481.codigo, 'modalidad_sin_respaldo');
+assert.equal(estadoDireccion481.carrito.datos.modalidad, undefined);
+assert.equal(estadoDireccion481.carrito.datos.cliente.direccion,
+  'Guardia Nacional frente al Banco Bienestar');
+
+const respuesta481 = aplicarRespuestaDeConfirmacion({ estado: estado481,
+  salida: { texto: 'Confirmado por $470', operaciones: [{ herramienta: 'confirmar_pedido',
+    resultado: { aplicado: true, folio: 'XAB-0481', total: 500, costo_envio: 60 } }] } });
+assert.match(respuesta481.texto, /\$500 MXN/);
+assert.doesNotMatch(respuesta481.texto, /\$470/);
+
+let registros481 = 0;
+const barrera481 = await confirmarYEmitir({
+  negocioId: NEGOCIO, telefono: '5218721242184', canal: 'whatsapp', estado: estado481,
+  pedido: { total: 470 }, emitir: async () => {}, guardar: async () => {},
+  previsualizar: async () => ({ ok: true, preview: { total: 500 } }),
+  registrar: async () => { registros481 += 1; return { id: 'NO-DEBE-EXISTIR' }; },
+});
+assert.equal(barrera481.ok, false);
+assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
+
+console.log('OK: doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

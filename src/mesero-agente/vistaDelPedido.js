@@ -52,6 +52,29 @@ export function opcionesDeLinea(item) {
 }
 
 /**
+ * Precio real del renglón: base del producto más las opciones seleccionadas.
+ * Si una opción guardada ya no existe, no se muestra un total parcial.
+ */
+export function precioUnitarioDeLinea(item, catalogo, precios = null) {
+  const ficha = fichaPorNombre(catalogo, item?.nombre);
+  if (!ficha) return null;
+  const hayMapa = precios && typeof precios === 'object';
+  if (hayMapa && precios[String(item?.nombre || '')] === undefined) return null;
+  const base = hayMapa ? Number(precios[String(item.nombre)]) : Number(ficha.precio);
+  if (!Number.isFinite(base)) return null;
+
+  let extras = 0;
+  for (const elegida of opcionesDeLinea(item)) {
+    const grupo = (ficha.grupos || []).find((g) => norm(g.nombre) === norm(elegida.grupo));
+    if (!grupo) return null;
+    const opcion = (grupo.opciones || []).find((o) => norm(o.nombre) === norm(elegida.opcion));
+    if (!opcion) return null;
+    extras += Number(opcion.precio_extra) || 0;
+  }
+  return Math.round((base + extras) * 100) / 100;
+}
+
+/**
  * LOS GRUPOS OBLIGATORIOS QUE ESTE RENGLÓN TODAVÍA NO HA ELEGIDO.
  *
  * Deducido, no recordado. Si el renglón no corresponde a ningún producto de la
@@ -81,6 +104,7 @@ export function gruposSinElegir(item, catalogo) {
 export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
   requierePago = true, hechos = {}, reglas = null, promocionesActivas = [] } = {}) {
   const items = Array.isArray(carrito?.items) ? carrito.items : [];
+  const precioUnitario = (item) => precioUnitarioDeLinea(item, catalogo, precios);
 
   const lineas = items.map((i) => {
     const falta = gruposSinElegir(i, catalogo);
@@ -90,8 +114,7 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
       cantidad: Number(i.cantidad) || 1,
       opciones: opcionesDeLinea(i),
       nota: String(i.notas || '').trim() || null,
-      precio_unitario: precios && precios[String(i.nombre || '')] !== undefined
-        ? Number(precios[String(i.nombre)]) : null,
+      precio_unitario: precioUnitario(i),
       falta_elegir: falta,
     };
   });
@@ -105,7 +128,7 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
   })));
 
   const resumen = resumenDelPedido(carrito, {
-    precios, requierePago, reglas, promocionesActivas,
+    precios, precioUnitario, requierePago, reglas, promocionesActivas,
   });
   const estado = estadoDelPedido({ carrito, aclaraciones, requierePago, hechos });
   const falta = queFaltaParaConfirmar({ carrito, aclaraciones, requierePago });

@@ -63,6 +63,38 @@ valores alineados. La regresión de predeploy reproduce el caso exacto de
 `pendiente_pago`; el despliegue se bloquea si el pedido recuperado no queda
 visible como `nuevo`.
 
+### Incidente de conversación XAB-0481
+
+La conversación del teléfono terminado en `42184` registró el pedido
+`XAB-0481`, lo mostró al cliente por `$470` y después lo guardó por `$500`.
+Los `$30` de diferencia corresponden a la opción `Bistec en Salsa`: el resumen
+del agente usaba únicamente el precio base de cada platillo, mientras el
+registro canónico sí sumaba el extra. Las dos comandas llegaron a Chilaquil y
+Cocina con los modificadores canónicos; el pedido durable quedó en `$500`.
+
+La frase «Y papas a la mexicana» se buscó como si fuera otro producto y el
+agente ofreció tacos, aunque `Papas a la mexicana` era una guarnición válida de
+los dos chilaquiles que ya estaban en el carrito. Por eso no llegó a las
+comandas. Después de confirmar, el cliente volvió a pedirla y el agente escaló
+correctamente a una persona; la respuesta humana «Sí claro» no modificó la
+orden durable ni generó una comanda de cambio.
+
+También se descartó la primera dirección porque el modelo la envió junto con
+una modalidad a domicilio que el cliente todavía no había dicho. El rechazo de
+la modalidad eliminaba todo el conjunto y el agente volvió a pedir la
+dirección.
+
+La corrección suma en la vista previa los extras de las opciones reales,
+incluye importes en la huella que autoriza la confirmación y vuelve a ejecutar
+el preview canónico antes del INSERT. Si el total canónico supera el importe
+aceptado, el pedido no se registra y se pide otra confirmación; una promoción
+que lo reduzca sí puede continuar. La respuesta final se redacta desde el total
+canónico, incluso para efectivo o terminal.
+Además, una opción exacta de un renglón existente gana sobre productos de
+nombre parecido, y la dirección se conserva aunque la modalidad inferida sea
+rechazada. El predeploy reproduce los dos chilaquiles, el extra de bistec, las
+dos guarniciones, el envío y la diferencia `$470/$500` del caso real.
+
 ### Incidente de doble confirmación XAB-0467 / XAB-0469
 
 La conversación de Viviana sí creó dos pedidos reales y dos juegos de

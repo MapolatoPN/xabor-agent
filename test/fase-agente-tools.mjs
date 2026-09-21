@@ -54,6 +54,46 @@ const CARTA = [
 ];
 const PRECIOS = { 'Chilaquiles Sencillos': 195, 'Chilaquiles Mixtos': 205, Hotcakes: 95, 'Coca Cola': 35 };
 
+// Fixture del incidente real XAB-0481: una opción de proteína cuesta $30 y
+// «Papas a la mexicana» existe como guarnición y también comparte palabras
+// con un producto. La opción del renglón debe ganar sobre la búsqueda de tacos.
+const CARTA_0481 = [
+  { id: 48, nombre: 'Desayunos', productos: [
+    { id: 107, nombre: 'Chilaquiles Mixtos', precio: 205, disponible: true,
+      modificadores: [
+        g('Salsa', 1, 2, ['Verde', 'Roja']),
+        { ...g('Proteína', 1, 2, ['Huevos Estrellados', 'Bistec en Salsa']),
+          opciones: [
+            { nombre: 'Huevos Estrellados', disponible: true, precio_extra: 0 },
+            { nombre: 'Bistec en Salsa', disponible: true, precio_extra: 30 },
+          ] },
+        g('Guarniciones', 1, 2, ['Frijolitos con chorizo', 'Papas a la mexicana']),
+      ] },
+    { id: 501, nombre: 'Taco de papa a la mexicana', precio: 35, disponible: true, modificadores: [] },
+  ] },
+];
+const PRECIOS_0481 = { 'Chilaquiles Mixtos': 205, 'Taco de papa a la mexicana': 35 };
+const estado0481 = () => {
+  const estado = nuevo();
+  estado.carrito.items = [
+    { lid: 'linea-1', nombre: 'Chilaquiles Mixtos', cantidad: 1, notas: 'sin cebolla arriba',
+      modificadores: [
+        { grupo: 'Salsa', opciones: ['Verde'] },
+        { grupo: 'Proteína', opciones: ['Huevos Estrellados'] },
+        { grupo: 'Guarniciones', opciones: ['Frijolitos con chorizo'] },
+      ] },
+    { lid: 'linea-2', nombre: 'Chilaquiles Mixtos', cantidad: 1, notas: 'sin cebolla arriba',
+      modificadores: [
+        { grupo: 'Salsa', opciones: ['Verde'] },
+        { grupo: 'Proteína', opciones: ['Huevos Estrellados', 'Bistec en Salsa'] },
+        { grupo: 'Guarniciones', opciones: ['Frijolitos con chorizo'] },
+      ] },
+  ];
+  estado.carrito.datos = { modalidad: 'entrega a domicilio', forma_pago: 'terminal',
+    cliente: { nombre: 'Aide', direccion: 'Libramiento 1384' } };
+  return estado;
+};
+
 const ejecutorDe = (estado, mensaje, extra = {}) => crearEjecutor({
   estado, catalogo: CARTA, precios: PRECIOS, mensaje, textoCiclo: extra.textoCiclo ?? mensaje,
   requierePago: extra.requierePago ?? true, efectos: extra.efectos ?? null,
@@ -155,6 +195,19 @@ await t('B2c · una palabra que no es opción no elige la variante base', async 
   const r = await e.ejecutar('buscar_producto', { texto: 'chilaquiles' });
   assert.ok(r.encontrados.length >= 2, 'un atributo inexistente eligió un producto por el cliente');
   assert.match(r.nota || '', /pregúntaselo|no ha dicho/i);
+});
+
+await t('B2d · XAB-0481: una guarnición del carrito no se convierte en taco', async () => {
+  const estado = estado0481();
+  const e = crearEjecutor({ estado, catalogo: CARTA_0481, precios: PRECIOS_0481,
+    mensaje: 'Y papas a la mexicana', textoCiclo: 'Y papas a la mexicana' });
+  const r = await e.ejecutar('buscar_producto', { texto: 'papas a la mexicana' });
+  assert.equal(r.es_opcion_del_pedido, true);
+  assert.deepEqual(r.encontrados, []);
+  assert.equal(r.coincidencias_opcion.length, 2);
+  assert.equal(r.coincidencias_opcion[0].linea_id, 'linea-1');
+  assert.deepEqual(r.coincidencias_opcion[0].opciones_actuales, ['Frijolitos con chorizo']);
+  assert.equal(r.coincidencias_opcion[0].opcion, 'Papas a la mexicana');
 });
 
 await t('B3 · un producto_id inventado no agrega nada', async () => {
@@ -355,6 +408,22 @@ await t('E5 · el total solo existe si todos los renglones tienen precio', async
   const sinPrecio = crearEjecutor({ estado, catalogo: CARTA, precios: {}, mensaje: 'x' });
   assert.equal((await sinPrecio.ejecutar('ver_pedido', {})).pedido.total, null,
     'sacó un total parcial, que parece completo');
+});
+
+await t('E5a · XAB-0481: el resumen suma el bistec antes de pedir confirmación', () => {
+  const estado = estado0481();
+  const v = vistaDelPedido({ carrito: estado.carrito, catalogo: CARTA_0481,
+    precios: PRECIOS_0481, reglas: { pedidos: { costo_envio: 60 } } });
+  assert.deepEqual(v.lineas.map((l) => l.precio_unitario), [205, 235]);
+  assert.equal(v.subtotal, 440);
+  assert.equal(v.costo_envio, 60);
+  assert.equal(v.total, 500);
+
+  const sinExtra = structuredClone(CARTA_0481);
+  sinExtra[0].productos[0].modificadores[1].opciones[1].precio_extra = 0;
+  const otra = vistaDelPedido({ carrito: estado.carrito, catalogo: sinExtra,
+    precios: PRECIOS_0481, reglas: { pedidos: { costo_envio: 60 } } });
+  assert.notEqual(v.huella, otra.huella, 'un cambio de precio no invalidó el resumen ya mostrado');
 });
 
 await t('E6 · la confirmación pasa por `efectos`, y sin ellos no cobra', async () => {
@@ -701,6 +770,19 @@ await t('J4 · el modelo no puede elegir una entrega que el mensaje no respalda'
   assert.equal(r.aplicado, false);
   assert.equal(r.codigo, 'modalidad_sin_respaldo');
   assert.equal(estado.carrito.datos.modalidad, undefined);
+});
+
+await t('J4a · una dirección se conserva aunque la modalidad propuesta no tenga respaldo', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'Dirección: Guardia Nacional frente al Banco Bienestar',
+    { modalidades: MODALIDADES_MAPOLATO }).ejecutar('definir_entrega', {
+      modalidad: 'domicilio', direccion: 'Guardia Nacional frente al Banco Bienestar',
+    });
+  assert.equal(r.aplicado, true, 'perdió la dirección junto con la modalidad rechazada');
+  assert.equal(r.parcial, true);
+  assert.equal(r.codigo, 'modalidad_sin_respaldo');
+  assert.equal(estado.carrito.datos.modalidad, undefined);
+  assert.equal(estado.carrito.datos.cliente.direccion, 'Guardia Nacional frente al Banco Bienestar');
 });
 
 await t('J5 · un estado viejo con consumo en sitio se limpia', () => {

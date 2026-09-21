@@ -27,7 +27,7 @@ import { carritoVacio } from '../orders/carritoDelPedido.js';
 import { buscarProductos, indiceDeLaCarta, productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
-import { vistaDelPedido, fichaPorId, fichaPorNombre } from './vistaDelPedido.js';
+import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
@@ -159,6 +159,46 @@ export function crearEjecutor({
       const t = String(texto || '').trim();
       if (!t) {
         return ok({ categorias: indiceDeLaCarta(catalogo) });
+      }
+
+      // XAB-0481: «y papas a la mexicana» era una guarnición de los
+      // chilaquiles ya agregados. La búsqueda por palabras encontró tacos y
+      // convirtió una opción real en otro producto. Las opciones exactas de
+      // los renglones actuales se detectan antes de buscar productos.
+      const dicho = norm(t);
+      const opcionesDelPedido = [];
+      for (const item of (estado.carrito?.items || [])) {
+        const fichaItem = fichaPorNombre(catalogo, item?.nombre);
+        if (!fichaItem) continue;
+        const actuales = opcionesDeLinea(item);
+        for (const grupo of (fichaItem.grupos || [])) {
+          for (const opcion of (grupo.opciones || [])) {
+            const nombreOpcion = norm(opcion.nombre);
+            if (!nombreOpcion || !(` ${dicho} `.includes(` ${nombreOpcion} `))) continue;
+            opcionesDelPedido.push({
+              linea_id: item.lid,
+              producto: item.nombre,
+              grupo: grupo.nombre,
+              opcion: opcion.nombre,
+              maximo: grupo.maximo,
+              opciones_actuales: actuales
+                .filter((o) => norm(o.grupo) === norm(grupo.nombre))
+                .map((o) => o.opcion),
+            });
+          }
+        }
+      }
+      const productoExacto = productosVendibles(catalogo)
+        .some((p) => norm(p.nombre) === dicho);
+      if (opcionesDelPedido.length && !productoExacto) {
+        return ok({
+          encontrados: [],
+          existe: true,
+          es_opcion_del_pedido: true,
+          coincidencias_opcion: opcionesDelPedido,
+          nota: 'Esto coincide con una OPCIÓN de un producto que ya está en el pedido, no con un producto nuevo. '
+            + 'Usa modificar_linea. Si el cliente no dijo a cuál renglón se aplica, pregúntale; conserva las opciones_actuales del grupo.',
+        });
       }
       let fichas = buscarProductos(catalogo, t, { limite: 8 });
       if (categoria) {
@@ -343,19 +383,21 @@ export function crearEjecutor({
 
     definir_entrega({ modalidad, direccion, referencias }) {
       const props = [];
+      let rechazoModalidad = null;
       if (modalidad) {
         const evaluacion = evaluarModalidad({ modalidad, modalidades, mensaje });
         if (!evaluacion.ok) {
-          return noAplicado(evaluacion.motivo, {
+          rechazoModalidad = {
+            motivo: evaluacion.motivo,
             codigo: evaluacion.codigo,
             modalidad_solicitada: evaluacion.tipo,
             modalidades_disponibles: evaluacion.disponibles.map((m) => etiquetaTipoModalidad(m.tipo)),
-            pedido: vista(),
-          });
+          };
+        } else {
+          props.push(propuesta({
+            accion: 'definir_modalidad', valorNuevo: evaluacion.valor, evidencia: mensaje,
+          }));
         }
-        props.push(propuesta({
-          accion: 'definir_modalidad', valorNuevo: evaluacion.valor, evidencia: mensaje,
-        }));
       }
       if (direccion || referencias) {
         props.push(propuesta({ accion: 'definir_cliente',
@@ -363,6 +405,12 @@ export function crearEjecutor({
           evidencia: mensaje }));
       }
       const r = aplicar(props);
+      if (rechazoModalidad && r.aplicado) {
+        return ok({ ...rechazoModalidad, pedido: r.pedido, parcial: true });
+      }
+      if (rechazoModalidad) {
+        return noAplicado(rechazoModalidad.motivo, { ...rechazoModalidad, pedido: r.pedido });
+      }
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
       return ok({ pedido: r.pedido });
     },
@@ -426,7 +474,10 @@ export function crearEjecutor({
       const r = efectos?.confirmar
         ? await efectos.confirmar({ estado, pedido: antes, catalogo, precios })
         : { ok: true, folio: null, simulado: true };
-      if (!r?.ok) return noAplicado(`no_se_pudo_registrar: ${r?.motivo || 'desconocido'}`, { pedido: antes });
+      if (!r?.ok) return noAplicado(`no_se_pudo_registrar: ${r?.motivo || 'desconocido'}`, {
+        pedido: antes,
+        ...(r?.resumen_canonico ? { resumen_canonico: r.resumen_canonico } : {}),
+      });
 
       estado.hechos.confirmado = true;
       estado.folio = r.folio ?? null;

@@ -18,7 +18,7 @@ import {
   pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
 } from '../services/database.js';
 import { crearEnlacePago } from '../services/pagosService.js';
-import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
+import { registrarPedido, emitirPedido, previsualizarPedido } from '../orders/orderManager.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
@@ -168,6 +168,7 @@ export async function atenderConAgente({
         confirmacionIntentada = true;
         return confirmarYEmitir({
           negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar, crearPago,
+          previsualizar: previsualizarPedido,
         });
       },
       // El `ok` que sale de aquí es lo que hace que `pedir_humano` cuente como
@@ -212,6 +213,7 @@ export async function atenderConAgente({
     });
 
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
+    salida = aplicarRespuestaDeConfirmacion({ salida, estado });
     salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
     const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
     if (falloEnlace) {
@@ -432,6 +434,38 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
   return salida;
 }
 
+/**
+ * Anuncia una confirmación desde el resultado canónico de registrarPedido.
+ * El texto libre del modelo fue redactado con la vista previa y puede quedar
+ * viejo si el backend aplicó un extra o una promoción al registrar.
+ */
+export function aplicarRespuestaDeConfirmacion({ salida, estado } = {}) {
+  if (!salida) return salida;
+  const confirmacion = resultadoConfirmacion(salida);
+  if (!confirmacion?.folio || confirmacion?.aplicado === false) return salida;
+
+  const total = Number(confirmacion.total);
+  const envio = Number(confirmacion.costo_envio);
+  const datos = estado?.carrito?.datos || {};
+  const cliente = datos.cliente || {};
+  const pago = datos.forma_pago;
+  const pagos = {
+    efectivo: 'Pago en efectivo.',
+    terminal: 'Pago con tarjeta en terminal.',
+    enlace_pago: 'Pago mediante enlace.',
+  };
+  const partes = [
+    `Tu pedido ${confirmacion.folio} quedó registrado${Number.isFinite(total) ? ` por $${total} MXN` : ''}.`,
+  ];
+  if (Number.isFinite(envio) && envio > 0) partes.push(`El total incluye $${envio} MXN de envío.`);
+  if (datos.modalidad && String(datos.modalidad).toLowerCase().includes('domicilio') && cliente.direccion) {
+    partes.push(`Entrega a domicilio en ${cliente.direccion}.`);
+  }
+  if (pagos[pago]) partes.push(pagos[pago]);
+  salida.texto = partes.join(' ');
+  return salida;
+}
+
 /** La política de entrega también se redacta en código cuando el modelo pide algo no permitido. */
 export function aplicarRespuestaDeEntrega({
   salida, modalidadDescartada = null, modalidades = [],
@@ -561,9 +595,32 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
 // de emisión no convierte un pedido ya guardado en un pedido rechazado.
 export async function confirmarYEmitir({
   negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir,
-  guardar = guardarPedido, crearPago = crearEnlacePago,
+  guardar = guardarPedido, crearPago = crearEnlacePago, previsualizar = null,
 }) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
+  // Última barrera ANTES del INSERT: el total canónico nunca puede superar el
+  // que el cliente confirmó. Una promoción sí puede reducirlo; la respuesta
+  // final informa ese importe menor. El incidente XAB-0481 mostró $470 y
+  // registró $500 por un extra de bistec.
+  if (typeof previsualizar === 'function') {
+    const previa = await previsualizar(orden, negocioId, { canal });
+    if (!previa?.ok) {
+      const motivo = (previa?.rechazos || []).map((r) => r.codigo || r.motivo).join(', ')
+        || 'preview_rechazado';
+      return { ok: false, motivo, resumen_canonico: previa?.preview ?? null };
+    }
+    const mostrado = Number(pedido?.total);
+    const canonico = Number(previa?.preview?.total);
+    if (Number.isFinite(mostrado) && Number.isFinite(canonico)
+        && canonico - mostrado > 0.001) {
+      return {
+        ok: false,
+        motivo: `total_cambio: el resumen mostrado fue $${mostrado} y el total canónico es $${canonico}. `
+          + 'No registres todavía; muestra el resumen canónico y pide confirmación otra vez.',
+        resumen_canonico: previa.preview,
+      };
+    }
+  }
   let resultado;
   try {
     resultado = await registrar(orden, canal);

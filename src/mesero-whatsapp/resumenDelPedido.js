@@ -47,15 +47,21 @@ function opcionesDe(item) {
  * no lo sería.
  */
 export function resumenDelPedido(carrito, {
-  precios = null, requierePago = true, reglas = null, promocionesActivas = [],
+  precios = null, precioUnitario = null, requierePago = true, reglas = null, promocionesActivas = [],
 } = {}) {
+  const precioResuelto = (item) => {
+    const valor = precioUnitario(item);
+    return valor === null || valor === undefined ? null : num(valor);
+  };
   const items = (carrito?.items || []).map((i) => ({
     nombre: String(i?.nombre || ''),
     cantidad: num(i?.cantidad) ?? 1,
     opciones: opcionesDe(i),
     notas: String(i?.notas || '').trim() || null,
-    precio_unitario: precios && precios[String(i?.nombre || '')] !== undefined
-      ? num(precios[String(i.nombre)]) : null,
+    precio_unitario: typeof precioUnitario === 'function'
+      ? precioResuelto(i)
+      : precios && precios[String(i?.nombre || '')] !== undefined
+        ? num(precios[String(i.nombre)]) : null,
   }));
   const datos = carrito?.datos || {};
   const conPrecio = items.filter((i) => i.precio_unitario !== null);
@@ -138,10 +144,13 @@ const enForma = (v) => String(v ?? '').toLowerCase().normalize('NFD')
 
 export const huellaDelResumen = (resumen) => JSON.stringify({
   items: (resumen?.items || []).map((i) => [i.nombre, i.cantidad,
-    i.opciones.map((o) => `${o.grupo}:${o.opcion}`).sort(), i.notas || '']),
+    i.opciones.map((o) => `${o.grupo}:${o.opcion}`).sort(), i.notas || '', i.precio_unitario]),
   modalidad: resumen?.modalidad ?? null,
   pago: resumen?.pago ?? null,
   cliente: CAMPOS_DEL_CLIENTE.map((c) => enForma(resumen?.cliente?.[c])),
+  subtotal: resumen?.subtotal ?? null,
+  costo_envio: resumen?.costo_envio ?? null,
+  total: resumen?.total ?? null,
 });
 
 export const resumenSigueVigente = (mostrado, ahora) =>
