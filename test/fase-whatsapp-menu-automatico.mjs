@@ -94,6 +94,11 @@ await t('FRASES', 'las frases del negocio se sanean (vacías, duplicadas, largas
   assert.ok(!r.some((f) => f.length > 60));
 });
 
+await t('FRASES', 'las frases personalizadas no desactivan las frases básicas', () => {
+  assert.strictEqual(mensajePideMenu('pásame el menú', ['me mandas el menu?']), true);
+  assert.strictEqual(mensajePideMenu('quiero ver la carta', ['me mandas el menu?']), true);
+});
+
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 const IMAGEN_JPG = await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 240, g: 230, b: 200 } } })

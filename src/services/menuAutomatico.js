@@ -86,7 +86,11 @@ export function mensajePideMenu(texto, frases = FRASES_POR_DEFECTO) {
   // se descarta antes de mirar las frases.
   if (MARCAS_DE_COMENTARIO.some((m) => msg.includes(normalizar(m)))) return false;
 
-  const lista = (Array.isArray(frases) && frases.length ? frases : FRASES_POR_DEFECTO);
+  // Las frases personalizadas son adicionales. Antes reemplazaban por
+  // completo las frases básicas y una configuración que solo tenía, por
+  // ejemplo, "me mandas el menu?" dejaba fuera "pásame el menú" o "carta".
+  // El cliente no debería conocer la redacción exacta guardada en el panel.
+  const lista = [...(Array.isArray(frases) ? frases : []), ...FRASES_POR_DEFECTO];
   return lista.some((frase) => {
     const f = normalizar(frase);
     if (!f) return false;
