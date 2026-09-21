@@ -2079,6 +2079,7 @@ export async function actualizarEstadoPedidoDB(folio, estado) {
             ELSE entregado_at
           END
       WHERE folio = $2
+        AND NOT ($1::text = 'entregado' AND estado = 'cancelado')
     `, [estado, folio]);
   } catch (e) {
     console.error('[DB] Error actualizarEstadoPedidoDB:', e.message);
@@ -2088,7 +2089,7 @@ export async function actualizarEstadoPedidoDB(folio, estado) {
 export async function obtenerPedidosActivos() {
   try {
     const result = await pool.query(`
-      SELECT datos, negocio_id FROM pedidos_activos
+      SELECT datos, negocio_id, estado, entregado_at FROM pedidos_activos
       WHERE estado != 'entregado'
         AND folio NOT LIKE 'RM-%'
       ORDER BY created_at ASC
@@ -2104,9 +2105,13 @@ export async function obtenerPedidosActivos() {
     // negocioId ya presente en el JSON, nunca se inventa un negocio por
     // defecto, y el JSON guardado en DB nunca se modifica (solo se ajusta
     // el objeto devuelto en memoria).
-    return result.rows.map(r => {
+      return result.rows.map(r => {
       const datos = r.datos || {};
-      return { ...datos, negocioId: datos.negocioId || r.negocio_id || null };
+      // El estado SQL es la autoridad. El JSON puede ser una fotografía
+      // antigua (por ejemplo, pendiente_pago antes de que expirara) y no debe
+      // resucitar un pedido cancelado ni convertirlo en entregado al arrancar.
+      return { ...datos, estado: r.estado, entregado_at: r.entregado_at || datos.entregado_at || null,
+        negocioId: datos.negocioId || r.negocio_id || null };
     });
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivos:', e.message);
@@ -4220,8 +4225,9 @@ export async function upsertClienteNombreEntrega(telefono, nombreEntrega, negoci
 export async function archivarPedidoActivo(folio) {
   try {
     await pool.query(`
-      UPDATE pedidos_activos SET estado = 'entregado', updated_at = NOW()
-      WHERE folio = $1
+      UPDATE pedidos_activos
+         SET estado = 'entregado', updated_at = NOW(), entregado_at = COALESCE(entregado_at, NOW())
+       WHERE folio = $1 AND estado NOT IN ('entregado', 'cancelado')
     `, [folio]);
   } catch (e) {
     console.error('[DB] Error archivarPedidoActivo:', e.message);
