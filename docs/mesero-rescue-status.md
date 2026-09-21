@@ -88,6 +88,33 @@ turno. El mismo mensaje ya no continúa por `brain.js`; así se evita reintroduc
 los errores del bot anterior. La prueba estructural está en
 `test/fase-agente-fallo-handoff.mjs`.
 
+### Pago por enlace solicitado después de una llamada
+
+El flujo de voz ahora normaliza tanto `enlace de pago` como `enlace_pago`
+antes de guardar el pedido y marca `requierePagoAnticipado`. Así, cuando una
+persona llama y después manda su folio por WhatsApp, el pedido ya aparece en
+el panel como `pendiente_pago`; el enlace se genera de forma idempotente y el
+pedido solo pasa a emisión después del webhook verificado de Clip. La prueba
+`test/fase-voz-enlace-pago.mjs` cubre las dos etiquetas y confirma que la marca
+se coloca antes de `registrarPedido()`.
+
+### Solicitudes de catering para Mapolato Obispado
+
+Se agregó el perfil comercial configurable `cotizacion_perfil=catering`,
+activado solo para Mapolato Obispado. La entrada se desvía antes del agente de
+menú y usa la sesión comercial durable para recopilar nombre, número de
+invitados, lugar y fecha. No expone herramientas de pedido ni permite
+`<ORDEN_CONFIRMADA>`; si el turno rompe el contrato, se pausa y se manda a
+revisión humana. Al completar los cuatro datos se crea un borrador de
+cotización con servicio genérico pendiente de revisión y el cliente recibe
+únicamente el aviso de que el equipo se pondrá en contacto. La prueba
+`test/fase-catering.mjs` cubre el detector, los campos obligatorios y las
+instrucciones de no ofrecer platillos.
+
+Estos cambios quedaron en el commit `d74f27d`, desplegado en Railway como
+`68153989-9a0c-49cc-a091-57d1bce29282`; `/health` respondió 200 después del
+despliegue.
+
 ---
 
 ## 1. La arquitectura anterior, y por qué no se podía encender
