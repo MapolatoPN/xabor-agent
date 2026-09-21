@@ -120,6 +120,24 @@ export function enElCanario(telefono, { lista = '', porcentaje = '' } = {}) {
 }
 
 /**
+ * Decide si el lote puede llegar al procesador conversacional.
+ *
+ * El agente tiene su propio interruptor y alcance por teléfono. Por eso un
+ * teléfono incluido en el canario puede entrar aunque el bot legacy del
+ * negocio esté apagado. Pausa manual y takeover humano siguen mandando sobre
+ * ambos caminos.
+ */
+export function puedeProcesarTurno({
+  botGlobalActivo = false,
+  agenteCanario = false,
+  pausado = false,
+  takeoverVigente = false,
+} = {}) {
+  if (pausado || takeoverVigente) return false;
+  return !!botGlobalActivo || !!agenteCanario;
+}
+
+/**
  * Comparación EXPLÍCITA contra "true".
  *
  * Los valores de `configuracion` son TEXT y los de entorno también, así que

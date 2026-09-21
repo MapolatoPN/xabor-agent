@@ -11,7 +11,7 @@
 // Suite pura: `modoDelPedido` acepta un lector de configuración inyectado, así
 // que no hace falta base ni negocios de prueba.
 import assert from 'node:assert/strict';
-import { modoDelPedido, enElCanario } from '../src/orders/modoDelPedido.js';
+import { modoDelPedido, enElCanario, puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -171,6 +171,22 @@ await t('C4 · sin teléfono no hay canario por porcentaje', async () => {
     ...con({ mesero_agente_v1: 'true', mesero_agente_porcentaje: '50' }), telefono: null });
   assert.equal(parcial.agente, false, 'repartió un tráfico que no puede identificar');
   limpiarEntorno();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── D. El canario no depende de encender el bot legacy ──');
+
+await t('D1 · el teléfono canario entra con el bot legacy apagado', () => {
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), true);
+});
+
+await t('D2 · otro teléfono sigue fuera con el bot legacy apagado', () => {
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: false }), false);
+});
+
+await t('D3 · pausa y takeover cierran también el canario', () => {
+  assert.equal(puedeProcesarTurno({ agenteCanario: true, pausado: true }), false);
+  assert.equal(puedeProcesarTurno({ agenteCanario: true, takeoverVigente: true }), false);
 });
 
 limpiarEntorno();

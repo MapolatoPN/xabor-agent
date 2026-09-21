@@ -19,7 +19,7 @@ const hash10 = (s) => createHash('sha256').update(String(s || '')).digest('hex')
 const hashDeConversacion = (negocioId, telefono) =>
   hash10(`sombra-${hash10(`meta-${negocioId}-${telefono}`)}`);
 
-import { modoDelPedido } from '../orders/modoDelPedido.js';
+import { modoDelPedido, puedeProcesarTurno } from '../orders/modoDelPedido.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -2091,7 +2091,18 @@ const continuidadWA = crearContinuidad({
       if(r) preparados.push(r);
     }
     // Una persona pudo tomar el chat mientras descargábamos una imagen.
-    if(await getBotPausado(t,n) || await getTakeoverHumanoActivo(t,n) || !await obtenerBotWhatsappActivoNegocio(n)) return;
+    // El agente tiene un canario propio y puede atender ESE teléfono aunque el
+    // bot legacy del negocio esté apagado. Sin esta excepción acotada, la
+    // sombra funcionaba pero el canario jamás podía arrancar en un negocio con
+    // el bot anterior deshabilitado. Pausa y takeover siguen cerrando ambos.
+    const [pausado, takeoverVigente, botGlobalActivo] = await Promise.all([
+      getBotPausado(t,n), getTakeoverHumanoActivo(t,n), obtenerBotWhatsappActivoNegocio(n),
+    ]);
+    let agenteCanario = false;
+    if (!botGlobalActivo && !pausado && !takeoverVigente) {
+      agenteCanario = !!(await modoDelPedido(n, { telefono: t })).agente;
+    }
+    if (!puedeProcesarTurno({ botGlobalActivo, agenteCanario, pausado, takeoverVigente })) return;
     if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
   },
   alRevision: async (n,t,motivo) => {
