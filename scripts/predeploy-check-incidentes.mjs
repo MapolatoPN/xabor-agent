@@ -15,6 +15,11 @@ import { aplicarRespuestaDeConfirmacion, confirmarYEmitir } from '../src/mesero-
 import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
 } from '../src/mesero-agente/seguridadConversacional.js';
+import { esPagoPorEnlace } from '../src/orders/pagoPorEnlace.js';
+import { esSolicitudCatering } from '../src/agent/catering.js';
+import { camposObligatoriosCompletos } from '../src/agent/comercialMarkers.js';
+import { construirBloqueModoComercial } from '../src/agent/prompts.js';
+import { mensajePideMenu } from '../src/services/menuAutomatico.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -45,6 +50,23 @@ assert.match(fuenteCanalAgente, /esSolicitudDePedidoProgramado\(mensaje/,
   'el detector de programados existe pero quedó desconectado del adaptador productivo');
 assert.match(fuenteCanalAgente, /respuestaAfirmaCambioSinAplicar\(salida\)/,
   'la barrera de afirmaciones existe pero quedó desconectada de la respuesta productiva');
+
+// Flujos secundarios que deben seguir vivos cuando se vuelva a habilitar el
+// bot: folio originado por llamada, catering y menú de imágenes.
+assert.equal(esPagoPorEnlace('enlace de pago'), true,
+  'la voz dejó de marcar el pedido como pago anticipado por enlace');
+const fuenteVoz = readFileSync(join(RAIZ, 'src', 'channels', 'voice.js'), 'utf8');
+const posicionGateVoz = fuenteVoz.indexOf('requierePagoAnticipado = true');
+assert.ok(posicionGateVoz >= 0
+  && fuenteVoz.indexOf('registrarPedido(resultado.orden', posicionGateVoz) > posicionGateVoz,
+  'la voz registra antes de fijar el gate de pago anticipado');
+assert.equal(esSolicitudCatering('Necesito mesa de postres para una boda'), true);
+assert.equal(camposObligatoriosCompletos({
+  nombre: 'Ana', numero_personas: '40', lugar: 'Jardín', fecha_evento_iso: '2026-10-15',
+}, { perfil: 'catering' }), true);
+assert.match(construirBloqueModoComercial({}, { perfil: 'catering' }), /No uses ni menciones platillos/i);
+assert.equal(mensajePideMenu('Pásame la carta', ['me mandas el menu?']), true,
+  'una frase básica dejó de activar el menú por tener frases personalizadas');
 
 // ── XAB-0467 / XAB-0469: confirmar una vez por ciclo ─────────────────────
 const NEGOCIO = '11111111-1111-4111-8111-111111111111';
@@ -236,4 +258,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: corte maestro, programados, afirmaciones guardadas, doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: corte maestro, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

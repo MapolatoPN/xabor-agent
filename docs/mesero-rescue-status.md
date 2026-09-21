@@ -229,6 +229,8 @@ el panel como `pendiente_pago`; el enlace se genera de forma idempotente y el
 pedido solo pasa a emisión después del webhook verificado de Clip. La prueba
 `test/fase-voz-enlace-pago.mjs` cubre las dos etiquetas y confirma que la marca
 se coloca antes de `registrarPedido()`.
+La revisión posterior volvió a pasar sus 7 invariantes y esta secuencia quedó
+también dentro del predeploy obligatorio.
 
 ### Solicitudes de catering para Mapolato Obispado
 
@@ -242,6 +244,8 @@ cotización con servicio genérico pendiente de revisión y el cliente recibe
 únicamente el aviso de que el equipo se pondrá en contacto. La prueba
 `test/fase-catering.mjs` cubre el detector, los campos obligatorios y las
 instrucciones de no ofrecer platillos.
+La revisión posterior pasó 8 invariantes y añadió al predeploy el detector, los
+cuatro campos y la prohibición de ofrecer platillos.
 
 Estos cambios quedaron en los commits `d74f27d`, `bb7b08d` y `4db2a64`,
 desplegados en Railway como `a8851b4d-8379-4592-931a-f0d0cffce26e`;
@@ -257,6 +261,9 @@ variantes como “pásame el menú” también envían las imágenes configurada
 se usa el menú textual si Meta o el almacenamiento no permiten entregar una
 imagen. El cambio quedó en `16599d9`, desplegado como
 `ad6bd078-de74-4b7f-9944-8b26a559e342`; `/health` respondió 200.
+La revisión de producción leyó las cuatro imágenes reales desde el
+almacenamiento (108–117 KB cada una) y comprobó que «¿Me mandas el menú?» y
+«Pásame la carta» activan el flujo. El detector básico quedó en el predeploy.
 
 ---
 
