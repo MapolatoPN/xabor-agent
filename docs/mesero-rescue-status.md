@@ -53,6 +53,41 @@ trabajos de impresión enviados (Chilaquil y Cocina). Permanecía en estado
 `entregado`. Como ya fue recogido, se reconcilió a `entregado` y ahora queda
 visible en historial.
 
+### Incidente de doble confirmación XAB-0467 / XAB-0469
+
+La conversación de Viviana sí creó dos pedidos reales y dos juegos de
+comandas. Después de confirmar `XAB-0467`, los mensajes «gracias» y «tiempo de
+envío» hicieron que el camino conversacional anterior reconstruyera el mismo
+resumen; otro «sí» terminó creando `XAB-0469`. No fue una reentrega duplicada
+de Meta: cada mensaje entrante tenía un `wamid` distinto.
+
+El estado actual quedó conciliado: `XAB-0467` está entregado y `XAB-0469` ya
+no está en pedidos activos ni en historial. Sus rastros de compra e impresión
+se conservan para auditoría y no se oculta que las comandas sí llegaron a
+cocina.
+
+El agente de herramientas, que ahora atiende el 100% de Mapolato, no usa ese
+camino. Cada pedido tiene una identidad de ciclo y Postgres impone una única
+`confirmar_pedido` por conversación mediante
+`uq_agente_confirmacion_conversacion`. Mensajes como «gracias», «tiempo de
+envío» o «sí» no abren otro ciclo; el cliente tiene que pedir explícitamente
+otro pedido. La regresión `scripts/predeploy-check-incidentes.mjs` reproduce
+la secuencia real y comprueba que `registrarPedido` se ejecuta una sola vez.
+
+### Barrera de liberación tras los incidentes del panel
+
+El predeploy de Railway ejecuta las regresiones de doble confirmación y de
+operación del panel antes de migrar o arrancar el binario. Comprueban sesión,
+menú reintentable, Restaurante, caché HTTP y replay limitado al día operativo
+sin entregados ni cancelados. Si alguna falla, el deployment nuevo no entra.
+
+Las migraciones `084-agente-operaciones` y `085-agente-outbox` quedaron
+incluidas en el runner real; antes existían los scripts, pero el runner
+terminaba en la 083. El comando `npm run release:gate` añade un humo de solo
+lectura sobre salud, sesión, menú, historial, checkouts, pagos y posibles
+duplicados recientes. Su uso y variables están en
+`docs/production-release-gate.md`.
+
 ### Corrección de formas de pago del canario
 
 Mapolato Obispado tiene disponibles para el bot `efectivo`, `terminal` y

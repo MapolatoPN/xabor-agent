@@ -7,7 +7,9 @@ import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL requerida');
-const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const host = new URL(process.env.DATABASE_URL).hostname;
+const ssl = ['localhost', '127.0.0.1', '::1'].includes(host) ? false : { rejectUnauthorized: false };
+const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl });
 
 const aplicada = async () => (await db.query(
   `SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'agente_outbox')::int

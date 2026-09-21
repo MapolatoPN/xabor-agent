@@ -18,6 +18,13 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const CHECKS = [
+  // Incidentes productivos del 21-sep: se prueban antes de tocar el esquema.
+  // Si reaparece la doble confirmación, el menú pegado, el redirect de sesión
+  // o el replay de pedidos viejos/cancelados, Railway conserva el deployment
+  // anterior.
+  'predeploy-check-incidentes.mjs',
+];
 const SCRIPTS = [
   '032-notificaciones-repartidor',
   '033-token-aceptacion-repartidor',
@@ -124,7 +131,30 @@ const SCRIPTS = [
   // pagos o ventas de mesa. Va ANTES del binario nuevo porque los totales
   // de la cuenta leen revertido_at.
   '083-restaurante-division-consumo',
+  // 084 es la barrera durable contra una doble confirmación del agente. El
+  // código productivo no puede arrancar confiando en agente_operaciones si el
+  // predeploy no garantiza antes la tabla y sus dos UNIQUE (operación y
+  // confirmación por ciclo de conversación).
+  '084-agente-operaciones',
+  // 085 depende de la 084 y conserva los efectos que aún no pudieron salir.
+  // Debe existir antes de que el agente nuevo atienda el primer mensaje del
+  // deployment.
+  '085-agente-outbox',
 ];
+
+for (const nombre of CHECKS) {
+  // `test/` no entra a la imagen productiva (.dockerignore). Estos checks
+  // viven junto al runner para que la barrera exista también dentro de Docker,
+  // no solo en el checkout local.
+  const ruta = join(__dirname, nombre);
+  console.log(`[predeploy-run] Comprobando ${nombre}...`);
+  try {
+    execFileSync(process.execPath, [ruta], { stdio: 'inherit', env: process.env });
+  } catch (e) {
+    console.error(`[predeploy-run] FALLO en ${nombre} -- se conserva el deployment anterior.`);
+    process.exit(1);
+  }
+}
 
 for (const nombre of SCRIPTS) {
   const ruta = join(__dirname, `predeploy-${nombre}.mjs`);
