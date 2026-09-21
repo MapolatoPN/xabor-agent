@@ -2071,11 +2071,7 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     };
 
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
-    let agenteCanario = false;
-    if (!botGlobalActivo) {
-      agenteCanario = !!(await modoDelPedido(negocioId, { telefono })).agente;
-    }
-    if (!puedeProcesarTurno({ botGlobalActivo, agenteCanario })) {
+    if (!puedeProcesarTurno({ botGlobalActivo })) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
       observarEnSombra();
       observarMeseroEnSombra();
@@ -2221,18 +2217,13 @@ const continuidadWA = crearContinuidad({
       if(r) preparados.push(r);
     }
     // Una persona pudo tomar el chat mientras descargábamos una imagen.
-    // El agente tiene un canario propio y puede atender ESE teléfono aunque el
-    // bot legacy del negocio esté apagado. Sin esta excepción acotada, la
-    // sombra funcionaba pero el canario jamás podía arrancar en un negocio con
-    // el bot anterior deshabilitado. Pausa y takeover siguen cerrando ambos.
+    // El interruptor visible del negocio es el corte maestro de cualquier
+    // respuesta automática. El agente conserva sus banderas y su alcance,
+    // pero solo se evalúan después, dentro de procesarTextoPersistido.
     const [pausado, takeoverVigente, botGlobalActivo] = await Promise.all([
       getBotPausado(t,n), getTakeoverHumanoActivo(t,n), obtenerBotWhatsappActivoNegocio(n),
     ]);
-    let agenteCanario = false;
-    if (!botGlobalActivo && !pausado && !takeoverVigente) {
-      agenteCanario = !!(await modoDelPedido(n, { telefono: t })).agente;
-    }
-    if (!puedeProcesarTurno({ botGlobalActivo, agenteCanario, pausado, takeoverVigente })) return;
+    if (!puedeProcesarTurno({ botGlobalActivo, pausado, takeoverVigente })) return;
     if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
   },
   alRevision: async (n,t,motivo) => {

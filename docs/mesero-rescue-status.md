@@ -12,6 +12,13 @@ los cuatro observadores (registro, panel, impresión y compra durable) miran
 el MISMO folio. La caída posterior al COMMIT también se prueba contra la
 base: no nace un segundo pedido y el handoff humano sí sale.
 
+**Estado operativo actual (21-sep, después de la prueba real):** Mapolato
+Obispado dejó apagados tanto `bot_whatsapp_activo` como `mesero_agente_v1`, y
+el alcance del agente quedó en `0%`. La sombra permanece activa, pero no
+responde, registra, cobra ni imprime. Además, el interruptor visible
+`bot_whatsapp_activo` pasó a ser el corte maestro del bot anterior y del agente
+nuevo; apagarlo desde el panel detiene toda respuesta automática.
+
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
 El commit `9f3abb0` está desplegado en Railway desde
@@ -555,13 +562,14 @@ legacy para los demás clientes.
 
    | quitar | alcance | efecto |
    |---|---|---|
-   | `MESERO_AGENTE_MODE` | todos los negocios | inmediato, sin redeploy de código |
-   | `mesero_agente_v1='false'` | un negocio | al siguiente mensaje (no hay caché) |
+   | `bot_whatsapp_activo=false` | un negocio | corte maestro del bot anterior y del agente nuevo |
+   | `MESERO_AGENTE_MODE` | agente nuevo de todos los negocios | inmediato, sin redeploy de código |
+   | `mesero_agente_v1='false'` | agente nuevo de un negocio | al siguiente mensaje (no hay caché) |
    | vaciar `mesero_agente_telefonos` y poner porcentaje a `'0'` | unos clientes | al siguiente mensaje |
 
-   En los tres casos se vuelve a la configuración legacy del negocio. Si su bot
-   legacy está activo, ese bot responde; si está apagado, el mensaje queda
-   guardado sin respuesta automática, como ocurría antes del canario.
+   La primera fila detiene toda automatización. Las otras tres apagan o acotan
+   únicamente al agente nuevo; si el bot del negocio sigue activo, el camino
+   configurado para ese teléfono continúa.
 
 6. **Verificar que llegó, no suponerlo.** `/health` responde 200 con el build
    viejo igual que con el nuevo. Lo que prueba: una conversación de prueba

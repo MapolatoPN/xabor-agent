@@ -174,19 +174,19 @@ await t('C4 · sin teléfono no hay canario por porcentaje', async () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n── D. El canario no depende de encender el bot legacy ──');
+console.log('\n── D. El interruptor visible del bot es el corte maestro ──');
 
-await t('D1 · el teléfono canario entra con el bot legacy apagado', () => {
-  assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), true);
+await t('D1 · apagar el bot detiene también al agente canario', () => {
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), false);
 });
 
-await t('D2 · otro teléfono sigue fuera con el bot legacy apagado', () => {
-  assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: false }), false);
+await t('D2 · con el bot encendido el turno puede llegar al motor configurado', () => {
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true }), true);
 });
 
-await t('D3 · pausa y takeover cierran también el canario', () => {
-  assert.equal(puedeProcesarTurno({ agenteCanario: true, pausado: true }), false);
-  assert.equal(puedeProcesarTurno({ agenteCanario: true, takeoverVigente: true }), false);
+await t('D3 · pausa y takeover cierran también con el bot encendido', () => {
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true, pausado: true }), false);
+  assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true, takeoverVigente: true }), false);
 });
 
 limpiarEntorno();

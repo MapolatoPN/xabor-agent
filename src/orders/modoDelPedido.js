@@ -122,19 +122,17 @@ export function enElCanario(telefono, { lista = '', porcentaje = '' } = {}) {
 /**
  * Decide si el lote puede llegar al procesador conversacional.
  *
- * El agente tiene su propio interruptor y alcance por teléfono. Por eso un
- * teléfono incluido en el canario puede entrar aunque el bot legacy del
- * negocio esté apagado. Pausa manual y takeover humano siguen mandando sobre
- * ambos caminos.
+ * `bot_whatsapp_activo` es el corte maestro que ve el negocio en el panel.
+ * Cuando está apagado, ninguna automatización responde, incluido el agente
+ * nuevo. Las banderas del agente deciden cuál motor atiende únicamente cuando
+ * ese corte maestro está encendido. Pausa manual y takeover humano también
+ * cierran ambos caminos.
  */
 export function puedeProcesarTurno({
-  botGlobalActivo = false,
-  agenteCanario = false,
-  pausado = false,
-  takeoverVigente = false,
+  botGlobalActivo = false, pausado = false, takeoverVigente = false,
 } = {}) {
-  if (pausado || takeoverVigente) return false;
-  return !!botGlobalActivo || !!agenteCanario;
+  if (!botGlobalActivo || pausado || takeoverVigente) return false;
+  return true;
 }
 
 /**

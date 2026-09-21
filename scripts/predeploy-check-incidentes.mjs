@@ -8,11 +8,19 @@ import { fileURLToPath } from 'node:url';
 import { libroDeOperaciones, almacenEnMemoria } from '../src/mesero-agente/libroDeOperaciones.js';
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
 import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
+import { puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import { aplicarRespuestaDeConfirmacion, confirmarYEmitir } from '../src/mesero-agente/canalDelAgente.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
+
+// El interruptor que usa el negocio en el panel es el corte maestro. El
+// agente nuevo no puede saltárselo aunque su propia bandera y alcance sigan
+// encendidos por error.
+assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), false,
+  'apagar el bot visible dejó al agente nuevo respondiendo');
+assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true }), true);
 
 // ── XAB-0467 / XAB-0469: confirmar una vez por ciclo ─────────────────────
 const NEGOCIO = '11111111-1111-4111-8111-111111111111';
@@ -204,4 +212,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: corte maestro, doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
