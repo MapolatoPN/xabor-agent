@@ -129,9 +129,9 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
  * ATIENDE UN TURNO DE VERDAD.
  *
  * Devuelve `{ ok, texto, folio, escalado, pedido, operaciones }`. Quien llama
- * —el canal— manda `texto` por WhatsApp. Si `ok` es false, el canal sigue con
- * lo de siempre: **el agente nunca deja a un cliente sin respuesta por haber
- * fallado**; si no puede, no contesta él y contesta el bot de siempre.
+ * —el canal— manda `texto` por WhatsApp. Si `ok` es false, el canal debe
+ * pausar la conversación y pedir revisión humana. El agente nunca debe
+ * devolver el mismo turno al bot legacy después de un fallo.
  */
 export async function atenderConAgente({
   negocioId, telefono, mensaje, nombre = null, canal = 'whatsapp',

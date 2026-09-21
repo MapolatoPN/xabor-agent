@@ -204,6 +204,7 @@ const MENSAJE_REVISION_POR_DEFECTO = '';
 const ETIQUETA_MOTIVO = {
   SOLICITUD_CLIENTE:    'el cliente pidió hablar con una persona',
   ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
+  AGENTE_NO_PUDO_ATENDER:'el agente nuevo no pudo atender el turno',
   SIN_VERIFICAR_MENU:   'no pudo verificar el pedido contra el menú',
   NEGATIVA_INTERCEPTADA:'no reconoció algo que sí vendemos',
   REENTREGA_LEGADA:     'llegó un mensaje repetido de WhatsApp',
@@ -232,6 +233,30 @@ Motivo: ${razon}
   } catch (e) {
     console.error('[Meta WA] aviso de revisión al equipo:', e.message);
   }
+}
+
+// El agente nuevo es el único bot autorizado para las conversaciones que le
+// fueron asignadas. Si no puede atender un turno, la conversación se pausa y
+// se avisa al equipo; nunca se entrega el mismo mensaje al bot legacy, que
+// podría inventar un producto, un precio o una confirmación.
+async function pasarAgenteARevision({ continuidad, negocioId, telefono, nombreMeta, credenciales, motivo = 'AGENTE_NO_PUDO_ATENDER' }) {
+  const marcada = await continuidad.enviarARevision(negocioId, telefono, motivo);
+  console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivo} nueva=${marcada}`);
+  if (!marcada) return false;
+
+  const cfgRev = await obtenerConfiguracion(negocioId).catch(() => ({}));
+  const aviso = cfgRev.bot_mensaje_revision === undefined ? MENSAJE_REVISION_POR_DEFECTO : cfgRev.bot_mensaje_revision;
+  if (aviso && aviso.trim()) {
+    try {
+      await enviarMensaje(telefono, aviso.trim(), credenciales);
+      const m = await guardarMensaje(telefono, nombreMeta, 'saliente', aviso.trim(), negocioId, 'bot');
+      if (m && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: m });
+    } catch (e) {
+      console.error(`[Meta WA] aviso de revisión no enviado a ${telefono}:`, e?.message);
+    }
+  }
+  avisarEquipoRevision(negocioId, telefono, motivo, credenciales).catch(() => {});
+  return true;
 }
 
 // ─── Debounce de mensajes — la cola de 6 s ──────────────────────────────
@@ -1125,10 +1150,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // (`mesero_agente_v1`) y que ESTE teléfono esté en el canario. Sin alcance
     // explícito no atiende a nadie.
     //
-    // Y si el agente no puede —sin carta, sin llave, una excepción— **no deja
-    // al cliente sin respuesta**: no contesta él, y sigue el bot de siempre,
-    // línea por línea igual que antes de que esto existiera. El camino viejo
-    // no se toca; se le antepone uno nuevo que sabe apartarse.
+    // Y si el agente no puede —sin carta, una excepción o un resultado
+    // inválido— la conversación pasa a revisión humana. El mismo mensaje no
+    // puede continuar al bot legacy: eso reintroduciría los errores que este
+    // agente fue puesto para evitar.
     try {
       const modoAgente = await modoDelPedido(negocioId, { telefono });
       if (modoAgente.agente) {
@@ -1158,10 +1183,25 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             + `folio=${r.folio || '-'} escalado=${!!r.escalado}`);
           return;
         }
-        console.warn(`[AGENTE] no atendió (motivo=${r.motivo || 'sin_texto'}) — sigue el bot de siempre`);
+        await pasarAgenteARevision({
+          continuidad: continuidadWA,
+          negocioId,
+          telefono,
+          nombreMeta,
+          credenciales,
+        });
+        return;
       }
     } catch (e) {
-      console.error('[AGENTE] contenido en el canal, sigue el bot de siempre:', e?.message);
+      console.error('[AGENTE] contenido en el canal, pasa a revisión humana:', e?.message);
+      await pasarAgenteARevision({
+        continuidad: continuidadWA,
+        negocioId,
+        telefono,
+        nombreMeta,
+        credenciales,
+      });
+      return;
     }
 
     // Si Claude tarda más de 8s, avisamos al cliente para que no piense que el bot falló

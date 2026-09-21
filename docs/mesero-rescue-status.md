@@ -79,6 +79,15 @@ $39, envío de $60 y total de $99 desde que se elige domicilio. El mensaje que
 acompaña el enlace de Clip también reemplaza cualquier texto incompleto del
 modelo y anuncia el total canónico, incluido el envío.
 
+### Fallo del agente: revisión humana, sin regreso al bot legacy
+
+Cuando el agente nuevo no puede atender un turno (por ejemplo, falta la carta,
+falla el modelo o ocurre una excepción), el canal marca la conversación para
+revisión humana, pausa las respuestas automáticas, avisa al equipo y corta el
+turno. El mismo mensaje ya no continúa por `brain.js`; así se evita reintroducir
+los errores del bot anterior. La prueba estructural está en
+`test/fase-agente-fallo-handoff.mjs`.
+
 ---
 
 ## 1. La arquitectura anterior, y por qué no se podía encender
@@ -227,6 +236,8 @@ test/fase-agente-emision.mjs       registro enlazado a emitirPedido; enlace de p
 test/fase-agente-gate-de-pago.mjs  5 pasadas, 0 fallidas; enlace nace pendiente_pago y
                                    no emite comanda antes del webhook verificado
 test/fase-agente-ciclos.mjs        un pedido nuevo rota la identidad del libro
+test/fase-agente-fallo-handoff.mjs  5 invariantes: fallo del agente pausa y avisa;
+                                   nunca vuelve al bot legacy
 test/fase-agente-confirmacion-perdida.mjs  COMMIT con respuesta perdida: no nace
                                    otro pedido Y alguien se entera (18 casos, 5 mordidas)
 test/fase-agente-indice-local.mjs  índice único y libro probados en Postgres local; ROLLBACK
