@@ -49,7 +49,11 @@ if (todosLosAgentes) {
           FROM configuracion
          WHERE clave='mesero_agente_v1' AND lower(trim(valor))='true'
          ORDER BY negocio_id::text`);
-      if (!rows.length) throw new Error('no hay ningún negocio con mesero_agente_v1=true');
+      if (!rows.length) {
+        console.log('Gate DB: no hay negocios con el agente activo; no existen tenants productivos que validar.');
+        await db.end();
+        process.exit(0);
+      }
       console.log(`Gate DB para ${rows.length} negocio(s) con agente activo.`);
       for (const row of rows) {
         execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--db-only'], {
