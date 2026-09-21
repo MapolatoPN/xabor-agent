@@ -437,6 +437,15 @@ export function aplicarRespuestaDeEntrega({
   salida, modalidadDescartada = null, modalidades = [],
 } = {}) {
   if (!salida) return salida;
+  const entregaAplicada = (salida.operaciones || []).find((o) =>
+    o?.herramienta === 'definir_entrega' && o?.resultado?.aplicado === true);
+  const pedidoEntrega = entregaAplicada?.resultado?.pedido;
+  const costoEnvio = Number(pedidoEntrega?.costo_envio);
+  if (pedidoEntrega?.modalidad && pedidoEntrega.modalidad.toLowerCase().includes('domicilio')
+      && costoEnvio > 0 && salida.texto && !/env[ií]o/i.test(salida.texto)) {
+    salida.texto = `${salida.texto.trim()} El costo de envío es $${costoEnvio} MXN.`;
+  }
+
   const rechazo = (salida.operaciones || []).find((o) =>
     o?.herramienta === 'definir_entrega'
     && o?.resultado?.codigo === 'modalidad_no_disponible');

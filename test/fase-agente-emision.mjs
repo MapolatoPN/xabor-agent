@@ -124,6 +124,14 @@ assert.match(respuestaConEnvio.texto, /registrado por \$95 MXN/);
 assert.match(respuestaConEnvio.texto, /incluye \$60 MXN de envío/i);
 assert.doesNotMatch(respuestaConEnvio.texto, /El platillo cuesta/);
 
+const respuestaModalidadDomicilio = aplicarRespuestaDeEntrega({
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  salida: { texto: 'Perfecto, ¿cuál es tu dirección?', operaciones: [{ herramienta: 'definir_entrega', resultado: {
+    aplicado: true, pedido: { modalidad: 'entrega a domicilio', costo_envio: 60 },
+  } }] },
+});
+assert.match(respuestaModalidadDomicilio.texto, /El costo de envío es \$60 MXN/);
+
 const emisionFallida = await confirmarYEmitir({ ...args,
   emitir: async () => { throw new Error('impresora no disponible'); } });
 await new Promise((resolve) => setImmediate(resolve));
