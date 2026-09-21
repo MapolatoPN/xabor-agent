@@ -18,6 +18,7 @@ import {
   pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
 } from '../services/database.js';
 import { crearEnlacePago } from '../services/pagosService.js';
+import { obtenerConfigTienda } from '../services/tiendaOnline.js';
 import { registrarPedido, emitirPedido, previsualizarPedido } from '../orders/orderManager.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
@@ -33,6 +34,7 @@ import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
   TEXTO_CAMBIO_NO_GUARDADO, TEXTO_PEDIDO_PROGRAMADO,
 } from './seguridadConversacional.js';
+import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -154,6 +156,23 @@ export async function atenderConAgente({
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
     ]);
+    const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+    if (!estadoRestaurante.abierto) {
+      const configTienda = await obtenerConfigTienda(negocioId).catch((e) => {
+        console.error(`[AGENTE] no se pudo resolver la tienda para aviso de cierre: ${e?.message}`);
+        return null;
+      });
+      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
+      return {
+        ok: true,
+        texto,
+        folio: null,
+        escalado: false,
+        fueraHorario: true,
+        motivoCierre: CIERRE.RESPONDIO,
+        operaciones: [],
+      };
+    }
     if (!Array.isArray(catalogo) || !catalogo.length) {
       // Sin carta no hay nada que el agente pueda hacer sin inventar.
       return { ok: false, motivo: 'sin_catalogo' };
@@ -182,7 +201,7 @@ export async function atenderConAgente({
     }
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
-    const promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || [];
+    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
@@ -231,6 +250,7 @@ export async function atenderConAgente({
         pagoDescartado,
         modalidades,
         modalidadDescartada,
+        estadoRestaurante,
       },
       modo: 'productivo',
       traza,
@@ -343,12 +363,30 @@ export async function observarConAgente({
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
     ]);
+    const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+    if (!estadoRestaurante.abierto) {
+      const configTienda = await obtenerConfigTienda(negocioId).catch(() => null);
+      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
+      console.log(`[SOMBRA-AGENTE] ${JSON.stringify({
+        evt: 'agente_sombra', negocio: negocioId, cierre: 'fuera_horario',
+        tienda_programados: !!configTienda?.aceptaProgramados,
+      })}`);
+      return {
+        ok: true,
+        texto,
+        folio: null,
+        escalado: false,
+        fueraHorario: true,
+        motivoCierre: CIERRE.RESPONDIO,
+        operaciones: [],
+      };
+    }
     if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
 
     const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
-    const promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || [];
+    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const grabadas = [];
@@ -387,6 +425,7 @@ export async function observarConAgente({
         pagoDescartado,
         modalidades,
         modalidadDescartada,
+        estadoRestaurante,
       },
       modo: 'sombra',
       traza,

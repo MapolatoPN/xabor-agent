@@ -18,8 +18,9 @@ import {
 import { esPagoPorEnlace } from '../src/orders/pagoPorEnlace.js';
 import { esSolicitudCatering } from '../src/agent/catering.js';
 import { camposObligatoriosCompletos } from '../src/agent/comercialMarkers.js';
-import { construirBloqueModoComercial } from '../src/agent/prompts.js';
+import { construirBloqueModoComercial, obtenerEstadoRestaurante } from '../src/agent/prompts.js';
 import { mensajePideMenu } from '../src/services/menuAutomatico.js';
+import { construirAvisoFueraDeHorario } from '../src/mesero-agente/horarioDelAgente.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -50,6 +51,34 @@ assert.match(fuenteCanalAgente, /esSolicitudDePedidoProgramado\(mensaje/,
   'el detector de programados existe pero quedó desconectado del adaptador productivo');
 assert.match(fuenteCanalAgente, /respuestaAfirmaCambioSinAplicar\(salida\)/,
   'la barrera de afirmaciones existe pero quedó desconectada de la respuesta productiva');
+
+// Pedidos recibidos después del cierre: el corte ocurre antes del modelo, la
+// tienda solo se ofrece si está publicada y admite pedidos programados, y los
+// minutos de 07:30 no se redondean a 07:00.
+const horariosCierre = Object.fromEntries([
+  'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
+].map((dia) => [dia, { abierto: true, apertura: '07:30', cierre: '14:45' }]));
+const reglasCierre = { timezone: 'UTC', horarios: horariosCierre, cierres_especiales: [], promociones: [] };
+assert.equal(obtenerEstadoRestaurante(reglasCierre, new Date('2026-09-21T07:29:00Z')).abierto, false,
+  '07:30 volvió a interpretarse como 07:00');
+assert.equal(obtenerEstadoRestaurante(reglasCierre, new Date('2026-09-21T07:30:00Z')).abierto, true);
+const estadoCerrado = obtenerEstadoRestaurante(reglasCierre, new Date('2026-09-21T15:00:00Z'));
+const avisoCierre = construirAvisoFueraDeHorario({
+  estadoRestaurante: estadoCerrado,
+  reglas: reglasCierre,
+  configTienda: { estado: 'publicada', aceptaProgramados: true, slug: 'mapolato-obispado' },
+  baseUrl: 'https://xabor.mx',
+});
+assert.match(avisoCierre, /https:\/\/xabor\.mx\/t\/mapolato-obispado/,
+  'el aviso de cierre perdió la tienda programable del negocio');
+assert.match(avisoCierre, /mañana a las 7:30 a\. m\./,
+  'el aviso de cierre no informa cuándo vuelve el personal');
+const posicionAvisoCierre = fuenteCanalAgente.indexOf('construirAvisoFueraDeHorario({',
+  fuenteCanalAgente.indexOf('export async function atenderConAgente'));
+const posicionProgramado = fuenteCanalAgente.indexOf('esSolicitudDePedidoProgramado(mensaje', posicionAvisoCierre);
+const posicionModelo = fuenteCanalAgente.indexOf('salida = await atenderTurnoConHerramientas({', posicionAvisoCierre);
+assert.ok(posicionAvisoCierre >= 0 && posicionProgramado > posicionAvisoCierre && posicionModelo > posicionProgramado,
+  'el agente puede llegar al modelo antes de responder que el negocio está cerrado');
 
 // Flujos secundarios que deben seguir vivos cuando se vuelva a habilitar el
 // bot: folio originado por llamada, catering y menú de imágenes.
@@ -258,4 +287,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: corte maestro, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: corte maestro, horario cerrado, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

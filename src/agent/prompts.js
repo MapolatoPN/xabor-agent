@@ -272,8 +272,18 @@ function formatearMenu(categorias) {
 }
 
 // Exportada para validadorOrden.js (P0) -- misma razón que cargarReglas.
-export function obtenerEstadoRestaurante(reglas) {
-  const ahora = new Date();
+const minutosDeHora = (valor) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(valor || '').trim());
+  if (!m) return null;
+  const horas = Number(m[1]);
+  const minutos = Number(m[2]);
+  if (!Number.isInteger(horas) || !Number.isInteger(minutos)
+      || horas < 0 || horas > 24 || minutos < 0 || minutos > 59
+      || (horas === 24 && minutos !== 0)) return null;
+  return horas * 60 + minutos;
+};
+
+export function obtenerEstadoRestaurante(reglas, ahora = new Date()) {
   // La zona la trae el negocio (cargarReglas la adjunta desde
   // configuracion.timezone). Antes estaba escrita a mano, así que un negocio
   // fuera de la frontera tenía al bot diciendo una hora que no era la suya.
@@ -281,16 +291,18 @@ export function obtenerEstadoRestaurante(reglas) {
   const horaMX = new Date(ahora.toLocaleString('en-US', { timeZone: zona }));
   const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
   const diaActual = diasSemana[horaMX.getDay()];
-  const horaActual = horaMX.getHours() + horaMX.getMinutes() / 60;
+  const minutoActual = horaMX.getHours() * 60 + horaMX.getMinutes();
 
   const horarioDia = reglas.horarios[diaActual];
   let abierto = false;
   let preApertura = false; // Es día de servicio pero aún no abrimos
   if (horarioDia?.abierto) {
-    const [hAbre] = horarioDia.apertura.split(':').map(Number);
-    const [hCierra] = horarioDia.cierre.split(':').map(Number);
-    abierto = horaActual >= hAbre && horaActual < hCierra;
-    if (!abierto && horaActual < hAbre) preApertura = true; // antes de apertura
+    const abre = minutosDeHora(horarioDia.apertura);
+    const cierra = minutosDeHora(horarioDia.cierre);
+    if (abre !== null && cierra !== null) {
+      abierto = minutoActual >= abre && minutoActual < cierra;
+      if (!abierto && minutoActual < abre) preApertura = true; // antes de apertura
+    }
   }
 
   // Verificar cierres especiales por fecha
@@ -300,8 +312,11 @@ export function obtenerEstadoRestaurante(reglas) {
   if (cierreEspecial) {
     if (cierreEspecial.hora_cierre) {
       // Cierre anticipado: cerrado solo después de la hora indicada
-      const [hCierreEsp] = cierreEspecial.hora_cierre.split(':').map(Number);
-      if (horaActual >= hCierreEsp) { abierto = false; cerradoPorEspecial = true; }
+      const cierreEspecialMin = minutosDeHora(cierreEspecial.hora_cierre);
+      if (cierreEspecialMin !== null && minutoActual >= cierreEspecialMin) {
+        abierto = false;
+        cerradoPorEspecial = true;
+      }
     } else {
       // Cierre todo el día
       abierto = false;
@@ -319,9 +334,9 @@ export function obtenerEstadoRestaurante(reglas) {
       // Promo recurrente por día de semana
       if (promo.dias && !promo.dias.includes(diaActual)) return false;
     }
-    const [hIni] = promo.hora_inicio.split(':').map(Number);
-    const [hFin] = promo.hora_fin.split(':').map(Number);
-    return horaActual >= hIni && horaActual < hFin;
+    const inicio = minutosDeHora(promo.hora_inicio);
+    const fin = minutosDeHora(promo.hora_fin);
+    return inicio !== null && fin !== null && minutoActual >= inicio && minutoActual < fin;
   });
 
   // Calcular el desfase UTC real de la zona del negocio en este momento

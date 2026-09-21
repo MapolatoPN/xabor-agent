@@ -833,3 +833,33 @@ Riesgos que quedan abiertos:
 - **`sin_opciones` sobre un grupo obligatorio** deja el renglón pendiente, que
   es correcto, pero si el cliente nunca contesta el pedido no avanza. Hoy sale
   por `pedir_humano` tras dos intentos.
+
+## 15. Respuesta del agente fuera de horario — 21 de septiembre de 2026
+
+El agente nuevo corta el turno **antes de llamar al modelo** cuando el horario
+real del negocio indica que está cerrado. No arma un carrito, no confirma un
+pedido y no devuelve el mensaje al bot anterior. La respuesta se construye con
+datos del negocio:
+
+- Ofrece la tienda en línea únicamente si está publicada y acepta pedidos
+  programados.
+- Usa el `slug` público de esa tienda; no hay una URL de Mapolato escrita a
+  mano en el código.
+- Informa la próxima apertura configurada. Si es mañana, el texto dice
+  "nuestro personal entra mañana a las 7:30 a. m.".
+- Respeta minutos en aperturas, cierres, cierres especiales y promociones. El
+  cálculo anterior interpretaba `07:30` como `07:00`.
+- Un cierre especial de día completo se salta al buscar la siguiente apertura.
+
+La consulta de solo lectura a producción confirmó para Mapolato Obispado:
+
+- tienda `https://xabor.mx/t/mapolato-obispado`, publicada;
+- pedidos programados habilitados;
+- zona `America/Matamoros`;
+- lunes y martes de `07:30` a `14:45`;
+- interruptor maestro del bot apagado durante el cambio;
+- agente productivo apagado y sombra encendida durante el cambio.
+
+Validación local: 9/9 casos específicos de horario, 65/65 herramientas,
+17/17 canario, 18/18 confirmación perdida, 5/5 handoff, 26/26 replay y gate
+obligatorio de incidentes en verde.
