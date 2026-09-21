@@ -995,7 +995,7 @@ export function hayContextoVisual(mensajes) {
   return mensajes.some(m => typeof m?.content === 'string' && m.content.includes('[CONTEXTO VISUAL]'));
 }
 
-export function construirBloqueModoComercial(camposCapturados = {}) {
+export function construirBloqueModoComercial(camposCapturados = {}, opciones = {}) {
   // camposParaPrompt() oculta fecha_evento si el texto que dio el cliente
   // no se pudo interpretar con confianza (ver normalizarFecha.js) -- así,
   // desde la perspectiva del modelo, esa fecha simplemente "todavía no se
@@ -1005,6 +1005,44 @@ export function construirBloqueModoComercial(camposCapturados = {}) {
   const yaCapturados = Object.keys(vista).length > 0
     ? `\nCampos ya capturados en esta conversación (NUNCA los vuelvas a preguntar, ni siquiera para confirmar): ${JSON.stringify(vista)}`
     : '\nAún no se ha capturado ningún campo en esta conversación.';
+
+  if (opciones.perfil === 'catering') {
+    return `
+
+[MODO SOLICITUD DE CATERING — ACTIVO]
+
+El cliente está solicitando información o cotización para un evento. Este
+turno NO es un pedido de comida del menú. No uses ni menciones platillos,
+precios, disponibilidad de productos, modalidades de entrega, métodos de
+pago ni confirmación de pedido. No emitas <ORDEN_CONFIRMADA> ni ningún otro
+borrador de pedido.
+
+Recopila únicamente estos cuatro datos, uno por uno y sin hacer un formulario:
+- nombre de la persona que solicita el servicio
+- número de invitados (un número)
+- lugar del evento
+- fecha concreta del evento (día, mes y año si es posible)
+
+Si el cliente menciona mesa de postres, catering de comidas, desayuno, cena u
+otro servicio, consérvalo como observación; no ofrezcas platillos ni elijas un
+servicio por él. Si la fecha solo trae un mes, pide un día aproximado.
+${yaCapturados}
+
+Cuando los cuatro datos estén capturados, termina con una frase breve como
+"Gracias, ya tengo los datos. Alguien del equipo se pondrá en contacto contigo
+para preparar la cotización." y emite <BORRADOR_LISTO>. No prometas precio,
+disponibilidad, PDF, aprobación ni confirmación del evento.
+
+Para cada dato nuevo o corregido emite inmediatamente después de tu respuesta
+visible este marcador, que el cliente nunca ve:
+<CAMPO_COMERCIAL_CAPTURADO>{"campo":"nombre_del_campo","valor":"..."}</CAMPO_COMERCIAL_CAPTURADO>
+
+Usa solo estas claves: nombre, numero_personas, lugar, fecha_evento u
+observaciones. Una sola pregunta por turno. No vuelvas a preguntar campos que
+ya aparecen en "Campos ya capturados".
+
+[FIN MODO SOLICITUD DE CATERING]`;
+  }
 
   return `
 

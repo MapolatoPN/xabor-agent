@@ -15,7 +15,7 @@ import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado
 import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
 import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
-import { obtenerEstadoModulo, obtenerMenuCompleto, pool } from '../services/database.js';
+import { obtenerEstadoModulo, obtenerMenuCompleto, obtenerConfiguracion, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
 import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
@@ -530,9 +530,13 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
   // normal de pedidos nunca se ve interrumpido por esta pieza.
   let sesionComercial = null;
   let bloqueComercial = '';
+  let perfilComercial = 'estandar';
   if (telefono && telefono !== '—' && typeof negocioId === 'string' && negocioId.trim()) {
     try {
       const moduloHabilitado = (await obtenerEstadoModulo(negocioId, 'asistente_comercial_cotizaciones')) === 'activo';
+      const configuracionComercial = await obtenerConfiguracion(negocioId);
+      perfilComercial = String(configuracionComercial.cotizacion_perfil || '').trim().toLowerCase() === 'catering'
+        ? 'catering' : 'estandar';
       const sesionExistente = await obtenerSesionActiva(negocioId, telefono);
       const categoria = await detectarIntencionComercial({
         mensaje: mensajeUsuario,
@@ -542,7 +546,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
       });
       if (activaModoComercial(categoria)) {
         sesionComercial = sesionExistente || await obtenerOCrearSesionActiva(negocioId, telefono);
-        bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados);
+        bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados, { perfil: perfilComercial });
       }
     } catch (e) {
       console.error('[brain] Error evaluando modo comercial (se continúa sin activarlo):', e.message);
@@ -1146,7 +1150,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     let textoFinal = limpiarBloqueComercial(limpiarTexto(textoRespuesta));
     if (sesionComercial) {
       try {
-        const resultadoComercial = await procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta);
+        const resultadoComercial = await procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta, { perfil: perfilComercial });
         if (resultadoComercial?.mensajeCliente) {
           textoFinal = `${textoFinal}\n\n${resultadoComercial.mensajeCliente}`.trim();
         }
@@ -1393,6 +1397,7 @@ async function registrarIntents(telefono, sessionId, canal, mensajeUsuario, text
 // error nunca promete un PDF ni miente sobre el estado, y dirige al
 // cliente a esperar seguimiento humano en vez de reintentar él mismo.
 const MENSAJE_BORRADOR_LISTO = 'Listo, ya preparé tu cotización y la envié a revisión. En cuanto sea aprobada, recibirás el PDF aquí mismo.';
+const MENSAJE_CATERING_LISTO = 'Gracias, ya registramos estos datos. Alguien del equipo se pondrá en contacto contigo para revisar el servicio y preparar la cotización.';
 const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu cotización en este momento, pero ya guardamos la información que nos diste. En breve alguien de nuestro equipo la revisa contigo -- no hace falta que la repitas.';
 
 /**
@@ -1415,7 +1420,7 @@ const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu
  * 'error_recuperable' (ver sesionComercial.js) en vez de dejarla atorada
  * en 'construyendo_borrador' sin salida.
  */
-async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta) {
+async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta, opciones = {}) {
   const capturas = extraerCamposComerciales(textoRespuesta);
   let camposActualizados = sesionComercial.campos_capturados;
 
@@ -1434,7 +1439,7 @@ async function procesarCapturaComercial(sesionComercial, negocioId, textoRespues
   if (!tieneBorradorListo(textoRespuesta)) return null; // sin intento de borrador este turno
 
   try {
-    const resultado = await generarBorradorDesdeSesion(sesionComercial.id, negocioId, camposActualizados);
+    const resultado = await generarBorradorDesdeSesion(sesionComercial.id, negocioId, camposActualizados, opciones);
     if (!resultado) {
       // Información aún insuficiente (p.ej. la fecha no se pudo
       // interpretar con confianza) -- NO es un error: la conversación
@@ -1463,7 +1468,7 @@ async function procesarCapturaComercial(sesionComercial, negocioId, textoRespues
       }
     }
 
-    return { ok: true, cotizacion: resultado, mensajeCliente: MENSAJE_BORRADOR_LISTO };
+    return { ok: true, cotizacion: resultado, mensajeCliente: opciones.perfil === 'catering' ? MENSAJE_CATERING_LISTO : MENSAJE_BORRADOR_LISTO };
   } catch (e) {
     await marcarSesionComoErrorRecuperable(sesionComercial.id, negocioId, e)
       .catch((err) => console.error('[brain] Error marcando sesión como error_recuperable:', err.message));

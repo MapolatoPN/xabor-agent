@@ -7,6 +7,7 @@ import { procesarMensajeStream } from '../agent/brain.js';
 import { registrarPedido, emitirPedido, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { setPagoPendiente, guardarTranscripcionVoz, obtenerIntegracionCanal } from '../services/database.js';
 import { zonaHorariaNegocio } from '../services/cortesCaja.js';
+import { esPagoPorEnlace } from '../orders/pagoPorEnlace.js';
 
 const router = Router();
 
@@ -196,6 +197,13 @@ export function setupVoiceWebSocket(wssVoice) {
 
           let textoExtra = '';
           if (resultado.orden) {
+            // La voz puede devolver la etiqueta visible "enlace de pago" o
+            // la forma canónica "enlace_pago". Normalizarla ANTES de
+            // registrar es lo que hace que el pedido nazca en
+            // `pendiente_pago`: queda en el panel, pero no entra a cocina ni
+            // se marca como cobrado hasta que Clip confirme el webhook.
+            const pagoPorEnlace = esPagoPorEnlace(resultado.orden.forma_pago);
+            if (pagoPorEnlace) resultado.orden.requierePagoAnticipado = true;
             resultado.orden.canal = 'voz';
             // negocioId (Incidente P0, mismo patrón que whatsapp-meta.js):
             // ya está resuelto en el scope de este handler (ver arriba),
@@ -242,7 +250,7 @@ export function setupVoiceWebSocket(wssVoice) {
 
             if (programadoFallido) {
               textoExtra = 'Tuvimos un problema programando tu pedido. Por favor intenta de nuevo en un momento.';
-            } else if (resultado.orden.forma_pago === 'enlace de pago') {
+            } else if (pagoPorEnlace || pedido.forma_pago === 'enlace_pago') {
               const folioVoz = deletrearFolio(pedido.id);
               textoExtra = `Tu número de folio es ${folioVoz}. Repito: ${folioVoz}. Mándanos ese folio por WhatsApp al mismo número y te enviamos el enlace de pago. ¿Lo anotaste?`;
               folioInfo = { texto: `Tu folio es ${folioVoz}. ¿Lo tienes anotado?` };

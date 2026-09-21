@@ -28,7 +28,7 @@ import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -55,6 +55,8 @@ import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
 import { agregarMensaje, restaurarSesion, getSession } from '../agent/session.js';
+import { obtenerSesionActiva } from '../services/sesionComercial.js';
+import { esSolicitudCatering } from '../agent/catering.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -1138,6 +1140,61 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // conversación de Claude entre negocios distintos si el mismo
     // teléfono le escribía a ambos.
     const sessionId = `meta-${negocioId}-${telefono}`;
+
+    // ── PERFIL CATERING ───────────────────────────────────────────────────
+    // Este perfil es una solicitud comercial separada del pedido. Se desvía
+    // antes del agente de menú para que no pueda buscar platillos, abrir un
+    // carrito ni confirmar una orden. Las continuaciones se reconocen por la
+    // sesión comercial durable, aunque el cliente solo responda con un dato.
+    try {
+      const cfgCatering = await obtenerConfiguracion(negocioId);
+      const perfilCatering = String(cfgCatering.cotizacion_perfil || '').trim().toLowerCase() === 'catering';
+      const moduloCatering = perfilCatering
+        && (await obtenerEstadoModulo(negocioId, 'asistente_comercial_cotizaciones')) === 'activo';
+      if (moduloCatering) {
+        const sesionCatering = await obtenerSesionActiva(negocioId, telefono);
+        if (sesionCatering || esSolicitudCatering(texto)) {
+          try {
+            const resultadoCatering = await procesarMensaje(
+              sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono,
+              { continuidadExterna: true }
+            );
+            // Si el modelo rompe el contrato y produce una orden, no se manda
+            // su texto al cliente: se congela para revisión humana.
+            if (resultadoCatering?.orden || /<ORDEN_CONFIRMADA>/i.test(String(resultadoCatering?.texto || ''))) {
+              throw new Error('perfil_catering_produjo_orden');
+            }
+            if (!resultadoCatering?.texto || !String(resultadoCatering.texto).trim()) {
+              throw new Error('perfil_catering_sin_respuesta');
+            }
+            await enviarMensaje(telefono, resultadoCatering.texto, credenciales);
+            await guardarMensaje(telefono, nombreMeta, 'saliente', resultadoCatering.texto, negocioId, 'bot');
+          } catch (e) {
+            console.error('[CATERING] turno fallido; pasa a revisión humana:', e?.message);
+            await pasarAgenteARevision({
+              continuidad: continuidadWA,
+              negocioId,
+              telefono,
+              nombreMeta,
+              credenciales,
+              motivo: 'CATERING_REVISION_HUMANA',
+            });
+          }
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('[CATERING] no se pudo evaluar el perfil; pasa a revisión humana:', e?.message);
+      await pasarAgenteARevision({
+        continuidad: continuidadWA,
+        negocioId,
+        telefono,
+        nombreMeta,
+        credenciales,
+        motivo: 'CATERING_CONFIGURACION_FALLIDA',
+      });
+      return;
+    }
 
     // ── EL AGENTE DE HERRAMIENTAS ───────────────────────────────────────────
     //

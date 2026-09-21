@@ -130,7 +130,16 @@ export function camposParaPrompt(camposCapturados = {}) {
  * camposSecundariosFaltantes(), que el panel usa para marcar pendientes
  * en vez de exigirlos antes de avanzar).
  */
-export function camposObligatoriosCompletos(camposCapturados = {}) {
+export function camposObligatoriosCompletos(camposCapturados = {}, opciones = {}) {
+  if (opciones.perfil === 'catering') {
+    return !!(
+      camposCapturados.nombre &&
+      camposCapturados.fecha_evento_iso &&
+      camposCapturados.lugar &&
+      Number.isFinite(Number(camposCapturados.numero_personas)) &&
+      Number(camposCapturados.numero_personas) > 0
+    );
+  }
   return !!(
     camposCapturados.nombre &&
     camposCapturados.fecha_evento_iso &&
@@ -139,7 +148,8 @@ export function camposObligatoriosCompletos(camposCapturados = {}) {
 }
 
 /** Campos secundarios (nunca bloqueantes) que faltan -- para marcar "pendiente de revisión" en el panel. */
-export function camposSecundariosFaltantes(camposCapturados = {}) {
+export function camposSecundariosFaltantes(camposCapturados = {}, opciones = {}) {
+  if (opciones.perfil === 'catering') return [];
   const secundarios = ['numero_personas', 'lugar', 'presupuesto'];
   return secundarios.filter((campo) => !camposCapturados[campo]);
 }

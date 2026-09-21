@@ -65,8 +65,12 @@ async function construirItemsConPrecio(negocioId, itemsCapturados) {
 
 const ETIQUETAS_SECUNDARIOS = { numero_personas: 'número de personas', lugar: 'lugar', presupuesto: 'presupuesto' };
 
-function construirNotas(camposCapturados) {
+function construirNotas(camposCapturados, opciones = {}) {
   const lineas = ['Solicitud generada por el Asistente Comercial de WhatsApp.'];
+  if (opciones.perfil === 'catering') {
+    lineas[0] = 'Solicitud de catering para evento generada por WhatsApp.';
+    if (camposCapturados.observaciones) lineas.push(`Servicio solicitado: ${camposCapturados.observaciones}`);
+  }
   if (camposCapturados.nombre) lineas.push(`Cliente: ${camposCapturados.nombre}`);
   if (camposCapturados.presupuesto) lineas.push(`Presupuesto aproximado indicado: ${camposCapturados.presupuesto}`);
   if (camposCapturados.observaciones) lineas.push(`Observaciones: ${camposCapturados.observaciones}`);
@@ -74,7 +78,7 @@ function construirNotas(camposCapturados) {
   // bloquean la creación del borrador -- si el asistente avanzó sin
   // ellos, se listan aquí para que el administrador los complete al
   // revisar, en vez de perderse silenciosamente.
-  const faltantes = camposSecundariosFaltantes(camposCapturados);
+  const faltantes = camposSecundariosFaltantes(camposCapturados, opciones);
   if (faltantes.length > 0) {
     lineas.push(`Pendiente de revisión (no confirmado por el cliente): ${faltantes.map((f) => ETIQUETAS_SECUNDARIOS[f] || f).join(', ')}.`);
   }
@@ -88,7 +92,7 @@ function construirNotas(camposCapturados) {
  * borradores). Devuelve la cotización creada, la ya existente si era
  * idempotente, o null si todavía no hay información suficiente.
  */
-export async function generarBorradorDesdeSesion(sesionId, negocioId, camposCapturadosOverride = null) {
+export async function generarBorradorDesdeSesion(sesionId, negocioId, camposCapturadosOverride = null, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     throw new TenantContextRequiredError('generarBorradorDesdeSesion');
   }
@@ -102,14 +106,21 @@ export async function generarBorradorDesdeSesion(sesionId, negocioId, camposCapt
   }
 
   const campos = camposCapturadosOverride || sesion.campos_capturados;
-  if (!camposObligatoriosCompletos(campos)) {
+  if (!camposObligatoriosCompletos(campos, opciones)) {
     console.log(`[draftBuilder] Sesión ${sesionId}: información aún insuficiente, no se crea borrador.`);
     return null;
   }
 
   await cambiarEstadoSesion(sesionId, negocioId, 'construyendo_borrador', { motivo: 'borrador_listo_recibido' });
 
-  const items = await construirItemsConPrecio(negocioId, campos.items);
+  const items = opciones.perfil === 'catering'
+    ? [{
+        tipo: 'servicio',
+        descripcion: campos.observaciones || 'Servicio de catering para evento (precio pendiente de revisión)',
+        cantidad: 1,
+        precioUnitario: 0,
+      }]
+    : await construirItemsConPrecio(negocioId, campos.items);
   const cotizacion = await crearCotizacion({
     negocioId,
     telefono: sesion.telefono,
@@ -124,7 +135,7 @@ export async function generarBorradorDesdeSesion(sesionId, negocioId, camposCapt
       lugar: campos.lugar || null,
       cantidadPersonas: Number(campos.numero_personas) || null,
     },
-    notas: construirNotas(campos),
+    notas: construirNotas(campos, opciones),
     items,
     origen: 'whatsapp_ia',
   });
