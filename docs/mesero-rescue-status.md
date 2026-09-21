@@ -116,6 +116,16 @@ desplegados en Railway como `a8851b4d-8379-4592-931a-f0d0cffce26e`;
 `/health` respondió 200
 después del despliegue.
 
+### Menú en imágenes cuando el cliente lo solicita
+
+El menú automático de Mapolato Obispado está activo con cuatro páginas de
+imagen. Se corrigió el detector para que las frases personalizadas del panel
+sean adicionales a las frases básicas (`menú`, `carta`, `precios`, etc.). Así,
+variantes como “pásame el menú” también envían las imágenes configuradas; solo
+se usa el menú textual si Meta o el almacenamiento no permiten entregar una
+imagen. El cambio quedó en `16599d9`, desplegado como
+`ad6bd078-de74-4b7f-9944-8b26a559e342`; `/health` respondió 200.
+
 ---
 
 ## 1. La arquitectura anterior, y por qué no se podía encender
