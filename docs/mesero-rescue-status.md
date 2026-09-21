@@ -14,11 +14,15 @@ base: no nace un segundo pedido y el handoff humano sí sale.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
-El commit `1654ef6` está desplegado en Railway desde
-`prod/mesero-shadow-v3`; la migración 084 está aplicada. La sombra está activa
-solo para Mapolato Obispado y ya procesó tres turnos sin errores. El canario
-quedó activo para un único teléfono autorizado, con porcentaje `0`; falta la
-prueba de pedido desde ese teléfono. Los eventos de `agente_outbox` siguen sin
+El commit `39e6b84` está desplegado en Railway desde
+`prod/mesero-shadow-v3`; la migración 084 está aplicada. La sombra y el canario
+están activos solo para Mapolato Obispado, con porcentaje `0` y un único
+teléfono autorizado. El canario real quedó validado: armó un Café Americano
+para recoger y pagar en efectivo, mostró el resumen de $39 y, tras el «Sí» del
+cliente, creó una sola vez el folio `XAB-0446`. El pedido, la compra durable y
+el trabajo de impresión comparten ese folio; la impresión quedó pendiente de
+que la terminal la recoja, sin error. El bot legacy del negocio permaneció
+apagado durante todo el recorrido. Los eventos de `agente_outbox` siguen sin
 consumidor y no forman parte del camino productivo actual.
 
 ---
@@ -158,7 +162,8 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 
 ```
 test/fase-agente-tools.mjs        48 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro)
-test/fase-agente-canario.mjs      14 pasadas, 0 fallidas    (alcance, kill switch, sombra)
+test/fase-agente-canario.mjs      17 pasadas, 0 fallidas    (alcance, kill switch, sombra,
+                                                             bot legacy apagado)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 test/fase-agente-emision.mjs       registro enlazado a emitirPedido; rechazo no emite
@@ -310,6 +315,13 @@ Autorizado y activado el 21-sep únicamente para el teléfono de prueba terminad
 en `9919` de Mapolato Obispado. `mesero_agente_porcentaje='0'`: ningún otro
 teléfono entra al agente nuevo.
 
+Prueba real cerrada el 21-sep: el primer turno quedó `listo` con cuatro
+operaciones aplicadas; el «Sí» del cliente ejecutó una sola
+`confirmar_pedido`, creó `XAB-0446`, emitió `nuevo_pedido`, registró la compra
+durable y creó el trabajo de impresión. No hubo handoff ni error. La prueba se
+hizo con `negocios.bot_whatsapp_activo=false`; no fue necesario abrir el bot
+legacy para los demás clientes.
+
 1. **Gate previo.** El bloqueo operacional está cerrado: el pedido llega al
    panel y a la impresión con el mismo folio, y está probado
    (`test/fase-agente-recorrido-operacional.mjs`, §6). La evaluación con modelo
@@ -336,8 +348,9 @@ teléfono entra al agente nuevo.
    | `mesero_agente_v1='false'` | un negocio | al siguiente mensaje (no hay caché) |
    | vaciar `mesero_agente_telefonos` y poner porcentaje a `'0'` | unos clientes | al siguiente mensaje |
 
-   En los tres casos el cliente sigue atendido: **el bot de siempre responde**,
-   porque el camino viejo no se tocó.
+   En los tres casos se vuelve a la configuración legacy del negocio. Si su bot
+   legacy está activo, ese bot responde; si está apagado, el mensaje queda
+   guardado sin respuesta automática, como ocurría antes del canario.
 
 6. **Verificar que llegó, no suponerlo.** `/health` responde 200 con el build
    viejo igual que con el nuevo. Lo que prueba: una conversación de prueba
@@ -558,8 +571,10 @@ Riesgos que quedan abiertos:
   evidencia de entrega operacional ni habilitar sus efectos sin una revisión
   separada.
 - **Calidad del modelo fuera de los fixtures.** La última corrida pasó 26/26
-  casos (§7), pero son conversaciones diseñadas para la prueba; el lenguaje de
-  clientes reales todavía no se ha observado en sombra o canario.
+  casos (§7) y el primer pedido real del canario se completó correctamente,
+  pero una conversación no representa todavía el lenguaje de todos los
+  clientes. Hace falta acumular más tráfico observado antes de ampliar el
+  porcentaje.
 - **Coste por turno sin cuantificar en dinero.** La última corrida real hizo
   121 llamadas, consumió 664 663 tokens de entrada y 11 558 de salida, y tardó
   en promedio 8,9 s por conversación. Falta traducirlo a coste monetario.
