@@ -1419,6 +1419,7 @@ wss.on('connection', (ws) => {
     // comportamiento histórico.
     const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p =>
       p.estado !== 'entregado'
+      && p.estado !== 'cancelado'
       && !(p.canal === 'tienda_online' && p.estado === 'pendiente_pago'));
     pedidosNegocio.forEach(pedido => {
       ws.send(JSON.stringify(conIdentidadDePedido(

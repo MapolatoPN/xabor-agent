@@ -2631,6 +2631,9 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   }
   // Cargar config del negocio
   await cargarNegocio();
+  // La captura única usa este catálogo para Para llevar, Recoger y
+  // Domicilio. Cargarlo aquí garantiza que la sesión ya fue confirmada.
+  if (MODULOS.includes('menu')) await renderMenuPOS();
   // Cargar pedidos programados al inicio -- solo si el módulo POS está
   // habilitado (si no, el endpoint solo respondería 403).
   if (MODULOS.includes('pos')) {
@@ -2823,11 +2826,9 @@ function conectarWS() {
 // tras confirmar /api/auth/me (ver arriba), para nunca abrir el WebSocket
 // antes de saber si hay una sesión válida.
 
-// ─── Inicializar POS al cargar ────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
-  renderMenuPOS();
-  cargarProgramados();
-});
+// El POS se inicializa después de confirmar /api/auth/me (abajo). Si se pide
+// /api/menu antes de validar la cookie, la primera respuesta 401 dejaba el
+// catálogo vacío para todas las modalidades.
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function horaCST(iso) {
@@ -2922,6 +2923,16 @@ let panelListo = false;
 // una segunda pestaña o en cada reconexión. Nunca puede quedar detrás de un
 // dedupe: un pedido activo que no se proyecta es un pedido perdido.
 function upsertPedidoEnTablero(pedido) {
+  // Los estados terminales no son tarjetas accionables. El servidor los
+  // excluye del replay, pero esta guarda evita que un evento tardío o una
+  // versión vieja del backend vuelva a pintarlos tras una reconexión.
+  if (pedido.estado === 'cancelado') {
+    const previa = document.getElementById(`comanda-${pedido.id}`);
+    if (previa) previa.remove();
+    delete pedidos[pedido.id];
+    actualizarContador();
+    return null;
+  }
   // Un checkout de la tienda en línea sin pagar NO es una orden del
   // restaurante: el servidor ya no lo vuelca, y esta guarda hace que ningún
   // evento suelto lo proyecte tampoco. Reaparece como nuevo_pedido normal
