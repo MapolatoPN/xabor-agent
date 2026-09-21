@@ -52,7 +52,7 @@ import {
 } from './services/modulosDependencias.js';
 import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
-  ticketCorte, zonaHorariaNegocio, fechaOperativaHoy, esFechaValida,
+  ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida,
 } from './services/cortesCaja.js';
 import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
@@ -1407,7 +1407,8 @@ wss.on('connection', (ws) => {
 
   if (ws.tipo === 'panel') {
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
-    // Volcado inicial: el panel recibe TODO lo activo como `nuevo_pedido`. Sin
+    // Volcado inicial: el panel recibe lo activo del día operativo como
+    // `nuevo_pedido`. Sin
     // identidad, cada reconexion era un lote de eventos "nuevos" -- y lo unico
     // que evitaba el sonido y la impresion era una bandera temporal del
     // navegador. Con la clave determinista, lo que ese panel ya proceso no
@@ -1417,15 +1418,26 @@ wss.on('connection', (ws) => {
     // confirmarPedidoPendientePago lo emite como nuevo_pedido normal. Los
     // pendiente_pago de OTROS canales (anticipo de WhatsApp) conservan su
     // comportamiento histórico.
-    const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p =>
-      p.estado !== 'entregado'
-      && p.estado !== 'cancelado'
-      && !(p.canal === 'tienda_online' && p.estado === 'pendiente_pago'));
-    pedidosNegocio.forEach(pedido => {
-      ws.send(JSON.stringify(conIdentidadDePedido(
-        { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
-    });
     ws.on('close', () => console.log('[WS] Panel autenticado desconectado'));
+    (async () => {
+      const tz = await zonaHorariaNegocio(ws.negocioId);
+      const hoy = fechaOperativaHoy(tz);
+      const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => {
+        if (p.estado === 'entregado' || p.estado === 'cancelado') return false;
+        if (p.canal === 'tienda_online' && p.estado === 'pendiente_pago') return false;
+        // `timestamp` es la fecha durable que se guardó dentro del pedido y
+        // está en ISO UTC. El panel operativo no debe resucitar pedidos de
+        // días anteriores al recargar, aunque sigan pendientes en DB.
+        if (!p.timestamp) return false;
+        const instante = new Date(p.timestamp);
+        return !Number.isNaN(instante.getTime()) && fechaOperativaDe(instante, tz) === hoy;
+      });
+      if (ws.readyState !== 1) return; // 1 = OPEN
+      pedidosNegocio.forEach(pedido => {
+        ws.send(JSON.stringify(conIdentidadDePedido(
+          { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
+      });
+    })().catch(e => console.error('[WS] Error preparando replay del panel:', e.message));
     return;
   }
 
