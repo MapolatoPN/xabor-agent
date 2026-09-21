@@ -26,6 +26,10 @@ El proceso aborta si falla cualquiera de estas comprobaciones:
 Para diagnosticar solamente la base se puede usar `npm run release:gate --
 --db-only`. Esa modalidad no sustituye la barrera completa.
 
+El predeploy ejecuta automáticamente `--db-only --all-agent-businesses` para
+todos los negocios con `mesero_agente_v1=true`; no requiere configurar un UUID
+en Railway. El humo HTTP autenticado sigue usando un negocio concreto.
+
 Railway también ejecuta las migraciones 084 y 085 en cada predeploy. Así el
 binario del agente nunca arranca sin su libro durable de operaciones y su cola
 de salida.

@@ -86,7 +86,8 @@ incluidas en el runner real; antes existían los scripts, pero el runner
 terminaba en la 083. El comando `npm run release:gate` añade un humo de solo
 lectura sobre salud, sesión, menú, historial, checkouts, pagos y posibles
 duplicados recientes. Su uso y variables están en
-`docs/production-release-gate.md`.
+`docs/production-release-gate.md`. La parte de base se ejecuta automáticamente
+en cada predeploy para todos los negocios con el agente activo.
 
 ### Corrección de formas de pago del canario
 

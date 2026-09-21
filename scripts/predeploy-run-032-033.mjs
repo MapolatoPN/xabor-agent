@@ -166,5 +166,18 @@ for (const nombre of SCRIPTS) {
     process.exit(1);
   }
 }
+// Última puerta, ya con el esquema completo: inspecciona en READ ONLY todos
+// los negocios que tienen el agente encendido. Un checkout huérfano, un pago
+// sin derivar, una carta vacía o dos pedidos idénticos vivos conservan el
+// deployment anterior.
+console.log('[predeploy-run] Ejecutando barrera de datos productivos...');
+try {
+  execFileSync(process.execPath,
+    [join(__dirname, 'release-gate.mjs'), '--db-only', '--all-agent-businesses'],
+    { stdio: 'inherit', env: process.env });
+} catch (e) {
+  console.error('[predeploy-run] FALLO en barrera de datos -- se conserva el deployment anterior.');
+  process.exit(1);
+}
 console.log('[predeploy-run] Todos los pasos completados.');
 process.exit(0);

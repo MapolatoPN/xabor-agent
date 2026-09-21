@@ -11,9 +11,12 @@
 // corren dentro de una transacción READ ONLY. La sesión de humo se cierra al
 // final. Cualquier invariante rota termina con exit 1 para bloquear la salida.
 import pg from 'pg';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const args = new Set(process.argv.slice(2));
 const dbOnly = args.has('--db-only');
+const todosLosAgentes = args.has('--all-agent-businesses');
 const databaseUrl = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 const negocioId = String(process.env.XABOR_SMOKE_NEGOCIO_ID || '').trim();
 const baseUrl = String(process.env.XABOR_BASE_URL || 'https://xabor.mx').replace(/\/+$/, '');
@@ -29,6 +32,43 @@ const exigir = (condicion, mensaje) => {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 if (!databaseUrl) fallos.push('Falta DATABASE_URL o DATABASE_PUBLIC_URL');
+
+// El predeploy no depende de una variable por negocio: descubre todos los que
+// tienen el agente encendido y ejecuta este mismo gate, aislado, para cada uno.
+// La modalidad completa HTTP sí exige un negocio concreto y credenciales.
+if (todosLosAgentes) {
+  if (!dbOnly) fallos.push('--all-agent-businesses solo se permite con --db-only');
+  if (!fallos.length) {
+    const host = new URL(databaseUrl).hostname;
+    const ssl = ['localhost', '127.0.0.1', '::1'].includes(host) ? false : { rejectUnauthorized: false };
+    const db = new pg.Client({ connectionString: databaseUrl, ssl });
+    try {
+      await db.connect();
+      const { rows } = await db.query(`
+        SELECT DISTINCT negocio_id::text
+          FROM configuracion
+         WHERE clave='mesero_agente_v1' AND lower(trim(valor))='true'
+         ORDER BY negocio_id::text`);
+      if (!rows.length) throw new Error('no hay ningún negocio con mesero_agente_v1=true');
+      console.log(`Gate DB para ${rows.length} negocio(s) con agente activo.`);
+      for (const row of rows) {
+        execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--db-only'], {
+          stdio: 'inherit',
+          env: { ...process.env, XABOR_SMOKE_NEGOCIO_ID: row.negocio_id },
+        });
+      }
+      await db.end();
+      process.exit(0);
+    } catch (e) {
+      await db.end().catch(() => {});
+      console.error(`FALLO  gate de negocios con agente: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  for (const mensaje of fallos) console.error(`FALLO  ${mensaje}`);
+  process.exit(1);
+}
+
 if (!uuid.test(negocioId)) fallos.push('Falta XABOR_SMOKE_NEGOCIO_ID válido');
 
 if (!fallos.length) {
