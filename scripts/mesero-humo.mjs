@@ -63,6 +63,12 @@ const { rows: opciones } = await db.query(
   'SELECT * FROM menu_modificadores_opciones WHERE negocio_id = $1 AND disponible = TRUE ORDER BY grupo_id, orden',
   [negocioId]);
 const { rows: cfgRows } = await db.query('SELECT clave, valor FROM configuracion WHERE negocio_id = $1', [negocioId]);
+const { rows: metodosRows } = await db.query(`
+  SELECT mp.tipo, mp.disponible_para_bot, ic.estado AS proveedor_estado
+  FROM metodos_pago mp
+  LEFT JOIN integraciones_canal ic ON ic.id = mp.integracion_id AND ic.principal = TRUE
+  WHERE mp.negocio_id = $1 AND mp.habilitado = TRUE
+  ORDER BY mp.orden`, [negocioId]);
 await db.end();
 
 const cfg = Object.fromEntries(cfgRows.map((r) => [r.clave, r.valor]));
@@ -70,6 +76,9 @@ for (const g of grupos) g.opciones = opciones.filter((o) => o.grupo_id === g.id)
 for (const p of prods) p.modificadores = grupos.filter((g) => g.producto_id === p.id);
 const catalogo = cats.map((c) => ({ ...c, productos: prods.filter((p) => p.categoria_id === c.id) }));
 const precios = Object.fromEntries(prods.map((p) => [p.nombre, Number(p.precio)]));
+const metodosPago = metodosRows
+  .filter((m) => m.disponible_para_bot && (m.tipo !== 'enlace_pago' || m.proveedor_estado === 'activo'))
+  .map((m) => ({ tipo: m.tipo }));
 
 if (!catalogo.length) { console.error('Ese negocio no tiene carta activa: no hay nada que probar.'); process.exit(2); }
 console.log(`Carta: ${catalogo.length} categorías, ${prods.length} productos.\n`);
@@ -96,9 +105,11 @@ for (const [i, mensaje] of guion.entries()) {
     mensaje, historial: historial.slice(-12),
     catalogo, precios,
     requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
+    metodosPago,
     estado, libro, llamarModelo: llamarModeloLocal, efectos,
     contexto: { nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
-      textoCiclo: [...historial.filter((h) => h.rol === 'user').map((h) => h.texto), mensaje].join('\n') },
+      textoCiclo: [...historial.filter((h) => h.rol === 'user').map((h) => h.texto), mensaje].join('\n'),
+      metodosPago },
     modo: 'humo', traza,
   });
   cerrar({ salida });

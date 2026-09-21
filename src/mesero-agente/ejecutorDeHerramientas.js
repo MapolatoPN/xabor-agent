@@ -29,6 +29,7 @@ import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import { vistaDelPedido, fichaPorId, fichaPorNombre } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
+import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -53,6 +54,7 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     folio: null,
     motivoEscalado: null,
     motivoCancelado: null,
+    pagoOfrecido: null,
     turno: 0,
     // Lo que el bot puso delante del cliente en el turno ANTERIOR y que un
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
@@ -75,11 +77,16 @@ export const estadoSerializable = (e) => JSON.parse(JSON.stringify(e ?? null));
 export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
-  efectos = null, registrarOfrecido = true,
+  efectos = null, registrarOfrecido = true, metodosPago = null,
 } = {}) {
-  const vista = () => vistaDelPedido({
-    carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
-  });
+  const vista = () => {
+    const pedido = vistaDelPedido({
+      carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
+    });
+    return estado.pagoOfrecido
+      ? { ...pedido, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
+      : pedido;
+  };
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
   //
@@ -345,13 +352,27 @@ export function crearEjecutor({
     },
 
     definir_pago({ forma_pago, paga_con }) {
-      const props = [propuesta({ accion: 'definir_pago', valorNuevo: forma_pago, evidencia: mensaje })];
+      const evaluacion = evaluarFormaPago({
+        formaPago: forma_pago, metodosPago, mensaje, ofrecido: estado.pagoOfrecido,
+      });
+      if (!evaluacion.ok) {
+        if (evaluacion.alternativa) estado.pagoOfrecido = evaluacion.alternativa;
+        return noAplicado(evaluacion.motivo, {
+          codigo: evaluacion.codigo,
+          metodo_solicitado: evaluacion.tipo,
+          metodos_disponibles: evaluacion.disponibles.map(etiquetaTipoPago),
+          alternativa: evaluacion.alternativa ? etiquetaTipoPago(evaluacion.alternativa) : null,
+          pedido: vista(),
+        });
+      }
+      const props = [propuesta({ accion: 'definir_pago', valorNuevo: evaluacion.tipo, evidencia: mensaje })];
       if (paga_con !== undefined) {
         props.push(propuesta({ accion: 'definir_cliente', valorNuevo: { paga_con }, evidencia: mensaje }));
       }
       const r = aplicar(props);
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
-      return ok({ pedido: r.pedido });
+      estado.pagoOfrecido = null;
+      return ok({ metodo: evaluacion.tipo, pedido: vista() });
     },
 
     definir_cliente({ nombre }) {
@@ -393,7 +414,11 @@ export function crearEjecutor({
 
       estado.hechos.confirmado = true;
       estado.folio = r.folio ?? null;
-      return ok({ pedido: vista(), folio: r.folio ?? null, simulado: !!r.simulado });
+      return ok({
+        pedido: vista(), folio: r.folio ?? null, simulado: !!r.simulado,
+        ...(r.enlacePago?.url ? { enlace_pago: r.enlacePago.url } : {}),
+        ...(r.enlacePagoError ? { enlace_pago_error: r.enlacePagoError } : {}),
+      });
     },
 
     async pedir_humano({ motivo }) {

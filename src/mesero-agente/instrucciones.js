@@ -22,6 +22,16 @@
 
 const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
 
+const ETIQUETAS_PAGO = Object.freeze({
+  efectivo: 'efectivo', terminal: 'tarjeta con terminal', enlace_pago: 'enlace de pago',
+  transferencia: 'transferencia', pago_en_sucursal: 'pago en sucursal',
+  otro_autorizado: 'otro método autorizado',
+});
+
+const metodosEnTexto = (metodos) => (Array.isArray(metodos)
+  ? metodos.map((m) => ETIQUETAS_PAGO[m?.tipo ?? m] || String(m?.tipo ?? m).replace(/_/g, ' ')).join(', ')
+  : '');
+
 /** El pedido como lo lee el modelo. Corto y sin adornos: son datos. */
 export function pedidoEnTexto(pedido) {
   if (!pedido) return 'No hay pedido en curso.';
@@ -38,6 +48,7 @@ export function pedidoEnTexto(pedido) {
     lineas.length ? lineas.join('\n') : '(sin renglones)',
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
+    pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,
     pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
     pedido.total !== null && pedido.total !== undefined ? `total: $${pedido.total}` : 'total: (aún no)',
     (pedido.falta || []).length ? `falta: ${pedido.falta.join(', ')}` : 'falta: nada',
@@ -54,6 +65,8 @@ export function construirInstrucciones({
   datosConocidos = [],
   reglasDelNegocio = null,
   requierePago = true,
+  metodosPago = null,
+  pagoDescartado = null,
 } = {}) {
   const abierto = estadoRestaurante?.abierto;
 
@@ -107,6 +120,12 @@ herramienta en ESTA conversación.
   \`linea_id\` que te dio \`ver_pedido\`. Si cambia entrega o pago, llama a
   \`definir_entrega\` o \`definir_pago\` antes de contestar; si falta la
   dirección, pídela después de registrar la nueva modalidad.
+- Solo registra métodos incluidos en MÉTODOS DE PAGO. Si pide transferencia y
+  no está disponible, llama a \`definir_pago\`: su rechazo te indicará si puedes
+  ofrecer enlace de pago. Dile que no cuentan con transferencia y que el enlace
+  es muy similar a pagar con transferencia. No cambies su elección hasta que lo
+  acepte. Si el pedido confirmado devuelve \`enlace_pago\`, incluye esa URL
+  exacta en tu respuesta; nunca inventes ni reconstruyas una URL.
 - Si cancela todo, llama a \`cancelar_pedido\` aunque aún no haya renglones.
   Si el pedido ya está confirmado y pide cambiarlo, llama a \`pedir_humano\`.
 - Si algo se atora dos veces, o el cliente se queja, o pide hablar con alguien:
@@ -117,6 +136,9 @@ Corto, cálido y de tú. Como un mesero que tiene la libreta en la mano, no como
 un formulario. Una pregunta a la vez. Sin listas numeradas ni emojis de más.
 No repitas el pedido entero en cada mensaje: solo cuando vas a confirmar.
 ${bloque('EL PEDIDO AHORA MISMO', pedidoEnTexto(pedido))}${
+  Array.isArray(metodosPago) ? bloque('MÉTODOS DE PAGO DISPONIBLES', metodosEnTexto(metodosPago) || 'ninguno') : ''}${
+  pagoDescartado ? bloque('PAGO ANTERIOR INVALIDADO',
+    `${ETIQUETAS_PAGO[pagoDescartado] || pagoDescartado} ya no está disponible. Explícalo y ofrece un método permitido.`) : ''}${
   estadoRestaurante ? bloque('HORARIO', abierto
     ? `Ahora mismo está ABIERTO. ${estadoRestaurante.detalle || ''}`.trim()
     : `Ahora mismo está CERRADO. ${estadoRestaurante.detalle || ''}\n`

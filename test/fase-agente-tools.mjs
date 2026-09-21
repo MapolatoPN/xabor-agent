@@ -21,6 +21,7 @@ import {
   libroDeOperaciones, almacenEnMemoria, hashDeArgumentos, claveDeOperacion,
 } from '../src/mesero-agente/libroDeOperaciones.js';
 import { articulosQueElClientePidioQuitar } from '../src/orders/carritoDelPedido.js';
+import { depurarPagoNoDisponible } from '../src/mesero-agente/politicaDePagos.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -54,6 +55,7 @@ const PRECIOS = { 'Chilaquiles Sencillos': 195, 'Chilaquiles Mixtos': 205, Hotca
 const ejecutorDe = (estado, mensaje, extra = {}) => crearEjecutor({
   estado, catalogo: CARTA, precios: PRECIOS, mensaje, textoCiclo: extra.textoCiclo ?? mensaje,
   requierePago: extra.requierePago ?? true, efectos: extra.efectos ?? null,
+  metodosPago: extra.metodosPago ?? null,
 });
 const nuevo = () => estadoNuevo({ negocioId: 'n1', conversacionId: 'c1' });
 
@@ -602,6 +604,59 @@ await t('H5 · dos acciones IDÉNTICAS en el mismo turno se aplican las dos', as
   await libro.ejecutarUnaVez({ ...base, ocurrencia: 1 }, ejecutar);
   await libro.ejecutarUnaVez({ ...base, ocurrencia: 2 }, ejecutar);
   assert.equal(veces, 2, 'el reintento del turno volvió a aplicar');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── I. La configuración real decide cómo se paga ──');
+
+const METODOS_MAPOLATO = [
+  { tipo: 'efectivo' }, { tipo: 'terminal' }, { tipo: 'enlace_pago' },
+];
+
+await t('I1 · transferencia deshabilitada se rechaza y ofrece enlace', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'pagaré con transferencia', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'transferencia' });
+  assert.equal(r.aplicado, false);
+  assert.equal(r.codigo, 'forma_pago_no_disponible');
+  assert.equal(r.alternativa, 'enlace de pago');
+  assert.equal(estado.carrito.datos.forma_pago, undefined, 'guardó un método que el negocio no acepta');
+  assert.equal(estado.pagoOfrecido, 'enlace_pago');
+});
+
+await t('I2 · un sí acepta el enlace que el bot acaba de ofrecer', async () => {
+  const estado = nuevo();
+  await ejecutorDe(estado, 'pagaré con transferencia', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'transferencia' });
+  const r = await ejecutorDe(estado, 'sí, me funciona', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'enlace de pago' });
+  assert.equal(r.aplicado, true, r.motivo);
+  assert.equal(estado.carrito.datos.forma_pago, 'enlace_pago');
+  assert.equal(estado.pagoOfrecido, null);
+});
+
+await t('I3 · el modelo no puede elegir enlace en un mensaje que no lo respalda', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'mi dirección es Hidalgo 12', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'enlace de pago' });
+  assert.equal(r.aplicado, false);
+  assert.equal(r.codigo, 'forma_pago_sin_respaldo');
+  assert.equal(estado.carrito.datos.forma_pago, undefined);
+});
+
+await t('I4 · efectivo permitido sigue funcionando y queda canónico', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'pago en efectivo', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'cash' });
+  assert.equal(r.aplicado, true, r.motivo);
+  assert.equal(estado.carrito.datos.forma_pago, 'efectivo');
+});
+
+await t('I5 · un estado viejo con transferencia se limpia antes del siguiente turno', async () => {
+  const estado = nuevo();
+  estado.carrito.datos.forma_pago = 'transferencia';
+  assert.equal(depurarPagoNoDisponible(estado, METODOS_MAPOLATO), 'transferencia');
+  assert.equal(estado.carrito.datos.forma_pago, undefined);
 });
 
 console.log(fallos.length

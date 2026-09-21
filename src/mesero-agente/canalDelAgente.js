@@ -14,13 +14,17 @@
 //
 // Las dos comparten TODO menos los efectos y dónde guardan el estado. Que no
 // haya dos implementaciones es lo que hace que observar signifique algo.
-import { pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido } from '../services/database.js';
+import {
+  pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
+} from '../services/database.js';
+import { crearEnlacePago } from '../services/pagosService.js';
 import { registrarPedido, emitirPedido } from '../orders/orderManager.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
+import { depurarPagoNoDisponible } from './politicaDePagos.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -108,16 +112,17 @@ export async function atenderConAgente({
   negocioId, telefono, mensaje, nombre = null, canal = 'whatsapp',
   llamarModelo, historial = [], textoCiclo = '', turnoId = null,
   escalarAHumano = null, registrar = registrarPedido, emitir = emitirPedido,
-  guardar = guardarPedido, traza = null,
+  guardar = guardarPedido, crearPago = crearEnlacePago, traza = null,
 } = {}) {
   const t0 = Date.now();
   let estado = null;
   let salida = null;
   let confirmacionIntentada = false;
   try {
-    const [catalogo, cfg] = await Promise.all([
+    const [catalogo, cfg, metodosPago] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
+      obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
     ]);
     if (!Array.isArray(catalogo) || !catalogo.length) {
       // Sin carta no hay nada que el agente pueda hacer sin inventar.
@@ -125,13 +130,14 @@ export async function atenderConAgente({
     }
 
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
+    const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
 
     const efectos = {
       confirmar: async ({ pedido }) => {
         confirmacionIntentada = true;
         return confirmarYEmitir({
-          negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar,
+          negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar, crearPago,
         });
       },
       // El `ok` que sale de aquí es lo que hace que `pedir_humano` cuente como
@@ -152,6 +158,7 @@ export async function atenderConAgente({
       catalogo,
       precios: preciosDelCatalogo(catalogo),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
+      metodosPago,
       estado,
       libro,
       llamarModelo,
@@ -162,10 +169,23 @@ export async function atenderConAgente({
         datosConocidos: [telefono && telefono !== '—' ? `Teléfono: ${telefono}` : null,
           nombre ? `Nombre: ${nombre}` : null].filter(Boolean),
         tono: cfg?.tono_bot || null,
+        metodosPago,
+        pagoDescartado,
       },
       modo: 'productivo',
       traza,
     });
+
+    salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+    const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
+    if (falloEnlace) {
+      if (await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ENLACE_PAGO_FALLO')) {
+        estado.hechos.escalado = true;
+        salida.escalado = true;
+      } else {
+        salida.handoffPendiente = true;
+      }
+    }
 
     // ── EL TURNO VOLVIÓ BIEN; FALTA VER SI PROMETIÓ DE MÁS ───────────────
     //
@@ -239,13 +259,15 @@ export async function observarConAgente({
 } = {}) {
   const t0 = Date.now();
   try {
-    const [catalogo, cfg] = await Promise.all([
+    const [catalogo, cfg, metodosPago] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
+      obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
     ]);
     if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
 
     const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
+    const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const grabadas = [];
     const salida = await atenderTurnoConHerramientas({
       negocioId,
@@ -256,6 +278,7 @@ export async function observarConAgente({
       catalogo,
       precios: preciosDelCatalogo(catalogo),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
+      metodosPago,
       estado,
       // Memoria, no Postgres: la sombra no escribe ni en la auditoría.
       libro: libroDeOperaciones(almacenEnMemoria()),
@@ -274,10 +297,14 @@ export async function observarConAgente({
         nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,
         tono: cfg?.tono_bot || null,
+        metodosPago,
+        pagoDescartado,
       },
       modo: 'sombra',
       traza,
     });
+
+    aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
 
     await guardarEstado(negocioId, telefono, estado, { sombra: true });
 
@@ -299,6 +326,53 @@ export async function observarConAgente({
     console.error('[SOMBRA-AGENTE] contenida:', e?.message);
     return { ok: false, motivo: e?.message || 'error', ms: Date.now() - t0 };
   }
+}
+
+/** El resultado durable de `confirmar_pedido`, si ocurrió en este turno. */
+export function resultadoConfirmacion(salida) {
+  const operaciones = Array.isArray(salida?.operaciones) ? salida.operaciones : [];
+  return [...operaciones].reverse()
+    .find((o) => o?.herramienta === 'confirmar_pedido')?.resultado || null;
+}
+
+/**
+ * Los mensajes sobre dinero no se dejan a interpretación del modelo:
+ * - una transferencia no habilitada siempre recibe la misma explicación;
+ * - una URL devuelta por pagosService siempre llega al cliente;
+ * - si Clip falla después del registro, se anuncia el folio sin inventar URL.
+ */
+export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, metodosPago = [] } = {}) {
+  if (!salida) return salida;
+  const confirmacion = resultadoConfirmacion(salida);
+  if (confirmacion?.enlace_pago) {
+    const url = String(confirmacion.enlace_pago);
+    const base = String(salida.texto || `Tu pedido ${confirmacion.folio || salida.folio || ''} quedó registrado.`).trim();
+    salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
+    salida.enlacePago = url;
+    return salida;
+  }
+  if (confirmacion?.enlace_pago_error) {
+    const folio = confirmacion.folio || salida.folio || estado?.folio || '';
+    salida.texto = `Tu pedido ${folio} quedó registrado, pero no pude generar el enlace de pago. `
+      + 'Escríbeme “enlace de pago” en un momento para reintentarlo sin duplicar el cobro.';
+    salida.enlacePagoError = confirmacion.enlace_pago_error;
+    return salida;
+  }
+
+  const rechazos = (salida.operaciones || []).filter((o) =>
+    o?.herramienta === 'definir_pago'
+    && o?.resultado?.codigo === 'forma_pago_no_disponible'
+    && o?.resultado?.metodo_solicitado === 'transferencia');
+  const enlaceDisponible = (metodosPago || []).some((m) => (m?.tipo ?? m) === 'enlace_pago');
+  const transferenciaDescartada = pagoDescartado === 'transferencia'
+    && !estado?.carrito?.datos?.forma_pago;
+
+  if (enlaceDisponible && (rechazos.length || transferenciaDescartada)) {
+    estado.pagoOfrecido = 'enlace_pago';
+    salida.texto = 'No contamos con pagos por transferencia, pero podemos ofrecerte un enlace de pago; '
+      + 'es muy similar a pagar con transferencia. ¿Te funciona?';
+  }
+  return salida;
 }
 
 // ── QUÉ PASÓ DE VERDAD EN ESTE TURNO ─────────────────────────────────────
@@ -394,7 +468,10 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
 // emitirPedido reclama esa deuda y envía panel/impresión por la ruta existente.
 // Igual que el bot legacy, la emisión se lanza después del registro; un fallo
 // de emisión no convierte un pedido ya guardado en un pedido rechazado.
-export async function confirmarYEmitir({ negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar = guardarPedido }) {
+export async function confirmarYEmitir({
+  negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir,
+  guardar = guardarPedido, crearPago = crearEnlacePago,
+}) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
   let resultado;
   try {
@@ -419,7 +496,25 @@ export async function confirmarYEmitir({ negocioId, telefono, nombre, canal, est
   try { await guardar(telefono, resultado, negocioId); }
   catch (e) { console.error(`[AGENTE] guardarPedido(${folio || '-'}) falló:`, e?.message); }
 
-  return { ok: true, folio };
+  let enlacePago = null;
+  let enlacePagoError = null;
+  if (orden.forma_pago === 'enlace_pago') {
+    try {
+      if (!folio) throw Object.assign(new Error('folio ausente después del registro'), { code: 'FOLIO_AUSENTE' });
+      const enlace = await crearPago({
+        negocioId, pedidoId: folio, actor: null, descripcion: `Pedido Xabor #${folio}`,
+      });
+      if (!enlace?.url) throw Object.assign(new Error('el proveedor no devolvió URL'), { code: 'ENLACE_SIN_URL' });
+      enlacePago = { url: enlace.url, estado: enlace.estado ?? null, reutilizado: !!enlace.reutilizado };
+    } catch (e) {
+      const codigo = String(e?.code || 'ERROR_ENLACE_PAGO').slice(0, 80);
+      console.error(`[AGENTE] crearEnlacePago(${folio || '-'}) falló codigo=${codigo}`);
+      enlacePagoError = { codigo };
+    }
+  }
+
+  return { ok: true, folio, ...(enlacePago ? { enlacePago } : {}),
+    ...(enlacePagoError ? { enlacePagoError } : {}) };
 }
 
 export { CIERRE };

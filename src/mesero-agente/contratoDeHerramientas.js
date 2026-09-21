@@ -189,7 +189,9 @@ export const HERRAMIENTAS = Object.freeze([
   {
     nombre: 'definir_pago',
     efecto: true,
-    descripcion: 'Registra con qué va a pagar el cliente. Solo cuando lo dijo.',
+    descripcion: 'Registra con qué va a pagar el cliente. Solo cuando lo dijo o cuando aceptó explícitamente '
+      + 'el método que el pedido muestra como ofrecido. La configuración real del negocio puede rechazarlo; '
+      + 'si ocurre, explica el motivo y ofrece únicamente la alternativa devuelta.',
     esquema: z.object({
       forma_pago: z.string().min(1).describe('"efectivo", "tarjeta", "transferencia"… como lo dijo el cliente.'),
       paga_con: z.number().optional().describe('Con cuánto paga, si lo dijo, para calcular el cambio.'),
@@ -219,7 +221,8 @@ export const HERRAMIENTAS = Object.freeze([
     descripcion: 'Cierra el pedido y lo manda a la cocina. Solo después de haberle mostrado al cliente '
       + 'el resumen que devuelve ver_pedido y de que él haya dicho que sí. '
       + 'La huella tiene que ser la del resumen que el cliente LEYÓ: si el pedido cambió desde entonces, '
-      + 'no confirma, y hay que volver a mostrar el resumen.',
+      + 'no confirma, y hay que volver a mostrar el resumen. Si la forma de pago es enlace de pago, '
+      + 'el resultado trae la URL real que debes copiar exactamente en la respuesta.',
     esquema: z.object({
       huella_resumen: z.string().min(1)
         .describe('El campo "huella" del último ver_pedido que le mostraste al cliente.'),
