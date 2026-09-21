@@ -1167,21 +1167,25 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           turnoId: `wa-${Date.now()}`,
         });
         if (r.ok) {
-          // Si el pedido ya se registró, un fallo de envío no puede devolver
-          // este mismo turno al bot viejo: podría crear un segundo pedido.
+          let respuestaEnviada = false;
           if (r.texto) {
             try {
               await enviarMensaje(telefono, r.texto, credenciales);
               await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot');
+              respuestaEnviada = true;
             } catch (e) {
-              console.error('[AGENTE] respuesta no enviada o no guardada; no se reintenta con el bot viejo:', e?.message);
+              console.error('[AGENTE] respuesta no enviada o no guardada; pasa a revisión humana:', e?.message);
             }
           } else {
-            console.error('[AGENTE] turno sin texto; no se reintenta con el bot viejo');
+            console.error('[AGENTE] turno sin texto; pasa a revisión humana');
           }
-          console.log(`[AGENTE] evento=atendido negocio=${negocioId} via=${modoAgente.canario?.via} `
-            + `folio=${r.folio || '-'} escalado=${!!r.escalado}`);
-          return;
+          if (respuestaEnviada) {
+            // Si el pedido ya se registró, un fallo posterior no puede
+            // devolver este turno al bot viejo: podría crear un duplicado.
+            console.log(`[AGENTE] evento=atendido negocio=${negocioId} via=${modoAgente.canario?.via} `
+              + `folio=${r.folio || '-'} escalado=${!!r.escalado}`);
+            return;
+          }
         }
         await pasarAgenteARevision({
           continuidad: continuidadWA,
