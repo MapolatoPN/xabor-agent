@@ -9,7 +9,7 @@ const normalizar = (s) => String(s || '').toLowerCase().normalize('NFD')
 const pideNuevoPedido = (mensaje) => {
   const t = normalizar(mensaje);
   return /\b(?:nuevo|otro|otra)\s+(?:pedido|orden)\b/.test(t)
-    || /\b(?:quiero|quisiera|voy a)\s+(?:hacer\s+)?(?:un\s+)?(?:pedido|orden|pedir)\b/.test(t);
+    || /\b(?:quiero|quisiera|voy a)\s+(?:hacer\s+)?(?:un\s+)?(?:pedido|orden|pedir|ordenar)\b/.test(t);
 };
 
 export function cicloParaTurno(estado, mensaje) {

@@ -37,6 +37,7 @@ const g = (nombre, minimo, maximo, opciones, requerido = true) => ({
 const CARTA = [
   { id: 1, nombre: 'Desayunos', productos: [
     { id: 85, nombre: 'Chilaquiles Sencillos', precio: 195, disponible: true, orden: 0,
+      opciones: { variante: { base: true } },
       modificadores: [g('Salsa', 1, 1, ['Roja', 'Verde', 'Suiza']),
         g('Proteína', 1, 1, ['Huevos Estrellados', 'Huevos Revueltos', 'Pollo'])] },
     { id: 107, nombre: 'Chilaquiles Mixtos', precio: 205, disponible: true, orden: 1,
@@ -131,6 +132,24 @@ await t('B2a · un nombre exacto no se vuelve ambiguo por hermanos parecidos', a
   const r = await e.ejecutar('buscar_producto', { texto: 'Chilaquiles Sencillos' });
   assert.deepEqual(r.encontrados.map((p) => p.nombre), ['Chilaquiles Sencillos']);
   assert.equal(r.nota, undefined);
+});
+
+await t('B2b · una opción dicha resuelve la variante base y viaja con su grupo real', async () => {
+  const e = ejecutorDe(nuevo(), 'Quiero ordenar unos chilaquiles suizos');
+  // El modelo puede buscar sólo la familia. La evidencia que decide es lo que
+  // dijo el cliente, no cuánto texto decidió copiar en la herramienta.
+  const r = await e.ejecutar('buscar_producto', { texto: 'chilaquiles' });
+  assert.deepEqual(r.encontrados.map((p) => p.nombre), ['Chilaquiles Sencillos']);
+  assert.deepEqual(r.encontrados[0].opciones_mencionadas,
+    [{ grupo: 'Salsa', opciones: ['Suiza'] }]);
+  assert.equal(r.nota, undefined);
+});
+
+await t('B2c · una palabra que no es opción no elige la variante base', async () => {
+  const e = ejecutorDe(nuevo(), 'Quiero unos chilaquiles azules');
+  const r = await e.ejecutar('buscar_producto', { texto: 'chilaquiles' });
+  assert.ok(r.encontrados.length >= 2, 'un atributo inexistente eligió un producto por el cliente');
+  assert.match(r.nota || '', /pregúntaselo|no ha dicho/i);
 });
 
 await t('B3 · un producto_id inventado no agrega nada', async () => {

@@ -18,6 +18,11 @@ assert.equal(nuevo.hechos.confirmado, false);
 assert.deepEqual(nuevo.carrito.items, []);
 assert.equal(estado.folio, 'XAB-9001', 'el ciclo anterior no debe mutarse');
 
+const nuevoPorVerbo = cicloParaTurno(estado, 'Quiero ordenar unos chilaquiles suizos');
+assert.notEqual(nuevoPorVerbo, estado, '«quiero ordenar» dejó vivo el pedido confirmado');
+assert.equal(nuevoPorVerbo.conversacionId, 'agente:528781234567:c1');
+assert.deepEqual(nuevoPorVerbo.carrito.items, []);
+
 nuevo.hechos.confirmado = true;
 const tercero = cicloParaTurno(nuevo, 'Quisiera pedir de nuevo');
 assert.equal(tercero.conversacionId, 'agente:528781234567:c2');

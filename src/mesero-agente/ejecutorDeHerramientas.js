@@ -25,6 +25,7 @@
 import { aplicarPropuestas, propuesta } from '../mesero-whatsapp/motorTransaccional.js';
 import { carritoVacio } from '../orders/carritoDelPedido.js';
 import { buscarProductos, indiceDeLaCarta, productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
+import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import { vistaDelPedido, fichaPorId, fichaPorNombre } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
@@ -154,6 +155,30 @@ export function crearEjecutor({
         const c = norm(categoria);
         fichas = fichas.filter((f) => norm(f.categoria) === c);
       }
+
+      // La coincidencia por palabras encuentra la FAMILIA, pero una opción
+      // que el cliente ya nombró también puede resolver la variante. Ejemplo
+      // real: «chilaquiles suizos» comparte el mismo nombre base con cuatro
+      // productos, pero la carta declara cuál es la variante base y que
+      // «Suiza» pertenece al grupo Salsa. El resolvedor canónico ya sabe hacer
+      // esa lectura sin inventar; la herramienta del agente no lo consultaba.
+      //
+      // Una mención totalmente genérica sigue devolviendo varios candidatos:
+      // solo se acota cuando el cliente nombró una variante o cuando al menos
+      // una opción de la carta quedó identificada de forma inequívoca.
+      const evidencia = String(textoCiclo || mensaje || t);
+      const anclada = anclarLinea({
+        catalogo, nombrePropuesto: t, evidencia,
+        dichoDelCliente: String(mensaje || evidencia),
+      });
+      const elecciones = (anclada?.grupos || [])
+        .map((g) => ({ grupo: g.grupo, opciones: (g.elegidas || []).slice() }))
+        .filter((g) => g.opciones.length);
+      const varianteNombrada = anclada?.motivo === 'variante_nombrada';
+      if (anclada?.estado === 'resuelto' && (varianteNombrada || elecciones.length)) {
+        const resuelta = fichas.find((f) => String(f.id) === String(anclada.producto?.id));
+        if (resuelta) fichas = [resuelta];
+      }
       // La búsqueda por palabras también devuelve hermanos (por ejemplo,
       // «Licuado de fresa» junto a «Licuado de plátano»). Si el texto coincide
       // con UN nombre exacto de la carta, ese producto ya está elegido.
@@ -178,6 +203,9 @@ export function crearEjecutor({
         descripcion: f.descripcion,
         opciones_obligatorias: (f.grupos || []).filter((g) => g.requerido || (Number(g.minimo) || 0) > 0)
           .map((g) => g.nombre),
+        ...(String(f.id) === String(anclada?.producto?.id) && elecciones.length
+          ? { opciones_mencionadas: elecciones }
+          : {}),
       }));
       // Un solo candidato es lo que un «sí» puede aceptar después. Con varios,
       // el cliente todavía no ha dicho cuál, y decidirlo por él es el error
