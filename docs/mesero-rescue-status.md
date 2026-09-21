@@ -111,9 +111,9 @@ cotización con servicio genérico pendiente de revisión y el cliente recibe
 `test/fase-catering.mjs` cubre el detector, los campos obligatorios y las
 instrucciones de no ofrecer platillos.
 
-Estos cambios quedaron en el commit `d74f27d`, desplegado en Railway como
-`68153989-9a0c-49cc-a091-57d1bce29282`; `/health` respondió 200 después del
-despliegue.
+Estos cambios quedaron en los commits `d74f27d` y `bb7b08d`, desplegados en
+Railway como `bb677f73-46eb-4dcb-b933-85d4a4927576`; `/health` respondió 200
+después del despliegue.
 
 ---
 
