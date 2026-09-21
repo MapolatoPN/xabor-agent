@@ -1,7 +1,7 @@
 # Rescate del Mesero de WhatsApp — estado
 
 **Rama:** `rescue/mesero-tool-agent` (desde `a90c8d0` = producción `dab2f12` + 1)
-**Fecha:** 20 de septiembre de 2026
+**Fecha:** 21 de septiembre de 2026
 **Auditoría de partida:** [`mesero-auditoria-2026-09-20.md`](mesero-auditoria-2026-09-20.md)
 
 **Estado de salida:** el bloqueo operacional está CERRADO. El recorrido
@@ -14,8 +14,11 @@ base: no nace un segundo pedido y el handoff humano sí sale.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
-El canario aún requiere autorización explícita para atender clientes reales,
-desplegar o hacer merge (§13). Los eventos de `agente_outbox` siguen sin
+El commit `1654ef6` está desplegado en Railway desde
+`prod/mesero-shadow-v3`; la migración 084 está aplicada. La sombra está activa
+solo para Mapolato Obispado y ya procesó tres turnos sin errores. El canario
+quedó activo para un único teléfono autorizado, con porcentaje `0`; falta la
+prueba de pedido desde ese teléfono. Los eventos de `agente_outbox` siguen sin
 consumidor y no forman parte del camino productivo actual.
 
 ---
@@ -301,15 +304,16 @@ su libro en memoria. Funciona con el bot productivo apagado.
 5. Apagar: quitar `MESERO_AGENTE_SHADOW` o poner la clave del negocio a
    `'false'`. Cualquiera de las dos basta.
 
-## 9. Pasos exactos para el CANARIO — **requiere aprobación de Mario**
+## 9. Pasos exactos para el CANARIO
 
-No se activa sin autorización explícita. Preparado, no activado.
+Autorizado y activado el 21-sep únicamente para el teléfono de prueba terminado
+en `9919` de Mapolato Obispado. `mesero_agente_porcentaje='0'`: ningún otro
+teléfono entra al agente nuevo.
 
 1. **Gate previo.** El bloqueo operacional está cerrado: el pedido llega al
    panel y a la impresión con el mismo folio, y está probado
    (`test/fase-agente-recorrido-operacional.mjs`, §6). La evaluación con modelo
-   real del 20-sep **pasó 26/26 con 0 críticas** (§7). Falta autorización
-   explícita para activar este canario.
+   real del 20-sep **pasó 26/26 con 0 críticas** (§7).
 2. Variable del servicio:
    ```
    MESERO_AGENTE_MODE=true

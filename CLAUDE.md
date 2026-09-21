@@ -173,11 +173,12 @@ ensucia el diagnóstico. Redirige a archivo (`> $log 2>&1`) y lee el archivo.
 
 ## Desplegar a producción
 
-**Un push a `main` NO despliega.** El auto-deploy desde GitHub está apagado, y
-esto se comprobó por las malas en las dos direcciones: primero se dio por
-supuesto que sí (porque unos merges coincidieron con despliegues ajenos) y
-después un push quedó seis minutos sin producir nada. El despliegue es siempre
-un acto explícito:
+**Comprueba el comportamiento antes de hacer push.** El 21-sep-2026, un push a
+la rama configurada `prod/mesero-shadow-v3` inició automáticamente un build de
+Railway. Esto contradice la observación anterior de que el auto-deploy estaba
+apagado. Un push a esa rama se trata desde ahora como un despliegue; no ejecutes
+además `redeploy` si Railway ya creó un deployment para el commit. Cuando no lo
+haga, el despliegue explícito es:
 
 ```powershell
 railway redeploy --yes --from-source
