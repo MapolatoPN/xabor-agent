@@ -177,10 +177,11 @@ export const HERRAMIENTAS = Object.freeze([
     descripcion: 'Registra cómo se entrega el pedido y, si es a domicilio, dónde. '
       + 'Un pedido a domicilio no queda listo para confirmar sin dirección. '
       + 'Si el cliente cambia la modalidad, llama a esta herramienta antes de decir que cambió. '
-      + 'Manda modalidad, dirección, o las dos.',
+      + 'La configuración real del negocio puede rechazar una modalidad; si ocurre, ofrece únicamente '
+      + 'las alternativas devueltas. Manda modalidad, dirección, o las dos.',
     esquema: z.object({
       modalidad: z.string().min(1).optional()
-        .describe('Tal como el negocio la llama: "domicilio", "recoger en tienda", "mesa"…'),
+        .describe('Tal como el negocio la llama, usando solo una modalidad disponible.'),
       direccion: z.string().min(1).optional().describe('La dirección completa que dio el cliente.'),
       referencias: z.string().max(200).optional().describe('Entre qué calles, color de la casa…'),
     }).strict().refine((v) => v.modalidad || v.direccion || v.referencias,

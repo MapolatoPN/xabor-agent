@@ -27,6 +27,9 @@ import { componenteIncluido } from '../agent/componentesIncluidos.js';
 import { variantesCompatibles, opcionesDelItem } from './variantePorLoPedido.js';
 import { distingueLaEleccion, opcionesDelGrupo, fuerzaDeEvidencia } from './evidenciaDeEleccion.js';
 import { modoDelPedido } from './modoDelPedido.js';
+import {
+  evaluarModalidad, etiquetaTipoModalidad, normalizarTipoModalidad,
+} from './modalidadesDelPedido.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -47,6 +50,7 @@ export const RECHAZOS = {
   // regreso al menú que tiraba el pedido armado.
   FORMA_PAGO_FALTANTE: 'FORMA_PAGO_FALTANTE',
   FORMA_PAGO_INVALIDA: 'FORMA_PAGO_INVALIDA',
+  MODALIDAD_INVALIDA: 'MODALIDAD_INVALIDA',
   MENU_VACIO: 'MENU_VACIO',
   ORDEN_SIN_ITEMS: 'ORDEN_SIN_ITEMS',
   // XAB-0230: el nombre de la opción existe en más de un grupo del producto
@@ -947,6 +951,31 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   const canalPromo = String(opts.canal || orden?.canal || 'whatsapp').toLowerCase().trim() || 'whatsapp';
   const rechazos = [];
   const ajustes = [];
+  let reglas = null;
+  let modalidadCanonica = orden?.modalidad;
+
+  // WhatsApp solo puede registrar las modalidades declaradas por el negocio.
+  // POS y restaurante conservan sus flujos presenciales (mesa/consumo local).
+  if (canalPromo === 'whatsapp' && orden?.modalidad) {
+    reglas = await cargarReglas(negocioId).catch(() => null);
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
+      ? reglas.pedidos.modalidades : [];
+    const evaluacion = evaluarModalidad({
+      modalidad: orden.modalidad, modalidades, exigirEvidencia: false,
+    });
+    if (!evaluacion.ok) {
+      rechazos.push({
+        codigo: RECHAZOS.MODALIDAD_INVALIDA,
+        nombre: etiquetaTipoModalidad(evaluacion.tipo || orden.modalidad),
+        disponibles: evaluacion.disponibles.map((m) => etiquetaTipoModalidad(m.tipo)),
+      });
+      eventoTxn('modalidad_invalida', negocioId, {
+        modalidad: String(orden.modalidad).slice(0, 40),
+      });
+      return { ok: false, rechazos, ajustes };
+    }
+    modalidadCanonica = evaluacion.valor;
+  }
 
   const itemsLLM = Array.isArray(orden?.items) ? orden.items : [];
   if (!itemsLLM.length) {
@@ -1190,10 +1219,10 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   if (rechazos.length) return { ok: false, rechazos, ajustes };
 
   // ── Totales: SIEMPRE recalculados ──
-  const reglas = await cargarReglas(negocioId).catch(() => null);
+  if (!reglas) reglas = await cargarReglas(negocioId).catch(() => null);
   const subtotal = itemsCanonicos.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
 
-  const esDomicilio = String(orden?.modalidad || '').toLowerCase().includes('domicilio');
+  const esDomicilio = normalizarTipoModalidad(modalidadCanonica) === 'domicilio';
   let costoEnvio = 0;
   if (esDomicilio) {
     const base = Number(reglas?.pedidos?.costo_envio) || 0;
@@ -1266,6 +1295,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
 
   const ordenCanonica = {
     ...orden,
+    modalidad: modalidadCanonica,
     items: itemsCanonicos,
     subtotal,
     costo_envio: costoEnvio,
@@ -1286,6 +1316,16 @@ export function mensajeRechazoParaCliente(rechazos) {
     const conLista = rechazos.find((r) => Array.isArray(r.disponibles) && r.disponibles.length);
     return conLista ? conLista.disponibles.join(', ') : 'efectivo';
   };
+
+  const soloModalidad = rechazos.length > 0
+    && rechazos.every((r) => r.codigo === RECHAZOS.MODALIDAD_INVALIDA);
+  if (soloModalidad) {
+    const sitio = rechazos.some((r) => r.nombre === 'comer aquí');
+    const disponibles = listaDisponibles();
+    return sitio
+      ? 'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger o enviarlo a domicilio. ¿Cuál prefieres?'
+      : `Esa forma de entrega no está disponible. Puedes elegir: ${disponibles}. ¿Cuál prefieres?`;
+  }
 
   // XAB-0175: si lo ÚNICO que falla es la forma de pago, el pedido NO se
   // tira ni se manda al cliente de vuelta al menú -- se conserva tal cual
@@ -1366,12 +1406,14 @@ export function mensajeRechazoParaCliente(rechazos) {
   const noDisponibles = rechazos.filter((r) => r.codigo === RECHAZOS.PRODUCTO_NO_DISPONIBLE).map((r) => r.nombre);
   const formaPagoInvalida = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_INVALIDA);
   const formaPagoFaltante = rechazos.some((r) => r.codigo === RECHAZOS.FORMA_PAGO_FALTANTE);
+  const modalidadInvalida = rechazos.some((r) => r.codigo === RECHAZOS.MODALIDAD_INVALIDA);
   const partes = [];
   if (noExisten.length) partes.push(`no manejamos ${noExisten.join(', ')} en nuestro menú actual`);
   if (agotados.length) partes.push(`${agotados.join(', ')} está agotado por hoy`);
   if (noDisponibles.length) partes.push(`${noDisponibles.join(', ')} no está disponible en este momento`);
   if (formaPagoInvalida) partes.push(`esa forma de pago no está disponible (puedes pagar con: ${listaDisponibles()})`);
   if (formaPagoFaltante) partes.push(`falta elegir la forma de pago (puedes pagar con: ${listaDisponibles()})`);
+  if (modalidadInvalida) partes.push(`esa forma de entrega no está disponible`);
   const motivo = partes.length ? partes.join('; ') : 'algunos datos del pedido no pudieron validarse';
   return `Una disculpa: no pude registrar tu pedido porque ${motivo}. ¿Te gustaría elegir algo de nuestro menú? Con gusto te lo comparto.`;
 }

@@ -57,7 +57,7 @@ const llamadasDe = (respuesta) => (respuesta?.content || []).filter((b) => b.typ
 export async function atenderTurnoConHerramientas({
   negocioId, conversacionId, turnoId,
   mensaje = '', historial = [],
-  catalogo = [], precios = null, requierePago = true, metodosPago = null,
+  catalogo = [], precios = null, requierePago = true, metodosPago = null, modalidades = null,
   estado, libro = null, llamarModelo,
   efectos = null, contexto = {}, modo = 'productivo',
   modelo = MODELO_POR_OMISION, maxTokens = 1024,
@@ -75,7 +75,7 @@ export async function atenderTurnoConHerramientas({
   let llamadasAlModelo = 0;
 
   const ejecutor = crearEjecutor({
-    estado, catalogo, precios, requierePago, metodosPago,
+    estado, catalogo, precios, requierePago, metodosPago, modalidades,
     mensaje,
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],

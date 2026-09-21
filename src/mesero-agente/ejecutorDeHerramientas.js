@@ -30,6 +30,7 @@ import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import { vistaDelPedido, fichaPorId, fichaPorNombre } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
+import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -77,7 +78,7 @@ export const estadoSerializable = (e) => JSON.parse(JSON.stringify(e ?? null));
 export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
-  efectos = null, registrarOfrecido = true, metodosPago = null,
+  efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
 } = {}) {
   const vista = () => {
     const pedido = vistaDelPedido({
@@ -340,7 +341,20 @@ export function crearEjecutor({
 
     definir_entrega({ modalidad, direccion, referencias }) {
       const props = [];
-      if (modalidad) props.push(propuesta({ accion: 'definir_modalidad', valorNuevo: modalidad, evidencia: mensaje }));
+      if (modalidad) {
+        const evaluacion = evaluarModalidad({ modalidad, modalidades, mensaje });
+        if (!evaluacion.ok) {
+          return noAplicado(evaluacion.motivo, {
+            codigo: evaluacion.codigo,
+            modalidad_solicitada: evaluacion.tipo,
+            modalidades_disponibles: evaluacion.disponibles.map((m) => etiquetaTipoModalidad(m.tipo)),
+            pedido: vista(),
+          });
+        }
+        props.push(propuesta({
+          accion: 'definir_modalidad', valorNuevo: evaluacion.valor, evidencia: mensaje,
+        }));
+      }
       if (direccion || referencias) {
         props.push(propuesta({ accion: 'definir_cliente',
           valorNuevo: { ...(direccion ? { direccion } : {}), ...(referencias ? { referencias } : {}) },

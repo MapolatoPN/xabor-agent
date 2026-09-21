@@ -79,6 +79,11 @@ const precios = Object.fromEntries(prods.map((p) => [p.nombre, Number(p.precio)]
 const metodosPago = metodosRows
   .filter((m) => m.disponible_para_bot && (m.tipo !== 'enlace_pago' || m.proveedor_estado === 'activo'))
   .map((m) => ({ tipo: m.tipo }));
+let modalidades = ['recoger en tienda', 'entrega a domicilio'];
+try {
+  const reglas = JSON.parse(cfg.reglas_atencion || '{}');
+  if (Array.isArray(reglas?.pedidos?.modalidades)) modalidades = reglas.pedidos.modalidades;
+} catch { /* el humo conserva el default seguro */ }
 
 if (!catalogo.length) { console.error('Ese negocio no tiene carta activa: no hay nada que probar.'); process.exit(2); }
 console.log(`Carta: ${catalogo.length} categorías, ${prods.length} productos.\n`);
@@ -106,10 +111,11 @@ for (const [i, mensaje] of guion.entries()) {
     catalogo, precios,
     requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
     metodosPago,
+    modalidades,
     estado, libro, llamarModelo: llamarModeloLocal, efectos,
     contexto: { nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
       textoCiclo: [...historial.filter((h) => h.rol === 'user').map((h) => h.texto), mensaje].join('\n'),
-      metodosPago },
+      metodosPago, modalidades },
     modo: 'humo', traza,
   });
   cerrar({ salida });

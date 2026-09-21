@@ -20,6 +20,8 @@
 // Lo que sí va: el estado del pedido, que es corto y cambia cada turno, y las
 // reglas del negocio que no salen de ninguna herramienta (horario, tono).
 
+import { etiquetaTipoModalidad, textoModalidades } from '../orders/modalidadesDelPedido.js';
+
 const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
 
 const ETIQUETAS_PAGO = Object.freeze({
@@ -67,6 +69,8 @@ export function construirInstrucciones({
   requierePago = true,
   metodosPago = null,
   pagoDescartado = null,
+  modalidades = null,
+  modalidadDescartada = null,
 } = {}) {
   const abierto = estadoRestaurante?.abierto;
 
@@ -120,6 +124,10 @@ herramienta en ESTA conversación.
   \`linea_id\` que te dio \`ver_pedido\`. Si cambia entrega o pago, llama a
   \`definir_entrega\` o \`definir_pago\` antes de contestar; si falta la
   dirección, pídela después de registrar la nueva modalidad.
+- Solo registra y ofrece modalidades incluidas en MODALIDADES DISPONIBLES. Si
+  pide comer aquí y no está disponible, llama a \`definir_entrega\`: su rechazo
+  te dará las alternativas reales. Explica que no cuentan con servicio para
+  comer aquí y ofrece únicamente recoger o domicilio, según la lista.
 - Solo registra métodos incluidos en MÉTODOS DE PAGO. Si pide transferencia y
   no está disponible, llama a \`definir_pago\`: su rechazo te indicará si puedes
   ofrecer enlace de pago. Dile que no cuentan con transferencia y que el enlace
@@ -136,6 +144,9 @@ Corto, cálido y de tú. Como un mesero que tiene la libreta en la mano, no como
 un formulario. Una pregunta a la vez. Sin listas numeradas ni emojis de más.
 No repitas el pedido entero en cada mensaje: solo cuando vas a confirmar.
 ${bloque('EL PEDIDO AHORA MISMO', pedidoEnTexto(pedido))}${
+  Array.isArray(modalidades) ? bloque('MODALIDADES DISPONIBLES', textoModalidades(modalidades)) : ''}${
+  modalidadDescartada ? bloque('MODALIDAD ANTERIOR INVALIDADA',
+    `${etiquetaTipoModalidad(modalidadDescartada)} ya no está disponible. Explícalo y ofrece una modalidad permitida.`) : ''}${
   Array.isArray(metodosPago) ? bloque('MÉTODOS DE PAGO DISPONIBLES', metodosEnTexto(metodosPago) || 'ninguno') : ''}${
   pagoDescartado ? bloque('PAGO ANTERIOR INVALIDADO',
     `${ETIQUETAS_PAGO[pagoDescartado] || pagoDescartado} ya no está disponible. Explícalo y ofrece un método permitido.`) : ''}${

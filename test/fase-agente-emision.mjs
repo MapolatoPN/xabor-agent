@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   confirmarYEmitir, ordenDesdeElCarrito, aplicarRespuestaDePago,
+  aplicarRespuestaDeEntrega,
 } from '../src/mesero-agente/canalDelAgente.js';
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 
@@ -92,6 +93,17 @@ const respuestaEstadoViejo = aplicarRespuestaDePago({
 assert.match(respuestaEstadoViejo.texto, /No contamos con pagos por transferencia/,
   'un carrito persistido antes del arreglo debe recibir la misma política');
 assert.equal(estadoViejo.pagoOfrecido, 'enlace_pago');
+
+const rechazoComerAqui = aplicarRespuestaDeEntrega({
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  salida: {
+    texto: 'respuesta libre incorrecta', operaciones: [{ herramienta: 'definir_entrega', resultado: {
+      aplicado: false, codigo: 'modalidad_no_disponible', modalidad_solicitada: 'consumo_sitio',
+    } }],
+  },
+});
+assert.equal(rechazoComerAqui.texto,
+  'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger o enviarlo a domicilio. ¿Cuál prefieres?');
 
 const respuestaConLink = aplicarRespuestaDePago({
   estado: estadoRespuesta,

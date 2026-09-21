@@ -22,6 +22,7 @@ import {
 } from '../src/mesero-agente/libroDeOperaciones.js';
 import { articulosQueElClientePidioQuitar } from '../src/orders/carritoDelPedido.js';
 import { depurarPagoNoDisponible } from '../src/mesero-agente/politicaDePagos.js';
+import { depurarModalidadNoDisponible } from '../src/orders/modalidadesDelPedido.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -56,6 +57,7 @@ const ejecutorDe = (estado, mensaje, extra = {}) => crearEjecutor({
   estado, catalogo: CARTA, precios: PRECIOS, mensaje, textoCiclo: extra.textoCiclo ?? mensaje,
   requierePago: extra.requierePago ?? true, efectos: extra.efectos ?? null,
   metodosPago: extra.metodosPago ?? null,
+  modalidades: extra.modalidades ?? null,
 });
 const nuevo = () => estadoNuevo({ negocioId: 'n1', conversacionId: 'c1' });
 
@@ -657,6 +659,63 @@ await t('I5 · un estado viejo con transferencia se limpia antes del siguiente t
   estado.carrito.datos.forma_pago = 'transferencia';
   assert.equal(depurarPagoNoDisponible(estado, METODOS_MAPOLATO), 'transferencia');
   assert.equal(estado.carrito.datos.forma_pago, undefined);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── J. La configuración real decide cómo se entrega ──');
+
+const MODALIDADES_MAPOLATO = ['recoger en tienda', 'entrega a domicilio'];
+
+await t('J1 · comer aquí se rechaza si el negocio no lo ofrece', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'quiero comer aquí', { modalidades: MODALIDADES_MAPOLATO })
+    .ejecutar('definir_entrega', { modalidad: 'consumo en sitio' });
+  assert.equal(r.aplicado, false);
+  assert.equal(r.codigo, 'modalidad_no_disponible');
+  assert.equal(r.modalidad_solicitada, 'consumo_sitio');
+  assert.deepEqual(r.modalidades_disponibles, ['recoger', 'domicilio']);
+  assert.equal(estado.carrito.datos.modalidad, undefined);
+});
+
+await t('J2 · recoger se guarda con el texto canónico del negocio', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'yo paso a recoger', { modalidades: MODALIDADES_MAPOLATO })
+    .ejecutar('definir_entrega', { modalidad: 'recoger' });
+  assert.equal(r.aplicado, true, r.motivo);
+  assert.equal(estado.carrito.datos.modalidad, 'recoger en tienda');
+});
+
+await t('J3 · domicilio permitido sigue funcionando', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'lo quiero a domicilio', { modalidades: MODALIDADES_MAPOLATO })
+    .ejecutar('definir_entrega', { modalidad: 'entrega' });
+  assert.equal(r.aplicado, true, r.motivo);
+  assert.equal(estado.carrito.datos.modalidad, 'entrega a domicilio');
+});
+
+await t('J4 · el modelo no puede elegir una entrega que el mensaje no respalda', async () => {
+  const estado = nuevo();
+  const r = await ejecutorDe(estado, 'mi dirección es Hidalgo 12', { modalidades: MODALIDADES_MAPOLATO })
+    .ejecutar('definir_entrega', { modalidad: 'recoger en tienda' });
+  assert.equal(r.aplicado, false);
+  assert.equal(r.codigo, 'modalidad_sin_respaldo');
+  assert.equal(estado.carrito.datos.modalidad, undefined);
+});
+
+await t('J5 · un estado viejo con consumo en sitio se limpia', () => {
+  const estado = nuevo();
+  estado.carrito.datos.modalidad = 'consumo en sitio';
+  assert.equal(depurarModalidadNoDisponible(estado, MODALIDADES_MAPOLATO), 'consumo_sitio');
+  assert.equal(estado.carrito.datos.modalidad, undefined);
+});
+
+await t('J6 · otro negocio sí puede habilitar consumo en sitio', async () => {
+  const estado = nuevo();
+  const modalidades = [...MODALIDADES_MAPOLATO, 'consumo en sitio'];
+  const r = await ejecutorDe(estado, 'quiero comer aquí', { modalidades })
+    .ejecutar('definir_entrega', { modalidad: 'mesa' });
+  assert.equal(r.aplicado, true, r.motivo);
+  assert.equal(estado.carrito.datos.modalidad, 'consumo en sitio');
 });
 
 console.log(fallos.length

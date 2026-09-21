@@ -25,6 +25,10 @@ import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libro
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
+import { cargarReglas } from '../agent/prompts.js';
+import {
+  depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
+} from '../orders/modalidadesDelPedido.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -97,6 +101,27 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
     },
     modalidad: datos.modalidad || null,
     forma_pago: datos.forma_pago || null,
+
+    // ── P0 INVARIANTE 4: SIN DINERO CONFIRMADO NO HAY COCINA ────────────
+    //
+    // `enlace_pago` significa que el dinero NO existe todavía: llega después,
+    // por un webhook verificado. `registrarPedido` hace nacer el pedido en
+    // `pendiente_pago` cuando ve esta bandera (orderManager.js), y
+    // `emitirPedido` no emite comanda, impresión ni oferta a repartidores
+    // mientras siga ahí. El webhook de Clip lo libera con
+    // `confirmarPedidoPendientePago`, y el reconciliador de pagos recoge lo
+    // que el webhook no haya cerrado.
+    //
+    // Sin esta línea el pedido nacía `nuevo`: la comanda salía a cocina en
+    // cuanto el cliente decía «sí», ANTES de que existiera el enlace —que
+    // `confirmarYEmitir` crea después de emitir— y mucho antes de que nadie
+    // pagara. Lo declara esta función porque es la única que sabe con qué va
+    // a pagar el cliente; `registrarPedido` solo obedece a la bandera.
+    //
+    // Solo `enlace_pago`. Efectivo, terminal y pago al recibir son compras
+    // reales desde el «sí»: ahí el negocio ya se comprometió, no hay webhook
+    // que esperar, y esperarlo sería esperar algo que nunca llega.
+    ...(datos.forma_pago === 'enlace_pago' ? { requierePagoAnticipado: true } : {}),
   };
 }
 
@@ -119,10 +144,11 @@ export async function atenderConAgente({
   let salida = null;
   let confirmacionIntentada = false;
   try {
-    const [catalogo, cfg, metodosPago] = await Promise.all([
+    const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
+      cargarReglas(negocioId),
     ]);
     if (!Array.isArray(catalogo) || !catalogo.length) {
       // Sin carta no hay nada que el agente pueda hacer sin inventar.
@@ -130,6 +156,9 @@ export async function atenderConAgente({
     }
 
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
+      ? reglas.pedidos.modalidades : [];
+    const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
 
@@ -159,6 +188,7 @@ export async function atenderConAgente({
       precios: preciosDelCatalogo(catalogo),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
+      modalidades,
       estado,
       libro,
       llamarModelo,
@@ -171,11 +201,14 @@ export async function atenderConAgente({
         tono: cfg?.tono_bot || null,
         metodosPago,
         pagoDescartado,
+        modalidades,
+        modalidadDescartada,
       },
       modo: 'productivo',
       traza,
     });
 
+    salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
     const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
     if (falloEnlace) {
@@ -259,14 +292,18 @@ export async function observarConAgente({
 } = {}) {
   const t0 = Date.now();
   try {
-    const [catalogo, cfg, metodosPago] = await Promise.all([
+    const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
+      cargarReglas(negocioId),
     ]);
     if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
 
     const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
+      ? reglas.pedidos.modalidades : [];
+    const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const grabadas = [];
     const salida = await atenderTurnoConHerramientas({
@@ -279,6 +316,7 @@ export async function observarConAgente({
       precios: preciosDelCatalogo(catalogo),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
+      modalidades,
       estado,
       // Memoria, no Postgres: la sombra no escribe ni en la auditoría.
       libro: libroDeOperaciones(almacenEnMemoria()),
@@ -299,11 +337,14 @@ export async function observarConAgente({
         tono: cfg?.tono_bot || null,
         metodosPago,
         pagoDescartado,
+        modalidades,
+        modalidadDescartada,
       },
       modo: 'sombra',
       traza,
     });
 
+    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
 
     await guardarEstado(negocioId, telefono, estado, { sombra: true });
@@ -372,6 +413,31 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
     salida.texto = 'No contamos con pagos por transferencia, pero podemos ofrecerte un enlace de pago; '
       + 'es muy similar a pagar con transferencia. ¿Te funciona?';
   }
+  return salida;
+}
+
+/** La política de entrega también se redacta en código cuando el modelo pide algo no permitido. */
+export function aplicarRespuestaDeEntrega({
+  salida, modalidadDescartada = null, modalidades = [],
+} = {}) {
+  if (!salida) return salida;
+  const rechazo = (salida.operaciones || []).find((o) =>
+    o?.herramienta === 'definir_entrega'
+    && o?.resultado?.codigo === 'modalidad_no_disponible');
+  const solicitada = rechazo?.resultado?.modalidad_solicitada || modalidadDescartada;
+  if (!solicitada) return salida;
+
+  const disponibles = modalidadesDisponibles(modalidades) || [];
+  const tipos = new Set(disponibles.map((m) => m.tipo));
+  if (solicitada === 'consumo_sitio' && tipos.has('recoger') && tipos.has('domicilio')) {
+    salida.texto = 'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger '
+      + 'o enviarlo a domicilio. ¿Cuál prefieres?';
+    return salida;
+  }
+
+  const alternativas = disponibles.map((m) => etiquetaTipoModalidad(m.tipo));
+  salida.texto = `No contamos con ${etiquetaTipoModalidad(solicitada)} como forma de entrega. `
+    + `Las opciones disponibles son: ${alternativas.join(', ') || 'ninguna'}. ¿Cuál prefieres?`;
   return salida;
 }
 

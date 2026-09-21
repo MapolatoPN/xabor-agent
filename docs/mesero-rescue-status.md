@@ -42,9 +42,28 @@ integración principal de Obispado es Clip, está activa y marcada como
 `sandbox`; no se cambió a producción. Si Clip falla, el pedido ya registrado
 se conserva, no se inventa una URL y se solicita revisión humana.
 
+Los pedidos del agente que usan `enlace_pago` ahora declaran pago anticipado:
+nacen en `pendiente_pago` y no emiten comanda, impresión ni oferta a reparto
+hasta que el webhook verificado confirme el dinero. Efectivo y terminal
+mantienen el recorrido inmediato. `test/fase-agente-gate-de-pago.mjs` prueba
+esta frontera contra Postgres local y la ruta real de emisión.
+
 La conversación del canario ya había confirmado `XAB-0447` con pago en
 terminal antes de desplegar esta corrección. El cambio no altera pedidos
 confirmados ni crea enlaces retroactivamente.
+
+### Corrección de modalidades del canario
+
+Mapolato Obispado solo permite `recoger en tienda` y `entrega a domicilio`.
+Se retiró `consumo en sitio` de `configuracion.reglas_atencion`. El agente lee
+esa lista por negocio en cada turno; si el cliente pide comer ahí, el carrito
+no cambia y una respuesta determinista aclara que no existe ese servicio y
+ofrece recoger o domicilio. Una conversación antigua que guardara consumo en
+sitio se limpia antes de continuar.
+
+La validación final vuelve a comprobar la modalidad para pedidos de WhatsApp,
+de modo que una llamada incorrecta del modelo tampoco puede registrar consumo
+en sitio. Los flujos presenciales de POS y restaurante conservan sus mesas.
 
 ---
 
@@ -182,14 +201,16 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 ## 6. Resultados
 
 ```
-test/fase-agente-tools.mjs        55 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro,
-                                                             política de pagos)
+test/fase-agente-tools.mjs        61 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro,
+                                                             pagos y modalidades)
 test/fase-agente-canario.mjs      17 pasadas, 0 fallidas    (alcance, kill switch, sombra,
                                                              bot legacy apagado)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 test/fase-agente-emision.mjs       registro enlazado a emitirPedido; enlace de pago solo
                                    después del folio; falla de Clip no duplica el pedido
+test/fase-agente-gate-de-pago.mjs  5 pasadas, 0 fallidas; enlace nace pendiente_pago y
+                                   no emite comanda antes del webhook verificado
 test/fase-agente-ciclos.mjs        un pedido nuevo rota la identidad del libro
 test/fase-agente-confirmacion-perdida.mjs  COMMIT con respuesta perdida: no nace
                                    otro pedido Y alguien se entera (18 casos, 5 mordidas)

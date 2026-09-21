@@ -114,6 +114,7 @@ async function limpiar() {
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre LIKE $2`, [NEG, PREFIJO + '%']);
   await pool.query('DELETE FROM integraciones_canal WHERE negocio_id=$1 AND canal=$2 AND identificador=$3',
     [NEG, 'whatsapp', PNID]);
+  await pool.query("DELETE FROM metodos_pago WHERE negocio_id=$1 AND tipo='efectivo'", [NEG]).catch(() => {});
   await pool.query('DELETE FROM compras_reales WHERE negocio_id=$1', [NEG]).catch(() => {});
   await pool.query('DELETE FROM impresion_trabajos WHERE negocio_id=$1', [NEG]).catch(() => {});
   await pool.query('DELETE FROM impresion_rutas WHERE negocio_id=$1', [NEG]).catch(() => {});
@@ -127,6 +128,7 @@ async function limpiar() {
     [NEG, SEED.adminNegocioAUsuarioId]).catch(() => {});
   await pool.query('DELETE FROM pedido_emisiones WHERE negocio_id=$1', [NEG]).catch(() => {});
   await pool.query('DELETE FROM pedidos WHERE negocio_id=$1', [NEG]).catch(() => {});
+  await pool.query('DELETE FROM clientes WHERE negocio_id=$1', [NEG]).catch(() => {});
   await pool.query('DELETE FROM configuracion WHERE negocio_id=$1', [NEG]);
   await pool.query('DELETE FROM negocio_modulos WHERE negocio_id=$1', [NEG]);
   await pool.query('DELETE FROM negocios WHERE id=$1', [NEG]);
@@ -176,6 +178,18 @@ await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUE
   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [NEG]);
 // El canario del agente debe funcionar aunque el bot legacy permanezca apagado.
 await pool.query('UPDATE negocios SET bot_whatsapp_activo=FALSE WHERE id=$1', [NEG]);
+
+// ── LOS MÉTODOS DE PAGO, declarados como en cualquier negocio real ──────
+//
+// `politicaDePagos.evaluarFormaPago` lee la lista real de `metodos_pago`.
+// Una lista VACÍA no significa «acepta lo de siempre»: significa que el
+// negocio no declaró ninguno, y entonces se rechaza todo, incluido el
+// efectivo. Un negocio sin métodos configurados tiene un agente que no
+// puede cerrar un pedido, así que el fixture declara el suyo en vez de
+// apoyarse en un valor por omisión que no existe.
+await pool.query(
+  `INSERT INTO metodos_pago (negocio_id, tipo, habilitado, disponible_para_bot, disponible_para_operador, orden)
+   VALUES ($1,'efectivo',TRUE,TRUE,TRUE,10)`, [NEG]);
 
 // ── LA IMPRESORA: una terminal Edge de verdad, con su ruta de comanda ────
 //
