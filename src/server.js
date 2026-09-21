@@ -3998,6 +3998,9 @@ app.get('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req,
 // negocio; editar el menú continúa reservado a las rutas /api/admin/menu.
 app.get('/api/menu', requireOperacionRestaurante, requireModulo('menu'), async (req, res) => {
   const menu = await obtenerMenuCompleto(req.negocioId);
+  // El menú es operativo y cambia durante el servicio. Evita que una
+  // respuesta vacía transitoria quede reutilizada por el navegador.
+  res.set('Cache-Control', 'private, no-store');
   res.json(menu);
 });
 

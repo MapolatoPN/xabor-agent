@@ -1029,7 +1029,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      llama en cada alta de producto, depende de modificadores.js y por tanto
      se carga DESPUES. Si se edita, actualizar esta huella aqui;
      fase-captura-unificada lo exige y dice el valor correcto. -->
-<script src="/captura.js?v=78ce777f"></script>
+<script src="/captura.js?v=5decb13a"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
@@ -5295,8 +5295,15 @@ let ENV_CARRITO = _cPOS.lineas;
 const esEnvio = () => MODALIDAD === 'recoger' || MODALIDAD === 'domicilio';
 
 async function renderMenuPOS() {
-  if (!document.getElementById('pos-menu-cats')) return;
-  pintarMenuPOS(await XaborCaptura.catalogo.cargar());
+  const cont = document.getElementById('pos-menu-cats');
+  if (!cont) return;
+  const cats = await XaborCaptura.catalogo.cargar({
+    refrescar: XaborCaptura.catalogo.categorias().length === 0,
+  });
+  pintarMenuPOS(cats);
+  if (!cats.length) {
+    cont.innerHTML = '<div id="pos-sin-resultados">No se pudo cargar el menú. <button type="button" onclick="renderMenuPOS()" style="margin-left:8px;padding:6px 10px;border:1px solid #d1d5db;border-radius:7px;background:#fff;cursor:pointer;">Reintentar</button></div>';
+  }
 }
 
 // Pintado puro: se puede llamar tantas veces como haga falta sin volver a

@@ -100,9 +100,9 @@
         aplicar(arbol);
       } catch (e) {
         console.warn('[captura] no se pudo revalidar el menú, se conserva el anterior:', e.message);
-        // Solo la PRIMERA carga puede dejar el catálogo vacío (igual que
-        // antes): sin nada previo no hay nada que conservar.
-        if (primera && !_arbol) { _arbol = []; _plano = []; _firma = huella([]); }
+        // Si falla la primera carga se conserva null. Un [] aquí convertía
+        // el fallo en un catálogo válido y las siguientes entradas a otra
+        // modalidad podían quedarse mostrando vacío en vez de reintentar.
       } finally { _enVuelo = null; }
     })();
     return _enVuelo;
@@ -112,7 +112,7 @@
   // esperar a la red— y la revalidación corre por detrás. Solo la primera
   // carga espera.
   async function cargar({ refrescar = false } = {}) {
-    if (_arbol && !refrescar) { revalidar(); return _arbol; }
+    if (_arbol && _arbol.length && !refrescar) { revalidar(); return _arbol; }
     await revalidar({ primera: !_arbol });
     return _arbol || [];
   }

@@ -673,9 +673,16 @@ async function abrirCuenta(cuentaId) {
 
 // ─── Menú: categorías y productos táctiles ──────────────────────────────────
 async function cargarMenu() {
-  if (MENU) { pintarCategorias(); pintarProductos(); return; }
-  try { MENU = await api('/api/menu'); } catch { MENU = []; }
-  CAT_ACTIVA = (MENU[0] || {}).id ?? null;
+  if (MENU && MENU.length) { pintarCategorias(); pintarProductos(); return; }
+  try {
+    const cargado = await api('/api/menu');
+    MENU = Array.isArray(cargado) ? cargado : null;
+  } catch {
+    // null obliga a reintentar al volver a abrir la cuenta; [] dejaba la
+    // estación pegada en "sin menú" durante toda la sesión.
+    MENU = null;
+  }
+  CAT_ACTIVA = (MENU?.[0] || {}).id ?? null;
   pintarCategorias();
   pintarProductos();
 }
@@ -706,7 +713,7 @@ function pintarProductos() {
       ${(p.modificadores || []).length ? '<div class="ops">Con opciones</div>' : ''}
       <div class="pre">${money(p.precio)}</div>
     </button>`).join('')
-    || `<p class="vacio">${MENU && MENU.length ? 'Sin productos disponibles aquí.' : 'Este negocio todavía no tiene menú cargado.'}</p>`;
+    || `<p class="vacio">${MENU && MENU.length ? 'Sin productos disponibles aquí.' : 'No se pudo cargar el menú. '}<button type="button" onclick="cargarMenu()" style="margin-top:8px;padding:8px 12px;border:1px solid #d8d4ca;border-radius:8px;background:#fff;cursor:pointer;">Reintentar</button></p>`;
 }
 function productoDelMenu(id) {
   for (const c of (MENU || [])) {
