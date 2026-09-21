@@ -20,6 +20,8 @@
 // que la diga como una persona; los números, los nombres y las opciones vienen
 // de aquí. Si el modelo falla, `resumenEnTexto` da una versión legible.
 
+import { calcularCostoEnvio } from '../orders/costoEnvioDelPedido.js';
+
 const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : null);
 
 /** Las opciones de un renglón, aplanadas y en orden estable. */
@@ -44,7 +46,9 @@ function opcionesDe(item) {
  * resumen sin precios sigue siendo correcto; un resumen con precios inventados
  * no lo sería.
  */
-export function resumenDelPedido(carrito, { precios = null, requierePago = true } = {}) {
+export function resumenDelPedido(carrito, {
+  precios = null, requierePago = true, reglas = null, promocionesActivas = [],
+} = {}) {
   const items = (carrito?.items || []).map((i) => ({
     nombre: String(i?.nombre || ''),
     cantidad: num(i?.cantidad) ?? 1,
@@ -55,6 +59,12 @@ export function resumenDelPedido(carrito, { precios = null, requierePago = true 
   }));
   const datos = carrito?.datos || {};
   const conPrecio = items.filter((i) => i.precio_unitario !== null);
+  const subtotal = conPrecio.length === items.length && items.length
+    ? items.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0) : null;
+  const costo_envio = subtotal === null ? null : calcularCostoEnvio({
+    reglas, modalidad: datos.modalidad, subtotal,
+    costoSolicitado: datos.costo_envio, promocionesActivas,
+  });
   return {
     items,
     modalidad: datos.modalidad ?? null,
@@ -62,8 +72,9 @@ export function resumenDelPedido(carrito, { precios = null, requierePago = true 
     cliente: datos.cliente ?? null,
     // El total solo existe si TODOS los renglones tienen precio. Un total
     // parcial es peor que ninguno: parece completo.
-    total: conPrecio.length === items.length && items.length
-      ? items.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0) : null,
+    subtotal,
+    costo_envio,
+    total: subtotal === null ? null : subtotal + costo_envio,
     completo: items.length > 0 && !!datos.modalidad && (!requierePago || !!datos.forma_pago),
   };
 }
@@ -80,6 +91,8 @@ export function resumenEnTexto(resumen) {
   }
   if (resumen.modalidad) lineas.push(String(resumen.modalidad));
   if (resumen.pago) lineas.push(`Pago: ${resumen.pago}`);
+  if (resumen.subtotal !== null && resumen.costo_envio) lineas.push(`Subtotal: $${resumen.subtotal}`);
+  if (resumen.costo_envio) lineas.push(`Envío: $${resumen.costo_envio}`);
   if (resumen.total !== null) lineas.push(`Total: $${resumen.total}`);
   return lineas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

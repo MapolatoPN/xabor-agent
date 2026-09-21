@@ -80,8 +80,9 @@ const metodosPago = metodosRows
   .filter((m) => m.disponible_para_bot && (m.tipo !== 'enlace_pago' || m.proveedor_estado === 'activo'))
   .map((m) => ({ tipo: m.tipo }));
 let modalidades = ['recoger en tienda', 'entrega a domicilio'];
+let reglas = null;
 try {
-  const reglas = JSON.parse(cfg.reglas_atencion || '{}');
+  reglas = JSON.parse(cfg.reglas_atencion || '{}');
   if (Array.isArray(reglas?.pedidos?.modalidades)) modalidades = reglas.pedidos.modalidades;
 } catch { /* el humo conserva el default seguro */ }
 
@@ -112,6 +113,7 @@ for (const [i, mensaje] of guion.entries()) {
     requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
     metodosPago,
     modalidades,
+    reglas,
     estado, libro, llamarModelo: llamarModeloLocal, efectos,
     contexto: { nombreNegocio: cfg?.nombre_negocio || 'el restaurante',
       textoCiclo: [...historial.filter((h) => h.rol === 'user').map((h) => h.texto), mensaje].join('\n'),

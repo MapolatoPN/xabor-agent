@@ -25,7 +25,7 @@ import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libro
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
-import { cargarReglas } from '../agent/prompts.js';
+import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
 import {
   depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
 } from '../orders/modalidadesDelPedido.js';
@@ -156,8 +156,9 @@ export async function atenderConAgente({
     }
 
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
-    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
-      ? reglas.pedidos.modalidades : [];
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || [];
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const libro = libroDeOperaciones(almacenEnPostgres(pool));
@@ -189,6 +190,8 @@ export async function atenderConAgente({
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
       modalidades,
+      reglas,
+      promocionesActivas,
       estado,
       libro,
       llamarModelo,
@@ -301,8 +304,9 @@ export async function observarConAgente({
     if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
 
     const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
-    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
-      ? reglas.pedidos.modalidades : [];
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || [];
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const grabadas = [];
@@ -317,6 +321,8 @@ export async function observarConAgente({
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
       modalidades,
+      reglas,
+      promocionesActivas,
       estado,
       // Memoria, no Postgres: la sombra no escribe ni en la auditoría.
       libro: libroDeOperaciones(almacenEnMemoria()),
@@ -387,14 +393,24 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
   const confirmacion = resultadoConfirmacion(salida);
   if (confirmacion?.enlace_pago) {
     const url = String(confirmacion.enlace_pago);
-    const base = String(salida.texto || `Tu pedido ${confirmacion.folio || salida.folio || ''} quedó registrado.`).trim();
+    const folio = confirmacion.folio || salida.folio || '';
+    const total = Number(confirmacion.total);
+    const envio = Number(confirmacion.costo_envio);
+    const base = Number.isFinite(total)
+      ? `Tu pedido ${folio} quedó registrado por $${total} MXN.`
+        + (envio > 0 ? ` Incluye $${envio} MXN de envío.` : '')
+      : String(salida.texto || `Tu pedido ${folio} quedó registrado.`).trim();
     salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
     salida.enlacePago = url;
     return salida;
   }
   if (confirmacion?.enlace_pago_error) {
     const folio = confirmacion.folio || salida.folio || estado?.folio || '';
-    salida.texto = `Tu pedido ${folio} quedó registrado, pero no pude generar el enlace de pago. `
+    const total = Number(confirmacion.total);
+    const envio = Number(confirmacion.costo_envio);
+    const importe = Number.isFinite(total)
+      ? ` por $${total} MXN${envio > 0 ? ` (incluye $${envio} MXN de envío)` : ''}` : '';
+    salida.texto = `Tu pedido ${folio} quedó registrado${importe}, pero no pude generar el enlace de pago. `
       + 'Escríbeme “enlace de pago” en un momento para reintentarlo sin duplicar el cobro.';
     salida.enlacePagoError = confirmacion.enlace_pago_error;
     return salida;
@@ -579,7 +595,14 @@ export async function confirmarYEmitir({
     }
   }
 
-  return { ok: true, folio, ...(enlacePago ? { enlacePago } : {}),
+  const total = Number(resultado?.total ?? resultado?.pedido?.total ?? pedido?.total);
+  const subtotal = Number(resultado?.subtotal ?? resultado?.pedido?.subtotal ?? pedido?.subtotal);
+  const costoEnvio = Number(resultado?.costo_envio ?? resultado?.pedido?.costo_envio ?? pedido?.costo_envio);
+  return { ok: true, folio,
+    ...(Number.isFinite(total) ? { total } : {}),
+    ...(Number.isFinite(subtotal) ? { subtotal } : {}),
+    ...(Number.isFinite(costoEnvio) ? { costo_envio: costoEnvio } : {}),
+    ...(enlacePago ? { enlacePago } : {}),
     ...(enlacePagoError ? { enlacePagoError } : {}) };
 }
 

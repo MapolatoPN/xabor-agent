@@ -58,6 +58,7 @@ export async function atenderTurnoConHerramientas({
   negocioId, conversacionId, turnoId,
   mensaje = '', historial = [],
   catalogo = [], precios = null, requierePago = true, metodosPago = null, modalidades = null,
+  reglas = null, promocionesActivas = [],
   estado, libro = null, llamarModelo,
   efectos = null, contexto = {}, modo = 'productivo',
   modelo = MODELO_POR_OMISION, maxTokens = 1024,
@@ -76,6 +77,7 @@ export async function atenderTurnoConHerramientas({
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
+    reglas, promocionesActivas,
     mensaje,
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],

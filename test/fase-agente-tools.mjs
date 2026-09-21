@@ -14,6 +14,7 @@ import {
 import {
   crearEjecutor, estadoNuevo, validarOpciones,
 } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import {
   estadoDelPedido, transicionLegal, LISTO, ARMANDO, CONFIRMADO, NAVEGANDO, ACLARANDO,
 } from '../src/mesero-agente/maquinaDeEstados.js';
@@ -716,6 +717,23 @@ await t('J6 · otro negocio sí puede habilitar consumo en sitio', async () => {
     .ejecutar('definir_entrega', { modalidad: 'mesa' });
   assert.equal(r.aplicado, true, r.motivo);
   assert.equal(estado.carrito.datos.modalidad, 'consumo en sitio');
+});
+
+await t('J7 · el resumen de domicilio incluye envío y total final', () => {
+  const v = vistaDelPedido({
+    carrito: {
+      items: [{ nombre: 'Coca Cola', cantidad: 1, modificadores: [] }],
+      datos: { modalidad: 'entrega a domicilio' },
+    },
+    catalogo: CARTA,
+    precios: PRECIOS,
+    requierePago: false,
+    reglas: { pedidos: { costo_envio: 60 } },
+  });
+  assert.equal(v.subtotal, 35);
+  assert.equal(v.costo_envio, 60);
+  assert.equal(v.total, 95);
+  assert.equal(v.resumen.total, 95);
 });
 
 console.log(fallos.length

@@ -30,6 +30,7 @@ import { modoDelPedido } from './modoDelPedido.js';
 import {
   evaluarModalidad, etiquetaTipoModalidad, normalizarTipoModalidad,
 } from './modalidadesDelPedido.js';
+import { calcularCostoEnvio } from './costoEnvioDelPedido.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -958,8 +959,8 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   // POS y restaurante conservan sus flujos presenciales (mesa/consumo local).
   if (canalPromo === 'whatsapp' && orden?.modalidad) {
     reglas = await cargarReglas(negocioId).catch(() => null);
-    const modalidades = Array.isArray(reglas?.pedidos?.modalidades)
-      ? reglas.pedidos.modalidades : [];
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
     const evaluacion = evaluarModalidad({
       modalidad: orden.modalidad, modalidades, exigirEvidencia: false,
     });
@@ -1223,27 +1224,17 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
   const subtotal = itemsCanonicos.reduce((s, i) => s + i.precio_unitario * i.cantidad, 0);
 
   const esDomicilio = normalizarTipoModalidad(modalidadCanonica) === 'domicilio';
-  let costoEnvio = 0;
-  if (esDomicilio) {
-    const base = Number(reglas?.pedidos?.costo_envio) || 0;
-    const zonas = Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega.map((z) => Number(z.costo)) : [];
-    const umbralGratis = Number(reglas?.pedidos?.entrega_gratis_desde) || 0;
-    const permitidos = new Set([base, ...zonas]);
-    if (umbralGratis > 0 && subtotal >= umbralGratis) permitidos.add(0);
-    try {
-      const estado = obtenerEstadoRestaurante(reglas);
-      if (estado.promocionesActivas?.some((p) => p.condicion === 'min_3_focaccias')) permitidos.add(0);
-    } catch { /* sin promo */ }
-    const envioLLM = Number(orden?.costo_envio);
-    if (Number.isFinite(envioLLM) && permitidos.has(envioLLM)) {
-      costoEnvio = envioLLM;
-    } else {
-      costoEnvio = base;
-      if (Number.isFinite(envioLLM) && envioLLM !== base) {
-        ajustes.push({ tipo: 'envio_mismatch', llm: envioLLM, real: base });
-        eventoTxn('envio_mismatch', negocioId, { llm: envioLLM, real: base });
-      }
-    }
+  let promocionesActivas = [];
+  try { promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || []; }
+  catch { /* sin promo */ }
+  const costoEnvio = calcularCostoEnvio({
+    reglas, modalidad: esDomicilio ? 'domicilio' : modalidadCanonica,
+    subtotal, costoSolicitado: orden?.costo_envio, promocionesActivas,
+  });
+  const envioLLM = Number(orden?.costo_envio);
+  if (esDomicilio && Number.isFinite(envioLLM) && envioLLM !== costoEnvio) {
+    ajustes.push({ tipo: 'envio_mismatch', llm: envioLLM, real: costoEnvio });
+    eventoTxn('envio_mismatch', negocioId, { llm: envioLLM, real: costoEnvio });
   }
 
   // ── DESCUENTOS: los calcula el MOTOR DE PROMOCIONES, jamás el modelo ──

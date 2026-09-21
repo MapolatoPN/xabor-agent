@@ -79,7 +79,7 @@ export function gruposSinElegir(item, catalogo) {
  * después de cada mutación.
  */
 export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
-  requierePago = true, hechos = {} } = {}) {
+  requierePago = true, hechos = {}, reglas = null, promocionesActivas = [] } = {}) {
   const items = Array.isArray(carrito?.items) ? carrito.items : [];
 
   const lineas = items.map((i) => {
@@ -104,7 +104,9 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     candidatos: g.opciones,
   })));
 
-  const resumen = resumenDelPedido(carrito, { precios, requierePago });
+  const resumen = resumenDelPedido(carrito, {
+    precios, requierePago, reglas, promocionesActivas,
+  });
   const estado = estadoDelPedido({ carrito, aclaraciones, requierePago, hechos });
   const falta = queFaltaParaConfirmar({ carrito, aclaraciones, requierePago });
 
@@ -117,6 +119,8 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     modalidad: datos.modalidad ?? null,
     forma_pago: datos.forma_pago ?? null,
     cliente: datos.cliente ?? null,
+    subtotal: resumen.subtotal,
+    costo_envio: resumen.costo_envio,
     // El total solo existe si TODOS los renglones tienen precio. Un total
     // parcial parece completo, y es la clase de dato con el que se cobra de
     // menos. La regla vive en `resumenDelPedido` y aquí solo se repite el

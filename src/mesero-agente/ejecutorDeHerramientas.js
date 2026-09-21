@@ -79,10 +79,12 @@ export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
+  reglas = null, promocionesActivas = [],
 } = {}) {
   const vista = () => {
     const pedido = vistaDelPedido({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
+      reglas, promocionesActivas,
     });
     return estado.pagoOfrecido
       ? { ...pedido, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
@@ -430,6 +432,9 @@ export function crearEjecutor({
       estado.folio = r.folio ?? null;
       return ok({
         pedido: vista(), folio: r.folio ?? null, simulado: !!r.simulado,
+        ...(r.total !== undefined ? { total: r.total } : {}),
+        ...(r.subtotal !== undefined ? { subtotal: r.subtotal } : {}),
+        ...(r.costo_envio !== undefined ? { costo_envio: r.costo_envio } : {}),
         ...(r.enlacePago?.url ? { enlace_pago: r.enlacePago.url } : {}),
         ...(r.enlacePagoError ? { enlace_pago_error: r.enlacePagoError } : {}),
       });

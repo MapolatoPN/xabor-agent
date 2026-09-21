@@ -114,6 +114,16 @@ assert.match(respuestaConLink.texto, /Paga aquí con el enlace seguro/);
 assert.equal((respuestaConLink.texto.match(/https:\/\/sandbox\.clip\.mx\/unico/g) || []).length, 1,
   'la URL de Clip debe enviarse exactamente una vez');
 
+const respuestaConEnvio = aplicarRespuestaDePago({
+  estado: estadoRespuesta,
+  salida: { texto: 'El platillo cuesta $35.', operaciones: [{ herramienta: 'confirmar_pedido',
+    resultado: { aplicado: true, folio: 'XAB-9005', total: 95, subtotal: 35, costo_envio: 60,
+      enlace_pago: 'https://sandbox.clip.mx/envio' } }] },
+});
+assert.match(respuestaConEnvio.texto, /registrado por \$95 MXN/);
+assert.match(respuestaConEnvio.texto, /incluye \$60 MXN de envío/i);
+assert.doesNotMatch(respuestaConEnvio.texto, /El platillo cuesta/);
+
 const emisionFallida = await confirmarYEmitir({ ...args,
   emitir: async () => { throw new Error('impresora no disponible'); } });
 await new Promise((resolve) => setImmediate(resolve));

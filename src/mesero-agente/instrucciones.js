@@ -52,6 +52,8 @@ export function pedidoEnTexto(pedido) {
     `pago: ${pedido.forma_pago ?? '—'}`,
     pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,
     pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
+    pedido.subtotal !== null && pedido.subtotal !== undefined ? `subtotal: $${pedido.subtotal}` : null,
+    pedido.costo_envio ? `envío: $${pedido.costo_envio}` : null,
     pedido.total !== null && pedido.total !== undefined ? `total: $${pedido.total}` : 'total: (aún no)',
     (pedido.falta || []).length ? `falta: ${pedido.falta.join(', ')}` : 'falta: nada',
     `huella: ${pedido.huella}`,

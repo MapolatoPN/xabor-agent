@@ -68,6 +68,14 @@ El humo con Claude real y la carta/configuración productiva respondió a
 «quiero comer aquí» con el rechazo correcto, ofreció recoger o domicilio y
 dejó la modalidad vacía; no registró, imprimió ni cobró nada.
 
+### Corrección del desglose de envío
+
+El resumen del Mesero ahora usa el mismo cálculo de envío que la validación
+final. Para Mapolato, un café de $39 a domicilio se muestra como subtotal de
+$39, envío de $60 y total de $99 desde que se elige domicilio. El mensaje que
+acompaña el enlace de Clip también reemplaza cualquier texto incompleto del
+modelo y anuncia el total canónico, incluido el envío.
+
 ---
 
 ## 1. La arquitectura anterior, y por qué no se podía encender
@@ -204,14 +212,15 @@ Se comprueban en **todos** los fixtures, diga lo que diga cada uno.
 ## 6. Resultados
 
 ```
-test/fase-agente-tools.mjs        61 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro,
+test/fase-agente-tools.mjs        62 pasadas, 0 fallidas    (contrato, ejecutor, FSM, libro,
                                                              pagos y modalidades)
 test/fase-agente-canario.mjs      17 pasadas, 0 fallidas    (alcance, kill switch, sombra,
                                                              bot legacy apagado)
 test/replay-mesero.mjs            26 pasadas, 0 fallidas    (conversaciones completas)
 test/fase-agente-estado.mjs        lectura fallida rechazada, sin inventar estado nuevo
 test/fase-agente-emision.mjs       registro enlazado a emitirPedido; enlace de pago solo
-                                   después del folio; falla de Clip no duplica el pedido
+                                   después del folio; falla de Clip no duplica el pedido;
+                                   enlace anuncia total y envío canónicos
 test/fase-agente-gate-de-pago.mjs  5 pasadas, 0 fallidas; enlace nace pendiente_pago y
                                    no emite comanda antes del webhook verificado
 test/fase-agente-ciclos.mjs        un pedido nuevo rota la identidad del libro
