@@ -174,7 +174,8 @@ await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identifica
   VALUES ($1,'whatsapp',$2,'AGR',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [NEG, PNID]);
 await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [NEG]);
-await pool.query('UPDATE negocios SET bot_whatsapp_activo=TRUE WHERE id=$1', [NEG]);
+// El canario del agente debe funcionar aunque el bot legacy permanezca apagado.
+await pool.query('UPDATE negocios SET bot_whatsapp_activo=FALSE WHERE id=$1', [NEG]);
 
 // ── LA IMPRESORA: una terminal Edge de verdad, con su ruta de comanda ────
 //

@@ -1970,7 +1970,11 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     };
 
     const botGlobalActivo = await obtenerBotWhatsappActivoNegocio(negocioId);
+    let agenteCanario = false;
     if (!botGlobalActivo) {
+      agenteCanario = !!(await modoDelPedido(negocioId, { telefono })).agente;
+    }
+    if (!puedeProcesarTurno({ botGlobalActivo, agenteCanario })) {
       console.log(`[Meta WA] Bot de WhatsApp desactivado para el negocio ${negocioId} — mensaje guardado, sin respuesta automática`);
       observarEnSombra();
       observarMeseroEnSombra();
