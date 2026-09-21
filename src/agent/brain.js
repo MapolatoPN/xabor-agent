@@ -17,6 +17,7 @@ import { modoDelPedido } from '../orders/modoDelPedido.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, obtenerConfiguracion, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
+import { esSolicitudCatering } from './catering.js';
 import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
 import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
@@ -538,13 +539,18 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
       perfilComercial = String(configuracionComercial.cotizacion_perfil || '').trim().toLowerCase() === 'catering'
         ? 'catering' : 'estandar';
       const sesionExistente = await obtenerSesionActiva(negocioId, telefono);
-      const categoria = await detectarIntencionComercial({
+      // El perfil catering ya fue seleccionado por configuración del negocio.
+      // No depende del clasificador Haiku: si Anthropic está temporalmente
+      // caído, este mensaje sigue sin poder abrir un pedido normal.
+      const entradaCatering = perfilComercial === 'catering'
+        && (Boolean(sesionExistente) || esSolicitudCatering(mensajeUsuario));
+      const categoria = entradaCatering ? 'solicitud_comercial' : await detectarIntencionComercial({
         mensaje: mensajeUsuario,
         moduloHabilitado,
         estadoComercialActual: sesionExistente?.estado || null,
         apiKey: getIntegracion('anthropic_api_key'),
       });
-      if (activaModoComercial(categoria)) {
+      if (entradaCatering || activaModoComercial(categoria)) {
         sesionComercial = sesionExistente || await obtenerOCrearSesionActiva(negocioId, telefono);
         bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados, { perfil: perfilComercial });
       }
