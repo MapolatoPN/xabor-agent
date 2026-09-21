@@ -2632,8 +2632,11 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   // Cargar config del negocio
   await cargarNegocio();
   // La captura única usa este catálogo para Para llevar, Recoger y
-  // Domicilio. Cargarlo aquí garantiza que la sesión ya fue confirmada.
-  if (MODULOS.includes('menu')) await renderMenuPOS();
+  // Domicilio. Se dispara después de confirmar la sesión, pero un fallo del
+  // catálogo no puede hacer que el bloque de autenticación redirija al login.
+  if (MODULOS.includes('menu')) {
+    renderMenuPOS().catch(e => console.warn('[POS] No se pudo cargar el menú:', e));
+  }
   // Cargar pedidos programados al inicio -- solo si el módulo POS está
   // habilitado (si no, el endpoint solo respondería 403).
   if (MODULOS.includes('pos')) {
