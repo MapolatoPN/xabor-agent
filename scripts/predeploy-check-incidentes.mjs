@@ -12,6 +12,9 @@ import { puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import { aplicarRespuestaDeConfirmacion, confirmarYEmitir } from '../src/mesero-agente/canalDelAgente.js';
+import {
+  esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
+} from '../src/mesero-agente/seguridadConversacional.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -21,6 +24,27 @@ const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), false,
   'apagar el bot visible dejó al agente nuevo respondiendo');
 assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true }), true);
+
+// Conversación terminada en 7753: el agente prometió un envío para mañana y
+// dijo «apunto» sin haber aplicado ninguna herramienta.
+assert.equal(esSolicitudDePedidoProgramado('Si por favor sería para enviarlo mañana'), true,
+  'un pedido futuro volvió a entrar al agente sin herramienta de programación');
+assert.equal(esSolicitudDePedidoProgramado('Mañana a las 10', { hayPedidoEnCurso: true }), true,
+  'una continuación temporal corta no se reconoció con un carrito en curso');
+assert.equal(esSolicitudDePedidoProgramado('¿Qué promociones hay mañana?'), false,
+  'una consulta futura inocente se mandó innecesariamente a revisión');
+assert.equal(respuestaAfirmaCambioSinAplicar({
+  texto: 'Va, apunto los chilaquiles suizos.', operaciones: [],
+}), true, 'el agente volvió a afirmar un cambio que no guardó');
+assert.equal(respuestaAfirmaCambioSinAplicar({
+  texto: 'Listo, salsa suiza anotada.',
+  operaciones: [{ herramienta: 'modificar_linea', resultado: { aplicado: true } }],
+}), false, 'se bloqueó una afirmación respaldada por una herramienta aplicada');
+const fuenteCanalAgente = readFileSync(join(RAIZ, 'src', 'mesero-agente', 'canalDelAgente.js'), 'utf8');
+assert.match(fuenteCanalAgente, /esSolicitudDePedidoProgramado\(mensaje/,
+  'el detector de programados existe pero quedó desconectado del adaptador productivo');
+assert.match(fuenteCanalAgente, /respuestaAfirmaCambioSinAplicar\(salida\)/,
+  'la barrera de afirmaciones existe pero quedó desconectada de la respuesta productiva');
 
 // ── XAB-0467 / XAB-0469: confirmar una vez por ciclo ─────────────────────
 const NEGOCIO = '11111111-1111-4111-8111-111111111111';
@@ -212,4 +236,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: corte maestro, doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: corte maestro, programados, afirmaciones guardadas, doble confirmación, sesión, menú, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

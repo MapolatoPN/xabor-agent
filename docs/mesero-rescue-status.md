@@ -29,11 +29,17 @@ guarniciones frijoles naturales y papas a la mexicana. El equipo debe confirmar
 con ella las opciones que aún faltan y registrar manualmente el pedido.
 
 El handoff funcionó como estaba diseñado: el agente se detuvo y no volvió al
-bot anterior. La conversación también mostró dos pendientes técnicos antes de
-reactivar: el agente todavía no expone una herramienta para crear pedidos
-programados y llegó a decir «anotado» sin que una herramienta hubiera guardado
-el producto o la hora. Ambos casos deben cerrarse con una regla verificable;
-hasta entonces, toda solicitud para otro día debe pasar a una persona.
+bot anterior. La conversación también mostró que el agente no expone una
+herramienta para crear pedidos programados y que llegó a decir «anotado» sin
+que una herramienta hubiera guardado el producto o la hora.
+
+La corrección intercepta pedidos para mañana, otro día o una fecha futura y
+los entrega a una persona antes de llamar al modelo. También compara el texto
+final con las operaciones aplicadas: «anotado», «agregado» o «registrado» sin
+una herramienta de efecto aceptada se reemplaza por una revisión humana. Una
+consulta como «¿qué promociones hay mañana?» no se confunde con una orden, y
+una consulta sobre un pedido anterior puede decir que quedó registrado sin
+simular una mutación nueva. Ambos casos forman parte del predeploy obligatorio.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).

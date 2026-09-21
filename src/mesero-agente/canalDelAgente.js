@@ -29,6 +29,10 @@ import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
 import {
   depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
 } from '../orders/modalidadesDelPedido.js';
+import {
+  esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
+  TEXTO_CAMBIO_NO_GUARDADO, TEXTO_PEDIDO_PROGRAMADO,
+} from './seguridadConversacional.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -156,6 +160,26 @@ export async function atenderConAgente({
     }
 
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
+    // El agente aún no tiene una herramienta que escriba `programado_para`.
+    // Detener aquí evita que el modelo acepte «mañana a las 10» en texto sin
+    // dejar una reserva durable que el panel y el scheduler puedan cumplir.
+    if (esSolicitudDePedidoProgramado(mensaje, {
+      hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
+    })) {
+      const entregado = await avisarAHumano(
+        escalarAHumano, negocioId, telefono, 'AGENTE_PEDIDO_PROGRAMADO');
+      if (!entregado) return { ok: false, motivo: 'handoff_pedido_programado_no_entregado' };
+      estado.hechos.escalado = true;
+      await guardarEstado(negocioId, telefono, estado);
+      return {
+        ok: true,
+        texto: TEXTO_PEDIDO_PROGRAMADO,
+        folio: estado.folio ?? null,
+        escalado: true,
+        motivoCierre: CIERRE.ESCALADO,
+        operaciones: [],
+      };
+    }
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
     const promocionesActivas = obtenerEstadoRestaurante(reglas).promocionesActivas || [];
@@ -215,6 +239,22 @@ export async function atenderConAgente({
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     salida = aplicarRespuestaDeConfirmacion({ salida, estado });
     salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+
+    // El prompt exige usar herramientas, pero la conversación de Tania
+    // demostró que el modelo puede decir «apunto» o «anotamos» sin hacerlo.
+    // La afirmación no sale al cliente: se reemplaza y se entrega el caso.
+    if (respuestaAfirmaCambioSinAplicar(salida)) {
+      const entregado = await avisarAHumano(
+        escalarAHumano, negocioId, telefono, 'AGENTE_AFIRMO_CAMBIO_SIN_GUARDAR');
+      if (entregado) {
+        estado.hechos.escalado = true;
+        salida.escalado = true;
+      } else {
+        salida.handoffPendiente = true;
+      }
+      salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
+      salida.motivoCierre = CIERRE.ESCALADO;
+    }
     const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
     if (falloEnlace) {
       if (await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ENLACE_PAGO_FALLO')) {
