@@ -173,9 +173,12 @@ aceptar ese ofrecimiento.
 El enlace se crea con `pagosService.crearEnlacePago()` únicamente después de
 que `registrarPedido()` devolvió el folio confirmado. La misma capa calcula el
 monto desde el pedido persistido y reutiliza el enlace ante reintentos. La
-integración principal de Obispado es Clip, está activa y marcada como
-`sandbox`; no se cambió a producción. Si Clip falla, el pedido ya registrado
-se conserva, no se inventa una URL y se solicita revisión humana.
+integración principal de Obispado es Clip y está activa. La columna genérica
+`ambiente` conserva el valor `sandbox`, pero Clip no tiene un sandbox operativo
+en este adaptador: producción no define `CLIP_API_BASE_URL` y por ello los
+enlaces se crean contra `https://api.payclip.com/v2/checkout`. Ese valor es
+metadato heredado y no un bloqueo para cobrar. Si Clip falla, el pedido ya
+registrado se conserva, no se inventa una URL y se solicita revisión humana.
 
 Los pedidos del agente que usan `enlace_pago` ahora declaran pago anticipado:
 nacen en `pendiente_pago` y no emiten comanda, impresión ni oferta a reparto
