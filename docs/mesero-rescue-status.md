@@ -16,16 +16,17 @@ La puerta técnica del evaluador está **ABIERTA**: la última corrida con model
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
 El commit `91db415` está desplegado en Railway desde
 `prod/mesero-shadow-v3` (deployment `c79cf1b0-c83f-46b7-a9bd-ef0e3ff85087`);
-la migración 084 está aplicada. La sombra y el canario
-están activos solo para Mapolato Obispado, con porcentaje `0` y los teléfonos
-de prueba autorizados. El canario real quedó validado: armó un Café Americano
+la migración 084 está aplicada. La sombra y el agente productivo están activos
+para Mapolato Obispado; el porcentaje del agente quedó en `100` y la lista de
+teléfonos está vacía para incluir a todos los clientes. El canario real quedó
+validado: armó un Café Americano
 para recoger y pagar en efectivo, mostró el resumen de $39 y, tras el «Sí» del
 cliente, creó una sola vez el folio `XAB-0446`. El pedido, la compra durable y
 el trabajo de impresión comparten ese folio; la impresión quedó pendiente de
 que la terminal la recoja, sin error. El bot legacy permaneció apagado durante
 ese recorrido de prueba. Después de la validación se activó
-`bot_whatsapp_activo` únicamente para Mapolato; el agente nuevo sigue limitado
-a los teléfonos del canario. Los eventos de `agente_outbox` siguen sin
+`bot_whatsapp_activo` únicamente para Mapolato y luego el agente se amplió al
+100% de sus teléfonos. Los eventos de `agente_outbox` siguen sin
 consumidor y no forman parte del camino productivo actual.
 
 ### Corrección de formas de pago del canario
