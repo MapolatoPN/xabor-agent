@@ -4,6 +4,7 @@
 
 const PALABRAS_EVENTO = /\b(evento|fiesta|boda|cumplea(?:n|ñ)os|reuni[oó]n|banquete|congreso|graduaci[oó]n)\b/i;
 const SERVICIOS_EVENTO = /\b(catering|mesa\s+de\s+postres|servicio\s+de\s+(?:comida|desayuno|cena)|desayuno|cena)\b/i;
+const SERVICIO_EXPLICITO = /\b(catering|mesa\s+de\s+postres|banquete)\b/i;
 const COTIZACION = /\b(cotizaci[oó]n|cotizar|presupuesto|presupuestar)\b/i;
 
 /**
@@ -14,8 +15,8 @@ const COTIZACION = /\b(cotizaci[oó]n|cotizar|presupuesto|presupuestar)\b/i;
 export function esSolicitudCatering(texto = '') {
   const t = String(texto || '').trim();
   if (!t) return false;
+  if (SERVICIO_EXPLICITO.test(t)) return true;
   if (SERVICIOS_EVENTO.test(t) && (PALABRAS_EVENTO.test(t) || COTIZACION.test(t))) return true;
   if (COTIZACION.test(t) && PALABRAS_EVENTO.test(t)) return true;
   return false;
 }
-

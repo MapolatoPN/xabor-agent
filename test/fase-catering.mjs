@@ -8,6 +8,7 @@ const completos = {
 };
 assert.equal(esSolicitudCatering('Quiero cotización para un evento de 40 personas'), true);
 assert.equal(esSolicitudCatering('Necesito mesa de postres para una boda'), true);
+assert.equal(esSolicitudCatering('Manejamos catering'), true);
 assert.equal(esSolicitudCatering('Quiero ordenar chilaquiles'), false);
 assert.equal(esSolicitudCatering('20 personas'), false);
 assert.equal(camposObligatoriosCompletos(completos, { perfil: 'catering' }), true);
@@ -16,5 +17,4 @@ const prompt = construirBloqueModoComercial({}, { perfil: 'catering' });
 assert.match(prompt, /No uses ni menciones platillos/i);
 assert.match(prompt, /número de invitados/i);
 assert.match(prompt, /<BORRADOR_LISTO>/);
-console.log('Catering: 7 invariantes pasadas, 0 fallidas.');
-
+console.log('Catering: 8 invariantes pasadas, 0 fallidas.');
