@@ -14,8 +14,8 @@ base: no nace un segundo pedido y el handoff humano sí sale.
 
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
-El commit `91db415` está desplegado en Railway desde
-`prod/mesero-shadow-v3` (deployment `c79cf1b0-c83f-46b7-a9bd-ef0e3ff85087`);
+El commit `ade024c` está desplegado en Railway desde
+`prod/mesero-shadow-v3` (deployment `c27e35c1-2900-4b18-b45a-132b2bdd2921`);
 la migración 084 está aplicada. La sombra y el agente productivo están activos
 para Mapolato Obispado; el porcentaje del agente quedó en `100` y la lista de
 teléfonos está vacía para incluir a todos los clientes. El canario real quedó
