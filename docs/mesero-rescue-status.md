@@ -48,10 +48,20 @@ También se corrigió el MIME de imágenes entrantes, que se estaba guardando
 como PDF.
 
 El pedido de tienda `XAB-0458` sí tuvo pago confirmado, compra durable y dos
-trabajos de impresión enviados (Chilaquil y Cocina). Permanecía en estado
-`nuevo`, por lo que no aparecía en historial mientras esperaba la transición a
-`entregado`. Como ya fue recogido, se reconcilió a `entregado` y ahora queda
-visible en historial.
+trabajos de impresión enviados (Chilaquil y Cocina), pero no apareció en
+`Pedidos activos` cuando debía entregarse. El cliente tuvo que mostrar su
+confirmación para recibirlo. La causa fue una desalineación: la columna SQL ya
+decía `nuevo`, mientras la fotografía JSON conservaba `pendiente_pago`; después
+de una recuperación, el tablero podía ocultarlo aunque cocina ya tuviera las
+comandas. Que ahora aparezca en historial sólo confirma la conciliación
+posterior a `entregado`, no que haya sido visible durante la operación.
+
+La recuperación ya toma la columna SQL como autoridad. La migración 086 además
+repara todas las fotografías históricas y deja un trigger que mantiene ambos
+valores alineados. La regresión de predeploy reproduce el caso exacto de
+`XAB-0458`: tienda pagada, SQL en `nuevo` y fotografía aún en
+`pendiente_pago`; el despliegue se bloquea si el pedido recuperado no queda
+visible como `nuevo`.
 
 ### Incidente de doble confirmación XAB-0467 / XAB-0469
 
@@ -81,9 +91,10 @@ operación del panel antes de migrar o arrancar el binario. Comprueban sesión,
 menú reintentable, Restaurante, caché HTTP y replay limitado al día operativo
 sin entregados ni cancelados. Si alguna falla, el deployment nuevo no entra.
 
-Las migraciones `084-agente-operaciones` y `085-agente-outbox` quedaron
-incluidas en el runner real; antes existían los scripts, pero el runner
-terminaba en la 083. El comando `npm run release:gate` añade un humo de solo
+Las migraciones `084-agente-operaciones`, `085-agente-outbox` y
+`086-estado-pedidos` quedaron incluidas en el runner real; antes existían los
+scripts, pero el runner terminaba en la 083. El comando
+`npm run release:gate` añade un humo de solo
 lectura sobre salud, sesión, menú, historial, checkouts, pagos y posibles
 duplicados recientes. Su uso y variables están en
 `docs/production-release-gate.md`. La parte de base se ejecuta automáticamente

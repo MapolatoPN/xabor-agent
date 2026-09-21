@@ -140,6 +140,11 @@ const SCRIPTS = [
   // Debe existir antes de que el agente nuevo atienda el primer mensaje del
   // deployment.
   '085-agente-outbox',
+  // 086 cierra el incidente XAB-0458: una confirmación de pago ya había
+  // mandado la comanda a cocina, pero datos.estado conservaba pendiente_pago
+  // y el replay podía ocultar el pedido del tablero. Repara las fotografías y
+  // deja un trigger que las mantiene alineadas con el estado SQL autoritativo.
+  '086-estado-pedidos',
 ];
 
 for (const nombre of CHECKS) {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { libroDeOperaciones, almacenEnMemoria } from '../src/mesero-agente/libroDeOperaciones.js';
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
+import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -65,8 +66,9 @@ const runner = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 
 const i83 = runner.indexOf("'083-restaurante-division-consumo'");
 const i84 = runner.indexOf("'084-agente-operaciones'");
 const i85 = runner.indexOf("'085-agente-outbox'");
-assert.ok(i83 >= 0 && i84 > i83 && i85 > i84,
-  'el predeploy debe aplicar 084 y 085, en orden, antes del binario nuevo');
+const i86 = runner.indexOf("'086-estado-pedidos'");
+assert.ok(i83 >= 0 && i84 > i83 && i85 > i84 && i86 > i85,
+  'el predeploy debe aplicar 084, 085 y 086, en orden, antes del binario nuevo');
 
 // ── Panel: sesión, menú, Restaurante y replay operativo ──────────────────
 const leer = (ruta) => readFileSync(join(RAIZ, ruta), 'utf8');
@@ -74,6 +76,7 @@ const panel = leer('panel/index.html');
 const captura = leer('panel/captura.js');
 const mesas = leer('panel/mesas.html');
 const server = leer('src/server.js');
+const migracion086 = leer('migrations/086_estado_pedido_autoritativo.sql');
 
 const auth = panel.indexOf("fetch('/api/auth/me'");
 const cargaMenu = panel.indexOf('renderMenuPOS().catch', auth);
@@ -97,4 +100,29 @@ assert.match(server, /if \(p\.estado === 'entregado' \|\| p\.estado === 'cancela
 assert.match(server, /fechaOperativaDe\(instante, tz\) === hoy/,
   'el replay debe limitarse al día operativo del negocio');
 
-console.log('OK: doble confirmación, sesión, menú, Restaurante y replay protegidos.');
+// XAB-0458: pago confirmado e impresión correcta, pero la fotografía JSON
+// seguía pendiente_pago. Después de recuperar el proceso, el tablero debe usar
+// el estado SQL nuevo y mantener el pedido visible para que se pueda entregar.
+const tiendaPagadaRecuperada = pedidoActivoDesdeFila({
+  estado: 'nuevo',
+  negocio_id: NEGOCIO,
+  entregado_at: null,
+  datos: {
+    folio: 'XAB-0458',
+    canal: 'tienda_online',
+    estado: 'pendiente_pago',
+    pago_confirmado: true,
+  },
+});
+assert.equal(tiendaPagadaRecuperada.estado, 'nuevo',
+  'el estado SQL pagado debe reemplazar la fotografía pendiente_pago');
+assert.equal(tiendaPagadaRecuperada.negocioId, NEGOCIO,
+  'el pedido recuperado debe conservar el negocio de su columna SQL');
+assert.match(migracion086, /UPDATE pedidos_activos[\s\S]*?datos->>'estado' IS DISTINCT FROM estado/,
+  'la 086 debe reparar las fotografías ya desalineadas');
+assert.match(migracion086, /BEFORE INSERT OR UPDATE OF estado, datos ON pedidos_activos/,
+  'la 086 debe impedir nuevas desalineaciones de estado');
+assert.ok(runner.indexOf("'086-estado-pedidos'") > runner.indexOf("'085-agente-outbox'"),
+  'el runner productivo debe aplicar la 086 después de la 085');
+
+console.log('OK: doble confirmación, sesión, menú, Restaurante, replay y XAB-0458 protegidos.');

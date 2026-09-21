@@ -87,12 +87,29 @@ if (!fallos.length) {
         EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public'
           AND indexname='uq_agente_confirmacion_conversacion' AND indexdef ILIKE '%UNIQUE%') AS confirmacion_unica,
         EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public'
-          AND tablename='whatsapp_entradas' AND indexdef ILIKE '%UNIQUE%negocio_id%wamid%') AS entrada_unica
+          AND tablename='whatsapp_entradas' AND indexdef ILIKE '%UNIQUE%negocio_id%wamid%') AS entrada_unica,
+        EXISTS (SELECT 1 FROM pg_trigger
+          WHERE tgrelid='pedidos_activos'::regclass
+            AND tgname='trg_pedidos_activos_estado_json'
+            AND NOT tgisinternal AND tgenabled <> 'D') AS estado_pedido_autoritativo
     `);
     exigir(schema.operaciones && schema.outbox && schema.entradas,
       'tablas durables del agente, outbox y WhatsApp');
     exigir(schema.confirmacion_unica, 'confirmación única por ciclo de conversación');
     exigir(schema.entrada_unica, 'deduplicación durable por wamid');
+    exigir(schema.estado_pedido_autoritativo,
+      'estado SQL autoritativo protegido en pedidos activos');
+
+    const { rows: estadosDesalineados } = await db.query(`
+      SELECT folio, estado, datos->>'estado' AS estado_json
+        FROM pedidos_activos
+       WHERE negocio_id=$1
+         AND (estado IS NULL OR datos->>'estado' IS DISTINCT FROM estado)
+       LIMIT 10`, [negocioId]);
+    exigir(estadosDesalineados.length === 0,
+      estadosDesalineados.length
+        ? `pedidos con estado SQL/JSON desalineado: ${estadosDesalineados.map(r => r.folio).join(', ')}`
+        : 'estado SQL y fotografía JSON de pedidos alineados');
 
     const { rows: [menu] } = await db.query(`
       SELECT count(DISTINCT c.id)::int AS categorias, count(p.id)::int AS productos
@@ -112,7 +129,7 @@ if (!fallos.length) {
        LIMIT 10`, [negocioId]);
     exigir(tiendasSinPedido.length === 0,
       tiendasSinPedido.length ? `tienda sin pedido operativo: ${tiendasSinPedido.map(r => r.pedido_folio).join(', ')}`
-        : 'cada checkout reciente conserva su pedido operativo/histórico');
+        : 'cada checkout reciente conserva su fila de pedido');
 
     const { rows: pagosSinDerivar } = await db.query(`
       SELECT p.pedido_folio, pa.estado

@@ -3,6 +3,7 @@ import { createHmac, createHash, randomBytes } from 'crypto';
 import { hashPassword, hashPin, verifyPin, pinValido } from './password.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
+import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
 const { Pool } = pkg;
 
 export const pool = new Pool({
@@ -2105,14 +2106,10 @@ export async function obtenerPedidosActivos() {
     // negocioId ya presente en el JSON, nunca se inventa un negocio por
     // defecto, y el JSON guardado en DB nunca se modifica (solo se ajusta
     // el objeto devuelto en memoria).
-      return result.rows.map(r => {
-      const datos = r.datos || {};
-      // El estado SQL es la autoridad. El JSON puede ser una fotografía
-      // antigua (por ejemplo, pendiente_pago antes de que expirara) y no debe
-      // resucitar un pedido cancelado ni convertirlo en entregado al arrancar.
-      return { ...datos, estado: r.estado, entregado_at: r.entregado_at || datos.entregado_at || null,
-        negocioId: datos.negocioId || r.negocio_id || null };
-    });
+    // El estado SQL es la autoridad. El JSON puede ser una fotografía antigua
+    // (por ejemplo, pendiente_pago antes de confirmar el pago) y no debe
+    // ocultar un pedido pagado ni resucitar uno cancelado al arrancar.
+    return result.rows.map(pedidoActivoDesdeFila);
   } catch (e) {
     console.error('[DB] Error obtenerPedidosActivos:', e.message);
     return [];
