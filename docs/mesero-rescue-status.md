@@ -19,6 +19,22 @@ responde, registra, cobra ni imprime. Además, el interruptor visible
 `bot_whatsapp_activo` pasó a ser el corte maestro del bot anterior y del agente
 nuevo; apagarlo desde el panel detiene toda respuesta automática.
 
+### Pendiente humano inmediato: desayuno para mañana
+
+La conversación terminada en `7753` (Tania) quedó en revisión humana después
+de un fallo de red al llamar al proveedor de IA. No se registró ningún pedido.
+La clienta pidió un Desayuno Sorpresa para mañana a las 10:00, salsa suiza,
+pechuga de pollo, sin flores, y también mencionó bebida chica y las
+guarniciones frijoles naturales y papas a la mexicana. El equipo debe confirmar
+con ella las opciones que aún faltan y registrar manualmente el pedido.
+
+El handoff funcionó como estaba diseñado: el agente se detuvo y no volvió al
+bot anterior. La conversación también mostró dos pendientes técnicos antes de
+reactivar: el agente todavía no expone una herramienta para crear pedidos
+programados y llegó a decir «anotado» sin que una herramienta hubiera guardado
+el producto o la hora. Ambos casos deben cerrarse con una regla verificable;
+hasta entonces, toda solicitud para otro día debe pasar a una persona.
+
 La puerta técnica del evaluador está **ABIERTA**: la última corrida con modelo
 real pasó **26 de 26 fixtures**, con **0 invariantes críticas rotas** (§7).
 El commit `9f3abb0` está desplegado en Railway desde
