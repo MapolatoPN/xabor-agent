@@ -7004,6 +7004,26 @@ async function cargarCorte() {
       <div class="pos-card-value">${pesosCorte(tardios.reduce((s, c) => s + Number(c.monto || 0), 0))}</div>
       <div style="font-size:0.75rem;color:#6b21a8;margin-top:2px;">${tardios.length} pago${tardios.length !== 1 ? 's' : ''} confirmado${tardios.length !== 1 ? 's' : ''} hoy de pedidos de otros días</div>
     </div>`;
+  // Descuentos/Rewards: informativo, YA incluido en las ventas de arriba.
+  // Se muestra aparte para que el dueño vea cuánto del ingreso se regaló,
+  // sin que se lea como un monto adicional a cobrar.
+  const descManual = Number(data.descuento_manual) || 0;
+  const descPromo = Number(data.descuento_promocional) || 0;
+  const rewardsCanje = Number(data.rewards_canjeados) || 0;
+  const totalRegalado = descManual + descPromo + rewardsCanje;
+  if (totalRegalado > 0) {
+    const partes = [
+      descManual > 0 ? `Manual ${pesosCorte(descManual)}` : null,
+      descPromo > 0 ? `Promos ${pesosCorte(descPromo)}` : null,
+      rewardsCanje > 0 ? `Rewards ${pesosCorte(rewardsCanje)}` : null,
+    ].filter(Boolean).join(' · ');
+    tarjetas += `
+    <div class="pos-card" style="border-left:4px solid #ec4899;background:#fdf2f8;">
+      <div class="pos-card-label">🎁 Descuentos y Rewards</div>
+      <div class="pos-card-value">${pesosCorte(totalRegalado)}</div>
+      <div style="font-size:0.75rem;color:#9d174d;margin-top:2px;">${partes} — incluido en las ventas de arriba, no se suma aparte</div>
+    </div>`;
+  }
   document.getElementById('corte-pagos').innerHTML = tarjetas ||
     '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas este día</div>';
 
@@ -7203,17 +7223,19 @@ async function cargarHistorialCortes() {
     return `<span style="color:${color};font-weight:700;">${n > 0 ? '+' : ''}${pesosCorte(n)}</span>`;
   };
   cont.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:760px;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:840px;">
       <thead><tr style="background:#faf9f7;color:#888;text-align:left;">
         <th style="padding:8px 12px;">Fecha</th><th style="padding:8px 12px;">Folio</th>
         <th style="padding:8px 12px;">Ventas</th><th style="padding:8px 12px;">Efectivo</th>
         <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Esperado</th>
         <th style="padding:8px 12px;">Contado</th><th style="padding:8px 12px;">Diferencia</th>
+        <th style="padding:8px 12px;">Regalado</th>
         <th style="padding:8px 12px;">Usuario</th><th style="padding:8px 12px;">Acciones</th>
       </tr></thead>
       <tbody>${lista.map(c => {
         const f = String(c.fecha_operativa).slice(0, 10);
         const electronico = Number(c.ventas_tarjeta || 0) + Number(c.ventas_enlace || 0) + Number(c.ventas_otros || 0);
+        const regalado = Number(c.descuento_manual || 0) + Number(c.descuento_promocional || 0) + Number(c.rewards_canjeados || 0);
         return `<tr style="border-top:1px solid #f1f0ed;">
           <td style="padding:8px 12px;font-weight:700;">${corteFechaLegible(f)}</td>
           <td style="padding:8px 12px;color:#888;">${c.folio}</td>
@@ -7223,6 +7245,7 @@ async function cargarHistorialCortes() {
           <td style="padding:8px 12px;">${pesosCorte(c.efectivo_esperado)}</td>
           <td style="padding:8px 12px;">${c.efectivo_contado === null ? '<span style="color:#bbb;">sin contar</span>' : pesosCorte(c.efectivo_contado)}</td>
           <td style="padding:8px 12px;">${dif(c.diferencia)}</td>
+          <td style="padding:8px 12px;${regalado > 0 ? 'color:#be185d;' : 'color:#bbb;'}">${regalado > 0 ? pesosCorte(regalado) : '—'}</td>
           <td style="padding:8px 12px;color:#888;">${c.usuario_nombre || '—'}</td>
           <td style="padding:8px 12px;white-space:nowrap;">
             <button onclick="corteIrAFecha('${f}')" style="background:none;border:1px solid #e5e2da;border-radius:6px;padding:3px 9px;font-size:0.78rem;cursor:pointer;">Ver</button>
