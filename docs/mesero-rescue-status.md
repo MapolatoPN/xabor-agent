@@ -919,3 +919,45 @@ diga un costo de envío y el pedido registre otro.
 Validación local específica: 9/9 casos. La puerta obligatoria de incidentes
 también comprueba que las tres rutas reciban las reglas y que el simulador use
 el agente nuevo. El bot de producción continuó apagado durante el cambio.
+
+## 17. Continuidad del Desayuno Sorpresa — 22 de septiembre de 2026
+
+El catálogo del producto `Desayuno Sorpresa` estaba completo. La causa del
+incidente fue la continuidad del diálogo:
+
+- el canal llamaba al agente sin historial conversacional;
+- `buscar_producto` sí guardaba el único producto ofrecido, pero esa oferta no
+  aparecía en la vista que recibía el modelo en el turno siguiente;
+- los grupos pendientes mostraban solo el nombre del grupo y ocultaban sus
+  opciones, aunque la vista canónica ya contenía todos los candidatos;
+- respuestas cortas como “sí”, “Suiza” o “sin las flores” se volvían a
+  interpretar generativamente, en lugar de continuar el formulario que el
+  catálogo y el carrito ya habían definido.
+
+La corrección se aplicó en el motor común del agente, no en la configuración de
+Mapolato ni con nombres de platillos escritos en código:
+
+1. Un “sí” inequívoco acepta automáticamente el único producto que
+   `buscar_producto` dejó ofrecido en el turno anterior. La adición pasa por
+   `agregar_producto`, el reconciliador y el libro de operaciones.
+2. Una opción inequívoca de un grupo pendiente se aplica mediante
+   `modificar_linea` y se vuelve a leer el pedido antes de preguntar lo
+   siguiente.
+3. Las preguntas se construyen con los grupos y opciones del catálogo real.
+   El foco durable permite interpretar un grupo binario exacto: por ejemplo,
+   después de preguntar “¿Agregar flores?”, “sin las flores” selecciona la
+   opción canónica “No”. Esa autorización está limitada al renglón, grupo y
+   opción exactos.
+4. Si una respuesta empata entre opciones hermanas, ninguna se elige y se
+   vuelve a mostrar la lista real.
+5. Si el cliente escribe un grupo que existe en la carta pero no pertenece al
+   producto actual, el agente lo explica y continúa con el grupo correcto. No
+   vuelve a buscar otro platillo por similitud de palabras.
+6. Como defensa adicional, el prompt de respaldo ahora muestra el producto
+   ofrecido y los candidatos de cada grupo pendiente.
+
+La prueba reproduce la secuencia completa: consulta, aceptación, salsa,
+proteína, topping, bebida, flores y modalidad; además cubre la guarnición ajena
+y una elección ambigua. Resultado local: prueba nueva en verde, 65/65 del motor,
+9/9 de reglas del Asistente, seguridad conversacional y barrera completa de
+incidentes en verde.

@@ -31,6 +31,11 @@ import { crearEjecutor } from './ejecutorDeHerramientas.js';
 import { hashDeArgumentos } from './libroDeOperaciones.js';
 import { construirInstrucciones } from './instrucciones.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
+import {
+  accionParaOfertaAceptada, accionesParaOpcionesPendientes,
+  siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
+} from './continuidadDeterminista.js';
+import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -75,6 +80,7 @@ export async function atenderTurnoConHerramientas({
   const ocurrencias = new Map();
   let iteraciones = 0;
   let llamadasAlModelo = 0;
+  const opcionesAceptadas = [];
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
@@ -83,11 +89,12 @@ export async function atenderTurnoConHerramientas({
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],
     datoOperativoPendiente: contexto.datoOperativoPendiente ?? false,
+    opcionesAceptadas,
     efectos,
   });
 
   const herramientas = definicionesParaElModelo();
-  const instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
+  let instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
 
   const mensajes = [
     ...historial.map((m) => ({ role: m.rol === 'assistant' ? 'assistant' : 'user', content: String(m.texto || '') }))
@@ -131,6 +138,14 @@ export async function atenderTurnoConHerramientas({
   const cerrar = (motivoCierre, texto, extra = null) => {
     ejecutor.cerrarTurno();
     const pedido = ejecutor.vista();
+    // El foco se deriva del estado canónico. Permite interpretar una respuesta
+    // binaria corta en el turno siguiente sin depender del historial del LLM.
+    const pendiente = (pedido.aclaraciones || [])[0];
+    if (pendiente) {
+      estado.foco = { tipo: 'opcion', linea_id: pendiente.lid, grupo: pendiente.grupo };
+    } else if (estado.foco?.tipo === 'opcion') {
+      estado.foco = null;
+    }
     return {
       texto: String(texto || '').trim(),
       motivoCierre,
@@ -151,6 +166,95 @@ export async function atenderTurnoConHerramientas({
   };
 
   try {
+    // ── CONTINUIDAD DETERMINISTA ENTRE MENSAJES ─────────────────────────
+    //
+    // Las respuestas cortas a una pregunta cerrada no requieren que el
+    // modelo recuerde el turno anterior. Se traducen a llamadas normales y
+    // pasan por las mismas validaciones, reconciliador y libro de operaciones.
+    let ordinalDeterminista = 0;
+    let huboCambioDeterminista = false;
+    const ejecutarDeterminista = async (accion) => {
+      ordinalDeterminista += 1;
+      const llamada = {
+        id: `det-${turnoId || estado.turno}-${ordinalDeterminista}`,
+        name: accion.herramienta,
+        input: accion.argumentos,
+      };
+      const r = await ejecutarLlamada({
+        llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
+        permitirMutacion: () => mutaciones < topeMutaciones,
+        ocurrenciaDe: (herramienta, hash) => {
+          const clave = `${herramienta}|${hash}`;
+          const n = (ocurrencias.get(clave) || 0) + 1;
+          ocurrencias.set(clave, n);
+          return n;
+        },
+      });
+      if (r.conto) mutaciones += 1;
+      operaciones.push({
+        herramienta: llamada.name, argumentos: llamada.input,
+        tool_call_id: llamada.id, resultado: r.resultado, repetida: r.repetida,
+        determinista: true, motivo: accion.motivo,
+      });
+      anotar({ tipo: 'herramienta_determinista', herramienta: llamada.name,
+        aplicado: !!r.resultado?.aplicado, motivo: accion.motivo });
+      return r.resultado;
+    };
+
+    const oferta = accionParaOfertaAceptada({ estado, catalogo, mensaje });
+    if (oferta) {
+      const r = await ejecutarDeterminista(oferta);
+      huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
+    }
+
+    const resolucion = accionesParaOpcionesPendientes({
+      estado, pedido: ejecutor.vista(), mensaje,
+    });
+    for (const accion of resolucion.acciones) {
+      let clave = null;
+      if (accion.opcionAceptada) {
+        clave = claveEvidenciaOpcion(accion.opcionAceptada);
+        opcionesAceptadas.push(clave);
+      }
+      const r = await ejecutarDeterminista(accion);
+      if (!r?.aplicado && clave) {
+        const i = opcionesAceptadas.lastIndexOf(clave);
+        if (i >= 0) opcionesAceptadas.splice(i, 1);
+      }
+      huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
+    }
+
+    const pedidoDespues = ejecutor.vista();
+    const pregunta = siguientePreguntaDelPedido({
+      pedido: pedidoDespues, modalidades, metodosPago, requierePago,
+    });
+
+    if (huboCambioDeterminista && pregunta) {
+      estado.foco = pregunta.foco;
+      return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true });
+    }
+
+    const grupoAjeno = grupoExplicitoNoAplicable({ pedido: pedidoDespues, catalogo, mensaje });
+    if (grupoAjeno && pregunta) {
+      estado.foco = pregunta.foco;
+      return cerrar(CIERRE.RESPONDIO,
+        `${grupoAjeno.producto} no tiene ${grupoAjeno.grupo} como elección. ${pregunta.texto}`,
+        { continuidadDeterminista: true });
+    }
+
+    // Si la frase sí apunta a opciones del grupo pero empata entre varias, se
+    // vuelve a preguntar con la lista real. Elegir una sería decidir por el
+    // cliente; mandarlo al modelo reabriría exactamente ese riesgo.
+    if (resolucion.ambiguas.length && pregunta) {
+      estado.foco = pregunta.foco;
+      return cerrar(CIERRE.RESPONDIO, pregunta.texto,
+        { continuidadDeterminista: true, opcionAmbigua: true });
+    }
+
+    // Si una acción determinista completó todas las opciones, el modelo sigue
+    // con modalidad, pago o resumen. Su prompt debe leer la vista actualizada.
+    instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
+
     while (iteraciones < topeIteraciones) {
       if (Date.now() - t0 > topeMs) return await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
       iteraciones += 1;

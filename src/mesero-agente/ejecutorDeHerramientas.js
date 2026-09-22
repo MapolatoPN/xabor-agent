@@ -79,16 +79,19 @@ export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [],
+  reglas = null, promocionesActivas = [], opcionesAceptadas = [],
 } = {}) {
   const vista = () => {
     const pedido = vistaDelPedido({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
       reglas, promocionesActivas,
     });
-    return estado.pagoOfrecido
-      ? { ...pedido, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
+    const conContinuidad = (estado.ofrecidos || []).length
+      ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
       : pedido;
+    return estado.pagoOfrecido
+      ? { ...conContinuidad, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
+      : conContinuidad;
   };
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
@@ -118,6 +121,7 @@ export function crearEjecutor({
     terminos,
     datoOperativoPendiente,
     evidenciaAceptada: evidenciaAceptada(),
+    evidenciaOpcionesAceptadas: opcionesAceptadas,
   });
 
   /** Aplica propuestas y RELEE. Devuelve `{ aplicado, decisiones, cambios, pedido }`. */

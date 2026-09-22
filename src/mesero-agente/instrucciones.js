@@ -39,7 +39,8 @@ export function pedidoEnTexto(pedido) {
   if (!pedido) return 'No hay pedido en curso.';
   const lineas = (pedido.lineas || []).map((l) => {
     const ops = (l.opciones || []).map((o) => `${o.grupo}: ${o.opcion}`).join(', ');
-    const falta = (l.falta_elegir || []).map((g) => g.grupo).join(', ');
+    const falta = (l.falta_elegir || [])
+      .map((g) => `${g.grupo} [${(g.opciones || []).join(' | ')}]`).join(', ');
     return `- [${l.linea_id}] ${l.cantidad}x ${l.producto}`
       + (ops ? ` (${ops})` : '')
       + (l.nota ? ` — nota: ${l.nota}` : '')
@@ -48,6 +49,8 @@ export function pedidoEnTexto(pedido) {
   const partes = [
     `estado: ${pedido.estado}`,
     lineas.length ? lineas.join('\n') : '(sin renglones)',
+    (pedido.ofrecidos || []).length
+      ? `producto ofrecido en el turno anterior: ${pedido.ofrecidos.join(', ')}` : null,
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
     pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,

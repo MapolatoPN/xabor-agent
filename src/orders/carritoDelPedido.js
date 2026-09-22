@@ -75,6 +75,13 @@ const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-z0-9ñ ]/g, ' ').replace(/\s+/g, ' ').trim();
 
+// Autorización estrecha para una opción que el motor determinista tradujo de
+// la respuesta a una pregunta binaria (por ejemplo, «sin flores» -> «No»).
+// Incluye renglón, grupo y opción; no puede autorizar otra selección.
+export const claveEvidenciaOpcion = ({ lid, grupo, opcion } = {}) => JSON.stringify([
+  String(lid || ''), norm(grupo), norm(opcion),
+]);
+
 /** Las opciones que trae un artículo, aplanadas, para comparar dos artículos. */
 function opcionesDe(item) {
   const fuera = [];
@@ -448,7 +455,12 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     // Opción por opción, no el grupo entero: si el cliente pidió cebolla y el
     // modelo añadió pepinillos, entra la cebolla y se queda fuera el pepinillo.
     // Rechazar el grupo completo castigaba lo que el cliente sí había pedido.
-    const agregadasOk = esMio ? agregadas.filter((o) => fuerzaDeEvidencia(o, donde) > 0) : [];
+    const opcionAceptada = (o) => ctx.opcionesAceptadas.has(claveEvidenciaOpcion({
+      lid: previo.lid, grupo, opcion: o,
+    }));
+    const agregadasOk = esMio
+      ? agregadas.filter((o) => fuerzaDeEvidencia(o, donde) > 0 || opcionAceptada(o))
+      : [];
     // Un intercambio 1:1 —una opción sale, otra entra, y el grupo tenía una
     // sola— es cambiar de idea: «mejor la salsa roja». Lo nuevo autoriza que lo
     // viejo salga, sin pedir además un «quita la suiza» que nadie dice.
@@ -754,6 +766,10 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     // palabra «café» y que nadie ofreció. Lo encontró A21.
     aceptado: new Set((Array.isArray(opciones.evidenciaAceptada) ? opciones.evidenciaAceptada : [])
       .map((x) => norm(x)).filter(Boolean)),
+    // A diferencia de `aceptado`, que solo permite agregar un producto
+    // ofrecido, estas claves permiten una opción exacta de un renglón exacto.
+    opcionesAceptadas: new Set(Array.isArray(opciones.evidenciaOpcionesAceptadas)
+      ? opciones.evidenciaOpcionesAceptadas.map(String) : []),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
     terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
     // Renglones que una capa de arriba identificó sin que la frase los nombre
