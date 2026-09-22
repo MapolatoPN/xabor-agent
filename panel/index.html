@@ -231,6 +231,24 @@ header {
 .cfg-card:hover { border-color: var(--color-brand); background: var(--color-brand-light); }
 .cfg-card b { font-size: 0.92rem; color: #1a1a1a; }
 .cfg-card span.cfg-desc { font-size: 0.76rem; color: #888; line-height: 1.35; }
+/* Acciones de una fila del historial.
+   Antes cada botón traía su emoji y su color inventado —verde para factura,
+   naranja para devolución—, que es el aspecto de una barra de herramientas de
+   hace veinte años. Aquí todos comparten forma, peso y color, y el icono es el
+   mismo trazo de 24px que ya usa el resto del panel. El color se reserva para
+   lo que de verdad avisa (destructivo), no para decorar. */
+.btn-fila {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: inherit; font-size: 0.75rem; font-weight: 500; line-height: 1;
+  padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface); color: var(--color-text-secondary);
+  transition: border-color .12s, color .12s;
+}
+.btn-fila:hover { border-color: var(--color-text-muted); color: var(--color-text-primary); }
+.btn-fila svg { width: 13px; height: 13px; flex-shrink: 0; }
+.btn-fila.peligro:hover { border-color: #f87171; color: #dc2626; }
+
 .cfg-chip { font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 8px; margin-top: 4px; }
 .cfg-chip.ok    { background: #f0fdf4; color: #15803d; }
 .cfg-chip.warn  { background: #fff7ed; color: #c2410c; }
@@ -1126,7 +1144,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Modal: factura CFDI -->
 <div id="modal-factura-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-height:90vh;overflow-y:auto;">
-    <h3 style="margin-bottom:6px;font-size:1rem;color:#16a34a;">🧾 Generar factura (CFDI)</h3>
+    <h3 style="margin-bottom:6px;font-size:1rem;color:var(--color-text-primary);font-weight:700;">Generar factura (CFDI)</h3>
     <p id="factura-ref" style="font-size:0.82rem;color:#888;margin-bottom:14px;"></p>
     <input type="hidden" id="factura-folio">
     <div style="display:flex;flex-direction:column;gap:10px;">
@@ -1168,7 +1186,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;" />
       </div>
     </div>
-    <div id="factura-resultado" style="display:none;margin-top:14px;padding:12px;background:#f0fdf4;border-radius:8px;font-size:0.82rem;"></div>
+    <div id="factura-aviso" style="display:none;margin-top:10px;font-size:0.78rem;color:var(--color-text-secondary);"></div>
+      <div id="factura-resultado" style="display:none;margin-top:14px;padding:12px;background:#f0fdf4;border-radius:8px;font-size:0.82rem;"></div>
     <div style="display:flex;gap:10px;margin-top:14px;">
       <button onclick="cerrarModalFactura()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
       <button id="btn-generar-factura" onclick="confirmarFactura()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Generar factura</button>
@@ -1822,7 +1841,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button class="cfg-card" onclick="cfgIr('pagos')"><b>💳 Pagos</b><span class="cfg-desc">Formas de pago que tu negocio ofrece</span><span class="cfg-chip off" id="cfgst-pagos">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('integraciones')"><b>🔌 Integraciones</b><span class="cfg-desc">WhatsApp y Rappi conectados a tu operación</span><span class="cfg-chip off" id="cfgst-integraciones">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('equipos')"><b>🖨️ Equipos e impresión</b><span class="cfg-desc">Comandas a cocina y cuentas en caja, en papel</span><span class="cfg-chip off" id="cfgst-equipos">○ Revisar</span></button>
-          <button class="cfg-card" onclick="cfgIr('facturacion')"><b>🔐 Facturación</b><span class="cfg-desc">e.firma del SAT para CFDI</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('facturacion')"><b>Facturación</b><span class="cfg-desc">Emitir CFDI y datos fiscales de tus clientes</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
           <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
           <button class="cfg-card" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
         </div>
@@ -1916,7 +1935,143 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Sección: Facturación -->
       <div class="cfg-sec" id="cfg-sec-facturacion">
       <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🔐 e.firma SAT</div>
+
+      <!-- ── EMITIR: la cuenta de Facturapi ────────────────────────────────
+           Esto y la e.firma de abajo son dos cosas distintas que antes vivían
+           bajo el mismo título, y por eso Config podía decir «listo» mientras
+           facturar era imposible:
+             · Facturapi   EMITE tus CFDI.
+             · e.firma SAT DESCARGA los CFDI que otros te emitieron.
+           Van separadas y con su propio estado. -->
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Emitir facturas</div>
+      <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:14px;">
+        Tu cuenta de Facturapi es la que timbra los CFDI de este negocio. La llave se guarda cifrada y no vuelve a mostrarse.
+      </div>
+      <div id="facturapi-status" style="background:var(--color-surface-2, #f1f0ed);border-radius:10px;padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--color-text-secondary);">
+        Cargando estado…
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:26px;">
+        <label style="font-size:0.82rem;font-weight:600;color:#374151;">Llave secreta de Facturapi</label>
+        <input type="password" id="facturapi-key" autocomplete="off" placeholder="sk_live_… o sk_test_…"
+          style="width:100%;padding:10px 14px;border:1px solid var(--color-border);border-radius:8px;font-size:0.9rem;background:#fff;box-sizing:border-box;" />
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="vincularFacturapi()" id="btn-facturapi-vincular"
+            style="padding:10px 16px;border-radius:9px;border:none;background:var(--color-text-primary);color:#fff;font-weight:600;cursor:pointer;font-size:0.85rem;font-family:inherit;">Vincular cuenta</button>
+          <button onclick="desvincularFacturapi()" id="btn-facturapi-desvincular"
+            style="padding:10px 16px;border-radius:9px;border:1px solid var(--color-border-strong);background:#fff;color:var(--color-text-secondary);cursor:pointer;font-size:0.85rem;font-family:inherit;">Desvincular</button>
+        </div>
+        <div id="facturapi-msg" style="font-size:0.82rem;"></div>
+      </div>
+
+      <!-- ── LA TASA DE IVA: NO SE ADIVINA ────────────────────────────────
+           `facturacionService.js` exige esto antes de crear cualquier
+           recibo: un régimen fiscal se puede equivocar, pero inventarlo es
+           peor que preguntarlo. Sin esta sección, la cuenta puede estar
+           vinculada y facturar sigue siendo imposible — por eso el chip de
+           Config mira las DOS cosas, no solo la cuenta. -->
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Impuestos de tus ventas</div>
+      <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:14px;">
+        La tasa de IVA de este negocio. Sin ella, ningún recibo se puede crear: no se adivina.
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:0.78rem;font-weight:600;color:#374151;">Tasa de IVA</label>
+          <select id="fc-iva" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+            <option value="">Selecciona una tasa</option>
+            <option value="0.16">16 %</option>
+            <option value="0.08">8 % (zona fronteriza)</option>
+            <option value="0">0 % (tasa cero)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:0.78rem;font-weight:600;color:#374151;">Serie del CFDI <span style="font-weight:400;color:var(--color-text-muted);">(opcional)</span></label>
+          <input id="fc-serie" type="text" maxlength="20" placeholder="A"
+            style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;box-sizing:border-box;" />
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:#374151;margin-bottom:14px;">
+        <input id="fc-autoemitir" type="checkbox" checked />
+        Crear el recibo de autofactura en cuanto el pedido se cobra
+      </label>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:26px;flex-wrap:wrap;">
+        <button onclick="guardarConfigFacturacion()"
+          style="padding:10px 16px;border-radius:9px;border:none;background:var(--color-text-primary);color:#fff;font-weight:600;cursor:pointer;font-size:0.85rem;font-family:inherit;">Guardar impuestos</button>
+        <span id="fc-msg" style="font-size:0.82rem;"></span>
+      </div>
+
+      <!-- ── LIBRETA DE DATOS FISCALES ───────────────────────────────────
+           Los seis campos que antes se tecleaban en cada factura. Se capturan
+           una vez —aquí a mano, o solos al emitir— y el modal los recupera. -->
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Clientes con datos fiscales</div>
+      <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:14px;">
+        Captura los datos una vez y factura de un clic. Al emitir una factura, los datos del cliente quedan guardados aquí solos.
+      </div>
+
+      <input type="search" id="cf-buscar" placeholder="Buscar por RFC o nombre" oninput="cargarClientesFiscales(this.value)"
+        style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;background:#fff;box-sizing:border-box;margin-bottom:6px;" />
+      <div id="clientes-fiscales-lista" style="margin-bottom:18px;">
+        <div style="color:var(--color-text-muted);font-size:0.82rem;padding:10px 0;">Cargando…</div>
+      </div>
+
+      <div style="background:var(--color-surface-2, #fafaf8);border:1px solid var(--color-border);border-radius:10px;padding:14px 16px;margin-bottom:26px;">
+        <div style="font-weight:700;font-size:0.9rem;margin-bottom:12px;">Capturar cliente</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;">
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">RFC</label>
+            <input id="cf-rfc" type="text" maxlength="13" placeholder="XAXX010101000"
+              style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;text-transform:uppercase;box-sizing:border-box;" />
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">Razón social</label>
+            <input id="cf-nombre" type="text" placeholder="Nombre Apellido o Empresa S.A."
+              style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;box-sizing:border-box;" />
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">Régimen fiscal</label>
+            <select id="cf-regimen" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+              <option value="626">626 – Simplificado de Confianza (RESICO)</option>
+              <option value="612">612 – Personas físicas con actividades empresariales</option>
+              <option value="601">601 – General de Ley Personas Morales</option>
+              <option value="621">621 – Incorporación Fiscal</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">Uso de CFDI</label>
+            <select id="cf-uso" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+              <option value="G03">G03 – Gastos en general</option>
+              <option value="G01">G01 – Adquisición de mercancias</option>
+              <option value="S01">S01 – Sin efectos fiscales</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">Código postal</label>
+            <input id="cf-cp" type="text" maxlength="5" placeholder="26000"
+              style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;box-sizing:border-box;" />
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">Correo <span style="font-weight:400;color:var(--color-text-muted);">(opcional)</span></label>
+            <input id="cf-email" type="email" placeholder="cliente@correo.com"
+              style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;box-sizing:border-box;" />
+          </div>
+          <div>
+            <label style="font-size:0.78rem;font-weight:600;color:#374151;">WhatsApp <span style="font-weight:400;color:var(--color-text-muted);">(opcional)</span></label>
+            <input id="cf-telefono" type="text" placeholder="528781234567"
+              style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--color-border);border-radius:8px;font-size:0.85rem;font-family:inherit;box-sizing:border-box;" />
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap;">
+          <button onclick="guardarClienteFiscalUI()"
+            style="padding:10px 16px;border-radius:9px;border:none;background:var(--color-text-primary);color:#fff;font-weight:600;cursor:pointer;font-size:0.85rem;font-family:inherit;">Guardar cliente</button>
+          <span id="cf-msg" style="font-size:0.82rem;"></span>
+        </div>
+        <div style="font-size:0.76rem;color:var(--color-text-muted);margin-top:10px;">
+          El WhatsApp sirve para que, cuando ese cliente pida factura por chat, sus datos aparezcan solos.
+        </div>
+      </div>
+
+      <div style="height:1px;background:var(--color-border);margin-bottom:22px;"></div>
+
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Descarga masiva (e.firma SAT)</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Sube tu certificado (.cer) y llave privada (.key) para la Descarga Masiva de CFDI. Se guardan cifrados en la base de datos — la contraseña no se almacena.</div>
 
       <!-- Estado actual del cert -->
@@ -2392,6 +2547,10 @@ async function cerrarSesion() {
 }
 
 let MODULOS = [];
+// ¿Este negocio tiene cuenta de Facturapi vinculada? El botón de factura no se
+// enseña si no la hay: ofrecer una acción que sólo puede acabar en error es
+// peor que no ofrecerla.
+let PUEDE_FACTURAR = false;
 let WHATSAPP_CONFIGURADO = false;
 
 // Oculta cualquier elemento con data-modulo cuyo módulo no esté en la lista
@@ -2440,6 +2599,16 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   DEDUPE = window.XaborDedupeEventos ? window.XaborDedupeEventos.crear(NEGOCIO_ID) : null;
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
+  // Se consulta aparte porque depende de una CREDENCIAL, no de un módulo: un
+  // negocio puede tener el módulo de facturación encendido y todavía no estar
+  // vinculado con el proveedor.
+  PUEDE_FACTURAR = false;
+  if (MODULOS.includes('facturacion') && ROL === 'admin') {
+    apiFetch('/api/admin/facturacion/estado')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { PUEDE_FACTURAR = !!(d && d.puedeFacturar); })
+      .catch(() => {});
+  }
   // Barra de sesión de soporte (Central de Operaciones): visible SIEMPRE
   // que la sesión sea de un superadmin operando este negocio. data.soporte
   // solo lo pone el servidor cuando la cookie trae el flag firmado -- no
@@ -3577,6 +3746,196 @@ function cfgIr(sec) {
   if (p) p.style.display = 'none';
   document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
   el.style.display = 'block';
+  // Cada sección carga lo suyo al abrirse, no al arrancar el panel: son
+  // consultas que la mayoría de las visitas no necesita.
+  if (sec === 'facturacion') { cargarEstadoFacturapi(); cargarClientesFiscales(); }
+}
+
+// ─── FACTURAR: la cuenta del negocio ───────────────────────────────────────
+//
+// El alta con Facturapi la hacemos nosotros; el ENLACE se hace aquí, en un
+// minuto, sin tocar Railway ni desplegar. La llave se manda una vez, se
+// guarda cifrada y no vuelve a salir: lo único consultable es si existe.
+
+async function cargarEstadoFacturapi() {
+  const caja = document.getElementById('facturapi-status');
+  if (!caja) return;
+  try {
+    const r = await apiFetch('/api/admin/facturacion/estado');
+    if (!r.ok) { caja.textContent = 'No se pudo consultar el estado.'; return; }
+    // `puedeFacturar` exige LAS DOS cosas: cuenta vinculada Y tasa de IVA
+    // configurada. Antes el chip solo miraba la cuenta, así que un negocio
+    // con Facturapi vinculado pero sin IVA veía «listo» y facturar seguía
+    // reventando con IVA_NO_CONFIGURADO.
+    const { puedeFacturar, proveedorConfigurado, ivaConfigurado, configuracion } = await r.json();
+    PUEDE_FACTURAR = !!puedeFacturar;
+    if (puedeFacturar) {
+      caja.innerHTML = '<b style="color:#15803d;">Listo para emitir.</b> Este negocio puede emitir CFDI. '
+        + 'El botón <b>Factura</b> aparece en cada pedido del Historial.';
+    } else if (!proveedorConfigurado) {
+      caja.innerHTML = '<b style="color:#c2410c;">Sin cuenta vinculada.</b> Todavía no se pueden emitir CFDI. '
+        + 'Pega abajo la llave secreta de Facturapi de este negocio.';
+    } else {
+      caja.innerHTML = '<b style="color:#c2410c;">Falta la tasa de IVA.</b> La cuenta ya está vinculada, '
+        + 'pero ningún recibo se puede crear sin la tasa — no se adivina. Configúrala más abajo.';
+    }
+    // Prellenar los campos de impuestos con lo que ya hay guardado.
+    if (configuracion) {
+      const iva = document.getElementById('fc-iva');
+      const serie = document.getElementById('fc-serie');
+      const auto = document.getElementById('fc-autoemitir');
+      if (iva && configuracion.iva_tasa !== null && configuracion.iva_tasa !== undefined) {
+        iva.value = String(configuracion.iva_tasa);
+      }
+      if (serie) serie.value = configuracion.serie || '';
+      if (auto) auto.checked = configuracion.autoemitir_recibo !== false;
+    }
+  } catch (e) { caja.textContent = 'No se pudo consultar el estado.'; }
+}
+
+async function guardarConfigFacturacion() {
+  const msg = document.getElementById('fc-msg');
+  const ivaEl = document.getElementById('fc-iva');
+  const iva_tasa = ivaEl.value === '' ? null : ivaEl.value;
+  const serie = document.getElementById('fc-serie').value.trim() || null;
+  const autoemitir_recibo = document.getElementById('fc-autoemitir').checked;
+  try {
+    const r = await apiFetch('/api/admin/facturacion/configuracion', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ iva_tasa, autoemitir_recibo, serie }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.style.color = '#dc2626'; msg.textContent = d.error || 'No se pudo guardar.'; return; }
+    msg.style.color = '#15803d'; msg.textContent = 'Impuestos guardados.';
+    await cargarEstadoFacturapi();
+  } catch (e) { msg.style.color = '#dc2626'; msg.textContent = 'No se pudo guardar.'; }
+}
+
+async function vincularFacturapi() {
+  const input = document.getElementById('facturapi-key');
+  const msg = document.getElementById('facturapi-msg');
+  const btn = document.getElementById('btn-facturapi-vincular');
+  const apiKey = (input.value || '').trim();
+  if (!apiKey) { msg.style.color = '#dc2626'; msg.textContent = 'Pega la llave secreta de Facturapi.'; return; }
+  btn.disabled = true; btn.textContent = 'Vinculando…';
+  try {
+    const r = await apiFetch('/api/admin/facturacion/credenciales', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.style.color = '#dc2626'; msg.textContent = d.error || 'No se pudo vincular.'; return; }
+    // La llave sale de la pantalla en cuanto se guarda: no tiene que quedarse
+    // escrita en un campo que alguien pueda leer por encima del hombro.
+    input.value = '';
+    msg.style.color = d.ambiente === 'prueba' ? '#c2410c' : '#15803d';
+    msg.textContent = d.ambiente === 'prueba'
+      ? 'Cuenta vinculada con una llave de PRUEBA: los CFDI no serán válidos ante el SAT.'
+      : 'Cuenta vinculada. Ya puedes emitir CFDI.';
+    await cargarEstadoFacturapi();
+  } catch (e) {
+    msg.style.color = '#dc2626'; msg.textContent = 'No se pudo vincular.';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Vincular cuenta';
+  }
+}
+
+async function desvincularFacturapi() {
+  if (!confirm('¿Quitar la cuenta de Facturapi? Este negocio dejará de poder emitir CFDI. Las facturas ya emitidas no se tocan.')) return;
+  const msg = document.getElementById('facturapi-msg');
+  try {
+    const r = await apiFetch('/api/admin/facturacion/credenciales', { method: 'DELETE' });
+    if (!r.ok) { msg.style.color = '#dc2626'; msg.textContent = 'No se pudo desvincular.'; return; }
+    msg.style.color = 'var(--color-text-secondary)'; msg.textContent = 'Cuenta desvinculada.';
+    await cargarEstadoFacturapi();
+  } catch (e) { msg.style.color = '#dc2626'; msg.textContent = 'No se pudo desvincular.'; }
+}
+
+// ─── LIBRETA DE DATOS FISCALES ─────────────────────────────────────────────
+//
+// Los seis campos del cliente, capturados una vez. Desde aquí se dan de alta
+// a mano; el modal de factura los recupera solo.
+
+let CLIENTES_FISCALES = [];
+
+// El texto del cliente entra en el DOM: escapar no es opcional. Una razón
+// social con un signo «<» rompería la lista entera.
+function escaparHTML(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function cargarClientesFiscales(busqueda = '') {
+  const cont = document.getElementById('clientes-fiscales-lista');
+  if (!cont) return;
+  try {
+    const r = await apiFetch('/api/admin/clientes-fiscales?q=' + encodeURIComponent(busqueda));
+    if (!r.ok) { cont.innerHTML = '<div style="color:#888;font-size:0.82rem;">No se pudo cargar.</div>'; return; }
+    const { clientes } = await r.json();
+    CLIENTES_FISCALES = clientes || [];
+    if (!CLIENTES_FISCALES.length) {
+      cont.innerHTML = '<div style="color:var(--color-text-muted);font-size:0.82rem;padding:10px 0;">'
+        + (busqueda ? 'Ningún cliente coincide.' : 'Todavía no hay clientes guardados. Al facturar, sus datos quedan aquí solos.')
+        + '</div>';
+      return;
+    }
+    cont.innerHTML = CLIENTES_FISCALES.map(c =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--color-border);">'
+      + '<div style="flex:1;min-width:0;">'
+      + '<div style="font-weight:600;font-size:0.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escaparHTML(c.razon_social) + '</div>'
+      + '<div style="font-size:0.76rem;color:var(--color-text-muted);">' + escaparHTML(c.rfc) + (c.telefono ? ' · ' + escaparHTML(c.telefono) : '') + '</div>'
+      + '</div>'
+      + '<button class="btn-fila" onclick="editarClienteFiscal(\'' + escaparHTML(c.rfc) + '\')">Editar</button>'
+      + '<button class="btn-fila peligro" onclick="borrarClienteFiscal(' + Number(c.id) + ')">Quitar</button>'
+      + '</div>').join('');
+  } catch (e) {
+    cont.innerHTML = '<div style="color:#888;font-size:0.82rem;">No se pudo cargar.</div>';
+  }
+}
+
+function editarClienteFiscal(rfc) {
+  const c = CLIENTES_FISCALES.find(x => x.rfc === rfc);
+  if (!c) return;
+  document.getElementById('cf-rfc').value = c.rfc || '';
+  document.getElementById('cf-nombre').value = c.razon_social || '';
+  document.getElementById('cf-regimen').value = c.regimen || '626';
+  document.getElementById('cf-uso').value = c.uso_cfdi || 'G03';
+  document.getElementById('cf-cp').value = c.cp || '';
+  document.getElementById('cf-email').value = c.email || '';
+  document.getElementById('cf-telefono').value = c.telefono || '';
+  document.getElementById('cf-rfc').focus();
+}
+
+async function guardarClienteFiscalUI() {
+  const msg = document.getElementById('cf-msg');
+  const cuerpo = {
+    rfc: document.getElementById('cf-rfc').value,
+    razon_social: document.getElementById('cf-nombre').value,
+    regimen: document.getElementById('cf-regimen').value,
+    uso_cfdi: document.getElementById('cf-uso').value,
+    cp: document.getElementById('cf-cp').value,
+    email: document.getElementById('cf-email').value || null,
+    telefono: document.getElementById('cf-telefono').value || null,
+  };
+  try {
+    const r = await apiFetch('/api/admin/clientes-fiscales', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.style.color = '#dc2626'; msg.textContent = d.error || 'No se pudo guardar.'; return; }
+    msg.style.color = '#15803d'; msg.textContent = 'Cliente guardado.';
+    ['cf-rfc','cf-nombre','cf-cp','cf-email','cf-telefono'].forEach(id => { document.getElementById(id).value = ''; });
+    await cargarClientesFiscales();
+  } catch (e) { msg.style.color = '#dc2626'; msg.textContent = 'No se pudo guardar.'; }
+}
+
+async function borrarClienteFiscal(id) {
+  if (!confirm('¿Quitar este cliente de la libreta? Las facturas ya emitidas no se tocan.')) return;
+  try {
+    const r = await apiFetch('/api/admin/clientes-fiscales/' + id, { method: 'DELETE' });
+    if (r.ok) await cargarClientesFiscales();
+  } catch (e) { /* la lista se queda como estaba */ }
 }
 function cfgVolver() {
   cfgMostrarPortada();
@@ -3626,15 +3985,23 @@ async function cargarConfigPortada() {
       else chip('equipos', 'warn', '⚠ Cobertura parcial');
     }
   } catch (err) {}
-  // Facturación: módulo + e.firma cargada
+  // Facturación. El chip mide EMITIR, que es lo que la gente busca cuando
+  // entra aquí. Antes medía la e.firma —que sirve para DESCARGAR— y decía
+  // «✓ cargada» mientras facturar era imposible por falta de cuenta.
+  //
+  // `puedeFacturar` exige DOS cosas (proveedor + tasa de IVA), y el chip dice
+  // cuál falta en vez de un genérico «incompleto»: son pasos distintos y en
+  // Config viven en secciones distintas.
   if (!MODULOS.includes('facturacion')) {
     chip('facturacion', 'off', '○ No habilitada');
   } else {
     try {
-      const r = await apiFetch('/api/admin/sat/credenciales/info');
+      const r = await apiFetch('/api/admin/facturacion/estado');
       if (r.ok) {
-        const { info } = await r.json();
-        chip('facturacion', info ? 'ok' : 'warn', info ? '✓ e.firma cargada' : '⚠ Falta e.firma');
+        const { puedeFacturar, proveedorConfigurado } = await r.json();
+        chip('facturacion', puedeFacturar ? 'ok' : 'warn',
+          puedeFacturar ? '✓ Lista para emitir'
+            : (proveedorConfigurado ? '⚠ Falta la tasa de IVA' : '⚠ Falta vincular Facturapi'));
       }
     } catch (err) {}
   }
@@ -4815,16 +5182,64 @@ document.getElementById('modal-devolucion-overlay').addEventListener('click', e 
 });
 
 // ─── Factura CFDI (admin) ────────────────────────────────────────────────────
-function abrirModalFactura(folio) {
+function abrirModalFactura(folio, telefono) {
   document.getElementById('factura-folio').value = folio;
-  document.getElementById('factura-ref').textContent = `Pedido ${folio}`;
+  document.getElementById('factura-ref').textContent = 'Pedido ' + folio;
   document.getElementById('factura-rfc').value = '';
   document.getElementById('factura-nombre').value = '';
   document.getElementById('factura-email').value = '';
   document.getElementById('factura-cp').value = '';
   document.getElementById('factura-resultado').style.display = 'none';
   document.getElementById('btn-generar-factura').style.display = '';
+  const aviso = document.getElementById('factura-aviso');
+  if (aviso) { aviso.style.display = 'none'; aviso.textContent = ''; }
   document.getElementById('modal-factura-overlay').style.display = 'flex';
+  // El teléfono del pedido es la pista: si ese cliente ya facturó aquí, sus
+  // datos se rellenan solos. Se busca DESPUÉS de abrir para que el modal no
+  // se quede esperando una consulta.
+  if (telefono) prellenarFacturaDesdeLibreta(telefono);
+}
+
+/**
+ * Rellena el modal con la ficha fiscal guardada de este teléfono.
+ *
+ * Si hay DOS fichas para el mismo número —alguien que factura a su nombre y
+ * al de su empresa—, no se elige ninguna: se avisa y se teclea. Adivinar
+ * aquí es emitir un comprobante a nombre de quien no compró.
+ */
+async function prellenarFacturaDesdeLibreta(telefono) {
+  try {
+    const r = await apiFetch('/api/admin/clientes-fiscales/por-telefono/' + encodeURIComponent(telefono));
+    if (!r.ok) return;
+    const { clientes } = await r.json();
+    const aviso = document.getElementById('factura-aviso');
+    if (!clientes || !clientes.length) return;
+    if (clientes.length > 1) {
+      if (aviso) {
+        aviso.style.display = 'block';
+        aviso.textContent = 'Este teléfono tiene ' + clientes.length + ' RFC guardados. Escribe el que corresponde.';
+      }
+      return;
+    }
+    const c = clientes[0];
+    // No se pisa lo que el operador ya haya escrito.
+    const poner = (id, valor) => {
+      const el = document.getElementById(id);
+      if (el && !el.value && valor) el.value = valor;
+    };
+    poner('factura-rfc', c.rfc);
+    poner('factura-nombre', c.razon_social);
+    poner('factura-cp', c.cp);
+    poner('factura-email', c.email);
+    const reg = document.getElementById('factura-regimen');
+    if (reg && c.regimen) reg.value = c.regimen;
+    const uso = document.getElementById('factura-uso');
+    if (uso && c.uso_cfdi) uso.value = c.uso_cfdi;
+    if (aviso) {
+      aviso.style.display = 'block';
+      aviso.textContent = 'Datos recuperados de la última factura de este cliente.';
+    }
+  } catch (e) { /* sin ficha, se teclea como siempre */ }
 }
 function cerrarModalFactura() {
   document.getElementById('modal-factura-overlay').style.display = 'none';
@@ -6751,10 +7166,19 @@ async function cargarHistorial() {
       ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+devolucion.motivo+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
     const cancelHtml = cancelado && p.cancelacion?.motivo
       ? `<div style="font-size:0.78rem;color:#ef4444;margin-top:4px;">Motivo: ${p.cancelacion.motivo}</div>` : '';
+    // Iconos de trazo sobre lienzo de 24px, el mismo lenguaje que el resto del
+    // panel. Sin emoji: un emoji se dibuja distinto en cada sistema operativo
+    // y no hay manera de alinearlo con el texto ni de teñirlo.
+    const ICO = {
+      pago:     '<path d="M19 5H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z"/><path d="M3 10h18"/>',
+      devolver: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+      factura:  '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/>',
+    };
+    const ico = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
     const adminBtns = isAdmin && !cancelado ? `
-      <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
-      ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
-      <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>` : '';
+      <button class="btn-fila" onclick="abrirModalPago('${folio}')">${ico(ICO.pago)}Pago</button>
+      ${!devolucion?`<button class="btn-fila peligro" onclick="abrirModalDevolucion('${folio}',${p.total})">${ico(ICO.devolver)}Devolución</button>`:''}
+      ${PUEDE_FACTURAR?`<button class="btn-fila" onclick="abrirModalFactura('${folio}','${getTelefono(p) || ''}')">${ico(ICO.factura)}Factura</button>`:''}` : '';
     return `
       <div style="border-bottom:1px solid #f1f0ed;${cancelado?'opacity:0.65;':''}">
         <div onclick="toggleHistorial('hdet-${i}')"

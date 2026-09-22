@@ -14,7 +14,8 @@ import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
-import { generarFactura, enviarFacturaPorEmail } from '../services/facturapi.js';
+import { generarFactura, enviarFacturaPorEmail, FacturapiNoConfiguradoError } from '../services/facturapi.js';
+import { manejarFacturacionWhatsapp } from '../services/facturacionWhatsapp.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { crearLinkDePago, ClipNoConfiguradoError } from '../services/clip-api.js';
@@ -819,6 +820,34 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     return;
   }
   try {
+    // Facturación se resuelve por reglas antes del canario y antes del bot
+    // legado. Así ambos modos ofrecen el mismo recibo, el folio se valida
+    // contra el teléfono y una palabra como "factura" nunca crea un pedido.
+    //
+    // Es un gate distinto del que corrige la rama `resultado.factura` más
+    // abajo en esta misma función: aquella dependía de que el MODELO decidiera
+    // incluir un marcador `<FACTURA>` en su respuesta —después de recolectar
+    // RFC/razón social/etc. EN EL CHAT, lo que además deja datos fiscales en el
+    // historial de mensajes—. Esta intercepta por reglas, antes de llamar al
+    // modelo, y manda un enlace de autofactura donde el cliente captura sus
+    // propios datos en la página de Facturapi. La rama vieja queda como red de
+    // seguridad para el caso en que esta no reconozca la intención.
+    const facturacionWA = await manejarFacturacionWhatsapp({ negocioId, telefono, texto });
+    if (facturacionWA.manejado) {
+      if (facturacionWA.error) {
+        console.error(`[Facturacion WA] ${facturacionWA.error.codigo || facturacionWA.error.message}`);
+      }
+      if (facturacionWA.escalar) {
+        await continuidadWA.enviarARevision(negocioId, telefono, 'FACTURACION_REVISION_HUMANA');
+      }
+      if (facturacionWA.mensaje) {
+        await enviarMensaje(telefono, facturacionWA.mensaje, credenciales);
+        const guardado = await guardarMensaje(telefono, nombreMeta, 'saliente', facturacionWA.mensaje, negocioId, 'bot');
+        if (guardado && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: guardado });
+      }
+      return;
+    }
+
     // Folio para pago
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
     const matchFolio = texto.match(/(?:xab[-\s]?(\d{1,4}))|(?:folio[\s:]*(?:xab[-\s]?)?(\d{1,4}))/i);
@@ -1368,7 +1397,12 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     }
 
     // ── Factura CFDI solicitada por WhatsApp ──────────────────────────────────
-    if (resultado.factura && process.env.FACTURAPI_KEY) {
+    // El gate era `process.env.FACTURAPI_KEY`: sin esa variable global la
+    // rama entera se saltaba EN SILENCIO. El cliente pedía su factura y no
+    // recibía nada —ni la factura ni una explicación—, y en el negocio nadie
+    // se enteraba de que la había pedido. Ahora la credencial es del negocio
+    // y la ausencia se contesta.
+    if (resultado.factura) {
       try {
         const datosFactura = resultado.factura;
         // Si no viene el folio en el marcador, usar el último pedido entregado del cliente
@@ -1384,7 +1418,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         if (!pedido) {
           await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.', credenciales);
         } else {
-          const factura = await generarFactura(pedido, datosFactura);
+          const factura = await generarFactura(negocioId, pedido, datosFactura);
           // Registro local pedido→factura (bloqueo de ajustes de cierre).
           // Nunca lanza: la factura ya existe en el proveedor.
           const { registrarFacturaEmitida: _rfe } = await import('../services/database.js');
@@ -1393,7 +1427,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             facturaId: factura.id || null, uuid: factura.uuid || null,
             total: pedido.total ?? null, fuente: 'whatsapp',
           });
-          if (datosFactura.email) await enviarFacturaPorEmail(factura.id, datosFactura.email).catch(() => {});
+          if (datosFactura.email) await enviarFacturaPorEmail(negocioId, factura.id, datosFactura.email).catch(() => {});
           const msgFactura = datosFactura.email
             ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
             : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
@@ -1402,7 +1436,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
         }
       } catch (e) {
-        console.error('[Meta WA] Error generando factura:', e.message);
+        // Dos fallos distintos que antes se veían igual: el negocio no tiene
+        // cuenta de Facturapi (así no va a poder timbrar nunca) y el timbrado
+        // falló esta vez. El log los separa para que quien opera sepa si hay
+        // algo que configurar o algo que reintentar.
+        if (e instanceof FacturapiNoConfiguradoError) {
+          console.error(`[Meta WA] Factura pedida por ${telefono} y el negocio ${negocioId} no tiene Facturapi configurado`);
+        } else {
+          console.error('[Meta WA] Error generando factura:', e.message);
+        }
         await enviarMensaje(telefono, 'Hubo un problema generando tu factura. Comunícate con nosotros directamente para ayudarte.', credenciales);
       }
     }

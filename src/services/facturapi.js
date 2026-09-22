@@ -1,123 +1,157 @@
-import { getIntegracion } from '../server.js';
-// Servicio Facturapi — generación de CFDI timbrados por el SAT
-// Documentación: https://www.facturapi.io/docs
+// Cliente mínimo de Facturapi. Toda operación exige negocioId y resuelve la
+// llave cifrada de ese negocio; no existe respaldo global.
+import { obtenerCredencialesFacturapiDescifradas } from './integracionesService.js';
 
 const BASE = 'https://www.facturapi.io/v2';
 
-function key() {
-  return getIntegracion('facturapi_key') || process.env.FACTURAPI_KEY;
+export class FacturapiNoConfiguradoError extends Error {
+  constructor() {
+    super('Este negocio no tiene una cuenta de Facturapi activa.');
+    this.name = 'FacturapiNoConfiguradoError';
+    this.codigo = 'FACTURAPI_NO_CONFIGURADO';
+  }
 }
 
-async function apiCall(method, path, body) {
-  if (!key()) throw new Error('FACTURAPI_KEY no configurada');
-  const resp = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      'Authorization': `Bearer ${key()}`,
-      'Content-Type': 'application/json'
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err?.message || `Facturapi ${resp.status}`);
+export class FacturapiError extends Error {
+  constructor(message, { status = 502, codigo = 'FACTURAPI_ERROR', detalle = null } = {}) {
+    super(message || 'Facturapi rechazó la operación.');
+    this.name = 'FacturapiError';
+    this.status = status;
+    this.codigo = codigo;
+    this.detalle = detalle;
   }
+}
+
+async function claveDe(negocioId) {
+  const credenciales = await obtenerCredencialesFacturapiDescifradas(negocioId);
+  if (!credenciales?.apiKey) throw new FacturapiNoConfiguradoError();
+  return credenciales.apiKey;
+}
+
+async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {}) {
+  const apiKey = await claveDe(negocioId);
+  let resp;
+  try {
+    resp = await fetch(`${BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Accept-Language': 'es',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new FacturapiError('No fue posible comunicarse con Facturapi.', { codigo: 'FACTURAPI_NO_DISPONIBLE', detalle: e.message });
+  }
+  if (!resp.ok) {
+    const detalle = await resp.json().catch(() => ({}));
+    const mensaje = detalle?.message || detalle?.error || `Facturapi respondió ${resp.status}`;
+    throw new FacturapiError(mensaje, { status: resp.status, codigo: detalle?.code || 'FACTURAPI_RECHAZO', detalle });
+  }
+  if (respuesta === 'arrayBuffer') return resp.arrayBuffer();
+  if (resp.status === 204) return null;
   return resp.json();
 }
 
-// Mapa forma de pago Xabor → clave SAT
-function mapFormaPago(forma) {
-  const mapa = {
-    'efectivo':      '01',
-    'terminal':      '28',
-    'enlace de pago':'04',
-    'tarjeta':       '04'
-  };
-  return mapa[(forma||'').toLowerCase()] || '99'; // 99 = por definir
+export function mapFormaPago(forma) {
+  const f = String(forma || '').trim().toLowerCase().replace(/_/g, ' ');
+  if (f === 'efectivo') return '01';
+  if (f.includes('transfer')) return '03';
+  if (f.includes('crédito') || f.includes('credito') || f.includes('enlace')) return '04';
+  if (f.includes('débito') || f.includes('debito') || f.includes('terminal')) return '28';
+  if (f === 'mixto' || f === 'multiple' || f === 'múltiple') return '99';
+  return '99';
 }
 
-// Mapa uso CFDI — los más comunes en restaurantes
-export const USOS_CFDI = [
-  { clave: 'G01', desc: 'Adquisición de mercancias' },
-  { clave: 'G03', desc: 'Gastos en general' },
-  { clave: 'D01', desc: 'Honorarios médicos, dentales y hospitalarios' },
-  { clave: 'S01', desc: 'Sin efectos fiscales' }
-];
-
-// Regímenes fiscales más comunes
-export const REGIMENES = [
-  { clave: '626', desc: 'Simplificado de Confianza (RESICO)' },
-  { clave: '612', desc: 'Personas físicas con actividades empresariales' },
-  { clave: '601', desc: 'General de Ley Personas Morales' },
-  { clave: '621', desc: 'Incorporación Fiscal' }
-];
-
-// Código SAT para alimentos preparados (restaurantes)
-const CLAVE_PROD_ALIMENTOS = '90111501';
-
-export async function generarFactura(pedido, clienteCFDI) {
-  // Crear o localizar cliente en Facturapi
-  const customerPayload = {
-    legal_name: clienteCFDI.nombre_fiscal,
-    tax_id:     clienteCFDI.rfc,
-    tax_system: clienteCFDI.regimen || '626',
-    email:      clienteCFDI.email   || undefined,
-    address: {
-      zip: clienteCFDI.cp || '26000'
-    }
-  };
-
-  let customer;
-  try {
-    // Buscar si ya existe el RFC
-    const busqueda = await apiCall('GET', `/customers?search=${encodeURIComponent(clienteCFDI.rfc)}`);
-    customer = busqueda.data?.[0];
-  } catch (_) { /* no encontrado, crear */ }
-
-  if (!customer) {
-    customer = await apiCall('POST', '/customers', customerPayload);
+export function construirConceptoVenta(pedido, { ivaTasa, claveRestaurante = '90101501', claveParaLlevar = '90101800' } = {}) {
+  const tasa = Number(ivaTasa);
+  if (![0, 0.08, 0.16].includes(tasa)) {
+    const e = new Error('Configura la tasa de IVA del negocio antes de emitir.');
+    e.codigo = 'IVA_NO_CONFIGURADO';
+    throw e;
   }
-
-  // Construir items de la factura
-  const items = (pedido.items || []).map(item => ({
-    quantity: item.cantidad || 1,
-    product: {
-      description:  item.nombre,
-      product_key:  CLAVE_PROD_ALIMENTOS,
-      unit_key:     'H87',       // Pieza (SAT)
-      price:        parseFloat(item.precio_unitario || 0),
-      tax_included: true,        // precio ya incluye IVA
-      taxes: [{ type: 'IVA', rate: 0.16, factor: 'Tasa', withholding: false }]
-    }
-  }));
-
-  // Descuento a nivel factura si aplica
-  const descuento = parseFloat(pedido.descuento || 0);
-
-  const facturaPayload = {
-    customer:        customer.id,
-    items,
-    use:             clienteCFDI.uso_cfdi || 'G03',
-    payment_form:    mapFormaPago(pedido.forma_pago),
-    payment_method:  'PUE',      // Pago en una sola exhibición
-    ...(descuento > 0 && { global_information: undefined })
+  const total = Number(pedido?.total);
+  if (!Number.isFinite(total) || total <= 0) {
+    const e = new Error('El pedido no tiene un total facturable.');
+    e.codigo = 'TOTAL_NO_FACTURABLE';
+    throw e;
+  }
+  const modalidad = String(pedido?.modalidad || pedido?.tipo || '').toLowerCase();
+  const enRestaurante = ['mesa', 'restaurante', 'comer aqui', 'comer aquí'].some(v => modalidad.includes(v));
+  const folio = String(pedido?.folio || pedido?.id || '').trim();
+  const product = {
+    description: `Consumo de alimentos y bebidas${folio ? ` · ${folio}` : ''}`,
+    product_key: enRestaurante ? claveRestaurante : claveParaLlevar,
+    unit_key: 'E48',
+    unit_name: 'Unidad de servicio',
+    price: Math.round(total * 100) / 100,
+    tax_included: true,
+    taxes: [{ type: 'IVA', rate: tasa }],
   };
-
-  const factura = await apiCall('POST', '/invoices', facturaPayload);
-  console.log(`[Facturapi] Factura creada: ${factura.id} — ${clienteCFDI.rfc} — $${pedido.total}`);
-  return factura;
+  return { quantity: 1, product };
 }
 
-export async function enviarFacturaPorEmail(facturaId, email) {
-  await apiCall('POST', `/invoices/${facturaId}/email`, { email });
-  console.log(`[Facturapi] Factura ${facturaId} enviada a ${email}`);
+export async function puedeFacturar(negocioId) {
+  try { return !!(await obtenerCredencialesFacturapiDescifradas(negocioId))?.apiKey; }
+  catch { return false; }
 }
 
-export async function descargarFacturaPDF(facturaId) {
-  if (!key()) throw new Error('FACTURAPI_KEY no configurada');
-  const resp = await fetch(`${BASE}/invoices/${facturaId}/pdf`, {
-    headers: { 'Authorization': `Bearer ${key()}` }
+export async function crearRecibo(negocioId, pedido, config = {}) {
+  const folio = String(pedido?.folio || pedido?.id || '').trim();
+  if (!folio) throw new Error('Folio requerido para crear el recibo.');
+  const idempotencyKey = `xabor:${negocioId}:${folio}`;
+  return apiCall(negocioId, 'POST', '/receipts', {
+    items: [construirConceptoVenta(pedido, config)],
+    payment_form: mapFormaPago(pedido?.forma_pago || pedido?.cliente?.forma_pago),
+    currency: 'MXN',
+    external_id: folio,
+    idempotency_key: idempotencyKey,
   });
-  if (!resp.ok) throw new Error(`Facturapi PDF: ${resp.status}`);
-  return resp.arrayBuffer();
 }
+
+export async function obtenerRecibo(negocioId, reciboId) {
+  return apiCall(negocioId, 'GET', `/receipts/${encodeURIComponent(reciboId)}`);
+}
+
+export async function obtenerFactura(negocioId, facturaId) {
+  return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}`);
+}
+
+export async function facturarRecibo(negocioId, reciboId, clienteCFDI, { serie = null } = {}) {
+  const customer = {
+    legal_name: String(clienteCFDI.nombre_fiscal || clienteCFDI.razon_social || '').trim().toUpperCase(),
+    tax_id: String(clienteCFDI.rfc || '').trim().toUpperCase(),
+    tax_system: String(clienteCFDI.regimen || '').trim(),
+    default_invoice_use: String(clienteCFDI.uso_cfdi || '').trim(),
+    address: { zip: String(clienteCFDI.cp || '').trim() },
+    ...(clienteCFDI.email ? { email: String(clienteCFDI.email).trim() } : {}),
+    ...(clienteCFDI.telefono ? { phone: String(clienteCFDI.telefono).replace(/\D/g, '') } : {}),
+  };
+  return apiCall(negocioId, 'POST', `/receipts/${encodeURIComponent(reciboId)}/invoice`, {
+    customer,
+    use: String(clienteCFDI.uso_cfdi || '').trim(),
+    ...(serie ? { series: String(serie).trim() } : {}),
+  });
+}
+
+export async function enviarFacturaPorEmail(negocioId, facturaId, email) {
+  return apiCall(negocioId, 'POST', `/invoices/${encodeURIComponent(facturaId)}/email`, { email });
+}
+
+export async function descargarFacturaPDF(negocioId, facturaId) {
+  return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/pdf`, undefined, { respuesta: 'arrayBuffer' });
+}
+
+export const USOS_CFDI = [
+  { clave: 'G01', desc: 'Adquisición de mercancías' },
+  { clave: 'G03', desc: 'Gastos en general' },
+  { clave: 'S01', desc: 'Sin efectos fiscales' },
+];
+
+export const REGIMENES = [
+  { clave: '601', desc: 'General de Ley Personas Morales' },
+  { clave: '612', desc: 'Personas físicas con actividades empresariales' },
+  { clave: '621', desc: 'Incorporación Fiscal' },
+  { clave: '626', desc: 'Simplificado de Confianza' },
+];

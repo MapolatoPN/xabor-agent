@@ -1279,6 +1279,142 @@ export async function registrarFacturaEmitida({ negocioId, folio, facturaId = nu
   }
 }
 
+// ─── LIBRETA DE DATOS FISCALES DEL CLIENTE (087) ────────────────────────────
+//
+// Seis campos que antes se tecleaban en cada factura. Se guardan una vez por
+// negocio y se reutilizan desde el panel, desde la captura manual y desde
+// WhatsApp. `negocioId` es obligatorio en todas: la cartera fiscal de un
+// negocio no se asoma a la de otro.
+
+/**
+ * El RFC, como lo quiere el SAT: mayúsculas, sin espacios ni guiones.
+ *
+ * Se normaliza SIEMPRE antes de tocar la base, porque el mismo RFC escrito
+ * "xaxx-010101-000" y "XAXX010101000" crearía dos fichas que compiten, y la
+ * llave única no lo impediría: para Postgres son dos cadenas distintas.
+ */
+export function normalizarRFC(rfc) {
+  return String(rfc || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
+}
+
+/** Guarda o actualiza la ficha fiscal de un cliente. Un RFC, una ficha. */
+export async function guardarClienteFiscal({
+  negocioId, rfc, razonSocial, regimen, usoCfdi,
+  cp, email = null, telefono = null, notas = null,
+} = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarClienteFiscal: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  const rfcNorm = normalizarRFC(rfc);
+  if (!/^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$/.test(rfcNorm)) return { error: 'RFC_INVALIDO' };
+  if (typeof razonSocial !== 'string' || !razonSocial.trim()) return { error: 'RAZON_SOCIAL_REQUERIDA' };
+  const regimenNorm = String(regimen || '').trim();
+  if (!/^[0-9]{3}$/.test(regimenNorm)) return { error: 'REGIMEN_REQUERIDO' };
+  const usoNorm = String(usoCfdi || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{3}$/.test(usoNorm)) return { error: 'USO_CFDI_REQUERIDO' };
+  const cpNorm = String(cp || '').replace(/\D/g, '');
+  if (!/^[0-9]{5}$/.test(cpNorm)) return { error: 'CP_INVALIDO' };
+
+  const emailNorm = email == null || String(email).trim() === '' ? null : String(email).trim().toLowerCase();
+  if (emailNorm && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) return { error: 'EMAIL_INVALIDO' };
+  const telefonoNorm = telefono == null || String(telefono).trim() === '' ? null : String(telefono).replace(/\D/g, '');
+  if (telefonoNorm && telefonoNorm.length < 10) return { error: 'TELEFONO_INVALIDO' };
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO clientes_fiscales
+         (negocio_id, rfc, razon_social, regimen, uso_cfdi, cp, email, telefono, notas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (negocio_id, rfc) DO UPDATE SET
+         razon_social = EXCLUDED.razon_social,
+         regimen      = EXCLUDED.regimen,
+         uso_cfdi     = EXCLUDED.uso_cfdi,
+         cp           = EXCLUDED.cp,
+         -- Un campo opcional que llega vacío NO borra lo que ya había: quien
+         -- factura desde el panel suele no traer el teléfono, y perderlo
+         -- rompería la búsqueda desde WhatsApp para siempre.
+         email        = COALESCE(EXCLUDED.email, clientes_fiscales.email),
+         telefono     = COALESCE(EXCLUDED.telefono, clientes_fiscales.telefono),
+         notas        = COALESCE(EXCLUDED.notas, clientes_fiscales.notas),
+         updated_at   = now()
+       RETURNING *`,
+      [negocioId.trim(), rfcNorm, razonSocial.trim().toUpperCase(), regimenNorm, usoNorm, cpNorm,
+        emailNorm, telefonoNorm, notas || null]);
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] guardarClienteFiscal:', e.message);
+    throw e;
+  }
+}
+
+/** La ficha de un RFC dentro de este negocio. */
+export async function obtenerClienteFiscalPorRFC(negocioId, rfc) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const rfcNorm = normalizarRFC(rfc);
+  if (!rfcNorm) return null;
+  const { rows } = await pool.query(
+    'SELECT * FROM clientes_fiscales WHERE negocio_id = $1 AND rfc = $2',
+    [negocioId.trim(), rfcNorm]).catch(() => ({ rows: [] }));
+  return rows[0] || null;
+}
+
+/**
+ * La ficha asociada a un teléfono. Es el camino de WhatsApp: la conversación
+ * ya sabe el número, así que el bot puede ofrecer los datos que el cliente
+ * dio la vez pasada en vez de volver a pedirlos todos.
+ *
+ * La comparación es por los ÚLTIMOS 10 DÍGITOS: el mismo cliente puede haber
+ * quedado guardado como "8781234567", "528781234567" o "+52 878 123 4567"
+ * según de dónde vino el dato, y un match exacto de cadena los trataría como
+ * personas distintas.
+ *
+ * Si hay más de una (un teléfono que factura a dos RFC), devuelve la más
+ * reciente y deja que quien llama pregunte: adivinar el RFC sería emitir un
+ * comprobante a nombre de quien no compró.
+ */
+export async function obtenerClientesFiscalesPorTelefono(negocioId, telefono) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const tel = String(telefono || '').replace(/\D/g, '');
+  if (!tel) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM clientes_fiscales
+      WHERE negocio_id = $1
+        AND right(regexp_replace(COALESCE(telefono,''), '\\D', '', 'g'), 10) = right($2, 10)
+      ORDER BY updated_at DESC`,
+    [negocioId.trim(), tel]).catch(() => ({ rows: [] }));
+  return rows;
+}
+
+/** La libreta del negocio, opcionalmente filtrada por texto. */
+export async function listarClientesFiscales(negocioId, { busqueda = '', limite = 100 } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] listarClientesFiscales: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const q = String(busqueda || '').trim();
+  const lim = Math.min(Math.max(Number(limite) || 100, 1), 500);
+  const { rows } = await pool.query(
+    q
+      ? `SELECT * FROM clientes_fiscales
+          WHERE negocio_id = $1
+            AND (rfc ILIKE '%' || $2 || '%' OR razon_social ILIKE '%' || $2 || '%')
+          ORDER BY updated_at DESC LIMIT $3`
+      : `SELECT * FROM clientes_fiscales
+          WHERE negocio_id = $1 ORDER BY updated_at DESC LIMIT $2`,
+    q ? [negocioId.trim(), q, lim] : [negocioId.trim(), lim]).catch(() => ({ rows: [] }));
+  return rows;
+}
+
+/** Retira una ficha. No toca las facturas ya emitidas con esos datos. */
+export async function eliminarClienteFiscal(negocioId, id) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    'DELETE FROM clientes_fiscales WHERE negocio_id = $1 AND id = $2',
+    [negocioId.trim(), id]).catch(() => ({ rowCount: 0 }));
+  return rowCount > 0;
+}
+
 // ─── Historial de pedidos entregados ─────────────────────────────────────────
 // negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
 export async function obtenerPedidosEntregados(limite = 100, negocioId) {

@@ -57,7 +57,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, guardarClienteFiscal, obtenerClienteFiscalPorRFC, obtenerClientesFiscalesPorTelefono, listarClientesFiscales, eliminarClienteFiscal, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -109,7 +109,12 @@ import {
   revertirVentaCuenta,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
-import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
+import { descargarFacturaPDF, FacturapiNoConfiguradoError } from './services/facturapi.js';
+import { guardarCredencialesFacturapi, eliminarCredencialesFacturapi } from './services/integracionesService.js';
+import {
+  FacturacionError, estadoFacturacionNegocio, guardarConfiguracionFacturacion,
+  asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
+} from './services/facturacionService.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -164,7 +169,6 @@ const ENV_MAP = {
   wa_phone_id:       'WHATSAPP_PHONE_ID',
   wa_verify_token:   'WHATSAPP_VERIFY_TOKEN',
   wa_admin_numero:   'WHATSAPP_ADMIN_NUMERO',
-  facturapi_key:     'FACTURAPI_KEY',
   anthropic_api_key: 'ANTHROPIC_API_KEY',
   vapid_public_key:  'VAPID_PUBLIC_KEY',
   vapid_private_key: 'VAPID_PRIVATE_KEY',
@@ -1641,7 +1645,7 @@ app.use('/api/finanzas', requireAdmin, finanzasRouter);
 // GET: devuelve info pública del cert (sin llave) para mostrar en panel
 app.get('/api/admin/sat/credenciales/info', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
-    const info = await obtenerInfoCertSAT();
+    const info = await obtenerInfoCertSAT(req.negocioId);
     res.json({ ok: true, info }); // info es null si no hay credenciales
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1715,7 +1719,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
     };
 
     // ── 5. Guardar en DB (llave cifrada) ────────────────────────────────────
-    await guardarCredencialesSAT({ certBase64: cerB64, privateKeyPem, certInfo });
+    await guardarCredencialesSAT(req.negocioId, { certBase64: cerB64, privateKeyPem, certInfo });
 
     // ── 6. Invalidar caché en memoria ──────────────────────────────────────
     invalidarCacheCredenciales();
@@ -1730,7 +1734,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
 // DELETE: eliminar credenciales SAT guardadas en DB
 app.delete('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
-    await eliminarCredencialesSAT();
+    await eliminarCredencialesSAT(req.negocioId);
     invalidarCacheCredenciales();
     res.json({ ok: true });
   } catch (e) {
@@ -3618,60 +3622,115 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, requireModul
   res.json({ ok: true });
 });
 
-// Generar factura CFDI — solo admin
-app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
-  const { folio } = req.params;
-  const { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp } = req.body;
-  if (!nombre_fiscal || !rfc) return res.status(400).json({ error: 'nombre_fiscal y rfc son requeridos' });
-  if (!process.env.FACTURAPI_KEY) return res.status(503).json({ error: 'FACTURAPI_KEY no configurada en Railway' });
-
-  // Obtener datos del pedido
-  const { obtenerPedidoActivoPorFolio } = await import('./services/database.js');
-  const { obtenerPedidosEntregados: _ent } = await import('./services/database.js');
-  // Buscar en activos primero, luego en entregados
-  let pedidoDatos = await obtenerPedidoActivoPorFolio(folio, req.negocioId);
-  if (!pedidoDatos) {
-    const ents = await _ent(500, req.negocioId);
-    const found = ents.find(p => p.id === folio || p.folio === folio);
-    pedidoDatos = found || null;
+function responderErrorFacturacion(res, e) {
+  if (e instanceof FacturacionError || e instanceof FacturapiNoConfiguradoError || e?.codigo) {
+    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400))
+      .json({ error: e.message, codigo: e.codigo });
   }
-  if (!pedidoDatos) return res.status(404).json({ error: 'Pedido no encontrado' });
+  console.error('[Facturacion] Error inesperado:', e.message);
+  return res.status(500).json({ error: 'No se pudo completar la operación de facturación.' });
+}
 
-  try {
-    const factura = await generarFactura(pedidoDatos, { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp });
-    // Registro local pedido→factura: la fuente con la que los ajustes de
-    // cierre bloquean ventas facturadas. Nunca lanza (la factura ya existe).
-    await registrarFacturaEmitida({
-      negocioId: req.negocioId, folio,
-      facturaId: factura.id || null, uuid: factura.uuid || null,
-      total: pedidoDatos.total ?? null, fuente: 'panel',
-    });
-    // Enviar por email si se proporcionó
-    if (email && factura.id) await enviarFacturaPorEmail(factura.id, email).catch(() => {});
-    res.json({
-      ok: true,
-      factura_id: factura.id,
-      folio_fiscal: factura.uuid,
-      pdf_url: `https://www.facturapi.io/v2/invoices/${factura.id}/pdf`,
-      xml_url: `https://www.facturapi.io/v2/invoices/${factura.id}/xml`
-    });
-  } catch (e) {
-    console.error('[Facturapi] Error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
+app.get('/api/admin/facturacion/estado', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await estadoFacturacionNegocio(req.negocioId)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
 });
 
-// Descargar PDF de factura — proxy autenticado para el panel
-app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  const apiKey = String(req.body?.api_key || '').trim();
+  if (apiKey.length < 12) return res.status(400).json({ error: 'La llave de Facturapi no es válida.' });
   try {
-    const buf = await descargarFacturaPDF(req.params.facturaId);
+    await guardarCredencialesFacturapi(req.negocioId, apiKey, { actorUsuarioId: req.usuarioId || null });
+    res.json({ ok: true, ambiente: /^sk_test_/i.test(apiKey) ? 'prueba' : 'produccion' });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.delete('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, quitada: await eliminarCredencialesFacturapi(req.negocioId, { actorUsuarioId: req.usuarioId || null }) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const configuracion = await guardarConfiguracionFacturacion(req.negocioId, {
+      ivaTasa: req.body?.iva_tasa,
+      autoemitirRecibo: req.body?.autoemitir_recibo,
+      serie: req.body?.serie,
+    });
+    res.json({ ok: true, configuracion });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    res.json({ ok: true, clientes: await listarClientesFiscales(req.negocioId, { busqueda: req.query.q || '', limite: req.query.limite || 100 }) });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/clientes-fiscales/por-telefono/:telefono', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, clientes: await obtenerClientesFiscalesPorTelefono(req.negocioId, req.params.telefono) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const cliente = await guardarClienteFiscal({
+      negocioId: req.negocioId, rfc: b.rfc, razonSocial: b.razon_social,
+      regimen: b.regimen, usoCfdi: b.uso_cfdi, cp: b.cp,
+      email: b.email, telefono: b.telefono, notas: b.notas,
+    });
+    if (cliente?.error) return res.status(400).json({ error: cliente.error, codigo: cliente.error });
+    res.json({ ok: true, cliente });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.delete('/api/admin/clientes-fiscales/:id', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const ok = await eliminarClienteFiscal(req.negocioId, req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Ficha no encontrada.' });
+    res.json({ ok: true });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/facturacion/pedidos/:folio/recibo', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await asegurarReciboPedido(req.negocioId, req.params.folio);
+    res.json({ ok: true, recibo: { estado: r.estado, url: r.url_autofactura, clave: r.clave, expiresAt: r.expires_at } });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+async function emitirFacturaHttp(req, res, fuente) {
+  try {
+    const r = await emitirFacturaPedido(req.negocioId, req.params.folio, req.body || {}, { fuente });
+    res.json({ ok: true, ya_emitida: r.yaEmitida, factura_id: r.factura_id, folio_fiscal: r.uuid });
+  } catch (e) { responderErrorFacturacion(res, e); }
+}
+
+// Caja/restaurante puede emitir después del cobro; el servidor vuelve a
+// comprobar negocio, estado y total. El folio del navegador no autoriza nada.
+app.post('/api/facturacion/pedidos/:folio/emitir', requireAuthSeguro, requireModulo('facturacion'),
+  (req, res) => emitirFacturaHttp(req, res, req.body?.fuente === 'restaurante' ? 'restaurante' : 'panel'));
+
+// Compatibilidad con el botón existente del Historial.
+app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'),
+  (req, res) => emitirFacturaHttp(req, res, 'panel'));
+
+app.get('/api/facturacion/pedidos/:folio/estado', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, recibo: await sincronizarRecibo(req.negocioId, req.params.folio) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+async function descargarFacturaHttp(req, res) {
+  try {
+    const buf = await descargarFacturaPDF(req.negocioId, req.params.facturaId);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=factura-${req.params.facturaId}.pdf`);
     res.send(Buffer.from(buf));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+  } catch (e) { responderErrorFacturacion(res, e); }
+}
+app.get('/api/facturacion/facturas/:facturaId/pdf', requireAuthSeguro, requireModulo('facturacion'), descargarFacturaHttp);
+app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), descargarFacturaHttp);
 
 // Conversaciones WhatsApp
 app.get('/api/conversaciones', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
@@ -6898,7 +6957,6 @@ app.get('/api/superadmin/red-repartidores/ranking/exportar.csv', requireSuperadm
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
-  'facturapi_key',
   'anthropic_api_key',
   'vapid_public_key','vapid_private_key','vapid_email',
 ];
