@@ -974,3 +974,40 @@ intento levantó una imagen antigua; se reemplazó antes de reactivar el agente.
 `scripts/deploy-current-commit.ps1` evita repetirlo: exige un árbol limpio,
 empaqueta el `HEAD` exacto con `git archive`, verifica archivos críticos y
 publica ese directorio con `--path-as-root`.
+
+## 18. Interruptor manual y agente preparado — 22 de septiembre de 2026
+
+La activación manual está en **Automatización → Atención automática del
+negocio**. Ese botón modifica `negocios.bot_whatsapp_activo`, que es el corte
+maestro por negocio. La pausa conserva los mensajes entrantes en el panel y
+detiene cualquier respuesta automática desde el siguiente mensaje.
+
+La auditoría confirmó la explicación del comportamiento del 21 de septiembre:
+
+- el administrador apagó el interruptor a las 10:54 a. m., lo encendió a las
+  12:55 p. m. y volvió a apagarlo a las 3:02 p. m., hora de Mapolato;
+- después del segundo apagado salieron 11 respuestas automáticas entre 4:32 y
+  4:47 p. m., todas en una conversación;
+- la versión vigente en ese momento permitía que un teléfono incluido en el
+  canario del agente ignorara el interruptor maestro;
+- la corrección `7844bd5` eliminó esa excepción y quedó en producción después
+  de esas respuestas. El canal comprueba el corte al recibir y nuevamente al
+  consumir la cola, por lo que tampoco responde un lote que se hubiera formado
+  antes de la pausa.
+
+Comprobación actual en producción: `bot_whatsapp_activo=false`; un mensaje real
+entró después del despliegue, quedó guardado y no produjo salida automática. El
+log confirmó “mensaje guardado, sin respuesta automática”.
+
+El agente quedó preparado detrás de ese corte para que el botón sea suficiente:
+
+- `mesero_agente_v1=true`;
+- `mesero_agente_porcentaje=100`;
+- `mesero_agente_telefonos=''`;
+- `mesero_agente_shadow=false`;
+- `bot_whatsapp_activo=false` hasta que el negocio pulse **Activar**.
+
+Con esta combinación, apagar el botón calla toda automatización; encenderlo
+enruta todos los teléfonos al agente nuevo. Si ese agente no puede completar
+el turno, entrega la conversación a una persona y no permite que el bot legacy
+responda como alternativa.
