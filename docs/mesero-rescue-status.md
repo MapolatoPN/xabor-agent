@@ -961,3 +961,16 @@ proteína, topping, bebida, flores y modalidad; además cubre la guarnición aje
 y una elección ambigua. Resultado local: prueba nueva en verde, 65/65 del motor,
 9/9 de reglas del Asistente, seguridad conversacional y barrera completa de
 incidentes en verde.
+
+Desplegado en Railway el 22 de septiembre de 2026 como deployment
+`0885e8bb-4f9a-4983-9bef-046d7f085470`. `/health` respondió listo, el
+contenedor confirmó la presencia e importación del módulo de continuidad y el
+gate de datos de Mapolato pasó 9/9. El negocio permaneció apagado para tráfico
+del agente (`mesero_agente_v1=false`, porcentaje `0`, sombra activa).
+
+Durante la publicación se detectó que `railway up` ejecutado desde un worktree
+puede seguir la raíz Git compartida y subir el checkout principal. El primer
+intento levantó una imagen antigua; se reemplazó antes de reactivar el agente.
+`scripts/deploy-current-commit.ps1` evita repetirlo: exige un árbol limpio,
+empaqueta el `HEAD` exacto con `git archive`, verifica archivos críticos y
+publica ese directorio con `--path-as-root`.
