@@ -1,8 +1,51 @@
-import { pool } from './database.js';
+import { pool, obtenerClientesFiscalesPorTelefono } from './database.js';
 import {
   asegurarReciboPedido, obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura,
 } from './facturacionService.js';
+
+/**
+ * El aviso de reconocimiento, o cadena vacia si no aplica o si algo salio mal.
+ *
+ * PURAMENTE INFORMATIVO Y GENERICO: nunca factura nada, nunca elige una ficha
+ * por el cliente, nunca inventa regimen ni uso de CFDI -- y desde esta
+ * revision, TAMPOCO revela ningun dato fiscal guardado por WhatsApp. Ni RFC,
+ * ni razon social, ni regimen, ni uso de CFDI. WhatsApp no es un canal
+ * verificado como la sesion del panel ni la pagina propia de Facturapi: el
+ * unico dato que viaja aqui es "existen datos previos, confirmalos en el
+ * portal" -- el cliente los ve y los corrige EN Facturapi, nunca aqui.
+ *
+ * Tres casos, y solo tres:
+ *   - ninguna ficha    -> sin aviso, el mensaje queda exactamente como antes.
+ *   - UNA ficha         -> aviso generico de que hay datos previos.
+ *   - dos o mas fichas  -> aviso de que hay varias opciones, sin elegir
+ *                          ninguna ni decir cuantas ni cuales son. Adivinar
+ *                          cual es la correcta seria facturar a nombre de
+ *                          quien no compro.
+ *
+ * NUNCA LANZA. Esto corre DESPUES de que el recibo ya esta listo -- si la
+ * consulta de clientes_fiscales revienta por lo que sea (un hipo de la base,
+ * por ejemplo), eso no puede convertir una autofactura ya creada en un
+ * "no pude preparar la factura" para el cliente. Se registra la falla y se
+ * sigue sin aviso, exactamente como si no hubiera ficha alguna.
+ */
+async function avisoDeReconocimiento(negocioId, telefono) {
+  let conocidos;
+  try {
+    conocidos = await obtenerClientesFiscalesPorTelefono(negocioId, telefono);
+  } catch (e) {
+    console.warn(`[Facturacion WA] avisoDeReconocimiento no pudo consultar clientes_fiscales `
+      + `(negocio=${negocioId}): ${e.message}`);
+    return '';
+  }
+  if (!conocidos.length) return '';
+  if (conocidos.length === 1) {
+    return '\n\nEncontramos datos fiscales utilizados anteriormente. '
+      + 'Podrás confirmarlos o corregirlos en el portal de facturación.';
+  }
+  return '\n\nEncontramos varias opciones de datos fiscales utilizados anteriormente. '
+    + 'Podrás confirmar la que corresponda en el portal de facturación.';
+}
 
 export function esSolicitudFactura(texto) {
   return /\b(factur(?:a|ar|aci[oó]n)|cfdi|comprobante\s+fiscal|ticket\s+para\s+facturar)\b/i.test(String(texto || ''));
@@ -84,9 +127,14 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
     const vigencia = recibo.expires_at
       ? `\nVigente en el portal hasta: ${new Date(recibo.expires_at).toLocaleDateString('es-MX')}.`
       : '';
+    // El reconocimiento se agrega DESPUES de que el recibo esta listo: si
+    // algo falla antes (pedido no pagado, negocio sin Facturapi, IVA sin
+    // configurar), el cliente nunca llega a ver un mensaje sobre datos
+    // fiscales que no tiene sentido en ese momento.
+    const aviso = await avisoDeReconocimiento(negocioId, telefono);
     return {
       manejado: true,
-      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}`,
+      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}${aviso}`,
     };
   } catch (e) {
     return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.', error: e };

@@ -1267,7 +1267,18 @@ export async function registrarFacturaEmitida({ negocioId, folio, facturaId = nu
   try {
     if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('negocioId requerido');
     if (typeof folio !== 'string' || !folio.trim()) throw new Error('folio requerido');
-    if (!['panel', 'whatsapp'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
+    // Mismo conjunto que el CHECK real de facturas_pedido (087/088: la
+    // migracion lo amplio a 'restaurante' y 'autofactura' cuando el modelo de
+    // recibo llego, pero esta validacion se quedo con la lista vieja -- asi
+    // que TODA factura de restaurante/POS y TODA autofactura self-service de
+    // WhatsApp fallaba aqui en silencio: la excepcion se atrapaba abajo, se
+    // registraba solo un "[DB] CRITICO" en el log, y la venta quedaba
+    // timbrada en Facturapi pero invisible para el bloqueo de ajustes de
+    // cierre sobre ventas ya facturadas. Encontrado auditando el flujo
+    // completo de facturacion de punta a punta.
+    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) {
+      throw new Error(`fuente inválida: ${fuente}`);
+    }
     await pool.query(
       `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
        VALUES ($1, $2, $3, $4, $5, $6)`,

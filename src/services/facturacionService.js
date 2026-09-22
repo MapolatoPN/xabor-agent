@@ -186,12 +186,37 @@ export async function emitirFacturaPedido(negocioId, folioEntrada, datos, { fuen
        error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
      WHERE negocio_id=$1 AND folio=$2`, [negocioId, pedido.folio, facturaId, uuid]);
   await registrarFacturaEmitida({ negocioId, folio: pedido.folio, facturaId, uuid, total: pedido.total, fuente });
-  const ficha = await guardarClienteFiscal({
-    negocioId, rfc: datos.rfc, razonSocial: datos.nombre_fiscal,
-    regimen: datos.regimen, usoCfdi: datos.uso_cfdi, cp: datos.cp,
-    email: datos.email, telefono: datos.telefono || pedido?.cliente?.telefono || pedido.telefono_conversacion,
-  });
-  if (ficha?.error) throw new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${ficha.error}`, 'FICHA_NO_GUARDADA', 207);
+  // La factura YA esta timbrada en este punto: nada de lo que pase de aqui en
+  // adelante puede reportarse como si la emision hubiera fallado. Antes, una
+  // excepcion inesperada de guardarClienteFiscal (no una validacion -- esa ya
+  // se manejaba abajo -- sino un error real de conexion, por ejemplo) se
+  // propagaba tal cual, y el panel mostraba un 500 generico sobre una factura
+  // que en realidad SI se emitio. El intento de guardar la ficha nunca debe
+  // poder convertir un exito en un fracaso reportado.
+  let ficha = null;
+  try {
+    ficha = await guardarClienteFiscal({
+      negocioId, rfc: datos.rfc, razonSocial: datos.nombre_fiscal,
+      regimen: datos.regimen, usoCfdi: datos.uso_cfdi, cp: datos.cp,
+      email: datos.email, telefono: datos.telefono || pedido?.cliente?.telefono || pedido.telefono_conversacion,
+    });
+  } catch (e) {
+    console.error(`[Facturacion] la factura ${facturaId} se emitio pero guardarClienteFiscal lanzo:`, e.message);
+    // La factura YA se timbro -- factura_id/uuid van pegados al error para que
+    // quien responda el HTTP (server.js) los pueda seguir devolviendo. Sin
+    // esto, el llamador solo ve `{error, codigo}` y pierde el enlace al PDF
+    // de una factura que si existe.
+    throw Object.assign(
+      new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${e.message}`, 'FICHA_NO_GUARDADA', 207),
+      { facturaId, uuid },
+    );
+  }
+  if (ficha?.error) {
+    throw Object.assign(
+      new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${ficha.error}`, 'FICHA_NO_GUARDADA', 207),
+      { facturaId, uuid },
+    );
+  }
   if (datos.email && facturaId) await enviarFacturaPorEmail(negocioId, facturaId, datos.email).catch(() => {});
   return { yaEmitida: false, factura_id: facturaId, uuid, recibo, factura };
 }

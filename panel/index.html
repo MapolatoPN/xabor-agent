@@ -5263,15 +5263,25 @@ async function confirmarFactura() {
   btn.disabled = false; btn.textContent = 'Generar factura';
   const res = document.getElementById('factura-resultado');
   res.style.display = 'block';
-  if (r.ok) {
-    const d = await r.json();
+  // FICHA_NO_GUARDADA llega con status 207: fetch lo trata como "ok" (2xx),
+  // pero es un caso propio, ni éxito limpio ni error -- la factura SÍ se
+  // timbró y eso debe quedar como titular; lo único que falló fue guardar la
+  // ficha fiscal del cliente para la próxima vez.
+  const d = await r.json().catch(() => ({}));
+  if (r.ok && d.codigo === 'FICHA_NO_GUARDADA') {
+    res.style.background = '#fffbeb';
+    res.innerHTML = `<strong style="color:#16a34a;">✅ Factura emitida correctamente</strong><br>
+      <span style="color:#b45309;">No se pudo guardar la ficha fiscal del cliente.</span><br>
+      UUID: ${d.folio_fiscal||'—'}<br>
+      ${d.factura_id ? `<a href="/api/admin/factura/${d.factura_id}/pdf" target="_blank" style="color:#16a34a;">Descargar PDF</a>${email?' · Enviada a '+email:''}` : ''}`;
+    btn.style.display = 'none';
+  } else if (r.ok) {
     res.style.background = '#f0fdf4';
     res.innerHTML = `<strong style="color:#16a34a;">✅ Factura generada</strong><br>
       UUID: ${d.folio_fiscal||'—'}<br>
       <a href="/api/admin/factura/${d.factura_id}/pdf" target="_blank" style="color:#16a34a;">Descargar PDF</a>${email?' · Enviada a '+email:''}`;
     btn.style.display = 'none';
   } else {
-    const d = await r.json().catch(() => ({}));
     res.style.background = '#fef2f2';
     res.innerHTML = `<strong style="color:#ef4444;">Error</strong>: ${d.error||'No se pudo generar'}`;
   }

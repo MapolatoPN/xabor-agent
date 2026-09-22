@@ -109,27 +109,81 @@ const { pool, guardarClienteFiscal, obtenerClienteFiscalPorRFC,
   eliminarClienteFiscal, normalizarRFC } = await import('../src/services/database.js');
 const { crearRecibo, puedeFacturar, FacturapiNoConfiguradoError } =
   await import('../src/services/facturapi.js');
-const { TenantContextRequiredError } = await import('../src/services/integracionesService.js');
+const { TenantContextRequiredError, guardarCredencialesFacturapi, eliminarCredencialesFacturapi } =
+  await import('../src/services/integracionesService.js');
 const { obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura, asegurarReciboPedido,
-  FacturacionError } = await import('../src/services/facturacionService.js');
+  guardarConfiguracionFacturacion, FacturacionError } = await import('../src/services/facturacionService.js');
 const { esSolicitudFactura, extraerFolioFactura, manejarFacturacionWhatsapp } =
   await import('../src/services/facturacionWhatsapp.js');
 
-const { rows: [neg] } = await pool.query('SELECT id FROM negocios ORDER BY created_at LIMIT 1');
-if (!neg) throw new Error('La base local no tiene un negocio de prueba');
-const NEG = neg.id;
+// Dos negocios: la mayoria de los casos solo necesita uno (NEG), pero la
+// garantia multiempresa del reconocimiento por telefono (F32) exige DOS
+// negocios reales para demostrar que uno no ve la ficha fiscal del otro.
+const { rows: negocios } = await pool.query('SELECT id FROM negocios ORDER BY created_at LIMIT 2');
+if (negocios.length < 2) throw new Error('La base local necesita al menos dos negocios de prueba');
+const [NEG, NEG_B] = negocios.map((n) => n.id);
 const RFC = 'XAXX010101000';
 const TEL = '5281990088';
 const PEDIDO_PRUEBA = { folio: 'XAB-FACTEST', total: 100, forma_pago: 'efectivo' };
 
 const limpiar = () => Promise.all([
-  pool.query("DELETE FROM clientes_fiscales WHERE negocio_id = $1 AND rfc LIKE 'XAXX%'", [NEG]),
-  pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = $1 AND folio LIKE $2', [NEG, 'XAB-FACTEST%']),
-  pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = $1 AND telefono = $2', [NEG, TEL]),
-  pool.query('DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE $2', [NEG, 'XAB-FACTEST%']),
+  pool.query("DELETE FROM clientes_fiscales WHERE negocio_id = ANY($1) AND rfc LIKE 'XAXX%'", [[NEG, NEG_B]]),
+  pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
+  pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL]),
+  pool.query('DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
+  pool.query('DELETE FROM facturacion_configuracion WHERE negocio_id = ANY($1)', [[NEG, NEG_B]]),
+  eliminarCredencialesFacturapi(NEG, null),
+  eliminarCredencialesFacturapi(NEG_B, null),
 ]).catch(() => {});
 await limpiar();
+
+/**
+ * Deja a un negocio LISTO para "poder facturar" -- credencial de Facturapi
+ * (una llave de mentira que NUNCA se usa de verdad, ver mas abajo) mas tasa
+ * de IVA configurada. No hace ninguna llamada de red: `guardarCredencialesFacturapi`
+ * solo cifra y guarda en Postgres.
+ */
+async function configurarFacturapiFalso(negocioId, ivaTasa = 0.16) {
+  await guardarCredencialesFacturapi(negocioId, 'sk_test_nunca_se_debe_usar_de_verdad', null);
+  await guardarConfiguracionFacturacion(negocioId, { ivaTasa, autoemitirRecibo: true });
+}
+
+/**
+ * Pre-siembra un recibo YA ABIERTO en Facturapi, sin llamar a Facturapi.
+ *
+ * Esto es lo que hace posible probar el camino de EXITO completo
+ * (asegurarReciboPedido -> recibo con url_autofactura -> mensaje de
+ * WhatsApp) sin red: `asegurarReciboPedido` solo llama a `crearRecibo`
+ * (la unica funcion que de verdad toca la red) cuando NO existe ya un
+ * recibo con `recibo_id` en estado abierto/facturado/global -- ver el
+ * `if (existente.recibo_id && [...]) return existente;` en
+ * facturacionService.js. Con la fila ya sembrada, ese camino corto se
+ * dispara y la llave falsa de `configurarFacturapiFalso` nunca llega a
+ * usarse.
+ */
+async function prepararReciboAbierto(negocioId, folio, total) {
+  await pool.query(
+    `INSERT INTO facturacion_recibos
+       (negocio_id, folio, total, idempotency_key, recibo_id, clave, url_autofactura, estado)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'abierto')
+     ON CONFLICT (negocio_id, folio) DO UPDATE SET
+       recibo_id=EXCLUDED.recibo_id, clave=EXCLUDED.clave,
+       url_autofactura=EXCLUDED.url_autofactura, estado='abierto', updated_at=NOW()`,
+    [negocioId, folio, total, `xabor:${negocioId}:${folio}`,
+      `rec_prueba_${folio}`, `clave-${folio}`, `https://facturapi.example/self/${folio}`]);
+}
+
+/** Un pedido pagado y entregado, listo para facturar, con el telefono dado. */
+async function sembrarPedidoPagado(negocioId, folio, telefono, total = 100) {
+  await pool.query(
+    `INSERT INTO pedidos_activos (negocio_id, folio, estado, datos, entregado_at)
+     VALUES ($1,$2,'entregado',$3::jsonb, NOW())
+     ON CONFLICT (folio) DO UPDATE SET negocio_id=$1, estado='entregado', datos=$3::jsonb, entregado_at=NOW()`,
+    [negocioId, folio, JSON.stringify({
+      total, forma_pago: 'efectivo', pago_confirmado: true, telefono_conversacion: telefono,
+    })]);
+}
 
 try {
 
@@ -469,6 +523,252 @@ await t('F28 el panel tiene dónde configurar la tasa de IVA', () => {
   assert.match(panel, /guardarConfigFacturacion/, 'falta la función que la guarda');
   assert.match(panel, /PUT.*\/api\/admin\/facturacion\/configuracion|facturacion\/configuracion.*PUT/s,
     'el panel no llama a la ruta de configuración');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTE D — RECONOCIMIENTO DE CLIENTES FISCALES POR TELÉFONO (WhatsApp)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `obtenerClientesFiscalesPorTelefono` ya existía; lo que faltaba era usarlo
+// en `manejarFacturacionWhatsapp`. El reconocimiento es PURAMENTE
+// INFORMATIVO: nunca factura solo porque exista una ficha, nunca inventa
+// RFC/régimen/uso de CFDI (solo repite lo que YA está guardado), y nunca
+// cruza negocio ni teléfono.
+
+await t('F29 reconocimiento: UNA ficha guardada se menciona en el mensaje', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECONA';
+  await sembrarPedidoPagado(NEG, folio, TEL);
+  await prepararReciboAbierto(NEG, folio, 100);
+  await guardarClienteFiscal({
+    negocioId: NEG, rfc: RFC, razonSocial: 'Cliente Reconocido',
+    regimen: '616', usoCfdi: 'S01', cp: '26000', telefono: TEL,
+  });
+
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: TEL, texto: `factura ${folio}` });
+  assert.equal(r.manejado, true);
+  assert.doesNotMatch(r.mensaje, new RegExp(RFC), 'WhatsApp no es canal verificado: no debe exponer el RFC completo');
+  assert.doesNotMatch(r.mensaje, /Cliente Reconocido/, 'no debe exponer la razón social guardada');
+  assert.doesNotMatch(r.mensaje, /\b616\b/, 'no debe exponer el régimen fiscal guardado');
+  assert.match(r.mensaje, /Encontramos datos fiscales utilizados anteriormente/,
+    'el mensaje generico de reconocimiento no aparecio');
+  assert.match(r.mensaje, /portal de facturación/,
+    'el mensaje tiene que remitir al portal, no resolverlo aqui');
+
+  // LA GARANTIA CENTRAL: reconocer no es facturar. El recibo sigue abierto;
+  // nada aqui llamo a facturarRecibo ni cambio el estado.
+  const { rows: [recibo] } = await pool.query(
+    'SELECT estado FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+  assert.equal(recibo.estado, 'abierto',
+    'el reconocimiento factura automaticamente solo porque hay una ficha guardada');
+});
+
+await t('F30 sin ficha fiscal, el mensaje queda exactamente como sin reconocimiento', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECONB';
+  const telSinFicha = '5281990077';
+  await sembrarPedidoPagado(NEG, folio, telSinFicha);
+  await prepararReciboAbierto(NEG, folio, 100);
+
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: telSinFicha, texto: `factura ${folio}` });
+  assert.equal(r.manejado, true);
+  assert.doesNotMatch(r.mensaje, /RFC/, 'menciono un RFC que no existe para este telefono');
+  assert.match(r.mensaje, /captura tus datos fiscales aquí/);
+});
+
+await t('F31 dos fichas para el mismo teléfono: avisa, no elige ni inventa cuál', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECONC';
+  const telDosFichas = '5281990066';
+  await sembrarPedidoPagado(NEG, folio, telDosFichas);
+  await prepararReciboAbierto(NEG, folio, 100);
+  await guardarClienteFiscal({
+    negocioId: NEG, rfc: 'XAXX010101001', razonSocial: 'Cliente Personal',
+    regimen: '616', usoCfdi: 'S01', cp: '26000', telefono: telDosFichas,
+  });
+  await guardarClienteFiscal({
+    negocioId: NEG, rfc: 'XAXX010101002', razonSocial: 'Cliente Empresa',
+    regimen: '601', usoCfdi: 'G03', cp: '26000', telefono: telDosFichas,
+  });
+
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: telDosFichas, texto: `factura ${folio}` });
+  assert.match(r.mensaje, /Encontramos varias opciones de datos fiscales/,
+    'el mensaje generico de multiples fichas no aparecio');
+  assert.match(r.mensaje, /portal de facturación/);
+  assert.doesNotMatch(r.mensaje, /XAXX010101001/, 'eligio un RFC entre los dos sin que el cliente lo dijera');
+  assert.doesNotMatch(r.mensaje, /XAXX010101002/, 'eligio el otro RFC sin que el cliente lo dijera');
+  assert.doesNotMatch(r.mensaje, /Cliente Personal|Cliente Empresa/, 'no debe exponer razon social alguna');
+
+  await pool.query("DELETE FROM clientes_fiscales WHERE negocio_id=$1 AND telefono=$2", [NEG, telDosFichas]);
+});
+
+await t('F32 LA GARANTÍA MULTIEMPRESA: una ficha de OTRO negocio, mismo teléfono, nunca se menciona', async () => {
+  // El escenario exacto que prohibe la tarea: un telefono que SI tiene una
+  // ficha fiscal, pero registrada bajo NEG_B. Quien factura ahora es NEG.
+  // El mensaje de NEG tiene que comportarse EXACTAMENTE como si no hubiera
+  // ninguna ficha -- porque para NEG, no la hay.
+  const telCompartido = '5281990055';
+  await guardarClienteFiscal({
+    negocioId: NEG_B, rfc: 'BBBB020202BBB', razonSocial: 'Cliente De Otro Negocio',
+    regimen: '601', usoCfdi: 'G03', cp: '64000', telefono: telCompartido,
+  });
+
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECOND';
+  await sembrarPedidoPagado(NEG, folio, telCompartido);
+  await prepararReciboAbierto(NEG, folio, 100);
+
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: telCompartido, texto: `factura ${folio}` });
+  assert.equal(r.manejado, true);
+  assert.doesNotMatch(r.mensaje, /BBBB020202BBB/,
+    'el mensaje de NEG expuso el RFC de un cliente fiscal que pertenece a NEG_B');
+  assert.doesNotMatch(r.mensaje, /Cliente De Otro Negocio/, 'expuso la razon social de un cliente de NEG_B');
+  assert.doesNotMatch(r.mensaje, /Encontramos datos fiscales|Encontramos varias opciones/,
+    'el mensaje se comporto como si NEG tuviera una ficha reconocida, y no la tiene');
+
+  await pool.query("DELETE FROM clientes_fiscales WHERE negocio_id=$1 AND rfc=$2", [NEG_B, 'BBBB020202BBB']);
+});
+
+await t('F33 el reconocimiento encuentra la ficha aunque el teléfono llegue con otro formato', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECONE';
+  const telGuardado = '8781234599';
+  const telFormatoDistinto = '+52 878 123 4599';
+  await sembrarPedidoPagado(NEG, folio, telFormatoDistinto);
+  await prepararReciboAbierto(NEG, folio, 100);
+  await guardarClienteFiscal({
+    negocioId: NEG, rfc: 'XAXX010101003', razonSocial: 'Cliente Formato Distinto',
+    regimen: '616', usoCfdi: 'S01', cp: '26000', telefono: telGuardado,
+  });
+
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: telFormatoDistinto, texto: `factura ${folio}` });
+  assert.doesNotMatch(r.mensaje, /XAXX010101003/, 'WhatsApp no debe exponer el RFC completo aunque si reconozca la ficha');
+  assert.match(r.mensaje, /Encontramos datos fiscales utilizados anteriormente/,
+    'el reconocimiento no encontro la ficha guardada con otro formato de telefono');
+
+  await pool.query("DELETE FROM clientes_fiscales WHERE negocio_id=$1 AND rfc=$2", [NEG, 'XAXX010101003']);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTE E — CASOS NEGATIVOS ESPECÍFICOS DE ESTA RONDA
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Pedido inexistente (F18), cancelado (F19), no pagado (F20), folio de otro
+// teléfono (F25), negocio sin Facturapi (F6/F7), RFC inválido (F11) y la
+// libreta por negocio (F12) ya estaban cubiertos antes de esta ronda. Aquí
+// se cierran los que faltaban: IVA sin configurar con cuenta YA vinculada,
+// y la idempotencia del recibo ante un reintento.
+
+await t('F34 negocio CON Facturapi pero SIN tasa de IVA: falla con el código correcto, sin tocar la red', async () => {
+  // Solo la credencial, a propósito: sin fila en facturacion_configuracion,
+  // iva_tasa vuelve null por el valor por defecto de
+  // obtenerConfiguracionFacturacion. Se borra explícitamente cualquier
+  // configuración previa de NEG (pruebas anteriores de esta misma ronda ya
+  // le configuraron IVA) para que este caso no dependa del orden en que
+  // corran las demás.
+  await guardarCredencialesFacturapi(NEG, 'sk_test_nunca_se_debe_usar_de_verdad', null);
+  await pool.query('DELETE FROM facturacion_configuracion WHERE negocio_id=$1', [NEG]);
+  const folio = 'XAB-FACTEST-SINIVA';
+  await sembrarPedidoPagado(NEG, folio, TEL);
+
+  await assert.rejects(
+    () => asegurarReciboPedido(NEG, folio),
+    (e) => e instanceof FacturacionError && e.codigo === 'IVA_NO_CONFIGURADO',
+    'no lanzo IVA_NO_CONFIGURADO con la cuenta vinculada pero sin tasa');
+
+  // Y NINGÚN recibo remoto se creó: configProveedor() lanza ANTES de que
+  // asegurarReciboPedido llegue a llamar a crearRecibo.
+  const { rows } = await pool.query(
+    'SELECT recibo_id FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+  assert.equal(rows[0]?.recibo_id ?? null, null, 'se creó un recibo remoto sin tener IVA configurado');
+});
+
+await t('F35 idempotencia (nivel servicio): un recibo ya abierto se REUTILIZA, nunca se vuelve a pedir', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-IDEMP';
+  await sembrarPedidoPagado(NEG, folio, TEL, 250);
+  await prepararReciboAbierto(NEG, folio, 250);
+
+  // Si esto llamara a crearRecibo con la llave falsa, lanzaria (red
+  // inalcanzable o rechazo de Facturapi) en vez de devolver limpio.
+  const recibo = await asegurarReciboPedido(NEG, folio);
+  assert.equal(recibo.estado, 'abierto');
+  assert.equal(recibo.recibo_id, `rec_prueba_${folio}`,
+    'no devolvio el recibo ya sembrado: intento crear uno nuevo');
+
+  const { rows } = await pool.query(
+    'SELECT count(*)::int AS n FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+  assert.equal(rows[0].n, 1, 'quedó más de un recibo local para el mismo pedido');
+});
+
+await t('F36 idempotencia (nivel base): la restricción única de Postgres rechaza un segundo recibo', async () => {
+  // La misma garantia que prueba F35, pero mirando el candado real: la
+  // restriccion UNIQUE(negocio_id, folio) de la migracion 087, no la logica
+  // de la aplicacion. Un reintento crudo -- sin el ON CONFLICT que usa
+  // asegurarReciboPedido -- tiene que ser Postgres quien lo rechace.
+  const folio = 'XAB-FACTEST-UNICO';
+  await pool.query(
+    `INSERT INTO facturacion_recibos (negocio_id, folio, total, idempotency_key)
+     VALUES ($1,$2,$3,$4)`, [NEG, folio, 50, `xabor:${NEG}:${folio}:1`]);
+  await assert.rejects(
+    () => pool.query(
+      `INSERT INTO facturacion_recibos (negocio_id, folio, total, idempotency_key)
+       VALUES ($1,$2,$3,$4)`, [NEG, folio, 50, `xabor:${NEG}:${folio}:2`]),
+    /duplicate key value violates unique constraint/,
+    'la base permitio un segundo recibo para el mismo negocio+folio');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTE F — EL RECONOCIMIENTO FISCAL NUNCA ROMPE UN RECIBO YA CREADO
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// avisoDeReconocimiento corre DESPUES de que asegurarReciboPedido ya dejo
+// listo el recibo con su url_autofactura. Si la consulta de clientes_fiscales
+// revienta de forma inesperada (un hipo de la base, por ejemplo), eso no
+// puede convertir una autofactura ya creada en un "no pude preparar la
+// factura" para el cliente -- el recibo YA es real y YA tiene URL.
+//
+// pool.query se reemplaza por una version que solo hace explotar, de forma
+// SINCRONA, la consulta contra clientes_fiscales (para saltarse el propio
+// `.catch(() => ({rows: []}))` de obtenerClientesFiscalesPorTelefono, que ya
+// ahoga los rechazos de promesa) y deja pasar cualquier otra consulta
+// (estadoPendiente, asegurarReciboPedido, limpiarEstado) sin tocarla.
+
+await t('F37 si la consulta de clientes fiscales revienta, el recibo ya creado se sigue entregando como éxito', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-RECONF';
+  const telExplota = '5281990044';
+  await sembrarPedidoPagado(NEG, folio, telExplota);
+  await prepararReciboAbierto(NEG, folio, 100);
+
+  const originalQuery = pool.query.bind(pool);
+  const advertencias = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => advertencias.push(args.join(' '));
+  pool.query = (sql, params) => {
+    if (typeof sql === 'string' && sql.includes('clientes_fiscales')) {
+      throw new Error('conexión caída de prueba (simulación F37)');
+    }
+    return originalQuery(sql, params);
+  };
+
+  let r;
+  try {
+    r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: telExplota, texto: `factura ${folio}` });
+  } finally {
+    pool.query = originalQuery;
+    console.warn = originalWarn;
+  }
+
+  assert.equal(r.manejado, true);
+  assert.notEqual(r.escalar, true,
+    'una excepcion en el reconocimiento (que es solo informativo) escalo la conversacion');
+  assert.match(r.mensaje, /captura tus datos fiscales aquí/,
+    'el recibo ya creado no se entrego pese a que la falla fue solo del reconocimiento');
+  assert.match(r.mensaje, /facturapi\.example\/self\//,
+    'la URL de autofactura del recibo ya creado se perdio');
+  assert.ok(advertencias.some((a) => a.includes('avisoDeReconocimiento')),
+    'no se registro ninguna advertencia sobre la falla del reconocimiento');
 });
 
 } finally {

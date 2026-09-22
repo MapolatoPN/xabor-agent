@@ -3704,7 +3704,19 @@ async function emitirFacturaHttp(req, res, fuente) {
   try {
     const r = await emitirFacturaPedido(req.negocioId, req.params.folio, req.body || {}, { fuente });
     res.json({ ok: true, ya_emitida: r.yaEmitida, factura_id: r.factura_id, folio_fiscal: r.uuid });
-  } catch (e) { responderErrorFacturacion(res, e); }
+  } catch (e) {
+    // FICHA_NO_GUARDADA: la factura ya quedo timbrada antes de que fallara el
+    // guardado de la ficha fiscal. e.facturaId/e.uuid viajan pegados al error
+    // (ver facturacionService.js) para que el panel pueda seguir mostrando el
+    // UUID y el enlace al PDF de una factura que si existe -- perderlos aqui
+    // dejaria al operador con un enlace roto sobre una factura real.
+    if (e?.codigo === 'FICHA_NO_GUARDADA') {
+      return res.status(e.status || 207).json({
+        error: e.message, codigo: e.codigo, factura_id: e.facturaId || null, folio_fiscal: e.uuid || null,
+      });
+    }
+    responderErrorFacturacion(res, e);
+  }
 }
 
 // Caja/restaurante puede emitir después del cobro; el servidor vuelve a
