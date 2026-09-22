@@ -145,6 +145,13 @@ const SCRIPTS = [
   // y el replay podía ocultar el pedido del tablero. Repara las fotografías y
   // deja un trigger que las mantiene alineadas con el estado SQL autoritativo.
   '086-estado-pedidos',
+  // 088 agrega a cortes_caja tres columnas informativas (descuento_manual,
+  // descuento_promocional, rewards_canjeados) -- solo ADD COLUMN con DEFAULT,
+  // no bloquea nada ni le exige nada al binario viejo si algo sale mal. Va
+  // ANTES del binario nuevo porque cerrarCorte()/listarCortes() ya las
+  // nombran explícitamente en su INSERT/SELECT. (No existe la 087 en esta
+  // rama -- feature de facturación aparte, sin commitear todavía.)
+  '088-cortes-descuentos-promociones',
 ];
 
 for (const nombre of CHECKS) {
