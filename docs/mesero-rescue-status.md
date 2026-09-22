@@ -1011,3 +1011,26 @@ Con esta combinación, apagar el botón calla toda automatización; encenderlo
 enruta todos los teléfonos al agente nuevo. Si ese agente no puede completar
 el turno, entrega la conversación a una persona y no permite que el bot legacy
 responda como alternativa.
+
+## 19. Corte operativo: Xabor como único punto de venta — 22 de septiembre de 2026
+
+Mapolato Obispado dejó de operar con Wansoft. Desde esta fecha, **Xabor es el
+único sistema operativo y la única fuente de verdad** para:
+
+- captura de pedidos en restaurante, mostrador, WhatsApp y tienda en línea;
+- comandas e impresión de cocina;
+- pedidos activos, estados e historial;
+- ventas, cobros, pagos y cortes;
+- clientes, promociones y Rewards;
+- folios y conciliación operativa.
+
+La búsqueda completa del repositorio confirmó que no existe código ejecutable,
+servicio, webhook ni sincronización activa con Wansoft. Las referencias
+restantes están únicamente en documentos históricos del piloto y quedaron
+marcadas como tales.
+
+Consecuencia operativa: ya no existe un POS paralelo al cual comparar o volver
+durante una incidencia. La impresión, visibilidad de pedidos, caja, pagos y
+recuperación después de reinicios de Xabor son ahora camino crítico de la
+operación diaria. Cualquier degradación en esos componentes debe tratarse como
+incidente de producción y conservar el pedido dentro de Xabor hasta resolverla.

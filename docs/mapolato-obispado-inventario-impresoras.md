@@ -1,5 +1,9 @@
 # Mapolato Obispado — inventario de impresoras
 
+> **INVENTARIO HISTÓRICO DEL PILOTO.** Desde el 22 de septiembre de 2026
+> Mapolato Obispado opera únicamente con Xabor. Las referencias a convivencia
+> con Wansoft se conservan solo como contexto del levantamiento original.
+
 **Todo lo que dice PENDIENTE se levanta en sitio.** Nada de este documento se
 ha rellenado por deducción: si un dato no está confirmado, está en blanco a
 propósito. Una IP supuesta cuesta una tarde de visita.

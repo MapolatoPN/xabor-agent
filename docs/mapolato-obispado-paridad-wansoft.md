@@ -1,5 +1,11 @@
 # Mapolato Obispado — paridad con Wansoft
 
+> **DOCUMENTO HISTÓRICO.** El 22 de septiembre de 2026 Mapolato Obispado dejó
+> de operar con Wansoft. Xabor es desde esa fecha el único punto de venta y la
+> única fuente de verdad. Las comparaciones y bloqueantes de cancelación que
+> aparecen abajo describen el periodo previo al corte y ya no representan una
+> operación paralela vigente.
+
 Qué cubre Xabor hoy de lo que hace Wansoft en Obispado, y qué falta. Se
 actualiza después de cada fase.
 
