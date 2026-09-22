@@ -1,9 +1,9 @@
 # Xabor Edge — hoja de ruta del modo sin conexión
 
-> **ACTUALIZACIÓN OPERATIVA — 22 de septiembre de 2026:** Mapolato Obispado ya
-> no opera en paralelo con Wansoft. Xabor es el único POS; por eso la
-> continuidad sin internet y la recuperación local pasan de preparación para
-> sustitución a riesgo operativo directo.
+> **CONTEXTO OPERATIVO — 22 de septiembre de 2026:** Wansoft era un punto de
+> venta externo e independiente, sin integración con Xabor. Mapolato Obispado
+> dejó de usarlo y ahora trabaja únicamente con Xabor, por lo que la continuidad
+> sin internet y la recuperación local son una prioridad operativa.
 
 **Nada de este documento está implementado.** Es el diseño para una fase
 posterior, escrito ahora para que las decisiones de Edge V1 no la bloqueen.

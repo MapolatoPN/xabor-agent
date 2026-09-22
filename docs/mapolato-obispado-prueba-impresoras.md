@@ -1,8 +1,9 @@
 # Mapolato Obispado — procedimiento de levantamiento y prueba
 
 > **PROCEDIMIENTO HISTÓRICO DEL PILOTO.** Desde el 22 de septiembre de 2026
-> Mapolato Obispado opera únicamente con Xabor. Las instrucciones sobre no
-> detener Wansoft o ejecutar ambos sistemas en paralelo ya no aplican.
+> Mapolato Obispado trabaja únicamente con Xabor. Wansoft era otro punto de
+> venta sin integración con Xabor; las instrucciones para usar ambos describen
+> la operación temporal de dos sistemas independientes.
 
 Procedimiento para la visita. Todo lo de la fase 1 es **de solo lectura**: no
 cambia una IP, no desinstala nada, no reinicia ninguna impresora.
