@@ -28,6 +28,13 @@ pechuga de pollo, sin flores, y también mencionó bebida chica y las
 guarniciones frijoles naturales y papas a la mexicana. El equipo debe confirmar
 con ella las opciones que aún faltan y registrar manualmente el pedido.
 
+El catálogo de producción sí estaba completo para este producto: exige Salsa,
+Proteína, Topping Waffles, Bebida y la decisión de agregar flores. Las
+guarniciones no son un grupo del Desayuno Sorpresa. El defecto fue del diálogo:
+el agente perdió el contexto, no aplicó «sin flores», ofreció jugo por fuera de
+las bebidas incluidas y convirtió las guarniciones mencionadas en tacos, en vez
+de explicar las opciones configuradas y continuar con Topping Waffles y Bebida.
+
 El handoff funcionó como estaba diseñado: el agente se detuvo y no volvió al
 bot anterior. La conversación también mostró que el agente no expone una
 herramienta para crear pedidos programados y que llegó a decir «anotado» sin
