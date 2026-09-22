@@ -4334,13 +4334,6 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
         diferencia: Number(cerrado.diferencia), nota: cerrado.nota,
         pedidos_count: cerrado.pedidos_count, cancelaciones_count: cerrado.cancelaciones_count,
         devoluciones_total: Number(cerrado.devoluciones_total),
-        // Informativos (088): ya incluidos en ventas_totales; un corte
-        // cerrado ANTES de esta migración simplemente los trae en 0 -- no se
-        // reconstruyen retroactivamente (invariante: un corte cerrado nunca
-        // se recalcula).
-        descuento_manual: Number(cerrado.descuento_manual) || 0,
-        descuento_promocional: Number(cerrado.descuento_promocional) || 0,
-        rewards_canjeados: Number(cerrado.rewards_canjeados) || 0,
         pendiente: s.pendiente || { num: 0, total: 0 },
         detalle_formas: s.detalle_formas || {}, pedidos: s.pedidos || [],
         movimientos: s.movimientos || [], cobros_dias_anteriores: s.cobros_dias_anteriores || [],
@@ -8707,17 +8700,10 @@ async function enviarReporteDiario() {
   const negocioIdReporte = await resolverNegocioActualPorDefecto();
   const tzReporte = await zonaHorariaNegocio(negocioIdReporte);
   const inicio = inicioDelDiaTexto(ahora, tzReporte);
-  const [ventas, resumen, fondoReg, corteVivo] = await Promise.all([
+  const [ventas, resumen, fondoReg] = await Promise.all([
     obtenerVentas(inicio, ahora, negocioIdReporte),
     obtenerResumenVentas(inicio, ahora, negocioIdReporte),
-    obtenerFondoCaja(fechaOperativaHoy(tzReporte), negocioIdReporte),
-    // Solo para el desglose de descuentos/Rewards del mensaje -- no
-    // reemplaza a obtenerVentas/obtenerResumenVentas arriba (fail-safe: si
-    // esto truena, el resto del reporte se sigue enviando sin ese bloque).
-    calcularCorteVivo(negocioIdReporte, fechaOperativaHoy(tzReporte)).catch(e => {
-      console.error('[Reporte] calcularCorteVivo (descuentos) falló:', e.message);
-      return null;
-    }),
+    obtenerFondoCaja(fechaOperativaHoy(tzReporte), negocioIdReporte)
   ]);
   const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
   const totalVentas   = parseFloat(resumen?.total_ventas || 0);
@@ -8738,17 +8724,6 @@ async function enviarReporteDiario() {
     `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
   const bloqueModal = Object.entries(porModal).map(([k,v]) =>
     `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
-  const descManual = Number(corteVivo?.descuento_manual) || 0;
-  const descPromo  = Number(corteVivo?.descuento_promocional) || 0;
-  const rewards    = Number(corteVivo?.rewards_canjeados) || 0;
-  const totalRegalado = descManual + descPromo + rewards;
-  const bloqueDescuentos = totalRegalado > 0
-    ? `\n\n🎁 *Descuentos y Rewards (ya incluidos arriba):*\n` +
-      (descManual > 0 ? `  • Manual: ${fmtMXN(descManual)}\n` : '') +
-      (descPromo > 0 ? `  • Promociones: ${fmtMXN(descPromo)}\n` : '') +
-      (rewards > 0 ? `  • Rewards canjeados: ${fmtMXN(rewards)}\n` : '') +
-      `  • Total: ${fmtMXN(totalRegalado)}`
-    : '';
   const msg =
 `🧾 *CORTE DE CAJA — XABOR*
 📅 ${new Date().toLocaleDateString('es-MX', { timeZone: tzReporte, dateStyle:'full' })}
@@ -8761,7 +8736,7 @@ async function enviarReporteDiario() {
 ${bloqueModal}
 
 📡 *Por canal de venta:*
-${bloqueCanal}${bloqueDescuentos}`;
+${bloqueCanal}`;
   try {
     // Fase A: credenciales propias del mismo negocio del reporte -- nunca
     // caché global. Job de un solo negocio por diseño (ver nota arriba).

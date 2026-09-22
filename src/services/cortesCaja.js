@@ -199,20 +199,13 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   const fechaOperativa = fecha && esFechaValida(fecha) ? fecha : fechaOperativaHoy(tz);
   const { inicio, fin } = rangoUtcDeFecha(fechaOperativa, tz);
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, rewardsRes] = await Promise.all([
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
-    // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
-    // motor de promociones escribe la lista en dos rutas distintas según el
-    // canal (top-level en POS/WhatsApp, anidada en datos.tienda en la
-    // tienda en línea); se resuelve cuál usar más abajo, por pedido.
     pool.query(
       `SELECT folio, estado, created_at,
               datos->>'forma_pago'                                     AS forma_pago,
               COALESCE((datos->>'pago_confirmado')::boolean, false)    AS pago_confirmado,
               COALESCE((datos->>'total')::decimal, 0)                  AS total,
-              COALESCE((datos->>'descuento')::decimal, 0)              AS descuento,
-              datos->'promociones'                                     AS promociones,
-              datos->'tienda'->'promociones'                           AS tienda_promociones,
               COALESCE((datos->'devolucion'->>'monto')::decimal, 0)    AS devolucion_monto,
               datos->'cliente'->>'nombre'                              AS cliente
          FROM pedidos_activos
@@ -237,38 +230,18 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       [nid, inicio.toISOString(), fin.toISOString()]),
     listarMovimientos(nid, fechaOperativa),
     pool.query(`SELECT fondo FROM caja_fondos WHERE negocio_id = $1 AND fecha = $2`, [nid, fechaOperativa]),
-    // Rewards canjeados: se lee de rewards_movements (fuente única, no
-    // depende del formato de `datos` de cada canal) y se atribuye al día
-    // de CREACIÓN del pedido -- igual que el descuento y la devolución,
-    // no al día en que se registró el canje (que en el flujo por_cobrar
-    // puede ser el mismo, pero no siempre). Se une por folio: un pedido
-    // cancelado (y por tanto excluido de pedidosRes) no aporta aquí aunque
-    // su canje no se haya revertido a tiempo.
-    // rewards_movements.tenant_id es TEXT (histórico, migración 013);
-    // pedidos_activos.negocio_id es UUID -- el cast explícito es el mismo
-    // patrón que ya usa rewardsService.js (`c.negocio_id::text = $1`), sin
-    // el cual Postgres rechaza la comparación entre los dos tipos.
-    pool.query(
-      `SELECT COALESCE(SUM((rm.metadata->>'monto_descuento')::decimal), 0)::float AS total
-         FROM rewards_movements rm
-         JOIN pedidos_activos pa ON pa.folio = rm.folio_venta AND pa.negocio_id::text = rm.tenant_id
-        WHERE rm.tenant_id = $1 AND rm.tipo = 'canje'
-          AND pa.created_at >= $2 AND pa.created_at < $3 AND pa.estado <> 'cancelado'`,
-      [nid, inicio.toISOString(), fin.toISOString()]),
   ]);
 
   const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
   const pedidos = [];
   let pendienteNum = 0, pendienteTotal = 0, devolucionesTotal = 0, pedidosCobrados = 0;
-  let descuentoPromoTotal = 0, descuentoManualTotal = 0;
 
   for (const v of pedidosRes.rows) {
     const total = dinero(v.total);
     devolucionesTotal += dinero(v.devolucion_monto);
     // Un pedido abierto (por_cobrar sin confirmar) todavía no tiene forma de
-    // pago real: no entra a ninguna categoría ni al efectivo esperado. Nace
-    // con descuento=0 (se fija hasta el cobro), así que tampoco aporta aquí.
+    // pago real: no entra a ninguna categoría ni al efectivo esperado.
     const abierto = String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true;
     if (abierto) {
       pendienteNum++; pendienteTotal += total;
@@ -285,24 +258,6 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
       forma_pago: clave, clase, total,
     });
-
-    // Manual vs. promocional: el motor de promociones deja constancia de LO
-    // QUE ÉL otorgó en un arreglo `promociones` (POS/WhatsApp la ponen al
-    // nivel de datos, la tienda en línea la anida en datos.tienda -- nunca
-    // las dos a la vez). Lo que el descuento total del pedido NO explica el
-    // arreglo es, por construcción de cada canal, lo que tecleó una persona
-    // (restaurante y POS son los únicos con descuento manual hoy; WhatsApp y
-    // la tienda jamás escriben un descuento que no venga del motor).
-    const descuentoPedido = dinero(v.descuento);
-    if (descuentoPedido > 0) {
-      const lista = Array.isArray(v.promociones) ? v.promociones
-        : Array.isArray(v.tienda_promociones) ? v.tienda_promociones : [];
-      const promoPedido = dinero(Math.min(
-        descuentoPedido,
-        lista.reduce((s, p) => s + (Number(p?.descuento) || 0), 0)));
-      descuentoPromoTotal += promoPedido;
-      descuentoManualTotal += dinero(descuentoPedido - promoPedido);
-    }
   }
 
   // Cobros tardíos: dinero electrónico (enlace), nunca efectivo.
@@ -351,12 +306,6 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     pedidos_count: pedidosCobrados,
     cancelaciones_count: cancelRes.rows[0]?.n || 0,
     devoluciones_total: dinero(devolucionesTotal),
-    // Informativos: YA están incluidos dentro de ventas_totales/total de cada
-    // pedido. Sumarlos aquí no cambia efectivo_esperado ni el arqueo -- solo
-    // responde "cuánto del ingreso del día se fue en descuentos y Rewards".
-    descuento_manual: dinero(descuentoManualTotal),
-    descuento_promocional: dinero(descuentoPromoTotal),
-    rewards_canjeados: dinero(rewardsRes.rows[0]?.total || 0),
     pendiente: { num: pendienteNum, total: dinero(pendienteTotal) },
     detalle_formas: detallePorForma,
     pedidos,
@@ -434,16 +383,14 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
          fondo_inicial, ventas_totales, ventas_efectivo, ventas_tarjeta, ventas_enlace, ventas_otros,
          entradas, retiros, gastos, devoluciones_efectivo,
          efectivo_esperado, efectivo_contado, diferencia, nota,
-         pedidos_count, cancelaciones_count, devoluciones_total,
-         descuento_manual, descuento_promocional, rewards_canjeados, snapshot_json)
+         pedidos_count, cancelaciones_count, devoluciones_total, snapshot_json)
        VALUES ($1,$2,'cerrado',
          'COR-' || LPAD(((SELECT COUNT(*) FROM cortes_caja c WHERE c.negocio_id = $1) + 1)::text, 6, '0'),
          $3, NOW(),
          $4,$5,$6,$7,$8,$9,
          $10,$11,$12,$13,
          $14,$15,$16,$17,
-         $18,$19,$20,
-         $21,$22,$23,$24::jsonb)
+         $18,$19,$20,$21::jsonb)
        ON CONFLICT (negocio_id, fecha_operativa) DO NOTHING
        RETURNING *`,
       [negocioId, fechaOperativa, usuarioId,
@@ -451,7 +398,6 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
        vivo.entradas, vivo.retiros, vivo.gastos, vivo.devoluciones_efectivo,
        vivo.efectivo_esperado, contado, diferencia, nota ? String(nota).slice(0, 500) : null,
        vivo.pedidos_count, vivo.cancelaciones_count, vivo.devoluciones_total,
-       vivo.descuento_manual, vivo.descuento_promocional, vivo.rewards_canjeados,
        JSON.stringify(vivo)]);
 
     if (!corte) {
@@ -499,7 +445,6 @@ export async function listarCortes(negocioId, { limite = 60 } = {}) {
     `SELECT c.id, c.fecha_operativa, c.folio, c.estado, c.cerrado_at,
             c.ventas_totales, c.ventas_efectivo, c.ventas_tarjeta, c.ventas_enlace, c.ventas_otros,
             c.efectivo_esperado, c.efectivo_contado, c.diferencia, c.pedidos_count,
-            c.descuento_manual, c.descuento_promocional, c.rewards_canjeados,
             u.nombre AS usuario_nombre
        FROM cortes_caja c LEFT JOIN usuarios u ON u.id = c.usuario_id
       WHERE c.negocio_id = $1
@@ -560,21 +505,6 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   L.push(fila('Otros', corte.ventas_otros));
   L.push(linea());
   L.push(fila('TOTAL', corte.ventas_totales));
-  const descManual = Number(corte.descuento_manual) || 0;
-  const descPromo = Number(corte.descuento_promocional) || 0;
-  const rewards = Number(corte.rewards_canjeados) || 0;
-  if (descManual > 0 || descPromo > 0 || rewards > 0) {
-    // Ya están incluidos en TOTAL de arriba -- esto es el desglose de
-    // cuánto de ese total se regaló, no un descuento adicional.
-    L.push('');
-    L.push(linea());
-    L.push('DESCUENTOS Y REWARDS (incluidos en TOTAL)');
-    L.push(linea());
-    if (descManual > 0) L.push(fila('Descuento manual', descManual));
-    if (descPromo > 0) L.push(fila('Promociones', descPromo));
-    if (rewards > 0) L.push(fila('Rewards canjeados', rewards));
-    L.push(fila('Total regalado', descManual + descPromo + rewards));
-  }
   L.push('');
   L.push(linea());
   L.push('CAJA');
