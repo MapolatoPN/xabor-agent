@@ -160,8 +160,19 @@ cerrado.
 - La **065** y la **066** no tienen script `predeploy`: se aplican a mano con
   `psql -f migrations/065_ajustes_cierre.sql` y `066_conversaciones_control.sql`
   (`facturas_pedido`, `ajustes_cierre`, `conversaciones_control`).
+- La **087** (facturación por negocio) y la **089** (autofactura) sí tienen
+  predeploy: `node scripts/predeploy-087-clientes-fiscales.mjs` y
+  `node scripts/predeploy-089-autofactura-xabor.mjs` (o `psql -f` de su `.sql`).
+  La 087 exige la 065 aplicada antes. Ninguna de estas está en
+  `aplicar-migraciones.mjs`: ese runner no cubre las migraciones recientes.
 
-Al terminar deben existir **81 tablas** en `public`.
+Al terminar deben existir **81 tablas** en `public` (86 con la 087 y la 089).
+
+En producción las migraciones se aplican EXCLUSIVAMENTE por el runner del
+Pre-Deploy Command de Railway (`scripts/predeploy-run-032-033.mjs`, arreglo
+`SCRIPTS`): no hay autodescubrimiento de `migrations/` y una migración que no
+esté en esa lista no llega nunca a producción. Los `*_down.sql` no los ejecuta
+nadie en automático: solo a mano, con `psql`, y a propósito.
 
 **5. Datos de prueba.** `node test/seed-datos-prueba.mjs`. Genera
 `test/.datos-prueba.json`; sin ese archivo ~20 suites revientan con un
