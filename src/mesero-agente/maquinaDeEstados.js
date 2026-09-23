@@ -127,6 +127,11 @@ export const LEGALIDAD = Object.freeze({
   // pedido ya confirmado ("oye, ¿qué más tienen?").
   enviar_menu: SIEMPRE,
 
+  // Fijar el dia se puede en cualquier momento mientras el pedido esta en
+  // curso. Despues de confirmar NO: la reserva ya esta hecha y cambiarla es
+  // mover algo que cocina ya tiene apuntado.
+  programar_para: EN_CURSO,
+
   // Un evento se puede pedir en cualquier momento de la conversacion, y
   // tambien despues de haber cerrado un desayuno. Lo unico que NO tiene
   // sentido es anotarlo cuando la conversacion ya esta en manos de una

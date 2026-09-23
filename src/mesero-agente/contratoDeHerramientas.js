@@ -252,6 +252,26 @@ export const HERRAMIENTAS = Object.freeze([
     esquema: z.object({}).strict(),
   },
   {
+    nombre: 'programar_para',
+    efecto: true,
+    // ── EL MODELO INTERPRETA, XABOR DECIDE ─────────────────────────────
+    //
+    // La fecha y la hora llegan en formato estricto porque convertir «mañana a
+    // las 10» es trabajo del modelo, que sabe qué día es hoy. Xabor no
+    // interpreta español: comprueba que el negocio abra ese día, a esa hora,
+    // con tiempo para prepararlo y dentro de un horizonte razonable.
+    descripcion: 'Programa el pedido para otro día u otra hora. Úsala cuando el cliente diga para cuándo lo '
+      + 'quiere ("mañana a las 10", "el sábado a las 2"). TÚ conviertes lo que dijo a fecha y hora exactas; '
+      + 'hoy es la fecha que aparece en el bloque HORARIO. '
+      + 'Si Xabor lo rechaza, el motivo te dice qué ofrecerle: no insistas con la misma hora.',
+    esquema: z.object({
+      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+        .describe('AAAA-MM-DD. Por ejemplo 2026-09-24.'),
+      hora: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+        .describe('HH:MM en 24 horas. Las 2 de la tarde son 14:00.'),
+    }).strict(),
+  },
+  {
     nombre: 'registrar_solicitud_evento',
     efecto: true,
     // ── CATERING: SE TOMAN DATOS, NO SE COTIZA ─────────────────────────

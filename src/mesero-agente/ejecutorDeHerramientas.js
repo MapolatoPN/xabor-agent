@@ -30,6 +30,7 @@ import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
+import { validarProgramado } from './programadoDelAgente.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 
 const norm = (s) => String(s || '')
@@ -84,7 +85,7 @@ export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [], opcionesAceptadas = [],
+  reglas = null, promocionesActivas = [], opcionesAceptadas = [], zonaDelNegocio = undefined,
 } = {}) {
   const vista = () => {
     const pedido = vistaDelPedido({
@@ -583,6 +584,30 @@ export function crearEjecutor({
       }
       return ok({ pedido: vista(), paginas: r.paginas ?? null, simulado: !!r.simulado,
         nota: 'El menú ya se envió, con su texto. NO repitas que se lo mandaste: pregunta qué se le antoja.' });
+    },
+
+    // ── PROGRAMAR PARA OTRO DÍA ────────────────────────────────────────
+    //
+    // Se guarda en los datos del carrito y NO pasa por `reconciliar`: el
+    // reconciliador decide qué ARTÍCULOS entran al pedido contra lo que dijo
+    // el cliente, y una fecha no es un artículo. Lo que la autoriza es la
+    // validación contra el horario del negocio, que es dato duro y no
+    // interpretación.
+    //
+    // Quien lo convierte en reserva durable es `confirmar_pedido`, llamando a
+    // `convertirPedidoAProgramado` después de registrar. Hasta entonces esto
+    // es una intención, no una promesa.
+    programar_para({ fecha, hora }) {
+      const r = validarProgramado({
+        fecha, hora, reglas, zona: zonaDelNegocio,
+        minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
+      });
+      if (!r.ok) return invalido(`${r.motivo}: ${r.mensaje}`, { pedido: vista() });
+
+      estado.carrito.datos = { ...(estado.carrito.datos || {}), programado_para: r.iso };
+      return ok({ pedido: vista(), programado_para: r.iso, dia: r.dia, hora: r.hora,
+        nota: `Queda para el ${r.dia} a las ${r.hora}. Díselo con esas palabras y sigue con el pedido. `
+          + 'La comanda sale en cocina una hora antes, no ahora.' });
     },
 
     // ── UN EVENTO SE ANOTA, NO SE COTIZA ───────────────────────────────

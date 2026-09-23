@@ -19,7 +19,9 @@ import {
 } from '../services/database.js';
 import { crearEnlacePago } from '../services/pagosService.js';
 import { obtenerConfigTienda } from '../services/tiendaOnline.js';
-import { registrarPedido, emitirPedido, previsualizarPedido } from '../orders/orderManager.js';
+import {
+  registrarPedido, emitirPedido, previsualizarPedido, convertirPedidoAProgramado,
+} from '../orders/orderManager.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
@@ -108,6 +110,9 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
     },
     modalidad: datos.modalidad || null,
     forma_pago: datos.forma_pago || null,
+    // Lo fija `programar_para`, ya validado contra el horario del negocio.
+    // Viaja en la orden para que `confirmarYEmitir` lo convierta en reserva.
+    ...(datos.programado_para ? { programado_para: datos.programado_para } : {}),
 
     // ── P0 INVARIANTE 4: SIN DINERO CONFIRMADO NO HAY COCINA ────────────
     //
@@ -180,42 +185,19 @@ export async function atenderConAgente({
     }
 
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
-    // El agente aún no tiene una herramienta que escriba `programado_para`.
-    // Detener aquí evita que el modelo acepte «mañana a las 10» en texto sin
-    // dejar una reserva durable que el panel y el scheduler puedan cumplir.
-    if (esSolicitudDePedidoProgramado(mensaje, {
-      hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
-    })) {
-      // Decisión del dueño: esto va a la TIENDA EN LÍNEA, que es donde se
-      // puede agendar de verdad, y solo a una persona si esa tienda no existe
-      // o no acepta programados. Antes iba siempre a una persona, y eso
-      // convertía «me lo apartas para mañana» en una espera.
-      //
-      // La configuración de la tienda se lee AQUÍ y no arriba: el camino
-      // normal —negocio abierto, pedido para hoy— es el 99 % de los turnos, y
-      // no tiene por qué pagar una consulta que no va a mirar. Si falla, se
-      // cae al handoff, que es la respuesta segura.
-      const tiendaParaAgendar = await obtenerConfigTienda(negocioId).catch((e) => {
-        console.error(`[AGENTE] no se pudo resolver la tienda para agendar: ${e?.message}`);
-        return null;
-      });
-      const salidaProgramado = respuestaAPedidoProgramado({ configTienda: tiendaParaAgendar });
-      if (salidaProgramado.escalar) {
-        const entregado = await avisarAHumano(
-          escalarAHumano, negocioId, telefono, 'AGENTE_PEDIDO_PROGRAMADO');
-        if (!entregado) return { ok: false, motivo: 'handoff_pedido_programado_no_entregado' };
-        estado.hechos.escalado = true;
-      }
-      await guardarEstado(negocioId, telefono, estado);
-      return {
-        ok: true,
-        texto: salidaProgramado.texto,
-        folio: estado.folio ?? null,
-        escalado: salidaProgramado.escalar,
-        motivoCierre: salidaProgramado.escalar ? CIERRE.ESCALADO : CIERRE.RESPONDIO,
-        operaciones: [],
-      };
-    }
+    // ── EL DESVÍO DE PEDIDOS PROGRAMADOS SE RETIRÓ ─────────────────────
+    //
+    // Este turno se detenía aquí porque el agente no tenía forma de escribir
+    // la fecha, así que aceptar «mañana a las 10» en texto habría registrado
+    // el pedido para HOY. Ya la tiene: `programar_para` valida la fecha
+    // contra el horario del negocio y la confirmación la convierte en
+    // reserva durable, que el job activa una hora antes de la entrega.
+    //
+    // El freno no desapareció, cambió de sitio: se movió al paso
+    // irreversible. `confirmarYEmitir` se niega a registrar si el cliente
+    // pidió otro día y no hay fecha fijada, así que un modelo que se olvide
+    // de la herramienta no puede meter en cocina un pedido de mañana.
+    // Frenar ANTES del modelo, además, le impedía hacerlo bien.
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
     const promocionesActivas = estadoRestaurante.promocionesActivas || [];
@@ -229,6 +211,7 @@ export async function atenderConAgente({
         return confirmarYEmitir({
           negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar, crearPago,
           previsualizar: previsualizarPedido,
+          textoDelCiclo: textoCiclo || mensaje,
         });
       },
       // El `ok` que sale de aquí es lo que hace que `pedir_humano` cuente como
@@ -305,6 +288,7 @@ export async function atenderConAgente({
       modalidades,
       reglas,
       promocionesActivas,
+      zonaDelNegocio: reglas?.timezone,
       estado,
       libro,
       llamarModelo,
@@ -490,6 +474,7 @@ export async function observarConAgente({
       modalidades,
       reglas,
       promocionesActivas,
+      zonaDelNegocio: reglas?.timezone,
       estado,
       // Memoria, no Postgres: la sombra no escribe ni en la auditoría.
       libro: libroDeOperaciones(almacenEnMemoria()),
@@ -903,6 +888,7 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
 export async function confirmarYEmitir({
   negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir,
   guardar = guardarPedido, crearPago = crearEnlacePago, previsualizar = null,
+  textoDelCiclo = null,
 }) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
   // Última barrera ANTES del INSERT: el total canónico nunca puede superar el
@@ -928,6 +914,24 @@ export async function confirmarYEmitir({
       };
     }
   }
+  // ── EL FRENO DE LOS PROGRAMADOS, EN EL PASO IRREVERSIBLE ───────────────
+  //
+  // Si el cliente pidió para otro día y nadie fijó la fecha, registrar aquí
+  // metería en cocina HOY un pedido que es para mañana. Antes esto se frenaba
+  // antes del modelo, lo que también le impedía hacerlo bien; ahora se frena
+  // donde de verdad importa, y solo cuando de verdad falta.
+  //
+  // Se mira el texto del CICLO, no el del último turno: «para mañana» se dice
+  // al principio y la confirmación llega cinco mensajes después.
+  if (!orden.programado_para && textoDelCiclo
+      && esSolicitudDePedidoProgramado(textoDelCiclo, { hayPedidoEnCurso: true })) {
+    return {
+      ok: false,
+      motivo: 'falta_programar: el cliente pidió el pedido para otro día y no hay fecha fijada. '
+        + 'Llama a programar_para con la fecha y la hora antes de confirmar.',
+    };
+  }
+
   let resultado;
   try {
     resultado = await registrar(orden, canal);
@@ -946,6 +950,35 @@ export async function confirmarYEmitir({
     return { ok: false, motivo };
   }
   const folio = resultado.folio || resultado.pedido?.id || resultado.id || null;
+
+  // ── UN PEDIDO PROGRAMADO NO VA A COCINA AHORA ──────────────────────────
+  //
+  // Se convierte en RESERVA antes de emitir. `convertirPedidoAProgramado` hace
+  // la transición durable en una sola llamada atómica (migración 062: asegura
+  // la reserva, mueve el claim del folio y retira el activo). El job de
+  // `server.js` lo activa `programado_para - 1 hora`, y activarlo es lo que lo
+  // mete en el panel y lo imprime. Ese es el requisito: la comanda sale una
+  // hora antes de la entrega, no al confirmar.
+  //
+  // Si la reserva NO queda asegurada, el pedido SIGUE siendo un activo normal
+  // y no se le confirma al cliente una programación que no existe — es lo
+  // mismo que hace el bot anterior, y por el mismo motivo.
+  const programadoPara = orden?.programado_para || pedido?.programado_para || null;
+  if (programadoPara) {
+    const paraConvertir = resultado.pedido || resultado;
+    const conv = await convertirPedidoAProgramado(paraConvertir, programadoPara)
+      .catch((e) => ({ ok: false, razon: e?.message || 'excepcion' }));
+    if (!conv?.ok) {
+      console.error(`[AGENTE] ${folio || '-'} no se pudo programar (${conv?.razon}): sigue activo`);
+      Promise.resolve().then(() => emitir(resultado)).catch(() => {});
+      return { ok: false, motivo: `no_se_pudo_programar: ${conv?.razon || 'desconocido'}`, folio };
+    }
+    try { await guardar(telefono, resultado, negocioId); }
+    catch (e) { console.error(`[AGENTE] guardarPedido(${folio || '-'}) falló:`, e?.message); }
+    console.log(`[AGENTE] evento=pedido_programado negocio=${negocioId} folio=${folio} para=${programadoPara}`);
+    return { ok: true, folio, programado_para: programadoPara };
+  }
+
   Promise.resolve().then(() => emitir(resultado)).catch((e) =>
     console.error(`[AGENTE] emitirPedido(${folio || '-'}) falló:`, e?.message));
   try { await guardar(telefono, resultado, negocioId); }

@@ -88,14 +88,38 @@ t('no ofrece una tienda que no puede agendar', () => {
   assert.match(texto, /mañana a las 7:30 a\. m\./);
 });
 
-t('el adaptador corta antes de programados y antes del modelo', () => {
+t('el aviso de cierre corta antes de llamar al modelo', () => {
+  // Lo que esta guarda protege es que con el negocio cerrado no se gaste una
+  // llamada al modelo ni se empiece un pedido: se contesta y se sale.
+  //
+  // Antes exigía además que el desvío de programados quedara en medio. Ese
+  // desvío se retiró el 23-sep, cuando el agente aprendió a fijar la fecha con
+  // `programar_para`: frenar antes del modelo le impedía hacerlo bien. El
+  // eslabón se sustituye por el de abajo, que es el que de verdad importa
+  // ahora.
   const fuente = readFileSync(`${RAIZ}/src/mesero-agente/canalDelAgente.js`, 'utf8');
   const funcion = fuente.indexOf('export async function atenderConAgente');
   const aviso = fuente.indexOf('construirAvisoFueraDeHorario({', funcion);
-  const programado = fuente.indexOf('esSolicitudDePedidoProgramado(mensaje', funcion);
   const modelo = fuente.indexOf('salida = await atenderTurnoConHerramientas({', funcion);
-  assert.ok(funcion >= 0 && aviso > funcion && programado > aviso && modelo > programado,
-    'el aviso de cierre debe salir antes de entregar programados o llamar al modelo');
+  assert.ok(funcion >= 0 && aviso > funcion && modelo > aviso,
+    'el aviso de cierre debe salir antes de llamar al modelo');
+});
+
+t('un pedido para otro día se comprueba ANTES de registrarlo', () => {
+  // El freno se movió al paso irreversible: si el cliente pidió para otro día
+  // y nadie fijó la fecha, no se registra. Si esta comprobación cayera después
+  // del INSERT, la comanda de mañana ya estaría en la cocina de hoy.
+  const fuente = readFileSync(`${RAIZ}/src/mesero-agente/canalDelAgente.js`, 'utf8');
+  const confirmar = fuente.indexOf('export async function confirmarYEmitir');
+  const guarda = fuente.indexOf('esSolicitudDePedidoProgramado(textoDelCiclo', confirmar);
+  const registro = fuente.indexOf('await registrar(orden, canal)', confirmar);
+  const conversion = fuente.indexOf('convertirPedidoAProgramado(', confirmar);
+  const emision = fuente.indexOf('emitir(resultado)', confirmar);
+  assert.ok(confirmar >= 0 && guarda > confirmar && registro > guarda,
+    'la comprobación de programados debe correr antes de registrar el pedido');
+  assert.ok(conversion > registro && conversion < emision,
+    'la reserva durable debe hacerse después de registrar y ANTES de emitir: '
+    + 'emitir un programado es mandarlo a cocina hoy');
 });
 
 if (!process.exitCode) console.log(`RESULTADO: ${pasadas} verificaciones pasaron.`);

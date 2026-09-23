@@ -75,6 +75,7 @@ export function resumenDelPedido(carrito, {
     items,
     modalidad: datos.modalidad ?? null,
     pago: datos.forma_pago ?? null,
+    programado_para: datos.programado_para ?? null,
     cliente: datos.cliente ?? null,
     // El total solo existe si TODOS los renglones tienen precio. Un total
     // parcial es peor que ninguno: parece completo.
@@ -147,6 +148,10 @@ export const huellaDelResumen = (resumen) => JSON.stringify({
     i.opciones.map((o) => `${o.grupo}:${o.opcion}`).sort(), i.notas || '', i.precio_unitario]),
   modalidad: resumen?.modalidad ?? null,
   pago: resumen?.pago ?? null,
+  // Un pedido para manana y el mismo pedido para hoy NO son el mismo
+  // pedido. Sin esto, el cliente podria confirmar un resumen y que la
+  // fecha cambiara despues sin que la huella se enterara.
+  programado_para: resumen?.programado_para ?? null,
   cliente: CAMPOS_DEL_CLIENTE.map((c) => enForma(resumen?.cliente?.[c])),
   subtotal: resumen?.subtotal ?? null,
   costo_envio: resumen?.costo_envio ?? null,
