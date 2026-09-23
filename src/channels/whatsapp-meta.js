@@ -13,8 +13,7 @@ import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
-import { generarFactura, enviarFacturaPorEmail, FacturapiNoConfiguradoError } from '../services/facturapi.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { manejarFacturacionWhatsapp } from '../services/facturacionWhatsapp.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -824,14 +823,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // legado. Así ambos modos ofrecen el mismo recibo, el folio se valida
     // contra el teléfono y una palabra como "factura" nunca crea un pedido.
     //
-    // Es un gate distinto del que corrige la rama `resultado.factura` más
-    // abajo en esta misma función: aquella dependía de que el MODELO decidiera
-    // incluir un marcador `<FACTURA>` en su respuesta —después de recolectar
-    // RFC/razón social/etc. EN EL CHAT, lo que además deja datos fiscales en el
-    // historial de mensajes—. Esta intercepta por reglas, antes de llamar al
-    // modelo, y manda un enlace de autofactura donde el cliente captura sus
-    // propios datos en la página de Facturapi. La rama vieja queda como red de
-    // seguridad para el caso en que esta no reconozca la intención.
+    // Esta es la ÚNICA ruta autorizada para facturación por WhatsApp. Ya no
+    // existe una rama vieja de respaldo: aquella dependía de que el MODELO
+    // decidiera incluir un marcador `<FACTURA>` en su respuesta —después de
+    // recolectar RFC/razón social/régimen/uso de CFDI EN EL CHAT, dejando
+    // datos fiscales sensibles en el historial de mensajes— y se eliminó por
+    // completo (`generarFactura` ni siquiera existe ya en facturapi.js).
+    // Esta intercepta por reglas, antes de llamar al modelo, y manda un
+    // enlace de autofactura donde el cliente captura sus propios datos en la
+    // página de Facturapi: el chat nunca vuelve a tocar esos datos.
     const facturacionWA = await manejarFacturacionWhatsapp({ negocioId, telefono, texto });
     if (facturacionWA.manejado) {
       if (facturacionWA.error) {
@@ -1393,59 +1393,6 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         resultado.texto = '';
       } else {
         console.log(`[Menu WA] La IA pidió mandar el menú pero el negocio ${negocioId} no lo tiene configurado -- no se manda nada`);
-      }
-    }
-
-    // ── Factura CFDI solicitada por WhatsApp ──────────────────────────────────
-    // El gate era `process.env.FACTURAPI_KEY`: sin esa variable global la
-    // rama entera se saltaba EN SILENCIO. El cliente pedía su factura y no
-    // recibía nada —ni la factura ni una explicación—, y en el negocio nadie
-    // se enteraba de que la había pedido. Ahora la credencial es del negocio
-    // y la ausencia se contesta.
-    if (resultado.factura) {
-      try {
-        const datosFactura = resultado.factura;
-        // Si no viene el folio en el marcador, usar el último pedido entregado del cliente
-        let pedido = null;
-        if (datosFactura.folio) {
-          const { obtenerPedidoActivoPorFolio: _paf } = await import('../services/database.js');
-          pedido = await _paf(datosFactura.folio, negocioId) || await obtenerUltimoPedidoEntregadoPorTelefono(telefono, negocioId);
-          if (pedido && !pedido.id) pedido.id = datosFactura.folio;
-        } else {
-          pedido = await obtenerUltimoPedidoEntregadoPorTelefono(telefono, negocioId);
-        }
-
-        if (!pedido) {
-          await enviarMensaje(telefono, 'No encontré un pedido reciente para facturar. Si tienes el folio (ej. XAB-0042) escríbemelo y lo buscamos.', credenciales);
-        } else {
-          const factura = await generarFactura(negocioId, pedido, datosFactura);
-          // Registro local pedido→factura (bloqueo de ajustes de cierre).
-          // Nunca lanza: la factura ya existe en el proveedor.
-          const { registrarFacturaEmitida: _rfe } = await import('../services/database.js');
-          await _rfe({
-            negocioId, folio: String(pedido.folio || pedido.id || datosFactura.folio || ''),
-            facturaId: factura.id || null, uuid: factura.uuid || null,
-            total: pedido.total ?? null, fuente: 'whatsapp',
-          });
-          if (datosFactura.email) await enviarFacturaPorEmail(negocioId, factura.id, datosFactura.email).catch(() => {});
-          const msgFactura = datosFactura.email
-            ? `Tu factura (${factura.uuid || factura.id}) fue generada y enviada a ${datosFactura.email}. ¡Gracias!`
-            : `Tu factura fue generada exitosamente. UUID: ${factura.uuid || factura.id}. Si quieres recibirla por email, compárteme tu correo.`;
-          await enviarMensaje(telefono, msgFactura, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', msgFactura, negocioId, 'bot');
-          console.log(`[Meta WA] Factura generada para ${telefono}: ${factura.id}`);
-        }
-      } catch (e) {
-        // Dos fallos distintos que antes se veían igual: el negocio no tiene
-        // cuenta de Facturapi (así no va a poder timbrar nunca) y el timbrado
-        // falló esta vez. El log los separa para que quien opera sepa si hay
-        // algo que configurar o algo que reintentar.
-        if (e instanceof FacturapiNoConfiguradoError) {
-          console.error(`[Meta WA] Factura pedida por ${telefono} y el negocio ${negocioId} no tiene Facturapi configurado`);
-        } else {
-          console.error('[Meta WA] Error generando factura:', e.message);
-        }
-        await enviarMensaje(telefono, 'Hubo un problema generando tu factura. Comunícate con nosotros directamente para ayudarte.', credenciales);
       }
     }
 
