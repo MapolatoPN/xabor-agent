@@ -152,6 +152,11 @@ const SCRIPTS = [
   // nombran explícitamente en su INSERT/SELECT. (No existe la 087 en esta
   // rama -- feature de facturación aparte, sin commitear todavía.)
   '088-cortes-descuentos-promociones',
+  // 089 le pone fecha a cada clave de `configuracion`, que es donde viven
+  // todos los interruptores del producto y donde no había ni una. Va aquí, al
+  // final, porque nada depende de ella para arrancar: es para poder contestar
+  // «¿desde cuándo está así este negocio?» la próxima vez que haga falta.
+  '089-configuracion-fechada',
 ];
 
 for (const nombre of CHECKS) {
