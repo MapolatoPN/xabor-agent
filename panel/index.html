@@ -1246,7 +1246,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Modal: factura CFDI -->
 <div id="modal-factura-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-height:90vh;overflow-y:auto;">
-    <h3 style="margin-bottom:6px;font-size:1rem;color:#1c1c1c;">Generar factura (CFDI)</h3>
+    <h3 style="margin-bottom:6px;font-size:1rem;color:#1c1c1c;"><i class="ti ti-file-invoice" aria-hidden="true"></i> Generar factura (CFDI)</h3>
     <p id="factura-ref" style="font-size:0.82rem;color:#888;margin-bottom:14px;"></p>
     <input type="hidden" id="factura-folio">
     <div style="display:flex;flex-direction:column;gap:10px;">
@@ -2104,7 +2104,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;">
         <div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label>
-          <select id="facturacion-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;">
+          <select id="fc-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;">
             <option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option>
           </select></div>
         <label style="font-size:0.82rem;padding-bottom:9px;"><input type="checkbox" id="facturacion-auto" checked> Crear recibo al cerrar/cobrar</label>
@@ -4034,7 +4034,7 @@ async function cargarEstadoFacturapi() {
     if (!r.ok) throw new Error(d.error || 'No disponible');
     PUEDE_FACTURAR = !!d.puedeFacturar;
     const cfg = d.configuracion || {};
-    document.getElementById('facturacion-iva').value = cfg.iva_tasa == null ? '' : String(Number(cfg.iva_tasa));
+    document.getElementById('fc-iva').value = cfg.iva_tasa == null ? '' : String(Number(cfg.iva_tasa));
     document.getElementById('facturacion-auto').checked = cfg.autoemitir_recibo !== false;
     caja.innerHTML = d.puedeFacturar
       ? '<b style="color:#15803d">Lista para emitir.</b> Cuenta vinculada e IVA confirmado.'
@@ -4063,7 +4063,7 @@ async function desvincularFacturapi() {
 }
 
 async function guardarConfigFacturacion() {
-  const iva = document.getElementById('facturacion-iva').value;
+  const iva = document.getElementById('fc-iva').value;
   const msg = document.getElementById('facturapi-msg');
   if (iva === '') { msg.textContent = 'Selecciona la tasa de IVA confirmada para el negocio.'; return; }
   const r = await apiFetch('/api/admin/facturacion/configuracion', {
@@ -4166,7 +4166,7 @@ async function cargarConfigPortada() {
       if (r.ok) {
         const d = await r.json();
         PUEDE_FACTURAR = !!d.puedeFacturar;
-        chip('facturacion', d.puedeFacturar ? 'ok' : 'warn', d.puedeFacturar ? '✓ Lista para emitir' : '⚠ Configuración incompleta');
+        chip('facturacion', d.puedeFacturar ? 'ok' : 'warn', d.puedeFacturar ? '✓ Lista para emitir' : (d.proveedorConfigurado ? '⚠ Falta tasa de IVA' : '⚠ Falta vincular Facturapi'));
       }
     } catch (err) {}
   }
@@ -5113,6 +5113,14 @@ const NAV_ICONOS = {
   'tab-usuarios':'ti ti-user-cog', 'tab-config':'ti ti-settings',
   'tab-diagnostico':'ti ti-activity',
 };
+// Icono de trazo para acciones fiscales; evita que la factura dependa de un
+// emoji distinto en cada sistema operativo.
+const ICONOS_FACTURACION = {
+  factura: '<path d="M4 2v20"></path><path d="M20 2v20"></path><path d="M4 2h16"></path><path d="M4 22h16"></path><path d="M8 6h8"></path><path d="M8 10h8"></path><path d="M8 14h5"></path>',
+};
+function iconoFactura() {
+  return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS_FACTURACION.factura}</svg>`;
+}
 // Tabs que YA son entradas de la barra inferior: no se repiten en el drawer.
 const DRAWER_EXCLUIR = new Set(['tab-comandas', 'tab-chats', 'tab-corte']);
 
@@ -7560,7 +7568,7 @@ async function cargarHistorial() {
     const adminBtns = isAdmin && !cancelado ? `
       <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
       ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
-      <button onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;">🧾 Factura</button>
+      ${PUEDE_FACTURAR?`<button class="btn-fila" onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;display:inline-flex;align-items:center;gap:3px;">${iconoFactura()} Factura</button>`:''}
       <button onclick="reenviarACocina('${folio}')" title="Vuelve a imprimir la comanda por Xabor Edge; el pedido y su pago no se tocan" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;cursor:pointer;">🔁 Reenviar a cocina</button>` : '';
     const rastroEdge = p.impresion_edge && p.impresion_edge.estado
       ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : (p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';

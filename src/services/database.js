@@ -5,10 +5,16 @@ import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
 const { Pool } = pkg;
+const DB_HOST = (() => {
+  try { return new URL(process.env.DATABASE_URL || '').hostname; }
+  catch { return ''; }
+})();
+const DB_SSL = ['localhost', '127.0.0.1', '::1'].includes(DB_HOST)
+  ? false : { rejectUnauthorized: false };
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: DB_SSL,
   // Igual al default de pg (10). Configurable solo para poder REPRODUCIR en
   // pruebas la saturación del pool con pocas peticiones.
   max: Number(process.env.XABOR_PG_POOL_MAX) || 10,
@@ -45,7 +51,7 @@ export function poolDeClaims() {
   if (!_poolClaims) {
     _poolClaims = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: DB_SSL,
       max: Number(process.env.XABOR_PG_POOL_CLAIMS_MAX) || 8,
       connectionTimeoutMillis: Number(process.env.XABOR_PG_POOL_CLAIMS_TIMEOUT_MS) || 20000,
     });

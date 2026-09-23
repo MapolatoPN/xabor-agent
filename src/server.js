@@ -3618,7 +3618,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
   const autorizacionPresencial = autorizarDescuento({
-    rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento,
+    rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento, requiereMotivo: false,
   });
   if (!autorizacionPresencial.ok) {
     return res.status(autorizacionPresencial.status).json({
@@ -3671,7 +3671,9 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   orden.descuentos = construirDesgloseDescuentos({
     manual: !esPorCobrar && descAutorizado > 0 ? {
       monto: descAutorizado, tipo: 'monto_fijo', motivo: autorizacionPresencial.motivo,
-      autorizadoPor: req.usuarioId || null,
+      // La captura presencial clásica no tenía una autorización explícita;
+      // conservar el actor de sesión aquí inventaría un dato histórico.
+      autorizadoPor: null,
     } : null,
     promociones: [],
     rewards: null,
@@ -7051,9 +7053,12 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
         acumulable: a.acumulable, prioridad: a.prioridad, codigo: a.codigo || null,
       }));
     } catch (e) { console.error('[POS] motor de promociones falló:', e.message); }
-    const descuentoManual = Math.max(0, Number(descuento) || 0);
+    // El POS histórico topaba el importe manual al subtotal. Conservamos esa
+    // semántica para no rechazar ventas antiguas ni crear descuentos mayores
+    // que la venta; el importe guardado es el efectivamente aplicado.
+    const descuentoManual = Math.min(subtotal, Math.max(0, Number(descuento) || 0));
     const autorizacionManual = autorizarDescuento({
-      rol: req.rol, subtotal, descuento: descuentoManual, motivo: motivo_descuento,
+      rol: req.rol, subtotal, descuento: descuentoManual, motivo: motivo_descuento, requiereMotivo: false,
     });
     if (!autorizacionManual.ok) {
       if (reserva.reservado) reserva.liberar(new Error(autorizacionManual.mensaje));
@@ -7073,7 +7078,7 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     orden.envio_gratis = envioGratisPos;
     if (promocionesPos.length) orden.promociones = promocionesPos;
     if (descuentoManualAplicado > 0) {
-      orden.motivo_descuento = String(motivo_descuento).trim();
+      orden.motivo_descuento = autorizacionManual.motivo;
       orden.descuento_tipo = 'monto_fijo';
       orden.descuento_valor = descuentoManualAplicado;
       orden.descuento_por = req.usuarioId || null;

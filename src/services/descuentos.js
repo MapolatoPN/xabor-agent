@@ -16,13 +16,13 @@ export const LIMITE_DESCUENTO_STAFF = 0.10;
 
 export const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-export function autorizarDescuento({ rol, subtotal, descuento, motivo }) {
+export function autorizarDescuento({ rol, subtotal, descuento, motivo, requiereMotivo = true }) {
   const sub = redondear(subtotal);
   const desc = redondear(descuento);
   if (!Number.isFinite(desc) || desc < 0 || desc > sub) {
     return { ok: false, status: 400, codigo: 'DESCUENTO_INVALIDO', mensaje: 'Descuento inválido' };
   }
-  if (desc > 0 && !String(motivo || '').trim()) {
+  if (desc > 0 && requiereMotivo && !String(motivo || '').trim()) {
     return { ok: false, status: 400, codigo: 'MOTIVO_REQUERIDO', mensaje: 'El motivo del descuento es obligatorio' };
   }
   if (desc > 0 && rol !== 'admin' && desc > sub * LIMITE_DESCUENTO_STAFF + 0.005) {
@@ -31,7 +31,8 @@ export function autorizarDescuento({ rol, subtotal, descuento, motivo }) {
       mensaje: `El descuento máximo para staff es ${Math.round(LIMITE_DESCUENTO_STAFF * 100)}% del subtotal`,
     };
   }
-  return { ok: true, descuento: desc, motivo: desc > 0 ? String(motivo).trim() : null };
+  const motivoNormalizado = String(motivo ?? '').trim();
+  return { ok: true, descuento: desc, motivo: desc > 0 && motivoNormalizado ? motivoNormalizado : null };
 }
 
 // De porcentaje o importe al monto en pesos, redondeado a centavos. No se

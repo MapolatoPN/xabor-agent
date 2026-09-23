@@ -9,7 +9,9 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl });
 
 const foto = async () => (await db.query(`
   SELECT (SELECT count(*) FROM pedidos_activos)::int AS pedidos,
-         (SELECT count(*) FROM ventas)::int AS ventas,
+         -- Las ventas durables del esquema actual viven en pedidos_activos;
+         -- no existe una tabla "ventas" versionada que pueda consultarse aquí.
+         (SELECT count(*) FROM pedidos_activos WHERE estado <> 'cancelado')::int AS ventas,
          (SELECT count(*) FROM negocios)::int AS negocios`)).rows[0];
 
 try {

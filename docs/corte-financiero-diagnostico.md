@@ -2,9 +2,9 @@
 
 ## Alcance inspeccionado
 
-- Rama: `rescue/mesero-tool-agent`
-- Commit base inspeccionado: `f2369fbadb6d8b2bea84e4d263fa55cc291267f3` (`docs: aclarar que Wansoft era un sistema externo`)
-- La revisión y las pruebas de esta tarea no consultaron producción ni ejecutaron suites que escriban en la base compartida.
+- Rama de integración inspeccionada: `integracion/corte-facturacion-20260923`
+- Commit de integración previo: `10f0032` (`feat: integrar corte financiero, promociones y facturacion`)
+- La verificación se hizo sobre un PostgreSQL local desechable (`xabor-ci-db`); no se desplegó, no se hizo push y no se escribieron datos de producción.
 
 ## Evidencia del modelo actual
 
@@ -87,4 +87,13 @@ node test/fase-corte-descuentos.mjs  # 9 pruebas pasaron
 git diff --check
 ```
 
-No se ejecutó `test/fase-cortes-caja.mjs` ni ningún predeploy contra una base compartida: ambas rutas escriben datos. Antes de desplegar, el siguiente paso seguro es aplicar la migración en un entorno aislado, ejecutar esa suite con una base dedicada y revisar un corte ficticio cerrado y su reimpresión.
+En la base local aislada también pasaron:
+
+- `test/fase-descuentos-normalizados.mjs`: 26/26;
+- `test/fase3a-registro-usos-promociones.mjs`: 31/31;
+- `test/fase-cobro-diferido.mjs`: 28/28;
+- `test/fase-cortes-caja.mjs`: 39/39;
+- `test/fase-facturacion-por-negocio.mjs`: 39/39, usando una clave Base64 efímera sólo para la prueba.
+- predeploy 087/088/090/091: aplicados/verificados en la base desechable sin cambiar conteos del camino crítico.
+
+La revisión de producción fue únicamente de lectura. Confirmó que el binario actualmente desplegado aún no tiene todas las tablas/columnas de las migraciones 087, 088, 090 y 091; por eso no se activa este cambio hasta ejecutar el predeploy en una base dedicada, revisar el backfill y validar canario.

@@ -265,7 +265,7 @@ await t('PRESENCIAL', 'I. pedido abierto (por_cobrar): descuentos en cero hasta 
   });
 });
 
-await t('PRESENCIAL', 'D. solo Rewards (flujo clásico): parche posterior a registrarCanje', async () => {
+await t('PRESENCIAL', 'D. solo Rewards (flujo clásico): registrarCanje estampa el snapshot durable', async () => {
   const tel = '5218780002001';
   await crearCuentaRewards(tel, 'Rewards clásico', 500);
   const r = await api('/api/pedido-presencial', { method: 'POST', body: {
@@ -273,7 +273,7 @@ await t('PRESENCIAL', 'D. solo Rewards (flujo clásico): parche posterior a regi
     forma_pago: 'efectivo', rewards_telefono: tel, rewards_canje_puntos: 100 } });
   assert.strictEqual(r.status, 200, JSON.stringify(r.body));
   const fila = await leerFila(r.body.pedido.id);
-  assert.strictEqual(fila.datos.rewards_canje, undefined, 'gap legacy preexistente: este flujo NUNCA escribió rewards_canje en datos -- Fase 2 no lo cambia');
+  assert.deepStrictEqual(fila.datos.rewards_canje, { puntos: 100, monto: 50, usuario: 'operador' }, 'el canje deja snapshot durable en la venta');
   assert.strictEqual(fila.datos.descuentos.rewards.monto, 50, '100 pts × 0.5 = $50');
   assert.strictEqual(fila.datos.descuentos.rewards.puntos, 100);
   assert.strictEqual(fila.datos.descuentos.manual.monto, 0);

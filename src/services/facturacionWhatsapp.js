@@ -1,8 +1,27 @@
-import { pool } from './database.js';
+import { pool, obtenerClientesFiscalesPorTelefono } from './database.js';
 import {
   asegurarReciboPedido, obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura,
 } from './facturacionService.js';
+
+// Reconocimiento informativo: nunca selecciona ni expone una ficha fiscal.
+// Si la consulta falla, el enlace de autofactura sigue siendo entregable.
+async function avisoDeReconocimiento(negocioId, telefono) {
+  let conocidos;
+  try {
+    conocidos = await obtenerClientesFiscalesPorTelefono(negocioId, telefono);
+  } catch (e) {
+    console.warn(`[Facturacion WA] avisoDeReconocimiento no pudo consultar clientes_fiscales (negocio=${negocioId}): ${e.message}`);
+    return '';
+  }
+  if (!conocidos.length) return '';
+  if (conocidos.length === 1) {
+    return '\n\nEncontramos datos fiscales utilizados anteriormente. '
+      + 'Podrás confirmarlos o corregirlos en el portal de facturación.';
+  }
+  return '\n\nEncontramos varias opciones de datos fiscales utilizados anteriormente. '
+    + 'Podrás confirmar la que corresponda en el portal de facturación.';
+}
 
 export function esSolicitudFactura(texto) {
   return /\b(factur(?:a|ar|aci[oó]n)|cfdi|comprobante\s+fiscal|ticket\s+para\s+facturar)\b/i.test(String(texto || ''));
@@ -84,9 +103,10 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
     const vigencia = recibo.expires_at
       ? `\nVigente en el portal hasta: ${new Date(recibo.expires_at).toLocaleDateString('es-MX')}.`
       : '';
+    const aviso = await avisoDeReconocimiento(negocioId, telefono);
     return {
       manejado: true,
-      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}`,
+      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}${aviso}`,
     };
   } catch (e) {
     return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.', error: e };

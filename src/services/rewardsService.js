@@ -21,6 +21,7 @@
  */
 
 import { pool, obtenerEstadoModulo } from './database.js';
+import { construirDesgloseDescuentos } from './descuentos.js';
 
 const DEFAULT_TENANT = 'xabor-principal';
 
@@ -636,9 +637,15 @@ export async function registrarCanje(folio, telefono, puntosACanjear, usuario, t
       const totalFinal = yaEstampado || !Number.isFinite(totalOriginal)
         ? totalOriginal
         : Math.max(0, Math.round((totalOriginal - montoCanje) * 100) / 100);
+      const descuentos = construirDesgloseDescuentos({
+        manual: datosPedido.descuentos?.manual || null,
+        promociones: datosPedido.descuentos?.promociones || [],
+        rewards: { monto: montoCanje, puntos: puntosACanjear },
+      });
       const parche = {
         ...(Number.isFinite(totalFinal) ? { total: totalFinal } : {}),
         rewards_canje: { puntos: puntosACanjear, monto: montoCanje, usuario },
+        descuentos,
       };
       await client.query(
         `UPDATE pedidos_activos
