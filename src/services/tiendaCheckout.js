@@ -544,6 +544,7 @@ export async function finalizarCheckout({ negocioId, token, pedido, datosPedido,
         // antes de consumir: una reserva de otra versión ya no representa el
         // precio que se cobró.
         pedidoVersion: calcularVersionPedidoHash(datos),
+        canal: 'tienda_online',
       });
     });
   }

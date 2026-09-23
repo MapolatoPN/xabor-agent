@@ -160,7 +160,22 @@ await pool.query(
 const { rows: [cat] } = await pool.query(
   `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,$2,TRUE,988) RETURNING id`,
   [A, 'Fase2 descuentos (test)']);
+// Idempotente a propósito: un segundo arranque de esta suite sobre la misma
+// base (sin reset entre corridas) NO debe crear un segundo "Taco Fase2".
+// Antes insertaba sin condición y, tras varias corridas, dejaba N filas con
+// el mismo nombre para el negocio -- validarOrdenPropuesta las busca por
+// negocio_id (sin filtrar categoría, ver validadorOrden.js) y el lookup por
+// nombre se vuelve ambiguo (PRODUCTO_NO_EXISTE, motivo="ambiguo"), un fallo
+// de fixture contaminado, no del código de producto. La búsqueda de
+// reutilización es por negocio_id + nombre (igual que la ambigüedad real),
+// NO por categoría: la categoría de arriba tampoco es idempotente (se
+// re-crea cada corrida), así que anclar la reutilización a su id cambiaría
+// en cada corrida y nunca encontraría el producto de la corrida anterior.
 async function crearProducto(nombre, precio) {
+  const { rows: [existente] } = await pool.query(
+    `SELECT id FROM menu_productos WHERE negocio_id=$1 AND nombre=$2 LIMIT 1`,
+    [A, nombre]);
+  if (existente) return existente.id;
   const { rows: [p] } = await pool.query(
     `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
      VALUES ($1,$2,$3,$4,TRUE,FALSE,1) RETURNING id`, [A, cat.id, nombre, precio]);

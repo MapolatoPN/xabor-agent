@@ -21,6 +21,7 @@ import {
   pedidosConEmisionOperacionalPendiente
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
+import { registrarUsoPromocionSimple } from '../services/tiendaPromociones.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
 import { emitirComandaDePedidoPorEdge } from '../printing/edgeComanda.js';
 import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
@@ -394,6 +395,25 @@ export async function registrarPedido(orden, canal = 'test') {
 
   if (!pedido) {
     throw new Error(`FOLIO_NO_DISPONIBLE: ${MAX_REINTENTOS_FOLIO} folios consecutivos ya existían en pedidos_activos (canal=${canal}) — pedido rechazado sin confirmar al cliente`);
+  }
+
+  // Fase 3A -- registro de auditoría multicanal de usos de promociones. Solo
+  // POS y WhatsApp/Mesero (allowlist explícita a propósito: tienda ya tiene su
+  // propio ciclo reserva→consumo por otro camino, y no queremos que voz, api,
+  // prueba_admin, test u otro canal futuro quede incluido por accidente). Se
+  // espera (no fire-and-forget) para reducir la ventana entre "pedido
+  // persistido" y "uso registrado", pero un fallo aquí NUNCA debe tocar el
+  // pedido ya persistido: se loguea y se sigue -- nunca se relanza hacia el
+  // caller ni se revierte nada financiero.
+  if ((canal === 'pos' || canal === 'whatsapp') && pedido.descuentos?.promociones?.length) {
+    try {
+      await registrarUsoPromocionSimple({
+        negocioId, folio: pedido.id, aplicadas: pedido.descuentos.promociones,
+        telefono: pedido.cliente?.telefono || null, montoVenta: pedido.total, canal,
+      });
+    } catch (e) {
+      console.error(`[Promos] registro de uso falló para ${pedido.id}:`, e.message);
+    }
   }
 
   pedidos.push(pedido);

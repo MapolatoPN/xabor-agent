@@ -665,7 +665,7 @@ export async function liberarUsosPromociones(negocioId, aplicadas = [], contexto
 // (negocio, promoción, folio) y no duplica nada.
 export async function registrarUsosPromociones({
   negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, clienteNuevo = false,
-  checkoutToken = null, estadoFinal = 'consumida', pedidoVersion = null,
+  checkoutToken = null, estadoFinal = 'consumida', pedidoVersion = null, canal = 'tienda_online',
 }) {
   if (!aplicadas.length) return { registrados: 0 };
   // Solo dos estados posibles: cualquier otra cosa seria vocabulario inventado
@@ -685,11 +685,12 @@ export async function registrarUsosPromociones({
             SET pedido_folio = $4, monto_descuento = $5, monto_venta = $6,
                 cliente_nuevo = $7, cliente_telefono = COALESCE(cliente_telefono, $8),
                 estado = $9, pedido_version = COALESCE($10, pedido_version),
-                consumida_at = CASE WHEN $9 = 'consumida' THEN COALESCE(consumida_at, NOW()) END
+                consumida_at = CASE WHEN $9 = 'consumida' THEN COALESCE(consumida_at, NOW()) END,
+                canal = COALESCE(canal, $11)
           WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3
             AND estado <> 'consumida'`,
         [negocioId, a.id, PREFIJO_RESERVA + checkoutToken, folio,
-         a.descuento || 0, montoVenta, !!clienteNuevo, telefono, estado, pedidoVersion]
+         a.descuento || 0, montoVenta, !!clienteNuevo, telefono, estado, pedidoVersion, canal]
       );
       if (confirmados > 0) {
         fallaInyectada('atribucion_tras_convertir');
@@ -715,12 +716,12 @@ export async function registrarUsosPromociones({
       const { rowCount } = await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-            monto_descuento, monto_venta, cliente_nuevo, estado, pedido_version, consumida_at)
+            monto_descuento, monto_venta, cliente_nuevo, estado, pedido_version, consumida_at, canal)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                 CASE WHEN $9 = 'consumida' THEN NOW() END)
+                 CASE WHEN $9 = 'consumida' THEN NOW() END, $11)
          ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
         [negocioId, a.id, a.campaniaId, folio, telefono,
-         a.descuento || 0, montoVenta, !!clienteNuevo, estado, pedidoVersion]
+         a.descuento || 0, montoVenta, !!clienteNuevo, estado, pedidoVersion, canal]
       );
       if (rowCount > 0) {
         fallaInyectada('atribucion_tras_insert');
@@ -766,10 +767,11 @@ export async function registrarUsosPromociones({
                 consumida_at = CASE
                   WHEN estado = 'consumida' THEN consumida_at
                   WHEN $8 = 'consumida' THEN NOW()
-                  ELSE consumida_at END
+                  ELSE consumida_at END,
+                canal = COALESCE(canal, $10)
           WHERE negocio_id = $1 AND promocion_id = $2 AND pedido_folio = $3`,
         [negocioId, a.id, folio, a.descuento || 0, montoVenta, !!clienteNuevo,
-         telefono, estado, pedidoVersion]);
+         telefono, estado, pedidoVersion, canal]);
       if (reconciliados > 0) registrados++;
     }
     fallaInyectada('atribucion_antes_de_commit');
@@ -786,6 +788,49 @@ export async function registrarUsosPromociones({
     throw e;
   } finally {
     client.release();
+  }
+  return { registrados };
+}
+
+// ── Fase 3A: registro simple de uso (auditoría multicanal, POS/WhatsApp) ──
+//
+// NO REEMPLAZAR esta función por `registrarUsosPromociones` ni llamar a esa
+// desde POS/WhatsApp/Mesero. `registrarUsosPromociones` hace ADEMÁS
+// enforcement real: reclama `tienda_promociones.usos` contra `limite_usos` y
+// puede lanzar `PromocionError('CUPO_AGOTADO')` abortando la transacción.
+// Pertenece al ciclo reserva → pedido → consumo, exclusivo de la tienda en
+// línea (reserva el cupo ANTES de crear el pedido). Reutilizarla aquí haría
+// que POS/WhatsApp empezaran a contar contra el límite global compartido con
+// tienda -- enforcement cross-canal por accidente, que Fase 3A NO debe hacer.
+//
+// Esta función es SOLO auditoría: una fila por (negocio, promoción, folio),
+// sin tocar el contador de cupo, sin límite por cliente, sin poder fallar
+// "cerrado". Recibe las promociones YA aplicadas (de `datos.descuentos.
+// promociones`, Fase 2) -- nunca vuelve a correr `calcularPromociones`.
+// Idempotente por el mismo UNIQUE que ya usa la tienda
+// (negocio_id, promocion_id, pedido_folio): un reintento con el mismo folio
+// no duplica, sin necesidad de SELECT previo.
+//
+// `canal` (migración 090) se persiste en la fila misma porque es la única
+// forma durable de conservarlo: ni `pedidos_activos` ni `pedidos` sobreviven
+// una cancelación (ambos mueren en la misma transacción de eliminarPedido(),
+// database.js), y ninguna otra tabla durable (compras_reales,
+// impresion_trabajos, notificaciones_repartidor) lleva un canal de venta
+// genérico. Investigado y confirmado antes de agregar la columna -- ver
+// docs/fase3a-registro-usos-promociones.md.
+export async function registrarUsoPromocionSimple({ negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, canal = null }) {
+  if (!aplicadas.length) return { registrados: 0 };
+  let registrados = 0;
+  for (const a of aplicadas) {
+    const { rowCount } = await pool.query(
+      `INSERT INTO tienda_promocion_usos
+         (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
+          monto_descuento, monto_venta, estado, consumida_at, canal)
+       VALUES ($1,$2,NULL,$3,$4,$5,$6,'consumida',NOW(),$7)
+       ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
+      [negocioId, a.promocionId ?? a.id, folio, telefono, a.monto ?? a.descuento ?? 0, montoVenta, canal]
+    );
+    if (rowCount > 0) registrados++;
   }
   return { registrados };
 }
