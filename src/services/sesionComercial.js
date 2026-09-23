@@ -41,8 +41,68 @@ async function registrarEventoSesion(sesionId, negocioId, tipoEvento, detalle = 
   }
 }
 
-/** Sesión activa (no finalizada/abandonada) de este negocio+teléfono, o null. */
-export async function obtenerSesionActiva(negocioId, telefono) {
+// ─── UNA SESIÓN COMERCIAL TIENE QUE PODER TERMINARSE SOLA ─────────────────
+//
+// Nadie marcaba `abandonada` nunca. Ni un job, ni un barrido, ni el propio
+// flujo: los seis sitios que escriben esta tabla cambian de estado por algo
+// que PASÓ, y que el cliente deje de contestar no pasa en ningún sitio.
+//
+// Lo que eso provoca no se parece a su causa, y costó encontrarlo:
+//
+//   · `whatsapp-meta.js` desvía al bot anterior TODA conversación con sesión
+//     comercial activa, antes del agente de herramientas y con `return`;
+//   · así que una sesión abierta una vez y nunca cerrada ANCLA a ese cliente
+//     al bot viejo para siempre, y lo vuelve invisible para el agente y para
+//     su canario.
+//
+// Medido en producción el 23-sep-2026, Mapolato Obispado: **24 clientes**
+// anclados, 6 con actividad esa semana. Los 24 con `campos_capturados = {}`,
+// un solo evento y `updated_at = created_at` — abiertos una vez, sin capturar
+// nada, algunos hacía tres semanas. Uno de ellos llevaba 129 mensajes en
+// siete días pidiendo chilaquiles, y ninguno llegó al agente.
+//
+// ── La regla, y por qué sobre `updated_at` ───────────────────────────────
+//
+// Una sesión sin NOVEDAD en N horas se da por abandonada. No «sin mensajes»:
+// sin novedad EN LA SESIÓN. El trigger `set_updated_at` (migración 028) la
+// toca en cada cambio de estado y en cada campo capturado, así que una
+// cotización que avanza sobrevive aunque el cliente tarde un día en
+// contestar, y una que se abrió y no capturó nada caduca aunque el cliente
+// siga escribiendo de otra cosa — que es exactamente la diferencia que hacía
+// falta.
+//
+// Caducar sobre «último mensaje del cliente» habría sido lo contrario: a
+// Mario, que escribe a diario, no le habría caducado nunca.
+const TTL_HORAS_OMISION = 48;
+export const CLAVE_TTL_SESION = 'cotizacion_sesion_ttl_horas';
+
+/**
+ * Horas de vida de una sesión sin novedad, según el negocio.
+ *
+ * Un valor raro, ausente o no positivo cae al default. No se acepta `0`
+ * —que caducaría toda sesión al instante y dejaría el asistente comercial
+ * inservible sin que nadie tocara su módulo— ni un valor negativo.
+ */
+export function ttlDeSesionHoras(cfg) {
+  const n = Number(String(cfg?.[CLAVE_TTL_SESION] ?? '').trim());
+  return Number.isFinite(n) && n > 0 ? n : TTL_HORAS_OMISION;
+}
+
+/**
+ * Sesión activa (no finalizada/abandonada, y CON NOVEDAD RECIENTE) de este
+ * negocio+teléfono, o null.
+ *
+ * Una sesión caducada no solo se deja fuera: se marca `abandonada`, con su
+ * evento de auditoría. Dejarla abierta y solo ignorarla aquí haría que el
+ * panel siguiera enseñando oportunidades que ya no existen, y que el
+ * siguiente que lea la tabla por su cuenta vuelva a tropezar con lo mismo.
+ *
+ * El marcado no bloquea la respuesta: si falla, se registra y la sesión
+ * igualmente se trata como inactiva. Lo que no puede pasar es lo contrario
+ * —tratarla como activa porque no se pudo cerrar—, que es el fallo que esto
+ * viene a cerrar.
+ */
+export async function obtenerSesionActiva(negocioId, telefono, { ahora = null, ttlHoras = null } = {}) {
   const nid = exigirNegocioId(negocioId, 'obtenerSesionActiva');
   if (typeof telefono !== 'string' || !telefono.trim()) return null;
   const { rows } = await pool.query(
@@ -50,7 +110,37 @@ export async function obtenerSesionActiva(negocioId, telefono) {
      WHERE negocio_id = $1 AND telefono = $2 AND estado NOT IN ${ESTADOS_ACTIVOS_SQL}`,
     [nid, telefono.trim()]
   );
-  return rows[0] || null;
+  const sesion = rows[0] || null;
+  if (!sesion) return null;
+
+  let horas = ttlHoras;
+  if (horas === null) {
+    // Se lee aquí y no se cachea: cambiar el TTL tiene que valer para el
+    // mensaje siguiente. `obtenerConfiguracion` ya se traga sus errores y
+    // devuelve `{}`, así que un fallo de lectura cae al default, no a
+    // «sin caducidad».
+    const { obtenerConfiguracion } = await import('./database.js');
+    horas = ttlDeSesionHoras(await obtenerConfiguracion(nid).catch(() => ({})));
+  }
+
+  const referencia = ahora ? new Date(ahora) : new Date();
+  const ultima = new Date(sesion.updated_at || sesion.created_at);
+  const caducada = (referencia - ultima) > horas * 3600 * 1000;
+  if (!caducada) return sesion;
+
+  console.log(`[sesionComercial] evento=sesion_caducada negocio=${nid} sesion=${String(sesion.id).slice(0, 8)} `
+    + `estado=${sesion.estado} sin_novedad_horas=${Math.round((referencia - ultima) / 3600000)} ttl=${horas}`);
+  try {
+    await pool.query(
+      `UPDATE sesiones_comerciales SET estado = 'abandonada'
+        WHERE id = $1 AND negocio_id = $2 AND estado NOT IN ${ESTADOS_ACTIVOS_SQL}`,
+      [sesion.id, nid]);
+    await registrarEventoSesion(sesion.id, nid, 'sesion_abandonada_por_caducidad',
+      { ttl_horas: horas, estado_previo: sesion.estado });
+  } catch (e) {
+    console.error('[sesionComercial] no se pudo cerrar una sesión caducada:', e.message);
+  }
+  return null;
 }
 
 /**
