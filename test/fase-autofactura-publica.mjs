@@ -76,7 +76,7 @@ const api = async (token, sufijo = '') => {
   let json = null; try { json = JSON.parse(texto); } catch { /* no JSON */ }
   return { status: r.status, json, texto, tipo: r.headers.get('content-type') || '' };
 };
-const CAMPOS_PUBLICOS = ['negocio', 'folio', 'fecha', 'total', 'estado', 'expires_at'];
+const CAMPOS_PUBLICOS = ['negocio', 'folio', 'fecha', 'total', 'estado', 'expires_at', 'catalogos', 'avisos'];
 
 let liga, ligaB;
 try {
@@ -222,7 +222,9 @@ await t('13. GET /f/<token> sirve autofactura.html sin sesión', async () => {
 await t('14. el HTML no embebe datos de la venta ni secretos ni datos fiscales', async () => {
   for (const v of [liga.token, F('OK'), NOMBRE_A, NEG, '150.00']) assert.ok(!html.includes(v), `el HTML embebe "${v}"`);
   assert.ok(!/sk_(test|live)|token_hash|token_cifrado|INTEGRATIONS_ENCRYPTION_KEY|DATABASE_URL|api_key/i.test(html));
-  assert.ok(!/<form|<input|\bRFC\b|raz[oó]n social|r[eé]gimen|uso de? CFDI/i.test(html), 'la fase 2 no captura datos fiscales');
+  // Desde la fase 3 el HTML trae el formulario fiscal (vacío): lo que no
+  // puede traer es ningún valor capturado ni catálogos embebidos.
+  assert.ok(!/value="[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}"|<option value="6[0-9]{2}"|<option value="[A-Z][0-9]{2}"/.test(html), 'el HTML embebe datos fiscales o catálogos');
 });
 
 await t('15. E2E en navegador real: la página carga la venta usando solo el token de la URL', async () => {
@@ -234,15 +236,15 @@ await t('15. E2E en navegador real: la página carga la venta usando solo el tok
     await page.setRequestInterception(true);
     page.on('request', (req) => (req.url().startsWith(base) ? req.continue() : req.abort()));
     await page.goto(`${base}/f/${liga.token}`, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction((folio) => document.body.textContent.includes(folio), {}, F('OK'));
-    const texto = await page.evaluate(() => document.body.textContent);
+    await page.waitForFunction((folio) => document.getElementById('app').textContent.includes(folio), {}, F('OK'));
+    const texto = await page.evaluate(() => document.getElementById('app').textContent);
     assert.ok(texto.includes(NOMBRE_A));
     assert.ok(texto.includes('$150.00'));
     assert.ok(texto.includes('Tu ticket está disponible para facturación.'));
     assert.ok(!texto.includes(liga.token));
 
     await page.goto(`${base}/f/${'C'.repeat(43)}`, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => document.body.textContent.includes('No encontramos esta liga de facturación.'));
+    await page.waitForFunction(() => document.getElementById('app').textContent.includes('No encontramos esta liga de facturación.'));
   } finally {
     await browser.close();
   }
