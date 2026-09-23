@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Factura tu consumo</title>
+<style>
+:root{
+  --marca:#111827; --fondo:#f6f7f9; --superficie:#ffffff; --superficie-2:#f3f4f6;
+  --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af; --borde:#e5e7eb;
+  --exito:#059669; --exito-bg:#ecfdf5; --aviso:#b45309; --aviso-bg:#fffbeb;
+  --error:#dc2626; --error-bg:#fef2f2; --r:16px; --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){
+  :root{--fondo:#0b0f19;--superficie:#151b28;--superficie-2:#1c2333;
+    --texto:#f3f4f6;--texto-2:#9ca3af;--texto-3:#6b7280;--borde:#252d3d;
+    --exito-bg:#052e23;--aviso-bg:#2a1f05;--error-bg:#2d1214}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--fondo);color:var(--texto);line-height:1.45;font-size:16px;-webkit-font-smoothing:antialiased;
+  min-height:100vh;display:flex;align-items:flex-start;justify-content:center}
+.app{width:100%;max-width:460px;margin:0 auto;padding:28px 16px calc(32px + var(--safe-b))}
+.tarjeta{background:var(--superficie);border:1px solid var(--borde);border-radius:var(--r);
+  padding:24px 20px;box-shadow:0 1px 2px rgba(17,24,39,.04)}
+.cab{display:flex;gap:12px;align-items:center;margin-bottom:18px}
+.logo{width:48px;height:48px;border-radius:12px;object-fit:cover;background:var(--superficie-2);
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--marca);flex:none}
+.negocio{font-size:14px;color:var(--texto-2);font-weight:600}
+h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
+.folio-caja{background:var(--superficie-2);border-radius:12px;padding:16px;text-align:center;margin:16px 0}
+.folio-lbl{font-size:11.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.06em}
+.folio{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:3px 0 0;word-break:break-all}
+.item{display:flex;justify-content:space-between;font-size:14.5px;padding:8px 0;gap:12px;border-top:1px solid var(--borde)}
+.item span:first-child{color:var(--texto-2)}
+.item.total{font-size:18px;font-weight:800}
+.item.total span:first-child{color:var(--texto)}
+.estado{padding:13px 14px;border-radius:12px;font-size:14.5px;font-weight:600;margin-top:16px;display:flex;gap:9px;align-items:flex-start}
+.estado.vigente{background:var(--exito-bg);color:var(--exito)}
+.estado.facturada{background:var(--superficie-2);color:var(--texto)}
+.estado.expirada,.estado.revocada{background:var(--aviso-bg);color:var(--aviso)}
+.estado.error{background:var(--error-bg);color:var(--error)}
+.vacio{padding:56px 16px;text-align:center;color:var(--texto-2)}
+.vacio .ico{font-size:40px;margin-bottom:12px;opacity:.55}
+.vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
+.pie{text-align:center;font-size:11.5px;color:var(--texto-3);margin-top:22px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app"><div class="tarjeta" id="app"><div class="vacio">Cargando tu ticket…</div></div>
+<div class="pie">Facturación electrónica con Xabor</div></div>
+<script>
+'use strict';
+// El token viene SOLO de la URL. El HTML no trae datos de la venta: todo se
+// pide a la API pública, y el servidor decide qué se puede ver.
+const TOKEN = (location.pathname.match(/\/f\/([^/?#]+)/) || [])[1] || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fechaBonita = iso => {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '—';
+};
+
+const MENSAJES = {
+  vigente:   ['vigente',   'Tu ticket está disponible para facturación.'],
+  expirada:  ['expirada',  'Esta liga de facturación ha expirado.'],
+  revocada:  ['revocada',  'Esta liga ya no está disponible.'],
+  facturada: ['facturada', 'Este consumo ya fue facturado.'],
+  emitiendo: ['facturada', 'Este consumo se está facturando en este momento.'],
+  error:     ['error',     'No pudimos preparar la facturación de este ticket. Contacta al negocio con tu folio.'],
+};
+
+function noEncontrada() {
+  $('app').innerHTML = `<div class="vacio"><div class="ico">🔍</div>
+    <h3>No encontramos esta liga de facturación.</h3>
+    <p>La liga puede estar incompleta o ya no estar disponible.<br>Contacta al negocio con tu número de folio.</p></div>`;
+}
+
+function pintar(d) {
+  const nombre = d.negocio && d.negocio.nombre ? d.negocio.nombre : 'Tu negocio';
+  const inicial = nombre.trim().charAt(0).toUpperCase() || 'X';
+  const logo = d.negocio && d.negocio.logo_url
+    ? `<img class="logo" src="${esc(d.negocio.logo_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'logo',textContent:'${esc(inicial)}'}))">`
+    : `<div class="logo">${esc(inicial)}</div>`;
+  const [clase, texto] = MENSAJES[d.estado] || MENSAJES.error;
+  $('app').innerHTML = `
+    <div class="cab">${logo}<div><div class="negocio">${esc(nombre)}</div><h1>Factura tu consumo</h1></div></div>
+    <div class="folio-caja"><div class="folio-lbl">Folio</div><div class="folio">${esc(d.folio)}</div></div>
+    <div class="item"><span>Fecha</span><span>${esc(fechaBonita(d.fecha))}</span></div>
+    <div class="item total"><span>Total</span><span>${esc(dinero(d.total))}</span></div>
+    <div class="estado ${esc(clase)}">${esc(texto)}</div>`;
+}
+
+async function cargar() {
+  if (!TOKEN) return noEncontrada();
+  try {
+    const r = await fetch('/api/autofactura/' + encodeURIComponent(TOKEN), { cache: 'no-store' });
+    if (r.status === 404) return noEncontrada();
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'sin respuesta');
+    pintar(d);
+  } catch (e) {
+    $('app').innerHTML = `<div class="vacio"><div class="ico">⏳</div>
+      <h3>No pudimos consultar tu ticket</h3>
+      <p>Intenta de nuevo en unos minutos.</p></div>`;
+  }
+}
+cargar();
+</script>
+</body>
+</html>

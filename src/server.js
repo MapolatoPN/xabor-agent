@@ -101,6 +101,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -5075,6 +5076,9 @@ function requireModuloAlguno(modulos) {
 // demasiado grande. Se monta aquí, después de requireModulo, porque las
 // rutas de backoffice lo necesitan.
 registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno });
+// Autofactura nativa: superficie pública /f/<token> y /api/autofactura/<token>
+// (solo lectura, sin sesión; el token es la única autorización).
+registrarRutasAutofactura(app);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
