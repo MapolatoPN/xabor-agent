@@ -1668,6 +1668,12 @@ wss.on('connection', (ws) => {
 // por el cable) -- un JSON.stringify(req.body) re-serializado produce una
 // firma distinta y rompería la validación. Ningún otro endpoint recibe
 // req.rawBody: no se retiene memoria extra fuera del webhook.
+// Autofactura nativa: superficie pública /f/<token>, /api/autofactura/<token>
+// y /api/autofactura/<token>/validar (sin sesión; el token es la única
+// autorización). Se monta ANTES del express.json global para que el POST
+// público use su propio parser con límite real de 8 KB (ver autofacturaRutas.js).
+registrarRutasAutofactura(app);
+
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
@@ -5454,9 +5460,6 @@ function requireModuloAlguno(modulos) {
 // demasiado grande. Se monta aquí, después de requireModulo, porque las
 // rutas de backoffice lo necesitan.
 registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno });
-// Autofactura nativa: superficie pública /f/<token> y /api/autofactura/<token>
-// (solo lectura, sin sesión; el token es la única autorización).
-registrarRutasAutofactura(app);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

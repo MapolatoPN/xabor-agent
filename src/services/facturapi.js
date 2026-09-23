@@ -1,6 +1,7 @@
 // Cliente mínimo de Facturapi. Toda operación exige negocioId y resuelve la
 // llave cifrada de ese negocio; no existe respaldo global.
 import { obtenerCredencialesFacturapiDescifradas } from './integracionesService.js';
+import { REGIMENES_SAT, USOS_CFDI_SAT } from './catalogosSat.js';
 
 const BASE = 'https://www.facturapi.io/v2';
 
@@ -143,15 +144,8 @@ export async function descargarFacturaPDF(negocioId, facturaId) {
   return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/pdf`, undefined, { respuesta: 'arrayBuffer' });
 }
 
-export const USOS_CFDI = [
-  { clave: 'G01', desc: 'Adquisición de mercancías' },
-  { clave: 'G03', desc: 'Gastos en general' },
-  { clave: 'S01', desc: 'Sin efectos fiscales' },
-];
-
-export const REGIMENES = [
-  { clave: '601', desc: 'General de Ley Personas Morales' },
-  { clave: '612', desc: 'Personas físicas con actividades empresariales' },
-  { clave: '621', desc: 'Incorporación Fiscal' },
-  { clave: '626', desc: 'Simplificado de Confianza' },
-];
+// Catálogos SAT: la única fuente es catalogosSat.js (completos, con
+// aplicabilidad por tipo de persona). Aquí solo se conserva la forma
+// {clave, desc} que este módulo exponía.
+export const USOS_CFDI = USOS_CFDI_SAT.map((u) => ({ clave: u.clave, desc: u.nombre }));
+export const REGIMENES = REGIMENES_SAT.map((r) => ({ clave: r.clave, desc: r.nombre }));

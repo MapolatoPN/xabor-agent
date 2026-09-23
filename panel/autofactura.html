@@ -29,11 +29,14 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,san
   display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--marca);flex:none}
 .negocio{font-size:14px;color:var(--texto-2);font-weight:600}
 h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
+h2{font-size:17px;font-weight:800;margin:22px 0 4px}
+.sub{font-size:13.5px;color:var(--texto-2);margin:0 0 14px}
 .folio-caja{background:var(--superficie-2);border-radius:12px;padding:16px;text-align:center;margin:16px 0}
 .folio-lbl{font-size:11.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.06em}
 .folio{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:3px 0 0;word-break:break-all}
 .item{display:flex;justify-content:space-between;font-size:14.5px;padding:8px 0;gap:12px;border-top:1px solid var(--borde)}
 .item span:first-child{color:var(--texto-2)}
+.item span:last-child{text-align:right;word-break:break-word}
 .item.total{font-size:18px;font-weight:800}
 .item.total span:first-child{color:var(--texto)}
 .estado{padding:13px 14px;border-radius:12px;font-size:14.5px;font-weight:600;margin-top:16px;display:flex;gap:9px;align-items:flex-start}
@@ -41,6 +44,22 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
 .estado.facturada{background:var(--superficie-2);color:var(--texto)}
 .estado.expirada,.estado.revocada{background:var(--aviso-bg);color:var(--aviso)}
 .estado.error{background:var(--error-bg);color:var(--error)}
+.campo{margin-top:14px}
+label{display:block;font-size:13px;font-weight:700;color:var(--texto-2);margin-bottom:5px}
+input,select{width:100%;padding:12px 13px;border:1px solid var(--borde);border-radius:12px;background:var(--superficie);
+  color:var(--texto);font-size:16px;font-family:inherit;appearance:none;-webkit-appearance:none}
+input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--marca) 45%,transparent);outline-offset:1px;border-color:var(--marca)}
+.campo.con-error input,.campo.con-error select{border-color:var(--error)}
+.err{display:none;font-size:12.5px;color:var(--error);margin-top:5px;font-weight:600}
+.campo.con-error .err{display:block}
+.ayuda{font-size:12.5px;color:var(--texto-2);margin-top:5px}
+.btn{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:var(--marca);
+  color:#fff;font-size:15.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:18px}
+.btn.sec{background:var(--superficie-2);color:var(--texto);margin-top:10px}
+.btn:disabled{opacity:.55;cursor:default}
+.aviso{padding:13px 14px;border-radius:12px;font-size:14px;font-weight:600;margin-top:14px}
+.aviso.error{background:var(--error-bg);color:var(--error)}
+.aviso.exito{background:var(--exito-bg);color:var(--exito)}
 .vacio{padding:56px 16px;text-align:center;color:var(--texto-2)}
 .vacio .ico{font-size:40px;margin-bottom:12px;opacity:.55}
 .vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
@@ -54,7 +73,8 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
 <script>
 'use strict';
 // El token viene SOLO de la URL. El HTML no trae datos de la venta: todo se
-// pide a la API pública, y el servidor decide qué se puede ver.
+// pide a la API pública, y el servidor decide qué se puede ver y qué es
+// válido. Los catálogos de régimen y uso de CFDI también vienen del servidor.
 const TOKEN = (location.pathname.match(/\/f\/([^/?#]+)/) || [])[1] || '';
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -74,6 +94,11 @@ const MENSAJES = {
   emitiendo: ['facturada', 'Este consumo se está facturando en este momento.'],
   error:     ['error',     'No pudimos preparar la facturación de este ticket. Contacta al negocio con tu folio.'],
 };
+const CAMPOS = ['rfc', 'nombre', 'cp', 'regimen', 'uso_cfdi', 'email'];
+
+let VENTA = null;          // lo que respondió GET /api/autofactura/<token>
+let FORM = { rfc: '', nombre: '', cp: '', regimen: '', uso_cfdi: '', email: '' }; // lo capturado (solo memoria)
+let VALIDADO = null;       // lo que el servidor normalizó y confirmó
 
 function noEncontrada() {
   $('app').innerHTML = `<div class="vacio"><div class="ico">🔍</div>
@@ -81,19 +106,167 @@ function noEncontrada() {
     <p>La liga puede estar incompleta o ya no estar disponible.<br>Contacta al negocio con tu número de folio.</p></div>`;
 }
 
-function pintar(d) {
+function cabeceraHTML(d) {
   const nombre = d.negocio && d.negocio.nombre ? d.negocio.nombre : 'Tu negocio';
   const inicial = nombre.trim().charAt(0).toUpperCase() || 'X';
   const logo = d.negocio && d.negocio.logo_url
     ? `<img class="logo" src="${esc(d.negocio.logo_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'logo',textContent:'${esc(inicial)}'}))">`
     : `<div class="logo">${esc(inicial)}</div>`;
+  return `<div class="cab">${logo}<div><div class="negocio">${esc(nombre)}</div><h1>Factura tu consumo</h1></div></div>`;
+}
+
+function ticketHTML(d) {
   const [clase, texto] = MENSAJES[d.estado] || MENSAJES.error;
-  $('app').innerHTML = `
-    <div class="cab">${logo}<div><div class="negocio">${esc(nombre)}</div><h1>Factura tu consumo</h1></div></div>
+  return `
     <div class="folio-caja"><div class="folio-lbl">Folio</div><div class="folio">${esc(d.folio)}</div></div>
     <div class="item"><span>Fecha</span><span>${esc(fechaBonita(d.fecha))}</span></div>
     <div class="item total"><span>Total</span><span>${esc(dinero(d.total))}</span></div>
     <div class="estado ${esc(clase)}">${esc(texto)}</div>`;
+}
+
+function opciones(lista, seleccionada, tipo, regimen) {
+  // Con un RFC de 12 caracteres se muestran solo las claves aplicables a
+  // persona moral; con 13, las de persona física. Sin RFC aún, todas. Y un
+  // uso de CFDI solo se ofrece si el catálogo SAT lo admite para el régimen
+  // elegido (`regimenes` viene del backend, que lo vuelve a validar).
+  const aplica = o => (tipo === 'moral' ? o.moral : tipo === 'fisica' ? o.fisica : true)
+    && (!regimen || !Array.isArray(o.regimenes) || o.regimenes.includes(regimen));
+  return '<option value="">Selecciona…</option>' + lista.filter(aplica)
+    .map(o => `<option value="${esc(o.clave)}"${o.clave === seleccionada ? ' selected' : ''}>${esc(o.clave)} – ${esc(o.nombre)}</option>`).join('');
+}
+
+function refrescarCatalogos() {
+  const cat = VENTA.catalogos || { regimenes: [], usos_cfdi: [] };
+  leerFormulario();
+  const t = tipoPersona(FORM.rfc);
+  $('af-regimen').innerHTML = opciones(cat.regimenes, FORM.regimen, t);
+  // Si el régimen que estaba elegido ya no aplica, el select vuelve a vacío.
+  FORM.regimen = $('af-regimen').value;
+  $('af-uso_cfdi').innerHTML = opciones(cat.usos_cfdi, FORM.uso_cfdi, t, FORM.regimen);
+  FORM.uso_cfdi = $('af-uso_cfdi').value;
+}
+
+function tipoPersona(rfc) {
+  const r = String(rfc || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
+  return r.length === 12 ? 'moral' : r.length === 13 ? 'fisica' : null;
+}
+
+function pintarFormulario(errores) {
+  const d = VENTA; const cat = d.catalogos || { regimenes: [], usos_cfdi: [] };
+  const tipo = tipoPersona(FORM.rfc);
+  const avisoNombre = (d.avisos && d.avisos.nombre) || 'Debe coincidir exactamente con tu Constancia de Situación Fiscal.';
+  $('app').innerHTML = cabeceraHTML(d) + ticketHTML(d) + `
+    <h2>Datos fiscales</h2>
+    <p class="sub">Los usaremos para emitir tu factura. Aún no se emite nada al continuar.</p>
+    <form id="af-form" novalidate autocomplete="off">
+      <div class="campo" id="af-campo-rfc"><label for="af-rfc">RFC</label>
+        <input id="af-rfc" name="rfc" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="20" value="${esc(FORM.rfc)}" placeholder="Ej. XAXX010101ABC">
+        <div class="err" id="af-err-rfc"></div></div>
+      <div class="campo" id="af-campo-nombre"><label for="af-nombre">Nombre o razón social</label>
+        <input id="af-nombre" name="nombre" inputmode="text" maxlength="254" value="${esc(FORM.nombre)}">
+        <div class="ayuda">${esc(avisoNombre)}</div>
+        <div class="err" id="af-err-nombre"></div></div>
+      <div class="campo" id="af-campo-cp"><label for="af-cp">Código postal fiscal</label>
+        <input id="af-cp" name="cp" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${esc(FORM.cp)}" placeholder="5 dígitos">
+        <div class="err" id="af-err-cp"></div></div>
+      <div class="campo" id="af-campo-regimen"><label for="af-regimen">Régimen fiscal</label>
+        <select id="af-regimen" name="regimen">${opciones(cat.regimenes, FORM.regimen, tipo)}</select>
+        <div class="err" id="af-err-regimen"></div></div>
+      <div class="campo" id="af-campo-uso_cfdi"><label for="af-uso_cfdi">Uso de CFDI</label>
+        <select id="af-uso_cfdi" name="uso_cfdi">${opciones(cat.usos_cfdi, FORM.uso_cfdi, tipo, FORM.regimen)}</select>
+        <div class="err" id="af-err-uso_cfdi"></div></div>
+      <div class="campo" id="af-campo-email"><label for="af-email">Correo electrónico</label>
+        <input id="af-email" name="email" type="email" inputmode="email" autocapitalize="off" maxlength="254" value="${esc(FORM.email)}" placeholder="donde recibirás tu factura">
+        <div class="err" id="af-err-email"></div></div>
+      <div class="aviso error" id="af-aviso" style="display:none"></div>
+      <button class="btn" type="submit" id="af-continuar">Continuar</button>
+    </form>`;
+  if (errores) mostrarErrores(errores);
+  // Al cambiar el RFC se filtran los catálogos por tipo de persona; al cambiar
+  // el régimen, los usos de CFDI compatibles.
+  $('af-rfc').addEventListener('input', refrescarCatalogos);
+  $('af-regimen').addEventListener('change', refrescarCatalogos);
+  $('af-form').addEventListener('submit', enviar);
+}
+
+function leerFormulario() {
+  for (const c of CAMPOS) FORM[c] = $('af-' + c) ? $('af-' + c).value : '';
+}
+
+function mostrarErrores(errores) {
+  for (const c of CAMPOS) {
+    const campo = $('af-campo-' + c); const err = $('af-err-' + c);
+    if (!campo || !err) continue;
+    if (errores[c]) { campo.classList.add('con-error'); err.textContent = errores[c]; }
+    else { campo.classList.remove('con-error'); err.textContent = ''; }
+  }
+  const primero = document.querySelector('.campo.con-error input, .campo.con-error select');
+  if (primero) primero.focus();
+}
+
+let enviando = false;
+async function enviar(ev) {
+  ev.preventDefault();
+  if (enviando) return;
+  enviando = true;
+  leerFormulario();
+  const btn = $('af-continuar'); btn.disabled = true; btn.textContent = 'Validando…';
+  $('af-aviso').style.display = 'none';
+  try {
+    const r = await fetch('/api/autofactura/' + encodeURIComponent(TOKEN) + '/validar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify(FORM),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 422 && d.errores) { mostrarErrores(d.errores); return; }
+    if (r.status === 404) return noEncontrada();
+    if (r.status === 409 && d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; return pintarTicket(); }
+    if (!r.ok) {
+      $('af-aviso').textContent = d.error || 'No pudimos validar tus datos. Intenta de nuevo.';
+      $('af-aviso').style.display = 'block';
+      return;
+    }
+    VALIDADO = d;
+    pintarConfirmacion();
+  } catch (e) {
+    $('af-aviso').textContent = 'No pudimos validar tus datos. Revisa tu conexión e intenta de nuevo.';
+    $('af-aviso').style.display = 'block';
+  } finally {
+    enviando = false;
+    if ($('af-continuar')) { $('af-continuar').disabled = false; $('af-continuar').textContent = 'Continuar'; }
+  }
+}
+
+function pintarConfirmacion() {
+  const x = VALIDADO.datos; const v = VALIDADO.venta;
+  const fila = (k, val) => `<div class="item"><span>${esc(k)}</span><span>${esc(val)}</span></div>`;
+  $('app').innerHTML = cabeceraHTML(VENTA) + `
+    <h2>Confirma tus datos</h2>
+    <p class="sub">Revisa que coincidan con tu Constancia de Situación Fiscal.</p>
+    ${fila('RFC', x.rfc)}
+    ${fila('Nombre / razón social', x.nombre)}
+    ${fila('CP fiscal', x.cp)}
+    ${fila('Régimen', x.regimen + ' – ' + x.regimen_nombre)}
+    ${fila('Uso CFDI', x.uso_cfdi + ' – ' + x.uso_nombre)}
+    ${fila('Correo', x.email)}
+    <h2>Venta</h2>
+    ${fila('Folio', v.folio)}
+    <div class="item total"><span>Total</span><span>${esc(dinero(v.total))}</span></div>
+    <div id="af-resultado"></div>
+    <button class="btn" type="button" id="af-confirmar">Confirmar datos</button>
+    <button class="btn sec" type="button" id="af-corregir">Corregir</button>`;
+  $('af-corregir').addEventListener('click', () => { VALIDADO = null; pintarFormulario(); });
+  $('af-confirmar').addEventListener('click', () => {
+    // Fase 3: aquí todavía NO se emite nada. El siguiente paso (emisión del
+    // CFDI) se habilita en la fase 4.
+    $('af-resultado').innerHTML = '<div class="aviso exito">Datos validados correctamente. La emisión de factura se habilitará en el siguiente paso.</div>';
+    $('af-confirmar').disabled = true;
+  });
+}
+
+function pintarTicket() {
+  const d = VENTA;
+  $('app').innerHTML = cabeceraHTML(d) + ticketHTML(d);
 }
 
 async function cargar() {
@@ -103,7 +276,8 @@ async function cargar() {
     if (r.status === 404) return noEncontrada();
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'sin respuesta');
-    pintar(d);
+    VENTA = d;
+    if (d.estado === 'vigente') pintarFormulario(); else pintarTicket();
   } catch (e) {
     $('app').innerHTML = `<div class="vacio"><div class="ico">⏳</div>
       <h3>No pudimos consultar tu ticket</h3>
