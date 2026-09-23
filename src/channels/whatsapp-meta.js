@@ -1164,6 +1164,21 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             if (resultadoCatering?.orden || /<ORDEN_CONFIRMADA>/i.test(String(resultadoCatering?.texto || ''))) {
               throw new Error('perfil_catering_produjo_orden');
             }
+            // ── Y UN BLOQUE TRUNCADO TAMBIÉN ES ROMPER EL CONTRATO ───────
+            //
+            // La comprobación de arriba miraba el texto YA limpio, así que
+            // solo cazaba lo que `limpiarTexto` no había podido quitar: un
+            // bloque sin cerrar. Desde que ese caso se corta en origen
+            // (`marcadoresTruncados.js`), mirar el texto dejaría de cazar
+            // nada — la corrección de una fuga habría apagado en silencio
+            // esta guarda.
+            //
+            // Por eso se pregunta por el HECHO y no por el texto: el turno
+            // habló de un pedido que el backend no procesó, y en un perfil
+            // de catering eso no se le manda a medias al cliente.
+            if (resultadoCatering?.marcadorTruncado) {
+              throw new Error('perfil_catering_respuesta_truncada');
+            }
             if (!resultadoCatering?.texto || !String(resultadoCatering.texto).trim()) {
               throw new Error('perfil_catering_sin_respuesta');
             }

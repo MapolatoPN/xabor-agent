@@ -14,6 +14,7 @@ import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado
          podriaResolverloElCatalogo } from '../orders/carritoDelPedido.js';
 import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
 import { modoDelPedido } from '../orders/modoDelPedido.js';
+import { cortarMarcadorSinCerrar, hayMarcadorSinCerrar } from './marcadoresTruncados.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, obtenerConfiguracion, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
@@ -1204,6 +1205,11 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
       factura: extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
+      // El modelo se quedó sin tokens a media JSON. `limpiarTexto` ya cortó
+      // el volcado, así que el cliente no lo ve; pero el turno habló de un
+      // pedido que el backend NO procesó, y quien llama tiene que poder
+      // decidir qué hacer con eso en vez de enterarse por una queja.
+      marcadorTruncado: hayMarcadorSinCerrar(textoRespuesta),
       sessionId
     };
 
@@ -1528,8 +1534,13 @@ function limpiarTexto(texto) {
     .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
     .replace(/<ENVIAR_MENU>/g, '')
     .trim();
+  // Lo que quede abierto después de quitar las parejas está SIN CERRAR, y sale
+  // entero al cliente si no se corta aquí: las regex de arriba exigen la
+  // etiqueta de cierre, y un bloque truncado por `max_tokens` no la tiene.
+  // Ver `marcadoresTruncados.js` y el incidente del 23-sep-2026.
+  const sinTruncados = cortarMarcadorSinCerrar(sinTags);
   // Última capa antes de guardar/enviar: WhatsApp no entiende Markdown.
   // Convierte **negrita**→*negrita* y des-escapa \* para que el cliente y el
   // panel no vean los símbolos literales. Ver src/utils/formatoWhatsapp.js.
-  return normalizarFormatoWhatsApp(sinTags);
+  return normalizarFormatoWhatsApp(sinTruncados);
 }
