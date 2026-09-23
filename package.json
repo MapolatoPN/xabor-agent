@@ -13,6 +13,7 @@
     "mesero:tools": "node test/fase-agente-tools.mjs",
     "test:continuidad": "node test/fase-agente-continuidad-determinista.mjs",
     "release:gate": "node scripts/release-gate.mjs",
+    "release:gate:financiero": "node scripts/release-gate-financiero.mjs",
     "test:incident": "node scripts/predeploy-check-incidentes.mjs && node test/fase-agente-continuidad-determinista.mjs",
     "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1"
   },
