@@ -34,6 +34,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
 import { setEntregaEdge, setAvisoImpresionEdge } from './printing/edgeComanda.js';
 import { autorizarDescuento, construirDesgloseDescuentos, redondear } from './services/descuentos.js';
+import { reconciliarUsosPromocionesFaltantes } from './services/promoUsosAuditoria.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -6903,7 +6904,8 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
       });
       descuentoPromo = Math.max(0, Number(promo.descuento) || 0);
       promocionesPos = (promo.aplicadas || []).filter(a => !a.envioGratis).map(a => ({
-        id: a.id, nombre: a.nombre, tipo: a.tipo, descuento: a.descuento, unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
+        id: a.id, campaniaId: a.campaniaId || null,
+        nombre: a.nombre, tipo: a.tipo, descuento: a.descuento, unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
       }));
     } catch (e) { console.error('[POS] motor de promociones falló:', e.message); }
     const descuentoManual = Math.max(0, Number(descuento) || 0);
@@ -9188,6 +9190,14 @@ async function arrancar() {
       .catch(e => console.error('[Rewards] Barrido de canjes cancelados fallo:', e.message));
   barridoRewards();
   setInterval(barridoRewards, 5 * 60 * 1000);
+  // Auditoria multicanal: repone usos que un timeout/crash dejo despues de
+  // persistir la venta. Es idempotente y cubre activos y programados.
+  reconciliarUsosPromocionesFaltantes().catch(e =>
+    console.error('[Promos] Reconciliacion inicial fallo:', e.message));
+  setInterval(() => {
+    reconciliarUsosPromocionesFaltantes().catch(e =>
+      console.error('[Promos] Reconciliacion fallo:', e.message));
+  }, 5 * 60 * 1000);
   // CRM: cada teléfono real que pide en un negocio es cliente de ese negocio.
   // El reconciliador crea las fichas que falten a partir de los pedidos
   // recientes (de cualquier canal), en segundo plano e idempotente -- nunca

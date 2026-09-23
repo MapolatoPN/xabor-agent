@@ -1,502 +1,526 @@
-// ─── Fase 3A: registro multicanal de usos de promociones ───────────────────
-//
-// Objetivo: cada promoción REALMENTE aplicada a un pedido persistido (POS,
-// WhatsApp legacy, Mesero) registra exactamente UN uso en
-// `tienda_promocion_usos`, sin tocar `limite_usos`, `limite_por_cliente`,
-// enforcement, ni el ciclo reserva/consumo de la tienda en línea (que queda
-// intacto y se prueba aparte para demostrar que no lo tocamos).
-//
-// Uso: DATABASE_URL=... node test/fase3a-registro-usos-promociones.mjs
+// Fase 3A: auditoria multicanal de promociones.
+// Esta suite ALTERA estructura: solo corre contra una base desechable test_*.
 import assert from 'assert';
+import { execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { arrancarServidor } from './lib-servidor.mjs';
+
+const SEED = JSON.parse(readFileSync(new URL('./.datos-prueba.json', import.meta.url), 'utf8'));
+
+process.env.XABOR_PROMO_AUDIT_STATEMENT_TIMEOUT_MS ||= '1200';
+process.env.XABOR_PROMO_AUDIT_LOCK_TIMEOUT_MS ||= '900';
+process.env.XABOR_PROMO_AUDIT_QUERY_TIMEOUT_MS ||= '1600';
+process.env.XABOR_PROMO_AUDIT_CONNECTION_TIMEOUT_MS ||= '250';
+process.env.XABOR_PROMO_AUDIT_MAX ||= '1';
 
 const { pool } = await import('../src/services/database.js');
-const { registrarUsoPromocionSimple, guardarPromocion, eliminarPromocion,
-  reservarUsosPromociones, registrarUsosPromociones } = await import('../src/services/tiendaPromociones.js');
-const { registrarPedido, previsualizarPedido } = await import('../src/orders/orderManager.js');
-
-let pasadas = 0, fallidas = 0; const fallos = [];
-async function t(cat, nombre, fn) {
-  try { await fn(); console.log(`  OK  [${cat}] ${nombre}`); pasadas++; }
-  catch (e) { console.log(`FALLO [${cat}] ${nombre}: ${e.message}`); fallidas++; fallos.push(`[${cat}] ${nombre}: ${e.message}`); }
+const { rows: [identidadDb] } = await pool.query('SELECT current_database() AS nombre');
+if (!String(identidadDb?.nombre || '').startsWith('test_')) {
+  console.error(`[GUARDIA] Se requiere una base desechable test_*; actual=${identidadDb?.nombre || '(desconocida)'}`);
+  await pool.end();
+  process.exit(2);
 }
 
-// ── Fixtures (mismo patrón que fase-promociones.mjs: negocio/categoría/
-// producto propios, autocontenidos, sin depender del seed compartido) ──────
+const {
+  calcularPromociones, guardarCampana, guardarPromocion,
+  liberarUsosPromociones, registrarUsosPromociones, reservarUsosPromociones,
+} = await import('../src/services/tiendaPromociones.js');
+const {
+  cerrarPoolAuditoria, reconciliarUsosPromocionesFaltantes,
+  registrarUsosDeVenta, telefonoDeAuditoria,
+} = await import('../src/services/promoUsosAuditoria.js');
+const {
+  confirmarPedidoPendientePago, convertirPedidoAProgramado,
+  previsualizarPedido, registrarPedido,
+} = await import('../src/orders/orderManager.js');
+const { crearTokenSesion } = await import('../src/services/session.js');
+
+let pasadas = 0;
+let fallidas = 0;
+const fallos = [];
+async function t(categoria, nombre, fn) {
+  try {
+    await fn();
+    pasadas++;
+    console.log(`  OK  [${categoria}] ${nombre}`);
+  } catch (e) {
+    fallidas++;
+    fallos.push(`[${categoria}] ${nombre}: ${e.stack || e.message}`);
+    console.log(`FALLO [${categoria}] ${nombre}: ${e.message}`);
+  }
+}
+
+async function reafirmarGuardia() {
+  const { rows: [r] } = await pool.query('SELECT current_database() AS nombre');
+  assert.match(r.nombre, /^test_/, 'operacion destructiva fuera de test_*');
+}
+
 async function montarNegocio(slug, nombre) {
-  const { rows: [n] } = await pool.query(
-    `INSERT INTO negocios (nombre, slug) VALUES ($1,$2) ON CONFLICT (slug) DO UPDATE SET nombre=$1 RETURNING id`, [nombre, slug]);
-  return n.id;
+  return (await pool.query(
+    `INSERT INTO negocios (nombre, slug) VALUES ($1,$2)
+     ON CONFLICT (slug) DO UPDATE SET nombre=$1 RETURNING id`,
+    [nombre, slug])).rows[0].id;
 }
+
 async function categoria(negocioId, nombre) {
   const { rows } = await pool.query(
-    `INSERT INTO menu_categorias (negocio_id, nombre, orden) VALUES ($1,$2,0) ON CONFLICT DO NOTHING RETURNING id`, [negocioId, nombre]);
+    `INSERT INTO menu_categorias (negocio_id, nombre, orden)
+     VALUES ($1,$2,0) ON CONFLICT DO NOTHING RETURNING id`, [negocioId, nombre]);
   if (rows[0]) return rows[0].id;
-  return (await pool.query(`SELECT id FROM menu_categorias WHERE negocio_id=$1 AND nombre=$2 LIMIT 1`, [negocioId, nombre])).rows[0].id;
-}
-async function producto(negocioId, catId, nombre, precio) {
-  const { rows } = await pool.query(
-    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio) VALUES ($1,$2,$3,$4) RETURNING id`,
-    [negocioId, catId, nombre, precio]);
-  return rows[0].id;
-}
-async function limpiarCatalogo(negocioId) {
-  await pool.query(`DELETE FROM tienda_promocion_usos WHERE negocio_id=$1`, [negocioId]).catch(() => {});
-  await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id=$1`, [negocioId]).catch(() => {});
-  await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1`, [negocioId]).catch(() => {});
-  await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1`, [negocioId]).catch(() => {});
-  await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1`, [negocioId]).catch(() => {});
-}
-async function nuevaPromo(negocioId, { nombre, valor = 10, canales = ['pos', 'whatsapp'], categorias }) {
-  const { id } = await guardarPromocion(negocioId, {
-    nombre, tipo: 'porcentaje', automatica: true, valor, categorias, canales,
-  });
-  return id;
-}
-async function contarUsos(negocioId, folio) {
-  const { rows: [r] } = await pool.query(
-    `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos WHERE negocio_id=$1 AND pedido_folio=$2`, [negocioId, folio]);
-  return r.n;
-}
-async function filasUso(negocioId, folio) {
-  const { rows } = await pool.query(
-    `SELECT * FROM tienda_promocion_usos WHERE negocio_id=$1 AND pedido_folio=$2 ORDER BY created_at`, [negocioId, folio]);
-  return rows;
-}
-async function leerPedido(folio) {
-  const { rows: [r] } = await pool.query(`SELECT datos FROM pedidos_activos WHERE folio=$1`, [folio]);
-  return r?.datos;
+  return (await pool.query(
+    `SELECT id FROM menu_categorias WHERE negocio_id=$1 AND nombre=$2 LIMIT 1`,
+    [negocioId, nombre])).rows[0].id;
 }
 
-const NEG_A = await montarNegocio('fase3a-neg-a', 'Fase3A Demo A');
-const NEG_B = await montarNegocio('fase3a-neg-b', 'Fase3A Demo B');
-await limpiarCatalogo(NEG_A); await limpiarCatalogo(NEG_B);
+async function producto(negocioId, categoriaId, nombre, precio) {
+  return (await pool.query(
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [negocioId, categoriaId, nombre, precio])).rows[0].id;
+}
 
-const cat = await categoria(NEG_A, 'FASE3A');
-const pTaco = await producto(NEG_A, cat, 'Taco Fase3A', 100);
-const pRefresco = await producto(NEG_A, cat, 'Refresco Fase3A', 30);
-const catB = await categoria(NEG_B, 'FASE3A');
-const pTacoB = await producto(NEG_B, catB, 'Taco Fase3A B', 100);
+async function limpiar(negocioId) {
+  await reafirmarGuardia();
+  for (const sql of [
+    `DELETE FROM tienda_promocion_usos WHERE negocio_id=$1`,
+    `DELETE FROM pedidos_programados WHERE negocio_id=$1`,
+    `DELETE FROM pedidos_activos WHERE negocio_id=$1`,
+    `DELETE FROM tienda_promociones WHERE negocio_id=$1`,
+    `DELETE FROM tienda_campanas WHERE negocio_id=$1`,
+    `DELETE FROM menu_productos WHERE negocio_id=$1`,
+    `DELETE FROM menu_categorias WHERE negocio_id=$1`,
+  ]) await pool.query(sql, [negocioId]).catch(() => {});
+}
 
-// Orden 'pos' ya canónica (como la construye server.js antes de registrarPedido):
-// items ya con producto_id/precio, descuentos ya calculado.
-function ordenPos(negocioId, { promociones = [], manual = null, total = 100, cliente } = {}) {
-  const promoTotal = promociones.reduce((s, p) => s + (p.monto || 0), 0);
+async function nuevaPromo(negocioId, {
+  nombre, categorias, campaniaId = null,
+  canales = ['pos', 'whatsapp', 'tienda_online'], limitePorCliente = null, valor = 10,
+}) {
+  return (await guardarPromocion(negocioId, {
+    nombre, tipo: 'porcentaje', automatica: true, valor, categorias,
+    canales, campaniaId, limitePorCliente,
+  })).id;
+}
+
+async function usos(negocioId, folio) {
+  return (await pool.query(
+    `SELECT * FROM tienda_promocion_usos
+      WHERE negocio_id=$1 AND pedido_folio=$2 ORDER BY promocion_id`,
+    [negocioId, folio])).rows;
+}
+
+function promoSnapshot(id, monto = 10, campaniaId = null, nombre = 'Promo') {
+  return { promocionId: id, campaniaId, nombre, monto, tipo: 'porcentaje', codigo: null };
+}
+
+function ordenPos(negocioId, productoId, promociones = [], extra = {}) {
+  const descuento = promociones.reduce((n, p) => n + Number(p.monto || 0), 0);
   return {
     negocioId,
-    items: [{ producto_id: pTaco, nombre: 'Taco Fase3A', cantidad: 1, precio_unitario: 100 }],
-    cliente: cliente ?? { telefono: '8780000001', nombre: 'Cliente POS' },
-    subtotal: 100,
-    total: Math.max(0, 100 - promoTotal - (manual?.monto || 0)),
-    forma_pago: 'efectivo',
-    modalidad: 'recoger',
+    items: [{ producto_id: productoId, nombre: 'Producto Fase3A', cantidad: 1, precio_unitario: 100 }],
+    cliente: { telefono: '8780000001', nombre: 'Cliente POS' },
+    subtotal: 100, total: Math.max(0, 100 - descuento), forma_pago: 'efectivo', modalidad: 'recoger',
     descuentos: {
-      manual: manual || { monto: 0, tipo: null, motivo: null, autorizadoPor: null },
-      promociones: promociones.map(p => ({ promocionId: p.id, nombre: p.nombre || 'Promo', monto: p.monto, tipo: 'porcentaje', codigo: null })),
-      rewards: { monto: 0, puntos: 0 },
-      total: promoTotal + (manual?.monto || 0),
+      manual: { monto: 0, tipo: null, motivo: null, autorizadoPor: null },
+      promociones, rewards: { monto: 0, puntos: 0 }, total: descuento,
     },
+    ...extra,
   };
 }
-// Orden 'whatsapp'/'voz'/'api' RAW (propuesta LLM): items por nombre, sin
-// descuentos -- los calcula validarOrdenPropuesta dentro de registrarPedido.
-function ordenLlm(negocioId, { telefono = '8780000002', cantidad = 1 } = {}) {
+
+function ordenWhatsapp(negocioId, telefono = '8780000002') {
   return {
-    negocioId,
-    items: [{ nombre: 'Taco Fase3A', cantidad }],
-    cliente: { telefono, nombre: 'Cliente LLM' },
+    negocioId, items: [{ nombre: 'Producto Fase3A', cantidad: 1 }],
+    cliente: { telefono, nombre: 'Cliente WA' }, telefono_conversacion: telefono,
     forma_pago: 'efectivo',
   };
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// A-B, F-H · POS (orden ya canónica, hook al final de registrarPedido)
-// ════════════════════════════════════════════════════════════════════════
-await t('POS', 'A. aplica 1 promoción → 1 uso registrado, monto correcto', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'P1', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenPos(NEG_A, { promociones: [{ id: promoId, monto: 10, nombre: 'P1' }] }), 'pos');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 1);
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(Number(fila.monto_descuento), 10);
-  assert.strictEqual(fila.estado, 'consumida');
-  assert.strictEqual(fila.campania_id, null);
-  assert.strictEqual(fila.cliente_nuevo, false, 'default, no se calcula en Fase 3A');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('POS', 'B. aplica 2 promociones → 2 usos correctos', async () => {
-  const p1 = await nuevaPromo(NEG_A, { nombre: 'P1', valor: 10, categorias: [cat] });
-  const p2 = await nuevaPromo(NEG_A, { nombre: 'P2', valor: 5, categorias: [cat] });
-  const pedido = await registrarPedido(ordenPos(NEG_A, {
-    promociones: [{ id: p1, monto: 10, nombre: 'P1' }, { id: p2, monto: 5, nombre: 'P2' }],
-  }), 'pos');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 2, 'L. dos promociones, mismo pedido → 2 filas');
-  await eliminarPromocion(NEG_A, p1); await eliminarPromocion(NEG_A, p2);
-});
-
-await t('POS', 'F. pedido sin promoción → 0 usos', async () => {
-  const pedido = await registrarPedido(ordenPos(NEG_A, { promociones: [] }), 'pos');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0);
-});
-
-await t('POS', 'G. descuento manual sin promoción → 0 usos', async () => {
-  const pedido = await registrarPedido(ordenPos(NEG_A, { promociones: [], manual: { monto: 20, tipo: 'importe', motivo: 'cortesía', autorizadoPor: null } }), 'pos');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0);
-});
-
-await t('POS', 'H. Rewards sin promoción → 0 usos (POS no tiene Rewards conectado, prueba con el shape igual)', async () => {
-  const orden = ordenPos(NEG_A, { promociones: [] });
-  orden.descuentos.rewards = { monto: 15, puntos: 30 };
-  const pedido = await registrarPedido(orden, 'pos');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// C-D · WhatsApp legacy y Mesero (comparten literalmente registrarPedido +
-// validarOrdenPropuesta -- no hay código distinto que probar por separado,
-// documentado en el mapa del handoff)
-// ════════════════════════════════════════════════════════════════════════
-await t('WHATSAPP', 'C. aplica promoción vía validarOrdenPropuesta → 1 uso', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PW', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A), 'whatsapp');
-  assert.ok(pedido.descuentos.promociones.length >= 1, 'la promo debió aplicar');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), pedido.descuentos.promociones.length);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('MESERO', 'D. Mesero usa el mismo canal `whatsapp` y la misma función → 1 uso (mismo código, prueba de humo)', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PM', valor: 10, categorias: [cat] });
-  // canalDelAgente.js llama exactamente `registrar(orden, canal)` con canal='whatsapp'
-  // (ver mapa §D del handoff) -- no existe una rama de código distinta para Mesero.
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000003' }), 'whatsapp');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 1);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// E, tienda-en-línea intacta (no pasa por el hook nuevo)
-// ════════════════════════════════════════════════════════════════════════
-await t('TIENDA', 'E. tienda online: reservarUsosPromociones + registrarUsosPromociones siguen igual, sin fila paralela del hook nuevo', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PT', valor: 10, categorias: [cat], canales: ['tienda_online'] });
-  const token = 'tok-fase3a-' + Date.now();
-  const aplicadas = [{ id: promoId, campaniaId: null, nombre: 'PT', descuento: 10 }];
-  const { reservadas } = await reservarUsosPromociones(NEG_A, aplicadas, { checkoutToken: token, telefono: '8780000004' });
-  assert.strictEqual(reservadas.length, 1);
-  assert.strictEqual(await contarUsos(NEG_A, 'reserva:' + token), 1, 'la reserva existe con folio provisional');
-
-  // El pedido real se crea con canal 'tienda_online' -- el hook de Fase 3A
-  // debe IGNORARLO por completo (allowlist explícita pos/whatsapp).
-  const orden = ordenPos(NEG_A, { promociones: [{ id: promoId, monto: 10, nombre: 'PT' }] });
-  orden.canal = 'tienda_online';
-  const pedido = await registrarPedido(orden, 'tienda_online');
-
-  await registrarUsosPromociones({ negocioId: NEG_A, folio: pedido.id, aplicadas, telefono: '8780000004', montoVenta: pedido.total, checkoutToken: token });
-
-  const filas = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(filas.length, 1, 'exactamente la fila de registrarUsosPromociones -- el hook nuevo NO insertó una segunda');
-  assert.strictEqual(filas[0].estado, 'consumida');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// I, J · Idempotencia (llamadas directas a registrarUsoPromocionSimple)
-// ════════════════════════════════════════════════════════════════════════
-await t('IDEMPOTENCIA', 'I. misma promo + mismo folio, llamada 2 veces seguidas → 1 fila', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PI', valor: 10, categorias: [cat] });
-  const folio = 'FASE3A-IDEM-1';
-  const aplicadas = [{ promocionId: promoId, monto: 10, nombre: 'PI' }];
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90 });
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90 });
-  assert.strictEqual(await contarUsos(NEG_A, folio), 1);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('IDEMPOTENCIA', 'J. dos llamadas CONCURRENTES (simula replay/retry en carrera) → 1 fila, sin excepción', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PJ', valor: 10, categorias: [cat] });
-  const folio = 'FASE3A-IDEM-2';
-  const aplicadas = [{ promocionId: promoId, monto: 10, nombre: 'PJ' }];
-  await Promise.all([
-    registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90 }),
-    registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90 }),
-  ]);
-  assert.strictEqual(await contarUsos(NEG_A, folio), 1);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('IDEMPOTENCIA', 'K. dos folios distintos, misma promoción → 2 filas', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PK', valor: 10, categorias: [cat] });
-  const aplicadas = [{ promocionId: promoId, monto: 10, nombre: 'PK' }];
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio: 'FASE3A-K-1', aplicadas, montoVenta: 90 });
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio: 'FASE3A-K-2', aplicadas, montoVenta: 90 });
-  assert.strictEqual(await contarUsos(NEG_A, 'FASE3A-K-1'), 1);
-  assert.strictEqual(await contarUsos(NEG_A, 'FASE3A-K-2'), 1);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('IDEMPOTENCIA', 'M. mismo folio literal en dos negocios distintos → NO se cruzan (negocio_id forma parte de la llave)', async () => {
-  const pA = await nuevaPromo(NEG_A, { nombre: 'PMA', valor: 10, categorias: [cat] });
-  const pB = await nuevaPromo(NEG_B, { nombre: 'PMB', valor: 10, categorias: [catB] });
-  const folioColisionado = 'FASE3A-M-COLISION';
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio: folioColisionado, aplicadas: [{ promocionId: pA, monto: 10 }], montoVenta: 90 });
-  await registrarUsoPromocionSimple({ negocioId: NEG_B, folio: folioColisionado, aplicadas: [{ promocionId: pB, monto: 10 }], montoVenta: 90 });
-  assert.strictEqual(await contarUsos(NEG_A, folioColisionado), 1);
-  assert.strictEqual(await contarUsos(NEG_B, folioColisionado), 1);
-  await eliminarPromocion(NEG_A, pA); await eliminarPromocion(NEG_B, pB);
-});
-
-await t('IDEMPOTENCIA', 'N. cliente null/anónimo no rompe el registro', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PN', valor: 10, categorias: [cat] });
-  const folio = 'FASE3A-N-1';
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas: [{ promocionId: promoId, monto: 10 }], telefono: null, montoVenta: 90 });
-  const [fila] = await filasUso(NEG_A, folio);
-  assert.strictEqual(fila.cliente_telefono, null);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// O, P · rechazado no registra, confirmado sí registra
-// ════════════════════════════════════════════════════════════════════════
-await t('CONFIRMACION', 'O. orden rechazada por catálogo (producto inexistente) → nunca llega a folio, 0 usos', async () => {
-  const antes = (await pool.query(`SELECT COUNT(*)::int AS n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
-  await assert.rejects(
-    registrarPedido({ negocioId: NEG_A, items: [{ nombre: 'Producto que no existe jamás', cantidad: 1 }], cliente: { telefono: '8780000005' } }, 'whatsapp'),
-    /ORDEN_INVALIDA/,
-  );
-  const despues = (await pool.query(`SELECT COUNT(*)::int AS n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
-  assert.strictEqual(despues, antes, 'ningún uso nuevo -- el pedido nunca se persistió');
-});
-
-await t('CONFIRMACION', 'P. orden confirmada por el flujo real (registrarPedido) → sí registra', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PP', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000006' }), 'whatsapp');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 1);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// Q, R · monto coincide con Fase 2, legacy y normalizado siguen consistentes
-// ════════════════════════════════════════════════════════════════════════
-await t('CONSISTENCIA', 'Q. monto_descuento de la fila === datos.descuentos.promociones[].monto del pedido', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PQ', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000007' }), 'whatsapp');
-  const datos = await leerPedido(pedido.id);
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(Number(fila.monto_descuento), datos.descuentos.promociones[0].monto);
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CONSISTENCIA', 'R. legacy `promociones[]` y `descuentos.promociones[]` siguen coincidiendo (regresión de Fase 2)', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PR', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000008' }), 'whatsapp');
-  const datos = await leerPedido(pedido.id);
-  assert.deepStrictEqual(
-    datos.descuentos.promociones.map(p => p.monto),
-    datos.promociones.map(p => p.descuento),
-  );
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// S, T · allowlist explícita: voz/api quedan FUERA aunque apliquen promo
-// ════════════════════════════════════════════════════════════════════════
-await t('ALLOWLIST', 'S. canal=\'voz\' con promoción realmente aplicada → NO registra (excluido por allowlist, no por el motor)', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PS', valor: 10, categorias: [cat], canales: ['pos', 'whatsapp', 'voz'] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000009' }), 'voz');
-  assert.ok(pedido.descuentos.promociones.length >= 1, 'la promo sí debía aplicar para este canal (para que la prueba sea real)');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0, 'voz no está en la allowlist {pos, whatsapp}');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('ALLOWLIST', 'T. canal=\'api\' con promoción realmente aplicada → NO registra', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PT2', valor: 10, categorias: [cat], canales: ['pos', 'whatsapp', 'api'] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000010' }), 'api');
-  assert.ok(pedido.descuentos.promociones.length >= 1, 'la promo sí debía aplicar para este canal');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0, 'api no está en la allowlist {pos, whatsapp}');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// Preview vs persistencia (§6) -- calcularPromociones corre en ambos, solo
-// la persistencia real debe registrar.
-// ════════════════════════════════════════════════════════════════════════
-await t('PREVIEW', 'preview con promoción → 0 filas; repetir preview varias veces → sigue 0; persistir → exactamente 1', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PPrev', valor: 10, categorias: [cat] });
-  const orden = ordenLlm(NEG_A, { telefono: '8780000011' });
-
-  const antesTotal = (await pool.query(`SELECT COUNT(*)::int AS n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
-
-  for (let i = 0; i < 3; i++) {
-    const prev = await previsualizarPedido(orden, NEG_A, { canal: 'whatsapp' });
-    assert.ok(prev.ok, JSON.stringify(prev.rechazos));
-    assert.ok(prev.preview.descuento_total > 0, 'el preview debe mostrar la promo aplicada');
+async function insertarSnapshot({ negocioId, folio, datos, estado = 'nuevo', programado = false }) {
+  if (programado) {
+    await pool.query(
+      `INSERT INTO pedidos_programados
+         (folio, datos, programado_para, activado, negocio_id)
+       VALUES ($1,$2,NOW()+INTERVAL '1 day',FALSE,$3)`,
+      [folio, JSON.stringify(datos), negocioId]);
+  } else {
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
+       VALUES ($1,$2,$3,$4)`,
+      [folio, estado, JSON.stringify(datos), negocioId]);
   }
-  const despuesPreviews = (await pool.query(`SELECT COUNT(*)::int AS n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
-  assert.strictEqual(despuesPreviews, antesTotal, '3 previews → 0 filas nuevas');
+}
 
-  const pedido = await registrarPedido(orden, 'whatsapp');
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 1, 'la persistencia real sí registra, exactamente 1');
-  await eliminarPromocion(NEG_A, promoId);
-});
+const sufijo = Date.now().toString(36);
+const NEG_A = await montarNegocio(`fase3a-a-${sufijo}`, 'Fase3A A');
+const NEG_B = await montarNegocio(`fase3a-b-${sufijo}`, 'Fase3A B');
+await limpiar(NEG_A);
+await limpiar(NEG_B);
+const CAT_A = await categoria(NEG_A, `FASE3A-${sufijo}`);
+const CAT_B = await categoria(NEG_B, `FASE3A-${sufijo}`);
+const PROD_A = await producto(NEG_A, CAT_A, 'Producto Fase3A', 100);
+await producto(NEG_B, CAT_B, 'Producto Fase3A B', 100);
 
-// ════════════════════════════════════════════════════════════════════════
-// Fail-safe real: el INSERT de auditoría falla (FK a una promoción
-// inexistente), el pedido debe seguir existiendo y registrarPedido debe
-// seguir retornando normalmente.
-// ════════════════════════════════════════════════════════════════════════
-await t('FAIL-SAFE', 'INSERT de uso falla (promocionId fantasma, viola FK) → registrarPedido NO lanza, pedido sigue persistido, error queda solo logueado', async () => {
-  const promocionFantasma = '00000000-0000-0000-0000-000000000000';
-  const orden = ordenPos(NEG_A, {
-    promociones: [{ id: promocionFantasma, monto: 15, nombre: 'Fantasma' }],
-  });
-  const t0 = Date.now();
-  const pedido = await registrarPedido(orden, 'pos'); // NO debe lanzar
-  const ms = Date.now() - t0;
-  console.log(`  [FAIL-SAFE] registrarPedido con INSERT de uso fallido tardó ${ms}ms`);
-
-  // El pedido existe, tal cual, con su total financiero intacto.
-  const datos = await leerPedido(pedido.id);
-  assert.ok(datos, 'el pedido sigue en pedidos_activos');
-  assert.strictEqual(datos.total, pedido.total);
-  assert.strictEqual(datos.estado ?? pedido.estado, pedido.estado);
-
-  // Y el registro de uso, efectivamente, no quedó (el INSERT violó la FK).
-  assert.strictEqual(await contarUsos(NEG_A, pedido.id), 0);
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// CANAL (migración 090) -- se persiste en la fila misma, es la única forma
-// durable: pedidos_activos y pedidos mueren juntos al cancelar.
-// ════════════════════════════════════════════════════════════════════════
-await t('CANAL', 'POS registra canal=\'pos\'', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalPos', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenPos(NEG_A, { promociones: [{ id: promoId, monto: 10, nombre: 'PCanalPos' }] }), 'pos');
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(fila.canal, 'pos');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CANAL', 'WhatsApp legacy registra canal=\'whatsapp\'', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalWa', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000012' }), 'whatsapp');
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(fila.canal, 'whatsapp');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CANAL', 'Mesero registra canal=\'whatsapp\' (mismo código que WhatsApp legacy)', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalMesero', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000013' }), 'whatsapp');
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.strictEqual(fila.canal, 'whatsapp');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CANAL', 'tienda en línea registra canal=\'tienda_online\' vía registrarUsosPromociones', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalTienda', valor: 10, categorias: [cat], canales: ['tienda_online'] });
-  const folio = 'FASE3A-CANAL-TIENDA';
-  await registrarUsosPromociones({
-    negocioId: NEG_A, folio, aplicadas: [{ id: promoId, campaniaId: null, nombre: 'PCanalTienda', descuento: 10 }],
-    telefono: '8780000014', montoVenta: 90, canal: 'tienda_online',
-  });
-  const [fila] = await filasUso(NEG_A, folio);
-  assert.strictEqual(fila.canal, 'tienda_online');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CANAL', 'retry conserva UNA sola fila y el canal correcto', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalRetry', valor: 10, categorias: [cat] });
-  const folio = 'FASE3A-CANAL-RETRY';
-  const aplicadas = [{ promocionId: promoId, monto: 10, nombre: 'PCanalRetry' }];
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90, canal: 'whatsapp' });
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio, aplicadas, montoVenta: 90, canal: 'whatsapp' });
-  assert.strictEqual(await contarUsos(NEG_A, folio), 1);
-  const [fila] = await filasUso(NEG_A, folio);
-  assert.strictEqual(fila.canal, 'whatsapp');
-  await eliminarPromocion(NEG_A, promoId);
-});
-
-await t('CANAL', 'dos negocios no se cruzan (canal incluido)', async () => {
-  const pA = await nuevaPromo(NEG_A, { nombre: 'PCanalCruceA', valor: 10, categorias: [cat] });
-  const pB = await nuevaPromo(NEG_B, { nombre: 'PCanalCruceB', valor: 10, categorias: [catB] });
-  const folioColisionado = 'FASE3A-CANAL-CRUCE';
-  await registrarUsoPromocionSimple({ negocioId: NEG_A, folio: folioColisionado, aplicadas: [{ promocionId: pA, monto: 10 }], montoVenta: 90, canal: 'pos' });
-  await registrarUsoPromocionSimple({ negocioId: NEG_B, folio: folioColisionado, aplicadas: [{ promocionId: pB, monto: 10 }], montoVenta: 90, canal: 'whatsapp' });
-  const [filaA] = await filasUso(NEG_A, folioColisionado);
-  const [filaB] = await filasUso(NEG_B, folioColisionado);
-  assert.strictEqual(filaA.canal, 'pos');
-  assert.strictEqual(filaB.canal, 'whatsapp');
-  await eliminarPromocion(NEG_A, pA); await eliminarPromocion(NEG_B, pB);
-});
-
-await t('CANAL', 'backfill: una fila histórica sin canal (simulada) queda tienda_online tras el UPDATE de la 090', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PBackfill', valor: 10, categorias: [cat], canales: ['tienda_online'] });
-  const folio = 'FASE3A-BACKFILL-HIST';
-  // Simula una fila PRE-090: inserta directo con canal NULL (como habría
-  // quedado cualquier fila escrita por tienda antes de esta migración).
+await t('PREDEPLOY', '091 converge una 090 nullable y es reejecutable con escritor viejo', async () => {
+  const promoId = await nuevaPromo(NEG_A, { nombre: 'Legacy', categorias: [CAT_A] });
+  await reafirmarGuardia();
+  await pool.query(`ALTER TABLE public.tienda_promocion_usos ADD COLUMN IF NOT EXISTS canal text`);
+  await pool.query(`ALTER TABLE public.tienda_promocion_usos ALTER COLUMN canal DROP NOT NULL`);
+  await pool.query(`ALTER TABLE public.tienda_promocion_usos ALTER COLUMN canal DROP DEFAULT`);
+  const folioLegacy = `F3A-LEGACY-${sufijo}`;
   await pool.query(
-    `INSERT INTO tienda_promocion_usos (negocio_id, promocion_id, pedido_folio, monto_descuento, monto_venta, estado, canal)
-     VALUES ($1,$2,$3,10,90,'consumida',NULL)`, [NEG_A, promoId, folio]);
-  const [antes] = await filasUso(NEG_A, folio);
-  assert.strictEqual(antes.canal, null, 'fixture: debía nacer sin canal, simulando pre-090');
-  // Mismo UPDATE exacto que trae la migración 090.
-  await pool.query(`UPDATE tienda_promocion_usos SET canal = 'tienda_online' WHERE canal IS NULL AND negocio_id = $1`, [NEG_A]);
-  const [despues] = await filasUso(NEG_A, folio);
-  assert.strictEqual(despues.canal, 'tienda_online');
-  await eliminarPromocion(NEG_A, promoId);
+    `INSERT INTO tienda_promocion_usos
+       (negocio_id,promocion_id,pedido_folio,monto_descuento,monto_venta,estado,canal)
+     VALUES ($1,$2,$3,10,90,'consumida',NULL)`, [NEG_A, promoId, folioLegacy]);
+
+  const script = fileURLToPath(new URL('../scripts/predeploy-091-tienda-promocion-usos-canal.mjs', import.meta.url));
+  execFileSync(process.execPath, [script], { env: process.env, stdio: 'pipe' });
+  assert.strictEqual((await usos(NEG_A, folioLegacy))[0].canal, 'tienda_online');
+  const { rows: [col] } = await pool.query(`
+    SELECT is_nullable, column_default FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='tienda_promocion_usos' AND column_name='canal'`);
+  assert.strictEqual(col.is_nullable, 'NO');
+  assert.match(col.column_default, /tienda_online/);
+
+  const folioViejo = `F3A-OLD-${sufijo}`;
+  await pool.query(
+    `INSERT INTO tienda_promocion_usos
+       (negocio_id,promocion_id,pedido_folio,monto_descuento,monto_venta,estado)
+     VALUES ($1,$2,$3,10,90,'consumida')`, [NEG_A, promoId, folioViejo]);
+  execFileSync(process.execPath, [script], { env: process.env, stdio: 'pipe' });
+  assert.strictEqual((await usos(NEG_A, folioViejo))[0].canal, 'tienda_online');
 });
 
-await t('CANAL', 'canal sigue disponible aunque el pedido se elimine después (cancelación/purga)', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCanalSobrevive', valor: 10, categorias: [cat] });
-  const pedido = await registrarPedido(ordenPos(NEG_A, { promociones: [{ id: promoId, monto: 10, nombre: 'PCanalSobrevive' }] }), 'pos');
-  const { eliminarPedido } = await import('../src/orders/orderManager.js');
-  const borrado = await eliminarPedido(pedido.id, NEG_A);
-  assert.ok(borrado, 'el pedido debía eliminarse para que la prueba sea real');
-  assert.strictEqual((await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [pedido.id])).rowCount, 0,
-    'fixture: el pedido debía desaparecer de pedidos_activos');
-  const [fila] = await filasUso(NEG_A, pedido.id);
-  assert.ok(fila, 'la fila de uso sigue existiendo pese a que el pedido ya no existe');
-  assert.strictEqual(fila.canal, 'pos', 'el canal se conserva aunque el pedido ya no se pueda consultar');
-  await eliminarPromocion(NEG_A, promoId);
+await t('REGISTRO', 'POS inserta dos promociones atomica e idempotentemente', async () => {
+  const p1 = await nuevaPromo(NEG_A, { nombre: 'Pos 1', categorias: [CAT_A] });
+  const p2 = await nuevaPromo(NEG_A, { nombre: 'Pos 2', categorias: [CAT_A] });
+  const pedido = await registrarPedido(ordenPos(NEG_A, PROD_A, [promoSnapshot(p1), promoSnapshot(p2, 5)]), 'pos');
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 2);
+  const replay = await registrarUsosDeVenta({
+    negocioId: NEG_A, folio: pedido.id, promociones: [promoSnapshot(p1), promoSnapshot(p2, 5)],
+    telefono: '8780000001', montoVenta: pedido.total, canal: 'pos',
+  });
+  assert.strictEqual(replay.registrados, 0);
+  assert.deepStrictEqual(replay.omitidos, []);
 });
 
-await t('CANAL', 'monto_venta: misma semántica (total del pedido en el momento del registro) en POS y WhatsApp', async () => {
-  const promoPos = await nuevaPromo(NEG_A, { nombre: 'PMontoPos', valor: 10, categorias: [cat] });
-  const pedidoPos = await registrarPedido(ordenPos(NEG_A, { promociones: [{ id: promoPos, monto: 10, nombre: 'PMontoPos' }] }), 'pos');
-  const [filaPos] = await filasUso(NEG_A, pedidoPos.id);
-  assert.strictEqual(Number(filaPos.monto_venta), pedidoPos.total, 'POS: monto_venta === pedido.total (subtotal - descuento + envío)');
-
-  const promoWa = await nuevaPromo(NEG_A, { nombre: 'PMontoWa', valor: 10, categorias: [cat] });
-  const pedidoWa = await registrarPedido(ordenLlm(NEG_A, { telefono: '8780000015' }), 'whatsapp');
-  const [filaWa] = await filasUso(NEG_A, pedidoWa.id);
-  assert.strictEqual(Number(filaWa.monto_venta), pedidoWa.total, 'WhatsApp: monto_venta === pedido.total, misma fórmula');
-  await eliminarPromocion(NEG_A, promoPos); await eliminarPromocion(NEG_A, promoWa);
+await t('REGISTRO', 'WhatsApp real registra canal y telefono de conversacion', async () => {
+  const p = await nuevaPromo(NEG_A, { nombre: 'WA', categorias: [CAT_A] });
+  const pedido = await registrarPedido(ordenWhatsapp(NEG_A, '5218781234567'), 'whatsapp');
+  assert.ok(pedido.descuentos.promociones.some(x => x.promocionId === p));
+  const [fila] = await usos(NEG_A, pedido.id);
+  assert.strictEqual(fila.canal, 'whatsapp');
+  assert.strictEqual(fila.cliente_telefono, '5218781234567');
 });
 
-// ════════════════════════════════════════════════════════════════════════
-// Costo aproximado del INSERT adicional (informativo, no assertion dura)
-// ════════════════════════════════════════════════════════════════════════
-await t('COSTO', 'medir costo aproximado del registro de uso dentro de registrarPedido', async () => {
-  const promoId = await nuevaPromo(NEG_A, { nombre: 'PCosto', valor: 10, categorias: [cat] });
-  const N = 20;
-  const t0 = Date.now();
-  for (let i = 0; i < N; i++) {
-    await registrarPedido(ordenPos(NEG_A, { promociones: [{ id: promoId, monto: 10, nombre: 'PCosto' }], cliente: { telefono: '878' + i } }), 'pos');
+await t('IDENTIDAD', 'telefono_conversacion prevalece y placeholders POS quedan NULL', async () => {
+  assert.strictEqual(telefonoDeAuditoria({ telefono_conversacion: '+52 1 878 111 2233', cliente: { telefono: '8789999999' } }), '5218781112233');
+  assert.strictEqual(telefonoDeAuditoria({ cliente: { telefono: '—' } }), null);
+});
+
+await t('ALLOWLIST', 'voz, api, preview y pedido sin promociones no escriben usos', async () => {
+  await nuevaPromo(NEG_A, { nombre: 'Allow', categorias: [CAT_A], canales: ['voz', 'api', 'whatsapp'] });
+  const voz = await registrarPedido(ordenWhatsapp(NEG_A, '8781000001'), 'voz');
+  const api = await registrarPedido(ordenWhatsapp(NEG_A, '8781000002'), 'api');
+  assert.ok(voz.descuentos.promociones.length && api.descuentos.promociones.length);
+  assert.strictEqual((await usos(NEG_A, voz.id)).length, 0);
+  assert.strictEqual((await usos(NEG_A, api.id)).length, 0);
+  const antes = (await pool.query(`SELECT COUNT(*)::int n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
+  const prev = await previsualizarPedido(ordenWhatsapp(NEG_A, '8781000003'), NEG_A, { canal: 'whatsapp' });
+  assert.ok(prev.ok);
+  const sinPromo = await registrarPedido(ordenPos(NEG_A, PROD_A, []), 'pos');
+  assert.strictEqual((await usos(NEG_A, sinPromo.id)).length, 0);
+  const despues = (await pool.query(`SELECT COUNT(*)::int n FROM tienda_promocion_usos WHERE negocio_id=$1`, [NEG_A])).rows[0].n;
+  assert.strictEqual(despues, antes);
+});
+
+await t('CUPO', 'auditoria POS no consume limite global ni limite por cliente de tienda', async () => {
+  const telefono = '8782223344';
+  const p = await nuevaPromo(NEG_A, { nombre: 'Cupo tienda', categorias: [CAT_A], limitePorCliente: 1 });
+  const antes = (await pool.query(`SELECT usos FROM tienda_promociones WHERE id=$1`, [p])).rows[0].usos;
+  await registrarUsosDeVenta({
+    negocioId: NEG_A, folio: `F3A-CUPO-${sufijo}`, promociones: [promoSnapshot(p)],
+    telefono, montoVenta: 90, canal: 'pos',
+  });
+  const despues = (await pool.query(`SELECT usos FROM tienda_promociones WHERE id=$1`, [p])).rows[0].usos;
+  assert.strictEqual(despues, antes);
+  const calculada = await calcularPromociones({
+    negocioId: NEG_A, subtotal: 100,
+    items: [{ producto_id: PROD_A, categoria_id: CAT_A, cantidad: 1, precio_unitario: 100 }],
+    telefono, canal: 'tienda_online', modalidad: 'recoger',
+  });
+  assert.ok(calculada.aplicadas.some(x => x.id === p), 'el calculo debe ignorar POS');
+  const token = `f3a-cupo-${sufijo}`;
+  const reservada = await reservarUsosPromociones(NEG_A, calculada.aplicadas, { checkoutToken: token, telefono });
+  assert.ok(reservada.reservadas.some(x => x.id === p), 'la reserva debe ignorar POS');
+  await liberarUsosPromociones(NEG_A, reservada.reservadas, { checkoutToken: token });
+});
+
+await t('PAGO', 'pendiente no registra; al confirmar usa telefono y campania historicos', async () => {
+  const c1 = (await guardarCampana(NEG_A, { nombre: `C1-${sufijo}` })).id;
+  const c2 = (await guardarCampana(NEG_A, { nombre: `C2-${sufijo}` })).id;
+  const p = await nuevaPromo(NEG_A, { nombre: 'Pago', categorias: [CAT_A], campaniaId: c1 });
+  const orden = ordenPos(NEG_A, PROD_A, [promoSnapshot(p, 10, c1)], {
+    requierePagoAnticipado: true, telefono_conversacion: '5218787654321',
+    cliente: { telefono: '8780000999', nombre: 'Entrega distinta' },
+  });
+  const pedido = await registrarPedido(orden, 'whatsapp');
+  assert.strictEqual(pedido.estado, 'pendiente_pago');
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 0);
+  await pool.query(`UPDATE tienda_promociones SET campania_id=$2 WHERE id=$1`, [p, c2]);
+  await confirmarPedidoPendientePago(pedido.id, NEG_A);
+  const fila = (await usos(NEG_A, pedido.id)).find(x => x.promocion_id === p);
+  assert.ok(fila, 'debe existir la fila de la promocion bajo prueba');
+  assert.strictEqual(fila.campania_id, c1);
+  assert.strictEqual(fila.cliente_telefono, '5218787654321');
+  const totalTrasPrimera = (await usos(NEG_A, pedido.id)).length;
+  await confirmarPedidoPendientePago(pedido.id, NEG_A);
+  const trasReplay = await usos(NEG_A, pedido.id);
+  assert.strictEqual(trasReplay.length, totalTrasPrimera);
+  assert.strictEqual(trasReplay.filter(x => x.promocion_id === p).length, 1);
+});
+
+await t('CTE', 'ID inexistente se reporta sin convertir conflictos en omitidos', async () => {
+  const p = await nuevaPromo(NEG_A, { nombre: 'CTE', categorias: [CAT_A] });
+  const fantasma = '00000000-0000-0000-0000-000000000000';
+  const folio = `F3A-CTE-${sufijo}`;
+  const r = await registrarUsosDeVenta({
+    negocioId: NEG_A, folio, promociones: [promoSnapshot(p), promoSnapshot(fantasma)],
+    montoVenta: 90, canal: 'pos',
+  });
+  assert.strictEqual(r.registrados, 1);
+  assert.deepStrictEqual(r.omitidos, [fantasma]);
+  const replay = await registrarUsosDeVenta({
+    negocioId: NEG_A, folio, promociones: [promoSnapshot(p)], montoVenta: 90, canal: 'pos',
+  });
+  assert.deepStrictEqual(replay, { registrados: 0, omitidos: [] });
+});
+
+await t('ATOMICIDAD', 'error numeric revierte las dos promociones y el pedido sigue persistido', async () => {
+  const p1 = await nuevaPromo(NEG_A, { nombre: 'Atom 1', categorias: [CAT_A] });
+  const p2 = await nuevaPromo(NEG_A, { nombre: 'Atom 2', categorias: [CAT_A] });
+  const folio = `F3A-ATOM-${sufijo}`;
+  await assert.rejects(registrarUsosDeVenta({
+    negocioId: NEG_A, folio,
+    promociones: [promoSnapshot(p1, 10), promoSnapshot(p2, 1_000_000_000)],
+    montoVenta: 90, canal: 'pos',
+  }), /numeric field overflow|out of range/i);
+  assert.strictEqual((await usos(NEG_A, folio)).length, 0);
+  const pedido = await registrarPedido(ordenPos(NEG_A, PROD_A, [
+    promoSnapshot(p1, 10), promoSnapshot(p2, 1_000_000_000),
+  ]), 'pos');
+  assert.ok((await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio=$1`, [pedido.id])).rowCount);
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 0);
+  // El snapshot desbordado ya cumplio su propósito; se retira para que el
+  // reconciliador de las pruebas siguientes no lo reintente deliberadamente.
+  await pool.query(`DELETE FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [pedido.id, NEG_A]);
+});
+
+await t('RECONCILIACION', 'deuda parcial inserta solo la promocion faltante y segunda pasada cero', async () => {
+  const p1 = await nuevaPromo(NEG_A, { nombre: 'Parcial 1', categorias: [CAT_A] });
+  const p2 = await nuevaPromo(NEG_A, { nombre: 'Parcial 2', categorias: [CAT_A] });
+  const folio = `F3A-PARC-${sufijo}`;
+  const datos = ordenPos(NEG_A, PROD_A, [promoSnapshot(p1), promoSnapshot(p2, 5)]);
+  Object.assign(datos, { id: folio, canal: 'pos', estado: 'nuevo' });
+  await insertarSnapshot({ negocioId: NEG_A, folio, datos });
+  await registrarUsosDeVenta({ negocioId: NEG_A, folio, promociones: [promoSnapshot(p1)], montoVenta: 85, canal: 'pos' });
+  const r1 = await reconciliarUsosPromocionesFaltantes();
+  assert.ok(r1.filasInsertadas >= 1);
+  assert.strictEqual((await usos(NEG_A, folio)).length, 2);
+  const r2 = await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual(r2.filasInsertadas, 0);
+});
+
+await t('RECONCILIACION', 'repara programado confirmado y omite programados no confirmados', async () => {
+  const p = await nuevaPromo(NEG_A, { nombre: 'Programado', categorias: [CAT_A] });
+  const clienteLock = await pool.connect();
+  await clienteLock.query('BEGIN');
+  await clienteLock.query(`SELECT id FROM tienda_promociones WHERE id=$1 FOR UPDATE`, [p]);
+  const inicio = Date.now();
+  const pedido = await registrarPedido(ordenPos(NEG_A, PROD_A, [promoSnapshot(p)], {
+    programado_para: new Date(Date.now() + 86_400_000).toISOString(),
+  }), 'pos');
+  assert.ok(Date.now() - inicio < 2_500, 'el hook con lock debe respetar su presupuesto total');
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 0);
+  const conv = await convertirPedidoAProgramado(pedido, pedido.programado_para);
+  assert.ok(conv.ok, conv.razon);
+  await clienteLock.query('ROLLBACK');
+  clienteLock.release();
+  const rr = await reconciliarUsosPromocionesFaltantes();
+  assert.ok(rr.filasInsertadas >= 1);
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 1);
+
+  const noPagado = `PP-${sufijo}`;
+  const datos = { ...ordenPos(NEG_A, PROD_A, [promoSnapshot(p)]), id: noPagado, canal: 'pos', estado: 'pendiente_pago' };
+  await insertarSnapshot({ negocioId: NEG_A, folio: noPagado, datos, programado: true });
+  await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual((await usos(NEG_A, noPagado)).length, 0);
+});
+
+await t('TIMEOUT', 'pool de auditoria saturado no bloquea el pedido y luego se reconcilia', async () => {
+  const pBloqueada = await nuevaPromo(NEG_A, { nombre: 'Pool lock', categorias: [CAT_A] });
+  const pPedido = await nuevaPromo(NEG_A, { nombre: 'Pool pedido', categorias: [CAT_A] });
+  const clienteLock = await pool.connect();
+  await clienteLock.query('BEGIN');
+  await clienteLock.query(`SELECT id FROM tienda_promociones WHERE id=$1 FOR UPDATE`, [pBloqueada]);
+  const ocupante = registrarUsosDeVenta({
+    negocioId: NEG_A, folio: `PL-${sufijo}`, promociones: [promoSnapshot(pBloqueada)],
+    montoVenta: 90, canal: 'pos',
+  }).then(() => null, e => e);
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  const inicio = Date.now();
+  const pedido = await registrarPedido(ordenPos(NEG_A, PROD_A, [promoSnapshot(pPedido)]), 'pos');
+  assert.ok(Date.now() - inicio < 1_500, 'connectionTimeoutMillis debe sacar al pedido del pool saturado');
+  assert.strictEqual((await usos(NEG_A, pedido.id)).length, 0);
+  const errorOcupante = await ocupante;
+  await clienteLock.query('ROLLBACK');
+  clienteLock.release();
+  assert.ok(errorOcupante instanceof Error, 'la consulta retenida debe terminar por timeout');
+
+  await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual((await usos(NEG_A, pedido.id)).filter(x => x.promocion_id === pPedido).length, 1);
+});
+
+await t('RECONCILIACION', 'campania viene del snapshot aunque la promocion vigente cambie', async () => {
+  const c1 = (await guardarCampana(NEG_A, { nombre: `Hist1-${sufijo}` })).id;
+  const c2 = (await guardarCampana(NEG_A, { nombre: `Hist2-${sufijo}` })).id;
+  const p = await nuevaPromo(NEG_A, { nombre: 'Historica', categorias: [CAT_A], campaniaId: c1 });
+  const folio = `F3A-HIST-${sufijo}`;
+  const datos = { ...ordenPos(NEG_A, PROD_A, [promoSnapshot(p, 10, c1)]), id: folio, canal: 'pos', estado: 'nuevo' };
+  await insertarSnapshot({ negocioId: NEG_A, folio, datos });
+  await pool.query(`UPDATE tienda_promociones SET campania_id=$2 WHERE id=$1`, [p, c2]);
+  await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual((await usos(NEG_A, folio))[0].campania_id, c1);
+
+  const folioLegacy = `HL-${sufijo}`;
+  const promoLegacy = promoSnapshot(p);
+  delete promoLegacy.campaniaId;
+  await insertarSnapshot({
+    negocioId: NEG_A, folio: folioLegacy,
+    datos: { ...ordenPos(NEG_A, PROD_A, [promoLegacy]), id: folioLegacy, canal: 'pos', estado: 'nuevo' },
+  });
+  await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual((await usos(NEG_A, folioLegacy))[0].campania_id, null,
+    'un snapshot anterior al despliegue no inventa la campaña vigente');
+});
+
+await t('RECONCILIACION', 'UUID malformado y promociones no-array no bloquean otra reparacion', async () => {
+  const p = await nuevaPromo(NEG_A, { nombre: 'JSON seguro', categorias: [CAT_A] });
+  const folioMal = `JM-${sufijo}`;
+  const folioObj = `JO-${sufijo}`;
+  const folioOk = `JK-${sufijo}`;
+  const folioViejo = `JV-${sufijo}`;
+  await insertarSnapshot({
+    negocioId: NEG_A, folio: folioMal,
+    datos: { negocioId: NEG_A, canal: 'pos', estado: 'nuevo', total: 90, descuentos: { promociones: [{ promocionId: 'no-es-uuid', monto: 10 }] } },
+  });
+  await insertarSnapshot({
+    negocioId: NEG_A, folio: folioObj,
+    datos: { negocioId: NEG_A, canal: 'pos', estado: 'nuevo', total: 90, descuentos: { promociones: { promocionId: p } } },
+  });
+  await insertarSnapshot({
+    negocioId: NEG_A, folio: folioOk,
+    datos: { negocioId: NEG_A, canal: 'pos', estado: 'nuevo', total: 90, descuentos: { promociones: [promoSnapshot(p)] } },
+  });
+  await insertarSnapshot({
+    negocioId: NEG_A, folio: folioViejo,
+    datos: { negocioId: NEG_A, canal: 'pos', estado: 'nuevo', total: 90, descuentos: { promociones: [promoSnapshot(p)] } },
+  });
+  await pool.query(
+    `UPDATE pedidos_activos SET created_at=NOW()-INTERVAL '49 hours' WHERE folio=$1 AND negocio_id=$2`,
+    [folioViejo, NEG_A]);
+  await reconciliarUsosPromocionesFaltantes();
+  assert.strictEqual((await usos(NEG_A, folioMal)).length, 0);
+  assert.strictEqual((await usos(NEG_A, folioObj)).length, 0);
+  assert.strictEqual((await usos(NEG_A, folioOk)).length, 1);
+  assert.strictEqual((await usos(NEG_A, folioViejo)).length, 0, 'la ventana de 48h limita el barrido');
+});
+
+await t('RECONCILIACION', 'dos pasadas simultaneas no se solapan', async () => {
+  const [a, b] = await Promise.all([
+    reconciliarUsosPromocionesFaltantes(), reconciliarUsosPromocionesFaltantes(),
+  ]);
+  assert.ok(a.saltada || b.saltada);
+  assert.notStrictEqual(a.saltada, b.saltada);
+});
+
+await t('AISLAMIENTO', 'mismo folio literal en dos negocios no cruza promociones', async () => {
+  const pA = await nuevaPromo(NEG_A, { nombre: 'Aislada A', categorias: [CAT_A] });
+  const pB = await nuevaPromo(NEG_B, { nombre: 'Aislada B', categorias: [CAT_B] });
+  const folio = `F3A-ISO-${sufijo}`;
+  await Promise.all([
+    registrarUsosDeVenta({ negocioId: NEG_A, folio, promociones: [promoSnapshot(pA)], montoVenta: 90, canal: 'pos' }),
+    registrarUsosDeVenta({ negocioId: NEG_B, folio, promociones: [promoSnapshot(pB)], montoVenta: 90, canal: 'whatsapp' }),
+  ]);
+  assert.strictEqual((await usos(NEG_A, folio))[0].canal, 'pos');
+  assert.strictEqual((await usos(NEG_B, folio))[0].canal, 'whatsapp');
+});
+
+await t('TIENDA', 'ciclo reserva-consumo conserva canal tienda_online explicito', async () => {
+  const p = await nuevaPromo(NEG_A, { nombre: 'Tienda', categorias: [CAT_A], canales: ['tienda_online'] });
+  const token = `f3a-store-${sufijo}`;
+  const aplicadas = [{ id: p, campaniaId: null, nombre: 'Tienda', descuento: 10 }];
+  const r = await reservarUsosPromociones(NEG_A, aplicadas, { checkoutToken: token, telefono: '8783334455' });
+  assert.strictEqual(r.reservadas.length, 1);
+  const folio = `F3A-STORE-${sufijo}`;
+  await registrarUsosPromociones({
+    negocioId: NEG_A, folio, aplicadas, telefono: '8783334455', montoVenta: 90,
+    checkoutToken: token,
+  });
+  assert.strictEqual((await usos(NEG_A, folio))[0].canal, 'tienda_online');
+});
+
+await t('ENTRYPOINT', 'POST /api/pos/pedidos conserva campaña y registra el uso POS', async () => {
+  const negocioId = SEED.negocioA;
+  const catHttp = await categoria(negocioId, `F3A-HTTP-${sufijo}`);
+  const prodHttp = await producto(negocioId, catHttp, `Producto HTTP ${sufijo}`, 100);
+  const campaniaId = (await guardarCampana(negocioId, { nombre: `HTTP-${sufijo}` })).id;
+  const promoId = await nuevaPromo(negocioId, {
+    nombre: `Promo HTTP ${sufijo}`, categorias: [catHttp], campaniaId,
+    canales: ['pos'],
+  });
+  await pool.query(
+    `INSERT INTO negocio_modulos (negocio_id, modulo, estado)
+     VALUES ($1,'pos','activo')
+     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [negocioId]);
+
+  const puerto = process.env.TEST_PORT_FASE3A || '4791';
+  const srv = await arrancarServidor({ PORT: puerto, TZ: 'America/Matamoros' }, { timeoutMs: 60_000 });
+  try {
+    const token = crearTokenSesion({
+      usuarioId: SEED.adminNegocioAUsuarioId, negocioId, rol: 'admin',
+    });
+    const respuesta = await fetch(`${srv.base}/api/pos/pedidos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(token)}` },
+      body: JSON.stringify({
+        tipo: 'recoger', cliente: { nombre: 'HTTP', telefono: '8785556677' },
+        items: [{ producto_id: prodHttp, cantidad: 1 }], formaPago: 'efectivo',
+      }),
+    });
+    const body = await respuesta.json();
+    assert.strictEqual(respuesta.status, 200, JSON.stringify(body));
+    const fila = (await usos(negocioId, body.pedido.id)).find(x => x.promocion_id === promoId);
+    assert.ok(fila, 'el entrypoint POS debe registrar la promocion aplicada');
+    assert.strictEqual(fila.canal, 'pos');
+    assert.strictEqual(fila.campania_id, campaniaId);
+  } finally {
+    const detenido = new Promise(resolve => srv.proc.once('exit', resolve));
+    srv.detener();
+    await detenido;
   }
-  const conPromo = (Date.now() - t0) / N;
-  const t1 = Date.now();
-  for (let i = 0; i < N; i++) {
-    await registrarPedido(ordenPos(NEG_A, { promociones: [], cliente: { telefono: '879' + i } }), 'pos');
-  }
-  const sinPromo = (Date.now() - t1) / N;
-  console.log(`  [COSTO] registrarPedido promedio CON promo (incluye INSERT de uso): ${conPromo.toFixed(1)}ms`);
-  console.log(`  [COSTO] registrarPedido promedio SIN promo (sin el hook): ${sinPromo.toFixed(1)}ms`);
-  console.log(`  [COSTO] costo marginal aproximado del INSERT de uso: ${(conPromo - sinPromo).toFixed(1)}ms`);
-  await eliminarPromocion(NEG_A, promoId);
 });
 
-// ── Limpieza final ──────────────────────────────────────────────────────
-await limpiarCatalogo(NEG_A); await limpiarCatalogo(NEG_B);
+await limpiar(NEG_A);
+await limpiar(NEG_B);
+await cerrarPoolAuditoria();
+await pool.end();
 
 console.log(`\n${pasadas} OK · ${fallidas} fallos`);
-if (fallidas) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
-await pool.end();
-process.exit(fallidas ? 1 : 0);
+if (fallidas) {
+  console.log('\nFallos:');
+  for (const fallo of fallos) console.log(` - ${fallo}`);
+}
+process.exitCode = fallidas ? 1 : 0;

@@ -21,7 +21,11 @@ import {
   pedidosConEmisionOperacionalPendiente
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
-import { registrarUsoPromocionSimple } from '../services/tiendaPromociones.js';
+import {
+  debeRegistrarse,
+  registrarUsosDeVenta,
+  telefonoDeAuditoria,
+} from '../services/promoUsosAuditoria.js';
 import { emitirTrabajoImpresion } from '../printing/printRouter.js';
 import { emitirComandaDePedidoPorEdge } from '../printing/edgeComanda.js';
 import { esPedidoElegibleParaRedRepartidores } from '../utils/elegibilidadRepartidor.js';
@@ -38,6 +42,27 @@ import { conIdentidadDePedido } from '../services/eventosPanel.js';
 // emitirPedido más abajo.
 let wsBroadcastNegocio = null;
 const pedidos = [];
+
+// Efecto posterior al commit del pedido: nunca puede revertir ni ocultar una
+// venta. El pool de auditoria trae timeouts propios y el reconciliador durable
+// repone cualquier deuda que deje un error/timeout/crash.
+async function auditarPromocionesDelPedido(pedido) {
+  const canal = pedido?.canal;
+  if (!debeRegistrarse(pedido, canal)) return { registrados: 0, omitidos: [] };
+  try {
+    return await registrarUsosDeVenta({
+      negocioId: pedido.negocioId,
+      folio: pedido.id,
+      promociones: pedido.descuentos.promociones,
+      telefono: telefonoDeAuditoria(pedido),
+      montoVenta: pedido.total,
+      canal,
+    });
+  } catch (e) {
+    console.error(`[Promos] registro de uso fallo para ${pedido.id}:`, e.message);
+    return { registrados: 0, omitidos: [], error: e.message };
+  }
+}
 
 // Hotfix P0 folio: tope duro de reintentos al reservar folio en
 // registrarPedido(). Un conflicto real es rarísimo (solo si otra instancia
@@ -397,24 +422,9 @@ export async function registrarPedido(orden, canal = 'test') {
     throw new Error(`FOLIO_NO_DISPONIBLE: ${MAX_REINTENTOS_FOLIO} folios consecutivos ya existían en pedidos_activos (canal=${canal}) — pedido rechazado sin confirmar al cliente`);
   }
 
-  // Fase 3A -- registro de auditoría multicanal de usos de promociones. Solo
-  // POS y WhatsApp/Mesero (allowlist explícita a propósito: tienda ya tiene su
-  // propio ciclo reserva→consumo por otro camino, y no queremos que voz, api,
-  // prueba_admin, test u otro canal futuro quede incluido por accidente). Se
-  // espera (no fire-and-forget) para reducir la ventana entre "pedido
-  // persistido" y "uso registrado", pero un fallo aquí NUNCA debe tocar el
-  // pedido ya persistido: se loguea y se sigue -- nunca se relanza hacia el
-  // caller ni se revierte nada financiero.
-  if ((canal === 'pos' || canal === 'whatsapp') && pedido.descuentos?.promociones?.length) {
-    try {
-      await registrarUsoPromocionSimple({
-        negocioId, folio: pedido.id, aplicadas: pedido.descuentos.promociones,
-        telefono: pedido.cliente?.telefono || null, montoVenta: pedido.total, canal,
-      });
-    } catch (e) {
-      console.error(`[Promos] registro de uso falló para ${pedido.id}:`, e.message);
-    }
-  }
+  // Solo registra ventas confirmadas. Un pedido pendiente_pago queda sin uso
+  // hasta que reclamarEmisionPorPago confirme la transicion financiera.
+  await auditarPromocionesDelPedido(pedido);
 
   pedidos.push(pedido);
 
@@ -859,6 +869,16 @@ export async function confirmarPedidoPendientePago(folio, negocioId) {
   if (!reclamo.reclamado) return null;
 
   eventoTxn('transicion_pendiente_pago_confirmado', nid, { folio });
+
+  // La transicion financiera ya quedo commiteada e idempotente. A partir de
+  // aqui la promocion si representa una venta consumida; si la auditoria
+  // vence/falla, la emision sigue y el reconciliador la repondra despues.
+  await auditarPromocionesDelPedido({
+    ...(reclamo.datos || {}),
+    id: folio,
+    negocioId: nid,
+    estado: 'nuevo',
+  });
 
   // Punto de fallo inyectable: EXACTAMENTE entre persistir la transición (con
   // su deuda de emisión) y emitir. Es la ventana que dejaba a la cocina sin

@@ -1,4 +1,4 @@
--- ─── 090: canal en tienda_promocion_usos (Fase 3A) ──────────────────────────
+-- ─── 091: canal en tienda_promocion_usos (Fase 3A) ──────────────────────────
 -- Idempotente y re-ejecutable.
 --
 -- POR QUÉ
@@ -24,6 +24,27 @@
 -- histórico en esta tabla es, por construcción del código hasta esta
 -- fecha, de tienda en línea.
 
-ALTER TABLE tienda_promocion_usos ADD COLUMN IF NOT EXISTS canal text;
+-- Un solo batch enviado por el predeploy se ejecuta como una transaccion
+-- implicita. Si el lock o el endurecimiento fallan, no queda medio cambio.
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
 
-UPDATE tienda_promocion_usos SET canal = 'tienda_online' WHERE canal IS NULL;
+-- El DEFAULT constante mantiene compatible al binario anterior durante una
+-- ventana de despliegue: sus INSERT que no nombran `canal` siguen siendo
+-- validos y ya no pueden crear nuevos NULL.
+ALTER TABLE public.tienda_promocion_usos
+  ADD COLUMN IF NOT EXISTS canal text NOT NULL DEFAULT 'tienda_online';
+
+-- También converge una base local donde la antigua 090 nullable ya alcanzó a
+-- ejecutarse. Un valor vacío no identifica ningún canal y se trata igual que
+-- el NULL legado; los valores no vacíos (incluidos canales futuros) se
+-- conservan exactamente.
+UPDATE public.tienda_promocion_usos
+   SET canal = 'tienda_online'
+ WHERE canal IS NULL OR btrim(canal) = '';
+
+ALTER TABLE public.tienda_promocion_usos
+  ALTER COLUMN canal SET DEFAULT 'tienda_online';
+
+ALTER TABLE public.tienda_promocion_usos
+  ALTER COLUMN canal SET NOT NULL;

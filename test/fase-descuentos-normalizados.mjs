@@ -54,10 +54,12 @@ await t('UNIT', 'B. solo manual: total = manual, promociones vacío, rewards cer
 });
 
 await t('UNIT', 'C. solo promoción: total = suma de promociones, acepta alias `descuento`', () => {
-  const d = construirDesgloseDescuentos({ promociones: [{ id: 7, nombre: '2x1', descuento: 30, tipo: '2x1' }] });
+  const campaniaId = '11111111-1111-1111-1111-111111111111';
+  const d = construirDesgloseDescuentos({ promociones: [{ id: 7, campaniaId, nombre: '2x1', descuento: 30, tipo: '2x1' }] });
   assert.strictEqual(d.manual.monto, 0);
   assert.strictEqual(d.promociones.length, 1);
   assert.strictEqual(d.promociones[0].promocionId, 7);
+  assert.strictEqual(d.promociones[0].campaniaId, campaniaId, 'conserva la atribucion historica de campaña');
   assert.strictEqual(d.promociones[0].monto, 30);
   assert.strictEqual(d.total, 30);
 });

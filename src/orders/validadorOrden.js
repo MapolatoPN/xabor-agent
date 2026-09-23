@@ -1269,7 +1269,8 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
     // lógica de reglas de arriba; aquí SOLO se toma el descuento de producto.
     descuento = Math.max(0, Math.min(Number(promo.descuento) || 0, subtotal));
     promocionesAplicadas = (promo.aplicadas || []).filter((a) => !a.envioGratis).map((a) => ({
-      id: a.id, nombre: a.nombre, tipo: a.tipo, descuento: a.descuento,
+      id: a.id, campaniaId: a.campaniaId || null,
+      nombre: a.nombre, tipo: a.tipo, descuento: a.descuento,
       unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
     }));
     oportunidadesPromo = promo.oportunidades || [];

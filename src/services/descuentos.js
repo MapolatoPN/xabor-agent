@@ -87,6 +87,9 @@ export function construirDesgloseDescuentos({ manual = null, promociones = [], r
   const manualMonto = redondear(manual?.monto);
   const promosNormalizadas = (Array.isArray(promociones) ? promociones : []).map((p) => ({
     promocionId: p?.promocionId ?? p?.id ?? null,
+    // Snapshot historico: la campaña puede cambiar antes de confirmar un pago
+    // o antes de que el reconciliador repare la auditoria.
+    campaniaId: p?.campaniaId ?? p?.campania_id ?? null,
     nombre: p?.nombre ?? null,
     monto: redondear(p?.monto ?? p?.descuento),
     tipo: p?.tipo ?? null,

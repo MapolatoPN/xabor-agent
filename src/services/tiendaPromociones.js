@@ -291,7 +291,9 @@ export async function calcularPromociones({
       clienteYaComproDeVerdad(negocioId, telefono),
       pool.query(
         `SELECT promocion_id, COUNT(*)::int AS n FROM tienda_promocion_usos
-          WHERE negocio_id = $1 AND cliente_telefono = $2 GROUP BY promocion_id`,
+          WHERE negocio_id = $1 AND cliente_telefono = $2
+            AND canal = 'tienda_online'
+          GROUP BY promocion_id`,
         [negocioId, telefono]
       ),
     ]);
@@ -591,7 +593,8 @@ export async function reservarUsosPromociones(negocioId, aplicadas = [], context
         if (tope != null) {
           const { rows: [c] } = await client.query(
             `SELECT COUNT(*)::int AS n FROM tienda_promocion_usos
-              WHERE negocio_id = $1 AND promocion_id = $2 AND cliente_telefono = $3`,
+              WHERE negocio_id = $1 AND promocion_id = $2 AND cliente_telefono = $3
+                AND canal = 'tienda_online'`,
             [negocioId, a.id, telefono]);
           if (c.n >= tope) { await client.query('ROLLBACK'); agotadas.push(a); continue; }
         }
@@ -603,8 +606,8 @@ export async function reservarUsosPromociones(negocioId, aplicadas = [], context
       //    todavia no lo es.
       await client.query(
         `INSERT INTO tienda_promocion_usos
-           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono, estado)
-         VALUES ($1,$2,$3,$4,$5,'reservada')`,
+           (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono, estado, canal)
+         VALUES ($1,$2,$3,$4,$5,'reservada','tienda_online')`,
         [negocioId, a.id, a.campaniaId, PREFIJO_RESERVA + (token || randomUUID()), telefono]);
 
       await client.query('COMMIT');
@@ -792,49 +795,6 @@ export async function registrarUsosPromociones({
   return { registrados };
 }
 
-// ── Fase 3A: registro simple de uso (auditoría multicanal, POS/WhatsApp) ──
-//
-// NO REEMPLAZAR esta función por `registrarUsosPromociones` ni llamar a esa
-// desde POS/WhatsApp/Mesero. `registrarUsosPromociones` hace ADEMÁS
-// enforcement real: reclama `tienda_promociones.usos` contra `limite_usos` y
-// puede lanzar `PromocionError('CUPO_AGOTADO')` abortando la transacción.
-// Pertenece al ciclo reserva → pedido → consumo, exclusivo de la tienda en
-// línea (reserva el cupo ANTES de crear el pedido). Reutilizarla aquí haría
-// que POS/WhatsApp empezaran a contar contra el límite global compartido con
-// tienda -- enforcement cross-canal por accidente, que Fase 3A NO debe hacer.
-//
-// Esta función es SOLO auditoría: una fila por (negocio, promoción, folio),
-// sin tocar el contador de cupo, sin límite por cliente, sin poder fallar
-// "cerrado". Recibe las promociones YA aplicadas (de `datos.descuentos.
-// promociones`, Fase 2) -- nunca vuelve a correr `calcularPromociones`.
-// Idempotente por el mismo UNIQUE que ya usa la tienda
-// (negocio_id, promocion_id, pedido_folio): un reintento con el mismo folio
-// no duplica, sin necesidad de SELECT previo.
-//
-// `canal` (migración 090) se persiste en la fila misma porque es la única
-// forma durable de conservarlo: ni `pedidos_activos` ni `pedidos` sobreviven
-// una cancelación (ambos mueren en la misma transacción de eliminarPedido(),
-// database.js), y ninguna otra tabla durable (compras_reales,
-// impresion_trabajos, notificaciones_repartidor) lleva un canal de venta
-// genérico. Investigado y confirmado antes de agregar la columna -- ver
-// docs/fase3a-registro-usos-promociones.md.
-export async function registrarUsoPromocionSimple({ negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, canal = null }) {
-  if (!aplicadas.length) return { registrados: 0 };
-  let registrados = 0;
-  for (const a of aplicadas) {
-    const { rowCount } = await pool.query(
-      `INSERT INTO tienda_promocion_usos
-         (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-          monto_descuento, monto_venta, estado, consumida_at, canal)
-       VALUES ($1,$2,NULL,$3,$4,$5,$6,'consumida',NOW(),$7)
-       ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
-      [negocioId, a.promocionId ?? a.id, folio, telefono, a.monto ?? a.descuento ?? 0, montoVenta, canal]
-    );
-    if (rowCount > 0) registrados++;
-  }
-  return { registrados };
-}
-
 // ── CAMBIO DE VERSION DEL PEDIDO ──────────────────────────────────────────
 //
 // Una reserva justifica UN precio. Si el pedido cambia -- otro total, otra
@@ -976,8 +936,8 @@ export async function resincronizarReservasPorVersion({
       await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-            monto_descuento, estado, pedido_version)
-         VALUES ($1,$2,$3,$4,$5,$6,'reservada',$7)`,
+            monto_descuento, estado, pedido_version, canal)
+         VALUES ($1,$2,$3,$4,$5,$6,'reservada',$7,'tienda_online')`,
         [nid, r.promocion_id, r.campania_id, folio, r.cliente_telefono,
          promo?.descuento || 0, versionActual]);
       rereservadas.push(r.promocion_id);
@@ -1177,8 +1137,8 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
       await client.query(
         `INSERT INTO tienda_promocion_usos
            (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
-            monto_descuento, estado)
-         VALUES ($1,$2,$3,$4,$5,$6,'reservada')
+            monto_descuento, estado, canal)
+         VALUES ($1,$2,$3,$4,$5,$6,'reservada','tienda_online')
          ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
         [nid, ap.id, ap.campaniaId || null, folio, datos?.cliente?.telefono || null,
          ap.descuento || 0]);

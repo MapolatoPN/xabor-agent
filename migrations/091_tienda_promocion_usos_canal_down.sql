@@ -1,0 +1,8 @@
+-- ─── 091 down: NO-OP deliberado ─────────────────────────────────────────────
+--
+-- La aplicacion anterior ignora la columna adicional, por lo que el rollback
+-- de codigo es compatible sin tocarla. Eliminarla destruiria atribucion
+-- historica de POS/WhatsApp y no es un rollback de datos reversible.
+--
+-- Teardown manual (DESTRUCTIVO, solo con autorizacion explicita y respaldo):
+-- ALTER TABLE public.tienda_promocion_usos DROP COLUMN IF EXISTS canal;
