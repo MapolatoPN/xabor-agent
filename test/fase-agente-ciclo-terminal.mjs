@@ -37,7 +37,7 @@ const haceHoras = (h) => new Date(AHORA.getTime() - h * 3600 * 1000).toISOString
 const estadoCon = (hechos, { minutos = 5, extra = {} } = {}) => ({
   ...estadoNuevo({ negocioId: 'n1', conversacionId: 'agente:52187' }),
   hechos: { confirmado: false, escalado: false, cancelado: false, fallido: false, ...hechos },
-  _actualizadoAt: new Date(AHORA.getTime() - minutos * 60000).toISOString(),
+  terminadoEn: new Date(AHORA.getTime() - minutos * 60000).toISOString(),
   ...extra,
 });
 
@@ -86,6 +86,22 @@ t('B2 · justo por debajo del corte, NO se reabre sola', () => {
     'reabrir demasiado pronto deja al cliente pidiendo dos veces el mismo pedido');
 });
 
+t('B1b · la conversación NO se rejuvenece por escribir', () => {
+  // El fallo del primer intento, en producción y el mismo día: la antigüedad
+  // se medía desde el último GUARDADO del estado, y el estado se reescribe en
+  // cada turno. Así un pedido confirmado el día 21 seguía mandando el 23 con
+  // la marca a nueve minutos, y la regla no llegaba a dispararse nunca.
+  const estado = {
+    ...estadoCon({ confirmado: true }, { minutos: 60 * 48 }),   // cerrado hace 2 días
+    _actualizadoAt: new Date(AHORA.getTime() - 9 * 60000).toISOString(), // escrito hace 9 min
+  };
+  const r = cicloParaTurno(estado, 'Quiero unos hotcakes para mañana a las 10', { ahora: AHORA });
+  assert.equal(r.hechos.confirmado, false,
+    'la fecha de guardado volvió a mandar sobre la de cierre');
+  assert.deepEqual(r.carrito.items, [], 'el carrito de hace dos días sigue en el pedido nuevo');
+  assert.equal(r.folio, null, 'el folio viejo viaja al ciclo nuevo');
+});
+
 t('B3 · la frase sigue funcionando, sin esperar las horas', () => {
   const estado = estadoCon({ confirmado: true }, { minutos: 10 });
   const r = cicloParaTurno(estado, 'quiero hacer otro pedido', { ahora: AHORA });
@@ -114,11 +130,18 @@ t('C1 · una confirmación de resultado incierto sigue intacta', () => {
   assert.equal(r.hechos.confirmado, true, 'reabrió una confirmación que nadie ha conciliado');
 });
 
-t('C2 · sin fecha de escritura no se reabre por tiempo', () => {
-  // Un estado viejo sin `_actualizadoAt` no autoriza a suponer que es antiguo.
-  const estado = { ...estadoCon({ confirmado: true }), _actualizadoAt: null };
-  const r = cicloParaTurno(estado, 'unos hotcakes', { ahora: AHORA });
-  assert.equal(r.hechos.confirmado, true);
+t('C2 · sin fecha de cierre se cae a la de guardado, que es conservadora', () => {
+  // La ausencia de `terminadoEn` NO autoriza a suponer que es viejo: probarlo
+  // asi rompio «preguntar por el pedido confirmado no abre otro ciclo» —un
+  // cliente preguntando «ya esta listo?» empezaba un pedido vacio—. Se cae a
+  // la fecha de guardado: como mucho no reabre, y no reabrir de mas es lo que
+  // protege esa garantia. Estas filas se curan al cerrar su siguiente ciclo.
+  const reciente = { ...estadoCon({ confirmado: true }), terminadoEn: null,
+    _actualizadoAt: new Date(AHORA.getTime() - 5 * 60000).toISOString() };
+  assert.equal(cicloParaTurno(reciente, 'ya esta listo?', { ahora: AHORA }).hechos.confirmado, true);
+  const antiguo = { ...estadoCon({ confirmado: true }), terminadoEn: null,
+    _actualizadoAt: new Date(AHORA.getTime() - 10 * 3600000).toISOString() };
+  assert.equal(cicloParaTurno(antiguo, 'unos hotcakes', { ahora: AHORA }).hechos.confirmado, false);
 });
 
 t('C3 · un estado sin terminar se devuelve tal cual', () => {

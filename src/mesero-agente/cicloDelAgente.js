@@ -61,7 +61,27 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   // Se reabre porque el cliente lo pide CON PALABRAS, o porque ha pasado
   // bastante. Lo segundo hace falta porque lo primero es una lista de frases,
   // y una lista de frases nunca cubre cómo habla la gente.
-  const marca = Date.parse(estado?._actualizadoAt || '');
+  //
+  // ── LA FECHA ES LA DEL CIERRE, NO LA DEL ÚLTIMO ESCRITO ──────────────
+  //
+  // Medir desde cuándo se guardó el estado la última vez no sirve: el estado
+  // se reescribe en CADA turno, así que la conversación se rejuvenece sola
+  // cada vez que el cliente habla y la regla no llega a dispararse nunca.
+  // Se vio en producción el mismo día que se escribió: un pedido confirmado
+  // el 21 seguía mandando el 23, con dos días de por medio y la marca a
+  // nueve minutos.
+  //
+  // Lo que vale es CUÁNDO TERMINÓ el ciclo. Eso lo anota el ejecutor al poner
+  // el hecho, y no se vuelve a tocar.
+  // Un estado sin `terminadoEn` viene de antes de que esto existiera. Se cae
+  // a la fecha de guardado, que no es buena —se renueva en cada turno— pero
+  // es CONSERVADORA: como mucho no reabre, y no reabrir de más es lo que
+  // protege «preguntar por el pedido confirmado no abre otro ciclo».
+  //
+  // Tratar la ausencia como «viejo» se probó y rompía justo esa garantía: un
+  // cliente preguntando «¿ya está listo?» empezaba un pedido vacío. Esas
+  // filas se curan solas en cuanto cierren su siguiente ciclo.
+  const marca = Date.parse(estado?.terminadoEn || estado?._actualizadoAt || '');
   const viejo = Number.isFinite(marca)
     && (ahora.getTime() - marca) > HORAS_PARA_REABRIR * 3600 * 1000;
   if (!pideNuevoPedido(mensaje) && !viejo) return estado;

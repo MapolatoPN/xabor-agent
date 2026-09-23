@@ -340,6 +340,7 @@ export async function atenderTurnoConHerramientas({
   } catch (e) {
     anotar({ tipo: 'error', mensaje: String(e?.message || e) });
     estado.hechos.fallido = true;
+    estado.terminadoEn = new Date().toISOString();
     // Marcado FALLIDO, ninguna mutación es legal ya: lo que quede del pedido
     // se queda como está y lo recoge una persona.
     const salida = await escalarYSalir(CIERRE.ERROR, `excepción: ${String(e?.message || e).slice(0, 200)}`);
@@ -392,6 +393,7 @@ async function ejecutarLlamada({ llamada, ejecutor, libro, estado, negocioId, co
     if (llamada.name === 'confirmar_pedido' && r.aplicada && r.resultado?.folio) {
       // El pedido durable sobrevivió pero guardarEstado pudo haber fallado.
       estado.hechos.confirmado = true;
+      estado.terminadoEn = new Date().toISOString();
       estado.folio = r.resultado.folio;
     }
     return {

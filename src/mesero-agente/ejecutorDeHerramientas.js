@@ -508,6 +508,7 @@ export function crearEjecutor({
     cancelar_pedido({ motivo }) {
       estado.carrito = carritoVacio();
       estado.hechos.cancelado = true;
+      estado.terminadoEn = new Date().toISOString();
       estado.motivoCancelado = String(motivo || '').slice(0, 200);
       return ok({ pedido: vista(), cancelado: true });
     },
@@ -540,6 +541,7 @@ export function crearEjecutor({
       });
 
       estado.hechos.confirmado = true;
+      estado.terminadoEn = new Date().toISOString();
       estado.folio = r.folio ?? null;
       return ok({
         pedido: vista(), folio: r.folio ?? null, simulado: !!r.simulado,
