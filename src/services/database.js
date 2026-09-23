@@ -3469,12 +3469,16 @@ export async function fijarEsperaDePago(pagoId, negocioId, esperaMinutos) {
   return r?.xabor_espera_hasta || null;
 }
 
-/** Intentos cuya ventana de espera ya paso y siguen vivos. */
+/**
+ * Intentos cuya ventana de espera ya paso y siguen vivos. Una revision por
+ * creacion ambigua conserva su plazo; una revision humana por comprobante lo
+ * congela explicitamente con xabor_espera_hasta=NULL.
+ */
 export async function pagosConEsperaVencida(limite = 25) {
   const { rows } = await pool.query(
     `SELECT * FROM pagos
       WHERE xabor_espera_hasta IS NOT NULL AND xabor_espera_hasta < NOW()
-        AND estado IN ('creando','pendiente')
+        AND estado IN ('creando','pendiente','requiere_revision')
       ORDER BY xabor_espera_hasta ASC LIMIT $1`, [limite]);
   return rows;
 }
@@ -3511,6 +3515,7 @@ export async function marcarPagoConComprobanteEnRevision(negocioId, folio, docum
     const { rows: [actualizado] } = await cliente.query(
       `UPDATE pagos
           SET estado = 'requiere_revision',
+              xabor_espera_hasta = NULL,
               metadata_sanitizada = metadata_sanitizada || $3::jsonb
         WHERE id = $1 AND negocio_id = $2 AND estado IN ('creando','pendiente')
         RETURNING *`, [pago.id, nid, JSON.stringify(metadata)]);

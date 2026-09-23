@@ -972,6 +972,32 @@ try {
     assert.strictEqual(Number((await promoDe(id)).usos), 0);
   });
 
+  await t('15b. un comprobante congela solo su pago y no vence por el barrido', async () => {
+    const id = await promo({ codigo: 'COMPROBANTE', limiteUsos: 1, valor: 50 });
+    const r = await comprarOk(carrito(tokenNuevo(), { codigo: 'COMPROBANTE' }));
+    const folio = r.body.folio;
+    await crearEnlace(folio);
+    const pago = (await pagosDe(folio))[0];
+
+    // El reloj ya habría vencido cuando llega la imagen. Marcar la revisión
+    // humana debe congelar ESTA fila de forma explícita, no todas las filas
+    // que compartan el estado requiere_revision.
+    await vencerYa(pago.id);
+    const { marcarPagoConComprobanteEnRevision } = await import('../src/services/database.js');
+    const enRevision = await marcarPagoConComprobanteEnRevision(NEG, folio, 'documento-prueba');
+    assert.strictEqual(enRevision.estado, 'requiere_revision');
+    assert.strictEqual(enRevision.xabor_espera_hasta, null,
+      'el comprobante no congeló el plazo de esta revisión humana');
+
+    const { expirarPagosVencidos } = await import('../src/services/webhookPagos.js');
+    await expirarPagosVencidos();
+    assert.strictEqual((await pedidoDe(folio)).estado, 'pendiente_pago',
+      'el barrido canceló un pedido cuyo comprobante espera revisión humana');
+    assert.strictEqual((await usosDe(id)).length, 1,
+      'el barrido soltó la promoción mientras el comprobante seguía en revisión');
+    assert.strictEqual(Number((await promoDe(id)).usos), 1);
+  });
+
   await t('16. el proceso muere justo tras vencer: pedido y cupo se mueven juntos', async () => {
     // La liberación vive DENTRO de la transacción del vencimiento. Por eso un
     // fallo inmediatamente posterior al COMMIT no puede dejar medio mundo:
