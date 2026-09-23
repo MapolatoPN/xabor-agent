@@ -15,7 +15,9 @@
     "release:gate": "node scripts/release-gate.mjs",
     "release:gate:financiero": "node scripts/release-gate-financiero.mjs",
     "test:incident": "node scripts/predeploy-check-incidentes.mjs && node test/fase-agente-continuidad-determinista.mjs",
-    "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1"
+    "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1",
+    "dev:autofactura": "node scripts/dev-autofactura-local.cjs",
+    "smoke:autofactura": "node scripts/smoke-autofactura-local.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
