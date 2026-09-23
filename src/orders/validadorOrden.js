@@ -21,6 +21,7 @@
 import { pool, obtenerMetodosPagoDisponibles, obtenerConfiguracion } from '../services/database.js';
 import { cargarReglas, obtenerEstadoRestaurante, obtenerPagoAceptadoReal } from '../agent/prompts.js';
 import { calcularPromociones } from '../services/tiendaPromociones.js';
+import { construirDesgloseDescuentos } from '../services/descuentos.js';
 import { cargarGruposDeProductos, resolverModificadoresLLM, validarCardinalidadGrupos, buscarOpcionPorMencion } from '../services/modificadores.js';
 import { tieneRespaldo, spanEnTexto, normalizar, partirMencion, esFragmentoDeAtributo } from '../agent/mencionesComerciales.js';
 import { componenteIncluido } from '../agent/componentesIncluidos.js';
@@ -1284,6 +1285,18 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
     eventoTxn('total_mismatch', negocioId, { llm: totalLLM, real: total });
   }
 
+  // Fase 2 -- bloque normalizado DUAL-WRITE junto al legacy `descuento`/
+  // `promociones` de arriba (ninguno de los dos se toca: panel, comanda,
+  // ticket e historial siguen leyéndolos igual). WhatsApp/Mesero nunca tiene
+  // descuento manual (el modelo no lo aplica, ver arriba) ni Rewards
+  // conectado todavía -- por eso `manual` y `rewards` van null aquí, nunca
+  // inventados.
+  const descuentos = construirDesgloseDescuentos({
+    manual: null,
+    promociones: promocionesAplicadas,
+    rewards: null,
+  });
+
   const ordenCanonica = {
     ...orden,
     modalidad: modalidadCanonica,
@@ -1295,6 +1308,7 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
     promociones: promocionesAplicadas,       // snapshot para ticket / historial
     promo_oportunidades: oportunidadesPromo,  // pista que el agente solo VERBALIZA
     forma_pago_tipo: tipoNormalizado,         // canónico (tipo de metodos_pago)
+    descuentos,                              // Fase 2: bloque normalizado
   };
 
   return { ok: true, orden: ordenCanonica, rechazos: [], ajustes };

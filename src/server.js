@@ -33,7 +33,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          expirarPagosVencidos, procesarExpiracionProveedorClip,
          reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
 import { setEntregaEdge, setAvisoImpresionEdge } from './printing/edgeComanda.js';
-import { autorizarDescuento } from './services/descuentos.js';
+import { autorizarDescuento, construirDesgloseDescuentos, redondear } from './services/descuentos.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
 } from './services/edgeService.js';
@@ -3603,6 +3603,19 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     costo_envio: 0,
     negocioId: req.negocioId
   };
+  // Fase 2 -- bloque normalizado DUAL-WRITE. Un pedido por_cobrar nace con
+  // descuento=0 (igual que el legacy de arriba): el descuento real se sabe
+  // hasta el cobro y ese endpoint (`/pedidos/:folio/cobro`) es quien lo
+  // escribe. Este POS clásico no valida el descuento con autorizarDescuento
+  // (comportamiento preexistente, fuera de alcance de Fase 2) ni asocia un
+  // usuario que lo haya autorizado -- se deja null, no inventado. Rewards se
+  // completa más abajo, después de `registrarCanje`, porque el canje ocurre
+  // DESPUÉS de crear el pedido (mismo orden que ya usa el código legacy).
+  orden.descuentos = construirDesgloseDescuentos({
+    manual: esPorCobrar ? null : { monto: desc, motivo: motivo_descuento || null, autorizadoPor: null },
+    promociones: [],
+    rewards: null,
+  });
   // Rewards en pedido abierto: el canje se RESERVA como intención pero solo
   // se CONSUME al cobrar con éxito — cancelar antes del cobro nunca quema
   // puntos. (En el flujo clásico el canje sigue consumiéndose al crear.)
@@ -3652,6 +3665,24 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
       // El pedido ya fue registrado — devolvemos advertencia pero no fallamos
       return res.json({ ok: true, pedido, rewards_warning: e.message });
     }
+  }
+  // Fase 2 -- completa `datos.descuentos.rewards` DESPUÉS del canje, porque
+  // (igual que el legacy `canje` de la respuesta) el monto no se conoce
+  // hasta que `registrarCanje` corre. `datos || jsonb` es un merge de nivel
+  // raíz (Postgres no hace merge profundo): se reconstruye el objeto
+  // `descuentos` COMPLETO con los mismos valores de manual/promociones que
+  // ya se escribieron al crear, para no perderlos al pisar la clave.
+  if (canjeInfo) {
+    const descuentosConRewards = construirDesgloseDescuentos({
+      manual: orden.descuentos.manual.monto > 0 ? orden.descuentos.manual : null,
+      promociones: [],
+      rewards: { monto: canjeInfo.monto, puntos: canjeInfo.puntos },
+    });
+    await pool.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2`,
+      [pedido.id, req.negocioId, JSON.stringify({ descuentos: descuentosConRewards })]);
+    pedido.descuentos = descuentosConRewards;
   }
 
   res.json({ ok: true, pedido, canje: canjeInfo });
@@ -3733,6 +3764,16 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
     cam = bil > 0 ? Math.round((bil - totalFinal) * 100) / 100 : 0;
   }
 
+  // Fase 2 -- bloque normalizado DUAL-WRITE. Este es el único de los cuatro
+  // canales con descuento manual que sí pasa por `autorizarDescuento`
+  // (arriba): `autorizadoPor` es legítimo aquí porque hubo una autorización
+  // real, a diferencia del POS de mostrador o el presencial clásico.
+  const descuentosCobro = construirDesgloseDescuentos({
+    manual: desc > 0 ? { monto: desc, motivo: motivo_descuento, autorizadoPor: req.usuarioId || null } : null,
+    promociones: [],
+    rewards: canje ? { monto: montoCanje, puntos: canje.puntos } : null,
+  });
+
   const campos = {
     forma_pago,
     subtotal,
@@ -3745,6 +3786,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
     total: totalFinal,
     pago_confirmado: true,
     cobrado_at: new Date().toISOString(),
+    descuentos: descuentosCobro,
     ...(canje ? { rewards_canje: { puntos: canje.puntos, monto: montoCanje } } : {}),
   };
   const r = await cobrarPedidoActivo(folio, req.negocioId, campos);
@@ -6871,6 +6913,21 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
       costoEnvio, descuento: descuentoTotal, cliente, direccion, formaPago, notas,
     });
     if (promocionesPos.length) orden.promociones = promocionesPos;
+
+    // Fase 2 -- bloque normalizado DUAL-WRITE, sin tocar `descuento`/
+    // `promociones` de arriba. `promoTotalPos` es lo que el motor otorgó de
+    // verdad (nunca se topa); lo que le queda a `manual` es el residuo
+    // contra `descuentoTotal` (que SÍ se topa al subtotal arriba) -- así
+    // `descuentos.total` coincide siempre con el `descuento` legacy, incluso
+    // en el caso extremo de que manual+promo excedan el subtotal. Este POS
+    // no captura motivo del descuento manual (el formulario no lo pide) ni
+    // autorización -- se deja null, no inventado.
+    const promoTotalPos = redondear(promocionesPos.reduce((s, p) => s + (Number(p.descuento) || 0), 0));
+    orden.descuentos = construirDesgloseDescuentos({
+      manual: { monto: Math.max(0, redondear(descuentoTotal - promoTotalPos)), motivo: null, autorizadoPor: null },
+      promociones: promocionesPos,
+      rewards: null,
+    });
 
     const pedido = await registrarPedido(orden, 'pos');
     emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`)); // comanda + impresión + tablero (no bloquea si no hay impresora)

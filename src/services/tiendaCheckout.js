@@ -17,6 +17,7 @@
 import { randomBytes, createHash } from 'crypto';
 import { pool, poolDeClaims, calcularVersionPedidoHash } from './database.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError } from './posEnvios.js';
+import { construirDesgloseDescuentos } from './descuentos.js';
 import {
   TiendaError, MODALIDAD_A_PEDIDO, reglasDelNegocio, estadoApertura,
   partesEnZona, metodosPagoTienda,
@@ -809,6 +810,19 @@ export async function crearPedidoTienda({
       envio_gratis: promo.envioGratis,
       envio_base: promo.envioBase,
     };
+    // Fase 2 -- bloque normalizado DUAL-WRITE. Tienda no tiene descuento
+    // manual (sin staff en el checkout público). `promociones` incluye
+    // TODAS las aplicadas, incluida la de envío gratis -- su `monto` sale en
+    // 0 (el ahorro de envío se rastrea aparte en costo_envio), así que no
+    // duplica el envío como si fuera descuento de producto, pero queda
+    // trazable que esa promoción sí participó. Rewards se completa después,
+    // en `aplicarRewardsAlPedido`, por la misma razón que en el POS clásico:
+    // el canje corre DESPUÉS de crear el pedido.
+    orden.descuentos = construirDesgloseDescuentos({
+      manual: null,
+      promociones: orden.tienda.promociones,
+      rewards: null,
+    });
     // El pedido recuerda a qué cliente pertenece (solo con sesión). Va dentro
     // de `datos` desde que nace; la columna indexada se estampa tras el alta.
     if (clienteSesion) {
@@ -957,7 +971,19 @@ export async function crearPedidoTienda({
  */
 async function aplicarRewardsAlPedido(negocioId, pedido, orden, rewards) {
   const totalFinal = dinero(Math.max(0, Number(orden.total || 0) - Number(rewards.monto || 0)));
-  const parche = { total: totalFinal, rewards_canje: { puntos: rewards.puntos, monto: rewards.monto } };
+  // Fase 2 -- `datos.descuentos` completo (mismo motivo que el POS clásico:
+  // el merge de Postgres es de nivel raíz, así que hay que reconstruir el
+  // objeto entero con las promociones que ya se habían calculado).
+  const descuentosConRewards = construirDesgloseDescuentos({
+    manual: null,
+    promociones: orden.descuentos?.promociones || [],
+    rewards: { monto: rewards.monto, puntos: rewards.puntos },
+  });
+  const parche = {
+    total: totalFinal,
+    rewards_canje: { puntos: rewards.puntos, monto: rewards.monto },
+    descuentos: descuentosConRewards,
+  };
 
   await pool.query(
     `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()

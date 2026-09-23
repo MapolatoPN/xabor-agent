@@ -1040,6 +1040,7 @@ export async function revertirCobro(cuentaId, negocioId, cobroId, { usuarioId, m
 //     (datos.propinas y datos.pagos[].propina) y NO se suma al total.
 export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
   const nid = validarNegocioId(negocioId);
+  const { construirDesgloseDescuentos } = await import('./descuentos.js');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1111,6 +1112,17 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
       ...(descuentoMonto > 0 ? {
         descuento_tipo: cta.descuento_tipo, descuento_valor: Number(cta.descuento_valor), descuento_por: cta.descuento_por,
       } : {}),
+      // Fase 2 -- bloque normalizado DUAL-WRITE. Restaurante es el único
+      // canal con `tipo` (porcentaje/importe) Y `autorizadoPor` reales de
+      // verdad (aplicarDescuentoCuenta los exige y audita). Sin promociones
+      // ni Rewards: ninguno de los dos existe todavía en el flujo de mesas.
+      descuentos: construirDesgloseDescuentos({
+        manual: descuentoMonto > 0
+          ? { monto: descuentoMonto, tipo: cta.descuento_tipo, motivo: cta.descuento_motivo, autorizadoPor: cta.descuento_por }
+          : null,
+        promociones: [],
+        rewards: null,
+      }),
       total: Number(tot.total),
       propinas: Number(tot.propinas),
       costo_envio: 0,
