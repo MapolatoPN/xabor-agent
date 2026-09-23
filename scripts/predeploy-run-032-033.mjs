@@ -90,6 +90,14 @@ const SCRIPTS = [
   // quiere hacer seguro.
   '077-webhook-entrante',
   '078-whatsapp-continuidad',
+  // 087 crea la libreta fiscal, la configuración de facturación, los recibos y
+  // el estado de WhatsApp (facturación por negocio). Requiere la 065
+  // (facturas_pedido) ya aplicada; el script lo comprueba antes de tocar nada.
+  '087-clientes-fiscales',
+  // 089 crea utofacturas (liga pública de autofactura por venta). Al integrar
+  // sobre prod/mesero-shadow-v3 debe quedar DESPUÉS de
+  // '088-cortes-descuentos-promociones' (esa 088 no existe en esta rama).
+  '089-autofactura-xabor',
 ];
 
 for (const nombre of SCRIPTS) {
