@@ -62,9 +62,14 @@ export async function leerEstado(negocioId, telefono, { sombra = false } = {}) {
   // Solo una lectura exitosa sin filas significa conversación nueva. Si la
   // base falla, atender con un carrito vacío podría duplicar un pedido previo.
   const { rows } = await pool.query(
-    'SELECT estado FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2',
+    'SELECT estado, actualizado_at FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2',
     [negocioId, sessionId]);
-  if (rows[0]?.estado) return rows[0].estado;
+  // La fecha del ULTIMO escrito viaja con el estado para que `cicloParaTurno`
+  // pueda reabrir un ciclo terminado por antiguedad. Va con guion bajo porque
+  // no es parte del estado: es un dato de la fila que lo guarda.
+  if (rows[0]?.estado) {
+    return { ...rows[0].estado, _actualizadoAt: rows[0].actualizado_at?.toISOString?.() || null };
+  }
   return estadoNuevo({ negocioId, conversacionId: sessionId });
 }
 
