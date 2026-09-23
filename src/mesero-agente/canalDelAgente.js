@@ -34,7 +34,7 @@ import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
   TEXTO_CAMBIO_NO_GUARDADO, TEXTO_PEDIDO_PROGRAMADO,
 } from './seguridadConversacional.js';
-import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
+import { construirAvisoFueraDeHorario, respuestaAPedidoProgramado } from './horarioDelAgente.js';
 import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
@@ -143,7 +143,7 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
 export async function atenderConAgente({
   negocioId, telefono, mensaje, nombre = null, canal = 'whatsapp',
   llamarModelo, historial = [], textoCiclo = '', turnoId = null,
-  escalarAHumano = null, registrar = registrarPedido, emitir = emitirPedido,
+  escalarAHumano = null, enviarMenu = null, registrar = registrarPedido, emitir = emitirPedido,
   guardar = guardarPedido, crearPago = crearEnlacePago, traza = null,
 } = {}) {
   const t0 = Date.now();
@@ -186,17 +186,33 @@ export async function atenderConAgente({
     if (esSolicitudDePedidoProgramado(mensaje, {
       hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
     })) {
-      const entregado = await avisarAHumano(
-        escalarAHumano, negocioId, telefono, 'AGENTE_PEDIDO_PROGRAMADO');
-      if (!entregado) return { ok: false, motivo: 'handoff_pedido_programado_no_entregado' };
-      estado.hechos.escalado = true;
+      // Decisión del dueño: esto va a la TIENDA EN LÍNEA, que es donde se
+      // puede agendar de verdad, y solo a una persona si esa tienda no existe
+      // o no acepta programados. Antes iba siempre a una persona, y eso
+      // convertía «me lo apartas para mañana» en una espera.
+      //
+      // La configuración de la tienda se lee AQUÍ y no arriba: el camino
+      // normal —negocio abierto, pedido para hoy— es el 99 % de los turnos, y
+      // no tiene por qué pagar una consulta que no va a mirar. Si falla, se
+      // cae al handoff, que es la respuesta segura.
+      const tiendaParaAgendar = await obtenerConfigTienda(negocioId).catch((e) => {
+        console.error(`[AGENTE] no se pudo resolver la tienda para agendar: ${e?.message}`);
+        return null;
+      });
+      const salidaProgramado = respuestaAPedidoProgramado({ configTienda: tiendaParaAgendar });
+      if (salidaProgramado.escalar) {
+        const entregado = await avisarAHumano(
+          escalarAHumano, negocioId, telefono, 'AGENTE_PEDIDO_PROGRAMADO');
+        if (!entregado) return { ok: false, motivo: 'handoff_pedido_programado_no_entregado' };
+        estado.hechos.escalado = true;
+      }
       await guardarEstado(negocioId, telefono, estado);
       return {
         ok: true,
-        texto: TEXTO_PEDIDO_PROGRAMADO,
+        texto: salidaProgramado.texto,
         folio: estado.folio ?? null,
-        escalado: true,
-        motivoCierre: CIERRE.ESCALADO,
+        escalado: salidaProgramado.escalar,
+        motivoCierre: salidaProgramado.escalar ? CIERRE.ESCALADO : CIERRE.RESPONDIO,
         operaciones: [],
       };
     }
@@ -222,6 +238,58 @@ export async function atenderConAgente({
         await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_PIDE_HUMANO')
           ? { ok: true }
           : { ok: false, motivo: escalarAHumano ? 'handoff_no_entregado' : 'handoff_sin_destino' }),
+
+      // ── EL MENÚ ────────────────────────────────────────────────────────
+      //
+      // Lo manda el módulo que ya existe y que además VERIFICA el envío: todas
+      // las páginas en orden, un reintento, y su propio aviso honesto si algo
+      // falla. Aquí no se reimplementa nada; se le pide y se le cree o no según
+      // lo que conteste.
+      enviarMenu: async () => {
+        if (!enviarMenu) return { ok: false, motivo: 'sin_canal' };
+        try {
+          const r = await enviarMenu(negocioId, telefono);
+          return r?.ok
+            ? { ok: true, paginas: r.enviadas ?? null }
+            : { ok: false, motivo: r?.motivo || 'envio_incompleto' };
+        } catch (e) {
+          return { ok: false, motivo: e?.message || 'error' };
+        }
+      },
+
+      // ── UNA SOLICITUD DE EVENTO ────────────────────────────────────────
+      //
+      // El dato se queda en DOS sitios, y son dos a propósito:
+      //
+      //   · la conversación pasa a revisión humana, que es lo que hace que
+      //     aparezca delante de alguien en el panel HOY;
+      //   · y el evento se escribe en el outbox, que es el registro durable
+      //     por si nadie mira el chat a tiempo.
+      //
+      // NO se mete en `sesiones_comerciales`: ese flujo existe para fabricar
+      // una cotización con renglones y precios, y la decisión del dueño es la
+      // contraria — se anotan cinco datos y llama una persona. Meterlo ahí lo
+      // pondría en manos de la maquinaria que sí cotiza.
+      //
+      // Límite conocido: `agente_outbox` todavía no tiene consumidor, así que
+      // el registro durable no avisa por su cuenta. Quien se entera hoy es
+      // quien abre el chat en el panel.
+      registrarEvento: async ({ evento }) => {
+        const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO');
+        try {
+          await encolar(negocioId, [{
+            tipo: TIPOS.SOLICITUD_EVENTO,
+            carga: { ...evento, telefono: telefonoCorto(telefono), canal },
+          }]);
+        } catch (e) {
+          console.error('[AGENTE] no se pudo encolar la solicitud de evento:', e.message);
+        }
+        console.log(`[AGENTE] evento=solicitud_evento negocio=${negocioId} `
+          + `tipo=${evento.tipo_servicio} personas=${evento.personas ?? '-'} handoff=${entregado}`);
+        return entregado
+          ? { ok: true }
+          : { ok: false, motivo: escalarAHumano ? 'handoff_no_entregado' : 'handoff_sin_destino' };
+      },
     };
 
     salida = await atenderTurnoConHerramientas({

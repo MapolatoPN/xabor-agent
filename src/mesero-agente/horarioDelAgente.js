@@ -72,6 +72,42 @@ export function enlaceDeTienda(configTienda, { baseUrl = process.env.PUBLIC_URL 
 }
 
 /**
+ * QUÉ CONTESTAR A UN PEDIDO PARA OTRO DÍA.
+ *
+ * El agente no tiene —todavía— una herramienta que escriba `programado_para`,
+ * así que no puede aceptar «mañana a las 10»: lo registraría como un pedido de
+ * HOY y la cocina lo prepararía hoy. Hasta aquí, nada que discutir.
+ *
+ * Lo que sí se decidió (dueño, 23-sep-2026) es a dónde mandarlo. Antes iba a
+ * una persona SIEMPRE. Ahora va a la tienda en línea, que es donde de verdad
+ * se puede agendar: `acepta_programados` es un dato del negocio, no una
+ * promesa del bot, y `enlaceDeTienda` solo devuelve URL si la tienda está
+ * publicada Y acepta programados.
+ *
+ * Y si no hay tienda que lo acepte, entonces sí una persona: es la única
+ * respuesta que no deja al cliente con un pedido que nadie va a preparar.
+ *
+ * Devuelve `{ texto, escalar }`. `escalar: false` significa que el cliente ya
+ * tiene con qué resolverlo solo.
+ */
+export function respuestaAPedidoProgramado({ configTienda, baseUrl } = {}) {
+  const tienda = enlaceDeTienda(configTienda, { baseUrl });
+  if (!tienda) {
+    return {
+      escalar: true,
+      texto: 'Para programar tu pedido para otro día necesito pasarte con alguien del equipo. '
+        + 'Así confirmamos la fecha y la hora sin registrar algo incorrecto.',
+    };
+  }
+  return {
+    escalar: false,
+    texto: 'Para un pedido de otro día, puedes agendarlo tú mismo en nuestra tienda en línea: '
+      + `${tienda} — ahí eliges el día y la hora. `
+      + 'Si prefieres algo para hoy, dime qué se te antoja y te lo anoto.',
+  };
+}
+
+/**
  * Texto que sale al cliente sin llamar al modelo. Devuelve null cuando el
  * negocio está abierto para que el turno continúe por el flujo normal.
  */

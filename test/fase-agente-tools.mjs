@@ -105,11 +105,18 @@ const nuevo = () => estadoNuevo({ negocioId: 'n1', conversacionId: 'c1' });
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── A. El esquema: estricto o no sirve ──');
 
-await t('A1 · doce herramientas, y las de efecto son las que mutan', () => {
-  assert.equal(NOMBRES.length, 12, `esperaba 12 herramientas, hay ${NOMBRES.length}`);
+await t('A1 · catorce herramientas, y las de efecto son las que mutan', () => {
+  // El número se afirma a propósito: una herramienta nueva es superficie nueva
+  // que el modelo puede usar, y tiene que costar cambiar esta línea. Subió de
+  // 12 a 14 el 23-sep-2026 con `enviar_menu` y `registrar_solicitud_evento`.
+  assert.equal(NOMBRES.length, 14, `esperaba 14 herramientas, hay ${NOMBRES.length}`);
   assert.deepEqual([...CON_EFECTO].sort(), [
     'agregar_producto', 'cancelar_pedido', 'confirmar_pedido', 'definir_cliente',
     'definir_entrega', 'definir_pago', 'modificar_linea', 'pedir_humano', 'quitar_linea',
+    // Mandar el menú tiene efecto aunque no toque el pedido: manda mensajes.
+    // Sin pasar por el libro, dos llamadas en un turno mandarían la carta dos
+    // veces. Anotar un evento también: llama a una persona.
+    'enviar_menu', 'registrar_solicitud_evento',
   ].sort());
   // Las tres de lectura NO tienen efecto: si alguna lo tuviera, pasaría por el
   // libro y una consulta repetida devolvería un resultado congelado.
@@ -136,7 +143,7 @@ await t('A4 · definir_entrega sin ningún dato se rechaza', () => {
 
 await t('A5 · el JSON Schema que ve el modelo sale del MISMO Zod', () => {
   const defs = definicionesParaElModelo();
-  assert.equal(defs.length, 12);
+  assert.equal(defs.length, 14);
   const agregar = defs.find((d) => d.name === 'agregar_producto');
   assert.deepEqual(agregar.input_schema.required, ['producto_id']);
   assert.equal(agregar.input_schema.additionalProperties, false,

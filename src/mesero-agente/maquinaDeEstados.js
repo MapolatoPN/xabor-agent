@@ -122,6 +122,16 @@ export const LEGALIDAD = Object.freeze({
   // más falta hace una persona, porque el motivo de haber llegado ahí —fallo,
   // confirmación, cancelación— es el motivo por el que hay algo que revisar.
   pedir_humano: SIEMPRE,
+
+  // Mandar la carta no cambia el pedido: es legal siempre, incluso con el
+  // pedido ya confirmado ("oye, ¿qué más tienen?").
+  enviar_menu: SIEMPRE,
+
+  // Un evento se puede pedir en cualquier momento de la conversacion, y
+  // tambien despues de haber cerrado un desayuno. Lo unico que NO tiene
+  // sentido es anotarlo cuando la conversacion ya esta en manos de una
+  // persona o cancelada: ahi ya contesta alguien que puede anotarlo mejor.
+  registrar_solicitud_evento: Object.freeze([...EN_CURSO, CONFIRMADO]),
 });
 
 /**

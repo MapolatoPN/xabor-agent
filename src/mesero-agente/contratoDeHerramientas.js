@@ -241,6 +241,41 @@ export const HERRAMIENTAS = Object.freeze([
       motivo: z.string().min(1).max(200).describe('Por qué hace falta una persona.'),
     }).strict(),
   },
+  {
+    nombre: 'enviar_menu',
+    efecto: true,
+    descripcion: 'Le manda al cliente la imagen del menú del negocio. Úsala cuando pida ver la carta, '
+      + 'el menú o las fotos. El envío lo hace Xabor y te dice si salió: NO le digas al cliente '
+      + '"aquí está tu menú", porque el texto que acompaña a las imágenes lo escribe Xabor. '
+      + 'Si el negocio no tiene menú en imagen, el resultado te lo dice y entonces se lo cuentas con '
+      + 'palabras usando buscar_producto.',
+    esquema: z.object({}).strict(),
+  },
+  {
+    nombre: 'registrar_solicitud_evento',
+    efecto: true,
+    // ── CATERING: SE TOMAN DATOS, NO SE COTIZA ─────────────────────────
+    //
+    // Decisión del dueño (23-sep-2026), y es lo que hace esta herramienta
+    // segura: el agente NO propone menús, NO da precios y NO promete nada.
+    // Anota cinco datos y avisa de que alguien del equipo llamará. Un evento
+    // se cotiza mirando disponibilidad, personal y margen — cosas que no
+    // están en la carta y que ningún modelo puede deducir de ella.
+    descripcion: 'Anota una solicitud de EVENTO (catering, taquiza, banquete, mesa de postres, coffee break) '
+      + 'y la pasa a una persona del equipo. Úsala cuando el cliente pida servicio para un evento, '
+      + 'no para un pedido normal por muchas personas que sean. '
+      + 'NO propongas menús, NO des precios y NO prometas disponibilidad: solo toma los datos. '
+      + 'Puedes llamarla con lo que tengas y pedir el resto después; el resultado te dice qué falta.',
+    esquema: z.object({
+      nombre: z.string().min(1).max(80).optional().describe('Nombre de la persona que organiza.'),
+      lugar: z.string().min(1).max(200).optional().describe('Dónde es el evento, con sus palabras.'),
+      fecha_hora: z.string().min(1).max(120).optional()
+        .describe('Fecha y hora del evento, tal como la dijo el cliente ("el sábado 5 a las 2").'),
+      tipo_servicio: z.enum(['almuerzo', 'comida', 'cena', 'mesa de postres', 'coffee break']).optional()
+        .describe('Qué servicio pide. Si dice otra cosa, pregúntale cuál de estos cinco es.'),
+      personas: z.number().int().min(1).max(10000).optional().describe('Cuántas personas, si lo dijo.'),
+    }).strict(),
+  },
 ]);
 
 export const PORNOMBRE = Object.freeze(Object.fromEntries(HERRAMIENTAS.map((h) => [h.nombre, h])));

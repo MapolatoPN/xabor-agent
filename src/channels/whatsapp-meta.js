@@ -1236,6 +1236,33 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           canal: 'whatsapp',
           llamarModelo: llamarModeloDelAgente,
           escalarAHumano: (n, t, m) => continuidadWA.enviarARevision(n, t, m),
+          // ── EL MENÚ, POR EL MISMO CAMINO QUE EL BOT VIEJO ─────────────
+          //
+          // `enviarMenuAutomatico` es quien manda las páginas en orden,
+          // reintenta una vez y redacta su propio aviso si algo falla. Se le
+          // pasa al agente tal cual, sin reimplementar nada: así el cliente
+          // recibe exactamente el mismo menú por los dos caminos, y el día
+          // que se arregle algo ahí se arregla para los dos.
+          enviarMenu: async (n, t) => {
+            const cfgMenu = await obtenerMenuParaEnvio(n);
+            if (!cfgMenu?.activo || !cfgMenu.imagenes?.length) {
+              return { ok: false, motivo: 'el negocio no tiene menú en imagen' };
+            }
+            const envio = await enviarMenuAutomatico({
+              negocioId: n, telefono: t, credenciales,
+              enviarTexto: enviarMensaje, enviarImagenBuffer,
+            });
+            if (envio.textoEnviado) {
+              await guardarMensaje(t, nombreMeta, 'saliente', envio.textoEnviado, n, 'bot');
+            }
+            if (envio.ok) {
+              await guardarMensaje(t, nombreMeta, 'saliente',
+                `📷 Menú (${envio.enviadas} página${envio.enviadas === 1 ? '' : 's'})`, n, 'bot');
+            } else if (envio.textoFallback) {
+              await guardarMensaje(t, nombreMeta, 'saliente', envio.textoFallback, n, 'bot');
+            }
+            return envio;
+          },
           turnoId: `wa-${Date.now()}`,
         });
         if (r.ok) {

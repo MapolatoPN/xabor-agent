@@ -61,6 +61,11 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
     ofrecidos: [],
     ofrecidosDelTurno: [],
+    // Los datos de un evento se juntan a trozos entre turnos. Vive aqui y
+    // no en el carrito porque un evento NO es un pedido: no tiene renglones,
+    // ni precio, ni modalidad, y meterlo en el carrito lo haria pasar por
+    // el reconciliador, que no tiene nada que decidir sobre el.
+    evento: null,
   };
 }
 
@@ -553,6 +558,77 @@ export function crearEjecutor({
       estado.hechos.escalado = true;
       estado.motivoEscalado = String(motivo || '').slice(0, 200);
       return ok({ pedido: vista(), escalado: true, simulado: !!r?.simulado });
+    },
+
+    // ── EL MENÚ LO MANDA XABOR, Y DICE SI SALIÓ ────────────────────────
+    //
+    // El envío real lo hace `enviarMenuAutomatico`, que ya manda todas las
+    // páginas en orden, reintenta una vez y redacta su propio aviso honesto
+    // si algo falla. Por eso el resultado insiste en que el modelo NO diga
+    // «aquí está tu menú»: esa frase ya la escribió quien sabe si de verdad
+    // llegó, y duplicarla es —en el peor caso— afirmar un envío que falló.
+    //
+    // Va por el libro de operaciones como cualquier herramienta con efecto,
+    // y su esquema no tiene argumentos: dos llamadas en el mismo turno dan la
+    // misma clave, así que el cliente no recibe el menú dos veces.
+    async enviar_menu() {
+      if (!efectos?.enviarMenu) {
+        return noAplicado('sin_canal_para_el_menu: este entorno no puede mandar imágenes. '
+          + 'Descríbele la carta con palabras usando buscar_producto.', { pedido: vista() });
+      }
+      const r = await efectos.enviarMenu({ estado });
+      if (!r?.ok) {
+        return noAplicado(`no_se_pudo_enviar_el_menu: ${r?.motivo || 'desconocido'}. `
+          + 'Díselo y ofrécele contarle la carta con palabras.', { pedido: vista() });
+      }
+      return ok({ pedido: vista(), paginas: r.paginas ?? null, simulado: !!r.simulado,
+        nota: 'El menú ya se envió, con su texto. NO repitas que se lo mandaste: pregunta qué se le antoja.' });
+    },
+
+    // ── UN EVENTO SE ANOTA, NO SE COTIZA ───────────────────────────────
+    //
+    // Decisión del dueño: el agente toma cinco datos y avisa de que alguien
+    // del equipo se comunica. No propone menús, no da precios, no promete
+    // disponibilidad. Un evento se cotiza mirando personal, agenda y margen,
+    // y nada de eso está en la carta.
+    //
+    // Los datos se ACUMULAN entre llamadas porque una persona los da a
+    // trozos. Mientras falte alguno, la herramienta contesta qué falta y no
+    // escala: escalar a medias le daría a quien conteste un aviso sin datos.
+    async registrar_solicitud_evento(datos) {
+      const previo = estado.evento || {};
+      const evento = {
+        nombre: datos.nombre ?? previo.nombre ?? null,
+        lugar: datos.lugar ?? previo.lugar ?? null,
+        fecha_hora: datos.fecha_hora ?? previo.fecha_hora ?? null,
+        tipo_servicio: datos.tipo_servicio ?? previo.tipo_servicio ?? null,
+        personas: datos.personas ?? previo.personas ?? null,
+      };
+      estado.evento = evento;
+
+      // `personas` NO es obligatorio a propósito: el dueño pidió cuatro datos,
+      // y exigir un quinto convertiría una anotación en un interrogatorio.
+      const faltan = ['nombre', 'lugar', 'fecha_hora', 'tipo_servicio'].filter((k) => !evento[k]);
+      if (faltan.length) {
+        return ok({ registrado: false, evento, faltan,
+          nota: `Anotado lo que hay. Todavía falta: ${faltan.join(', ')}. Pregúntaselo, de uno en uno.` });
+      }
+
+      const r = efectos?.registrarEvento
+        ? await efectos.registrarEvento({ estado, evento })
+        : { ok: true, simulado: true };
+      if (!r?.ok) {
+        return noAplicado(`no_se_pudo_registrar_el_evento: ${r?.motivo || 'desconocido'}`, { pedido: vista() });
+      }
+
+      // Queda escalado: a partir de aquí contesta una persona. Es el mismo
+      // desenlace que `pedir_humano` y por eso reutiliza su estado, en vez de
+      // inventar un sexto hecho irreversible que habría que mantener aparte.
+      estado.hechos.escalado = true;
+      estado.motivoEscalado = `solicitud de evento: ${evento.tipo_servicio}`;
+      return ok({ registrado: true, evento, pedido: vista(), escalado: true, simulado: !!r.simulado,
+        nota: 'Ya quedó anotado. Dile que alguien del equipo se comunica con él para los detalles. '
+          + 'No le des precios ni propongas menú.' });
     },
   };
 
