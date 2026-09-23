@@ -233,8 +233,10 @@ const i83 = runner.indexOf("'083-restaurante-division-consumo'");
 const i84 = runner.indexOf("'084-agente-operaciones'");
 const i85 = runner.indexOf("'085-agente-outbox'");
 const i86 = runner.indexOf("'086-estado-pedidos'");
-assert.ok(i83 >= 0 && i84 > i83 && i85 > i84 && i86 > i85,
-  'el predeploy debe aplicar 084, 085 y 086, en orden, antes del binario nuevo');
+const i89 = runner.indexOf("'089-configuracion-fechada'");
+const i90 = runner.indexOf("'090-agente-terminado-en'");
+assert.ok(i83 >= 0 && i84 > i83 && i85 > i84 && i86 > i85 && i89 > i86 && i90 > i89,
+  'el predeploy debe aplicar 084–090, en orden, antes del binario nuevo');
 
 // ── Panel: sesión, menú, Restaurante y replay operativo ──────────────────
 const leer = (ruta) => readFileSync(join(RAIZ, ruta), 'utf8');

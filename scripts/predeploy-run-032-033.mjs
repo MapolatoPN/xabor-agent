@@ -159,6 +159,10 @@ const SCRIPTS = [
   // final, porque nada depende de ella para arrancar: es para poder contestar
   // «¿desde cuándo está así este negocio?» la próxima vez que haga falta.
   '089-configuracion-fechada',
+  // 090 rellena la fecha real de cierre de los ciclos legacy desde el libro
+  // de operaciones. Va después de 084 (que crea el libro) y al final porque
+  // toca conversaciones vivas bajo el mismo lock que usa WhatsApp.
+  '090-agente-terminado-en',
   // 091 agrega tienda_promocion_usos.canal con DEFAULT compatible con el
   // binario anterior, backfill y NOT NULL. No toca limite_usos ni el ciclo
   // reserva/consumo; POS/WhatsApp son filas de auditoria, no de enforcement.
