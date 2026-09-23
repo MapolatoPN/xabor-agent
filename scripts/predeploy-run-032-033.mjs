@@ -98,6 +98,10 @@ const SCRIPTS = [
   // sobre prod/mesero-shadow-v3 debe quedar DESPUÉS de
   // '088-cortes-descuentos-promociones' (esa 088 no existe en esta rama).
   '089-autofactura-xabor',
+  // 090 agrega a `autofacturas` el intento fiscal idempotente y el snapshot
+  // cifrado del request a Facturapi (solo ADD COLUMN / índices). Requiere la
+  // 089. Al integrar sobre prod/mesero-shadow-v3 va después de la 089.
+  '090-autofactura-emision',
 ];
 
 for (const nombre of SCRIPTS) {

@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "chat": "node src/agent/chat-test.js"
+    "chat": "node src/agent/chat-test.js",
+    "dev:autofactura": "node scripts/dev-autofactura-local.cjs",
+    "smoke:autofactura": "node scripts/smoke-autofactura-local.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

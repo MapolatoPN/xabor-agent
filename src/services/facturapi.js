@@ -29,7 +29,11 @@ async function claveDe(negocioId) {
   return credenciales.apiKey;
 }
 
-async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {}) {
+// Opciones (todas opcionales, los llamadores existentes no cambian):
+//   timeoutMs  -> AbortSignal.timeout; al vencer lanza FACTURAPI_TIMEOUT
+//   conStatus  -> devuelve { status, body } en vez de solo el cuerpo (200 vs 202)
+//   body string -> se manda tal cual (para reenviar un snapshot byte a byte)
+async function apiCall(negocioId, method, path, body, { respuesta = 'json', timeoutMs = null, conStatus = false } = {}) {
   const apiKey = await claveDe(negocioId);
   let resp;
   try {
@@ -40,10 +44,14 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {
         'Content-Type': 'application/json',
         'Accept-Language': 'es',
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)),
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
   } catch (e) {
-    throw new FacturapiError('No fue posible comunicarse con Facturapi.', { codigo: 'FACTURAPI_NO_DISPONIBLE', detalle: e.message });
+    const agotado = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    throw new FacturapiError(
+      agotado ? 'Facturapi no respondió a tiempo.' : 'No fue posible comunicarse con Facturapi.',
+      { codigo: agotado ? 'FACTURAPI_TIMEOUT' : 'FACTURAPI_NO_DISPONIBLE', detalle: e.message });
   }
   if (!resp.ok) {
     const detalle = await resp.json().catch(() => ({}));
@@ -51,8 +59,8 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {
     throw new FacturapiError(mensaje, { status: resp.status, codigo: detalle?.code || 'FACTURAPI_RECHAZO', detalle });
   }
   if (respuesta === 'arrayBuffer') return resp.arrayBuffer();
-  if (resp.status === 204) return null;
-  return resp.json();
+  const cuerpo = resp.status === 204 ? null : await resp.json();
+  return conStatus ? { status: resp.status, body: cuerpo } : cuerpo;
 }
 
 export function mapFormaPago(forma) {
@@ -109,6 +117,21 @@ export async function crearRecibo(negocioId, pedido, config = {}) {
     external_id: folio,
     idempotency_key: idempotencyKey,
   });
+}
+
+/**
+ * CFDI de ingreso directo (POST /invoices), sin E-Receipts. `payload` puede
+ * ser el objeto o el JSON ya serializado (el snapshot de un intento, para
+ * reenviarlo byte a byte con la misma idempotency_key). Devuelve
+ * { status, body } para que el llamador distinga 200 (timbrada) de 202
+ * (pendiente). Cualquier respuesta no 2xx lanza FacturapiError con su
+ * status; timeout y red caída lanzan FACTURAPI_TIMEOUT / FACTURAPI_NO_DISPONIBLE.
+ */
+export async function crearFacturaDirecta(negocioId, payload, { timeoutMs = 30000 } = {}) {
+  if (!payload || (typeof payload !== 'object' && typeof payload !== 'string')) {
+    throw new Error('crearFacturaDirecta: payload requerido');
+  }
+  return apiCall(negocioId, 'POST', '/invoices', payload, { conStatus: true, timeoutMs });
 }
 
 export async function obtenerRecibo(negocioId, reciboId) {
