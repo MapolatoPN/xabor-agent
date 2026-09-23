@@ -24,6 +24,24 @@ import { etiquetaTipoModalidad, textoModalidades } from '../orders/modalidadesDe
 
 const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
 
+// ── QUÉ DÍA ES HOY, EN EL RELOJ DEL NEGOCIO ──────────────────────────────
+//
+// Sin esto, `programar_para` es inservible: el modelo tiene que convertir
+// «mañana a las 10» a una fecha exacta y no tiene forma de saber la de hoy —
+// la adivinaría de su entrenamiento, que es de otro año.
+//
+// Se da la fecha en ISO **y** el día de la semana. La primera es la que copia
+// a la herramienta; el segundo es lo que le deja entender «el sábado» sin
+// contar días a mano.
+export function hoyEnTexto(estadoRestaurante) {
+  const fecha = estadoRestaurante?.fechaHoy;
+  const dia = estadoRestaurante?.diaActual;
+  const hora = estadoRestaurante?.horaActual;
+  if (!fecha) return '';
+  return `Hoy es ${dia ? `${dia} ` : ''}${fecha}${hora ? `, son las ${hora}` : ''}. `
+    + 'Usa esta fecha para calcular cualquier otro día.';
+}
+
 const ETIQUETAS_PAGO = Object.freeze({
   efectivo: 'efectivo', terminal: 'tarjeta con terminal', enlace_pago: 'enlace de pago',
   transferencia: 'transferencia', pago_en_sucursal: 'pago en sucursal',
@@ -156,10 +174,22 @@ herramienta en ESTA conversación.
   exacta en tu respuesta; nunca inventes ni reconstruyas una URL.
 - Si cancela todo, llama a \`cancelar_pedido\` aunque aún no haya renglones.
   Si el pedido ya está confirmado y pide cambiarlo, llama a \`pedir_humano\`.
-- No prometas pedidos para mañana, otro día o una fecha futura: no tienes una
-  herramienta para programarlos. Esos casos se entregan a una persona.
+- Si lo quiere para otro día u otra hora, llama a \`programar_para\` con la fecha
+  y la hora exactas. TÚ conviertes lo que dijo —«mañana a las 10», «el sábado a
+  las 2»— usando la fecha de hoy del bloque HORARIO. Si Xabor lo rechaza, el
+  motivo te dice qué ofrecerle; no insistas con la misma hora ni lo pases a una
+  persona por eso. Y no digas que quedó programado hasta que la herramienta lo
+  haya aceptado.
 - Palabras como «anotado», «agregado», «registrado» o «programado» solo se usan
   después de que una herramienta aplicada haya guardado ese cambio.
+- Si pide ver la carta, el menú o las fotos: \`enviar_menu\`. Xabor manda las
+  imágenes con su propio texto; no digas tú «aquí está tu menú».
+- Si pide servicio para un EVENTO —catering, taquiza, banquete, mesa de
+  postres, coffee break—: \`registrar_solicitud_evento\`. Tomas cinco datos
+  (nombre, lugar, fecha y hora, tipo de servicio, y cuántas personas si lo
+  dice) y le avisas de que alguien del equipo se comunica. **No propongas
+  menús, no des precios y no prometas disponibilidad.** Un pedido normal para
+  mucha gente NO es un evento: eso se toma como cualquier otro pedido.
 - Si algo se atora dos veces, o el cliente se queja, o pide hablar con alguien:
   \`pedir_humano\`.
 
@@ -174,11 +204,12 @@ ${bloque('EL PEDIDO AHORA MISMO', pedidoEnTexto(pedido))}${
   Array.isArray(metodosPago) ? bloque('MÉTODOS DE PAGO DISPONIBLES', metodosEnTexto(metodosPago) || 'ninguno') : ''}${
   pagoDescartado ? bloque('PAGO ANTERIOR INVALIDADO',
     `${ETIQUETAS_PAGO[pagoDescartado] || pagoDescartado} ya no está disponible. Explícalo y ofrece un método permitido.`) : ''}${
-  estadoRestaurante ? bloque('HORARIO', abierto
-    ? `Ahora mismo está ABIERTO. ${estadoRestaurante.detalle || ''}`.trim()
-    : `Ahora mismo está CERRADO. ${estadoRestaurante.detalle || ''}\n`
-      + 'Puedes tomar el pedido para cuando abra, pero dile con claridad que ahorita está cerrado '
-      + 'y a qué hora abre. No prometas una entrega inmediata.') : ''
+  estadoRestaurante ? bloque('HORARIO', `${hoyEnTexto(estadoRestaurante)}\n`
+    + (abierto
+      ? `Ahora mismo está ABIERTO. ${estadoRestaurante.detalle || ''}`.trim()
+      : `Ahora mismo está CERRADO. ${estadoRestaurante.detalle || ''}\n`
+        + 'Puedes tomar el pedido para cuando abra, pero dile con claridad que ahorita está cerrado '
+        + 'y a qué hora abre. No prometas una entrega inmediata.')) : ''
 }${datosConocidos.length ? bloque('DATOS QUE YA TIENES (no los preguntes)', datosConocidos.join('\n')) : ''}${
   tono ? bloque('TONO DEL NEGOCIO', tono) : ''
 }${reglasDelNegocio ? bloque('REGLAS DEL NEGOCIO', reglasDelNegocio) : ''}${
