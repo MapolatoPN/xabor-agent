@@ -78,10 +78,35 @@ assert.match(avisoCierre, /mañana a las 7:30 a\. m\./,
   'el aviso de cierre no informa cuándo vuelve el personal');
 const posicionAvisoCierre = fuenteCanalAgente.indexOf('construirAvisoFueraDeHorario({',
   fuenteCanalAgente.indexOf('export async function atenderConAgente'));
-const posicionProgramado = fuenteCanalAgente.indexOf('esSolicitudDePedidoProgramado(mensaje', posicionAvisoCierre);
 const posicionModelo = fuenteCanalAgente.indexOf('salida = await atenderTurnoConHerramientas({', posicionAvisoCierre);
-assert.ok(posicionAvisoCierre >= 0 && posicionProgramado > posicionAvisoCierre && posicionModelo > posicionProgramado,
+assert.ok(posicionAvisoCierre >= 0 && posicionModelo > posicionAvisoCierre,
   'el agente puede llegar al modelo antes de responder que el negocio está cerrado');
+
+// ── EL FRENO DE LOS PROGRAMADOS SE MOVIÓ AL PASO IRREVERSIBLE ────────────
+//
+// Hasta el 23-sep esta comprobación exigía que el desvío de pedidos
+// programados quedara ENTRE el aviso de cierre y el modelo. Ese desvío se
+// retiró cuando el agente aprendió a fijar la fecha (`programar_para`):
+// frenarlo antes del modelo también le impedía hacerlo bien.
+//
+// Lo que ahora hay que garantizar es el orden dentro de `confirmarYEmitir`,
+// que es donde se vuelve irreversible:
+//
+//   1. la comprobación ANTES de registrar — si el cliente pidió otro día y
+//      nadie fijó la fecha, no se registra;
+//   2. la reserva durable DESPUÉS de registrar y ANTES de emitir — emitir un
+//      programado es mandarlo a la cocina de hoy.
+const posicionConfirmar = fuenteCanalAgente.indexOf('export async function confirmarYEmitir');
+const posicionGuardaProgramado = fuenteCanalAgente.indexOf(
+  'esSolicitudDePedidoProgramado(textoDelCiclo', posicionConfirmar);
+const posicionRegistro = fuenteCanalAgente.indexOf('await registrar(orden, canal)', posicionConfirmar);
+const posicionReserva = fuenteCanalAgente.indexOf('convertirPedidoAProgramado(', posicionConfirmar);
+const posicionEmision = fuenteCanalAgente.indexOf('emitir(resultado)', posicionConfirmar);
+assert.ok(posicionConfirmar >= 0 && posicionGuardaProgramado > posicionConfirmar
+  && posicionRegistro > posicionGuardaProgramado,
+'un pedido para otro día puede registrarse sin que nadie haya fijado la fecha');
+assert.ok(posicionReserva > posicionRegistro && posicionReserva < posicionEmision,
+  'la reserva del programado no queda entre registrar y emitir: la comanda saldría hoy');
 
 // Módulo Asistente: sus opciones deben alimentar al agente nuevo y su
 // simulador, no quedarse conectadas únicamente al prompt del bot anterior.
