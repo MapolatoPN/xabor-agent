@@ -32,6 +32,12 @@ El predeploy ejecuta automáticamente `--db-only --all-agent-businesses` para
 todos los negocios con `mesero_agente_v1=true`; no requiere configurar un UUID
 en Railway. El humo HTTP autenticado sigue usando un negocio concreto.
 
+Después de aplicar las migraciones 087, 088, 090 y 091, el runner ejecuta
+`scripts/release-gate-financiero.mjs` en modo `READ ONLY`. Esa barrera confirma
+las tablas de facturación y devoluciones, el desglose congelado del corte, el
+canal de usos de promociones y las unicidades de recibos/backfill. Si falta
+cualquiera, el deployment se conserva en la versión anterior.
+
 Railway también ejecuta las migraciones 084, 085 y 086 en cada predeploy. Así
 el binario del agente nunca arranca sin su libro durable de operaciones, su
 cola de salida y la protección que mantiene visible un pedido de tienda pagado.

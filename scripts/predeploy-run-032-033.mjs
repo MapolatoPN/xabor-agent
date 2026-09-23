@@ -193,6 +193,20 @@ for (const nombre of SCRIPTS) {
     process.exit(1);
   }
 }
+
+// La migración puede haber sido idempotente/no-op, pero el binario nuevo no
+// puede arrancar si alguna tabla, índice o columna financiera sigue faltando.
+// Esta barrera corre DESPUÉS de 087/088/090/091 y es exclusivamente READ ONLY.
+console.log('[predeploy-run] Ejecutando gate financiero...');
+try {
+  execFileSync(process.execPath,
+    [join(__dirname, 'release-gate-financiero.mjs')],
+    { stdio: 'inherit', env: process.env });
+} catch (e) {
+  console.error('[predeploy-run] FALLO en gate financiero -- se conserva el deployment anterior.');
+  process.exit(1);
+}
+
 // Última puerta, ya con el esquema completo: inspecciona en READ ONLY todos
 // los negocios que tienen el agente encendido. Un checkout huérfano, un pago
 // sin derivar, una carta vacía o dos pedidos idénticos vivos conservan el

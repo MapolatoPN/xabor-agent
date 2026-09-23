@@ -72,6 +72,7 @@ Los importes y nombres anteriores son ficticios.
 2. `src/services/cortesCaja.js`, `src/services/ajustesCierre.js` y el panel consumen el mismo periodo, negocio, permisos y zona horaria.
 3. `migrations/091_devoluciones_venta.sql` y `scripts/predeploy-091-devoluciones-venta.mjs` crean el ledger append-only y verifican que no cambien conteos de pedidos/ventas.
 4. `scripts/predeploy-run-032-033.mjs` ejecuta la 091 antes de atender tráfico del binario nuevo.
+5. `scripts/release-gate-financiero.mjs` bloquea el arranque si el esquema de corte, promociones, devoluciones o facturación no quedó completo; todas sus lecturas son `READ ONLY`.
 
 ## Verificación
 
