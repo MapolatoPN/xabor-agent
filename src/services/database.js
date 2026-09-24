@@ -2176,7 +2176,19 @@ export async function guardarLinkPago(folio, negocioId, clipLinkId) {
       SET datos = datos || $3::jsonb, updated_at = NOW()
       WHERE folio = $1 AND negocio_id = $2
     `, [folio, negocioId.trim(), JSON.stringify({ clip_link_id: clipLinkId })]);
-    return rowCount > 0;
+    if (rowCount > 0) return true;
+
+    // El único escritor legacy que queda crea el enlace DESPUÉS de convertir
+    // el pedido a programado. Para entonces el activo ya no existe: guardar
+    // solo arriba perdía la identidad del checkout y ningún webhook/job podía
+    // volver a encontrar ese dinero. Se escribe en la reserva pendiente, sin
+    // activarla ni reinsertarla en el tablero.
+    const programado = await pool.query(`
+      UPDATE pedidos_programados
+         SET datos = datos || $3::jsonb
+       WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+    `, [folio, negocioId.trim(), JSON.stringify({ clip_link_id: clipLinkId })]);
+    return programado.rowCount > 0;
   } catch (e) {
     console.error('[DB] Error guardarLinkPago:', e.message);
     return false;
@@ -2190,12 +2202,21 @@ export async function guardarLinkPago(folio, negocioId, clipLinkId) {
 export async function obtenerPagosPendientesConLink() {
   try {
     const result = await pool.query(`
-      SELECT folio, negocio_id, datos->>'clip_link_id' AS clip_link_id
-      FROM pedidos_activos
-      WHERE datos->>'forma_pago' = 'enlace de pago'
-        AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
-        AND datos->>'clip_link_id' IS NOT NULL
-        AND estado != 'entregado'
+      SELECT folio, negocio_id, datos->>'clip_link_id' AS clip_link_id,
+             'activo'::text AS origen
+        FROM pedidos_activos
+       WHERE datos->>'forma_pago' IN ('enlace de pago','enlace_pago')
+         AND (datos->>'pago_confirmado') IS DISTINCT FROM 'true'
+         AND datos->>'clip_link_id' IS NOT NULL
+         AND estado != 'entregado'
+      UNION ALL
+      SELECT folio, negocio_id, datos->>'clip_link_id' AS clip_link_id,
+             'programado'::text AS origen
+        FROM pedidos_programados
+       WHERE datos->>'forma_pago' IN ('enlace de pago','enlace_pago')
+         AND (datos->>'pago_confirmado') IS DISTINCT FROM 'true'
+         AND datos->>'clip_link_id' IS NOT NULL
+         AND activado = FALSE
     `);
     return result.rows;
   } catch (e) {
@@ -4084,6 +4105,58 @@ export async function confirmarPagoPedido(folio, negocioId) {
     console.error('[DB] Error confirmarPagoPedido:', e.message);
     return false;
   }
+}
+
+// Un programado pagado NO se activa ni se emite aquí. Solo queda listo en su
+// snapshot durable para que el scheduler normal lo inserte en activos y lo
+// mande a cocina cuando llegue su hora. `clipLinkId` ata la confirmación al
+// checkout que el GET autenticado acaba de verificar; un id ajeno no escribe.
+export async function confirmarPagoProgramado(folio, negocioId, clipLinkId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  if (typeof clipLinkId !== 'string' || !clipLinkId.trim()) return false;
+  try {
+    const { rowCount } = await pool.query(`
+      UPDATE pedidos_programados
+         SET datos = datos || jsonb_build_object(
+           'pago_confirmado', true,
+           'estado', 'nuevo',
+           'pago_confirmado_at', COALESCE(datos->>'pago_confirmado_at', NOW()::text)
+         )
+       WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+         AND datos->>'clip_link_id' = $3
+    `, [folio, negocioId.trim(), clipLinkId.trim()]);
+    return rowCount > 0;
+  } catch (e) {
+    console.error('[DB] Error confirmarPagoProgramado:', e.message);
+    return false;
+  }
+}
+
+// Rastro durable para un checkout legacy cuya referencia autenticada no
+// coincide. El origen viene de obtenerPagosPendientesConLink (vocabulario
+// cerrado), pero se mantienen sentencias separadas para no interpolar tablas.
+export async function marcarReferenciaClipLegacyNoCoincidente(
+  folio, negocioId, origen, clipLinkId, referenciaRecibida
+) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const marca = JSON.stringify({
+    clip_legacy_referencia_no_coincide: {
+      checkout: String(clipLinkId),
+      referencia_recibida: referenciaRecibida ?? null,
+      folio_esperado: String(folio),
+      detectado_at: new Date().toISOString(),
+    },
+  });
+  const tablaProgramada = origen === 'programado';
+  const sql = tablaProgramada
+    ? `UPDATE pedidos_programados SET datos = datos || $3::jsonb
+         WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+           AND datos->>'clip_legacy_referencia_no_coincide' IS NULL`
+    : `UPDATE pedidos_activos SET datos = datos || $3::jsonb
+         WHERE folio = $1 AND negocio_id = $2
+           AND datos->>'clip_legacy_referencia_no_coincide' IS NULL`;
+  const { rowCount } = await pool.query(sql, [folio, negocioId.trim(), marca]);
+  return rowCount > 0;
 }
 
 // negocioId OBLIGATORIO — falla cerrado (Auditoría P0). Un folio de otro

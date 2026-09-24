@@ -2088,19 +2088,17 @@ app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), nor
     // existen en pedidos_activos, que crearEnlacePago exige). Ese es hoy el
     // único caso real que sigue llegando por este camino: me_reference_id
     // es solo el folio, sin negocioId embebido, y se resuelve por el
-    // pedido en memoria. Riesgo residual documentado (ver
-    // docs/pagos-multiempresa.md): si el proceso se reinició, este pago no
-    // se reconcilia por esta vía y depende del job de reconciliación en
-    // background (obtenerPagosPendientesConLink).
+    // pedido durable. El webhook NO se cree: Clip no lo firma. Se dispara la
+    // misma conciliación autenticada del job, acotada al folio; ella resuelve
+    // el tenant desde la fila persistida y hace GET al proveedor antes de
+    // confirmar. Esto también funciona tras un reinicio y para programados,
+    // que deliberadamente ya no existen en memoria ni en pedidos_activos.
     acusar();
-    const pedido = obtenerPedidoPorId(ref);
-    if (pedido?.negocioId) {
-      await confirmarPagoPedido(ref, pedido.negocioId);
-      await confirmarPedidoPendientePago(ref, pedido.negocioId); // P0: mismo gate que el camino nuevo
-      broadcastNegocio(pedido.negocioId, { tipo: 'pago_confirmado', pedidoId: ref, proveedor: 'clip' });
-      console.log(`[Clip] ✅ Pago confirmado y guardado para pedido ${ref} (camino legacy)`);
-    } else {
-      console.warn(`[Clip] pago_confirmado: no se pudo resolver negocioId para ${ref} — se omite confirmación y broadcast (fail closed)`);
+    const confirmadosLegacy = await reconciliarLegacyClip({
+      broadcast: broadcastNegocio, soloFolio: ref,
+    });
+    if (!confirmadosLegacy) {
+      console.warn(`[Clip] pago legacy ${ref}: no quedó confirmado; seguirá en la conciliación durable`);
     }
   } catch (e) {
     console.error('[Clip] Error al procesar webhook:', e.message);

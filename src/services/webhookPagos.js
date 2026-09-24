@@ -22,7 +22,8 @@ import {
   consumirDeudaDeDerivacion, adoptarCheckoutClip, pagosConCandidatoClipSinVerificar,
   pagosConEsperaVencida, vencerEsperaDePago, anotarMetadataPago,
   conObligacionDePagoExclusiva, ledgerConoceCheckoutClip, obtenerPagosPendientesConLink,
-  confirmarPagoPedido, crearPagoPuenteLegacyClip, invalidarPagosVigentesDePedido,
+  confirmarPagoPedido, confirmarPagoProgramado, marcarReferenciaClipLegacyNoCoincidente,
+  crearPagoPuenteLegacyClip, invalidarPagosVigentesDePedido,
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
@@ -446,12 +447,15 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
  * `pausaInyectada`: SOLO pruebas (candado NODE_ENV) -- abre la ventana
  * exacta entre el pre-chequeo y el lock para demostrar la carrera.
  */
-export async function reconciliarLegacyClip({ broadcast = null } = {}) {
+export async function reconciliarLegacyClip({ broadcast = null, soloFolio = null } = {}) {
   const { getPaymentStatus } = await import('./providers/clipProvider.js');
   const { confirmarPedidoPendientePago } = await import('../orders/orderManager.js');
-  const pendientes = await obtenerPagosPendientesConLink();
+  let pendientes = await obtenerPagosPendientesConLink();
+  if (soloFolio != null) {
+    pendientes = pendientes.filter(p => String(p.folio) === String(soloFolio));
+  }
   let confirmados = 0;
-  for (const { folio, negocio_id, clip_link_id } of pendientes) {
+  for (const { folio, negocio_id, clip_link_id, origen } of pendientes) {
     if (!negocio_id) {
       console.warn(`[Clip Reconciliación] ${folio} sin negocio_id resuelto — omitido (fail closed)`);
       continue;
@@ -498,21 +502,10 @@ export async function reconciliarLegacyClip({ broadcast = null } = {}) {
           } else {
             // Legacy puro: no hay fila de ledger donde anotar y JAMAS se
             // inventa una fila financiera para un dinero ajeno -- el ruido
-            // durable vive en el pedido (sanitizado: folio, referencia
-            // devuelta, checkout; sin secretos), una sola vez.
-            const { pool } = await import('./database.js');
-            await pool.query(
-              `UPDATE pedidos_activos SET datos = datos || $3::jsonb
-                WHERE folio = $1 AND negocio_id = $2
-                  AND datos->>'clip_legacy_referencia_no_coincide' IS NULL`,
-              [folio, negocio_id, JSON.stringify({
-                clip_legacy_referencia_no_coincide: {
-                  checkout: String(clip_link_id),
-                  referencia_recibida: data.referenciaInterna ?? null,
-                  folio_esperado: String(folio),
-                  detectado_at: new Date().toISOString(),
-                },
-              })]);
+            // durable vive en el pedido activo O programado (sanitizado:
+            // folio, referencia devuelta, checkout; sin secretos), una vez.
+            await marcarReferenciaClipLegacyNoCoincidente(
+              folio, negocio_id, origen, clip_link_id, data.referenciaInterna);
           }
           console.error(`[Clip Reconciliación] REFERENCIA NO COINCIDE folio=${folio} checkout=${clip_link_id} external_reference=${data.referenciaInterna ?? 'null'}: dinero autenticado de otro pedido -- no se atribuye`);
           return;
@@ -561,8 +554,14 @@ export async function reconciliarLegacyClip({ broadcast = null } = {}) {
         }
 
         // Camino legacy legitimo: el folio no tiene NINGUNA fila de ledger.
-        await confirmarPagoPedido(folio, negocio_id);
-        await confirmarPedidoPendientePago(folio, negocio_id);
+        if (origen === 'programado') {
+          const confirmado = await confirmarPagoProgramado(
+            folio, negocio_id, clip_link_id);
+          if (!confirmado) return;
+        } else {
+          await confirmarPagoPedido(folio, negocio_id);
+          await confirmarPedidoPendientePago(folio, negocio_id);
+        }
         confirmados++;
         if (typeof broadcast === 'function') {
           broadcast(negocio_id, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });

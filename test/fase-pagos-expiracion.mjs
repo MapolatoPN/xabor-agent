@@ -41,6 +41,10 @@ const PUERTO_REINICIO = Number(process.env.TEST_PORT_EXP_REINICIO || 4332);
 const PUERTO_CLIP = Number(process.env.TEST_PORT_EXP_CLIP || 4333);
 const PUERTO_MP = Number(process.env.TEST_PORT_EXP_MP || 4334);
 const base = `http://localhost:${PUERTO}`;
+// La barrera durable de folios solo reclama el namespace productivo XAB-N.
+// Un valor unico por proceso permite ejercitar la conversion real y reintentar
+// esta suite sobre la misma base sin reciclar una identidad anterior.
+const FOLIO_PROGRAMADO = `XAB-97${String(Date.now()).slice(-7)}${String(process.pid).slice(-3)}`;
 
 process.env.CLIP_API_BASE_URL = `http://localhost:${PUERTO_CLIP}`;
 process.env.XABOR_MP_API_BASE = `http://localhost:${PUERTO_MP}`;
@@ -181,6 +185,12 @@ async function pedidoDe(folio, negocioId = NEG) {
     `SELECT estado, datos FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`, [folio, negocioId]);
   return r || null;
 }
+async function programadoDe(folio, negocioId = NEG) {
+  const { rows: [r] } = await pool.query(
+    `SELECT activado, datos FROM pedidos_programados WHERE folio=$1 AND negocio_id=$2`,
+    [folio, negocioId]);
+  return r || null;
+}
 async function comandasDe(folio) {
   const { rows: [r] } = await pool.query(
     `SELECT COUNT(*)::int AS n FROM impresion_trabajos
@@ -245,10 +255,15 @@ async function limpiar() {
   for (const n of [NEG, NEG_B]) {
     await pool.query(`DELETE FROM pagos WHERE negocio_id=$1`, [n]);
     await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio LIKE 'EX-%'`, [n]);
+    await pool.query(`DELETE FROM pedidos_programados WHERE negocio_id=$1 AND folio LIKE 'EX-%'`, [n]);
     await pool.query(`DELETE FROM integraciones_canal WHERE negocio_id=$1 AND canal='pagos'`, [n]);
     await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave='pago_online_espera_minutos'`, [n]);
   }
+  await pool.query(`DELETE FROM pedidos_activos WHERE folio=$1`, [FOLIO_PROGRAMADO]);
+  await pool.query(`DELETE FROM pedidos_programados WHERE folio=$1`, [FOLIO_PROGRAMADO]);
+  await pool.query(`DELETE FROM folios_pedido_usados WHERE folio=$1`, [FOLIO_PROGRAMADO]);
   await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1 AND origen_id LIKE 'EX-%'`, [NEG]);
+  await pool.query(`DELETE FROM impresion_trabajos WHERE negocio_id=$1 AND origen_id=$2`, [NEG, FOLIO_PROGRAMADO]);
   await pool.query(`DELETE FROM impresion_rutas WHERE negocio_id=$1`, [NEG]);
   await pool.query(`DELETE FROM impresoras WHERE negocio_id=$1`, [NEG]);
   await pool.query(
@@ -793,6 +808,74 @@ try {
     assert.strictEqual((await pedidoDe(folio, NEG_B)).estado, 'cancelado');
     assert.strictEqual((await pedidoDe('EX-0014')).estado, 'pendiente_pago',
       'vencer en el negocio B tocó un pedido del negocio A');
+  });
+
+  await t('12. un pago de programado se concilia sin activarlo ni emitir antes de hora', async () => {
+    const folio = FOLIO_PROGRAMADO;
+    await pedido(folio, 420);
+    await conectarClip();
+    const activo = await pedidoDe(folio);
+    const {
+      guardarPedidoProgramado, guardarLinkPago, obtenerPagosPendientesConLink,
+      confirmarPagoProgramado,
+    } =
+      await import('../src/services/database.js');
+    const conversion = await guardarPedidoProgramado(
+      folio, activo.datos, new Date(Date.now() + 6 * 3600e3));
+    assert.strictEqual(conversion.ok, true, `no se convirtió a programado: ${conversion.razon}`);
+    assert.strictEqual(await pedidoDe(folio), null, 'el programado siguió como activo');
+
+    // Este es el escritor legacy real que usa WhatsApp para un programado ya
+    // retirado de activos. Su identidad debe quedar en la reserva durable.
+    const { crearLinkDePago } = await import('../src/services/clip-api.js');
+    const link = await crearLinkDePago({
+      negocioId: NEG, pedidoId: folio, total: 420,
+      descripcion: `Pedido Xabor #${folio}`,
+      cliente: activo.datos.cliente,
+    });
+    assert.strictEqual(await guardarLinkPago(folio, NEG, link.linkId), true,
+      'guardarLinkPago perdió el checkout después de convertir a programado');
+    const enCola = (await obtenerPagosPendientesConLink())
+      .find(p => p.folio === folio && p.negocio_id === NEG);
+    assert.ok(enCola, 'el programado con link no entró a la cola durable');
+    assert.strictEqual(enCola.origen, 'programado');
+    assert.strictEqual(enCola.clip_link_id, link.linkId);
+    assert.strictEqual(await confirmarPagoProgramado(folio, NEG_B, link.linkId), false,
+      'otro negocio pudo confirmar la reserva programada');
+
+    const checkout = CHECKOUTS.get(link.linkId);
+    checkout.estado = 'COMPLETED';
+    checkout.referencia = `${folio}-AJENO`;
+    const { reconciliarLegacyClip } = await import('../src/services/webhookPagos.js');
+    assert.strictEqual(await webhookClip(folio, { puerto: PUERTO_REINICIO }), 200,
+      'el webhook legacy no reconoció el aviso del programado');
+    await esperar(
+      async () => Boolean((await programadoDe(folio))?.datos?.clip_legacy_referencia_no_coincide),
+      'la alerta durable por referencia ajena en el programado');
+    const rechazado = await programadoDe(folio);
+    assert.notStrictEqual(rechazado.datos.pago_confirmado, true,
+      'un checkout autenticado de otro pedido confirmó el programado');
+    assert.strictEqual(await pedidoDe(folio), null,
+      'la referencia ajena reinsertó prematuramente el programado');
+    assert.strictEqual(await comandasDe(folio), 0,
+      'la referencia ajena emitió una comanda antes de hora');
+
+    checkout.referencia = folio;
+    assert.strictEqual(await webhookClip(folio, { puerto: PUERTO_REINICIO }), 200,
+      'el segundo aviso legacy no fue reconocido');
+    await esperar(async () => (await programadoDe(folio))?.datos?.pago_confirmado === true,
+      'la conciliación autenticada del webhook para el programado');
+
+    const confirmado = await programadoDe(folio);
+    assert.strictEqual(confirmado.activado, false, 'pagar activó el pedido antes de su hora');
+    assert.strictEqual(confirmado.datos.pago_confirmado, true);
+    assert.strictEqual(confirmado.datos.estado, 'nuevo',
+      'el scheduler volvería a activar el programado como pendiente_pago');
+    assert.strictEqual(await pedidoDe(folio), null, 'pagar reinsertó prematuramente el activo');
+    assert.strictEqual(await comandasDe(folio), 0, 'pagar imprimió antes de la hora programada');
+
+    assert.strictEqual(await reconciliarLegacyClip({ soloFolio: folio }), 0,
+      'la conciliación repetida volvió a confirmar el mismo checkout');
   });
 
 } catch (e) {

@@ -330,9 +330,15 @@ try {
       const src = readFileSync(ruta, 'utf8');
       const i = src.indexOf('convertirPedidoAProgramado(pedido,');
       assert.ok(i > 0, 'voice.js ya no llama a convertirPedidoAProgramado');
-      const iEnlace = src.indexOf("forma_pago === 'enlace de pago'", i);
-      assert.ok(iEnlace > i, 'no se encontro el bloque de enlace de pago despues de la conversion');
-      const bloque = src.slice(i, iEnlace + 40);
+      // El canal normaliza hoy ambas grafias mediante `pagoPorEnlace` y
+      // conserva `enlace_pago` como compatibilidad durable. El diente debe
+      // buscar la rama semantica, no una grafia literal ya retirada.
+      const ramaEnlace = src.slice(i).match(
+        /}\s*else\s+if\s*\([^)]*(?:pagoPorEnlace|forma_pago)[^)]*\)\s*{/);
+      assert.ok(ramaEnlace,
+        'no se encontro el bloque normalizado de enlace de pago despues de la conversion');
+      const iEnlace = i + ramaEnlace.index;
+      const bloque = src.slice(i, iEnlace + ramaEnlace[0].length);
       assert.ok(!/eliminarPedido\(pedido\.id/.test(bloque),
         'voice.js vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica');
       const iIfNoOk = bloque.indexOf('if (!conv.ok)');
@@ -344,7 +350,7 @@ try {
       // no dos `if` independientes que se evaluarian los dos.
       const iGate = bloque.indexOf('if (programadoFallido)');
       assert.ok(iGate > -1, 'voice.js levanta la bandera pero nada la usa para bloquear el flujo de exito');
-      const entreGateYEnlace = bloque.slice(iGate, bloque.indexOf("forma_pago === 'enlace de pago'"));
+      const entreGateYEnlace = bloque.slice(iGate);
       assert.ok(/}\s*else\s+if\s*\(/.test(entreGateYEnlace),
         'voice.js NO encadena el bloque de enlace de pago como else-if de programadoFallido: ' +
         'ambos se evaluarian aunque la conversion haya fallado');
