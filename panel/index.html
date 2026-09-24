@@ -2303,10 +2303,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button type="button" onclick="abrirModalServicioFactura()" style="background:#fff7ed;color:#b45309;border:1px solid #f1dfad;border-radius:8px;font-weight:800;">+ Factura de servicio</button>
         </div>
         <div class="facturacion-portal-cliente">
-          <div class="descripcion"><b>Portal de facturación para clientes</b>Los clientes pueden entrar a Mapolato, pulsar <b style="display:inline;font-size:inherit;">Facturar</b> y capturar el código de su ticket.</div>
-          <a href="https://www.mapolato.com/" target="_blank" rel="noopener noreferrer">Abrir mapolato.com</a>
-          <a href="https://www.wansoft.net/Mapolato/FE.html" target="_blank" rel="noopener noreferrer">Abrir facturación directa</a>
-          <button type="button" onclick="copiarLigaPortalMapolato(this)">Copiar liga</button>
+          <div class="descripcion"><b>Portal de autofacturación Xabor</b>Comparte esta liga con tus clientes: elegirán sucursal, capturarán su folio XAB y continuarán con sus datos fiscales.</div>
+          <a href="/facturacion" target="_blank" rel="noopener noreferrer">Abrir portal Xabor</a>
+          <button type="button" onclick="copiarLigaPortalXabor(this)">Copiar liga</button>
         </div>
         <div style="background:#fafaf8;border:1px solid #e5e2da;border-radius:12px;padding:14px;margin-bottom:14px;">
           <label style="font-size:0.82rem;font-weight:700;display:block;margin-bottom:7px;">Folio (ej. XAB-0746)</label>
@@ -4665,13 +4664,13 @@ function avisoEnlaceAutofactura(folio, url) {
   msg.innerHTML = `Enlace de autofactura de <b>${esc(folio)}</b>: <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
 }
 
-async function copiarLigaPortalMapolato(btn) {
-  const url = 'https://www.wansoft.net/Mapolato/FE.html';
+async function copiarLigaPortalXabor(btn) {
+  const url = `${location.origin}/facturacion`;
   const original = btn?.textContent || 'Copiar liga';
   if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
   try {
     await copiarTextoFacturacion(url);
-    avisoFacturacion('Liga del portal de facturación de Mapolato copiada.');
+    avisoFacturacion('Liga del portal de autofacturación Xabor copiada.');
   } catch (e) {
     avisoFacturacion(e.message || 'No se pudo copiar la liga del portal.', true);
   } finally {
