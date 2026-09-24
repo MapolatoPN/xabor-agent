@@ -211,6 +211,33 @@ try {
     assert.deepStrictEqual(rechazadas, [], `al admin lo rechazó la puerta: ${rechazadas.join(' | ')}`);
   });
 
+  // Regla del dueño (2026-09-24, Fase 3): el total de ventas solo lo ve el
+  // administrador. Estas son las rutas que devuelven dinero AGREGADO (ventas
+  // del periodo, corte, reporte diario, resúmenes). El operador ve el importe
+  // de cada pedido o mesa (lo necesita para cobrar), nunca una suma. Una ruta
+  // nueva de este tipo se agrega aquí.
+  const TOTALES_DE_VENTAS = [
+    ['GET', '/api/ventas'], ['GET', '/api/ventas/resumen'],
+    ['GET', '/api/corte-caja'], ['GET', '/api/corte-caja/historial'], ['GET', '/api/corte-caja/2026-09-01/ticket'],
+    ['POST', '/api/admin/reporte-diario/enviar'],
+    ['GET', '/api/admin/clientes/v2/resumen'], ['GET', '/api/rewards/resumen'], ['GET', '/api/admin/compras/resumen'],
+  ];
+  await t('HTTP', 'el total de ventas solo lo ve el administrador (regla del dueño)', async () => {
+    const pasan = [];
+    for (const [metodo, ruta] of TOTALES_DE_VENTAS) {
+      const r = await api(srv.base, metodo, ruta, OPERADOR);
+      if (!rechazoPorRol(r)) pasan.push(`${metodo} ${ruta} → ${r.status}`);
+    }
+    assert.deepStrictEqual(pasan, [], `el operador llegó a totales de ventas: ${pasan.join(' | ')}`);
+    // El admin sí (solo lecturas: el reporte diario manda un WhatsApp).
+    const rechazadas = [];
+    for (const [metodo, ruta] of TOTALES_DE_VENTAS.filter(([m]) => m === 'GET')) {
+      const r = await api(srv.base, metodo, ruta, ADMIN);
+      if (rechazoPorRol(r) || r.status === 401) rechazadas.push(`${ruta} → ${r.status}`);
+    }
+    assert.deepStrictEqual(rechazadas, [], `al admin lo rechazó la puerta: ${rechazadas.join(' | ')}`);
+  });
+
   await t('HTTP', 'lo de pedidos y mesas le sigue abierto al operador', async () => {
     const rechazadas = [];
     for (const [metodo, ruta] of DEL_OPERADOR) {

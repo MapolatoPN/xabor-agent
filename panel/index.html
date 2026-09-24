@@ -183,6 +183,21 @@ header {
 }
 .seccion-pestana:hover { color: #1c1c1c; }
 .seccion-pestana.activa { color: #1c1c1c; border-bottom-color: #16a34a; font-weight: 800; }
+/* Mesas y Compras dentro del panel (Fase 3.1): la página de siempre en un
+   marco que ocupa el alto disponible. "Pantalla completa" esconde el menú
+   lateral para dejarle a Mesas toda la pantalla (tablets); en el celular el
+   menú lateral no existe y el botón no se muestra. */
+.vista-marco iframe { display: block; width: 100%; height: calc(100vh - var(--header-h) - 64px); border: 0; border-radius: var(--radius-lg); background: var(--color-surface); }
+#vista-restaurante iframe { height: calc(100vh - var(--header-h) - 108px); }
+.marco-barra { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.marco-completa { display: inline-flex; align-items: center; gap: 6px; background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong); }
+.marco-completa:hover { color: var(--color-text-primary); }
+body.pantalla-completa #tabs-nav { display: none !important; }
+body.pantalla-completa main, body.pantalla-completa #vistas-extra { margin-left: 0 !important; }
+@media screen and (max-width: 640px) {
+  .marco-barra { display: none; }
+  .vista-marco iframe, #vista-restaurante iframe { height: calc(100vh - var(--header-h) - 120px); }
+}
 /* Pie del menú (Configuración): margin-top:auto lo ancla al fondo de la
    columna cuando sobra alto; si el menú no cabe, queda al final del scroll.
    La línea es un ::before con margen propio para que nunca se pegue al último
@@ -1114,7 +1129,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .tnd-prod input[type=checkbox] { width:18px; height:18px; accent-color:var(--color-brand); flex-shrink:0; }
 .tnd-prod .nom { flex:1; font-size:0.85rem; font-weight:600; }
 .tnd-prod .precio { font-size:0.82rem; color:var(--color-text-secondary); }
+/* "Editar en Menú" (Fase 3.2) va FUERA de la etiqueta: pulsarlo no publica ni
+   despublica. Nombre, precio, foto y modificadores se editan en el Menú: la
+   tienda no tiene catálogo aparte. */
+.tnd-prod-fila { display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--color-border); }
+.tnd-prod-fila:last-child { border-bottom:none; }
+.tnd-prod-fila .tnd-prod { flex:1; min-width:0; border-bottom:none; }
+.tnd-editar-menu { flex-shrink:0; background:none; border:1px solid var(--color-border-strong); color:var(--color-text-secondary); padding:5px 10px; font-size:0.75rem; font-weight:600; cursor:pointer; }
+.tnd-editar-menu:hover { color:var(--color-text-primary); border-color:var(--color-text-secondary); }
+.tnd-cat-oculta { font-size:0.7rem; font-weight:700; color:#92400e; }
 .tnd-cat-tit { font-size:0.75rem; font-weight:800; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 2px; }
+.menu-editor-categoria--inactiva { background:#f3f4f6 !important; border-color:#cbd5e1 !important; color:#6b7280; }
+.menu-editor-categoria--inactiva .menu-editor-cabecera { background:#e5e7eb !important; }
+.menu-editor-categoria--inactiva .menu-editor-productos { background:#f8fafc; }
+.menu-editor-categoria-oculta { border-radius:999px; background:#d1d5db; color:#4b5563; padding:2px 7px; font-size:0.68rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; }
 .tnd-promo { border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:13px; margin-bottom:10px; background:var(--color-surface); }
 .tnd-promo .top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
 .tnd-promo .nom { font-size:0.88rem; font-weight:800; }
@@ -1554,8 +1582,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
        oculta si el negocio no tiene el módulo; el backend igual responde 403
-       por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian. -->
-  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
+       por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian.
+       Desde la Fase 3.1 se abre DENTRO del panel (vista-restaurante, la misma
+       página /restaurante en un marco); la tablet del mesero la sigue
+       abriendo sola, con su PIN. -->
+  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="mostrarTab('restaurante')">Mesas</button>
   <!-- Chats agrupa Conversaciones y el Bot (antes "Asistente") en pestañas.
        Cada pestaña conserva su permiso: Conversaciones pide el módulo
        whatsapp y el Bot no, así que el botón es solo admin-only (a un admin
@@ -1589,7 +1620,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Facturación: facturas, autofactura y clientes fiscales de las ventas ya
        cobradas. Su pantalla se dibuja dentro de la vista de Configuración. -->
   <button class="tab-btn admin-only" id="tab-facturacion" data-modulo="facturacion" onclick="mostrarTab('facturacion')">Facturación</button>
-  <button class="tab-btn admin-only" id="tab-compras" onclick="location.href='/compras.html'">Compras y gastos</button>
+  <button class="tab-btn admin-only" id="tab-compras" onclick="mostrarTab('compras')">Compras y gastos</button>
   </div>
 
   <!-- Configuración: fija al final del menú, fuera de toda sección plegable.
@@ -2427,7 +2458,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
-        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="/compras.html#sat">Compras y gastos</a>.</div>
+        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="#compras/sat">Compras y gastos</a>.</div>
       </section>
       </div>
     </div><!-- /vista-config -->
@@ -2785,6 +2816,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
     </div><!-- /vista-usuarios -->
+
+    <!-- Mesas y Compras dentro del panel (Fase 3.1): la MISMA página de
+         siempre en un marco que se carga la primera vez que se abre. Mesas
+         sigue sirviendo sola a las tablets de los meseros, que entran con PIN
+         y nunca cargan el panel: una sola pantalla de Mesas, no dos. -->
+    <div id="vista-restaurante" class="vista-marco" style="display:none;">
+      <div class="marco-barra">
+        <button type="button" class="marco-completa" id="btn-pantalla-completa" onclick="alternarPantallaCompleta()"><i class="ti ti-arrows-maximize" aria-hidden="true"></i> <span>Pantalla completa</span></button>
+      </div>
+      <iframe id="marco-mesas" title="Mesas"></iframe>
+    </div>
+    <div id="vista-compras" class="vista-marco" style="display:none;">
+      <iframe id="marco-compras" title="Compras y gastos" allow="camera"></iframe>
+    </div>
 
 </div><!-- /vistas-extra -->
 
@@ -4232,7 +4277,7 @@ const NAV_RUTA_DE_TAB = {
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'clientes/rewards', campanas: 'clientes/campanas', cotizaciones: 'cotizaciones',
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
   facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
-  diagnostico: 'estado',
+  diagnostico: 'estado', restaurante: 'mesas', compras: 'compras',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
@@ -4257,6 +4302,7 @@ function navTabDeDireccion(hash) {
   let ruta = '';
   try { ruta = decodeURIComponent(String(hash || '').replace(/^#/, '')); } catch { /* dirección mal escrita */ }
   if (/^(?:config\/)?facturacion(?:\/|$)/.test(ruta)) return 'facturacion';
+  if (/^compras(?:\/|$)/.test(ruta)) return 'compras';   // #compras/sat: la e.firma
   return NAV_TAB_DE_RUTA[ruta] || NAV_ALIAS_DE_RUTA[ruta] || null;
 }
 
@@ -4287,8 +4333,9 @@ function navEscribirRuta(tab) {
   const ruta = NAV_RUTA_DE_TAB[tab];
   if (!ruta) return;
   // La sub-pantalla de Facturación vive en la dirección (#facturacion/clientes):
-  // si ya la trae, no se pisa con #facturacion a secas.
-  if (tab === 'facturacion' && navTabDeDireccion(location.hash) === 'facturacion') return;
+  // si ya la trae, no se pisa con #facturacion a secas. La de Compras
+  // (#compras/sat) tampoco: abrirCompras la lee y luego la deja en #compras.
+  if ((tab === 'facturacion' || tab === 'compras') && navTabDeDireccion(location.hash) === tab) return;
   try { history.replaceState(null, '', ruta === 'inicio' ? location.pathname + location.search : '#' + ruta); } catch { /* sin history: la navegación sigue */ }
 }
 
@@ -4302,6 +4349,7 @@ function navSeguirDireccion() {
   if (pedida && pedida === navTabActual) {
     // Misma pantalla; en Facturación pudo cambiar la sub-pantalla.
     if (pedida === 'facturacion') facturacionIr(facturacionPaneDesdeHash(), { actualizarHash: false });
+    if (pedida === 'compras') comprasSubpantalla();
     return;
   }
   if (pedida && navTabDisponible(pedida)) { bnavTab(pedida); return; }
@@ -4434,7 +4482,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -4442,7 +4490,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -4477,6 +4525,14 @@ function mostrarTab(tab) {
   if (tab === 'envios') abrirEnvios();
   if (tab === 'inicio') cargarInicio();
   if (tab === 'tienda') tndAbrir();
+  if (tab === 'restaurante') {
+    const yaEstaba = !!document.getElementById('marco-mesas')?.dataset.cargado;
+    const marco = abrirMarco('marco-mesas', '/restaurante');
+    // Al volver, el tablero se refresca en vez de esperar su siguiente sondeo.
+    if (yaEstaba) { try { marco?.contentWindow?.refrescarDesdePanel?.(); } catch { /* aún cargando */ } }
+  }
+  if (tab === 'compras') abrirCompras();
+  if (tab !== 'restaurante') alternarPantallaCompleta(false);
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -4573,6 +4629,40 @@ function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
 function irADatosFiscales() {
   bnavTab('facturacion');
   facturacionIr('clientes');
+}
+
+// ─── Mesas y Compras dentro del panel (Fase 3.1) ─────────────────────────────
+// La página de siempre en un marco. Se carga la primera vez que se abre la
+// vista y se conserva: ir a otra pantalla no pierde lo que se estaba
+// capturando.
+function abrirMarco(idMarco, src) {
+  const marco = document.getElementById(idMarco);
+  if (marco && !marco.dataset.cargado) { marco.dataset.cargado = '1'; marco.src = src; }
+  return marco;
+}
+// Compras › e.firma: #compras/sat (antes /compras.html#sat). Se usa una vez
+// y la dirección vuelve a #compras: después manda lo que el usuario elija
+// dentro de Compras (volver a Compras desde el menú no lo regresa a la
+// e.firma). Con el marco recién creado, la pestaña la abre Compras misma
+// (lee #sat de su propia dirección).
+function comprasSubpantalla(marcoListo = true) {
+  if (location.hash !== '#compras/sat') return;
+  if (marcoListo) {
+    try { document.getElementById('marco-compras')?.contentWindow?.document?.querySelector('[data-view="sat"]')?.click(); } catch { /* aún cargando */ }
+  }
+  try { history.replaceState(null, '', '#compras'); } catch { /* sin history: la pantalla ya se abrió */ }
+}
+function abrirCompras() {
+  const yaEstaba = !!document.getElementById('marco-compras')?.dataset.cargado;
+  abrirMarco('marco-compras', '/compras.html' + (location.hash === '#compras/sat' ? '#sat' : ''));
+  comprasSubpantalla(yaEstaba);
+}
+// "Pantalla completa" esconde el menú lateral para dejarle a Mesas toda la
+// pantalla (tablets). Salir de Mesas la apaga.
+function alternarPantallaCompleta(forzar) {
+  const activa = document.body.classList.toggle('pantalla-completa', forzar);
+  const txt = document.querySelector('#btn-pantalla-completa span');
+  if (txt) txt.textContent = activa ? 'Salir de pantalla completa' : 'Pantalla completa';
 }
 
 // Los cambios de dirección hacia Facturación (#facturacion, #facturacion/<sub>,
@@ -5167,7 +5257,7 @@ function cerrarNuevoPedido() {
 }
 function nuevoPedidoModalidad(m) {
   cerrarNuevoPedido();
-  if (m === 'restaurante') { location.href = '/restaurante'; return; }
+  if (m === 'restaurante') { bnavTab('restaurante'); return; }
   // Las tres modalidades de mostrador comparten pantalla: cambiar de chip NO
   // saca al operador de la captura, solo cambia los campos del pedido.
   bnavTab('presencial');
@@ -5343,10 +5433,13 @@ async function tndProductos() {
     porCat.get(p.categoria).push(p);
   }
   const publicados = TND.productos.filter(p => p.publicado).length;
+  // Sin el módulo Menú no hay dónde editar: no se ofrece el enlace.
+  const editarEnMenu = navTabDisponible('menu');
 
   cont.innerHTML = `
     <div class="tnd-aviso info">ℹ️ <div>Estos son los productos de tu menú. Marca los que quieres
-      que vea el público. Precios y modificadores son los mismos del menú — no hay catálogo aparte.</div></div>
+      que vea el público. Precios y modificadores son los mismos del menú — no hay catálogo aparte.${editarEnMenu
+        ? ' Para cambiar nombre, precio, foto o modificadores usa «Editar en Menú».' : ''}</div></div>
     <div class="tnd-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
         <h3 style="margin:0">${publicados} de ${TND.productos.length} publicados</h3>
@@ -5357,12 +5450,13 @@ async function tndProductos() {
       </div>
       ${[...porCat.entries()].map(([cat, prods]) => `
         <div class="tnd-cat-tit">${tndEsc(cat)}</div>
-        ${prods.map(p => `<label class="tnd-prod">
+        ${prods.map(p => `<div class="tnd-prod-fila"><label class="tnd-prod">
           <input type="checkbox" ${p.publicado ? 'checked' : ''} onchange="tndPublicar(${p.id}, this.checked)">
           <span class="nom">${tndEsc(p.nombre)}
-            ${p.disponible === false ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}</span>
+            ${p.agotado ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}
+            ${p.categoriaActiva === false ? '<span class="tnd-cat-oculta"> · Categoría oculta: no sale en la tienda</span>' : ''}</span>
           <span class="precio">${tndDinero(p.precio)}</span>
-        </label>`).join('')}
+        </label>${editarEnMenu ? `<button type="button" class="tnd-editar-menu" onclick="tndEditarEnMenu(${p.id})">Editar en Menú</button>` : ''}</div>`).join('')}
       `).join('')}
     </div>`;
 }
@@ -5389,6 +5483,13 @@ async function tndTodos(publicado) {
     });
     tndProductos();
   } catch (e) { alert(e.message); }
+}
+
+// "Editar en Menú" (Fase 3.2): el producto se edita donde vive. Se abre el
+// Menú y, en cuanto carga, el editor de ese producto (menuAbrirPendiente).
+function tndEditarEnMenu(id) {
+  MENU_EDITAR_PENDIENTE = id;
+  bnavTab('menu');
 }
 
 // ── Promociones ──
@@ -10695,30 +10796,65 @@ async function guardarIntegraciones() {
   }
 }
 
+// Producto que pidió "Editar en Menú" desde Tienda › Productos (Fase 3.2).
+let MENU_EDITAR_PENDIENTE = null;
 async function cargarMenuEditor() {
-  menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
-  renderMenuEditor();
+  const menuAnterior = Array.isArray(menuData) ? menuData : [];
+  try {
+    const r = await apiFetch('/api/admin/menu');
+    const d = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(d?.error || 'No se pudo cargar el Menú');
+    if (!Array.isArray(d)) throw new Error('El Menú respondió con un formato inválido');
+    menuData = d;
+    renderMenuEditor();
+    menuAbrirPendiente();
+    return true;
+  } catch (e) {
+    // Un fallo transitorio no debe fingir que el negocio se quedó sin menú ni
+    // dejar la casilla en un estado optimista que el servidor no confirmó.
+    menuData = menuAnterior;
+    renderMenuEditor();
+    if (!menuData.length) {
+      document.getElementById('menu-editor').innerHTML = '<div style="color:#b91c1c;text-align:center;padding:40px;">No se pudo cargar el Menú</div>';
+    }
+    avisoPanel(e.message || 'No se pudo cargar el Menú', { error: true });
+    return false;
+  }
+}
+// Abre el editor del producto pedido. El catálogo administrativo incluye las
+// categorías ocultas; este fallback queda para un producto borrado o una carga
+// incompleta, no para inferir el estado de la categoría.
+function menuAbrirPendiente() {
+  const id = MENU_EDITAR_PENDIENTE;
+  MENU_EDITAR_PENDIENTE = null;
+  if (id == null || !Array.isArray(menuData)) return;
+  for (const cat of menuData) {
+    const p = (cat.productos || []).find(x => x.id === id);
+    if (p) { abrirModalEditarProducto(p.id, p.nombre, p.precio, p.descripcion || '', cat.id, !!p.destacado, p.imagen || ''); return; }
+  }
+  avisoPanel('Ese producto ya no existe o no se pudo cargar en Menú.', { error: true });
 }
 
 function renderMenuEditor() {
   const el = document.getElementById('menu-editor');
   if (!menuData.length) { el.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No hay categorías aún</div>'; return; }
   el.innerHTML = menuData.map((cat, catIdx) => `
-    <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
-      <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
+    <div class="menu-editor-categoria${cat.activa === true ? '' : ' menu-editor-categoria--inactiva'}" data-categoria-id="${cat.id}" data-activa="${cat.activa === true}" style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
+      <div class="menu-editor-cabecera" style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
         <div style="display:flex;flex-direction:column;gap:1px;">
           <button onclick="moverCategoria(${catIdx},-1)" ${catIdx===0?'disabled':''} style="background:none;border:none;cursor:pointer;color:${catIdx===0?'#ddd':'#666'};font-size:0.7rem;padding:0;line-height:1;">▲</button>
           <button onclick="moverCategoria(${catIdx},1)" ${catIdx===menuData.length-1?'disabled':''} style="background:none;border:none;cursor:pointer;color:${catIdx===menuData.length-1?'#ddd':'#666'};font-size:0.7rem;padding:0;line-height:1;">▼</button>
         </div>
-        <span style="font-weight:800;font-size:0.95rem;flex:1;">${cat.nombre}</span>
+        <span style="font-weight:800;font-size:0.95rem;flex:1;">${tndEsc(cat.nombre)}</span>
+        ${cat.activa === true ? '' : '<span class="menu-editor-categoria-oculta">Categoría oculta</span>'}
         <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#666;cursor:pointer;">
-          <input type="checkbox" ${cat.activa ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
+          <input type="checkbox" data-accion="toggle-categoria" ${cat.activa === true ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
           Activa
         </label>
         <button onclick="abrirModalProducto(${cat.id})" style="background:#e8a020;color:#1c1c1c;border:none;border-radius:7px;padding:5px 12px;font-size:0.78rem;font-weight:700;cursor:pointer;">+ Producto</button>
         <button onclick="eliminarCategoriaUI(${cat.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:5px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
       </div>
-      <div style="padding:10px 0;">
+      <div class="menu-editor-productos" style="padding:10px 0;">
         ${cat.productos.length === 0 ? '<div style="padding:12px 18px;color:#aaa;font-size:0.85rem;">Sin productos</div>' :
           cat.productos.map((p, pIdx) => `
           <div style="display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid #f8f7f4;flex-wrap:wrap;">
@@ -10750,7 +10886,20 @@ function renderMenuEditor() {
 }
 
 async function toggleCategoria(id, activa) {
-  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
+  const checkbox = document.querySelector(`[data-categoria-id="${id}"] [data-accion="toggle-categoria"]`);
+  if (checkbox) checkbox.disabled = true;
+  try {
+    const r = await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'No se pudo actualizar la categoría');
+    }
+  } catch (e) {
+    avisoPanel(e.message || 'No se pudo actualizar la categoría', { error: true });
+  }
+  // Recarga el estado canónico tanto al activar como al ocultar. El endpoint
+  // administrativo conserva la tarjeta aunque activa=false.
+  await cargarMenuEditor();
 }
 
 // Reordenar (Fase 3): intercambia el campo `orden` con el vecino en esa
@@ -11137,7 +11286,7 @@ function mostrarModalProducto(datos, esEdicion) {
   const existing = document.getElementById('modal-producto');
   if (existing) existing.remove();
 
-  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${c.nombre}</option>`).join('');
+  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${tndEsc(c.nombre)}${c.activa === true ? '' : ' (oculta)'}</option>`).join('');
   const div = document.createElement('div');
   div.id = 'modal-producto';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;';
@@ -12053,6 +12202,7 @@ async function cargarPreciosRappi() {
   try {
     const cats = Array.isArray(menuData) ? menuData : [];
     for (const c of cats) {
+      if (c.activa !== true) continue;
       const p = (c.productos || []).find(x => Number(x.precio) > 0);
       if (p) { rpPrecioMuestra = Number(p.precio); break; }
     }
