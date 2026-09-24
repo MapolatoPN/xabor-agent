@@ -355,6 +355,12 @@ function laFraseLoSenala(item, hermanos, texto) {
  */
 function autorizaCantidad(nueva, previa, ctx, item, hermanos) {
   if (nueva === previa) return true;
+  // Una oferta oficial de Xabor puede autorizar la cantidad que exige la
+  // promoción. No es una inferencia del modelo ni un número leído de la
+  // respuesta: llega como contrato estructurado y solo para el producto
+  // participante que el cliente aceptó.
+  const cantidadOferta = ctx.cantidadesAutorizadas?.get(norm(item?.nombre));
+  if (Number(cantidadOferta) === nueva && ctx.aceptado?.has(norm(item?.nombre))) return true;
   if (!Number.isFinite(nueva) || nueva < 1 || nueva > CANTIDAD_PLAUSIBLE) return false;
   if (respuestaConNumerosAjenos(ctx.datoOperativoPendiente)) return false;
   if (!elClienteDijoElNumero(nueva, ctx.mensajeDicho)) return false;
@@ -526,7 +532,10 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
  */
 function depurarNuevo(item, ctx, cambios) {
   const salida = { ...item };
-  if (item.cantidad !== 1 && !elClienteDijoElNumero(item.cantidad, ctx.dicho)) {
+  const cantidadOferta = ctx.cantidadesAutorizadas?.get(norm(item?.nombre));
+  const cantidadAutorizada = Number(cantidadOferta) === Number(item.cantidad)
+    && ctx.aceptado?.has(norm(item?.nombre));
+  if (item.cantidad !== 1 && !cantidadAutorizada && !elClienteDijoElNumero(item.cantidad, ctx.dicho)) {
     cambios.congelados.push({ nombre: item.nombre, campo: 'cantidad', propuesto: item.cantidad, conservado: 1 });
     salida.cantidad = 1;
   }
@@ -770,6 +779,8 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     // ofrecido, estas claves permiten una opción exacta de un renglón exacto.
     opcionesAceptadas: new Set(Array.isArray(opciones.evidenciaOpcionesAceptadas)
       ? opciones.evidenciaOpcionesAceptadas.map(String) : []),
+    cantidadesAutorizadas: opciones.cantidadesAutorizadas instanceof Map
+      ? opciones.cantidadesAutorizadas : new Map(),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
     terminos: Array.isArray(opciones.terminos) ? opciones.terminos : [],
     // Renglones que una capa de arriba identificó sin que la frase los nombre

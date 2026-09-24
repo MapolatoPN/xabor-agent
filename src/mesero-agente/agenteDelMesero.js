@@ -262,6 +262,13 @@ export async function atenderTurnoConHerramientas({
     const oferta = accionParaOfertaAceptada({ estado, catalogo, mensaje });
     if (oferta) {
       const r = await ejecutarDeterminista(oferta);
+      if (oferta.consumeOfertaPromocion && r?.aplicado) {
+        // La aceptación ya se convirtió en una mutación real del carrito.
+        // Consumir la oferta aquí impide que un segundo «sí» vuelva a agregar
+        // unidades y mantiene la idempotencia en el libro del turno.
+        estado.ofertaPromocionPendiente = null;
+        estado.promocionInformativaPendiente = false;
+      }
       huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
     }
 

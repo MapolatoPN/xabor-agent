@@ -32,6 +32,8 @@ const CATALOGO = [{ id: 1, nombre: 'Desayunos', productos: [
     modificadores: [grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo',
       'Papas a la mexicana', 'Papas con chorizo'], 2)],
   },
+  { id: 201, nombre: 'Combito de Chilaquiles', precio: 180, disponible: true,
+    modificadores: [] },
 ] }];
 
 const PRECIOS = { 'Desayuno Sorpresa': 345, 'Chilaquiles Mixtos': 205 };
@@ -178,5 +180,34 @@ assert.deepEqual(dosOpciones.pedido.lineas[0].opciones, [
   { grupo: 'Guarniciones', opcion: 'Frijolitos con chorizo' },
   { grupo: 'Guarniciones', opcion: 'Papas con chorizo' },
 ]);
+
+// 10) Una promoción no se guarda como un booleano huérfano. La aceptación de
+// una oferta única usa el contrato estructurado de Xabor y agrega la cantidad
+// exigida por la promoción, sin llamar al modelo ni volver a preguntar qué
+// quería ordenar.
+const estadoPromo = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'promo-raiz' });
+estadoPromo.ofertaPromocionPendiente = {
+  id: 'promo-jueves', nombre: 'Jueves de Combitos',
+  participantes: ['Combito de Chilaquiles'], cantidadRequerida: 2, condiciones: [],
+};
+estadoPromo.ofrecidos = ['Combito de Chilaquiles'];
+const promoAceptada = await turno(estadoPromo, 'Sí', 12);
+assert.equal(promoAceptada.llamadasAlModelo, 0);
+assert.equal(promoAceptada.continuidadDeterminista, true);
+assert.equal(estadoPromo.carrito.items[0].nombre, 'Combito de Chilaquiles');
+assert.equal(estadoPromo.carrito.items[0].cantidad, 2);
+assert.equal(estadoPromo.ofertaPromocionPendiente, null);
+
+// Los identificadores internos de la promoción nunca llegan al modelo ni al
+// texto del cliente; el contrato público solo expone datos humanos.
+const textoOferta = pedidoEnTexto({
+  estado: 'armando', lineas: [], ofrecidos: [], modalidad: null, forma_pago: null,
+  oferta_promocion_pendiente: {
+    id: 'promo-interno', nombre: 'Jueves de Combitos',
+    participantes: ['Combito de Chilaquiles'], cantidadRequerida: 2,
+  }, falta: ['modalidad'], huella: 'h', total: null,
+});
+assert.match(textoOferta, /Jueves de Combitos/);
+assert.doesNotMatch(textoOferta, /promo-interno/);
 
 console.log('OK: continuidad determinista del Desayuno Sorpresa, opciones canónicas, preguntas, grupo ajeno y ambigüedad protegidos.');

@@ -1646,6 +1646,13 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
     out.push({
       id: p.id,
       nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
+      // La cantidad es parte del contrato operativo de la promoción. Antes se
+      // perdía al convertir la fila en texto y el turno siguiente no podía
+      // saber qué significa aceptar la oferta; terminaba preguntando de nuevo
+      // qué quería ordenar. Se conserva como dato estructurado, nunca se
+      // deduce del texto que redacta el modelo.
+      cantidadRequerida: Number(p.cantidad_requerida) >= 1
+        ? Number(p.cantidad_requerida) : 2,
       participacion, participantesTexto, condicionesTexto, condiciones,
       horaInicio: p.hora_inicio || null, horaFin: p.hora_fin || null,
     });
@@ -1664,39 +1671,50 @@ export async function describirPromocionesVigentes(negocioId, opts = {}) {
   return describirPromocionesParaFecha(negocioId, { ...opts, ahora, timezone, minutos });
 }
 
-// Respuesta HUMANA (redactada por CÓDIGO, no por el modelo) a una consulta de
-// promociones para una fecha/día: "¿qué hay mañana?", "¿el miércoles?", "¿esta
-// semana?". Resuelve la expresión temporal en la TZ del negocio y consulta el
-// módulo estructurado (describirPromocionesParaFecha), reutilizando la misma
-// descripción de participantes/condiciones. Devuelve el texto, o null si la
-// expresión no se pudo resolver (el caller pedirá aclaración). Solo informa lo
-// que Xabor realmente tiene; jamás inventa ni usa memoria del modelo.
-export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT } = {}) {
+// La misma consulta temporal que usa la respuesta humana, pero conserva la
+// fila estructurada para el flujo de conversación. El texto y los datos salen
+// de UNA lectura temporal, para que un cambio de minuto no produzca un texto
+// que ofrece una promoción y un estado que no la puede aceptar.
+export async function consultarPromocionesParaAgente(negocioId, cuando, {
+  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT,
+} = {}) {
   const r = resolverCuandoPromo(cuando, { ahora, timezone });
-  if (!r.ok) return null;
+  if (!r.ok || !r.dias?.length) return { texto: null, promociones: [] };
   const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   const hhmm = (t) => String(t || '').slice(0, 5);
 
   if (r.esSemana) {
     const vistos = new Set();
     const bloques = [];
+    const todas = [];
     for (const d of r.dias) {
-      const promos = await describirPromocionesParaFecha(negocioId, { canal, ahora: d.ahora, timezone, minutos: null });
+      const promos = await describirPromocionesParaFecha(
+        negocioId, { canal, ahora: d.ahora, timezone, minutos: null },
+      );
       const nuevos = promos.filter((p) => !vistos.has(p.nombre));
-      nuevos.forEach((p) => vistos.add(p.nombre));
+      nuevos.forEach((p) => { vistos.add(p.nombre); todas.push(p); });
       if (nuevos.length) bloques.push(`${cap(d.diaNombre)}: ${nuevos.map((p) => p.nombre).join(', ')}`);
     }
-    if (!bloques.length) return 'Esta semana no tenemos promociones programadas.';
-    return 'Promociones de esta semana:\n' + bloques.join('\n');
+    return {
+      texto: bloques.length
+        ? 'Promociones de esta semana:\n' + bloques.join('\n')
+        : 'Esta semana no tenemos promociones programadas.',
+      promociones: todas.length === 1 ? todas : [],
+    };
   }
 
   const d = r.dias[0];
-  const promos = await describirPromocionesParaFecha(negocioId, { canal, ahora: d.ahora, timezone, minutos: r.minutos });
+  const promos = await describirPromocionesParaFecha(negocioId, {
+    canal, ahora: d.ahora, timezone, minutos: r.minutos,
+  });
   const cuandoTxt = d.etiqueta ? `${d.etiqueta} ${d.diaNombre}` : `el ${d.diaNombre}`;
   if (!promos.length) {
-    return r.minutos != null
-      ? `Para ${cuandoTxt} a esa hora no tenemos una promoción disponible.`
-      : `Para ${cuandoTxt} no tenemos promociones programadas.`;
+    return {
+      texto: r.minutos != null
+        ? `Para ${cuandoTxt} a esa hora no tenemos una promoción disponible.`
+        : `Para ${cuandoTxt} no tenemos promociones programadas.`,
+      promociones: [],
+    };
   }
   const lineas = [`Para ${cuandoTxt} tenemos:`];
   for (const p of promos) {
@@ -1705,7 +1723,25 @@ export async function responderConsultaPromos(negocioId, cuando, { canal = 'what
     if (r.minutos == null && p.horaInicio && p.horaFin) l += ` (horario ${hhmm(p.horaInicio)}–${hhmm(p.horaFin)})`;
     lineas.push(l);
   }
-  return lineas.join('\n');
+  return { texto: lineas.join('\n'), promociones: promos };
+}
+
+// Compatibilidad para callers que solo necesitan la lista estructurada.
+export async function promocionesParaConsulta(negocioId, cuando, opts = {}) {
+  return (await consultarPromocionesParaAgente(negocioId, cuando, opts)).promociones;
+}
+
+// Respuesta HUMANA (redactada por CÓDIGO, no por el modelo) a una consulta de
+// promociones para una fecha/día: "¿qué hay mañana?", "¿el miércoles?", "¿esta
+// semana?". Resuelve la expresión temporal en la TZ del negocio y consulta el
+// módulo estructurado (describirPromocionesParaFecha), reutilizando la misma
+// descripción de participantes/condiciones. Devuelve el texto, o null si la
+// expresión no se pudo resolver (el caller pedirá aclaración). Solo informa lo
+// que Xabor realmente tiene; jamás inventa ni usa memoria del modelo.
+export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT } = {}) {
+  return (await consultarPromocionesParaAgente(negocioId, cuando, {
+    canal, ahora, timezone,
+  })).texto;
 }
 
 // Frase legible de las condiciones por modificadores de una promo, resolviendo

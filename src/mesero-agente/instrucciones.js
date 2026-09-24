@@ -134,6 +134,12 @@ export function pedidoEnTexto(pedido) {
     lineas.length ? lineas.join('\n') : '(sin renglones)',
     (pedido.ofrecidos || []).length
       ? `producto ofrecido en el turno anterior: ${pedido.ofrecidos.join(', ')}` : null,
+    pedido.oferta_promocion_pendiente
+      ? `oferta de promoción pendiente (dato de Xabor, no del modelo): `
+        + `${pedido.oferta_promocion_pendiente.nombre || '—'}; `
+        + `participantes: ${(pedido.oferta_promocion_pendiente.participantes || []).join(', ') || 'elige uno'}; `
+        + `cantidad requerida: ${pedido.oferta_promocion_pendiente.cantidadRequerida || 1}`
+      : null,
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
     pedido.programado_para ? `programado para: ${pedido.programado_para}` : null,

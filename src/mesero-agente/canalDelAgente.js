@@ -33,7 +33,9 @@ import { buscarProductos, productosVendibles } from '../mesero-whatsapp/consulta
 import { cicloParaTurno } from './cicloDelAgente.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
-import { responderConsultaPromos, describirPromocionesVigentes } from '../services/tiendaPromociones.js';
+import {
+  describirPromocionesVigentes, consultarPromocionesParaAgente,
+} from '../services/tiendaPromociones.js';
 import {
   depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
 } from '../orders/modalidadesDelPedido.js';
@@ -638,24 +640,22 @@ export async function atenderConAgente({
     // completa dirección o forma de pago. Nunca debe caer al modelo, porque
     // el modelo no es la fuente oficial de promociones.
     const consultaPromos = esConsultaDePromociones(mensaje);
-    const aceptaPromoPendiente = estado.promocionInformativaPendiente === true
+    const aceptaPromoPendiente = !!estado.ofertaPromocionPendiente
       && esAceptacionBreveDePromocion(mensaje);
 
-    // La respuesta oficial termina con una invitación («¿te gustaría pedir
-    // un par?»). Conservar solo ese hecho evita que un «sí» vuelva a entrar al
-    // modelo sin contexto y termine preguntando genéricamente qué ordenar.
-    // Todavía no se agrega ningún producto: el cliente debe elegirlo y la
-    // elegibilidad final la decide el backend al armar el pedido.
+    // La aceptación ya no termina en una respuesta suelta. Conservamos la
+    // oferta estructurada y dejamos que el mismo ejecutor que usa el resto del
+    // pedido aplique el producto participante, con la cantidad que exige la
+    // promoción. La aceptación breve sigue siendo determinista; el modelo no
+    // puede inventar el platillo ni perder el contexto.
     if (aceptaPromoPendiente) {
-      estado.promocionInformativaPendiente = false;
-      await guardarEstado(negocioId, telefono, estado);
-      return {
-        ok: true,
-        texto: 'Perfecto. Dime qué productos participantes quieres pedir y verificaré que cumplan la promoción.',
-        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO, operaciones: [],
-      };
+      const nombres = estado.ofertaPromocionPendiente.participantes || [];
+      if (nombres.length === 1) estado.ofrecidos = [nombres[0]];
     }
-    if (!consultaPromos) estado.promocionInformativaPendiente = false;
+    if (!consultaPromos && !aceptaPromoPendiente) {
+      estado.ofertaPromocionPendiente = null;
+      estado.promocionInformativaPendiente = false;
+    }
     let textoConsultaPromos = null;
 
     // Una pregunta informativa no debe quedar bloqueada por el horario ni
@@ -665,22 +665,41 @@ export async function atenderConAgente({
     if (consultaPromos) {
       let errorConsultaPromos = null;
       try {
-        textoConsultaPromos = await responderConsultaPromos(
+        const consultaEstructurada = await consultarPromocionesParaAgente(
           negocioId, cuandoDeConsultaDePromociones(mensaje),
           { canal, timezone: reglas?.timezone },
         );
+        textoConsultaPromos = consultaEstructurada.texto;
+        let estructuradas = consultaEstructurada.promociones;
         // Compatibilidad defensiva con una instancia/caller antiguo que aún
         // entregue un alias de canal: las promociones de WhatsApp se guardan
         // bajo el canal público `whatsapp`. Nunca dejamos que un alias haga
         // desaparecer una promoción real.
         if (!textoConsultaPromos && canal !== 'whatsapp') {
-          textoConsultaPromos = await responderConsultaPromos(
+          const fallbackPromos = await consultarPromocionesParaAgente(
             negocioId, cuandoDeConsultaDePromociones(mensaje),
             { canal: 'whatsapp', timezone: reglas?.timezone },
           );
+          textoConsultaPromos = fallbackPromos.texto;
+          estructuradas = fallbackPromos.promociones;
         }
         if (textoConsultaPromos) {
-          estado.promocionInformativaPendiente = true;
+          const primera = estructuradas.length === 1 ? estructuradas[0] : null;
+          estado.ofertaPromocionPendiente = primera
+            ? {
+              id: primera.id,
+              nombre: primera.nombre,
+              participantes: primera.participacion?.modo === 'productos'
+                ? (primera.participacion.nombres || []) : [],
+              cantidadRequerida: primera.cantidadRequerida,
+              condiciones: primera.condiciones || [],
+            } : null;
+          // Compatibilidad de lectura para el build anterior; las nuevas
+          // filas usan la oferta estructurada y no este booleano.
+          estado.promocionInformativaPendiente = !!estado.ofertaPromocionPendiente;
+          if (estado.ofertaPromocionPendiente?.participantes?.length === 1) {
+            estado.ofrecidos = estado.ofertaPromocionPendiente.participantes.slice();
+          }
           await guardarEstado(negocioId, telefono, estado);
           return {
             ok: true, texto: textoConsultaPromos, folio: null, escalado: false,

@@ -84,9 +84,14 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
     ofrecidos: [],
     ofrecidosDelTurno: [],
-    // La ruta informativa de promociones no pasa por el modelo. Este marcador
-    // conserva una aceptación breve («sí», «dale») para que el siguiente turno
-    // no pierda la oferta y vuelva a preguntar genéricamente qué ordenar.
+    // Oferta estructurada que Xabor puso delante del cliente. No es un
+    // booleano: al aceptar, el siguiente turno necesita saber qué promoción,
+    // qué productos participan y cuántas unidades exige. El modelo nunca
+    // decide esos datos leyendo el texto de una respuesta anterior.
+    ofertaPromocionPendiente: null,
+    // Compatibilidad de lectura para estados escritos por el build anterior.
+    // Las filas viejas no tienen una oferta recuperable; se ignoran de forma
+    // explícita y no se convierten en una autorización inventada.
     promocionInformativaPendiente: false,
     // Los datos de un evento se juntan a trozos entre turnos. Vive aqui y
     // no en el carrito porque un evento NO es un pedido: no tiene renglones,
@@ -225,9 +230,23 @@ export function crearEjecutor({
     const conContinuidad = (estado.ofrecidos || []).length
       ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
       : pedido;
-    const conPago = estado.pagoOfrecido
-      ? { ...conContinuidad, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
+    const ofertaPublica = estado.ofertaPromocionPendiente
+      ? {
+        nombre: estado.ofertaPromocionPendiente.nombre || null,
+        participantes: (estado.ofertaPromocionPendiente.participantes || []).slice(),
+        cantidadRequerida: Number(estado.ofertaPromocionPendiente.cantidadRequerida) || 1,
+        condiciones: (estado.ofertaPromocionPendiente.condiciones || []).map((c) => ({
+          grupo: c?.grupo || null,
+          permitidas: Array.isArray(c?.permitidas) ? c.permitidas.slice() : undefined,
+        })),
+      }
+      : null;
+    const conOfertaPromocion = ofertaPublica
+      ? { ...conContinuidad, oferta_promocion_pendiente: ofertaPublica }
       : conContinuidad;
+    const conPago = estado.pagoOfrecido
+      ? { ...conOfertaPromocion, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
+      : conOfertaPromocion;
     const pendiente = programacionPendiente();
     const conProgramacion = pendiente
       ? { ...conPago, programacion_pendiente: pendiente }
@@ -265,6 +284,12 @@ export function crearEjecutor({
     datoOperativoPendiente,
     evidenciaAceptada: evidenciaAceptada(),
     evidenciaOpcionesAceptadas: opcionesAceptadas,
+    cantidadesAutorizadas: new Map(
+      estado.ofertaPromocionPendiente?.participantes?.length === 1
+        ? [[norm(estado.ofertaPromocionPendiente.participantes[0]),
+          Number(estado.ofertaPromocionPendiente.cantidadRequerida) || 1]]
+        : [],
+    ),
   });
 
   /** Aplica propuestas y RELEE. Devuelve `{ aplicado, decisiones, cambios, pedido }`. */

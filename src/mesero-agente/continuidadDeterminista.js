@@ -28,6 +28,29 @@ const esNoBinario = (texto) => {
 
 /** Un «sí» solo acepta una oferta cuando el turno anterior dejó UNA. */
 export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' } = {}) {
+  const ofertaPromo = estado?.ofertaPromocionPendiente;
+  if (ofertaPromo && esConfirmacionVerbal(mensaje)) {
+    const participantes = Array.isArray(ofertaPromo.participantes)
+      ? ofertaPromo.participantes.filter(Boolean) : [];
+    // Una aceptación solo puede autorizar una oferta inequívoca. Si hay más
+    // de un producto participante, el cliente todavía tiene que elegirlo;
+    // dejar que el modelo decida por él reintroduciría la misma divergencia
+    // que este camino determinista evita.
+    if (participantes.length === 1) {
+      const ficha = fichaPorNombre(catalogo, participantes[0]);
+      if (!ficha) return null;
+      return {
+        herramienta: 'agregar_producto',
+        argumentos: {
+          producto_id: String(ficha.id),
+          cantidad: Number(ofertaPromo.cantidadRequerida) >= 1
+            ? Number(ofertaPromo.cantidadRequerida) : 1,
+        },
+        motivo: 'aceptacion_de_oferta_promocion',
+        consumeOfertaPromocion: true,
+      };
+    }
+  }
   const ofrecidos = Array.isArray(estado?.ofrecidos) ? estado.ofrecidos.filter(Boolean) : [];
   if (ofrecidos.length !== 1 || !esConfirmacionVerbal(mensaje)) return null;
   const ficha = fichaPorNombre(catalogo, ofrecidos[0]);
