@@ -25,7 +25,8 @@ import {
   ordenDesdeElCarrito, puedeContinuarConLocalCerrado,
 } from '../src/mesero-agente/canalDelAgente.js';
 import {
-  horasExactasDePedido, pideQuitarProgramacion, referenciasTemporalesDePedido,
+  fechasExactasDePedido, horasExactasDePedido,
+  pideQuitarProgramacion, referenciasTemporalesDePedido,
 } from '../src/mesero-agente/seguridadConversacional.js';
 import { resumenDelPedido, huellaDelResumen } from '../src/mesero-whatsapp/resumenDelPedido.js';
 
@@ -603,7 +604,8 @@ await t('F3 · corregir solo la hora conserva la fecha validada y borra el ISO v
   const fechaInventada = await ejecutorDe(estado, 'mejor a las 11')
     .ejecutar('programar_para', { fecha: '2026-09-25', hora: '11:00' });
   assert.equal(fechaInventada.aplicado, false);
-  assert.match(fechaInventada.motivo, /fecha_no_coincide_con_programacion_validada/);
+  assert.match(fechaInventada.motivo,
+    /fecha_no_coincide_con_programacion_validada|programacion_alternativa_sin_cliente/);
   const corregida = await ejecutorDe(estado, 'mejor a las 11')
     .ejecutar('programar_para', { fecha: '2026-09-24', hora: '11:00' });
   assert.equal(corregida.aplicado, true, corregida.motivo);
@@ -656,9 +658,9 @@ await t('F6 · los args del modelo no fabrican evidencia ni hechos validados', a
   assert.equal(sinEvidencia.carrito.datos.programado_para, undefined);
 
   const incompleta = nuevo();
-  marcarProgramacionRequerida(incompleta, 'quiero pedir mañana', { fechaHoy: '2026-09-23' });
-  const horaInventada = await ejecutorDe(incompleta, 'quiero pedir mañana')
-    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  marcarProgramacionRequerida(incompleta, 'quiero pedir el domingo', { fechaHoy: '2026-09-23' });
+  const horaInventada = await ejecutorDe(incompleta, 'quiero pedir el domingo')
+    .ejecutar('programar_para', { fecha: '2026-09-27', hora: '10:00' });
   assert.equal(horaInventada.aplicado, false);
   assert.match(horaInventada.motivo, /falta que el cliente indique la hora/);
   assert.equal(incompleta.referenciaProgramacion.fechaValidada, null);
@@ -757,6 +759,7 @@ await t('F10 · una consulta temporal no autoriza programar_para', async () => {
     assert.equal(estado.programacionRequerida, false, mensaje);
     assert.equal(estado.carrito.datos.programado_para, undefined, mensaje);
   }
+
 });
 
 await t('F11 · tras un rechazo no elige otra fecha sin un mensaje nuevo', async () => {
@@ -776,7 +779,7 @@ await t('F11 · tras un rechazo no elige otra fecha sin un mensaje nuevo', async
     fecha: '2026-09-28', hora: '10:00',
   });
   assert.equal(lunesSinPermiso.aplicado, false);
-  assert.match(lunesSinPermiso.motivo, /programacion_alternativa_sin_cliente/);
+  assert.match(lunesSinPermiso.motivo, /fecha_no_coincide_con_cliente|programacion_alternativa_sin_cliente/);
   assert.equal(estado.carrito.datos.programado_para, undefined);
 
   marcarProgramacionRequerida(estado, 'mejor a las 11', { fechaHoy: '2026-09-23' });
@@ -786,7 +789,8 @@ await t('F11 · tras un rechazo no elige otra fecha sin un mensaje nuevo', async
   const fechaCambiadaConSoloHora = await ejecutorDe(estado, 'mejor a las 11')
     .ejecutar('programar_para', { fecha: '2026-09-28', hora: '11:00' });
   assert.equal(fechaCambiadaConSoloHora.aplicado, false);
-  assert.match(fechaCambiadaConSoloHora.motivo, /programacion_alternativa_sin_cliente/);
+  assert.match(fechaCambiadaConSoloHora.motivo,
+    /fecha_no_coincide_con_cliente|programacion_alternativa_sin_cliente/);
 });
 
 await t('F12 · correcciones tersas invalidan A y un reemplazo no se vuelve inmediato', () => {
@@ -843,11 +847,271 @@ await t('F13 · una segunda llamada del mismo turno no borra ni reemplaza el pri
     fecha: '2026-09-25', hora: '10:00',
   });
   assert.equal(segunda.aplicado, false);
-  assert.match(segunda.motivo, /programacion_alternativa_sin_cliente/);
+  assert.match(segunda.motivo, /fecha_no_coincide_con_cliente|programacion_alternativa_sin_cliente/);
   assert.equal(estado.carrito.datos.programado_para, isoPrimero,
     'la llamada rechazada borró la programación que ya había sido aceptada');
   assert.equal(estado.referenciaProgramacion.fechaValidada, '2026-09-24');
   assert.equal(estado.referenciaProgramacion.horaValidada, '10:00');
+});
+
+await t('F14 · la fecha literal y las relativas quedan ligadas al ancla del cliente', async () => {
+  assert.deepEqual(fechasExactasDePedido('2026-09-25', { fechaAncla: '2026-09-23' }), ['2026-09-25']);
+  assert.deepEqual(fechasExactasDePedido('mañana', { fechaAncla: '2026-09-23' }), ['2026-09-24']);
+  assert.deepEqual(fechasExactasDePedido('pasado mañana', { fechaAncla: '2026-09-23' }), ['2026-09-25']);
+  assert.deepEqual(fechasExactasDePedido('el viernes', { fechaAncla: '2026-09-23' }), ['2026-09-25']);
+  assert.deepEqual(fechasExactasDePedido('25 de septiembre', { fechaAncla: '2026-09-23' }), ['2026-09-25']);
+  assert.deepEqual(fechasExactasDePedido('25/09', { fechaAncla: '2026-09-23' }), ['2026-09-25']);
+
+  const literal = nuevo();
+  marcarProgramacionRequerida(literal, 'quiero el pedido el 2026-09-25 a las 10', {
+    fechaHoy: '2026-09-23',
+  });
+  const otroDia = await ejecutorDe(literal, 'quiero el pedido el 2026-09-25 a las 10')
+    .ejecutar('programar_para', { fecha: '2026-09-26', hora: '10:00' });
+  assert.equal(otroDia.aplicado, false);
+  assert.match(otroDia.motivo, /fecha_no_coincide_con_cliente/);
+  assert.equal(literal.carrito.datos.programado_para, undefined);
+
+  const relativa = nuevo();
+  marcarProgramacionRequerida(relativa, 'quiero pedir mañana a las 10', {
+    fechaHoy: '2026-09-23',
+  });
+  const reinterpretada = await ejecutorDe(relativa, 'quiero pedir mañana a las 10')
+    .ejecutar('programar_para', { fecha: '2026-09-25', hora: '10:00' });
+  assert.equal(reinterpretada.aplicado, false);
+  assert.match(reinterpretada.motivo, /fecha_no_coincide_con_cliente/);
+  assert.equal(relativa.referenciaProgramacion.fechaAncla, '2026-09-23',
+    'el ejecutor volvió a anclar «mañana» después de medianoche');
+});
+
+await t('F15 · una semana no elige día y una hora con dos lecturas obliga a aclarar', async () => {
+  const vaga = nuevo();
+  marcarProgramacionRequerida(vaga, 'quiero pedir la próxima semana a las 10 am', {
+    fechaHoy: '2026-09-23',
+  });
+  const inventada = await ejecutorDe(vaga, 'quiero pedir la próxima semana a las 10 am')
+    .ejecutar('programar_para', { fecha: '2026-09-25', hora: '10:00' });
+  assert.equal(inventada.aplicado, false);
+  assert.match(inventada.motivo, /no identifica un día exacto/);
+
+  assert.deepEqual(horasExactasDePedido('a las doce de la noche'), ['00:00']);
+  const ambigua = nuevo();
+  marcarProgramacionRequerida(ambigua, 'quiero pedir el viernes a las 8', {
+    fechaHoy: '2026-09-23',
+  });
+  const nocheElegidaPorModelo = await ejecutorDe(ambigua, 'quiero pedir el viernes a las 8')
+    .ejecutar('programar_para', { fecha: '2026-09-25', hora: '20:00' });
+  assert.equal(nocheElegidaPorModelo.aplicado, false);
+  assert.match(nocheElegidaPorModelo.motivo, /hora_ambigua_cliente/);
+  assert.equal(ambigua.carrito.datos.programado_para, undefined);
+
+  marcarProgramacionRequerida(ambigua, 'mejor a las 8 pm', { fechaHoy: '2026-09-23' });
+  const aclarada = await ejecutorDe(ambigua, 'mejor a las 8 pm')
+    .ejecutar('programar_para', { fecha: '2026-09-25', hora: '20:00' });
+  assert.equal(aclarada.aplicado, true, aclarada.motivo);
+});
+
+await t('F16 · corregir una programación a hoy o ahora gana sobre la fecha negada', () => {
+  const programado = () => {
+    const estado = nuevo();
+    estado.programacionRequerida = true;
+    estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+    estado.referenciaProgramacion = {
+      fechaCliente: null, horaCliente: null,
+      fechaValidada: '2026-09-25', horaValidada: '10:00',
+      isoValidado: '2026-09-25T15:00:00.000Z',
+      fechaIntentada: '2026-09-25', horaIntentada: '10:00',
+    };
+    return estado;
+  };
+  for (const mensaje of [
+    'ya no mañana, mejor hoy',
+    'mañana no, mejor ahora',
+    'ya no el viernes, mejor hoy',
+  ]) {
+    const estado = programado();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-24',
+    }), false, mensaje);
+    assert.equal(estado.programacionRequerida, false, mensaje);
+    assert.equal(estado.referenciaProgramacion, null, mensaje);
+    assert.equal(estado.carrito.datos.programado_para, undefined, mensaje);
+  }
+
+  const correccionEnLaMismaFrase = nuevo();
+  assert.equal(marcarProgramacionRequerida(
+    correccionEnLaMismaFrase,
+    'quiero pedir mañana, no, mejor hoy',
+    { fechaHoy: '2026-09-24' },
+  ), false);
+  assert.equal(correccionEnLaMismaFrase.programacionRequerida, false);
+  assert.equal(correccionEnLaMismaFrase.referenciaProgramacion, null);
+
+  const ahoraEsElActoDePedir = nuevo();
+  assert.equal(marcarProgramacionRequerida(
+    ahoraEsElActoDePedir,
+    'quiero ahora hacer un pedido para mañana a las 10',
+    { fechaHoy: '2026-09-24' },
+  ), true, '«ahora» describía cuándo pide, no cuándo se entrega');
+  assert.equal(ahoraEsElActoDePedir.programacionRequerida, true);
+  assert.equal(ahoraEsElActoDePedir.referenciaProgramacion.fechaCliente, 'manana');
+});
+
+await t('F17 · la última autocorrección temporal manda y lo negado nunca se programa', async () => {
+  for (const mensaje of [
+    'para hoy no, mejor mañana a las 10 am',
+    'no para hoy, mejor mañana a las 10 am',
+    'lo quería para hoy, pero mejor mañana a las 10 am',
+    'mejor para hoy no, mañana a las 10 am',
+  ]) {
+    const estado = nuevo();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, mensaje);
+    assert.equal(estado.programacionRequerida, true, mensaje);
+    assert.equal(estado.referenciaProgramacion?.fechaCliente, 'manana', mensaje);
+  }
+
+  for (const caso of [
+    {
+      mensaje: 'quiero para el viernes, no, el sábado a las 10 am',
+      fechaRechazada: '2026-09-25', fechaFinal: '2026-09-26', horaRechazada: '10:00', horaFinal: '10:00',
+    },
+    {
+      mensaje: 'quiero el 2026-09-25, no, el 2026-09-26 a las 10 am',
+      fechaRechazada: '2026-09-25', fechaFinal: '2026-09-26', horaRechazada: '10:00', horaFinal: '10:00',
+    },
+    {
+      mensaje: 'quiero el viernes a las 10 am, no, a las 11 am',
+      fechaRechazada: '2026-09-25', fechaFinal: '2026-09-25', horaRechazada: '10:00', horaFinal: '11:00',
+    },
+  ]) {
+    const estado = nuevo();
+    assert.equal(marcarProgramacionRequerida(estado, caso.mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, caso.mensaje);
+    const rechazada = await ejecutorDe(estado, caso.mensaje).ejecutar('programar_para', {
+      fecha: caso.fechaRechazada, hora: caso.horaRechazada,
+    });
+    assert.equal(rechazada.aplicado, false, `aceptó lo descartado: ${caso.mensaje}`);
+    const aplicada = await ejecutorDe(estado, caso.mensaje).ejecutar('programar_para', {
+      fecha: caso.fechaFinal, hora: caso.horaFinal,
+    });
+    assert.equal(aplicada.aplicado, true, `${caso.mensaje}: ${aplicada.motivo}`);
+  }
+});
+
+await t('F18 · alternativas y rangos quedan incompletos; nunca escogen el primer valor', async () => {
+  for (const mensaje of [
+    'quiero pedir entre el viernes y el sábado a las 10 am',
+    'quiero pedir del viernes al sábado a las 10 am',
+    'quiero pedir el viernes o el sábado a las 10 am',
+    'quiero pedir hoy o mañana a las 10 am',
+  ]) {
+    const estado = nuevo();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, mensaje);
+    assert.equal(estado.programacionRequerida, true, mensaje);
+    assert.equal(estado.referenciaProgramacion?.fechaCliente ?? null, null, mensaje);
+    const elegidaPorModelo = await ejecutorDe(estado, mensaje).ejecutar('programar_para', {
+      fecha: '2026-09-25', hora: '10:00',
+    });
+    assert.equal(elegidaPorModelo.aplicado, false, `eligió el primer día: ${mensaje}`);
+    assert.equal(estado.carrito.datos.programado_para, undefined, mensaje);
+  }
+
+  const horas = nuevo();
+  const mensajeHoras = 'quiero pedir el viernes a las 10 u 11';
+  assert.equal(marcarProgramacionRequerida(horas, mensajeHoras, {
+    fechaHoy: '2026-09-23',
+  }), true);
+  assert.equal(horas.referenciaProgramacion?.fechaCliente, 'el viernes');
+  assert.equal(horas.referenciaProgramacion?.horaCliente ?? null, null);
+  for (const hora of ['10:00', '11:00']) {
+    const elegida = await ejecutorDe(horas, mensajeHoras).ejecutar('programar_para', {
+      fecha: '2026-09-25', hora,
+    });
+    assert.equal(elegida.aplicado, false, `eligió ${hora} de una alternativa`);
+  }
+});
+
+await t('F19 · autocorrecciones afirmadas y negación del segundo tienen semántica estable', async () => {
+  for (const [mensaje, fecha] of [
+    ['quiero el viernes, perdón, el sábado a las 10 am', 'sabado'],
+    ['quiero el viernes, digo, el sábado a las 10 am', 'sabado'],
+    ['quiero el viernes, quise decir el sábado a las 10 am', 'sabado'],
+    ['quiero el viernes, más bien el sábado a las 10 am', 'sabado'],
+    ['quiero el viernes no; el sábado sí a las 10 am', 'sabado'],
+    ['quiero no el viernes sino el sábado a las 10 am', 'sabado'],
+    ['quiero el viernes, no el sábado a las 10 am', 'viernes'],
+  ]) {
+    const estado = nuevo();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, mensaje);
+    assert.match(estado.referenciaProgramacion?.fechaCliente || '', new RegExp(fecha), mensaje);
+  }
+
+  const negacionDelSegundo = nuevo();
+  const mensaje = 'quiero el viernes a las 10 am, no el sábado a las 11 am';
+  marcarProgramacionRequerida(negacionDelSegundo, mensaje, { fechaHoy: '2026-09-23' });
+  const descartada = await ejecutorDe(negacionDelSegundo, mensaje).ejecutar('programar_para', {
+    fecha: '2026-09-26', hora: '11:00',
+  });
+  assert.equal(descartada.aplicado, false, 'la referencia negada quedó autorizada');
+  const afirmada = await ejecutorDe(negacionDelSegundo, mensaje).ejecutar('programar_para', {
+    fecha: '2026-09-25', hora: '10:00',
+  });
+  assert.equal(afirmada.aplicado, true, afirmada.motivo);
+});
+
+await t('F20 · corrección inmediata/futura, estado previo y consultas son fail-closed', () => {
+  const programado = () => {
+    const estado = nuevo();
+    estado.programacionRequerida = true;
+    estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+    estado.referenciaProgramacion = {
+      fechaCliente: null, horaCliente: null,
+      fechaValidada: '2026-09-25', horaValidada: '10:00',
+      isoValidado: '2026-09-25T15:00:00.000Z',
+      fechaIntentada: '2026-09-25', horaIntentada: '10:00',
+    };
+    return estado;
+  };
+
+  const futura = programado();
+  assert.equal(marcarProgramacionRequerida(futura, 'hoy no; mejor mañana a las 11 am', {
+    fechaHoy: '2026-09-23',
+  }), true);
+  assert.equal(futura.programacionRequerida, true);
+  assert.equal(futura.referenciaProgramacion.fechaCliente, 'manana');
+  assert.equal(futura.carrito.datos.programado_para, undefined);
+
+  const inmediata = programado();
+  assert.equal(marcarProgramacionRequerida(inmediata, 'mañana no; mejor ahora', {
+    fechaHoy: '2026-09-23',
+  }), false);
+  assert.equal(inmediata.programacionRequerida, false);
+  assert.equal(inmediata.referenciaProgramacion, null);
+  assert.equal(inmediata.carrito.datos.programado_para, undefined);
+
+  for (const mensaje of ['viernes o sábado', 'entre el viernes y el sábado']) {
+    const ambiguo = programado();
+    assert.equal(marcarProgramacionRequerida(ambiguo, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, mensaje);
+    assert.equal(ambiguo.programacionRequerida, true, mensaje);
+    assert.equal(ambiguo.referenciaProgramacion?.fechaValidada ?? null, null, mensaje);
+    assert.equal(ambiguo.carrito.datos.programado_para, undefined, mensaje);
+  }
+
+  const consulta = programado();
+  const antes = JSON.stringify(consulta);
+  assert.equal(marcarProgramacionRequerida(consulta, '¿el viernes no abren?', {
+    fechaHoy: '2026-09-23',
+  }), false);
+  assert.equal(JSON.stringify(consulta), antes, 'una consulta cambió la reserva durable');
 });
 
 console.log(fallos.length

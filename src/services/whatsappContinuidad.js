@@ -199,6 +199,23 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     } finally { db.release(); }
   }
 
+  /**
+   * Confirma el estado durable, sin confundir "ya estaba pausada" con un
+   * error al escribir. Se usa antes de prometerle al cliente un handoff.
+   */
+  async function revisionActiva(negocioId, telefono) {
+    if (!negocioId || !telefono) return false;
+    try {
+      const { rows: [fila] } = await pool.query(
+        `SELECT requiere_revision FROM whatsapp_conversaciones
+          WHERE negocio_id=$1 AND telefono=$2`, [negocioId, telefono]);
+      return fila?.requiere_revision === true;
+    } catch (e) {
+      console.error('[wa-continuidad] revisionActiva:', e.message);
+      return false;
+    }
+  }
+
   // ─── La pausa no puede ser eterna ────────────────────────────────────────
   //
   // Una conversación en revisión NO recibe ninguna respuesta del bot: ni un
@@ -304,5 +321,8 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     return true;
   }
 
-  return { recibir, ejecutar, barrer, iniciar, detener, enviarARevision, liberarRevisionesOlvidadas };
+  return {
+    recibir, ejecutar, barrer, iniciar, detener,
+    enviarARevision, revisionActiva, liberarRevisionesOlvidadas,
+  };
 }

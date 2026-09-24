@@ -193,6 +193,16 @@ const esErrorRespuestaTruncada = (error) =>
   error instanceof RespuestaModeloTruncadaError
   || error?.codigo === 'RESPUESTA_MODELO_TRUNCADA';
 
+const esErrorSalidaInternaNoPublicable = (error) =>
+  error?.codigo === 'SALIDA_INTERNA_NO_PUBLICABLE';
+
+const errorHandoffNoConfirmado = (cause = null) => {
+  const error = new Error('AGENTE_HANDOFF_NO_CONFIRMADO');
+  error.codigo = 'AGENTE_HANDOFF_NO_CONFIRMADO';
+  if (cause) error.cause = cause;
+  return error;
+};
+
 // SILENCIO TOTAL por defecto: cuando la conversación pasa a una persona, el
 // cliente no recibe NADA del bot.
 //
@@ -220,6 +230,7 @@ const ETIQUETA_MOTIVO = {
   ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
   AGENTE_NO_PUDO_ATENDER:'el agente nuevo no pudo atender el turno',
   RESPUESTA_TRUNCADA:   'la respuesta automática quedó incompleta',
+  SALIDA_INTERNA_NO_PUBLICABLE:'la respuesta automática contenía datos internos y fue retenida',
   CATERING_DATOS_LISTOS:'la solicitud de catering ya tiene los datos para continuar',
   CATERING_REVISION_HUMANA:'la solicitud de catering necesita revisión humana',
   CATERING_CONFIGURACION_FALLIDA:'no se pudo comprobar la configuración de catering',
@@ -265,8 +276,12 @@ async function pasarAgenteARevision({
   motivo = 'AGENTE_NO_PUDO_ATENDER', avisarCliente = true,
 }) {
   const marcada = await continuidad.enviarARevision(negocioId, telefono, motivo);
-  console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivo} nueva=${marcada}`);
-  if (!marcada) return false;
+  const confirmada = marcada || (await continuidad.revisionActiva?.(negocioId, telefono)) === true;
+  console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivo} nueva=${marcada} confirmada=${confirmada}`);
+  if (!confirmada) return false;
+  // Ya estaba pausada: la garantía está cumplida, pero no se repiten ni el
+  // aviso al cliente ni la notificación al equipo.
+  if (!marcada) return true;
 
   const cfgRev = await obtenerConfiguracion(negocioId).catch(() => ({}));
   const aviso = cfgRev.bot_mensaje_revision === undefined ? MENSAJE_REVISION_POR_DEFECTO : cfgRev.bot_mensaje_revision;
@@ -1409,7 +1424,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           negocioId, telefono, mensaje: texto, nombre: clienteDB?.nombre || nombreMeta,
           canal: 'whatsapp',
           llamarModelo: llamarModeloDelAgente,
-          escalarAHumano: (n, t, m) => continuidadWA.enviarARevision(n, t, m),
+          escalarAHumano: async (n, t, m) => {
+            const nueva = await continuidadWA.enviarARevision(n, t, m);
+            return nueva || await continuidadWA.revisionActiva(n, t);
+          },
           // ── EL MENÚ, POR EL MISMO CAMINO QUE EL BOT VIEJO ─────────────
           //
           // `enviarMenuAutomatico` es quien manda las páginas en orden,
@@ -1439,7 +1457,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           },
           turnoId: `wa-${Date.now()}`,
         });
-        if (r.ok) {
+        if (r.ok && r.handoffPendiente !== true) {
           let respuestaEnviada = false;
           if (r.texto) {
             try {
@@ -1460,24 +1478,28 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             return;
           }
         }
-        await pasarAgenteARevision({
+        const revisionConfirmada = await pasarAgenteARevision({
           continuidad: continuidadWA,
           negocioId,
           telefono,
           nombreMeta,
           credenciales,
         });
+        if (!revisionConfirmada) throw errorHandoffNoConfirmado();
         return;
       }
     } catch (e) {
       console.error('[AGENTE] contenido en el canal, pasa a revisión humana:', e?.message);
-      await pasarAgenteARevision({
+      const revisionConfirmada = await pasarAgenteARevision({
         continuidad: continuidadWA,
         negocioId,
         telefono,
         nombreMeta,
         credenciales,
       });
+      if (!revisionConfirmada) {
+        throw errorHandoffNoConfirmado(e);
+      }
       return;
     }
 
@@ -1805,14 +1827,20 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // cliente: repetir el turno podría duplicar efectos que alcanzaron a
     // ocurrir fuera del modelo. Se pausa la conversación sin enviar ni guardar
     // texto parcial (tampoco la disculpa genérica de abajo).
-    if (esErrorRespuestaTruncada(error)) {
+    if (esErrorRespuestaTruncada(error) || esErrorSalidaInternaNoPublicable(error)) {
       const marcada = await pasarAgenteARevision({
         continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
-        motivo: 'RESPUESTA_TRUNCADA', avisarCliente: false,
+        motivo: esErrorRespuestaTruncada(error)
+          ? 'RESPUESTA_TRUNCADA' : 'SALIDA_INTERNA_NO_PUBLICABLE',
+        avisarCliente: false,
       });
       if (!marcada) throw error;
       return;
     }
+    // Nunca afirmar que la conversación quedó señalada si la escritura durable
+    // de la pausa no pudo confirmarse. Continuidad conserva el checkpoint y
+    // hace su propio último intento con EJECUCION_NO_VERIFICADA.
+    if (error?.codigo === 'AGENTE_HANDOFF_NO_CONFIRMADO') throw error;
     // responderFalloConsultaPago ya avisó en neutro, pero no pudo confirmar
     // la pausa durable. Propagar permite que continuidad marque
     // EJECUCION_NO_VERIFICADA; mandar aquí la disculpa genérica produciría un

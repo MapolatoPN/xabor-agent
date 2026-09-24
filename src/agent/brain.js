@@ -40,6 +40,7 @@ import {
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
+import { exigirSalidaPublicable } from '../mesero-agente/salidaPublicable.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
 import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente, continuarAclaracionProducto } from '../orders/validadorOrden.js';
 import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
@@ -655,6 +656,11 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // marcadores o ejecutar cualquier efecto. Una respuesta parcial no es una
     // respuesta del agente.
     const textoRespuesta = textoCompletoDeRespuesta(respuesta);
+    // Los marcadores cerrados se consumen como protocolo; cualquier carga de
+    // máquina que sobreviva a esa limpieza es una respuesta inválida. Esta
+    // puerta va ANTES de guardar historial o ejecutar efectos: así el canal
+    // puede pausar la conversación sin persistir el JSON que acaba de retener.
+    exigirSalidaPublicable(limpiarBloqueComercial(limpiarTexto(textoRespuesta)));
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
 
     const orden = turnoCatering ? null : extraerOrden(textoRespuesta);
@@ -1270,6 +1276,10 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // Ningún ensamblador posterior puede reemplazar el cierre controlado de
     // catering con un resumen de pedido, precio o promesa del modelo.
     if (cateringListo) textoFinal = MENSAJE_CATERING_ENTREGADO;
+    // Los marcadores cerrados ya fueron consumidos por el protocolo legacy.
+    // Cualquier JSON, nombre de herramienta o marcador que sobreviva en el
+    // texto FINAL es una fuga, incluso con `stop_reason=end_turn`.
+    textoFinal = exigirSalidaPublicable(textoFinal);
     if (sesionComercial && perfilComercial === 'catering') {
       // Aunque el modelo rompa el prompt con un marcador de pedido, el canal
       // no lo registra. Tampoco puede quedar un preview confirmable escondido
@@ -1345,9 +1355,10 @@ export async function simularMensaje(sessionId, mensajeUsuario, negocioId) {
       messages: session.mensajes,
     });
     const textoRespuesta = textoCompletoDeRespuesta(respuesta);
+    const textoVisible = exigirSalidaPublicable(limpiarTexto(textoRespuesta));
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
     return {
-      texto: limpiarTexto(textoRespuesta),
+      texto: textoVisible,
       ordenDetectada: !!extraerOrden(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       sessionId,
@@ -1389,7 +1400,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
     resultadoStream = await consumirStreamCompleto(stream, {
       signal,
       onTextoSeguro: async (crudo) => {
-        const visible = limpiarTexto(crudo);
+        const visible = exigirSalidaPublicable(limpiarTexto(crudo));
         if (visible && visible.trim()) await onFrase(visible.trim());
       },
     });
@@ -1411,7 +1422,7 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
   agregarMensaje(sessionId, 'assistant', textoCompleto);
 
   return {
-    texto: limpiarTexto(textoCompleto),
+    texto: exigirSalidaPublicable(limpiarTexto(textoCompleto)),
     orden: extraerOrden(textoCompleto),
     factura: extraerFactura(textoCompleto),
     escalar: textoCompleto.includes('<ESCALAR_A_HUMANO>'),

@@ -17,6 +17,19 @@ const HORAS_EN_PALABRAS = Object.freeze({
   veintiuna: 21, veintiuno: 21, veintidos: 22, veintitres: 23, veinticuatro: 24,
 });
 
+const MESES_NUMERO = Object.freeze({
+  enero: 1, ene: 1, febrero: 2, feb: 2, marzo: 3, mar: 3,
+  abril: 4, abr: 4, mayo: 5, may: 5, junio: 6, jun: 6,
+  julio: 7, jul: 7, agosto: 8, ago: 8,
+  septiembre: 9, setiembre: 9, sept: 9, sep: 9,
+  octubre: 10, oct: 10, noviembre: 11, nov: 11, diciembre: 12, dic: 12,
+});
+
+const DIA_SEMANA_NUMERO = Object.freeze({
+  domingo: 0, lunes: 1, martes: 2, miercoles: 3,
+  jueves: 4, viernes: 5, sabado: 6,
+});
+
 const primeraCoincidencia = (texto, patrones) => {
   for (const patron of patrones) {
     const coincidencia = patron.exec(texto);
@@ -39,6 +52,42 @@ const fechaCalendarioSegura = (valor) => {
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12));
   return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1
     && d.getUTCDate() === +m[3] ? s : null;
+};
+
+const fechaDesdePartes = (anio, mes, dia) => {
+  const y = Number(anio);
+  const m = Number(mes);
+  const d = Number(dia);
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return null;
+  const candidata = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return fechaCalendarioSegura(candidata);
+};
+
+const sumarDiasCalendario = (fecha, dias) => {
+  const segura = fechaCalendarioSegura(fecha);
+  if (!segura || !Number.isInteger(dias)) return null;
+  const [y, m, d] = segura.split('-').map(Number);
+  const resultado = new Date(Date.UTC(y, m - 1, d + dias, 12));
+  return fechaDesdePartes(resultado.getUTCFullYear(), resultado.getUTCMonth() + 1, resultado.getUTCDate());
+};
+
+const fechaSinAnioDesdeAncla = (mes, dia, fechaAncla) => {
+  const ancla = fechaCalendarioSegura(fechaAncla);
+  if (!ancla) return null;
+  const anio = Number(ancla.slice(0, 4));
+  const esteAnio = fechaDesdePartes(anio, mes, dia);
+  if (esteAnio && esteAnio >= ancla) return esteAnio;
+  return fechaDesdePartes(anio + 1, mes, dia);
+};
+
+const diaDelMesDesdeAncla = (dia, fechaAncla) => {
+  const ancla = fechaCalendarioSegura(fechaAncla);
+  if (!ancla) return null;
+  const [anio, mes] = ancla.split('-').map(Number);
+  const esteMes = fechaDesdePartes(anio, mes, dia);
+  if (esteMes && esteMes >= ancla) return esteMes;
+  const siguiente = new Date(Date.UTC(anio, mes, 1, 12));
+  return fechaDesdePartes(siguiente.getUTCFullYear(), siguiente.getUTCMonth() + 1, dia);
 };
 
 const horaValidadaSegura = (valor) => {
@@ -71,35 +120,214 @@ const extraerReferencias = (t) => {
     /\bpasado\s+manana\b/,
     new RegExp(`\\bproxim[oa]\\s+(?:semana|${DIAS})\\b`),
     /\bmanana\b/,
+    /\bhoy\b/,
+    /\bahora\b/,
+    /\blo\s+antes\s+posible\b/,
     new RegExp(`\\b(?:(?:para\\s+)?(?:este|el)\\s+)?${DIAS}(?:\\s+que\\s+viene)?\\b`),
     /\b(?:para\s+)?el\s+(?:[1-9]|[12]\d|3[01])\b/,
   ]);
   return { fecha, hora };
 };
 
+const PATRONES_FECHA = Object.freeze([
+  '\\b(?:19|20)\\d{2}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\\d|3[01])\\b',
+  '\\b(?:0?[1-9]|[12]\\d|3[01])[\\/-](?:0?[1-9]|1[0-2])[\\/-](?:\\d{2}|(?:19|20)\\d{2})\\b',
+  '\\b(?:0?[1-9]|[12]\\d|3[01])\\/(?:0?[1-9]|1[0-2])\\b',
+  `\\b(?:para\\s+)?(?:el\\s+)?(?:[1-9]|[12]\\d|3[01])\\s+(?:de\\s+)?${MESES}`
+    + '\\.?(?:\\s+(?:de\\s+)?(?:19|20)\\d{2})?\\b',
+  '\\bpasado\\s+manana\\b',
+  `\\bproxim[oa]\\s+(?:semana|${DIAS})\\b`,
+  '\\bmanana\\b',
+  '\\bhoy\\b',
+  `\\b(?:(?:para\\s+)?(?:este|el)\\s+)?${DIAS}(?:\\s+que\\s+viene)?\\b`,
+  '\\b(?:para\\s+)?el\\s+(?:[1-9]|[12]\\d|3[01])\\b',
+]);
+
+const PATRONES_HORA = Object.freeze([
+  `\\ba\\s+las?\\s+(?:${HORA_NUMERICA}|${HORA_EN_PALABRAS}`
+    + `(?:\\s+y\\s+(?:media|cuarto))?|mediodia|medianoche)${CALIFICADOR_HORA}\\b`,
+  '\\b(?:por|en)\\s+la\\s+(?:manana|tarde|noche)\\b',
+  '\\b(?:[01]?\\d|2[0-3]):[0-5]\\d(?:\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?))?\\b',
+  '\\b(?:[01]?\\d|2[0-3])\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?)\\b',
+  '\\b(?:[01]?\\d|2[0-3])\\s+de\\s+la\\s+(?:manana|tarde|noche)\\b',
+  `\\b${HORA_EN_PALABRAS}(?:\\s+y\\s+(?:media|cuarto))?`
+    + '\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?|de\\s+la\\s+(?:manana|tarde|noche))\\b',
+]);
+
+const coincidenciasTemporales = (texto, patrones) => {
+  const todas = [];
+  for (const fuente of patrones) {
+    for (const coincidencia of texto.matchAll(new RegExp(fuente, 'g'))) {
+      const valor = coincidencia[0]?.trim().replace(/[.!?,;:]+$/, '');
+      if (!valor) continue;
+      todas.push({
+        valor,
+        inicio: coincidencia.index,
+        fin: coincidencia.index + coincidencia[0].length,
+      });
+    }
+  }
+  // Los patrones intencionalmente se solapan: «pasado mañana» también
+  // contiene «mañana», y «a las 10 am» contiene «10 am». Conservamos el
+  // fragmento más largo que empieza antes para que una sola evidencia nunca
+  // parezca una alternativa.
+  todas.sort((a, b) => a.inicio - b.inicio || (b.fin - b.inicio) - (a.fin - a.inicio));
+  const elegidas = [];
+  for (const candidata of todas) {
+    if (elegidas.some((actual) => candidata.inicio < actual.fin && candidata.fin > actual.inicio)) continue;
+    elegidas.push(candidata);
+  }
+  return elegidas;
+};
+
+const distintas = (coincidencias) => {
+  const vistas = new Set();
+  return coincidencias.filter(({ valor }) => {
+    const clave = normalizar(valor).replace(/\s+/g, ' ').trim();
+    if (vistas.has(clave)) return false;
+    vistas.add(clave);
+    return true;
+  });
+};
+
+const destinoInmediatoEn = (texto) => {
+  const t = texto.trim();
+  return /\b(?:para|mejor|prefiero|seria|hazlo|dejalo|cambialo|muevelo|pasalo|ponlo)\s+(?:para\s+)?(?:hoy|ahora)\b/.test(t)
+    || /\blo\s+quiero\s+(?:para\s+)?(?:hoy|ahora)\b/.test(t)
+    || /\bquiero\s+que\s+sea\s+(?:para\s+)?(?:hoy|ahora)\b/.test(t)
+    || /\blo\s+antes\s+posible\b/.test(t)
+    || /^(?:hoy|ahora)[.!]?\s*$/.test(t);
+};
+
+const rangoHorarioEn = (texto) => {
+  const marcaHora = `(?:${HORA_NUMERICA}|${HORA_EN_PALABRAS}`
+    + `(?:\\s+y\\s+(?:media|cuarto))?)${CALIFICADOR_HORA}`;
+  return new RegExp(`\\b(?:entre\\s+(?:las?\\s+)?${marcaHora}`
+    + `\\s+(?:y|o|u)\\s+(?:las?\\s+)?${marcaHora}`
+    + `|de\\s+(?:las?\\s+)?${marcaHora}\\s+(?:a|hasta)\\s+(?:las?\\s+)?${marcaHora}`
+    + `|a\\s+las?\\s+${marcaHora}\\s+(?:o|u)\\s+(?:a\\s+las?\\s+)?${marcaHora})\\b`).test(texto);
+};
+
+const referenciasCrudas = (texto) => {
+  const horas = distintas(coincidenciasTemporales(texto, PATRONES_HORA));
+  // «por la mañana» es una hora aproximada, no una segunda fecha. El mismo
+  // descarte se aplica a cualquier solapamiento entre los dos vocabularios.
+  const fechas = distintas(coincidenciasTemporales(texto, PATRONES_FECHA)
+    .filter((fecha) => !horas.some((hora) => fecha.inicio < hora.fin && fecha.fin > hora.inicio)));
+  const respaldo = extraerReferencias(texto);
+  if (!fechas.length && respaldo.fecha
+      && !/^(?:ahora|lo antes posible)$/.test(respaldo.fecha)) {
+    fechas.push({ valor: respaldo.fecha, inicio: -1, fin: -1 });
+  }
+  if (!horas.length && respaldo.hora) {
+    horas.push({ valor: respaldo.hora, inicio: -1, fin: -1 });
+  }
+  return {
+    fechas,
+    horas,
+    ambiguaFecha: fechas.length > 1,
+    ambiguaHora: horas.length > 1 || rangoHorarioEn(texto),
+    inmediato: destinoInmediatoEn(texto),
+    correccion: false,
+  };
+};
+
+const ultimaFronteraDeCorreccion = (texto) => {
+  const fronteras = [];
+  const agregar = (patron, modo, desplazarAlFinal = true) => {
+    for (const coincidencia of texto.matchAll(patron)) {
+      fronteras.push({
+        inicio: coincidencia.index,
+        fin: desplazarAlFinal
+          ? coincidencia.index + coincidencia[0].length
+          : coincidencia.index,
+        modo,
+      });
+    }
+  };
+  agregar(/\b(?:mejor|prefiero|cambia(?:lo)?|mueve(?:lo)?|pasalo|dejalo|ponlo|perdon|digo|corrijo|quise\s+decir|mas\s+bien|en\s+realidad|sino)\b/g, 'reemplaza');
+  // «viernes, no, sábado» y «viernes no; sábado» afirman lo que sigue.
+  agregar(/(?:,\s*)?\bno\b\s*[,;]\s*/g, 'reemplaza');
+  // «viernes, no sábado» niega solo el segundo candidato: conserva el tramo
+  // anterior y nunca elige silenciosamente la referencia negada.
+  agregar(/[,;]\s*\bno\b(?!\s*[,;])\s+/g, 'niega_sufijo', false);
+  // Forma inicial: «no viernes, sábado». La coma cierra lo rechazado.
+  const inicial = /^\s*no\b[^,;]{1,120}([,;]\s*)/.exec(texto);
+  if (inicial) {
+    const fin = inicial.index + inicial[0].length;
+    fronteras.push({ inicio: 0, fin, modo: 'reemplaza' });
+  }
+  return fronteras.sort((a, b) => a.inicio - b.inicio || a.fin - b.fin).at(-1) || null;
+};
+
+const resolverReferencias = (texto, profundidad = 0) => {
+  if (profundidad > 8) return referenciasCrudas(texto);
+  const frontera = ultimaFronteraDeCorreccion(texto);
+  if (!frontera) return referenciasCrudas(texto);
+
+  const anteriores = resolverReferencias(texto.slice(0, frontera.inicio), profundidad + 1);
+  if (frontera.modo === 'niega_sufijo') {
+    return { ...anteriores, correccion: true };
+  }
+
+  const posteriores = resolverReferencias(texto.slice(frontera.fin), profundidad + 1);
+  const posteriorDefineFecha = posteriores.fechas.length > 0
+    || posteriores.ambiguaFecha || posteriores.inmediato;
+  const posteriorDefineHora = posteriores.horas.length > 0 || posteriores.ambiguaHora;
+  return {
+    fechas: posteriorDefineFecha ? posteriores.fechas : anteriores.fechas,
+    horas: posteriorDefineHora ? posteriores.horas : anteriores.horas,
+    ambiguaFecha: posteriorDefineFecha ? posteriores.ambiguaFecha : anteriores.ambiguaFecha,
+    ambiguaHora: posteriorDefineHora ? posteriores.ambiguaHora : anteriores.ambiguaHora,
+    inmediato: posteriorDefineFecha ? posteriores.inmediato : anteriores.inmediato,
+    correccion: true,
+  };
+};
+
+/**
+ * Resuelve correcciones solo cuando el texto deja un candidato afirmado.
+ * Alternativas, rangos y contradicciones quedan explícitamente ambiguos para
+ * que el canal invalide la reserva anterior y pida precisión.
+ */
+export function analizarReferenciasTemporalesDePedido(texto) {
+  const t = normalizar(texto).replace(/\s+/g, ' ').trim().slice(0, 1000);
+  if (!t) {
+    return {
+      fecha: null, hora: null, ambiguaFecha: false, ambiguaHora: false,
+      objetivoInmediato: false, correccion: false, tieneReferenciaTemporal: false,
+    };
+  }
+  const crudas = referenciasCrudas(t);
+  const resueltas = resolverReferencias(t);
+  const ambiguaFecha = resueltas.ambiguaFecha || resueltas.fechas.length > 1;
+  const ambiguaHora = resueltas.ambiguaHora || resueltas.horas.length > 1;
+  const fecha = ambiguaFecha ? null : resueltas.fechas[0]?.valor || null;
+  const hora = ambiguaHora ? null : resueltas.horas[0]?.valor || null;
+  const objetivoInmediato = !ambiguaFecha
+    && (resueltas.inmediato || /\bhoy\b/.test(fecha || ''));
+  return {
+    fecha,
+    hora,
+    ambiguaFecha,
+    ambiguaHora,
+    objetivoInmediato,
+    correccion: resueltas.correccion,
+    tieneReferenciaTemporal: crudas.fechas.length > 0 || crudas.horas.length > 0
+      || crudas.inmediato || crudas.ambiguaFecha || crudas.ambiguaHora,
+  };
+}
+
 /**
  * Extrae únicamente fragmentos temporales de una lista cerrada.
  *
  * Nunca conserva la frase completa: nombre, teléfono, dirección, notas y
- * cualquier otra palabra quedan fuera del estado durable. Tampoco convierte
- * «mañana» a una fecha; esa interpretación sigue siendo trabajo del modelo y
- * `programar_para` la somete después a la política dura del negocio.
+ * cualquier otra palabra quedan fuera del estado durable. Aquí aún no se
+ * convierte «mañana»: `fechasExactasDePedido` lo liga después al ancla local
+ * guardada, sin aceptar una reinterpretación de los argumentos del modelo.
  */
 export function referenciasTemporalesDePedido(texto) {
-  const t = normalizar(texto).replace(/\s+/g, ' ').trim().slice(0, 1000);
-  if (!t) return { fecha: null, hora: null };
-  const total = extraerReferencias(t);
-  // En «ya no mañana, mejor el viernes», lo que autoriza es el tramo de la
-  // corrección. Si ese tramo solo cambia la hora («mañana, mejor a las 11»),
-  // la fecha anterior de la misma frase sigue siendo útil.
-  const senales = [...t.matchAll(/\b(?:mejor|prefiero|cambia(?:lo)?|mueve(?:lo)?|pasalo|dejalo|ponlo)\b/g)];
-  const ultima = senales.at(-1);
-  if (!ultima) return total;
-  const corregida = extraerReferencias(t.slice(ultima.index));
-  return {
-    fecha: corregida.fecha || total.fecha,
-    hora: corregida.hora || total.hora,
-  };
+  const analisis = analizarReferenciasTemporalesDePedido(texto);
+  return { fecha: analisis.fecha, hora: analisis.hora };
 }
 
 /**
@@ -140,8 +368,10 @@ export function horasExactasDePedido(texto) {
   if (hora === 24) hora = 0;
   const esAM = /\ba\.?\s*m\.?\b|\bde\s+la\s+manana\b/.test(fragmento);
   const esPM = /\bp\.?\s*m\.?\b|\bde\s+la\s+(?:tarde|noche)\b/.test(fragmento);
+  const esDoceDeLaNoche = hora === 12 && /\bde\s+la\s+noche\b/.test(fragmento);
   let candidatas;
-  if (esAM) candidatas = [hora === 12 ? 0 : hora];
+  if (esDoceDeLaNoche) candidatas = [0];
+  else if (esAM) candidatas = [hora === 12 ? 0 : hora];
   else if (esPM) candidatas = [hora < 12 ? hora + 12 : hora];
   else if (hora > 12 || hora === 0) candidatas = [hora];
   else candidatas = hora === 12 ? [0, 12] : [hora, hora + 12];
@@ -149,6 +379,79 @@ export function horasExactasDePedido(texto) {
   return [...new Set(candidatas)]
     .filter((h) => h >= 0 && h <= 23)
     .map((h) => `${String(h).padStart(2, '0')}:${String(minutos).padStart(2, '0')}`);
+}
+
+/**
+ * Fechas de calendario que autoriza literalmente una referencia del cliente.
+ *
+ * La conversión es deliberadamente cerrada: una fecha ISO, una fecha con mes,
+ * hoy/mañana/pasado mañana, un día de semana o un día de mes. Todas las formas
+ * relativas usan la fecha local guardada cuando el cliente las dijo. Frases
+ * que nombran un intervalo (por ejemplo «la próxima semana») no eligen un día
+ * y por tanto devuelven una lista vacía.
+ */
+export function fechasExactasDePedido(texto, { fechaAncla = null } = {}) {
+  const t = normalizar(texto).replace(/\s+/g, ' ').trim();
+  const fragmento = referenciasTemporalesDePedido(t).fecha;
+  if (!fragmento) return [];
+
+  if (/\bproxim[oa]\s+semana\b/.test(fragmento)) return [];
+
+  let m = /\b((?:19|20)\d{2})-(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])\b/.exec(fragmento);
+  if (m) {
+    const fecha = fechaDesdePartes(m[1], m[2], m[3]);
+    return fecha ? [fecha] : [];
+  }
+
+  m = /\b(0?[1-9]|[12]\d|3[01])[\/-](0?[1-9]|1[0-2])[\/-](\d{2}|(?:19|20)\d{2})\b/.exec(fragmento);
+  if (m) {
+    const anio = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    const fecha = fechaDesdePartes(anio, m[2], m[1]);
+    return fecha ? [fecha] : [];
+  }
+
+  m = /\b(0?[1-9]|[12]\d|3[01])\/(0?[1-9]|1[0-2])\b/.exec(fragmento);
+  if (m) {
+    const fecha = fechaSinAnioDesdeAncla(Number(m[2]), Number(m[1]), fechaAncla);
+    return fecha ? [fecha] : [];
+  }
+
+  m = new RegExp(`\\b([1-9]|[12]\\d|3[01])\\s+(?:de\\s+)?(${Object.keys(MESES_NUMERO).join('|')})`
+    + `\\.?(?:\\s+(?:de\\s+)?((?:19|20)\\d{2}))?\\b`).exec(fragmento);
+  if (m) {
+    const fecha = m[3]
+      ? fechaDesdePartes(Number(m[3]), MESES_NUMERO[m[2]], Number(m[1]))
+      : fechaSinAnioDesdeAncla(MESES_NUMERO[m[2]], Number(m[1]), fechaAncla);
+    return fecha ? [fecha] : [];
+  }
+
+  const ancla = fechaCalendarioSegura(fechaAncla);
+  if (/\bpasado\s+manana\b/.test(fragmento)) {
+    const fecha = sumarDiasCalendario(ancla, 2);
+    return fecha ? [fecha] : [];
+  }
+  if (/\bmanana\b/.test(fragmento)) {
+    const fecha = sumarDiasCalendario(ancla, 1);
+    return fecha ? [fecha] : [];
+  }
+  if (/\bhoy\b/.test(fragmento)) return ancla ? [ancla] : [];
+
+  m = new RegExp(`\\b(${Object.keys(DIA_SEMANA_NUMERO).join('|')})\\b`).exec(fragmento);
+  if (m && ancla) {
+    const [y, mes, d] = ancla.split('-').map(Number);
+    const actual = new Date(Date.UTC(y, mes - 1, d, 12)).getUTCDay();
+    let diferencia = (DIA_SEMANA_NUMERO[m[1]] - actual + 7) % 7;
+    if (diferencia === 0 && /\b(?:proxim[oa]|que\s+viene)\b/.test(fragmento)) diferencia = 7;
+    const fecha = sumarDiasCalendario(ancla, diferencia);
+    return fecha ? [fecha] : [];
+  }
+
+  m = /\b(?:para\s+)?el\s+([1-9]|[12]\d|3[01])\b/.exec(fragmento);
+  if (m) {
+    const fecha = diaDelMesDesdeAncla(Number(m[1]), ancla);
+    return fecha ? [fecha] : [];
+  }
+  return [];
 }
 
 /** Solo deja entrar al estado la forma cerrada que Xabor sabe volver a leer. */
@@ -338,8 +641,14 @@ export function esSolicitudDePedidoProgramado(texto, {
     && (nominalAntes.test(t) || nominalDespues.test(t));
   const pedido = accionDePedido || (deseo && !consultaInformativa) || pedidoNominal;
   const soloTiempo = /^(?:para\s+)?(?:el\s+)?(?:manana|pasado manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|(?:19|20)\d{2}-\d{1,2}-\d{1,2}|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?|\d{1,2}\s+(?:de\s+)?(?:enero|ene|febrero|feb|marzo|mar|abril|abr|mayo|may|junio|jun|julio|jul|agosto|ago|septiembre|setiembre|sept|sep|octubre|oct|noviembre|nov|diciembre|dic)\.?(?:\s+(?:de\s+)?\d{4})?|\d{1,2})(?:\s+(?:a\s+las?\s+[\w:.]+|por\s+la\s+(?:manana|tarde|noche)))?(?:\s+por\s+favor)?[.!]?$/;
-  return pedido || (hayPedidoEnCurso && !consultaInformativa
+  const detectada = pedido || (hayPedidoEnCurso && !consultaInformativa
     && (continuacionTemporal || soloTiempo.test(t)));
+  if (!detectada) return false;
+  // La intención futura sí existe, pero una alternativa no autoriza llamar a
+  // `programar_para`. El canal la conserva como pendiente para preguntar; un
+  // caller directo queda rechazado antes de que argumentos del modelo elijan.
+  const temporal = analizarReferenciasTemporalesDePedido(t);
+  return !temporal.ambiguaFecha && !temporal.ambiguaHora;
 }
 
 /** El cliente no solo menciona una fecha: corrige la que ya estaba fijada. */

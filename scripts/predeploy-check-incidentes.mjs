@@ -16,15 +16,17 @@ import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import {
   aplicarRespuestaDeConfirmacion, aplicarSalidaSeguraDeCatering, confirmarYEmitir,
   consumirCancelacionCatering, marcarProgramacionRequerida, prepararEstadoCatering,
-  TEXTO_CATERING_CANCELADO,
+  resultadoDelCanalAgente, TEXTO_CATERING_CANCELADO,
 } from '../src/mesero-agente/canalDelAgente.js';
 import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
 import {
   diagnosticarRespuestaTruncada, RespuestaModeloTruncadaError, textoCompletoDeRespuesta,
 } from '../src/agent/respuestaTruncada.js';
-import { detectarSalidaInterna } from '../src/mesero-agente/salidaPublicable.js';
 import {
-  esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
+  detectarSalidaInterna, exigirSalidaPublicable,
+} from '../src/mesero-agente/salidaPublicable.js';
+import {
+  esSolicitudDePedidoProgramado, horasExactasDePedido, respuestaAfirmaCambioSinAplicar,
 } from '../src/mesero-agente/seguridadConversacional.js';
 import { esPagoPorEnlace } from '../src/orders/pagoPorEnlace.js';
 import {
@@ -94,6 +96,9 @@ assert.equal(detectarSalidaInterna('Usa {sin cebolla}'), null,
   'el cortafuegos confundió una indicación humana entre llaves con JSON');
 assert.equal(detectarSalidaInterna('El costo usa {subtotal} como referencia.'), null,
   'el cortafuegos confundió un marcador de prosa sin dos puntos con JSON');
+assert.throws(() => exigirSalidaPublicable('Claro. {"producto_id":"secret-123"'),
+  /salida_interna_no_publicable/,
+  'la puerta compartida dejó pasar JSON parcial con end_turn');
 
 const catalogoFuga = [{ id: 1, nombre: 'Desayunos', productos: [{
   id: 90, nombre: 'Waffle', precio: 100, disponible: true, modificadores: [],
@@ -156,6 +161,9 @@ assert.equal(handoffsFugaParcial, 1,
   'un JSON parcial con end_turn no produjo exactamente un handoff');
 assert.doesNotMatch(salidaFugaParcial.texto, /producto_id|secret-123/i,
   'un argumento JSON parcial llegó a la respuesta pública');
+assert.equal(resultadoDelCanalAgente({
+  texto: 'te paso con alguien', handoffPendiente: true,
+}).ok, false, 'el canal declaró atendido un handoff no confirmado');
 
 const fuenteBrain = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8');
 const bloquePrincipalBrain = fuenteBrain.slice(
@@ -165,6 +173,15 @@ const posicionValidaRespuesta = bloquePrincipalBrain.indexOf('textoCompletoDeRes
 assert.ok(posicionValidaRespuesta >= 0
   && posicionValidaRespuesta < bloquePrincipalBrain.indexOf('extraerOrden(textoRespuesta)'),
   'el bot legacy volvió a interpretar la orden antes de validar stop_reason');
+const posicionCortafuegosTemprano = bloquePrincipalBrain.indexOf(
+  'exigirSalidaPublicable(limpiarBloqueComercial(limpiarTexto(textoRespuesta)))');
+assert.ok(posicionCortafuegosTemprano > posicionValidaRespuesta
+  && posicionCortafuegosTemprano < bloquePrincipalBrain.indexOf("agregarMensaje(sessionId, 'assistant'"),
+  'el bot legacy guarda JSON residual en el historial antes de retenerlo');
+assert.ok(posicionCortafuegosTemprano < bloquePrincipalBrain.indexOf('extraerOrden(textoRespuesta)'),
+  'el bot legacy ejecuta efectos antes de retener JSON residual');
+assert.match(bloquePrincipalBrain, /textoFinal\s*=\s*exigirSalidaPublicable\(textoFinal\)/,
+  'el bot legacy no aplica el cortafuegos al texto final que publica');
 
 // Conversación terminada en 7753: el agente prometió un envío para mañana y
 // dijo «apunto» sin haber aplicado ninguna herramienta.
@@ -269,6 +286,21 @@ assert.equal(horaCambiada.aplicado, false,
   'el modelo sustituyó por su cuenta la hora literal del cliente');
 assert.match(horaCambiada.motivo, /hora_no_coincide_con_cliente/);
 
+const estadoFechaCambiada = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-fecha-cambiada',
+});
+const mensajeFechaCambiada = 'quiero pedir el 2 de enero de 2099 a las 10 am';
+assert.equal(marcarProgramacionRequerida(
+  estadoFechaCambiada, mensajeFechaCambiada,
+  { fechaHoy: '2026-09-23' }), true);
+const fechaCambiada = await crearEjecutor({
+  estado: estadoFechaCambiada, mensaje: mensajeFechaCambiada,
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+}).ejecutar('programar_para', { fecha: '2099-01-03', hora: '10:00' });
+assert.equal(fechaCambiada.aplicado, false,
+  'el modelo sustituyó por su cuenta la fecha literal del cliente');
+assert.match(fechaCambiada.motivo, /fecha_no_coincide_con_cliente/);
+
 const estadoFranja = estadoNuevo({
   negocioId: 'gate-programado', conversacionId: 'gate-franja-inexacta',
 });
@@ -319,6 +351,55 @@ const alternativaSinCliente = await ejecutorAlternativa.ejecutar('programar_para
 assert.equal(alternativaSinCliente.aplicado, false,
   'el modelo eligió otra fecha después del rechazo sin mensaje nuevo');
 assert.match(alternativaSinCliente.motivo, /programacion_alternativa_sin_cliente/);
+
+const fechaAmbiguaGate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+const estadoHoraAmbigua = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-hora-ambigua',
+});
+const mensajeHoraAmbigua = `quiero pedir el ${fechaAmbiguaGate} a las 8`;
+assert.equal(marcarProgramacionRequerida(
+  estadoHoraAmbigua, mensajeHoraAmbigua, { fechaHoy: '2026-09-23' }), true);
+const horariosTodoElDia = Object.fromEntries([
+  'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
+].map((dia) => [dia, { abierto: true, apertura: '00:00', cierre: '23:59' }]));
+const horaAmbigua = await crearEjecutor({
+  estado: estadoHoraAmbigua, mensaje: mensajeHoraAmbigua,
+  catalogo: [], precios: {}, zonaDelNegocio: 'UTC',
+  reglas: { horarios: horariosTodoElDia, pedidos: { tiempo_preparacion_minutos: 25 } },
+  configTienda: { aceptaProgramados: true },
+}).ejecutar('programar_para', { fecha: fechaAmbiguaGate, hora: '20:00' });
+assert.equal(horaAmbigua.aplicado, false,
+  'una hora con dos lecturas válidas no obligó a preguntar AM/PM');
+assert.match(horaAmbigua.motivo, /hora_ambigua_cliente/);
+assert.deepEqual(horasExactasDePedido('a las doce de la noche'), ['00:00'],
+  'doce de la noche volvió a interpretarse como mediodía');
+
+const estadoSemanaVaga = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-semana-vaga',
+});
+const mensajeSemanaVaga = 'quiero pedir la próxima semana a las 10 am';
+assert.equal(marcarProgramacionRequerida(
+  estadoSemanaVaga, mensajeSemanaVaga, { fechaHoy: '2026-09-23' }), true);
+const diaInventadoDeSemana = await crearEjecutor({
+  estado: estadoSemanaVaga, mensaje: mensajeSemanaVaga,
+  catalogo: [], precios: {}, zonaDelNegocio: 'UTC',
+}).ejecutar('programar_para', { fecha: fechaAmbiguaGate, hora: '10:00' });
+assert.equal(diaInventadoDeSemana.aplicado, false,
+  'una semana vaga autorizó al modelo a elegir un día');
+assert.match(diaInventadoDeSemana.motivo, /no identifica un día exacto/);
+
+const estadoVuelveInmediato = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-vuelve-inmediato',
+});
+estadoVuelveInmediato.programacionRequerida = true;
+estadoVuelveInmediato.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+assert.equal(marcarProgramacionRequerida(
+  estadoVuelveInmediato, 'ya no mañana, mejor hoy',
+  { fechaHoy: '2026-09-24' }), false,
+'una corrección a hoy revivió la fecha negada');
+assert.equal(estadoVuelveInmediato.programacionRequerida, false);
+assert.equal(estadoVuelveInmediato.referenciaProgramacion, null);
+assert.equal(estadoVuelveInmediato.carrito.datos.programado_para, undefined);
 
 // Pedidos recibidos después del cierre: el corte ocurre antes del modelo, la
 // tienda solo se ofrece si está publicada y admite pedidos programados, y los
@@ -753,8 +834,14 @@ assert.match(fuenteCanalWhatsApp, /motivo: 'CATERING_DATOS_LISTOS'/,
 assert.match(fuenteCanalWhatsApp, /cerrarSesionCatering\('catering_entregado_a_humano'\)/,
   'la ficha entregada dejó la sesión activa y volvería a interceptar al reanudar');
 assert.match(fuenteCanalWhatsApp,
-  /esErrorRespuestaTruncada\(error\)[\s\S]{0,300}motivo: 'RESPUESTA_TRUNCADA'/,
+  /esErrorRespuestaTruncada\(error\) \|\| esErrorSalidaInternaNoPublicable\(error\)[\s\S]{0,450}\? 'RESPUESTA_TRUNCADA'/,
   'WhatsApp dejó de pausar una respuesta max_tokens antes de publicar texto parcial');
+assert.match(fuenteCanalWhatsApp,
+  /\? 'RESPUESTA_TRUNCADA' : 'SALIDA_INTERNA_NO_PUBLICABLE'/,
+  'WhatsApp no pausa una salida interna retenida por el cortafuegos');
+assert.match(fuenteCanalWhatsApp,
+  /error\?\.codigo === 'AGENTE_HANDOFF_NO_CONFIRMADO'\) throw error/,
+  'WhatsApp afirma revisión aunque no confirmó la pausa durable');
 assert.equal(mensajePideMenu('Pásame la carta', ['me mandas el menu?']), true,
   'una frase básica dejó de activar el menú por tener frases personalizadas');
 

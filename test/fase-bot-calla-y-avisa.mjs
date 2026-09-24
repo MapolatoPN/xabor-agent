@@ -118,6 +118,8 @@ await t('8. no se avisa dos veces de la misma conversación', async () => {
   // leerlos y la alerta valdría cero.
   const otra = await cont.enviarARevision(NEG, TEL, 'ESCALADA_MODELO');
   assert.strictEqual(otra, false, 'ya estaba en revisión');
+  assert.strictEqual(await cont.revisionActiva(NEG, TEL), true,
+    'false por deduplicación se confundió con una pausa inexistente');
   assert.strictEqual(avisados.length, 1, 'no puede repetir el aviso');
 });
 
@@ -135,6 +137,7 @@ await t('10. sin datos suficientes no marca nada, y nunca lanza', async () => {
   assert.strictEqual(await cont.enviarARevision(null, TEL, 'X'), false);
   assert.strictEqual(await cont.enviarARevision(NEG, null, 'X'), false);
   assert.strictEqual(await cont.enviarARevision(NEG, TEL, null), false);
+  assert.strictEqual(await cont.revisionActiva(null, TEL), false);
 });
 
 await t('11. el equipo puede devolverla al bot', async () => {

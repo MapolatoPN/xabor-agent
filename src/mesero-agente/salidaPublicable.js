@@ -177,3 +177,20 @@ export function detectarSalidaInterna(texto = '') {
   if (entradaInterna) return { clase: 'entrada_herramienta', token: entradaInterna };
   return null;
 }
+
+export class SalidaInternaNoPublicableError extends Error {
+  constructor(hallazgo) {
+    super(`salida_interna_no_publicable:${hallazgo?.clase || 'desconocida'}`);
+    this.name = 'SalidaInternaNoPublicableError';
+    this.codigo = 'SALIDA_INTERNA_NO_PUBLICABLE';
+    this.hallazgo = hallazgo || null;
+  }
+}
+
+/** Última puerta compartida para cualquier texto que vaya a una persona. */
+export function exigirSalidaPublicable(texto) {
+  const visible = String(texto ?? '');
+  const hallazgo = detectarSalidaInterna(visible);
+  if (hallazgo) throw new SalidaInternaNoPublicableError(hallazgo);
+  return visible;
+}

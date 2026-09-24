@@ -25,6 +25,7 @@ import {
   reconciliarEmisionesOperacionalesPendientes,
   reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
+import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -8865,7 +8866,7 @@ async function activarPedidosProgramados() {
       // Defensa en profundidad. La consulta SQL ya excluye reservas que aun
       // esperan dinero, pero el scheduler nunca debe depender de una sola
       // barrera para no mandar a cocina un programado impagado.
-      if (pedido.estado === 'pendiente_pago' && pedido.pago_confirmado !== true) {
+      if (!puedeActivarsePedidoProgramado(pedido)) {
         console.warn(`[Scheduler] Pedido programado ${row.folio} sigue pendiente de pago — no se activa`);
         continue;
       }

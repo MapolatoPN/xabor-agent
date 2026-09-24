@@ -243,6 +243,37 @@ try {
     assert.strictEqual(contar(/Dame un momento/i), provAntes, 'mando provisional en una respuesta rapida');
   });
 
+  await t('J. JSON interno con end_turn se retiene, limpia del historial y pausa', async () => {
+    await drenar();
+    const antes = salientes().length;
+    modoBrain = { tipo: 'ok', demoraMs: 0, texto: 'Claro. {"producto_id":"secret-123"}' };
+    await enviarWebhook('quiero hacer un pedido');
+    const pausada = await esperarHasta(async () => {
+      const { rows: [fila] } = await pool.query(
+        `SELECT requiere_revision, motivo FROM whatsapp_conversaciones
+          WHERE negocio_id=$1 AND telefono=$2`, [NEG, TEL]);
+      return fila?.requiere_revision === true
+        && fila?.motivo === 'SALIDA_INTERNA_NO_PUBLICABLE';
+    }, { timeoutMs: 15000 });
+    assert.ok(pausada, `la fuga no pausó la conversación: ${srv.obtenerSalida().slice(-1200)}`);
+    const terminada = await esperarHasta(async () => {
+      const { rows: [fila] } = await pool.query(
+        `SELECT estado FROM whatsapp_entradas
+          WHERE negocio_id=$1 AND telefono=$2 ORDER BY id DESC LIMIT 1`, [NEG, TEL]);
+      return fila?.estado === 'completado';
+    }, { timeoutMs: 5000 });
+    assert.ok(terminada, 'continuidad no cerró el checkpoint retenido');
+    await esperar(500);
+    const nuevos = salientes().slice(antes);
+    assert.deepStrictEqual(nuevos, [], `el canal habló después de retener la fuga: ${JSON.stringify(nuevos)}`);
+    const { rows: [sesion] } = await pool.query(
+      `SELECT estado FROM conversacion_estado
+        WHERE negocio_id=$1 AND session_id=$2`, [NEG, `meta-${NEG}-${TEL}`]);
+    assert.ok(sesion?.estado, 'no se persistió el checkpoint limpio');
+    assert.doesNotMatch(JSON.stringify(sesion.estado), /secret-123|producto_id/,
+      'la salida interna quedó en el historial durable');
+  });
+
 } catch (e) {
   console.error('ERROR FATAL:', e.stack || e);
   fallidas++; fallos.push('ERROR FATAL: ' + e.message);

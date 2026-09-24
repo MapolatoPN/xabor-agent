@@ -12,9 +12,11 @@ import { quitarBloquesCerrados } from '../src/agent/marcadoresTruncados.js';
 import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import {
-  aplicarSalidaSeguraDeCatering, desenlaceDelTurno,
+  aplicarSalidaSeguraDeCatering, desenlaceDelTurno, resultadoDelCanalAgente,
 } from '../src/mesero-agente/canalDelAgente.js';
-import { detectarSalidaInterna } from '../src/mesero-agente/salidaPublicable.js';
+import {
+  detectarSalidaInterna, exigirSalidaPublicable, SalidaInternaNoPublicableError,
+} from '../src/mesero-agente/salidaPublicable.js';
 
 let pasadas = 0;
 const probar = (nombre, fn) => {
@@ -168,6 +170,38 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
   assert.equal(detectarSalidaInterna('Nombre: Mario'), null);
 });
 
+probar('la puerta compartida también bloquea JSON residual del bot legacy', () => {
+  for (const texto of [
+    'Claro. {"producto_id":"secret-123"',
+    'Claro. {"producto_id":"secret-123"}',
+    'Voy a llamar confirmar_pedido para ayudarte.',
+  ]) {
+    assert.throws(
+      () => exigirSalidaPublicable(texto),
+      (error) => error instanceof SalidaInternaNoPublicableError
+        && error.codigo === 'SALIDA_INTERNA_NO_PUBLICABLE',
+      texto,
+    );
+  }
+  assert.equal(exigirSalidaPublicable('Claro, ¿para qué día lo necesitas?'),
+    'Claro, ¿para qué día lo necesitas?');
+});
+
+probar('un handoff pendiente nunca se declara como turno atendido', () => {
+  const pendiente = resultadoDelCanalAgente({
+    texto: 'Permíteme un momento, te paso con alguien del equipo.',
+    handoffPendiente: true,
+  });
+  assert.equal(pendiente.ok, false);
+  assert.equal(resultadoDelCanalAgente({ handoffPendiente: false }).ok, true);
+
+  const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
+  assert.match(canal, /if\s*\(r\.ok\s*&&\s*r\.handoffPendiente\s*!==\s*true\)/,
+    'WhatsApp puede publicar antes de confirmar el handoff');
+  assert.match(canal, /AGENTE_HANDOFF_NO_CONFIRMADO/,
+    'WhatsApp no propaga un fallo durable de pausa a continuidad');
+});
+
 probar('brain valida todas las respuestas antes de guardar, parsear o ejecutar', () => {
   const brain = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');
 
@@ -194,18 +228,34 @@ probar('brain valida todas las respuestas antes de guardar, parsear o ejecutar',
   assert.ok(validaPrincipal < principal.indexOf("agregarMensaje(sessionId, 'assistant'", validaPrincipal));
   assert.ok(validaPrincipal < principal.indexOf('extraerOrden(textoRespuesta)', validaPrincipal));
   assert.match(principal, /instanceof RespuestaModeloTruncadaError\) throw e/);
+  const validaSalidaInterna = principal.indexOf('exigirSalidaPublicable(limpiarBloqueComercial(limpiarTexto(textoRespuesta)))');
+  assert.ok(validaSalidaInterna >= 0);
+  assert.ok(validaSalidaInterna < principal.indexOf("agregarMensaje(sessionId, 'assistant'"),
+    'el JSON residual llegó al historial antes del cortafuegos');
+  assert.ok(validaSalidaInterna < principal.indexOf('extraerOrden(textoRespuesta)'),
+    'el bot interpretó efectos antes del cortafuegos');
+  assert.match(principal, /textoFinal\s*=\s*exigirSalidaPublicable\(textoFinal\)/,
+    'el texto final del bot legacy no pasa por el cortafuegos compartido');
 
   const simulador = brain.slice(brain.indexOf('export async function simularMensaje'), brain.indexOf('// ─── Versión streaming'));
   const validaSimulador = simulador.indexOf('textoCompletoDeRespuesta(respuesta)');
   assert.ok(validaSimulador >= 0);
   assert.ok(validaSimulador < simulador.indexOf("agregarMensaje(sessionId, 'assistant'", validaSimulador));
   assert.ok(validaSimulador < simulador.indexOf('extraerOrden(textoRespuesta)', validaSimulador));
+  assert.match(simulador, /exigirSalidaPublicable\(limpiarTexto\(textoRespuesta\)\)/);
 
   const streaming = brain.slice(brain.indexOf('export async function procesarMensajeStream'), brain.indexOf('// ─── Detección de intents'));
   const consumeSeguro = streaming.indexOf('await consumirStreamCompleto(stream');
   assert.ok(consumeSeguro >= 0);
   assert.ok(consumeSeguro < streaming.indexOf("agregarMensaje(sessionId, 'assistant'"));
   assert.ok(consumeSeguro < streaming.indexOf('extraerOrden(textoCompleto)'));
+  assert.match(streaming, /exigirSalidaPublicable\(limpiarTexto\(crudo\)\)/);
+
+  const whatsapp = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
+  assert.match(whatsapp, /esErrorRespuestaTruncada\(error\)\s*\|\|\s*esErrorSalidaInternaNoPublicable\(error\)/,
+    'WhatsApp no convierte la salida interna en revisión humana');
+  assert.match(whatsapp, /error\?\.codigo\s*===\s*'AGENTE_HANDOFF_NO_CONFIRMADO'\)\s*throw error/,
+    'WhatsApp todavía promete revisión después de fallar la pausa durable');
 
   const helper = readFileSync(new URL('../src/agent/respuestaTruncada.js', import.meta.url), 'utf8');
   const bloqueStream = helper.slice(helper.indexOf('export async function consumirStreamCompleto'));
@@ -224,10 +274,12 @@ probar('WhatsApp convierte el error tipado en revisión sin enviar prosa parcial
     canal.indexOf("console.error('[Meta WA] Error en procesarConClaude:'"),
     canal.indexOf('// ─── Enrutamiento repartidor/cliente'),
   );
-  const ramaTruncada = catchPrincipal.indexOf('if (esErrorRespuestaTruncada(error))');
+  const ramaTruncada = catchPrincipal.indexOf(
+    'if (esErrorRespuestaTruncada(error) || esErrorSalidaInternaNoPublicable(error))',
+  );
   const mensajeGenerico = catchPrincipal.indexOf('const msgFallo');
   assert.ok(ramaTruncada >= 0 && mensajeGenerico > ramaTruncada);
-  assert.match(catchPrincipal.slice(ramaTruncada, mensajeGenerico), /motivo: 'RESPUESTA_TRUNCADA'/);
+  assert.match(catchPrincipal.slice(ramaTruncada, mensajeGenerico), /\? 'RESPUESTA_TRUNCADA'\s*: 'SALIDA_INTERNA_NO_PUBLICABLE'/);
   assert.match(catchPrincipal.slice(ramaTruncada, mensajeGenerico), /avisarCliente: false/);
 
   const catering = canal.slice(canal.indexOf('if (entradaCatering)'), canal.indexOf('// ── EL AGENTE DE HERRAMIENTAS'));

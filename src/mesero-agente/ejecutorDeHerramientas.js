@@ -39,7 +39,7 @@ import {
 import { esSolicitudCatering } from '../agent/catering.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import {
-  esSolicitudDePedidoProgramado, fusionarReferenciaProgramacion,
+  esSolicitudDePedidoProgramado, fechasExactasDePedido, fusionarReferenciaProgramacion,
   horasExactasDePedido, referenciaProgramacionSegura, referenciasTemporalesDePedido,
 } from './seguridadConversacional.js';
 import {
@@ -110,6 +110,7 @@ export function crearEjecutor({
   zonaDelNegocio = undefined,
 } = {}) {
   const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
+  const referenciaAlCrearEjecutor = referenciaProgramacionSegura(estado.referenciaProgramacion);
   // Foto del inicio del turno. No se relee después de una herramienta: una
   // segunda llamada del modelo no puede confundir la fecha que la primera
   // acaba de guardar con una programación previa del cliente.
@@ -159,7 +160,16 @@ export function crearEjecutor({
       ? fusionarReferenciaProgramacion(
         estado.referenciaProgramacion,
         referenciasDelMensaje,
-        { isoAnterior: programadoAlIniciarTurno, fechaAncla: fechaAnclaActual },
+        {
+          isoAnterior: programadoAlIniciarTurno,
+          // El adaptador ya ancló esta referencia antes de llamar al modelo.
+          // No la vuelvas a fechar con un segundo reloj: si el turno cruza la
+          // medianoche, «mañana» sigue significando lo que significaba cuando
+          // el cliente lo escribió.
+          fechaAncla: referenciaAlCrearEjecutor?.fechaCliente === referenciasDelMensaje.fecha
+            && referenciaAlCrearEjecutor?.fechaAncla
+            ? referenciaAlCrearEjecutor.fechaAncla : fechaAnclaActual,
+        },
       )
       : referenciaProgramacionSegura(estado.referenciaProgramacion),
   );
@@ -724,24 +734,66 @@ export function crearEjecutor({
       // componentes en fragmentos whitelist del mensaje/estado, o en una
       // reserva validada anterior cuyo componente opuesto se está corrigiendo.
       const referencia = referenciaEfectiva();
+      const fechasDelCliente = fechasExactasDePedido(referencia?.fechaCliente, {
+        fechaAncla: referencia?.fechaAncla,
+      });
       const horasDelCliente = horasExactasDePedido(referencia?.horaCliente);
-      const hayFecha = !!((referencia?.fechaCliente && referencia?.fechaAncla)
-        || referencia?.fechaValidada
+      const hayFecha = !!(fechasDelCliente.length || referencia?.fechaValidada
         || referencia?.isoValidado);
       const hayHora = !!(horasDelCliente.length || referencia?.horaValidada
         || referencia?.isoValidado);
       if (!hayFecha || !hayHora) {
         return invalido('programacion_sin_evidencia_cliente: falta que el cliente indique '
           + `${!hayFecha && !hayHora ? 'fecha y hora' : (!hayFecha ? 'la fecha' : 'la hora')}. `
+          + (referencia?.fechaCliente && !fechasDelCliente.length
+            ? `«${referencia.fechaCliente}» no identifica un día exacto. ` : '')
           + (referencia?.horaCliente && !horasDelCliente.length
             ? `«${referencia.horaCliente}» es una franja, no una hora exacta. ` : '')
           + 'Pregúntale el dato exacto; no lo completes desde los argumentos de la herramienta.',
         { pedido: vista() });
       }
+      // El primer par que interpreta la evidencia queda ligado a ella incluso
+      // si la política lo rechaza. Esta guarda va antes de las comparaciones
+      // literales para que una segunda propuesta distinta conserve un único
+      // desenlace estable: necesita palabras nuevas del cliente.
+      if ((referencia.fechaIntentada && String(fecha) !== referencia.fechaIntentada)
+          || (referencia.horaIntentada && String(hora) !== referencia.horaIntentada)) {
+        return invalido('programacion_alternativa_sin_cliente: Xabor ya evaluó '
+          + `${referencia.fechaIntentada || 'esa fecha'} ${referencia.horaIntentada || 'esa hora'} `
+          + 'para esas palabras. '
+          + 'Pregunta otra fecha u hora y espera un mensaje nuevo del cliente.', { pedido: vista() });
+      }
+      if (fechasDelCliente.length && !fechasDelCliente.includes(String(fecha))) {
+        return invalido('fecha_no_coincide_con_cliente: la fecha propuesta no corresponde a '
+          + `«${referencia.fechaCliente}» dicha con fecha local ${referencia.fechaAncla || 'desconocida'}. `
+          + `La fecha permitida es ${fechasDelCliente.join(' o ')}.`, { pedido: vista() });
+      }
       if (horasDelCliente.length && !horasDelCliente.includes(String(hora))) {
         return invalido('hora_no_coincide_con_cliente: la hora propuesta no corresponde a '
           + `«${referencia.horaCliente}». Las lecturas literales permitidas son `
           + `${horasDelCliente.join(' o ')}.`, { pedido: vista() });
+      }
+
+      // Una hora sin AM/PM puede tener dos lecturas literales. Xabor solo la
+      // desambigua cuando la política dura vuelve imposible una de ellas. Si
+      // ambas caben en el horario, elegir mañana/noche sería inventar por el
+      // cliente y se le pide que lo aclare.
+      if (horasDelCliente.length > 1) {
+        const interpretacionesPosibles = horasDelCliente.filter((horaCandidata) => validarProgramado({
+          fecha: String(fecha), hora: horaCandidata, reglas, configTienda, zona: zonaDelNegocio,
+          minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
+        }).ok);
+        if (interpretacionesPosibles.length > 1) {
+          return invalido('hora_ambigua_cliente: la hora tiene más de una lectura válida '
+            + `(${interpretacionesPosibles.join(' o ')}). Pregunta AM/PM o mañana/tarde y espera su respuesta.`,
+          { pedido: vista() });
+        }
+        if (interpretacionesPosibles.length === 1
+            && String(hora) !== interpretacionesPosibles[0]) {
+          return invalido('hora_no_coincide_con_contexto: con el horario de ese día, '
+            + `«${referencia.horaCliente}» solo puede ser ${interpretacionesPosibles[0]}.`,
+          { pedido: vista() });
+        }
       }
       // Si el cliente corrigió solo un componente, el otro ya es un hecho
       // exacto de Xabor. El modelo debe copiarlo, no reinterpretarlo.
@@ -756,17 +808,6 @@ export function crearEjecutor({
           + `${referencia.horaValidada}; el cliente solo cambió la fecha.`, { pedido: vista() });
       }
 
-      // El primer par que interpreta la evidencia queda ligado a ella incluso
-      // si la política lo rechaza. El modelo debe PREGUNTAR y esperar nueva
-      // evidencia; no puede escoger por sí solo otro día u otra hora en la
-      // siguiente iteración del mismo turno.
-      if ((referencia.fechaIntentada && String(fecha) !== referencia.fechaIntentada)
-          || (referencia.horaIntentada && String(hora) !== referencia.horaIntentada)) {
-        return invalido('programacion_alternativa_sin_cliente: Xabor ya evaluó '
-          + `${referencia.fechaIntentada || 'esa fecha'} ${referencia.horaIntentada || 'esa hora'} `
-          + 'para esas palabras. '
-          + 'Pregunta otra fecha u hora y espera un mensaje nuevo del cliente.', { pedido: vista() });
-      }
       estado.referenciaProgramacion = referenciaProgramacionSegura({
         ...referencia,
         fechaIntentada: String(fecha),

@@ -37,9 +37,10 @@ import {
   depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
 } from '../orders/modalidadesDelPedido.js';
 import {
-  esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
+  analizarReferenciasTemporalesDePedido, esSolicitudDePedidoProgramado,
+  respuestaAfirmaCambioSinAplicar,
   fusionarReferenciaProgramacion, pideQuitarProgramacion,
-  referenciaProgramacionSegura, referenciasTemporalesDePedido,
+  referenciaProgramacionSegura,
   TEXTO_CAMBIO_NO_GUARDADO,
 } from './seguridadConversacional.js';
 import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
@@ -232,15 +233,73 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
   const referenciaAnterior = referenciaProgramacionSegura(estado.referenciaProgramacion);
   const habiaProgramacion = estado.programacionRequerida === true
     || !!programadoAnterior || !!referenciaAnterior;
+  const analisis = analizarReferenciasTemporalesDePedido(mensaje);
+  const nuevas = { fecha: analisis.fecha, hora: analisis.hora };
+  const hayPedidoEnCurso = (estado.carrito?.items || []).length > 0 || habiaProgramacion;
   const detectada = esSolicitudDePedidoProgramado(mensaje, {
     // Una fecha pendiente ya ES un ciclo de pedido aunque todavía no tenga
     // renglones. Así «mañana» y, en el turno siguiente, «a las 10» no se
     // separan cuando el canal productivo no manda historial al modelo.
-    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0 || habiaProgramacion,
+    hayPedidoEnCurso,
     hayProgramacionPrevia: habiaProgramacion,
   });
-  if (detectada) {
-    const nuevas = referenciasTemporalesDePedido(mensaje);
+  const quitaProgramacion = pideQuitarProgramacion(mensaje, {
+    hayProgramacionPrevia: habiaProgramacion,
+  });
+
+  // Primero se resuelve cuál referencia quedó afirmada. Así «hoy no, mañana»
+  // conserva futuro y «mañana, mejor hoy» sí desprograma. `ahora` en «quiero
+  // ahora hacer un pedido para mañana» no es destino y no entra aquí.
+  if (analisis.objetivoInmediato
+      && (quitaProgramacion || (analisis.correccion && (detectada || hayPedidoEnCurso)))) {
+    estado.programacionRequerida = false;
+    estado.referenciaProgramacion = null;
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return false;
+  }
+
+  const textoNormalizado = String(mensaje ?? '').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const consultaInformativa = /\b(?:saber|preguntar|consultar|promociones?|horarios?|abren|abre|cierran|cierra|disponibilidad|disponible|hay|tienen|manejan)\b/.test(textoNormalizado)
+    || (/[¿?]/.test(textoNormalizado) && !analisis.correccion && !quitaProgramacion);
+  const referenciaAmbigua = analisis.ambiguaFecha || analisis.ambiguaHora;
+  // Una alternativa también administra una reserva en curso, aunque sea una
+  // respuesta tersa. Nunca la resolvemos escogiendo la primera: borramos la
+  // programación aplicada y dejamos incompleto el componente dudoso.
+  const gestionaTemporal = detectada
+    || (hayPedidoEnCurso && analisis.tieneReferenciaTemporal
+      && (analisis.correccion || referenciaAmbigua) && !consultaInformativa)
+    // La alternativa prueba intención temporal pero no autoriza una fecha u
+    // hora. Se conserva la barrera para preguntar aun en el primer turno.
+    || (referenciaAmbigua && !consultaInformativa)
+    // En un mismo turno «para hoy no, mejor mañana» ya expresa un destino
+    // futuro completo aunque omita repetir «quiero pedir» tras corregirse.
+    || (analisis.correccion && !!analisis.fecha && !consultaInformativa);
+  if (referenciaAmbigua && gestionaTemporal) {
+    let pendiente = fusionarReferenciaProgramacion(
+      referenciaAnterior,
+      nuevas,
+      { isoAnterior: programadoAnterior, fechaAncla: fechaHoy },
+    ) || {};
+    pendiente = { ...pendiente, isoValidado: null };
+    if (analisis.ambiguaFecha) {
+      pendiente.fechaCliente = null;
+      pendiente.fechaAncla = null;
+      pendiente.fechaValidada = null;
+      pendiente.fechaIntentada = null;
+    }
+    if (analisis.ambiguaHora) {
+      pendiente.horaCliente = null;
+      pendiente.horaValidada = null;
+      pendiente.horaIntentada = null;
+    }
+    estado.programacionRequerida = true;
+    estado.referenciaProgramacion = referenciaProgramacionSegura(pendiente);
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return true;
+  }
+
+  if (gestionaTemporal) {
     estado.programacionRequerida = true;
     estado.referenciaProgramacion = fusionarReferenciaProgramacion(
       referenciaAnterior,
@@ -263,9 +322,7 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
   }
   // Se evalúa DESPUÉS del reemplazo. «Ya no mañana, mejor el viernes» no es
   // convertir el pedido a inmediato: es sustituir una programación por otra.
-  if (pideQuitarProgramacion(mensaje, {
-    hayProgramacionPrevia: habiaProgramacion,
-  })) {
+  if (quitaProgramacion) {
     estado.programacionRequerida = false;
     estado.referenciaProgramacion = null;
     if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
@@ -328,6 +385,15 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
     // que esperar, y esperarlo sería esperar algo que nunca llega.
     ...(datos.forma_pago === 'enlace_pago' ? { requierePagoAnticipado: true } : {}),
   };
+}
+
+/**
+ * El adaptador solo puede declarar atendido un turno que no deba un handoff.
+ * El texto puede ser seguro, pero no se publica si promete una persona y la
+ * pausa durable no quedó confirmada.
+ */
+export function resultadoDelCanalAgente(salida = null) {
+  return { ...(salida || {}), ok: salida?.handoffPendiente !== true };
 }
 
 /**
@@ -600,6 +666,10 @@ export async function atenderConAgente({
       if (desenlace.incierta) estado.confirmacionIncierta = true;
       if (await avisarAHumano(escalarAHumano, negocioId, telefono, desenlace.motivoHandoff)) {
         estado.hechos.escalado = true;
+        salida.escalado = true;
+        salida.handoffPendiente = false;
+      } else {
+        salida.handoffPendiente = true;
       }
       if (desenlace.texto) salida.texto = desenlace.texto;
     }
@@ -610,25 +680,24 @@ export async function atenderConAgente({
       + `estado=${salida.pedido?.estado} ops=${salida.operaciones.length} `
       + `iter=${salida.iteraciones} ms=${salida.duracionMs}`);
 
-    return { ok: true, ...salida };
+    return resultadoDelCanalAgente(salida);
   } catch (e) {
     console.error('[AGENTE] contenido en el adaptador:', e?.message);
     // Un efecto irreversible pudo ocurrir antes del error (por ejemplo,
     // registrarPedido hizo COMMIT y luego falló guardarEstado). En ese caso
     // el bot viejo NO debe volver a procesar este mismo mensaje.
     if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
-      if (confirmacionIntentada) {
-        await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
-      }
-      return {
-        ok: true,
+      const handoffConfirmado = !confirmacionIntentada
+        || await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+      return resultadoDelCanalAgente({
         texto: estado?.hechos?.confirmado && estado.folio
           ? (salida?.texto || `Tu pedido ${estado.folio} quedó registrado. El equipo lo revisará.`)
           : 'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.',
         folio: estado?.folio ?? null,
         escalado: !!estado?.hechos?.escalado,
         estadoIncierto: true,
-      };
+        handoffPendiente: !handoffConfirmado,
+      });
     }
     return { ok: false, motivo: e?.message || 'error', ms: Date.now() - t0 };
   }

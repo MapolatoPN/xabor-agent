@@ -50,6 +50,7 @@ const {
   pool, actualizarConfiguracion, crearUsuarioConPassword,
   obtenerPedidoParaPagoPorFolio, obtenerPedidoPorFolioAmplio,
   obtenerPedidosCobrablesPorTelefono,
+  obtenerPedidosPorActivar,
   marcarPedidoProgramadoActivado,
   reservarFolioPedido,
 } = await import('../src/services/database.js');
@@ -63,10 +64,14 @@ const {
 } = await import('../src/mesero-agente/agenteDelMesero.js');
 const { estadoNuevo } = await import('../src/mesero-agente/ejecutorDeHerramientas.js');
 const { almacenEnMemoria, libroDeOperaciones } = await import('../src/mesero-agente/libroDeOperaciones.js');
-const { confirmarYEmitir } = await import('../src/mesero-agente/canalDelAgente.js');
+const {
+  confirmarYEmitir,
+  marcarProgramacionRequerida,
+} = await import('../src/mesero-agente/canalDelAgente.js');
 const { obtenerConfigTienda } = await import('../src/services/tiendaOnline.js');
 const { guardarIntegracionPago, marcarProveedorPrincipal } = await import('../src/services/integracionesService.js');
 const { crearEnlacePago } = await import('../src/services/pagosService.js');
+const { puedeActivarsePedidoProgramado } = await import('../src/orders/pagoPorEnlace.js');
 const { derivarPedidoPorPagoAsentado } = await import('../src/services/webhookPagos.js');
 const {
   MENSAJE_FALLO_CONSULTA_PAGO,
@@ -377,7 +382,6 @@ try {
     assert.equal(configTienda.anticipacionMinutos, 40);
 
     const estado = estadoNuevo({ negocioId: NEG, conversacionId: `agp:${TELEFONO}` });
-    estado.programacionRequerida = true;
     estado.carrito.items = [{
       lid: 'agp-linea-1', id: String(producto.id), nombre: producto.nombre,
       cantidad: 1, modificadores: [], notas: '',
@@ -391,6 +395,12 @@ try {
     const objetivoInicial = new Date(Date.now() + 3 * 3600e3);
     objetivoInicial.setUTCSeconds(0, 0);
     const local = fechaYHoraEnZona(objetivoInicial);
+    const [hora24, minutos] = local.hora.split(':').map(Number);
+    const horaCliente = `${hora24 % 12 || 12}:${String(minutos).padStart(2, '0')} ${hora24 < 12 ? 'a. m.' : 'p. m.'}`;
+    const mensajeProgramado = `Quiero este pedido para ${local.fecha} a las ${horaCliente}; sí, lo confirmo.`;
+    assert.equal(marcarProgramacionRequerida(estado, mensajeProgramado, {
+      fechaHoy: fechaYHoraEnZona(new Date()).fecha,
+    }), true, 'el caller real no detectó la fecha futura explícita');
     let paso = 0;
     let emisionesDelCaller = 0;
     let promptConFecha = false;
@@ -422,7 +432,7 @@ try {
 
     const salida = await atenderTurnoConHerramientas({
       negocioId: NEG, conversacionId: estado.conversacionId, turnoId: 'agp-turno-1',
-      mensaje: `Quiero este pedido para ${local.fecha} a las ${local.hora}; sí, lo confirmo.`,
+      mensaje: mensajeProgramado,
       catalogo: [{ id: categoria.id, nombre: categoria.nombre, productos: [{
         id: producto.id, nombre: producto.nombre, precio: Number(producto.precio),
         disponible: true, agotado: false, modificadores: [],
@@ -445,6 +455,8 @@ try {
       },
     });
 
+    const programacion = salida.operaciones.find((o) => o.herramienta === 'programar_para')?.resultado;
+    assert.equal(programacion?.aplicado, true, programacion?.motivo);
     const confirmacion = salida.operaciones.find((o) => o.herramienta === 'confirmar_pedido')?.resultado;
     assert.equal(confirmacion?.aplicado, true, confirmacion?.motivo);
     assert.equal(salida.confirmado, true);
@@ -894,6 +906,70 @@ try {
     assert.equal((await pool.query(
       'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, pedido.id])).rowCount, 1,
     'el reinicio duplicó la compra de la carrera');
+  });
+
+  await t('snapshot legacy nuevo con enlace no activa hasta confirmar el pago', async () => {
+    await detenerServidor();
+    const programadoPara = new Date(Date.now() + 55 * 60e3).toISOString();
+    const { folio, datos } = await crearActivoProgramadoDirecto({
+      telefono: '528199009807', programadoPara,
+    });
+    const conversion = await convertirPedidoAProgramado({
+      id: folio, negocioId: NEG, createdAt: new Date(), ...datos,
+    }, programadoPara);
+    assert.equal(conversion.ok, true, JSON.stringify(conversion));
+
+    // Reproduce una fila anterior a la barrera moderna: el estado ya dice
+    // `nuevo`, pero la forma de pago aún exige dinero y no existe confirmación.
+    await pool.query(
+      `UPDATE pedidos_programados
+          SET programado_para=NOW()+INTERVAL '55 minutes',
+              datos = (datos - 'pago_confirmado' - 'forma_pago_tipo' - 'requierePagoAnticipado') || jsonb_build_object(
+                'estado','nuevo',
+                'forma_pago','enlace de pago')
+        WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
+    const { rows: [legacy] } = await pool.query(
+      'SELECT datos FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2',
+      [NEG, folio]);
+    assert.equal(puedeActivarsePedidoProgramado(legacy.datos), false,
+      'la defensa del scheduler aceptó el snapshot impagado');
+    for (const senal of [
+      { estado: 'pendiente_pago' },
+      { estado: 'nuevo', forma_pago_tipo: 'enlace_pago' },
+      { estado: 'nuevo', requierePagoAnticipado: true },
+    ]) {
+      assert.equal(puedeActivarsePedidoProgramado(senal), false,
+        `la defensa ignoró una señal legacy aislada: ${JSON.stringify(senal)}`);
+    }
+    assert.equal((await obtenerPedidosPorActivar()).some((p) => p.folio === folio), false,
+      'la selección SQL entregó al scheduler un programado online impagado');
+
+    await arrancarApp();
+    await esperar(700);
+    const { rows: [antes] } = await pool.query(
+      `SELECT activado FROM pedidos_programados
+        WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
+    assert.equal(antes.activado, false, 'el arranque activó la reserva legacy sin dinero');
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2',
+      [NEG, folio])).rowCount, 0, 'el programado impagado apareció en el panel');
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2',
+      [NEG, folio])).rowCount, 0, 'el programado impagado creó deuda de cocina');
+
+    await detenerServidor();
+    await pool.query(
+      `UPDATE pedidos_programados
+          SET datos = datos || '{"pago_confirmado":true}'::jsonb
+        WHERE negocio_id=$1 AND folio=$2`, [NEG, folio]);
+    assert.equal((await obtenerPedidosPorActivar()).some((p) => p.folio === folio), true,
+      'confirmar el pago no volvió elegible la reserva legacy');
+    await arrancarApp();
+    await hasta(async () => (await pool.query(
+      `SELECT 1 FROM pedido_emisiones
+        WHERE negocio_id=$1 AND folio=$2 AND estado='saldada'`,
+      [NEG, folio])).rowCount === 1,
+    { que: 'emisión posterior al pago del snapshot legacy' });
   });
 
   await t('promo desfasada en reserva: dos intentos fallan y cero checkouts', async () => {

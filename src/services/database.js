@@ -4877,11 +4877,25 @@ export async function obtenerPedidosPorActivar() {
          AND programado_para <= NOW() + INTERVAL '1 hour'
          -- Un programado sin dinero no se convierte en pedido activo: se
          -- quedaria bloqueado por emitirPedido y ya no habria reserva que el
-         -- webhook pudiera liberar. Tras pagar, la derivacion cambia el estado
-         -- embebido a nuevo y el siguiente barrido si lo toma.
-         AND COALESCE(datos->>'estado','nuevo') <> 'pendiente_pago'
-         AND COALESCE(datos->>'estado','nuevo') <> 'cancelado'
-       ORDER BY programado_para ASC
+          -- webhook pudiera liberar. Tras pagar, la derivacion cambia el estado
+          -- embebido a nuevo y el siguiente barrido si lo toma.
+          AND COALESCE(datos->>'estado','nuevo') <> 'pendiente_pago'
+          AND COALESCE(datos->>'estado','nuevo') <> 'cancelado'
+          -- Compatibilidad fail-closed: snapshots anteriores pueden decir
+          -- estado nuevo aunque su semantica siga siendo pago anticipado. El
+          -- scheduler no debe convertir esa inconsistencia en una comanda sin
+          -- dinero. El operador de texto cubre booleanos JSON y strings legacy.
+          AND (
+            NOT (
+              lower(trim(COALESCE(datos->>'forma_pago', ''))) IN
+                ('enlace_pago', 'enlace de pago', 'link de pago')
+              OR lower(trim(COALESCE(datos->>'forma_pago_tipo', ''))) IN
+                ('enlace_pago', 'enlace de pago', 'link de pago')
+              OR lower(trim(COALESCE(datos->>'requierePagoAnticipado', 'false'))) = 'true'
+            )
+            OR lower(trim(COALESCE(datos->>'pago_confirmado', 'false'))) = 'true'
+          )
+        ORDER BY programado_para ASC
     `);
     // Mismo fallback y mismo motivo que obtenerPedidosActivos(): un
     // pedido programado creado antes de la migración 007 no tiene
