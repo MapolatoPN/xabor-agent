@@ -32,7 +32,7 @@ import { createHash } from 'crypto';
 import express from 'express';
 import { rateLimitMiddleware } from './rateLimit.js';
 import { pool, obtenerConfiguracion, obtenerNombreNegocio, negocioEstaActivo, moduloHabilitado } from './database.js';
-import { resolverAutofacturaPorToken, esFormatoTokenValido } from './autofacturaService.js';
+import { resolverAutofacturaPorToken, esFormatoTokenValido, crearOObtenerAutofactura } from './autofacturaService.js';
 import { obtenerPedidoFacturable } from './facturacionService.js';
 import { validarDatosFiscales, AVISO_NOMBRE } from './autofacturaFiscal.js';
 import { catalogosPublicos } from './catalogosSat.js';
@@ -254,6 +254,15 @@ export function registrarRutasAutofactura(app) {
 
   const sinCache = (res) => { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Content-Type-Options', 'nosniff'); };
 
+  // Portal público de entrada: el cliente elige sucursal y captura el folio
+  // impreso en su ticket. La liga segura /f/<token> sigue siendo la superficie
+  // que muestra y emite la factura; esta ruta solo la prepara de forma
+  // idempotente y nunca timbra por sí sola.
+  app.get('/facturacion', limitePublico, (req, res) => {
+    sinCache(res);
+    res.sendFile(join(PANEL_DIR, 'facturacion.html'));
+  });
+
   app.get('/f/:token', limitePublico, (req, res) => {
     sinCache(res);
     res.sendFile(join(PANEL_DIR, 'autofactura.html'));
@@ -279,6 +288,31 @@ export function registrarRutasAutofactura(app) {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ error: 'Cuerpo inválido.' });
     next();
   };
+
+  app.post('/api/autofactura/portal', limiteValidar, cuerpoAcotado, cuerpoEsObjeto, async (req, res) => {
+    sinCache(res);
+    const slug = String(req.body?.slug || '').trim().toLowerCase();
+    const folio = String(req.body?.folio || '').trim().toUpperCase();
+    if (!/^[a-z0-9][a-z0-9-]{1,119}$/.test(slug) || !/^[A-Z0-9-]{2,40}$/.test(folio)) {
+      return res.status(400).json({ error: 'Sucursal o folio inválido.' });
+    }
+    try {
+      const { rows: [negocio] } = await pool.query(
+        'SELECT id, nombre FROM negocios WHERE lower(slug)=lower($1) LIMIT 1', [slug]);
+      if (!negocio || !(await negocioEstaActivo(negocio.id)) || !(await moduloHabilitado(negocio.id, 'facturacion'))) {
+        return res.status(404).json({ error: 'No encontramos ese ticket. Revisa la sucursal y el folio.' });
+      }
+      const portal = await crearOObtenerAutofactura(negocio.id, folio);
+      if (!portal?.url) return res.status(409).json({ error: 'Este ticket no tiene una liga de facturación disponible.' });
+      return res.json({ ok: true, url: portal.url, folio: portal.folio, negocio: negocio.nombre });
+    } catch (e) {
+      if (['PEDIDO_NO_ENCONTRADO', 'PEDIDO_CANCELADO', 'PEDIDO_NO_PAGADO', 'FOLIO_REQUERIDO', 'AUTOFACTURA_NO_DISPONIBLE'].includes(e?.codigo)) {
+        return res.status(404).json({ error: 'No encontramos ese ticket. Revisa la sucursal y el folio.' });
+      }
+      console.error('[autofactura] portal público no pudo preparar la liga:', e?.codigo || e?.message);
+      return res.status(500).json({ error: 'No pudimos consultar el ticket en este momento. Intenta de nuevo más tarde.' });
+    }
+  });
 
   app.post('/api/autofactura/:token/validar', limiteValidar, cuerpoAcotado, cuerpoEsObjeto, async (req, res) => {
     sinCache(res);

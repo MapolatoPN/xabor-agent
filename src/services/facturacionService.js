@@ -321,6 +321,9 @@ export async function listarRecibosFacturacion(negocioId, {
                        NULLIF(pp.datos->'cliente'->>'rfc',''),
                        NULLIF(pp.datos->'cliente'->>'tax_id',''),
                        NULLIF(pp.datos->>'rfc','')) AS cliente_rfc,
+              COALESCE(NULLIF(p.datos->'cliente'->>'telefono',''),
+                       NULLIF(p.datos->>'telefono',''),
+                       NULLIF(p.datos->>'telefono_conversacion','')) AS cliente_telefono,
               COUNT(*) OVER()::int AS total_filtrado
          FROM documentos r
          LEFT JOIN pedidos_activos p

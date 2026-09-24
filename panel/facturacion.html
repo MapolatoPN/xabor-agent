@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Factura tu consumo | Xabor</title>
+  <style>
+    :root { --fondo:#f6f7f9; --superficie:#fff; --texto:#111827; --muted:#6b7280; --borde:#e5e7eb; --marca:#111827; --error:#b91c1c; --error-bg:#fef2f2; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; justify-content:center; background:var(--fondo); color:var(--texto); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    main { width:100%; max-width:480px; padding:28px 16px 36px; }
+    .card { background:var(--superficie); border:1px solid var(--borde); border-radius:16px; padding:24px 20px; box-shadow:0 1px 3px rgba(17,24,39,.05); }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+    .logo { width:42px; height:42px; border-radius:11px; display:grid; place-items:center; background:var(--marca); color:#fff; font-weight:800; }
+    h1 { margin:0; font-size:21px; letter-spacing:-.02em; }
+    h2 { margin:22px 0 5px; font-size:17px; }
+    p { margin:0; color:var(--muted); font-size:14px; line-height:1.5; }
+    label { display:block; margin:16px 0 5px; color:#4b5563; font-size:13px; font-weight:700; }
+    input, select { width:100%; padding:12px 13px; border:1px solid var(--borde); border-radius:11px; background:#fff; color:var(--texto); font:inherit; font-size:16px; }
+    input:focus, select:focus { outline:2px solid #93c5fd; outline-offset:1px; border-color:#2563eb; }
+    button { width:100%; margin-top:18px; padding:13px; border:0; border-radius:11px; background:#16a34a; color:#fff; font:inherit; font-weight:800; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:default; }
+    .aviso { display:none; margin-top:14px; padding:12px 13px; border-radius:10px; background:var(--error-bg); color:var(--error); font-size:13px; font-weight:600; }
+    .ayuda { margin-top:16px; padding-top:14px; border-top:1px solid var(--borde); font-size:12.5px; color:var(--muted); }
+    .pie { margin-top:18px; color:#9ca3af; font-size:11.5px; text-align:center; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <div class="brand"><div class="logo">X</div><div><h1>Factura tu consumo</h1><p>Portal de facturación de Xabor</p></div></div>
+      <h2>Encuentra tu ticket</h2>
+      <p>Selecciona la sucursal donde compraste y captura el folio que aparece en tu ticket, por ejemplo <b>XAB-0746</b>.</p>
+      <form id="form" novalidate>
+        <label for="sucursal">Sucursal</label>
+        <select id="sucursal" required>
+          <option value="">Selecciona la sucursal</option>
+          <option value="mapolato-obispado">Mapolato Obispado</option>
+          <option value="mapolato-acuna">Mapolato Acuña</option>
+        </select>
+        <label for="folio">Folio del ticket</label>
+        <input id="folio" required maxlength="40" autocomplete="off" autocapitalize="characters" placeholder="Ej. XAB-0746">
+        <div id="aviso" class="aviso" role="alert"></div>
+        <button id="continuar" type="submit">Continuar</button>
+      </form>
+      <div class="ayuda">Tu folio identifica la venta; después capturarás tus datos fiscales en una liga segura y temporal.</div>
+    </section>
+    <div class="pie">Facturación electrónica con Xabor</div>
+  </main>
+  <script>
+    'use strict';
+    const form = document.getElementById('form');
+    const aviso = document.getElementById('aviso');
+    const boton = document.getElementById('continuar');
+    const folio = document.getElementById('folio');
+    const sucursal = document.getElementById('sucursal');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      aviso.style.display = 'none';
+      const slug = sucursal.value;
+      const valor = String(folio.value || '').trim().toUpperCase();
+      if (!slug) { aviso.textContent = 'Selecciona la sucursal.'; aviso.style.display = 'block'; sucursal.focus(); return; }
+      if (!/^[A-Z0-9-]{2,40}$/.test(valor)) { aviso.textContent = 'Escribe un folio válido, por ejemplo XAB-0746.'; aviso.style.display = 'block'; folio.focus(); return; }
+      boton.disabled = true; boton.textContent = 'Buscando ticket…';
+      try {
+        const r = await fetch('/api/autofactura/portal', { method:'POST', headers:{'Content-Type':'application/json'}, cache:'no-store', body:JSON.stringify({ slug, folio:valor }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.url) throw new Error(d.error || 'No encontramos ese ticket. Revisa la sucursal y el folio.');
+        location.href = d.url;
+      } catch (e) {
+        aviso.textContent = e.message || 'No pudimos consultar el ticket. Intenta de nuevo.';
+        aviso.style.display = 'block';
+      } finally { boton.disabled = false; boton.textContent = 'Continuar'; }
+    });
+  </script>
+</body>
+</html>

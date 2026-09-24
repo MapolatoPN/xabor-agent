@@ -344,7 +344,21 @@ main { display: block; padding: 28px 32px; }
   flex: 0 0 auto; padding: 9px 12px; border: 1px solid #e5e2da;
   border-radius: 8px; background: #fff; color: #555; cursor: pointer; font: inherit;
 }
+#facturacion-operacion-msg { overflow-wrap: anywhere; }
+#facturacion-operacion-msg a { color: #1d4ed8; text-decoration: underline; }
 .facturacion-placeholder::placeholder { color: #b4b0a8; opacity: 1; }
+.facturacion-portal-cliente {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+  padding: 11px 13px; border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff;
+}
+.facturacion-portal-cliente .descripcion { flex: 1 1 260px; min-width: 0; color: #334155; font-size: .78rem; }
+.facturacion-portal-cliente .descripcion b { display: block; margin-bottom: 2px; color: #1e3a8a; font-size: .86rem; }
+.facturacion-portal-cliente a, .facturacion-portal-cliente button {
+  flex: 0 0 auto; padding: 8px 10px; border: 1px solid #93c5fd; border-radius: 8px;
+  background: #fff; color: #1d4ed8; font: inherit; font-size: .76rem; font-weight: 700; cursor: pointer;
+  text-decoration: none;
+}
+.facturacion-portal-cliente a:hover, .facturacion-portal-cliente button:hover { background: #dbeafe; }
 .facturacion-tabla { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .78rem; }
 .facturacion-tabla th, .facturacion-tabla td { padding: 9px 8px; vertical-align: top; }
 .facturacion-tabla th:nth-child(1) { width: 9%; }
@@ -368,6 +382,7 @@ main { display: block; padding: 28px 32px; }
   padding: 5px; border: 1px solid #e5e2da; border-radius: 9px; background: #fff;
   box-shadow: 0 8px 22px rgba(0,0,0,.12);
 }
+.facturacion-acciones.abre-arriba .facturacion-menu { top: auto; bottom: calc(100% + 4px); }
 .facturacion-menu button, .facturacion-menu a {
   display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 6px;
   background: transparent; color: #333; text-align: left; text-decoration: none;
@@ -381,6 +396,16 @@ main { display: block; padding: 28px 32px; }
   border-radius: 8px; background: #fff; color: #1c1c1c; font: inherit; font-weight: 400;
 }
 .facturacion-servicio-grid .span-2 { grid-column: 1 / -1; }
+.facturacion-servicio-modal {
+  display: flex; flex-direction: column; background: #fff; border-radius: 14px; padding: 24px;
+  width: 90%; max-width: 560px; max-height: 90vh; box-sizing: border-box; box-shadow: 0 8px 32px rgba(0,0,0,.18);
+}
+.facturacion-servicio-cuerpo { min-height: 0; overflow-y: auto; padding-right: 2px; }
+.facturacion-servicio-pie {
+  flex: 0 0 auto; display: flex; gap: 10px; padding-top: 14px; margin-top: 10px;
+  border-top: 1px solid #eee; background: #fff;
+}
+.facturacion-servicio-pie button { flex: 1; padding: 10px; border-radius: 9px; font: inherit; cursor: pointer; }
 @media (max-width: 760px) {
   .facturacion-tabla th:nth-child(1), .facturacion-tabla td:nth-child(1),
   .facturacion-tabla th:nth-child(4), .facturacion-tabla td:nth-child(4) { display: none; }
@@ -391,8 +416,11 @@ main { display: block; padding: 28px 32px; }
   .facturacion-tabla th:nth-child(7) { width: 11%; }
 }
 @media (max-width: 560px) {
+  .facturacion-portal-cliente { align-items: stretch; }
+  .facturacion-portal-cliente a, .facturacion-portal-cliente button { flex: 1 1 100%; text-align: center; }
   .facturacion-servicio-grid { grid-template-columns: 1fr; }
   .facturacion-servicio-grid .span-2 { grid-column: auto; }
+  .facturacion-servicio-modal { padding: 18px; width: 94%; }
 }
 
 /* ─── Grid de comandas ──────────────────────────────────────────────────── */
@@ -1412,9 +1440,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
 <!-- Modal: factura de servicio/catering sin folio -->
 <div id="modal-servicio-factura-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
-  <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:560px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-height:90vh;overflow-y:auto;">
+  <div class="facturacion-servicio-modal">
     <h3 style="margin-bottom:6px;font-size:1rem;color:#1c1c1c;">+ Factura de servicio</h3>
     <p style="font-size:0.82rem;color:#777;margin-bottom:14px;">Catering, evento u otro servicio sin folio de venta. La referencia es opcional.</p>
+    <div class="facturacion-servicio-cuerpo">
     <div style="font-size:.82rem;font-weight:800;margin-bottom:7px;">Cliente</div>
     <div class="facturacion-servicio-grid">
       <label class="span-2">Buscar cliente guardado
@@ -1424,8 +1453,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <span style="align-self:center;color:#888;font-size:.74rem;">Selecciona una ficha para reutilizar sus datos fiscales.</span>
       <label>RFC *<input id="fs-rfc" class="facturacion-placeholder" maxlength="13" placeholder="Ej. XAXX010101000"></label>
       <label>Nombre o razón social *<input id="fs-nombre" class="facturacion-placeholder" placeholder="Ej. Nombre o Razón Social S.A."></label>
-      <label>Régimen fiscal *<select id="fs-regimen"><option value="" selected disabled>Ej. 626 — Régimen Simplificado de Confianza</option><option value="601">601 — General de Ley Personas Morales</option><option value="603">603 — Personas Morales con Fines no Lucrativos</option><option value="605">605 — Sueldos y Salarios e Ingresos Asimilados a Salarios</option><option value="606">606 — Arrendamiento</option><option value="607">607 — Régimen de Enajenación o Adquisición de Bienes</option><option value="608">608 — Demás ingresos</option><option value="610">610 — Residentes en el Extranjero sin Establecimiento Permanente en México</option><option value="611">611 — Ingresos por Dividendos (socios y accionistas)</option><option value="612">612 — Personas Físicas con Actividades Empresariales y Profesionales</option><option value="614">614 — Ingresos por intereses</option><option value="615">615 — Régimen de los ingresos por obtención de premios</option><option value="616">616 — Sin obligaciones fiscales</option><option value="620">620 — Sociedades Cooperativas de Producción que optan por diferir sus ingresos</option><option value="621">621 — Incorporación Fiscal</option><option value="622">622 — Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras</option><option value="623">623 — Opcional para Grupos de Sociedades</option><option value="624">624 — Coordinados</option><option value="625">625 — Actividades Empresariales con ingresos a través de Plataformas Tecnológicas</option><option value="626">626 — Régimen Simplificado de Confianza</option></select></label>
-      <label>Uso CFDI *<select id="fs-uso"><option value="" selected disabled>Ej. G03 — Gastos en general</option><option value="G01">G01 — Adquisición de mercancías</option><option value="G02">G02 — Devoluciones, descuentos o bonificaciones</option><option value="G03">G03 — Gastos en general</option><option value="I01">I01 — Construcciones</option><option value="I02">I02 — Mobiliario y equipo de oficina por inversiones</option><option value="I03">I03 — Equipo de transporte</option><option value="I04">I04 — Equipo de cómputo y accesorios</option><option value="I05">I05 — Dados, troqueles, moldes, matrices y herramental</option><option value="I06">I06 — Comunicaciones telefónicas</option><option value="I07">I07 — Comunicaciones satelitales</option><option value="I08">I08 — Otra maquinaria y equipo</option><option value="D01">D01 — Honorarios médicos, dentales y gastos hospitalarios</option><option value="D02">D02 — Gastos médicos por incapacidad o discapacidad</option><option value="D03">D03 — Gastos funerales</option><option value="D04">D04 — Donativos</option><option value="D05">D05 — Intereses reales efectivamente pagados por créditos hipotecarios</option><option value="D06">D06 — Aportaciones voluntarias al SAR</option><option value="D07">D07 — Primas por seguros de gastos médicos</option><option value="D08">D08 — Gastos de transportación escolar obligatoria</option><option value="D09">D09 — Depósitos en cuentas para el ahorro y planes de pensiones</option><option value="D10">D10 — Pagos por servicios educativos (colegiaturas)</option><option value="S01">S01 — Sin efectos fiscales</option><option value="CP01">CP01 — Pagos</option><option value="CN01">CN01 — Nómina</option></select></label>
+      <label>Régimen fiscal *<select id="fs-regimen"><option value="" selected disabled>Selecciona…</option><option value="601">601 — General de Ley Personas Morales</option><option value="603">603 — Personas Morales con Fines no Lucrativos</option><option value="605">605 — Sueldos y Salarios e Ingresos Asimilados a Salarios</option><option value="606">606 — Arrendamiento</option><option value="607">607 — Régimen de Enajenación o Adquisición de Bienes</option><option value="608">608 — Demás ingresos</option><option value="610">610 — Residentes en el Extranjero sin Establecimiento Permanente en México</option><option value="611">611 — Ingresos por Dividendos (socios y accionistas)</option><option value="612">612 — Personas Físicas con Actividades Empresariales y Profesionales</option><option value="614">614 — Ingresos por intereses</option><option value="615">615 — Régimen de los ingresos por obtención de premios</option><option value="616">616 — Sin obligaciones fiscales</option><option value="620">620 — Sociedades Cooperativas de Producción que optan por diferir sus ingresos</option><option value="621">621 — Incorporación Fiscal</option><option value="622">622 — Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras</option><option value="623">623 — Opcional para Grupos de Sociedades</option><option value="624">624 — Coordinados</option><option value="625">625 — Actividades Empresariales con ingresos a través de Plataformas Tecnológicas</option><option value="626">626 — Régimen Simplificado de Confianza</option></select></label>
+      <label>Uso CFDI *<select id="fs-uso"><option value="" selected disabled>Selecciona…</option><option value="G01">G01 — Adquisición de mercancías</option><option value="G02">G02 — Devoluciones, descuentos o bonificaciones</option><option value="G03">G03 — Gastos en general</option><option value="I01">I01 — Construcciones</option><option value="I02">I02 — Mobiliario y equipo de oficina por inversiones</option><option value="I03">I03 — Equipo de transporte</option><option value="I04">I04 — Equipo de cómputo y accesorios</option><option value="I05">I05 — Dados, troqueles, moldes, matrices y herramental</option><option value="I06">I06 — Comunicaciones telefónicas</option><option value="I07">I07 — Comunicaciones satelitales</option><option value="I08">I08 — Otra maquinaria y equipo</option><option value="D01">D01 — Honorarios médicos, dentales y gastos hospitalarios</option><option value="D02">D02 — Gastos médicos por incapacidad o discapacidad</option><option value="D03">D03 — Gastos funerales</option><option value="D04">D04 — Donativos</option><option value="D05">D05 — Intereses reales efectivamente pagados por créditos hipotecarios</option><option value="D06">D06 — Aportaciones voluntarias al SAR</option><option value="D07">D07 — Primas por seguros de gastos médicos</option><option value="D08">D08 — Gastos de transportación escolar obligatoria</option><option value="D09">D09 — Depósitos en cuentas para el ahorro y planes de pensiones</option><option value="D10">D10 — Pagos por servicios educativos (colegiaturas)</option><option value="S01">S01 — Sin efectos fiscales</option><option value="CP01">CP01 — Pagos</option><option value="CN01">CN01 — Nómina</option></select></label>
       <label>Código postal fiscal *<input id="fs-cp" class="facturacion-placeholder" maxlength="5" placeholder="Ej. 26000"></label>
       <label>Correo (opcional)<input id="fs-email" class="facturacion-placeholder" type="email" placeholder="Ej. cliente@correo.com"></label>
     </div>
@@ -1441,7 +1470,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     <div class="facturacion-servicio-grid"><label class="span-2">Selecciona la forma de pago<select id="fs-forma-pago"><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="credito">Tarjeta de crédito</option><option value="debito">Tarjeta de débito</option></select></label></div>
     <label style="display:flex;flex-direction:row;align-items:center;gap:7px;font-weight:500;font-size:0.8rem;"><input type="checkbox" id="fs-guardar-cliente" checked style="width:auto;min-height:0;"> Guardar este cliente</label>
     <div id="fs-msg" style="font-size:0.78rem;margin-top:8px;color:#8a6d1d;min-height:18px;"></div>
-    <div style="display:flex;gap:10px;margin-top:14px;"><button type="button" onclick="cerrarModalServicioFactura()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;">Cancelar</button><button type="button" id="fs-emitir" onclick="emitirServicioUI()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-weight:700;">Generar factura</button></div>
+    </div>
+    <div class="facturacion-servicio-pie"><button type="button" onclick="cerrarModalServicioFactura()" style="border:1px solid #e5e2da;background:#fafaf8;">Cancelar</button><button type="button" id="fs-emitir" onclick="emitirServicioUI()" style="border:none;background:#16a34a;color:#fff;font-weight:700;">Generar factura</button></div>
   </div>
 </div>
 
@@ -2271,6 +2301,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
           <div><div style="font-size:1rem;font-weight:800;">Emitir una factura</div><div style="font-size:0.78rem;color:#888;">Ventas con folio o servicios sin folio, en el mismo lugar.</div></div>
           <button type="button" onclick="abrirModalServicioFactura()" style="background:#fff7ed;color:#b45309;border:1px solid #f1dfad;border-radius:8px;font-weight:800;">+ Factura de servicio</button>
+        </div>
+        <div class="facturacion-portal-cliente">
+          <div class="descripcion"><b>Portal de autofacturación Xabor</b>Comparte esta liga con tus clientes: elegirán sucursal, capturarán su folio XAB y continuarán con sus datos fiscales.</div>
+          <a href="/facturacion" target="_blank" rel="noopener noreferrer">Abrir portal Xabor</a>
+          <button type="button" onclick="copiarLigaPortalXabor(this)">Copiar liga</button>
         </div>
         <div style="background:#fafaf8;border:1px solid #e5e2da;border-radius:12px;padding:14px;margin-bottom:14px;">
           <label style="font-size:0.82rem;font-weight:700;display:block;margin-bottom:7px;">Folio (ej. XAB-0746)</label>
@@ -4312,7 +4347,7 @@ async function desvincularFacturapi() {
   await cargarCentroFacturacion();
 }
 
-function abrirModalDesvincularFacturapi() { const el = document.getElementById('modal-desvincular-facturapi-overlay'); if (el) el.style.display = 'flex'; }
+function abrirModalDesvincularFacturapi() { cerrarMenusFacturacion(); const el = document.getElementById('modal-desvincular-facturapi-overlay'); if (el) el.style.display = 'flex'; }
 function cerrarModalDesvincularFacturapi() { const el = document.getElementById('modal-desvincular-facturapi-overlay'); if (el) el.style.display = 'none'; }
 
 async function guardarConfigFacturacion() {
@@ -4348,7 +4383,12 @@ function abrirFacturaDesdeCentro() {
 function abrirModalServicioFactura() {
   const overlay = document.getElementById('modal-servicio-factura-overlay');
   if (!overlay) return;
+  cerrarMenusFacturacion();
   document.getElementById('fs-msg').textContent = '';
+  for (const id of ['fs-cliente-buscar','fs-rfc','fs-nombre','fs-regimen','fs-uso','fs-cp','fs-email','fs-descripcion','fs-total','fs-referencia','fs-clave-sat']) {
+    const el = document.getElementById(id); if (el) el.value = '';
+  }
+  const guardar = document.getElementById('fs-guardar-cliente'); if (guardar) guardar.checked = true;
   cargarClientesFiscales(document.getElementById('cf-buscar')?.value || '');
   pintarClientesServicio();
   overlay.style.display = 'flex';
@@ -4384,6 +4424,7 @@ document.getElementById('modal-servicio-factura-overlay')?.addEventListener('cli
   if (e.target === e.currentTarget) cerrarModalServicioFactura();
 });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') cerrarMenusFacturacion();
   const overlay = document.getElementById('modal-servicio-factura-overlay');
   if (e.key === 'Escape' && overlay?.style.display === 'flex') cerrarModalServicioFactura();
 });
@@ -4440,6 +4481,49 @@ function estadoReciboUI(estado) {
   })[estado] || [estado || 'Desconocido', '#6b7280', '#f3f4f6'];
 }
 
+// Facturapi usa /demo/ también para organizaciones de producción. Solo se
+// marca como prueba cuando el registro trae un ambiente explícito de prueba o
+// una liga con segmentos inequívocos de test/sandbox.
+function esReciboPruebaUI(doc) {
+  const ambiente = String(doc?.ambiente || doc?.entorno || doc?.modo || '').toLowerCase();
+  if (['prueba', 'test', 'sandbox'].includes(ambiente)) return true;
+  return /\/(?:test|sandbox)(?:\/|$)/i.test(String(doc?.url_autofactura || ''));
+}
+
+function cerrarMenusFacturacion(excepto = null) {
+  document.querySelectorAll('#facturacion-recibos-lista details.facturacion-acciones[open]').forEach(menu => {
+    if (menu !== excepto) menu.open = false;
+  });
+}
+
+function acomodarMenuFacturacion(menu) {
+  if (!menu) return;
+  const rect = menu.getBoundingClientRect();
+  const altoEstimado = Math.min(260, Math.max(150, menu.querySelector('.facturacion-menu')?.offsetHeight || 190));
+  menu.classList.toggle('abre-arriba', rect.bottom + altoEstimado > window.innerHeight && rect.top > altoEstimado);
+}
+
+// Los menús viven dentro de una tabla con overflow visible. Se reposicionan
+// según el espacio real y se cierran al cambiar de fila, hacer clic fuera o
+// pulsar Escape; abrir un modal también llama a cerrarMenusFacturacion().
+document.addEventListener('toggle', e => {
+  const menu = e.target;
+  if (!(menu instanceof HTMLDetailsElement) || !menu.classList.contains('facturacion-acciones')) return;
+  if (menu.open) {
+    cerrarMenusFacturacion(menu);
+    requestAnimationFrame(() => acomodarMenuFacturacion(menu));
+  } else {
+    menu.classList.remove('abre-arriba');
+  }
+}, true);
+document.addEventListener('click', e => {
+  if (!e.target.closest('#facturacion-recibos-lista details.facturacion-acciones')) cerrarMenusFacturacion();
+});
+window.addEventListener('resize', () => {
+  const abierto = document.querySelector('#facturacion-recibos-lista details.facturacion-acciones[open]');
+  if (abierto) acomodarMenuFacturacion(abierto);
+});
+
 async function cargarCentroFacturacion() {
   const lista = document.getElementById('facturacion-recibos-lista');
   if (!lista) return;
@@ -4463,8 +4547,8 @@ async function cargarCentroFacturacion() {
     if (!rr.ok) throw new Error(dr.error || 'No se pudieron consultar las ventas facturables.');
     if (!rs.ok) throw new Error(ds.error || 'No se pudieron consultar los servicios facturables.');
     const documentos = [
-      ...(dr.recibos || []).map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.created_at || r.updated_at, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '' })),
-      ...(ds.servicios || []).map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '' })),
+      ...(dr.recibos || []).map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.created_at || r.updated_at, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '', cliente_telefono: r.cliente_telefono || '' })),
+      ...(ds.servicios || []).map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '', cliente_telefono: s.cliente_telefono || '' })),
     ].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
     const dia = v => String(v || '').slice(0, 10);
     const enPeriodo = documentos.filter(d => (!desde || dia(d.fecha) >= desde) && (!hasta || dia(d.fecha) <= hasta));
@@ -4492,26 +4576,31 @@ async function cargarCentroFacturacion() {
         const [etiqueta, color, fondo] = doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoReciboUI(doc.estado);
         const folioCodificado = encodeURIComponent(String(doc.folio || '')).replace(/'/g, '%27');
         const idCodificado = encodeURIComponent(String(doc.id || '')).replace(/'/g, '%27');
-        const autofactura = urlFacturacionSegura(doc.url_autofactura);
-        const fecha = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-MX') : '—';
+        const fechaCompleta = doc.fecha ? new Date(doc.fecha).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
+        const fecha = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' }) : '—';
         const puedeEmitir = doc.tipo === 'venta' && PUEDE_FACTURAR && ['creando','abierto'].includes(doc.estado);
         const puedeReintentar = doc.estado === 'error';
+        const puedeCompartir = ['creando','abierto'].includes(doc.estado);
+        const telefonoCodificado = encodeURIComponent(String(doc.cliente_telefono || '')).replace(/'/g, '%27');
+        const marcaPrueba = esReciboPruebaUI(doc) ? '<span title="Recibo creado en ambiente de pruebas" style="display:inline-block;margin-left:5px;font-size:.65rem;font-weight:700;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:1px 5px;">Prueba</span>' : '';
         const acciones = [
-          puedeEmitir ? `<button onclick="abrirModalFactura(decodeURIComponent('${folioCodificado}'))" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 8px;font-weight:700;">Facturar</button>` : '',
-          doc.tipo === 'venta' && autofactura && doc.estado === 'abierto' ? `<a href="${esc(autofactura)}" target="_blank" rel="noopener noreferrer" style="border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">Autofactura</a>` : '',
-          doc.tipo === 'venta' && ['creando','abierto'].includes(doc.estado) ? `<button onclick="prepararAutofacturaUI('${folioCodificado}',this)" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;border-radius:7px;padding:5px 8px;font-weight:700;">Portal Xabor</button>` : '',
+          puedeEmitir ? `<button onclick="abrirModalFactura(decodeURIComponent('${folioCodificado}'))" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 8px;font-weight:700;">Facturar ahora</button>` : '',
+          doc.tipo === 'venta' && puedeCompartir ? `<button onclick="copiarAutofacturaUI('${folioCodificado}',this)" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;border-radius:7px;padding:5px 8px;font-weight:700;">Copiar enlace de autofactura</button>` : '',
+          doc.tipo === 'venta' && puedeCompartir && doc.cliente_telefono ? `<button onclick="enviarAutofacturaWhatsApp('${folioCodificado}','${telefonoCodificado}',this)" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 8px;font-weight:700;">Enviar por WhatsApp</button>` : '',
           doc.factura_id && (doc.estado === 'facturado' || doc.estado === 'facturada') ? `<a href="/api/admin/factura/${encodeURIComponent(doc.factura_id)}/pdf" target="_blank" rel="noopener" style="border:1px solid #bbf7d0;background:#fff;color:#15803d;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">PDF</a>` : '',
           doc.tipo === 'venta' && puedeReintentar ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:7px;padding:5px 8px;">Reintentar</button>` : '',
-          doc.tipo === 'venta' && doc.sincronizable && ['abierto','creando'].includes(doc.estado) ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Sincronizar</button>` : '',
+          doc.tipo === 'venta' && doc.sincronizable && ['abierto','creando'].includes(doc.estado) ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Actualizar estado</button>` : '',
           doc.tipo === 'servicio' && doc.estado === 'emitiendo' ? `<button onclick="reanudarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Reanudar</button>` : '',
-          doc.tipo === 'servicio' && doc.estado === 'procesando' ? `<button onclick="sincronizarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Sincronizar</button>` : '',
+          doc.tipo === 'servicio' && doc.estado === 'procesando' ? `<button onclick="sincronizarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Actualizar estado</button>` : '',
           doc.tipo === 'servicio' && puedeReintentar ? `<button onclick="reanudarServicioUI('${idCodificado}',this)" style="border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:7px;padding:5px 8px;">Reintentar</button>` : '',
         ].filter(Boolean).join('');
         const menu = acciones ? `<details class="facturacion-acciones"><summary aria-label="Acciones">⋯</summary><div class="facturacion-menu">${acciones}</div></details>` : '<span style="color:#aaa;">—</span>';
-        const cliente = doc.cliente_nombre || 'Sin datos fiscales';
+        const clientePendiente = ['creando','abierto','emitiendo','procesando'].includes(doc.estado);
+        const cliente = doc.cliente_nombre || (clientePendiente ? 'Público en general' : 'Sin datos fiscales');
+        const clienteRfc = doc.cliente_rfc || (clientePendiente ? '' : 'RFC no disponible');
         const detalleError = doc.error_detalle || doc.error_codigo || '';
         const detalle = detalleError ? `<div class="facturacion-ellipsis" title="${esc(detalleError)}" style="max-width:100%;margin-top:4px;color:#b91c1c;font-size:.7rem;">${esc(detalleError)}</div>` : '';
-        return `<tr style="border-top:1px solid #f1f0ed;"><td class="facturacion-ellipsis">${esc(fecha)}</td><td><div class="facturacion-ellipsis" title="${esc(doc.tipo === 'venta' ? doc.folio : doc.referencia)}"><b>${esc(doc.tipo === 'venta' ? doc.folio : doc.referencia)}</b></div>${doc.uuid ? `<div class="facturacion-ellipsis" title="${esc(doc.uuid)}" style="color:#888;font-size:.7rem;">UUID ${esc(doc.uuid)}</div>` : ''}</td><td><div class="facturacion-ellipsis" title="${esc(cliente)}">${esc(cliente)}</div><div class="facturacion-ellipsis" title="${esc(doc.cliente_rfc || 'RFC no disponible')}" style="color:#888;font-size:.7rem;">${esc(doc.cliente_rfc || 'RFC no disponible')}</div></td><td>${doc.tipo === 'venta' ? 'Venta' : 'Servicio'}</td><td style="text-align:right;font-weight:800;white-space:nowrap;">$${Number(doc.total || 0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td><span title="${esc(detalleError)}" style="font-size:0.7rem;font-weight:700;color:${color};background:${fondo};border-radius:12px;padding:2px 7px;white-space:nowrap;">${esc(etiqueta)}</span>${detalle}</td><td>${menu}</td></tr>`;
+        return `<tr style="border-top:1px solid #f1f0ed;"><td title="${esc(fechaCompleta)}">${esc(fecha)}</td><td><div class="facturacion-ellipsis" title="${esc(doc.tipo === 'venta' ? doc.folio : doc.referencia)}"><b>${esc(doc.tipo === 'venta' ? doc.folio : doc.referencia)}</b>${marcaPrueba}</div>${doc.uuid ? `<div class="facturacion-ellipsis" title="${esc(doc.uuid)}" style="color:#888;font-size:.7rem;">UUID ${esc(doc.uuid)}</div>` : ''}</td><td><div class="facturacion-ellipsis" title="${esc(cliente)}">${esc(cliente)}</div><div class="facturacion-ellipsis" title="${esc(clienteRfc)}" style="color:#888;font-size:.7rem;">${esc(clienteRfc)}</div></td><td>${doc.tipo === 'venta' ? 'Venta' : 'Servicio'}</td><td style="text-align:right;font-weight:800;white-space:nowrap;">$${Number(doc.total || 0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td><span title="${esc(detalleError)}" style="font-size:0.7rem;font-weight:700;color:${color};background:${fondo};border-radius:12px;padding:2px 7px;white-space:nowrap;">${esc(etiqueta)}</span>${detalle}</td><td>${menu}</td></tr>`;
       }).join('')}</tbody></table>`;
     }
     const info = document.getElementById('facturacion-recibos-paginacion');
@@ -4533,7 +4622,7 @@ function estadoServicioUI(estado) {
 
 async function sincronizarServicioUI(idCodificado, btn) {
   const id = decodeURIComponent(idCodificado);
-  if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Actualizando…'; }
   try { await apiFetch('/api/admin/facturacion/servicios/' + encodeURIComponent(id) + '/sincronizar', { method:'POST' }); }
   finally { await cargarCentroFacturacion(); }
 }
@@ -4551,24 +4640,84 @@ async function reanudarServicioUI(idCodificado, btn) {
   } finally { await cargarCentroFacturacion(); }
 }
 
-async function prepararAutofacturaUI(folioCodificado, btn) {
+async function copiarTextoFacturacion(texto) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(texto);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = texto; area.style.position = 'fixed'; area.style.opacity = '0';
+  document.body.appendChild(area); area.focus(); area.select();
+  const ok = document.execCommand('copy'); area.remove();
+  if (!ok) throw new Error('El navegador no permitió copiar el enlace.');
+}
+
+function avisoFacturacion(texto, error = false) {
+  const msg = document.getElementById('facturacion-operacion-msg');
+  if (msg) { msg.style.color = error ? '#b91c1c' : '#15803d'; msg.textContent = texto; }
+}
+
+function avisoEnlaceAutofactura(folio, url) {
+  const msg = document.getElementById('facturacion-operacion-msg');
+  if (!msg) return;
+  msg.style.color = '#15803d';
+  msg.innerHTML = `Enlace de autofactura de <b>${esc(folio)}</b>: <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+}
+
+async function copiarLigaPortalXabor(btn) {
+  const url = `${location.origin}/facturacion`;
+  const original = btn?.textContent || 'Copiar liga';
+  if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
+  try {
+    await copiarTextoFacturacion(url);
+    avisoFacturacion('Liga del portal de autofacturación Xabor copiada.');
+  } catch (e) {
+    avisoFacturacion(e.message || 'No se pudo copiar la liga del portal.', true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+async function obtenerEnlaceAutofacturaUI(folio) {
+  const r = await apiFetch('/api/admin/facturacion/autofacturas/' + encodeURIComponent(folio), { method:'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.autofactura?.url) throw new Error(d.error || 'No se pudo preparar el portal.');
+  return d.autofactura.url;
+}
+
+async function copiarAutofacturaUI(folioCodificado, btn) {
   const folio = decodeURIComponent(folioCodificado);
+  cerrarMenusFacturacion();
+  if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
+  try {
+    const url = await obtenerEnlaceAutofacturaUI(folio);
+    await copiarTextoFacturacion(url);
+    avisoEnlaceAutofactura(folio, url);
+  } catch (e) {
+    avisoFacturacion(e.message || 'No se pudo copiar el enlace.', true);
+  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Copiar enlace de autofactura'; } }
+}
+
+async function enviarAutofacturaWhatsApp(folioCodificado, telefonoCodificado, btn) {
+  const folio = decodeURIComponent(folioCodificado);
+  const telefono = decodeURIComponent(telefonoCodificado).replace(/\D/g, '');
+  cerrarMenusFacturacion();
+  if (telefono.length < 7) { avisoFacturacion('La venta no tiene un teléfono de WhatsApp válido.', true); return; }
   if (btn) { btn.disabled = true; btn.textContent = 'Preparando…'; }
   try {
-    const r = await apiFetch('/api/admin/facturacion/autofacturas/' + encodeURIComponent(folio), { method:'POST' });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.autofactura?.url) throw new Error(d.error || 'No se pudo preparar el portal.');
-    window.open(d.autofactura.url, '_blank', 'noopener');
+    const url = await obtenerEnlaceAutofacturaUI(folio);
+    const texto = `Hola, aquí tienes el enlace para facturar tu venta ${folio}: ${url}`;
+    window.open('https://wa.me/' + telefono + '?text=' + encodeURIComponent(texto), '_blank', 'noopener');
+    avisoFacturacion(`WhatsApp preparado para ${folio}.`);
   } catch (e) {
-    const msg = document.getElementById('facturacion-operacion-msg');
-    if (msg) { msg.style.color='#b91c1c'; msg.textContent=e.message || 'No se pudo preparar el portal.'; }
-  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Portal Xabor'; } }
+    avisoFacturacion(e.message || 'No se pudo preparar el enlace.', true);
+  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Enviar por WhatsApp'; } }
 }
 
 async function sincronizarReciboUI(folioCodificado, btn) {
   const folio = decodeURIComponent(folioCodificado);
   const msg = document.getElementById('facturacion-operacion-msg');
-  if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Actualizando…'; }
   try {
     const r = await apiFetch('/api/admin/facturacion/recibos/' + encodeURIComponent(folio) + '/sincronizar', { method:'POST' });
     const d = await r.json().catch(() => ({}));
@@ -4577,7 +4726,7 @@ async function sincronizarReciboUI(folioCodificado, btn) {
     await cargarCentroFacturacion();
   } catch (e) {
     if (msg) { msg.style.color='#b91c1c'; msg.textContent=e.message || 'No se pudo sincronizar.'; }
-    if (btn) { btn.disabled=false; btn.textContent='Sincronizar'; }
+    if (btn) { btn.disabled=false; btn.textContent='Actualizar estado'; }
   }
 }
 
@@ -5892,6 +6041,7 @@ document.getElementById('modal-devolucion-overlay').addEventListener('click', e 
 
 // ─── Factura CFDI (admin) ────────────────────────────────────────────────────
 function abrirModalFactura(folio) {
+  cerrarMenusFacturacion();
   document.getElementById('factura-folio').value = folio;
   document.getElementById('factura-ref').textContent = `Pedido ${folio}`;
   document.getElementById('factura-rfc').value = '';
