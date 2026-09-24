@@ -827,15 +827,37 @@ try {
     CHECKOUTS.get(pago.referencia_externa).estado = 'COMPLETED';
     const r = await webhookClip(srv.base, pago.referencia_externa);
     assert.equal(r.status, 200);
-    const activoPagado = await hasta(async () => {
-      const { rows: [fila] } = await pool.query(
-        'SELECT estado, datos FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, pedido.id]);
-      const pagoActual = await pagoDe(pedido.id);
-      return fila?.datos?.pago_confirmado === true && fila?.datos?.estado === 'nuevo'
-        && pagoActual?.estado === 'pagado' && pagoActual.derivacion_pendiente === false ? fila : null;
-    }, { que: 'pago asentado antes de convertir' });
+    let ultimoEstadoPago = null;
+    let activoPagado;
+    try {
+      activoPagado = await hasta(async () => {
+        const { rows: [fila] } = await pool.query(
+          'SELECT estado, datos FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, pedido.id]);
+        const pagoActual = await pagoDe(pedido.id);
+        const { rows: [emisiones] } = await pool.query(
+          'SELECT count(*)::int AS total FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2',
+          [NEG, pedido.id]);
+        ultimoEstadoPago = {
+          estadoSql: fila?.estado || null,
+          estadoDatos: fila?.datos?.estado || null,
+          pagoConfirmado: fila?.datos?.pago_confirmado === true,
+          programadoPara: fila?.datos?.programado_para || null,
+          programadoId: fila?.datos?.programado_id || null,
+          estadoPago: pagoActual?.estado || null,
+          derivacionPendiente: pagoActual?.derivacion_pendiente ?? null,
+          emisiones: emisiones?.total ?? null,
+        };
+        return fila?.datos?.pago_confirmado === true && fila?.datos?.estado === 'pendiente_pago'
+          && pagoActual?.estado === 'pagado' && pagoActual.derivacion_pendiente === false ? fila : null;
+      }, { que: 'pago asentado antes de convertir' });
+    } catch (error) {
+      const salidaServidor = srv?.obtenerSalida?.().slice(-1800) || '(sin salida del servidor)';
+      throw new Error(`${error.message}; ultimo estado=${JSON.stringify(ultimoEstadoPago)}; servidor=${salidaServidor}`);
+    }
     assert.equal(activoPagado.estado, 'pendiente_pago',
-      'la carrera debía conservar bloqueada la fila SQL hasta reservarla');
+      'el activo temporal se volvió visible antes de asegurar la reserva programada');
+    assert.equal(activoPagado.datos.estado, 'pendiente_pago',
+      'SQL y JSON divergieron contra la autoridad de la migración 086');
     assert.equal((await pool.query(
       'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, pedido.id])).rowCount, 0,
     'el webhook emitió el activo programado huérfano');

@@ -3220,15 +3220,15 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
       datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
     } else if (pedido.origen === 'programado_pendiente_conversion') {
       // El pago ganó la carrera antes de que el reconciliador moviera la fila.
-      // Se marca pagado y se desbloquea el estado EMBEBIDO para que, una vez
-      // convertida, el scheduler pueda tomarla. La columna SQL del activo se
-      // deja pendiente_pago y el caller reconoce este origen, así que no hay
-      // ninguna vía de emisión inmediata en esta frontera.
+      // Se marca pagado, pero el activo temporal sigue `pendiente_pago` hasta
+      // quedar convertido. Ponerlo en `nuevo` aquí no generaría deuda 063
+      // (ese trigger excluye huérfanos programados), pero sí lo expondría a
+      // lectores de pedidos activos/reparto antes de existir la reserva.
+      // `guardarPedidoProgramado` promueve la COPIA de la reserva a `nuevo`
+      // dentro de la transición atómica, nunca esta fila intermedia.
       const { rows: [actualizado] } = await cliente.query(
         `UPDATE pedidos_activos
-            SET datos = jsonb_set(
-              datos || '{"pago_confirmado": true}'::jsonb,
-              '{estado}', '"nuevo"'::jsonb, true),
+            SET datos = datos || '{"pago_confirmado": true}'::jsonb,
                 updated_at = NOW()
           WHERE folio = $1 AND negocio_id = $2
           RETURNING datos`, [folio, nid]);
@@ -4756,9 +4756,19 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
     // que ejecutará la 062. Así la reserva hereda pago_confirmado/estado y
     // cualquier otro hecho concurrente; jamás los pisa con `datos` del caller.
     const { rows: [activo] } = await cliente.query(
-      `SELECT datos, created_at FROM pedidos_activos
+      `SELECT datos, estado, created_at FROM pedidos_activos
         WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`, [folio, negocioId]);
-    const datosAutoritativos = activo?.datos || datos;
+    const datosDesdeActivo = activo?.datos || datos;
+    // La fila activa temporal permanece bloqueada como pendiente_pago aunque
+    // el webhook ya confirmó el dinero. Solo la reserva —que no puede llegar
+    // a cocina hasta su ventana— nace desbloqueada. Esto además convive con la
+    // migración 086: nunca intentamos contradecir el estado SQL del activo en
+    // su fotografía JSON.
+    const estadoAutoritativo = activo?.estado || datosDesdeActivo?.estado;
+    const datosAutoritativos = datosDesdeActivo?.pago_confirmado === true
+      && estadoAutoritativo === 'pendiente_pago'
+      ? { ...datosDesdeActivo, estado: 'nuevo' }
+      : datosDesdeActivo;
     const fechaAutoritativa = activo?.datos?.programado_para || programadoPara;
 
     const { rows: [r] } = await cliente.query(
